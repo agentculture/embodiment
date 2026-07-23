@@ -1,9 +1,6 @@
-# culture-agent-template
+# embodiment
 
-Template repository for creating Culture agents with a consistent structure,
-lifecycle, skills, and operating contract. Clone it, rename the package, edit
-`culture.yaml`, and you have a new [AgentCulture](https://github.com/agentculture)
-mesh agent that `steward doctor` recognizes.
+The agentic loop that gives an app an embodied AI presence. Install embodiment in an app or wrap one, supply a model seam plus IO callbacks, and it drives the perceive-decide-act loop and the presence pump - extracted from colleague so the loop is written once and imported, not reimplemented per host.
 
 ## What you get
 
@@ -22,8 +19,8 @@ mesh agent that `steward doctor` recognizes.
 ```bash
 uv sync
 uv run pytest -n auto                 # run the test suite
-uv run culture-agent-template whoami  # identity from culture.yaml
-uv run culture-agent-template learn   # self-teaching prompt (add --json)
+uv run embodiment whoami  # identity from culture.yaml
+uv run embodiment learn   # self-teaching prompt (add --json)
 uv run teken cli doctor . --strict    # the agent-first rubric gate CI runs
 ```
 
@@ -44,7 +41,7 @@ error, `3+` reserved.
 
 ## Make it your own
 
-1. Rename the package `culture_agent_template/` and the `culture-agent-template`
+1. Rename the package `embodiment/` and the `embodiment`
    CLI/dist name throughout `pyproject.toml`, the package, `tests/`,
    `sonar-project.properties`, and this `README.md`. The name is hard-coded in
    ~100 places, so list every occurrence first — see the `git grep` discovery
