@@ -5,6 +5,22 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.6.2] - 2026-07-24
+
+### Added
+
+- **Known doc drift** section in `CLAUDE.md` recording that `docs/skill-sources.md` carries 16 provenance rows while `.claude/skills/` holds 18 — the eidetic-origin `remember` / `recall` skills have no ledger entry, to be added (origin: `agentculture/eidetic-cli`) on the next skills PR.
+
+### Changed
+
+- **`CLAUDE.md` re-initialized** from the self-init seed into a full runtime prompt (the `/init` deliverable). It records what is actually on disk today — the renamed `culture-agent-template` scaffold, with the loop and presence pump still in `colleague 1.52.1` awaiting extraction — so a future session does not go hunting for code that does not exist yet. Adds: the layer map (agentfront / shell-cli / **embodiment** / eidetic + coherence / colleague); the two identities this repo holds (its own mesh identity, where `culture.yaml`'s `backend: colleague` is authoritative over the seed's `claude` claim per issue #1 §6.2, and **Gwen**, the shipped embodiment); the extraction source table with per-module guarantees from `colleague/loop.py`, `presence_engine.py`, `presence.py`, `senses_loop.py`, `senses.py` and `realtime.py`; the four hard constraints (pure-stdlib core against colleague's `test_zero_deps.py` guard, the open third-base-dependency question, the software-presence-not-a-body name boundary, observable degradation) plus the verbatim and never-raise invariants; both open issues' agendas including issue #1's five parked questions; the CLI contracts (`CliError` and the exit-code policy, the stdout/stderr split, how to register a verb, why `culture.yaml` is line-scanned rather than parsed with PyYAML); and the conventions the template documented before `guild create` reset the seed — worktrees at `../.worktrees.embodiment/<name>/`, version-bump-every-PR, the `cicd` lane, the `ask-colleague` reflex, and memory discipline as this repo's vendored wrappers actually behave (a plain `/remember` is **public and committed** to `<repo-root>/.eidetic/memory`; `--visibility private` is what keeps a record in `$HOME`).
+- **`README.md` rewritten** around the real project rather than the template it was cloned from. Adds the software-presence-not-a-robot-body boundary callout that issue #1's constraint C2 explicitly requires be stated rather than left to inference; a Status section marking scaffold stage; the layer table; a **Gwen** section naming the reference rig (Qwen 3.6 27B cortex / Gemma 4 31B muse / Gemma 4 12B senses, model ids as catalogued in `lobes/catalog.py`, roles resolved by name from the lobes `/capabilities` contract) and the four honesty rules from [colleague#352](https://github.com/agentculture/colleague/issues/352); the ears-only `/v1/realtime` lane over the lobes gateway; a roadmap describing the three colleague seams; and an open-issues table summarizing issues #1 and #2 (both currently without replies, stated as such).
+- Corrected the README's vendored-skill count from 11 to **18** (the number actually under `.claude/skills/`).
+
+### Fixed
+
+- **Memory-visibility default documented backwards** (PR #3 review). `CLAUDE.md` claimed the vendored `/remember` / `/recall` wrappers default to `--visibility private` (`$HOME/.eidetic/memory`, uncommitted); the wrappers actually inject `--visibility public`, so a plain `/remember` lands in `<repo-root>/.eidetic/memory` — **committed** and shared with the team and mesh peers. The section now leads with that, names `--visibility private` as the opt-out, and records the underlying **upstream bug** under Known doc drift: `remember.sh` / `recall.sh` still document a private default in their header comments and `--help` text, contradicting their own flag-injection blocks (`remember.sh:148`, `recall.sh:144`). The scripts are cited verbatim (cite-don't-import), so the fix belongs upstream in `agentculture/eidetic-cli`, not in this repo.
+
 ## [0.6.1] - 2026-07-20
 
 ### Added
