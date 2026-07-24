@@ -104,3 +104,41 @@ def test_doctor_recognizes_declared_backend(capsys: pytest.CaptureFixture[str]) 
     assert "unknown backend" not in messages
     assert rc == 0
     assert payload["healthy"] is True
+
+
+# --- explain boundary ----
+
+
+def test_explain_root_contains_software_presence_boundary(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The software-presence boundary must be stated in explain output.
+
+    Mirrors the README's boundary blockquote so users understand embodiment
+    is software presence, not a physical robot body.
+    """
+    rc = main(["explain"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    assert "software presence" in out.lower()
+    assert "robot" in out.lower()
+    assert "physical" in out.lower()
+
+
+def test_explain_root_covers_loop_presence_identity_continuity(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The explain catalog must cover loop/presence/identity/continuity concepts.
+
+    These seams are planned; the catalog should document them at a conceptual
+    level so the rubric gate and introspection tests stay green.
+    """
+    rc = main(["explain"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    # Check for conceptual references to the seams
+    out_lower = out.lower()
+    assert "loop" in out_lower
+    assert "presence" in out_lower
+    assert "identity" in out_lower or "gwen" in out_lower
+    assert "continuity" in out_lower or "memory" in out_lower or "eidetic" in out_lower
