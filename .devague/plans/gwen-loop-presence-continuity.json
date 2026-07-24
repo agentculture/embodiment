@@ -1,0 +1,735 @@
+{
+  "slug": "gwen-loop-presence-continuity",
+  "title": "Gwen: loop, presence, continuity",
+  "frame_slug": "gwen-loop-presence-continuity",
+  "schema_version": 3,
+  "status": "exported",
+  "created": "2026-07-24T19:23:48Z",
+  "updated": "2026-07-24T20:00:26Z",
+  "targets": [
+    {
+      "id": "c2",
+      "kind": "requirement",
+      "text": "extract colleague 1.52.1's injection-shaped seams: loop.py bounded tool loop (h3 guaranteed termination; task_start/pre_tool/post_tool/finish hooks with only pre_tool control-bearing; ToolCall/ModelResponse/WorkAborted/TaskResult) plus the presence stack (presence_engine.py PresenceIO pump \u2014 no TTY/thread/clock; presence.py pure policy; senses_loop.py tools-off coordination loop) \u2014 decoupling work, not redesign"
+    },
+    {
+      "id": "h2",
+      "kind": "honesty",
+      "text": "the extracted loop preserves colleague's guarantees without importing any colleague module: guaranteed termination (finish / empty tool-call turn / max_steps), the four-event hook lifecycle with only pre_tool control-bearing, and the public shapes \u2014 proven by porting colleague's loop-behavior tests"
+    },
+    {
+      "id": "c3",
+      "kind": "requirement",
+      "text": "pure-stdlib core (C1): [project].dependencies stays exactly [] \u2014 verified empty at embodiment 0.6.2; optional capabilities live behind extras with lazy in-function imports, so pip install embodiment clears colleague's tests/test_zero_deps.py bar"
+    },
+    {
+      "id": "h3",
+      "kind": "honesty",
+      "text": "embodiment ships its own zero-deps guard (runtime sys.modules diff, no allow-list needed); [project].dependencies is [] at every release; optional extras import lazily inside functions, never at module load"
+    },
+    {
+      "id": "c4",
+      "kind": "boundary",
+      "text": "colleague's refactor is colleague's to make: embodiment proposes the import seam via an issue on agentculture/colleague (communicate skill), never pushes there"
+    },
+    {
+      "id": "h4",
+      "kind": "honesty",
+      "text": "no embodiment-authored commit or PR lands directly on agentculture/colleague; the refactor exists only as a tracked colleague issue authored via the communicate skill"
+    },
+    {
+      "id": "c5",
+      "kind": "requirement",
+      "text": "observable degradation (C3): every degradation records a transition the host can see \u2014 cadence caps, clarify thresholds, and senses_loop's explicit loop\u2192beats\u2192off ladder; nothing degrades silently"
+    },
+    {
+      "id": "h5",
+      "kind": "honesty",
+      "text": "a test enumerates every degradation path in the shipped code and asserts each appends a host-visible record (the recorded-ladder pattern); no silent except-pass on any presence path"
+    },
+    {
+      "id": "c6",
+      "kind": "requirement",
+      "text": "inherit both senses.py invariants verbatim: ContextPacket.original is set from the caller's input verbatim (never from model output), and every presence-path invocation never raises \u2014 dead port, request error, overflow, or lossy JSON degrades to None plus a degraded record"
+    },
+    {
+      "id": "h6",
+      "kind": "honesty",
+      "text": "fault-injection tests (dead port, overflow, malformed JSON, hostile model output) show every public presence entry point returns a degraded value instead of raising, and the perceived original stays byte-identical to the caller's input"
+    },
+    {
+      "id": "c8",
+      "kind": "requirement",
+      "text": "state the software-presence boundary in explain output too: README.md already carries the boundary blockquote (verified on disk), but embodiment/explain/catalog.py has no boundary language (grep for presence/body/physical/software returns nothing) \u2014 C2 requires both surfaces"
+    },
+    {
+      "id": "h7",
+      "kind": "honesty",
+      "text": "embodiment explain output renders the software-presence boundary statement, and a catalog test asserts it is present"
+    },
+    {
+      "id": "c9",
+      "kind": "requirement",
+      "text": "compose eidetic-cli (memory: recall, provenance, consolidation, relevance, ageing, forgetting) and coherence-cli (the relationship between memory and the present: quality, meaning, signal, investiture, frames) as runtime subsystems; embodiment owns only the lived sequence \u2014 when something is perceived, considered, acted on, remembered, or revisited"
+    },
+    {
+      "id": "h8",
+      "kind": "honesty",
+      "text": "the lifecycle invokes eidetic and coherence through the adapter at the defined checkpoints; embodiment source contains no store, no scoring, and no embedding logic of its own"
+    },
+    {
+      "id": "c10",
+      "kind": "boundary",
+      "text": "never reimplement eidetic's or coherence's responsibilities inside embodiment, and remove/avoid equivalent parallel implementations in embodiment and colleague"
+    },
+    {
+      "id": "h9",
+      "kind": "honesty",
+      "text": "review confirms no eidetic-equivalent or coherence-equivalent implementation exists in embodiment, and the colleague seam proposal names colleague's memory/coherence wiring as the code the refactor replaces"
+    },
+    {
+      "id": "c11",
+      "kind": "requirement",
+      "text": "coherence checks run at meaningful boundaries \u2014 before consequential action, before final completion, before durable memory; remember selectively; preserve provenance from perception through action into durable memory"
+    },
+    {
+      "id": "h10",
+      "kind": "honesty",
+      "text": "the lifecycle exposes named checkpoints \u2014 before consequential action, before final completion, before durable memory \u2014 each covered by a test showing coherence consulted and memory writes gated there"
+    },
+    {
+      "id": "c12",
+      "kind": "boundary",
+      "text": "permission stays separate from coherence: coherence asks whether an action makes sense; the capability layer decides whether it is permitted"
+    },
+    {
+      "id": "h11",
+      "kind": "honesty",
+      "text": "the tool-approval callback and the coherence gate are separate injection points; a test proves a coherence verdict cannot alter an approval decision, and vice versa"
+    },
+    {
+      "id": "c13",
+      "kind": "requirement",
+      "text": "definition of done spans two hosts: continuity demonstrated across at least two separate interactions in a minimal non-colleague app, and the same composition inside colleague without colleague-specific assumptions leaking into embodiment"
+    },
+    {
+      "id": "h12",
+      "kind": "honesty",
+      "text": "the repo contains a minimal non-colleague demo app demonstrating recall across two separate process runs, and embodiment's public API carries no colleague-specific types or imports"
+    },
+    {
+      "id": "c15",
+      "kind": "requirement",
+      "text": "Gwen is explicit configuration for the reference rig, reusing colleague's resolved identity (culture.yaml nick/suffix, then .colleague/identity.json) \u2014 no parallel persona system, and identity is never inferred by parsing model names"
+    },
+    {
+      "id": "h13",
+      "kind": "honesty",
+      "text": "identity enters only through explicit configuration on the resolved-identity seam; a test changes model names and asserts the resolved identity is unchanged"
+    },
+    {
+      "id": "c16",
+      "kind": "requirement",
+      "text": "absent identity => byte-identical prompts: no configured identity means today's prompts survive unchanged, byte for byte \u2014 the acceptance criterion that keeps the feature honest; tests must cover unnamed, named single-model, and named dual-model prompt composition"
+    },
+    {
+      "id": "h14",
+      "kind": "honesty",
+      "text": "a golden test renders every prompt surface with no identity configured and asserts byte-equality with the pre-identity output"
+    },
+    {
+      "id": "c17",
+      "kind": "boundary",
+      "text": "identity framing renames who is speaking, never what they may do: no change to tool authority, routing, or safety policy; traces still expose the actual contributing role, model, and machine"
+    },
+    {
+      "id": "h15",
+      "kind": "honesty",
+      "text": "with identity on versus off, tool schemas, routing, and approval decisions are identical \u2014 only speaker-framing text differs; asserted by a test that diffs both compositions"
+    },
+    {
+      "id": "c18",
+      "kind": "requirement",
+      "text": "role-specific authority per prompt-bearing role: senses speaks externally as Gwen in the first person; cortex is framed only on the top-level acting loop (typed subagents are not cortex); muse receives its authority boundary via a system message on every deepthink path; transcription stays identity-neutral; a single-model run must not claim another mind exists"
+    },
+    {
+      "id": "h16",
+      "kind": "honesty",
+      "text": "each prompt-bearing role's template carries its own authority framing; typed subagents never receive cortex framing; a muse-absent run mentions no second mind; tests cover unnamed, named-single-model, and named-dual-model composition"
+    },
+    {
+      "id": "c19",
+      "kind": "boundary",
+      "text": "two identities, never conflated: this repo's mesh identity is the agent 'embodiment' (culture.yaml: suffix embodiment, backend colleague, model Qwen3.6-27B \u2014 doctor reports healthy), while Gwen is the reference teammate the package configures for a consuming rig; Gwen resolves from the consuming deployment's identity, not from this repo's culture.yaml"
+    },
+    {
+      "id": "h17",
+      "kind": "honesty",
+      "text": "embodiment's own whoami/doctor output is unaffected by any Gwen configuration; Gwen resolves from the consuming rig's configuration, never from this repo's culture.yaml"
+    },
+    {
+      "id": "c21",
+      "kind": "requirement",
+      "text": "inherit PresenceIO as the IO seam: 8 plain callables all defaulted to no-ops (dispatch_to_cortex, append_guidance, read_flight, render, poll_operator_input, feed_tail, task_state, narrate), with narrate exception-swallowed so TTS can never disturb the text path; carry over both AST guard tests \u2014 no-front-import independence and presence.py policy purity (no time/threading/datetime/subprocess)"
+    },
+    {
+      "id": "h18",
+      "kind": "honesty",
+      "text": "the extracted PresenceIO keeps every callback defaulted to a no-op, and the ported AST guard tests (no-front-import for the engine; no time/threading/datetime/subprocess for policy) pass in embodiment CI"
+    },
+    {
+      "id": "c24",
+      "kind": "boundary",
+      "text": "realtime/voice stays a perception seam behind an optional extra, never a base dependency: colleague's [voice] precedent \u2014 sounddevice/soundfile/websocket-client imported lazily, missing extra raises a clean CliError naming pip install colleague[voice], mid-session failure flips RealtimeSession.degraded with one stderr notice; ears-only is double-pinned by tests (static source scan + live wire assertion that response.create is never sent)"
+    },
+    {
+      "id": "h19",
+      "kind": "honesty",
+      "text": "importing embodiment's base package introduces no websocket/audio/third-party module (covered by the zero-deps guard); any future realtime lane is extra-gated, lazily imported, and ears-only"
+    },
+    {
+      "id": "c26",
+      "kind": "requirement",
+      "text": "the subprocess adapter must pin its environment: eidetic recall resolution depends on cwd (git-toplevel probe in backend.py _resolve_write_dir \u2014 public+in-repo writes to <git-toplevel>/.eidetic/memory, else HOME) so the adapter sets EIDETIC_DATA_DIR or pins cwd explicitly; and coherence assess exits 0 even when the embedding endpoint is unreachable, naming what could not run in the report's unavailable field \u2014 the adapter must inspect unavailable/diagnostics, never trust exit code alone"
+    },
+    {
+      "id": "h20",
+      "kind": "honesty",
+      "text": "the adapter sets EIDETIC_DATA_DIR or an explicit cwd on every eidetic invocation, and parses coherence verdicts from the JSON payload including the unavailable field \u2014 a test proves an unreachable embedder (exit 0) still surfaces as a visible degradation"
+    },
+    {
+      "id": "c35",
+      "kind": "boundary",
+      "text": "shell-cli is part of colleague, not embodiment: not all embodiment apps have shell access, so embodiment never composes or depends on shell-cli \u2014 tools reach the loop only through the injected tool-executor protocol, and a host with no shell simply injects different (or no) tools"
+    },
+    {
+      "id": "h21",
+      "kind": "honesty",
+      "text": "embodiment source never imports or shells out to shell-cli; the loop runs against any injected executor \u2014 proven by a no-shell test fixture driving the loop with an executor exposing zero shell tools"
+    },
+    {
+      "id": "c36",
+      "kind": "audience",
+      "text": "app developers embedding an AI presence in their application \u2014 colleague first among them as the refactor consumer \u2014 plus the agents operating those apps through the embodiment CLI"
+    },
+    {
+      "id": "h27",
+      "kind": "honesty",
+      "text": "both audiences are demonstrably served: colleague can adopt without gaining transitive deps (zero-deps guard), and a non-colleague app author can integrate from the README plus the demo app alone"
+    },
+    {
+      "id": "c37",
+      "kind": "after_state",
+      "text": "an app imports embodiment (or installs its CLI), supplies a model seam, IO callbacks, and optionally an injected tool executor, and gains the bounded perceive-decide-act loop with presence between acts; configured with an identity it becomes Gwen \u2014 Qwen cortex worker with an optional Gemma 31B muse subconsciousness \u2014 and via the eidetic/coherence adapter its presence is continuous across sessions, with every degradation observable"
+    },
+    {
+      "id": "h28",
+      "kind": "honesty",
+      "text": "the end-state is exactly the sum of the confirmed requirements \u2014 loop import, optional muse, Gwen-when-configured, adapter continuity, observable degradation \u2014 each already carrying its own confirmed, testable honesty condition"
+    },
+    {
+      "id": "c38",
+      "kind": "before_state",
+      "text": "the loop and presence machinery live only inside colleague 1.52.1 \u2014 working but unreusable; an app wanting an embodied presence must reimplement the pump, memory and coherence must be hand-wired per host, and no identity framing exists anywhere (Gwen is a contract, not code)"
+    },
+    {
+      "id": "h29",
+      "kind": "honesty",
+      "text": "the before-state is survey-verified, not asserted: the loop/presence code exists only inside colleague 1.52.1 (scope entries s1, s13-s20), no Gwen literal exists anywhere (s19), and memory/coherence wiring is colleague-internal (s25)"
+    },
+    {
+      "id": "c39",
+      "kind": "why_it_matters",
+      "text": "the loop gets written once and imported, not reimplemented per host; presence claims stay honest because degradation is recorded, the operator's words survive verbatim, and continuity comes from authoritative subsystems (eidetic, coherence) rather than a larger context window"
+    },
+    {
+      "id": "h30",
+      "kind": "honesty",
+      "text": "the value claim holds only if the extraction preserves the invariants (termination, verbatim, never-raise, recorded degradation) \u2014 all pinned by confirmed conditions h2, h5, h6 \u2014 and the demo proves reuse without reimplementation (h12)"
+    },
+    {
+      "id": "c40",
+      "kind": "success_signal",
+      "text": "three observable signals: (1) embodiment's CI is green with the zero-deps guard, the byte-identical-prompt golden test, and the degradation-record tests; (2) a minimal non-colleague demo app in-repo shows continuity across two separate interactions; (3) the seam proposal is filed on agentculture/colleague and colleague#352 carries the recorded framing divergence"
+    },
+    {
+      "id": "h31",
+      "kind": "honesty",
+      "text": "every signal is mechanically checkable: CI job status for the three test families, the demo app present and passing in-repo, and the two issue links (colleague seam proposal, #352 divergence comment) resolvable on GitHub"
+    },
+    {
+      "id": "c41",
+      "kind": "requirement",
+      "text": "the muse injects through the advisory channel only: its instructions, guidance, and critique arrive as text the cortex reads (guidance/message stream), never through the control-bearing pre_tool hook \u2014 the muse holds no deny/rewrite authority over tool calls, preserving colleague#352's proposes-never-decides boundary in the mechanism, not just the prose"
+    },
+    {
+      "id": "h22",
+      "kind": "honesty",
+      "text": "the muse's output enters the loop only as advisory text in the guidance/message stream; a test asserts no muse-sourced path can deny or rewrite a tool call"
+    },
+    {
+      "id": "c42",
+      "kind": "requirement",
+      "text": "cortex-only is the primary tested path, not the degraded exception: the default test fixture runs the full loop with no muse configured; the muse is an optional seam whose arrival, absence, and mid-run failure are each recorded per C3 (grounded in thor-muse being declared-UNVALIDATED in lobes docs)"
+    },
+    {
+      "id": "h23",
+      "kind": "honesty",
+      "text": "the default CI fixture runs the loop museless end-to-end; muse configured-but-dead and muse mid-run-failure each produce a recorded degradation, asserted by tests"
+    },
+    {
+      "id": "c43",
+      "kind": "requirement",
+      "text": "honest scope for the pump: presence.py policy (cadence, clarify, go-words) extracts as-is, but presence_engine's driver seam is redesigned around the cortex+muse pair because the senses loop stays behind in colleague \u2014 the spec names this as light redesign, not pure extraction"
+    },
+    {
+      "id": "h24",
+      "kind": "honesty",
+      "text": "presence.py ports with its tests unchanged; the redesigned engine seam still passes the ported cadence-policy tests and the no-front-import AST guard; the spec and CHANGELOG describe the engine work as redesign, not extraction"
+    },
+    {
+      "id": "c44",
+      "kind": "requirement",
+      "text": "record the framing divergence before implementation lands: comment on colleague#352 via the communicate skill that embodiment implements the cortex+muse framing and leaves senses framing to colleague \u2014 a recorded divergence, never silent drift"
+    },
+    {
+      "id": "h25",
+      "kind": "honesty",
+      "text": "the comment exists on colleague#352, signed '- embodiment (Claude)', before the identity-framing implementation merges"
+    },
+    {
+      "id": "c45",
+      "kind": "announcement",
+      "text": "embodiment ships colleague's bounded tool loop as a reusable stdlib-only package \u2014 one loop, usable as a library or CLI \u2014 where Qwen is the working cortex and an optional Gemma 4 31B muse injects guidance and critique as a subconsciousness; configured identity makes it Gwen per colleague#352 (byte-identical prompts when absent), and an eidetic/coherence subprocess adapter makes its presence continuous across sessions with every degradation observable"
+    },
+    {
+      "id": "h26",
+      "kind": "honesty",
+      "text": "every announcement clause is demonstrable: a stdlib-only wheel installs cleanly, a colleague-shaped host and a non-colleague demo drive the same imported loop, the museless run is the default tested path, Gwen framing appears only when configured, and continuity works over the adapter"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "t1",
+      "summary": "Carve the data contract into embodiment/contract.py",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "embodiment.contract imports stdlib only and defines Task, TaskResult, Step, ToolCall, ModelResponse, WorkAborted, ContextPacket, SensesRecord and the OK/ERROR/INCOMPLETE/NO_RESULT_PRODUCED constants with field parity to colleague's contract.py public shapes",
+        "no colleague import anywhere; unit tests construct and round-trip every dataclass"
+      ],
+      "deps": [],
+      "covers": [],
+      "instruction": ""
+    },
+    {
+      "id": "t2",
+      "summary": "Zero-deps guard and extras discipline",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "a runtime sys.modules-diff test proves importing every embodiment module introduces no third-party top-level module, with no allow-list",
+        "a test asserts pyproject [project].dependencies == [] and that base import pulls no websocket/audio/third-party module (the realtime boundary)",
+        "any optional extra imports lazily inside a function; a guard test proves module-scope purity"
+      ],
+      "deps": [],
+      "covers": [
+        "c3",
+        "h3",
+        "c24",
+        "h19"
+      ],
+      "instruction": ""
+    },
+    {
+      "id": "t3",
+      "summary": "Port context windowing and media handling",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "window_messages, classify_degradable, count_tokens_chars and the media flatten/build/rejection-retry helpers ported with their tests, stdlib-only"
+      ],
+      "deps": [
+        "t1"
+      ],
+      "covers": [],
+      "instruction": ""
+    },
+    {
+      "id": "t4",
+      "summary": "Extract the bounded tool loop with injection points",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "the loop is driven only by an injected complete callable and an injected tool-executor protocol; module-scope imports are stdlib plus embodiment-internal only",
+        "termination test matrix: model finish, empty tool-call turn, max_steps budget \u2014 no other exit path exists; hooks add none and cannot extend the budget",
+        "the four-event hook lifecycle (task_start/pre_tool/post_tool/finish) ported with only pre_tool control-bearing (deny/rewrite); every colleague-policy import from the triage (lint, escalation, memory, autosplit, backpressure, coherence-gate, \u2026) is gone or an injectable callback"
+      ],
+      "deps": [
+        "t1",
+        "t3"
+      ],
+      "covers": [
+        "c2",
+        "h2"
+      ],
+      "instruction": ""
+    },
+    {
+      "id": "t5",
+      "summary": "No-shell host fixture",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "a test drives the full loop with an injected executor exposing zero shell tools and asserts normal completion",
+        "a source grep test proves no shell_cli / shell-cli reference exists in embodiment"
+      ],
+      "deps": [
+        "t4"
+      ],
+      "covers": [
+        "c35",
+        "h21"
+      ],
+      "instruction": ""
+    },
+    {
+      "id": "t6",
+      "summary": "Port the presence policy verbatim",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "UpdateCadence, should_update, ClarifyPolicy, should_clarify, is_go_word and the *_from_env builders port byte-faithfully with their tests, including never-raise on malformed env values",
+        "the no-forbidden-imports AST test (time/threading/datetime/subprocess) ports and passes"
+      ],
+      "deps": [],
+      "covers": [
+        "c43"
+      ],
+      "instruction": ""
+    },
+    {
+      "id": "t7",
+      "summary": "Redesign the presence engine around cortex + muse",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "PresenceIO keeps eight plain callables all defaulted to no-ops; narrate stays exception-swallowed so a voice hook can never disturb the text path",
+        "the engine drives cadence step/phase-based with no TTY, no thread, no clock; the no-front-import AST guard ports and passes",
+        "the engine consumes the cortex loop and the optional muse seam instead of a senses-loop driver, and the CHANGELOG/spec text names this redesign; the engine exposes no external presence event stream (loop-only)"
+      ],
+      "deps": [
+        "t1",
+        "t6"
+      ],
+      "covers": [
+        "c21",
+        "h18",
+        "h24"
+      ],
+      "instruction": ""
+    },
+    {
+      "id": "t8",
+      "summary": "Verbatim perception and never-raise",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "the perception intake sets the packet original from the caller's input verbatim; a test with hostile model output asserts byte-identity",
+        "fault-injection tests (dead port, request error, overflow, lossy JSON) show every public presence entry point returns a degraded value and never raises"
+      ],
+      "deps": [
+        "t7"
+      ],
+      "covers": [
+        "c6",
+        "h6"
+      ],
+      "instruction": ""
+    },
+    {
+      "id": "t9",
+      "summary": "Degradation ledger",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "an enumeration test walks every degradation path (budget exit, muse absence/failure, adapter failure, presence downgrade) and asserts each appends a host-visible record",
+        "a source scan proves no silent except-pass exists on any presence path"
+      ],
+      "deps": [
+        "t4",
+        "t7"
+      ],
+      "covers": [
+        "c5",
+        "h5"
+      ],
+      "instruction": ""
+    },
+    {
+      "id": "t10",
+      "summary": "Optional muse seam \u2014 the advisory subconsciousness",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "the muse arrives as an optional injected completion seam; its output enters the loop only as advisory text in the guidance/message stream",
+        "a test asserts no muse-sourced path can deny or rewrite a tool call (the pre_tool hook registry receives nothing muse-sourced)",
+        "the default CI fixture runs the loop museless end-to-end; muse configured-but-dead and muse mid-run-failure each produce a recorded degradation",
+        "the muse endpoint arrives via explicit injected configuration (role-by-name style), never parsed from model names"
+      ],
+      "deps": [
+        "t4",
+        "t7"
+      ],
+      "covers": [
+        "c41",
+        "h22",
+        "c42",
+        "h23"
+      ],
+      "instruction": ""
+    },
+    {
+      "id": "t11",
+      "summary": "Resolved-identity seam",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "identity resolves only from explicit host configuration (culture.yaml nick/suffix, then identity.json \u2014 mirroring colleague's resolution order and its reserved insertion slot); a test changes model names and asserts the resolved identity is unchanged",
+        "embodiment's own whoami/doctor output is byte-identical with and without a Gwen configuration present in a consuming-rig fixture"
+      ],
+      "deps": [],
+      "covers": [
+        "c15",
+        "h13",
+        "c19",
+        "h17"
+      ],
+      "instruction": ""
+    },
+    {
+      "id": "t12",
+      "summary": "Role-framed prompt composition \u2014 Gwen per colleague#352",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "golden test: with no identity configured, every prompt surface byte-equals the pre-identity output",
+        "with identity on versus off, tool schemas, routing, and approval decisions are identical \u2014 only speaker-framing text differs, proven by a composition diff test",
+        "cortex framing applies only to the top-level acting loop (typed subagents never get it); a museless run mentions no second mind; tests cover unnamed, named-single-model, and named-dual-model composition"
+      ],
+      "deps": [
+        "t4",
+        "t11",
+        "t18"
+      ],
+      "covers": [
+        "c16",
+        "h14",
+        "c17",
+        "h15",
+        "c18",
+        "h16"
+      ],
+      "instruction": ""
+    },
+    {
+      "id": "t13",
+      "summary": "Shared subprocess adapter for eidetic and coherence",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "one adapter module shells to both CLIs with --json, relying on their shared exit-code and stdout/stderr contract; every eidetic invocation sets EIDETIC_DATA_DIR or an explicit cwd",
+        "coherence verdicts parse from the JSON payload including the unavailable field \u2014 a test proves an unreachable embedder (exit 0) still surfaces as a recorded degradation",
+        "the adapter carries its own drift test pinning scope/visibility conventions per eidetic docs/contract.md section 4",
+        "embodiment source contains no store, no scoring, no embedding logic; each subsystem is optional and its absence degrades to a recorded no-continuity mode"
+      ],
+      "deps": [
+        "t1"
+      ],
+      "covers": [
+        "c9",
+        "h8",
+        "c10",
+        "h9",
+        "c26",
+        "h20"
+      ],
+      "instruction": ""
+    },
+    {
+      "id": "t14",
+      "summary": "Continuity lifecycle checkpoints",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "named checkpoints exist \u2014 before consequential action, before final completion, before durable memory \u2014 each covered by a test showing coherence consulted and memory writes gated there",
+        "provenance flows perception to action to durable record (added_by, links, supersedes populated on writes)",
+        "a test proves a coherence verdict cannot alter a tool-approval decision and vice versa \u2014 separate injection points"
+      ],
+      "deps": [
+        "t4",
+        "t13"
+      ],
+      "covers": [
+        "c11",
+        "h10",
+        "c12",
+        "h11"
+      ],
+      "instruction": ""
+    },
+    {
+      "id": "t15",
+      "summary": "Non-colleague demo app",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "a minimal demo host in-repo runs two separate process runs and the second demonstrably recalls the first (continuity across interactions)",
+        "the demo uses only embodiment's public API \u2014 no colleague-specific types or imports \u2014 and an app author can follow it from the README alone"
+      ],
+      "deps": [
+        "t4",
+        "t7",
+        "t13",
+        "t14"
+      ],
+      "covers": [
+        "c13",
+        "h12",
+        "c36",
+        "h27",
+        "c37",
+        "h28"
+      ],
+      "instruction": ""
+    },
+    {
+      "id": "t16",
+      "summary": "Explain catalog and CLI surface \u2014 the software-presence boundary",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "embodiment explain output renders the software-presence boundary statement and a catalog test asserts its presence",
+        "the explain catalog covers the new loop/presence/identity/continuity seams so the rubric gate and introspection tests stay green"
+      ],
+      "deps": [],
+      "covers": [
+        "c8",
+        "h7"
+      ],
+      "instruction": ""
+    },
+    {
+      "id": "t17",
+      "summary": "Relationship docs for app authors",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "docs describe the embodiment/eidetic/coherence ownership split in app-author language, the Colleague=runtime / Gwen=teammate / Qwen=cortex / Gemma-31B=muse table, and the before-to-after story citing the survey (scope entries) rather than asserting it"
+      ],
+      "deps": [
+        "t13",
+        "t14"
+      ],
+      "covers": [
+        "c38",
+        "h29"
+      ],
+      "instruction": ""
+    },
+    {
+      "id": "t18",
+      "summary": "Record the framing divergence on colleague#352",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "a comment exists on colleague#352, signed '- embodiment (Claude)', recording that embodiment implements the cortex+muse framing and leaves senses framing to colleague \u2014 posted before the identity-framing implementation merges"
+      ],
+      "deps": [],
+      "covers": [
+        "c44",
+        "h25"
+      ],
+      "instruction": ""
+    },
+    {
+      "id": "t19",
+      "summary": "Seam-proposal issue on agentculture/colleague",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "a tracked issue on agentculture/colleague proposes importing embodiment, names the loop and memory/coherence wiring it replaces, and records the C1b base-dependency question as colleague's decision",
+        "no embodiment-authored commit or PR lands directly on agentculture/colleague"
+      ],
+      "deps": [
+        "t4",
+        "t13"
+      ],
+      "covers": [
+        "c4",
+        "h4"
+      ],
+      "instruction": ""
+    },
+    {
+      "id": "t20",
+      "summary": "Integration verification \u2014 the announcement checklist",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "one CI-runnable checklist verifies every announcement clause: zero-deps guard green, byte-identical-prompt golden green, museless default fixture green, no-shell fixture green, degradation ledger green, and the continuity demo across two separate interactions green",
+        "the three success signals are checkable: CI status for the test families, the demo app passing in-repo, and the two issue links (seam proposal, #352 comment) resolving on GitHub"
+      ],
+      "deps": [
+        "t2",
+        "t5",
+        "t9",
+        "t12",
+        "t15"
+      ],
+      "covers": [
+        "c45",
+        "h26",
+        "c39",
+        "h30",
+        "c40",
+        "h31"
+      ],
+      "instruction": ""
+    }
+  ],
+  "risks": [
+    {
+      "id": "r1",
+      "text": "C1b residual: whether colleague allow-lists embodiment as a base dependency alongside agentfront (and shell-cli) is colleague's decision \u2014 recorded in the seam-proposal issue, outside embodiment's control",
+      "kind": "follow_up",
+      "task_id": "t19",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r2",
+      "text": "the reference muse deployment is declared-UNVALIDATED (lobes thor-muse, lobes#108): rig validation of the 31B muse is outside embodiment's control; museless remains the honest default until acceptance evidence lands",
+      "kind": "unknown_nonblocking",
+      "task_id": "t10",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r3",
+      "text": "the contract.py carve boundary may shift during extraction \u2014 which Task/TaskResult fields are truly loop-essential is confirmed only when the loop's tests pass without colleague imports",
+      "kind": "unknown_nonblocking",
+      "task_id": "t1",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r4",
+      "text": "subprocess overhead at checkpoint boundaries is unmeasured; if latency matters, the follow-up is the injected-port variant (env-armed embedder pattern), never a base dependency",
+      "kind": "unknown_nonblocking",
+      "task_id": "t13",
+      "resolved": false,
+      "resolution": ""
+    }
+  ]
+}
