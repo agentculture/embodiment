@@ -1,15 +1,34 @@
 # embodiment
 
-The agentic loop that gives an app an embodied AI presence. Install embodiment in an app or wrap one, supply a model seam plus IO callbacks, and it drives the perceive-decide-act loop and the presence pump - extracted from colleague so the loop is written once and imported, not reimplemented per host.
+The agentic loop that gives an app an embodied AI presence. Install `embodiment`
+in an app or wrap one, supply a **model seam** plus **IO callbacks**, and it
+drives the perceive → decide → act loop and the presence pump — extracted from
+[`colleague`](https://github.com/agentculture/colleague) so the loop is written
+once and imported, not reimplemented per host.
+
+> **Software presence, not a robot body.** "Embodiment" is an overloaded word in
+> this mesh: `reachy-mini-cli` owns the physical robot, `reachy-lobes` its local
+> brain. This package gives an *application* a loop and a presence — it does not
+> drive hardware, and nothing here claims a body. If that ever changes it will
+> be a stated goal agreed with the robot siblings, never an implication drawn
+> from the name.
+
+## Status
+
+**Scaffold stage.** What ships today is the agent-first CLI, the mesh identity,
+the vendored skill kit, and green CI + PyPI publishing. The loop and the
+presence pump are still in `colleague 1.52.1` awaiting extraction — see
+[Roadmap](#roadmap) and [issue #1](https://github.com/agentculture/embodiment/issues/1).
+`CLAUDE.md` marks what exists versus what is planned; this README does the same.
 
 ## What you get
 
 - **An agent-first CLI** cited from [teken](https://github.com/agentculture/teken)
-  (`afi-cli`) — the runtime package has no third-party dependencies.
+  (`afi-cli`) — the runtime package has **no third-party dependencies**.
 - **A mesh identity** — `culture.yaml` (`suffix` + `backend`) and the matching
-  resident prompt file (`AGENTS.colleague.md`, since this template runs
+  resident prompt file (`AGENTS.colleague.md`, since this agent runs
   `backend: colleague`).
-- **The canonical guildmaster skill kit** (11 skills) under `.claude/skills/`,
+- **The canonical guildmaster skill kit** (18 skills) under `.claude/skills/`,
   vendored cite-don't-import. See [`docs/skill-sources.md`](docs/skill-sources.md).
 - **A build + deploy baseline** — pytest, lint, the agent-first rubric gate, and
   PyPI Trusted Publishing wired into GitHub Actions.
@@ -19,8 +38,8 @@ The agentic loop that gives an app an embodied AI presence. Install embodiment i
 ```bash
 uv sync
 uv run pytest -n auto                 # run the test suite
-uv run embodiment whoami  # identity from culture.yaml
-uv run embodiment learn   # self-teaching prompt (add --json)
+uv run embodiment whoami              # identity from culture.yaml
+uv run embodiment learn               # self-teaching prompt (add --json)
 uv run teken cli doctor . --strict    # the agent-first rubric gate CI runs
 ```
 
@@ -39,20 +58,113 @@ Every command supports `--json`. Results go to stdout, errors/diagnostics to
 stderr (never mixed). Exit codes: `0` success, `1` user error, `2` environment
 error, `3+` reserved.
 
+## Where embodiment sits
+
+| Layer | Package | Owns |
+|-------|---------|------|
+| Surface | `agentfront` | CLI / MCP / HTTP / TAUI fronts, the App registry |
+| Tools | `shell-cli` | The file-and-shell tool surface + approval policy |
+| **Loop + presence** | **`embodiment`** | **The pump: perceive → decide → act, and the presence between acts** |
+| Memory / trust | `eidetic-cli`, `coherence-cli` | Durable recall + provenance; drift and consistency signals |
+| Product | `colleague` | The coder-agent harness — the opinions, not the plumbing |
+
+Three questions, three layers: *how does a human or agent reach it*
+(`agentfront`), *what can it do* (`shell-cli`), *what makes it keep going and
+feel present* (`embodiment`).
+
+## Gwen — the embodiment we ship
+
+The reference embodiment is **Gwen**: one prompt-visible teammate produced by
+cooperating cognitive roles across two model families — **G** from Gemma, **wen**
+from Qwen. Colleague stays the runtime; embodiment drives the roles; Gwen is who
+the operator talks to.
+
+| Concept | Value | Authority |
+|---------|-------|-----------|
+| Runtime | `colleague` | the harness |
+| Loop + presence | `embodiment` | the pump |
+| **Teammate identity** | **Gwen** | who the operator addresses |
+| Cortex | Qwen 3.6 27B (`sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP`) | bounded tool loop, repo actions, final synthesis — **final authority** |
+| Muse | Gemma 4 31B (`nvidia/Gemma-4-31B-IT-NVFP4`) | tools-off advisory reasoning; proposes, never decides |
+| Senses | Gemma 4 12B (`coolthor/gemma-4-12B-it-NVFP4A16`) | intake, perception, conversational presence, speak-back; never acts on the repo |
+| Ears / voice | Parakeet STT + Chatterbox TTS (lobes audio overlay) | the realtime lane below |
+
+Roles resolve **by name** from a [`lobes`](https://github.com/agentculture/lobes-cli)
+gateway's `/capabilities` contract — never by parsing model names. The identity
+contract is tracked in
+[colleague#352](https://github.com/agentculture/colleague/issues/352) and holds
+four rules that keep it honest:
+
+1. **Absent identity ⇒ byte-identical prompts.** Un-named deployments behave
+   exactly as they do today.
+2. **Identity never changes authority.** Framing renames who speaks; it does not
+   touch tool authority, routing, or safety policy.
+3. **Same identity, role-specific authority.** Senses speaks as Gwen in the
+   first person; cortex is framed only on the top-level acting loop; muse
+   receives its boundary on every advisory path; transcription stays neutral.
+4. **Traces stay truthful** — they always expose the actual contributing role,
+   model, and machine, and a single-model run never claims another mind exists.
+
+### The realtime interface (lobes)
+
+The rig's lobes gateway serves a `/v1/realtime` WebSocket (server-VAD, pcm16 @
+24 kHz). Gwen's ear rides it **ears-only**: the client never triggers the
+bridge's own model, so senses stays the only mind that answers and replies go
+out over the batch TTS lane. The microphone is opt-in per session, a
+client-edge half-duplex mute substitutes for AEC on hardware without one, and
+turn-based voice is the degrade floor — a flaky socket degrades with a recorded
+notice, never an exception into the host's main path.
+
+## Roadmap
+
+Both seams already exist in `colleague`, written injection-shaped, so this is
+decoupling work rather than redesign:
+
+- **The bounded tool loop** (`colleague/loop.py`) — engine-agnostic: handed a
+  `complete` callable that performs one model turn, it drives until the model
+  finishes, stops requesting tools, or the step budget is reached. Termination
+  is guaranteed; hooks at four lifecycle points can deny or rewrite a tool call
+  but add no exit path.
+- **The presence pump** (`colleague/presence_engine.py` + `presence.py`) — one
+  pump every surface shares, assuming **no TTY, no thread, and no clock**: all
+  IO rides injected callbacks and cadence is step/phase-based.
+- **The senses coordination loop** (`colleague/senses_loop.py`) — agentic
+  without ever putting a tool schema on the wire, with an explicit
+  `loop → beats → off` degradation ladder that records every transition.
+
+Two invariants come across unchanged: the operator's words are preserved
+**verbatim**, never round-tripped through a model, and perception **never
+raises** — it degrades to a recorded, observable failure. A presence layer that
+can lose the user's words, or fail loudly into an app's main path, is worse than
+no presence layer.
+
+### Open issues
+
+| Issue | What it asks |
+|-------|--------------|
+| [#1](https://github.com/agentculture/embodiment/issues/1) | The build brief: extract the loop + presence from colleague, stay pure-stdlib (colleague's zero-deps guard), don't overclaim the name, keep degradation observable. Parks five questions to answer before building — one loop or two, one model seam or two, library mode or wrapper mode first, the decoupling cost of `loop.py`'s dozen module-scope imports, and whether embodiment owns the presence *event stream* that `harmonics-cli` and `reterminal` currently consume without a shared producer. |
+| [#2](https://github.com/agentculture/embodiment/issues/2) | Continuity: compose `eidetic-cli` (memory, provenance, ageing) and `coherence-cli` (agreement between memory and the present) rather than reimplementing either. Embodiment owns the lived sequence; memory and coherence are runtime, not tools the model picks arbitrarily; checks happen at meaningful boundaries; degradation is visible to the host. Done means a second, non-colleague app gains the same continuity. |
+
+Neither issue has replies yet — answers belong on the issue or in an exported
+spec, not only in a commit message.
+
 ## Make it your own
 
-1. Rename the package `embodiment/` and the `embodiment`
-   CLI/dist name throughout `pyproject.toml`, the package, `tests/`,
+This repo was minted from
+[`culture-agent-template`](https://github.com/agentculture/culture-agent-template).
+To mint another agent from it:
+
+1. Rename the package `embodiment/` and the `embodiment` CLI/dist name
+   throughout `pyproject.toml`, the package, `tests/`,
    `sonar-project.properties`, and this `README.md`. The name is hard-coded in
-   ~100 places, so list every occurrence first — see the `git grep` discovery
-   command in [`CLAUDE.md`](CLAUDE.md), the authoritative rename procedure.
+   ~100 places, so list every occurrence first: `git grep -nF -e embodiment`.
 2. Edit `culture.yaml` with your `suffix` and `backend`.
 3. Rewrite `CLAUDE.md` for your agent and run `/init`.
 4. Re-vendor only the skills you need from guildmaster (see
    [`docs/skill-sources.md`](docs/skill-sources.md)).
 
 See [`CLAUDE.md`](CLAUDE.md) for the full conventions (version-bump-every-PR,
-the `cicd` PR lane, deploy setup).
+the `cicd` PR lane, worktree layout, memory discipline, deploy setup).
 
 ## License
 
