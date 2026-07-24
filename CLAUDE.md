@@ -379,15 +379,26 @@ we done this before?"), `/remember` when something worth keeping surfaces (a
 non-obvious decision *and its rationale*, a constraint, a fix and why it was
 needed). Capture it as it happens, not at the end when it has faded.
 
-This repo's vendored wrappers default to this agent's **personal, private**
-scope (`--scope embodiment --visibility private` → `$HOME/.eidetic/memory`,
-never committed), with the scope resolved at runtime from `culture.yaml`'s
-`suffix` — so the Claude and colleague backends share one store. Pass
-`--visibility public` to contribute to the shared pool, which for a public
-record inside a git repo routes to `<repo-root>/.eidetic/memory` (committed).
-`/recall` reads both and merges. Don't store what the repo already records
-(code structure, git history, `CHANGELOG.md`) — store what you would otherwise
-re-derive.
+**A plain `/remember` here is PUBLIC and COMMITTED.** This repo's vendored
+wrappers inject `--scope embodiment --visibility public` (the rollout-cli
+eidetic-memory recipe's deliberate policy override of eidetic's own private
+default), and a public record inside a git repo routes to
+`<repo-root>/.eidetic/memory` — committed, shared with the team and mesh peers.
+The scope is resolved at runtime from `culture.yaml`'s `suffix`, so the Claude
+and colleague backends share one store. Pass **`--visibility private`** to keep
+a record in `$HOME/.eidetic/memory` instead (never committed); `/recall` reads
+both stores and merges. An explicit `--scope` or `--visibility` on the command
+line always wins, and with no resolvable suffix the wrapper warns on stderr
+before falling back to eidetic's `default`/public scope.
+
+Trust the code, not the wrappers' prose: `remember.sh` / `recall.sh` still carry
+header and `--help` text claiming a *private* default, which their own
+flag-injection blocks (`remember.sh:148`, `recall.sh:144`) contradict. The
+scripts are vendored cite-don't-import — do not edit them to fix this; the
+divergence is logged under [Known doc drift](#known-doc-drift-fix-when-you-touch-these).
+
+Don't store what the repo already records (code structure, git history,
+`CHANGELOG.md`) — store what you would otherwise re-derive.
 
 ## Known doc drift (fix when you touch these)
 
@@ -397,3 +408,10 @@ re-derive.
 - `docs/skill-sources.md` still describes this repo through the template's
   lens in places; consumer-identifying prose was adapted, upstream citations
   intentionally were not.
+- **Vendored-script drift (upstream bug).** `remember.sh` / `recall.sh` document
+  a `--visibility private` default in their header comments and `--help` usage,
+  while the code injects `--visibility public` (`remember.sh:148`,
+  `recall.sh:144`). The code is authoritative — a plain `/remember` commits to
+  the repo. These are cited verbatim, so the fix belongs upstream in
+  `agentculture/eidetic-cli`, not here; file it there when the next skills
+  re-sync happens.
