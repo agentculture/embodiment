@@ -58,6 +58,7 @@ _SUBMODULES = frozenset(
         "presence",
         "presence_engine",
         "recall_bundle",
+        "scratchpad",
     }
 )
 
@@ -211,6 +212,10 @@ _LAZY_NAMES = {
     "LEVEL_FLAT": "recall_bundle",
     "LEVEL_GRAPH": "recall_bundle",
     "graph_available": "recall_bundle",
+    # ── the scratchpad (working memory a successor can resume from) ──────
+    "Scratchpad": "scratchpad",
+    "Entry": "scratchpad",
+    "resume_report": "scratchpad",
 }
 
 __all__ = ["__version__", *sorted(_SUBMODULES), *sorted(_LAZY_NAMES)]
@@ -269,6 +274,7 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
         presence,
         presence_engine,
         recall_bundle,
+        scratchpad,
     )
     from embodiment.contract import (  # noqa: F401
         ERROR,
@@ -398,4 +404,9 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
         flat_fetch,
         flat_fetcher,
         graph_available,
+    )
+    from embodiment.scratchpad import (  # noqa: F401
+        Entry,
+        Scratchpad,
+        resume_report,
     )
