@@ -32,6 +32,7 @@ from embodiment.contract import (
     ContextPacket,
     ModelResponse,
     Task,
+    TaskResult,
     ToolCall,
     WorkAborted,
 )
@@ -47,6 +48,7 @@ from embodiment.loop import (
     DEGRADED_OVERFLOW_EXHAUSTED,
     DEGRADED_PRESENCE,
     DEGRADED_PROGRESS,
+    DEGRADED_TOOL_ARGUMENTS,
     EVENT_FINISH,
     EVENT_POST_TOOL,
     EVENT_PRE_TOOL,
@@ -215,6 +217,22 @@ def _drive(*responses: Any, **kw: Any):
     kw.setdefault("max_steps", 10)
     task = kw.pop("task", None) or _task()
     return run(Scripted(*responses), task, **kw)
+
+
+def _work_ctx() -> Any:
+    """A minimal ``_Work`` context, for unit-testing a ``ctx``-taking helper
+    without driving a whole loop through :func:`run`."""
+    from embodiment.loop import _Work
+
+    task = _task()
+    return _Work(
+        complete=lambda messages: _turn(_call("finish")),
+        executor=_reading_executor(),
+        task=task,
+        result=TaskResult(task_id=task.id, status=OK),
+        messages=[],
+        controls=LoopControls(),
+    )
 
 
 # ── 1. injection only ─────────────────────────────────────────────────────────
@@ -1331,8 +1349,57 @@ class TestSeamRobustness:
     def test_string_arguments_pass_through_to_the_wire_unchanged(self):
         from embodiment.loop import _arguments_json
 
-        assert _arguments_json('{"path": "a"}') == '{"path": "a"}'
-        assert _arguments_json({"path": "a"}) == '{"path": "a"}'
+        ctx = _work_ctx()
+        assert _arguments_json(ctx, "read_file", '{"path": "a"}') == '{"path": "a"}'
+        assert _arguments_json(ctx, "read_file", {"path": "a"}) == '{"path": "a"}'
+        assert ctx.degradations == []
+
+    def test_unserializable_tool_call_arguments_are_coerced_to_valid_json_and_degrade(self):
+        """``ToolCall.arguments`` is typed ``dict[str, Any]``: nothing upstream
+        constrains its VALUES to JSON primitives, so a seam is free to hand back
+        a bare ``Path``. ``json.dumps`` would raise ``TypeError`` on it; the loop
+        must coerce and record, never abort (constraint C3)."""
+        from embodiment.loop import _arguments_json
+
+        ctx = _work_ctx()
+        result = _arguments_json(ctx, "read_file", {"path": Path("/nope/missing")})
+        parsed = json.loads(result)  # still valid, replayable JSON
+        assert parsed["path"] == str(Path("/nope/missing"))
+        assert [d.code for d in ctx.degradations] == [DEGRADED_TOOL_ARGUMENTS]
+        assert "read_file" in ctx.degradations[0].reason
+
+    def test_a_tool_call_argument_hostile_to_both_json_and_str_never_raises(self):
+        """The ``default=str`` fallback itself calls arbitrary ``__str__`` — an
+        adversarial value can make THAT raise too. The last-resort branch names
+        only the tool and the value's type, a call that cannot itself fail."""
+        from embodiment.loop import _arguments_json
+
+        class Hostile:
+            def __str__(self) -> str:  # pragma: no cover - exercised via json.dumps
+                raise RuntimeError("even str() refuses")
+
+        ctx = _work_ctx()
+        result = _arguments_json(ctx, "read_file", {"weird": Hostile()})
+        parsed = json.loads(result)
+        assert "_unserializable_arguments" in parsed
+        assert "read_file" in parsed["_unserializable_arguments"]
+        assert [d.code for d in ctx.degradations] == [DEGRADED_TOOL_ARGUMENTS]
+
+    def test_a_drive_with_unserializable_tool_call_arguments_still_finishes(self):
+        """End to end: a seam that hands back a non-JSON-serializable argument
+        value must not abort the drive — the assistant turn replays with the
+        value coerced to a string, and the loop reaches its normal finish."""
+        complete = Scripted(
+            _turn(_call("read_file", path=Path("/nope"))),
+            _turn(_call("finish")),
+        )
+        outcome = run(complete, _task(), executor=_reading_executor(), max_steps=4)
+        assert outcome.exit_reason == EXIT_FINISHED
+        replayed = complete.calls[1]
+        assistant = next(m for m in replayed if m["role"] == "assistant")
+        parsed = json.loads(assistant["tool_calls"][0]["function"]["arguments"])
+        assert parsed["path"] == str(Path("/nope"))
+        assert any(d.code == DEGRADED_TOOL_ARGUMENTS for d in outcome.degradations)
 
     @pytest.mark.parametrize(
         "content",

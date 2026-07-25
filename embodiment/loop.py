@@ -153,6 +153,7 @@ __all__ = [
     "DEGRADED_PRESENCE",
     "DEGRADED_PROGRESS",
     "DEGRADED_SYNTHESIS",
+    "DEGRADED_TOOL_ARGUMENTS",
     # presence + continuity seams
     "PresenceSink",
     "OperatorInboxFn",
@@ -221,6 +222,12 @@ _DECISIVE = (DECISION_DENY, DECISION_REWRITE)
 
 #: An attachment named by the task could not be read into a content part.
 DEGRADED_ATTACHMENT = "attachment-unreadable"
+#: A tool call's ``arguments`` were not JSON-serializable (a seam-supplied
+#: ``Path``/``set``/custom object) and were coerced on the way to the wire.
+#: This has its own code rather than borrowing ``attachment-unreadable``: C3
+#: makes degradation *observable*, and an operator who sees an attachment code
+#: goes looking at the task's media, not at what a seam returned.
+DEGRADED_TOOL_ARGUMENTS = "tool-arguments-unserializable"
 #: A degradable completion error was retried against a smaller window.
 DEGRADED_CONTEXT_OVERFLOW = "context-overflow-retry"
 #: The shrink-and-retry ladder hit its floor or cap; the partial is preserved.
@@ -887,18 +894,45 @@ def _fire_hooks(
 # ── message shaping ───────────────────────────────────────────────────────────
 
 
-def _arguments_json(arguments: Any) -> str:
+def _arguments_json(ctx: _Work, tool_name: str, arguments: Any) -> str:
     """OpenAI wire format wants ``function.arguments`` as a JSON *string*.
 
     The loop carries arguments as dicts for execution; serialize only on the way
     back into the message list so strict servers accept replayed turns.
+    ``ToolCall.arguments`` is typed ``dict[str, Any]`` and nothing upstream
+    constrains its VALUES to JSON-serializable primitives — a seam-supplied
+    ``Path``, ``set``, or other custom object reaching here must not abort the
+    drive (constraint C3: a presence layer that fails loudly into an app's main
+    path is worse than none).
+
+    Never raises. ``default=str`` renders every leaf into valid JSON without
+    dropping it, and the substitution is recorded as a degradation (see
+    :data:`DEGRADED_TOOL_ARGUMENTS`) so the operator can see the seam handed
+    back something odd. If even ``default=str`` cannot finish — a pathological
+    ``__str__`` that itself raises — the last resort names only the tool and
+    the argument value's type, a call that cannot itself fail.
     """
     if isinstance(arguments, str):
         return arguments
-    return json.dumps(arguments, ensure_ascii=False)
+    try:
+        return json.dumps(arguments, ensure_ascii=False)
+    except (TypeError, ValueError) as exc:
+        _degrade(
+            ctx,
+            DEGRADED_TOOL_ARGUMENTS,
+            f"tool '{tool_name}' arguments not JSON-serializable, coerced: "
+            f"{type(exc).__name__}: {exc}",
+        )
+    try:
+        return json.dumps(arguments, ensure_ascii=False, default=str)
+    except Exception:  # noqa: BLE001 - default=str runs arbitrary __str__; must not abort
+        return json.dumps(
+            {"_unserializable_arguments": f"{tool_name}: {type(arguments).__name__} instance"},
+            ensure_ascii=False,
+        )
 
 
-def _assistant_message(resp: ModelResponse) -> dict[str, Any]:
+def _assistant_message(ctx: _Work, resp: ModelResponse) -> dict[str, Any]:
     return {
         "role": "assistant",
         "content": resp.content,
@@ -906,7 +940,10 @@ def _assistant_message(resp: ModelResponse) -> dict[str, Any]:
             {
                 "id": tc.id,
                 "type": "function",
-                "function": {"name": tc.name, "arguments": _arguments_json(tc.arguments)},
+                "function": {
+                    "name": tc.name,
+                    "arguments": _arguments_json(ctx, tc.name, tc.arguments),
+                },
             }
             for tc in resp.tool_calls
         ],
@@ -1258,7 +1295,7 @@ def _advance_turn(ctx: _Work, resp: ModelResponse, nudges: int) -> tuple[int, Op
     """Process one turn; return ``(nudges, exit_reason_or_None)``."""
     if not resp.tool_calls:
         return _handle_no_tool_turn(ctx, resp, nudges)
-    ctx.messages.append(_assistant_message(resp))
+    ctx.messages.append(_assistant_message(ctx, resp))
     if _run_tool_calls(ctx, resp.tool_calls):
         return nudges, EXIT_FINISHED
     return nudges, None

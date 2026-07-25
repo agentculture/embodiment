@@ -195,6 +195,17 @@ def _loop_attachment(tmp_path: Path, _mp: pytest.MonkeyPatch) -> list[ledger.Led
     return ledger.from_loop(_drive(_turn(_call("finish")), task=task))
 
 
+def _loop_tool_arguments(tmp_path: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    """A seam hands back a ``Path`` where the wire format needs JSON.
+
+    The degradation fires when the turn is REPLAYED into the message list, so
+    the drive needs a second turn — a single finishing turn is never serialized
+    back and would provoke nothing.
+    """
+    unserializable = _turn(_call("read_file", path=tmp_path / "somewhere.txt"))
+    return ledger.from_loop(_drive(unserializable, _turn(_call("finish"))))
+
+
 def _loop_overflow_retry(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
     attempts: list[int] = []
 
@@ -209,9 +220,10 @@ def _loop_overflow_retry(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.Led
 
 def _loop_overflow_exhausted(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
     controls = LoopControls(context_budget=50, max_overflow_retries=2)
+    error = RuntimeError("maximum context length exceeded")
     with pytest.raises(LoopAborted) as excinfo:
         _drive(
-            RuntimeError("maximum context length exceeded"),
+            error,
             controls=controls,
         )
     # The partial's ledger rides the exception; the reader unwraps it.
@@ -630,6 +642,7 @@ def _ledger_unreadable(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.Ledge
 
 PROVOKERS: dict[tuple[str, str], Provoker] = {
     (ledger.SOURCE_LOOP, loop.DEGRADED_ATTACHMENT): _loop_attachment,
+    (ledger.SOURCE_LOOP, loop.DEGRADED_TOOL_ARGUMENTS): _loop_tool_arguments,
     (ledger.SOURCE_LOOP, loop.DEGRADED_CONTEXT_OVERFLOW): _loop_overflow_retry,
     (ledger.SOURCE_LOOP, loop.DEGRADED_OVERFLOW_EXHAUSTED): _loop_overflow_exhausted,
     (ledger.SOURCE_LOOP, loop.DEGRADED_MEDIA_REJECTED): _loop_media_rejected,

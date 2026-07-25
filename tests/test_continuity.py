@@ -468,6 +468,98 @@ class TestTrapOneStorageAnchor:
         assert seen["resolved_public"] == str(tmp_path)
         assert seen["resolved_private"] == str(tmp_path)
 
+    def test_a_relative_data_dir_is_pinned_absolutely_in_remember(
+        self, clean_store_env: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A relative ``data_dir`` must not leave the pin cwd-dependent.
+
+        ``_usable_anchor`` resolves a relative path to an absolute one for
+        exactly this reason (see its docstring); the pin has to receive that
+        resolved anchor, not the original relative string, or the ambiguity
+        the anchor exists to remove comes right back in through
+        ``_pinned_store``.
+        """
+        seen: dict[str, Any] = {}
+
+        class _Recording:
+            def upsert(self, record: Any) -> None:
+                seen["env"] = os.environ.get("EIDETIC_DATA_DIR")
+
+        monkeypatch.setattr(continuity, "_eidetic_get_backend", lambda *a, **k: _Recording())
+
+        relative = os.path.relpath(tmp_path / "store", os.getcwd())
+        expected = str(Path(relative).expanduser().resolve())
+
+        continuity.remember(_record(), data_dir=relative)
+
+        assert seen["env"] == expected
+        assert Path(seen["env"]).is_absolute()
+        assert seen["env"] != relative
+
+    def test_a_relative_data_dir_is_pinned_absolutely_in_recall(
+        self, clean_store_env: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen: dict[str, Any] = {}
+
+        class _Empty:
+            def search(self, *args: Any, **kwargs: Any) -> list[Any]:
+                seen["env"] = os.environ.get("EIDETIC_DATA_DIR")
+                return []
+
+        monkeypatch.setattr(continuity, "_eidetic_get_backend", lambda *a, **k: _Empty())
+
+        relative = os.path.relpath(tmp_path / "store", os.getcwd())
+        expected = str(Path(relative).expanduser().resolve())
+
+        continuity.recall("anything", data_dir=relative)
+
+        assert seen["env"] == expected
+        assert Path(seen["env"]).is_absolute()
+        assert seen["env"] != relative
+
+    def test_a_tilde_prefixed_data_dir_is_expanded_in_remember(
+        self, clean_store_env: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``~`` must be expanded, not handed to eidetic as a literal directory
+        name — the same normalisation gap as the relative-path case above, just
+        on the expansion half of ``_usable_anchor`` rather than the resolution
+        half."""
+        seen: dict[str, Any] = {}
+
+        class _Recording:
+            def upsert(self, record: Any) -> None:
+                seen["env"] = os.environ.get("EIDETIC_DATA_DIR")
+
+        monkeypatch.setattr(continuity, "_eidetic_get_backend", lambda *a, **k: _Recording())
+
+        tilde_path = "~/embodiment-test-anchor-does-not-exist"
+        expected = str(Path(tilde_path).expanduser().resolve())
+
+        continuity.remember(_record(), data_dir=tilde_path)
+
+        assert seen["env"] == expected
+        assert "~" not in seen["env"]
+
+    def test_a_tilde_prefixed_data_dir_is_expanded_in_recall(
+        self, clean_store_env: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen: dict[str, Any] = {}
+
+        class _Empty:
+            def search(self, *args: Any, **kwargs: Any) -> list[Any]:
+                seen["env"] = os.environ.get("EIDETIC_DATA_DIR")
+                return []
+
+        monkeypatch.setattr(continuity, "_eidetic_get_backend", lambda *a, **k: _Empty())
+
+        tilde_path = "~/embodiment-test-anchor-does-not-exist"
+        expected = str(Path(tilde_path).expanduser().resolve())
+
+        continuity.recall("anything", data_dir=tilde_path)
+
+        assert seen["env"] == expected
+        assert "~" not in seen["env"]
+
     def test_the_pin_is_restored_after_the_call(
         self, clean_store_env: None, tmp_path: Path
     ) -> None:

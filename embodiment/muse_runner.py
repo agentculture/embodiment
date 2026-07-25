@@ -103,7 +103,7 @@ from __future__ import annotations
 import threading
 from collections import deque
 from dataclasses import replace
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, cast
 
 from embodiment.muse import (
     DEFAULT_STALE_LAG,
@@ -280,9 +280,8 @@ def _carry(boundary: BoundaryContext) -> BoundaryContext:
     if not isinstance(history, list):
         return boundary
     try:
-        carried: BoundaryContext = replace(boundary, history=list(history))
-        return carried
-    except Exception:  # noqa: BLE001 - an uncopyable boundary still gets thought about
+        return cast(BoundaryContext, replace(boundary, history=list(history)))
+    except Exception:  # an uncopyable boundary still gets thought about
         return boundary
 
 

@@ -724,7 +724,7 @@ def remember(
         )
 
     try:
-        with _pinned_store(data_dir):
+        with _pinned_store(anchor):
             _eidetic_get_backend(backend).upsert(built)
     except Exception as exc:  # noqa: BLE001 - a store failure never reaches the host
         return RememberOutcome(
@@ -824,7 +824,7 @@ def recall(
     degradation: Optional[Degradation] = None
 
     try:
-        with _pinned_store(data_dir):
+        with _pinned_store(anchor):
             store = _eidetic_get_backend(backend)
             # Fetch unbounded, then apply the lifecycle filter before slicing —
             # eidetic's CLI order, so top_k counts only records the caller may see.
