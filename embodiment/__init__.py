@@ -57,6 +57,7 @@ _SUBMODULES = frozenset(
         "perception",
         "presence",
         "presence_engine",
+        "recall_bundle",
     }
 )
 
@@ -196,6 +197,20 @@ _LAZY_NAMES = {
     "INCOMPLETE": "contract",
     # ── identity (explicit configuration only, never inferred) ────────────
     "resolve_identity": "identity",
+    # ── the recall bundle (raw memory material for the muse) ─────────────
+    "fetch_bundle": "recall_bundle",
+    "flat_fetch": "recall_bundle",
+    "flat_fetcher": "recall_bundle",
+    "RecallBundle": "recall_bundle",
+    "BundleRequest": "recall_bundle",
+    "BundleItem": "recall_bundle",
+    "BundleProvenance": "recall_bundle",
+    "BundleDegradation": "recall_bundle",
+    "FetchFn": "recall_bundle",
+    "RecallFn": "recall_bundle",
+    "LEVEL_FLAT": "recall_bundle",
+    "LEVEL_GRAPH": "recall_bundle",
+    "graph_available": "recall_bundle",
 }
 
 __all__ = ["__version__", *sorted(_SUBMODULES), *sorted(_LAZY_NAMES)]
@@ -253,6 +268,7 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
         perception,
         presence,
         presence_engine,
+        recall_bundle,
     )
     from embodiment.contract import (  # noqa: F401
         ERROR,
@@ -367,4 +383,19 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
         PresenceSink,
         PresenceTurn,
         build_presence_executor,
+    )
+    from embodiment.recall_bundle import (  # noqa: F401
+        LEVEL_FLAT,
+        LEVEL_GRAPH,
+        BundleDegradation,
+        BundleItem,
+        BundleProvenance,
+        BundleRequest,
+        FetchFn,
+        RecallBundle,
+        RecallFn,
+        fetch_bundle,
+        flat_fetch,
+        flat_fetcher,
+        graph_available,
     )

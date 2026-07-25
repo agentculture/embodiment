@@ -812,13 +812,21 @@ class TestEngineIntegration:
             assert isinstance(runner, MuseSeam)
 
     def test_the_engine_renders_and_injects_a_drained_insight(self):
-        seam = _Scripted(_resp("I notice the tests never ran\nGUIDANCE: run pytest " + MARKER_DONE))
+        # GATED, not scripted: ``acknowledge`` drains too, so an ungated muse
+        # that finishes inside that call lands its counsel BEFORE the operator's
+        # own message and the relay order inverts. Holding the seam until
+        # acknowledge has returned makes which beat drains it deterministic —
+        # the ordering below is then a real guarantee, not a race the scheduler
+        # usually wins.
+        seam = _Gated(_resp("I notice the tests never ran\nGUIDANCE: run pytest " + MARKER_DONE))
         rendered: list[str] = []
         guided: list[str] = []
         io = PresenceIO(render=rendered.append, append_guidance=guided.append)
         with _runner(seam) as runner:
             engine = PresenceEngine(io=io, muse=runner)
             engine.acknowledge(ContextPacket(original="ship it", ack="on it"))
+            assert seam.started.wait(_TIMEOUT)
+            seam.release.set()
             assert runner.wait_idle(_TIMEOUT)
             engine.on_operator_message("any thoughts?")
             assert any("I notice the tests never ran" in line for line in rendered)
