@@ -21,3 +21,15 @@ ignores:
   - ".teken/**"
   # Vendored skills are cited verbatim from guildmaster — do not reformat them.
   - ".claude/skills/**"
+  # Installed third-party packages. Load-bearing since deviation d2 gave this
+  # package real dependencies: CI runs `markdownlint-cli2 "**/*.md"` AFTER the
+  # steps that build .venv, and numpy alone ships several LICENSE.md files that
+  # fail MD009/MD012/MD022/MD034/MD041/MD047. Nothing here is ours to reformat,
+  # and a lint job that fails on a dependency's licence text teaches everyone to
+  # ignore it.
+  - ".venv/**"
+  - "**/site-packages/**"
+  # devague's own working artifacts. `.devague/reviews/` and `.devague/questions/`
+  # are gitignored, so CI never sees them — leaving them in only makes a LOCAL
+  # run disagree with CI, which is how people learn to distrust a local lint.
+  - ".devague/**"
