@@ -18,6 +18,7 @@ Organised around the four things the extraction has to prove:
 from __future__ import annotations
 
 import ast
+import json
 from pathlib import Path
 from typing import Any, Optional
 
@@ -326,6 +327,14 @@ class TestTerminationMatrix:
         assert outcome.result.stats.model_turns == 3
         assert outcome.result.status == INCOMPLETE
 
+    @pytest.mark.parametrize("max_steps", [0, 1, 2, 3, 7])
+    def test_completions_never_exceed_the_budget(self, max_steps):
+        """The synthesis turn is reserved out of max_steps, never added to it."""
+        complete = Scripted(_turn(_call("read_file", path="a")))
+        outcome = run(complete, _task(), executor=_reading_executor(), max_steps=max_steps)
+        assert complete.turns <= max(1, max_steps)
+        assert outcome.result.stats.model_turns == complete.turns
+
     def test_budget_of_zero_still_runs_at_least_one_turn(self):
         outcome = _drive(_turn(_call("read_file", path="a")), max_steps=0)
         assert outcome.exit_reason == EXIT_BUDGET
@@ -397,9 +406,7 @@ class TestHooksCannotChangeTermination:
 
     def test_hooks_denying_every_event_still_exits_through_the_three(self):
         deny = HookDecision(decision=DECISION_DENY, reason="no")
-        hooks = RecordingHooks(
-            task_start=[deny], pre_tool=[deny], post_tool=[deny], finish=[deny]
-        )
+        hooks = RecordingHooks(task_start=[deny], pre_tool=[deny], post_tool=[deny], finish=[deny])
         outcome = _drive(_turn(_call("read_file", path="a")), max_steps=3, hooks=hooks)
         assert outcome.exit_reason in EXIT_REASONS
         assert outcome.result.stats.model_turns == 3
@@ -415,10 +422,21 @@ class TestHooksCannotChangeTermination:
         assert outcome.exit_reason == EXIT_BUDGET
 
     def test_a_raising_hook_cannot_abort_the_run(self):
+        """It fails closed (so the tool is denied) but never propagates."""
+
         def boom(event: Any) -> Any:
             raise RuntimeError("hook blew up")
 
         hooks = RecordingHooks(task_start=boom, pre_tool=boom, post_tool=boom, finish=boom)
+        outcome = _drive(_turn(_call("finish")), max_steps=2, hooks=hooks)
+        assert outcome.exit_reason in EXIT_REASONS
+        assert any(d.code == DEGRADED_HOOK_ERROR for d in outcome.degradations)
+
+    def test_a_raising_hook_on_observe_only_events_leaves_the_finish_intact(self):
+        def boom(event: Any) -> Any:
+            raise RuntimeError("hook blew up")
+
+        hooks = RecordingHooks(task_start=boom, post_tool=boom, finish=boom)
         outcome = _drive(_turn(_call("finish")), hooks=hooks)
         assert outcome.exit_reason == EXIT_FINISHED
         assert any(d.code == DEGRADED_HOOK_ERROR for d in outcome.degradations)
@@ -430,7 +448,7 @@ class TestHooksCannotChangeTermination:
             _task(),
             executor=_reading_executor(),
             max_steps=2,
-            controls=LoopControls(max_continue_nudges=5),
+            controls=LoopControls(max_continue_nudges=5, synthesis=False),
         )
         # 2 turns is the whole budget even though 5 nudges were allowed.
         assert complete.turns == 2
@@ -541,9 +559,7 @@ class TestHookLifecycle:
     @pytest.mark.parametrize("event", [EVENT_TASK_START, EVENT_POST_TOOL, EVENT_FINISH])
     def test_observe_only_events_cannot_alter_control_flow(self, event):
         executor = _reading_executor()
-        hooks = RecordingHooks(
-            **{event: [HookDecision(decision=DECISION_DENY, reason="ignored")]}
-        )
+        hooks = RecordingHooks(**{event: [HookDecision(decision=DECISION_DENY, reason="ignored")]})
         outcome = _drive(
             _turn(_call("read_file", path="a"), _call("finish")), hooks=hooks, executor=executor
         )
@@ -637,16 +653,16 @@ class TestToolExecution:
 
     def test_a_finish_does_not_cancel_the_rest_of_the_turn(self):
         executor = _reading_executor()
-        outcome = _drive(
-            _turn(_call("finish"), _call("read_file", path="a")), executor=executor
-        )
+        outcome = _drive(_turn(_call("finish"), _call("read_file", path="a")), executor=executor)
         assert [name for name, _ in executor.seen] == ["finish", "read_file"]
         assert outcome.exit_reason == EXIT_FINISHED
 
     def test_changed_files_and_bytes_come_from_the_executor_ledger(self):
         executor = _reading_executor()
         executor.bytes_written = 42
-        outcome = _drive(_turn(_call("write_file", path="a.py"), _call("finish")), executor=executor)
+        outcome = _drive(
+            _turn(_call("write_file", path="a.py"), _call("finish")), executor=executor
+        )
         assert outcome.result.changed_files == ["a.py"]
         assert outcome.result.stats.bytes_written == 42
         assert outcome.result.stats.files_changed == 1
@@ -752,8 +768,11 @@ class TestPresenceBinding:
     def test_acknowledge_is_called_once_before_the_first_step(self):
         sink = FakeSink()
         packet = ContextPacket(original="do the thing")
-        _drive(_turn(_call("read_file", path="a"), _call("finish")),
-               task=_task(context_packet=packet), presence=sink)
+        _drive(
+            _turn(_call("read_file", path="a"), _call("finish")),
+            task=_task(context_packet=packet),
+            presence=sink,
+        )
         assert sink.acknowledged == [packet]
 
     def test_acknowledge_precedes_every_progress_boundary(self):
@@ -774,8 +793,10 @@ class TestPresenceBinding:
 
     def test_one_progress_boundary_per_step(self):
         sink = FakeSink()
-        _drive(_turn(_call("read_file", path="a"), _call("read_file", path="b"), _call("finish")),
-               presence=sink)
+        _drive(
+            _turn(_call("read_file", path="a"), _call("read_file", path="b"), _call("finish")),
+            presence=sink,
+        )
         steps = [b for b in sink.boundaries if not b[1]]
         assert len(steps) == 3
         assert [s[0] for s in steps] == [1, 2, 3]
@@ -793,8 +814,7 @@ class TestPresenceBinding:
         def poll() -> list[str]:
             return inbox.pop(0) if inbox else []
 
-        _drive(_turn(_call("read_file", path="a")), max_steps=3,
-               presence=sink, operator_inbox=poll)
+        _drive(_turn(_call("read_file", path="a")), max_steps=4, presence=sink, operator_inbox=poll)
         assert sink.operator == ["are you there?", "still working?"]
 
     def test_no_inbox_means_no_operator_routing(self):
@@ -892,8 +912,9 @@ class TestDegradationIsObservable:
             raise RuntimeError("maximum context length is 4096 tokens")
 
         with pytest.raises(LoopAborted):
-            _drive(always_overflow, controls=LoopControls(context_budget=4000,
-                                                          max_overflow_retries=2))
+            _drive(
+                always_overflow, controls=LoopControls(context_budget=4000, max_overflow_retries=2)
+            )
         assert len(calls) <= 3  # first attempt + at most two retries
 
     def test_a_non_degradable_error_is_never_retried(self):
@@ -926,9 +947,7 @@ class TestDegradationIsObservable:
         assert len(attempts) == 2
         assert isinstance(attempts[1], str)  # flattened
         assert any(d.code == DEGRADED_MEDIA_REJECTED for d in outcome.degradations)
-        assert outcome.result.media == {
-            "attachments": [{"path": str(png), "status": "dropped"}]
-        }
+        assert outcome.result.media == {"attachments": [{"path": str(png), "status": "dropped"}]}
 
     def test_a_raising_progress_sink_is_recorded_not_fatal(self):
         def boom(*args: Any) -> None:
@@ -961,8 +980,9 @@ class TestDegradationIsObservable:
 
     def test_progress_receives_raw_arguments_not_a_rendered_label(self):
         seen: list[tuple[Any, ...]] = []
-        _drive(_turn(_call("read_file", path="a"), _call("finish")),
-               progress=lambda *a: seen.append(a))
+        _drive(
+            _turn(_call("read_file", path="a"), _call("finish")), progress=lambda *a: seen.append(a)
+        )
         steps = [s for s in seen if s[1]]
         assert steps[0] == (0, "read_file", {"path": "a"}, True)
 
@@ -979,8 +999,13 @@ class TestDegradationIsObservable:
 class TestResultShaping:
     def test_usage_and_turn_accounting(self):
         complete = Scripted(
-            _turn(_call("read_file", path="a"), prompt_tokens=10, completion_tokens=4,
-                  reasoning="thinking", content="reading"),
+            _turn(
+                _call("read_file", path="a"),
+                prompt_tokens=10,
+                completion_tokens=4,
+                reasoning="thinking",
+                content="reading",
+            ),
             _turn(_call("finish"), prompt_tokens=20, completion_tokens=6),
         )
         outcome = run(complete, _task(), executor=_reading_executor(), max_steps=5)
@@ -1024,9 +1049,9 @@ class TestResultShaping:
     def test_forced_synthesis_turns_a_budget_exhaustion_into_a_partial(self):
         turns = [_turn(_call("read_file", path="a")), _turn(content="here is what I found")]
         complete = Scripted(*turns)
-        outcome = run(complete, _task(), executor=_reading_executor(), max_steps=1)
+        outcome = run(complete, _task(), executor=_reading_executor(), max_steps=2)
         assert outcome.result.summary == "here is what I found"
-        assert complete.turns == 2  # one reading turn + one synthesis turn
+        assert complete.turns == 2  # one reading turn + the reserved synthesis turn
 
     def test_synthesis_never_runs_when_nothing_was_read(self):
         complete = Scripted(_turn(content=""))
@@ -1048,7 +1073,7 @@ class TestResultShaping:
 
     def test_a_failing_synthesis_turn_degrades_rather_than_raising(self):
         complete = Scripted(_turn(_call("read_file", path="a")), RuntimeError("dead"))
-        outcome = run(complete, _task(), executor=_reading_executor(), max_steps=1)
+        outcome = run(complete, _task(), executor=_reading_executor(), max_steps=2)
         assert outcome.exit_reason == EXIT_BUDGET
         assert any(d.code == "synthesis-failed" for d in outcome.degradations)
 
@@ -1190,3 +1215,168 @@ class TestContinuitySeam:
         assert _comparable(_drive(build())) == _comparable(
             _drive(build(), continuity=lambda b: None)
         )
+
+
+# ── 11. seam robustness (the C3 claims, exercised) ────────────────────────────
+
+
+class TestSeamRobustness:
+    """Every "never raises into the host" claim above, driven at least once."""
+
+    def test_hook_event_payload_is_json_ready(self):
+        from embodiment.loop import HookEvent
+
+        payload = HookEvent(
+            event=EVENT_PRE_TOOL, task=_task(), tool="read_file", arguments={"path": "a"}
+        ).payload()
+        assert json.loads(json.dumps(payload))["tool"] == "read_file"
+        assert payload["task_id"] == "t1" and payload["repo_path"] == "/repo"
+
+    def test_firing_and_degradation_records_serialize(self):
+        hooks = RecordingHooks(pre_tool=[HookDecision(decision=DECISION_DENY, reason="no")])
+        outcome = _drive(
+            _turn(_call("read_file", path="a")), max_steps=1, hooks=hooks, progress=_boom_sink
+        )
+        assert outcome.hook_firings[0].to_dict()["decision"] == DECISION_DENY
+        assert outcome.degradations[0].to_dict()["code"] == DEGRADED_PROGRESS
+
+    @pytest.mark.parametrize("reply", ["deny", b"deny", {"decision": "deny"}, 7, object()])
+    def test_a_junk_hook_reply_is_ignored_rather_than_trusted(self, reply):
+        executor = _reading_executor()
+        hooks = RecordingHooks(pre_tool=reply)
+        _drive(_turn(_call("read_file", path="a")), max_steps=1, hooks=hooks, executor=executor)
+        assert executor.seen == [("read_file", {"path": "a"})]
+
+    def test_non_decision_items_in_a_sequence_are_dropped(self):
+        hooks = RecordingHooks(
+            pre_tool=["junk", HookDecision(decision=DECISION_DENY, reason="real", source="s")]
+        )
+        outcome = _drive(_turn(_call("read_file", path="a")), max_steps=1, hooks=hooks)
+        assert [f.source for f in outcome.hook_firings] == ["s"]
+
+    def test_a_sink_whose_active_probe_raises_disarms_the_lane(self):
+        class Hostile(FakeSink):
+            @property
+            def active(self) -> bool:
+                raise RuntimeError("no idea")
+
+        sink = Hostile()
+        outcome = _drive(_turn(_call("finish")), presence=sink)
+        assert outcome.exit_reason == EXIT_FINISHED
+        assert sink.acknowledged == []
+        assert any(d.code == DEGRADED_PRESENCE for d in outcome.degradations)
+
+    def test_a_raising_operator_inbox_degrades(self):
+        def poll():
+            raise RuntimeError("mic down")
+
+        outcome = _drive(_turn(_call("finish")), presence=FakeSink(), operator_inbox=poll)
+        assert outcome.exit_reason == EXIT_FINISHED
+        assert any("operator inbox" in d.reason for d in outcome.degradations)
+
+    def test_a_sink_that_chokes_on_an_operator_message_degrades(self):
+        class Choker(FakeSink):
+            def on_operator_message(self, text: str):
+                raise RuntimeError("lost the thread")
+
+        sink = Choker()
+        outcome = _drive(_turn(_call("finish")), presence=sink, operator_inbox=lambda: ["hello?"])
+        assert outcome.exit_reason == EXIT_FINISHED
+        assert any(d.code == DEGRADED_PRESENCE for d in outcome.degradations)
+
+    def test_an_inbox_without_a_sink_still_drains(self):
+        drained: list[int] = []
+
+        def poll():
+            drained.append(1)
+            return ["hello"]
+
+        events: list[Any] = []
+        _drive(_turn(_call("finish")), operator_inbox=poll, observer=events.append)
+        assert drained
+        assert any(e.kind == "operator" for e in events)
+
+    def test_string_arguments_pass_through_to_the_wire_unchanged(self):
+        from embodiment.loop import _arguments_json
+
+        assert _arguments_json('{"path": "a"}') == '{"path": "a"}'
+        assert _arguments_json({"path": "a"}) == '{"path": "a"}'
+
+    @pytest.mark.parametrize(
+        "content",
+        [
+            "function=finish> but no parameter block",
+            "function=finish><parameter=summary>unterminated",
+            "function=finish><parameter=summary>   </parameter>",
+        ],
+    )
+    def test_incomplete_finish_markup_is_not_a_finish(self, content):
+        outcome = _drive(_turn(content=content), max_steps=3)
+        assert outcome.exit_reason == EXIT_STOPPED
+
+    def test_the_window_floor_is_recorded_and_gives_up(self):
+        with pytest.raises(LoopAborted) as excinfo:
+            _drive(
+                RuntimeError("maximum context length exceeded"),
+                controls=LoopControls(context_budget=1, max_overflow_retries=5),
+            )
+        reasons = [d.reason for d in excinfo.value.outcome.degradations]
+        assert any("floor" in r for r in reasons)
+
+    def test_a_media_refusal_with_nothing_to_flatten_is_not_retried(self):
+        with pytest.raises(LoopAborted) as excinfo:
+            _drive(RuntimeError("HTTP 400: At most 0 image(s) may be provided"))
+        assert not [
+            d for d in excinfo.value.outcome.degradations if d.code == DEGRADED_MEDIA_REJECTED
+        ]
+
+    def test_an_unreadable_bytes_written_ledger_degrades(self):
+        executor = _reading_executor()
+        executor.bytes_written = "not a number"  # type: ignore[assignment]
+        outcome = _drive(_turn(_call("finish")), executor=executor)
+        assert outcome.result.stats.bytes_written == 0
+        assert any("bytes_written" in d.reason for d in outcome.degradations)
+
+    def test_an_unreadable_changed_ledger_degrades(self):
+        executor = _reading_executor()
+        executor.changed = 7  # type: ignore[assignment]
+        outcome = _drive(_turn(_call("finish")), executor=executor)
+        assert outcome.result.changed_files == []
+        assert any("changed" in d.reason for d in outcome.degradations)
+
+    def test_sub_results_are_snapshotted_when_the_executor_keeps_them(self):
+        from embodiment.contract import SubResult
+
+        child = SubResult(task_id="c1", engine="mock", model="m", status=OK, summary="did it")
+        executor = _reading_executor()
+        executor.sub_results = [child]  # type: ignore[attr-defined]
+        outcome = _drive(_turn(_call("finish")), executor=executor)
+        assert outcome.result.sub_results == [child]
+
+    def test_a_meta_finish_with_no_changes_is_write_no_changes(self):
+        executor = FakeExecutor(
+            read_file=ToolOutcome(result="contents"),
+            finish=ToolOutcome(
+                result="done", finished=True, finish_summary="I will implement this next."
+            ),
+        )
+        outcome = _drive(_turn(_call("read_file", path="a"), _call("finish")), executor=executor)
+        assert outcome.result.incompletion is not None
+        assert outcome.result.incompletion.reason == "write-no-changes"
+
+    def test_a_read_intent_stop_with_no_prose_is_an_empty_deliverable(self):
+        complete = Scripted(_turn(_call("read_file", path="a")), _turn(), _turn())
+        outcome = run(
+            complete,
+            _task(),
+            executor=_reading_executor(),
+            max_steps=4,
+            controls=LoopControls(synthesis=False, write_intent=False),
+        )
+        assert outcome.exit_reason == EXIT_STOPPED
+        assert outcome.result.incompletion is not None
+        assert outcome.result.incompletion.reason == "empty-deliverable"
+
+
+def _boom_sink(*args: Any) -> None:
+    raise RuntimeError("sink down")
