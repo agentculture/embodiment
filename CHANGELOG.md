@@ -5,6 +5,36 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-07-25
+
+### Added
+
+- The bounded tool loop, extracted from colleague (4463 lines -> 1615) and driven only by an injected `complete` callable and an injected tool-executor protocol. Termination is proved structurally: AST tests assert every return in `_work_loop` is one of three exit constants and that it raises nothing of its own.
+- The presence pump, redesigned around cortex + muse. No TTY, no thread, no clock; all IO rides injected `PresenceIO` callbacks and cadence is step/phase-based.
+- `muse.py` and `muse_runner.py` — the muse as a bounded, tools-off thinking loop on one daemon thread with a `threading.Event` stop signal and a bounded join (deviation d1). Advisory only: nothing muse-sourced can reach a tool decision, proved by an adversarial sentinel test.
+- `perception.py` — verbatim intake. `ContextPacket.original` comes from the caller's input and never from model output, enforced structurally by an allowlist rather than by convention.
+- `continuity.py` and `lifecycle.py` — eidetic/coherence composed behind three named checkpoints (before-action, before-completion, before-memory), with provenance threaded from perception to durable record.
+- `framing.py` — Gwen role-framed prompt composition per colleague#352. Absent identity yields byte-identical prompts, proved by goldens against the real seams plus an AST guard.
+- `ledger.py` — one host-visible degradation stream folding six record shapes across seven lanes, with an enumeration test that is exhaustive by construction.
+- `events.py` — optional event emission through events-cli, satisfying the loop's existing `ObserverFn` seam.
+- A curated, lazily-resolved public API (PEP 562): `import embodiment` loads no submodule and costs 9.1ms, down from 19.8ms.
+- `examples/` — a greenhouse demo proving continuity across two real processes, a live self-test (two instances conversing; recognising own memories), long-running proof tasks, thinking telemetry, and a reset-survivable scratchpad.
+
+### Changed
+
+- BREAKING: `[project].dependencies` is no longer empty. eidetic-cli, coherence-cli and events-cli are now base dependencies imported in-process (deviation d2), which transitively installs neo4j, pymongo, numpy, httpx and paho-mqtt. What survives of the old zero-dependency rule is the discipline: `tests/test_zero_deps.py` is now a human gate that pins the approved set and fails on any change in either direction.
+- BREAKING for colleague specifically: importing embodiment introduces third-party top-level modules, so colleague cannot adopt it until it relaxes its own zero-deps assertions. Tracked as the C1b decision in colleague#358.
+- `run()` returns a `LoopOutcome` (result, exit reason, hook firings, degradations) rather than a bare `TaskResult`, because those ledgers are the loop's record of its own conduct.
+- `run()` accepts `continued_from`, making the `supersedes` provenance edge reachable through the public API — the before-memory boundary fires inside `run()`, so setting it on the returned result is always too late.
+
+### Fixed
+
+- An aborted drive reported `exit_reason="budget"`. `outcome` defaulted to EXIT_BUDGET before the try, so a seam raising three steps into a twenty-step drive claimed to have exhausted a budget it had barely touched. Now EXIT_ABORTED, which is not a loop exit and cannot become one. Found by an independent review.
+- The continuity store anchor checked only `data_dir is None`. An empty string passed, and an empty EIDETIC_DATA_DIR reads as unset — dropping eidetic back to the git-toplevel probe, the exact leak the anchor exists to prevent. Found by the same review.
+- The forced synthesis turn could exceed `max_steps`, inherited from colleague where `synthesis_reserve` defaults to 0. It is now reserved out of the budget. Reported upstream as colleague#357.
+- The markdownlint CI job had been red since dependencies landed, because `.venv` was never in the ignore list and numpy ships LICENSE.md files that fail six rules.
+- Vendored remember/recall skills were a mid-flight snapshot of eidetic-cli#28 whose prose still claimed a private default while the code injected public — including in the SKILL.md files loaded into an agent's context.
+
 ## [Unreleased]
 
 ### Changed
