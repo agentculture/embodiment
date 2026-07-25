@@ -51,6 +51,7 @@ generously.
 | [proof.md](proof.md) | a long multi-phase task, with and without the muse | correct; muse more careful, not more correct |
 | [designed-problem.md](designed-problem.md) | the embodiment designs a problem; a fresh instance solves it, n=4 per arm | **no measured muse effect** (1/4 both arms) |
 | [configurations.md](configurations.md) | every run's full settings, including confounded ones | temperature was a hidden variable throughout |
+| [scratchpad.md](scratchpad.md) | does forcing a tool call per step repair the `exit=stopped` collapse | yes on protocol failures (25%→67%), no on capacity ones |
 
 ## Reproducing
 
@@ -91,7 +92,12 @@ contains successes is not evidence of anything.
    Claimed once from n=1, then again from two of three replicates *before the
    third reported*; the third falsified it. See
    [designed-problem.md](designed-problem.md).
-3. **"The instance failed to recognise its own memories."** It did not fail;
+3. **"The muse arm self-corrected — the first in the series."** It did not.
+   The two entries carry *identical values*; it was a re-verification filed
+   under the `revise` tool, and the claim was made from the label without
+   reading the text. It also does not reproduce — zero revisions across six
+   runs. See [scratchpad.md](scratchpad.md).
+4. **"The instance failed to recognise its own memories."** It did not fail;
    the scoring did. The first self-test graded against records that were
    *seeded* rather than records that were *recalled*, so a retriever that
    surfaced 3 of 4 was counted against the mind. See [self-test.md](self-test.md).
