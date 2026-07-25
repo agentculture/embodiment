@@ -377,6 +377,32 @@ JUDGE_TOOLS: list[dict[str, Any]] = [
 ]
 
 
+def resume_report(pad: Scratchpad, degradations: Any = None) -> str:
+    """Render the scratchpad and degradation ledger as one record for a successor.
+
+    A resuming mind needs to see what it meant to do, what it observed, and
+    what went wrong — in a single output it can read in about twenty lines.
+    """
+    lines: list[str] = []
+    lines.append("── SCRATCHPAD ──")
+    rendered = render(pad)
+    if rendered:
+        lines.append(rendered)
+    else:
+        lines.append("(empty)")
+    if degradations:
+        lines.append("── DEGRADATIONS ──")
+        for rec in degradations:
+            if hasattr(rec, "to_dict"):
+                d = rec.to_dict()
+                lines.append(
+                    f"  [{d.get('source', '?')}] {d.get('code', '?')}: {d.get('reason', '')}"
+                )
+            else:
+                lines.append(f"  {rec}")
+    return "\n".join(lines)
+
+
 def judge_journey(
     pad: Scratchpad,
     *,
