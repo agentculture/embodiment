@@ -452,9 +452,13 @@ class PresenceEngine:
                     ),
                 )
             )
-        turns.extend(self._muse_turns(BOUNDARY_INTAKE))
+        # Emit BEFORE consulting the muse: the operator hears the acknowledgment
+        # first, so a muse remark — or a muse *degradation notice* — can never
+        # land ahead of the beat it comments on.
         self._emit(turns)
-        return turns
+        muse_turns = self._muse_turns(BOUNDARY_INTAKE)
+        self._emit(muse_turns)
+        return turns + muse_turns
 
     def on_operator_message(self, text: str) -> list[PresenceTurn]:
         """Relay an operator message into the running loop, verbatim."""
@@ -468,9 +472,10 @@ class PresenceEngine:
                 injection=self._stamp({"text": text, "source": SOURCE_OPERATOR}),
             )
         ]
-        turns.extend(self._muse_turns(BOUNDARY_OPERATOR_INPUT, operator_input=text))
         self._emit(turns)
-        return turns
+        muse_turns = self._muse_turns(BOUNDARY_OPERATOR_INPUT, operator_input=text)
+        self._emit(muse_turns)
+        return turns + muse_turns
 
     def on_progress_boundary(
         self, *, step_count: int = 0, phase_changed: bool = False

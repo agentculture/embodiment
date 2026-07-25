@@ -480,6 +480,20 @@ class TestMuseDegradation:
         assert "muse endpoint refused connection" in transition[0]["detail"]
         assert any("muse unavailable" in line for line in io.rendered)
 
+    def test_the_degradation_notice_never_lands_ahead_of_the_beat(self):
+        # The operator hears the acknowledgment first; a muse notice comments on
+        # a beat, so it can never precede it in either the render or the ledger.
+        muse = _FakeMuse(raises=True)
+        engine, io = _engine(muse=muse)
+        engine.acknowledge(ContextPacket(original="x", ack="on it"))
+        assert io.rendered == [
+            "presence: on it",
+            "presence: (muse unavailable — continuing cortex-only)",
+        ]
+        chat = engine.snapshot()["chat"]
+        assert chat[0]["text"] == "on it"
+        assert chat[1]["degraded"] == SOURCE_MUSE
+
     def test_the_muse_is_not_retried_after_it_degrades(self):
         muse = _FakeMuse(raises=True)
         engine, io = _engine(muse=muse, cadence=UpdateCadence(every_steps=1))
