@@ -112,20 +112,34 @@ class ThinkingTrace:
         return tuple(name for t in self.turns for name in t.tool_calls)
 
     @property
-    def thought_ratio(self) -> Optional[float]:
-        """Whole-drive reasoning:answer character ratio, or ``None`` if silent."""
-        return self.reasoning_chars / self.answer_chars if self.answer_chars else None
+    def steps(self) -> list[str]:
+        """The reasoning split into sentence-ish steps.
+
+        Length is the wrong unit and was the first version's mistake: 30,000
+        characters is not the same as 70 sentences, and neither number says
+        whether the trace went anywhere. A step is a unit of thought; the
+        question worth asking is how many *distinct* ones there were.
+        """
+        import re
+
+        parts = re.split(r"(?<=[.!?])\s+|\n+", self.reasoning_text)
+        return [p.strip() for p in parts if len(p.strip()) > 15]
 
     def summary(self) -> dict[str, Any]:
         return {
             "label": self.label,
             "turns": len(self.turns),
-            "reasoning_chars": self.reasoning_chars,
-            "answer_chars": self.answer_chars,
-            "thought_ratio": (
-                round(self.thought_ratio, 2) if self.thought_ratio is not None else None
-            ),
-            "per_turn_reasoning": [len(t.reasoning) for t in self.turns],
+            "reasoning_steps": len(self.steps),
+            "steps_per_turn": [
+                len(
+                    [
+                        p
+                        for p in __import__("re").split(r"(?<=[.!?])\s+|\n+", t.reasoning)
+                        if len(p.strip()) > 15
+                    ]
+                )
+                for t in self.turns
+            ],
             "tool_sequence": list(self.tool_sequence),
         }
 
@@ -206,9 +220,57 @@ def cosine(a: Sequence[float], b: Sequence[float]) -> Optional[float]:
     return dot / (na * nb)
 
 
+def progression(trace: ThinkingTrace, **embed_kwargs: Any) -> dict[str, Any]:
+    """Did the reasoning GO anywhere, or circle?
+
+    Splits the trace into steps and embeds them. Consecutive steps that are near
+    duplicates mean the model restated rather than advanced; a trace whose steps
+    stay mutually similar throughout is ruminating, not reasoning.
+
+    This is the measurement length cannot make. A 30,000-character trace of 70
+    genuinely distinct steps and one of the same thought forty times over are
+    indistinguishable by size and completely different events — and the second
+    is what a model that cannot terminate into a tool call looks like from the
+    inside.
+    """
+    steps = trace.steps
+    if len(steps) < 3:
+        return {"steps": len(steps), "note": "too few steps to judge progression"}
+
+    vectors = embed_texts(steps, **embed_kwargs)
+    if vectors is None:
+        return {"steps": len(steps), "note": "embedder unavailable"}
+
+    consecutive = [
+        c
+        for c in (cosine(vectors[i], vectors[i + 1]) for i in range(len(vectors) - 1))
+        if c is not None
+    ]
+    # How close the end is to the beginning: a trace that returns to its opening
+    # thought has travelled in a circle.
+    span = cosine(vectors[0], vectors[-1])
+    near_duplicate = sum(1 for c in consecutive if c > 0.93)
+
+    return {
+        "steps": len(steps),
+        "mean_consecutive_similarity": round(sum(consecutive) / len(consecutive), 4),
+        "near_duplicate_steps": near_duplicate,
+        "near_duplicate_fraction": round(near_duplicate / len(consecutive), 3),
+        "first_to_last_similarity": round(span, 4) if span is not None else None,
+        "reading": (
+            "High consecutive similarity and a high first-to-last score together "
+            "mean the trace circled. Low consecutive similarity with a low "
+            "first-to-last score means it travelled."
+        ),
+    }
+
+
 def compare_traces(traces: Sequence[ThinkingTrace], **embed_kwargs: Any) -> dict[str, Any]:
-    """Roll up several drives: volume, shape, and pairwise thinking similarity."""
+    """Roll up several drives: shape, progression, and pairwise similarity."""
     report: dict[str, Any] = {"runs": [t.summary() for t in traces]}
+    report["progression"] = {
+        (t.label or i): progression(t, **embed_kwargs) for i, t in enumerate(traces)
+    }
 
     sequences = [t.tool_sequence for t in traces]
     report["identical_tool_sequences"] = len(set(sequences)) == 1
