@@ -16,6 +16,11 @@ Covers:
    no clock/thread module, and no ``colleague``.
 5. The engine exposes NO external presence event stream (c33) — ``snapshot()``
    is a pull-only artifact fold, not a pub/sub surface.
+6. Fault-injection hardening (t8): each of the four named fault classes (dead
+   port, request error, overflow, lossy JSON) degrades every public
+   PresenceSink entry point (``acknowledge``, ``on_operator_message``,
+   ``on_progress_boundary``) visibly and never raises, reusing t7's existing
+   ``_degrade_muse`` mechanism rather than a second one.
 """
 
 from __future__ import annotations
@@ -23,6 +28,7 @@ from __future__ import annotations
 import ast
 import dataclasses
 import inspect
+import json
 from pathlib import Path
 from typing import Any, Optional
 
@@ -121,9 +127,17 @@ class _RecordingIO:
 
 
 class _FakeMuse:
-    """An advisory muse seam stand-in (what task t10 must conform to)."""
+    """An advisory muse seam stand-in (what task t10 must conform to).
 
-    def __init__(self, comments: Any = None, *, raises: bool = False) -> None:
+    ``raises`` is either a plain ``bool`` (``True`` raises a generic
+    ``RuntimeError`` — the original, still-used shape) or a specific
+    ``BaseException`` instance, so fault-injection tests can pin the exact
+    exception TYPE a muse endpoint might raise (a dead port, a request error,
+    an overflow, lossy JSON) while the engine's degrade-and-record handling
+    stays exactly the same either way (t8).
+    """
+
+    def __init__(self, comments: Any = None, *, raises: Any = False) -> None:
         self.comments = list(comments or [])
         self.raises = raises
         self.boundaries: list[BoundaryContext] = []
@@ -131,6 +145,8 @@ class _FakeMuse:
     def __call__(self, boundary: BoundaryContext) -> Optional[MuseComment]:
         self.boundaries.append(boundary)
         if self.raises:
+            if isinstance(self.raises, BaseException):
+                raise self.raises
             raise RuntimeError("muse endpoint refused connection")
         if not self.comments:
             return None
@@ -516,6 +532,88 @@ class TestMuseDegradation:
         engine.acknowledge(ContextPacket(original="x"))
         # Nothing about the failure is inferred — it is in the ledger verbatim.
         assert any(r.degraded for r in engine.records)
+
+
+# ── 3b. fault-injection hardening across every public entry point (t8) ────────
+
+#: The four fault classes named in the build brief (C3): a dead port, a
+#: request error, a context/window overflow, and lossy/malformed JSON. A real
+#: muse seam is a network call (t10's contract) and any of these is a
+#: plausible exception it raises; the engine's existing generic
+#: ``except Exception`` in ``_muse_turns_for`` already degrades every one of
+#: them identically — these tests PROVE that across the three public
+#: PresenceSink entry points, pinning the exact exception type rather than a
+#: generic RuntimeError stand-in.
+_FAULT_CLASSES = [
+    ConnectionRefusedError("dead port: connection refused"),
+    TimeoutError("request error: timed out"),
+    OverflowError("overflow: context window exceeded"),
+    json.JSONDecodeError("lossy JSON", "doc", 0),
+]
+_FAULT_IDS = ["dead-port", "request-error", "overflow", "lossy-json"]
+
+
+class TestPublicEntryPointsNeverRaise:
+    """Every public PresenceSink entry point degrades, never raises (C3, t8).
+
+    Reuses t7's existing degradation-recording mechanism (``_degrade_muse``,
+    the ``muse:<boundary>`` / ``muse:degraded-off`` record pair, the rendered
+    notice, the mode transition to cortex-only) — no second ledger is
+    invented here, exactly as t9 (a later wave) will need one consistent shape
+    to build a degradation ledger over.
+    """
+
+    @pytest.mark.parametrize("fault", _FAULT_CLASSES, ids=_FAULT_IDS)
+    def test_acknowledge_never_raises_and_degrades_visibly(self, fault):
+        muse = _FakeMuse(raises=fault)
+        engine, io = _engine(muse=muse)
+        # Must not raise, regardless of fault type.
+        turns = engine.acknowledge(ContextPacket(original="fix the bug", ack="on it"))
+        assert isinstance(turns, list)
+        assert engine.mode == MODE_CORTEX_ONLY
+        assert engine.muse_degraded is True
+        assert any(r.degraded for r in engine.records)
+        assert any("muse unavailable" in line for line in io.rendered)
+
+    @pytest.mark.parametrize("fault", _FAULT_CLASSES, ids=_FAULT_IDS)
+    def test_on_operator_message_never_raises_and_degrades_visibly(self, fault):
+        muse = _FakeMuse(raises=fault)
+        engine, io = _engine(muse=muse)
+        turns = engine.on_operator_message("hurry up")
+        assert isinstance(turns, list)
+        assert engine.mode == MODE_CORTEX_ONLY
+        assert engine.muse_degraded is True
+        assert any(r.degraded for r in engine.records)
+        assert any("muse unavailable" in line for line in io.rendered)
+        # The operator's own relay still landed — a failing muse never costs
+        # the engine's own (non-muse) work for this beat.
+        assert io.guided == ["hurry up"]
+
+    @pytest.mark.parametrize("fault", _FAULT_CLASSES, ids=_FAULT_IDS)
+    def test_on_progress_boundary_never_raises_and_degrades_visibly(self, fault):
+        muse = _FakeMuse(raises=fault)
+        engine, io = _engine(muse=muse, cadence=UpdateCadence(every_steps=1))
+        turns = engine.on_progress_boundary(step_count=1)
+        assert isinstance(turns, list)
+        assert engine.mode == MODE_CORTEX_ONLY
+        assert engine.muse_degraded is True
+        assert any(r.degraded for r in engine.records)
+        assert any("muse unavailable" in line for line in io.rendered)
+
+    @pytest.mark.parametrize("fault", _FAULT_CLASSES, ids=_FAULT_IDS)
+    def test_presence_keeps_working_after_any_fault_class(self, fault):
+        # A degraded muse drops to cortex-only PERMANENTLY (never retried) —
+        # structural presence (acknowledge, relay, structural updates) must
+        # keep functioning on every subsequent beat regardless of which fault
+        # class caused the drop.
+        muse = _FakeMuse(raises=fault)
+        engine, io = _engine(muse=muse, cadence=UpdateCadence(every_steps=1))
+        engine.acknowledge(ContextPacket(original="do x", ack="on it"))
+        engine.on_operator_message("keep going")
+        engine.on_progress_boundary(step_count=1)
+        assert "presence: on it" in io.rendered
+        assert "→ cortex: keep going" in io.rendered
+        assert any("still working" in line for line in io.rendered)
 
 
 # ── 4. no clock ───────────────────────────────────────────────────────────────

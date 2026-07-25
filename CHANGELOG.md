@@ -9,6 +9,25 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`embodiment/perception.py` — the verbatim-invariant perception intake
+  (task t8).** ``perceive(original, interpret=...)`` is the ONE entry point:
+  it builds every returned ``ContextPacket`` from a single
+  ``ContextPacket(original=text, **fields)`` call, where ``fields`` comes from
+  an allowlist (``_extract_fields``) that reads exactly the five
+  non-``original`` packet fields and never a ``data.get("original")`` —
+  structural enforcement of colleague ``senses.py``'s core invariant
+  (``ContextPacket.original`` is set from the caller's input verbatim, never
+  from model output), proven with hostile-completion tests (a spoofed
+  ``"original"`` key, a prompt-injection payload, a near-miss paraphrase,
+  empty output, non-JSON garbage, multiline unicode, a JSON list instead of an
+  object) asserting byte-identity, not equivalence. Never raises: the four
+  fault classes named in the build brief (C3) — a dead port, a request error,
+  an overflow, and lossy/malformed JSON — all fold through one blanket
+  ``except Exception`` into a degraded ``(ContextPacket, SensesRecord)``
+  return, never an exception, so the caller's verbatim text is never lost.
+  With no ``interpret`` seam configured, ``perceive`` still returns a clean,
+  non-degraded packet at zero model calls — the same "museless is the primary
+  path, not a fault" stance ``presence_engine.py`` (t7) already takes.
 - **`embodiment/presence_engine.py` — the presence pump, redesigned around
   cortex + muse (task t7).** This is a **redesign, not an extraction**, and the
   spec (claim c43) names it as such. colleague `1.52.1`'s `presence_engine.py`
@@ -41,6 +60,14 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Fault-injection hardening across every public presence entry point**
+  (task t8). ``PresenceEngine.acknowledge`` / ``on_operator_message`` /
+  ``on_progress_boundary`` are now proven, per the four C3 fault classes (dead
+  port, request error, overflow, lossy JSON), to degrade visibly and never
+  raise — reusing t7's existing ``_degrade_muse`` mechanism (the
+  ``muse:<boundary>`` / ``muse:degraded-off`` record pair, the rendered
+  notice, the permanent transition to cortex-only) rather than a second one,
+  so a later degradation-ledger task has one consistent shape to build over.
 - **The clock the "no TTY, no thread, no clock" contract denied.** Upstream's
   `presence_engine.py` imports `time` and stamps `time.time()` onto its
   capped-update record, contradicting its own docstring. embodiment resolves it
