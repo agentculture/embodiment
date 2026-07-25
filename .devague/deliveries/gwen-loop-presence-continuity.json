@@ -1,0 +1,25 @@
+{
+  "plan_slug": "gwen-loop-presence-continuity",
+  "schema_version": 1,
+  "created": "2026-07-25T05:07:40Z",
+  "updated": "2026-07-25T05:07:40Z",
+  "deviations": [
+    {
+      "id": "d1",
+      "what": "the muse becomes a second, parallel thinking loop that embodiment runs on its own thread, replacing t7's synchronous per-boundary advisory seam",
+      "task_ref": "t10",
+      "reason": "Gemma 4 31B is a thinking model: it needs iterative turns to reason, not a single completion per boundary, and must run non-blocking alongside Qwen's actor loop. User decision on the concurrency question: embodiment ships the threaded runner and owns the thread lifecycle, accepting that threading enters the library contract and deterministic tests get harder.",
+      "affects": [
+        "t7",
+        "t4",
+        "t9",
+        "t12",
+        "c41",
+        "c42"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "risky"
+    }
+  ]
+}
