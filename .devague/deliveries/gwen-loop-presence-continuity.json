@@ -2,7 +2,7 @@
   "plan_slug": "gwen-loop-presence-continuity",
   "schema_version": 1,
   "created": "2026-07-25T05:07:40Z",
-  "updated": "2026-07-25T06:28:15Z",
+  "updated": "2026-07-25T07:22:53Z",
   "deviations": [
     {
       "id": "d1",
@@ -39,6 +39,34 @@
       "origin": "user",
       "status": "approved",
       "classification": "risky"
+    },
+    {
+      "id": "d3",
+      "what": "event emission through events-cli lands as new scope: embodiment/events.py plus events-cli as a fourth base dependency, neither in the confirmed plan",
+      "task_ref": "t9",
+      "reason": "User asked to wire agentculture/embodiment#4 rather than only document it ('wire in issue 4 if it is easy'), once deviation d2 removed the dependency objection its analysis rested on. Anchored to t9 because the emitter and the degradation ledger are the same concern -- host-visible degradation -- and t9 must now unify a fourth record shape (EventDegradation) alongside loop, muse and runner. Built against t4's existing ObserverFn seam rather than a new hook, so run(observer=...) is the whole integration and a host configuring nothing is byte-identical. Confirmed claim c33 still holds and is NOT reopened: events-cli owns the envelope contract and topic vocabulary, embodiment is only a producer, and reterminal-cli/harmonics-cli remain non-consumers of embodiment.",
+      "affects": [
+        "t4",
+        "t20",
+        "c33"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable"
+    },
+    {
+      "id": "d4",
+      "what": "live rig testing against the real cortex+muse becomes an acceptance bar, beyond the plan's in-repo demo and CI checklist",
+      "task_ref": "t20",
+      "reason": "User: 'When done, do live-testing. I want it to be an embodiment you will WANT to speak with. A diverse mind that sees things differently and intrigues you.' The plan's t15 (in-repo demo) and t20 (CI-runnable checklist) verify correctness only; nothing in the confirmed plan judges whether the result is worth talking to, and that bar cannot be met by tests. Adds: a museless baseline run against the live Qwen cortex, a two-mind run with the Gemma 31B muse, and an echo-chamber probe (user-confirmed) that feeds the muse confidently wrong advice and checks whether the cortex follows it -- a failure every current test passes silently, since our guards stop the muse SEIZING authority but not the cortex SURRENDERING it. t15's demo host will double as the harness rather than a throwaway. Note this partly retires plan risk r2 ('rig validation of the 31B muse is outside embodiment's control'): live probing on 2026-07-25 showed the muse reachable and answering through the lobes gateway proxy in 2.6s, so the two-mind path is testable now even though the thor-muse SHAPE remains unvalidated (lobes#108).",
+      "affects": [
+        "t15",
+        "t10",
+        "c45"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "needs-follow-up"
     }
   ]
 }
