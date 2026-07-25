@@ -225,18 +225,76 @@ def _source_text(path: Path) -> str:
     return path.read_text(encoding="utf-8")
 
 
-class TestNoShellCoupling:
-    """Verify no shell_cli coupling exists in embodiment source."""
+def _shell_cli_identifiers(tree: ast.AST) -> set[str]:
+    """Every place ``shell_cli`` appears as *code* rather than prose.
 
-    def test_no_shell_cli_import_anywhere(self):
-        """Guard against importing shell_cli — it's colleague's, not embodiment's."""
-        banned_tokens = ("shell_cli", "shell-cli", "shell cli")
+    Imports, bare names, and attribute access — the three ways a module can
+    actually reach shell-cli. A docstring or comment naming it is not code and
+    is not collected.
+    """
+    found: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            found |= {a.name for a in node.names if a.name.split(".")[0] == "shell_cli"}
+        elif isinstance(node, ast.ImportFrom):
+            if (node.module or "").split(".")[0] == "shell_cli":
+                found.add(node.module or "")
+        elif isinstance(node, ast.Name) and node.id == "shell_cli":
+            found.add(node.id)
+        elif isinstance(node, ast.Attribute) and node.attr == "shell_cli":
+            found.add(node.attr)
+    return found
+
+
+class TestNoShellCoupling:
+    """No shell-cli coupling in embodiment source — checked as code, not text.
+
+    Deliberately AST-based rather than a substring scan. `c35` ("shell-cli is
+    part of colleague, not embodiment") is a boundary that *deserves to be
+    documented*, and a text scan makes documenting it fail the build: a
+    docstring reading "shell-cli belongs to colleague" is the correct thing to
+    write and would trip a `"shell_cli" not in source` assertion. A guard that
+    punishes the behaviour it exists to encourage gets deleted the first time it
+    blocks someone, so this one bans the *identifier* and lets prose through.
+    """
+
+    def test_no_module_references_shell_cli_in_code(self):
         for path in _collect_python_files():
-            source = _source_text(path)
-            for token in banned_tokens:
-                assert (
-                    token not in source
-                ), f"Found '{token}' in {path.relative_to(EMBODIMENT_ROOT.parent)}"
+            refs = _shell_cli_identifiers(ast.parse(_source_text(path)))
+            rel = path.relative_to(EMBODIMENT_ROOT.parent)
+            assert not refs, f"{rel} references shell_cli in code: {sorted(refs)}"
+
+    def test_prose_may_name_the_boundary(self):
+        """The guard must accept documentation of the very boundary it enforces."""
+        documented = ast.parse(
+            '"""shell-cli belongs to colleague, not embodiment.\n\n'
+            'A host with no shell still perceives normally.\n"""\n'
+            "# shell_cli is deliberately absent here\n"
+            "VALUE = 1\n"
+        )
+        assert not _shell_cli_identifiers(documented)
+
+    def test_the_guard_still_catches_a_real_import(self):
+        """...and must still fail on an actual coupling, in every form."""
+        for snippet in (
+            "import shell_cli",
+            "import shell_cli.runner",
+            "from shell_cli import execute",
+            "from shell_cli.runner import execute",
+            "result = shell_cli.execute(cmd)",
+        ):
+            assert _shell_cli_identifiers(ast.parse(snippet)), f"missed: {snippet}"
+
+    def test_shell_cli_is_not_a_declared_dependency(self):
+        """The other way coupling could arrive: pyproject, not an import."""
+        pyproject = (EMBODIMENT_ROOT.parent / "pyproject.toml").read_text(encoding="utf-8")
+        in_deps = False
+        for line in pyproject.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("dependencies") or stripped.startswith("["):
+                in_deps = stripped.startswith("dependencies")
+            if in_deps:
+                assert "shell" not in stripped.lower(), f"shell dependency declared: {stripped}"
 
     def test_loop_py_imports_no_subprocess_family(self):
         """Guard ``embodiment/loop.py`` specifically: no subprocess/shlex/os.system.
