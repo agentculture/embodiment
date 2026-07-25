@@ -828,6 +828,23 @@ class TestAuthorityFraming:
         assert "propose" in lowered
         assert "final authority" in lowered
 
+    def test_the_authority_text_names_the_five_reflective_verbs(self):
+        authority = MUSE_AUTHORITY
+        for verb in (
+            "imagine",
+            "reframe",
+            "connect memories",
+            "simulate futures",
+            "construct meaning",
+        ):
+            assert verb in authority, f"missing verb: {verb}"
+
+    def test_the_authority_text_invites_disagreement(self):
+        lowered = MUSE_AUTHORITY.lower()
+        assert "disagree" in lowered
+        assert "challenge" in lowered
+        assert "materially different alternatives" in lowered
+
     def test_the_default_framing_claims_no_identity_and_no_second_mind(self):
         """t12 owns identity; an unconfigured muse names nobody."""
         lowered = MUSE_AUTHORITY.lower()
