@@ -7,6 +7,69 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **BREAKING (install footprint) — deviation d2: `eidetic-cli` and
+  `coherence-cli` are now base dependencies, imported directly at module
+  scope.** The t13 subprocess adapter in `embodiment/continuity.py` is gone;
+  the seam calls the sibling libraries as ordinary Python. `events-cli` is
+  declared alongside them for a sibling task (no events module ships yet).
+  `pip install embodiment` therefore now pulls **neo4j + pymongo** (via
+  `eidetic-cli` → `data-refinery-cli[store]`), **numpy + httpx** (via
+  `coherence-cli`) and **paho-mqtt** (via `events-cli`). This deliberately
+  reverses constraint C1 (pure-stdlib core); the deviation was recorded and
+  approved with the cost stated up front.
+  - **Consequence for colleague, stated rather than discovered later:**
+    importing embodiment now transitively imports third-party modules, so
+    colleague's own `tests/test_zero_deps.py` — which asserts its dependencies
+    are *exactly* `["agentfront>=…"]` and that importing colleague adds no
+    third-party top-level import — **will fail if colleague adds embodiment**.
+    C1b (whether colleague relaxes its one-base-dependency rule) is now a hard
+    prerequisite for the seam proposal, not an open question.
+  - `import embodiment` on its own still costs nothing: the package root stays
+    lazy (PEP 562), so only a host that actually reaches
+    `embodiment.continuity` pays. Pinned by a test.
+- **Both silent-corruption traps re-solved for in-process, not inherited
+  blindly.** *Trap #1* — eidetic resolves an unpinned public write against
+  `os.getcwd()`, which in-process is the **host's** cwd, so a host started
+  inside a git checkout would commit its memories into that repo. With no
+  subprocess `cwd` left to pin, `data_dir` becomes the **sole, mandatory**
+  anchor, applied through a `_pinned_store` context manager that sets
+  eidetic's `EIDETIC_DATA_DIR` override (which short-circuits the git-toplevel
+  probe entirely) and restores the host's environment in a `finally` —
+  including `DR_DATA_DIR`, which eidetic itself writes and never restores, a
+  leak that only becomes visible once the call is in-process. Supplying no
+  anchor still degrades *before* any work. *Trap #2* — `coherence.assess` now
+  reports partial availability by **returning normally** with a non-empty
+  `unavailable` map rather than by exiting 0 with one; `assess()` reads the
+  returned structure and records a degradation regardless, so success is never
+  inferred from "it didn't raise".
+- **`tests/test_zero_deps.py` is now a human gate, not a zero-deps assertion.**
+  It pins the approved dependency set *and* the exact set of third-party
+  top-level modules an import introduces, and fails on any delta **in either
+  direction** — a removal is as reviewable as an addition. Its failure message
+  names what changed, what it costs, and that updating the pin *is* the
+  approval. Module discovery stays dynamic, so future modules are covered
+  automatically.
+
+### Removed
+
+- **`continuity.repo_path`, `Degradation.exit_code`, and the call timeout.**
+  All three were subprocess artefacts with no honest in-process meaning:
+  `repo_path` set a child `cwd`; `exit_code` reported a process result;
+  `timeout` bounded a hung child. `Degradation.exception` (the exception class
+  name) replaces `exit_code`. There is deliberately **no** replacement timeout
+  — an in-process call cannot be bounded without a watchdog thread, and the
+  module will not pretend otherwise; a host needing a hard bound imposes it at
+  its own boundary.
+- **The `CODE_*` tokens the subprocess model implied.** `cli-not-found` →
+  `import-failed`; `nonzero-exit`/`launch-error` → `subsystem-error`;
+  `malformed-json` → `malformed-result`; `timeout` removed. Added
+  `artifact-unreadable` (coherence's engine lets file I/O errors propagate —
+  in-process embodiment is the boundary that converts them) and
+  `reinforce-failed` (a recall whose passive write-back failed still returns
+  its records).
+
 ### Added
 
 - **`embodiment/perception.py` — the verbatim-invariant perception intake
