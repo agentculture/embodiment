@@ -4,27 +4,31 @@ Resolves agentculture/embodiment#4. The issue was filed when embodiment carried
 a hard zero-dependency constraint (C1) and argued for an injected port or a
 subprocess seam specifically because ``import events_cli`` would pull in
 ``paho-mqtt``. Deviation d2 makes direct imports of sibling AgentCulture CLIs
-an approved pattern, and ``events-cli>=0.10`` is becoming a base dependency of
-this package alongside it — so this module does the thing the issue's own
-analysis called "the honest shape": a direct import of ``events_cli``, never a
-subprocess adapter (contrast :mod:`embodiment.continuity`, built under the OLD
-C1 regime for eidetic/coherence, which stay subprocess-shaped because their own
-transitive dependencies — neo4j, pymongo, numpy, httpx — are far heavier than
-one MQTT client) and never an injected ``Protocol`` a host must implement.
+an approved pattern, and ``events-cli>=0.10`` is a base dependency of this
+package alongside it — so this module does the thing the issue's own analysis
+called "the honest shape": a direct import of ``events_cli``, never a
+subprocess adapter and never an injected ``Protocol`` a host must implement.
+:mod:`embodiment.continuity` made the same move under ``d2``; both talk to
+their sibling CLI in-process.
 
-"Direct" does not mean "at module scope", though. ``tests/test_zero_deps.py``
-— a file this task does not own or touch, mid-migration by a parallel change —
-still walks every ``embodiment`` module and asserts NONE of them imports a
-third-party package at import time, with no allow-list yet. So the import here
-is direct but LAZY: exactly the discipline ``events_cli.client`` itself already
-uses for ``paho-mqtt`` (its own module docstring: "paho is imported ONLY
-inside this module, and only when the client is actually constructed"). This
-module mirrors that one layer up — :func:`_load_envelope_core` and
-:func:`_load_event_client_class` are the only two places ``events_cli`` is
-named, and neither runs unless an :class:`EventEmitter` actually attempts to
-build or send an event, so importing ``embodiment.events`` alone — which the
-zero-deps guard does for every module whether or not a host ever uses it —
-introduces no third-party import.
+"Direct" does not mean "at module scope", though — and the reason is *not* the
+one first written here. That reason was "the zero-deps guard has no allow-list
+yet", which stopped being true the moment ``d2`` landed: the guard is now a
+human gate over a pinned approved set, and adding ``events_cli`` to the runtime
+import set would be a one-line, reviewable change rather than a wall.
+
+The import stays lazy on its own merits. This emitter is optional in a way
+continuity is not: continuity is constructed whenever a host uses the lifecycle
+at all, whereas nothing here runs unless a host explicitly wires
+``run(observer=...)``. A host that never emits an event should not pay to
+import an MQTT client, and ``import embodiment.events`` should stay cheap for
+the many hosts that only want the name in a type annotation. That is exactly
+the discipline ``events_cli.client`` itself uses for ``paho-mqtt`` (its own
+docstring: "paho is imported ONLY inside this module, and only when the client
+is actually constructed"); this module mirrors it one layer up.
+:func:`_load_envelope_core` and :func:`_load_event_client_class` are the only
+two places ``events_cli`` is named, and neither runs until an
+:class:`EventEmitter` actually builds or sends an event.
 
 Shaped as an ObserverFn, not a new hook
 ----------------------------------------

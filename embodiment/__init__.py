@@ -48,6 +48,7 @@ _SUBMODULES = frozenset(
         "events",
         "framing",
         "identity",
+        "lifecycle",
         "loop",
         "media",
         "muse",
@@ -139,6 +140,18 @@ _LAZY_NAMES = {
     # embodiment produces; `events-cli` owns the envelope contract (c33).
     "EventEmitter": "events",
     "EventDegradation": "events",
+    # ── the lived sequence: when to consider, remember, revisit ───────────
+    # `ContinuityLifecycle` IS a `ContinuityFn` — inject it as `continuity=`.
+    # The host names which tools are consequential; embodiment cannot know
+    # that a kiosk's `send_message` matters and its `get_weather` does not.
+    "ContinuityLifecycle": "lifecycle",
+    "LifecycleConfig": "lifecycle",
+    "LifecycleEvent": "lifecycle",
+    "LifecycleSink": "lifecycle",
+    "ConsequentialFn": "lifecycle",
+    "build_continuity_fn": "lifecycle",
+    "select_for_memory": "lifecycle",
+    "request_text": "lifecycle",
     # ── Gwen framing: pure composition, absent identity ⇒ identical prompts ─
     "Framing": "framing",
     "frame_cortex": "framing",
@@ -222,6 +235,7 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
         events,
         framing,
         identity,
+        lifecycle,
         loop,
         media,
         muse,
@@ -257,6 +271,16 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
         unframe,
     )
     from embodiment.identity import resolve_identity  # noqa: F401
+    from embodiment.lifecycle import (  # noqa: F401
+        ConsequentialFn,
+        ContinuityLifecycle,
+        LifecycleConfig,
+        LifecycleEvent,
+        LifecycleSink,
+        build_continuity_fn,
+        request_text,
+        select_for_memory,
+    )
     from embodiment.loop import (  # noqa: F401
         BOUNDARY_ACTION,
         BOUNDARY_COMPLETION,
