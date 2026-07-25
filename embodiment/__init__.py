@@ -217,6 +217,7 @@ _LAZY_NAMES = {
     "Scratchpad": "scratchpad",
     "Entry": "scratchpad",
     "resume_report": "scratchpad",
+    "PerceptionDegradation": "perception",
     # ── the subagent seam (delegation bounded by arithmetic) ──────────────
     "SubagentFn": "subagent",
     "SubagentCall": "subagent",
@@ -383,6 +384,7 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
         is_stale,
     )
     from embodiment.muse_runner import ThreadedMuseRunner, ThreadFactory  # noqa: F401
+    from embodiment.perception import PerceptionDegradation  # noqa: F401
     from embodiment.perception import perceive  # noqa: F401
     from embodiment.presence import (  # noqa: F401
         ClarifyPolicy,

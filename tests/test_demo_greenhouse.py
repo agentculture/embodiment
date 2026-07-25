@@ -876,14 +876,11 @@ class TestLivePerception:
 
         # The verbatim invariant: original is byte-identical to the caller's input.
         assert packet.original == utterance
-        # The model DOES answer well; embodiment#15 is that we cannot read it.
-        # The 12B fences its JSON (```json ... ```), perceive does not strip the
-        # fence, and every model-derived field comes back empty while the record
-        # still claims degraded=False. Pinned as xfail rather than deleted so the
-        # defect stays visible in the suite and this test starts passing by
-        # itself the moment #15 is fixed.
-        if packet.interpretation == "":
-            pytest.xfail("embodiment#15: fenced JSON parses to nothing, degraded=False")
+        # embodiment#15 is fixed (t21) and this was confirmed against the live
+        # 12B: its fenced answer now parses and populates every field. The
+        # xfail escape is gone deliberately — if the seam ever stops reading a
+        # real model again, this must fail rather than quietly degrade to a
+        # skip.
         assert packet.interpretation != ""
         assert record.degraded is False
 
