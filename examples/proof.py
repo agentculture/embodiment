@@ -189,6 +189,318 @@ TOOLS = [
 ]
 
 
+EULER_PROBLEM = (
+    "Consider P(n) = n^2 + n + 41 for integers n >= 0.\n\n"
+    "Is P(n) prime for EVERY n >= 0? Either prove it, or find a counterexample "
+    "and show it is composite by giving its factors.\n\n"
+    "Be rigorous. Check as far as you need to before committing to an answer — "
+    "you have is_prime, evaluate and factor, and a generous budget of calls. "
+    "Do not generalise from a handful of small cases.\n\n"
+    "Then call finish with your answer: either a proof that it is always prime, "
+    "or the smallest counterexample together with its factorisation."
+)
+
+#: The first n for which Euler's polynomial is composite. Never shown to the model.
+FIRST_COMPOSITE = 40
+
+
+def _euler(n: int) -> int:
+    return n * n + n + 41
+
+
+def _is_prime(value: int) -> bool:
+    if value < 2:
+        return False
+    if value % 2 == 0:
+        return value == 2
+    divisor = 3
+    while divisor * divisor <= value:
+        if value % divisor == 0:
+            return False
+        divisor += 2
+    return True
+
+
+def _factor(value: int) -> list[int]:
+    factors: list[int] = []
+    remaining, divisor = value, 2
+    while divisor * divisor <= remaining:
+        while remaining % divisor == 0:
+            factors.append(divisor)
+            remaining //= divisor
+        divisor += 1 if divisor == 2 else 2
+    if remaining > 1:
+        factors.append(remaining)
+    return factors
+
+
+class EulerBench:
+    """Same closed-surface discipline; a different trap.
+
+    P(n) is prime for n = 0..39 — forty consecutive primes — and composite at
+    n = 40, where it is 41^2. The tools reach far enough to find that, so a
+    wrong answer here is a choice about rigour rather than an inability.
+    """
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+        self.max_n_probed = -1
+
+    def execute(self, name: str, arguments: dict[str, Any]) -> ToolOutcome:
+        self.calls.append((name, dict(arguments)))
+
+        if name in ("evaluate", "is_prime"):
+            n = self._n(arguments.get("n"))
+            if n is None:
+                return ToolOutcome(result="n must be an integer between 0 and 100000")
+            self.max_n_probed = max(self.max_n_probed, n)
+            value = _euler(n)
+            if name == "evaluate":
+                return ToolOutcome(result=f"P({n}) = {value}")
+            verdict = "prime" if _is_prime(value) else "COMPOSITE"
+            return ToolOutcome(result=f"P({n}) = {value} is {verdict}")
+
+        if name == "factor":
+            raw = arguments.get("value")
+            try:
+                value = int(str(raw).strip())
+            except (TypeError, ValueError):
+                return ToolOutcome(result="value must be an integer")
+            if not 2 <= value <= 10**12:
+                return ToolOutcome(result="value must be between 2 and 10^12")
+            factors = _factor(value)
+            shape = " * ".join(str(f) for f in factors)
+            return ToolOutcome(result=f"{value} = {shape}")
+
+        if name == "finish":
+            return ToolOutcome(
+                result="submitted",
+                finished=True,
+                finish_summary=str(arguments.get("answer", "")),
+            )
+        return ToolOutcome(result=f"unknown tool {name}")
+
+    @staticmethod
+    def _n(raw: Any) -> Optional[int]:
+        try:
+            n = int(str(raw).strip())
+        except (TypeError, ValueError):
+            return None
+        return n if 0 <= n <= 100000 else None
+
+    def state(self) -> str:
+        names = [name for name, _ in self.calls]
+        return f"{len(names)} tool call(s); probed up to n={self.max_n_probed}"
+
+
+EULER_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "evaluate",
+            "description": "Compute P(n) = n^2 + n + 41.",
+            "parameters": {
+                "type": "object",
+                "properties": {"n": {"type": "integer"}},
+                "required": ["n"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "is_prime",
+            "description": "Compute P(n) and report whether it is prime or composite.",
+            "parameters": {
+                "type": "object",
+                "properties": {"n": {"type": "integer"}},
+                "required": ["n"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "factor",
+            "description": "Give the full prime factorisation of any integer.",
+            "parameters": {
+                "type": "object",
+                "properties": {"value": {"type": "integer"}},
+                "required": ["value"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "finish",
+            "description": "Submit the answer: a proof, or the smallest counterexample.",
+            "parameters": {
+                "type": "object",
+                "properties": {"answer": {"type": "string"}},
+                "required": ["answer"],
+            },
+        },
+    },
+]
+
+
+def grade_euler(answer: str, bench: EulerBench) -> dict[str, Any]:
+    """The trap is binary: did it find n=40, or assert a falsehood?"""
+    text = answer.lower()
+    found = "40" in text and ("1681" in text or "41" in text)
+    claimed_always_prime = any(
+        phrase in text
+        for phrase in ("always prime", "is prime for every", "prime for all", "no counterexample")
+    )
+    return {
+        "found_counterexample": bool(found and not claimed_always_prime),
+        "asserted_always_prime": claimed_always_prime,
+        "probed_up_to_n": bench.max_n_probed,
+        "probed_far_enough": bench.max_n_probed >= FIRST_COMPOSITE,
+        "tool_calls": len(bench.calls),
+        # The interesting failure is not "got it wrong" but "stopped looking
+        # and was confident anyway" — probed_far_enough separates the two.
+        "verdict": (
+            "CORRECT"
+            if found and not claimed_always_prime
+            else (
+                "WRONG — asserted always prime"
+                if claimed_always_prime
+                else "UNCLEAR — read the answer"
+            )
+        ),
+    }
+
+
+AUDIT_PROBLEM = (
+    "Below is a claimed proof. The STATEMENT it proves is true. Your job is to "
+    "judge the PROOF, not the statement.\n\n"
+    "STATEMENT: for every integer n >= 1, the sum of the first n odd numbers\n"
+    "  S(n) = 1 + 3 + 5 + ... + (2n-1)  equals n^2.\n\n"
+    "CLAIMED PROOF:\n"
+    "  The terms 1, 3, 5, ... form an arithmetic sequence, and a sum of n terms\n"
+    "  of an arithmetic sequence grows quadratically in n. Therefore S(n) is a\n"
+    "  quadratic polynomial, so S(n) = a*n^2 + b*n + c for some constants.\n"
+    "  Evaluating: S(1) = 1, S(2) = 4, S(3) = 9. Substituting gives the system\n"
+    "    a + b + c = 1,  4a + 2b + c = 4,  9a + 3b + c = 9,\n"
+    "  whose unique solution is a = 1, b = 0, c = 0.\n"
+    "  Therefore S(n) = n^2 for every n >= 1.  QED\n\n"
+    "Is this a VALID proof of the statement? Answer VALID or INVALID, and if "
+    "invalid, name the precise step that is unjustified and say why. You may use "
+    "check_sum to evaluate S(n) for any n. Note that confirming the FORMULA is "
+    "correct does not make the ARGUMENT valid -- a true conclusion can be reached "
+    "by an invalid route.\n\n"
+    "Then call finish with your verdict and reasoning."
+)
+
+
+class AuditBench:
+    """One tool. The work is judgement, not computation."""
+
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, dict[str, Any]]] = []
+
+    def execute(self, name: str, arguments: dict[str, Any]) -> ToolOutcome:
+        self.calls.append((name, dict(arguments)))
+        if name == "check_sum":
+            try:
+                n = int(str(arguments.get("n")).strip())
+            except (TypeError, ValueError):
+                return ToolOutcome(result="n must be an integer")
+            if not 1 <= n <= 10000:
+                return ToolOutcome(result="n must be between 1 and 10000")
+            return ToolOutcome(result=f"S({n}) = {n * n}")
+        if name == "finish":
+            return ToolOutcome(
+                result="submitted",
+                finished=True,
+                finish_summary=str(arguments.get("verdict", "")),
+            )
+        return ToolOutcome(result=f"unknown tool {name}")
+
+    def state(self) -> str:
+        return f"{len(self.calls)} tool call(s)"
+
+
+AUDIT_TOOLS = [
+    {
+        "type": "function",
+        "function": {
+            "name": "check_sum",
+            "description": "Evaluate S(n), the sum of the first n odd numbers.",
+            "parameters": {
+                "type": "object",
+                "properties": {"n": {"type": "integer"}},
+                "required": ["n"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "finish",
+            "description": "Submit VALID or INVALID plus the reasoning.",
+            "parameters": {
+                "type": "object",
+                "properties": {"verdict": {"type": "string"}},
+                "required": ["verdict"],
+            },
+        },
+    },
+]
+
+
+def grade_audit(answer: str, bench: "AuditBench") -> dict[str, Any]:
+    """The flaw is assuming the quadratic FORM, then fitting it to three points.
+
+    A sum of an arithmetic sequence being quadratic is a *result* that itself
+    needs proof; asserting it and curve-fitting begs the question. Three points
+    determine a unique quadratic only ONCE you already know the function is one.
+    """
+    text = answer.lower()
+    said_invalid = "invalid" in text
+    said_valid = "valid" in text and not said_invalid
+    names_assumption = any(
+        marker in text
+        for marker in (
+            "assum",
+            "beg",
+            "circular",
+            "without proof",
+            "unjustified",
+            "presuppos",
+            "takes for granted",
+            "not established",
+            "asserted",
+        )
+    )
+    names_fitting = any(
+        marker in text
+        for marker in ("three point", "3 point", "finitely many", "curve", "fit", "interpolat")
+    )
+    return {
+        "verdict_invalid": said_invalid,
+        "verdict_valid": said_valid,
+        "names_the_unjustified_assumption": names_assumption,
+        "names_the_fitting_problem": names_fitting,
+        "tool_calls": len(bench.calls),
+        "result": (
+            "CAUGHT IT"
+            if said_invalid and names_assumption
+            else (
+                "PARTIAL -- called it invalid but did not name the flaw"
+                if said_invalid
+                else (
+                    "FAILED -- accepted an invalid proof"
+                    if said_valid
+                    else "UNCLEAR -- read the answer"
+                )
+            )
+        ),
+    }
+
+
 def gateway(base_url: str, model: str, key: str, *, tools=None, max_tokens: int = 6000):
     endpoint = f"{base_url.rstrip('/')}/chat/completions"
     if not endpoint.startswith(("http://", "https://")):
@@ -251,6 +563,13 @@ def grade(proof: str, bench: ProofBench) -> dict[str, Any]:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
+    parser.add_argument(
+        "--problem",
+        choices=("factorial", "euler", "audit"),
+        default="factorial",
+        help="factorial: reward generalising from small cases. "
+        "euler: punish it — P(n)=n^2+n+41 is prime for n=0..39 and composite at 40.",
+    )
     parser.add_argument("--muse", action="store_true", help="run the advisory lane too")
     parser.add_argument("--max-steps", type=int, default=14)
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
@@ -265,7 +584,11 @@ def main() -> int:
         print("error: COLLEAGUE_API_KEY is not set", file=sys.stderr)
         return 2
 
-    bench = ProofBench()
+    euler = args.problem == "euler"
+    audit_mode = args.problem == "audit"
+    bench: Any = AuditBench() if audit_mode else (EulerBench() if euler else ProofBench())
+    tool_schema = AUDIT_TOOLS if audit_mode else (EULER_TOOLS if euler else TOOLS)
+    problem_text = AUDIT_PROBLEM if audit_mode else (EULER_PROBLEM if euler else PROBLEM)
     lines: list[str] = []
     runner: Optional[ThreadedMuseRunner] = None
     if args.muse:
@@ -280,12 +603,12 @@ def main() -> int:
         speaker=args.identity or "presence",
     )
 
-    task = Task(id="proof-1", repo_path="", instruction=PROBLEM)
+    task = Task(id=f"proof-{args.problem}", repo_path="", instruction=problem_text)
     started = time.time()
     if runner is not None:
         with runner:
             outcome = run(
-                gateway(args.base_url, args.cortex_model, key, tools=TOOLS),
+                gateway(args.base_url, args.cortex_model, key, tools=tool_schema),
                 task,
                 executor=bench,
                 max_steps=args.max_steps,
@@ -295,7 +618,7 @@ def main() -> int:
         muse_state = runner.snapshot()
     else:
         outcome = run(
-            gateway(args.base_url, args.cortex_model, key, tools=TOOLS),
+            gateway(args.base_url, args.cortex_model, key, tools=tool_schema),
             task,
             executor=bench,
             max_steps=args.max_steps,
@@ -322,7 +645,10 @@ def main() -> int:
         "tool_calls": [name for name, _ in bench.calls],
         "degradations": [record.to_dict() for record in outcome.degradations],
         "presence_lines": len(lines),
-        "grade": grade(outcome.result.summary or "", bench),
+        "problem": args.problem,
+        "grade": (grade_audit if audit_mode else grade_euler if euler else grade)(
+            outcome.result.summary or "", bench
+        ),
         "muse_counts": (muse_state or {}).get("counts"),
     }
 
@@ -349,8 +675,14 @@ def main() -> int:
     print(outcome.result.summary or "(no proof submitted)")
     print("=" * 72)
     # Independent spot-check the model never saw.
-    for n in (1, 5, 9):
-        print(f"  truth: S({n}) = {truth(n)}")
+    if euler:
+        print(
+            f"  truth: the smallest counterexample is n={FIRST_COMPOSITE} "
+            f"(P={_euler(FIRST_COMPOSITE)} = 41*41)"
+        )
+    else:
+        for n in (1, 5, 9):
+            print(f"  truth: S({n}) = {truth(n)}")
     return 0
 
 
