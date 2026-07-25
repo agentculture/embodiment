@@ -15,14 +15,18 @@ once and imported, not reimplemented per host.
 
 ## Status
 
-**The extraction has largely landed.** The loop, the presence pump, the muse
-thinking loop, perception, continuity and Gwen framing are checked in on the
-`spec/gwen-loop-presence-continuity` branch — this section previously said they
-were still in `colleague 1.52.1` awaiting extraction, which stopped being true
-partway through that build. Still to land: the continuity lifecycle checkpoints,
-the degradation ledger, the demo app, and the seam proposal to colleague. See
-[Roadmap](#roadmap) and [issue #1](https://github.com/agentculture/embodiment/issues/1).
-`CLAUDE.md` carries the module-by-module status.
+**The extraction has landed.** The loop, the presence pump, the muse thinking
+loop, perception, continuity and its lifecycle checkpoints, Gwen framing, the
+degradation ledger, event emission and the demo are all checked in on the
+`spec/gwen-loop-presence-continuity` branch. The demo has been run against a
+real two-model rig, not only against fakes.
+
+Still outstanding: the seam-proposal issue to `colleague`, and the deeper live
+testing recorded as deviation `d4` — an acceptance bar that is *recorded but
+not yet met*, so it is listed here rather than quietly counted as done. See
+[Roadmap](#roadmap) and [issue #1](https://github.com/agentculture/embodiment/issues/1);
+`CLAUDE.md` carries the module-by-module status and `devague deviate --list`
+the approved departures from the plan.
 
 ## What you get
 
