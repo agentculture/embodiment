@@ -25,6 +25,23 @@ finalize the partial :class:`~embodiment.contract.TaskResult` and re-raise as
 :class:`LoopAborted`. Hooks add no exit path and cannot extend the budget: the
 nudge for a prose-only turn spends model turns from the same ``max_steps``.
 
+Delegation adds no exit either
+------------------------------
+A host may decompose work through the injected
+:data:`~embodiment.subagent.SubagentFn` seam: its executor returns a
+:class:`~embodiment.subagent.SpawnRequest` on a :class:`ToolOutcome`, and this
+module mints the attenuated child, runs it through the seam, and charges what it
+spent back to ``max_steps``. That is a *step*, not an exit — a spawn resolves
+inside :func:`_run_tool_call` like any other tool call, and a refused or failed
+spawn costs one self-correcting step exactly as a :class:`ToolError` does.
+
+Two bounds hold at once, both by arithmetic (see :mod:`embodiment.subagent`):
+the **spawn allowance** strictly decrements every generation, so depth and
+subtree size are fixed before the first spawn; and **child turns draw from the
+parent's pool**, so ``max_steps`` keeps meaning what it says. Neither can be
+widened from here — this module never computes an allowance of its own, it only
+calls :func:`~embodiment.subagent.attenuate`.
+
 The hook lifecycle
 ------------------
 Four events fire — ``task_start`` (once, before the loop), ``pre_tool`` (before
@@ -61,9 +78,11 @@ here:
 * a **default tool executor** — the host injects one, always (there is no
   ``ToolExecutor(repo_path)`` fallback, and no ``run_command`` approval policy:
   authority over a tool belongs to whoever built the executor);
-* **subagent fan-out** (``Spawns``, ``MAX_SUBAGENT_FANOUT``) — one ``int`` that
-  dragged in a 3000-line config module; a host that delegates does it inside its
-  own executor;
+* colleague's **subagent fan-out config** (``Spawns``, ``MAX_SUBAGENT_FANOUT``)
+  — one ``int`` that dragged in a 3000-line config module. Delegation itself did
+  NOT stay behind: it returned as the injected
+  :data:`~embodiment.subagent.SubagentFn` seam described above, whose reach is
+  computed here rather than read from a config file;
 * the **pre-finish gates** (lint, test-integrity, affected-tests, coherence) and
   the **memory** recall/remember pair — the last two return as the
   :data:`ContinuityFn` boundaries below, which task t14 fills in;
@@ -91,7 +110,7 @@ import datetime
 import json
 import time
 from collections import Counter
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Callable, Optional, Protocol, Sequence, Union, runtime_checkable
 
 from embodiment.context import classify_degradable, is_media_rejection, window_messages
@@ -104,12 +123,29 @@ from embodiment.contract import (
     IncompletionRecord,
     ModelResponse,
     Step,
+    SubResult,
     Task,
     TaskResult,
     ToolCall,
     WorkAborted,
 )
 from embodiment.media import build_part, flatten_parts
+from embodiment.subagent import (
+    NO_SPAWNS,
+    SPAWN_FAILED,
+    SPAWN_GRANTED,
+    SPAWN_REFUSED_ALLOWANCE,
+    SPAWN_REFUSED_BUDGET,
+    SPAWN_REFUSED_SEAM,
+    SpawnRecord,
+    SpawnRequest,
+    SubagentCall,
+    SubagentFn,
+    SubagentResult,
+    as_count,
+    attenuate,
+    child_call,
+)
 
 __all__ = [
     # exits
@@ -152,8 +188,24 @@ __all__ = [
     "DEGRADED_OVERFLOW_EXHAUSTED",
     "DEGRADED_PRESENCE",
     "DEGRADED_PROGRESS",
+    "DEGRADED_SPAWN_FAILED",
+    "DEGRADED_SPAWN_UNAVAILABLE",
     "DEGRADED_SYNTHESIS",
     "DEGRADED_TOOL_ARGUMENTS",
+    # the subagent seam (shapes owned by embodiment.subagent, re-exported so a
+    # host building a seam needs one import, as with the contract shapes below)
+    "NO_SPAWNS",
+    "SpawnRequest",
+    "SubagentCall",
+    "SubagentResult",
+    "SubagentFn",
+    "SpawnRecord",
+    "SPAWN_GRANTED",
+    "SPAWN_REFUSED_ALLOWANCE",
+    "SPAWN_REFUSED_BUDGET",
+    "SPAWN_REFUSED_SEAM",
+    "SPAWN_FAILED",
+    "attenuate",
     # presence + continuity seams
     "PresenceSink",
     "OperatorInboxFn",
@@ -244,6 +296,16 @@ DEGRADED_OBSERVER = "observer-failed"
 DEGRADED_PRESENCE = "presence-failed"
 #: The injected continuity seam raised at a boundary.
 DEGRADED_CONTINUITY = "continuity-failed"
+#: A tool asked to delegate and no child ran: either no ``SubagentFn`` was
+#: injected, or the injected one returned ``None``. The acting model asked for
+#: help and got none, which it must not learn about only by the work not
+#: happening.
+DEGRADED_SPAWN_UNAVAILABLE = "subagent-seam-absent"
+#: The injected subagent seam raised, returned something unusable, or reported
+#: spending more model turns than it was granted. NOT recorded for a spawn the
+#: loop itself refused on allowance or budget — that is the bound working, and a
+#: ledger that reports the design working claims a breakage that did not happen.
+DEGRADED_SPAWN_FAILED = "subagent-spawn-failed"
 #: The forced final synthesis turn failed; the summary falls to its next rung.
 DEGRADED_SYNTHESIS = "synthesis-failed"
 
@@ -342,6 +404,12 @@ class ToolOutcome:
     """An OpenAI content part produced by a media-viewing tool. The tool message
     itself stays a plain string (the wire-safe convention); a non-``None`` part
     rides a follow-up user parts message the next turn sees."""
+    spawn: Optional[SpawnRequest] = None
+    """A request to delegate this call's work to a child drive, or ``None`` for
+    an ordinary tool. The host's executor decides *when* to delegate (it owns
+    tool naming); the loop decides *how far the child reaches* and charges what
+    it spends. ``None`` — the default — leaves the drive byte-identical to one
+    with no subagent seam at all: nothing is called, nothing is recorded."""
 
 
 @runtime_checkable
@@ -621,6 +689,18 @@ class LoopOutcome:
     exit_reason: str
     hook_firings: list[HookFiring] = field(default_factory=list)
     degradations: list[LoopDegradation] = field(default_factory=list)
+    spawns: list[SpawnRecord] = field(default_factory=list)
+    """Every spawn attempt this drive made, granted or refused, in order. Empty
+    for a drive that delegated nothing."""
+    child_model_turns: int = 0
+    """Model turns spent by descendants and charged against this drive's
+    ``max_steps``. ``result.stats.model_turns`` stays the drive's OWN
+    completions — the two are reported separately rather than summed, because a
+    parent that claims turns it never took is exactly the overclaim C3 exists to
+    prevent. The budget the loop enforces is their sum."""
+    spawn_allowance_remaining: int = NO_SPAWNS
+    """How many more children this drive could still have created when it
+    ended. Visible so an operator can see the bound, not just trust it."""
 
 
 class LoopAborted(WorkAborted):
@@ -660,14 +740,30 @@ class _Work:
     presence: Optional[PresenceSink] = None
     operator_inbox: Optional[OperatorInboxFn] = None
     continuity: Optional[ContinuityFn] = None
+    subagent: Optional[SubagentFn] = None
     firings: list[HookFiring] = field(default_factory=list)
     degradations: list[LoopDegradation] = field(default_factory=list)
+    spawns: list[SpawnRecord] = field(default_factory=list)
     last_substantive: str = ""
     observer_failed: bool = False
     presence_armed: bool = False
     #: The whole drive's model-turn budget — the reading budget the turn loop
     #: runs against PLUS any reserved synthesis turn. Nothing spends past it.
     turn_budget: int = 1
+    #: The turn loop's own budget: ``turn_budget`` less any synthesis reserve.
+    #: What a child may borrow is measured against THIS, so lending to a child
+    #: cannot eat the reserved final answer.
+    reading_budget: int = 1
+    #: How many more children this drive may create, tree-wide. Seeded once from
+    #: the host's ``spawn_allowance`` and thereafter only ever passed through
+    #: ``attenuate`` — there is no other writer, which is what makes the depth
+    #: bound structural rather than conventional.
+    allowance: int = NO_SPAWNS
+    #: Ancestor task ids, root first. Handed to every child so a subagent tree
+    #: is walkable from artifacts alone.
+    lineage: tuple[str, ...] = ()
+    #: Model turns descendants spent, charged against ``turn_budget``.
+    child_turns: int = 0
 
 
 # ── observability helpers (never control-bearing, never silent) ───────────────
@@ -815,6 +911,239 @@ def _boundary(ctx: _Work, name: str, **extra: Any) -> None:
         ctx.continuity(point)
     except Exception as exc:  # noqa: BLE001 - continuity never aborts a drive
         _degrade(ctx, DEGRADED_CONTINUITY, f"{name}: {type(exc).__name__}: {exc}")
+
+
+# ── the subagent binding ──────────────────────────────────────────────────────
+
+
+def _turns_spent(ctx: _Work) -> int:
+    """Model turns this drive is accountable for — its OWN plus its children's.
+
+    The single number every budget check reads, which is what makes a child's
+    turns draw from the parent's ``max_steps`` rather than from thin air. The
+    two halves stay separate on the artifact (``stats.model_turns`` is honestly
+    this drive's own completions); only the *bound* sums them.
+    """
+    return ctx.result.stats.model_turns + ctx.child_turns
+
+
+def _turns_available(ctx: _Work) -> int:
+    """What is left of the turn loop's budget — what a child may borrow.
+
+    Measured against ``reading_budget``, not ``turn_budget``, so lending to a
+    child can never eat the turn held back for the forced final synthesis.
+    """
+    return ctx.reading_budget - _turns_spent(ctx)
+
+
+def _record_spawn(ctx: _Work, call: ToolCall, outcome: str, **extra: Any) -> SpawnRecord:
+    """Append one spawn attempt to the drive's own accounting and observe it."""
+    record = SpawnRecord(
+        outcome=outcome,
+        tool=call.name,
+        step_index=len(ctx.result.steps),
+        parent_task_id=ctx.task.id,
+        **extra,
+    )
+    ctx.spawns.append(record)
+    _observe(ctx, "spawn", outcome, **record.to_dict())
+    return record
+
+
+def _spawn_note(record: SpawnRecord, sub: Optional[SubResult]) -> str:
+    """The one line the acting model reads about what its delegation did.
+
+    A refusal has to reach the model as text, not only as a ledger entry: a
+    model whose delegation quietly did nothing will sit there waiting for work
+    that is never coming.
+    """
+    if record.outcome != SPAWN_GRANTED:
+        return f"[subagent not run — {record.outcome}: {record.reason}]"
+    if sub is None:
+        return (
+            f"[subagent {record.child_task_id}] ran for {record.model_turns} model turn(s) "
+            "and reported no result"
+        )
+    return f"[subagent {sub.task_id}] {sub.status}: {sub.summary}"
+
+
+def _with_note(outcome: ToolOutcome, note: str) -> ToolOutcome:
+    """Fold the delegation note into the tool result, and clear the request.
+
+    ``spawn=None`` on the returned outcome is deliberate: the request has been
+    honored or refused exactly once, and nothing downstream can act on it twice.
+    """
+    text = f"{outcome.result}\n\n{note}" if outcome.result else note
+    return replace(outcome, result=text, spawn=None)
+
+
+def _stamp_sub_result(
+    ctx: _Work, child: SubagentCall, reply: SubagentResult
+) -> Optional[SubResult]:
+    """Record the child's artifact under its lineage; ``None`` when it has none.
+
+    ``parent`` is stamped from the *parent's* own task id rather than trusted
+    from the seam — the loop minted this child, so it is the one surface that
+    knows the lineage structurally (``SubResult.parent``'s own contract).
+    """
+    sub = reply.sub_result
+    if sub is None:
+        return None
+    if not isinstance(sub, SubResult):
+        _degrade(
+            ctx,
+            DEGRADED_SPAWN_FAILED,
+            f"child {child.task.id}: sub_result was {type(sub).__name__}, not a SubResult",
+        )
+        return None
+    stamped = replace(
+        sub, role=sub.role if sub.role is not None else child.role, parent=ctx.task.id
+    )
+    ctx.result.sub_results.append(stamped)
+    return stamped
+
+
+def _charge_child(ctx: _Work, child: SubagentCall, reply: SubagentResult) -> int:
+    """Charge the child's turns to the parent's budget; report an overspend.
+
+    The claim is charged VERBATIM, even when it exceeds the grant. Clamping it
+    would make ``max_steps`` quietly mean less than it says the moment a seam
+    ignored its budget — the parent would keep driving on turns that were
+    already spent. An overspend is a recorded degradation instead.
+    """
+    spent = as_count(reply.model_turns)
+    ctx.child_turns = ctx.child_turns + spent
+    if spent > child.max_steps:
+        _degrade(
+            ctx,
+            DEGRADED_SPAWN_FAILED,
+            f"child {child.task.id} spent {spent} model turn(s) of a "
+            f"{child.max_steps}-turn grant; the overspend is charged to the parent",
+        )
+    return spent
+
+
+def _run_child(
+    ctx: _Work,
+    call: ToolCall,
+    outcome: ToolOutcome,
+    request: SpawnRequest,
+    child: SubagentCall,
+) -> tuple[ToolOutcome, bool]:
+    """Hand the attenuated child to the injected seam and account for it.
+
+    A seam that raises does NOT abort the drive: the delegation failed, so it
+    costs one self-correcting step with the failure fed back to the model,
+    exactly as a :class:`ToolError` does. A child taking the parent down with it
+    would be a fourth way out of the loop wearing a different hat.
+
+    Only reached with a seam wired: :func:`_delegate` turns an unwired host away
+    before minting anything, so no record here can claim an allowance was handed
+    to a child that never existed.
+    """
+    seam = ctx.subagent
+    shared = {
+        "role": child.role,
+        "child_task_id": child.task.id,
+        "allowance_requested": request.allowance,
+        "allowance_granted": child.allowance,
+        "steps_granted": child.max_steps,
+    }
+    try:
+        reply = seam(child) if seam is not None else None
+    except Exception as exc:  # noqa: BLE001 - a failed child never aborts its parent
+        reason = f"{type(exc).__name__}: {exc}"
+        record = _record_spawn(ctx, call, SPAWN_FAILED, reason=reason, **shared)
+        _degrade(ctx, DEGRADED_SPAWN_FAILED, f"child {child.task.id}: {reason}")
+        return _with_note(outcome, _spawn_note(record, None)), False
+    if reply is None:
+        reason = "the subagent seam declined to run the child"
+        record = _record_spawn(ctx, call, SPAWN_REFUSED_SEAM, reason=reason, **shared)
+        _degrade(ctx, DEGRADED_SPAWN_UNAVAILABLE, f"child {child.task.id}: {reason}")
+        return _with_note(outcome, _spawn_note(record, None)), False
+    if not isinstance(reply, SubagentResult):
+        reason = f"the subagent seam returned {type(reply).__name__}, not a SubagentResult"
+        record = _record_spawn(ctx, call, SPAWN_FAILED, reason=reason, **shared)
+        _degrade(ctx, DEGRADED_SPAWN_FAILED, f"child {child.task.id}: {reason}")
+        return _with_note(outcome, _spawn_note(record, None)), False
+
+    spent = _charge_child(ctx, child, reply)
+    sub = _stamp_sub_result(ctx, child, reply)
+    record = _record_spawn(
+        ctx,
+        call,
+        SPAWN_GRANTED,
+        model_turns=spent,
+        exit_reason=reply.exit_reason,
+        degradations=tuple(reply.degradations or ()),
+        **shared,
+    )
+    return _with_note(outcome, reply.result or _spawn_note(record, sub)), True
+
+
+def _delegate(ctx: _Work, call: ToolCall, outcome: ToolOutcome) -> tuple[ToolOutcome, bool]:
+    """Resolve a delegation the executor asked for; return ``(outcome, step_ok)``.
+
+    With no :attr:`ToolOutcome.spawn` this returns the SAME object and ``True``
+    before touching anything — the spawn-free path allocates nothing, records
+    nothing, and is byte-identical to a loop with no subagent seam (pinned by a
+    golden transcript in ``tests/test_subagent.py``).
+
+    Three gates, in this order, and NOTHING is minted until all three pass:
+
+    * **allowance** — a drive at :data:`~embodiment.subagent.NO_SPAWNS` cannot
+      spawn, which is what terminates recursion;
+    * **budget** — a parent with no turns left has none to lend;
+    * **the seam** — an unwired host is turned away here rather than inside
+      :func:`_run_child`, so no record ever claims an allowance was granted to
+      a child that was never built.
+
+    The first two are the design working rather than failures, so neither
+    records a degradation — the same reason a clean ``budget`` exit records
+    none. The third does: a tool asked for help that nothing was there to give.
+
+    The parent's allowance is decremented at the moment the child is MINTED,
+    not when it succeeds: an attempt that reached a wired seam spends a spawn
+    either way, so the count can only ever fall and a flaky seam cannot retry
+    its way past the bound.
+    """
+    request = outcome.spawn
+    if request is None:
+        return outcome, True
+    common = {"role": request.role, "allowance_requested": request.allowance}
+    if ctx.allowance <= NO_SPAWNS:
+        record = _record_spawn(
+            ctx,
+            call,
+            SPAWN_REFUSED_ALLOWANCE,
+            reason="this drive's spawn allowance is exhausted",
+            **common,
+        )
+        return _with_note(outcome, _spawn_note(record, None)), False
+    available = _turns_available(ctx)
+    if available <= 0:
+        record = _record_spawn(
+            ctx,
+            call,
+            SPAWN_REFUSED_BUDGET,
+            reason="no model turns remain in the parent's budget to lend",
+            **common,
+        )
+        return _with_note(outcome, _spawn_note(record, None)), False
+    if ctx.subagent is None:
+        reason = "a tool asked to delegate and no SubagentFn is wired"
+        record = _record_spawn(ctx, call, SPAWN_REFUSED_SEAM, reason=reason, **common)
+        _degrade(ctx, DEGRADED_SPAWN_UNAVAILABLE, f"{call.name}: {reason}")
+        return _with_note(outcome, _spawn_note(record, None)), False
+    child = child_call(
+        request,
+        parent_allowance=ctx.allowance,
+        parent_task_id=ctx.task.id,
+        parent_lineage=ctx.lineage,
+        turns_available=available,
+    )
+    ctx.allowance = attenuate(ctx.allowance)
+    return _run_child(ctx, call, outcome, request, child)
 
 
 # ── hook firing ───────────────────────────────────────────────────────────────
@@ -1080,7 +1409,12 @@ def _run_tool_call(ctx: _Work, call: ToolCall) -> bool:
         _fire_hooks(ctx, event=EVENT_POST_TOOL, tool=call.name, arguments=arguments)
         return False
 
-    ctx.result.steps.append(Step(step_index, call.name, arguments, outcome.result, ok=True))
+    # Delegation resolves BEFORE the step is recorded, so the child's summary
+    # (or the reason no child ran) is part of the tool result the model reads.
+    # With no spawn request this returns the same object and ``ok=True``.
+    outcome, ok = _delegate(ctx, call, outcome)
+
+    ctx.result.steps.append(Step(step_index, call.name, arguments, outcome.result, ok=ok))
     ctx.messages.append(_tool_message(call.id, outcome.result))
     if outcome.media_part is not None:
         # The tool message above stays a plain string (the wire-safe
@@ -1094,7 +1428,7 @@ def _run_tool_call(ctx: _Work, call: ToolCall) -> bool:
                 ],
             }
         )
-    _emit_progress(ctx, step_index, call.name, arguments, ok=True)
+    _emit_progress(ctx, step_index, call.name, arguments, ok=ok)
     _presence_boundary(ctx)
 
     _fire_hooks(ctx, event=EVENT_POST_TOOL, tool=call.name, arguments=arguments)
@@ -1309,14 +1643,17 @@ def _work_loop(ctx: _Work, max_steps: int) -> str:
     the turn, then either run its tool calls or handle a no-tool turn.
 
     The budget counts *successful model turns*, not raw iterations, and nothing
-    in this function adds to it. There are exactly three ``return`` statements
-    and no ``raise``: whatever the injected ``complete`` raises propagates to
-    :func:`run`, which preserves the partial — that is the host's failure
-    surfacing, not a fourth way for the loop to decide it is done.
+    in this function adds to it. It counts them through :func:`_turns_spent`,
+    which is this drive's own turns PLUS every turn its children reported —
+    so a subagent draws down the same budget and is not a fourth way to exceed
+    it. There are exactly three ``return`` statements and no ``raise``:
+    whatever the injected ``complete`` raises propagates to :func:`run`, which
+    preserves the partial — that is the host's failure surfacing, not a fourth
+    way for the loop to decide it is done.
     """
     nudges = 0
     budget = max(1, max_steps)
-    while ctx.result.stats.model_turns < budget:
+    while _turns_spent(ctx) < budget:
         _drain_operator_inbox(ctx)
         resp = _complete_with_degradation(ctx)
         _account_turn(ctx, resp)
@@ -1370,7 +1707,11 @@ def _snapshot_executor_ledger(ctx: _Work) -> None:
             _degrade(ctx, DEGRADED_PROGRESS, f"executor.changed unreadable: {exc}")
     sub_results = getattr(ctx.executor, "sub_results", None)
     if sub_results:
-        ctx.result.sub_results = list(sub_results)
+        # EXTEND, never replace: the loop already appended a SubResult for every
+        # child it minted through the subagent seam, and an executor that keeps
+        # its own ledger must not silently drop them. For a drive that spawned
+        # nothing this is exactly the old assignment.
+        ctx.result.sub_results = [*ctx.result.sub_results, *sub_results]
 
 
 def _maybe_force_synthesis(ctx: _Work, outcome: str) -> None:
@@ -1394,7 +1735,7 @@ def _maybe_force_synthesis(ctx: _Work, outcome: str) -> None:
         return
     if ctx.result.summary or ctx.result.stats.step_count <= 0:
         return
-    if ctx.result.stats.model_turns >= ctx.turn_budget:
+    if _turns_spent(ctx) >= ctx.turn_budget:
         return
     prompt = _EMPTY_FINISH_PROMPT if outcome == EXIT_FINISHED else _SYNTHESIS_PROMPT
     ctx.messages.append({"role": "user", "content": prompt})
@@ -1536,6 +1877,23 @@ def _maybe_flag_incompletion(ctx: _Work, outcome: str) -> None:
         ctx.result.status = INCOMPLETE
 
 
+def _outcome(ctx: _Work, exit_reason: str) -> LoopOutcome:
+    """Assemble the drive's outcome — its result, its exit, and its own ledgers.
+
+    One builder for both exit paths (the ordinary return and the aborted
+    re-raise) so a ledger can never reach one and be forgotten on the other.
+    """
+    return LoopOutcome(
+        result=ctx.result,
+        exit_reason=exit_reason,
+        hook_firings=ctx.firings,
+        degradations=ctx.degradations,
+        spawns=ctx.spawns,
+        child_model_turns=ctx.child_turns,
+        spawn_allowance_remaining=ctx.allowance,
+    )
+
+
 # ── the public entry point ────────────────────────────────────────────────────
 
 
@@ -1552,6 +1910,9 @@ def run(
     presence: Optional[PresenceSink] = None,
     operator_inbox: Optional[OperatorInboxFn] = None,
     continuity: Optional[ContinuityFn] = None,
+    subagent: Optional[SubagentFn] = None,
+    spawn_allowance: int = NO_SPAWNS,
+    lineage: tuple[str, ...] = (),
     controls: Optional[LoopControls] = None,
     model: str = "",
     continued_from: Optional[str] = None,
@@ -1565,11 +1926,13 @@ def run(
         executor: the tool surface, injected. There is no default: what the
             model may do belongs to the host, always.
         max_steps: the model-turn budget, and the hard ceiling on how many times
-            ``complete`` is called. Nothing extends it: not a hook, not a
-            finish nudge, not the forced synthesis turn (which is reserved out
-            of the budget, never added to it). A degradable-error retry is the
-            one thing that does not *count* against it, because a retried turn
-            is the same turn — and that ladder is separately bounded.
+            ``complete`` is called — by this drive AND by every descendant it
+            spawns, whose reported turns are charged here. Nothing extends it:
+            not a hook, not a finish nudge, not a subagent, not the forced
+            synthesis turn (which is reserved out of the budget, never added to
+            it). A degradable-error retry is the one thing that does not *count*
+            against it, because a retried turn is the same turn — and that
+            ladder is separately bounded.
         system_prompt: the first system message. The built-in default names no
             tool, because this loop may not assume a tool surface exists.
         hooks: the injected hook runner (see :data:`HookFn`). ``None`` means the
@@ -1583,6 +1946,20 @@ def run(
             the presence sink.
         continuity: the memory/coherence boundary seam (see
             :data:`ContinuityFn`) — observation only, filled in by task t14.
+        subagent: the injected delegation seam (see
+            :data:`~embodiment.subagent.SubagentFn`). ``None`` — the default —
+            means a spawn request from the executor is refused and recorded;
+            a drive whose executor never asks is byte-identical either way.
+        spawn_allowance: how many children this drive may create, tree-wide.
+            :data:`~embodiment.subagent.NO_SPAWNS` (the default) means none.
+            **This number is the depth bound**: each child is minted with one
+            less, a drive at zero cannot spawn, and the total descendants a
+            drive with allowance ``a`` can ever create is ``2**a - 1``. It is
+            declared once, here, by the host — every allowance below it comes
+            from :func:`~embodiment.subagent.attenuate` and is strictly smaller.
+        lineage: ancestor task ids, root first, for a drive that IS a child.
+            A seam driving :class:`~embodiment.subagent.SubagentCall` passes
+            ``call.lineage`` straight through. Empty at the root.
         controls: the loop's own knobs; every default is the strict no-op.
         model: the model id, recorded on the stats so the artifact is
             self-describing about which mind ran it.
@@ -1597,7 +1974,8 @@ def run(
 
     Returns:
         A :class:`LoopOutcome` — the result, the exit reason, and the loop's own
-        hook-firing and degradation ledgers.
+        hook-firing, degradation and spawn ledgers, plus what the delegation
+        cost (``child_model_turns``) and what allowance was left over.
 
     Raises:
         LoopAborted: when ``complete`` or the executor raised something the loop
@@ -1620,6 +1998,9 @@ def run(
         presence=presence,
         operator_inbox=operator_inbox,
         continuity=continuity,
+        subagent=subagent,
+        allowance=as_count(spawn_allowance),
+        lineage=tuple(lineage),
     )
     ctx.messages = [
         {"role": "system", "content": system_prompt or _DEFAULT_SYSTEM},
@@ -1640,6 +2021,7 @@ def run(
     reading_budget = ctx.turn_budget
     if _controls.synthesis and reading_budget > 1:
         reading_budget -= 1
+    ctx.reading_budget = reading_budget
 
     aborted: Optional[Exception] = None
     # Not EXIT_BUDGET: if the seam raises, the loop never reached a budget
@@ -1669,14 +2051,7 @@ def run(
             or ctx.last_substantive
             or f"aborted after {len(result.steps)} step(s): {result.error}"
         )
-        raise LoopAborted(
-            LoopOutcome(
-                result=result,
-                exit_reason=outcome,
-                hook_firings=ctx.firings,
-                degradations=ctx.degradations,
-            )
-        ) from aborted
+        raise LoopAborted(_outcome(ctx, outcome)) from aborted
 
     _apply_outcome_flags(ctx, outcome)
     _boundary(ctx, BOUNDARY_COMPLETION)
@@ -1687,9 +2062,4 @@ def run(
     _maybe_flag_incompletion(ctx, outcome)
     _boundary(ctx, BOUNDARY_MEMORY)
 
-    return LoopOutcome(
-        result=result,
-        exit_reason=outcome,
-        hook_firings=ctx.firings,
-        degradations=ctx.degradations,
-    )
+    return _outcome(ctx, outcome)

@@ -1,0 +1,702 @@
+{
+  "completions": [
+    [
+      {
+        "content": "You are an agent working through a task with the tools you have been given. Use them to gather what you need, then finish with a short, complete summary of the result. Make the smallest change that satisfies the task.",
+        "role": "system"
+      },
+      {
+        "content": "do the thing\n\nContext:\nsome context\n\nConstraints:\n- be brief\n\nGoal:\nthe thing is done\n\nAcceptance criteria (the work is done when each of these holds):\n- it works",
+        "role": "user"
+      }
+    ],
+    [
+      {
+        "content": "You are an agent working through a task with the tools you have been given. Use them to gather what you need, then finish with a short, complete summary of the result. Make the smallest change that satisfies the task.",
+        "role": "system"
+      },
+      {
+        "content": "do the thing\n\nContext:\nsome context\n\nConstraints:\n- be brief\n\nGoal:\nthe thing is done\n\nAcceptance criteria (the work is done when each of these holds):\n- it works",
+        "role": "user"
+      },
+      {
+        "content": "",
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "function": {
+              "arguments": "{\"path\": \"a.py\"}",
+              "name": "read_file"
+            },
+            "id": "c1",
+            "type": "function"
+          }
+        ]
+      },
+      {
+        "content": "file contents",
+        "role": "tool",
+        "tool_call_id": "c1"
+      }
+    ],
+    [
+      {
+        "content": "You are an agent working through a task with the tools you have been given. Use them to gather what you need, then finish with a short, complete summary of the result. Make the smallest change that satisfies the task.",
+        "role": "system"
+      },
+      {
+        "content": "do the thing\n\nContext:\nsome context\n\nConstraints:\n- be brief\n\nGoal:\nthe thing is done\n\nAcceptance criteria (the work is done when each of these holds):\n- it works",
+        "role": "user"
+      },
+      {
+        "content": "",
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "function": {
+              "arguments": "{\"path\": \"a.py\"}",
+              "name": "read_file"
+            },
+            "id": "c1",
+            "type": "function"
+          }
+        ]
+      },
+      {
+        "content": "file contents",
+        "role": "tool",
+        "tool_call_id": "c1"
+      },
+      {
+        "content": "Let me think about this.",
+        "role": "assistant"
+      },
+      {
+        "content": "You ended your turn without finishing and without requesting another tool. If your work is complete, finish now with your result as the summary. Otherwise continue by calling a tool \u2014 do not reply with prose alone.",
+        "role": "user"
+      }
+    ],
+    [
+      {
+        "content": "You are an agent working through a task with the tools you have been given. Use them to gather what you need, then finish with a short, complete summary of the result. Make the smallest change that satisfies the task.",
+        "role": "system"
+      },
+      {
+        "content": "do the thing\n\nContext:\nsome context\n\nConstraints:\n- be brief\n\nGoal:\nthe thing is done\n\nAcceptance criteria (the work is done when each of these holds):\n- it works",
+        "role": "user"
+      },
+      {
+        "content": "",
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "function": {
+              "arguments": "{\"path\": \"a.py\"}",
+              "name": "read_file"
+            },
+            "id": "c1",
+            "type": "function"
+          }
+        ]
+      },
+      {
+        "content": "file contents",
+        "role": "tool",
+        "tool_call_id": "c1"
+      },
+      {
+        "content": "Let me think about this.",
+        "role": "assistant"
+      },
+      {
+        "content": "You ended your turn without finishing and without requesting another tool. If your work is complete, finish now with your result as the summary. Otherwise continue by calling a tool \u2014 do not reply with prose alone.",
+        "role": "user"
+      },
+      {
+        "content": "",
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "function": {
+              "arguments": "{\"path\": \"hacked.py\"}",
+              "name": "write_file"
+            },
+            "id": "c2",
+            "type": "function"
+          },
+          {
+            "function": {
+              "arguments": "{}",
+              "name": "nope"
+            },
+            "id": "c3",
+            "type": "function"
+          }
+        ]
+      },
+      {
+        "content": "wrote 11 bytes",
+        "role": "tool",
+        "tool_call_id": "c2"
+      },
+      {
+        "content": "error: unknown tool: nope",
+        "role": "tool",
+        "tool_call_id": "c3"
+      }
+    ],
+    [
+      {
+        "content": "You are an agent working through a task with the tools you have been given. Use them to gather what you need, then finish with a short, complete summary of the result. Make the smallest change that satisfies the task.",
+        "role": "system"
+      },
+      {
+        "content": "do the thing\n\nContext:\nsome context\n\nConstraints:\n- be brief\n\nGoal:\nthe thing is done\n\nAcceptance criteria (the work is done when each of these holds):\n- it works",
+        "role": "user"
+      },
+      {
+        "content": "",
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "function": {
+              "arguments": "{\"path\": \"a.py\"}",
+              "name": "read_file"
+            },
+            "id": "c1",
+            "type": "function"
+          }
+        ]
+      },
+      {
+        "content": "file contents",
+        "role": "tool",
+        "tool_call_id": "c1"
+      },
+      {
+        "content": "Let me think about this.",
+        "role": "assistant"
+      },
+      {
+        "content": "You ended your turn without finishing and without requesting another tool. If your work is complete, finish now with your result as the summary. Otherwise continue by calling a tool \u2014 do not reply with prose alone.",
+        "role": "user"
+      },
+      {
+        "content": "",
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "function": {
+              "arguments": "{\"path\": \"hacked.py\"}",
+              "name": "write_file"
+            },
+            "id": "c2",
+            "type": "function"
+          },
+          {
+            "function": {
+              "arguments": "{}",
+              "name": "nope"
+            },
+            "id": "c3",
+            "type": "function"
+          }
+        ]
+      },
+      {
+        "content": "wrote 11 bytes",
+        "role": "tool",
+        "tool_call_id": "c2"
+      },
+      {
+        "content": "error: unknown tool: nope",
+        "role": "tool",
+        "tool_call_id": "c3"
+      },
+      {
+        "content": "",
+        "role": "assistant",
+        "tool_calls": [
+          {
+            "function": {
+              "arguments": "{}",
+              "name": "finish"
+            },
+            "id": "c4",
+            "type": "function"
+          }
+        ]
+      },
+      {
+        "content": "done",
+        "role": "tool",
+        "tool_call_id": "c4"
+      },
+      {
+        "content": "You finished without a summary, but the summary IS your deliverable. Write your complete result NOW, directly, from what you have already read. Do not request any more tools.",
+        "role": "user"
+      }
+    ]
+  ],
+  "degradations": [
+    {
+      "code": "progress-sink-failed",
+      "model_turns": 0,
+      "reason": "RuntimeError: sink cold",
+      "step_index": 0
+    }
+  ],
+  "executor_seen": [
+    [
+      "read_file",
+      {
+        "path": "a.py"
+      }
+    ],
+    [
+      "write_file",
+      {
+        "path": "a.py"
+      }
+    ],
+    [
+      "nope",
+      {}
+    ],
+    [
+      "finish",
+      {}
+    ]
+  ],
+  "exit_reason": "finished",
+  "hook_firings": [
+    {
+      "decision": "allow",
+      "event": "task_start",
+      "exit_code": null,
+      "reason": "",
+      "source": "h",
+      "tool": null
+    },
+    {
+      "decision": "allow",
+      "event": "pre_tool",
+      "exit_code": null,
+      "reason": "",
+      "source": "h",
+      "tool": "read_file"
+    },
+    {
+      "decision": "allow",
+      "event": "post_tool",
+      "exit_code": null,
+      "reason": "",
+      "source": "h",
+      "tool": "read_file"
+    },
+    {
+      "decision": "rewrite",
+      "event": "pre_tool",
+      "exit_code": null,
+      "reason": "",
+      "source": "h",
+      "tool": "write_file"
+    },
+    {
+      "decision": "allow",
+      "event": "post_tool",
+      "exit_code": null,
+      "reason": "",
+      "source": "h",
+      "tool": "write_file"
+    },
+    {
+      "decision": "allow",
+      "event": "pre_tool",
+      "exit_code": null,
+      "reason": "",
+      "source": "h",
+      "tool": "nope"
+    },
+    {
+      "decision": "allow",
+      "event": "post_tool",
+      "exit_code": null,
+      "reason": "",
+      "source": "h",
+      "tool": "nope"
+    },
+    {
+      "decision": "allow",
+      "event": "pre_tool",
+      "exit_code": null,
+      "reason": "",
+      "source": "h",
+      "tool": "finish"
+    },
+    {
+      "decision": "allow",
+      "event": "post_tool",
+      "exit_code": null,
+      "reason": "",
+      "source": "h",
+      "tool": "finish"
+    },
+    {
+      "decision": "allow",
+      "event": "finish",
+      "exit_code": null,
+      "reason": "",
+      "source": "h",
+      "tool": null
+    }
+  ],
+  "observed": [
+    [
+      "hook",
+      "allow",
+      {
+        "event": "task_start",
+        "source": "h",
+        "tool": null
+      }
+    ],
+    [
+      "operator",
+      "are you there?",
+      {}
+    ],
+    [
+      "phase",
+      "thinking\u2026 (waiting on the model \u2014 this can be slow on a large model)",
+      {}
+    ],
+    [
+      "degradation",
+      "RuntimeError: sink cold",
+      {
+        "code": "progress-sink-failed",
+        "model_turns": 0,
+        "reason": "RuntimeError: sink cold",
+        "step_index": 0
+      }
+    ],
+    [
+      "turn",
+      "",
+      {
+        "model_turns": 1,
+        "tool_calls": 1
+      }
+    ],
+    [
+      "hook",
+      "allow",
+      {
+        "event": "pre_tool",
+        "source": "h",
+        "tool": "read_file"
+      }
+    ],
+    [
+      "step",
+      "read_file",
+      {
+        "ok": true,
+        "step_index": 0
+      }
+    ],
+    [
+      "hook",
+      "allow",
+      {
+        "event": "post_tool",
+        "source": "h",
+        "tool": "read_file"
+      }
+    ],
+    [
+      "phase",
+      "thinking\u2026 (waiting on the model \u2014 this can be slow on a large model)",
+      {}
+    ],
+    [
+      "turn",
+      "Let me think about this.",
+      {
+        "model_turns": 2,
+        "tool_calls": 0
+      }
+    ],
+    [
+      "phase",
+      "thinking\u2026 (waiting on the model \u2014 this can be slow on a large model)",
+      {}
+    ],
+    [
+      "turn",
+      "",
+      {
+        "model_turns": 3,
+        "tool_calls": 2
+      }
+    ],
+    [
+      "hook",
+      "rewrite",
+      {
+        "event": "pre_tool",
+        "source": "h",
+        "tool": "write_file"
+      }
+    ],
+    [
+      "step",
+      "write_file",
+      {
+        "ok": true,
+        "step_index": 1
+      }
+    ],
+    [
+      "hook",
+      "allow",
+      {
+        "event": "post_tool",
+        "source": "h",
+        "tool": "write_file"
+      }
+    ],
+    [
+      "hook",
+      "allow",
+      {
+        "event": "pre_tool",
+        "source": "h",
+        "tool": "nope"
+      }
+    ],
+    [
+      "step",
+      "nope",
+      {
+        "ok": false,
+        "step_index": 2
+      }
+    ],
+    [
+      "hook",
+      "allow",
+      {
+        "event": "post_tool",
+        "source": "h",
+        "tool": "nope"
+      }
+    ],
+    [
+      "phase",
+      "thinking\u2026 (waiting on the model \u2014 this can be slow on a large model)",
+      {}
+    ],
+    [
+      "turn",
+      "",
+      {
+        "model_turns": 4,
+        "tool_calls": 1
+      }
+    ],
+    [
+      "hook",
+      "allow",
+      {
+        "event": "pre_tool",
+        "source": "h",
+        "tool": "finish"
+      }
+    ],
+    [
+      "step",
+      "finish",
+      {
+        "ok": true,
+        "step_index": 3
+      }
+    ],
+    [
+      "hook",
+      "allow",
+      {
+        "event": "post_tool",
+        "source": "h",
+        "tool": "finish"
+      }
+    ],
+    [
+      "hook",
+      "allow",
+      {
+        "event": "finish",
+        "source": "h",
+        "tool": null
+      }
+    ],
+    [
+      "exit",
+      "finished",
+      {
+        "aborted": false
+      }
+    ],
+    [
+      "phase",
+      "synthesizing the final answer from what was read \u2014 this can take a while on a slow backend; it is working, not stalled\u2026",
+      {}
+    ],
+    [
+      "turn",
+      "The file was read and rewritten.",
+      {
+        "model_turns": 5,
+        "tool_calls": 0
+      }
+    ]
+  ],
+  "presence": [
+    "ack:do the thing, please",
+    "op:are you there?",
+    "beat:0:True",
+    "beat:1:False",
+    "beat:1:True",
+    "beat:1:True",
+    "beat:2:False",
+    "beat:3:False",
+    "beat:3:True",
+    "beat:4:False",
+    "beat:4:True"
+  ],
+  "progress": [
+    [
+      0,
+      "read_file",
+      "{'path': 'a.py'}",
+      true
+    ],
+    [
+      1,
+      "",
+      "'thinking\u2026 (waiting on the model \u2014 this can be slow on a large model)'",
+      true
+    ],
+    [
+      1,
+      "",
+      "'thinking\u2026 (waiting on the model \u2014 this can be slow on a large model)'",
+      true
+    ],
+    [
+      1,
+      "write_file",
+      "{'path': 'a.py'}",
+      true
+    ],
+    [
+      2,
+      "nope",
+      "{}",
+      false
+    ],
+    [
+      3,
+      "",
+      "'thinking\u2026 (waiting on the model \u2014 this can be slow on a large model)'",
+      true
+    ],
+    [
+      3,
+      "finish",
+      "{}",
+      true
+    ],
+    [
+      4,
+      "",
+      "'synthesizing the final answer from what was read \u2014 this can take a while on a slow backend; it is working, not stalled\u2026'",
+      true
+    ]
+  ],
+  "result": {
+    "artifacts_path": null,
+    "branch": null,
+    "changed_files": [
+      "a.py"
+    ],
+    "command": null,
+    "continued_from": "golden-0",
+    "error": null,
+    "not_finished": false,
+    "pr_url": null,
+    "stats": {
+      "answer_bytes": 56,
+      "answer_chars": 56,
+      "bytes_written": 11,
+      "engine": "mock",
+      "files_changed": 1,
+      "model": "golden-model",
+      "model_turns": 5,
+      "reasoning_bytes": 0,
+      "reasoning_chars": 0,
+      "request": "do the thing",
+      "step_count": 4,
+      "tool_counts": {
+        "finish": 1,
+        "nope": 1,
+        "read_file": 1,
+        "write_file": 1
+      }
+    },
+    "status": "ok",
+    "steps": [
+      {
+        "arguments": {
+          "path": "a.py"
+        },
+        "index": 0,
+        "ok": true,
+        "result": "file contents",
+        "tool": "read_file"
+      },
+      {
+        "arguments": {
+          "path": "a.py"
+        },
+        "index": 1,
+        "ok": true,
+        "result": "wrote 11 bytes",
+        "tool": "write_file"
+      },
+      {
+        "arguments": {},
+        "index": 2,
+        "ok": false,
+        "result": "error: unknown tool: nope",
+        "tool": "nope"
+      },
+      {
+        "arguments": {},
+        "index": 3,
+        "ok": true,
+        "result": "done",
+        "tool": "finish"
+      }
+    ],
+    "stopped_without_finish": false,
+    "summary": "The file was read and rewritten.",
+    "task_id": "golden-1",
+    "usage": {
+      "completion_tokens": 0,
+      "prompt_tokens": 0,
+      "total_tokens": 0
+    }
+  }
+}
