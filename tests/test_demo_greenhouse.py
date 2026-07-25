@@ -733,3 +733,158 @@ def _readme_headings() -> list[str]:
 
 def test_the_readme_has_a_demo_section() -> None:
     assert any("demo" in heading.lower() for heading in _readme_headings())
+
+
+# ── perception seam: the first real model consumer ──────────────────────────
+
+
+class TestPerceptionFlag:
+    """Hermetic tests for the --perceive wiring (no network)."""
+
+    def test_perceive_flag_is_off_by_default(self) -> None:
+        args = greenhouse.build_parser().parse_args(["x"])
+        assert args.perceive is False
+
+    def test_perceive_flag_needs_the_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No key ⇒ an environment error (exit 2), not a half-configured dial."""
+        monkeypatch.delenv(greenhouse.API_KEY_ENV, raising=False)
+        args = greenhouse.build_parser().parse_args(
+            ["--home", str(tmp_path), "--perceive", VISIT_ONE]
+        )
+        with pytest.raises(SystemExit) as excinfo:
+            greenhouse.visit(args)
+        assert excinfo.value.code == 2
+
+    def test_perceive_with_faked_interpret_populates_fields(self, tmp_path: Path) -> None:
+        """A faked interpret populates ack/interpretation/confidence/task_type
+        while original stays verbatim — the verbatim invariant."""
+        from embodiment.perception import perceive
+
+        original = "Check the moisture on Marlow's sensor"
+
+        def fake_interpret(text: str) -> str:
+            return json.dumps(
+                {
+                    "interpretation": "read sensor for plant Marlow",
+                    "confidence": 0.9,
+                    "task_type": "query",
+                    "omissions": ["which sensor"],
+                    "ack": "checking Marlow's moisture",
+                }
+            )
+
+        packet, record = perceive(original, interpret=fake_interpret)
+
+        # Verbatim invariant: original is byte-identical to the caller's input.
+        assert packet.original == original
+        # The five non-original fields are populated from the model's JSON.
+        assert packet.interpretation == "read sensor for plant Marlow"
+        assert packet.confidence == 0.9
+        assert packet.task_type == "query"
+        assert packet.omissions == ["which sensor"]
+        assert packet.ack == "checking Marlow's moisture"
+        # Record is clean (not degraded).
+        assert record.degraded is False
+
+    def test_perceive_with_hostile_model_output_preserves_original(self, tmp_path: Path) -> None:
+        """A model that returns a spoofed 'original' key cannot overwrite the packet."""
+        from embodiment.perception import perceive
+
+        original = "Water the fig"
+
+        def hostile_interpret(text: str) -> str:
+            return json.dumps(
+                {
+                    "interpretation": "rewritten by model",
+                    "confidence": 1.0,
+                    "task_type": "task",
+                    "omissions": [],
+                    "ack": "ok",
+                    "original": "completely different text",
+                }
+            )
+
+        packet, record = perceive(original, interpret=hostile_interpret)
+        # The packet's original is STILL the caller's input, not the model's spoof.
+        assert packet.original == original
+        assert packet.original != "completely different text"
+
+    def test_perceive_with_raising_interpret_degrades(self, tmp_path: Path) -> None:
+        """A dead endpoint (simulated by a raising interpret) degrades, never raises."""
+        from embodiment.perception import perceive
+
+        original = "Hello greenhouse"
+
+        def broken_interpret(text: str) -> str:
+            raise ConnectionRefusedError("simulated dead endpoint")
+
+        packet, record = perceive(original, interpret=broken_interpret)
+
+        # Packet still carries the verbatim original.
+        assert packet.original == original
+        # All other fields are empty (degraded path).
+        assert packet.interpretation == ""
+        assert packet.confidence == 0.0
+        assert packet.task_type == ""
+        assert packet.omissions == []
+        assert packet.ack is None
+        # Record shows degradation.
+        assert record.degraded is True
+        assert record.tokens is None
+
+    def test_perceive_without_interpret_returns_clean_packet(self, tmp_path: Path) -> None:
+        """No interpret seam: clean packet with only original, no degradation."""
+        from embodiment.perception import perceive
+
+        original = "Just a plain request"
+        packet, record = perceive(original)
+
+        assert packet.original == original
+        assert packet.interpretation == ""
+        assert record.degraded is False
+
+
+# ── live perception rig — skipped unless explicitly pointed at it ─────────────
+
+
+@pytest.mark.skipif(not LIVE_ENABLED, reason="set EMBODIMENT_LIVE_RIG=1 to test the real rig")
+@pytest.mark.skipif(not LIVE_KEY, reason=f"{greenhouse.API_KEY_ENV} is not set")
+class TestLivePerception:
+    """Live perception seam: the verbatim invariant against a real model."""
+
+    def test_live_perception_preserves_verbatim_original(self, tmp_path: Path) -> None:
+        """Assert ContextPacket.original is byte-identical to the operator's input."""
+        base_url = os.environ.get("EMBODIMENT_DEMO_BASE_URL", greenhouse.DEFAULT_BASE_URL)
+        if not _gateway_answers(base_url):
+            pytest.skip(f"no gateway answering at {base_url}")
+
+        key = os.environ.get(greenhouse.API_KEY_ENV, "").strip()
+        interpret_fn = greenhouse.senses_seam(base_url, greenhouse.SENSES_MODEL, key)
+
+        from embodiment.perception import perceive
+
+        utterance = "Is the fig thirsty today?"
+        packet, record = perceive(utterance, interpret=interpret_fn)
+
+        # The verbatim invariant: original is byte-identical to the caller's input.
+        assert packet.original == utterance
+        # The model should have filled at least interpretation.
+        assert packet.interpretation != ""
+        assert record.degraded is False
+
+    def test_dead_endpoint_degrades_not_raises(self, tmp_path: Path) -> None:
+        """A dead endpoint degrades to a degraded record, never raises."""
+        from embodiment.perception import perceive
+
+        # Point at a port that nothing listens on.
+        dead_url = "http://localhost:59999/v1"
+        interpret_fn = greenhouse.senses_seam(dead_url, greenhouse.SENSES_MODEL, "fake-key")
+
+        utterance = "Hello from a dead port"
+        packet, record = perceive(utterance, interpret=interpret_fn)
+
+        assert packet.original == utterance
+        assert record.degraded is True
+        assert record.tokens is None

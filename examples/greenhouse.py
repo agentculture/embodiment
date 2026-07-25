@@ -82,6 +82,7 @@ from embodiment import (
     continuity,
     frame_cortex,
     frame_muse,
+    perceive,
     run,
     speaker_label,
 )
@@ -124,6 +125,9 @@ DEFAULT_BASE_URL = "http://localhost:8001/v1"
 #: ``--max-tokens`` generously or a truncated thought looks like an empty turn.
 CORTEX_MODEL = "sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP"
 MUSE_MODEL = "nvidia/Gemma-4-31B-IT-NVFP4"
+
+#: The senses role model for the perception seam (``--perceive``).
+SENSES_MODEL = "coolthor/gemma-4-12B-it-NVFP4A16"
 
 #: Generous by design: the measured cortex spent 209 completion tokens on a
 #: three-word answer, and at 64 it returned ``content: None`` mid-thought.
@@ -483,6 +487,60 @@ def gateway_seam(
     return complete
 
 
+# ── the perception seam: interpret the operator's utterance ──────────────────
+
+
+def senses_seam(
+    base_url: str,
+    model: str,
+    api_key: str,
+    *,
+    max_tokens: int = 256,
+    timeout: float = 60.0,
+) -> Callable[[str], ModelResponse]:
+    """Build a perception-seam callable that talks to the senses model.
+
+    Takes a single string (the operator's verbatim utterance) and returns a
+    :class:`ModelResponse` whose ``content`` is the JSON interpretation.
+    Follows the same gateway pattern as :func:`gateway_seam`; the senses model
+    is addressed **by name** and no role is inferred from the model id.
+    """
+    endpoint = f"{base_url.rstrip('/')}/chat/completions"
+
+    system = (
+        "You are a perception intake. Given an operator's request, return a "
+        "JSON object with these keys: interpretation (a concise reading of "
+        "what the request means), confidence (0.0-1.0), task_type (a short "
+        "category such as query, task, or maintenance), omissions (a list of "
+        "things the request left implicit), and ack (a brief acknowledgment "
+        "line). Return ONLY the JSON object, no other text."
+    )
+
+    def interpret(text: str) -> ModelResponse:
+        body: dict[str, Any] = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": text},
+            ],
+            "max_tokens": max_tokens,
+            "temperature": 0.3,
+        }
+        request = urllib.request.Request(
+            endpoint,
+            data=json.dumps(body).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # nosec B310
+            return parse_completion(json.loads(response.read().decode("utf-8")))
+
+    return interpret
+
+
 # ── wiring ───────────────────────────────────────────────────────────────────
 
 
@@ -577,6 +635,25 @@ def visit(args: argparse.Namespace) -> dict[str, Any]:
 
     cortex, muse_complete, cortex_model, muse_model = build_minds(args)
 
+    # 0. Perception seam (opt-in; off by default).
+    packet = None
+    senses_record = None
+    if args.perceive:
+        key = os.environ.get(API_KEY_ENV, "").strip()
+        if not key:
+            print(
+                f"error: --perceive needs {API_KEY_ENV} in the environment",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+        interpret_fn = senses_seam(
+            args.base_url,
+            SENSES_MODEL,
+            key,
+            max_tokens=256,
+        )
+        packet, senses_record = perceive(args.utterance, interpret=interpret_fn)
+
     # 1. Recall — the host's own, so the mind can be TOLD what it remembers.
     prior = continuity.recall(
         args.utterance,
@@ -647,6 +724,8 @@ def visit(args: argparse.Namespace) -> dict[str, Any]:
         identity=identity,
         aborted=aborted,
         muse_snapshot=muse_snapshot(runner),
+        packet=packet,
+        senses_record=senses_record,
     )
     append_journal(
         journal,
@@ -722,6 +801,15 @@ def build_report(**parts: Any) -> dict[str, Any]:
     prior = parts["prior"]
     status = lifecycle.status
 
+    packet = parts.get("packet")
+    senses_record = parts.get("senses_record")
+    perception: Optional[dict[str, Any]] = None
+    if packet is not None:
+        perception = {
+            "packet": packet.to_dict(),
+            "record": senses_record.to_dict() if senses_record is not None else None,
+        }
+
     return {
         "home": str(parts["home"]),
         "store": str(parts["store"]),
@@ -768,6 +856,7 @@ def build_report(**parts: Any) -> dict[str, Any]:
             "aborted": parts["aborted"],
             "degradations": [d.to_dict() for d in outcome.degradations],
         },
+        "perception": perception,
     }
 
 
@@ -870,6 +959,11 @@ def build_parser() -> argparse.ArgumentParser:
     live.add_argument("--muse-model", default=MUSE_MODEL, help="the advisory model id")
     live.add_argument("--max-tokens", type=int, default=DEFAULT_MAX_TOKENS)
     live.add_argument("--muse-max-tokens", type=int, default=DEFAULT_MUSE_MAX_TOKENS)
+    live.add_argument(
+        "--perceive",
+        action="store_true",
+        help="route the utterance through the perception seam (senses model) before the drive",
+    )
     return parser
 
 
