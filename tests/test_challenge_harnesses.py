@@ -10,8 +10,6 @@ from __future__ import annotations
 import json
 import tempfile
 
-import pytest
-
 from examples.challenge_config import write_config_preamble
 from examples.challenge_entropic import (
     grade,

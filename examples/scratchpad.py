@@ -2,15 +2,15 @@
 
 from embodiment.scratchpad import *  # noqa: F401, F403
 from embodiment.scratchpad import (  # noqa: F401
-    KINDS,
-    Entry,
-    Scratchpad,
-    SCRATCHPAD_TOOLS,
     JUDGE_TOOLS,
+    KINDS,
     PROTOCOL,
     RESUME_PROTOCOL,
-    render,
-    structure,
+    SCRATCHPAD_TOOLS,
+    Entry,
+    Scratchpad,
     judge_journey,
+    render,
     resume_report,
+    structure,
 )

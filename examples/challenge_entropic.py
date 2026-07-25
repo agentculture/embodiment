@@ -28,7 +28,6 @@ from embodiment import (  # noqa: E402
     run,
 )
 from embodiment.contract import ModelResponse, ToolCall  # noqa: E402
-
 from examples.challenge_config import write_config_preamble  # noqa: E402
 
 DEFAULT_BASE_URL = os.environ.get("EMBODIMENT_BASE_URL", "http://localhost:8001/v1")
