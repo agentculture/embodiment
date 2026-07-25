@@ -402,11 +402,33 @@ class TestTrapOneStorageAnchor:
         *public* record would land in ``<repo-root>/.eidetic/memory`` — committed,
         team-shared, and wrong. Assert it landed in the anchor instead, and that
         eidetic's own resolver agrees under the pin.
+
+        The ambient check is "this repo's store is BYTE-UNCHANGED", not "this
+        repo has no store". It used to be the latter, which quietly assumed the
+        repo would never carry a committed ``.eidetic/`` of its own — an
+        assumption this repo's own memory discipline breaks on purpose (a plain
+        ``/remember`` here is public, and public-in-repo is committed and
+        mesh-shared by design). The moment the first record landed, the trap
+        test failed for a reason that had nothing to do with the trap. Comparing
+        content is also strictly stronger: a leak into an *existing* store would
+        have slipped past an existence check anyway.
         """
         from eidetic.memory.backend import _resolve_write_dir
 
         store = tmp_path / "store"
         repo_root = Path(__file__).resolve().parents[1]
+        ambient = repo_root / ".eidetic"
+
+        def ambient_state() -> dict[str, str]:
+            if not ambient.exists():
+                return {}
+            return {
+                str(p.relative_to(ambient)): p.read_text(encoding="utf-8", errors="replace")
+                for p in sorted(ambient.rglob("*"))
+                if p.is_file()
+            }
+
+        before = ambient_state()
 
         # Precondition: unanchored, eidetic really would write into this repo.
         assert str(repo_root) in _resolve_write_dir("public")
@@ -418,7 +440,10 @@ class TestTrapOneStorageAnchor:
         written = sorted(p for p in store.rglob("*") if p.is_file())
         assert written, "record did not land in the anchor"
         assert "anchored-1" in written[0].read_text(encoding="utf-8")
-        assert not (repo_root / ".eidetic").exists()
+
+        after = ambient_state()
+        assert after == before, "the anchored write leaked into this repo's own store"
+        assert not any("anchored-1" in text for text in after.values())
 
     def test_the_pin_is_active_for_the_whole_call(
         self, clean_store_env: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
