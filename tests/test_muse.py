@@ -828,6 +828,39 @@ class TestAuthorityFraming:
         assert "propose" in lowered
         assert "final authority" in lowered
 
+    def test_the_authority_text_names_the_five_reflective_verbs(self):
+        authority = MUSE_AUTHORITY
+        for verb in (
+            "imagine",
+            "reframe",
+            "connect memories",
+            "simulate futures",
+            "construct meaning",
+        ):
+            assert verb in authority, f"missing verb: {verb}"
+
+    def test_the_authority_text_invites_disagreement(self):
+        lowered = MUSE_AUTHORITY.lower()
+        assert "disagree" in lowered
+        assert "challenge" in lowered
+        assert "materially different alternatives" in lowered
+
+    def test_the_reflective_charter_is_not_duplicated_in_a_framed_composition(self):
+        """The charter lives in MUSE_AUTHORITY alone.
+
+        MuseLoop always prepends MUSE_AUTHORITY and then appends the host's
+        framing block, so a charter copied into the identity appendix reaches a
+        framed muse twice. Presence tests cannot catch that; only a count can.
+        """
+        from embodiment.framing import frame_muse
+
+        needle = "imagine alternatives, reframe the"
+        for identity in (None, "Gwen"):
+            composed = frame_muse(MUSE_AUTHORITY, identity=identity)
+            assert (
+                composed.count(needle) == 1
+            ), f"charter appears {composed.count(needle)}x for identity={identity!r}"
+
     def test_the_default_framing_claims_no_identity_and_no_second_mind(self):
         """t12 owns identity; an unconfigured muse names nobody."""
         lowered = MUSE_AUTHORITY.lower()
