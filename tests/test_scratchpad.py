@@ -16,15 +16,14 @@ import textwrap
 
 import pytest
 
-sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1] / "examples"))
-
-from scratchpad import (  # noqa: E402
+from embodiment.scratchpad import (
     KINDS,
     PROTOCOL,
     RESUME_PROTOCOL,
     SCRATCHPAD_TOOLS,
     Scratchpad,
     render,
+    resume_report,
     structure,
 )
 
@@ -85,10 +84,8 @@ class TestSurvivesTheProcess:
     def test_it_survives_a_real_process_boundary(self, tmp_path):
         """Not two objects in one interpreter — two actual processes."""
         path = tmp_path / "pad.jsonl"
-        examples = str(__import__("pathlib").Path(__file__).resolve().parents[1] / "examples")
         writer = textwrap.dedent(f"""
-            import sys; sys.path.insert(0, {examples!r})
-            from scratchpad import Scratchpad
+            from embodiment.scratchpad import Scratchpad
             pad = Scratchpad.load({str(path)!r})
             pad.execute("intend", {{"text": "Enumerate the orders."}})
             """)
@@ -177,3 +174,45 @@ class TestSurface:
         pad.execute("intend", {"text": "One."})
         lines = [json.loads(raw) for raw in path.read_text().splitlines() if raw.strip()]
         assert lines == [{"id": "n1", "kind": "intend", "text": "One."}]
+
+
+class TestResumeReport:
+    """resume_report renders scratchpad + degradations as one output."""
+
+    def test_renders_open_intent_and_observations(self, tmp_path):
+        pad = _pad(tmp_path)
+        pad.execute("intend", {"text": "Check n=5."})
+        pad.execute("observe", {"text": "n=5 gives 7 even of 13."})
+        pad.execute("intend", {"text": "Verify n=7."})
+
+        report = resume_report(pad)
+        assert "SCRATCHPAD" in report
+        assert "Check n=5" in report
+        assert "n=5 gives 7 even of 13" in report
+        assert "Verify n=7" in report
+
+    def test_includes_degradations_when_present(self, tmp_path):
+        from dataclasses import dataclass
+
+        @dataclass
+        class FakeDegradation:
+            def to_dict(self):
+                return {
+                    "source": "loop",
+                    "code": "budget-exceeded",
+                    "reason": "ran out of steps",
+                }
+
+        pad = _pad(tmp_path)
+        pad.execute("intend", {"text": "Compute the answer."})
+        report = resume_report(pad, degradations=[FakeDegradation()])
+
+        assert "DEGRADATIONS" in report
+        assert "budget-exceeded" in report
+        assert "ran out of steps" in report
+
+    def test_empty_pad_still_renders(self, tmp_path):
+        pad = _pad(tmp_path)
+        report = resume_report(pad)
+        assert "SCRATCHPAD" in report
+        assert "(empty)" in report
