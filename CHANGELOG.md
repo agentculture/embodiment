@@ -28,6 +28,58 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   With no ``interpret`` seam configured, ``perceive`` still returns a clean,
   non-degraded packet at zero model calls — the same "museless is the primary
   path, not a fault" stance ``presence_engine.py`` (t7) already takes.
+- **`embodiment/loop.py` — the bounded tool loop, extracted (task t4).** The
+  pump itself: handed a `complete` callable that performs *one* model turn, it
+  drives that until the model finishes, stops asking for tools, or exhausts
+  `max_steps`. Extracted from colleague `1.52.1`'s 4463-line `loop.py`, whose
+  seams were already injection-shaped, so this is decoupling work rather than
+  redesign. Public API: `run()` → `LoopOutcome`, plus the `ToolExecutor` /
+  `PresenceSink` protocols, the `HookFn` / `ObserverFn` / `ProgressFn` /
+  `ContinuityFn` / `OperatorInboxFn` seams, and `LoopControls`.
+- **Termination is an honesty condition, and now provable.** `_work_loop` has
+  exactly three exits — `EXIT_FINISHED`, `EXIT_STOPPED`, `EXIT_BUDGET` — proved
+  both behaviourally and *structurally*: `tests/test_loop.py` parses the module
+  and asserts the function returns nothing but those three constants and
+  contains no `raise` of its own, so the only other way out is the injected
+  seam's own exception (preserved as a partial and re-raised as `LoopAborted`).
+  colleague's two extra exits are gone with the features that justified them:
+  the pilot stop left with flight control, and the unknown-tool streak guard's
+  `tool_protocol` exit left because a broken tool channel is now one
+  self-correcting step bounded by the ordinary budget.
+- **Nothing extends the budget.** Not a hook, not a finish nudge, and — unlike
+  upstream — not the forced synthesis turn, which is now *reserved out of*
+  `max_steps` rather than added to it, so the number of `complete` calls a drive
+  makes never exceeds the budget it was given.
+- **The four-event hook lifecycle** (`task_start` / `pre_tool` / `post_tool` /
+  `finish`) with only `pre_tool` control-bearing (`deny` skips execution and
+  feeds the reason back; `rewrite` swaps the arguments; the first decisive
+  verdict wins and short-circuits the chain). Hook *discovery* is injected as a
+  single `HookFn`, which is what keeps process spawning, config-directory
+  resolution and command quoting out of the package entirely — nothing in
+  `embodiment` may assume a shell (C6), because not every host that wants a
+  presence has one. A hook that raises fails closed to a `deny` firing plus a
+  recorded degradation; it can never abort the work item.
+- **An optional `PresenceSink` binding** conforming to the protocol t7 defined:
+  `acknowledge` once before the first step, `on_progress_boundary` once per
+  step, and any operator message routed through `on_operator_message`. The
+  protocol is deliberately re-declared rather than imported, so presence
+  consumes the loop and never the reverse; with no sink — or an inactive one —
+  the drive is byte-identical to a loop with no presence at all.
+- **C3 throughout:** every `contextlib.suppress(Exception)` upstream became an
+  explicit handler recording a `LoopDegradation` on a host-visible ledger — the
+  context-overflow shrink-and-retry ladder and its exhaustion, the
+  media-rejection flatten, an unreadable attachment, and every raising hook,
+  progress sink, observer, presence sink or continuity seam. A raising observer
+  is recorded once and then disabled rather than re-provoked. `hook_firings` and
+  `degradations` ride `LoopOutcome`, not `TaskResult`: they are the loop's record
+  of its own conduct, which is why task t1's contract carve deliberately left
+  `HookFiring` behind.
+- **Clean injection points for task t14** — `ContinuityFn` and the three
+  `Boundary` points issue #2 names (`before-action`, `before-completion`,
+  `before-memory`). The loop owns *when*; it owns no checkpoint policy, ignores
+  whatever the seam returns (coherence asks whether an action makes sense; the
+  capability layer decides whether it is permitted), and degrades rather than
+  letting a downed memory subsystem take the work item with it.
 - **`embodiment/presence_engine.py` — the presence pump, redesigned around
   cortex + muse (task t7).** This is a **redesign, not an extraction**, and the
   spec (claim c43) names it as such. colleague `1.52.1`'s `presence_engine.py`
