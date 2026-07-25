@@ -61,10 +61,12 @@ from embodiment.muse_runner import (
     DROPPED_LATE,
     DROPPED_OVERFLOW,
     DROPPED_STALE,
+    MAX_LEDGER,
     MUSE_ROLE,
     THREAD_NAME,
     ThreadedMuseRunner,
 )
+from embodiment.presence import UpdateCadence
 from embodiment.presence_engine import (
     BOUNDARY_CADENCE_TICK,
     BOUNDARY_INTAKE,
@@ -105,17 +107,19 @@ class _Scripted:
         self.replies = list(replies)
         self.calls = 0
         self.threads: list[threading.Thread] = []
+        self.seen: list[list[dict[str, Any]]] = []
 
-    def _next(self) -> Any:
+    def _next(self, messages: list[dict[str, Any]]) -> Any:
         self.calls += 1
         self.threads.append(threading.current_thread())
+        self.seen.append(list(messages))
         reply = self.replies.pop(0) if self.replies else _resp(MARKER_DONE)
         if isinstance(reply, BaseException):
             raise reply
         return reply
 
     def __call__(self, messages: list[dict[str, Any]]) -> ModelResponse:
-        return self._next()
+        return self._next(messages)
 
 
 class _Gated(_Scripted):
@@ -134,7 +138,7 @@ class _Gated(_Scripted):
     def __call__(self, messages: list[dict[str, Any]]) -> ModelResponse:
         self.started.set()
         assert self.release.wait(_TIMEOUT), "the gated muse seam was never released"
-        return self._next()
+        return self._next(messages)
 
 
 @contextlib.contextmanager
@@ -219,6 +223,11 @@ class _Host:
             context_packet=ContextPacket(original="do the thing", ack="on it"),
         )
 
+    def engine(self, muse: Any = None) -> PresenceEngine:
+        # every_steps=1 so EVERY loop boundary drives the pump: the fixture's
+        # behaviour must not ride on the default cadence happening to fire.
+        return PresenceEngine(io=self.io(), muse=muse, cadence=UpdateCadence(every_steps=1))
+
     def drive(self, engine: Optional[PresenceEngine], *, max_steps: int = 6) -> Any:
         return run(
             self.complete,
@@ -252,7 +261,7 @@ class TestMuselessIsTheDefault:
                 _turn(_call("finish")),
             ]
         )
-        engine = PresenceEngine(io=host.io())
+        engine = host.engine()
         outcome = host.drive(engine)
         assert outcome.exit_reason == EXIT_FINISHED
         assert engine.mode == MODE_CORTEX_ONLY
@@ -263,7 +272,7 @@ class TestMuselessIsTheDefault:
 
     def test_a_museless_run_still_feels_present(self):
         host = _Host(turns=[_turn(_call("write_file", path="a.py")), _turn(_call("finish"))])
-        engine = PresenceEngine(io=host.io())
+        engine = host.engine()
         host.drive(engine)
         assert any("still working" in line for line in host.rendered)
         # Sourced to cortex — a museless run never claims a second mind.
@@ -457,7 +466,10 @@ class TestStaleness:
     def test_the_actors_observed_step_is_monotonic(self):
         # A boundary that carries no step (intake, an operator aside) must not
         # make a long-stale insight look current again.
-        seam = _Scripted(_resp("GUIDANCE: about step one " + MARKER_DONE))
+        seam = _Scripted(
+            _resp("GUIDANCE: about step one " + MARKER_DONE),
+            _resp("GUIDANCE: also about step one " + MARKER_DONE),
+        )
         with _runner(seam, max_lag=2) as runner:
             runner.consider(_boundary(step=1))
             assert runner.wait_idle(_TIMEOUT)
@@ -618,8 +630,10 @@ class TestDegradation:
             runner.consider(_boundary(step=7))
             assert runner.wait_idle(_TIMEOUT)
             assert all(isinstance(d, MuseDegradation) for d in runner.degradations)
-            assert all(set(d.to_dict()) == {"code", "reason", "step_index", "model_turns"}
-                       for d in runner.degradations)
+            assert all(
+                set(d.to_dict()) == {"code", "reason", "step_index", "model_turns"}
+                for d in runner.degradations
+            )
 
     def test_the_snapshot_is_a_pull_only_fold(self):
         seam = _Scripted(_resp("a " + MARKER_DONE))
@@ -667,7 +681,7 @@ class TestAuthorityBoundary:
             # Turn 2 waits on a REAL condition — the muse's session finishing —
             # so the assertion below cannot race the thread.
             host.before_turn = lambda n: runner.wait_idle(_TIMEOUT) if n == 1 else None
-            engine = PresenceEngine(io=host.io(), muse=runner)
+            engine = host.engine(muse=runner)
             outcome = host.drive(engine)
 
         assert outcome.exit_reason == EXIT_FINISHED
@@ -832,7 +846,7 @@ class TestEngineIntegration:
         host = _Host(turns=[_turn(_call("write_file", path="a.py")), _turn(_call("finish"))])
         with _runner(_Scripted(fault)) as runner:
             host.before_turn = lambda n: runner.wait_idle(_TIMEOUT) if n == 1 else None
-            engine = PresenceEngine(io=host.io(), muse=runner)
+            engine = host.engine(muse=runner)
             outcome = host.drive(engine)
             assert outcome.exit_reason == EXIT_FINISHED
             assert engine.muse_degraded is True
@@ -840,3 +854,125 @@ class TestEngineIntegration:
         assert any("muse unavailable" in line for line in host.rendered)
         # The run itself is untouched: the tools still ran, the loop still finished.
         assert [name for name, _ in host.executor.executed] == ["write_file", "finish"]
+
+
+# ── 9. hostile inputs and the defensive edges ─────────────────────────────────
+
+
+class _Deferred:
+    """A thread the runner "starts" but which really begins when a test says so.
+
+    The determinism trick for the boundary-copy test: it lets a test hold the
+    worker at the starting line, mutate the host state the boundary referenced,
+    and only then let the muse read it — no race, no sleep.
+    """
+
+    def __init__(self, **kwargs: Any) -> None:
+        self._thread = threading.Thread(**kwargs)
+
+    def start(self) -> None:
+        """Deferred on purpose — :meth:`release` is the real start."""
+
+    def release(self) -> None:
+        self._thread.start()
+
+    def is_alive(self) -> bool:
+        return self._thread.is_alive()
+
+    def join(self, timeout: Optional[float] = None) -> None:
+        self._thread.join(timeout=timeout)
+
+
+class _HostileControls:
+    """Controls whose first read explodes — a stand-in for a harness bug."""
+
+    max_turns = 4
+    max_quiet_turns = 1
+    max_insight_chars = 2000
+
+    @property
+    def max_context_chars(self) -> int:
+        raise RuntimeError("the controls exploded")
+
+
+class TestDefensiveEdges:
+    """Junk in, degradation out — never an exception into the actor loop."""
+
+    def test_a_boundary_is_copied_before_it_crosses_the_thread(self):
+        seam = _Scripted(_resp("noted " + MARKER_DONE))
+        deferred: list[_Deferred] = []
+
+        def factory(**kwargs: Any) -> _Deferred:
+            thread = _Deferred(**kwargs)
+            deferred.append(thread)
+            return thread
+
+        history = [{"role": "user", "content": "the original ask"}]
+        with _runner(seam, thread_factory=factory) as runner:
+            runner.consider(BoundaryContext(kind=BOUNDARY_INTAKE, history=history))
+            # The worker is provably still at the starting line, so mutating the
+            # host's live list here is a clean test of the crossing, not a race.
+            history.clear()
+            history.append({"role": "user", "content": "something else entirely"})
+            deferred[0].release()
+            assert runner.wait_idle(_TIMEOUT)
+            prompt = "\n".join(str(m.get("content", "")) for m in seam.seen[0])
+            assert "the original ask" in prompt
+            assert "something else entirely" not in prompt
+
+    def test_a_missing_boundary_is_ignored(self):
+        seam = _Scripted()
+        with _runner(seam) as runner:
+            assert runner.consider(None) is None
+            assert runner.thread_started is False
+            assert seam.calls == 0
+
+    def test_hostile_controls_and_boundaries_never_reach_the_actor(self):
+        class _Hostile:
+            kind = "cadence-tick"
+            history = "not a list"
+
+            @property
+            def step_count(self) -> int:
+                raise RuntimeError("hostile boundary")
+
+        seam = _Scripted(_resp("noted " + MARKER_DONE))
+        with _runner(
+            seam,
+            controls=_HostileControls(),
+            max_lag=object(),
+            max_pending=object(),
+            max_failed_sessions=object(),
+        ) as runner:
+            runner.consider(_Hostile())  # type: ignore[arg-type]
+            assert runner.wait_idle(_TIMEOUT)
+            # The worker died on the harness bug — and SAID SO, rather than
+            # leaving a host with a lane that looks quiet but is gone.
+            assert [d.code for d in runner.degradations] == ["muse-worker-failed"]
+            reason = runner.degradation()
+            assert reason is not None and "the controls exploded" in reason
+            assert runner.drain(step_count=1) == []
+
+    def test_the_ledger_stops_growing_but_the_counter_does_not(self):
+        seam = _Gated(_resp("noted " + MARKER_DONE))
+        with _runner(seam) as runner:
+            runner.consider(_boundary(step=1))
+            assert seam.started.wait(_TIMEOUT)
+            for step in range(2, 140):  # each supersedes the one still queued
+                runner.consider(_boundary(step=step))
+            assert len(runner.degradations) == MAX_LEDGER
+            assert runner.counts["degradations_recorded"] == 137
+            assert runner.counts["boundaries_superseded"] == 137
+
+    def test_an_uncopyable_boundary_still_gets_thought_about(self):
+        class _NotADataclass:
+            kind = BOUNDARY_CADENCE_TICK
+            step_count = 2
+            history = [{"role": "user", "content": "the original ask"}]
+
+        seam = _Scripted(_resp("GUIDANCE: noted " + MARKER_DONE))
+        with _runner(seam) as runner:
+            runner.consider(_NotADataclass())  # type: ignore[arg-type]
+            assert runner.wait_idle(_TIMEOUT)
+            assert [c.guidance for c in runner.drain(step_count=2)] == ["noted"]
+            assert runner.degradations == []

@@ -27,6 +27,33 @@ driver seam had to be rebuilt around the pair embodiment actually ships:
   no path from a muse comment to a tool-call decision, because the acting
   surface has no deny/rewrite field to bind.
 
+Why the muse seam is a DRAIN (task t10b, deviation d1)
+------------------------------------------------------
+t7's seam was a synchronous pull — one call per boundary, one comment back.
+Deviation ``d1`` made the muse a *parallel* thinking loop running on its own
+thread (:mod:`embodiment.muse_runner`), so an insight is almost never ready at
+the boundary that prompted it. :class:`MuseSeam` is therefore two non-blocking
+calls, plus a health probe:
+
+* ``consider(boundary)`` — offer the boundary; the seam thinks about it wherever
+  and whenever it likes. The pump does not wait, and gets nothing back.
+* ``drain(step_count=…)`` — collect whatever finished in the meantime. **An
+  empty drain is the normal case**, not a fault. ``step_count`` is the actor
+  loop's current step, so a seam can judge its own insights' staleness.
+* ``degradation()`` — ``None`` while the lane is healthy; a short reason once it
+  has stopped thinking for good. A seam that reports one is unbound exactly like
+  a seam that raises, with the same single operator-facing notice.
+
+t7's callable is still accepted as :class:`MusePullSeam` and adapted internally,
+so hosts (and :class:`embodiment.muse.MuseLoop`) that want one synchronous
+thinking session per boundary keep working unchanged. **The thread lives in the
+runner, never here**: this module still imports no ``threading``, no ``time``
+and no ``asyncio``, and an AST test pins that.
+
+Because a muse notice *comments on* a beat, a degradation is latched during the
+beat and its notice is rendered **after** the beat's own turns land — never
+ahead of the thing it is commenting on.
+
 The **museless run is the default, primary path**, not a degraded exception: with
 no muse configured the engine still acknowledges (from the intake packet's own
 ``ack``) and still narrates progress (from the loop's own state), spending zero
@@ -89,6 +116,7 @@ __all__ = [
     "SOURCE_CORTEX",
     "BoundaryContext",
     "MuseComment",
+    "MusePullSeam",
     "MuseSeam",
     "PresenceEngine",
     "PresenceExecutor",
@@ -311,17 +339,86 @@ class PresenceTurn:
 
 @runtime_checkable
 class MuseSeam(Protocol):
-    """The optional advisory seam — what task t10 must conform to.
+    """The optional advisory seam — a DRAIN, not a synchronous pull (task t10b).
 
-    One callable: given a :class:`BoundaryContext`, return a :class:`MuseComment`
-    or ``None`` to stay silent. It receives no acting callbacks and returns no
-    decision, only text. It may raise — the engine degrades and records rather
-    than propagating — and it owns its own timing/config (an endpoint arrives
-    through the host's explicit configuration when the seam is built, never
-    inferred by this module).
+    Three non-blocking calls. None of them may block the pump, because the pump
+    runs inside the actor loop and the actor loop must never wait on a second
+    mind:
+
+    * ``consider(boundary)`` — offer one :class:`BoundaryContext` to think
+      about. Returns nothing; whether, where and for how long the seam thinks is
+      entirely its own business.
+    * ``drain(step_count=…)`` — return whatever advisory comments are ready
+      *now*, oldest first. **An empty list is the normal case.** ``step_count``
+      is the actor loop's current step, handed over so a seam can judge whether
+      its own insights have gone stale (see :func:`embodiment.muse.is_stale`).
+    * ``degradation()`` — ``None`` while the lane is healthy; a short,
+      operator-readable reason once it has stopped thinking for good. It is a
+      METHOD rather than a property so this protocol stays callable-members-only
+      and therefore usable with both ``isinstance`` and ``issubclass``.
+
+    The seam receives no acting callbacks and returns no decision, only text.
+    Any of the three may raise — the engine degrades and records rather than
+    propagating — and it owns its own timing and configuration (an endpoint
+    arrives through the host's explicit configuration when the seam is built,
+    resolved BY ROLE NAME and never inferred from a model name by this module).
+    """
+
+    def consider(self, boundary: BoundaryContext) -> None: ...
+
+    def drain(self, *, step_count: int = 0) -> list[MuseComment]: ...
+
+    def degradation(self) -> Optional[str]: ...
+
+
+@runtime_checkable
+class MusePullSeam(Protocol):
+    """t7's synchronous seam: one call per boundary, one comment back.
+
+    Still accepted by :class:`PresenceEngine` and adapted onto
+    :class:`MuseSeam` internally, so a host that wants one thinking session per
+    boundary — on the caller's own thread, with no concurrency anywhere — keeps
+    working unchanged. :class:`embodiment.muse.MuseLoop` satisfies exactly this,
+    which is what let the pump move to the drain shape without a flag day.
     """
 
     def __call__(self, boundary: BoundaryContext) -> Optional[MuseComment]: ...
+
+
+class _PullSeam:
+    """Adapt a :class:`MusePullSeam` onto the drain shape.
+
+    The pull happens inside ``consider`` — the same call, at the same boundary,
+    with the same exceptions — and the comment is handed straight back by the
+    ``drain`` that follows it in the same beat. So an adapted seam behaves
+    exactly as it did under t7, and the engine has ONE code path.
+    """
+
+    def __init__(self, pull: Any) -> None:
+        self._pull = pull
+        self._ready: list[MuseComment] = []
+
+    def consider(self, boundary: BoundaryContext) -> None:
+        comment = self._pull(boundary)
+        if comment is not None:
+            self._ready.append(comment)
+
+    def drain(self, *, step_count: int = 0) -> list[MuseComment]:
+        ready, self._ready = self._ready, []
+        return ready
+
+    def degradation(self) -> Optional[str]:
+        """Never self-reports: a pull seam signals failure by raising."""
+        return None
+
+
+def _as_drain_seam(muse: Any) -> Any:
+    """Normalize either accepted muse shape to the drain shape. Never raises."""
+    if muse is None:
+        return None
+    if hasattr(muse, "consider") and hasattr(muse, "drain"):
+        return muse
+    return _PullSeam(muse)
 
 
 @runtime_checkable
@@ -358,8 +455,11 @@ class PresenceEngine:
         executor: the acting surface; built from ``io`` when omitted.
         cadence: step/phase update cadence; :class:`UpdateCadence` defaults when
             omitted.
-        muse: the OPTIONAL advisory seam (see :class:`MuseSeam`). ``None`` — the
-            default — is the primary tested path, not a degraded one.
+        muse: the OPTIONAL advisory seam — either the drain-shaped
+            :class:`MuseSeam` (the primary shape) or t7's :class:`MusePullSeam`
+            callable, which is adapted onto it. ``None`` — the default — is the
+            primary tested path, not a degraded one, and costs no thread
+            anywhere in the stack.
         history_provider: optional rolling-history callable threaded into every
             boundary. A provider that raises is recorded once and then left
             alone, never retried and never fatal.
@@ -376,7 +476,7 @@ class PresenceEngine:
         io: Optional[PresenceIO] = None,
         executor: Optional[PresenceExecutor] = None,
         cadence: Optional[UpdateCadence] = None,
-        muse: Optional[MuseSeam] = None,
+        muse: Optional[Any] = None,
         history_provider: Optional[Callable[[], Optional[list[dict[str, str]]]]] = None,
         clock: Optional[Callable[[], float]] = None,
         enabled: bool = True,
@@ -385,7 +485,7 @@ class PresenceEngine:
         self._io = io if io is not None else PresenceIO()
         self._executor = executor if executor is not None else build_presence_executor(self._io)
         self._cadence = cadence if cadence is not None else UpdateCadence()
-        self._muse = muse
+        self._muse = _as_drain_seam(muse)
         self._history_provider = history_provider
         self._clock = clock
         self._enabled = bool(enabled)
@@ -397,6 +497,8 @@ class PresenceEngine:
         self._updates_sent = 0
         self._capped_recorded = False
         self._muse_degraded = False
+        #: A latched muse degradation, rendered after the beat it commented on.
+        self._pending_degradation: Optional[tuple[str, str]] = None
         # The ledger, shaped like the contract's SensesBlock fields.
         self._records: list[SensesRecord] = []
         self._chat: list[dict[str, Any]] = []
@@ -458,6 +560,7 @@ class PresenceEngine:
         self._emit(turns)
         muse_turns = self._muse_turns(BOUNDARY_INTAKE)
         self._emit(muse_turns)
+        self._flush_muse_degradation()
         return turns + muse_turns
 
     def on_operator_message(self, text: str) -> list[PresenceTurn]:
@@ -475,6 +578,7 @@ class PresenceEngine:
         self._emit(turns)
         muse_turns = self._muse_turns(BOUNDARY_OPERATOR_INPUT, operator_input=text)
         self._emit(muse_turns)
+        self._flush_muse_degradation()
         return turns + muse_turns
 
     def on_progress_boundary(
@@ -550,6 +654,7 @@ class PresenceEngine:
                     ),
                 )
         self._emit(turns)
+        self._flush_muse_degradation()
         return turns
 
     def _record_cap(self) -> None:
@@ -590,26 +695,48 @@ class PresenceEngine:
         return self._muse_turns_for(self._boundary(kind, operator_input=operator_input))
 
     def _muse_turns_for(self, boundary: BoundaryContext) -> list[PresenceTurn]:
-        """Invoke the advisory seam for an already-built boundary and record it."""
+        """Offer the boundary to the seam, collect what is ready, and record it.
+
+        Two non-blocking calls and a health probe — never a wait. A drain that
+        comes back empty is the NORMAL case under deviation d1 (the muse is
+        still thinking, elsewhere), so it is recorded as a completed, healthy
+        invocation, exactly as a silent pull seam was under t7.
+        """
         muse = self._muse
         if muse is None:
             return []
         try:
-            comment = muse(boundary)
+            muse.consider(boundary)
+            drained = muse.drain(step_count=boundary.step_count)
+            reason = muse.degradation()
         except Exception as exc:  # noqa: BLE001 - a failing muse degrades, never aborts
-            self._degrade_muse(boundary, exc)
+            self._latch_degradation(boundary.kind, exc)
             return []
-        self._records.append(
-            SensesRecord(
-                point=f"muse:{boundary.kind}",
-                latency=getattr(comment, "latency", None),
-                tokens=getattr(comment, "tokens", None),
-                degraded=False,
+        comments = list(drained) if isinstance(drained, (list, tuple)) else []
+        self._record_drain(boundary.kind, comments)
+        if reason:
+            # Its last words still land this beat; the notice follows them.
+            self._latch_degradation(boundary.kind, reason)
+        turns: list[PresenceTurn] = []
+        for comment in comments:
+            turns.extend(self._comment_turns(boundary, comment))
+        return turns
+
+    def _record_drain(self, kind: str, comments: list[MuseComment]) -> None:
+        """One record per drained comment; one for a drain that came back empty."""
+        point = f"muse:{kind}"
+        if not comments:
+            self._records.append(SensesRecord(point=point, degraded=False))
+            return
+        for comment in comments:
+            self._records.append(
+                SensesRecord(
+                    point=point,
+                    latency=getattr(comment, "latency", None),
+                    tokens=getattr(comment, "tokens", None),
+                    degraded=False,
+                )
             )
-        )
-        if comment is None:
-            return []
-        return self._comment_turns(boundary, comment)
 
     def _comment_turns(self, boundary: BoundaryContext, comment: MuseComment) -> list[PresenceTurn]:
         """Turn one muse comment into turns — narration, then advisory guidance."""
@@ -641,25 +768,35 @@ class PresenceEngine:
             )
         return turns
 
-    def _degrade_muse(self, boundary: BoundaryContext, exc: BaseException) -> None:
+    def _latch_degradation(self, kind: str, detail: Any) -> None:
+        """Unbind the seam NOW; render the notice after the beat lands.
+
+        Unbinding is immediate so a dead endpoint is never re-dialled — not at
+        the next step and not later in this beat. The operator-facing half is
+        deferred to :meth:`_flush_muse_degradation` because a muse notice
+        *comments on* a beat and must not arrive ahead of it. The first
+        degradation wins: a seam only dies once.
+        """
+        self._muse = None
+        if self._pending_degradation is None:
+            self._pending_degradation = (kind, str(detail)[:_MAX_DETAIL_LEN])
+
+    def _flush_muse_degradation(self) -> None:
         """Drop to the cortex-only lane, visibly (C3) and exactly once.
 
-        Records the failed invocation, the transition itself, and the reason;
-        renders one notice; then unbinds the seam so a dead endpoint is not
-        re-dialled at every step. Presence continues on the structural lane.
+        Records the failed invocation, the transition itself and the reason,
+        then renders one notice. Presence continues on the structural lane.
         """
-        self._records.append(SensesRecord(point=f"muse:{boundary.kind}", degraded=True))
+        pending = self._pending_degradation
+        if pending is None:
+            return
+        self._pending_degradation = None
+        kind, detail = pending
+        self._records.append(SensesRecord(point=f"muse:{kind}", degraded=True))
         self._records.append(SensesRecord(point="muse:degraded-off", degraded=True))
-        self._muse = None
         self._muse_degraded = True
         self._chat.append(
-            self._stamp(
-                {
-                    "kind": TURN_UPDATE,
-                    "degraded": SOURCE_MUSE,
-                    "detail": str(exc)[:_MAX_DETAIL_LEN],
-                }
-            )
+            self._stamp({"kind": TURN_UPDATE, "degraded": SOURCE_MUSE, "detail": detail})
         )
         self._io.render(f"{self._speaker}: {_MUSE_DEGRADED_NOTICE}")
 
