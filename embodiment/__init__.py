@@ -45,11 +45,13 @@ _SUBMODULES = frozenset(
         "context",
         "continuity",
         "contract",
+        "events",
         "framing",
         "identity",
         "loop",
         "media",
         "muse",
+        "muse_runner",
         "perception",
         "presence",
         "presence_engine",
@@ -108,6 +110,9 @@ _LAZY_NAMES = {
     "PresenceTurn": "presence_engine",
     "build_presence_executor": "presence_engine",
     "MuseSeam": "presence_engine",
+    # t7's original synchronous callable. Still accepted and adapted onto the
+    # drain shape internally, so a host written against it keeps working.
+    "MusePullSeam": "presence_engine",
     "MuseComment": "presence_engine",
     "BoundaryContext": "presence_engine",
     "DEFAULT_SPEAKER": "presence_engine",
@@ -127,6 +132,13 @@ _LAZY_NAMES = {
     # reasoned about, so relevance is the consumer's judgement to make.
     "insight_lag": "muse",
     "is_stale": "muse",
+    # ── the muse runner: the one place embodiment owns a thread ───────────
+    "ThreadedMuseRunner": "muse_runner",
+    "ThreadFactory": "muse_runner",
+    # ── event emission (embodiment#4) — optional, absent by default ───────
+    # embodiment produces; `events-cli` owns the envelope contract (c33).
+    "EventEmitter": "events",
+    "EventDegradation": "events",
     # ── Gwen framing: pure composition, absent identity ⇒ identical prompts ─
     "Framing": "framing",
     "frame_cortex": "framing",
@@ -207,11 +219,13 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
         context,
         continuity,
         contract,
+        events,
         framing,
         identity,
         loop,
         media,
         muse,
+        muse_runner,
         perception,
         presence,
         presence_engine,
@@ -228,6 +242,7 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
         ToolCall,
         WorkAborted,
     )
+    from embodiment.events import EventDegradation, EventEmitter  # noqa: F401
     from embodiment.framing import (  # noqa: F401
         ROLE_CORTEX,
         ROLE_MUSE,
@@ -289,6 +304,7 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
         insight_lag,
         is_stale,
     )
+    from embodiment.muse_runner import ThreadedMuseRunner, ThreadFactory  # noqa: F401
     from embodiment.perception import perceive  # noqa: F401
     from embodiment.presence import (  # noqa: F401
         ClarifyPolicy,
@@ -303,6 +319,7 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
         DEFAULT_SPEAKER,
         BoundaryContext,
         MuseComment,
+        MusePullSeam,
         MuseSeam,
         PresenceEngine,
         PresenceExecutor,
