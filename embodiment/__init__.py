@@ -45,9 +45,11 @@ _SUBMODULES = frozenset(
         "context",
         "continuity",
         "contract",
+        "framing",
         "identity",
         "loop",
         "media",
+        "muse",
         "perception",
         "presence",
         "presence_engine",
@@ -108,6 +110,35 @@ _LAZY_NAMES = {
     "MuseSeam": "presence_engine",
     "MuseComment": "presence_engine",
     "BoundaryContext": "presence_engine",
+    "DEFAULT_SPEAKER": "presence_engine",
+    # ── the muse: a bounded, tools-off thinking loop (deviation d1) ───────
+    # Advisory only. `MUSE_AUTHORITY` resolves from `muse`, which owns it;
+    # `framing` re-exports the same object so a host composes against one copy.
+    "MuseLoop": "muse",
+    "MuseControls": "muse",
+    "MuseInsight": "muse",
+    "MuseOutcome": "muse",
+    "MuseOrigin": "muse",
+    "MuseDegradation": "muse",
+    "MuseCompleteFn": "muse",
+    "MuseSink": "muse",
+    "MUSE_AUTHORITY": "muse",
+    # Staleness: a parallel loop's insight can arrive long after the step it
+    # reasoned about, so relevance is the consumer's judgement to make.
+    "insight_lag": "muse",
+    "is_stale": "muse",
+    # ── Gwen framing: pure composition, absent identity ⇒ identical prompts ─
+    "Framing": "framing",
+    "frame_cortex": "framing",
+    "frame_subagent": "framing",
+    "frame_muse": "framing",
+    "muse_system_message": "framing",
+    "speaker_label": "framing",
+    "unframe": "framing",
+    "is_configured": "framing",
+    "ROLE_CORTEX": "framing",
+    "ROLE_SUBAGENT": "framing",
+    "ROLE_MUSE": "framing",
     # ── presence policy (pure; no IO, no clock) ───────────────────────────
     "UpdateCadence": "presence",
     "ClarifyPolicy": "presence",
@@ -176,9 +207,11 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
         context,
         continuity,
         contract,
+        framing,
         identity,
         loop,
         media,
+        muse,
         perception,
         presence,
         presence_engine,
@@ -194,6 +227,19 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
         TaskResult,
         ToolCall,
         WorkAborted,
+    )
+    from embodiment.framing import (  # noqa: F401
+        ROLE_CORTEX,
+        ROLE_MUSE,
+        ROLE_SUBAGENT,
+        Framing,
+        frame_cortex,
+        frame_muse,
+        frame_subagent,
+        is_configured,
+        muse_system_message,
+        speaker_label,
+        unframe,
     )
     from embodiment.identity import resolve_identity  # noqa: F401
     from embodiment.loop import (  # noqa: F401
@@ -230,6 +276,19 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
         UnknownToolError,
         run,
     )
+    from embodiment.muse import (  # noqa: F401
+        MUSE_AUTHORITY,
+        MuseCompleteFn,
+        MuseControls,
+        MuseDegradation,
+        MuseInsight,
+        MuseLoop,
+        MuseOrigin,
+        MuseOutcome,
+        MuseSink,
+        insight_lag,
+        is_stale,
+    )
     from embodiment.perception import perceive  # noqa: F401
     from embodiment.presence import (  # noqa: F401
         ClarifyPolicy,
@@ -241,6 +300,7 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
         should_update,
     )
     from embodiment.presence_engine import (  # noqa: F401
+        DEFAULT_SPEAKER,
         BoundaryContext,
         MuseComment,
         MuseSeam,
