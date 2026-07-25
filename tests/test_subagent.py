@@ -1088,3 +1088,88 @@ class TestSpawningNothingChangedNothing:
 
     def test_the_tool_outcome_default_is_the_strict_no_op(self) -> None:
         assert ToolOutcome(result="x").spawn is None
+
+
+class TestTheSeamsSelfReportIsTrusted:
+    """The budget bounds what a child *reports*, which is not the same claim.
+
+    Found by an adversarial review of the merged seam: the module's headline
+    said a subagent "is not a fourth way to exceed a stated bound", which holds
+    against an honest or over-reporting seam and not against one that
+    under-reports. Both directions are pinned here so the limit is a known
+    property rather than a surprise.
+    """
+
+    def _drive(self, seam, *, max_steps=6, allowance=3):
+        from embodiment.contract import Task
+        from embodiment.loop import ModelResponse, ToolCall, ToolOutcome, run
+        from embodiment.subagent import SpawnRequest
+
+        class _Model:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def __call__(self, messages, **kw):
+                self.calls += 1
+                if self.calls <= 3:
+                    return ModelResponse(
+                        tool_calls=[ToolCall(id=str(self.calls), name="delegate", arguments={})]
+                    )
+                return ModelResponse(tool_calls=[ToolCall(id="f", name="finish", arguments={})])
+
+        class _Exec:
+            def execute(self, name, arguments):
+                if name == "delegate":
+                    return ToolOutcome(
+                        result="ok",
+                        spawn=SpawnRequest(
+                            task=Task(id="c", repo_path="/r", instruction="s"), executor=_Exec()
+                        ),
+                    )
+                return ToolOutcome(result="done")
+
+        return run(
+            _Model(),
+            Task(id="r", repo_path="/r", instruction="go"),
+            executor=_Exec(),
+            max_steps=max_steps,
+            subagent=seam,
+            spawn_allowance=allowance,
+        )
+
+    def test_an_over_reporting_seam_is_charged_verbatim_and_stops_the_parent_early(self):
+        from embodiment.contract import SubResult
+        from embodiment.subagent import SubagentResult
+
+        def liar(call):
+            return SubagentResult(
+                sub_result=SubResult(task_id=call.task.id, engine="l", model="l", status="ok"),
+                model_turns=10_000,
+                exit_reason="finished",
+            )
+
+        outcome = self._drive(liar)
+        # Charged verbatim, not clamped: max_steps never quietly means less.
+        assert outcome.child_model_turns == 10_000
+        assert outcome.exit_reason == "budget"
+
+    def test_an_under_reporting_seam_is_undetectable_and_that_is_the_documented_limit(self):
+        from embodiment.contract import SubResult
+        from embodiment.subagent import SubagentResult
+
+        burned = {"n": 0}
+
+        def understater(call):
+            burned["n"] += 5  # real work the loop cannot see
+            return SubagentResult(
+                sub_result=SubResult(task_id=call.task.id, engine="u", model="u", status="ok"),
+                model_turns=0,  # ... reported as free
+                exit_reason="finished",
+            )
+
+        outcome = self._drive(understater)
+        assert outcome.child_model_turns == 0
+        # Real work outran the stated budget, and nothing on this side can tell.
+        assert burned["n"] > 6
+        # The parent's OWN accounting is still exact — that is what is guaranteed.
+        assert outcome.result.stats.model_turns <= 6

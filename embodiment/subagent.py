@@ -54,6 +54,19 @@ ignores the allowance it was handed still spends the parent's turns, so the
 tree terminates regardless — the allowance bounds the *shape*, the budget
 bounds the *work*.
 
+**The precondition, stated rather than implied.** The budget bounds the work a
+child *reports*. The loop cannot observe a child's model calls — they happen
+inside the host's seam — so a seam that under-reports its cost spends real
+turns the parent never charges. A seam reporting ``0`` while burning five turns
+per call will exceed a stated ``max_steps`` and nothing here can detect it. This
+is the same trust boundary a ``ToolExecutor`` already has (a tool may call a
+model internally and the loop will never know), not a new one, and it is not
+policeable from this side of an injected seam. Over-reporting is safe in the
+other direction: the overspend is charged verbatim, the parent stops earlier
+than it needed to, and the discrepancy is recorded. Hosts that need the bound to
+mean wall-clock work must report honestly; embodiment guarantees the accounting,
+not the honesty of the number it is handed.
+
 What this seam does not do
 --------------------------
 * **It never builds a child's tool surface.** The parent's executor supplies
