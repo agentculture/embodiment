@@ -1,173 +1,241 @@
-"""A scratchpad tool surface — force the thinking out where it can be seen.
+"""A scratchpad that survives a reset — working memory, not a lab notebook.
 
-The live-test series turned up one dominant failure: drives ending
-``exit=stopped`` at ``turns=2`` having called **no tools at all**. The thinking
-telemetry (``examples/thinking.py``) diagnosed it — roughly 15,000 characters of
-internal reasoning per turn against a few hundred characters written, a 66:1
-thought-to-written ratio, and an empty tool sequence. The model was not failing
-to reason. It reasoned enormously and then emitted prose instead of a structured
-call.
+The first version of this file was a journal: the model recorded what it had
+already done, so a reader could grade the route afterwards. That is the wrong
+artefact. A journal is written for whoever comes later; **working memory is
+written for yourself, in case you stop existing between two thoughts.**
 
-This is the counter-measure, and it is a tool surface rather than a prompt
-tweak. A scratchpad the model **must** write to, one short entry per call:
+The ordering is the whole design:
 
-    note(kind="approach", text="Split by parity and recurse on n.")   -> n1
-    note(kind="claim",    text="S(n) obeys a two-term recurrence.")   -> n2
-    note(kind="check",    text="n=3 gives 3 even of 5 — matches.")    -> n3
-    revise(id="n2", text="Coupling flips when n is odd.")             -> n4
-    finish(answer="76")
+    intend("Split by parity and recurse on n; I expect a two-term recurrence.")
+    ... act ...
+    observe("n=3 gives 3 even of 5 — the recurrence holds so far.")
+    conclude("The count of even-sum subsets is 76.")
 
-Two things follow, and the second is the point.
+**The intent is written BEFORE the act.** That single rule is what makes a reset
+survivable. A mind that wakes with no context and reads
 
-**It gives the reasoning somewhere to go.** A turn that must end in a call
-cannot end in an essay. Whether this actually lowers the stop rate is an
-empirical question this file exists to answer — not an assumption.
+    n4 [intend]  Check n=5 against the recurrence before trusting it.
+    (nothing after it)
 
-**It makes the journey evaluable.** Until now an embodiment could only be
-scored on its answer. A scratchpad records the *route*: did it state an approach
-before making claims, did it check anything, did it ever revise itself? A run
-that reaches the right answer having checked nothing is not the same as one that
-tested a claim and corrected it, and outcome scoring cannot tell them apart.
+knows exactly two things: what it meant to do, and that it had not yet done it.
+A journal written after the fact cannot tell you that — the most important entry
+is precisely the one that never got written.
 
-**Evaluation is a judgement, not a tally.** Counting notes measures nothing
-worth knowing — a long scratchpad is not a good one, and a model can label a
-line ``check`` having checked nothing. :func:`structure` therefore reports
-only what can be read off without interpretation, and :func:`judge_journey`
-hands the route to a *model* with the ground truth in hand, asking the
-question a tally cannot: does this route EARN the answer, or did it arrive by
-luck, recall, or assertion? Judging working is far closer to the muse's
-advertised ``divergent_second_opinion`` than solving is.
+This is the claim issue #2 makes about the package as a whole — *"an embodiment
+without memory is a sequence of awakenings"* — applied one level down: not
+continuity between sessions, but continuity across a **dropped thought**.
+
+**Reading only the scratchpad should show the mind.** Not a transcript, not a
+token count — a short ordered record of intent, observation and belief, where
+the *gap* between an intent and its observation is itself information. Entries
+are one sentence and carry ids because a mind you can read in twenty lines is
+one you can actually check.
+
+Persistence is deliberate: the pad is written to disk as it goes, because a
+working memory that only exists inside the process it serves protects against
+nothing.
 """
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Optional
 
 __all__ = [
     "KINDS",
-    "Note",
+    "Entry",
     "Scratchpad",
     "SCRATCHPAD_TOOLS",
+    "JUDGE_TOOLS",
+    "PROTOCOL",
+    "RESUME_PROTOCOL",
+    "render",
     "structure",
     "judge_journey",
-    "render",
-    "PROTOCOL",
 ]
 
-#: The vocabulary. Small on purpose — a long menu invites classification games
-#: instead of work, and every extra kind is another thing to get wrong.
-KINDS = ("approach", "claim", "check", "revision", "conclusion")
+#: ``intend`` comes first on purpose — it is the entry that makes a reset
+#: survivable, and the only one that must precede what it describes.
+KINDS = ("intend", "observe", "conclude", "revise")
 
 PROTOCOL = (
-    "You have a scratchpad. Use it as you work — one short entry per call, a "
-    "single sentence each:\n"
-    "  note(kind='approach', text=...)   how you intend to attack this\n"
-    "  note(kind='claim', text=...)      something you now believe\n"
-    "  note(kind='check', text=...)      a claim you tested, and what happened\n"
-    "  note(kind='conclusion', text=...) what you have concluded\n"
-    "  revise(id='n2', text=...)         correct an earlier note by its id\n"
-    "Start with an approach note before you claim anything. Check your claims "
-    "rather than asserting them. If you find you were wrong, revise the note "
-    "rather than quietly moving on — a corrected claim is worth more than a "
-    "confident one. Call finish only when the scratchpad shows your route."
+    "You have a scratchpad that survives you. If this process dies mid-task, a "
+    "fresh one wakes with NO memory and only this pad to go on — so write it for "
+    "that successor, who is you.\n\n"
+    "  intend(text)   what you are ABOUT to do, and what you expect. Write this "
+    "BEFORE you do it, always.\n"
+    "  observe(text)  what actually happened, and whether it matched.\n"
+    "  conclude(text) what you now believe, and why.\n"
+    "  revise(id, text)  correct an earlier entry you now know was wrong.\n"
+    "  read()         re-read the pad.\n\n"
+    "One sentence per entry. The rule that matters: never act before recording "
+    "the intent. An intent with no observation after it tells your successor "
+    "exactly where you were interrupted — that gap is the point."
+)
+
+RESUME_PROTOCOL = (
+    "You are resuming work that was interrupted. You have no memory of it. The "
+    "scratchpad below is everything you left yourself.\n\n"
+    "Read it, work out where you got to, and continue. If the last entry is an "
+    "`intend` with nothing after it, you were interrupted before doing that "
+    "thing — do it now. Do not restart from the beginning, and do not assume "
+    "work was done that the pad does not record."
 )
 
 
 @dataclass
-class Note:
+class Entry:
     id: str
     kind: str
     text: str
     revises: Optional[str] = None
 
+    def to_dict(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {"id": self.id, "kind": self.kind, "text": self.text}
+        if self.revises:
+            payload["revises"] = self.revises
+        return payload
+
 
 @dataclass
 class Scratchpad:
-    """An id-addressed notebook the model writes as it works."""
+    """An id-addressed working memory, persisted as it is written."""
 
-    notes: list[Note] = field(default_factory=list)
+    path: Optional[Path] = None
+    entries: list[Entry] = field(default_factory=list)
     answer: Optional[str] = None
     rejected: list[str] = field(default_factory=list)
 
-    # ── the tool surface ──────────────────────────────────────────────────
+    # ── persistence: a memory that dies with its process is only a cache ────
+
+    @classmethod
+    def load(cls, path: Any) -> "Scratchpad":
+        """Reopen a pad left by a previous process. An absent file is a fresh mind."""
+        pad = cls(path=Path(path))
+        if pad.path is not None and pad.path.exists():
+            for line in pad.path.read_text(encoding="utf-8").splitlines():
+                if not line.strip():
+                    continue
+                try:
+                    raw = json.loads(line)
+                except ValueError:
+                    continue  # a torn final write is survivable; skip it
+                if raw.get("answer") is not None:
+                    pad.answer = str(raw["answer"])
+                else:
+                    pad.entries.append(
+                        Entry(
+                            id=str(raw.get("id", "")),
+                            kind=str(raw.get("kind", "")),
+                            text=str(raw.get("text", "")),
+                            revises=raw.get("revises"),
+                        )
+                    )
+        return pad
+
+    def _append(self, payload: dict[str, Any]) -> None:
+        if self.path is None:
+            return
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        with self.path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(payload) + "\n")
+            handle.flush()
+
+    # ── what the pad can answer about itself ────────────────────────────────
+
+    @property
+    def open_intent(self) -> Optional[Entry]:
+        """The intent with no observation after it — where a reset caught this mind.
+
+        The single most valuable thing a resuming mind can read, and it exists
+        only because intents are written *before* the act they describe.
+        """
+        for entry in reversed(self.entries):
+            if entry.kind == "observe":
+                return None
+            if entry.kind == "intend":
+                return entry
+        return None
+
+    # ── the tool surface ────────────────────────────────────────────────────
 
     def execute(self, name: str, arguments: dict[str, Any]) -> Any:
         from embodiment import ToolOutcome
 
-        if name == "note":
-            kind = str(arguments.get("kind", "")).strip().lower()
+        if name in ("intend", "observe", "conclude"):
             text = str(arguments.get("text", "")).strip()
-            if kind not in KINDS:
-                self.rejected.append(f"unknown kind {kind!r}")
-                return ToolOutcome(result=f"kind must be one of {', '.join(KINDS)}")
             if not text:
-                self.rejected.append("empty note")
+                self.rejected.append(f"empty {name}")
                 return ToolOutcome(result="text must not be empty")
-            note = Note(id=f"n{len(self.notes) + 1}", kind=kind, text=text)
-            self.notes.append(note)
-            return ToolOutcome(result=f"{note.id} recorded ({kind})")
+            entry = Entry(id=f"n{len(self.entries) + 1}", kind=name, text=text)
+            self.entries.append(entry)
+            self._append(entry.to_dict())
+            return ToolOutcome(result=f"{entry.id} recorded")
 
         if name == "revise":
             target = str(arguments.get("id", "")).strip()
             text = str(arguments.get("text", "")).strip()
-            known = {n.id for n in self.notes}
+            known = {e.id for e in self.entries}
             if target not in known:
                 self.rejected.append(f"revise unknown id {target!r}")
-                return ToolOutcome(result=f"no note {target!r}; known: {sorted(known)}")
+                return ToolOutcome(result=f"no entry {target!r}; known: {sorted(known)}")
             if not text:
                 return ToolOutcome(result="text must not be empty")
-            note = Note(id=f"n{len(self.notes) + 1}", kind="revision", text=text, revises=target)
-            self.notes.append(note)
-            return ToolOutcome(result=f"{note.id} revises {target}")
+            entry = Entry(id=f"n{len(self.entries) + 1}", kind="revise", text=text, revises=target)
+            self.entries.append(entry)
+            self._append(entry.to_dict())
+            return ToolOutcome(result=f"{entry.id} revises {target}")
 
         if name == "read":
-            if not self.notes:
-                return ToolOutcome(result="scratchpad is empty")
-            lines = [
-                f"{n.id} [{n.kind}]"
-                + (f" (revises {n.revises})" if n.revises else "")
-                + f" {n.text}"
-                for n in self.notes
-            ]
-            return ToolOutcome(result="\n".join(lines))
+            return ToolOutcome(result=render(self) or "the scratchpad is empty")
 
         if name == "finish":
             self.answer = str(arguments.get("answer", "")).strip()
+            self._append({"answer": self.answer})
             return ToolOutcome(result="submitted", finished=True, finish_summary=self.answer)
 
         return ToolOutcome(result=f"unknown tool {name}")
 
     def state(self) -> str:
-        if not self.notes:
+        if not self.entries:
             return "nothing written yet"
-        return f"{len(self.notes)} note(s); last: {self.notes[-1].kind}"
+        pending = self.open_intent
+        if pending is not None:
+            return f"{len(self.entries)} entries; mid-intent ({pending.id})"
+        return f"{len(self.entries)} entries; last: {self.entries[-1].kind}"
+
+
+def _text_tool(name: str, description: str) -> dict[str, Any]:
+    return {
+        "type": "function",
+        "function": {
+            "name": name,
+            "description": description,
+            "parameters": {
+                "type": "object",
+                "properties": {"text": {"type": "string", "description": "One sentence."}},
+                "required": ["text"],
+            },
+        },
+    }
 
 
 SCRATCHPAD_TOOLS: list[dict[str, Any]] = [
-    {
-        "type": "function",
-        "function": {
-            "name": "note",
-            "description": (
-                "Record ONE short sentence about your work: an approach, a claim, "
-                "a check you ran, or a conclusion. Returns the note's id."
-            ),
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "kind": {"type": "string", "enum": list(KINDS)},
-                    "text": {"type": "string", "description": "One sentence."},
-                },
-                "required": ["kind", "text"],
-            },
-        },
-    },
+    _text_tool(
+        "intend",
+        "Record what you are ABOUT to do and what you expect — before you do it. "
+        "If you are interrupted, this is what tells your successor where you were.",
+    ),
+    _text_tool("observe", "Record what actually happened, and whether it matched the intent."),
+    _text_tool("conclude", "Record what you now believe, and why."),
     {
         "type": "function",
         "function": {
             "name": "revise",
-            "description": "Correct an earlier note by its id, when you find it wrong.",
+            "description": "Correct an earlier entry you now know was wrong, by its id.",
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -182,7 +250,7 @@ SCRATCHPAD_TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "read",
-            "description": "Read the scratchpad back.",
+            "description": "Re-read the scratchpad.",
             "parameters": {"type": "object", "properties": {}},
         },
     },
@@ -190,7 +258,7 @@ SCRATCHPAD_TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "finish",
-            "description": "Submit the final answer, once the scratchpad shows your route.",
+            "description": "Submit the final answer.",
             "parameters": {
                 "type": "object",
                 "properties": {"answer": {"type": "string"}},
@@ -201,43 +269,56 @@ SCRATCHPAD_TOOLS: list[dict[str, Any]] = [
 ]
 
 
-def structure(pad: Scratchpad) -> dict[str, Any]:
-    """Objective facts about the record. Deliberately NOT a quality score.
+def render(pad: Scratchpad) -> str:
+    """The pad as a resuming mind reads it — and as a human glimpses it."""
+    if not pad.entries:
+        return ""
+    lines = []
+    for entry in pad.entries:
+        arrow = f"  <- revises {entry.revises}" if entry.revises else ""
+        lines.append(f"{entry.id:>3} [{entry.kind:<8}] {entry.text}{arrow}")
+    pending = pad.open_intent
+    if pending is not None:
+        lines.append(f"    ! {pending.id} has no observation — you were interrupted here.")
+    if pad.answer is not None:
+        lines.append(f"    answer: {pad.answer}")
+    return "\n".join(lines)
 
-    Counting notes and characters measures nothing worth knowing — a long
-    scratchpad is not a good one, and a model can label a line ``check`` having
-    checked nothing. What is here is only what can be read off without
-    interpretation: what was written, in what order, and what it pointed at.
-    Judgement is :func:`judge_journey`'s job, and it needs a mind to do it.
+
+def structure(pad: Scratchpad) -> dict[str, Any]:
+    """Facts readable without interpretation. Deliberately not a quality score.
+
+    Counting entries measures nothing worth knowing. What is here is only what
+    can be read off directly — including the one thing that decides whether a
+    reset is survivable: is an intent left dangling, and can it be acted on.
+    Judgement is :func:`judge_journey`'s job, and it needs a mind.
     """
-    kinds = [n.kind for n in pad.notes]
+    kinds = [e.kind for e in pad.entries]
+    pending = pad.open_intent
     return {
         "sequence": kinds,
-        "revised_ids": [n.revises for n in pad.notes if n.revises],
+        "open_intent": pending.id if pending else None,
+        "revised_ids": [e.revises for e in pad.entries if e.revises],
         "rejected_calls": pad.rejected,
         "answered": pad.answer is not None,
+        "persisted": bool(pad.path and pad.path.exists()),
     }
 
 
 JUDGE_BRIEF = (
-    "You are reviewing another agent's WORKING, not its answer. You are given "
-    "the problem, the correct answer, the agent's scratchpad in order, and what "
-    "it finally submitted.\n\n"
-    "Judge the ROUTE. The question is not whether it arrived — it is whether "
-    "the route earns the destination.\n\n"
-    "Look for, specifically:\n"
-    "- an approach that actually fits the problem, rather than a generic plan;\n"
-    "- claims that follow from what came before, rather than being asserted;\n"
-    "- checks that genuinely test the claim they name — a 'check' that restates "
-    "the claim tests nothing;\n"
-    "- a revision that is a real correction, rather than a restatement;\n"
-    "- and the case that matters most: a CORRECT answer reached by an UNSOUND "
-    "route. Getting there by luck, by recalling a known result, or by asserting "
-    "the key step is not the same as deriving it. Say so plainly when you see "
-    "it.\n\n"
-    "The reverse also matters: a WRONG answer reached by sound reasoning that "
-    "slipped once is a better performance than a lucky right one, and should be "
-    "scored that way.\n\n"
+    "You are reading another agent's working memory — not a transcript, but a "
+    "scratchpad it wrote for itself in case it was interrupted. You have the "
+    "problem, the correct answer, the pad in order, and what it submitted.\n\n"
+    "Two questions. The second matters more.\n\n"
+    "1. Does the route EARN the answer? A correct answer reached by luck, by "
+    "recalling a known result, or by asserting the key step is not the same as "
+    "deriving it — say so plainly when you see it. A wrong answer reached by "
+    "sound reasoning that slipped once is the better performance.\n\n"
+    "2. Could a mind with NO memory resume from this pad alone? Read it as that "
+    "successor. Does each intent say enough to act on? Would you know what had "
+    "already been done and what had not? If the pad ends on an intent with no "
+    "observation, could you tell what to do next — or is the record too thin to "
+    "recover from?\n\n"
     "Call verdict exactly once."
 )
 
@@ -246,28 +327,31 @@ JUDGE_TOOLS: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "verdict",
-            "description": "Deliver the judgement on the working.",
+            "description": "Judge the working and whether it survives a reset.",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "route_sound": {
-                        "type": "boolean",
-                        "description": "Does the working actually establish the answer?",
-                    },
                     "earned": {
                         "type": "boolean",
                         "description": (
-                            "Is the answer EARNED by this route, as opposed to "
-                            "guessed, recalled, or asserted?"
+                            "Is the answer earned by this route, not guessed or recalled?"
                         ),
                     },
                     "weakest_step": {
                         "type": "string",
-                        "description": "The note id of the least justified step, and why.",
+                        "description": "Id of the least justified step, and why.",
                     },
-                    "checks_were_real": {
+                    "resumable_by_a_blank_mind": {
                         "type": "boolean",
-                        "description": "Did the checks test their claims, or restate them?",
+                        "description": (
+                            "Could a successor with no memory continue from this pad alone?"
+                        ),
+                    },
+                    "what_a_successor_would_miss": {
+                        "type": "string",
+                        "description": (
+                            "What the pad fails to record that a resuming mind would need."
+                        ),
                     },
                     "self_correction": {
                         "type": "string",
@@ -275,14 +359,14 @@ JUDGE_TOOLS: list[dict[str, Any]] = [
                     },
                     "verdict": {
                         "type": "string",
-                        "description": "Two sentences: what this working did well and badly.",
+                        "description": "Two sentences on this mind's working.",
                     },
                 },
                 "required": [
-                    "route_sound",
                     "earned",
                     "weakest_step",
-                    "checks_were_real",
+                    "resumable_by_a_blank_mind",
+                    "what_a_successor_would_miss",
                     "self_correction",
                     "verdict",
                 ],
@@ -300,23 +384,21 @@ def judge_journey(
     complete: Any,
     run_fn: Any = None,
 ) -> dict[str, Any]:
-    """Have a model read the scratchpad and judge whether the route earns the answer.
+    """Have a model read the pad and judge both the route and its survivability.
 
-    ``complete`` is a model seam — pass the *muse* model where one is available.
-    Judging working is much closer to ``divergent_second_opinion``, the muse's
-    advertised role, than solving is, and it is the first task in this series
-    that plays to it.
+    Pass the *muse* seam where one exists: judging working is far closer to the
+    muse's advertised ``divergent_second_opinion`` than solving is, and the muse
+    has now failed to help on four solving tasks.
 
-    The judge is shown the ground truth on purpose. Without it, it cannot
-    distinguish a sound derivation from a confident assertion that happens to
-    land on the right number — and that distinction is the entire reason this
-    function exists rather than a note count.
+    The judge sees the ground truth on purpose — without it, a sound derivation
+    and a confident assertion that lands on the right number are
+    indistinguishable, and telling those apart is the whole reason this exists
+    rather than a tally.
     """
     from embodiment import Task, ToolOutcome
     from embodiment import run as default_run
 
     drive = run_fn or default_run
-    transcript = render(pad) or "(the agent wrote nothing)"
 
     class _Judge:
         def __init__(self) -> None:
@@ -336,34 +418,18 @@ def judge_journey(
             return "judging" if not self.payload else "judged"
 
     judge = _Judge()
-    instruction = (
-        f"{JUDGE_BRIEF}\n\n"
-        f"PROBLEM:\n{problem}\n\n"
-        f"CORRECT ANSWER: {truth}\n\n"
-        f"THE AGENT'S SCRATCHPAD:\n{transcript}\n\n"
-        f"IT SUBMITTED: {pad.answer!r}"
-    )
     outcome = drive(
         complete,
-        Task(id="judge", repo_path="", instruction=instruction),
+        Task(
+            id="judge",
+            repo_path="",
+            instruction=(
+                f"{JUDGE_BRIEF}\n\nPROBLEM:\n{problem}\n\nCORRECT ANSWER: {truth}\n\n"
+                f"THE SCRATCHPAD:\n{render(pad) or '(empty)'}\n\n"
+                f"IT SUBMITTED: {pad.answer!r}"
+            ),
+        ),
         executor=judge,
         max_steps=6,
     )
-    return {
-        "judged": bool(judge.payload),
-        "exit": outcome.exit_reason,
-        **judge.payload,
-    }
-
-
-def render(pad: Scratchpad) -> str:
-    """The journey as a human reads it."""
-    if not pad.notes:
-        return "(scratchpad empty — the model wrote nothing)"
-    lines = []
-    for n in pad.notes:
-        arrow = f" ⟵ revises {n.revises}" if n.revises else ""
-        lines.append(f"  {n.id:>3} [{n.kind:<10}] {n.text}{arrow}")
-    if pad.answer is not None:
-        lines.append(f"  answer: {pad.answer}")
-    return "\n".join(lines)
+    return {"judged": bool(judge.payload), "exit": outcome.exit_reason, **judge.payload}
