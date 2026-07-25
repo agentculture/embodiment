@@ -17,15 +17,32 @@ value is the importable seam an app depends on.
 
 ### Honest status — read this before you plan work
 
-**The loop and the presence pump are not in this repo yet.** What is on disk
-today is the `culture-agent-template` scaffold, renamed: an agent-first CLI
-(`whoami` / `learn` / `explain` / `overview` / `doctor` / `cli`), a mesh
-identity, the vendored skill kit, and green CI + PyPI publishing. `git log` is
-two commits. Everything under [The extraction](#the-extraction-what-comes-from-colleague)
-is **work to be done**, sourced from `colleague`, not code you can read here.
+**The extraction is largely done.** This section previously said the loop and
+presence pump were not in the repo; that stopped being true partway through the
+`gwen-loop-presence-continuity` build. What is checked in on the
+`spec/gwen-loop-presence-continuity` branch today:
+
+| Module | What it is |
+|--------|------------|
+| `loop.py` | The bounded tool loop, extracted from colleague's 4463-line `loop.py` (~42% of its statements). Termination proved *structurally* by AST tests, not just behaviourally. |
+| `presence_engine.py` | The pump, redesigned around cortex + muse — no TTY, no thread, no clock. |
+| `presence.py` | The pure policy half (cadence + clarify), ported byte-faithfully. |
+| `muse.py` | The bounded, thread-free muse **thinking** loop (deviation `d1`). |
+| `perception.py` | Verbatim-invariant intake + never-raise. |
+| `continuity.py` | The eidetic/coherence seam (rewritten under `d2` — see C1). |
+| `contract.py` | The carved data contract. |
+| `context.py` / `media.py` | Windowing, degradable classification, media handling. |
+| `identity.py` | Resolved identity, mirroring colleague's order. |
+
+Still to land: the threaded muse runner, Gwen prompt framing, the continuity
+lifecycle checkpoints, the degradation ledger, the demo app, and the seam
+proposal to colleague. Check `docs/plans/` and `.devague/deliveries/` for the
+live state — the deviation ledger (`devague deviate --list`) records every
+approved departure from the plan and is the authority on what changed and why.
 
 Keep this file's claims grounded in checked-in reality. When a section drifts
-ahead of what exists, mark it `(planned)` or move it under a roadmap heading.
+ahead of what exists, mark it `(planned)` or move it under a roadmap heading —
+and when it drifts *behind*, as this one did, fix it.
 
 ## Where embodiment sits
 
@@ -152,18 +169,37 @@ extra, never as a base dependency (see the zero-deps rule below).
 These come from the build brief (issue #1) and hold until a sibling repo agrees
 otherwise in writing.
 
-- **C1 — pure-stdlib core.** colleague's `tests/test_zero_deps.py` asserts its
-  `[project].dependencies` is *exactly* `["agentfront>=…"]` and that importing
-  colleague adds no third-party top-level import. `embodiment` must clear the
-  same bar or `pip install embodiment` breaks colleague's CI. `pyproject.toml`
-  ships `dependencies = []` today — keep it that way; retrofitting
-  stdlib-purity is far harder than starting there. Optional capabilities go
-  behind extras, lazily imported inside a function, never at module load.
-- **C1b — the third-base-dependency question is open.** "agentfront is the ONE
-  sanctioned base dependency" does not survive being said three times. Does
-  colleague allow-list three, or does embodiment *compose* `shell-cli` so
-  colleague gains one dependency instead of two? Raise it with colleague and
-  shell-cli before choosing.
+- **C1 — SUPERSEDED by deviation `d2` (2026-07-25). Dependencies are now
+  human-gated, not forbidden.** The original constraint read: `embodiment` must
+  ship `dependencies = []` because colleague's `tests/test_zero_deps.py`
+  asserts its own `[project].dependencies` is *exactly* `["agentfront>=…"]` and
+  that importing colleague adds no third-party top-level import — so a fat
+  embodiment would break colleague's CI.
+
+  That is no longer the rule here. `d2` (approved, recorded in
+  `.devague/deliveries/`) allows sibling CLIs to be **imported directly at
+  module scope as base dependencies**, replacing the subprocess adapter:
+  `eidetic-cli` (→ `data-refinery-cli[store]` → neo4j + pymongo),
+  `coherence-cli` (→ numpy + httpx), and `events-cli` (→ paho-mqtt).
+
+  What survives is the *discipline*, not the zero: **no dependency enters
+  without a human deciding.** `tests/test_zero_deps.py` pins the exact approved
+  set and fails on any delta in either direction — an unplanned addition *or* a
+  removal — with a failure message naming what approval is being requested.
+  Adding a dependency is a deliberate act with a recorded reason, not a quiet
+  edit to a requirements list.
+
+  **The accepted cost, recorded so it is not rediscovered:** `pip install
+  embodiment` now pulls a graph driver, a Mongo driver, numpy, httpx and
+  paho-mqtt; and importing embodiment transitively imports third-party
+  modules, so colleague's zero-deps test **will fail** if colleague adds
+  embodiment as a dependency.
+- **C1b — no longer an open question; it is now a hard prerequisite.** It used
+  to ask whether colleague would allow-list a third base dependency. After
+  `d2`, colleague cannot import embodiment at all until it relaxes its
+  one-base-dependency rule *and* its no-third-party-import assertion. This is
+  the headline ask of the seam-proposal issue (task t19), not a footnote — and
+  it is colleague's decision to make, never embodiment's to assume.
 - **C2 — do not overclaim the name.** In this mesh `reachy-mini-cli` owns the
   robot body, `reachy-lobes` its local brain, `reachy_nova` its AI brain. A
   package called `embodiment` reads as *physical* embodiment by default. On the
