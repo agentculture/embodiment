@@ -49,6 +49,8 @@ generously.
 | [muse-and-echo-chamber.md](muse-and-echo-chamber.md) | does an advisory mind help, and can it mislead | helped; did not mislead |
 | [self-test.md](self-test.md) | two instances conversing; recognising own memories | converged; recognised |
 | [proof.md](proof.md) | a long multi-phase task, with and without the muse | correct; muse more careful, not more correct |
+| [designed-problem.md](designed-problem.md) | the embodiment designs a problem; a fresh instance solves it, n=4 per arm | **no measured muse effect** (1/4 both arms) |
+| [configurations.md](configurations.md) | every run's full settings, including confounded ones | temperature was a hidden variable throughout |
 
 ## Reproducing
 
@@ -84,7 +86,12 @@ contains successes is not evidence of anything.
    `TaskResult.steps` counts *tool calls* — one `Step` per call — while
    `max_steps` bounds *model turns*. A run showing `steps: 14` against
    `max_steps: 14` had used **6 turns of 14**. See [proof.md](proof.md).
-2. **"The instance failed to recognise its own memories."** It did not fail;
+2. **"The muse rescued a failure the solo arm could not complete."** It did
+   not. With four runs per arm both scored 1/4 — the original pair was noise.
+   Claimed once from n=1, then again from two of three replicates *before the
+   third reported*; the third falsified it. See
+   [designed-problem.md](designed-problem.md).
+3. **"The instance failed to recognise its own memories."** It did not fail;
    the scoring did. The first self-test graded against records that were
    *seeded* rather than records that were *recalled*, so a retriever that
    surfaced 3 of 4 was counted against the mind. See [self-test.md](self-test.md).
