@@ -5,6 +5,53 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **`embodiment/presence_engine.py` — the presence pump, redesigned around
+  cortex + muse (task t7).** This is a **redesign, not an extraction**, and the
+  spec (claim c43) names it as such. colleague `1.52.1`'s `presence_engine.py`
+  hands every boundary to a `SensesLoopDriver` — the senses *coordination* loop,
+  a second agentic loop answering each boundary with a tools-off JSON "move".
+  embodiment ships exactly ONE loop (decision c30: the bounded tool loop;
+  `senses_loop.py` stays in colleague), so the driver seam is rebuilt around the
+  pair embodiment actually ships: the **cortex** loop, reached only through the
+  acting callbacks on `PresenceExecutor` and calling back into the pump at each
+  progress boundary (`PresenceSink`), and an **optional muse** that comments on a
+  boundary and *proposes, never decides* — its narration is rendered, its
+  guidance rides the same advisory `append_guidance` channel an operator relay
+  does, and no muse-sourced value can reach a tool-call decision because the
+  acting surface has no `deny`/`rewrite` field to bind (c41, held by the
+  mechanism rather than the prose).
+- The **museless run is the primary path**, not a degraded exception (c42): with
+  no muse configured the pump still acknowledges (from the intake packet's own
+  `ContextPacket.ack`) and still narrates progress (from the loop's own reported
+  state), spending zero model calls. Three lanes, one ladder — `muse` →
+  `cortex-only` → `off` — where only a *transition* into `cortex-only` is a
+  degradation; starting there is normal. A muse that fails records the failed
+  invocation, the transition, its reason and a rendered notice, then unbinds so a
+  dead endpoint is not re-dialled every step (C3: nothing degrades silently).
+- `PresenceIO` carries the same **eight plain callables, all defaulted to no-ops**
+  (c21), with `narrate` the ONE whose exceptions are swallowed so a voice hook
+  can never disturb the text path; every other callback's failure stays visible
+  to the host. Recorded lines carry the **contributing role** (`packet` /
+  `operator` / `muse` / `cortex`), so a single-model run never looks like two
+  minds.
+
+### Fixed
+
+- **The clock the "no TTY, no thread, no clock" contract denied.** Upstream's
+  `presence_engine.py` imports `time` and stamps `time.time()` onto its
+  capped-update record, contradicting its own docstring. embodiment resolves it
+  by injection: an optional `clock` callable is the only source of a timestamp,
+  and its default (`None`) **omits the `at` key entirely** rather than fabricating
+  a zero — a fabricated timestamp is exactly the silent dishonesty C3 forbids. An
+  AST test pins that `time` / `threading` / `datetime` / `subprocess` are never
+  imported by the engine, alongside the ported no-front-import graph guard and a
+  test that the engine exposes **no presence event stream** (non-goal c33 —
+  presence stays loop-internal; `snapshot()` is a pull-only artifact fold).
+
 ## [0.6.2] - 2026-07-24
 
 ### Added
