@@ -76,6 +76,104 @@ uv run embodiment learn               # self-teaching prompt (add --json)
 uv run teken cli doctor . --strict    # the agent-first rubric gate CI runs
 ```
 
+## The demo: an app that remembers you
+
+`examples/greenhouse.py` is a small potting-shed assistant — **not** a coding
+agent, and not colleague. Three domain tools, no shell, no filesystem outside
+its own directory. It exists to show the one thing an agentic loop cannot show
+on its own: *an embodiment without memory is a sequence of awakenings*, so run
+it twice and watch the sequence close.
+
+```bash
+uv run python examples/greenhouse.py --reset "New plant card - name: Marlow; sensor: s-fig-01; water below: 30% moisture. It is the fig by the north window. Check it in and log the visit."
+uv run python examples/greenhouse.py --moisture 22 "Does Marlow need water today?"
+```
+
+The second command is a **separate process**. Its utterance never names
+`s-fig-01`, and nothing about Marlow is in the code. It reads that sensor
+anyway, decides to water (22% is under the 30% threshold it was told about
+once, in the previous process), and logs the visit — because the first run's
+summary was written to a durable store and this run recalled it. Add `--json`
+to either command for the machine-readable report: what was recalled, what each
+step did, what was remembered, and every degradation along the way.
+
+Delete the store (`--reset`) and ask the second question on its own: the
+assistant says it has no plant card and asks for one. That refusal is the
+control experiment — it is what proves the recall is load-bearing rather than
+decorative.
+
+### The four seams the demo wires
+
+An app author copies these four things and nothing else:
+
+| Seam | What you supply | In the demo |
+|------|-----------------|-------------|
+| Tool surface | an object with `execute(name, arguments) -> ToolOutcome` | `Greenhouse` — `read_sensor`, `log_care`, `finish` |
+| Model seam | `complete(messages) -> ModelResponse`, one call = one model turn | `scripted_cortex`, or `gateway_seam(...)` with `--live` |
+| Continuity | `build_continuity_fn(LifecycleConfig(data_dir=...))`, injected as `run(..., continuity=...)` | `lifecycle_config()` |
+| Presence | `PresenceIO(render=..., task_state=...)` → `PresenceEngine` | lines go to stderr |
+
+```python
+from embodiment import LifecycleConfig, build_continuity_fn, run
+
+lifecycle = build_continuity_fn(LifecycleConfig(data_dir="/var/lib/myapp/memory"))
+outcome = run(complete, task, executor=my_tools, max_steps=8, continuity=lifecycle)
+for event in lifecycle.events:      # the C3 ledger: recalled, assessed, remembered
+    log(event.to_dict())
+```
+
+Three things worth knowing before you copy it:
+
+- **`data_dir` is mandatory, not a convenience.** It is the sole store anchor.
+  Without it, a *public* record resolves against whatever git repo the host
+  process happens to be running in — so an app started inside a checkout would
+  quietly commit its memories into it. Every eidetic call refuses, with a
+  recorded degradation, rather than guessing.
+- **embodiment recalls; it never injects.** What the acting mind is *told* is
+  host policy, so the demo does that itself in `build_task()` — one recall
+  rendered into `Task.context`. embodiment owns *when* something is perceived,
+  considered, acted on and remembered; it does not own your prompt.
+- **The host names which actions are consequential.** `LifecycleConfig.consequential`
+  takes a predicate; the demo's says `log_care` matters and `read_sensor` does
+  not. embodiment cannot know that, and guessing from a tool name would be the
+  kind of inference this package refuses everywhere else.
+- **Only what the mind puts in its summary is remembered.** The durable
+  record's text *is* `TaskResult.summary`, so what survives to the next process
+  is a prompt-quality question, not a storage one. Two findings from running
+  this demo against real models, both now in its system prompt: say what a
+  summary must restate, and say that memory is a *past* visit rather than a
+  present reading — without the second, a model will happily answer today's
+  question with yesterday's sensor value.
+
+### Running it against a real rig
+
+Everything above is hermetic: a scripted mind, no network, no gateway, no
+Docker. Pointing the *same host* at real models is one flag:
+
+```bash
+export COLLEAGUE_API_KEY=…    # read from the environment; never hardcoded, never printed
+uv run python examples/greenhouse.py --live --identity Gwen --muse --base-url http://localhost:8001/v1 "Does Marlow need water today?"
+```
+
+`--live` is opt-in and has no default anywhere — the demo's test suite asserts
+that, so CI cannot trip into a real endpoint. `--muse` starts a second,
+advisory mind beside the actor: it proposes, it never decides, and it is given
+no tool schema at all. Without it the report says `"muse": null`, truthfully — a
+single-model run never claims another mind exists. `--identity Gwen` frames the
+prompts; with no identity the prompt is **byte-identical** to the unframed one.
+
+Two measured notes about the reference rig, so a first live run is not a
+mystery: the cortex is a *thinking* model (it emits a long `reasoning` field
+before any `content`, which `ModelResponse` carries separately), and a stingy
+`--max-tokens` will return `content: None` while still mid-thought. The default
+is deliberately generous.
+
+The live tests are **skipped**, never failed, unless you ask for them:
+
+```bash
+EMBODIMENT_LIVE_RIG=1 COLLEAGUE_API_KEY=… uv run pytest tests/test_demo_greenhouse.py -k LiveRig
+```
+
 ## CLI
 
 | Verb | What it does |
