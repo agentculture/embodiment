@@ -107,7 +107,8 @@ def _drive(*responses: Any, **kw: Any) -> Any:
     """Run the real loop over *responses*, returning the ``LoopOutcome``."""
     task = kw.pop("task", None) or _task()
     max_steps = kw.pop("max_steps", 4)
-    return run(Scripted(*responses), task, executor=Executor(), max_steps=max_steps, **kw)
+    executor = kw.pop("executor", None) or Executor()
+    return run(Scripted(*responses), task, executor=executor, max_steps=max_steps, **kw)
 
 
 def _muse_boundary(*, step: int = 0, **kw: Any) -> BoundaryContext:
@@ -292,6 +293,47 @@ def _loop_continuity(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerR
         raise RuntimeError("eidetic down")
 
     return ledger.from_loop(_drive(_turn(_call("finish")), continuity=boom))
+
+
+class _DelegatingExecutor(Executor):
+    """An executor whose ``delegate`` tool asks the loop for a child drive."""
+
+    def execute(self, name: str, arguments: dict[str, Any]) -> ToolOutcome:
+        if name != "delegate":
+            return super().execute(name, arguments)
+        child = Task(id="child-1", repo_path="/repo", instruction="the sub-task")
+        return ToolOutcome(
+            result="delegating",
+            spawn=loop.SpawnRequest(task=child, executor=Executor()),
+        )
+
+
+def _loop_spawn_unavailable(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    # A tool asks to delegate and no ``SubagentFn`` is wired: the model asked
+    # for help and got none, which must not be visible only as absent work.
+    return ledger.from_loop(
+        _drive(
+            _turn(_call("delegate")),
+            max_steps=4,
+            executor=_DelegatingExecutor(),
+            spawn_allowance=1,
+        )
+    )
+
+
+def _loop_spawn_failed(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    def boom(_call: Any) -> Any:
+        raise RuntimeError("child harness down")
+
+    return ledger.from_loop(
+        _drive(
+            _turn(_call("delegate")),
+            max_steps=4,
+            executor=_DelegatingExecutor(),
+            subagent=boom,
+            spawn_allowance=1,
+        )
+    )
 
 
 def _loop_synthesis(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
@@ -651,6 +693,8 @@ PROVOKERS: dict[tuple[str, str], Provoker] = {
     (ledger.SOURCE_LOOP, loop.DEGRADED_OBSERVER): _loop_observer,
     (ledger.SOURCE_LOOP, loop.DEGRADED_PRESENCE): _loop_presence,
     (ledger.SOURCE_LOOP, loop.DEGRADED_CONTINUITY): _loop_continuity,
+    (ledger.SOURCE_LOOP, loop.DEGRADED_SPAWN_UNAVAILABLE): _loop_spawn_unavailable,
+    (ledger.SOURCE_LOOP, loop.DEGRADED_SPAWN_FAILED): _loop_spawn_failed,
     (ledger.SOURCE_LOOP, loop.DEGRADED_SYNTHESIS): _loop_synthesis,
     (ledger.SOURCE_MUSE, muse.DEGRADED_THINKING): _muse_thinking,
     (ledger.SOURCE_MUSE, muse.DEGRADED_SINK): _muse_sink,

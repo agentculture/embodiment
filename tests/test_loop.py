@@ -304,8 +304,106 @@ class TestImportPosture:
         source = _LOOP_SRC.read_text(encoding="utf-8")
         assert "executor = executor or" not in source
 
+    def test_the_subagent_capability_arrived_through_an_embodiment_import(self):
+        """Stated positively: new capability enters as a seam, never a new dep.
+
+        Delegation is the first capability added to this module since the
+        extraction, so it is the first test of whether the import pin above is
+        load-bearing or decorative. It came from ``embodiment.subagent``, which
+        itself imports nothing but stdlib and the contract.
+        """
+        import sys
+
+        modules = _imported_modules()
+        assert "embodiment.subagent" in modules
+        seam = Path(_LOOP_SRC).parent / "subagent.py"
+        seam_tree = ast.parse(seam.read_text(encoding="utf-8"))
+        for node in ast.walk(seam_tree):
+            names: list[str] = []
+            if isinstance(node, ast.Import):
+                names = [a.name for a in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                names = [node.module]
+            for name in names:
+                top = name.split(".")[0]
+                assert top == "__future__" or top in sys.stdlib_module_names or top == "embodiment"
+
+
+class TestTheDepthBoundIsPinnedInTheLoopToo:
+    """loop.py's half of the structural depth bound (the seam's half is in
+    ``tests/test_subagent.py``): this module computes no allowance of its own.
+
+    The bound is only structural if BOTH halves hold. The seam can be as
+    careful as it likes about ``attenuate`` while the loop quietly writes
+    ``ctx.allowance = 99`` beside it, so the loop's writes are pinned here,
+    where the rest of loop.py's AST pins live.
+    """
+
+    def test_every_allowance_write_passes_through_attenuate(self):
+        tree = ast.parse(_LOOP_SRC.read_text(encoding="utf-8"))
+        writes = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Assign)
+            and any(isinstance(t, ast.Attribute) and t.attr == "allowance" for t in node.targets)
+        ]
+        assert writes, "expected the loop to decrement an allowance somewhere"
+        for node in writes:
+            assert isinstance(node.value, ast.Call), ast.dump(node)
+            assert isinstance(node.value.func, ast.Name), ast.dump(node)
+            assert node.value.func.id == "attenuate", ast.dump(node)
+
+    def test_no_allowance_is_ever_augmented(self):
+        """``ctx.allowance += 1`` is the edit this pin exists to stop."""
+        for node in ast.walk(ast.parse(_LOOP_SRC.read_text(encoding="utf-8"))):
+            if isinstance(node, ast.AugAssign) and isinstance(node.target, ast.Attribute):
+                assert node.target.attr != "allowance", ast.dump(node)
+
+    def test_the_zero_gate_is_checked_before_a_child_is_minted(self):
+        """A drive at ``NO_SPAWNS`` is turned away before anything is built."""
+        tree = ast.parse(_LOOP_SRC.read_text(encoding="utf-8"))
+        delegate = next(
+            n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef) and n.name == "_delegate"
+        )
+        gates = [
+            n.lineno
+            for n in ast.walk(delegate)
+            if isinstance(n, ast.Compare)
+            and any(isinstance(c, ast.Name) and c.id == "NO_SPAWNS" for c in n.comparators)
+        ]
+        mints = [
+            n.lineno
+            for n in ast.walk(delegate)
+            if isinstance(n, ast.Call)
+            and isinstance(n.func, ast.Name)
+            and n.func.id == "child_call"
+        ]
+        assert gates and mints and min(gates) < min(mints)
+
 
 # ── 2. termination ────────────────────────────────────────────────────────────
+
+
+def _exit_returning_functions() -> set[str]:
+    """Every function in ``loop.py`` that returns an ``EXIT_*`` constant.
+
+    Counts a constant appearing ANYWHERE in the returned expression, not only a
+    bare ``return EXIT_X``: ``_advance_turn`` returns it inside a tuple, and a
+    new exit smuggled in as one element of some other shape would otherwise
+    slip past this read entirely.
+    """
+    tree = ast.parse(_LOOP_SRC.read_text(encoding="utf-8"))
+    producers: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.FunctionDef):
+            continue
+        for inner in ast.walk(node):
+            if not isinstance(inner, ast.Return) or inner.value is None:
+                continue
+            for name in ast.walk(inner.value):
+                if isinstance(name, ast.Name) and name.id.startswith("EXIT_"):
+                    producers.add(node.name)
+    return producers
 
 
 def _work_loop_node() -> ast.FunctionDef:
@@ -429,6 +527,25 @@ class TestTerminationMatrix:
         assert outcome.exit_reason == EXIT_BUDGET
         assert outcome.result.stats.model_turns == 4
         assert all(step.ok is False for step in outcome.result.steps)
+
+    def test_delegation_introduced_no_new_exit_producer(self):
+        """The subagent seam is a STEP, not a fourth way out.
+
+        Pinned as "which functions may return an ``EXIT_*`` constant" rather
+        than as "``_work_loop`` has three returns", because the way a new
+        capability would smuggle in an exit is by returning one from a helper
+        the loop then propagates. The list is exactly three, and delegation is
+        not on it.
+        """
+        assert _exit_returning_functions() == {
+            "_work_loop",
+            "_advance_turn",
+            "_handle_no_tool_turn",
+        }
+
+    def test_the_delegation_helpers_return_no_exit_at_all(self):
+        delegation = {"_delegate", "_run_child", "_charge_child", "_stamp_sub_result"}
+        assert not (delegation & _exit_returning_functions())
 
     def test_a_raising_seam_is_not_a_loop_exit_but_a_preserved_partial(self):
         complete = Scripted(_turn(_call("read_file", path="a")), RuntimeError("engine down"))
