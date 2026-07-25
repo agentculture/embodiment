@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.1] - 2026-07-25
+
+### Added
+
+- Spec + build plan for the function-first loops + muse redesign (frame function-first-loops-muse-redesign): reflective/associative muse with five-verb charter and counsel-kind delivery, muse-compiled memory over a fetch-only eidetic bundle (eidetic-cli#37 proposed), scratchpad promotion, attenuating subagent seam, committed challenge harnesses, and a league-of-agents seat host with two residency arms
+
 ## [0.7.0] - 2026-07-25
 
 ### Added
