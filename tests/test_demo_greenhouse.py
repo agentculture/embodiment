@@ -285,7 +285,16 @@ class TestPublicApiOnly:
             tree = ast.parse(path.read_text(encoding="utf-8"))
             for module, _names in _imports(tree):
                 root = module.split(".")[0]
-                allowed = root in sys.stdlib_module_names or root == "embodiment"
+                # `examples` is allowed as a root so harnesses can share one
+                # helper (the config-record preamble) instead of copying it
+                # four times. The rule this guard exists for is unchanged: a
+                # demo pulls NO third-party dependency, so an app author can
+                # copy one and owe nothing but stdlib + embodiment.
+                allowed = (
+                    root in sys.stdlib_module_names
+                    or root == "embodiment"
+                    or root == "examples"
+                )
                 assert allowed, f"{path.name} imports {module!r}: not stdlib, not embodiment"
 
     def test_every_embodiment_name_is_on_the_curated_surface(self) -> None:
