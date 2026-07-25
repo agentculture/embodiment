@@ -47,7 +47,7 @@ from embodiment.presence_engine import (
     BOUNDARY_INTAKE,
     BoundaryContext,
     MuseComment,
-    MuseSeam,
+    MusePullSeam,
     PresenceEngine,
     PresenceIO,
 )
@@ -907,11 +907,19 @@ class TestImportPosture:
 
 
 class TestSeamCompatibility:
-    """The loop is usable through today's synchronous seam AND drain-shaped."""
+    """The loop is usable through the pump's synchronous PULL seam, unchanged.
 
-    def test_a_muse_loop_satisfies_the_pumps_existing_seam(self):
+    Task t10b reshaped the pump's primary ``MuseSeam`` into a drain
+    (``consider`` / ``drain`` / ``degradation``) and kept t7's synchronous
+    callable as ``MusePullSeam``. This shim is why that could happen without a
+    flag day: a bare ``MuseLoop`` is still a working muse for any host that
+    wants one thinking session per boundary on its own thread, and wrapping it
+    in a ``ThreadedMuseRunner`` is what makes it parallel.
+    """
+
+    def test_a_muse_loop_satisfies_the_pumps_pull_seam(self):
         loop, _ = _loop(_resp(MARKER_DONE))
-        assert isinstance(loop, MuseSeam)
+        assert isinstance(loop, MusePullSeam)
 
     def test_calling_it_folds_one_session_into_one_comment(self):
         loop, _ = _loop(

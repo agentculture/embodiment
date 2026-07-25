@@ -49,6 +49,7 @@ from embodiment.presence_engine import (
     SOURCE_PACKET,
     BoundaryContext,
     MuseComment,
+    MusePullSeam,
     MuseSeam,
     PresenceEngine,
     PresenceExecutor,
@@ -151,6 +152,49 @@ class _FakeMuse:
         if not self.comments:
             return None
         return self.comments.pop(0)
+
+
+class _DrainMuse:
+    """A DRAIN-shaped muse stand-in — the seam task t10b's runner implements.
+
+    ``consider`` starts thinking somewhere else and returns immediately;
+    ``drain`` hands back whatever is ready *now* (an empty drain is normal);
+    ``degradation`` reports the lane having stopped for good, WITHOUT raising.
+    """
+
+    def __init__(
+        self,
+        ready: Any = None,
+        *,
+        consider_raises: Any = False,
+        drain_raises: Any = False,
+        degradation: Any = None,
+        degradation_raises: bool = False,
+    ) -> None:
+        self.ready = list(ready or [])
+        self.considered: list[BoundaryContext] = []
+        self.drained_at: list[int] = []
+        self.consider_raises = consider_raises
+        self.drain_raises = drain_raises
+        self._degradation = degradation
+        self.degradation_raises = degradation_raises
+
+    def consider(self, boundary: BoundaryContext) -> None:
+        self.considered.append(boundary)
+        if self.consider_raises:
+            raise self.consider_raises
+
+    def drain(self, *, step_count: int = 0) -> list[MuseComment]:
+        self.drained_at.append(step_count)
+        if self.drain_raises:
+            raise self.drain_raises
+        ready, self.ready = self.ready, []
+        return ready
+
+    def degradation(self) -> Optional[str]:
+        if self.degradation_raises:
+            raise RuntimeError("the seam's own health probe exploded")
+        return self._degradation
 
 
 def _engine(
@@ -534,6 +578,136 @@ class TestMuseDegradation:
         assert any(r.degraded for r in engine.records)
 
 
+# ── 3a. the DRAIN-shaped seam (t10b) ──────────────────────────────────────────
+
+
+class TestDrainSeam:
+    """The revised seam: consider-then-drain, so the pump never waits on a mind.
+
+    Deviation ``d1`` put the muse on its own thread, which means an insight is
+    almost never ready at the boundary that asked for it. The engine therefore
+    *offers* every boundary (``consider``) and *collects* whatever finished in
+    the meantime (``drain``) — and an empty drain is the normal case, not a
+    fault. The engine itself stays thread-free: it only ever makes two
+    non-blocking calls.
+    """
+
+    def test_a_boundary_is_offered_then_whatever_is_ready_is_collected(self):
+        muse = _DrainMuse()
+        engine, io = _engine(muse=muse, cadence=UpdateCadence(every_steps=1))
+        engine.on_progress_boundary(step_count=4)
+        assert [b.kind for b in muse.considered] == [BOUNDARY_CADENCE_TICK]
+        assert muse.drained_at == [4]
+
+    def test_an_empty_drain_is_normal_and_the_beat_still_lands(self):
+        muse = _DrainMuse()
+        engine, io = _engine(muse=muse, cadence=UpdateCadence(every_steps=1))
+        turns = engine.on_progress_boundary(step_count=1)
+        assert [t.source for t in turns] == [SOURCE_CORTEX]
+        assert io.rendered == ["presence: still working — step 3/40"]
+        assert engine.muse_degraded is False
+        assert [(r.point, r.degraded) for r in engine.records] == [
+            (f"muse:{BOUNDARY_CADENCE_TICK}", False)
+        ]
+
+    def test_an_insight_drained_at_a_later_boundary_still_lands(self):
+        # The whole point of the drain: an insight reasoned about step 1 arrives
+        # at step 2, and the pump renders and injects it there.
+        muse = _DrainMuse()
+        engine, io = _engine(muse=muse, cadence=UpdateCadence(every_steps=1))
+        engine.on_progress_boundary(step_count=1)
+        muse.ready.append(MuseComment(text="the parser is the risk", guidance="read parser.py"))
+        engine.on_progress_boundary(step_count=2)
+        assert "presence: the parser is the risk" in io.rendered
+        assert io.guided == ["read parser.py"]
+
+    def test_several_ready_comments_all_land_in_order(self):
+        muse = _DrainMuse([MuseComment(text="first"), MuseComment(text="second", tokens=12)])
+        engine, io = _engine(muse=muse, cadence=UpdateCadence(every_steps=1))
+        turns = engine.on_progress_boundary(step_count=1)
+        assert [t.source for t in turns] == [SOURCE_MUSE, SOURCE_MUSE]
+        assert io.rendered == ["presence: first", "presence: second"]
+        assert [(r.point, r.tokens) for r in engine.records] == [
+            (f"muse:{BOUNDARY_CADENCE_TICK}", None),
+            (f"muse:{BOUNDARY_CADENCE_TICK}", 12),
+        ]
+
+    def test_a_raising_consider_degrades_visibly_and_never_propagates(self):
+        muse = _DrainMuse(consider_raises=ConnectionRefusedError("dead port"))
+        engine, io = _engine(muse=muse, cadence=UpdateCadence(every_steps=1))
+        engine.on_progress_boundary(step_count=1)
+        assert engine.mode == MODE_CORTEX_ONLY
+        assert engine.muse_degraded is True
+        assert any("muse unavailable" in line for line in io.rendered)
+
+    def test_a_raising_drain_degrades_visibly_and_never_propagates(self):
+        muse = _DrainMuse(drain_raises=TimeoutError("the drain wedged"))
+        engine, io = _engine(muse=muse)
+        engine.on_operator_message("hurry")
+        assert engine.muse_degraded is True
+        assert io.guided == ["hurry"]  # the engine's own work still landed
+
+    def test_a_seam_reporting_itself_degraded_is_unbound_after_its_last_words(self):
+        muse = _DrainMuse([MuseComment(text="last thought")], degradation="the endpoint died")
+        engine, io = _engine(muse=muse, cadence=UpdateCadence(every_steps=1))
+        engine.on_progress_boundary(step_count=1)
+        # The last words land FIRST; the notice comments on the beat, so it can
+        # never precede it.
+        assert io.rendered == [
+            "presence: last thought",
+            "presence: (muse unavailable — continuing cortex-only)",
+        ]
+        assert engine.mode == MODE_CORTEX_ONLY
+        assert engine.muse_degraded is True
+        detail = [c for c in engine.snapshot()["chat"] if c.get("degraded") == SOURCE_MUSE][0]
+        assert "the endpoint died" in detail["detail"]
+
+    def test_a_seam_that_reports_degraded_is_never_consulted_again(self):
+        muse = _DrainMuse(degradation="gone")
+        engine, io = _engine(muse=muse, cadence=UpdateCadence(every_steps=1))
+        engine.on_progress_boundary(step_count=1)
+        engine.on_progress_boundary(step_count=2)
+        engine.on_progress_boundary(step_count=3)
+        assert len(muse.considered) == 1
+        assert sum("muse unavailable" in line for line in io.rendered) == 1
+
+    def test_a_raising_health_probe_degrades_like_any_other_fault(self):
+        muse = _DrainMuse(degradation_raises=True)
+        engine, io = _engine(muse=muse)
+        engine.acknowledge(ContextPacket(original="x", ack="on it"))
+        assert engine.muse_degraded is True
+        assert any("muse unavailable" in line for line in io.rendered)
+
+    def test_a_drain_returning_junk_is_tolerated(self):
+        muse = _DrainMuse()
+        muse.ready = None  # type: ignore[assignment]
+        engine, io = _engine(muse=muse, cadence=UpdateCadence(every_steps=1))
+        engine.on_progress_boundary(step_count=1)
+        assert io.rendered == ["presence: still working — step 3/40"]
+
+
+class TestDegradationNoticeOrdering:
+    """A muse notice comments on a beat — it can never land ahead of one."""
+
+    def test_the_notice_follows_the_structural_update_it_comments_on(self):
+        muse = _FakeMuse(raises=True)
+        engine, io = _engine(muse=muse, cadence=UpdateCadence(every_steps=1))
+        engine.on_progress_boundary(step_count=1)
+        assert io.rendered == [
+            "presence: still working — step 3/40",
+            "presence: (muse unavailable — continuing cortex-only)",
+        ]
+
+    def test_the_notice_follows_the_relay_it_comments_on(self):
+        muse = _FakeMuse(raises=True)
+        engine, io = _engine(muse=muse)
+        engine.on_operator_message("hurry")
+        assert io.rendered == [
+            "→ cortex: hurry",
+            "presence: (muse unavailable — continuing cortex-only)",
+        ]
+
+
 # ── 3b. fault-injection hardening across every public entry point (t8) ────────
 
 #: The four fault classes named in the build brief (C3): a dead port, a
@@ -861,9 +1035,16 @@ class TestSeamContracts:
         engine, _ = _engine()
         assert isinstance(engine, PresenceSink)
 
-    def test_a_bare_callable_satisfies_the_muse_seam_protocol(self):
-        assert isinstance(_FakeMuse(), MuseSeam)
-        assert isinstance(lambda boundary: None, MuseSeam)
+    def test_a_bare_callable_satisfies_the_muse_pull_seam_protocol(self):
+        # t7's synchronous shape, still accepted (t10b keeps the compat lane).
+        assert isinstance(_FakeMuse(), MusePullSeam)
+        assert isinstance(lambda boundary: None, MusePullSeam)
+
+    def test_the_primary_seam_is_the_drain_shape(self):
+        assert isinstance(_DrainMuse(), MuseSeam)
+        assert not isinstance(_FakeMuse(), MuseSeam)
+        members = {name for name in vars(MuseSeam) if not name.startswith("_")}
+        assert members == {"consider", "drain", "degradation"}
 
     def test_every_exported_name_resolves(self):
         import embodiment.presence_engine as mod
