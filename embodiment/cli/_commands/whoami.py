@@ -15,6 +15,7 @@ from pathlib import Path
 
 from embodiment import __version__
 from embodiment.cli._output import emit_result
+from embodiment.identity import scalar_value
 
 _FALLBACK_NICK = "embodiment"
 
@@ -67,9 +68,16 @@ def read_agent_fields() -> dict[str, str]:
 
 
 def _scalar(line: str, key: str) -> str:
-    """Extract the scalar after ``key:`` from a ``culture.yaml`` line."""
-    _, _, value = line.partition(f"{key}:")
-    return value.strip().strip("'\"") or "unknown"
+    """Extract the scalar after ``key:`` from a ``culture.yaml`` line.
+
+    Thin wrapper around ``embodiment.identity.scalar_value`` — the single
+    shared implementation of "read a YAML-ish scalar line" in the package —
+    that maps an absent/blank value to this command's ``"unknown"`` display
+    fallback (identity resolution elsewhere in the package treats absence as
+    ``None`` instead; that distinction is deliberate and stays local to this
+    module).
+    """
+    return scalar_value(line, key) or "unknown"
 
 
 def report() -> dict[str, object]:

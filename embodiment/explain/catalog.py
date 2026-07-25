@@ -12,11 +12,38 @@ from __future__ import annotations
 _ROOT = """\
 # embodiment
 
-A clonable template for AgentCulture mesh agents. It carries an agent-first CLI
-(cited from the teken `python-cli` reference), a mesh identity (`culture.yaml` +
-`CLAUDE.md`), the canonical guildmaster skill kit under `.claude/skills/`, and a
-buildable/deployable package baseline. Clone it, rename the package, edit
-`culture.yaml`, and you have a new agent.
+The agentic loop that gives an app an embodied AI presence. Install `embodiment`
+in an app or wrap one, supply a **model seam** plus **IO callbacks**, and it
+drives the perceive → decide → act loop and the presence pump — extracted from
+colleague so the loop is written once and imported, not reimplemented per host.
+
+## Software presence, not a robot body
+
+"Embodiment" is an overloaded word in this mesh: `reachy-mini-cli` owns the
+physical robot, `reachy-lobes` its local brain. This package gives an
+*application* a loop and a presence — it does not drive hardware, and nothing
+here claims a body. If that ever changes it will be a stated goal agreed with
+the robot siblings, never an implication drawn from the name.
+
+## Key concepts
+
+- **Loop** — The bounded perceive → decide → act cycle. Handed a `complete`
+  callable that performs one model turn, it drives until the model finishes,
+  stops requesting tools, or the step budget is reached. Termination is
+  guaranteed.
+- **Presence** — The pump that keeps the app feeling attended to between acts.
+  No TTY, no thread, no clock — all IO rides injected callbacks and cadence is
+  step/phase-based.
+- **Identity and Gwen** — Configuration that frames who is speaking in prompts.
+  Gwen is the reference embodiment: a Qwen cortex (the worker that owns the loop
+  and holds final authority) plus an optional Gemma muse (an advisory
+  subconsciousness that comments and critiques, but never decides and never
+  acts). A run with no muse configured says so rather than implying a second
+  mind. Absent identity means byte-identical prompts to today's behavior.
+- **Continuity** — Memory and coherence wired as runtime subsystems through
+  eidetic-cli (recall, provenance, ageing) and coherence-cli (agreement between
+  memory and the present). Embodiment owns the lived sequence — when something
+  is perceived, considered, acted on, remembered, or revisited.
 
 ## Verbs
 

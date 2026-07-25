@@ -1,6 +1,6 @@
 [project]
 name = "embodiment"
-version = "0.6.2"
+version = "0.7.0"
 description = "The agentic loop that gives an app an embodied AI presence. Install embodiment in an app or wrap one, supply a model seam plus IO callbacks, and it drives the perceive-decide-act loop and the presence pump - extracted from colleague so the loop is written once and imported, not reimplemented per host."
 readme = "README.md"
 license = "Apache-2.0"
@@ -13,7 +13,33 @@ classifiers = [
     "Topic :: Software Development",
     "Intended Audience :: Developers",
 ]
-dependencies = []
+# Deviation d2 (approved, recorded): eidetic-cli and coherence-cli are BASE
+# dependencies imported directly at module scope — the t13 subprocess adapter
+# is gone. This reverses constraint C1 (pure-stdlib core) deliberately, and it
+# is not free. Each entry below carries what it actually costs:
+#
+#   eidetic-cli   -> data-refinery-cli[store] -> neo4j + pymongo (graph +
+#                    Mongo drivers, pulled even for the default `files` store)
+#   coherence-cli -> numpy + httpx (and httpx's own httpcore/h11/anyio/certifi)
+#   events-cli    -> paho-mqtt  (declared here for the sibling events task; this
+#                    package ships no events module of its own yet)
+#
+# Consequence, accepted with eyes open: `pip install embodiment` now pulls a
+# graph driver, a Mongo driver, numpy, httpx and an MQTT client, and importing
+# embodiment transitively imports third-party modules. colleague's own
+# tests/test_zero_deps.py asserts its dependencies are exactly ["agentfront>=…"]
+# and that importing colleague adds no third-party top-level import — so
+# colleague CANNOT adopt embodiment until C1b (does colleague relax its
+# one-base-dependency rule?) is answered. That is now a hard prerequisite for
+# the seam proposal, not an open question.
+#
+# tests/test_zero_deps.py is the human gate on this list: any addition OR
+# removal fails until a human updates the pinned set on purpose.
+dependencies = [
+    "eidetic-cli>=0.12",
+    "coherence-cli>=0.6",
+    "events-cli>=0.10",
+]
 
 [project.urls]
 Homepage = "https://github.com/agentculture/embodiment"

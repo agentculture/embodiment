@@ -17,15 +17,32 @@ value is the importable seam an app depends on.
 
 ### Honest status — read this before you plan work
 
-**The loop and the presence pump are not in this repo yet.** What is on disk
-today is the `culture-agent-template` scaffold, renamed: an agent-first CLI
-(`whoami` / `learn` / `explain` / `overview` / `doctor` / `cli`), a mesh
-identity, the vendored skill kit, and green CI + PyPI publishing. `git log` is
-two commits. Everything under [The extraction](#the-extraction-what-comes-from-colleague)
-is **work to be done**, sourced from `colleague`, not code you can read here.
+**The extraction is largely done.** This section previously said the loop and
+presence pump were not in the repo; that stopped being true partway through the
+`gwen-loop-presence-continuity` build. What is checked in on the
+`spec/gwen-loop-presence-continuity` branch today:
+
+| Module | What it is |
+|--------|------------|
+| `loop.py` | The bounded tool loop, extracted from colleague's 4463-line `loop.py` (~42% of its statements). Termination proved *structurally* by AST tests, not just behaviourally. |
+| `presence_engine.py` | The pump, redesigned around cortex + muse — no TTY, no thread, no clock. |
+| `presence.py` | The pure policy half (cadence + clarify), ported byte-faithfully. |
+| `muse.py` | The bounded, thread-free muse **thinking** loop (deviation `d1`). |
+| `perception.py` | Verbatim-invariant intake + never-raise. |
+| `continuity.py` | The eidetic/coherence seam (rewritten under `d2` — see C1). |
+| `contract.py` | The carved data contract. |
+| `context.py` / `media.py` | Windowing, degradable classification, media handling. |
+| `identity.py` | Resolved identity, mirroring colleague's order. |
+
+Still to land: the threaded muse runner, Gwen prompt framing, the continuity
+lifecycle checkpoints, the degradation ledger, the demo app, and the seam
+proposal to colleague. Check `docs/plans/` and `.devague/deliveries/` for the
+live state — the deviation ledger (`devague deviate --list`) records every
+approved departure from the plan and is the authority on what changed and why.
 
 Keep this file's claims grounded in checked-in reality. When a section drifts
-ahead of what exists, mark it `(planned)` or move it under a roadmap heading.
+ahead of what exists, mark it `(planned)` or move it under a roadmap heading —
+and when it drifts *behind*, as this one did, fix it.
 
 ## Where embodiment sits
 
@@ -152,18 +169,37 @@ extra, never as a base dependency (see the zero-deps rule below).
 These come from the build brief (issue #1) and hold until a sibling repo agrees
 otherwise in writing.
 
-- **C1 — pure-stdlib core.** colleague's `tests/test_zero_deps.py` asserts its
-  `[project].dependencies` is *exactly* `["agentfront>=…"]` and that importing
-  colleague adds no third-party top-level import. `embodiment` must clear the
-  same bar or `pip install embodiment` breaks colleague's CI. `pyproject.toml`
-  ships `dependencies = []` today — keep it that way; retrofitting
-  stdlib-purity is far harder than starting there. Optional capabilities go
-  behind extras, lazily imported inside a function, never at module load.
-- **C1b — the third-base-dependency question is open.** "agentfront is the ONE
-  sanctioned base dependency" does not survive being said three times. Does
-  colleague allow-list three, or does embodiment *compose* `shell-cli` so
-  colleague gains one dependency instead of two? Raise it with colleague and
-  shell-cli before choosing.
+- **C1 — SUPERSEDED by deviation `d2` (2026-07-25). Dependencies are now
+  human-gated, not forbidden.** The original constraint read: `embodiment` must
+  ship `dependencies = []` because colleague's `tests/test_zero_deps.py`
+  asserts its own `[project].dependencies` is *exactly* `["agentfront>=…"]` and
+  that importing colleague adds no third-party top-level import — so a fat
+  embodiment would break colleague's CI.
+
+  That is no longer the rule here. `d2` (approved, recorded in
+  `.devague/deliveries/`) allows sibling CLIs to be **imported directly at
+  module scope as base dependencies**, replacing the subprocess adapter:
+  `eidetic-cli` (→ `data-refinery-cli[store]` → neo4j + pymongo),
+  `coherence-cli` (→ numpy + httpx), and `events-cli` (→ paho-mqtt).
+
+  What survives is the *discipline*, not the zero: **no dependency enters
+  without a human deciding.** `tests/test_zero_deps.py` pins the exact approved
+  set and fails on any delta in either direction — an unplanned addition *or* a
+  removal — with a failure message naming what approval is being requested.
+  Adding a dependency is a deliberate act with a recorded reason, not a quiet
+  edit to a requirements list.
+
+  **The accepted cost, recorded so it is not rediscovered:** `pip install
+  embodiment` now pulls a graph driver, a Mongo driver, numpy, httpx and
+  paho-mqtt; and importing embodiment transitively imports third-party
+  modules, so colleague's zero-deps test **will fail** if colleague adds
+  embodiment as a dependency.
+- **C1b — no longer an open question; it is now a hard prerequisite.** It used
+  to ask whether colleague would allow-list a third base dependency. After
+  `d2`, colleague cannot import embodiment at all until it relaxes its
+  one-base-dependency rule *and* its no-third-party-import assertion. This is
+  the headline ask of the seam-proposal issue (task t19), not a footnote — and
+  it is colleague's decision to make, never embodiment's to assume.
 - **C2 — do not overclaim the name.** In this mesh `reachy-mini-cli` owns the
   robot body, `reachy-lobes` its local brain, `reachy_nova` its AI brain. A
   package called `embodiment` reads as *physical* embodiment by default. On the
@@ -380,38 +416,47 @@ non-obvious decision *and its rationale*, a constraint, a fix and why it was
 needed). Capture it as it happens, not at the end when it has faded.
 
 **A plain `/remember` here is PUBLIC and COMMITTED.** This repo's vendored
-wrappers inject `--scope embodiment --visibility public` (the rollout-cli
-eidetic-memory recipe's deliberate policy override of eidetic's own private
-default), and a public record inside a git repo routes to
-`<repo-root>/.eidetic/memory` — committed, shared with the team and mesh peers.
-The scope is resolved at runtime from `culture.yaml`'s `suffix`, so the Claude
-and colleague backends share one store. Pass **`--visibility private`** to keep
-a record in `$HOME/.eidetic/memory` instead (never committed); `/recall` reads
-both stores and merges. An explicit `--scope` or `--visibility` on the command
-line always wins, and with no resolvable suffix the wrapper warns on stderr
-before falling back to eidetic's `default`/public scope.
-
-Trust the code, not the wrappers' prose: `remember.sh` / `recall.sh` still carry
-header and `--help` text claiming a *private* default, which their own
-flag-injection blocks (`remember.sh:148`, `recall.sh:144`) contradict. The
-scripts are vendored cite-don't-import — do not edit them to fix this; the
-divergence is logged under [Known doc drift](#known-doc-drift-fix-when-you-touch-these).
+wrappers inject `--scope embodiment --visibility public` — the memory
+scope+visibility convention v1 (eidetic `docs/contract.md`, eidetic-cli#28).
+That public default is eidetic's *own* contract, not a downstream override: it
+matches the plain `eidetic remember` CLI's default and colleague's
+`memory.py` hardcode, so a no-flag remember here and a no-flag `eidetic
+remember` elsewhere land mutually-visible records. A public record inside a git
+repo routes to `<repo-root>/.eidetic/memory` — committed, shared with the team
+and mesh peers. The scope is resolved at runtime from `culture.yaml`'s
+`suffix`, so the Claude and colleague backends share one store. Pass
+**`--visibility private`** to keep a record in `$HOME/.eidetic/memory` instead
+(never committed); `/recall` reads both stores and merges. An explicit
+`--scope` or `--visibility` on the command line always wins. With no resolvable
+suffix (a wheel install with no `culture.yaml`) the wrapper leaves both flags
+unset so the plain CLI defaults apply — `default`/public: the same visibility,
+just grouped under the `default` scope name. There is no stderr warning on that
+path and no privacy downgrade either way.
 
 Don't store what the repo already records (code structure, git history,
 `CHANGELOG.md`) — store what you would otherwise re-derive.
 
 ## Known doc drift (fix when you touch these)
 
-- `docs/skill-sources.md` has **16** table rows but `.claude/skills/` holds
-  **18** — the eidetic-origin `remember` / `recall` skills have no provenance
-  entry. Add them (origin: `agentculture/eidetic-cli`) on the next skills PR.
 - `docs/skill-sources.md` still describes this repo through the template's
   lens in places; consumer-identifying prose was adapted, upstream citations
   intentionally were not.
-- **Vendored-script drift (upstream bug).** `remember.sh` / `recall.sh` document
-  a `--visibility private` default in their header comments and `--help` usage,
-  while the code injects `--visibility public` (`remember.sh:148`,
-  `recall.sh:144`). The code is authoritative — a plain `/remember` commits to
-  the repo. These are cited verbatim, so the fix belongs upstream in
-  `agentculture/eidetic-cli`, not here; file it there when the next skills
-  re-sync happens.
+
+Resolved 2026-07-25 (kept as a caution about how this list is read):
+
+- ~~`docs/skill-sources.md` has 16 rows but `.claude/skills/` holds 18.~~
+  `remember` / `recall` now carry provenance entries (origin:
+  `agentculture/eidetic-cli`).
+- ~~**Vendored-script drift (upstream bug).**~~ **It was not an upstream bug.**
+  The vendored `remember`/`recall` copies were a mid-flight snapshot of
+  eidetic-cli#28: they had the flipped code line but not the documentation pass
+  that followed, so the scripts *and both `SKILL.md`s* still claimed a private
+  default while injecting `--visibility public`. eidetic-cli 0.12.1 was already
+  correct on every surface, so there was nothing to file — the defect was local
+  staleness, fixed by re-syncing all four files verbatim. Details and the
+  re-sync path are in `docs/skill-sources.md`.
+
+  The lesson worth keeping: this section asserted an upstream bug that did not
+  exist. Verify a drift entry against the current upstream before acting on it
+  — filing it as written would have opened an issue on a sibling repo for
+  something they had already closed.

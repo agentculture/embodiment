@@ -5,6 +5,225 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.7.0] - 2026-07-25
+
+### Added
+
+- The bounded tool loop, extracted from colleague (4463 lines -> 1615) and driven only by an injected `complete` callable and an injected tool-executor protocol. Termination is proved structurally: AST tests assert every return in `_work_loop` is one of three exit constants and that it raises nothing of its own.
+- The presence pump, redesigned around cortex + muse. No TTY, no thread, no clock; all IO rides injected `PresenceIO` callbacks and cadence is step/phase-based.
+- `muse.py` and `muse_runner.py` — the muse as a bounded, tools-off thinking loop on one daemon thread with a `threading.Event` stop signal and a bounded join (deviation d1). Advisory only: nothing muse-sourced can reach a tool decision, proved by an adversarial sentinel test.
+- `perception.py` — verbatim intake. `ContextPacket.original` comes from the caller's input and never from model output, enforced structurally by an allowlist rather than by convention.
+- `continuity.py` and `lifecycle.py` — eidetic/coherence composed behind three named checkpoints (before-action, before-completion, before-memory), with provenance threaded from perception to durable record.
+- `framing.py` — Gwen role-framed prompt composition per colleague#352. Absent identity yields byte-identical prompts, proved by goldens against the real seams plus an AST guard.
+- `ledger.py` — one host-visible degradation stream folding six record shapes across seven lanes, with an enumeration test that is exhaustive by construction.
+- `events.py` — optional event emission through events-cli, satisfying the loop's existing `ObserverFn` seam.
+- A curated, lazily-resolved public API (PEP 562): `import embodiment` loads no submodule and costs 9.1ms, down from 19.8ms.
+- `examples/` — a greenhouse demo proving continuity across two real processes, a live self-test (two instances conversing; recognising own memories), long-running proof tasks, thinking telemetry, and a reset-survivable scratchpad.
+
+### Changed
+
+- BREAKING: `[project].dependencies` is no longer empty. eidetic-cli, coherence-cli and events-cli are now base dependencies imported in-process (deviation d2), which transitively installs neo4j, pymongo, numpy, httpx and paho-mqtt. What survives of the old zero-dependency rule is the discipline: `tests/test_zero_deps.py` is now a human gate that pins the approved set and fails on any change in either direction.
+- BREAKING for colleague specifically: importing embodiment introduces third-party top-level modules, so colleague cannot adopt it until it relaxes its own zero-deps assertions. Tracked as the C1b decision in colleague#358.
+- `run()` returns a `LoopOutcome` (result, exit reason, hook firings, degradations) rather than a bare `TaskResult`, because those ledgers are the loop's record of its own conduct.
+- `run()` accepts `continued_from`, making the `supersedes` provenance edge reachable through the public API — the before-memory boundary fires inside `run()`, so setting it on the returned result is always too late.
+
+### Fixed
+
+- An aborted drive reported `exit_reason="budget"`. `outcome` defaulted to EXIT_BUDGET before the try, so a seam raising three steps into a twenty-step drive claimed to have exhausted a budget it had barely touched. Now EXIT_ABORTED, which is not a loop exit and cannot become one. Found by an independent review.
+- The continuity store anchor checked only `data_dir is None`. An empty string passed, and an empty EIDETIC_DATA_DIR reads as unset — dropping eidetic back to the git-toplevel probe, the exact leak the anchor exists to prevent. Found by the same review.
+- The forced synthesis turn could exceed `max_steps`, inherited from colleague where `synthesis_reserve` defaults to 0. It is now reserved out of the budget. Reported upstream as colleague#357.
+- The markdownlint CI job had been red since dependencies landed, because `.venv` was never in the ignore list and numpy ships LICENSE.md files that fail six rules.
+- Vendored remember/recall skills were a mid-flight snapshot of eidetic-cli#28 whose prose still claimed a private default while the code injected public — including in the SKILL.md files loaded into an agent's context.
+
+## [Unreleased]
+
+### Changed
+
+- **BREAKING (install footprint) — deviation d2: `eidetic-cli` and
+  `coherence-cli` are now base dependencies, imported directly at module
+  scope.** The t13 subprocess adapter in `embodiment/continuity.py` is gone;
+  the seam calls the sibling libraries as ordinary Python. `events-cli` is
+  declared alongside them for a sibling task (no events module ships yet).
+  `pip install embodiment` therefore now pulls **neo4j + pymongo** (via
+  `eidetic-cli` → `data-refinery-cli[store]`), **numpy + httpx** (via
+  `coherence-cli`) and **paho-mqtt** (via `events-cli`). This deliberately
+  reverses constraint C1 (pure-stdlib core); the deviation was recorded and
+  approved with the cost stated up front.
+  - **Consequence for colleague, stated rather than discovered later:**
+    importing embodiment now transitively imports third-party modules, so
+    colleague's own `tests/test_zero_deps.py` — which asserts its dependencies
+    are *exactly* `["agentfront>=…"]` and that importing colleague adds no
+    third-party top-level import — **will fail if colleague adds embodiment**.
+    C1b (whether colleague relaxes its one-base-dependency rule) is now a hard
+    prerequisite for the seam proposal, not an open question.
+  - `import embodiment` on its own still costs nothing: the package root stays
+    lazy (PEP 562), so only a host that actually reaches
+    `embodiment.continuity` pays. Pinned by a test.
+- **Both silent-corruption traps re-solved for in-process, not inherited
+  blindly.** *Trap #1* — eidetic resolves an unpinned public write against
+  `os.getcwd()`, which in-process is the **host's** cwd, so a host started
+  inside a git checkout would commit its memories into that repo. With no
+  subprocess `cwd` left to pin, `data_dir` becomes the **sole, mandatory**
+  anchor, applied through a `_pinned_store` context manager that sets
+  eidetic's `EIDETIC_DATA_DIR` override (which short-circuits the git-toplevel
+  probe entirely) and restores the host's environment in a `finally` —
+  including `DR_DATA_DIR`, which eidetic itself writes and never restores, a
+  leak that only becomes visible once the call is in-process. Supplying no
+  anchor still degrades *before* any work. *Trap #2* — `coherence.assess` now
+  reports partial availability by **returning normally** with a non-empty
+  `unavailable` map rather than by exiting 0 with one; `assess()` reads the
+  returned structure and records a degradation regardless, so success is never
+  inferred from "it didn't raise".
+- **`tests/test_zero_deps.py` is now a human gate, not a zero-deps assertion.**
+  It pins the approved dependency set *and* the exact set of third-party
+  top-level modules an import introduces, and fails on any delta **in either
+  direction** — a removal is as reviewable as an addition. Its failure message
+  names what changed, what it costs, and that updating the pin *is* the
+  approval. Module discovery stays dynamic, so future modules are covered
+  automatically.
+
+### Removed
+
+- **`continuity.repo_path`, `Degradation.exit_code`, and the call timeout.**
+  All three were subprocess artefacts with no honest in-process meaning:
+  `repo_path` set a child `cwd`; `exit_code` reported a process result;
+  `timeout` bounded a hung child. `Degradation.exception` (the exception class
+  name) replaces `exit_code`. There is deliberately **no** replacement timeout
+  — an in-process call cannot be bounded without a watchdog thread, and the
+  module will not pretend otherwise; a host needing a hard bound imposes it at
+  its own boundary.
+- **The `CODE_*` tokens the subprocess model implied.** `cli-not-found` →
+  `import-failed`; `nonzero-exit`/`launch-error` → `subsystem-error`;
+  `malformed-json` → `malformed-result`; `timeout` removed. Added
+  `artifact-unreadable` (coherence's engine lets file I/O errors propagate —
+  in-process embodiment is the boundary that converts them) and
+  `reinforce-failed` (a recall whose passive write-back failed still returns
+  its records).
+
+### Added
+
+- **`embodiment/perception.py` — the verbatim-invariant perception intake
+  (task t8).** ``perceive(original, interpret=...)`` is the ONE entry point:
+  it builds every returned ``ContextPacket`` from a single
+  ``ContextPacket(original=text, **fields)`` call, where ``fields`` comes from
+  an allowlist (``_extract_fields``) that reads exactly the five
+  non-``original`` packet fields and never a ``data.get("original")`` —
+  structural enforcement of colleague ``senses.py``'s core invariant
+  (``ContextPacket.original`` is set from the caller's input verbatim, never
+  from model output), proven with hostile-completion tests (a spoofed
+  ``"original"`` key, a prompt-injection payload, a near-miss paraphrase,
+  empty output, non-JSON garbage, multiline unicode, a JSON list instead of an
+  object) asserting byte-identity, not equivalence. Never raises: the four
+  fault classes named in the build brief (C3) — a dead port, a request error,
+  an overflow, and lossy/malformed JSON — all fold through one blanket
+  ``except Exception`` into a degraded ``(ContextPacket, SensesRecord)``
+  return, never an exception, so the caller's verbatim text is never lost.
+  With no ``interpret`` seam configured, ``perceive`` still returns a clean,
+  non-degraded packet at zero model calls — the same "museless is the primary
+  path, not a fault" stance ``presence_engine.py`` (t7) already takes.
+- **`embodiment/loop.py` — the bounded tool loop, extracted (task t4).** The
+  pump itself: handed a `complete` callable that performs *one* model turn, it
+  drives that until the model finishes, stops asking for tools, or exhausts
+  `max_steps`. Extracted from colleague `1.52.1`'s 4463-line `loop.py`, whose
+  seams were already injection-shaped, so this is decoupling work rather than
+  redesign. Public API: `run()` → `LoopOutcome`, plus the `ToolExecutor` /
+  `PresenceSink` protocols, the `HookFn` / `ObserverFn` / `ProgressFn` /
+  `ContinuityFn` / `OperatorInboxFn` seams, and `LoopControls`.
+- **Termination is an honesty condition, and now provable.** `_work_loop` has
+  exactly three exits — `EXIT_FINISHED`, `EXIT_STOPPED`, `EXIT_BUDGET` — proved
+  both behaviourally and *structurally*: `tests/test_loop.py` parses the module
+  and asserts the function returns nothing but those three constants and
+  contains no `raise` of its own, so the only other way out is the injected
+  seam's own exception (preserved as a partial and re-raised as `LoopAborted`).
+  colleague's two extra exits are gone with the features that justified them:
+  the pilot stop left with flight control, and the unknown-tool streak guard's
+  `tool_protocol` exit left because a broken tool channel is now one
+  self-correcting step bounded by the ordinary budget.
+- **Nothing extends the budget.** Not a hook, not a finish nudge, and — unlike
+  upstream — not the forced synthesis turn, which is now *reserved out of*
+  `max_steps` rather than added to it, so the number of `complete` calls a drive
+  makes never exceeds the budget it was given.
+- **The four-event hook lifecycle** (`task_start` / `pre_tool` / `post_tool` /
+  `finish`) with only `pre_tool` control-bearing (`deny` skips execution and
+  feeds the reason back; `rewrite` swaps the arguments; the first decisive
+  verdict wins and short-circuits the chain). Hook *discovery* is injected as a
+  single `HookFn`, which is what keeps process spawning, config-directory
+  resolution and command quoting out of the package entirely — nothing in
+  `embodiment` may assume a shell (C6), because not every host that wants a
+  presence has one. A hook that raises fails closed to a `deny` firing plus a
+  recorded degradation; it can never abort the work item.
+- **An optional `PresenceSink` binding** conforming to the protocol t7 defined:
+  `acknowledge` once before the first step, `on_progress_boundary` once per
+  step, and any operator message routed through `on_operator_message`. The
+  protocol is deliberately re-declared rather than imported, so presence
+  consumes the loop and never the reverse; with no sink — or an inactive one —
+  the drive is byte-identical to a loop with no presence at all.
+- **C3 throughout:** every `contextlib.suppress(Exception)` upstream became an
+  explicit handler recording a `LoopDegradation` on a host-visible ledger — the
+  context-overflow shrink-and-retry ladder and its exhaustion, the
+  media-rejection flatten, an unreadable attachment, and every raising hook,
+  progress sink, observer, presence sink or continuity seam. A raising observer
+  is recorded once and then disabled rather than re-provoked. `hook_firings` and
+  `degradations` ride `LoopOutcome`, not `TaskResult`: they are the loop's record
+  of its own conduct, which is why task t1's contract carve deliberately left
+  `HookFiring` behind.
+- **Clean injection points for task t14** — `ContinuityFn` and the three
+  `Boundary` points issue #2 names (`before-action`, `before-completion`,
+  `before-memory`). The loop owns *when*; it owns no checkpoint policy, ignores
+  whatever the seam returns (coherence asks whether an action makes sense; the
+  capability layer decides whether it is permitted), and degrades rather than
+  letting a downed memory subsystem take the work item with it.
+- **`embodiment/presence_engine.py` — the presence pump, redesigned around
+  cortex + muse (task t7).** This is a **redesign, not an extraction**, and the
+  spec (claim c43) names it as such. colleague `1.52.1`'s `presence_engine.py`
+  hands every boundary to a `SensesLoopDriver` — the senses *coordination* loop,
+  a second agentic loop answering each boundary with a tools-off JSON "move".
+  embodiment ships exactly ONE loop (decision c30: the bounded tool loop;
+  `senses_loop.py` stays in colleague), so the driver seam is rebuilt around the
+  pair embodiment actually ships: the **cortex** loop, reached only through the
+  acting callbacks on `PresenceExecutor` and calling back into the pump at each
+  progress boundary (`PresenceSink`), and an **optional muse** that comments on a
+  boundary and *proposes, never decides* — its narration is rendered, its
+  guidance rides the same advisory `append_guidance` channel an operator relay
+  does, and no muse-sourced value can reach a tool-call decision because the
+  acting surface has no `deny`/`rewrite` field to bind (c41, held by the
+  mechanism rather than the prose).
+- The **museless run is the primary path**, not a degraded exception (c42): with
+  no muse configured the pump still acknowledges (from the intake packet's own
+  `ContextPacket.ack`) and still narrates progress (from the loop's own reported
+  state), spending zero model calls. Three lanes, one ladder — `muse` →
+  `cortex-only` → `off` — where only a *transition* into `cortex-only` is a
+  degradation; starting there is normal. A muse that fails records the failed
+  invocation, the transition, its reason and a rendered notice, then unbinds so a
+  dead endpoint is not re-dialled every step (C3: nothing degrades silently).
+- `PresenceIO` carries the same **eight plain callables, all defaulted to no-ops**
+  (c21), with `narrate` the ONE whose exceptions are swallowed so a voice hook
+  can never disturb the text path; every other callback's failure stays visible
+  to the host. Recorded lines carry the **contributing role** (`packet` /
+  `operator` / `muse` / `cortex`), so a single-model run never looks like two
+  minds.
+
+### Fixed
+
+- **Fault-injection hardening across every public presence entry point**
+  (task t8). ``PresenceEngine.acknowledge`` / ``on_operator_message`` /
+  ``on_progress_boundary`` are now proven, per the four C3 fault classes (dead
+  port, request error, overflow, lossy JSON), to degrade visibly and never
+  raise — reusing t7's existing ``_degrade_muse`` mechanism (the
+  ``muse:<boundary>`` / ``muse:degraded-off`` record pair, the rendered
+  notice, the permanent transition to cortex-only) rather than a second one,
+  so a later degradation-ledger task has one consistent shape to build over.
+- **The clock the "no TTY, no thread, no clock" contract denied.** Upstream's
+  `presence_engine.py` imports `time` and stamps `time.time()` onto its
+  capped-update record, contradicting its own docstring. embodiment resolves it
+  by injection: an optional `clock` callable is the only source of a timestamp,
+  and its default (`None`) **omits the `at` key entirely** rather than fabricating
+  a zero — a fabricated timestamp is exactly the silent dishonesty C3 forbids. An
+  AST test pins that `time` / `threading` / `datetime` / `subprocess` are never
+  imported by the engine, alongside the ported no-front-import graph guard and a
+  test that the engine exposes **no presence event stream** (non-goal c33 —
+  presence stays loop-internal; `snapshot()` is a pull-only artifact fold).
+
 ## [0.6.2] - 2026-07-24
 
 ### Added

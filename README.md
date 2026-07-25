@@ -15,16 +15,26 @@ once and imported, not reimplemented per host.
 
 ## Status
 
-**Scaffold stage.** What ships today is the agent-first CLI, the mesh identity,
-the vendored skill kit, and green CI + PyPI publishing. The loop and the
-presence pump are still in `colleague 1.52.1` awaiting extraction — see
-[Roadmap](#roadmap) and [issue #1](https://github.com/agentculture/embodiment/issues/1).
-`CLAUDE.md` marks what exists versus what is planned; this README does the same.
+**The extraction has landed.** The loop, the presence pump, the muse thinking
+loop, perception, continuity and its lifecycle checkpoints, Gwen framing, the
+degradation ledger, event emission and the demo are all checked in on the
+`spec/gwen-loop-presence-continuity` branch. The demo has been run against a
+real two-model rig, not only against fakes.
+
+Still outstanding: the seam-proposal issue to `colleague`, and the deeper live
+testing recorded as deviation `d4` — an acceptance bar that is *recorded but
+not yet met*, so it is listed here rather than quietly counted as done. See
+[Roadmap](#roadmap) and [issue #1](https://github.com/agentculture/embodiment/issues/1);
+`CLAUDE.md` carries the module-by-module status and `devague deviate --list`
+the approved departures from the plan.
 
 ## What you get
 
+- **The bounded tool loop and the presence pump** — the actual point of the
+  package. `run()` is driven by an injected model seam and an injected tool
+  executor; termination is proved structurally, not just tested.
 - **An agent-first CLI** cited from [teken](https://github.com/agentculture/teken)
-  (`afi-cli`) — the runtime package has **no third-party dependencies**.
+  (`afi-cli`).
 - **A mesh identity** — `culture.yaml` (`suffix` + `backend`) and the matching
   resident prompt file (`AGENTS.colleague.md`, since this agent runs
   `backend: colleague`).
@@ -32,6 +42,33 @@ presence pump are still in `colleague 1.52.1` awaiting extraction — see
   vendored cite-don't-import. See [`docs/skill-sources.md`](docs/skill-sources.md).
 - **A build + deploy baseline** — pytest, lint, the agent-first rubric gate, and
   PyPI Trusted Publishing wired into GitHub Actions.
+
+## Dependencies — what installing this costs you
+
+embodiment is a library host apps import, so **its dependencies become theirs**.
+That is worth stating plainly rather than burying:
+
+| Dependency | Pulls in | For |
+|------------|----------|-----|
+| `eidetic-cli` | `data-refinery-cli[store]` → neo4j, pymongo | durable memory |
+| `coherence-cli` | numpy, httpx | memory-to-present coherence |
+| `events-cli` | paho-mqtt | event emission |
+
+This package began with a hard zero-dependency rule; deviation `d2` replaced it
+with a **human gate**. `tests/test_zero_deps.py` pins the approved set and the
+runtime import set and fails on any change in *either* direction — a new
+dependency cannot arrive without someone deciding, and the failure message says
+what approval is being asked for. Adding one is a deliberate act, not an edit.
+
+Two honest caveats:
+
+- **Install footprint ≠ import footprint.** neo4j, pymongo and paho are
+  installed but never imported at rest — data-refinery resolves its backends
+  lazily and events-cli loads paho on demand. A test guards that distinction so
+  nobody "fixes" one to match the other.
+- **`import embodiment` still costs nothing.** The package root stays lazy
+  (PEP 562), so a consumer that only wants the loop never pays for the
+  continuity stack. This is the strongest surviving piece of the original rule.
 
 ## Quickstart
 
@@ -41,6 +78,104 @@ uv run pytest -n auto                 # run the test suite
 uv run embodiment whoami              # identity from culture.yaml
 uv run embodiment learn               # self-teaching prompt (add --json)
 uv run teken cli doctor . --strict    # the agent-first rubric gate CI runs
+```
+
+## The demo: an app that remembers you
+
+`examples/greenhouse.py` is a small potting-shed assistant — **not** a coding
+agent, and not colleague. Three domain tools, no shell, no filesystem outside
+its own directory. It exists to show the one thing an agentic loop cannot show
+on its own: *an embodiment without memory is a sequence of awakenings*, so run
+it twice and watch the sequence close.
+
+```bash
+uv run python examples/greenhouse.py --reset "New plant card - name: Marlow; sensor: s-fig-01; water below: 30% moisture. It is the fig by the north window. Check it in and log the visit."
+uv run python examples/greenhouse.py --moisture 22 "Does Marlow need water today?"
+```
+
+The second command is a **separate process**. Its utterance never names
+`s-fig-01`, and nothing about Marlow is in the code. It reads that sensor
+anyway, decides to water (22% is under the 30% threshold it was told about
+once, in the previous process), and logs the visit — because the first run's
+summary was written to a durable store and this run recalled it. Add `--json`
+to either command for the machine-readable report: what was recalled, what each
+step did, what was remembered, and every degradation along the way.
+
+Delete the store (`--reset`) and ask the second question on its own: the
+assistant says it has no plant card and asks for one. That refusal is the
+control experiment — it is what proves the recall is load-bearing rather than
+decorative.
+
+### The four seams the demo wires
+
+An app author copies these four things and nothing else:
+
+| Seam | What you supply | In the demo |
+|------|-----------------|-------------|
+| Tool surface | an object with `execute(name, arguments) -> ToolOutcome` | `Greenhouse` — `read_sensor`, `log_care`, `finish` |
+| Model seam | `complete(messages) -> ModelResponse`, one call = one model turn | `scripted_cortex`, or `gateway_seam(...)` with `--live` |
+| Continuity | `build_continuity_fn(LifecycleConfig(data_dir=...))`, injected as `run(..., continuity=...)` | `lifecycle_config()` |
+| Presence | `PresenceIO(render=..., task_state=...)` → `PresenceEngine` | lines go to stderr |
+
+```python
+from embodiment import LifecycleConfig, build_continuity_fn, run
+
+lifecycle = build_continuity_fn(LifecycleConfig(data_dir="/var/lib/myapp/memory"))
+outcome = run(complete, task, executor=my_tools, max_steps=8, continuity=lifecycle)
+for event in lifecycle.events:      # the C3 ledger: recalled, assessed, remembered
+    log(event.to_dict())
+```
+
+Three things worth knowing before you copy it:
+
+- **`data_dir` is mandatory, not a convenience.** It is the sole store anchor.
+  Without it, a *public* record resolves against whatever git repo the host
+  process happens to be running in — so an app started inside a checkout would
+  quietly commit its memories into it. Every eidetic call refuses, with a
+  recorded degradation, rather than guessing.
+- **embodiment recalls; it never injects.** What the acting mind is *told* is
+  host policy, so the demo does that itself in `build_task()` — one recall
+  rendered into `Task.context`. embodiment owns *when* something is perceived,
+  considered, acted on and remembered; it does not own your prompt.
+- **The host names which actions are consequential.** `LifecycleConfig.consequential`
+  takes a predicate; the demo's says `log_care` matters and `read_sensor` does
+  not. embodiment cannot know that, and guessing from a tool name would be the
+  kind of inference this package refuses everywhere else.
+- **Only what the mind puts in its summary is remembered.** The durable
+  record's text *is* `TaskResult.summary`, so what survives to the next process
+  is a prompt-quality question, not a storage one. Two findings from running
+  this demo against real models, both now in its system prompt: say what a
+  summary must restate, and say that memory is a *past* visit rather than a
+  present reading — without the second, a model will happily answer today's
+  question with yesterday's sensor value.
+
+### Running it against a real rig
+
+Everything above is hermetic: a scripted mind, no network, no gateway, no
+Docker. Pointing the *same host* at real models is one flag:
+
+```bash
+export COLLEAGUE_API_KEY=…    # read from the environment; never hardcoded, never printed
+uv run python examples/greenhouse.py --live --identity Gwen --muse --base-url http://localhost:8001/v1 "Does Marlow need water today?"
+```
+
+`--live` is opt-in and has no default anywhere — the demo's test suite asserts
+that, so CI cannot trip into a real endpoint. `--muse` starts a second,
+advisory mind beside the actor: it proposes, it never decides, and it is given
+no tool schema at all. Without it the report says `"muse": null`, truthfully — a
+single-model run never claims another mind exists. `--identity Gwen` frames the
+prompts; with no identity the prompt is **byte-identical** to the unframed one.
+
+Two measured notes about the reference rig, so a first live run is not a
+mystery: the cortex is a *thinking* model (it emits a long `reasoning` field
+before any `content`, which `ModelResponse` carries separately), and a stingy
+`--max-tokens` will return `content: None` while still mid-thought. The default
+is deliberately generous.
+
+The live tests are **skipped**, never failed, unless you ask for them:
+
+```bash
+EMBODIMENT_LIVE_RIG=1 COLLEAGUE_API_KEY=… uv run pytest tests/test_demo_greenhouse.py -k LiveRig
 ```
 
 ## CLI
@@ -84,10 +219,18 @@ the operator talks to.
 | Runtime | `colleague` | the harness |
 | Loop + presence | `embodiment` | the pump |
 | **Teammate identity** | **Gwen** | who the operator addresses |
-| Cortex | Qwen 3.6 27B (`sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP`) | bounded tool loop, repo actions, final synthesis — **final authority** |
-| Muse | Gemma 4 31B (`nvidia/Gemma-4-31B-IT-NVFP4`) | tools-off advisory reasoning; proposes, never decides |
-| Senses | Gemma 4 12B (`coolthor/gemma-4-12B-it-NVFP4A16`) | intake, perception, conversational presence, speak-back; never acts on the repo |
+| Cortex | Qwen 3.6 27B (`sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP`) | bounded tool loop, repo actions, final synthesis — **final authority**. Framed by embodiment. |
+| Muse | Gemma 4 31B (`nvidia/Gemma-4-31B-IT-NVFP4`) | a tools-off advisory mind running its own parallel thinking loop; proposes, never decides. Framed by embodiment. |
+| Senses | Gemma 4 12B (`coolthor/gemma-4-12B-it-NVFP4A16`) | intake, perception, speak-back; never acts on the repo. **Lives in colleague, not here** — see the scope note below. |
 | Ears / voice | Parakeet STT + Chatterbox TTS (lobes audio overlay) | the realtime lane below |
+
+> **Scope: embodiment frames cortex and muse, not senses.** The table describes
+> the whole reference rig, but only part of it is this package. embodiment ships
+> **one** actor loop; colleague's senses coordination loop stays in colleague,
+> and so does its framing. This split is recorded on
+> [colleague#352](https://github.com/agentculture/colleague/issues/352#issuecomment-5073964358).
+> A single-model run — the default tested path — starts no muse and claims no
+> second mind.
 
 Roles resolve **by name** from a [`lobes`](https://github.com/agentculture/lobes-cli)
 gateway's `/capabilities` contract — never by parsing model names. The identity
@@ -99,9 +242,10 @@ four rules that keep it honest:
    exactly as they do today.
 2. **Identity never changes authority.** Framing renames who speaks; it does not
    touch tool authority, routing, or safety policy.
-3. **Same identity, role-specific authority.** Senses speaks as Gwen in the
-   first person; cortex is framed only on the top-level acting loop; muse
-   receives its boundary on every advisory path; transcription stays neutral.
+3. **Same identity, role-specific authority.** Cortex is framed only on the
+   top-level acting loop — typed subagents never receive it; muse receives its
+   authority boundary on every advisory path. (Senses framing and neutral
+   transcription are colleague's half of the contract, not embodiment's.)
 4. **Traces stay truthful** — they always expose the actual contributing role,
    model, and machine, and a single-model run never claims another mind exists.
 

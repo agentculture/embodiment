@@ -23,6 +23,10 @@ One skill, `ask-colleague` (formerly `outsource`), originates in
 renamed `convertible`. guildmaster's re-broadcast still carries the old
 `outsource` name, so `ask-colleague` is vendored **directly from colleague** as a
 tracked local divergence (see [below](#local-divergence--outsource--ask-colleague-2026-06-06)).
+Two skills, `remember` and `recall`, originate in
+[`agentculture/eidetic-cli`](https://github.com/agentculture/eidetic-cli) —
+eidetic owns its own memory surface — and are vendored **directly from eidetic**
+(see [below](#stale-vendoring--rememberrecall-visibility-default-2026-07-25)).
 
 Every vendored `SKILL.md` carries `type: command`. embodiment
 declares a culture agent (`culture.yaml`, `backend: colleague`), and
@@ -47,6 +51,8 @@ is load-bearing, even where guildmaster's upstream copy omits it.
 | `deviate` | `../devague/.claude/skills/deviate/` | **devague** (vendored directly — guildmaster's copy now carries an added `scripts/` wrapper; see [local divergence](#local-divergence--scope--challenge--deviate--summarize-delivery-vendored-directly-from-devague-2026-07-15)) | Stops an in-flight assign-to-workforce run the moment execution must diverge from the confirmed plan, gets explicit human approval for the divergence, and records it as a first-class, append-only deviation record via `devague deviate` before resuming — never folds a deviation silently into drift after the fact. Verbatim (carries `type: command`). | 2026-07-15 (devague#74/#75/#76) |
 | `summarize-delivery` | `../devague/.claude/skills/summarize-delivery/` | **devague** (vendored directly — guildmaster's copy now carries an added `scripts/` wrapper; see [local divergence](#local-divergence--scope--challenge--deviate--summarize-delivery-vendored-directly-from-devague-2026-07-15)) | Closes the loop after an assign-to-workforce run by turning what actually happened into an accountability artifact — planned versus actual delivery, mid-work decisions, plan drift, evidence-backed delivery claims, and remaining work; runs on complete, partial, AND failed runs, reporting failure faithfully rather than smoothing it over. Verbatim (carries `type: command`). | 2026-07-15 (devague#74/#75/#76) |
 | `ask-colleague` | `../colleague/.claude/skills/ask-colleague/` | **colleague** (renamed from convertible; vendored directly — guildmaster re-broadcast pending) | The first-party front door to the `colleague` CLI: hand a scoped task to a *different* engine/mind via `explore` / `review` / `write`, grade a finished work item via `feedback` (the ROI loop), and reap stale/corrupt `colleague/*` branches a crashed run left behind via `clean`. Every verb takes `--json` (result JSON on stdout, diagnostics on stderr). `explore`/`review` run isolated in a throwaway `git worktree`; `write` **previews by default** (throwaway worktree, no side effects) and refuses a dirty tree only when applying (`--apply` / `--pr`). Verbatim except one consumer-identifying clause in the Provenance paragraph (`colleague vendors from guildmaster` → `embodiment vendors from guildmaster`); already carried `type: command`. Optional runtime dep: **`colleague`** on PATH. | 2026-06-12 (colleague 1.7.0, direct) |
+| `remember` | `../eidetic-cli/.claude/skills/remember/` | **eidetic-cli** (vendored directly — eidetic owns its memory surface; no guildmaster re-broadcast) | Ingests records into the shared eidetic memory store (`eidetic remember`); one JSON object as an argument, or NDJSON on stdin for batch. Upsert is idempotent by id and dedups by content hash. The wrapper injects the runtime-resolved `--scope` (from `culture.yaml`'s `suffix`) **and `--visibility public`** — the memory scope+visibility convention v1 (eidetic `docs/contract.md`, issue #28), a deliberate policy choice, *not* a private default: a plain `/remember` inside this repo lands in `<repo-root>/.eidetic/memory`, **committed and mesh-shared**. Pass `--visibility private` to keep a record in `$HOME`. Consumer-identifying scope literals adapted (`--scope eidetic-cli` → `--scope embodiment`); upstream citations (`<eidetic-cli checkout>`, the "First-party to eidetic-cli" provenance) kept verbatim. Requires `eidetic` on PATH. | 2026-07-25 (eidetic-cli 0.12.1, direct) |
+| `recall` | `../eidetic-cli/.claude/skills/recall/` | **eidetic-cli** (vendored directly — eidetic owns its memory surface; no guildmaster re-broadcast) | Searches the shared eidetic memory store (`eidetic recall`) across four modes — exact, approximate, keyword, hybrid (default) — returning ranked, provenanced records. Reads **both** stores (repo-public and `$HOME`-private) and merges. Same wrapper flag injection as `remember` (resolved `--scope` + `--visibility public`), so a no-flag recall queries the shared public pool; pass `--visibility private` to also surface this agent's private records. Recall passively reinforces matched records — note eidetic#24/#32: that reinforcement rewrites the committed in-repo store, so a read can dirty the git tree. Consumer-identifying scope literals adapted as above. Requires `eidetic` on PATH. | 2026-07-25 (eidetic-cli 0.12.1, direct) |
 
 ## Re-sync procedure
 
@@ -162,6 +168,59 @@ If guildmaster ever re-broadcasts these four **without** the extra `scripts/`
 wrapper (i.e. its copy goes back to matching devague byte-for-byte), switch
 the upstream column back to `../guildmaster/.claude/skills/<skill>/` and
 re-sync from there per the normal procedure.
+
+### Stale vendoring — `remember`/`recall` visibility default (2026-07-25)
+
+Resolved. Recorded because the repo previously carried this as an *upstream*
+bug to file, and it was not one.
+
+The vendored `remember`/`recall` copies were a **mid-flight snapshot** of
+eidetic's scope+visibility convention work
+([eidetic-cli#28](https://github.com/agentculture/eidetic-cli/issues/28), since
+closed). They had taken the flipped code line — `has_flag --visibility "$@" ||
+SCOPE_ARGS+=(--visibility public)` — but not the documentation pass that
+followed it. The result was a file that contradicted itself:
+
+| Surface | Vendored (stale) | Actual behaviour |
+|---------|------------------|------------------|
+| `remember.sh` `--help` | "Records default to this agent's PRIVATE personal scope … pass `--visibility public` to contribute" | injects `--visibility public` |
+| `remember.sh` `resolve_scope` comment | "The personal scope is PRIVATE by default … the private default applies only when we inject the resolved scope" | same |
+| `recall.sh` `resolve_scope` comment | "PRIVATE by default to match /remember" | injects `--visibility public` |
+| both `SKILL.md`s | "the default personal scope is **private**" | same |
+
+The `SKILL.md` surface mattered most: it is loaded into the agent's context
+when the skill is invoked, so the agent was told a plain `/remember` stayed in
+`$HOME` while the wrapper committed the record to `<repo-root>/.eidetic/memory`
+— shared with the team and mesh peers. A confidentiality-shaped surprise, not a
+cosmetic one.
+
+**eidetic-cli 0.12.1 is already correct on every one of those surfaces** (it
+completed the docs pass and dropped the then-obsolete fallback warning), so
+there was nothing to file upstream — the defect was purely local staleness. All
+four files were re-synced verbatim from `../eidetic-cli/`, with only the
+consumer-identifying scope literal adapted (`--scope eidetic-cli` → `--scope
+embodiment`, plus one "(here, `eidetic-cli`)"); the `<eidetic-cli checkout>`
+paths and the "First-party to **eidetic-cli**" provenance lines are upstream
+citations and stay verbatim.
+
+Re-sync path (eidetic is the origin; there is no guildmaster re-broadcast):
+
+```bash
+for s in remember recall; do
+  diff -u ../eidetic-cli/.claude/skills/$s/scripts/$s.sh .claude/skills/$s/scripts/$s.sh
+  diff -u ../eidetic-cli/.claude/skills/$s/SKILL.md      .claude/skills/$s/SKILL.md
+done
+
+for s in remember recall; do
+  rm -rf .claude/skills/$s
+  cp -R ../eidetic-cli/.claude/skills/$s .claude/skills/
+done
+# Then re-apply the scope-literal adaptation:
+sed -i 's/--scope eidetic-cli/--scope embodiment/g; s/(here, `eidetic-cli`)/(here, `embodiment`)/g' \
+    .claude/skills/remember/SKILL.md .claude/skills/recall/SKILL.md
+```
+
+Both already carry `type: command`; no other adaptation is needed.
 
 ## Tooling prerequisites
 
