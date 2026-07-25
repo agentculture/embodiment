@@ -2,7 +2,7 @@
   "plan_slug": "gwen-loop-presence-continuity",
   "schema_version": 1,
   "created": "2026-07-25T05:07:40Z",
-  "updated": "2026-07-25T05:07:40Z",
+  "updated": "2026-07-25T06:28:15Z",
   "deviations": [
     {
       "id": "d1",
@@ -16,6 +16,25 @@
         "t12",
         "c41",
         "c42"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "risky"
+    },
+    {
+      "id": "d2",
+      "what": "eidetic-cli and coherence-cli become base dependencies imported directly at module scope; the t13 subprocess adapter is replaced",
+      "task_ref": "t13",
+      "reason": "User decision: importing coherence-cli and eidetic-cli is allowed and the subprocess workaround should not be used. Declared as base dependencies with ordinary module-scope imports (the simplest, most idiomatic Python), accepting that pip install embodiment pulls neo4j+pymongo (via eidetic -> data-refinery-cli[store]) and numpy+httpx (via coherence), and that importing colleague would transitively import a graph driver -- so colleague's tests/test_zero_deps.py fails until colleague relaxes its rule. C1b is therefore a hard prerequisite for t19, not an open question.",
+      "affects": [
+        "t14",
+        "t2",
+        "t19",
+        "c9",
+        "c10",
+        "c26",
+        "c3",
+        "c24"
       ],
       "origin": "user",
       "status": "approved",
