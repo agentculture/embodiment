@@ -1341,3 +1341,37 @@ class TestContractDrift:
 def test_python_version_guard() -> None:
     """The seam relies on 3.12 generics/typing already required by pyproject."""
     assert sys.version_info >= (3, 12)
+
+
+class TestAnchorEdgeCases:
+    """`data_dir is None` was not the whole check.
+
+    Found by an independent review (`ask-colleague review`) of this branch: an
+    empty string passes `is not None`, and an empty EIDETIC_DATA_DIR almost
+    certainly reads as *unset* — dropping eidetic back to the git-toplevel probe,
+    which is the exact leak the anchor exists to prevent.
+    """
+
+    @pytest.mark.parametrize("bad", ["", "   ", "\t", None])
+    def test_an_unusable_anchor_degrades_before_touching_the_store(self, bad):
+        outcome = continuity.remember(_record(id="x"), data_dir=bad)
+        assert outcome.ok is False
+        assert outcome.degradation is not None
+        assert outcome.degradation.code == continuity.CODE_NO_STORAGE_ANCHOR
+
+    @pytest.mark.parametrize("bad", ["", "   ", None])
+    def test_recall_refuses_the_same_way(self, bad):
+        outcome = continuity.recall("anything", data_dir=bad)
+        assert outcome.ok is False
+        assert outcome.degradation.code == continuity.CODE_NO_STORAGE_ANCHOR
+
+    def test_a_relative_anchor_is_resolved_not_refused(self, tmp_path, monkeypatch):
+        """A caller passing a relative path pinned it deliberately; make it absolute."""
+        monkeypatch.chdir(tmp_path)
+        resolved = continuity._usable_anchor("store")
+        assert resolved is not None
+        assert resolved.is_absolute()
+        assert resolved == (tmp_path / "store").resolve()
+
+    def test_a_real_anchor_survives_validation(self, tmp_path):
+        assert continuity._usable_anchor(tmp_path) == tmp_path.resolve()

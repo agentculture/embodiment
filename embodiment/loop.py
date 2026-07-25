@@ -116,6 +116,7 @@ __all__ = [
     "EXIT_FINISHED",
     "EXIT_STOPPED",
     "EXIT_BUDGET",
+    "EXIT_ABORTED",
     "EXIT_REASONS",
     # hook lifecycle
     "EVENT_TASK_START",
@@ -182,8 +183,19 @@ EXIT_FINISHED = "finished"
 EXIT_STOPPED = "stopped"
 #: ``max_steps`` model turns were spent without finishing (a partial).
 EXIT_BUDGET = "budget"
-#: The complete set. There is no fourth; see the module docstring.
+#: The complete set of ways ``_work_loop`` can END. There is no fourth; see the
+#: module docstring, and the AST tests that prove it structurally.
 EXIT_REASONS = (EXIT_FINISHED, EXIT_STOPPED, EXIT_BUDGET)
+#: NOT a loop exit — the state when the loop did not exit at all because an
+#: injected seam raised. ``_work_loop`` never returns this and a test proves it;
+#: only :func:`run` sets it, on the path where it catches, finalizes the partial
+#: work, and re-raises as :class:`LoopAborted`.
+#:
+#: It exists because the alternative was dishonest: this defaulted to
+#: ``EXIT_BUDGET``, so an abort three steps into a twenty-step drive reported
+#: ``exit_reason="budget"`` — the loop claiming it had exhausted a budget it had
+#: barely touched. Found by an independent review of this branch.
+EXIT_ABORTED = "aborted"
 
 
 # ── hook lifecycle ────────────────────────────────────────────────────────────
@@ -1573,7 +1585,9 @@ def run(
         reading_budget -= 1
 
     aborted: Optional[Exception] = None
-    outcome = EXIT_BUDGET
+    # Not EXIT_BUDGET: if the seam raises, the loop never reached a budget
+    # decision, and saying so would misreport the loop's own conduct.
+    outcome = EXIT_ABORTED
     try:
         outcome = _work_loop(ctx, reading_budget)
     except Exception as exc:  # noqa: BLE001 - preserve partial work on any seam failure

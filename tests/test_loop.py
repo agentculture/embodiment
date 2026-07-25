@@ -51,6 +51,7 @@ from embodiment.loop import (
     EVENT_POST_TOOL,
     EVENT_PRE_TOOL,
     EVENT_TASK_START,
+    EXIT_ABORTED,
     EXIT_BUDGET,
     EXIT_FINISHED,
     EXIT_REASONS,
@@ -366,7 +367,28 @@ class TestTerminationMatrix:
                 for target in node.targets:
                     if isinstance(target, ast.Name) and target.id.startswith("EXIT_"):
                         names.add(target.id)
-        assert names == {"EXIT_FINISHED", "EXIT_STOPPED", "EXIT_BUDGET", "EXIT_REASONS"}
+        # EXIT_ABORTED is deliberately included: it is NOT a loop exit. The
+        # loop never returns it (proved below); only run() sets it when a seam
+        # raised and the loop never reached an exit decision at all.
+        assert names == {
+            "EXIT_FINISHED",
+            "EXIT_STOPPED",
+            "EXIT_BUDGET",
+            "EXIT_REASONS",
+            "EXIT_ABORTED",
+        }
+
+    def test_work_loop_can_never_return_the_aborted_marker(self):
+        """The fourth constant must not become a fourth exit."""
+        tree = ast.parse(_LOOP_SRC.read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == "_work_loop":
+                for inner in ast.walk(node):
+                    if isinstance(inner, ast.Return) and isinstance(inner.value, ast.Name):
+                        assert inner.value.id != "EXIT_ABORTED"
+
+    def test_exit_reasons_still_excludes_the_aborted_marker(self):
+        assert EXIT_ABORTED not in EXIT_REASONS
 
     def test_work_loop_returns_only_the_three_exit_constants(self):
         """Structural proof that no fourth exit path exists."""
@@ -1380,3 +1402,44 @@ class TestSeamRobustness:
 
 def _boom_sink(*args: Any) -> None:
     raise RuntimeError("sink down")
+
+
+def _never_finishes(_messages):
+    return _turn(_call("noop"))
+
+
+class TestAbortIsReportedHonestly:
+    """An abort must not masquerade as a budget exhaustion.
+
+    Found by an independent review (`ask-colleague review`) of this branch:
+    `outcome` defaulted to EXIT_BUDGET before the try, so a seam raising three
+    steps into a twenty-step drive reported exit_reason="budget" — the loop
+    claiming it had spent a budget it had barely touched.
+    """
+
+    def test_a_raising_seam_reports_aborted_not_budget(self):
+        def explode(_messages):
+            raise RuntimeError("the endpoint died")
+
+        with pytest.raises(LoopAborted) as caught:
+            run(explode, _task(), executor=FakeExecutor(), max_steps=20)
+        assert caught.value.outcome.exit_reason == EXIT_ABORTED
+        assert caught.value.outcome.exit_reason != EXIT_BUDGET
+
+    def test_a_genuine_budget_exit_still_says_budget(self):
+        """The fix must not make every partial look like an abort."""
+        outcome = run(_never_finishes, _task(), executor=FakeExecutor(), max_steps=2)
+        assert outcome.exit_reason == EXIT_BUDGET
+
+    def test_the_partial_work_still_survives_an_abort(self):
+        calls = iter([_turn(_call("noop")), _turn(_call("noop"))])
+
+        def one_then_die(_messages):
+            try:
+                return next(calls)
+            except StopIteration:
+                raise RuntimeError("died mid-drive") from None
+
+        with pytest.raises(LoopAborted) as caught:
+            run(one_then_die, _task(), executor=FakeExecutor(), max_steps=20)
+        assert caught.value.outcome.result.steps, "partial work was lost"

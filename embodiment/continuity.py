@@ -156,6 +156,7 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import date, datetime, timezone
+from pathlib import Path
 from typing import Any, Optional, Union
 
 # --- the d2 imports: module scope, guarded, never lazy ----------------------
@@ -535,6 +536,28 @@ def _malformed_degradation(subsystem: str, stage: str, reason: str) -> Degradati
     )
 
 
+def _usable_anchor(data_dir: Any) -> Optional[Path]:
+    """Return the store anchor as an absolute path, or ``None`` if unusable.
+
+    ``data_dir is None`` was the only check here until an independent review of
+    this branch pointed out the gap: an EMPTY string passes ``is not None``, and
+    an empty ``EIDETIC_DATA_DIR`` almost certainly reads as *unset*, dropping
+    eidetic back to the git-toplevel probe — the precise leak the anchor exists
+    to prevent, reached through a different door.
+
+    A relative path is resolved rather than refused. A caller passing ``"."``
+    has pinned the store deliberately; leaving it relative would make the pin
+    depend on the process's working directory, which is the ambiguity being
+    removed.
+    """
+    if data_dir is None:
+        return None
+    text = str(data_dir).strip()
+    if not text:
+        return None
+    return Path(text).expanduser().resolve()
+
+
 def _storage_anchor_degradation(stage: str) -> Degradation:
     """Trap #1's refusal.
 
@@ -679,7 +702,8 @@ def remember(
     raises all degrade to ``RememberOutcome(ok=False, …)`` with a
     :class:`Degradation` attached.
     """
-    if data_dir is None:
+    anchor = _usable_anchor(data_dir)
+    if anchor is None:
         return RememberOutcome(
             ok=False, record_id=None, degradation=_storage_anchor_degradation("remember")
         )
@@ -784,7 +808,8 @@ def recall(
 
     Never raises — see :func:`remember` for the degradation ladder this mirrors.
     """
-    if data_dir is None:
+    anchor = _usable_anchor(data_dir)
+    if anchor is None:
         return RecallOutcome(
             ok=False, records=[], degradation=_storage_anchor_degradation("recall")
         )
