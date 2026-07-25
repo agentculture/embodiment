@@ -48,6 +48,7 @@ _SUBMODULES = frozenset(
         "events",
         "framing",
         "identity",
+        "ledger",
         "lifecycle",
         "loop",
         "media",
@@ -140,6 +141,14 @@ _LAZY_NAMES = {
     # embodiment produces; `events-cli` owns the envelope contract (c33).
     "EventEmitter": "events",
     "EventDegradation": "events",
+    # ── one answer to "what went wrong?" ──────────────────────────────────
+    # A reader over every lane's own degradation shape, not a replacement for
+    # them: `read(loop=..., muse_runner=..., lifecycle=...)` folds six record
+    # types into one stream and keeps each source record in `.original`.
+    "LedgerRecord": "ledger",
+    "read": "ledger",
+    "known_codes": "ledger",
+    "source_for_code": "ledger",
     # ── the lived sequence: when to consider, remember, revisit ───────────
     # `ContinuityLifecycle` IS a `ContinuityFn` — inject it as `continuity=`.
     # The host names which tools are consequential; embodiment cannot know
@@ -235,6 +244,7 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
         events,
         framing,
         identity,
+        ledger,
         lifecycle,
         loop,
         media,
@@ -271,6 +281,12 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
         unframe,
     )
     from embodiment.identity import resolve_identity  # noqa: F401
+    from embodiment.ledger import (  # noqa: F401
+        LedgerRecord,
+        known_codes,
+        read,
+        source_for_code,
+    )
     from embodiment.lifecycle import (  # noqa: F401
         ConsequentialFn,
         ContinuityLifecycle,
