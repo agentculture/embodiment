@@ -79,7 +79,7 @@ esac
 
 resolve_eidetic || exit 2
 
-# ── default to this agent's PERSONAL, PRIVATE scope (culture.yaml `suffix`) ──
+# ── default to this agent's PERSONAL, PUBLIC scope (culture.yaml `suffix`) ───
 # Query this agent's OWN personal scope by default, matching where /remember
 # writes, instead of the global `default` scope shared by every project on this
 # host. We read the `suffix` from the nearest culture.yaml (walking up from this
@@ -88,15 +88,26 @@ resolve_eidetic || exit 2
 # backend (running in a worktree of this same repo) resolves the same suffix,
 # keeping the Claude↔colleague shared-memory story intact.
 #
-# The personal scope is PRIVATE by default to match /remember: in eidetic's model
-# a private record is served only to a recall in the SAME scope (`can_serve`), so
-# querying with --scope <suffix> --visibility private is what retrieves those
-# isolated records (a public/default recall can't see them). Scope and visibility
-# are paired — the private default applies only when we inject the resolved scope,
-# and only if the caller didn't pass --visibility (so an explicit
-# `--visibility public` still wins). An explicit --scope on the command line takes
-# over steering entirely; a wheel install with no culture.yaml falls back to the
-# plain CLI default (`default`/`public`).
+# The personal scope is PUBLIC by default to match /remember — the memory
+# scope+visibility convention (v1, docs/contract.md): a public record is
+# visible to ANY query scope regardless of name (`can_serve`,
+# eidetic/memory/scope.py), so a no-flag recall here returns the full public
+# pool, matching both the plain `eidetic recall` CLI's own --visibility
+# default and the colleague backend's runtime (colleague/memory.py hardcodes
+# --visibility public). Scope and visibility are paired — the public default
+# applies only when we inject the resolved scope, and only if the caller
+# didn't pass --visibility (so an explicit `--visibility private` still
+# wins). Passing --visibility private restores exactly what used to be the
+# implicit default: this agent's own private notes (scope=<suffix>, matched
+# exactly — `can_serve` only serves a private record to a query in the SAME
+# scope) PLUS the full public pool (a private query still sees every public
+# record too — that "private + public" merge is `can_serve`'s behavior
+# whenever the QUERY itself is private, unrelated to this default). What
+# changed is only the no-flag case: a plain recall now returns public-only,
+# since a public-visibility query structurally excludes every private
+# record regardless of scope name. An explicit --scope on the command line
+# takes over steering entirely; a wheel install with no culture.yaml falls
+# back to the plain CLI default (`default`/`public`).
 resolve_scope() {
     local dir suffix=""
     dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
@@ -136,28 +147,34 @@ if ! has_flag --scope "$@"; then
     EIDETIC_SCOPE=$(resolve_scope)
     if [ -n "$EIDETIC_SCOPE" ]; then
         SCOPE_ARGS+=(--scope "$EIDETIC_SCOPE")
-        # rollout-cli eidetic-memory recipe POLICY OVERRIDE (not eidetic's
-        # upstream private default): default to PUBLIC, so a plain recall queries
-        # the in-repo public pool (<repo>/.eidetic/memory) this repo writes to.
-        # Pass --visibility private to also surface this agent's private ($HOME)
-        # notes. The two-store read model reads both dirs regardless.
         has_flag --visibility "$@" || SCOPE_ARGS+=(--visibility public)
-    elif ! has_flag --visibility "$@"; then
-        # No suffix AND no explicit --visibility: the query runs against
-        # eidetic's own default (scope=default, visibility=public), not this
-        # agent's private personal scope — so an empty result isn't silently
-        # misread. Warn on stderr (stdout stays clean for --json). Warn ONLY
-        # here: an explicit --scope (outer guard) or --visibility (this guard) is
-        # a deliberate choice, honored verbatim, so either flag silences this.
-        printf 'warning: no culture.yaml suffix resolved; querying the public default scope rather than a private personal scope. Pass --scope or --visibility to target deliberately.\n' >&2
     fi
+    # No suffix resolved (e.g. a wheel install with no culture.yaml): leave
+    # --scope/--visibility unset entirely, so the plain `eidetic recall`
+    # defaults apply (scope=default, visibility=public) — identical
+    # visibility to the suffix-resolved case above, just grouped under the
+    # `default` scope name instead of this agent's personal one. Nothing to
+    # warn about: unlike the old private-by-default behavior, there is no
+    # unexpected-leak or unexpected-empty-result surprise here either way.
 fi
 
 # Default the embedding endpoint to the local model-gear embed gear. eidetic
 # falls back to a deterministic offline embedding if it's unreachable, so this
 # is safe even when the gear is down. Override by exporting these yourself.
-: "${EIDETIC_EMBED_URL:=http://localhost:8002/v1}"
+# The endpoint is the lobes fleet gateway, which fronts every role on ONE
+# OpenAI-compatible port; the per-role vLLM containers are not published to the
+# host, so a per-gear port is unreachable (`lobes endpoint embedder` confirms
+# the live value). eidetic-cli#28 aligned these to :8002, which matched the code
+# default but was never host-reachable. These values match eidetic's own code
+# default in eidetic/memory/embed.py, so this export is a redundant-but-harmless
+# belt-and-suspenders default kept for explicitness and for older eidetic
+# installs that predate the code-default alignment. The bearer token the gateway
+# requires is read by eidetic from EIDETIC_EMBED_API_KEY / COLLEAGUE_API_KEY /
+# CULTURE_VLLM_API_KEY — deliberately not set here, so no secret passes through
+# this wrapper.
+: "${EIDETIC_EMBED_URL:=http://localhost:8001/v1}"
 : "${EIDETIC_EMBED_MODEL:=Qwen/Qwen3-Embedding-0.6B}"
-export EIDETIC_EMBED_URL EIDETIC_EMBED_MODEL
+: "${EIDETIC_RERANK_MODEL:=Qwen/Qwen3-Reranker-0.6B}"
+export EIDETIC_EMBED_URL EIDETIC_EMBED_MODEL EIDETIC_RERANK_MODEL
 
 exec "${EIDETIC[@]}" recall "${SCOPE_ARGS[@]}" "$@"

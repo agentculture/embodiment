@@ -380,38 +380,47 @@ non-obvious decision *and its rationale*, a constraint, a fix and why it was
 needed). Capture it as it happens, not at the end when it has faded.
 
 **A plain `/remember` here is PUBLIC and COMMITTED.** This repo's vendored
-wrappers inject `--scope embodiment --visibility public` (the rollout-cli
-eidetic-memory recipe's deliberate policy override of eidetic's own private
-default), and a public record inside a git repo routes to
-`<repo-root>/.eidetic/memory` — committed, shared with the team and mesh peers.
-The scope is resolved at runtime from `culture.yaml`'s `suffix`, so the Claude
-and colleague backends share one store. Pass **`--visibility private`** to keep
-a record in `$HOME/.eidetic/memory` instead (never committed); `/recall` reads
-both stores and merges. An explicit `--scope` or `--visibility` on the command
-line always wins, and with no resolvable suffix the wrapper warns on stderr
-before falling back to eidetic's `default`/public scope.
-
-Trust the code, not the wrappers' prose: `remember.sh` / `recall.sh` still carry
-header and `--help` text claiming a *private* default, which their own
-flag-injection blocks (`remember.sh:148`, `recall.sh:144`) contradict. The
-scripts are vendored cite-don't-import — do not edit them to fix this; the
-divergence is logged under [Known doc drift](#known-doc-drift-fix-when-you-touch-these).
+wrappers inject `--scope embodiment --visibility public` — the memory
+scope+visibility convention v1 (eidetic `docs/contract.md`, eidetic-cli#28).
+That public default is eidetic's *own* contract, not a downstream override: it
+matches the plain `eidetic remember` CLI's default and colleague's
+`memory.py` hardcode, so a no-flag remember here and a no-flag `eidetic
+remember` elsewhere land mutually-visible records. A public record inside a git
+repo routes to `<repo-root>/.eidetic/memory` — committed, shared with the team
+and mesh peers. The scope is resolved at runtime from `culture.yaml`'s
+`suffix`, so the Claude and colleague backends share one store. Pass
+**`--visibility private`** to keep a record in `$HOME/.eidetic/memory` instead
+(never committed); `/recall` reads both stores and merges. An explicit
+`--scope` or `--visibility` on the command line always wins. With no resolvable
+suffix (a wheel install with no `culture.yaml`) the wrapper leaves both flags
+unset so the plain CLI defaults apply — `default`/public: the same visibility,
+just grouped under the `default` scope name. There is no stderr warning on that
+path and no privacy downgrade either way.
 
 Don't store what the repo already records (code structure, git history,
 `CHANGELOG.md`) — store what you would otherwise re-derive.
 
 ## Known doc drift (fix when you touch these)
 
-- `docs/skill-sources.md` has **16** table rows but `.claude/skills/` holds
-  **18** — the eidetic-origin `remember` / `recall` skills have no provenance
-  entry. Add them (origin: `agentculture/eidetic-cli`) on the next skills PR.
 - `docs/skill-sources.md` still describes this repo through the template's
   lens in places; consumer-identifying prose was adapted, upstream citations
   intentionally were not.
-- **Vendored-script drift (upstream bug).** `remember.sh` / `recall.sh` document
-  a `--visibility private` default in their header comments and `--help` usage,
-  while the code injects `--visibility public` (`remember.sh:148`,
-  `recall.sh:144`). The code is authoritative — a plain `/remember` commits to
-  the repo. These are cited verbatim, so the fix belongs upstream in
-  `agentculture/eidetic-cli`, not here; file it there when the next skills
-  re-sync happens.
+
+Resolved 2026-07-25 (kept as a caution about how this list is read):
+
+- ~~`docs/skill-sources.md` has 16 rows but `.claude/skills/` holds 18.~~
+  `remember` / `recall` now carry provenance entries (origin:
+  `agentculture/eidetic-cli`).
+- ~~**Vendored-script drift (upstream bug).**~~ **It was not an upstream bug.**
+  The vendored `remember`/`recall` copies were a mid-flight snapshot of
+  eidetic-cli#28: they had the flipped code line but not the documentation pass
+  that followed, so the scripts *and both `SKILL.md`s* still claimed a private
+  default while injecting `--visibility public`. eidetic-cli 0.12.1 was already
+  correct on every surface, so there was nothing to file — the defect was local
+  staleness, fixed by re-syncing all four files verbatim. Details and the
+  re-sync path are in `docs/skill-sources.md`.
+
+  The lesson worth keeping: this section asserted an upstream bug that did not
+  exist. Verify a drift entry against the current upstream before acting on it
+  — filing it as written would have opened an issue on a sibling repo for
+  something they had already closed.
