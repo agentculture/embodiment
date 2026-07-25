@@ -59,6 +59,7 @@ _SUBMODULES = frozenset(
         "presence_engine",
         "recall_bundle",
         "scratchpad",
+        "subagent",
     }
 )
 
@@ -216,6 +217,20 @@ _LAZY_NAMES = {
     "Scratchpad": "scratchpad",
     "Entry": "scratchpad",
     "resume_report": "scratchpad",
+    # ── the subagent seam (delegation bounded by arithmetic) ──────────────
+    "SubagentFn": "subagent",
+    "SubagentCall": "subagent",
+    "SubagentResult": "subagent",
+    "SpawnRequest": "subagent",
+    "SpawnRecord": "subagent",
+    "NO_SPAWNS": "subagent",
+    "SPAWN_GRANTED": "subagent",
+    "SPAWN_REFUSED_ALLOWANCE": "subagent",
+    "SPAWN_REFUSED_BUDGET": "subagent",
+    "SPAWN_REFUSED_SEAM": "subagent",
+    "SPAWN_FAILED": "subagent",
+    "SPAWN_OUTCOMES": "subagent",
+    "SPAWN_REFUSALS": "subagent",
 }
 
 __all__ = ["__version__", *sorted(_SUBMODULES), *sorted(_LAZY_NAMES)]
@@ -275,6 +290,7 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
         presence_engine,
         recall_bundle,
         scratchpad,
+        subagent,
     )
     from embodiment.contract import (  # noqa: F401
         ERROR,
@@ -409,4 +425,19 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
         Entry,
         Scratchpad,
         resume_report,
+    )
+    from embodiment.subagent import (  # noqa: F401
+        NO_SPAWNS,
+        SPAWN_FAILED,
+        SPAWN_GRANTED,
+        SPAWN_OUTCOMES,
+        SPAWN_REFUSALS,
+        SPAWN_REFUSED_ALLOWANCE,
+        SPAWN_REFUSED_BUDGET,
+        SPAWN_REFUSED_SEAM,
+        SpawnRecord,
+        SpawnRequest,
+        SubagentCall,
+        SubagentFn,
+        SubagentResult,
     )
