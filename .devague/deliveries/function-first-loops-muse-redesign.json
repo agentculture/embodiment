@@ -1,0 +1,22 @@
+{
+  "plan_slug": "function-first-loops-muse-redesign",
+  "schema_version": 1,
+  "created": "2026-07-25T19:31:18Z",
+  "updated": "2026-07-25T20:01:03Z",
+  "deviations": [
+    {
+      "id": "d1",
+      "what": "t12 cannot re-author the two register puzzles: their problem statements do not exist in this repo, only their answers",
+      "task_ref": "t12",
+      "reason": "The plan's claim c15 said the register puzzles 'exist only as prose in docs/live-test-results/ and must be re-authored into committed harnesses'. Verified directly: designed-problem.md:114-118 describes the 4-bit puzzle only as 'an externally-supplied puzzle (a Hamming-distance-1 error model over five non-commuting 4-bit routines, plus an ordering constraint)' and gives the answer (initial 0101, order C-B-E-A-D). The five routine definitions are nowhere in the repo, and the Entropic Register has even less (only 120 orders x 256 states, Hamming-distance-2, 17 solutions). Re-authoring therefore needs the external source. The colleague drive diagnosed this correctly but proposed back-fitting routines that reproduce the stated answer - which would fabricate a different puzzle wearing the original's answer, making any measurement non-comparable to the earlier series. The designed subset problem IS fully specified and independently brute-force verified (144 non-consecutive subsets, 76 even, 68 odd, trap 72), so that third of t12 plus the shared config-record helper are unaffected and buildable now.",
+      "affects": [
+        "t12",
+        "t18",
+        "t19"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "needs-follow-up"
+    }
+  ]
+}
