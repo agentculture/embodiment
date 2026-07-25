@@ -1485,6 +1485,7 @@ def run(
     continuity: Optional[ContinuityFn] = None,
     controls: Optional[LoopControls] = None,
     model: str = "",
+    continued_from: Optional[str] = None,
 ) -> LoopOutcome:
     """Drive ``complete`` against ``task`` until finish, a prose stop, or the budget.
 
@@ -1516,6 +1517,14 @@ def run(
         controls: the loop's own knobs; every default is the strict no-op.
         model: the model id, recorded on the stats so the artifact is
             self-describing about which mind ran it.
+        continued_from: the id of the work item this one continues, seeded onto
+            the result **before the first step**. It has to arrive here rather
+            than be set on the returned result, because the ``before-memory``
+            continuity boundary fires *inside* this call — a host assigning it
+            afterwards would always be too late, and the durable record would
+            lose its ``supersedes`` edge. (colleague sets the same field from
+            its CLI front after ``run`` returns, which is fine for the feedback
+            lineage it reads back off an artifact, but not for a mid-run write.)
 
     Returns:
         A :class:`LoopOutcome` — the result, the exit reason, and the loop's own
@@ -1528,7 +1537,7 @@ def run(
             non-empty trace before surfacing the failure.
     """
     _controls = controls or LoopControls()
-    result = TaskResult(task_id=task.id, status=OK)
+    result = TaskResult(task_id=task.id, status=OK, continued_from=continued_from)
     ctx = _Work(
         complete=complete,
         executor=executor,
