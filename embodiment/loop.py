@@ -858,7 +858,7 @@ def _fire_hooks(
     )
     try:
         decisions = _normalize_decisions(ctx.hooks(payload))
-    except Exception as exc:  # noqa: BLE001 - fail closed, never propagate
+    except Exception as exc:  # fail closed, never propagate
         reason = f"hook error: {type(exc).__name__}: {exc}"
         _degrade(ctx, DEGRADED_HOOK_ERROR, f"{event}: {reason}")
         decisions = [HookDecision(decision=DECISION_DENY, reason=reason)]
@@ -934,7 +934,7 @@ def _build_user_message(task: Task) -> str:
     return user
 
 
-def _build_initial_content(ctx: _Work) -> Union[str, list[dict[str, Any]]]:
+def _build_initial_content(ctx: _Work) -> str | list[dict[str, Any]]:
     """The first user turn: a plain string, or content parts when media is attached.
 
     With no attachments this returns the string UNCHANGED — downstream
@@ -1139,6 +1139,41 @@ def _flatten_on_media_rejection(ctx: _Work, exc: Exception) -> bool:
     return True
 
 
+def _classify_complete_error(
+    ctx: _Work, exc: Exception, *, windowed: bool, effective: int, retries_left: int
+) -> tuple[int, int]:
+    """Decide the fate of a ``complete`` failure the flatten path did not retry.
+
+    Called from inside the ``except`` block in :func:`_complete_with_degradation`
+    — every ``raise`` here is bare and re-raises the exception already being
+    handled by that caller, per Python's active-exception rule, so the original
+    traceback and exception object survive unchanged.
+
+    Returns the ``(effective, retries_left)`` pair to retry with. Every other
+    case degrades (where applicable) and raises: no budget in play, a
+    non-degradable error, the retry cap exhausted, or the window floor reached.
+    This is the second of the two counters :func:`_complete_with_degradation`'s
+    docstring promises never grows — it only ever shrinks or the call raises.
+    """
+    if not windowed:
+        raise
+    if classify_degradable(str(exc)) is None:
+        raise  # non-degradable errors are never retried
+    if retries_left <= 0:
+        _degrade(ctx, DEGRADED_OVERFLOW_EXHAUSTED, f"retry cap reached: {exc}")
+        raise
+    shrunk = _shrink_for_retry(ctx, effective)
+    if shrunk is None:
+        _degrade(ctx, DEGRADED_OVERFLOW_EXHAUSTED, f"window floor reached: {exc}")
+        raise
+    _degrade(
+        ctx,
+        DEGRADED_CONTEXT_OVERFLOW,
+        f"{classify_degradable(str(exc))}: window {effective} -> {shrunk}",
+    )
+    return shrunk, retries_left - 1
+
+
 def _complete_with_degradation(ctx: _Work, *, phase: str = _PHASE_THINKING) -> ModelResponse:
     """Window the history, call ``complete``, and degrade on a degradable error.
 
@@ -1165,28 +1200,13 @@ def _complete_with_degradation(ctx: _Work, *, phase: str = _PHASE_THINKING) -> M
     while True:
         try:
             return ctx.complete(ctx.messages)
-        except Exception as exc:  # noqa: BLE001 - classified below, never swallowed
+        except Exception as exc:  # classified below, never swallowed
             if flattens_left > 0 and _flatten_on_media_rejection(ctx, exc):
                 flattens_left -= 1
                 continue
-            if not windowed:
-                raise
-            if classify_degradable(str(exc)) is None:
-                raise  # non-degradable errors are never retried
-            if retries_left <= 0:
-                _degrade(ctx, DEGRADED_OVERFLOW_EXHAUSTED, f"retry cap reached: {exc}")
-                raise
-            shrunk = _shrink_for_retry(ctx, effective)
-            if shrunk is None:
-                _degrade(ctx, DEGRADED_OVERFLOW_EXHAUSTED, f"window floor reached: {exc}")
-                raise
-            _degrade(
-                ctx,
-                DEGRADED_CONTEXT_OVERFLOW,
-                f"{classify_degradable(str(exc))}: window {effective} -> {shrunk}",
+            effective, retries_left = _classify_complete_error(
+                ctx, exc, windowed=windowed, effective=effective, retries_left=retries_left
             )
-            effective = shrunk
-            retries_left -= 1
 
 
 # ── the turn loop ─────────────────────────────────────────────────────────────

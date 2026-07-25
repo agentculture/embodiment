@@ -28,6 +28,7 @@ Five properties, and the first one is the whole point:
 from __future__ import annotations
 
 import ast
+import dataclasses
 import re
 from pathlib import Path
 from typing import Any, Optional
@@ -823,7 +824,7 @@ class TestFramingObjectIsThinDelegation:
         assert framing.block(ROLE_CORTEX) == block_for(ROLE_CORTEX, identity=_IDENTITY, muse=True)
 
     def test_it_is_frozen(self) -> None:
-        with pytest.raises(Exception):
+        with pytest.raises(dataclasses.FrozenInstanceError):
             Framing().identity = "x"  # type: ignore[misc]
 
 

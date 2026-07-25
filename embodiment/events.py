@@ -278,7 +278,7 @@ class EventEmitter:
         self._client_factory = client_factory
         self._on_degrade = on_degrade
 
-        self._Envelope: Optional[Any] = None
+        self._envelope_cls: Optional[Any] = None
         self._type_to_topic: Optional[Any] = None
         self._now_rfc3339: Optional[Any] = None
 
@@ -353,14 +353,14 @@ class EventEmitter:
 
     def _ensure_core(self) -> bool:
         """Lazily resolve the envelope/topic seam once; ``False`` degrades."""
-        if self._Envelope is not None:
+        if self._envelope_cls is not None:
             return True
         try:
             envelope_cls, type_to_topic, now_rfc3339 = _load_envelope_core()
-        except Exception as exc:  # noqa: BLE001 - degrade, never raise
+        except Exception as exc:  # degrade, never raise
             self._degrade(DEGRADED_UNAVAILABLE, f"{type(exc).__name__}: {exc}")
             return False
-        self._Envelope = envelope_cls
+        self._envelope_cls = envelope_cls
         self._type_to_topic = type_to_topic
         self._now_rfc3339 = now_rfc3339
         return True
@@ -375,7 +375,7 @@ class EventEmitter:
             else:
                 event_client_cls = _load_event_client_class()
                 self._client = event_client_cls(host=self._host, port=self._port)
-        except Exception as exc:  # noqa: BLE001 - degrade, never raise
+        except Exception as exc:  # degrade, never raise
             self._degrade(DEGRADED_CONNECT, f"{type(exc).__name__}: {exc}")
             return None
         return self._client
@@ -384,7 +384,7 @@ class EventEmitter:
         detail = (event.detail or "")[:_MAX_DETAIL_CHARS]
         data: dict[str, Any] = {"detail": detail}
         data.update(event.data)
-        return self._Envelope.new(
+        return self._envelope_cls.new(
             type=f"{EVENT_TYPE_PREFIX}{event.kind}",
             source=self._source,
             data=data,

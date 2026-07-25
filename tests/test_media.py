@@ -84,14 +84,16 @@ class TestValidateAttachment:
     def test_unknown_extension_raises(self, tmp_path):
         f = tmp_path / "data.xyz"
         f.write_bytes(b"")
+        path = str(f)
         with pytest.raises(ValueError, match="data.xyz"):
-            validate_attachment(str(f))
+            validate_attachment(path)
 
     def test_no_extension_raises(self, tmp_path):
         f = tmp_path / "README"
         f.write_bytes(b"hello")
+        path = str(f)
         with pytest.raises(ValueError, match="README"):
-            validate_attachment(str(f))
+            validate_attachment(path)
 
     def test_uppercase_extension(self, tmp_path):
         f = tmp_path / "LOGO.PNG"
@@ -102,15 +104,17 @@ class TestValidateAttachment:
     def test_directory_path_raises(self, tmp_path):
         d = tmp_path / "not_a_file.png"
         d.mkdir()
+        path = str(d)
         with pytest.raises(ValueError, match="not_a_file.png"):
-            validate_attachment(str(d))
+            validate_attachment(path)
 
     def test_oversize_file_raises(self, tmp_path, monkeypatch):
         monkeypatch.setattr("embodiment.media.MAX_ATTACHMENT_BYTES", 16)
         f = tmp_path / "big.png"
         f.write_bytes(b"\x89PNG" + b"\x00" * 32)
+        path = str(f)
         with pytest.raises(ValueError, match="too large"):
-            validate_attachment(str(f))
+            validate_attachment(path)
 
     def test_file_within_cap_still_validates(self, tmp_path, monkeypatch):
         monkeypatch.setattr("embodiment.media.MAX_ATTACHMENT_BYTES", 16)

@@ -28,7 +28,7 @@ thread is bounded so a broken implementation fails rather than hangs.
 from __future__ import annotations
 
 import threading
-from dataclasses import dataclass, fields
+from dataclasses import FrozenInstanceError, dataclass, fields
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -208,10 +208,11 @@ def _loop_overflow_retry(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.Led
 
 
 def _loop_overflow_exhausted(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    controls = LoopControls(context_budget=50, max_overflow_retries=2)
     with pytest.raises(LoopAborted) as excinfo:
         _drive(
             RuntimeError("maximum context length exceeded"),
-            controls=LoopControls(context_budget=50, max_overflow_retries=2),
+            controls=controls,
         )
     # The partial's ledger rides the exception; the reader unwraps it.
     return ledger.from_loop(excinfo.value)
@@ -823,7 +824,7 @@ class TestNothingIsFabricated:
 
     def test_the_record_is_frozen(self) -> None:
         record = ledger.LedgerRecord(source="loop", code="x", reason="y")
-        with pytest.raises(Exception):
+        with pytest.raises(FrozenInstanceError):
             record.code = "z"  # type: ignore[misc]
 
     def test_the_shape_is_the_union_of_what_the_lanes_carry(self) -> None:

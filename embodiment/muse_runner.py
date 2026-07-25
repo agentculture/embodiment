@@ -238,7 +238,7 @@ def _coerce_int(value: Any, default: int = 0) -> int:
     """Best-effort ``int``; anything uncoercible falls back to *default*."""
     try:
         return int(value)
-    except Exception:  # noqa: BLE001 - a junk count is a default, never a crash
+    except Exception:  # a junk count is a default, never a crash
         return default
 
 
@@ -280,7 +280,8 @@ def _carry(boundary: BoundaryContext) -> BoundaryContext:
     if not isinstance(history, list):
         return boundary
     try:
-        return replace(boundary, history=list(history))
+        carried: BoundaryContext = replace(boundary, history=list(history))
+        return carried
     except Exception:  # noqa: BLE001 - an uncopyable boundary still gets thought about
         return boundary
 
@@ -475,7 +476,7 @@ class ThreadedMuseRunner:
             try:
                 thread = self._thread_factory(target=self._work, name=THREAD_NAME, daemon=True)
                 thread.start()
-            except Exception as exc:  # noqa: BLE001 - no thread is a degradation, not a crash
+            except Exception as exc:  # no thread is a degradation, not a crash
                 self._degrade(DEGRADED_THREAD, f"{type(exc).__name__}: {exc}")
                 return False
             self._thread = thread
@@ -581,7 +582,7 @@ class ThreadedMuseRunner:
                     self._wake.clear()
                     continue
                 self._absorb(self._loop.think(boundary))
-        except Exception as exc:  # noqa: BLE001 - a dead worker is recorded, never silent
+        except Exception as exc:  # a dead worker is recorded, never silent
             with self._lock:
                 self._degrade(DEGRADED_WORKER, f"{type(exc).__name__}: {exc}")
         finally:

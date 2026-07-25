@@ -78,7 +78,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional, Union
+from typing import Optional
 
 from embodiment.identity import resolve_identity
 from embodiment.muse import MUSE_AUTHORITY
@@ -323,9 +323,9 @@ class Framing:
     @classmethod
     def resolve(
         cls,
-        repo_path: Union[str, Path],
+        repo_path: str | Path,
         *,
-        user_home: Optional[Union[str, Path]] = None,
+        user_home: str | Path | None = None,
         muse: bool = False,
     ) -> "Framing":
         """Build a :class:`Framing` from the rig's configured identity.

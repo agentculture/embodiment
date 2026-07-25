@@ -325,8 +325,9 @@ class TestTerminationMatrix:
             raise KeyboardInterrupt
 
         loop = MuseLoop(hostile)
+        boundary = _boundary()
         with pytest.raises(KeyboardInterrupt):
-            loop.think(_boundary())
+            loop.think(boundary)
 
     def test_every_exception_class_degrades_rather_than_propagates(self):
         for exc in (RuntimeError("x"), ValueError("y"), OSError("z"), TypeError("w")):

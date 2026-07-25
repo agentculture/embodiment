@@ -345,7 +345,7 @@ def _text(value: Any) -> str:
         return ""
     try:
         text = value if isinstance(value, str) else str(value)
-    except Exception as exc:  # noqa: BLE001 - an unrenderable value is named, not dropped
+    except Exception as exc:  # an unrenderable value is named, not dropped
         return f"<unrenderable {type(value).__name__}: {type(exc).__name__}>"
     return text[:_MAX_REASON_LEN]
 
@@ -462,7 +462,7 @@ def _fold(source: Any, *, lane: str) -> list[LedgerRecord]:
     """Read one container into ledger records. Never raises (C3)."""
     try:
         raw = _records_of(source)
-    except Exception as exc:  # noqa: BLE001 - an unreadable source is recorded, never raised
+    except Exception as exc:  # an unreadable source is recorded, never raised
         return [_unreadable(f"{lane}: {type(exc).__name__}: {exc}", source)]
     folded: list[LedgerRecord] = []
     for record in raw:
@@ -532,7 +532,7 @@ def from_lifecycle(source: Any) -> list[LedgerRecord]:
             candidates = [source]
         else:
             candidates = list(source)
-    except Exception as exc:  # noqa: BLE001 - an unreadable source is recorded, never raised
+    except Exception as exc:  # an unreadable source is recorded, never raised
         return [_unreadable(f"{SOURCE_LIFECYCLE}: {type(exc).__name__}: {exc}", source)]
     folded: list[LedgerRecord] = []
     for event in candidates:

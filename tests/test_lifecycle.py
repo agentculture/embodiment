@@ -1545,9 +1545,10 @@ class TestNeverRaises:
             raise KeyboardInterrupt
 
         lifecycle = ContinuityLifecycle(_config(tmp_path, consequential=interrupted))
+        boundary = _boundary(BOUNDARY_ACTION, tool="w", arguments={})
 
         with pytest.raises(KeyboardInterrupt):
-            lifecycle(_boundary(BOUNDARY_ACTION, tool="w", arguments={}))
+            lifecycle(boundary)
 
 
 class TestBoundedState:

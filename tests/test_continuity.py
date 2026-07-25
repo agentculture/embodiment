@@ -1132,8 +1132,9 @@ class TestNeverRaises:
 
         monkeypatch.setattr(continuity, "_eidetic_get_backend", lambda *a, **k: _Interrupting())
 
+        record = _record()
         with pytest.raises(KeyboardInterrupt):
-            continuity.remember(_record(), data_dir=tmp_path)
+            continuity.remember(record, data_dir=tmp_path)
 
 
 # ---------------------------------------------------------------------------

@@ -870,7 +870,7 @@ def _coerce_int(value: Any, default: int = 0) -> int:
     """Best-effort ``int``; anything uncoercible falls back to *default*."""
     try:
         return int(value)
-    except Exception:  # noqa: BLE001 - a junk count is a default, never a crash
+    except Exception:  # a junk count is a default, never a crash
         return default
 
 

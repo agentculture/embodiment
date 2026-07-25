@@ -269,8 +269,10 @@ class TestImportPosture:
                 assert not (len(body) == 1 and isinstance(body[0], ast.Pass)), ast.dump(node)
 
     def test_executor_is_required(self):
+        complete = Scripted(_turn())
+        task = _task()
         with pytest.raises(TypeError):
-            run(Scripted(_turn()), _task(), max_steps=3)  # type: ignore[call-arg]
+            run(complete, task, max_steps=3)  # type: ignore[call-arg]
 
     def test_a_minimal_duck_typed_executor_drives_a_whole_run(self):
         executor = MinimalExecutor()
@@ -412,8 +414,10 @@ class TestTerminationMatrix:
 
     def test_a_raising_seam_is_not_a_loop_exit_but_a_preserved_partial(self):
         complete = Scripted(_turn(_call("read_file", path="a")), RuntimeError("engine down"))
+        task = _task()
+        executor = _reading_executor()
         with pytest.raises(LoopAborted) as excinfo:
-            run(complete, _task(), executor=_reading_executor(), max_steps=9)
+            run(complete, task, executor=executor, max_steps=9)
         aborted = excinfo.value
         assert isinstance(aborted, WorkAborted)
         assert aborted.result.status == ERROR
@@ -518,11 +522,14 @@ class TestHookLifecycle:
 
     def test_finish_fires_even_on_the_aborted_path(self):
         hooks = RecordingHooks()
+        complete = Scripted(RuntimeError("down"))
+        task = _task()
+        executor = _reading_executor()
         with pytest.raises(LoopAborted):
             run(
-                Scripted(RuntimeError("down")),
-                _task(),
-                executor=_reading_executor(),
+                complete,
+                task,
+                executor=executor,
                 max_steps=3,
                 hooks=hooks,
             )
@@ -670,8 +677,10 @@ class TestToolExecution:
             def execute(self, name: str, arguments: dict[str, Any]) -> ToolOutcome:
                 raise OSError("disk on fire")
 
+        turn = _turn(_call("read_file"))
+        executor = Raiser()
         with pytest.raises(LoopAborted):
-            _drive(_turn(_call("read_file")), max_steps=1, executor=Raiser())
+            _drive(turn, max_steps=1, executor=executor)
 
     def test_a_finish_does_not_cancel_the_rest_of_the_turn(self):
         executor = _reading_executor()
@@ -920,8 +929,9 @@ class TestDegradationIsObservable:
 
     def test_an_exhausted_overflow_preserves_the_partial_and_records_it(self):
         overflow = RuntimeError("maximum context length exceeded")
+        controls = LoopControls(context_budget=50, max_overflow_retries=2)
         with pytest.raises(LoopAborted) as excinfo:
-            _drive(overflow, controls=LoopControls(context_budget=50, max_overflow_retries=2))
+            _drive(overflow, controls=controls)
         codes = [d.code for d in excinfo.value.outcome.degradations]
         assert DEGRADED_OVERFLOW_EXHAUSTED in codes
         assert excinfo.value.result.status == ERROR
@@ -933,10 +943,9 @@ class TestDegradationIsObservable:
             calls.append(1)
             raise RuntimeError("maximum context length is 4096 tokens")
 
+        controls = LoopControls(context_budget=4000, max_overflow_retries=2)
         with pytest.raises(LoopAborted):
-            _drive(
-                always_overflow, controls=LoopControls(context_budget=4000, max_overflow_retries=2)
-            )
+            _drive(always_overflow, controls=controls)
         assert len(calls) <= 3  # first attempt + at most two retries
 
     def test_a_non_degradable_error_is_never_retried(self):
@@ -946,8 +955,9 @@ class TestDegradationIsObservable:
             calls.append(1)
             raise RuntimeError("something else entirely")
 
+        controls = LoopControls(context_budget=4000)
         with pytest.raises(LoopAborted):
-            _drive(boom, controls=LoopControls(context_budget=4000))
+            _drive(boom, controls=controls)
         assert len(calls) == 1
 
     def test_media_rejection_flattens_and_retries_text_only(self):
@@ -1337,17 +1347,17 @@ class TestSeamRobustness:
         assert outcome.exit_reason == EXIT_STOPPED
 
     def test_the_window_floor_is_recorded_and_gives_up(self):
+        overflow = RuntimeError("maximum context length exceeded")
+        controls = LoopControls(context_budget=1, max_overflow_retries=5)
         with pytest.raises(LoopAborted) as excinfo:
-            _drive(
-                RuntimeError("maximum context length exceeded"),
-                controls=LoopControls(context_budget=1, max_overflow_retries=5),
-            )
+            _drive(overflow, controls=controls)
         reasons = [d.reason for d in excinfo.value.outcome.degradations]
         assert any("floor" in r for r in reasons)
 
     def test_a_media_refusal_with_nothing_to_flatten_is_not_retried(self):
+        refusal = RuntimeError("HTTP 400: At most 0 image(s) may be provided")
         with pytest.raises(LoopAborted) as excinfo:
-            _drive(RuntimeError("HTTP 400: At most 0 image(s) may be provided"))
+            _drive(refusal)
         assert not [
             d for d in excinfo.value.outcome.degradations if d.code == DEGRADED_MEDIA_REJECTED
         ]
@@ -1421,8 +1431,10 @@ class TestAbortIsReportedHonestly:
         def explode(_messages):
             raise RuntimeError("the endpoint died")
 
+        task = _task()
+        executor = FakeExecutor()
         with pytest.raises(LoopAborted) as caught:
-            run(explode, _task(), executor=FakeExecutor(), max_steps=20)
+            run(explode, task, executor=executor, max_steps=20)
         assert caught.value.outcome.exit_reason == EXIT_ABORTED
         assert caught.value.outcome.exit_reason != EXIT_BUDGET
 
@@ -1440,6 +1452,8 @@ class TestAbortIsReportedHonestly:
             except StopIteration:
                 raise RuntimeError("died mid-drive") from None
 
+        task = _task()
+        executor = FakeExecutor()
         with pytest.raises(LoopAborted) as caught:
-            run(one_then_die, _task(), executor=FakeExecutor(), max_steps=20)
+            run(one_then_die, task, executor=executor, max_steps=20)
         assert caught.value.outcome.result.steps, "partial work was lost"

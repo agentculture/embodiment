@@ -709,7 +709,7 @@ class PresenceEngine:
             muse.consider(boundary)
             drained = muse.drain(step_count=boundary.step_count)
             reason = muse.degradation()
-        except Exception as exc:  # noqa: BLE001 - a failing muse degrades, never aborts
+        except Exception as exc:  # a failing muse degrades, never aborts
             self._latch_degradation(boundary.kind, exc)
             return []
         comments = list(drained) if isinstance(drained, (list, tuple)) else []
@@ -807,7 +807,7 @@ class PresenceEngine:
             return None
         try:
             return provider()
-        except Exception:  # noqa: BLE001 - recorded below; never fatal, never retried
+        except Exception:  # recorded below; never fatal, never retried
             self._history_provider = None
             self._records.append(SensesRecord(point="history", degraded=True))
             return None

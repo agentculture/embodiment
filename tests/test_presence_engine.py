@@ -868,8 +868,9 @@ class TestNarrate:
         io = _RecordingIO()
         io.render_raises = True
         engine, io = _engine(io)
+        packet = ContextPacket(original="x", ack="on it")
         with pytest.raises(RuntimeError, match="tty gone"):
-            engine.acknowledge(ContextPacket(original="x", ack="on it"))
+            engine.acknowledge(packet)
 
     def test_a_raising_poll_stays_visible(self):
         io = _RecordingIO()
