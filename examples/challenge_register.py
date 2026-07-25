@@ -6,8 +6,8 @@ exactly 1 from the true state. Constraint: A executed before D.
 
 Answer: initial 0101, order C -> B -> E -> A -> D.
 
-Follows the pattern of examples/challenge_subset.py: truth(), grade(), Bench
-class, TOOLS list, main() with --json.
+Follows the pattern of examples/proof.py: truth(), grade(), Bench class,
+TOOLS list, main() with --json.
 """
 
 from __future__ import annotations
@@ -60,7 +60,8 @@ PROBLEM = (
     "- After 5: 1111\n\n"
     "Exactly one bit is wrong in each recorded value (Hamming distance 1).\n\n"
     "One additional fact: A executed before D.\n\n"
-    "Determine (1) the register's initial value and (2) the exact execution order.\n\n"
+    "Determine (1) the register's initial value and (2) the exact execution "
+    "order.\n\n"
     "Format your answer as: initial=XXXX order=ABCDE\n\n"
     "Then call finish with your answer."
 )
@@ -202,7 +203,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "hamming_distance",
-            "description": "Compute the Hamming distance between two 4-bit states.",
+            "description": ("Compute the Hamming distance between two 4-bit states."),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -224,7 +225,7 @@ TOOLS = [
         "function": {
             "name": "check_order",
             "description": (
-                "Check whether an execution order satisfies the A-before-D constraint."
+                "Check whether an execution order satisfies the A-before-D " "constraint."
             ),
             "parameters": {
                 "type": "object",
@@ -242,7 +243,7 @@ TOOLS = [
         "type": "function",
         "function": {
             "name": "finish",
-            "description": "Submit the final answer in format 'initial=XXXX order=ABCDE'.",
+            "description": ("Submit the final answer in format 'initial=XXXX order=ABCDE'."),
             "parameters": {
                 "type": "object",
                 "properties": {"answer": {"type": "string"}},
@@ -253,7 +254,14 @@ TOOLS = [
 ]
 
 
-def gateway(base_url: str, model: str, key: str, *, tools=None, max_tokens: int = 6000):
+def gateway(
+    base_url: str,
+    model: str,
+    key: str,
+    *,
+    tools=None,
+    max_tokens: int = 6000,
+):
     endpoint = f"{base_url.rstrip('/')}/chat/completions"
     if not endpoint.startswith(("http://", "https://")):
         raise SystemExit(f"error: --base-url must be http(s), got {base_url!r}")
@@ -270,7 +278,10 @@ def gateway(base_url: str, model: str, key: str, *, tools=None, max_tokens: int 
         request = urllib.request.Request(
             endpoint,
             data=json.dumps(body).encode("utf-8"),
-            headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {key}",
+            },
         )
         with urllib.request.urlopen(request, timeout=600) as response:  # nosec B310
             payload = json.load(response)

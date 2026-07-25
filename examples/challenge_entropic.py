@@ -5,7 +5,7 @@ C-volatility constraint. Under-determined: 17 solutions.
 
 Problem 3b: Same plus "A executed immediately after C" — unique solution.
 
-Follows the pattern of examples/challenge_subset.py: Bench class, TOOLS list,
+Follows the pattern of examples/proof.py: Bench class, TOOLS list,
 main() with --json.
 """
 
@@ -113,7 +113,7 @@ def _check_c_volatility(initial: int, order: list[str]) -> bool:
     If C runs after another routine, the state handed to C must be odd.
     """
     state = initial
-    for i, name in enumerate(order):
+    for name in order:
         if name == "C":
             if state % 2 == 0:
                 return False  # even input to C — fault
@@ -237,29 +237,23 @@ def grade(answer: str) -> dict[str, Any]:
 def grade_constrained(answer: str) -> dict[str, Any]:
     """Grade problem 3b answer. Accepts only the unique solution."""
     lower = answer.lower()
-    # The unique answer: initial 00001111 (15), order C→A→E→D→B.
+    # The unique answer: initial 00001111 (15), order C->A->E->D->B.
     has_initial = "00001111" in answer or "15" in answer
 
-    # Check for the specific order C→A→E→D→B.
-    # We look for the sequence in the answer text.
-    caed_b = (
-        "c→a→e→d→b" in lower
-        or "c->a->e->d->b" in lower
-        or "c, a, e, d, b" in lower
-        or "c a e d b" in lower
-    )
+    # Check for the specific order C->A->E->D->B.
+    caed_b = "c->a->e->d->b" in lower or "c, a, e, d, b" in lower or "c a e d b" in lower
 
     if has_initial and caed_b:
         return {
             "answer": answer,
             "is_correct": True,
-            "verdict": "CORRECT — unique solution: initial 00001111, order C→A→E→D→B",
+            "verdict": ("CORRECT — unique solution: initial 00001111, " "order C->A->E->D->B"),
         }
 
     return {
         "answer": answer,
         "is_correct": False,
-        "verdict": "WRONG — expected initial 00001111, order C→A→E→D→B",
+        "verdict": ("WRONG — expected initial 00001111, order C->A->E->D->B"),
     }
 
 
@@ -384,7 +378,7 @@ TOOLS = [
                 "properties": {
                     "answer": {
                         "type": "string",
-                        "description": "Your answer describing the initial value and order.",
+                        "description": ("Your answer describing the initial value and order."),
                     },
                 },
                 "required": ["answer"],
@@ -394,7 +388,14 @@ TOOLS = [
 ]
 
 
-def gateway(base_url: str, model: str, key: str, *, tools=None, max_tokens: int = 6000):
+def gateway(
+    base_url: str,
+    model: str,
+    key: str,
+    *,
+    tools=None,
+    max_tokens: int = 6000,
+):
     endpoint = f"{base_url.rstrip('/')}/chat/completions"
     if not endpoint.startswith(("http://", "https://")):
         raise SystemExit(f"error: --base-url must be http(s), got {base_url!r}")

@@ -13,12 +13,11 @@ result line so the run is reproducible from the JSON alone.  Records:
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any, Optional
 
 
 def write_config_preamble(
-    path: str | Path,
+    path: str,
     *,
     cortex_model: str,
     cortex_temperature: float,
@@ -43,5 +42,7 @@ def write_config_preamble(
         "n": n,
     }
 
-    Path(path).write_text(json.dumps(config, indent=2) + "\n", encoding="utf-8")
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2)
+        f.write("\n")
     return config

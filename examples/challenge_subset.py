@@ -177,7 +177,14 @@ TOOLS = [
 ]
 
 
-def gateway(base_url: str, model: str, key: str, *, tools=None, max_tokens: int = 6000):
+def gateway(
+    base_url: str,
+    model: str,
+    key: str,
+    *,
+    tools=None,
+    max_tokens: int = 6000,
+):
     endpoint = f"{base_url.rstrip('/')}/chat/completions"
     if not endpoint.startswith(("http://", "https://")):
         raise SystemExit(f"error: --base-url must be http(s), got {base_url!r}")
@@ -194,7 +201,10 @@ def gateway(base_url: str, model: str, key: str, *, tools=None, max_tokens: int 
         request = urllib.request.Request(
             endpoint,
             data=json.dumps(body).encode("utf-8"),
-            headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"},
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {key}",
+            },
         )
         with urllib.request.urlopen(request, timeout=600) as response:  # nosec B310
             payload = json.load(response)
