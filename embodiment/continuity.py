@@ -174,11 +174,13 @@ try:
     from eidetic.memory.record import Record as _EideticRecord
     from eidetic.memory.scope import Scope as _EideticScope
     from eidetic.memory.scoring import signal_strength as _eidetic_signal_strength
+    from eidetic.memory.traverse import discover as _eidetic_discover
 except Exception as exc:  # pragma: no cover - exercised via monkeypatch, not a real break
     _eidetic_get_backend = None  # type: ignore[assignment]
     _EideticRecord = None  # type: ignore[assignment,misc]
     _EideticScope = None  # type: ignore[assignment,misc]
     _eidetic_signal_strength = None  # type: ignore[assignment]
+    _eidetic_discover = None  # type: ignore[assignment]
     _EIDETIC_IMPORT_ERROR: Optional[str] = f"{type(exc).__name__}: {exc}"
 else:
     _EIDETIC_IMPORT_ERROR = None
@@ -222,6 +224,8 @@ __all__ = [
     "remember",
     "recall",
     "assess",
+    "traverse",
+    "traverse_available",
 ]
 
 _StrPath = Union[str, "os.PathLike[str]"]
