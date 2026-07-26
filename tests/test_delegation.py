@@ -11,6 +11,9 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
+from embodiment.loop import UnknownToolError
 from examples import delegation
 
 
@@ -37,6 +40,26 @@ class TestDelegationExample:
             "delegate",
             "analyze",
         }, f"expected withheld tools {{'delegate', 'analyze'}}, got {withheld}"
+
+    def test_a_withheld_tool_is_refused_not_answered(self) -> None:
+        """The narrowing must BITE, not merely be absent from a list.
+
+        Asserting the child's tool names exclude ``analyze`` proves the surface
+        was narrowed on paper. This proves it is narrowed in fact: calling it
+        raises ``UnknownToolError`` rather than returning a cheerful outcome
+        whose text happens to say "unknown tool" — which the loop would record
+        as a successful step.
+        """
+        child = delegation.ChildExecutor()
+        for withheld in ("analyze", "delegate"):
+            with pytest.raises(UnknownToolError):
+                child.execute(withheld, {})
+
+    def test_the_childs_own_tools_still_work(self) -> None:
+        """The refusal must not be "everything raises"."""
+        child = delegation.ChildExecutor()
+        assert child.execute("record", {"text": "a note"}).result.startswith("recorded:")
+        assert child.execute("finish", {"summary": "done"}).finished is True
 
     def test_child_allowance_is_one_less(self) -> None:
         """Child allowance equals attenuate(parent_allowance)."""

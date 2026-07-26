@@ -35,6 +35,7 @@ from embodiment import (
     ToolOutcome,
     run,
 )
+from embodiment.loop import UnknownToolError
 from embodiment.subagent import (
     SpawnRequest,
     attenuate,
@@ -130,7 +131,14 @@ class ChildExecutor:
                 finish_summary=summary,
             )
 
-        return ToolOutcome(result=f"unknown tool {name}")
+        # A withheld tool is REFUSED, not answered. Returning a ToolOutcome
+        # whose ``result`` merely says "unknown tool" would be a *success*
+        # carrying an error string: the loop would record the step as fine and
+        # the model would read prose where it should read a refusal. Raising
+        # ``UnknownToolError`` is what narrowing a tool surface actually means
+        # — and the loop already knows this shape, treating it as one
+        # self-correcting step rather than a new way out.
+        raise UnknownToolError(f"{name} is not available to this child")
 
     def state(self) -> str:
         names = [n for n, _ in self.calls]

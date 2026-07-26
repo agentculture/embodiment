@@ -291,9 +291,7 @@ class TestPublicApiOnly:
                 # demo pulls NO third-party dependency, so an app author can
                 # copy one and owe nothing but stdlib + embodiment.
                 allowed = (
-                    root in sys.stdlib_module_names
-                    or root == "embodiment"
-                    or root == "examples"
+                    root in sys.stdlib_module_names or root == "embodiment" or root == "examples"
                 )
                 assert allowed, f"{path.name} imports {module!r}: not stdlib, not embodiment"
 
