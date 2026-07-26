@@ -569,7 +569,14 @@ def _advance_turn(ctx: _Session, content: str, quiet: int) -> tuple[int, Optiona
     text, guidance, kinds, degradations = _split_content(content, ctx.controls.max_insight_chars)
     ctx.degradations.extend(degradations)
     if text or guidance:
-        kind = kinds[0] if kinds else DEFAULT_KIND
+        # A turn can carry several GUIDANCE lines but produces ONE insight, so
+        # disagreeing markers have to resolve to a single kind. First-line-wins
+        # loses advice: a durable reframing written alongside a step note would
+        # inherit ``step`` and be dropped for loop distance with it — precisely
+        # the loss the kind split exists to stop. Resolve to DEFAULT_KIND
+        # (durable) whenever the lines disagree, the same fail-open rule an
+        # unlabelled or malformed marker already follows: when in doubt, keep it.
+        kind = kinds[0] if kinds and len(set(kinds)) == 1 else DEFAULT_KIND
         insight = MuseInsight(
             text=text,
             guidance=guidance,

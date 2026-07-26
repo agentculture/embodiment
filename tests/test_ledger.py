@@ -471,7 +471,12 @@ def _runner_endpoint(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerR
 
 
 def _runner_stale(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
-    runner = ThreadedMuseRunner(Scripted(_resp("GUIDANCE: about step one " + MARKER_DONE)))
+    # The marker is load-bearing (task t3). An UNLABELLED `GUIDANCE:` line is
+    # durable-kind by default, and durable counsel is never dropped for
+    # loop-distance staleness alone — so a bare line can no longer provoke this
+    # code at all. Only step-sensitive counsel ages out, which is the point of
+    # the kind split rather than an inconvenience to work around here.
+    runner = ThreadedMuseRunner(Scripted(_resp("GUIDANCE[step]: about step one " + MARKER_DONE)))
     try:
         runner.consider(_muse_boundary(step=1))
         assert runner.wait_idle(_TIMEOUT)
@@ -519,6 +524,34 @@ def _runner_boundary(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerR
         return ledger.from_muse_runner(runner)
     finally:
         seam.release.set()
+        runner.close(timeout=_TIMEOUT)
+
+
+def _runner_compilation_starved(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    """Provoke DROPPED_COMPILATION_STARVED by recording the code directly."""
+    runner = ThreadedMuseRunner(Scripted())
+    try:
+        with runner._lock:
+            runner._record(
+                muse_runner.DROPPED_COMPILATION_STARVED,
+                "compilation work starved by boundary counsel priority",
+            )
+        return ledger.from_muse_runner(runner)
+    finally:
+        runner.close(timeout=_TIMEOUT)
+
+
+def _runner_counsel_displaced(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    """Provoke DROPPED_COUNSEL_DISPLACED by recording the code directly."""
+    runner = ThreadedMuseRunner(Scripted())
+    try:
+        with runner._lock:
+            runner._record(
+                muse_runner.DROPPED_COUNSEL_DISPLACED,
+                "boundary counsel displaced by compilation filling buffer",
+            )
+        return ledger.from_muse_runner(runner)
+    finally:
         runner.close(timeout=_TIMEOUT)
 
 
@@ -743,6 +776,11 @@ PROVOKERS: dict[tuple[str, str], Provoker] = {
     (ledger.SOURCE_MUSE_RUNNER, muse_runner.DROPPED_LATE): _runner_late,
     (ledger.SOURCE_MUSE_RUNNER, muse_runner.DROPPED_OVERFLOW): _runner_overflow,
     (ledger.SOURCE_MUSE_RUNNER, muse_runner.DROPPED_BOUNDARY): _runner_boundary,
+    (
+        ledger.SOURCE_MUSE_RUNNER,
+        muse_runner.DROPPED_COMPILATION_STARVED,
+    ): _runner_compilation_starved,
+    (ledger.SOURCE_MUSE_RUNNER, muse_runner.DROPPED_COUNSEL_DISPLACED): _runner_counsel_displaced,
     (ledger.SOURCE_EVENTS, "events-cli-unavailable"): _events_unavailable,
     (ledger.SOURCE_EVENTS, "connect-failed"): _events_connect,
     (ledger.SOURCE_EVENTS, "publish-failed"): _events_publish,
