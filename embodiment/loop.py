@@ -1078,6 +1078,8 @@ def _run_child(
         degradations=tuple(reply.degradations or ()),
         **shared,
     )
+    # A granted spawn must carry a child id — attribution is structural.
+    assert record.child_task_id is not None, "granted spawn has no child_task_id"
     return _with_note(outcome, reply.result or _spawn_note(record, sub)), True
 
 
