@@ -233,3 +233,6 @@ skills.local.yaml
 .devague/questions/
 
 .devague/reviews/
+
+# Experiment harness output (config preambles, run JSON) — never committed
+/results/
