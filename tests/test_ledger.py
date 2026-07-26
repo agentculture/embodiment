@@ -34,8 +34,8 @@ from typing import Any, Callable, Optional
 
 import pytest
 
-from embodiment import continuity, ledger, lifecycle, loop, muse, muse_runner
-from embodiment.contract import OK, ModelResponse, Task, TaskResult, ToolCall
+from embodiment import continuity, ledger, lifecycle, loop, muse, muse_runner, subagent
+from embodiment.contract import OK, ModelResponse, SubResult, Task, TaskResult, ToolCall
 from embodiment.events import EventEmitter
 from embodiment.lifecycle import CHECKPOINT_DEGRADED, ContinuityLifecycle, LifecycleConfig
 from embodiment.loop import (
@@ -331,6 +331,33 @@ def _loop_spawn_failed(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.Ledge
             max_steps=4,
             executor=_DelegatingExecutor(),
             subagent=boom,
+            spawn_allowance=1,
+        )
+    )
+
+
+def _loop_spawn_duplicate(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    """An executor that ledgers the very child it delegated to the loop."""
+    child = SubResult(task_id="child-1", engine="e", model="m", status="ok", summary="dupe")
+
+    class _DoubleLedgering(_DelegatingExecutor):
+        def __init__(self) -> None:
+            self.sub_results: list[Any] = [child]
+
+    def seam(_call: Any) -> Any:
+        return subagent.SubagentResult(
+            sub_result=child,
+            model_turns=1,
+            result="child done",
+            exit_reason=loop.EXIT_FINISHED,
+        )
+
+    return ledger.from_loop(
+        _drive(
+            _turn(_call("delegate")),
+            max_steps=4,
+            executor=_DoubleLedgering(),
+            subagent=seam,
             spawn_allowance=1,
         )
     )
@@ -695,6 +722,7 @@ PROVOKERS: dict[tuple[str, str], Provoker] = {
     (ledger.SOURCE_LOOP, loop.DEGRADED_CONTINUITY): _loop_continuity,
     (ledger.SOURCE_LOOP, loop.DEGRADED_SPAWN_UNAVAILABLE): _loop_spawn_unavailable,
     (ledger.SOURCE_LOOP, loop.DEGRADED_SPAWN_FAILED): _loop_spawn_failed,
+    (ledger.SOURCE_LOOP, loop.DEGRADED_SPAWN_DUPLICATE): _loop_spawn_duplicate,
     (ledger.SOURCE_LOOP, loop.DEGRADED_SYNTHESIS): _loop_synthesis,
     (ledger.SOURCE_MUSE, muse.DEGRADED_THINKING): _muse_thinking,
     (ledger.SOURCE_MUSE, muse.DEGRADED_SINK): _muse_sink,
@@ -896,6 +924,7 @@ class TestNothingIsFabricated:
             "stage",
             "subsystem",
             "exception",
+            "child_task_id",
             "original",
         }
 

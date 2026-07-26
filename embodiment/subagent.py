@@ -434,16 +434,21 @@ class SpawnRecord:
         :attr:`degradations` is deliberately absent: those are another lane's
         records in another lane's shape, and serialising them is that lane's
         own ``to_dict``'s job, never this one's (the same rule
-        :attr:`embodiment.ledger.LedgerRecord.original` follows)."""
+        :attr:`embodiment.ledger.LedgerRecord.original` follows).
+
+        :attr:`child_task_id` is ALWAYS present in the dict (``None`` when
+        unset) so a consumer can rely on the key existing — the asymmetry
+        found by an independent review of task t9.
+        """
         data: dict[str, Any] = {
             "outcome": self.outcome,
             "tool": self.tool,
             "step_index": self.step_index,
             "parent_task_id": self.parent_task_id,
             "model_turns": self.model_turns,
+            "child_task_id": self.child_task_id,
         }
         for name in (
-            "child_task_id",
             "role",
             "allowance_requested",
             "allowance_granted",

@@ -188,6 +188,7 @@ __all__ = [
     "DEGRADED_OVERFLOW_EXHAUSTED",
     "DEGRADED_PRESENCE",
     "DEGRADED_PROGRESS",
+    "DEGRADED_SPAWN_DUPLICATE",
     "DEGRADED_SPAWN_FAILED",
     "DEGRADED_SPAWN_UNAVAILABLE",
     "DEGRADED_SYNTHESIS",
@@ -306,6 +307,12 @@ DEGRADED_SPAWN_UNAVAILABLE = "subagent-seam-absent"
 #: loop itself refused on allowance or budget — that is the bound working, and a
 #: ledger that reports the design working claims a breakage that did not happen.
 DEGRADED_SPAWN_FAILED = "subagent-spawn-failed"
+#: An executor's own ``sub_results`` ledger named a child the loop had already
+#: minted through the subagent seam. The loop keeps its own record and drops the
+#: executor's duplicate: ``SubResult`` carries ``usage``, and its contract says a
+#: reader sums children explicitly for a roll-up, so a doubled entry silently
+#: doubles that child's cost. Recorded rather than dropped quietly (C3).
+DEGRADED_SPAWN_DUPLICATE = "subagent-result-duplicate"
 #: The forced final synthesis turn failed; the summary falls to its next rung.
 DEGRADED_SYNTHESIS = "synthesis-failed"
 
@@ -1711,7 +1718,26 @@ def _snapshot_executor_ledger(ctx: _Work) -> None:
         # child it minted through the subagent seam, and an executor that keeps
         # its own ledger must not silently drop them. For a drive that spawned
         # nothing this is exactly the old assignment.
-        ctx.result.sub_results = [*ctx.result.sub_results, *sub_results]
+        #
+        # But extend does not mean duplicate. An executor that both delegates a
+        # spawn to the loop AND ledgers that same child would otherwise land the
+        # child twice — and ``SubResult`` carries ``usage``, whose contract has
+        # the reader summing children explicitly, so a doubled entry silently
+        # doubles that child's cost. The loop's own record wins (it stamped the
+        # lineage); the executor's copy is dropped with a record, never quietly.
+        minted = {sub.task_id for sub in ctx.result.sub_results}
+        kept: list[SubResult] = []
+        for sub in sub_results:
+            task_id = getattr(sub, "task_id", None)
+            if task_id is not None and task_id in minted:
+                _degrade(
+                    ctx,
+                    DEGRADED_SPAWN_DUPLICATE,
+                    f"executor.sub_results repeated child {task_id}; kept the loop's own record",
+                )
+                continue
+            kept.append(sub)
+        ctx.result.sub_results = [*ctx.result.sub_results, *kept]
 
 
 def _maybe_force_synthesis(ctx: _Work, outcome: str) -> None:
