@@ -123,6 +123,7 @@ __all__ = [
     "SOURCE_LABELS",
     # adapters
     "ADAPTER_FLAT_RECALL",
+    "ADAPTER_GRAPH_TRAVERSE",
     # store defaults, mirrored from continuity and pinned against it
     "DEFAULT_SCOPE",
     "DEFAULT_VISIBILITY",
@@ -136,6 +137,7 @@ __all__ = [
     "DEGRADED_UNREADABLE_RECORD",
     "DEGRADED_ENRICHMENT_UNAVAILABLE",
     "DEGRADED_ITEM_CAP",
+    "DEGRADED_BUNDLE_TRUNCATED",
     "STAGE_FETCH",
     "STAGE_ASSEMBLE",
     # shapes
@@ -175,14 +177,20 @@ LEVELS = (LEVEL_FLAT, LEVEL_GRAPH)
 
 
 def graph_available() -> bool:
-    """Whether a graph-level fetch ships in this package. It does not.
+    """Whether a graph-level fetch ships in this package.
 
-    Stated as a function rather than a constant because the answer belongs to a
-    sibling's release, not to this file's history: when eidetic-cli's composite
-    fetch lands, a host wires it in as a :data:`FetchFn` and this still returns
-    ``False`` — embodiment ships no graph adapter of its own until it does.
+    Asked of :mod:`embodiment.continuity`, which owns the eidetic seam — this
+    module never imports the store itself, and ``TestModulePosture`` pins that.
+    The import stays lazy: reaching continuity is what costs a host eidetic, and
+    a host that never asks for graph should not pay for it just by importing
+    this module.
+
+    ``False`` is an ordinary answer, not a fault: graph traversal arrived in
+    eidetic-cli 0.13.0 and this package declares ``>=0.12``, so a valid install
+    may simply not have it. :func:`graph_fetch` then serves
+    :data:`LEVEL_FLAT` and records the substitution (claim c35's floor).
     """
-    return False
+    return bool(_default_traverse().traverse_available())
 
 
 # ── per-item source labels ────────────────────────────────────────────────────
@@ -207,6 +215,9 @@ SOURCE_LABELS = (SOURCE_RECALL, SOURCE_LINK, SOURCE_TRAVERSAL, SOURCE_VECTOR, SO
 #: The built-in adapter's name, stamped into provenance so a bundle says which
 #: fetch produced it.
 ADAPTER_FLAT_RECALL = "eidetic-flat-recall"
+#: The adapter that walked the graph, when one did. Named on the bundle so a
+#: reader can tell a graph answer from a flat one without inspecting items.
+ADAPTER_GRAPH_TRAVERSE = "eidetic-graph-traverse"
 
 
 # ── store defaults, mirrored from continuity ──────────────────────────────────
@@ -246,6 +257,10 @@ DEGRADED_UNREADABLE_RECORD = "bundle-record-unreadable"
 DEGRADED_ENRICHMENT_UNAVAILABLE = "bundle-enrichment-unavailable"
 #: :attr:`BundleRequest.max_items` dropped whole items. Never a silent clip.
 DEGRADED_ITEM_CAP = "bundle-item-cap"
+#: The graph walk stopped at the caller's stated depth/node bounds. eidetic
+#: reports this itself rather than returning a short answer that looks whole;
+#: relaying it is what keeps a bounded bundle from reading as a complete one.
+DEGRADED_BUNDLE_TRUNCATED = "bundle-truncated"
 
 #: Reading the store.
 STAGE_FETCH = "fetch"
@@ -409,6 +424,10 @@ class BundleRequest:
     mode: str = DEFAULT_MODE
     level: str = LEVEL_FLAT
     max_items: int = DEFAULT_MAX_ITEMS
+    #: How many hops the graph walk may take from a primary hit. The bound is
+    #: the CALLER's to state — eidetic's spec puts bound-setting on the caller
+    #: — and 0 skips the walk entirely for a flat, primary-only bundle.
+    max_depth: int = 1
     reinforce: bool = True
     include_shadowed: bool = False
     include_archived: bool = False
@@ -769,6 +788,137 @@ def flat_fetcher(recall_fn: Optional[RecallFn] = None) -> FetchFn:
 
     def fetch(request: BundleRequest) -> RecallBundle:
         return flat_fetch(request, recall_fn=recall_fn)
+
+    return fetch
+
+
+# ── the graph adapter — eidetic 0.13.0+ ───────────────────────────────────────
+
+
+def _default_traverse() -> Any:
+    """The traversal seam, imported on use — :func:`embodiment.continuity.traverse`.
+
+    This module reaches eidetic the same way :func:`flat_fetch` does: through
+    :mod:`embodiment.continuity`, which owns that seam, and never by importing
+    eidetic itself. ``tests/test_recall_bundle.py::TestModulePosture`` pins it —
+    a store this module talked to directly would be store logic reimplemented
+    here, which is the one thing the module says it does not do.
+    """
+    from embodiment import continuity
+
+    return continuity
+
+
+def graph_fetch(request: BundleRequest, *, recall_fn: Optional[RecallFn] = None) -> RecallBundle:
+    """Fetch at :data:`LEVEL_GRAPH` — flat recall, then a bounded graph walk.
+
+    The flat hits are the seeds; :func:`embodiment.continuity.traverse` walks
+    ``links``/``supersedes`` from them, bounded by the caller's
+    :attr:`BundleRequest.max_depth` and :attr:`BundleRequest.max_items`.
+    Discovered records join the bundle labelled :data:`SOURCE_TRAVERSAL`, so a
+    traversal discovery is never mistaken for a primary hit.
+
+    **Degrades to flat rather than failing.** An install without
+    ``eidetic.memory.traverse`` (it arrived in eidetic-cli 0.13.0; this package
+    declares ``>=0.12``), a store that cannot be reached, or a walk that raises
+    each yield the flat bundle plus a recorded degradation — claim c35's floor:
+    a rig with only flat recall runs the whole path end to end.
+
+    Never raises.
+    """
+    seam = recall_fn if recall_fn is not None else _default_recall()
+    flat = flat_fetch(request, recall_fn=seam)
+
+    def _degraded_to_flat(code: str, reason: str) -> RecallBundle:
+        return RecallBundle(
+            provenance=provenance_for(request, level=LEVEL_FLAT, adapter=ADAPTER_FLAT_RECALL),
+            items=flat.items,
+            degradations=tuple(
+                [*flat.degradations, BundleDegradation(code=code, reason=reason, stage=STAGE_FETCH)]
+            ),
+        )
+
+    continuity = _default_traverse()
+    if not continuity.traverse_available():
+        return _degraded_to_flat(
+            DEGRADED_ENRICHMENT_UNAVAILABLE,
+            f"{LEVEL_GRAPH!r} was requested but this install cannot traverse; "
+            f"served {LEVEL_FLAT!r} instead (needs eidetic-cli >= 0.13)",
+        )
+
+    seeds = [item.raw for item in flat.items if item.raw is not None]
+    if not seeds:
+        # Nothing to walk from. Not a degradation — an empty graph around an
+        # empty result set is the correct answer, at the level asked for.
+        return RecallBundle(
+            provenance=provenance_for(request, level=LEVEL_GRAPH, adapter=ADAPTER_GRAPH_TRAVERSE),
+            items=flat.items,
+            degradations=flat.degradations,
+        )
+
+    outcome = continuity.traverse(
+        seeds,
+        data_dir=request.data_dir,
+        scope=request.scope,
+        visibility=request.visibility,
+        max_depth=request.max_depth,
+        max_nodes=request.max_items,
+    )
+    if not outcome.ok:
+        degradation = outcome.degradation
+        return _degraded_to_flat(
+            DEGRADED_ENRICHMENT_UNAVAILABLE,
+            f"{LEVEL_GRAPH!r} walk did not run "
+            f"({getattr(degradation, 'reason', 'no reason recorded')}); "
+            f"served {LEVEL_FLAT!r} instead",
+        )
+
+    items: dict[str, BundleItem] = {item.record_id: item for item in flat.items}
+    degradations = list(flat.degradations)
+    for node in outcome.nodes:
+        item = item_from_record(node.get("record"), source=SOURCE_TRAVERSAL)
+        if item is None:
+            degradations.append(
+                BundleDegradation(
+                    code=DEGRADED_UNREADABLE_RECORD,
+                    reason="a traversal node could not be read as a record",
+                    stage=STAGE_ASSEMBLE,
+                )
+            )
+            continue
+        # A primary hit that the walk rediscovers keeps its primary label: the
+        # stronger provenance wins, and setdefault is what makes that true.
+        items.setdefault(item.record_id, item)
+
+    if outcome.truncated:
+        degradations.append(
+            BundleDegradation(
+                code=DEGRADED_BUNDLE_TRUNCATED,
+                reason=(
+                    f"the walk hit its caller-stated bounds "
+                    f"(depth {request.max_depth}, {request.max_items} nodes); "
+                    "more material exists in the graph"
+                ),
+                stage=STAGE_FETCH,
+            )
+        )
+
+    return RecallBundle(
+        provenance=provenance_for(request, level=LEVEL_GRAPH, adapter=ADAPTER_GRAPH_TRAVERSE),
+        items=tuple(items.values()),
+        degradations=tuple(degradations),
+    )
+
+
+def graph_fetcher(recall_fn: Optional[RecallFn] = None) -> FetchFn:
+    """Build the graph adapter over *recall_fn* as a plain :data:`FetchFn`.
+
+    ``fetch_bundle(request, fetch=graph_fetcher(my_store))`` is how a host
+    points the graph adapter at a different store seam.
+    """
+
+    def fetch(request: BundleRequest) -> RecallBundle:
+        return graph_fetch(request, recall_fn=recall_fn)
 
     return fetch
 
