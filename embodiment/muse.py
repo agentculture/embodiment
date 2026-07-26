@@ -140,6 +140,12 @@ __all__ = [
     "DEGRADED_THINKING",
     "DEGRADED_SINK",
     "DEGRADED_UNREADABLE",
+    "DEGRADED_MARKER_UNREADABLE",
+    # counsel kinds (t2)
+    "COUNSEL_KIND_STEP",
+    "COUNSEL_KIND_DURABLE",
+    "COUNSEL_KINDS",
+    "DEFAULT_KIND",
     # protocol
     "MUSE_AUTHORITY",
     "MARKER_DONE",
@@ -190,6 +196,23 @@ DEGRADED_THINKING = "muse-thinking-failed"
 DEGRADED_SINK = "muse-sink-failed"
 #: A boundary field could not be rendered into the prompt; the field is NAMED.
 DEGRADED_UNREADABLE = "muse-context-unreadable"
+#: A counsel-kind marker was present but could not be read (malformed bracket,
+#: unknown kind, empty bracket). The advice text is kept; the kind falls back
+#: to :data:`DEFAULT_KIND`.
+DEGRADED_MARKER_UNREADABLE = "muse-marker-unreadable"
+
+
+# ── counsel kinds (t2) ────────────────────────────────────────────────────────
+
+#: Counsel anchored to the current step — goes stale as the loop moves on.
+COUNSEL_KIND_STEP = "step"
+#: Counsel that outlives the step — reframings, assumption challenges,
+#: long-horizon implications. Survives to the next boundary or synthesis.
+COUNSEL_KIND_DURABLE = "durable"
+#: The complete set of valid counsel kinds.
+COUNSEL_KINDS = (COUNSEL_KIND_STEP, COUNSEL_KIND_DURABLE)
+#: Default when the muse writes no marker, or the marker is unreadable.
+DEFAULT_KIND = COUNSEL_KIND_DURABLE
 
 
 # ── the thinking protocol ─────────────────────────────────────────────────────
@@ -208,6 +231,11 @@ MUSE_AUTHORITY = (
     "any line meant for the acting loop with 'GUIDANCE:'; everything else is "
     "narration for the operator. Write '[done]' when you have nothing further "
     "worth saying.\n"
+    "You can label guidance with a kind to say how long it should survive. "
+    "Use 'GUIDANCE[step]:' for advice tied to the current step (e.g. 'the test "
+    "you just ran covers the wrong branch'). Use 'GUIDANCE[durable]:' for "
+    "insights that outlive the step (e.g. 'you are solving the wrong problem'). "
+    "A bare 'GUIDANCE:' line without a kind is treated as durable.\n"
     "Your task is reflective and associative: imagine alternatives, reframe the "
     "problem, connect memories from past work, simulate futures the acting loop "
     "has not yet reached, and construct meaning from patterns you see. Disagree "
@@ -225,7 +253,10 @@ MARKER_GUIDANCE = "GUIDANCE:"
 _CONTINUE = "Continue thinking, or write [done] if you have nothing further worth saying."
 
 _DONE_RE = re.compile(re.escape(MARKER_DONE), re.IGNORECASE)
-_GUIDANCE_RE = re.compile(r"^\s*guidance\s*:\s*", re.IGNORECASE)
+#: Matches 'GUIDANCE:', 'GUIDANCE[step]:', 'GUIDANCE[durable]:', etc.
+#: Group 1 is the bracket part (including brackets) or None for bare form.
+#: Group 2 is the content inside brackets or None for bare form.
+_GUIDANCE_RE = re.compile(r"^\s*guidance(\s*\[([^\]]*)\]?)?\s*:\s*", re.IGNORECASE)
 
 #: Cap on a recorded degradation's reason text, so a runaway traceback from a
 #: misbehaving seam cannot blow up a host's artifact. Mirrors continuity.py.
@@ -311,10 +342,15 @@ class MuseInsight(MuseComment):
 
     ``latency`` is inherited and stays ``None`` unless a clock was injected —
     see the module docstring on reporting cost without one.
+
+    ``kind`` is the counsel kind (task t2): :data:`COUNSEL_KIND_STEP` for
+    advice anchored to the current step, :data:`COUNSEL_KIND_DURABLE` for
+    counsel that outlives it. Defaults to :data:`DEFAULT_KIND` (durable).
     """
 
     origin: MuseOrigin = field(default_factory=MuseOrigin)
     turn_index: int = 0
+    kind: str = DEFAULT_KIND
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -324,6 +360,7 @@ class MuseInsight(MuseComment):
             "latency": self.latency,
             "turn_index": self.turn_index,
             "origin": self.origin.to_dict(),
+            "kind": self.kind,
         }
 
 
@@ -529,8 +566,10 @@ def _advance_turn(ctx: _Session, content: str, quiet: int) -> tuple[int, Optiona
     having run dry.
     """
     done = bool(_DONE_RE.search(content))
-    text, guidance = _split_content(content, ctx.controls.max_insight_chars)
+    text, guidance, kinds, degradations = _split_content(content, ctx.controls.max_insight_chars)
+    ctx.degradations.extend(degradations)
     if text or guidance:
+        kind = kinds[0] if kinds else DEFAULT_KIND
         insight = MuseInsight(
             text=text,
             guidance=guidance,
@@ -538,6 +577,7 @@ def _advance_turn(ctx: _Session, content: str, quiet: int) -> tuple[int, Optiona
             latency=_since(ctx.clock, ctx.turn_started),
             origin=ctx.origin,
             turn_index=ctx.turns,
+            kind=kind,
         )
         ctx.insights.append(insight)
         _emit(ctx, insight)
@@ -770,15 +810,47 @@ def _render_history(history: Any, cap: int, unreadable: list[str]) -> list[str]:
 # ── content parsing ───────────────────────────────────────────────────────────
 
 
-def _split_content(content: str, cap: int) -> tuple[str, str]:
-    """Split one thinking turn into ``(narration, guidance)``.
+def _parse_kind(match: "re.Match[str]") -> tuple[str, Optional[str]]:
+    """Extract the counsel kind from a guidance-line match.
+
+    Returns ``(kind, raw_marker_or_None)``.  *kind* is always a valid kind
+    string (defaulting to :data:`DEFAULT_KIND`).  *raw_marker_or_None* is the
+    original bracket text when the marker was present but unreadable, or ``None``
+    when the line was a bare ``GUIDANCE:`` or carried a valid marker.
+    """
+    bracket = match.group(1)  # e.g. "[step]" or None
+    if bracket is None:
+        return DEFAULT_KIND, None
+    raw = match.group(2)  # e.g. "step" or "durable" or "wharrgarbl" or ""
+    if raw is None:
+        # e.g. "GUIDANCE[:" — bracket opened but never closed
+        return DEFAULT_KIND, bracket
+    kind = raw.strip().lower()
+    if kind in COUNSEL_KINDS:
+        return kind, None
+    # Present but not a valid kind → degrade, default to durable
+    return DEFAULT_KIND, bracket
+
+
+def _split_content(
+    content: str,
+    cap: int,
+) -> tuple[str, str, list[MuseInsight], list[MuseDegradation]]:
+    """Split one thinking turn into ``(narration, guidance, insights, degradations)``.
 
     Guidance lines are the ONLY channel into the acting loop, and they arrive as
     plain advisory text — there is no other kind of line this could produce.
     Both halves are capped so a runaway turn cannot flood anything.
+
+    Each guidance line is parsed for an optional kind marker.  A valid marker
+    sets the insight's ``kind``; an invalid marker records a degradation and
+    falls back to :data:`DEFAULT_KIND`.  The marker text is stripped from the
+    visible guidance body.
     """
     narration: list[str] = []
     guidance: list[str] = []
+    kinds: list[str] = []
+    degradations: list[MuseDegradation] = []
     for raw in content.splitlines():
         line = _DONE_RE.sub("", raw).strip()
         if not line:
@@ -786,11 +858,25 @@ def _split_content(content: str, cap: int) -> tuple[str, str]:
         match = _GUIDANCE_RE.match(line)
         if match is not None:
             body = line[match.end() :].strip()
+            kind, bad_marker = _parse_kind(match)
+            if bad_marker is not None:
+                degradations.append(
+                    MuseDegradation(
+                        code=DEGRADED_MARKER_UNREADABLE,
+                        reason=f"unreadable counsel-kind marker: {bad_marker}",
+                    )
+                )
             if body:
                 guidance.append(body)
+                kinds.append(kind)
             continue
         narration.append(line)
-    return _clip("\n".join(narration), cap), _clip("\n".join(guidance), cap)
+    return (
+        _clip("\n".join(narration), cap),
+        _clip("\n".join(guidance), cap),
+        kinds,
+        degradations,
+    )
 
 
 def _content(response: Any) -> str:
