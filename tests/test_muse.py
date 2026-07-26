@@ -22,7 +22,12 @@ import pytest
 
 from embodiment.contract import ContextPacket, ModelResponse, ToolCall
 from embodiment.muse import (
+    COUNSEL_KIND_DURABLE,
+    COUNSEL_KIND_STEP,
+    COUNSEL_KINDS,
+    DEFAULT_KIND,
     DEFAULT_STALE_LAG,
+    DEGRADED_MARKER_UNREADABLE,
     DEGRADED_SINK,
     DEGRADED_THINKING,
     DEGRADED_UNREADABLE,
@@ -784,6 +789,7 @@ class TestLedgerSerialization:
                 "latency": None,
                 "turn_index": 1,
                 "origin": data["origin"],
+                "kind": "durable",
             }
         ]
         assert data["degradations"] == []
@@ -984,3 +990,115 @@ class TestSeamCompatibility:
         assert any("I notice the tests were never run" in line for line in rendered)
         assert guided == ["run pytest"]
         assert engine.muse_degraded is False
+
+
+# ── 11. counsel-kind self-labelling (t2) ──────────────────────────────────────
+
+
+class TestCounselKind:
+    """Task t2: the muse self-labels its counsel kind via a prompt marker."""
+
+    def test_kind_vocabulary_exists(self):
+        assert COUNSEL_KIND_STEP == "step"
+        assert COUNSEL_KIND_DURABLE == "durable"
+        assert COUNSEL_KINDS == ("step", "durable")
+        assert DEFAULT_KIND == COUNSEL_KIND_DURABLE
+
+    def test_labelled_step_produces_step_kind(self):
+        loop, _ = _loop(_resp("GUIDANCE[step]: check the null case\n" + MARKER_DONE))
+        insight = loop.think(_boundary()).insights[0]
+        assert insight.kind == COUNSEL_KIND_STEP
+        assert insight.guidance == "check the null case"
+
+    def test_labelled_durable_produces_durable_kind(self):
+        loop, _ = _loop(
+            _resp("GUIDANCE[durable]: you are solving the wrong problem\n" + MARKER_DONE)
+        )
+        insight = loop.think(_boundary()).insights[0]
+        assert insight.kind == COUNSEL_KIND_DURABLE
+        assert insight.guidance == "you are solving the wrong problem"
+
+    def test_unlabelled_guidance_defaults_to_durable(self):
+        loop, _ = _loop(_resp("GUIDANCE: advice without a kind\n" + MARKER_DONE))
+        insight = loop.think(_boundary()).insights[0]
+        assert insight.kind == COUNSEL_KIND_DURABLE
+        assert insight.guidance == "advice without a kind"
+
+    def test_unlabelled_guidance_produces_no_degradation(self):
+        loop, _ = _loop(_resp("GUIDANCE: plain advice\n" + MARKER_DONE))
+        outcome = loop.think(_boundary())
+        assert not outcome.degradations
+
+    def test_malformed_marker_produces_durable_and_degradation(self):
+        loop, _ = _loop(_resp("GUIDANCE[wharrgarbl]: still useful advice\n" + MARKER_DONE))
+        outcome = loop.think(_boundary())
+        insight = outcome.insights[0]
+        assert insight.kind == COUNSEL_KIND_DURABLE
+        assert insight.guidance == "still useful advice"
+        assert len(outcome.degradations) == 1
+        assert outcome.degradations[0].code == DEGRADED_MARKER_UNREADABLE
+
+    def test_empty_bracket_produces_durable_and_degradation(self):
+        loop, _ = _loop(_resp("GUIDANCE[: advice with empty bracket\n" + MARKER_DONE))
+        outcome = loop.think(_boundary())
+        insight = outcome.insights[0]
+        assert insight.kind == COUNSEL_KIND_DURABLE
+        assert insight.guidance == "advice with empty bracket"
+        assert len(outcome.degradations) == 1
+        assert outcome.degradations[0].code == DEGRADED_MARKER_UNREADABLE
+
+    def test_unclosed_bracket_produces_durable_and_degradation(self):
+        loop, _ = _loop(_resp("GUIDANCE[step: advice with unclosed bracket\n" + MARKER_DONE))
+        outcome = loop.think(_boundary())
+        insight = outcome.insights[0]
+        assert insight.kind == COUNSEL_KIND_DURABLE
+        assert insight.guidance == "advice with unclosed bracket"
+        assert len(outcome.degradations) == 1
+        assert outcome.degradations[0].code == DEGRADED_MARKER_UNREADABLE
+
+    def test_marker_is_case_insensitive(self):
+        loop, _ = _loop(_resp("GUIDANCE[STEP]: case test\n" + MARKER_DONE))
+        insight = loop.think(_boundary()).insights[0]
+        assert insight.kind == COUNSEL_KIND_STEP
+
+    def test_marker_with_whitespace_is_handled(self):
+        loop, _ = _loop(_resp("GUIDANCE[ durable ]: whitespace test\n" + MARKER_DONE))
+        insight = loop.think(_boundary()).insights[0]
+        assert insight.kind == COUNSEL_KIND_DURABLE
+
+    def test_to_dict_roundtrips_kind(self):
+        loop, _ = _loop(_resp("GUIDANCE[step]: step advice\n" + MARKER_DONE))
+        insight = loop.think(_boundary()).insights[0]
+        data = insight.to_dict()
+        assert data["kind"] == COUNSEL_KIND_STEP
+
+    def test_default_kind_on_construction(self):
+        insight = MuseInsight(text="t", guidance="g")
+        assert insight.kind == DEFAULT_KIND
+
+    def test_mixed_guidance_lines_in_one_turn(self):
+        """A turn can carry multiple guidance lines of different kinds."""
+        loop, _ = _loop(
+            _resp(
+                "GUIDANCE[step]: check branch A\n"
+                "GUIDANCE[durable]: rethink the approach\n" + MARKER_DONE
+            )
+        )
+        outcome = loop.think(_boundary())
+        insight = outcome.insights[0]
+        # The first guidance line's kind wins for the insight
+        assert insight.kind == COUNSEL_KIND_STEP
+        assert "check branch A" in insight.guidance
+        assert "rethink the approach" in insight.guidance
+        assert not outcome.degradations
+
+    def test_authority_text_teaches_the_marker(self):
+        """MUSE_AUTHORITY must mention the kind marker (additive only)."""
+        assert "GUIDANCE[step]" in MUSE_AUTHORITY
+        assert "GUIDANCE[durable]" in MUSE_AUTHORITY
+        # The five-verb charter must still be present (t1's test)
+        assert "imagine alternatives" in MUSE_AUTHORITY
+        assert "reframe the" in MUSE_AUTHORITY
+        assert "connect memories" in MUSE_AUTHORITY
+        assert "simulate futures" in MUSE_AUTHORITY
+        assert "construct meaning" in MUSE_AUTHORITY
