@@ -522,6 +522,34 @@ def _runner_boundary(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerR
         runner.close(timeout=_TIMEOUT)
 
 
+def _runner_compilation_starved(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    """Provoke DROPPED_COMPILATION_STARVED by recording the code directly."""
+    runner = ThreadedMuseRunner(Scripted())
+    try:
+        with runner._lock:
+            runner._record(
+                muse_runner.DROPPED_COMPILATION_STARVED,
+                "compilation work starved by boundary counsel priority",
+            )
+        return ledger.from_muse_runner(runner)
+    finally:
+        runner.close(timeout=_TIMEOUT)
+
+
+def _runner_counsel_displaced(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    """Provoke DROPPED_COUNSEL_DISPLACED by recording the code directly."""
+    runner = ThreadedMuseRunner(Scripted())
+    try:
+        with runner._lock:
+            runner._record(
+                muse_runner.DROPPED_COUNSEL_DISPLACED,
+                "boundary counsel displaced by compilation filling buffer",
+            )
+        return ledger.from_muse_runner(runner)
+    finally:
+        runner.close(timeout=_TIMEOUT)
+
+
 # -- events -------------------------------------------------------------------
 
 
@@ -743,6 +771,11 @@ PROVOKERS: dict[tuple[str, str], Provoker] = {
     (ledger.SOURCE_MUSE_RUNNER, muse_runner.DROPPED_LATE): _runner_late,
     (ledger.SOURCE_MUSE_RUNNER, muse_runner.DROPPED_OVERFLOW): _runner_overflow,
     (ledger.SOURCE_MUSE_RUNNER, muse_runner.DROPPED_BOUNDARY): _runner_boundary,
+    (
+        ledger.SOURCE_MUSE_RUNNER,
+        muse_runner.DROPPED_COMPILATION_STARVED,
+    ): _runner_compilation_starved,
+    (ledger.SOURCE_MUSE_RUNNER, muse_runner.DROPPED_COUNSEL_DISPLACED): _runner_counsel_displaced,
     (ledger.SOURCE_EVENTS, "events-cli-unavailable"): _events_unavailable,
     (ledger.SOURCE_EVENTS, "connect-failed"): _events_connect,
     (ledger.SOURCE_EVENTS, "publish-failed"): _events_publish,

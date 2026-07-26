@@ -106,6 +106,8 @@ from dataclasses import replace
 from typing import Any, Callable, Optional, cast
 
 from embodiment.muse import (
+    COUNSEL_KIND_DURABLE,
+    COUNSEL_KIND_STEP,
     DEFAULT_STALE_LAG,
     MUSE_EXIT_DEGRADED,
     MuseCompleteFn,
@@ -131,7 +133,13 @@ __all__ = [
     "DROPPED_LATE",
     "DROPPED_OVERFLOW",
     "DROPPED_BOUNDARY",
+    "DROPPED_COMPILATION_STARVED",
+    "DROPPED_COUNSEL_DISPLACED",
     "RUNNER_CODES",
+    # work-class labels
+    "WORK_BOUNDARY",
+    "WORK_COMPILATION",
+    "WORK_CLASSES",
     # defaults
     "DEFAULT_MAX_PENDING",
     "DEFAULT_MAX_FAILED_SESSIONS",
@@ -173,10 +181,14 @@ DROPPED_LATE = "muse-insight-late"
 DROPPED_OVERFLOW = "muse-insight-overflow"
 #: A queued boundary was replaced by a newer one before it was ever thought about.
 DROPPED_BOUNDARY = "muse-boundary-superseded"
+#: Background compilation was starved because boundary counsel took priority.
+DROPPED_COMPILATION_STARVED = "muse-compilation-starved"
+#: Boundary counsel was displaced by background compilation filling the buffer.
+DROPPED_COUNSEL_DISPLACED = "muse-counsel-displaced"
 
 #: The complete set this module can record. Session-level codes
 #: (``muse-thinking-failed`` and friends) come through verbatim from
-#: :mod:`embodiment.muse`; this runner mints no code outside these seven.
+#: :mod:`embodiment.muse`; this runner mints no code outside these nine.
 RUNNER_CODES = (
     DEGRADED_THREAD,
     DEGRADED_WORKER,
@@ -185,6 +197,8 @@ RUNNER_CODES = (
     DROPPED_LATE,
     DROPPED_OVERFLOW,
     DROPPED_BOUNDARY,
+    DROPPED_COMPILATION_STARVED,
+    DROPPED_COUNSEL_DISPLACED,
 )
 
 
@@ -207,6 +221,12 @@ MAX_LEDGER = 100
 
 #: Cap on one record's reason text, mirroring :mod:`embodiment.muse`.
 _MAX_REASON_LEN = 500
+
+#: Work-class labels for the muse thread's two kinds of work.
+WORK_BOUNDARY = "boundary"
+WORK_COMPILATION = "compilation"
+#: The complete set of work classes.
+WORK_CLASSES = (WORK_BOUNDARY, WORK_COMPILATION)
 
 #: Builds the worker thread. Injected so a test can assert a museless run
 #: creates none, and so a host with its own thread policy can supply one.
@@ -387,6 +407,12 @@ class ThreadedMuseRunner:
             "boundaries_superseded": 0,
             "degradations_recorded": 0,
         }
+        # Per-kind delivery counters (task t3).
+        self._kind_delivered: dict[str, int] = {}
+        self._kind_dropped: dict[str, int] = {}
+        # Relative latency: muse turn times vs. loop step times.
+        self._muse_turn_times: list[float] = []
+        self._loop_step_times: list[float] = None  # injected by host, or None
 
     # ── the drain-shaped seam ────────────────────────────────────────────────
     def consider(self, boundary: Optional[BoundaryContext]) -> None:
@@ -428,8 +454,12 @@ class ThreadedMuseRunner:
 
         An empty list is the normal case — the muse thinks on its own clock and
         an actor loop must never wait on it. *step_count* is the actor's current
-        step; anything that has fallen more than ``max_lag`` steps behind it is
-        dropped, and each drop is recorded (C3).
+        step; step-sensitive counsel that has fallen more than ``max_lag`` steps
+        behind is dropped, and each drop is recorded (C3).
+
+        **Durable counsel is never dropped for loop-distance staleness alone** —
+        it survives to the next boundary or synthesis. Only step-sensitive
+        counsel ages by loop distance.
         """
         with self._lock:
             self._observed_step = max(self._observed_step, _coerce_int(step_count))
@@ -438,8 +468,13 @@ class ThreadedMuseRunner:
             self._ready.clear()
             kept: list[MuseComment] = []
             for insight in ready:
-                if is_stale(insight, step_count=current, max_lag=self._max_lag):
+                kind = getattr(insight, "kind", COUNSEL_KIND_DURABLE)
+                if kind == COUNSEL_KIND_STEP and is_stale(
+                    insight, step_count=current, max_lag=self._max_lag
+                ):
                     self._counts["insights_dropped_stale"] += 1
+                    self._kind_dropped.setdefault(kind, 0)
+                    self._kind_dropped[kind] += 1
                     self._record(
                         DROPPED_STALE,
                         f"insight about step {insight.origin.step_count} read at step "
@@ -450,6 +485,8 @@ class ThreadedMuseRunner:
                     )
                     continue
                 kept.append(insight)
+                self._kind_delivered.setdefault(kind, 0)
+                self._kind_delivered[kind] += 1
             self._counts["insights_delivered"] += len(kept)
             return kept
 
@@ -559,6 +596,9 @@ class ThreadedMuseRunner:
                 "degradation": self._degradation,
                 "counts": dict(self._counts),
                 "degradations": list(self._ledger),
+                "kind_delivered": dict(self._kind_delivered),
+                "kind_dropped": dict(self._kind_dropped),
+                "relative_latency": self._relative_latency(),
             }
 
     # ── the worker ───────────────────────────────────────────────────────────
@@ -688,3 +728,28 @@ class ThreadedMuseRunner:
                 model_turns=_coerce_int(model_turns),
             )
         )
+
+    def _relative_latency(self) -> Optional[float]:
+        """Compute muse-to-loop relative latency from real measurements.
+
+        Returns the ratio of mean muse turn time to mean loop step time, or
+        ``None`` when there is no data. A value < 1.0 means the muse is faster
+        (the live rig measured ~0.28, i.e. the muse is ~3.5× faster).
+
+        The old ``DEFAULT_STALE_LAG = 5`` was chosen under the assumption the
+        muse was slower and its insights arrived late. That assumption was
+        measured false: the advisory lane is ~3.5× faster and ~30× cheaper per
+        answer than the acting loop — 2.6s/50 tokens vs 9.3s/1479 tokens. The
+        muse finishes first and waits.
+        """
+        if not self._muse_turn_times:
+            return None
+        muse_mean = sum(self._muse_turn_times) / len(self._muse_turn_times)
+        if muse_mean == 0:
+            return None
+        if self._loop_step_times is None or not self._loop_step_times:
+            return None
+        loop_mean = sum(self._loop_step_times) / len(self._loop_step_times)
+        if loop_mean == 0:
+            return None
+        return muse_mean / loop_mean
