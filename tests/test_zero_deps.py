@@ -72,8 +72,9 @@ _APPROVED_DEPENDENCIES: dict[str, str] = {
     "eidetic-cli>=0.12": "pulls data-refinery-cli[store] -> neo4j + pymongo",
     # -> numpy + httpx (and httpx's own anyio/certifi/httpcore/idna).
     "coherence-cli>=0.6": "pulls numpy + httpx",
-    # -> paho-mqtt. Declared for the sibling events task; this package ships no
-    #    events module of its own yet, so nothing imports it today.
+    # -> paho-mqtt. `embodiment/events.py` ships and is the consumer, but it
+    #    imports `events_cli` LAZILY (inside the emit path), so paho-mqtt stays
+    #    out of the measured top-level import set below.
     "events-cli>=0.10": "pulls paho-mqtt",
 }
 
