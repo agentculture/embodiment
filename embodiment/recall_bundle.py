@@ -175,14 +175,18 @@ LEVELS = (LEVEL_FLAT, LEVEL_GRAPH)
 
 
 def graph_available() -> bool:
-    """Whether a graph-level fetch ships in this package. It does not.
+    """Whether a graph-level fetch ships in this package.
 
-    Stated as a function rather than a constant because the answer belongs to a
-    sibling's release, not to this file's history: when eidetic-cli's composite
-    fetch lands, a host wires it in as a :data:`FetchFn` and this still returns
-    ``False`` — embodiment ships no graph adapter of its own until it does.
+    Returns ``True`` when eidetic 0.13.0+ is importable and provides
+    :func:`eidetic.memory.traverse.discover`.  The import is lazy: reaching
+    eidetic is what costs a host, and a host that never asks for graph should
+    not pay for it just by importing this module.
     """
-    return False
+    try:
+        from eidetic.memory.traverse import discover  # noqa: F401
+    except Exception:
+        return False
+    return True
 
 
 # ── per-item source labels ────────────────────────────────────────────────────
@@ -769,6 +773,197 @@ def flat_fetcher(recall_fn: Optional[RecallFn] = None) -> FetchFn:
 
     def fetch(request: BundleRequest) -> RecallBundle:
         return flat_fetch(request, recall_fn=recall_fn)
+
+    return fetch
+
+
+# ── the graph adapter — eidetic 0.13.0+ ───────────────────────────────────────
+
+
+def _default_traverse() -> Any:
+    """The traverse engine, imported on use.
+
+    Lazy on purpose: reaching eidetic's traverse module is what costs a host,
+    and a host that never asks for graph should not pay for it.
+    """
+    from eidetic.memory import traverse
+
+    return traverse
+
+
+def _default_backend() -> Any:
+    """The store backend, imported on use. Lazy for the same reason."""
+    from eidetic.memory.backend import get_backend
+
+    return get_backend
+
+
+def _default_scope() -> Any:
+    """The scope module, imported on use."""
+    from eidetic.memory import scope
+
+    return scope
+
+
+def graph_fetch(request: BundleRequest, *, recall_fn: Optional[RecallFn] = None) -> RecallBundle:
+    """Fetch at :data:`LEVEL_GRAPH` — traversal over the memory graph.
+
+    Uses :func:`eidetic.memory.traverse.discover` (pure, no IO) with injected
+    ``fetch`` and ``can_serve`` callables backed by
+    :meth:`StoreBackend.get_many` and :func:`eidetic.memory.scope.can_serve`.
+
+    Seeds are the records returned by the flat recall query. The traversal
+    follows ``links`` and ``supersedes`` edges breadth-first. Discovered
+    records carry :data:`SOURCE_TRAVERSAL` and their hop depth.
+
+    If the traverse module is not available, degrades to flat with a
+    :data:`DEGRADED_ENRICHMENT_UNAVAILABLE` record. A traversal that hits
+    ``max_depth`` or ``max_nodes`` sets :attr:`TraversalResult.truncated`,
+    which becomes a :data:`DEGRADED_BUNDLE_TRUNCATED` degradation.
+
+    Never raises.
+    """
+    # Lazy import: only pay for traverse when graph is actually requested.
+    try:
+        traverse_mod = _default_traverse()
+        get_backend = _default_backend()
+        scope_mod = _default_scope()
+    except Exception:
+        # Traverse not available — degrade to flat.
+        seam = recall_fn if recall_fn is not None else _default_recall()
+        flat = flat_fetch(request, recall_fn=seam)
+        flat.provenance = provenance_for(request, level=LEVEL_FLAT, adapter=ADAPTER_FLAT_RECALL)
+        degradations = list(flat.degradations) + [
+            BundleDegradation(
+                code=DEGRADED_ENRICHMENT_UNAVAILABLE,
+                reason=(
+                    f"{LEVEL_GRAPH!r} enrichment was requested; "
+                    f"eidetic traverse is not available, fell back to {LEVEL_FLAT!r}"
+                ),
+                stage=STAGE_FETCH,
+            )
+        ]
+        return RecallBundle(
+            provenance=flat.provenance,
+            items=flat.items,
+            degradations=tuple(degradations),
+        )
+
+    # Run the flat fetch first to get seeds.
+    seam = recall_fn if recall_fn is not None else _default_recall()
+    flat = flat_fetch(request, recall_fn=seam)
+    seeds = [item.raw for item in flat.items if item.raw is not None]
+
+    if not seeds:
+        # No seeds — nothing to traverse, return flat result.
+        return RecallBundle(
+            provenance=provenance_for(request, level=LEVEL_GRAPH, adapter="eidetic-graph"),
+            items=flat.items,
+            degradations=flat.degradations,
+        )
+
+    # Build the injected callables for discover().
+    backend = get_backend(data_dir=request.data_dir) if request.data_dir else None
+    scope = scope_mod.Scope(name=request.scope) if hasattr(scope_mod, "Scope") else None
+
+    def _fetch_one(rid: str) -> Any:
+        """Resolve one id via the store backend."""
+        if backend is None or scope is None:
+            return None
+        try:
+            results = backend.get_many([rid], scope)
+            return results.get(rid)
+        except Exception:
+            return None
+
+    def _can_serve(record: Any) -> bool:
+        """Check if a record is servable (public or same-scope private)."""
+        if scope is None:
+            return True
+        try:
+            record_scope = getattr(record, "scope", None)
+            if record_scope is None:
+                return True
+            return scope_mod.can_serve(scope, record_scope)
+        except Exception:
+            return True
+
+    # Run the traversal.
+    max_depth = 3
+    max_nodes = request.max_items or DEFAULT_MAX_ITEMS
+    try:
+        result = traverse_mod.discover(
+            seeds,
+            _fetch_one,
+            _can_serve,
+            max_depth,
+            max_nodes,
+        )
+    except Exception as exc:
+        # Traversal failed — degrade to flat.
+        degradations = list(flat.degradations) + [
+            BundleDegradation(
+                code=DEGRADED_FETCH_FAILED,
+                reason=_text(f"traversal failed: {exc}" if str(exc) else type(exc).__name__),
+                stage=STAGE_FETCH,
+                exception=type(exc).__name__,
+            )
+        ]
+        return RecallBundle(
+            provenance=provenance_for(request, level=LEVEL_FLAT, adapter=ADAPTER_FLAT_RECALL),
+            items=flat.items,
+            degradations=tuple(degradations),
+        )
+
+    # Assemble traversal-discovered items.
+    items: dict[str, BundleItem] = dict(flat.items)
+    degradations = list(flat.degradations)
+
+    for node in result.nodes:
+        item = item_from_record(
+            node.record.to_dict() if hasattr(node.record, "to_dict") else node.record,
+            source=SOURCE_TRAVERSAL,
+        )
+        if item is not None:
+            items.setdefault(item.record_id, item)
+        else:
+            degradations.append(
+                BundleDegradation(
+                    code=DEGRADED_UNREADABLE_RECORD,
+                    reason=_text(f"traversal node could not be read as a record"),
+                    stage=STAGE_ASSEMBLE,
+                )
+            )
+
+    # Record truncation if the traversal was cut short.
+    if result.truncated:
+        degradations.append(
+            BundleDegradation(
+                code=DEGRADED_ITEM_CAP,
+                reason=(
+                    f"traversal was truncated at depth {max_depth} / "
+                    f"{max_nodes} nodes; more material may exist"
+                ),
+                stage=STAGE_FETCH,
+            )
+        )
+
+    return RecallBundle(
+        provenance=provenance_for(request, level=LEVEL_GRAPH, adapter="eidetic-graph"),
+        items=tuple(items.values()),
+        degradations=tuple(degradations),
+    )
+
+
+def graph_fetcher(recall_fn: Optional[RecallFn] = None) -> FetchFn:
+    """Build the graph adapter over *recall_fn* as a plain :data:`FetchFn`.
+
+    ``fetch_bundle(request, fetch=graph_fetcher(my_store))`` is how a host
+    points the graph adapter at a different store seam.
+    """
+
+    def fetch(request: BundleRequest) -> RecallBundle:
+        return graph_fetch(request, recall_fn=recall_fn)
 
     return fetch
 
