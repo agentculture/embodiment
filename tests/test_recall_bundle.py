@@ -925,3 +925,75 @@ class TestModulePosture:
 
         assert not _fetch(FakeStore(), _request("a")).items
         assert len(_fetch(store, _request("a"))) == 1
+
+
+# ── the graph level, and the flat floor beneath it (task t5) ─────────────────
+
+
+class TestGraphDegradesToFlatAndSaysSo:
+    """Claim c35's floor: a rig that cannot traverse still runs the whole path.
+
+    Graph traversal arrived in eidetic-cli 0.13.0 and this package declares
+    ``eidetic-cli>=0.12``, so "cannot traverse" is an ordinary install, not a
+    broken one — and the install this suite runs on is exactly that. The bundle
+    must come back flat, LABELLED flat, with the substitution recorded.
+    """
+
+    def _request(self, tmp_path: Path) -> recall_bundle.BundleRequest:
+        return recall_bundle.BundleRequest(
+            queries=("anything",),
+            data_dir=tmp_path / "store",
+            level=recall_bundle.LEVEL_GRAPH,
+        )
+
+    def _recall(self, *records: dict) -> Any:
+        class _Outcome:
+            ok = True
+            degradation = None
+
+            def __init__(self, recs: tuple) -> None:
+                self.records = list(recs)
+
+        return lambda query, **kw: _Outcome(records)
+
+    def test_a_graph_request_without_traversal_serves_flat(self, tmp_path: Path) -> None:
+        bundle = recall_bundle.graph_fetch(
+            self._request(tmp_path),
+            recall_fn=self._recall({"id": "r1", "text": "remembered"}),
+        )
+        assert bundle.provenance.level == recall_bundle.LEVEL_FLAT
+        assert bundle.provenance.requested_level == recall_bundle.LEVEL_GRAPH
+        assert [i.record_id for i in bundle.items] == ["r1"]
+
+    def test_the_substitution_is_recorded_never_silent(self, tmp_path: Path) -> None:
+        bundle = recall_bundle.graph_fetch(
+            self._request(tmp_path),
+            recall_fn=self._recall({"id": "r1", "text": "remembered"}),
+        )
+        codes = [d.code for d in bundle.degradations]
+        assert recall_bundle.DEGRADED_ENRICHMENT_UNAVAILABLE in codes
+
+    def test_it_degrades_rather_than_raises(self, tmp_path: Path) -> None:
+        """Never-raise holds on the graph path too."""
+
+        def _explodes(query: str, **kw: Any) -> Any:
+            raise RuntimeError("store is gone")
+
+        bundle = recall_bundle.graph_fetch(self._request(tmp_path), recall_fn=_explodes)
+        assert bundle.items == ()
+        assert bundle.degradations  # something was recorded
+
+    def test_graph_available_reports_this_install_honestly(self) -> None:
+        from embodiment import continuity
+
+        assert recall_bundle.graph_available() is continuity.traverse_available()
+
+
+class TestCallerStatedBounds:
+    """eidetic puts bound-setting on the caller; the request carries them."""
+
+    def test_max_depth_is_a_request_field_defaulting_to_one_hop(self) -> None:
+        assert recall_bundle.BundleRequest(queries=("q",)).max_depth == 1
+
+    def test_a_caller_can_ask_for_no_walk_at_all(self) -> None:
+        assert recall_bundle.BundleRequest(queries=("q",), max_depth=0).max_depth == 0

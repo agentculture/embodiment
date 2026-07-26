@@ -104,6 +104,15 @@ ABSENT_BY_DESIGN: dict[tuple[str, str], str] = {
         "perception.py",
         "_now",
     ): "Same rule for intake: a clock failure is not one of the four fault classes.",
+    (
+        "continuity.py",
+        "traverse._fetch_one",
+    ): (
+        "A graph hop that cannot be resolved is ABSENT, which is what eidetic's "
+        "traversal already means by a dangling id — it skips them without error. "
+        "The walk's own outcome still records whether it ran at all, so nothing "
+        "about the traversal is silent; only the single unresolvable edge is."
+    ),
 }
 
 #: Markers a sanctioned ``pass``-bodied swallow must carry in its own source, so

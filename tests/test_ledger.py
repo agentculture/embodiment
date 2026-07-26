@@ -380,6 +380,31 @@ def _muse_thinking(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRec
     return ledger.from_muse(thinking.think(_muse_boundary(step=4)))
 
 
+def _muse_bundle_truncated(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    """A recall bundle larger than its OWN budget — not the snapshot budget.
+
+    The two budgets are deliberately independent: a compiled bundle of notes and
+    traversal results exceeds the 600-char boundary snapshot by construction, and
+    clipping it through that limit would destroy exactly the material the muse is
+    meant to compile. Clipping it through its own budget is legitimate; doing so
+    silently is not.
+    """
+
+    class _Item:
+        record_id = "r1"
+        source = "eidetic-recall"
+        text = "x" * 5000
+
+    class _Bundle:
+        items = (_Item(),)
+
+    thinking = MuseLoop(
+        Scripted(_resp(MARKER_DONE)),
+        controls=MuseControls(max_bundle_chars=100),
+    )
+    return ledger.from_muse(thinking.think(_muse_boundary(), recall_bundle=_Bundle()))
+
+
 def _muse_sink(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
     def sink(_insight: Any) -> None:
         raise RuntimeError("queue is closed")
@@ -733,6 +758,7 @@ PROVOKERS: dict[tuple[str, str], Provoker] = {
     (ledger.SOURCE_LOOP, loop.DEGRADED_SPAWN_DUPLICATE): _loop_spawn_duplicate,
     (ledger.SOURCE_LOOP, loop.DEGRADED_SYNTHESIS): _loop_synthesis,
     (ledger.SOURCE_MUSE, muse.DEGRADED_THINKING): _muse_thinking,
+    (ledger.SOURCE_MUSE, muse.DEGRADED_BUNDLE_TRUNCATED): _muse_bundle_truncated,
     (ledger.SOURCE_MUSE, muse.DEGRADED_SINK): _muse_sink,
     (ledger.SOURCE_MUSE, muse.DEGRADED_UNREADABLE): _muse_unreadable,
     (ledger.SOURCE_MUSE, muse.DEGRADED_MARKER_UNREADABLE): _muse_marker_unreadable,
