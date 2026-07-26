@@ -896,6 +896,7 @@ class TestNothingIsFabricated:
             "stage",
             "subsystem",
             "exception",
+            "child_task_id",
             "original",
         }
 

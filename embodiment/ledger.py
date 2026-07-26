@@ -215,9 +215,11 @@ _RELEVANT: dict[str, tuple[str, ...]] = {
     SOURCE_LIFECYCLE: (SOURCE_LIFECYCLE, SOURCE_CONTINUITY),
     SOURCE_LEDGER: (SOURCE_LEDGER,),
     # The subagent lane relays the child's own codes: a loop degradation from a
-    # child keeps ``source=loop`` while carrying ``child_task_id``.
+    # child keeps ``source=loop`` while carrying ``child_task_id``. The subagent
+    # lane itself has no codes (it is not in :data:`_MODULES`), so it is omitted
+    # from its own relevance set — only the child's possible minting lanes are
+    # searched.
     SOURCE_SUBAGENT: (
-        SOURCE_SUBAGENT,
         SOURCE_LOOP,
         SOURCE_MUSE,
         SOURCE_MUSE_RUNNER,
@@ -683,23 +685,47 @@ def read(
     recorded order. They are deliberately not interleaved by time — see the
     module docstring.
     """
-    handed = {
-        SOURCE_LOOP: loop,
-        SOURCE_MUSE: muse,
-        SOURCE_MUSE_RUNNER: muse_runner,
-        SOURCE_EVENTS: events,
-        SOURCE_CONTINUITY: continuity,
-        SOURCE_LIFECYCLE: lifecycle,
-        SOURCE_SUBAGENT: subagent,
-    }
     folded: list[LedgerRecord] = []
     for lane in SOURCES:
-        given = handed.get(lane)
+        given = {
+            SOURCE_LOOP: loop,
+            SOURCE_MUSE: muse,
+            SOURCE_MUSE_RUNNER: muse_runner,
+            SOURCE_EVENTS: events,
+            SOURCE_CONTINUITY: continuity,
+            SOURCE_LIFECYCLE: lifecycle,
+        }.get(lane)
         if given is None:
             continue
-        if lane == SOURCE_SUBAGENT:
-            # subagent records carry child_task_id; from_subagent handles it.
-            folded.extend(from_subagent(given))
-        else:
-            folded.extend(_READERS[lane](given))
+        folded.extend(_READERS[lane](given))
+    # Subagent is not in SOURCES (it has no codes of its own), so handle it
+    # separately. It appears after the standard lanes in the output.
+    if subagent is not None:
+        folded.extend(from_subagent(subagent))
+    # Also fold child degradations from loop spawns when a loop outcome is
+    # provided but no explicit subagent argument. The child's degradations ride
+    # on SpawnRecord.degradations inside outcome.spawns.
+    if subagent is None and loop is not None:
+        _fold_spawn_degradations(loop, folded)
     return folded
+
+
+def _fold_spawn_degradations(loop_source: Any, folded: list[LedgerRecord]) -> None:
+    """Fold child degradations from a loop outcome's spawn records.
+
+    Each granted spawn carries the child's own degradation records on
+    :attr:`~embodiment.subagent.SpawnRecord.degradations` and a
+    :attr:`~embodiment.subagent.SpawnRecord.child_task_id`. These are folded
+    through :func:`from_subagent` so they carry child attribution.
+    """
+    spawns = getattr(loop_source, "spawns", None)
+    if not spawns:
+        return
+    for spawn in spawns:
+        if not getattr(spawn, "granted", False):
+            continue
+        child_id = getattr(spawn, "child_task_id", None)
+        if child_id is None:
+            continue
+        child_records = from_subagent(spawn)
+        folded.extend(child_records)
