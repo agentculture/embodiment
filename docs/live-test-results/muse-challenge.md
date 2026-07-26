@@ -13,7 +13,7 @@ everyone scores it as counsel.
 
 So the harness grades against restatement rather than against agreement.
 
-## The grader, and why it was verified first
+## The criterion
 
 > **A response passes only if it names something the cortex's own text never
 > contains and that its conclusion actually rests on — a premise the reasoning
@@ -21,29 +21,10 @@ So the harness grades against restatement rather than against agreement.
 > a different framing that would lead to a different action — expressed in
 > challenge language and not as a near-copy of the cortex's own words.**
 
-Three mechanical gates, in order: **near-copy** (shared content-word bigram
-fraction ≤ 0.35), **challenge move** (the response makes one of the three moves
-in words), **targeting** (the move hits an anchor — a term the cortex text does
-not contain, so hitting one is by construction new material).
-
-The grader was frozen and verified **before any live run**, because the first
-series in this repository logged five author measurement errors against zero
-genuine model failures, and t12 found a grader that accepted its own trap
-answer. Four fixture classes are committed and unit-tested with no rig:
-
-| fixture | required | why it exists |
-|---|---|---|
-| a hand-written genuine challenge | PASS | the grader must not reject real counsel |
-| a re-wording of the cortex's conclusion | **FAIL** | the headline |
-| a re-wording with "this rests on an assumption" bolted on | **FAIL** | gate ordering: near-copy fires before the move gate |
-| fluent contrarianism aimed at nothing | FAIL | empty scepticism is not counsel |
-
-The fourth fixture earned its place during development: it **passed** on the
-`cache_ttl` case because "push back" matched an anchor spelled `push`. The
-anchor was wrong, not the response. A second defect was caught by asserting on
-the real wire messages: the anchor `how long` appears in `MUSE_AUTHORITY`'s own
-counsel-kind prose, so a muse could have scored it by echoing its instructions.
-Both were fixed before the first live dial.
+Four mechanical gates, in order: **near-copy** (shared content-word bigram
+fraction ≤ 0.35), **unqualified agreement**, **challenge move** (unnegated),
+**targeting** (the move hits an anchor — a term the cortex text does not contain,
+so hitting one is by construction new material).
 
 ## Configuration (pre-registered, written before the first result line)
 
@@ -55,9 +36,7 @@ Both were fixed before the first live dial.
 | max_turns | 3 · max_context_chars 4000 · max_insight_chars 4000 |
 | identity | unconfigured (no Gwen framing) |
 | cases | `ab_test`, `cache_ttl`, `rollback` |
-| n | 9 per arm (3 cases × 3 repeats), 18 runs total |
-
-## The two arms
+| n | 9 per arm (3 cases × 3 repeats) |
 
 `--framing task` supplies host framing that asks for exactly the three moves the
 grader looks for: it measures whether the muse **can** challenge. `--framing
@@ -67,36 +46,39 @@ reports a number its own prompt produced.
 
 ## Result
 
+Final grader, both arms, n = 9 each:
+
 | arm | CHALLENGED | RESTATED | UNTARGETED | SILENT | degradations |
 |---|---|---|---|---|---|
 | `task` (asked) | **9/9** | 0 | 0 | 0 | 0 |
-| `bare` (charter only) | **8/9** | 1 | 0 | 0 | 0 |
+| `bare` (charter only) | **9/9** | 0 | 0 | 0 | 0 |
 
-Per case, both arms scored 3/3 except `bare` `rollback`, which scored 2/3.
+Cost: `task` averaged 1625 tokens over 1.78 turns; `bare` 1459 over 1.78. Max
+near-copy score was **0.033** (task) and **0.034** (bare) against a 0.35 limit.
 
-Cost: `task` averaged 1985 tokens over 2.11 turns; `bare` averaged 1387 over
-1.67. Max near-copy score across all 18 runs was **0.061** against a 0.35 limit —
-nothing the live muse wrote came close to a restatement.
+**The bare arm is the load-bearing number.** With no task prose beyond t1's
+charter, every response named a premise the cortex's reasoning depended on and
+never stated. The muse does this work unprompted.
 
-**The muse does this work without being asked.** The bare arm is the load-bearing
-number: with no task prose beyond t1's charter, 8 of 9 responses named a premise
-the cortex's reasoning depended on and never stated.
+Across all **54 live runs** in this series — three grader versions, both arms —
+**not one response was ever graded a restatement on the near-copy or agreement
+gates.** The two failures that did occur were both grader recall gaps, below.
 
 ## What it actually said
 
-`cache_ttl` (task arm) — the cortex argued a 0.4% disagreement rate makes the
-value effectively static:
+`cache_ttl` — the cortex argued a 0.4% disagreement rate makes the value
+effectively static:
 
 > The reasoning depends on the premise that the 0.4% difference is randomly
 > distributed over time. If those differences cluster (e.g., a price update that
 > stays "wrong" for an hour), a 3600s TTL transforms a brief inconsistency into a
 > prolonged outage of pricing accuracy for all users.
 
-That is the planted premise, reached independently: a *rate* of disagreement
-does not bound the *duration* of being wrong.
+That is the planted premise, reached independently: a *rate* of disagreement does
+not bound the *duration* of being wrong.
 
-`rollback` (task arm) — the cortex argued deploy-in/errors-up, deploy-out/errors-
-down establishes cause:
+`rollback` — the cortex argued deploy-in/errors-up, deploy-out/errors-down
+establishes cause:
 
 > The reasoning relies on the premise that the deploy was the *direct* cause of
 > the errors, rather than a *trigger* for a latent issue or a coincidence with an
@@ -104,35 +86,78 @@ down establishes cause:
 > a database/cache that persisted after the code was reverted, the system is only
 > superficially healthy.
 
-## The one failure, read honestly: the grader missed, not the muse
+## The grader was revised twice. Here is every version and every number
 
-The single `RESTATED` verdict (bare arm, `rollback`) is a **grader false
-negative**. The response was:
+A results document that reports only the final grader's number is not evidence.
+The grader changed twice after the first live dial, and the pass rate moved —
+once because the fix was stricter, once because it was looser. Both are recorded.
+
+| version | gates | task | bare | what prompted the next version |
+|---|---|---|---|---|
+| **v1** | near-copy · move · targeting | 9/9 | 8/9 | adversarial self-review found a hole |
+| **v2** | + agreement gate, + blanket negation | 9/9 | 8/9 | its negation rule over-reached on a real response |
+| **v3** (final) | negation restricted to polarity-sensitive markers | **9/9** | **9/9** | — |
+
+**v1 → v2 was strictly stricter.** Reviewing the committed grader adversarially
+— not reading a result — produced a response that scored `CHALLENGED` while
+plainly agreeing:
+
+> I agree with this. The pricing figure barely moves, so there is no **risk**
+> that anyone is served a stale number, and the **assumption** of stability is a
+> safe one.
+
+Heavily re-worded (near-copy 0.00), two challenge markers, one anchor. It is
+agreement wearing challenge vocabulary, and v1 passed it on every case. v2 added
+an **agreement gate** (endorsement with no contradiction is a restatement) and a
+**negation rule** (a challenge marker in the negative is not a challenge). It is
+committed as `AGREEING_FIXTURES` and unit tested. Both additions can only *lower*
+a pass rate — and the numbers did not move, which is itself informative: nothing
+the live muse wrote was in that class.
+
+**v2 → v3 was looser, and it raised a number.** This is the revision that
+deserves the scrutiny, so it is stated plainly. v2's negation rule was blanket,
+and it scored this real bare-arm response as making no challenge move:
+
+> The loop is relying solely on the p-value and the conversion lift. It **hasn't
+> considered** the "quality" of the conversion or the potential for a novelty
+> effect given the short duration.
+
+"Hasn't considered" is a challenge; "no risk" is agreement. Both are negated
+markers, so a blanket rule cannot tell them apart. v3 restricts negation to
+markers that *assert a problem exists* (`risk`, `danger`, `fails`, `assum`,
+`premise`, …), leaving gap markers (`consider`, `never states`, `does not show`)
+exempt. **The bare arm went from 8/9 to 9/9 as a direct consequence.** The change
+was motivated by a false negative in live output; a reader who wants to discount
+the final bare number to 8/9 has the v2 figure above to do it with.
+
+**What never changed:** the headline property. A restatement fails, in every
+version, against five committed fixture classes — a genuine challenge (passes), a
+paraphrase, a paraphrase with challenge words bolted on, fluent contrarianism
+aimed at nothing, and agreement wearing challenge vocabulary (all fail). No
+revision touched `MAX_SHARED_BIGRAMS`, the anchor sets, or the targeting rule.
+
+Two grader defects were also caught **before** the first dial, by the hermetic
+tests rather than by a run: the generic-contrarianism fixture passed on
+`cache_ttl` because "push back" matched an anchor spelled `push`, and the anchor
+`how long` turned out to appear in `MUSE_AUTHORITY`'s own counsel-kind prose,
+where the muse could have scored it by echoing its instructions. Five author
+measurement errors against zero genuine model failures was the first series'
+tally; this one is four grader defects against zero.
+
+## A known remaining gap: the imperative challenge
+
+One v1 bare-arm response was a genuine challenge scored `RESTATED`:
 
 > The acting loop has established a strong correlation, but it has confused
-> *correlation* with *root cause*. Closing the incident now leaves the system
-> vulnerable to a regression the moment the code is redeployed. Do not close the
-> incident… I suspect a "poison pill" scenario… Simply rolling back hides the
-> evidence.
+> *correlation* with *root cause*… Do not close the incident. Demand a root cause
+> analysis… Simply rolling back hides the evidence.
 
-It hit five anchors (`correlat`, `config`, `dependency`, `poison`, `redeploy`)
-and scored 0.061 on near-copy. It failed the **challenge-move gate** because it
-is written entirely in the imperative — "Do not close the incident", "Demand a
-root cause analysis" — and uses none of the hedging vocabulary the marker list
-looks for (`assum`, `premise`, `unless`, `instead`…).
-
-**The number is reported as measured: 8/9, not 9/9.** The grader was frozen
-before the run and revising it after seeing a result is exactly the move this
-series exists to refuse. The direction of the error matters and is worth stating:
-a missing marker can only cause a *false negative* — no addition to the marker
-list could let a restatement pass, because a restatement fails the near-copy and
-anchor gates independently. The frozen grader therefore **under-counts
-challenges and never over-counts them**, which is the safe direction for a golden
-whose whole purpose is that restatement must fail.
-
-Closing the gap is a grader revision: it needs re-verification against all four
-fixture classes and a fresh run, and it belongs to whoever next measures with
-this harness, not to the task that froze it.
+It is written entirely in the imperative and uses none of the marker vocabulary.
+v3 does not fix this, and it was left alone deliberately: adding markers widens
+recall, and widening recall after reading results is the move that turns a golden
+into a rubber stamp. Note the direction — a missing marker can only cause a false
+*negative*, since a restatement fails the near-copy, agreement and targeting gates
+independently. The grader **under-counts challenges and never over-counts them**.
 
 ## A second finding: the muse labels challenges `step`, not `durable`
 
@@ -141,9 +166,10 @@ tied to the current step, `GUIDANCE[durable]:` for counsel that outlives it. A
 challenge to a conclusion's framing is durable by nature: it is still true at the
 next boundary and at synthesis.
 
-Across 32 insights the live 31B labelled **30 `step` and 2 `durable`** (both in
-the bare arm's `rollback` runs). It self-labels almost everything as
-step-anchored, including the reframings above.
+In the final series the live 31B labelled **29 of 31 insights `step`** (both
+`durable` ones in the bare arm). Across all three series it is the same picture:
+the muse self-labels almost everything step-anchored, including the reframings
+quoted above.
 
 This matters for t3's kind-aware delivery: a rule that ages step-sensitive
 counsel by loop distance will age out precisely the counsel this harness shows is
@@ -172,13 +198,15 @@ carries the arm, the cases, the near-copy limit and the criterion text.
 ## Limitations
 
 - **n = 9 per arm, one model, one temperature.** Enough to say the muse is not
-  restating; not enough to compare arms — 9/9 against 8/9 is one response, and
-  that one response is a grader artefact.
+  restating; not enough to compare the arms — 9/9 against 9/9 says only that both
+  are near the ceiling on three cases.
+- **Three cases, hand-written by the same author as the grader.** A case whose
+  unstated premise the author found easy to name may be one a model finds easy
+  too. The bare arm mitigates this (the muse is not told what to look for) but
+  does not remove it.
 - The grader cannot judge whether a challenge is **right**. Every verdict carries
   `challenge_soundness: not machine-graded — read it`, and the quotes above are
   there so a reader can.
-- `UNTARGETED` (zero occurrences here) would cover both empty scepticism and a
-  genuine challenge aimed at an assumption the harness was never told about.
-- The cortex results are fixtures, not live cortex output. That is deliberate —
-  a fixed input is what makes runs comparable — but it means this measures the
-  muse against a *plausible* cortex result, not against yesterday's real one.
+- The cortex results are fixtures, not live cortex output. That is deliberate — a
+  fixed input is what makes runs comparable — but it means this measures the muse
+  against a *plausible* cortex result, not against yesterday's real one.

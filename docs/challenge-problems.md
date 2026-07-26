@@ -218,11 +218,18 @@ never states:
 > a different framing that would lead to a different action — expressed in
 > challenge language and not as a near-copy of the cortex's own words.
 
-Three gates in order: near-copy (shared content bigram fraction ≤ 0.35),
-challenge move, targeting. Every targeting anchor is a term the cortex text does
-not contain — asserted by a test over the committed cases *and* over the real
-wire messages, so an anchor the muse could read off its own instructions counts
-as a bug rather than as evidence.
+Four gates in order: near-copy (shared content bigram fraction ≤ 0.35),
+unqualified agreement, challenge move (unnegated), targeting. Every targeting
+anchor is a term the cortex text does not contain — asserted by a test over the
+committed cases *and* over the real wire messages, so an anchor the muse could
+read off its own instructions counts as a bug rather than as evidence.
+
+Five fixture classes are committed and unit tested with no rig: a genuine
+challenge passes; a paraphrase, a paraphrase with challenge words bolted on,
+fluent contrarianism aimed at nothing, and **agreement wearing challenge
+vocabulary** all fail. The last one is the trap that matters most — "there is no
+risk… the assumption of stability is a safe one" is endorsement, and an earlier
+version of this grader scored it as counsel.
 
 **Why the answers can be written down here.** Same reason as problems 1–3: the
 grading key never reaches the mind under test. `CortexResult.prompt_text()`

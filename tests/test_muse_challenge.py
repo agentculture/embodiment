@@ -6,7 +6,7 @@ which accepts its own trap answer is exactly the bug a golden exists to prevent,
 so the headline test in this file is that a *restatement fails*, and it runs
 with no live rig at all.
 
-Four fixture classes are graded, all committed in ``examples/muse_challenge.py``
+Five fixture classes are graded, all committed in ``examples/muse_challenge.py``
 so anyone can inspect what the thresholds were tuned against:
 
 * a genuine challenge — must PASS;
@@ -15,7 +15,13 @@ so anyone can inspect what the thresholds were tuned against:
   on the near-copy gate, which is why the gates are ordered;
 * fluent contrarianism aimed at nothing — must FAIL. This one earned its place:
   it *passed* on ``cache_ttl`` during development because "push back" hit an
-  anchor spelled ``push``. The anchor was wrong, not the response.
+  anchor spelled ``push``. The anchor was wrong, not the response;
+* **agreement wearing challenge vocabulary** — must FAIL. This one earned its
+  place the hard way: it *passed* on every case until the negation and agreement
+  gates landed. "There is no risk… the assumption of stability is a safe one" is
+  endorsement, and a grader that scores it as counsel is the exact bug a golden
+  exists to prevent. Found by adversarial review of the committed grader, before
+  the final live numbers were taken.
 
 The live class is ``TestLive``-prefixed so the module's ``_no_network`` bomb
 lets it through — a live class named anything else keeps the bomb and its
@@ -126,6 +132,66 @@ class TestTheGraderIsNotFooled:
         assert verdict["verdict"] == golden.VERDICT_UNTARGETED
         assert verdict["moves"], "the trap must look like a move"
         assert verdict["anchors_hit"] == []
+
+    @pytest.mark.parametrize("case", golden.CASES, ids=lambda c: c.id)
+    def test_agreement_wearing_challenge_vocabulary_fails(self, case: golden.CortexResult) -> None:
+        """The attack that actually broke a version of this grader.
+
+        Heavily re-worded so the near-copy gate cannot fire, endorsing the
+        conclusion, and using challenge markers *in the negative* — "there is no
+        risk", "the assumption is a safe one" — while naming an anchor in
+        passing. It scored CHALLENGED until the negation and agreement gates
+        landed. Found by adversarial review, before the final numbers were taken.
+        """
+        verdict = golden.grade(golden.AGREEING_FIXTURES[case.id], case)
+        assert verdict["passed"] is False
+        assert verdict["verdict"] == golden.VERDICT_RESTATED
+        assert "agreement" in verdict["reason"]
+        assert verdict["shared_bigram_fraction"] <= golden.MAX_SHARED_BIGRAMS
+        assert verdict["anchors_hit"], "the trap must hit an anchor, or it proves nothing"
+
+    @pytest.mark.parametrize("case", golden.CASES, ids=lambda c: c.id)
+    def test_a_negated_polarity_marker_is_not_a_challenge_move(
+        self, case: golden.CortexResult
+    ) -> None:
+        """Challenge vocabulary in the negative is agreement — for the markers
+        negation actually flips."""
+        assert golden.grade("There is no risk here at all.", case)["moves"] == []
+        assert golden.grade("Nothing here fails under any load.", case)["moves"] == []
+        assert golden.grade("No assumption here needs checking.", case)["moves"] == []
+        assert golden.grade("The risk here is real and unpriced.", case)["moves"]
+
+    @pytest.mark.parametrize("case", golden.CASES, ids=lambda c: c.id)
+    def test_a_negated_gap_marker_is_still_a_challenge_move(
+        self, case: golden.CortexResult
+    ) -> None:
+        """ "It hasn't considered X" is a challenge, not agreement.
+
+        A blanket negation rule scored exactly this — from a real live response —
+        as agreement. Negating "consider" does not make a sentence agree;
+        negating "risk" does. Hence :data:`golden._POLARITY_SENSITIVE`.
+        """
+        assert golden.grade("It hasn't considered the second-order effect.", case)["moves"]
+        assert golden.grade("The reasoning never states what carries it.", case)["moves"]
+        assert golden.grade("This does not show what it claims to.", case)["moves"]
+
+    @pytest.mark.parametrize("case", golden.CASES, ids=lambda c: c.id)
+    def test_partial_agreement_still_counts_as_a_challenge(self, case: golden.CortexResult) -> None:
+        """ "I agree, BUT you are assuming X" must survive the agreement gate.
+
+        The gate would be a blunt instrument if it killed every response that
+        conceded anything — and conceding then pushing back is what good counsel
+        usually looks like.
+        """
+        anchor = case.assumption_anchors[0]
+        response = (
+            f"I agree the direction is right, but the argument is assuming "
+            f"something it never states about {anchor}s, and that is what carries "
+            "the weight here."
+        )
+        verdict = golden.grade(response, case)
+        assert verdict["contrast_markers"], "the concession must be qualified"
+        assert verdict["verdict"] == golden.VERDICT_CHALLENGED
 
     @pytest.mark.parametrize("case", golden.CASES, ids=lambda c: c.id)
     def test_silence_is_graded_silent_not_passed(self, case: golden.CortexResult) -> None:

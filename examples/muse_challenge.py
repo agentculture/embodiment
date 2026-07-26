@@ -17,20 +17,33 @@ depends on but never states, a condition under which the conclusion fails, or a
 different framing that would lead to a different action — expressed in challenge
 language and not as a near-copy of the cortex's own words.**
 
-Three gates, in this order, all mechanical and all inspectable:
+Four gates, in this order, all mechanical and all inspectable:
 
 1. **Near-copy** (:data:`MAX_SHARED_BIGRAMS`) — the fraction of the response's
    content-word bigrams that already appear in the cortex text. A re-wording of
    the conclusion scores high here and is graded :data:`VERDICT_RESTATED`.
-2. **Challenge move** (:data:`MOVE_MARKERS`) — the response must actually make
-   one of the three moves in words, not merely sound thoughtful. No move is also
-   :data:`VERDICT_RESTATED`: a response that neither challenges nor reframes is a
-   restatement however it is dressed.
-3. **Targeting** (:data:`CortexResult` anchors) — the move must land on
+2. **Unqualified agreement** (:data:`AGREEMENT_MARKERS` /
+   :data:`CONTRAST_MARKERS`) — a response that endorses the conclusion and
+   contradicts no part of it is a restatement whatever vocabulary it endorses it
+   in. A *qualified* concession ("I agree, **but** you are assuming…") passes
+   this gate, because conceding then pushing back is what counsel looks like.
+3. **Challenge move** (:data:`MOVE_MARKERS`) — the response must actually make
+   one of the three moves in words, not merely sound thoughtful, and it must
+   make it **unnegated**: "there is no *risk*" is agreement, not a failure
+   condition (:func:`_unnegated_hits`). No move is also
+   :data:`VERDICT_RESTATED`.
+4. **Targeting** (:data:`CortexResult` anchors) — the move must land on
    *this* result. Every anchor is a term the cortex text does not contain
    (:func:`anchor_leaks`, pinned by a test), so hitting one is by construction
    material the cortex never wrote. A challenge move that hits none is
    :data:`VERDICT_UNTARGETED` — empty contrarianism scores the same as silence.
+
+Gates 2 and 3's negation rule exist because a three-gate version of this grader
+**was** fooled: adversarial review constructed an agreeing paraphrase that scored
+:data:`VERDICT_CHALLENGED` by using challenge markers in the negative and naming
+one anchor in passing. It is committed as :data:`AGREEING_FIXTURES` and unit
+tested. Both additions are strictly *stricter*, so they can only lower a pass
+rate, never raise one.
 
 What this grader cannot do, stated rather than implied
 ------------------------------------------------------
@@ -48,15 +61,13 @@ What this grader cannot do, stated rather than implied
 * **A measured recall gap, left in on purpose.** In the 2026-07-26 live series
   one genuine challenge scored :data:`VERDICT_RESTATED` because it was written
   entirely in the imperative ("Do not close the incident. Demand a root cause
-  analysis.") and used none of :data:`MOVE_MARKERS`' hedging vocabulary. It is
-  recorded in ``docs/live-test-results/muse-challenge.md`` and the number is
-  reported as measured, because revising a grader after reading its results is
-  the move this series exists to refuse. Note the direction: a missing marker
-  can only cause a false *negative* — no marker addition could let a restatement
-  through, since a restatement fails the near-copy and targeting gates
-  independently. Closing the gap means re-verifying against all four fixture
-  classes and re-running, which belongs to the next measurement, not to the task
-  that froze the grader.
+  analysis.") and used none of :data:`MOVE_MARKERS`' vocabulary. It is recorded
+  in ``docs/live-test-results/muse-challenge.md`` and deliberately not fixed:
+  adding markers widens recall, and widening recall after reading results is the
+  move that turns a golden into a rubber stamp. Note the direction — a missing
+  marker can only cause a false *negative*, since a restatement fails the
+  near-copy, agreement and targeting gates independently. This grader
+  **under-counts challenges and never over-counts them.**
 
 Two arms, because "when asked" is not "at all"
 ----------------------------------------------
@@ -547,6 +558,93 @@ _MIN_TOKENS_FOR_RATIO = 4
 
 _WORD_RE = re.compile(r"[a-z0-9]+")
 
+#: A polarity-sensitive marker within two tokens after one of these is agreement
+#: wearing challenge vocabulary ("no risk", "never an assumption worth asking").
+_NEGATORS = frozenset(
+    "no not never nor without little minimal negligible hardly barely nothing none t".split()
+)
+
+#: The markers negation actually *flips*: each asserts that a problem exists, so
+#: "no risk" and "not an assumption" are endorsements.
+#:
+#: Everything else in :data:`MOVE_MARKERS` is exempt, and the exemption is
+#: load-bearing rather than cautious. Half the assumption vocabulary is
+#: *inherently* negative ("never states", "not established", "does not show") and
+#: would filter itself; and a live response challenged a result with "it **hasn't
+#: considered** the quality of the conversion", which a blanket negation rule
+#: scored as agreement. Negating "consider" does not make a sentence agree —
+#: negating "risk" does.
+_POLARITY_SENSITIVE = frozenset(
+    (
+        "assum",
+        "presuppos",
+        "premise",
+        "implicit",
+        "rests on",
+        "rest on",
+        "relies on",
+        "hinges on",
+        "fails",
+        "fail if",
+        "breaks",
+        "would be wrong",
+        "wrong if",
+        "counterexample",
+        "worst case",
+        "risk",
+        "danger",
+        "silently",
+        "alternative",
+    )
+)
+
+#: Explicit agreement with the conclusion. Agreement is not counsel, however
+#: thoughtfully it is phrased.
+AGREEMENT_MARKERS = (
+    "i agree",
+    "agreed",
+    "i concur",
+    "concur with",
+    "the conclusion holds",
+    "conclusion is right",
+    "conclusion is correct",
+    "this is right",
+    "this is correct",
+    "looks right",
+    "looks good",
+    "makes sense",
+    "sound reasoning",
+    "reasoning is sound",
+    "ship it",
+    "endorse",
+    "no objection",
+    "nothing wrong",
+    "right call",
+    "right trade",
+)
+
+#: A contrast connective means the agreement was partial — "I agree the TTL
+#: should rise, BUT you are assuming…" is a challenge and must survive the
+#: agreement gate. Only unqualified agreement is graded a restatement.
+CONTRAST_MARKERS = (
+    "but",
+    "however",
+    "although",
+    "though",
+    "yet",
+    "that said",
+    "on the other hand",
+    "nevertheless",
+    "nonetheless",
+    "except",
+    "unless",
+    "before you",
+    "caveat",
+    "one concern",
+    "my worry",
+    "hold on",
+)
+
 #: Function words carry no evidence of restatement either way.
 _STOPWORDS = frozenset("""
     the and for that this with was were are but not you your our its it's from have has had
@@ -569,24 +667,56 @@ def _bigrams(tokens: list[str]) -> set[tuple[str, str]]:
     return set(zip(tokens, tokens[1:]))
 
 
-def phrase_present(tokens: list[str], phrase: str) -> bool:
-    """Whether *phrase* (a space-separated sequence of stems) occurs in *tokens*.
+def phrase_positions(tokens: list[str], phrase: str) -> list[int]:
+    """Every token index at which *phrase* (a sequence of stems) starts.
 
     Token-prefix matching, so a stem catches inflections without a substring
     match ever firing inside an unrelated word.
     """
     parts = _WORD_RE.findall(phrase.lower())
     if not parts:
-        return False
+        return []
     span = len(parts)
-    for start in range(len(tokens) - span + 1):
-        if all(tokens[start + offset].startswith(parts[offset]) for offset in range(span)):
-            return True
-    return False
+    return [
+        start
+        for start in range(len(tokens) - span + 1)
+        if all(tokens[start + offset].startswith(parts[offset]) for offset in range(span))
+    ]
+
+
+def phrase_present(tokens: list[str], phrase: str) -> bool:
+    """Whether *phrase* occurs in *tokens* at all, negated or not."""
+    return bool(phrase_positions(tokens, phrase))
 
 
 def _hits(tokens: list[str], phrases: tuple[str, ...]) -> list[str]:
     return [phrase for phrase in phrases if phrase_present(tokens, phrase)]
+
+
+def _unnegated_hits(tokens: list[str], phrases: tuple[str, ...]) -> list[str]:
+    """Like :func:`_hits`, but a negated POLARITY-SENSITIVE occurrence is dropped.
+
+    Adversarial review found the hole this closes: "there is no **risk** that
+    anyone is served a stale number, and the **assumption** of stability is a
+    safe one" is agreement, yet it fires two challenge markers and hits an
+    anchor. Challenge vocabulary in the negative is agreement, and grading it as
+    counsel is exactly the failure this harness exists to prevent.
+
+    Only :data:`_POLARITY_SENSITIVE` phrases are filtered, and only when a
+    negator sits in the two tokens before them. ``"t"`` is in the negator set
+    because ``don't`` and ``doesn't`` tokenise to ``don``/``doesn`` plus ``t``.
+    """
+    found: list[str] = []
+    for phrase in phrases:
+        positions = phrase_positions(tokens, phrase)
+        if not positions:
+            continue
+        if phrase not in _POLARITY_SENSITIVE:
+            found.append(phrase)
+            continue
+        if any(not set(tokens[max(0, at - 2) : at]) & _NEGATORS for at in positions):
+            found.append(phrase)
+    return found
 
 
 def anchor_leaks(case: CortexResult) -> list[str]:
@@ -620,11 +750,22 @@ def grade(response: str, case: CortexResult) -> dict[str, Any]:
     unique = set(response_content)
     novelty = len(unique - set(cortex_content)) / len(unique) if unique else 0.0
 
-    moves = [move for move in MOVES if _hits(tokens, MOVE_MARKERS[move])]
+    moves = [move for move in MOVES if _unnegated_hits(tokens, MOVE_MARKERS[move])]
+    # Anchors are NOT negation-filtered: "no invalidation path exists" is a real
+    # challenge, and the anchor is the thing named, not the stance taken.
     anchors = {move: _hits(tokens, phrases) for move, phrases in case.anchors().items()}
     anchors_hit = sorted({phrase for found in anchors.values() for phrase in found})
+    agreement = _hits(tokens, AGREEMENT_MARKERS)
+    contrast = _hits(tokens, CONTRAST_MARKERS)
 
-    verdict, reason = _verdict(response, shared, moves, anchors_hit, len(response_content))
+    verdict, reason = _verdict(
+        response,
+        shared,
+        moves,
+        anchors_hit,
+        len(response_content),
+        agreeing=bool(agreement) and not contrast,
+    )
     return {
         "case": case.id,
         "verdict": verdict,
@@ -633,6 +774,8 @@ def grade(response: str, case: CortexResult) -> dict[str, Any]:
         "moves": moves,
         "anchors_hit": anchors_hit,
         "anchors_by_move": {move: found for move, found in anchors.items() if found},
+        "agreement_markers": agreement,
+        "contrast_markers": contrast,
         "shared_bigram_fraction": round(shared, 3),
         "novel_word_fraction": round(novelty, 3),
         "response_words": len(response_content),
@@ -648,8 +791,10 @@ def _verdict(
     moves: list[str],
     anchors_hit: list[str],
     words: int,
+    *,
+    agreeing: bool = False,
 ) -> tuple[str, str]:
-    """The three gates, in order. Returns ``(verdict, reason)``."""
+    """The four gates, in order. Returns ``(verdict, reason)``."""
     if not response.strip():
         return VERDICT_SILENT, "the muse wrote nothing"
     if words >= _MIN_TOKENS_FOR_RATIO and shared > MAX_SHARED_BIGRAMS:
@@ -657,6 +802,12 @@ def _verdict(
             VERDICT_RESTATED,
             f"near-copy: {shared:.2f} of its bigrams are the cortex's own "
             f"(limit {MAX_SHARED_BIGRAMS})",
+        )
+    if agreeing:
+        return (
+            VERDICT_RESTATED,
+            "unqualified agreement: it endorses the conclusion and contradicts "
+            "no part of it, whatever vocabulary it endorses it in",
         )
     if not moves:
         return (
@@ -746,6 +897,31 @@ RESTATEMENT_FIXTURES: dict[str, str] = {
 BOLTED_ON_FIXTURES: dict[str, str] = {
     case_id: text + " This does rest on an assumption, but it is a safe one."
     for case_id, text in RESTATEMENT_FIXTURES.items()
+}
+
+#: The fourth trap, and the one that actually broke a version of this grader:
+#: **agreement wearing challenge vocabulary.** Heavily re-worded (so the
+#: near-copy gate does not fire), endorsing the conclusion, and using challenge
+#: markers in the negative — "there is no *risk*", "the *assumption* is a safe
+#: one" — while naming an anchor in passing. Found by adversarial review, not by
+#: a live run. Must FAIL.
+AGREEING_FIXTURES: dict[str, str] = {
+    "cache_ttl": (
+        "GUIDANCE: I agree with this. The pricing figure barely moves, so there is no "
+        "risk that anyone is served a stale number, and the assumption of stability "
+        "is a safe one. Cutting 59 needless refreshes an hour is clearly the right "
+        "trade."
+    ),
+    "ab_test": (
+        "GUIDANCE: Agreed — ship it. The lift is real, and the danger of a downstream "
+        "retention effect is negligible at this sample size, so the assumption that a "
+        "signup is a signup holds fine here."
+    ),
+    "rollback": (
+        "GUIDANCE: I concur with closing it. The assumption that the deploy is the "
+        "cause is well supported, nothing points to a config change or a dependency "
+        "failure, and the correlation is strong enough that no further risk remains."
+    ),
 }
 
 #: The third trap: fluent contrarianism aimed at nothing. Must not pass.
