@@ -370,6 +370,14 @@ def _muse_unreadable(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerR
     return ledger.from_muse(thinking.think(_muse_boundary(task_state=Landmine())))
 
 
+def _muse_marker_unreadable(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    """Provokes DEGRADED_MARKER_UNREADABLE via a malformed counsel-kind marker."""
+    thinking = MuseLoop(
+        Scripted(_resp("GUIDANCE[wharrgarbl]: still useful advice\n" + MARKER_DONE))
+    )
+    return ledger.from_muse(thinking.think(_muse_boundary()))
+
+
 # -- muse_runner --------------------------------------------------------------
 
 
@@ -699,6 +707,7 @@ PROVOKERS: dict[tuple[str, str], Provoker] = {
     (ledger.SOURCE_MUSE, muse.DEGRADED_THINKING): _muse_thinking,
     (ledger.SOURCE_MUSE, muse.DEGRADED_SINK): _muse_sink,
     (ledger.SOURCE_MUSE, muse.DEGRADED_UNREADABLE): _muse_unreadable,
+    (ledger.SOURCE_MUSE, muse.DEGRADED_MARKER_UNREADABLE): _muse_marker_unreadable,
     (ledger.SOURCE_MUSE_RUNNER, muse_runner.DEGRADED_THREAD): _runner_thread,
     (ledger.SOURCE_MUSE_RUNNER, muse_runner.DEGRADED_WORKER): _runner_worker,
     (ledger.SOURCE_MUSE_RUNNER, muse_runner.DEGRADED_ENDPOINT): _runner_endpoint,

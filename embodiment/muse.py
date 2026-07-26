@@ -821,9 +821,12 @@ def _parse_kind(match: "re.Match[str]") -> tuple[str, Optional[str]]:
     bracket = match.group(1)  # e.g. "[step]" or None
     if bracket is None:
         return DEFAULT_KIND, None
+    # Unclosed bracket (e.g. "GUIDANCE[step:") → malformed
+    if not bracket.rstrip().endswith("]"):
+        return DEFAULT_KIND, bracket
     raw = match.group(2)  # e.g. "step" or "durable" or "wharrgarbl" or ""
-    if raw is None:
-        # e.g. "GUIDANCE[:" — bracket opened but never closed
+    if not raw or not raw.strip():
+        # Empty bracket (e.g. "GUIDANCE[]:") → malformed
         return DEFAULT_KIND, bracket
     kind = raw.strip().lower()
     if kind in COUNSEL_KINDS:
