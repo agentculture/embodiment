@@ -17,13 +17,16 @@ once and imported, not reimplemented per host.
 
 **The extraction has landed.** The loop, the presence pump, the muse thinking
 loop, perception, continuity and its lifecycle checkpoints, Gwen framing, the
-degradation ledger, event emission and the demo are all checked in on the
-`spec/gwen-loop-presence-continuity` branch. The demo has been run against a
-real two-model rig, not only against fakes.
+degradation ledger, event emission and the demo are all checked in on `main`
+(PR #13). The demo has been run against a real two-model rig, not only against
+fakes.
 
-Still outstanding: the seam-proposal issue to `colleague`, and the deeper live
-testing recorded as deviation `d4` — an acceptance bar that is *recorded but
-not yet met*, so it is listed here rather than quietly counted as done. See
+Still outstanding: `colleague`'s answer to the seam proposal, filed and open as
+[colleague#358](https://github.com/agentculture/colleague/issues/358) — the
+`C1b` dependency decision is colleague's to make, not ours — and depth in the
+live evidence. Deviation `d4`'s live bar *was* met, but every result behind it
+is n≤4 on one rig with one model pair, so it is listed here rather than quietly
+counted as settled. See
 [Roadmap](#roadmap) and [issue #1](https://github.com/agentculture/embodiment/issues/1);
 `CLAUDE.md` carries the module-by-module status and `devague deviate --list`
 the approved departures from the plan.
@@ -207,6 +210,15 @@ Three questions, three layers: *how does a human or agent reach it*
 (`agentfront`), *what can it do* (`shell-cli`), *what makes it keep going and
 feel present* (`embodiment`).
 
+There is a second way to read the same parts — by *function* rather than by
+position: what notices, what acts, what reflects, what remembers, what sequences
+the rest. That map, with the caveat that its names are design metaphors for
+allocating responsibility across seams rather than claims about cognition, lives
+in [`docs/relationships.md`](docs/relationships.md#3-the-function-map--what-each-part-is-for).
+It stays there on purpose: it is promoted into this README only if the
+association-work experiment supports it, and an honest negative keeps it where
+it is. This table is the one to build against until then.
+
 ## Gwen — the embodiment we ship
 
 The reference embodiment is **Gwen**: one prompt-visible teammate produced by
@@ -220,7 +232,7 @@ the operator talks to.
 | Loop + presence | `embodiment` | the pump |
 | **Teammate identity** | **Gwen** | who the operator addresses |
 | Cortex | Qwen 3.6 27B (`sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP`) | bounded tool loop, repo actions, final synthesis — **final authority**. Framed by embodiment. |
-| Muse | Gemma 4 31B (`nvidia/Gemma-4-31B-IT-NVFP4`) | a tools-off advisory mind running its own parallel thinking loop; proposes, never decides. Framed by embodiment. |
+| Muse | Gemma 4 31B (`nvidia/Gemma-4-31B-IT-NVFP4`) | reflective counsel: a tools-off mind running its own parallel thinking loop, there to reframe the problem, challenge assumptions and offer materially different alternatives — it proposes, never decides. Framed by embodiment. |
 | Senses | Gemma 4 12B (`coolthor/gemma-4-12B-it-NVFP4A16`) | intake, perception, speak-back; never acts on the repo. **Lives in colleague, not here** — see the scope note below. |
 | Ears / voice | Parakeet STT + Chatterbox TTS (lobes audio overlay) | the realtime lane below |
 

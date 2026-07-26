@@ -19,8 +19,8 @@ value is the importable seam an app depends on.
 
 **The extraction is largely done.** This section previously said the loop and
 presence pump were not in the repo; that stopped being true partway through the
-`gwen-loop-presence-continuity` build. What is checked in on the
-`spec/gwen-loop-presence-continuity` branch today:
+`gwen-loop-presence-continuity` build, which has since merged to `main`
+(PR #13). The core of what is checked in:
 
 | Module | What it is |
 |--------|------------|
@@ -34,11 +34,19 @@ presence pump were not in the repo; that stopped being true partway through the
 | `context.py` / `media.py` | Windowing, degradable classification, media handling. |
 | `identity.py` | Resolved identity, mirroring colleague's order. |
 
-Still to land: the threaded muse runner, Gwen prompt framing, the continuity
-lifecycle checkpoints, the degradation ledger, the demo app, and the seam
-proposal to colleague. Check `docs/plans/` and `.devague/deliveries/` for the
-live state — the deviation ledger (`devague deviate --list`) records every
-approved departure from the plan and is the authority on what changed and why.
+That table is not exhaustive and it has already drifted behind once. Everything
+this section used to list as "still to land" — the threaded muse runner
+(`muse_runner.py`), Gwen prompt framing (`framing.py`), the continuity lifecycle
+checkpoints (`lifecycle.py`), the degradation ledger (`ledger.py`) and the demo
+app (`examples/greenhouse.py`) — is checked in, and the `events.py` emitter
+landed after it under deviation `d3`. Still outstanding: colleague's answer on
+the seam proposal, which is filed and open as
+[colleague#358](https://github.com/agentculture/colleague/issues/358) — C1b is
+theirs to resolve, not ours — and depth in the live evidence, since `d4`'s live
+bar was met but every result is n≤4 on one rig with one model pair. Check
+`docs/plans/` and `.devague/deliveries/` for the live state — the deviation
+ledger (`devague deviate --list`) records every approved departure from the plan
+and is the authority on what changed and why.
 
 Keep this file's claims grounded in checked-in reality. When a section drifts
 ahead of what exists, mark it `(planned)` or move it under a roadmap heading —
@@ -57,6 +65,19 @@ and when it drifts *behind*, as this one did, fix it.
 Three questions, three layers: *how does a human or agent reach it*
 (agentfront), *what can it do* (shell-cli), *what makes it keep going and feel
 present* (embodiment).
+
+The same parts also read as a **function** map — what notices, what acts, what
+reflects, what remembers, what sequences the rest
+([issue #11](https://github.com/agentculture/embodiment/issues/11)). That map
+lives in
+[`docs/relationships.md`](docs/relationships.md#3-the-function-map--what-each-part-is-for),
+together with the caveat it must always ship beside: those names are
+design metaphors for allocating responsibility across model seams, not claims
+about cognition. It is parked there deliberately, not half-migrated — promoted
+into this file and the README only if the association-work experiment (plan task
+`t18`) returns a supporting measured result, and an honest negative keeps it in
+`relationships.md` with the negative recorded. Until then the layer table above
+is the map to work from.
 
 `colleague` is the **first consumer, and this is a refactor** — the code
 embodiment will ship already exists inside colleague `1.52.1` and works. The
@@ -100,7 +121,7 @@ operator actually talks to.
 | Loop + presence | `embodiment` (this repo) | the pump |
 | **Teammate identity** | **Gwen** | what the operator addresses |
 | Cortex | Qwen 3.6 27B (`sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP`) | bounded tool loop, repo actions, final synthesis, **final authority** |
-| Muse | Gemma 4 31B (`nvidia/Gemma-4-31B-IT-NVFP4`) | tools-off advisory reasoning (deepthink); proposes, never decides |
+| Muse | Gemma 4 31B (`nvidia/Gemma-4-31B-IT-NVFP4`) | tools-off reflective counsel: reframe the problem, challenge the cortex's assumptions, offer materially different alternatives; proposes, never decides |
 | Senses | Gemma 4 12B (`coolthor/gemma-4-12B-it-NVFP4A16`) | intake, perception, conversational presence, speak-back; never acts on the repo |
 | Ears / voice | Parakeet STT + Chatterbox TTS behind the lobes audio overlay | the realtime lane (below) |
 

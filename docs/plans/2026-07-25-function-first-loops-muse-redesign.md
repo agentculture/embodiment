@@ -6,11 +6,11 @@ slug: `function-first-loops-muse-redesign` · status: `exported` · from frame: 
 
 ## Tasks
 
-### t1 — Reframe the muse prompt: five-verb reflective task prose in MUSE_AUTHORITY, boundary rendering and the _MUSE appendix, inviting disagreement
+### t1 — Reframe the muse prompt: five-verb reflective task prose in MUSE_AUTHORITY, boundary rendering and the `_MUSE` appendix, inviting disagreement
 
 - covers: c2, h2, c7, h5, c19, h18
 - acceptance:
-  - MUSE_AUTHORITY and _MUSE name imagine/reframe/connect-memories/simulate-futures/construct-meaning and explicitly invite disagreement and reframing; the diff is additive - no existing sentence removed
+  - `MUSE_AUTHORITY` and `_MUSE` name imagine/reframe/connect-memories/simulate-futures/construct-meaning and explicitly invite disagreement and reframing; the diff is additive - no existing sentence removed
   - role name, injected endpoint contract and thor-muse references unchanged; test_framing token-ban tests (incl. the senses ban and museless-composition ban) and test_muse authority tests pass, extended not weakened
 
 ### t2 — Counsel-kind self-labelling: kind marker vocabulary in the muse turn format, MuseInsight.kind, unlabelled defaults to durable
@@ -157,7 +157,7 @@ slug: `function-first-loops-muse-redesign` · status: `exported` · from frame: 
 - depends on: t13
 - covers: c18, h12
 - acceptance:
-  - a fenced payload (```json ... ```) parses to populated fields; a fixture for the fenced shape joins the hostile-output set so this stays covered with no live rig
+  - a fenced JSON payload parses to populated fields; a fixture for the fenced shape joins the hostile-output set so this stays covered with no live rig
   - an unreadable or empty interpretation records a degradation instead of returning silent empties with degraded=False (C3); never-raise is preserved
   - the verbatim invariant is untouched - original is still never sourced from model output - and tests/test_perception.py's existing pins pass unchanged
 

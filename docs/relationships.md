@@ -148,7 +148,11 @@ about a different question entirely: *who is the operator talking to?*
 | Loop + presence | `embodiment` | the pump |
 | **Teammate identity** | **Gwen** | who the operator addresses |
 | **Cortex** | Qwen 3.6 27B (`sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP`) | the worker: bounded tool loop, repo actions, final synthesis — **final authority** |
-| **Muse** | Gemma 4 31B (`nvidia/Gemma-4-31B-IT-NVFP4`) | advisory only, **proposes, never decides**; optional |
+| **Muse** | Gemma 4 31B (`nvidia/Gemma-4-31B-IT-NVFP4`) | reflective counsel: reframes the problem, challenges assumptions, offers materially different alternatives. Advisory only — **proposes, never decides**; optional |
+
+These role names are design metaphors for splitting responsibility across model
+seams, not claims about cognition — [§3](#3-the-function-map--what-each-part-is-for)
+states that in full and maps each role to the job it actually does.
 
 Gwen is one prompt-visible teammate produced by cooperating cognitive roles
 across two model families — **G**\ from Gemma, **wen** from Qwen. Colleague
@@ -209,6 +213,12 @@ running loop only as text on the guidance/message stream that the cortex
 reads — the mechanism colleague#352 calls "proposes, never decides" is real
 in code, not asserted in a docstring.
 
+What the muse is *for* is carried by the prompt, not only by this document:
+`MUSE_AUTHORITY` names reflective, associative work and asks the muse to
+disagree when it sees a better path, rather than to be generically creative.
+That is task shaping and nothing more — the authority boundary sits in the same
+system message and is unchanged by it.
+
 A museless run — no muse configured at all — is the default, primarily
 tested path, not a degraded fallback: no muse means no runner, and a runner
 that's never asked to consider anything starts no thread at all.
@@ -240,7 +250,89 @@ embodiment's consumers; nothing here knows either of them exists. With no
 `observer=` supplied, none of this runs and a host never touches
 `events-cli` in any form.
 
-## 3. Before → after — grounded in what was actually surveyed
+## 3. The function map — what each part is *for*
+
+Sections 1 and 2 answer *where the pieces sit* and *who is speaking*. Neither
+answers a third question that turns out to explain more of the design than
+either: **what job is each part doing?** That frame comes from
+[embodiment#11](https://github.com/agentculture/embodiment/issues/11) and
+compresses to six words — *senses notice, cortex acts, muse reflects*.
+
+> **These names are design metaphors, not claims about cognition.** "Cortex",
+> "muse", "senses", "association", "salience", "reflect" are here to allocate
+> responsibility across model seams and modules: which endpoint gets which job,
+> which module owns which decision. They are not claims about neuroscience, not
+> descriptions of what any model does internally, and not evidence that anything
+> here notices, reflects or remembers the way a person does. A model prompted to
+> reflect is a model prompted to reflect. This is the same discipline the
+> README's *software presence, not a robot body* note applies to the package
+> name (constraint **C2**): say what the word is doing, before someone reads it
+> as an architecture claim.
+
+| Function | What it does | Where it lives today |
+|---|---|---|
+| **Notice** | take the operator's words in, keep them verbatim, interpret without deciding | `embodiment/perception.py` — the *seam* only (`perceive(interpret=…)`); the senses coordination loop stays colleague's (`c30`, above) |
+| **Act** | plan, choose, call tools, finish — under a step budget, with termination proved structurally | `embodiment/loop.py` |
+| **Reflect / associate** | imagine alternatives, reframe the problem, connect memories, simulate futures, construct meaning — counsel only | `embodiment/muse.py` (the bounded thinking loop) + `embodiment/muse_runner.py` (its thread) |
+| **Hold working state across a reset** | intent written *before* the act, observation after, so a successor resumes instead of restarting | `embodiment/scratchpad.py` |
+| **Remember** | recall, provenance, consolidation, ageing, forgetting | `eidetic-cli`, reached through `embodiment/continuity.py` |
+| **Relate memory to the present** | quality, meaning, signal, investiture, frames | `coherence-cli`, through the same seam |
+| **Sequence all of it** | when something is perceived, considered, acted on, remembered, revisited — and what is worth keeping | `embodiment/lifecycle.py` |
+| **Stay present between acts** | keep the host attended-to while the acting loop is not producing output | `embodiment/presence_engine.py` + `embodiment/presence.py` |
+| **Report what went wrong** | fold six lanes' degradation vocabularies into one host-visible stream (**C3**) | `embodiment/ledger.py` |
+| **Decide what deserves attention** (salience) | — | **no owner.** Nothing in this repo implements it |
+
+Four things this table is *not*:
+
+- **It is not an embodiment roadmap.** A row naming colleague or a sibling CLI
+  says where that function lives *in the mesh*, not what this package is going
+  to grow. In particular it does not reopen `c30`: embodiment ships one actor
+  loop, and colleague keeps the senses coordination loop and its framing.
+- **It is not the muse's charter.** The muse's task prose lives in exactly one
+  place — `MUSE_AUTHORITY` in `embodiment/muse.py`, prepended to the system
+  message of every thinking turn, so no host configuration can drop it. The row
+  above *describes* it; restating it here would create a second source of truth
+  that drifts.
+- **"Connect memories" is half-built, and the half that exists is the fetch.**
+  `embodiment/recall_bundle.py` fetches raw records out of the store on the
+  runtime's side — never the muse's, which has no query verb and no tool schema
+  — and marks each bundle flat or graph in its provenance. The muse itself still
+  sees only a boundary snapshot capped by `MuseControls.max_context_chars` (600
+  characters) with no memory in it. Wiring the bundle into the muse's boundary
+  rendering, under its own budget, is **(planned)** — plan task `t5`.
+- **Salience really has no owner.** The nearest things in this package answer
+  different questions: `lifecycle.select_for_memory` asks what is worth
+  *remembering* by fixed policy, and `LifecycleConfig.consequential` asks the
+  *host* which actions matter (because embodiment refuses to guess that from a
+  tool name). Neither decides what deserves attention in the first place.
+
+### Why this map lives here and not in README.md or CLAUDE.md
+
+`README.md` and `CLAUDE.md` keep the **layer table** — the where-it-sits map —
+and this document keeps the function map. That is not a half-finished
+migration; the promotion is gated on a measurement.
+
+The frame's own strongest argument is a prediction. The muse's measured
+non-result (`docs/live-test-results/designed-problem.md`: 1 of 4 in both arms,
+n=4 per arm) is what you would expect if the muse had been asked to *supervise a
+tool loop* — executive work — rather than to reflect. That is testable, and
+issue #11 recommends testing it before promoting the frame rather than promoting
+it because it reads well.
+
+So the gate, stated plainly so a later reader knows this map is parked
+deliberately:
+
+- **Promotion** — the function map moves into `README.md` and `CLAUDE.md` only
+  after the association-work experiment (plan task `t18`) returns a supporting
+  measured result, with its n stated.
+- **An honest negative keeps the map here.** If the experiment finds no effect,
+  the map stays in this document, the negative is recorded in this section
+  beside it, and the layer table stays exactly where it is. A negative is a
+  result, not a prompt to re-run until it passes.
+- **Neither outcome is pre-empted.** As of this writing the association-work
+  experiment has **not been run**, and nothing in this document reports one.
+
+## 4. Before → after — grounded in what was actually surveyed
 
 The claim that embodiment is worth adopting rests on a specific "before"
 state that was verified against colleague's code, not assumed. From the
@@ -305,7 +397,7 @@ than take this document's word for it, the scope entry IDs (`s7`, `s9`,
 `s10`, `s19`, `s21`, `s25`) are the citations, resolvable with
 `devague show` against this repo's frame.
 
-## 4. Summary for an app author
+## 5. Summary for an app author
 
 - **You supply:** a model seam (a `complete` callable), IO callbacks, and
   (optionally) a tool executor, a `LifecycleConfig` naming your `data_dir` and
