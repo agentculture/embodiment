@@ -1077,7 +1077,22 @@ class TestCounselKind:
         assert insight.kind == DEFAULT_KIND
 
     def test_mixed_guidance_lines_in_one_turn(self):
-        """A turn can carry multiple guidance lines of different kinds."""
+        """Disagreeing kinds in one turn resolve to durable, not to the first line.
+
+        A turn produces ONE insight, so several guidance lines with different
+        markers have to collapse to a single kind. This originally took the
+        first line's kind, which loses advice: below, "rethink the approach" is
+        durable counsel, and under first-line-wins the insight carrying it would
+        be labelled ``step`` and dropped for loop distance along with the branch
+        note — the exact loss the kind split exists to prevent, and a case where
+        task t3's guarantee that durable counsel survives distance would be
+        false.
+
+        Resolving to :data:`DEFAULT_KIND` on disagreement is the same fail-open
+        rule an unlabelled or malformed marker already follows: when in doubt,
+        keep it. A uniformly step-kind turn still ages out — pinned in
+        ``tests/test_muse_runner.py``.
+        """
         loop, _ = _loop(
             _resp(
                 "GUIDANCE[step]: check branch A\n"
@@ -1086,10 +1101,10 @@ class TestCounselKind:
         )
         outcome = loop.think(_boundary())
         insight = outcome.insights[0]
-        # The first guidance line's kind wins for the insight
-        assert insight.kind == COUNSEL_KIND_STEP
+        assert insight.kind == COUNSEL_KIND_DURABLE
         assert "check branch A" in insight.guidance
         assert "rethink the approach" in insight.guidance
+        # Disagreement is ambiguity, not corruption: nothing was unreadable.
         assert not outcome.degradations
 
     def test_authority_text_teaches_the_marker(self):

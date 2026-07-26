@@ -410,9 +410,12 @@ class ThreadedMuseRunner:
         # Per-kind delivery counters (task t3).
         self._kind_delivered: dict[str, int] = {}
         self._kind_dropped: dict[str, int] = {}
-        # Relative latency: muse turn times vs. loop step times.
+        # Relative latency: muse turn times vs. loop step times. The muse side
+        # fills itself from each finished session (see :meth:`_absorb`); the
+        # loop side can only come from the host, which is the only party that
+        # knows how long its own steps took (see :meth:`note_loop_step`).
         self._muse_turn_times: list[float] = []
-        self._loop_step_times: list[float] = None  # injected by host, or None
+        self._loop_step_times: list[float] = []
 
     # ── the drain-shaped seam ────────────────────────────────────────────────
     def consider(self, boundary: Optional[BoundaryContext]) -> None:
@@ -666,6 +669,12 @@ class ThreadedMuseRunner:
         """Fold one finished session's cost and degradations. Worker thread only."""
         with self._lock:
             self._counts["sessions_completed"] += 1
+            # The muse half of the relative-latency measurement. Only present
+            # when the host injected a clock — absent, this stays empty and
+            # `relative_latency` reports None rather than inventing a number.
+            for insight in outcome.insights:
+                if insight.latency is not None:
+                    self._muse_turn_times.append(float(insight.latency))
             for degradation in outcome.degradations:
                 self._record(
                     degradation.code,
@@ -729,6 +738,28 @@ class ThreadedMuseRunner:
             )
         )
 
+    def note_loop_step(self, seconds: Any) -> None:
+        """Tell the runner how long one acting-loop step took.
+
+        The loop half of the relative-latency measurement. The runner cannot
+        observe this itself — it has no view of the acting loop — so a host that
+        wants :meth:`snapshot`'s ``relative_latency`` populated feeds its own
+        measured step durations here. A host that does not call this gets
+        ``None``, which is the honest answer rather than a default standing in
+        for a measurement nobody made.
+
+        Never raises: an unreadable or non-positive value is ignored, because a
+        telemetry call must not be able to break a drive.
+        """
+        try:
+            value = float(seconds)
+        except (TypeError, ValueError):
+            return
+        if value <= 0 or value != value:  # non-positive or NaN
+            return
+        with self._lock:
+            self._loop_step_times.append(value)
+
     def _relative_latency(self) -> Optional[float]:
         """Compute muse-to-loop relative latency from real measurements.
 
@@ -747,7 +778,7 @@ class ThreadedMuseRunner:
         muse_mean = sum(self._muse_turn_times) / len(self._muse_turn_times)
         if muse_mean == 0:
             return None
-        if self._loop_step_times is None or not self._loop_step_times:
+        if not self._loop_step_times:
             return None
         loop_mean = sum(self._loop_step_times) / len(self._loop_step_times)
         if loop_mean == 0:

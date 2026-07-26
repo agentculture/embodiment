@@ -1153,3 +1153,92 @@ class TestWorkClassPriority:
 
         assert DROPPED_COUNSEL_DISPLACED in RUNNER_CODES
         assert DROPPED_COUNSEL_DISPLACED.startswith("muse-")
+
+
+# ── mixed-kind resolution + the relative-latency measurement (task t3) ────────
+
+
+class TestDisagreeingKindMarkersResolveSafely:
+    """One turn, several GUIDANCE lines, different kinds — one insight, one kind.
+
+    ``_split_content`` produces one insight per turn, so disagreeing markers
+    must collapse to a single kind. First-line-wins loses advice: a durable
+    reframing written alongside a step note would inherit ``step`` and be
+    dropped for loop distance with it, which is exactly the loss the kind
+    split exists to prevent.
+    """
+
+    def test_mixed_kinds_resolve_to_durable_and_survive_distance(self) -> None:
+        runner = ThreadedMuseRunner(
+            _Scripted(_resp("GUIDANCE[step]: aged\nGUIDANCE[durable]: kept " + MARKER_DONE))
+        )
+        try:
+            runner.consider(_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)
+            delivered = runner.drain(step_count=400)
+            assert [i.kind for i in delivered] == [COUNSEL_KIND_DURABLE]
+            assert "kept" in delivered[0].guidance
+        finally:
+            runner.close(timeout=_TIMEOUT)
+
+    def test_uniformly_step_kind_still_ages_out(self) -> None:
+        """The safe resolution must not disable the stale path altogether."""
+        runner = ThreadedMuseRunner(
+            _Scripted(_resp("GUIDANCE[step]: a\nGUIDANCE[step]: b " + MARKER_DONE))
+        )
+        try:
+            runner.consider(_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)
+            assert runner.drain(step_count=400) == []
+        finally:
+            runner.close(timeout=_TIMEOUT)
+
+
+class TestRelativeLatencyIsMeasuredNotAssumed:
+    """``relative_latency`` reports a real ratio or ``None`` — never a default."""
+
+    def _runner(self) -> ThreadedMuseRunner:
+        ticks = iter([n * 0.5 for n in range(200)])
+        return ThreadedMuseRunner(
+            _Scripted(_resp("GUIDANCE[durable]: think " + MARKER_DONE)),
+            clock=lambda: next(ticks),
+        )
+
+    def test_none_until_the_host_reports_its_own_steps(self) -> None:
+        """The runner cannot see the acting loop, so it must not guess."""
+        runner = self._runner()
+        try:
+            runner.consider(_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)
+            runner.drain(step_count=2)
+            assert runner.snapshot()["relative_latency"] is None
+        finally:
+            runner.close(timeout=_TIMEOUT)
+
+    def test_ratio_is_computed_from_both_halves(self) -> None:
+        runner = self._runner()
+        try:
+            runner.consider(_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)
+            runner.drain(step_count=2)
+            for _ in range(3):
+                runner.note_loop_step(2.0)
+            ratio = runner.snapshot()["relative_latency"]
+            assert ratio is not None and 0.0 < ratio < 1.0, ratio
+        finally:
+            runner.close(timeout=_TIMEOUT)
+
+    def test_junk_telemetry_never_raises_and_never_corrupts(self) -> None:
+        """A telemetry call must not be able to break a drive."""
+        runner = self._runner()
+        try:
+            runner.consider(_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)
+            runner.drain(step_count=2)
+            runner.note_loop_step(2.0)
+            good = runner.snapshot()["relative_latency"]
+            for junk in (None, "abc", -1, 0, float("nan"), object()):
+                runner.note_loop_step(junk)
+            assert runner.snapshot()["relative_latency"] == good
+        finally:
+            runner.close(timeout=_TIMEOUT)

@@ -471,7 +471,12 @@ def _runner_endpoint(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerR
 
 
 def _runner_stale(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
-    runner = ThreadedMuseRunner(Scripted(_resp("GUIDANCE: about step one " + MARKER_DONE)))
+    # The marker is load-bearing (task t3). An UNLABELLED `GUIDANCE:` line is
+    # durable-kind by default, and durable counsel is never dropped for
+    # loop-distance staleness alone — so a bare line can no longer provoke this
+    # code at all. Only step-sensitive counsel ages out, which is the point of
+    # the kind split rather than an inconvenience to work around here.
+    runner = ThreadedMuseRunner(Scripted(_resp("GUIDANCE[step]: about step one " + MARKER_DONE)))
     try:
         runner.consider(_muse_boundary(step=1))
         assert runner.wait_idle(_TIMEOUT)
