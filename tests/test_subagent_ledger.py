@@ -12,15 +12,10 @@ Acceptance criteria:
 
 from __future__ import annotations
 
-import json
-from dataclasses import dataclass, field
-from pathlib import Path
 from typing import Any, Optional
 
-import pytest
-
 from embodiment import ledger, loop, subagent
-from embodiment.contract import ModelResponse, Task, TaskResult, ToolCall
+from embodiment.contract import ModelResponse, SubResult, Task, TaskResult, ToolCall
 from embodiment.loop import LoopDegradation, ToolOutcome, run
 
 # ── shared doubles ────────────────────────────────────────────────────────────
@@ -327,16 +322,21 @@ class TestSpawnRecordToDictKeyAsymmetry:
 
 
 class TestSubResultsNoDoubleCount:
-    """Regression: child's records cannot be folded twice.
+    """Regression: the same child must not be recorded twice.
 
-    The review flagged a possible double-count in _snapshot_executor_ledger:
-    could a child's records be folded twice when the executor ledger snapshot
-    and the subagent result path both see them?
+    The review flagged a possible double-count in ``_snapshot_executor_ledger``.
+    The lists are indeed separate — it reads ``ctx.executor.sub_results`` while
+    the subagent path appends to ``ctx.result.sub_results`` — but separate lists
+    were never the risk. The risk is one child landing in BOTH: an executor that
+    delegates a spawn to the loop and also ledgers that child itself. Extending
+    one list with the other then duplicates it, and ``SubResult`` carries
+    ``usage`` whose contract has the reader summing children explicitly, so a
+    duplicate silently doubles that child's cost.
 
-    The answer is no: _snapshot_executor_ledger reads ctx.executor.sub_results
-    (an optional attribute the executor maintains independently), while the
-    loop's subagent path appends to ctx.result.sub_results. These are separate
-    lists. The loop never writes to ctx.executor.sub_results.
+    The loop now keeps its own record (it stamped the lineage) and drops the
+    executor's copy with a ``DEGRADED_SPAWN_DUPLICATE`` record — never quietly.
+    An executor entry for a child the loop did NOT mint is still kept, which is
+    the property the extend-never-replace comment exists to protect.
     """
 
     def test_executor_sub_results_and_loop_sub_results_are_separate(self) -> None:
@@ -359,6 +359,64 @@ class TestSubResultsNoDoubleCount:
         # The executor's sub_results is independent of the loop's
         assert executor.sub_results == []
         assert outcome.result.sub_results == []
+
+    def test_an_executor_that_also_ledgers_the_child_does_not_duplicate_it(self) -> None:
+        """The case the original reasoning missed: BOTH lists name the same child."""
+        child = SubResult(task_id="child-1", engine="e", model="m", status="ok", summary="dupe")
+
+        class _DoubleLedgering(_DelegatingExecutor):
+            def __init__(self) -> None:
+                self.sub_results: list[Any] = [child]
+
+        def _seam(_call: subagent.SubagentCall) -> Optional[subagent.SubagentResult]:
+            return subagent.SubagentResult(
+                sub_result=child,
+                model_turns=1,
+                result="child done",
+                exit_reason=loop.EXIT_FINISHED,
+            )
+
+        outcome = _drive(
+            _turn(_call("delegate")),
+            max_steps=4,
+            executor=_DoubleLedgering(),
+            subagent=_seam,
+            spawn_allowance=1,
+        )
+
+        ids = [sub.task_id for sub in outcome.result.sub_results]
+        assert ids == ["child-1"], f"the child was recorded {len(ids)} times: {ids}"
+        # Dropped, but never silently (C3).
+        codes = [d.code for d in outcome.degradations]
+        assert loop.DEGRADED_SPAWN_DUPLICATE in codes
+
+    def test_an_unrelated_executor_sub_result_is_still_kept(self) -> None:
+        """Dedupe must not become "drop the executor's ledger"."""
+        mine = SubResult(task_id="child-1", engine="e", model="m", status="ok", summary="seam")
+        theirs = SubResult(task_id="other", engine="e", model="m", status="ok", summary="theirs")
+
+        class _AlsoLedgering(_DelegatingExecutor):
+            def __init__(self) -> None:
+                self.sub_results: list[Any] = [theirs]
+
+        def _seam(_call: subagent.SubagentCall) -> Optional[subagent.SubagentResult]:
+            return subagent.SubagentResult(
+                sub_result=mine,
+                model_turns=1,
+                result="child done",
+                exit_reason=loop.EXIT_FINISHED,
+            )
+
+        outcome = _drive(
+            _turn(_call("delegate")),
+            max_steps=4,
+            executor=_AlsoLedgering(),
+            subagent=_seam,
+            spawn_allowance=1,
+        )
+
+        assert sorted(sub.task_id for sub in outcome.result.sub_results) == ["child-1", "other"]
+        assert loop.DEGRADED_SPAWN_DUPLICATE not in [d.code for d in outcome.degradations]
 
     def test_spawned_child_does_not_double_count(self) -> None:
         """A spawned child's SubResult appears once in the result.
