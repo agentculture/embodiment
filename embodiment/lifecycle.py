@@ -276,7 +276,7 @@ CHECKPOINT_REMEMBER_SKIPPED = "remember-skipped"
 #: Something degraded. ``detail`` is a ``continuity.CODE_*`` token when the
 #: degradation came from a subsystem, else one of this module's own:
 #: ``internal-error`` | ``sink-failed`` | ``trace-lost`` |
-#: ``consequential-fn-failed``.
+#: ``consequential-fn-failed`` | ``links-truncated`` | ``compiled-from-lost``.
 CHECKPOINT_DEGRADED = "degraded"
 
 #: The complete, closed vocabulary. There is no other ``kind`` this module emits.
@@ -295,6 +295,8 @@ _FAULT_INTERNAL = "internal-error"
 _FAULT_SINK = "sink-failed"
 _FAULT_TRACE_LOST = "trace-lost"
 _FAULT_CONSEQUENTIAL = "consequential-fn-failed"
+_FAULT_LINKS_TRUNCATED = "links-truncated"
+_FAULT_COMPILED_FROM_LOST = "compiled-from-lost"
 
 # ``detail`` tokens for a skipped assessment.
 _SKIP_CONSIDERED = "already-considered"
@@ -544,6 +546,7 @@ class _Trace:
 
     considered: bool = False
     recalled_ids: list[str] = field(default_factory=list)
+    compiled_from: list[str] = field(default_factory=list)
     assessed_text: Optional[str] = None
     assess_outcome: Optional[continuity.AssessOutcome] = None
 
@@ -588,9 +591,15 @@ class ContinuityLifecycle:
         config: Optional[LifecycleConfig] = None,
         *,
         on_event: Optional[LifecycleSink] = None,
+        muse: Any = None,
     ) -> None:
         self.config = config or LifecycleConfig()
         self._on_event = on_event
+        # OPTIONAL provenance source: anything exposing ``compiled_from`` — in
+        # practice :class:`embodiment.muse_runner.ThreadedMuseRunner`. Read
+        # duck-typed and never imported, so this module keeps its import
+        # posture and a host with no muse is unaffected.
+        self._muse = muse
         self._sink_failed = False
         self._events: deque[LifecycleEvent] = deque(maxlen=max(1, self.config.max_events))
         self._dropped = 0
@@ -758,6 +767,7 @@ class ContinuityLifecycle:
 
     def _on_before_memory(self, boundary: Boundary) -> None:
         trace = self._traces.pop(boundary.task.id, _Trace())
+        self._gather_compiled_from(trace)
 
         # The cheap veto first: a run with nothing to remember never pays for
         # an assessment, and no verdict could overturn it anyway.
@@ -832,8 +842,26 @@ class ContinuityLifecycle:
             "type": self.config.record_type,
             "metadata": self._metadata(task, result),
         }
-        if trace.recalled_ids:
-            record["links"] = list(trace.recalled_ids)
+        # Merge compiled-from ids (provenance: what the muse cited) and
+        # lifecycle recall ids. compiled_from takes priority.
+        all_ids: list[str] = []
+        seen: set[str] = set()
+        for rid in trace.compiled_from + trace.recalled_ids:
+            if rid not in seen:
+                seen.add(rid)
+                all_ids.append(rid)
+        if all_ids:
+            max_links = max(0, self.config.max_links)
+            if len(all_ids) > max_links:
+                self._emit(
+                    BOUNDARY_MEMORY,
+                    CHECKPOINT_DEGRADED,
+                    _FAULT_LINKS_TRUNCATED,
+                    total=len(all_ids),
+                    kept=max_links,
+                )
+                all_ids = all_ids[:max_links]
+            record["links"] = list(all_ids)
         if result.continued_from:
             record["supersedes"] = record_id_for(result.continued_from)
         if result.stats.started_at:
@@ -842,6 +870,32 @@ class ContinuityLifecycle:
             # stamps its own.
             record["created"] = result.stats.started_at
         return record
+
+    def _gather_compiled_from(self, trace: _Trace) -> None:
+        """Pull the muse's citation surface onto *trace*, if a muse was wired.
+
+        Read at the memory boundary rather than pushed by the host, because
+        that is the only moment the full set is known: a muse thinks across
+        several boundaries and cites more as it goes. Never raises — a
+        provenance source that misbehaves costs links, and losing links must
+        not cost the record they belong to.
+        """
+        if self._muse is None:
+            return
+        try:
+            cited = tuple(getattr(self._muse, "compiled_from", ()) or ())
+        except Exception as exc:  # noqa: BLE001 - provenance never aborts a write
+            self._emit(
+                BOUNDARY_MEMORY,
+                CHECKPOINT_DEGRADED,
+                _FAULT_COMPILED_FROM_LOST,
+                error=f"{type(exc).__name__}: {exc}",
+            )
+            return
+        for record_id in cited:
+            text = str(record_id)
+            if text and text not in trace.compiled_from:
+                trace.compiled_from.append(text)
 
     def _metadata(self, task: Task, result: TaskResult) -> dict[str, Any]:
         metadata: dict[str, Any] = {
@@ -1031,12 +1085,18 @@ def build_continuity_fn(
     config: Optional[LifecycleConfig] = None,
     *,
     on_event: Optional[LifecycleSink] = None,
+    muse: Any = None,
 ) -> ContinuityLifecycle:
     """Build a :data:`~embodiment.loop.ContinuityFn` ready to inject into ``run()``.
 
     A thin, discoverable alias for ``ContinuityLifecycle(config,
-    on_event=on_event)`` — named to match
+    on_event=on_event, muse=muse)`` — named to match
     :func:`embodiment.presence_engine.build_presence_executor`'s ``build_*``
     convention for the sibling injection point.
+
+    ``muse`` is optional and duck-typed: anything exposing ``compiled_from``
+    (a :class:`~embodiment.muse_runner.ThreadedMuseRunner` in practice) has its
+    citation surface folded into the durable record's ``links``. ``None`` — the
+    museless default — changes nothing.
     """
-    return ContinuityLifecycle(config, on_event=on_event)
+    return ContinuityLifecycle(config, on_event=on_event, muse=muse)

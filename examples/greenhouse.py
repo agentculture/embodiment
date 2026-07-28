@@ -65,6 +65,7 @@ from typing import Any, Callable, Optional
 
 from embodiment import (
     Boundary,
+    BundleRequest,
     LifecycleConfig,
     LoopAborted,
     LoopControls,
@@ -80,6 +81,7 @@ from embodiment import (
     UnknownToolError,
     build_continuity_fn,
     continuity,
+    flat_fetch,
     frame_cortex,
     frame_muse,
     perceive,
@@ -106,6 +108,14 @@ RECALL_MODE = "keyword"
 
 #: How many prior records are offered to the mind as context.
 RECALL_TOP_K = 3
+
+#: How many prior records the MUSE is given as raw material to compile from.
+#: Wider than :data:`RECALL_TOP_K` on purpose: the cortex is handed a short
+#: rendered context because it is acting, while the muse is handed material
+#: because it is reflecting over it. Equal values would make the compiled-from
+#: provenance a no-op — every cited id would already be one lifecycle recalled
+#: on its own, so the durable record's ``links`` could never gain anything.
+MUSE_BUNDLE_TOP_K = 10
 
 #: The model id recorded on a hermetic run's stats. It names no real model,
 #: because no real model ran.
@@ -563,8 +573,18 @@ def is_consequential(boundary: Boundary) -> bool:
     return boundary.tool == "log_care"
 
 
-def lifecycle_config(home: Path, *, coherence: bool = False) -> LifecycleConfig:
+def lifecycle_config(
+    home: Path, *, coherence: bool = False, recall_top_k: int = RECALL_TOP_K
+) -> LifecycleConfig:
     """How this app reaches durable memory.
+
+    ``recall_top_k`` is threaded from ``--recall-top-k`` rather than left at
+    :data:`RECALL_TOP_K`. This host performs *two* recalls — its own, whose
+    text it renders into ``Task.context``, and the lifecycle's, whose ids
+    become the durable record's ``links`` — and until this argument existed the
+    flag governed only the first. One flag that silently moves one of two
+    recalls is the kind of thing that makes a measurement mean something other
+    than it appears to.
 
     ``data_dir`` is the mandatory anchor: without it eidetic would resolve a
     public record against whatever git repo the *host process* happens to be
@@ -587,7 +607,7 @@ def lifecycle_config(home: Path, *, coherence: bool = False) -> LifecycleConfig:
         assess_completion=coherence,
         assess_memory=coherence,
         recall_mode=RECALL_MODE,
-        recall_top_k=RECALL_TOP_K,
+        recall_top_k=recall_top_k,
         workdir=home / "work",
     )
 
@@ -667,14 +687,42 @@ def visit(args: argparse.Namespace) -> dict[str, Any]:
 
     # 2. The seams.
     tools = Greenhouse(home, moisture=args.moisture)
-    lifecycle = build_continuity_fn(lifecycle_config(home, coherence=args.coherence))
     runner: Optional[ThreadedMuseRunner] = None
     if muse_complete is not None:
+        # The muse gets recalled material as raw bundle items, so it can
+        # COMPILE memory rather than be told a conclusion. eidetic is
+        # fetch-only; compilation is the muse's job, one layer up. Fetched once
+        # for the whole work item — a work item has one recalled context — and
+        # its citation surface comes back out through ``runner.compiled_from``
+        # for the durable record's ``links``.
+        #
+        # Deliberately WIDER than the cortex's own recall (see
+        # :data:`MUSE_BUNDLE_TOP_K`). Handing the muse exactly what the host
+        # already told the cortex would make this whole seam a no-op: the
+        # citation surface would always be a subset of what lifecycle recalled
+        # by itself, ``links`` would never gain an id, and the provenance would
+        # be true but carry no information.
+        bundle = flat_fetch(
+            BundleRequest(
+                queries=[args.utterance],
+                data_dir=store,
+                scope=SCOPE,
+                top_k=max(args.recall_top_k, MUSE_BUNDLE_TOP_K),
+                mode=RECALL_MODE,
+            )
+        )
         runner = ThreadedMuseRunner(
             muse_complete,
             system=frame_muse(None, identity=identity),
             controls=MuseControls(max_turns=2),
+            recall_bundle=bundle,
         )
+    # The lifecycle reads the muse's citation surface at the memory boundary,
+    # so a record written after a muse-informed drive links to what it compiled.
+    lifecycle = build_continuity_fn(
+        lifecycle_config(home, coherence=args.coherence, recall_top_k=args.recall_top_k),
+        muse=runner,
+    )
     presence = PresenceEngine(
         io=PresenceIO(
             render=lambda line: print(line, file=sys.stderr),
