@@ -441,6 +441,11 @@ class MuseOutcome:
     ``turns`` is the loop's own honest cost unit; ``tokens`` is what the seam
     reported (``None`` when it reported nothing); ``latency`` is a measurement
     only, present solely when a clock was injected.
+
+    ``compiled_from`` carries the record ids the recall-context bundle cited,
+    so a durable record written afterwards can link to the material the muse
+    actually compiled (:attr:`RecallBundle.record_ids`).  ``None`` when no
+    bundle was supplied.
     """
 
     origin: MuseOrigin
@@ -450,6 +455,7 @@ class MuseOutcome:
     tokens: Optional[int] = None
     latency: Optional[float] = None
     degradations: list[MuseDegradation] = field(default_factory=list)
+    compiled_from: Optional[tuple[str, ...]] = None
 
     @property
     def degraded(self) -> bool:
@@ -742,6 +748,12 @@ class MuseLoop:
             )
         # Record bundle truncation if the bundle was clipped.
         _record_bundle_truncation(ctx, recall_bundle)
+        # Capture the citation surface so the outcome carries provenance.
+        compiled_from: Optional[tuple[str, ...]] = None
+        if recall_bundle is not None:
+            _ids = getattr(recall_bundle, "record_ids", None)
+            if _ids is not None:
+                compiled_from = tuple(_ids)
         started = _now(self._clock)
         exit_reason = _think_loop(ctx, self._controls.max_turns)
         return MuseOutcome(
@@ -752,6 +764,7 @@ class MuseLoop:
             tokens=ctx.tokens,
             latency=_since(self._clock, started),
             degradations=list(ctx.degradations),
+            compiled_from=compiled_from,
         )
 
     def __call__(self, boundary: Optional[BoundaryContext]) -> Optional[MuseComment]:
