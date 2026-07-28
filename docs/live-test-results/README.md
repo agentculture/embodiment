@@ -52,6 +52,7 @@ generously.
 | [designed-problem.md](designed-problem.md) | the embodiment designs a problem; a fresh instance solves it, n=4 per arm | **no measured muse effect** (1/4 both arms) |
 | [configurations.md](configurations.md) | every run's full settings, including confounded ones | temperature was a hidden variable throughout |
 | [scratchpad.md](scratchpad.md) | does forcing a tool call per step repair the `exit=stopped` collapse | yes on protocol failures (25%→67%), no on capacity ones |
+| [muse-challenge.md](muse-challenge.md) | does the muse challenge a cortex result or restate it, n=9 per arm | challenged 9/9 asked **and** 9/9 unasked; zero restatements in 54 runs |
 
 ## Reproducing
 
@@ -67,6 +68,10 @@ uv run python examples/greenhouse.py --home /tmp/gh2 --reset --live --muse --ide
 
 # self-test: conversation, then self-recognition
 uv run python examples/selftest.py
+
+# does the muse challenge a cortex result, or restate it (both arms)
+uv run python examples/muse_challenge.py --live --framing task --n 3 --json
+uv run python examples/muse_challenge.py --live --framing bare --n 3 --json
 
 # long-running proof, with and without the muse
 uv run python examples/proof.py --json

@@ -8,12 +8,16 @@ result line so the run is reproducible from the JSON alone.  Records:
 - Muse controls (max_turns, staleness_policy)
 - Model ids (cortex_model, muse_model)
 - n (number of runs)
+- ``extra``: anything else a harness varies between arms (an experimental
+  condition, a threshold). A setting a run varies but does not record is a
+  hidden variable, which is exactly what an earlier series discovered about
+  temperature.
 """
 
 from __future__ import annotations
 
 import json
-from typing import Any, Optional
+from typing import Any, Mapping, Optional
 
 
 def write_config_preamble(
@@ -26,11 +30,14 @@ def write_config_preamble(
     max_turns: int = 14,
     staleness_policy: str = "default",
     n: int = 1,
+    extra: Optional[Mapping[str, Any]] = None,
 ) -> dict[str, Any]:
     """Write a JSON config preamble and return the config dict.
 
     Call this BEFORE the first result line so the run is reproducible from
-    the JSON alone.
+    the JSON alone. ``extra`` folds in harness-specific settings — the arm a
+    comparison was run under, a grader threshold — so the whole configuration
+    lives in one record rather than half in the file and half in a docstring.
     """
     config: dict[str, Any] = {
         "cortex_model": cortex_model,
@@ -41,6 +48,7 @@ def write_config_preamble(
         "staleness_policy": staleness_policy,
         "n": n,
     }
+    config.update(dict(extra or {}))
 
     with open(path, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=2)
