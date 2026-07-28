@@ -140,6 +140,13 @@ DEFAULT_MAX_TURNS = 3
 BOUNDARY_CHARS = 4000
 #: Generous enough that a whole challenge comes back unclipped.
 INSIGHT_CHARS = 4000
+#: Completion budget for one thinking turn. Exposed as ``--max-tokens`` because
+#: it is NOT neutral across minds: a thinking model spends this budget on a
+#: reasoning field before it writes any content, and the rig's own README
+#: records the cortex returning ``finish_reason: length`` with ``content: None``
+#: when the budget ran out mid-thought. A run that compares two minds has to set
+#: it high enough that neither is graded on a truncation.
+DEFAULT_MAX_TOKENS = 1600
 #: One sentence, printed with every report, so a reader never has to guess what
 #: a verdict means.
 CRITERION = (
@@ -995,7 +1002,14 @@ def scripted_muse(*, mode: str = "challenge") -> Any:
     return complete
 
 
-def gateway(base_url: str, model: str, key: str, *, temperature: float, max_tokens: int = 1600):
+def gateway(
+    base_url: str,
+    model: str,
+    key: str,
+    *,
+    temperature: float,
+    max_tokens: int = DEFAULT_MAX_TOKENS,
+):
     """One tools-off completion against the lobes gateway. Never sees a tool."""
     endpoint = f"{base_url.rstrip('/')}/chat/completions"
     if not endpoint.startswith(("http://", "https://")):
@@ -1139,6 +1153,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
     parser.add_argument("--muse-model", default=DEFAULT_MUSE)
     parser.add_argument("--muse-temperature", type=float, default=DEFAULT_TEMPERATURE)
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=DEFAULT_MAX_TOKENS,
+        help="completion budget per thinking turn; raise it when the mind under test thinks",
+    )
     parser.add_argument("--max-turns", type=int, default=DEFAULT_MAX_TURNS)
     parser.add_argument("--identity", default=None)
     parser.add_argument(
@@ -1178,12 +1198,20 @@ def main(argv: Optional[list[str]] = None) -> int:
             "identity": args.identity,
             "cases": [case.id for case in cases],
             "max_shared_bigrams": MAX_SHARED_BIGRAMS,
+            "max_anchor_density": MAX_ANCHOR_DENSITY,
+            "max_tokens": args.max_tokens,
             "criterion": CRITERION,
         },
     )
 
     complete = (
-        gateway(args.base_url, args.muse_model, key, temperature=args.muse_temperature)
+        gateway(
+            args.base_url,
+            args.muse_model,
+            key,
+            temperature=args.muse_temperature,
+            max_tokens=args.max_tokens,
+        )
         if args.live
         else scripted_muse(mode=args.scripted)
     )
