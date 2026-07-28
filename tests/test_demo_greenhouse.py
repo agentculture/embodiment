@@ -225,6 +225,87 @@ class TestContinuityAcrossTwoProcesses:
         assert record["metadata"]["model"] == greenhouse.SCRIPTED_CORTEX
 
 
+class TestCompiledMemoryProvenanceClosesTheLoop:
+    """Task t6's acceptance criterion 2, end to end across real processes.
+
+    Not "``links`` is non-empty" — that a plausible id can be written is the
+    easy half. What is asserted here is **resolution**: every id the second
+    run's record links to is fetched back out of the store through the public
+    recall seam and must name a record that really exists. A run that linked to
+    ids resolving to nothing would sail through a presence check and fail this.
+    """
+
+    #: Two prior visits, so the muse's wider bundle can cite material the
+    #: cortex's own narrow recall did not return. With one prior record the two
+    #: sets are identical and the test cannot tell the seam from its absence.
+    EXTRA_VISIT = (
+        "New plant card - name: Juniper; sensor: s-herb-02; water below: 20% moisture. "
+        "It is the herb tray. Check it in and log the visit."
+    )
+
+    def test_the_links_carry_what_only_the_muses_bundle_saw(self, tmp_path: Path) -> None:
+        home = tmp_path / "greenhouse"
+
+        first = _demo(home, VISIT_ONE)
+        extra = _demo(home, self.EXTRA_VISIT)
+        # --recall-top-k 1 narrows the CORTEX's recall to a single record while
+        # the muse's bundle still fetches MUSE_BUNDLE_TOP_K. That gap is the
+        # whole experiment: any id in links beyond the cortex's own recall got
+        # there through the compiled-from path or not at all.
+        third = _demo(home, VISIT_TWO, "--moisture", "22", "--muse", "--recall-top-k", "1")
+
+        assert len({first["pid"], extra["pid"], third["pid"]}) == 3, "three real processes"
+
+        muse = third["mind"]["muse_runner"]
+        assert muse is not None, "the --muse arm reported no muse at all"
+        cited = set(muse["compiled_from"])
+        host_recalled = set(third["continuity"]["recalled"])
+        links = third["continuity"]["remembered"]["links"]
+
+        # 1. The muse genuinely saw more than the cortex was told.
+        beyond = cited - host_recalled
+        assert beyond, (
+            "the muse's bundle cited nothing the host's own recall missed, so this "
+            f"test cannot distinguish the seam from its absence (cited={cited})"
+        )
+
+        # 2. That surplus reached the durable record. THIS is the closure, and
+        #    it is the assertion that fails when the muse is not wired through.
+        assert beyond <= set(links), f"compiled-only ids missing from links: {beyond - set(links)}"
+
+        # 3. THE RESOLUTION CHECK. Every link is fetched back through the same
+        #    public seam a host would use and must name a record that exists —
+        #    a run linking to plausible ids that resolve to nothing fails here
+        #    and would sail through a presence check.
+        known = {
+            str(record["id"])
+            for record in embodiment.continuity.recall(
+                "plant",
+                data_dir=home / "memory",
+                scope=greenhouse.SCOPE,
+                mode=greenhouse.RECALL_MODE,
+                top_k=50,
+            ).records
+            if record.get("id")
+        }
+        assert known, "the store answered nothing; resolution could not be checked"
+        unresolved = [link for link in links if link not in known]
+        assert not unresolved, f"links that resolve to no record: {unresolved}"
+
+    def test_a_museless_run_claims_no_compiled_provenance(self, tmp_path: Path) -> None:
+        """The control that makes the test above evidence.
+
+        If a museless run produced the same citation surface, the links would
+        be lifecycle's own recall and nothing would have been shown about
+        compiled memory at all.
+        """
+        home = tmp_path / "greenhouse"
+        _demo(home, VISIT_ONE)
+        second = _demo(home, VISIT_TWO, "--moisture", "22")
+
+        assert second["mind"]["muse_runner"] is None
+
+
 # ── store hygiene: never this repo's own committed memory ─────────────────────
 
 

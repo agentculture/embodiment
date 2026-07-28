@@ -783,6 +783,22 @@ def _lifecycle_links_truncated(
     return ledger.from_lifecycle(checkpoints)
 
 
+def _lifecycle_compiled_from_lost(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> list[ledger.LedgerRecord]:
+    """A muse whose citation surface cannot be read costs links, not the record."""
+    monkeypatch.setattr(continuity, "assess", _AssessStub())
+
+    class _HostileMuse:
+        @property
+        def compiled_from(self) -> tuple[str, ...]:
+            raise RuntimeError("the provenance source is broken")
+
+    checkpoints = ContinuityLifecycle(_lifecycle_config(tmp_path), muse=_HostileMuse())
+    checkpoints._gather_compiled_from(_Trace())
+    return ledger.from_lifecycle(checkpoints)
+
+
 # -- the ledger's own rung ----------------------------------------------------
 
 
@@ -845,6 +861,7 @@ PROVOKERS: dict[tuple[str, str], Provoker] = {
     (ledger.SOURCE_LIFECYCLE, lifecycle._FAULT_TRACE_LOST): _lifecycle_trace,
     (ledger.SOURCE_LIFECYCLE, lifecycle._FAULT_CONSEQUENTIAL): _lifecycle_consequential,
     (ledger.SOURCE_LIFECYCLE, lifecycle._FAULT_LINKS_TRUNCATED): _lifecycle_links_truncated,
+    (ledger.SOURCE_LIFECYCLE, lifecycle._FAULT_COMPILED_FROM_LOST): _lifecycle_compiled_from_lost,
     (ledger.SOURCE_LEDGER, ledger.DEGRADED_UNREADABLE_SOURCE): _ledger_unreadable,
 }
 

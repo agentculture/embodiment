@@ -366,8 +366,36 @@ class ThreadedMuseRunner:
         join_timeout: float = DEFAULT_JOIN_TIMEOUT,
         poll_interval: float = DEFAULT_POLL_INTERVAL,
         thread_factory: Optional[ThreadFactory] = None,
+        recall_bundle: Any = None,
     ) -> None:
         self._role = str(role or MUSE_ROLE)
+        # The recall-context material this runner's muse compiles from, fetched
+        # ONCE by the host for the whole work item rather than per boundary.
+        # That granularity is the honest one: a work item has one recalled
+        # context, and it is also what keeps this module IO-free — the runner
+        # never fetches, so the muse thread never blocks on a store.
+        self._recall_bundle = recall_bundle
+        # The citation surface, seeded from the bundle AT CONSTRUCTION rather
+        # than accumulated as sessions finish. That ordering is deliberate and
+        # was a measured correction: the muse is a background thread, so
+        # whether any session had completed by the time a host built its report
+        # varied run to run (3 sessions in one run, 0 in the next on the same
+        # input). An accumulate-on-absorb surface is therefore not wrong so
+        # much as NON-DETERMINISTIC, which is worse — a provenance field that
+        # is sometimes empty for timing reasons teaches a reader to distrust it
+        # when it is full.
+        #
+        # What this therefore means, stated rather than implied: the material
+        # the muse was GIVEN for this work item, not proof it finished reading
+        # it. That is the same standard ``links`` already holds itself to —
+        # lifecycle documents it as "what the agent knew when it acted" — and
+        # ``counts["sessions_completed"]`` is right there for a reader who
+        # needs the stronger fact. :attr:`MuseOutcome.compiled_from` remains
+        # per-session and exact.
+        # A dict keeps insertion order while deduping.
+        self._compiled_from: dict[str, None] = {}
+        for record_id in getattr(recall_bundle, "record_ids", ()) or ():
+            self._compiled_from[str(record_id)] = None
         # ONE loop instance, driven by ONE thread, one session at a time — the
         # protocol embodiment.muse documents for exactly this consumer.
         self._loop = MuseLoop(
@@ -578,6 +606,24 @@ class ThreadedMuseRunner:
         return self._thread is not None
 
     @property
+    def compiled_from(self) -> tuple[str, ...]:
+        """The recalled material this lane was given, in order, each once.
+
+        Read by the continuity lifecycle at the memory boundary so a durable
+        record ``links`` to the material its counsel was compiled from. Empty
+        when no recall bundle was supplied, or when the bundle cited nothing —
+        reported as empty rather than absent, because "compiled from nothing"
+        and "no muse ran" are different facts and a host can tell them apart
+        through :attr:`counts`.
+
+        Deterministic by construction: see the note in ``__init__`` for why
+        this is seeded from the bundle instead of accumulated as sessions
+        complete, and for exactly how strong a claim it is.
+        """
+        with self._lock:
+            return tuple(self._compiled_from)
+
+    @property
     def degradations(self) -> list[MuseDegradation]:
         """The most recent transitions, at most :data:`MAX_LEDGER` of them."""
         with self._lock:
@@ -602,6 +648,10 @@ class ThreadedMuseRunner:
                 "kind_delivered": dict(self._kind_delivered),
                 "kind_dropped": dict(self._kind_dropped),
                 "relative_latency": self._relative_latency(),
+                # The citation surface, reported so a host's own artifact can
+                # show which remembered records its counsel was compiled from —
+                # provenance a reader can check, not a claim they must trust.
+                "compiled_from": list(self._compiled_from),
             }
 
     # ── the worker ───────────────────────────────────────────────────────────
@@ -623,7 +673,7 @@ class ThreadedMuseRunner:
                     self._wake.wait(self._poll_interval)
                     self._wake.clear()
                     continue
-                self._absorb(self._loop.think(boundary))
+                self._absorb(self._loop.think(boundary, recall_bundle=self._recall_bundle))
         except Exception as exc:  # a dead worker is recorded, never silent
             with self._lock:
                 self._degrade(DEGRADED_WORKER, f"{type(exc).__name__}: {exc}")
@@ -669,6 +719,12 @@ class ThreadedMuseRunner:
         """Fold one finished session's cost and degradations. Worker thread only."""
         with self._lock:
             self._counts["sessions_completed"] += 1
+            # Provenance: the ids this session's compiled memory cited. Held so
+            # the host can carry them into the durable record's ``links`` — the
+            # loop's memory boundary reads them back through
+            # :attr:`compiled_from`.
+            for record_id in outcome.compiled_from or ():
+                self._compiled_from[str(record_id)] = None
             # The muse half of the relative-latency measurement. Only present
             # when the host injected a clock — absent, this stays empty and
             # `relative_latency` reports None rather than inventing a number.

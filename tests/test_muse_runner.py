@@ -659,6 +659,7 @@ class TestDegradation:
                 "kind_delivered",
                 "kind_dropped",
                 "relative_latency",
+                "compiled_from",
             }
             snap["counts"]["sessions_started"] = 999
             snap["degradations"].append("forged")

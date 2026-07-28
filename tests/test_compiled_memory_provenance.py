@@ -13,32 +13,69 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
 
-import pytest
-
-from embodiment.contract import OK, Task, TaskResult
+from embodiment.contract import OK, ModelResponse, Task
 from embodiment.lifecycle import (
     CHECKPOINT_DEGRADED,
     ContinuityLifecycle,
     LifecycleConfig,
     _Trace,
 )
-from embodiment.loop import BOUNDARY_MEMORY, Boundary
+from embodiment.loop import Boundary
 from embodiment.muse import (
     COUNSEL_KIND_DURABLE,
-    MuseInsight,
+    MARKER_DONE,
     MuseOrigin,
     MuseOutcome,
 )
-from embodiment.recall_bundle import RecallBundle
+from embodiment.muse_runner import ThreadedMuseRunner
+from embodiment.presence_engine import BoundaryContext
+from embodiment.recall_bundle import (
+    ADAPTER_FLAT_RECALL,
+    LEVEL_FLAT,
+    SOURCE_RECALL,
+    BundleItem,
+    BundleProvenance,
+    RecallBundle,
+)
 
 # ── Criterion 1: counsel via durable channel, never Task.context ────────────
 
 
-class TestCounselNeverReplacesTaskContext:
-    """Compiled counsel arrives via the counsel channel, not Task.context."""
+def _bundle(*ids: str) -> RecallBundle:
+    """A bundle citing *ids*, shaped as a flat recall returns them."""
+    return RecallBundle(
+        items=[
+            BundleItem(record_id=rid, text=f"remembered: {rid}", source=SOURCE_RECALL)
+            for rid in ids
+        ],
+        provenance=BundleProvenance(adapter=ADAPTER_FLAT_RECALL, level=LEVEL_FLAT),
+    )
 
-    def test_task_context_is_byte_identical_before_and_after_counsel(self) -> None:
-        """task.context must not be modified by counsel delivery."""
+
+def _muse_saying(text: str) -> Any:
+    """A muse seam that answers once with *text*, then finishes."""
+    calls = {"n": 0}
+
+    def complete(messages: list[dict[str, Any]], **_kw: Any) -> ModelResponse:
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return ModelResponse(content=text)
+        return ModelResponse(content=MARKER_DONE)
+
+    return complete
+
+
+class TestCounselNeverReplacesTaskContext:
+    """Compiled counsel arrives via the counsel channel, not ``Task.context``.
+
+    These drive a REAL runner over a REAL bundle. The first version of this
+    file constructed a :class:`MuseInsight` inline and then asserted
+    ``task.context`` was unchanged — which it always is when nothing delivers
+    anything. A test that never invokes delivery cannot detect delivery
+    writing to the wrong place: it passes just as happily on broken code.
+    """
+
+    def test_task_context_is_byte_identical_after_real_counsel_delivery(self) -> None:
         context_before = "original host context"
         task = Task(
             id="test-1",
@@ -47,33 +84,86 @@ class TestCounselNeverReplacesTaskContext:
             context=context_before,
             engine="test",
         )
-        context_after_copy = task.context
+        runner = ThreadedMuseRunner(
+            _muse_saying("GUIDANCE[durable]: reconsider the framing.\n" + MARKER_DONE),
+            recall_bundle=_bundle("mem-1", "mem-2"),
+        )
+        with runner:
+            runner.start()
+            runner.consider(BoundaryContext(kind="cadence-tick", step_count=1, reason="a beat"))
+            assert runner.wait_idle(5.0), "the muse never finished"
+            comments = runner.drain(step_count=1)
 
-        # Simulate counsel delivery: the counsel channel receives durable
-        # counsel, but task.context must remain byte-identical.
-        assert task.context is context_after_copy
+        assert comments, "nothing was delivered — the assertion below would be vacuous"
         assert task.context == context_before
 
-        # The counsel channel (MuseInsight) carries the counsel independently.
-        insight = MuseInsight(
-            origin=MuseOrigin.of(None, session=1),
-            text="advisory counsel",
-            kind=COUNSEL_KIND_DURABLE,
+    def test_the_delivered_counsel_is_labelled_durable(self) -> None:
+        runner = ThreadedMuseRunner(
+            _muse_saying("GUIDANCE[durable]: the store is not the same as the truth.\n"),
+            recall_bundle=_bundle("mem-1"),
         )
-        assert insight.kind == COUNSEL_KIND_DURABLE
-        # task.context is still unchanged — counsel went through the counsel
-        # channel, not into the host's context field.
-        assert task.context == context_before
+        with runner:
+            runner.start()
+            runner.consider(BoundaryContext(kind="cadence-tick", step_count=1, reason="a beat"))
+            assert runner.wait_idle(5.0)
+            runner.drain(step_count=1)
 
-    def test_compiled_counsel_kind_is_durable(self) -> None:
-        """Counsel from compiled memory carries kind=durable."""
-        insight = MuseInsight(
-            origin=MuseOrigin.of(None, session=1),
-            text="compiled memory counsel",
-            kind=COUNSEL_KIND_DURABLE,
+        assert runner.counts["insights_delivered"] >= 1
+        assert runner.snapshot()["kind_delivered"].get(COUNSEL_KIND_DURABLE, 0) >= 1
+
+    def test_the_bundle_reaches_the_muse_at_all(self) -> None:
+        """Without this, the two above could pass on a bundle nobody ever read."""
+        seen: list[str] = []
+
+        def complete(messages: list[dict[str, Any]], **_kw: Any) -> ModelResponse:
+            seen.append("\n".join(str(m.get("content", "")) for m in messages))
+            return ModelResponse(content=MARKER_DONE)
+
+        runner = ThreadedMuseRunner(complete, recall_bundle=_bundle("mem-unique-77"))
+        with runner:
+            runner.start()
+            runner.consider(BoundaryContext(kind="cadence-tick", step_count=1, reason="a beat"))
+            assert runner.wait_idle(5.0)
+
+        assert seen, "the muse was never called"
+        assert "mem-unique-77" in seen[0], "the recall bundle never reached the wire"
+
+    def test_the_runner_carries_the_citation_surface_back(self) -> None:
+        runner = ThreadedMuseRunner(
+            _muse_saying("GUIDANCE[durable]: something.\n"),
+            recall_bundle=_bundle("mem-a", "mem-b"),
         )
-        assert insight.kind == COUNSEL_KIND_DURABLE
-        assert insight.kind != "step"
+        with runner:
+            runner.start()
+            runner.consider(BoundaryContext(kind="cadence-tick", step_count=1, reason="a beat"))
+            assert runner.wait_idle(5.0)
+
+        assert runner.compiled_from == ("mem-a", "mem-b")
+
+    def test_the_citation_surface_does_not_depend_on_a_session_finishing(self) -> None:
+        """The determinism fix, pinned.
+
+        The first implementation accumulated these ids in ``_absorb``, so the
+        surface was populated only when a background session happened to
+        complete before the host read it. Measured on the greenhouse demo, that
+        varied run to run on identical input — 3 completed sessions one run, 0
+        the next — which left a provenance field intermittently empty for
+        timing reasons alone. Here the worker thread is never even started.
+        """
+        runner = ThreadedMuseRunner(
+            _muse_saying("GUIDANCE[durable]: x.\n"), recall_bundle=_bundle("mem-a", "mem-b")
+        )
+        assert runner.counts["sessions_completed"] == 0
+        assert runner.compiled_from == ("mem-a", "mem-b")
+
+    def test_a_museless_runner_cites_nothing_rather_than_guessing(self) -> None:
+        runner = ThreadedMuseRunner(_muse_saying("GUIDANCE[durable]: x.\n"))
+        with runner:
+            runner.start()
+            runner.consider(BoundaryContext(kind="cadence-tick", step_count=1, reason="a beat"))
+            assert runner.wait_idle(5.0)
+
+        assert runner.compiled_from == ()
 
 
 # ── Criterion 2: provenance resolution across processes ─────────────────────
@@ -209,48 +299,60 @@ class TestMuseOutcomeCompiledFrom:
         )
         assert outcome.compiled_from is None
 
-    def test_record_compiled_from_method(self, tmp_path: Path) -> None:
-        """_record_compiled_from populates the trace's compiled_from list."""
-        config = LifecycleConfig(
-            data_dir=tmp_path / "memory",
-            scope="test",
+    def test_the_lifecycle_pulls_the_citation_surface_from_a_wired_muse(
+        self, tmp_path: Path
+    ) -> None:
+        """The join: a muse's ids reach the trace without the host pushing them."""
+
+        class _Muse:
+            compiled_from = ("id-1", "id-2")
+
+        checkpoints = ContinuityLifecycle(
+            LifecycleConfig(data_dir=tmp_path / "memory", scope="test"), muse=_Muse()
         )
-        lifecycle = ContinuityLifecycle(config)
-
-        task_id = "test-3"
-        lifecycle._traces[task_id] = _Trace()
-        lifecycle._record_compiled_from(task_id, ("id-1", "id-2"))
-
-        trace = lifecycle._traces[task_id]
-        assert "id-1" in trace.compiled_from
-        assert "id-2" in trace.compiled_from
-
-    def test_record_compiled_from_deduplicates(self, tmp_path: Path) -> None:
-        """_record_compiled_from does not add duplicate ids."""
-        config = LifecycleConfig(
-            data_dir=tmp_path / "memory",
-            scope="test",
-        )
-        lifecycle = ContinuityLifecycle(config)
-
-        task_id = "test-4"
-        lifecycle._traces[task_id] = _Trace(compiled_from=["id-1"])
-        lifecycle._record_compiled_from(task_id, ("id-1", "id-2"))
-
-        trace = lifecycle._traces[task_id]
+        trace = _Trace()
+        checkpoints._gather_compiled_from(trace)
         assert trace.compiled_from == ["id-1", "id-2"]
 
-    def test_record_compiled_from_noop_for_unknown_task(self, tmp_path: Path) -> None:
-        """_record_compiled_from is a no-op when no trace exists."""
-        config = LifecycleConfig(
-            data_dir=tmp_path / "memory",
-            scope="test",
-        )
-        lifecycle = ContinuityLifecycle(config)
+    def test_gathering_deduplicates_against_what_the_trace_already_holds(
+        self, tmp_path: Path
+    ) -> None:
+        class _Muse:
+            compiled_from = ("id-1", "id-2")
 
-        # No trace for this task_id — should not raise.
-        lifecycle._record_compiled_from("unknown-task", ("id-1",))
-        assert len(lifecycle._traces) == 0
+        checkpoints = ContinuityLifecycle(
+            LifecycleConfig(data_dir=tmp_path / "memory", scope="test"), muse=_Muse()
+        )
+        trace = _Trace(compiled_from=["id-1"])
+        checkpoints._gather_compiled_from(trace)
+        assert trace.compiled_from == ["id-1", "id-2"]
+
+    def test_no_muse_means_no_ids_and_no_degradation(self, tmp_path: Path) -> None:
+        """A museless host is the primary path, not a degraded one."""
+        checkpoints = ContinuityLifecycle(
+            LifecycleConfig(data_dir=tmp_path / "memory", scope="test")
+        )
+        trace = _Trace()
+        checkpoints._gather_compiled_from(trace)
+        assert trace.compiled_from == []
+        assert checkpoints.events == ()
+
+    def test_a_broken_provenance_source_costs_links_not_the_record(self, tmp_path: Path) -> None:
+        """Losing links must never cost the record they belong to (C3)."""
+
+        class _Hostile:
+            @property
+            def compiled_from(self) -> tuple[str, ...]:
+                raise RuntimeError("broken")
+
+        checkpoints = ContinuityLifecycle(
+            LifecycleConfig(data_dir=tmp_path / "memory", scope="test"), muse=_Hostile()
+        )
+        trace = _Trace()
+        checkpoints._gather_compiled_from(trace)  # must not raise
+        assert trace.compiled_from == []
+        details = [event.detail for event in checkpoints.events]
+        assert "compiled-from-lost" in details, "the loss must be recorded, not silent"
 
     def test_links_order_compiled_from_before_recalled(self, tmp_path: Path) -> None:
         """compiled_from ids appear before recalled_ids in links."""
