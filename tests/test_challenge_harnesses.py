@@ -10,6 +10,8 @@ from __future__ import annotations
 import json
 import tempfile
 
+import pytest
+
 from examples.challenge_config import write_config_preamble
 from examples.challenge_entropic import (
     grade,
@@ -147,6 +149,37 @@ class TestConfigPreamble:
         assert "cortex_temperature" in data
         assert "max_turns" in data
         assert "n" in data
+
+    def test_extra_records_a_harness_setting_alongside_the_canonical_ones(self) -> None:
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
+            config = write_config_preamble(
+                tmp.name,
+                cortex_model="m",
+                cortex_temperature=0.0,
+                extra={"arm": "task", "anchor_density_limit": 0.45},
+            )
+        with open(tmp.name, encoding="utf-8") as f:
+            assert json.load(f) == config
+        assert config["arm"] == "task"
+        assert config["anchor_density_limit"] == 0.45
+        assert config["cortex_model"] == "m", "canonical fields survive"
+
+    def test_extra_may_not_quietly_overwrite_a_canonical_field(self) -> None:
+        """The record that exists to prevent hidden variables must not hide one.
+
+        ``config.update(extra)`` let a harness pass ``extra={"n": 1}`` on a run
+        of 20 and write a preamble that reads as a run of 1 — a lie in the one
+        artifact a reader is told makes the run reproducible.
+        """
+        with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:
+            with pytest.raises(ValueError, match="n"):
+                write_config_preamble(
+                    tmp.name,
+                    cortex_model="m",
+                    cortex_temperature=0.0,
+                    n=20,
+                    extra={"n": 1, "arm": "task"},
+                )
 
     def test_config_preamble_records_temperatures_separately(self) -> None:
         with tempfile.NamedTemporaryFile(suffix=".json", delete=False) as tmp:

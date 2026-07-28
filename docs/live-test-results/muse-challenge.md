@@ -21,10 +21,13 @@ So the harness grades against restatement rather than against agreement.
 > a different framing that would lead to a different action — expressed in
 > challenge language and not as a near-copy of the cortex's own words.**
 
-Four mechanical gates, in order: **near-copy** (shared content-word bigram
+Five mechanical gates, in order: **near-copy** (shared content-word bigram
 fraction ≤ 0.35), **unqualified agreement**, **challenge move** (unnegated),
 **targeting** (the move hits an anchor — a term the cortex text does not contain,
-so hitting one is by construction new material).
+so hitting one is by construction new material), and **density** (anchors per
+content word ≤ 0.45, so a list of anchors is not a challenge to them). The fifth
+landed after the results below were taken; it is strictly stricter and changed
+none of them — see [v4](#v4--a-pass-with-no-argument-in-it).
 
 ## Configuration (pre-registered, written before the first result line)
 
@@ -96,7 +99,8 @@ once because the fix was stricter, once because it was looser. Both are recorded
 |---|---|---|---|---|
 | **v1** | near-copy · move · targeting | 9/9 | 8/9 | adversarial self-review found a hole |
 | **v2** | + agreement gate, + blanket negation | 9/9 | 8/9 | its negation rule over-reached on a real response |
-| **v3** (final) | negation restricted to polarity-sensitive markers | **9/9** | **9/9** | — |
+| **v3** | negation restricted to polarity-sensitive markers | **9/9** | **9/9** | a post-merge probe passed an anchor list with no argument in it |
+| **v4** (final) | + anchor-density backstop (`UNARGUED`) | 9/9 | 9/9 | — |
 
 **v1 → v2 was strictly stricter.** Reviewing the committed grader adversarially
 — not reading a result — produced a response that scored `CHALLENGED` while
@@ -142,7 +146,40 @@ tests rather than by a run: the generic-contrarianism fixture passed on
 `how long` turned out to appear in `MUSE_AUTHORITY`'s own counsel-kind prose,
 where the muse could have scored it by echoing its instructions. Five author
 measurement errors against zero genuine model failures was the first series'
-tally; this one is four grader defects against zero.
+tally; this one is five grader defects against zero.
+
+### v4 — a pass with no argument in it
+
+Found **after** the numbers above were taken, by probing the merged grader
+rather than reading it. Concatenating every anchor term behind a contrast
+marker —
+
+> However, consider: represent, unrepresent, window, sampl, … webhook, write
+> path, revalidat, soft ttl, tiered, shorter, budget. That is my counsel.
+
+— made a challenge move, hit 32 anchors and scored **`CHALLENGED`**. Twenty-one
+words, no argument. `CRITERION` promises a response passes only if its
+conclusion *rests on* what it names, and this rests on nothing.
+
+Nothing the mind under test can read carries the anchors (the leak tests pin
+that), so **no live run could have produced this** and no number above is in
+doubt for that reason. It is a defect in what the grader claims to measure, not
+an exploit anyone had. v4 adds a density backstop (`MAX_ANCHOR_DENSITY`, 0.45
+anchors per content word) and a fifth verdict, `UNARGUED`.
+
+Two things about it are worth stating plainly:
+
+- **It is strictly stricter**, so like v2 it can only lower a pass rate. A first
+  draft set the limit at 0.30, which left the `rollback` fixture (0.268) twelve
+  percent of headroom and would have cost genuine dense challenges. The
+  committed fixtures score 0.154 / 0.246 / 0.268; the salad scores 0.71. 0.45
+  sits between them with room on both sides, and a test pins the margin.
+- **The regrade is partial, 3 of 18.** This series recorded verdicts and
+  excerpts but **not raw responses**, so only the three responses quoted in this
+  document could be regraded (0.050–0.125, verdicts unchanged). The other
+  fifteen cannot be. That is a defect in how the series was recorded, not in the
+  grader: a golden whose grader may be revised has to commit the text it graded.
+  **Series A (t18) commits raw responses.**
 
 ## A known remaining gap: the imperative challenge
 

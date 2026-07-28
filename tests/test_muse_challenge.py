@@ -134,6 +134,43 @@ class TestTheGraderIsNotFooled:
         assert verdict["anchors_hit"] == []
 
     @pytest.mark.parametrize("case", golden.CASES, ids=lambda c: c.id)
+    def test_a_list_of_the_graders_own_targets_is_not_a_challenge(
+        self, case: golden.CortexResult
+    ) -> None:
+        """The hole an adversarial probe found AFTER the first live series.
+
+        Concatenating every anchor term behind a contrast marker made a move,
+        hit 32 anchors and scored CHALLENGED — a pass with no argument in it.
+        The anchors never reach the mind (see the leak tests), so no live run
+        could produce this; it is a defect in what the grader *claims to
+        measure*, not an exploit anyone had. Fixed by a density backstop.
+        """
+        salad = " ".join(sum((list(v) for v in case.anchors().values()), []))
+        verdict = golden.grade(f"However, consider: {salad}. That is my counsel.", case)
+        assert verdict["passed"] is False
+        assert verdict["verdict"] == golden.VERDICT_UNARGUED
+        assert verdict["moves"], "the trap must look like a move"
+        assert verdict["anchors_hit"], "and it must hit anchors — that is the trap"
+
+    @pytest.mark.parametrize("case", golden.CASES, ids=lambda c: c.id)
+    def test_a_genuine_challenge_is_nowhere_near_the_density_limit(
+        self, case: golden.CortexResult
+    ) -> None:
+        """The gate must be a backstop, not a judgement about density.
+
+        A first draft at 0.30 left the rollback fixture 12 percent of headroom,
+        which would have cost real passes. Pin the margin so a later tightening
+        has to face the measurement.
+        """
+        verdict = golden.grade(golden.CHALLENGE_FIXTURES[case.id], case)
+        assert verdict["verdict"] == golden.VERDICT_CHALLENGED
+        density = len(verdict["anchors_hit"]) / verdict["response_words"]
+        assert density < golden.MAX_ANCHOR_DENSITY * 0.65, (
+            f"{case.id} scores {density:.3f} against a {golden.MAX_ANCHOR_DENSITY} "
+            "limit — too little headroom for the gate to be a backstop"
+        )
+
+    @pytest.mark.parametrize("case", golden.CASES, ids=lambda c: c.id)
     def test_agreement_wearing_challenge_vocabulary_fails(self, case: golden.CortexResult) -> None:
         """The attack that actually broke a version of this grader.
 

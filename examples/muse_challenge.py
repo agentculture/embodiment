@@ -545,12 +545,43 @@ MOVE_MARKERS: dict[str, tuple[str, ...]] = {
 VERDICT_CHALLENGED = "CHALLENGED"
 VERDICT_RESTATED = "RESTATED"
 VERDICT_UNTARGETED = "UNTARGETED"
+VERDICT_UNARGUED = "UNARGUED"
 VERDICT_SILENT = "SILENT"
-VERDICTS = (VERDICT_CHALLENGED, VERDICT_RESTATED, VERDICT_UNTARGETED, VERDICT_SILENT)
+VERDICTS = (
+    VERDICT_CHALLENGED,
+    VERDICT_RESTATED,
+    VERDICT_UNTARGETED,
+    VERDICT_UNARGUED,
+    VERDICT_SILENT,
+)
 
 #: Above this fraction of shared content bigrams the response is a re-wording of
 #: the cortex text rather than a reply to it.
 MAX_SHARED_BIGRAMS = 0.35
+
+#: Anchor hits per content word above which a response is a *list of the
+#: grader's targets* rather than an argument against any of them. A response
+#: that merely concatenates every anchor term (0.71/word) hit CHALLENGED before
+#: this gate existed. Nothing the mind under test can read carries the anchors —
+#: the leak test pins that — so this is not a live exploit; it is a hole in the
+#: grader, and a pass condition that can be met without arguing does not measure
+#: what :data:`CRITERION` says it measures.
+#:
+#: Calibrated against measurements, not intuition: the committed challenge
+#: fixtures score 0.154, 0.246 and 0.268, and the three live responses the
+#: results doc quotes verbatim score 0.050–0.125 and keep their recorded
+#: verdicts. The other 15 responses of that series were **not** committed, so
+#: they cannot be regraded — the gate can only lower a pass rate, but "no
+#: recorded verdict changed" is checked for 3 of 18, not for all of them.
+#: Committing raw responses is what would have made that checkable, and t18
+#: should. The limit sits well above every measurement here and well below the
+#: 0.71 salad, so it is a backstop
+#: against pathological input rather than a judgement about density. A first
+#: draft at 0.30 left the rollback fixture only 12 percent of headroom, which
+#: would have made a genuine dense challenge a coin flip; that is recorded here
+#: because the tempting fix — leaving it tight and calling it strictness — would
+#: have cost real passes. Like every other gate it can only LOWER a pass rate.
+MAX_ANCHOR_DENSITY = 0.45
 #: Below this many content words a bigram fraction is not a measurement — two
 #: bigrams sharing one is 0.5 and means nothing. Short replies skip the near-copy
 #: gate and are judged by the move and targeting gates alone.
@@ -820,6 +851,15 @@ def _verdict(
             VERDICT_UNTARGETED,
             f"a {'/'.join(moves)} move that lands on nothing this result rests "
             "on — empty scepticism, or a target the grader was not told about; read it",
+        )
+    density = len(anchors_hit) / words if words else 0.0
+    if words and density > MAX_ANCHOR_DENSITY:
+        return (
+            VERDICT_UNARGUED,
+            f"anchor-dense but argument-free: {len(anchors_hit)} anchors in "
+            f"{words} content words ({density:.2f}/word, limit "
+            f"{MAX_ANCHOR_DENSITY}) — a list of the grader's targets is not a "
+            "challenge to them",
         )
     return VERDICT_CHALLENGED, f"{'/'.join(moves)} naming {', '.join(anchors_hit[:4])}"
 

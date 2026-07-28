@@ -38,6 +38,11 @@ def write_config_preamble(
     the JSON alone. ``extra`` folds in harness-specific settings — the arm a
     comparison was run under, a grader threshold — so the whole configuration
     lives in one record rather than half in the file and half in a docstring.
+
+    An ``extra`` key that collides with a canonical one raises. ``extra``
+    exists so a run records MORE than the canonical fields; letting it
+    silently overwrite ``n`` or ``cortex_model`` would turn the record that
+    exists to prevent hidden variables into a place to hide one.
     """
     config: dict[str, Any] = {
         "cortex_model": cortex_model,
@@ -48,7 +53,15 @@ def write_config_preamble(
         "staleness_policy": staleness_policy,
         "n": n,
     }
-    config.update(dict(extra or {}))
+    additions = dict(extra or {})
+    collisions = sorted(set(additions) & set(config))
+    if collisions:
+        raise ValueError(
+            "extra may not overwrite a canonical config field: "
+            + ", ".join(collisions)
+            + " — pass the value through the named argument instead"
+        )
+    config.update(additions)
 
     with open(path, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=2)
