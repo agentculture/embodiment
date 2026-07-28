@@ -336,6 +336,61 @@ def reflective_runs(
     return out
 
 
+def cells_from_records(
+    records: list[dict[str, Any]],
+    *,
+    muse_model: str = MUSE_MODEL,
+    cortex_model: str = CORTEX_MODEL,
+) -> dict[str, Cell]:
+    """Rebuild the four cells from committed raw records.
+
+    The committed JSONL — not this process's memory — is the artifact, so the
+    decision has to be reproducible from it alone. A run that crashes mid-series
+    still leaves every completed run on disk, and a reader who distrusts the
+    reported number can recompute it with ``--analyse``.
+    """
+    cells: dict[str, Cell] = {}
+    for axis in ("reflective", "executive"):
+        for label, model in (("muse", muse_model), ("cortex", cortex_model)):
+            runs = [r for r in records if r.get("axis") == axis and r.get("model") == model]
+            if runs:
+                cells[f"{axis}_{label}"] = Cell(f"{axis}_{label}", axis, model, runs)
+    return cells
+
+
+def failure_modes(cell: Cell) -> dict[str, int]:
+    """Split an executive cell's failures into protocol and reasoning.
+
+    Both count as not-correct — a mind that cannot complete the work has not
+    completed it — but "could not drive the tool loop" and "drove it and reasoned
+    wrongly" are different findings, and the pre-registration promised the split.
+
+    A run is a PROTOCOL failure when nothing gradeable was submitted: a transport
+    error, an exit that is not ``finished``, an empty summary, or a summary the
+    harness could not read as an answer at all (``NO ANSWER``). Everything else
+    that failed reached the grader with an answer and was wrong.
+
+    **This predicate is a disclosure, not a gate**: it changes no pass count and
+    is not read by :func:`decide`. Its exact wording was settled after the
+    pre-registration commit and before any executive run existed, which is
+    recorded in the results document rather than left for a reader to notice.
+    """
+    modes = {"passed": 0, "protocol": 0, "reasoning": 0}
+    for run in cell.runs:
+        if run.get("passed"):
+            modes["passed"] += 1
+        elif (
+            run.get("transport_error")
+            or run.get("exit_reason") != "finished"
+            or not str(run.get("raw_summary") or "").strip()
+            or str(run.get("verdict") or "").startswith("NO ANSWER")
+        ):
+            modes["protocol"] += 1
+        else:
+            modes["reasoning"] += 1
+    return modes
+
+
 def _executive_once(problem: str, complete: Callable[..., Any]) -> dict[str, Any]:
     """One executive attempt, dispatched to the harness that owns the problem."""
     if problem == "subset":
@@ -430,6 +485,11 @@ def executive_gateway_for(problem: str, base_url: str, model: str, key: str) -> 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=(__doc__ or "").splitlines()[0])
     parser.add_argument("--live", action="store_true", help="dial both real minds")
+    parser.add_argument(
+        "--analyse",
+        action="store_true",
+        help="dial nothing; re-apply the committed rule to the committed --out records",
+    )
     parser.add_argument("--n-reflective", type=int, default=4, help="repeats per reflective case")
     parser.add_argument("--n-executive", type=int, default=3, help="repeats per executive problem")
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
@@ -496,8 +556,46 @@ def config_record(args: argparse.Namespace) -> dict[str, Any]:
     )
 
 
+def _analyse(args: argparse.Namespace) -> int:
+    """Re-apply the committed rule to the committed records. Dials nothing."""
+    path = Path(args.out).expanduser()
+    if not path.exists():
+        print(f"error: no records at {path}", file=sys.stderr)
+        print("hint: run the series with --live first, or pass --out", file=sys.stderr)
+        return 1
+    records = [
+        json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()
+    ]
+    cells = cells_from_records(records, muse_model=args.muse_model, cortex_model=args.cortex_model)
+    report: dict[str, Any] = {
+        "source": str(path),
+        "records": len(records),
+        "cells": {name: cell.summary() for name, cell in cells.items()},
+        "failure_modes": {
+            name: failure_modes(cell) for name, cell in cells.items() if cell.axis == "executive"
+        },
+    }
+    if len(cells) == 4:
+        report["analysis"] = decide(
+            cells["reflective_muse"],
+            cells["reflective_cortex"],
+            cells["executive_muse"],
+            cells["executive_cortex"],
+        )
+    else:
+        report["analysis"] = {
+            "decision": None,
+            "why": "a partial run cannot be judged against a rule about an interaction",
+        }
+    print(json.dumps(report, indent=2, default=str))
+    return 0
+
+
 def main(argv: Optional[list[str]] = None) -> int:
     args = build_parser().parse_args(argv)
+
+    if args.analyse:
+        return _analyse(args)
 
     key = ""
     if args.live:

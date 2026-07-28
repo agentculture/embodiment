@@ -387,6 +387,94 @@ class TestConfigPreambleIsWrittenBeforeResults:
         assert aw.main([]) == 1
 
 
+class TestReanalysisFromCommittedRecords:
+    """The decision must be reproducible from the committed JSONL alone."""
+
+    @staticmethod
+    def _records() -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        for index in range(4):
+            rows.append(
+                {
+                    "axis": "reflective",
+                    "model": aw.MUSE_MODEL,
+                    "passed": True,
+                    "transport_error": False,
+                }
+            )
+            rows.append(
+                {
+                    "axis": "reflective",
+                    "model": aw.CORTEX_MODEL,
+                    "passed": index == 0,
+                    "transport_error": False,
+                }
+            )
+            rows.append(
+                {
+                    "axis": "executive",
+                    "model": aw.MUSE_MODEL,
+                    "passed": False,
+                    "transport_error": False,
+                    "exit_reason": "stopped",
+                    "raw_summary": "",
+                }
+            )
+            rows.append(
+                {
+                    "axis": "executive",
+                    "model": aw.CORTEX_MODEL,
+                    "passed": index < 3,
+                    "transport_error": False,
+                    "exit_reason": "finished",
+                    "raw_summary": "76",
+                }
+            )
+        return rows
+
+    def test_cells_rebuild_from_records(self) -> None:
+        cells = aw.cells_from_records(self._records())
+        assert set(cells) == {
+            "reflective_muse",
+            "reflective_cortex",
+            "executive_muse",
+            "executive_cortex",
+        }
+        assert cells["reflective_muse"].rate == 1.0
+        assert cells["reflective_cortex"].rate == 0.25
+        assert cells["executive_cortex"].rate == 0.75
+
+    def test_failure_modes_split_protocol_from_reasoning(self) -> None:
+        """ "Could not drive the loop" and "drove it and was wrong" differ."""
+        cells = aw.cells_from_records(self._records())
+        assert aw.failure_modes(cells["executive_muse"]) == {
+            "passed": 0,
+            "protocol": 4,
+            "reasoning": 0,
+        }
+        assert aw.failure_modes(cells["executive_cortex"]) == {
+            "passed": 3,
+            "protocol": 0,
+            "reasoning": 1,
+        }
+
+    def test_analyse_reproduces_the_decision_without_dialling(
+        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        out = tmp_path / "records.jsonl"
+        out.write_text(
+            "\n".join(json.dumps(row) for row in self._records()) + "\n", encoding="utf-8"
+        )
+        assert aw.main(["--analyse", "--out", str(out)]) == 0
+        report = json.loads(capsys.readouterr().out)
+        assert report["records"] == 16
+        assert report["analysis"]["decision"] in aw.DECISIONS
+        assert report["failure_modes"]["executive_muse"]["protocol"] == 4
+
+    def test_analyse_says_so_when_there_is_nothing_to_analyse(self, tmp_path: Path) -> None:
+        assert aw.main(["--analyse", "--out", str(tmp_path / "absent.jsonl")]) == 1
+
+
 # ── the live lane is opt-in, and every live class says so in its name ────────
 
 
