@@ -276,7 +276,7 @@ CHECKPOINT_REMEMBER_SKIPPED = "remember-skipped"
 #: Something degraded. ``detail`` is a ``continuity.CODE_*`` token when the
 #: degradation came from a subsystem, else one of this module's own:
 #: ``internal-error`` | ``sink-failed`` | ``trace-lost`` |
-#: ``consequential-fn-failed``.
+#: ``consequential-fn-failed`` | ``links-truncated``.
 CHECKPOINT_DEGRADED = "degraded"
 
 #: The complete, closed vocabulary. There is no other ``kind`` this module emits.
@@ -295,6 +295,7 @@ _FAULT_INTERNAL = "internal-error"
 _FAULT_SINK = "sink-failed"
 _FAULT_TRACE_LOST = "trace-lost"
 _FAULT_CONSEQUENTIAL = "consequential-fn-failed"
+_FAULT_LINKS_TRUNCATED = "links-truncated"
 
 # ``detail`` tokens for a skipped assessment.
 _SKIP_CONSIDERED = "already-considered"
@@ -544,6 +545,7 @@ class _Trace:
 
     considered: bool = False
     recalled_ids: list[str] = field(default_factory=list)
+    compiled_from: list[str] = field(default_factory=list)
     assessed_text: Optional[str] = None
     assess_outcome: Optional[continuity.AssessOutcome] = None
 
@@ -832,8 +834,26 @@ class ContinuityLifecycle:
             "type": self.config.record_type,
             "metadata": self._metadata(task, result),
         }
-        if trace.recalled_ids:
-            record["links"] = list(trace.recalled_ids)
+        # Merge compiled-from ids (provenance: what the muse cited) and
+        # lifecycle recall ids. compiled_from takes priority.
+        all_ids: list[str] = []
+        seen: set[str] = set()
+        for rid in trace.compiled_from + trace.recalled_ids:
+            if rid not in seen:
+                seen.add(rid)
+                all_ids.append(rid)
+        if all_ids:
+            max_links = max(0, self.config.max_links)
+            if len(all_ids) > max_links:
+                self._emit(
+                    BOUNDARY_MEMORY,
+                    CHECKPOINT_DEGRADED,
+                    _FAULT_LINKS_TRUNCATED,
+                    total=len(all_ids),
+                    kept=max_links,
+                )
+                all_ids = all_ids[:max_links]
+            record["links"] = list(all_ids)
         if result.continued_from:
             record["supersedes"] = record_id_for(result.continued_from)
         if result.stats.started_at:
@@ -842,6 +862,15 @@ class ContinuityLifecycle:
             # stamps its own.
             record["created"] = result.stats.started_at
         return record
+
+    def _record_compiled_from(self, task_id: str, ids: tuple[str, ...]) -> None:
+        """Record the record ids a compiled memory cited for this work item."""
+        trace = self._traces.get(task_id)
+        if trace is None:
+            return
+        for rid in ids:
+            if rid not in trace.compiled_from:
+                trace.compiled_from.append(rid)
 
     def _metadata(self, task: Task, result: TaskResult) -> dict[str, Any]:
         metadata: dict[str, Any] = {

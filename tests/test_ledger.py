@@ -37,7 +37,7 @@ import pytest
 from embodiment import continuity, ledger, lifecycle, loop, muse, muse_runner, subagent
 from embodiment.contract import OK, ModelResponse, SubResult, Task, TaskResult, ToolCall
 from embodiment.events import EventEmitter
-from embodiment.lifecycle import CHECKPOINT_DEGRADED, ContinuityLifecycle, LifecycleConfig
+from embodiment.lifecycle import CHECKPOINT_DEGRADED, ContinuityLifecycle, LifecycleConfig, _Trace
 from embodiment.loop import (
     Boundary,
     LoopAborted,
@@ -762,6 +762,27 @@ def _lifecycle_consequential(
     return ledger.from_lifecycle(checkpoints)
 
 
+def _lifecycle_links_truncated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> list[ledger.LedgerRecord]:
+    """Trigger links-truncated by exceeding max_links with compiled_from ids."""
+    monkeypatch.setattr(continuity, "assess", _AssessStub())
+    checkpoints = ContinuityLifecycle(_lifecycle_config(tmp_path, max_links=1))
+    # Populate a trace with enough ids to exceed max_links.
+    task_id = "truncate-test"
+    checkpoints._traces[task_id] = _Trace(
+        compiled_from=["id-a", "id-b"],
+        recalled_ids=["id-c"],
+    )
+    boundary = _lifecycle_boundary(
+        "before-memory",
+        task=_task(id=task_id),
+        result=TaskResult(task_id=task_id, status=OK, summary="done"),
+    )
+    checkpoints._build_record(boundary, checkpoints._traces[task_id])
+    return ledger.from_lifecycle(checkpoints)
+
+
 # -- the ledger's own rung ----------------------------------------------------
 
 
@@ -823,6 +844,7 @@ PROVOKERS: dict[tuple[str, str], Provoker] = {
     (ledger.SOURCE_LIFECYCLE, lifecycle._FAULT_SINK): _lifecycle_sink,
     (ledger.SOURCE_LIFECYCLE, lifecycle._FAULT_TRACE_LOST): _lifecycle_trace,
     (ledger.SOURCE_LIFECYCLE, lifecycle._FAULT_CONSEQUENTIAL): _lifecycle_consequential,
+    (ledger.SOURCE_LIFECYCLE, lifecycle._FAULT_LINKS_TRUNCATED): _lifecycle_links_truncated,
     (ledger.SOURCE_LEDGER, ledger.DEGRADED_UNREADABLE_SOURCE): _ledger_unreadable,
 }
 
