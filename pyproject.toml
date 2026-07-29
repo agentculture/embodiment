@@ -1,6 +1,6 @@
 [project]
 name = "embodiment"
-version = "0.7.1"
+version = "0.8.0"
 description = "The agentic loop that gives an app an embodied AI presence. Install embodiment in an app or wrap one, supply a model seam plus IO callbacks, and it drives the perceive-decide-act loop and the presence pump - extracted from colleague so the loop is written once and imported, not reimplemented per host."
 readme = "README.md"
 license = "Apache-2.0"
@@ -21,8 +21,8 @@ classifiers = [
 #   eidetic-cli   -> data-refinery-cli[store] -> neo4j + pymongo (graph +
 #                    Mongo drivers, pulled even for the default `files` store)
 #   coherence-cli -> numpy + httpx (and httpx's own httpcore/h11/anyio/certifi)
-#   events-cli    -> paho-mqtt  (declared here for the sibling events task; this
-#                    package ships no events module of its own yet)
+#   events-cli    -> paho-mqtt  (consumed by embodiment/events.py, which imports
+#                    events_cli lazily so importing embodiment stays cheap)
 #
 # Consequence, accepted with eyes open: `pip install embodiment` now pulls a
 # graph driver, a Mongo driver, numpy, httpx and an MQTT client, and importing

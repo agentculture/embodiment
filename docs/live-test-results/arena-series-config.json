@@ -1,0 +1,24 @@
+{
+  "cortex_model": "sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP",
+  "cortex_temperature": 0.3,
+  "muse_model": "nvidia/Gemma-4-31B-IT-NVFP4",
+  "muse_temperature": 0.7,
+  "max_turns": 3,
+  "staleness_policy": "default",
+  "n": 3,
+  "series": "arena_series",
+  "seeds": [
+    4242,
+    4243,
+    4244
+  ],
+  "cells": [
+    "CM",
+    "CO",
+    "RM",
+    "RO"
+  ],
+  "objective": "cp-west",
+  "live": true,
+  "preregistration": "docs/live-test-results/arena-series-preregistration.md"
+}

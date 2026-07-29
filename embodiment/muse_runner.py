@@ -100,12 +100,15 @@ Stdlib only (constraint C1): ``collections``, ``dataclasses``, ``threading``,
 
 from __future__ import annotations
 
+import math
 import threading
 from collections import deque
 from dataclasses import replace
 from typing import Any, Callable, Optional, cast
 
 from embodiment.muse import (
+    COUNSEL_KIND_DURABLE,
+    COUNSEL_KIND_STEP,
     DEFAULT_STALE_LAG,
     MUSE_EXIT_DEGRADED,
     MuseCompleteFn,
@@ -131,7 +134,13 @@ __all__ = [
     "DROPPED_LATE",
     "DROPPED_OVERFLOW",
     "DROPPED_BOUNDARY",
+    "DROPPED_COMPILATION_STARVED",
+    "DROPPED_COUNSEL_DISPLACED",
     "RUNNER_CODES",
+    # work-class labels
+    "WORK_BOUNDARY",
+    "WORK_COMPILATION",
+    "WORK_CLASSES",
     # defaults
     "DEFAULT_MAX_PENDING",
     "DEFAULT_MAX_FAILED_SESSIONS",
@@ -173,10 +182,14 @@ DROPPED_LATE = "muse-insight-late"
 DROPPED_OVERFLOW = "muse-insight-overflow"
 #: A queued boundary was replaced by a newer one before it was ever thought about.
 DROPPED_BOUNDARY = "muse-boundary-superseded"
+#: Background compilation was starved because boundary counsel took priority.
+DROPPED_COMPILATION_STARVED = "muse-compilation-starved"
+#: Boundary counsel was displaced by background compilation filling the buffer.
+DROPPED_COUNSEL_DISPLACED = "muse-counsel-displaced"
 
 #: The complete set this module can record. Session-level codes
 #: (``muse-thinking-failed`` and friends) come through verbatim from
-#: :mod:`embodiment.muse`; this runner mints no code outside these seven.
+#: :mod:`embodiment.muse`; this runner mints no code outside these nine.
 RUNNER_CODES = (
     DEGRADED_THREAD,
     DEGRADED_WORKER,
@@ -185,6 +198,8 @@ RUNNER_CODES = (
     DROPPED_LATE,
     DROPPED_OVERFLOW,
     DROPPED_BOUNDARY,
+    DROPPED_COMPILATION_STARVED,
+    DROPPED_COUNSEL_DISPLACED,
 )
 
 
@@ -207,6 +222,12 @@ MAX_LEDGER = 100
 
 #: Cap on one record's reason text, mirroring :mod:`embodiment.muse`.
 _MAX_REASON_LEN = 500
+
+#: Work-class labels for the muse thread's two kinds of work.
+WORK_BOUNDARY = "boundary"
+WORK_COMPILATION = "compilation"
+#: The complete set of work classes.
+WORK_CLASSES = (WORK_BOUNDARY, WORK_COMPILATION)
 
 #: Builds the worker thread. Injected so a test can assert a museless run
 #: creates none, and so a host with its own thread policy can supply one.
@@ -346,8 +367,36 @@ class ThreadedMuseRunner:
         join_timeout: float = DEFAULT_JOIN_TIMEOUT,
         poll_interval: float = DEFAULT_POLL_INTERVAL,
         thread_factory: Optional[ThreadFactory] = None,
+        recall_bundle: Any = None,
     ) -> None:
         self._role = str(role or MUSE_ROLE)
+        # The recall-context material this runner's muse compiles from, fetched
+        # ONCE by the host for the whole work item rather than per boundary.
+        # That granularity is the honest one: a work item has one recalled
+        # context, and it is also what keeps this module IO-free — the runner
+        # never fetches, so the muse thread never blocks on a store.
+        self._recall_bundle = recall_bundle
+        # The citation surface, seeded from the bundle AT CONSTRUCTION rather
+        # than accumulated as sessions finish. That ordering is deliberate and
+        # was a measured correction: the muse is a background thread, so
+        # whether any session had completed by the time a host built its report
+        # varied run to run (3 sessions in one run, 0 in the next on the same
+        # input). An accumulate-on-absorb surface is therefore not wrong so
+        # much as NON-DETERMINISTIC, which is worse — a provenance field that
+        # is sometimes empty for timing reasons teaches a reader to distrust it
+        # when it is full.
+        #
+        # What this therefore means, stated rather than implied: the material
+        # the muse was GIVEN for this work item, not proof it finished reading
+        # it. That is the same standard ``links`` already holds itself to —
+        # lifecycle documents it as "what the agent knew when it acted" — and
+        # ``counts["sessions_completed"]`` is right there for a reader who
+        # needs the stronger fact. :attr:`MuseOutcome.compiled_from` remains
+        # per-session and exact.
+        # A dict keeps insertion order while deduping.
+        self._compiled_from: dict[str, None] = {}
+        for record_id in getattr(recall_bundle, "record_ids", ()) or ():
+            self._compiled_from[str(record_id)] = None
         # ONE loop instance, driven by ONE thread, one session at a time — the
         # protocol embodiment.muse documents for exactly this consumer.
         self._loop = MuseLoop(
@@ -387,6 +436,15 @@ class ThreadedMuseRunner:
             "boundaries_superseded": 0,
             "degradations_recorded": 0,
         }
+        # Per-kind delivery counters (task t3).
+        self._kind_delivered: dict[str, int] = {}
+        self._kind_dropped: dict[str, int] = {}
+        # Relative latency: muse turn times vs. loop step times. The muse side
+        # fills itself from each finished session (see :meth:`_absorb`); the
+        # loop side can only come from the host, which is the only party that
+        # knows how long its own steps took (see :meth:`note_loop_step`).
+        self._muse_turn_times: list[float] = []
+        self._loop_step_times: list[float] = []
 
     # ── the drain-shaped seam ────────────────────────────────────────────────
     def consider(self, boundary: Optional[BoundaryContext]) -> None:
@@ -428,8 +486,12 @@ class ThreadedMuseRunner:
 
         An empty list is the normal case — the muse thinks on its own clock and
         an actor loop must never wait on it. *step_count* is the actor's current
-        step; anything that has fallen more than ``max_lag`` steps behind it is
-        dropped, and each drop is recorded (C3).
+        step; step-sensitive counsel that has fallen more than ``max_lag`` steps
+        behind is dropped, and each drop is recorded (C3).
+
+        **Durable counsel is never dropped for loop-distance staleness alone** —
+        it survives to the next boundary or synthesis. Only step-sensitive
+        counsel ages by loop distance.
         """
         with self._lock:
             self._observed_step = max(self._observed_step, _coerce_int(step_count))
@@ -438,8 +500,13 @@ class ThreadedMuseRunner:
             self._ready.clear()
             kept: list[MuseComment] = []
             for insight in ready:
-                if is_stale(insight, step_count=current, max_lag=self._max_lag):
+                kind = getattr(insight, "kind", COUNSEL_KIND_DURABLE)
+                if kind == COUNSEL_KIND_STEP and is_stale(
+                    insight, step_count=current, max_lag=self._max_lag
+                ):
                     self._counts["insights_dropped_stale"] += 1
+                    self._kind_dropped.setdefault(kind, 0)
+                    self._kind_dropped[kind] += 1
                     self._record(
                         DROPPED_STALE,
                         f"insight about step {insight.origin.step_count} read at step "
@@ -450,6 +517,8 @@ class ThreadedMuseRunner:
                     )
                     continue
                 kept.append(insight)
+                self._kind_delivered.setdefault(kind, 0)
+                self._kind_delivered[kind] += 1
             self._counts["insights_delivered"] += len(kept)
             return kept
 
@@ -538,6 +607,24 @@ class ThreadedMuseRunner:
         return self._thread is not None
 
     @property
+    def compiled_from(self) -> tuple[str, ...]:
+        """The recalled material this lane was given, in order, each once.
+
+        Read by the continuity lifecycle at the memory boundary so a durable
+        record ``links`` to the material its counsel was compiled from. Empty
+        when no recall bundle was supplied, or when the bundle cited nothing —
+        reported as empty rather than absent, because "compiled from nothing"
+        and "no muse ran" are different facts and a host can tell them apart
+        through :attr:`counts`.
+
+        Deterministic by construction: see the note in ``__init__`` for why
+        this is seeded from the bundle instead of accumulated as sessions
+        complete, and for exactly how strong a claim it is.
+        """
+        with self._lock:
+            return tuple(self._compiled_from)
+
+    @property
     def degradations(self) -> list[MuseDegradation]:
         """The most recent transitions, at most :data:`MAX_LEDGER` of them."""
         with self._lock:
@@ -559,6 +646,13 @@ class ThreadedMuseRunner:
                 "degradation": self._degradation,
                 "counts": dict(self._counts),
                 "degradations": list(self._ledger),
+                "kind_delivered": dict(self._kind_delivered),
+                "kind_dropped": dict(self._kind_dropped),
+                "relative_latency": self._relative_latency(),
+                # The citation surface, reported so a host's own artifact can
+                # show which remembered records its counsel was compiled from —
+                # provenance a reader can check, not a claim they must trust.
+                "compiled_from": list(self._compiled_from),
             }
 
     # ── the worker ───────────────────────────────────────────────────────────
@@ -580,7 +674,7 @@ class ThreadedMuseRunner:
                     self._wake.wait(self._poll_interval)
                     self._wake.clear()
                     continue
-                self._absorb(self._loop.think(boundary))
+                self._absorb(self._loop.think(boundary, recall_bundle=self._recall_bundle))
         except Exception as exc:  # a dead worker is recorded, never silent
             with self._lock:
                 self._degrade(DEGRADED_WORKER, f"{type(exc).__name__}: {exc}")
@@ -626,6 +720,18 @@ class ThreadedMuseRunner:
         """Fold one finished session's cost and degradations. Worker thread only."""
         with self._lock:
             self._counts["sessions_completed"] += 1
+            # Provenance: the ids this session's compiled memory cited. Held so
+            # the host can carry them into the durable record's ``links`` — the
+            # loop's memory boundary reads them back through
+            # :attr:`compiled_from`.
+            for record_id in outcome.compiled_from or ():
+                self._compiled_from[str(record_id)] = None
+            # The muse half of the relative-latency measurement. Only present
+            # when the host injected a clock — absent, this stays empty and
+            # `relative_latency` reports None rather than inventing a number.
+            for insight in outcome.insights:
+                if insight.latency is not None:
+                    self._muse_turn_times.append(float(insight.latency))
             for degradation in outcome.degradations:
                 self._record(
                     degradation.code,
@@ -688,3 +794,58 @@ class ThreadedMuseRunner:
                 model_turns=_coerce_int(model_turns),
             )
         )
+
+    def note_loop_step(self, seconds: Any) -> None:
+        """Tell the runner how long one acting-loop step took.
+
+        The loop half of the relative-latency measurement. The runner cannot
+        observe this itself — it has no view of the acting loop — so a host that
+        wants :meth:`snapshot`'s ``relative_latency`` populated feeds its own
+        measured step durations here. A host that does not call this gets
+        ``None``, which is the honest answer rather than a default standing in
+        for a measurement nobody made.
+
+        Never raises: an unreadable or non-positive value is ignored, because a
+        telemetry call must not be able to break a drive.
+        """
+        try:
+            value = float(seconds)
+        except (TypeError, ValueError):
+            return
+        # NaN is rejected EXPLICITLY rather than as a side effect of comparison
+        # order. Two earlier spellings were both worse: `value != value` reads
+        # as a typo (and S1764 flags it as one), while `not value > 0` folds the
+        # NaN case into an inverted comparison that S1940 then asks you to
+        # "simplify" to `value <= 0` — which would silently let NaN through,
+        # because every comparison against NaN is False, and one NaN poisons
+        # every later mean in `_relative_latency`. Saying `isnan` out loud costs
+        # one stdlib import and cannot be misread in either direction.
+        if math.isnan(value) or value <= 0:
+            return
+        with self._lock:
+            self._loop_step_times.append(value)
+
+    def _relative_latency(self) -> Optional[float]:
+        """Compute muse-to-loop relative latency from real measurements.
+
+        Returns the ratio of mean muse turn time to mean loop step time, or
+        ``None`` when there is no data. A value < 1.0 means the muse is faster
+        (the live rig measured ~0.28, i.e. the muse is ~3.5× faster).
+
+        The old ``DEFAULT_STALE_LAG = 5`` was chosen under the assumption the
+        muse was slower and its insights arrived late. That assumption was
+        measured false: the advisory lane is ~3.5× faster and ~30× cheaper per
+        answer than the acting loop — 2.6s/50 tokens vs 9.3s/1479 tokens. The
+        muse finishes first and waits.
+        """
+        if not self._muse_turn_times:
+            return None
+        muse_mean = sum(self._muse_turn_times) / len(self._muse_turn_times)
+        if muse_mean == 0:
+            return None
+        if not self._loop_step_times:
+            return None
+        loop_mean = sum(self._loop_step_times) / len(self._loop_step_times)
+        if loop_mean == 0:
+            return None
+        return muse_mean / loop_mean

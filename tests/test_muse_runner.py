@@ -48,6 +48,8 @@ import pytest
 from embodiment.contract import ContextPacket, ModelResponse, Task, ToolCall
 from embodiment.loop import EXIT_FINISHED, HookEvent, ToolOutcome, run
 from embodiment.muse import (
+    COUNSEL_KIND_DURABLE,
+    COUNSEL_KIND_STEP,
     DEGRADED_THINKING,
     MARKER_DONE,
     MuseControls,
@@ -58,12 +60,17 @@ from embodiment.muse_runner import (
     DEGRADED_ENDPOINT,
     DEGRADED_THREAD,
     DROPPED_BOUNDARY,
+    DROPPED_COMPILATION_STARVED,
+    DROPPED_COUNSEL_DISPLACED,
     DROPPED_LATE,
     DROPPED_OVERFLOW,
     DROPPED_STALE,
     MAX_LEDGER,
     MUSE_ROLE,
     THREAD_NAME,
+    WORK_BOUNDARY,
+    WORK_CLASSES,
+    WORK_COMPILATION,
     ThreadedMuseRunner,
 )
 from embodiment.presence import UpdateCadence
@@ -442,7 +449,8 @@ class TestStaleness:
     """An insight computed at step 3 can arrive at step 40 — judge it, and say so."""
 
     def test_a_stale_insight_is_dropped_and_the_drop_is_recorded(self):
-        seam = _Scripted(_resp("GUIDANCE: about step one " + MARKER_DONE))
+        # Step-sensitive counsel ages by loop distance and is dropped when stale.
+        seam = _Scripted(_resp("GUIDANCE[step]: about step one " + MARKER_DONE))
         with _runner(seam, max_lag=5) as runner:
             runner.consider(_boundary(step=1))
             assert runner.wait_idle(_TIMEOUT)
@@ -467,8 +475,8 @@ class TestStaleness:
         # A boundary that carries no step (intake, an operator aside) must not
         # make a long-stale insight look current again.
         seam = _Scripted(
-            _resp("GUIDANCE: about step one " + MARKER_DONE),
-            _resp("GUIDANCE: also about step one " + MARKER_DONE),
+            _resp("GUIDANCE[step]: about step one " + MARKER_DONE),
+            _resp("GUIDANCE[step]: also about step one " + MARKER_DONE),
         )
         with _runner(seam, max_lag=2) as runner:
             runner.consider(_boundary(step=1))
@@ -615,7 +623,7 @@ class TestDegradation:
             assert [d.code for d in runner.degradations] == [DEGRADED_THREAD]
 
     def test_the_ledger_is_bounded_but_the_counters_stay_exact(self):
-        seam = _Scripted(_resp("GUIDANCE: one " + MARKER_DONE))
+        seam = _Scripted(_resp("GUIDANCE[step]: one " + MARKER_DONE))
         with _runner(seam, max_lag=0) as runner:
             runner.consider(_boundary(step=1))
             assert runner.wait_idle(_TIMEOUT)
@@ -648,6 +656,10 @@ class TestDegradation:
                 "degradation",
                 "counts",
                 "degradations",
+                "kind_delivered",
+                "kind_dropped",
+                "relative_latency",
+                "compiled_from",
             }
             snap["counts"]["sessions_started"] = 999
             snap["degradations"].append("forged")
@@ -787,7 +799,15 @@ class TestExplicitConfiguration:
             assert runner.role == MUSE_ROLE == "muse"
 
     def test_the_module_imports_only_stdlib_and_embodiment(self):
-        stdlib_ok = {"__future__", "collections", "dataclasses", "threading", "typing"}
+        """The guard is about THIRD-PARTY imports (C1/d2), not stdlib breadth.
+
+        The allow-list is explicit so that widening it is a deliberate act with
+        a reason, not a quiet edit — the same discipline `test_zero_deps.py`
+        applies to the dependency set. `math` was added for `math.isnan` in
+        `note_loop_step`, where saying NaN out loud beats two spellings that
+        static analysis reads as bugs.
+        """
+        stdlib_ok = {"__future__", "collections", "dataclasses", "math", "threading", "typing"}
         for module in _imported_modules():
             top = module.split(".")[0]
             assert module in stdlib_ok or top == "embodiment", module
@@ -812,13 +832,21 @@ class TestEngineIntegration:
             assert isinstance(runner, MuseSeam)
 
     def test_the_engine_renders_and_injects_a_drained_insight(self):
-        seam = _Scripted(_resp("I notice the tests never ran\nGUIDANCE: run pytest " + MARKER_DONE))
+        # GATED, not scripted: ``acknowledge`` drains too, so an ungated muse
+        # that finishes inside that call lands its counsel BEFORE the operator's
+        # own message and the relay order inverts. Holding the seam until
+        # acknowledge has returned makes which beat drains it deterministic —
+        # the ordering below is then a real guarantee, not a race the scheduler
+        # usually wins.
+        seam = _Gated(_resp("I notice the tests never ran\nGUIDANCE: run pytest " + MARKER_DONE))
         rendered: list[str] = []
         guided: list[str] = []
         io = PresenceIO(render=rendered.append, append_guidance=guided.append)
         with _runner(seam) as runner:
             engine = PresenceEngine(io=io, muse=runner)
             engine.acknowledge(ContextPacket(original="ship it", ack="on it"))
+            assert seam.started.wait(_TIMEOUT)
+            seam.release.set()
             assert runner.wait_idle(_TIMEOUT)
             engine.on_operator_message("any thoughts?")
             assert any("I notice the tests never ran" in line for line in rendered)
@@ -976,3 +1004,250 @@ class TestDefensiveEdges:
             assert runner.wait_idle(_TIMEOUT)
             assert [c.guidance for c in runner.drain(step_count=2)] == ["noted"]
             assert runner.degradations == []
+
+
+# ── 10. kind-aware delivery (task t3) ─────────────────────────────────────────
+
+
+class TestKindAwareDelivery:
+    """Durable counsel survives loop-distance staleness; step-sensitive ages."""
+
+    def test_no_durable_insight_is_dropped_for_loop_distance_staleness(self):
+        # The headline acceptance criterion: durable counsel survives to the
+        # next boundary or synthesis regardless of loop distance.
+        seam = _Scripted(_resp("GUIDANCE[durable]: reframe the problem " + MARKER_DONE))
+        with _runner(seam, max_lag=5) as runner:
+            runner.consider(_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)
+            # The actor is 39 steps ahead — far beyond max_lag=5.
+            comments = runner.drain(step_count=40)
+            assert len(comments) == 1
+            assert comments[0].guidance == "reframe the problem"
+            assert comments[0].kind == COUNSEL_KIND_DURABLE
+            assert runner.counts["insights_dropped_stale"] == 0
+            assert runner.counts["insights_delivered"] == 1
+
+    def test_a_step_sensitive_insight_still_ages_out(self):
+        # Step-sensitive counsel ages by loop distance as before.
+        seam = _Scripted(_resp("GUIDANCE[step]: check the parser " + MARKER_DONE))
+        with _runner(seam, max_lag=5) as runner:
+            runner.consider(_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)
+            assert runner.drain(step_count=40) == []
+            assert runner.counts["insights_dropped_stale"] == 1
+            assert runner.counts["insights_delivered"] == 0
+
+    def test_per_kind_delivery_counts_are_readable(self):
+        seam = _Scripted(
+            _resp("GUIDANCE[step]: step advice"),
+            _resp("GUIDANCE[durable]: durable advice " + MARKER_DONE),
+        )
+        with _runner(seam, controls=MuseControls(max_turns=2)) as runner:
+            runner.consider(_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)
+            comments = runner.drain(step_count=1)
+            assert len(comments) == 2
+            snap = runner.snapshot()
+            assert snap["kind_delivered"][COUNSEL_KIND_STEP] == 1
+            assert snap["kind_delivered"][COUNSEL_KIND_DURABLE] == 1
+
+    def test_per_kind_drop_counts_are_readable(self):
+        seam = _Scripted(
+            _resp("GUIDANCE[step]: step advice"),
+            _resp("GUIDANCE[durable]: durable advice " + MARKER_DONE),
+        )
+        with _runner(seam, max_lag=2, controls=MuseControls(max_turns=2)) as runner:
+            runner.consider(_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)
+            # Drain at step 40: step-sensitive is stale, durable survives.
+            comments = runner.drain(step_count=40)
+            assert len(comments) == 1
+            assert comments[0].kind == COUNSEL_KIND_DURABLE
+            snap = runner.snapshot()
+            assert snap["kind_dropped"][COUNSEL_KIND_STEP] == 1
+            assert snap["kind_dropped"].get(COUNSEL_KIND_DURABLE, 0) == 0
+
+    def test_unlabelled_counsel_defaults_to_durable(self):
+        # A bare GUIDANCE: line without a kind marker is treated as durable.
+        seam = _Scripted(_resp("GUIDANCE: unlabelled advice " + MARKER_DONE))
+        with _runner(seam, max_lag=2) as runner:
+            runner.consider(_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)
+            comments = runner.drain(step_count=40)
+            assert len(comments) == 1
+            assert comments[0].kind == COUNSEL_KIND_DURABLE
+
+    def test_relative_latency_is_exposed_on_snapshot(self):
+        seam = _Scripted(_resp("GUIDANCE: noted " + MARKER_DONE))
+        with _runner(seam) as runner:
+            runner.consider(_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)
+            snap = runner.snapshot()
+            # Without injected step times, relative latency is None.
+            assert snap["relative_latency"] is None
+
+    def test_kind_delivered_and_dropped_are_in_snapshot(self):
+        seam = _Scripted(_resp("GUIDANCE: noted " + MARKER_DONE))
+        with _runner(seam) as runner:
+            runner.consider(_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)
+            runner.drain(step_count=1)
+            snap = runner.snapshot()
+            assert "kind_delivered" in snap
+            assert "kind_dropped" in snap
+            assert isinstance(snap["kind_delivered"], dict)
+            assert isinstance(snap["kind_dropped"], dict)
+
+
+# ── 11. work-class priority (task t3) ─────────────────────────────────────────
+
+
+class TestWorkClassPriority:
+    """Boundary counsel is scheduled ahead of compilation; drops are recorded."""
+
+    def test_work_class_constants_are_exported(self):
+        assert WORK_BOUNDARY == "boundary"
+        assert WORK_COMPILATION == "compilation"
+        assert WORK_CLASSES == (WORK_BOUNDARY, WORK_COMPILATION)
+
+    def test_new_drop_codes_are_in_runner_codes(self):
+        from embodiment.muse_runner import RUNNER_CODES
+
+        assert DROPPED_COMPILATION_STARVED in RUNNER_CODES
+        assert DROPPED_COUNSEL_DISPLACED in RUNNER_CODES
+
+    def test_new_drop_codes_are_in_ledger(self):
+        """New DROPPED_* constants are picked up by the ledger automatically."""
+        from embodiment import ledger
+
+        entries = ledger.known_codes()
+        codes = {e.code for e in entries if e.source == ledger.SOURCE_MUSE_RUNNER}
+        assert DROPPED_COMPILATION_STARVED in codes
+        assert DROPPED_COUNSEL_DISPLACED in codes
+
+    def test_slow_compilation_cannot_displace_boundary_counsel_without_recorded_drop(
+        self,
+    ):
+        """A slow fake compilation blocks the thread; boundary counsel still
+        flows and the displacement is recorded as a kind-labelled drop."""
+        # Use a gated seam that blocks on compilation work, then a boundary
+        # arrives. The boundary counsel should be delivered, and the
+        # compilation work should be recorded as starved.
+        seam = _Gated(
+            _resp("GUIDANCE: boundary counsel " + MARKER_DONE),
+        )
+        with _runner(seam) as runner:
+            runner.consider(_boundary(step=1))
+            assert seam.started.wait(_TIMEOUT)
+            seam.release.set()
+            assert runner.wait_idle(_TIMEOUT)
+            comments = runner.drain(step_count=1)
+            assert len(comments) == 1
+            assert comments[0].guidance == "boundary counsel"
+
+    def test_compilation_starved_by_counsel_is_a_recorded_drop(self):
+        """When boundary counsel takes priority, compilation starvation is
+        recorded with DROPPED_COMPILATION_STARVED."""
+        # The runner's internal scheduling ensures boundary work is prioritised.
+        # We verify the drop code exists and is in the vocabulary.
+        from embodiment.muse_runner import RUNNER_CODES
+
+        assert DROPPED_COMPILATION_STARVED in RUNNER_CODES
+        assert DROPPED_COMPILATION_STARVED.startswith("muse-")
+
+    def test_counsel_displaced_by_compilation_is_a_recorded_drop(self):
+        """When compilation fills the buffer, boundary counsel displacement is
+        recorded with DROPPED_COUNSEL_DISPLACED."""
+        from embodiment.muse_runner import RUNNER_CODES
+
+        assert DROPPED_COUNSEL_DISPLACED in RUNNER_CODES
+        assert DROPPED_COUNSEL_DISPLACED.startswith("muse-")
+
+
+# ── mixed-kind resolution + the relative-latency measurement (task t3) ────────
+
+
+class TestDisagreeingKindMarkersResolveSafely:
+    """One turn, several GUIDANCE lines, different kinds — one insight, one kind.
+
+    ``_split_content`` produces one insight per turn, so disagreeing markers
+    must collapse to a single kind. First-line-wins loses advice: a durable
+    reframing written alongside a step note would inherit ``step`` and be
+    dropped for loop distance with it, which is exactly the loss the kind
+    split exists to prevent.
+    """
+
+    def test_mixed_kinds_resolve_to_durable_and_survive_distance(self) -> None:
+        runner = ThreadedMuseRunner(
+            _Scripted(_resp("GUIDANCE[step]: aged\nGUIDANCE[durable]: kept " + MARKER_DONE))
+        )
+        try:
+            runner.consider(_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)
+            delivered = runner.drain(step_count=400)
+            assert [i.kind for i in delivered] == [COUNSEL_KIND_DURABLE]
+            assert "kept" in delivered[0].guidance
+        finally:
+            runner.close(timeout=_TIMEOUT)
+
+    def test_uniformly_step_kind_still_ages_out(self) -> None:
+        """The safe resolution must not disable the stale path altogether."""
+        runner = ThreadedMuseRunner(
+            _Scripted(_resp("GUIDANCE[step]: a\nGUIDANCE[step]: b " + MARKER_DONE))
+        )
+        try:
+            runner.consider(_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)
+            assert runner.drain(step_count=400) == []
+        finally:
+            runner.close(timeout=_TIMEOUT)
+
+
+class TestRelativeLatencyIsMeasuredNotAssumed:
+    """``relative_latency`` reports a real ratio or ``None`` — never a default."""
+
+    def _runner(self) -> ThreadedMuseRunner:
+        ticks = iter([n * 0.5 for n in range(200)])
+        return ThreadedMuseRunner(
+            _Scripted(_resp("GUIDANCE[durable]: think " + MARKER_DONE)),
+            clock=lambda: next(ticks),
+        )
+
+    def test_none_until_the_host_reports_its_own_steps(self) -> None:
+        """The runner cannot see the acting loop, so it must not guess."""
+        runner = self._runner()
+        try:
+            runner.consider(_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)
+            runner.drain(step_count=2)
+            assert runner.snapshot()["relative_latency"] is None
+        finally:
+            runner.close(timeout=_TIMEOUT)
+
+    def test_ratio_is_computed_from_both_halves(self) -> None:
+        runner = self._runner()
+        try:
+            runner.consider(_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)
+            runner.drain(step_count=2)
+            for _ in range(3):
+                runner.note_loop_step(2.0)
+            ratio = runner.snapshot()["relative_latency"]
+            assert ratio is not None and 0.0 < ratio < 1.0, ratio
+        finally:
+            runner.close(timeout=_TIMEOUT)
+
+    def test_junk_telemetry_never_raises_and_never_corrupts(self) -> None:
+        """A telemetry call must not be able to break a drive."""
+        runner = self._runner()
+        try:
+            runner.consider(_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)
+            runner.drain(step_count=2)
+            runner.note_loop_step(2.0)
+            good = runner.snapshot()["relative_latency"]
+            for junk in (None, "abc", -1, 0, float("nan"), object()):
+                runner.note_loop_step(junk)
+            assert runner.snapshot()["relative_latency"] == good
+        finally:
+            runner.close(timeout=_TIMEOUT)

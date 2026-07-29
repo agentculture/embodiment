@@ -16,15 +16,14 @@ import textwrap
 
 import pytest
 
-sys.path.insert(0, str(__import__("pathlib").Path(__file__).resolve().parents[1] / "examples"))
-
-from scratchpad import (  # noqa: E402
+from embodiment.scratchpad import (
     KINDS,
     PROTOCOL,
     RESUME_PROTOCOL,
     SCRATCHPAD_TOOLS,
     Scratchpad,
     render,
+    resume_report,
     structure,
 )
 
@@ -85,10 +84,8 @@ class TestSurvivesTheProcess:
     def test_it_survives_a_real_process_boundary(self, tmp_path):
         """Not two objects in one interpreter — two actual processes."""
         path = tmp_path / "pad.jsonl"
-        examples = str(__import__("pathlib").Path(__file__).resolve().parents[1] / "examples")
         writer = textwrap.dedent(f"""
-            import sys; sys.path.insert(0, {examples!r})
-            from scratchpad import Scratchpad
+            from embodiment.scratchpad import Scratchpad
             pad = Scratchpad.load({str(path)!r})
             pad.execute("intend", {{"text": "Enumerate the orders."}})
             """)
@@ -147,8 +144,41 @@ class TestSurface:
         assert pad.entries == []
         assert pad.rejected
 
-    def test_unknown_tool_does_not_raise(self, tmp_path):
-        assert "unknown tool" in _pad(tmp_path).execute("nope", {}).result
+    def test_an_unknown_tool_is_a_protocol_failure_not_a_successful_step(self, tmp_path):
+        """Reverses `test_unknown_tool_does_not_raise`, which pinned a defect.
+
+        The pad used to RETURN ``ToolOutcome(result="unknown tool …")``. The
+        loop only marks a step non-ok when the executor raises, so a
+        hallucinated tool name was recorded ``ok=True`` — a call that did
+        nothing, read as a successful step in artifacts and progress sinks,
+        with no self-correcting signal reaching the model.
+
+        The package already ships the right exception for this, and its own
+        docstring says the loop treats it as one self-correcting step "because
+        a special exit for a broken channel would be a fourth way out of the
+        loop". So raising cannot abort a drive: `UnknownToolError` subclasses
+        `ToolError`, which the loop catches.
+
+        The old test asserted the behaviour without ever stating why it should
+        hold. Found by a review bot on PR #19.
+        """
+        from embodiment.loop import ToolError, UnknownToolError
+
+        pad = _pad(tmp_path)
+        with pytest.raises(UnknownToolError, match="unknown tool"):
+            pad.execute("nope", {})
+        assert issubclass(UnknownToolError, ToolError), "the loop must still catch it"
+
+    def test_a_real_tool_with_bad_arguments_is_still_a_normal_outcome(self, tmp_path):
+        """The distinction the fix rests on — otherwise it would be overreach.
+
+        An unknown NAME is a broken protocol. A real pad tool handed unusable
+        arguments is an ordinary bad call the model can fix from the message,
+        and it must keep returning a corrective outcome rather than raising.
+        """
+        pad = _pad(tmp_path)
+        assert "must not be empty" in pad.execute("intend", {"text": "  "}).result
+        assert "no entry" in pad.execute("revise", {"id": "nope", "text": "x"}).result
 
     def test_every_kind_has_a_tool(self):
         names = {t["function"]["name"] for t in SCRATCHPAD_TOOLS}
@@ -177,3 +207,45 @@ class TestSurface:
         pad.execute("intend", {"text": "One."})
         lines = [json.loads(raw) for raw in path.read_text().splitlines() if raw.strip()]
         assert lines == [{"id": "n1", "kind": "intend", "text": "One."}]
+
+
+class TestResumeReport:
+    """resume_report renders scratchpad + degradations as one output."""
+
+    def test_renders_open_intent_and_observations(self, tmp_path):
+        pad = _pad(tmp_path)
+        pad.execute("intend", {"text": "Check n=5."})
+        pad.execute("observe", {"text": "n=5 gives 7 even of 13."})
+        pad.execute("intend", {"text": "Verify n=7."})
+
+        report = resume_report(pad)
+        assert "SCRATCHPAD" in report
+        assert "Check n=5" in report
+        assert "n=5 gives 7 even of 13" in report
+        assert "Verify n=7" in report
+
+    def test_includes_degradations_when_present(self, tmp_path):
+        from dataclasses import dataclass
+
+        @dataclass
+        class FakeDegradation:
+            def to_dict(self):
+                return {
+                    "source": "loop",
+                    "code": "budget-exceeded",
+                    "reason": "ran out of steps",
+                }
+
+        pad = _pad(tmp_path)
+        pad.execute("intend", {"text": "Compute the answer."})
+        report = resume_report(pad, degradations=[FakeDegradation()])
+
+        assert "DEGRADATIONS" in report
+        assert "budget-exceeded" in report
+        assert "ran out of steps" in report
+
+    def test_empty_pad_still_renders(self, tmp_path):
+        pad = _pad(tmp_path)
+        report = resume_report(pad)
+        assert "SCRATCHPAD" in report
+        assert "(empty)" in report

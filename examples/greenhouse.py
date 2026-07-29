@@ -65,6 +65,7 @@ from typing import Any, Callable, Optional
 
 from embodiment import (
     Boundary,
+    BundleRequest,
     LifecycleConfig,
     LoopAborted,
     LoopControls,
@@ -80,8 +81,10 @@ from embodiment import (
     UnknownToolError,
     build_continuity_fn,
     continuity,
+    flat_fetch,
     frame_cortex,
     frame_muse,
+    perceive,
     run,
     speaker_label,
 )
@@ -106,6 +109,14 @@ RECALL_MODE = "keyword"
 #: How many prior records are offered to the mind as context.
 RECALL_TOP_K = 3
 
+#: How many prior records the MUSE is given as raw material to compile from.
+#: Wider than :data:`RECALL_TOP_K` on purpose: the cortex is handed a short
+#: rendered context because it is acting, while the muse is handed material
+#: because it is reflecting over it. Equal values would make the compiled-from
+#: provenance a no-op — every cited id would already be one lifecycle recalled
+#: on its own, so the durable record's ``links`` could never gain anything.
+MUSE_BUNDLE_TOP_K = 10
+
 #: The model id recorded on a hermetic run's stats. It names no real model,
 #: because no real model ran.
 SCRIPTED_CORTEX = "scripted-greenhouse-mind"
@@ -124,6 +135,9 @@ DEFAULT_BASE_URL = "http://localhost:8001/v1"
 #: ``--max-tokens`` generously or a truncated thought looks like an empty turn.
 CORTEX_MODEL = "sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP"
 MUSE_MODEL = "nvidia/Gemma-4-31B-IT-NVFP4"
+
+#: The senses role model for the perception seam (``--perceive``).
+SENSES_MODEL = "coolthor/gemma-4-12B-it-NVFP4A16"
 
 #: Generous by design: the measured cortex spent 209 completion tokens on a
 #: three-word answer, and at 64 it returned ``content: None`` mid-thought.
@@ -483,6 +497,60 @@ def gateway_seam(
     return complete
 
 
+# ── the perception seam: interpret the operator's utterance ──────────────────
+
+
+def senses_seam(
+    base_url: str,
+    model: str,
+    api_key: str,
+    *,
+    max_tokens: int = 256,
+    timeout: float = 60.0,
+) -> Callable[[str], ModelResponse]:
+    """Build a perception-seam callable that talks to the senses model.
+
+    Takes a single string (the operator's verbatim utterance) and returns a
+    :class:`ModelResponse` whose ``content`` is the JSON interpretation.
+    Follows the same gateway pattern as :func:`gateway_seam`; the senses model
+    is addressed **by name** and no role is inferred from the model id.
+    """
+    endpoint = f"{base_url.rstrip('/')}/chat/completions"
+
+    system = (
+        "You are a perception intake. Given an operator's request, return a "
+        "JSON object with these keys: interpretation (a concise reading of "
+        "what the request means), confidence (0.0-1.0), task_type (a short "
+        "category such as query, task, or maintenance), omissions (a list of "
+        "things the request left implicit), and ack (a brief acknowledgment "
+        "line). Return ONLY the JSON object, no other text."
+    )
+
+    def interpret(text: str) -> ModelResponse:
+        body: dict[str, Any] = {
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system},
+                {"role": "user", "content": text},
+            ],
+            "max_tokens": max_tokens,
+            "temperature": 0.3,
+        }
+        request = urllib.request.Request(
+            endpoint,
+            data=json.dumps(body).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {api_key}",
+            },
+            method="POST",
+        )
+        with urllib.request.urlopen(request, timeout=timeout) as response:  # nosec B310
+            return parse_completion(json.loads(response.read().decode("utf-8")))
+
+    return interpret
+
+
 # ── wiring ───────────────────────────────────────────────────────────────────
 
 
@@ -505,8 +573,18 @@ def is_consequential(boundary: Boundary) -> bool:
     return boundary.tool == "log_care"
 
 
-def lifecycle_config(home: Path, *, coherence: bool = False) -> LifecycleConfig:
+def lifecycle_config(
+    home: Path, *, coherence: bool = False, recall_top_k: int = RECALL_TOP_K
+) -> LifecycleConfig:
     """How this app reaches durable memory.
+
+    ``recall_top_k`` is threaded from ``--recall-top-k`` rather than left at
+    :data:`RECALL_TOP_K`. This host performs *two* recalls — its own, whose
+    text it renders into ``Task.context``, and the lifecycle's, whose ids
+    become the durable record's ``links`` — and until this argument existed the
+    flag governed only the first. One flag that silently moves one of two
+    recalls is the kind of thing that makes a measurement mean something other
+    than it appears to.
 
     ``data_dir`` is the mandatory anchor: without it eidetic would resolve a
     public record against whatever git repo the *host process* happens to be
@@ -529,7 +607,7 @@ def lifecycle_config(home: Path, *, coherence: bool = False) -> LifecycleConfig:
         assess_completion=coherence,
         assess_memory=coherence,
         recall_mode=RECALL_MODE,
-        recall_top_k=RECALL_TOP_K,
+        recall_top_k=recall_top_k,
         workdir=home / "work",
     )
 
@@ -577,6 +655,25 @@ def visit(args: argparse.Namespace) -> dict[str, Any]:
 
     cortex, muse_complete, cortex_model, muse_model = build_minds(args)
 
+    # 0. Perception seam (opt-in; off by default).
+    packet = None
+    senses_record = None
+    if args.perceive:
+        key = os.environ.get(API_KEY_ENV, "").strip()
+        if not key:
+            print(
+                f"error: --perceive needs {API_KEY_ENV} in the environment",
+                file=sys.stderr,
+            )
+            raise SystemExit(2)
+        interpret_fn = senses_seam(
+            args.base_url,
+            SENSES_MODEL,
+            key,
+            max_tokens=256,
+        )
+        packet, senses_record = perceive(args.utterance, interpret=interpret_fn)
+
     # 1. Recall — the host's own, so the mind can be TOLD what it remembers.
     prior = continuity.recall(
         args.utterance,
@@ -590,14 +687,42 @@ def visit(args: argparse.Namespace) -> dict[str, Any]:
 
     # 2. The seams.
     tools = Greenhouse(home, moisture=args.moisture)
-    lifecycle = build_continuity_fn(lifecycle_config(home, coherence=args.coherence))
     runner: Optional[ThreadedMuseRunner] = None
     if muse_complete is not None:
+        # The muse gets recalled material as raw bundle items, so it can
+        # COMPILE memory rather than be told a conclusion. eidetic is
+        # fetch-only; compilation is the muse's job, one layer up. Fetched once
+        # for the whole work item — a work item has one recalled context — and
+        # its citation surface comes back out through ``runner.compiled_from``
+        # for the durable record's ``links``.
+        #
+        # Deliberately WIDER than the cortex's own recall (see
+        # :data:`MUSE_BUNDLE_TOP_K`). Handing the muse exactly what the host
+        # already told the cortex would make this whole seam a no-op: the
+        # citation surface would always be a subset of what lifecycle recalled
+        # by itself, ``links`` would never gain an id, and the provenance would
+        # be true but carry no information.
+        bundle = flat_fetch(
+            BundleRequest(
+                queries=[args.utterance],
+                data_dir=store,
+                scope=SCOPE,
+                top_k=max(args.recall_top_k, MUSE_BUNDLE_TOP_K),
+                mode=RECALL_MODE,
+            )
+        )
         runner = ThreadedMuseRunner(
             muse_complete,
             system=frame_muse(None, identity=identity),
             controls=MuseControls(max_turns=2),
+            recall_bundle=bundle,
         )
+    # The lifecycle reads the muse's citation surface at the memory boundary,
+    # so a record written after a muse-informed drive links to what it compiled.
+    lifecycle = build_continuity_fn(
+        lifecycle_config(home, coherence=args.coherence, recall_top_k=args.recall_top_k),
+        muse=runner,
+    )
     presence = PresenceEngine(
         io=PresenceIO(
             render=lambda line: print(line, file=sys.stderr),
@@ -647,6 +772,8 @@ def visit(args: argparse.Namespace) -> dict[str, Any]:
         identity=identity,
         aborted=aborted,
         muse_snapshot=muse_snapshot(runner),
+        packet=packet,
+        senses_record=senses_record,
     )
     append_journal(
         journal,
@@ -722,6 +849,15 @@ def build_report(**parts: Any) -> dict[str, Any]:
     prior = parts["prior"]
     status = lifecycle.status
 
+    packet = parts.get("packet")
+    senses_record = parts.get("senses_record")
+    perception: Optional[dict[str, Any]] = None
+    if packet is not None:
+        perception = {
+            "packet": packet.to_dict(),
+            "record": senses_record.to_dict() if senses_record is not None else None,
+        }
+
     return {
         "home": str(parts["home"]),
         "store": str(parts["store"]),
@@ -768,6 +904,7 @@ def build_report(**parts: Any) -> dict[str, Any]:
             "aborted": parts["aborted"],
             "degradations": [d.to_dict() for d in outcome.degradations],
         },
+        "perception": perception,
     }
 
 
@@ -870,6 +1007,11 @@ def build_parser() -> argparse.ArgumentParser:
     live.add_argument("--muse-model", default=MUSE_MODEL, help="the advisory model id")
     live.add_argument("--max-tokens", type=int, default=DEFAULT_MAX_TOKENS)
     live.add_argument("--muse-max-tokens", type=int, default=DEFAULT_MUSE_MAX_TOKENS)
+    live.add_argument(
+        "--perceive",
+        action="store_true",
+        help="route the utterance through the perception seam (senses model) before the drive",
+    )
     return parser
 
 

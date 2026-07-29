@@ -118,8 +118,14 @@ def _events(report: dict[str, Any], kind: str) -> list[dict[str, Any]]:
 
 @pytest.fixture(autouse=True)
 def _no_network(monkeypatch: pytest.MonkeyPatch, request: pytest.FixtureRequest) -> None:
-    """No in-process test may dial anything. The live class opts out by name."""
-    if "TestLiveRig" in request.node.nodeid:
+    """No in-process test may dial anything. Live classes opt out by name.
+
+    Matched on the ``TestLive`` prefix rather than one exact class: a live class
+    named anything else silently keeps the bomb, and its "live" assertions then
+    pass or fail against the fixture instead of a real endpoint — which is how
+    a dead-endpoint test can go green without ever dialling one.
+    """
+    if "TestLive" in request.node.nodeid:
         return
     import urllib.request
 
@@ -219,6 +225,87 @@ class TestContinuityAcrossTwoProcesses:
         assert record["metadata"]["model"] == greenhouse.SCRIPTED_CORTEX
 
 
+class TestCompiledMemoryProvenanceClosesTheLoop:
+    """Task t6's acceptance criterion 2, end to end across real processes.
+
+    Not "``links`` is non-empty" — that a plausible id can be written is the
+    easy half. What is asserted here is **resolution**: every id the second
+    run's record links to is fetched back out of the store through the public
+    recall seam and must name a record that really exists. A run that linked to
+    ids resolving to nothing would sail through a presence check and fail this.
+    """
+
+    #: Two prior visits, so the muse's wider bundle can cite material the
+    #: cortex's own narrow recall did not return. With one prior record the two
+    #: sets are identical and the test cannot tell the seam from its absence.
+    EXTRA_VISIT = (
+        "New plant card - name: Juniper; sensor: s-herb-02; water below: 20% moisture. "
+        "It is the herb tray. Check it in and log the visit."
+    )
+
+    def test_the_links_carry_what_only_the_muses_bundle_saw(self, tmp_path: Path) -> None:
+        home = tmp_path / "greenhouse"
+
+        first = _demo(home, VISIT_ONE)
+        extra = _demo(home, self.EXTRA_VISIT)
+        # --recall-top-k 1 narrows the CORTEX's recall to a single record while
+        # the muse's bundle still fetches MUSE_BUNDLE_TOP_K. That gap is the
+        # whole experiment: any id in links beyond the cortex's own recall got
+        # there through the compiled-from path or not at all.
+        third = _demo(home, VISIT_TWO, "--moisture", "22", "--muse", "--recall-top-k", "1")
+
+        assert len({first["pid"], extra["pid"], third["pid"]}) == 3, "three real processes"
+
+        muse = third["mind"]["muse_runner"]
+        assert muse is not None, "the --muse arm reported no muse at all"
+        cited = set(muse["compiled_from"])
+        host_recalled = set(third["continuity"]["recalled"])
+        links = third["continuity"]["remembered"]["links"]
+
+        # 1. The muse genuinely saw more than the cortex was told.
+        beyond = cited - host_recalled
+        assert beyond, (
+            "the muse's bundle cited nothing the host's own recall missed, so this "
+            f"test cannot distinguish the seam from its absence (cited={cited})"
+        )
+
+        # 2. That surplus reached the durable record. THIS is the closure, and
+        #    it is the assertion that fails when the muse is not wired through.
+        assert beyond <= set(links), f"compiled-only ids missing from links: {beyond - set(links)}"
+
+        # 3. THE RESOLUTION CHECK. Every link is fetched back through the same
+        #    public seam a host would use and must name a record that exists —
+        #    a run linking to plausible ids that resolve to nothing fails here
+        #    and would sail through a presence check.
+        known = {
+            str(record["id"])
+            for record in embodiment.continuity.recall(
+                "plant",
+                data_dir=home / "memory",
+                scope=greenhouse.SCOPE,
+                mode=greenhouse.RECALL_MODE,
+                top_k=50,
+            ).records
+            if record.get("id")
+        }
+        assert known, "the store answered nothing; resolution could not be checked"
+        unresolved = [link for link in links if link not in known]
+        assert not unresolved, f"links that resolve to no record: {unresolved}"
+
+    def test_a_museless_run_claims_no_compiled_provenance(self, tmp_path: Path) -> None:
+        """The control that makes the test above evidence.
+
+        If a museless run produced the same citation surface, the links would
+        be lifecycle's own recall and nothing would have been shown about
+        compiled memory at all.
+        """
+        home = tmp_path / "greenhouse"
+        _demo(home, VISIT_ONE)
+        second = _demo(home, VISIT_TWO, "--moisture", "22")
+
+        assert second["mind"]["muse_runner"] is None
+
+
 # ── store hygiene: never this repo's own committed memory ─────────────────────
 
 
@@ -279,7 +366,14 @@ class TestPublicApiOnly:
             tree = ast.parse(path.read_text(encoding="utf-8"))
             for module, _names in _imports(tree):
                 root = module.split(".")[0]
-                allowed = root in sys.stdlib_module_names or root == "embodiment"
+                # `examples` is allowed as a root so harnesses can share one
+                # helper (the config-record preamble) instead of copying it
+                # four times. The rule this guard exists for is unchanged: a
+                # demo pulls NO third-party dependency, so an app author can
+                # copy one and owe nothing but stdlib + embodiment.
+                allowed = (
+                    root in sys.stdlib_module_names or root == "embodiment" or root == "examples"
+                )
                 assert allowed, f"{path.name} imports {module!r}: not stdlib, not embodiment"
 
     def test_every_embodiment_name_is_on_the_curated_surface(self) -> None:
@@ -733,3 +827,162 @@ def _readme_headings() -> list[str]:
 
 def test_the_readme_has_a_demo_section() -> None:
     assert any("demo" in heading.lower() for heading in _readme_headings())
+
+
+# ── perception seam: the first real model consumer ──────────────────────────
+
+
+class TestPerceptionFlag:
+    """Hermetic tests for the --perceive wiring (no network)."""
+
+    def test_perceive_flag_is_off_by_default(self) -> None:
+        args = greenhouse.build_parser().parse_args(["x"])
+        assert args.perceive is False
+
+    def test_perceive_flag_needs_the_key(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """No key ⇒ an environment error (exit 2), not a half-configured dial."""
+        monkeypatch.delenv(greenhouse.API_KEY_ENV, raising=False)
+        args = greenhouse.build_parser().parse_args(
+            ["--home", str(tmp_path), "--perceive", VISIT_ONE]
+        )
+        with pytest.raises(SystemExit) as excinfo:
+            greenhouse.visit(args)
+        assert excinfo.value.code == 2
+
+    def test_perceive_with_faked_interpret_populates_fields(self, tmp_path: Path) -> None:
+        """A faked interpret populates ack/interpretation/confidence/task_type
+        while original stays verbatim — the verbatim invariant."""
+        from embodiment.perception import perceive
+
+        original = "Check the moisture on Marlow's sensor"
+
+        def fake_interpret(text: str) -> str:
+            return json.dumps(
+                {
+                    "interpretation": "read sensor for plant Marlow",
+                    "confidence": 0.9,
+                    "task_type": "query",
+                    "omissions": ["which sensor"],
+                    "ack": "checking Marlow's moisture",
+                }
+            )
+
+        packet, record = perceive(original, interpret=fake_interpret)
+
+        # Verbatim invariant: original is byte-identical to the caller's input.
+        assert packet.original == original
+        # The five non-original fields are populated from the model's JSON.
+        assert packet.interpretation == "read sensor for plant Marlow"
+        assert packet.confidence == 0.9
+        assert packet.task_type == "query"
+        assert packet.omissions == ["which sensor"]
+        assert packet.ack == "checking Marlow's moisture"
+        # Record is clean (not degraded).
+        assert record.degraded is False
+
+    def test_perceive_with_hostile_model_output_preserves_original(self, tmp_path: Path) -> None:
+        """A model that returns a spoofed 'original' key cannot overwrite the packet."""
+        from embodiment.perception import perceive
+
+        original = "Water the fig"
+
+        def hostile_interpret(text: str) -> str:
+            return json.dumps(
+                {
+                    "interpretation": "rewritten by model",
+                    "confidence": 1.0,
+                    "task_type": "task",
+                    "omissions": [],
+                    "ack": "ok",
+                    "original": "completely different text",
+                }
+            )
+
+        packet, record = perceive(original, interpret=hostile_interpret)
+        # The packet's original is STILL the caller's input, not the model's spoof.
+        assert packet.original == original
+        assert packet.original != "completely different text"
+
+    def test_perceive_with_raising_interpret_degrades(self, tmp_path: Path) -> None:
+        """A dead endpoint (simulated by a raising interpret) degrades, never raises."""
+        from embodiment.perception import perceive
+
+        original = "Hello greenhouse"
+
+        def broken_interpret(text: str) -> str:
+            raise ConnectionRefusedError("simulated dead endpoint")
+
+        packet, record = perceive(original, interpret=broken_interpret)
+
+        # Packet still carries the verbatim original.
+        assert packet.original == original
+        # All other fields are empty (degraded path).
+        assert packet.interpretation == ""
+        assert packet.confidence == 0.0
+        assert packet.task_type == ""
+        assert packet.omissions == []
+        assert packet.ack is None
+        # Record shows degradation.
+        assert record.degraded is True
+        assert record.tokens is None
+
+    def test_perceive_without_interpret_returns_clean_packet(self, tmp_path: Path) -> None:
+        """No interpret seam: clean packet with only original, no degradation."""
+        from embodiment.perception import perceive
+
+        original = "Just a plain request"
+        packet, record = perceive(original)
+
+        assert packet.original == original
+        assert packet.interpretation == ""
+        assert record.degraded is False
+
+
+# ── live perception rig — skipped unless explicitly pointed at it ─────────────
+
+
+@pytest.mark.skipif(not LIVE_ENABLED, reason="set EMBODIMENT_LIVE_RIG=1 to test the real rig")
+@pytest.mark.skipif(not LIVE_KEY, reason=f"{greenhouse.API_KEY_ENV} is not set")
+class TestLivePerception:
+    """Live perception seam: the verbatim invariant against a real model."""
+
+    def test_live_perception_preserves_verbatim_original(self, tmp_path: Path) -> None:
+        """Assert ContextPacket.original is byte-identical to the operator's input."""
+        base_url = os.environ.get("EMBODIMENT_DEMO_BASE_URL", greenhouse.DEFAULT_BASE_URL)
+        if not _gateway_answers(base_url):
+            pytest.skip(f"no gateway answering at {base_url}")
+
+        key = os.environ.get(greenhouse.API_KEY_ENV, "").strip()
+        interpret_fn = greenhouse.senses_seam(base_url, greenhouse.SENSES_MODEL, key)
+
+        from embodiment.perception import perceive
+
+        utterance = "Is the fig thirsty today?"
+        packet, record = perceive(utterance, interpret=interpret_fn)
+
+        # The verbatim invariant: original is byte-identical to the caller's input.
+        assert packet.original == utterance
+        # embodiment#15 is fixed (t21) and this was confirmed against the live
+        # 12B: its fenced answer now parses and populates every field. The
+        # xfail escape is gone deliberately — if the seam ever stops reading a
+        # real model again, this must fail rather than quietly degrade to a
+        # skip.
+        assert packet.interpretation != ""
+        assert record.degraded is False
+
+    def test_dead_endpoint_degrades_not_raises(self, tmp_path: Path) -> None:
+        """A dead endpoint degrades to a degraded record, never raises."""
+        from embodiment.perception import perceive
+
+        # Point at a port that nothing listens on.
+        dead_url = "http://localhost:59999/v1"
+        interpret_fn = greenhouse.senses_seam(dead_url, greenhouse.SENSES_MODEL, "fake-key")
+
+        utterance = "Hello from a dead port"
+        packet, record = perceive(utterance, interpret=interpret_fn)
+
+        assert packet.original == utterance
+        assert record.degraded is True
+        assert record.tokens is None

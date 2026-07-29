@@ -1,7 +1,7 @@
 """ONE host-visible degradation stream, folded from every lane (task t9).
 
 Constraint **C3** says every degradation records a host-visible transition and
-nothing degrades silently. Six lanes each hold that promise on their own, in
+nothing degrades silently. Seven lanes each hold that promise on their own, in
 their own vocabulary and their own record shape::
 
     LoopOutcome.degradations       -> loop.LoopDegradation        (DEGRADED_*)
@@ -10,11 +10,26 @@ their own vocabulary and their own record shape::
     EventEmitter.degradations      -> events.EventDegradation     (DEGRADED_*)
     RecallOutcome.degradation      -> continuity.Degradation      (CODE_*)
     ContinuityLifecycle.events     -> lifecycle.LifecycleEvent    (kind "degraded")
+    SpawnRecord.degradations       -> (child's own records)        (child's lane)
 
-So a host that wants to answer *"what went wrong?"* has to know six
-vocabularies, six containers and five field layouts. That is C3 satisfied
+So a host that wants to answer *"what went wrong?"* has to know seven
+vocabularies, seven containers and six field layouts. That is C3 satisfied
 per-lane and defeated in aggregate. This module is the fold: one shape, one
 stream, one question.
+
+Child attribution
+-----------------
+A subagent's degradations ride back on
+:class:`~embodiment.subagent.SubagentResult` and are folded into the parent's
+ledger wearing the **subagent lane** (:data:`SOURCE_SUBAGENT`) and the child's
+own task id in :attr:`LedgerRecord.child_task_id`. A degradation the child's own
+loop recorded keeps its minting lane in :attr:`LedgerRecord.source` (a loop code
+is a loop code) while carrying the child attribution. This mirrors how
+:attr:`_RELEVANT` already lets a relaying lane resolve another lane's codes: the
+subagent lane is the relay, the child's own lane is the mint. A host reading the
+stream can answer "who degraded?" without heuristics and without parsing reason
+text — the child task id is a first-class field, never ``None`` for records that
+came from a child.
 
 A reader, not a refactor
 ------------------------
@@ -98,6 +113,7 @@ __all__ = [
     "SOURCE_CONTINUITY",
     "SOURCE_LIFECYCLE",
     "SOURCE_LEDGER",
+    "SOURCE_SUBAGENT",
     "SOURCES",
     # this module's own vocabulary (C3 applies to the ledger too)
     "DEGRADED_UNREADABLE_SOURCE",
@@ -114,6 +130,7 @@ __all__ = [
     "from_events",
     "from_continuity",
     "from_lifecycle",
+    "from_subagent",
     "read",
 ]
 
@@ -134,6 +151,11 @@ SOURCE_CONTINUITY = "continuity"
 SOURCE_LIFECYCLE = "lifecycle"
 #: This module. A ledger that cannot read a source says so, in its own stream.
 SOURCE_LEDGER = "ledger"
+#: A child drive's degradations, carried back on :class:`~embodiment.subagent.SubagentResult`.
+#: The child's own lane is preserved in :attr:`LedgerRecord.source`; this lane is
+#: the relay, and :attr:`LedgerRecord.child_task_id` names the child.
+#: Not in :data:`SOURCES` — it has no codes of its own (it relays the child's).
+SOURCE_SUBAGENT = "subagent"
 
 #: Every lane this module folds, in the order :func:`read` emits them.
 SOURCES = (
@@ -192,6 +214,19 @@ _RELEVANT: dict[str, tuple[str, ...]] = {
     # ``_emit_degradation`` re-emits a continuity ``CODE_*`` as a checkpoint.
     SOURCE_LIFECYCLE: (SOURCE_LIFECYCLE, SOURCE_CONTINUITY),
     SOURCE_LEDGER: (SOURCE_LEDGER,),
+    # The subagent lane relays the child's own codes: a loop degradation from a
+    # child keeps ``source=loop`` while carrying ``child_task_id``. The subagent
+    # lane itself has no codes (it is not in :data:`_MODULES`), so it is omitted
+    # from its own relevance set — only the child's possible minting lanes are
+    # searched.
+    SOURCE_SUBAGENT: (
+        SOURCE_LOOP,
+        SOURCE_MUSE,
+        SOURCE_MUSE_RUNNER,
+        SOURCE_EVENTS,
+        SOURCE_CONTINUITY,
+        SOURCE_LIFECYCLE,
+    ),
 }
 
 # code -> constant name, per lane. Populated on first use and never invalidated:
@@ -249,6 +284,11 @@ class LedgerRecord:
         that is :attr:`source`.
     exception:
         The caught exception's class name, where the source recorded one.
+    child_task_id:
+        The child drive's task id, when this record came from a subagent.
+        ``None`` for every existing lane and populated for records folded from
+        :data:`SOURCE_SUBAGENT`. A host can answer "who degraded?" without
+        heuristics or parsing reason text.
     original:
         The record exactly as its lane built it — the live object, untouched, so
         nothing is lost in the fold. Deliberately absent from :meth:`to_dict`:
@@ -266,16 +306,32 @@ class LedgerRecord:
     stage: Optional[str] = None
     subsystem: Optional[str] = None
     exception: Optional[str] = None
+    child_task_id: Optional[str] = None
     original: Any = None
 
     def to_dict(self) -> dict[str, Any]:
-        """JSON-safe fold. Absent fields are OMITTED, never emitted as zeros."""
+        """JSON-safe fold. Absent fields are OMITTED, never emitted as zeros.
+
+        :attr:`original` is **excluded even when present** — it is a live
+        foreign object, and serialising it is its own lane's ``to_dict``'s job.
+        That exclusion is what makes this return value JSON-safe
+        unconditionally; a reader who needs the untouched record reaches for the
+        attribute directly.
+        """
         data: dict[str, Any] = {
             "source": self.source,
             "code": self.code,
             "reason": self.reason,
         }
-        for name in ("step_index", "model_turns", "boundary", "stage", "subsystem", "exception"):
+        for name in (
+            "step_index",
+            "model_turns",
+            "boundary",
+            "stage",
+            "subsystem",
+            "exception",
+            "child_task_id",
+        ):
             value = getattr(self, name)
             if value is not None:
                 data[name] = value
@@ -547,6 +603,61 @@ def from_lifecycle(source: Any) -> list[LedgerRecord]:
     return folded
 
 
+def from_subagent(source: Any, *, child_task_id: Optional[str] = None) -> list[LedgerRecord]:
+    """Fold a child drive's degradations with child attribution.
+
+    *source* is a sequence of raw degradation records from a
+    :class:`~embodiment.subagent.SubagentResult`. Each record keeps its
+    minting lane in :attr:`LedgerRecord.source` (a loop code is a loop code)
+    while carrying *child_task_id* so a host can answer "who degraded?"
+    without heuristics.
+
+    When *source* is a :class:`~embodiment.subagent.SpawnRecord`, its
+    :attr:`~embodiment.subagent.SpawnRecord.degradations` and
+    :attr:`~embodiment.subagent.SpawnRecord.child_task_id` are read
+    automatically.
+    """
+    subagent_module = importlib.import_module("embodiment.subagent")
+    spawn_record_cls = subagent_module.SpawnRecord
+
+    if source is None:
+        return []
+    if isinstance(source, spawn_record_cls):
+        child_id = source.child_task_id
+        raw = list(source.degradations)
+    else:
+        child_id = child_task_id
+        raw = list(source) if _is_sequence(source) else [source]
+
+    folded: list[LedgerRecord] = []
+    for record in raw:
+        try:
+            adapted = _adapt(record, lane=SOURCE_SUBAGENT)
+            folded.append(
+                LedgerRecord(
+                    source=adapted.source,
+                    code=adapted.code,
+                    reason=adapted.reason,
+                    step_index=adapted.step_index,
+                    model_turns=adapted.model_turns,
+                    boundary=adapted.boundary,
+                    stage=adapted.stage,
+                    subsystem=adapted.subsystem,
+                    exception=adapted.exception,
+                    child_task_id=child_id,
+                    original=adapted.original,
+                )
+            )
+        except Exception as exc:  # noqa: BLE001 - one bad record never loses the rest
+            folded.append(
+                _unreadable(
+                    f"{SOURCE_SUBAGENT} record: {type(exc).__name__}: {exc}",
+                    record,
+                )
+            )
+    return folded
+
+
 _READERS = {
     SOURCE_LOOP: from_loop,
     SOURCE_MUSE: from_muse,
@@ -565,6 +676,7 @@ def read(
     events: Any = None,
     continuity: Any = None,
     lifecycle: Any = None,
+    subagent: Any = None,
 ) -> list[LedgerRecord]:
     """Fold everything a host was handed into ONE stream.
 
@@ -580,18 +692,47 @@ def read(
     recorded order. They are deliberately not interleaved by time — see the
     module docstring.
     """
-    handed = {
-        SOURCE_LOOP: loop,
-        SOURCE_MUSE: muse,
-        SOURCE_MUSE_RUNNER: muse_runner,
-        SOURCE_EVENTS: events,
-        SOURCE_CONTINUITY: continuity,
-        SOURCE_LIFECYCLE: lifecycle,
-    }
     folded: list[LedgerRecord] = []
     for lane in SOURCES:
-        given = handed.get(lane)
+        given = {
+            SOURCE_LOOP: loop,
+            SOURCE_MUSE: muse,
+            SOURCE_MUSE_RUNNER: muse_runner,
+            SOURCE_EVENTS: events,
+            SOURCE_CONTINUITY: continuity,
+            SOURCE_LIFECYCLE: lifecycle,
+        }.get(lane)
         if given is None:
             continue
         folded.extend(_READERS[lane](given))
+    # Subagent is not in SOURCES (it has no codes of its own), so handle it
+    # separately. It appears after the standard lanes in the output.
+    if subagent is not None:
+        folded.extend(from_subagent(subagent))
+    # Also fold child degradations from loop spawns when a loop outcome is
+    # provided but no explicit subagent argument. The child's degradations ride
+    # on SpawnRecord.degradations inside outcome.spawns.
+    if subagent is None and loop is not None:
+        _fold_spawn_degradations(loop, folded)
     return folded
+
+
+def _fold_spawn_degradations(loop_source: Any, folded: list[LedgerRecord]) -> None:
+    """Fold child degradations from a loop outcome's spawn records.
+
+    Each granted spawn carries the child's own degradation records on
+    :attr:`~embodiment.subagent.SpawnRecord.degradations` and a
+    :attr:`~embodiment.subagent.SpawnRecord.child_task_id`. These are folded
+    through :func:`from_subagent` so they carry child attribution.
+    """
+    spawns = getattr(loop_source, "spawns", None)
+    if not spawns:
+        return
+    for spawn in spawns:
+        if not getattr(spawn, "granted", False):
+            continue
+        child_id = getattr(spawn, "child_task_id", None)
+        if child_id is None:
+            continue
+        child_records = from_subagent(spawn)
+        folded.extend(child_records)

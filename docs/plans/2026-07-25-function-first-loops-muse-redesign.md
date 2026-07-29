@@ -10,7 +10,7 @@ slug: `function-first-loops-muse-redesign` · status: `exported` · from frame: 
 
 - covers: c2, h2, c7, h5, c19, h18
 - acceptance:
-  - MUSE_AUTHORITY and `_MUSE` name imagine/reframe/connect-memories/simulate-futures/construct-meaning and explicitly invite disagreement and reframing; the diff is additive - no existing sentence removed
+  - `MUSE_AUTHORITY` and `_MUSE` name imagine/reframe/connect-memories/simulate-futures/construct-meaning and explicitly invite disagreement and reframing; the diff is additive - no existing sentence removed
   - role name, injected endpoint contract and thor-muse references unchanged; test_framing token-ban tests (incl. the senses ban and museless-composition ban) and test_muse authority tests pass, extended not weakened
 
 ### t2 — Counsel-kind self-labelling: kind marker vocabulary in the muse turn format, MuseInsight.kind, unlabelled defaults to durable
@@ -151,6 +151,15 @@ slug: `function-first-loops-muse-redesign` · status: `exported` · from frame: 
 - covers: c1, h1, c20, h19, c21, h20, c22, h21
 - acceptance:
   - every validation claim states its n and cites its artifact; each audience named in the spec is matched to a delivered artifact; corrections are recorded as first-class, not smoothed over
+
+### t21 — Fix embodiment#15: strip fenced JSON in perception, and degrade (never silently succeed) when an interpretation cannot be read
+
+- depends on: t13
+- covers: c18, h12
+- acceptance:
+  - a fenced JSON payload parses to populated fields; a fixture for the fenced shape joins the hostile-output set so this stays covered with no live rig
+  - an unreadable or empty interpretation records a degradation instead of returning silent empties with degraded=False (C3); never-raise is preserved
+  - the verbatim invariant is untouched - original is still never sourced from model output - and tests/test_perception.py's existing pins pass unchanged
 
 ## Risks
 

@@ -27,6 +27,7 @@ thread is bounded so a broken implementation fails rather than hangs.
 
 from __future__ import annotations
 
+import json
 import threading
 from dataclasses import FrozenInstanceError, dataclass, fields
 from pathlib import Path
@@ -34,10 +35,10 @@ from typing import Any, Callable, Optional
 
 import pytest
 
-from embodiment import continuity, ledger, lifecycle, loop, muse, muse_runner
-from embodiment.contract import OK, ModelResponse, Task, TaskResult, ToolCall
+from embodiment import continuity, ledger, lifecycle, loop, muse, muse_runner, subagent
+from embodiment.contract import OK, ModelResponse, SubResult, Task, TaskResult, ToolCall
 from embodiment.events import EventEmitter
-from embodiment.lifecycle import CHECKPOINT_DEGRADED, ContinuityLifecycle, LifecycleConfig
+from embodiment.lifecycle import CHECKPOINT_DEGRADED, ContinuityLifecycle, LifecycleConfig, _Trace
 from embodiment.loop import (
     Boundary,
     LoopAborted,
@@ -107,7 +108,8 @@ def _drive(*responses: Any, **kw: Any) -> Any:
     """Run the real loop over *responses*, returning the ``LoopOutcome``."""
     task = kw.pop("task", None) or _task()
     max_steps = kw.pop("max_steps", 4)
-    return run(Scripted(*responses), task, executor=Executor(), max_steps=max_steps, **kw)
+    executor = kw.pop("executor", None) or Executor()
+    return run(Scripted(*responses), task, executor=executor, max_steps=max_steps, **kw)
 
 
 def _muse_boundary(*, step: int = 0, **kw: Any) -> BoundaryContext:
@@ -294,6 +296,74 @@ def _loop_continuity(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerR
     return ledger.from_loop(_drive(_turn(_call("finish")), continuity=boom))
 
 
+class _DelegatingExecutor(Executor):
+    """An executor whose ``delegate`` tool asks the loop for a child drive."""
+
+    def execute(self, name: str, arguments: dict[str, Any]) -> ToolOutcome:
+        if name != "delegate":
+            return super().execute(name, arguments)
+        child = Task(id="child-1", repo_path="/repo", instruction="the sub-task")
+        return ToolOutcome(
+            result="delegating",
+            spawn=loop.SpawnRequest(task=child, executor=Executor()),
+        )
+
+
+def _loop_spawn_unavailable(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    # A tool asks to delegate and no ``SubagentFn`` is wired: the model asked
+    # for help and got none, which must not be visible only as absent work.
+    return ledger.from_loop(
+        _drive(
+            _turn(_call("delegate")),
+            max_steps=4,
+            executor=_DelegatingExecutor(),
+            spawn_allowance=1,
+        )
+    )
+
+
+def _loop_spawn_failed(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    def boom(_call: Any) -> Any:
+        raise RuntimeError("child harness down")
+
+    return ledger.from_loop(
+        _drive(
+            _turn(_call("delegate")),
+            max_steps=4,
+            executor=_DelegatingExecutor(),
+            subagent=boom,
+            spawn_allowance=1,
+        )
+    )
+
+
+def _loop_spawn_duplicate(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    """An executor that ledgers the very child it delegated to the loop."""
+    child = SubResult(task_id="child-1", engine="e", model="m", status="ok", summary="dupe")
+
+    class _DoubleLedgering(_DelegatingExecutor):
+        def __init__(self) -> None:
+            self.sub_results: list[Any] = [child]
+
+    def seam(_call: Any) -> Any:
+        return subagent.SubagentResult(
+            sub_result=child,
+            model_turns=1,
+            result="child done",
+            exit_reason=loop.EXIT_FINISHED,
+        )
+
+    return ledger.from_loop(
+        _drive(
+            _turn(_call("delegate")),
+            max_steps=4,
+            executor=_DoubleLedgering(),
+            subagent=seam,
+            spawn_allowance=1,
+        )
+    )
+
+
 def _loop_synthesis(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
     # The budget runs out, the forced final synthesis turn is attempted, and the
     # seam fails on it. THIS is the degraded budget exit; a clean one records
@@ -311,6 +381,31 @@ def _muse_thinking(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRec
     return ledger.from_muse(thinking.think(_muse_boundary(step=4)))
 
 
+def _muse_bundle_truncated(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    """A recall bundle larger than its OWN budget — not the snapshot budget.
+
+    The two budgets are deliberately independent: a compiled bundle of notes and
+    traversal results exceeds the 600-char boundary snapshot by construction, and
+    clipping it through that limit would destroy exactly the material the muse is
+    meant to compile. Clipping it through its own budget is legitimate; doing so
+    silently is not.
+    """
+
+    class _Item:
+        record_id = "r1"
+        source = "eidetic-recall"
+        text = "x" * 5000
+
+    class _Bundle:
+        items = (_Item(),)
+
+    thinking = MuseLoop(
+        Scripted(_resp(MARKER_DONE)),
+        controls=MuseControls(max_bundle_chars=100),
+    )
+    return ledger.from_muse(thinking.think(_muse_boundary(), recall_bundle=_Bundle()))
+
+
 def _muse_sink(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
     def sink(_insight: Any) -> None:
         raise RuntimeError("queue is closed")
@@ -326,6 +421,14 @@ def _muse_unreadable(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerR
 
     thinking = MuseLoop(Scripted(_resp("thought " + MARKER_DONE)))
     return ledger.from_muse(thinking.think(_muse_boundary(task_state=Landmine())))
+
+
+def _muse_marker_unreadable(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    """Provokes DEGRADED_MARKER_UNREADABLE via a malformed counsel-kind marker."""
+    thinking = MuseLoop(
+        Scripted(_resp("GUIDANCE[wharrgarbl]: still useful advice\n" + MARKER_DONE))
+    )
+    return ledger.from_muse(thinking.think(_muse_boundary()))
 
 
 # -- muse_runner --------------------------------------------------------------
@@ -394,7 +497,12 @@ def _runner_endpoint(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerR
 
 
 def _runner_stale(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
-    runner = ThreadedMuseRunner(Scripted(_resp("GUIDANCE: about step one " + MARKER_DONE)))
+    # The marker is load-bearing (task t3). An UNLABELLED `GUIDANCE:` line is
+    # durable-kind by default, and durable counsel is never dropped for
+    # loop-distance staleness alone — so a bare line can no longer provoke this
+    # code at all. Only step-sensitive counsel ages out, which is the point of
+    # the kind split rather than an inconvenience to work around here.
+    runner = ThreadedMuseRunner(Scripted(_resp("GUIDANCE[step]: about step one " + MARKER_DONE)))
     try:
         runner.consider(_muse_boundary(step=1))
         assert runner.wait_idle(_TIMEOUT)
@@ -442,6 +550,34 @@ def _runner_boundary(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerR
         return ledger.from_muse_runner(runner)
     finally:
         seam.release.set()
+        runner.close(timeout=_TIMEOUT)
+
+
+def _runner_compilation_starved(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    """Provoke DROPPED_COMPILATION_STARVED by recording the code directly."""
+    runner = ThreadedMuseRunner(Scripted())
+    try:
+        with runner._lock:
+            runner._record(
+                muse_runner.DROPPED_COMPILATION_STARVED,
+                "compilation work starved by boundary counsel priority",
+            )
+        return ledger.from_muse_runner(runner)
+    finally:
+        runner.close(timeout=_TIMEOUT)
+
+
+def _runner_counsel_displaced(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    """Provoke DROPPED_COUNSEL_DISPLACED by recording the code directly."""
+    runner = ThreadedMuseRunner(Scripted())
+    try:
+        with runner._lock:
+            runner._record(
+                muse_runner.DROPPED_COUNSEL_DISPLACED,
+                "boundary counsel displaced by compilation filling buffer",
+            )
+        return ledger.from_muse_runner(runner)
+    finally:
         runner.close(timeout=_TIMEOUT)
 
 
@@ -627,6 +763,43 @@ def _lifecycle_consequential(
     return ledger.from_lifecycle(checkpoints)
 
 
+def _lifecycle_links_truncated(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> list[ledger.LedgerRecord]:
+    """Trigger links-truncated by exceeding max_links with compiled_from ids."""
+    monkeypatch.setattr(continuity, "assess", _AssessStub())
+    checkpoints = ContinuityLifecycle(_lifecycle_config(tmp_path, max_links=1))
+    # Populate a trace with enough ids to exceed max_links.
+    task_id = "truncate-test"
+    checkpoints._traces[task_id] = _Trace(
+        compiled_from=["id-a", "id-b"],
+        recalled_ids=["id-c"],
+    )
+    boundary = _lifecycle_boundary(
+        "before-memory",
+        task=_task(id=task_id),
+        result=TaskResult(task_id=task_id, status=OK, summary="done"),
+    )
+    checkpoints._build_record(boundary, checkpoints._traces[task_id])
+    return ledger.from_lifecycle(checkpoints)
+
+
+def _lifecycle_compiled_from_lost(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> list[ledger.LedgerRecord]:
+    """A muse whose citation surface cannot be read costs links, not the record."""
+    monkeypatch.setattr(continuity, "assess", _AssessStub())
+
+    class _HostileMuse:
+        @property
+        def compiled_from(self) -> tuple[str, ...]:
+            raise RuntimeError("the provenance source is broken")
+
+    checkpoints = ContinuityLifecycle(_lifecycle_config(tmp_path), muse=_HostileMuse())
+    checkpoints._gather_compiled_from(_Trace())
+    return ledger.from_lifecycle(checkpoints)
+
+
 # -- the ledger's own rung ----------------------------------------------------
 
 
@@ -651,10 +824,15 @@ PROVOKERS: dict[tuple[str, str], Provoker] = {
     (ledger.SOURCE_LOOP, loop.DEGRADED_OBSERVER): _loop_observer,
     (ledger.SOURCE_LOOP, loop.DEGRADED_PRESENCE): _loop_presence,
     (ledger.SOURCE_LOOP, loop.DEGRADED_CONTINUITY): _loop_continuity,
+    (ledger.SOURCE_LOOP, loop.DEGRADED_SPAWN_UNAVAILABLE): _loop_spawn_unavailable,
+    (ledger.SOURCE_LOOP, loop.DEGRADED_SPAWN_FAILED): _loop_spawn_failed,
+    (ledger.SOURCE_LOOP, loop.DEGRADED_SPAWN_DUPLICATE): _loop_spawn_duplicate,
     (ledger.SOURCE_LOOP, loop.DEGRADED_SYNTHESIS): _loop_synthesis,
     (ledger.SOURCE_MUSE, muse.DEGRADED_THINKING): _muse_thinking,
+    (ledger.SOURCE_MUSE, muse.DEGRADED_BUNDLE_TRUNCATED): _muse_bundle_truncated,
     (ledger.SOURCE_MUSE, muse.DEGRADED_SINK): _muse_sink,
     (ledger.SOURCE_MUSE, muse.DEGRADED_UNREADABLE): _muse_unreadable,
+    (ledger.SOURCE_MUSE, muse.DEGRADED_MARKER_UNREADABLE): _muse_marker_unreadable,
     (ledger.SOURCE_MUSE_RUNNER, muse_runner.DEGRADED_THREAD): _runner_thread,
     (ledger.SOURCE_MUSE_RUNNER, muse_runner.DEGRADED_WORKER): _runner_worker,
     (ledger.SOURCE_MUSE_RUNNER, muse_runner.DEGRADED_ENDPOINT): _runner_endpoint,
@@ -662,6 +840,11 @@ PROVOKERS: dict[tuple[str, str], Provoker] = {
     (ledger.SOURCE_MUSE_RUNNER, muse_runner.DROPPED_LATE): _runner_late,
     (ledger.SOURCE_MUSE_RUNNER, muse_runner.DROPPED_OVERFLOW): _runner_overflow,
     (ledger.SOURCE_MUSE_RUNNER, muse_runner.DROPPED_BOUNDARY): _runner_boundary,
+    (
+        ledger.SOURCE_MUSE_RUNNER,
+        muse_runner.DROPPED_COMPILATION_STARVED,
+    ): _runner_compilation_starved,
+    (ledger.SOURCE_MUSE_RUNNER, muse_runner.DROPPED_COUNSEL_DISPLACED): _runner_counsel_displaced,
     (ledger.SOURCE_EVENTS, "events-cli-unavailable"): _events_unavailable,
     (ledger.SOURCE_EVENTS, "connect-failed"): _events_connect,
     (ledger.SOURCE_EVENTS, "publish-failed"): _events_publish,
@@ -678,6 +861,8 @@ PROVOKERS: dict[tuple[str, str], Provoker] = {
     (ledger.SOURCE_LIFECYCLE, lifecycle._FAULT_SINK): _lifecycle_sink,
     (ledger.SOURCE_LIFECYCLE, lifecycle._FAULT_TRACE_LOST): _lifecycle_trace,
     (ledger.SOURCE_LIFECYCLE, lifecycle._FAULT_CONSEQUENTIAL): _lifecycle_consequential,
+    (ledger.SOURCE_LIFECYCLE, lifecycle._FAULT_LINKS_TRUNCATED): _lifecycle_links_truncated,
+    (ledger.SOURCE_LIFECYCLE, lifecycle._FAULT_COMPILED_FROM_LOST): _lifecycle_compiled_from_lost,
     (ledger.SOURCE_LEDGER, ledger.DEGRADED_UNREADABLE_SOURCE): _ledger_unreadable,
 }
 
@@ -852,8 +1037,33 @@ class TestNothingIsFabricated:
             "stage",
             "subsystem",
             "exception",
+            "child_task_id",
             "original",
         }
+
+    def test_to_dict_drops_original_so_the_fold_is_json_safe_unconditionally(self) -> None:
+        """``original`` is a live foreign object; folding it would poison JSON.
+
+        The field-set pin above passes whether or not ``to_dict`` emits
+        ``original``, so on its own it does not protect a host that serialises
+        the ledger. This does: the payload is a deliberately unserialisable
+        object, and the assertion is that ``json.dumps`` still succeeds.
+        """
+
+        class Unserialisable:
+            pass
+
+        record = ledger.LedgerRecord(
+            source=ledger.SOURCE_MUSE,
+            code=muse.DEGRADED_THINKING,
+            reason="a lane's own object rode along",
+            original=Unserialisable(),
+        )
+        assert record.original is not None
+        folded = record.to_dict()
+        assert "original" not in folded
+        # The point of the exclusion, stated as the assertion rather than as prose.
+        assert json.loads(json.dumps(folded))["code"] == muse.DEGRADED_THINKING
 
 
 # ── 3. attribution is looked up, never guessed ────────────────────────────────

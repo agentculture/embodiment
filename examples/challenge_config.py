@@ -1,0 +1,69 @@
+"""Shared config-record preamble for experiment harnesses.
+
+Every experiment harness calls ``write_config_preamble`` BEFORE its first
+result line so the run is reproducible from the JSON alone.  Records:
+
+- Per-role temperature (cortex and muse SEPARATELY — an earlier series ran
+  both at 0.2 by accident)
+- Muse controls (max_turns, staleness_policy)
+- Model ids (cortex_model, muse_model)
+- n (number of runs)
+- ``extra``: anything else a harness varies between arms (an experimental
+  condition, a threshold). A setting a run varies but does not record is a
+  hidden variable, which is exactly what an earlier series discovered about
+  temperature.
+"""
+
+from __future__ import annotations
+
+import json
+from typing import Any, Mapping, Optional
+
+
+def write_config_preamble(
+    path: str,
+    *,
+    cortex_model: str,
+    cortex_temperature: float,
+    muse_model: Optional[str] = None,
+    muse_temperature: Optional[float] = None,
+    max_turns: int = 14,
+    staleness_policy: str = "default",
+    n: int = 1,
+    extra: Optional[Mapping[str, Any]] = None,
+) -> dict[str, Any]:
+    """Write a JSON config preamble and return the config dict.
+
+    Call this BEFORE the first result line so the run is reproducible from
+    the JSON alone. ``extra`` folds in harness-specific settings — the arm a
+    comparison was run under, a grader threshold — so the whole configuration
+    lives in one record rather than half in the file and half in a docstring.
+
+    An ``extra`` key that collides with a canonical one raises. ``extra``
+    exists so a run records MORE than the canonical fields; letting it
+    silently overwrite ``n`` or ``cortex_model`` would turn the record that
+    exists to prevent hidden variables into a place to hide one.
+    """
+    config: dict[str, Any] = {
+        "cortex_model": cortex_model,
+        "cortex_temperature": cortex_temperature,
+        "muse_model": muse_model,
+        "muse_temperature": muse_temperature,
+        "max_turns": max_turns,
+        "staleness_policy": staleness_policy,
+        "n": n,
+    }
+    additions = dict(extra or {})
+    collisions = sorted(set(additions) & set(config))
+    if collisions:
+        raise ValueError(
+            "extra may not overwrite a canonical config field: "
+            + ", ".join(collisions)
+            + " — pass the value through the named argument instead"
+        )
+    config.update(additions)
+
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(config, f, indent=2)
+        f.write("\n")
+    return config

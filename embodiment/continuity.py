@@ -183,6 +183,25 @@ except Exception as exc:  # pragma: no cover - exercised via monkeypatch, not a 
 else:
     _EIDETIC_IMPORT_ERROR = None
 
+# Graph traversal is guarded SEPARATELY, and the separation is the point.
+#
+# ``eidetic.memory.traverse`` arrived in eidetic-cli 0.13.0; the floor this
+# package declares is ``eidetic-cli>=0.12``. Folding this import into the block
+# above would mean a 0.12 install loses **all** of memory — one optional new
+# symbol failing would null ``_eidetic_get_backend`` and every recall, remember
+# and lifecycle checkpoint with it. That is the difference between "graph
+# enrichment is unavailable" and "the memory subsystem is gone", and claim c35
+# binds the first: a rig with only flat recall must run the whole path end to
+# end. Measured, not theorised — collapsing the two took 65 tests down on a
+# 0.12.1 install.
+try:
+    from eidetic.memory.traverse import discover as _eidetic_discover
+except Exception as exc:  # pragma: no cover - absent on eidetic < 0.13
+    _eidetic_discover = None  # type: ignore[assignment]
+    _TRAVERSE_IMPORT_ERROR: Optional[str] = f"{type(exc).__name__}: {exc}"
+else:
+    _TRAVERSE_IMPORT_ERROR = None
+
 try:
     from coherence.assess import assess as _coherence_assess
 except Exception as exc:  # pragma: no cover - exercised via monkeypatch, not a real break
@@ -222,6 +241,9 @@ __all__ = [
     "remember",
     "recall",
     "assess",
+    "traverse",
+    "traverse_available",
+    "TraverseOutcome",
 ]
 
 _StrPath = Union[str, "os.PathLike[str]"]
@@ -868,6 +890,177 @@ def recall(
         )
 
     return RecallOutcome(ok=True, records=records, degradation=degradation)
+
+
+# ---------------------------------------------------------------------------
+# eidetic seam — graph traversal (eidetic-cli >= 0.13)
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class TraverseOutcome:
+    """Result of one :func:`traverse` call.
+
+    ``nodes`` are ``{"record": <Record.to_dict()>, "depth": int}`` mappings —
+    eidetic's own record shape, with the hop distance the walk found it at, so a
+    consumer can tell a primary hit from a discovery without heuristics.
+
+    ``truncated`` is eidetic's own flag: a walk that hit ``max_depth`` or
+    ``max_nodes`` says so rather than returning a short answer that looks
+    complete.
+    """
+
+    ok: bool
+    nodes: list[dict[str, Any]]
+    truncated: bool
+    degradation: Optional[Degradation]
+
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {
+            "ok": self.ok,
+            "nodes": list(self.nodes),
+            "truncated": self.truncated,
+        }
+        if self.degradation is not None:
+            data["degradation"] = self.degradation.to_dict()
+        return data
+
+
+def _bound(value: Any) -> int:
+    """A caller-supplied walk bound as an int; anything unreadable means 0.
+
+    Zero is the safe reading: eidetic treats ``max_depth=0`` as "skip the
+    traversal", so a bound nobody can parse yields a flat answer rather than an
+    unbounded walk over someone's memory graph.
+    """
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+
+
+def traverse_available() -> bool:
+    """Whether this install can walk the memory graph at all.
+
+    ``eidetic.memory.traverse`` arrived in eidetic-cli 0.13.0 and this package
+    declares ``eidetic-cli>=0.12``, so a perfectly valid install may not have
+    it. Guarded separately from the rest of the eidetic seam on purpose — see
+    the import block — so its absence costs graph enrichment and nothing else.
+    """
+    return _eidetic_discover is not None and _eidetic_get_backend is not None
+
+
+def traverse(
+    seeds: Sequence[Mapping[str, Any]],
+    *,
+    data_dir: Optional[_StrPath] = None,
+    scope: str = DEFAULT_SCOPE,
+    visibility: str = DEFAULT_VISIBILITY,
+    max_depth: int = 1,
+    max_nodes: int = 20,
+) -> TraverseOutcome:
+    """Walk ``links``/``supersedes`` from *seeds*, bounded by the caller.
+
+    Thin seam over :func:`eidetic.memory.traverse.discover`, which is pure — it
+    takes injected ``fetch`` and ``can_serve`` callables and touches no store
+    itself. This function supplies both, backed by the same backend
+    :func:`recall` uses.
+
+    **The no-leak check fails CLOSED.** ``can_serve`` is the per-hop guard that
+    stops a private record reachable by a link from a public one entering a
+    public bundle. A guard that answers "yes" when it cannot tell is not a
+    guard: anything it cannot positively authorise is excluded, and an
+    unresolvable id is simply skipped (eidetic treats a dangling id as absent).
+    Excluding a record a caller was entitled to costs enrichment; including one
+    it was not is a disclosure.
+
+    Never raises. A missing traverse module, a dead store or a malformed shape
+    each return ``ok=False`` with a recorded :class:`Degradation`.
+    """
+    if not traverse_available():
+        return TraverseOutcome(
+            ok=False,
+            nodes=[],
+            truncated=False,
+            degradation=Degradation(
+                subsystem="eidetic",
+                stage="traverse",
+                code=CODE_IMPORT_FAILED,
+                reason=(
+                    "eidetic.memory.traverse is unavailable "
+                    f"({_TRAVERSE_IMPORT_ERROR or 'not installed'}); "
+                    "graph enrichment needs eidetic-cli >= 0.13"
+                ),
+            ),
+        )
+    if data_dir is None:
+        return TraverseOutcome(
+            ok=False,
+            nodes=[],
+            truncated=False,
+            degradation=Degradation(
+                subsystem="eidetic",
+                stage="traverse",
+                code=CODE_NO_STORAGE_ANCHOR,
+                reason="traverse needs an explicit data_dir; it never guesses a store",
+            ),
+        )
+
+    try:
+        store = _eidetic_get_backend("files", data_dir=str(data_dir))
+        query_scope = _EideticScope(scope, visibility)
+        seed_records = [_EideticRecord.from_dict(dict(seed)) for seed in seeds]
+    except Exception as exc:  # noqa: BLE001 - a store failure never reaches the host
+        return TraverseOutcome(
+            ok=False,
+            nodes=[],
+            truncated=False,
+            degradation=_error_degradation("eidetic", "traverse", exc),
+        )
+
+    def _fetch_one(record_id: str) -> Any:
+        """Resolve one id, or ``None``. A dangling id is absent, not an error."""
+        try:
+            return store.get_many([record_id], query_scope).get(record_id)
+        except Exception:  # noqa: BLE001 - one bad id never loses the walk
+            return None
+
+    def _can_serve(record: Any) -> bool:
+        """Per-hop no-leak check, failing CLOSED. See the docstring."""
+        try:
+            record_scope = getattr(record, "scope", None)
+            if record_scope is None:
+                return False
+            return bool(query_scope.can_serve(record_scope))
+        except Exception:  # noqa: BLE001 - cannot authorise means not authorised
+            return False
+
+    try:
+        result = _eidetic_discover(
+            seed_records,
+            _fetch_one,
+            _can_serve,
+            max(0, _bound(max_depth)),
+            max(0, _bound(max_nodes)),
+        )
+        nodes = [
+            {"record": node.record.to_dict(), "depth": int(node.depth)}
+            for node in getattr(result, "nodes", ())
+        ]
+    except Exception as exc:  # noqa: BLE001 - a traversal failure never reaches the host
+        return TraverseOutcome(
+            ok=False,
+            nodes=[],
+            truncated=False,
+            degradation=_error_degradation("eidetic", "traverse", exc),
+        )
+
+    return TraverseOutcome(
+        ok=True,
+        nodes=nodes,
+        truncated=bool(getattr(result, "truncated", False)),
+        degradation=None,
+    )
 
 
 # ---------------------------------------------------------------------------

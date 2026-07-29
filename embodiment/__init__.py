@@ -57,6 +57,9 @@ _SUBMODULES = frozenset(
         "perception",
         "presence",
         "presence_engine",
+        "recall_bundle",
+        "scratchpad",
+        "subagent",
     }
 )
 
@@ -196,6 +199,39 @@ _LAZY_NAMES = {
     "INCOMPLETE": "contract",
     # ── identity (explicit configuration only, never inferred) ────────────
     "resolve_identity": "identity",
+    # ── the recall bundle (raw memory material for the muse) ─────────────
+    "fetch_bundle": "recall_bundle",
+    "flat_fetch": "recall_bundle",
+    "flat_fetcher": "recall_bundle",
+    "RecallBundle": "recall_bundle",
+    "BundleRequest": "recall_bundle",
+    "BundleItem": "recall_bundle",
+    "BundleProvenance": "recall_bundle",
+    "BundleDegradation": "recall_bundle",
+    "FetchFn": "recall_bundle",
+    "RecallFn": "recall_bundle",
+    "LEVEL_FLAT": "recall_bundle",
+    "LEVEL_GRAPH": "recall_bundle",
+    "graph_available": "recall_bundle",
+    # ── the scratchpad (working memory a successor can resume from) ──────
+    "Scratchpad": "scratchpad",
+    "Entry": "scratchpad",
+    "resume_report": "scratchpad",
+    "PerceptionDegradation": "perception",
+    # ── the subagent seam (delegation bounded by arithmetic) ──────────────
+    "SubagentFn": "subagent",
+    "SubagentCall": "subagent",
+    "SubagentResult": "subagent",
+    "SpawnRequest": "subagent",
+    "SpawnRecord": "subagent",
+    "NO_SPAWNS": "subagent",
+    "SPAWN_GRANTED": "subagent",
+    "SPAWN_REFUSED_ALLOWANCE": "subagent",
+    "SPAWN_REFUSED_BUDGET": "subagent",
+    "SPAWN_REFUSED_SEAM": "subagent",
+    "SPAWN_FAILED": "subagent",
+    "SPAWN_OUTCOMES": "subagent",
+    "SPAWN_REFUSALS": "subagent",
 }
 
 __all__ = ["__version__", *sorted(_SUBMODULES), *sorted(_LAZY_NAMES)]
@@ -253,6 +289,9 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
         perception,
         presence,
         presence_engine,
+        recall_bundle,
+        scratchpad,
+        subagent,
     )
     from embodiment.contract import (  # noqa: F401
         ERROR,
@@ -345,6 +384,7 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
         is_stale,
     )
     from embodiment.muse_runner import ThreadedMuseRunner, ThreadFactory  # noqa: F401
+    from embodiment.perception import PerceptionDegradation  # noqa: F401
     from embodiment.perception import perceive  # noqa: F401
     from embodiment.presence import (  # noqa: F401
         ClarifyPolicy,
@@ -367,4 +407,39 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
         PresenceSink,
         PresenceTurn,
         build_presence_executor,
+    )
+    from embodiment.recall_bundle import (  # noqa: F401
+        LEVEL_FLAT,
+        LEVEL_GRAPH,
+        BundleDegradation,
+        BundleItem,
+        BundleProvenance,
+        BundleRequest,
+        FetchFn,
+        RecallBundle,
+        RecallFn,
+        fetch_bundle,
+        flat_fetch,
+        flat_fetcher,
+        graph_available,
+    )
+    from embodiment.scratchpad import (  # noqa: F401
+        Entry,
+        Scratchpad,
+        resume_report,
+    )
+    from embodiment.subagent import (  # noqa: F401
+        NO_SPAWNS,
+        SPAWN_FAILED,
+        SPAWN_GRANTED,
+        SPAWN_OUTCOMES,
+        SPAWN_REFUSALS,
+        SPAWN_REFUSED_ALLOWANCE,
+        SPAWN_REFUSED_BUDGET,
+        SPAWN_REFUSED_SEAM,
+        SpawnRecord,
+        SpawnRequest,
+        SubagentCall,
+        SubagentFn,
+        SubagentResult,
     )
