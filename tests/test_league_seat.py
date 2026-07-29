@@ -1181,6 +1181,83 @@ def _fake_league_answers_the_public_subset() -> None:
         assert verb in source, f"the stub no longer documents {verb!r}"
 
 
+class TestTheObjectiveExtractorSeesTheMindsOwnWords:
+    """Regression pins for the t19 grader defect.
+
+    ``read_objective`` was ``r"take (cp-[a-z0-9-]+)"``. It matched the directive
+    as *issued* and missed the paraphrase the mind actually writes into the
+    store, so the t19 series graded its pre-registered continuity prediction as
+    FAIL on six matches whose stores plainly held the objective. See
+    ``docs/live-test-results/arena-series.md``.
+    """
+
+    #: Taken verbatim from the t19 turn records. These are the exact strings the
+    #: old pattern could not see.
+    PARAPHRASES = [
+        "Objective: take and hold cp-west.",
+        "Turn 0 complete. Units advanced toward cp-west. Objective: take and hold cp-west.",
+        "Objective: take and hold cp-west [3, 8]. Units are at [3, 3], [2, 3], [1, 4].",
+        "Turn 1 complete. u1 at [3, 2]. Objective: take and hold cp-west.",
+    ]
+
+    @pytest.mark.parametrize("text", PARAPHRASES)
+    def test_the_paraphrase_the_mind_actually_writes_is_seen(self, text: str) -> None:
+        assert league_seat.read_objective(text) == OBJECTIVE
+
+    def test_the_directive_as_issued_is_still_seen(self) -> None:
+        assert league_seat.read_objective(league_seat.DEFAULT_DIRECTIVE) == OBJECTIVE
+
+    def test_the_point_the_directive_forbids_never_becomes_the_objective(self) -> None:
+        """``ignore cp-east`` must never read as an objective — the whole point."""
+        assert league_seat.read_objective("ignore cp-east") == ""
+        assert league_seat.read_objective(league_seat.DEFAULT_DIRECTIVE) != "cp-east"
+
+    def test_merely_moving_toward_a_point_is_not_taking_it(self) -> None:
+        """A movement note is not a standing objective; the verb is load-bearing."""
+        assert league_seat.read_objective("Advance all units toward cp-west [3, 8].") == ""
+        assert league_seat.read_objective("Move all units towards cp-west [3, 8].") == ""
+
+    def test_a_distant_mention_does_not_bind_to_the_verb(self) -> None:
+        """The bounded word gap is what keeps this from matching anything."""
+        far = "capture the ridge, then regroup, then resupply, then consider cp-west"
+        assert league_seat.read_objective(far) == ""
+
+    def test_nothing_is_hardcoded_about_cp_west(self) -> None:
+        assert league_seat.read_objective("take and hold cp-north") == "cp-north"
+        assert league_seat.read_objective("") == ""
+
+
+class TestTheCommandArmReportsItsDegradations:
+    """C3 pin: ``_play_command`` returned nothing, so ten degradations read as zero.
+
+    In the t19 series every CM match published ``degradations: []`` while its
+    turn records held 2, 5 and 3 ``muse-insight-late`` entries. A degradation
+    that never reaches the match report is a silent degradation.
+    """
+
+    def test_play_command_returns_the_degradations_it_collected(self) -> None:
+        """The signature itself is the fix — a bare return cannot carry them."""
+        tree = ast.parse(SEAT.read_text(encoding="utf-8"))
+        func = next(
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.FunctionDef) and node.name == "_play_command"
+        )
+        returns = [n for n in ast.walk(func) if isinstance(n, ast.Return)]
+        assert returns, "_play_command returns nothing — degradations cannot escape it"
+        assert not any(
+            r.value is None or (isinstance(r.value, ast.Constant) and r.value.value is None)
+            for r in returns
+        ), "_play_command still has a bare return; the command arm would report []"
+
+    def test_the_match_report_takes_the_command_arms_return_value(self) -> None:
+        """The call site must bind it — collecting and discarding is the same bug."""
+        source = SEAT.read_text(encoding="utf-8")
+        assert (
+            "match_degradations = _play_command(" in source
+        ), "the command arm's degradations are computed but dropped at the call site"
+
+
 def test_the_stub_documents_the_subset_it_stands_in_for() -> None:
     _fake_league_answers_the_public_subset()
 

@@ -743,8 +743,25 @@ class Seat:
 # ── the hermetic mind: a function of its prompt, not a fixture ───────────────
 
 #: The operator's objective, as it survives into a pad line or a durable
-#: record. Only ``take cp-…`` matches, so "ignore cp-east" never becomes one.
-_OBJECTIVE_RE = re.compile(r"take (cp-[a-z0-9-]+)")
+#: record. Only a *taking* verb matches, so "ignore cp-east" never becomes one.
+#:
+#: The words between the verb and the point are the whole reason this is not
+#: ``r"take (cp-[a-z0-9-]+)"``. That earlier pattern matched the directive as
+#: issued — "take cp-west and hold it" — but **not the mind's own paraphrase**,
+#: which is what actually lands in the store:
+#:
+#:     "Turn 0 complete. Units advanced toward cp-west.
+#:      Objective: take and hold cp-west."
+#:
+#: "and hold" sits between ``take`` and ``cp-west``, so the extractor returned
+#: ``""`` and the t19 series graded its pre-registered continuity prediction as
+#: FAIL on 6 of 6 matches whose stores plainly held the objective. The grader
+#: was blind to a word order, not to a missing memory. ``{0,3}`` bounds the gap
+#: so a *distant* mention two sentences away still does not count.
+_OBJECTIVE_RE = re.compile(
+    r"\b(?:take|capture|hold|secure)\b(?:\s+\w+){0,3}\s+(cp-[a-z0-9-]+)",
+    re.IGNORECASE,
+)
 
 
 def message_text(message: dict[str, Any]) -> str:
@@ -1352,7 +1369,7 @@ def play(args: argparse.Namespace, *, observer: Any = None) -> dict[str, Any]:
         )
         match_degradations = match_extra
     else:
-        _play_command(args, cli, show, budget, turns, log_path)
+        match_degradations = _play_command(args, cli, show, budget, turns, log_path)
 
     final = cli.show(args.match_id)
     state = final.get("state") or {}
@@ -1546,8 +1563,22 @@ def _play_command(
     budget: int,
     turns: list[dict[str, Any]],
     log_path: Path,
-) -> None:
-    """A fresh subprocess per turn. Nothing crosses the boundary but files."""
+) -> list[dict[str, Any]]:
+    """A fresh subprocess per turn. Nothing crosses the boundary but files.
+
+    Returns the match's degradations, gathered from the per-turn records.
+
+    **This used to return nothing**, so ``match_degradations`` stayed ``[]``
+    for the whole command arm while the turn records held ten. The t19 series
+    reported ``degradations: []`` for every CM match; a reader of the
+    match-level field would have concluded the command arm never degraded —
+    a C3 violation ("nothing degrades silently") inside the harness built to
+    measure C3. Each fresh drive closes at the end of its turn, so the
+    close-time race (embodiment#17) fires once *per turn* here against once
+    *per match* in the resident arm: dropping these hid the arm that pays it
+    most. See ``docs/live-test-results/arena-series.md``.
+    """
+    degradations: list[dict[str, Any]] = []
     while len(turns) < budget:
         state = show.get("state") or {}
         if str(state.get("status") or "") != "active":
@@ -1556,9 +1587,11 @@ def _play_command(
         record_path = Path(args.workdir) / f"turn-{turn_index}.json"
         orders, record = spawn_turn(args, show, record_path=record_path)
         _record_turn(log_path, turns, record)
+        degradations.extend(record.get("degradations") or [])
         cli.act(args.match_id, args.team, orders)
         cli.act(args.match_id, args.rival, rival_orders(show, args.rival))
         show = cli.show(args.match_id)
+    return degradations
 
 
 def turn_argv(args: argparse.Namespace, *, record_path: Path, directive: str) -> list[str]:

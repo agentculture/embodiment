@@ -39,6 +39,28 @@ that can certify dead vocabulary indefinitely.
 its weakest permitted provoker. "Every code is covered" and "every code is
 reachable" are different claims and this suite only checked the first.
 
+### `t14`'s arena seat reported the command arm's degradations as zero
+
+`_play_command` returned nothing, so `match_degradations` stayed `[]` for the
+entire command arm while the per-turn records held **ten** `muse-insight-late`
+entries (2, 5 and 3 across the three CM matches). A reader of the match-level
+field would have concluded the command arm never degraded.
+
+That is a **C3 violation** — *"every degradation records a transition; nothing
+degrades silently"* — inside the harness built to measure C3. It shipped in t14
+and was found in t19 by cross-checking two surfaces that should have agreed.
+
+**The instrument was not repaired mid-series.** Fixing it between matches would
+have meant early matches were measured with one instrument and late ones with
+another; the results document reports the true count from the turn records and
+names the field as defective. The fix and its falsification landed after the
+last match.
+
+**Why the guard missed it:** the seat's tests covered *what a turn record
+contains*, and the turn records were correct all along. Nothing tested that the
+match report **aggregated** them. The bug lived entirely in the gap between two
+individually-correct surfaces.
+
 ### `t12` merged challenge harnesses that could not run at all
 
 `challenge_subset.py` and its siblings called `Task(system=…, tools=…)` and
@@ -84,6 +106,44 @@ Fixed with an anchor-density gate and a fifth verdict (`UNARGUED`), calibrated
 responses at 0.050–0.125) rather than intuition. My first threshold of 0.30 was
 too tight — the rollback fixture had only 12% headroom — and was corrected to
 0.45.
+
+### `t19`'s continuity grader could not see the mind's own words
+
+The arena series pre-registered a continuity prediction and graded it **FAIL on
+6 of 6 matches**. The stores plainly held the objective. The extractor was:
+
+```python
+_OBJECTIVE_RE = re.compile(r"take (cp-[a-z0-9-]+)")
+```
+
+It matched the directive as **issued** — "take cp-west and hold it" — and missed
+the paraphrase the mind actually writes into the store: *"Objective: take and
+hold cp-west."* Two words between the verb and the point were enough.
+
+The pre-registered verdict is published **as FAIL**, because retuning a grader
+after seeing the data is the thing pre-registration exists to prevent. The
+corrected reading is published beside it, explicitly labelled post-hoc, and a
+corrected prediction is left to its own series. Same restraint as t18 above; the
+difference is that here the honest verdict and the true one disagree, and both
+are printed.
+
+### And I built the confound that nearly buried it
+
+Mid-analysis I concluded the control arm had *also* reached the objective, and
+so continuity was not demonstrated. That came from testing `'cp-west' in plan` —
+which scored the control's generic board plan as a hit because that plan
+enumerates every control point:
+
+> "1) Capture **cp-center** first … 3) Expand to **cp-west** and **cp-east**"
+
+The directive was *"take cp-west; **ignore cp-east**"*. A plan naming cp-east is
+the opposite of having adopted it. Measuring west-**without**-east instead gives
+**8/9 in the memory arm and 0/9 in the control** — a perfect separation that the
+substring test had inverted.
+
+**Three defective measures in one task**, all of them mine, all found by reading
+the data rather than the code. The fourth — `_play_command` reporting no
+degradations — is in §1 below.
 
 ### And then I asserted a regrade I had not run
 
@@ -162,6 +222,18 @@ the durable-sparing rule changing a single delivery. A sufficient alternative
 was measured: those runs took 4 turns / 14–16 tool calls against the baseline's
 6 / 24, and staleness is loop distance. Baseline n=1.
 
+### A prediction that could not be graded in the cells it named
+
+t19's P2 was written about the CO and CM cells. `matrix_specs()` leaves
+`Spec.directive` at its `""` default, so **those cells were never given a
+directive** — every CO/CM turn records `directive_given: False`, turn 0
+included. The prediction was ungradeable where it said it would be tested.
+
+Nothing about the pre-registration was wrong; the runner did not implement what
+the pre-registration described. Written down because "the prediction was fine,
+the harness did not do the thing" is a distinct failure from a wrong prediction,
+and only shows up if you grade rather than glance.
+
 ### The dominant counsel loss is a close-time race, not staleness
 
 **One `muse-insight-late` in every one of four runs**, at steps 13–15,
@@ -175,6 +247,20 @@ step. Filed as
 [embodiment#17](https://github.com/agentculture/embodiment/issues/17) rather
 than fixed, because changing the muse lane's close contract is a design
 decision.
+
+**t19 replicated it in a third task shape and measured the rate law.** All 14
+degradations in the 24-match arena series were this one code, and the rate
+tracks **drive closes**, not turns and not matches:
+
+| arm | drive closes | late insights | per close |
+|---|---|---|---|
+| resident (one drive per match) | 3 | 4 | **1.33** |
+| command (a fresh drive per turn) | 9 | 10 | **1.11** |
+
+So the cost scales with **how often a host closes a drive**. A per-turn command
+host pays it three times as often as a resident host doing the same work — which
+is sharper than the issue currently states, and is the thing a consumer needs to
+know before choosing an arm.
 
 ### The compiled-memory lane is not live-safe
 

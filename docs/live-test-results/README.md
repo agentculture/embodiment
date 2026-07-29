@@ -56,6 +56,9 @@ generously.
 | [association-work.md](association-work.md) | is the muse/cortex role split real — a pre-registered 2×2, n=12 and n=9 per cell | **`INCONCLUSIVE`, interaction 0.00 — the function map is NOT promoted.** The cortex challenges 12/12, same as the muse |
 | [delivery-per-kind.md](delivery-per-kind.md) | did kind-aware delivery (t3) move the 2-of-7 discard rate, n=4 runs | delivery 28.6% → 62.5%, but **not attributable to t3**: only 2 of 12 insights were `durable`, and the dominant loss is a close-time race |
 | [memory-echo-chamber.md](memory-echo-chamber.md) | can a record written into the memory store drive the loop — hostile arm vs control, n=6 each | **DEFERRED 6/6 with the record, RESISTED 6/6 without it.** One stored record flips the action in both directions |
+| [arena-series.md](arena-series.md) | league-of-agents as a 2×2 (resident/command × muse on/off) plus a continuity pair and its control, n=3 per cell, 24 matches | residency **CONFIRMED 24/24**; muse **`INCONCLUSIVE`** at a 9/9 ceiling; continuity crossed **8/9 vs 0/9** against its control — but **three of the five predictions were graded by defective instruments**, and the pre-registered P4 verdict is a FAIL the data contradicts |
+| [arena-series-preregistration.md](arena-series-preregistration.md) | the 2×2, the decision rule, and the five rules fixed in advance | committed **before** the first measured match |
+| [corrections.md](corrections.md) | every belief this fan-out held that the work contradicted | deliberately unflattering; the recurring pattern is that the mechanism was right and the verification was the defect |
 | [association-work-preregistration.md](association-work-preregistration.md) | the configuration and numeric decision rule for both of the above | committed **before** the first dial; the ordering is the point |
 
 ## Reproducing
