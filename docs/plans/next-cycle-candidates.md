@@ -213,33 +213,6 @@ waves, fewer dangling deps — than one Qwen builds from its own frame. With a
 same-mind control arm, because t18 and t19 both taught that the control is where
 the result actually lives.
 
-## Tier 2d — should the muse have a scratchpad and a headspace?
-
-**Proposal (operator).** Filed as
-[#21](https://github.com/agentculture/embodiment/issues/21) with the
-measurements. Summary of why it may be the strongest experiment on this list:
-
-- **The baseline is nowhere near a ceiling** — the failure that killed t18 and
-  t19 as designs. `association-work.md` found **5 of the muse's 6 failures
-  state a definite, wrong final answer.** Confidently wrong, not confused, with
-  enormous headroom to move.
-- **A probe suggests the mechanism.** Handed the pad's three tools and its
-  ordering rule, the muse wrote **five `intend`s and zero `observe`s** — the
-  exact failure the pad exists to prevent, with the intent texts visibly
-  circling (*"I will re-evaluate the recurrence carefully"* on turn 5). A mind
-  that never observes never checks itself. **n=1**, so this is a prediction for
-  the pad-only arm, not a finding.
-- **If that holds, a pad alone will not fix it** — the muse needs something to
-  observe *against*, which is the argument for execution (arm C).
-- **The truth function already exists and is brute-force verified** (the
-  designed subset problem), so no new grader is needed — see M2.
-
-Three arms: tools-off (today) / +pad / +pad +headspace. Risks that must ride
-along: headspace is a real authority increase for a role whose contract is
-*proposes, never decides*; a muse pad that ever becomes recallable arrives
-wearing the "something we remembered" authority that beat the cortex 6/6 (S1);
-and latency grew 5.5 s → 30.4 s over five pad turns.
-
 ## Tier 2c — ledger-based thinking as a working strategy
 
 **Proposal (operator):** apply ledger discipline to the reasoning process, not
@@ -288,6 +261,75 @@ without checking, and here is the check I skipped."
 That gap is worth proposing upstream to devague rather than building locally —
 it is a method-level idea, and this repo is a consumer of the method, not its
 owner.
+
+## Tier 2d — should the muse have a scratchpad and a headspace?
+
+**Proposal (operator).** Filed as
+[#21](https://github.com/agentculture/embodiment/issues/21) with the
+measurements.
+
+**The three arms**, referred to by letter throughout:
+
+| Arm | Authority |
+|---|---|
+| **A** | tools-off — today's seam, the baseline |
+| **B** | **+ scratchpad** — write-only working memory, no repo and no execution |
+| **C** | **+ scratchpad + headspace** — plus a bounded ephemeral workspace it can run code in |
+
+### The framing that makes arm C worth running: logic without arithmetic
+
+**Operator's framing, and it is better than the one this section originally
+carried.** Headspace is not primarily a way for the muse to *check itself* — it
+is a way to do **logic without arithmetic**, so the model spends its capacity on
+thinking and prose instead of calculation.
+
+The probe is evidence for exactly that. All five circling intents were stuck on
+**arithmetic**, not on reasoning:
+
+> *"I will define f(n, parity)…"* → *"I will continue the recurrence for E(n)
+> and O(n)…"* → *"I will **re-evaluate the recurrence carefully**"*
+
+That is a mind trying to be an ALU and failing, while its actual job —
+reflective counsel: reframe, challenge, offer alternatives — is prose work that
+arithmetic was crowding out.
+
+**This materially weakens the authority objection below.** A sandbox that
+evaluates a recurrence is not decision authority; it does not let the muse act
+on the world, it lets it stop pretending to be a calculator. The risk survives
+only in proportion to what the workspace can actually reach — which makes the
+sandbox boundary the load-bearing control, not the existence of execution.
+
+### Why it may be the strongest experiment on this list
+
+- **The baseline is nowhere near a ceiling** — the failure that killed t18 and
+  t19 as designs.
+  [`association-work.md`](../live-test-results/association-work.md) found
+  **5 of the muse's 6 failures state a definite, wrong final answer.**
+  Confidently wrong, not confused, with enormous headroom to move.
+- **A probe suggests the mechanism.** Handed the pad's three tools and its
+  ordering rule, the muse wrote **five `intend`s and zero `observe`s** — the
+  exact failure the pad exists to prevent. **n=1**, so this is a prediction for
+  arm B, not a finding.
+- **If that holds, arm B alone will not fix it.** A mind that never observes
+  never checks itself, and one doing arithmetic in its head has nothing
+  trustworthy to observe. Both point at arm C.
+- **The truth function already exists and is brute-force verified** (the
+  designed subset problem), so no new grader is needed — see M2.
+
+### Risks that must ride along
+
+- **Authority.** Reduced, not removed, by the calculator framing above. Arm C
+  must not reach the repo, the eidetic store, or the network — and that
+  boundary must be **asserted by test, not by intent**, because it is now the
+  only thing standing between "a calculator" and "a second acting mind".
+- **The echo chamber.** A muse pad that ever becomes recallable arrives wearing
+  the "something we remembered" authority that beat the cortex 6/6 (S1).
+- **Latency.** 5.5 s → 30.4 s across five pad turns, and the cortex is the
+  contended resource on this box.
+- **Arithmetic is not the only thing it might offload.** The framing predicts
+  the muse uses the workspace for calculation; it may instead use it to
+  *substitute* execution for reasoning, which would be a different result and
+  worth measuring rather than assuming away.
 
 ## Tier 3 — known defects, already filed
 
