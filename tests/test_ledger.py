@@ -27,6 +27,7 @@ thread is bounded so a broken implementation fails rather than hangs.
 
 from __future__ import annotations
 
+import json
 import threading
 from dataclasses import FrozenInstanceError, dataclass, fields
 from pathlib import Path
@@ -1039,6 +1040,30 @@ class TestNothingIsFabricated:
             "child_task_id",
             "original",
         }
+
+    def test_to_dict_drops_original_so_the_fold_is_json_safe_unconditionally(self) -> None:
+        """``original`` is a live foreign object; folding it would poison JSON.
+
+        The field-set pin above passes whether or not ``to_dict`` emits
+        ``original``, so on its own it does not protect a host that serialises
+        the ledger. This does: the payload is a deliberately unserialisable
+        object, and the assertion is that ``json.dumps`` still succeeds.
+        """
+
+        class Unserialisable:
+            pass
+
+        record = ledger.LedgerRecord(
+            source=ledger.SOURCE_MUSE,
+            code=muse.DEGRADED_THINKING,
+            reason="a lane's own object rode along",
+            original=Unserialisable(),
+        )
+        assert record.original is not None
+        folded = record.to_dict()
+        assert "original" not in folded
+        # The point of the exclusion, stated as the assertion rather than as prose.
+        assert json.loads(json.dumps(folded))["code"] == muse.DEGRADED_THINKING
 
 
 # ── 3. attribution is looked up, never guessed ────────────────────────────────

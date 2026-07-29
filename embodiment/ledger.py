@@ -310,7 +310,14 @@ class LedgerRecord:
     original: Any = None
 
     def to_dict(self) -> dict[str, Any]:
-        """JSON-safe fold. Absent fields are OMITTED, never emitted as zeros."""
+        """JSON-safe fold. Absent fields are OMITTED, never emitted as zeros.
+
+        :attr:`original` is **excluded even when present** — it is a live
+        foreign object, and serialising it is its own lane's ``to_dict``'s job.
+        That exclusion is what makes this return value JSON-safe
+        unconditionally; a reader who needs the untouched record reaches for the
+        attribute directly.
+        """
         data: dict[str, Any] = {
             "source": self.source,
             "code": self.code,
