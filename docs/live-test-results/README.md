@@ -53,6 +53,9 @@ generously.
 | [configurations.md](configurations.md) | every run's full settings, including confounded ones | temperature was a hidden variable throughout |
 | [scratchpad.md](scratchpad.md) | does forcing a tool call per step repair the `exit=stopped` collapse | yes on protocol failures (25%→67%), no on capacity ones |
 | [muse-challenge.md](muse-challenge.md) | does the muse challenge a cortex result or restate it, n=9 per arm | challenged 9/9 asked **and** 9/9 unasked; zero restatements in 54 runs |
+| [association-work.md](association-work.md) | is the muse/cortex role split real — a pre-registered 2×2, n=12 and n=9 per cell | **`INCONCLUSIVE`, interaction 0.00 — the function map is NOT promoted.** The cortex challenges 12/12, same as the muse |
+| [delivery-per-kind.md](delivery-per-kind.md) | did kind-aware delivery (t3) move the 2-of-7 discard rate, n=4 runs | delivery 28.6% → 62.5%, but **not attributable to t3**: only 2 of 12 insights were `durable`, and the dominant loss is a close-time race |
+| [association-work-preregistration.md](association-work-preregistration.md) | the configuration and numeric decision rule for both of the above | committed **before** the first dial; the ordering is the point |
 
 ## Reproducing
 
@@ -72,6 +75,16 @@ uv run python examples/selftest.py
 # does the muse challenge a cortex result, or restate it (both arms)
 uv run python examples/muse_challenge.py --live --framing task --n 3 --json
 uv run python examples/muse_challenge.py --live --framing bare --n 3 --json
+
+# is the role split real — the pre-registered 2x2, then the same rule re-applied
+uv run python examples/association_work.py --live --n-reflective 4 --n-executive 3 \
+    --out docs/live-test-results/association-work.jsonl
+uv run python examples/association_work.py --analyse \
+    --out docs/live-test-results/association-work.jsonl
+
+# per-kind delivery, against the 2-of-7 baseline
+uv run python examples/delivery_series.py --n 4 \
+    --out docs/live-test-results/delivery-per-kind.jsonl
 
 # long-running proof, with and without the muse
 uv run python examples/proof.py --json
@@ -106,6 +119,26 @@ contains successes is not evidence of anything.
    the scoring did. The first self-test graded against records that were
    *seeded* rather than records that were *recalled*, so a retriever that
    surfaced 3 of 4 was counted against the mind. See [self-test.md](self-test.md).
+5. **"Challenging a conclusion is what the muse is for."** Not established.
+   [muse-challenge.md](muse-challenge.md) measured the muse at 9/9 and 9/9 but
+   never ran the *cortex* through the same loop. When
+   [association-work.md](association-work.md) did, it also scored 12/12. The
+   original numbers stand; the inference drawn beside them — that this is a
+   muse-shaped ability — does not.
+6. **"Neither model ever submitted a wrong answer on the executive problems."**
+   Written from a classifier's output, and false. `failure_modes()` charges any
+   non-`finished` exit as a *protocol* failure, so it reported `0` reasoning
+   failures — while **5 of the muse's 6 failures end on a definite, wrong final
+   answer** that simply never went through the `finish` tool. Caught by reading
+   the transcripts the series had committed. The counter is left as-is and
+   documented as defective rather than retuned after the fact. See
+   [association-work.md](association-work.md).
+7. **"The three constrained-problem harnesses are committed and verified."**
+   Their *graders* were. The harnesses themselves had never executed: each
+   built `Task(system=…, tools=…)` and called `run(task=…, bench=…)`, and the
+   contract has none of those names, so every invocation raised `TypeError`
+   before its first model call. Found by trying to run one. See
+   [association-work.md](association-work.md).
 
 ## Deviations
 

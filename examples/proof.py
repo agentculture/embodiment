@@ -52,10 +52,21 @@ from embodiment import (  # noqa: E402
     run,
 )
 from embodiment.contract import ModelResponse, ToolCall  # noqa: E402
+from embodiment.muse import DEFAULT_STALE_LAG  # noqa: E402
+from examples.challenge_config import write_config_preamble  # noqa: E402
 
 DEFAULT_BASE_URL = os.environ.get("EMBODIMENT_BASE_URL", "http://localhost:8001/v1")
 DEFAULT_CORTEX = "sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP"
 DEFAULT_MUSE = "nvidia/Gemma-4-31B-IT-NVFP4"
+#: Both lanes' temperature. It was a literal inside ``gateway`` — recorded
+#: nowhere, and therefore a hidden variable in every number this harness has
+#: produced, the 2-of-7 delivery baseline included.
+DEFAULT_TEMPERATURE = 0.3
+#: The muse's thinking-turn budget in this harness. Named so the config
+#: preamble records it rather than leaving it in a constructor call.
+MUSE_MAX_TURNS = 2
+#: The muse's completion budget per turn, likewise.
+MUSE_MAX_TOKENS = 1200
 
 PROBLEM = (
     "Find a closed form for the sum S(n) = 1*1! + 2*2! + 3*3! + ... + n*n!, "
@@ -501,7 +512,22 @@ def grade_audit(answer: str, bench: "AuditBench") -> dict[str, Any]:
     }
 
 
-def gateway(base_url: str, model: str, key: str, *, tools=None, max_tokens: int = 6000):
+def gateway(
+    base_url: str,
+    model: str,
+    key: str,
+    *,
+    tools=None,
+    temperature: float = DEFAULT_TEMPERATURE,
+    max_tokens: int = 6000,
+):
+    """One completion against the gateway.
+
+    ``temperature`` is a parameter rather than a literal so the config preamble
+    can record what was actually on the wire, per role. It was hardcoded, which
+    meant the muse ran at the acting temperature in every run this harness has
+    ever produced — including the 2-of-7 delivery baseline — and nothing said so.
+    """
     endpoint = f"{base_url.rstrip('/')}/chat/completions"
     if not endpoint.startswith(("http://", "https://")):
         raise SystemExit(f"error: --base-url must be http(s), got {base_url!r}")
@@ -511,7 +537,7 @@ def gateway(base_url: str, model: str, key: str, *, tools=None, max_tokens: int 
             "model": model,
             "messages": messages,
             "max_tokens": max_tokens,
-            "temperature": 0.3,
+            "temperature": temperature,
         }
         if tools:
             body["tools"] = tools
@@ -561,6 +587,20 @@ def grade(proof: str, bench: ProofBench) -> dict[str, Any]:
     }
 
 
+def _fold_codes(muse_state: Optional[dict[str, Any]]) -> dict[str, int]:
+    """Tally the muse runner's ledger by degradation code.
+
+    A code that never fires reports **nothing**, not a zero: a zero would be
+    indistinguishable from "this run did not trip it", and two of the runner's
+    codes have no producer at all. The absent-vs-zero distinction is the finding.
+    """
+    tally: dict[str, int] = {}
+    for record in (muse_state or {}).get("degradations", []):
+        code = getattr(record, "code", "")
+        tally[code] = tally.get(code, 0) + 1
+    return tally
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     parser.add_argument(
@@ -575,7 +615,14 @@ def main() -> int:
     parser.add_argument("--base-url", default=DEFAULT_BASE_URL)
     parser.add_argument("--cortex-model", default=DEFAULT_CORTEX)
     parser.add_argument("--muse-model", default=DEFAULT_MUSE)
+    parser.add_argument("--cortex-temperature", type=float, default=DEFAULT_TEMPERATURE)
+    parser.add_argument("--muse-temperature", type=float, default=DEFAULT_TEMPERATURE)
     parser.add_argument("--identity", default=None)
+    parser.add_argument(
+        "--results",
+        default="results/proof_config.json",
+        help="where the config preamble is written, BEFORE the first result line",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -583,6 +630,29 @@ def main() -> int:
     if not key:
         print("error: COLLEAGUE_API_KEY is not set", file=sys.stderr)
         return 2
+
+    # Written BEFORE the first dial. This harness produced the 2-of-7 delivery
+    # baseline with no configuration record at all; the staleness threshold the
+    # baseline turns on was not written down anywhere a reader could find it.
+    results_path = Path(args.results).expanduser()
+    results_path.parent.mkdir(parents=True, exist_ok=True)
+    config = write_config_preamble(
+        str(results_path),
+        cortex_model=args.cortex_model,
+        cortex_temperature=args.cortex_temperature,
+        muse_model=args.muse_model if args.muse else None,
+        muse_temperature=args.muse_temperature if args.muse else None,
+        max_turns=args.max_steps,
+        staleness_policy=f"default (DEFAULT_STALE_LAG={DEFAULT_STALE_LAG})",
+        n=1,
+        extra={
+            "problem": args.problem,
+            "identity": args.identity,
+            "muse_max_turns": MUSE_MAX_TURNS,
+            "muse_max_tokens": MUSE_MAX_TOKENS,
+            "stale_lag": DEFAULT_STALE_LAG,
+        },
+    )
 
     euler = args.problem == "euler"
     audit_mode = args.problem == "audit"
@@ -593,9 +663,15 @@ def main() -> int:
     runner: Optional[ThreadedMuseRunner] = None
     if args.muse:
         runner = ThreadedMuseRunner(
-            gateway(args.base_url, args.muse_model, key, max_tokens=1200),
+            gateway(
+                args.base_url,
+                args.muse_model,
+                key,
+                temperature=args.muse_temperature,
+                max_tokens=MUSE_MAX_TOKENS,
+            ),
             system=frame_muse(None, identity=args.identity),
-            controls=MuseControls(max_turns=2),
+            controls=MuseControls(max_turns=MUSE_MAX_TURNS),
         )
     presence = PresenceEngine(
         io=PresenceIO(render=lines.append, task_state=bench.state),
@@ -604,11 +680,18 @@ def main() -> int:
     )
 
     task = Task(id=f"proof-{args.problem}", repo_path="", instruction=problem_text)
+    cortex = gateway(
+        args.base_url,
+        args.cortex_model,
+        key,
+        tools=tool_schema,
+        temperature=args.cortex_temperature,
+    )
     started = time.time()
     if runner is not None:
         with runner:
             outcome = run(
-                gateway(args.base_url, args.cortex_model, key, tools=tool_schema),
+                cortex,
                 task,
                 executor=bench,
                 max_steps=args.max_steps,
@@ -618,7 +701,7 @@ def main() -> int:
         muse_state = runner.snapshot()
     else:
         outcome = run(
-            gateway(args.base_url, args.cortex_model, key, tools=tool_schema),
+            cortex,
             task,
             executor=bench,
             max_steps=args.max_steps,
@@ -649,7 +732,19 @@ def main() -> int:
         "grade": (grade_audit if audit_mode else grade_euler if euler else grade)(
             outcome.result.summary or "", bench
         ),
+        "config": config,
         "muse_counts": (muse_state or {}).get("counts"),
+        # Task t3's per-kind delivery counters, and the ledger folded by code.
+        # Reporting only `counts` is how the 2-of-7 baseline came out with no
+        # way to ask WHICH kind of counsel was discarded — the whole question
+        # kind-aware delivery was built to answer.
+        "muse_kind_delivered": (muse_state or {}).get("kind_delivered"),
+        "muse_kind_dropped": (muse_state or {}).get("kind_dropped"),
+        "muse_degradation_codes": _fold_codes(muse_state),
+        "muse_degradations": [
+            record.to_dict() for record in (muse_state or {}).get("degradations", [])
+        ],
+        "muse_relative_latency": (muse_state or {}).get("relative_latency"),
     }
 
     if args.json:
@@ -668,6 +763,11 @@ def main() -> int:
     print(f"degradations : {len(report['degradations'])}")
     if muse_state:
         print(f"muse         : {report['muse_counts']}")
+        print(
+            f"  by kind    : delivered {report['muse_kind_delivered']} "
+            f"dropped {report['muse_kind_dropped']}"
+        )
+        print(f"  by code    : {report['muse_degradation_codes']}")
     print("-" * 72)
     for key_name, value in report["grade"].items():
         print(f"  {key_name:22s}: {value}")
