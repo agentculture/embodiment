@@ -261,14 +261,28 @@ _DONE_RE = re.compile(re.escape(MARKER_DONE), re.IGNORECASE)
 #: Group 1 is the bracket part (including brackets) or None for bare form.
 #: Group 2 is the content inside brackets or None for bare form.
 #:
-#: The quantifiers are **possessive** (``\s*+``) so the whitespace runs cannot
-#: be re-partitioned on failure. Nothing that follows them is whitespace, so
-#: giving back a space could never rescue a match, and refusing to try removes
-#: the ambiguity static analysis flags as super-linear (SonarCloud S8786).
-#: Measured linear before the change and behaviourally identical after it —
-#: differential-tested over 574 inputs with zero divergence — so this is a
-#: clarity fix, not a latency fix. This regex reads model output, which is the
-#: one input class a host does not control.
+#: The whitespace quantifiers are **possessive** (``\s*+``) so those runs cannot
+#: be re-partitioned on failure. Nothing following them is whitespace, so giving
+#: back a space could never rescue a match, and refusing to try is free.
+#: Differential-tested over 574 inputs against the previous pattern with zero
+#: divergence.
+#:
+#: SonarCloud **S8786 still flags this line, and that is a deliberate
+#: won't-fix.** Two measurements say so:
+#:
+#: - It is linear in practice. 60 000 spaces before an unmatched ``[`` match in
+#:   0.0003 s; there is no catastrophic backtracking to remove.
+#: - Silencing it completely requires making the bracket body possessive too
+#:   (``[^\]:]*+``), and that is **not** behaviour-preserving: it changes what a
+#:   malformed, unclosed marker parses to. ``GUIDANCE[unclosed:x: y`` yields the
+#:   kind ``unclosed:x`` today and would yield ``unclosed`` instead — 576
+#:   divergences across 3 178 differential inputs, every one of them on
+#:   malformed input.
+#:
+#: Both spellings produce junk that fails kind validation and records a
+#: degradation, so neither is more correct — which is exactly why this is not
+#: worth a silent semantic change to satisfy a linter. The rule is right that
+#: the construct is ambiguous and wrong that it costs anything here.
 _GUIDANCE_RE = re.compile(r"^\s*+guidance(\s*+\[([^\]]*)\]?)?\s*+:\s*+", re.IGNORECASE)
 
 #: Cap on a recorded degradation's reason text, so a runaway traceback from a
