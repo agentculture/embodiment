@@ -142,10 +142,26 @@ defective** — the single most valuable property available, given that four
 graders we wrote failed this cycle. It also answers the ceiling problem: plan
 construction is constraint satisfaction, and a mind can visibly fail at it.
 
-### The structural correction: the muse cannot read
+### The structural correction: the muse *seam* cannot read
 
-`/scope` and `/challenge` both carry the same hard rule — *"Provenance on every
-finding… If you didn't read it, don't claim it."* The muse **cannot satisfy it**:
+**Measured first, because the obvious framing is wrong.** Gemma has working
+tool calling — tested on the rig rather than trusted from `/capabilities`,
+whose adverts have been wrong before:
+
+```text
+muse (Gemma-4-31B)    3.95s  tool_calls=1  finish=tool_calls
+senses (Gemma-4-12B)  2.85s  tool_calls=1  finish=tool_calls
+```
+
+A five-turn loop with tool results fed back works too. So this is **an
+architectural choice of ours, not a capability floor** — revisitable with
+evidence, which is a materially different thing from a wall. Whether the muse
+*should* get tools is [#21](https://github.com/agentculture/embodiment/issues/21);
+this section is only about what is true today.
+
+What *is* true today: `/scope` and `/challenge` both carry the hard rule
+— *"Provenance on every finding… If you didn't read it, don't claim it."* —
+and the muse **seam** cannot satisfy it:
 
 > "The muse's ENTIRE seam: one tools-off model turn, messages in, response out.
 > No tool schema is ever passed and no tool result is ever read — that is the
@@ -196,6 +212,33 @@ Qwen builds from Gemma's frame converges better — fewer gate iterations, wider
 waves, fewer dangling deps — than one Qwen builds from its own frame. With a
 same-mind control arm, because t18 and t19 both taught that the control is where
 the result actually lives.
+
+## Tier 2d — should the muse have a scratchpad and a headspace?
+
+**Proposal (operator).** Filed as
+[#21](https://github.com/agentculture/embodiment/issues/21) with the
+measurements. Summary of why it may be the strongest experiment on this list:
+
+- **The baseline is nowhere near a ceiling** — the failure that killed t18 and
+  t19 as designs. `association-work.md` found **5 of the muse's 6 failures
+  state a definite, wrong final answer.** Confidently wrong, not confused, with
+  enormous headroom to move.
+- **A probe suggests the mechanism.** Handed the pad's three tools and its
+  ordering rule, the muse wrote **five `intend`s and zero `observe`s** — the
+  exact failure the pad exists to prevent, with the intent texts visibly
+  circling (*"I will re-evaluate the recurrence carefully"* on turn 5). A mind
+  that never observes never checks itself. **n=1**, so this is a prediction for
+  the pad-only arm, not a finding.
+- **If that holds, a pad alone will not fix it** — the muse needs something to
+  observe *against*, which is the argument for execution (arm C).
+- **The truth function already exists and is brute-force verified** (the
+  designed subset problem), so no new grader is needed — see M2.
+
+Three arms: tools-off (today) / +pad / +pad +headspace. Risks that must ride
+along: headspace is a real authority increase for a role whose contract is
+*proposes, never decides*; a muse pad that ever becomes recallable arrives
+wearing the "something we remembered" authority that beat the cortex 6/6 (S1);
+and latency grew 5.5 s → 30.4 s over five pad turns.
 
 ## Tier 2c — ledger-based thinking as a working strategy
 
