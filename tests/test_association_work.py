@@ -444,6 +444,34 @@ class TestReanalysisFromCommittedRecords:
         assert cells["reflective_cortex"].rate == 0.25
         assert cells["executive_cortex"].rate == 0.75
 
+    def test_a_budget_exit_with_a_stated_wrong_answer_counts_as_protocol(self) -> None:
+        """The known defect, pinned so it cannot be mistaken for a finding.
+
+        A run that burned its budget and ended on a definite wrong answer is
+        charged *protocol*, because the predicate keys on ``exit_reason``. The
+        2026-07-29 series hit this in 5 of 6 muse failures. Pinned rather than
+        fixed: retuning a measurement to fit the result it just produced is the
+        move this harness exists to avoid, and the corrected reading lives in
+        ``docs/live-test-results/association-work.md``.
+        """
+        cell = aw.Cell(
+            "executive_muse",
+            "executive",
+            "m",
+            [
+                {
+                    "passed": False,
+                    "transport_error": False,
+                    "exit_reason": "budget",
+                    "raw_summary": "initial=1011 order=BCAED",
+                    "verdict": "WRONG",
+                }
+            ],
+        )
+        modes = aw.failure_modes(cell)
+        assert modes == {"passed": 0, "protocol": 1, "reasoning": 0}
+        assert modes["reasoning"] == 0, "under-counts reasoning failures — read the transcript"
+
     def test_failure_modes_split_protocol_from_reasoning(self) -> None:
         """ "Could not drive the loop" and "drove it and was wrong" differ."""
         cells = aw.cells_from_records(self._records())

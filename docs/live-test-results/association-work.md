@@ -87,9 +87,10 @@ rule, not repaired after the fact.
 
 ### The failure modes are not the same, even though the rates are
 
-Both executive cells are 3 passed / 6 protocol / 0 reasoning — **neither model
-ever submitted a wrong answer to `register` or `entropic3b`.** But they failed
-in completely different ways:
+`failure_modes()` reports both executive cells as 3 passed / 6 protocol / 0
+reasoning. **That "0 reasoning" is an artifact of the predicate and must not be
+read as "neither model reasoned wrongly" — see the correction below.** What the
+two cells actually did:
 
 | | muse (Gemma 4 31B) | cortex (Qwen 3.6 27B) |
 |---|---|---|
@@ -107,6 +108,40 @@ problem family.
 So "3/9 versus 3/9" must not be read as *equally good at executive reasoning*.
 It reads as: **both minds failed to complete two of three problems inside a
 14-turn budget, one by grinding through it and one by giving up silently.**
+
+#### Correction: the classifier said "0 reasoning failures". It was wrong
+
+This document first claimed, from `failure_modes()`'s output, that *neither
+model ever submitted a wrong answer*. **Reading the six muse transcripts
+falsified it.** In **5 of its 6 failures the muse states a definite final
+answer, and every one of the five is wrong**:
+
+| problem | muse's stated answer | truth |
+|---|---|---|
+| `register` | `initial=1011 order=BCAED` | `initial=0101 order=CBEAD` |
+| `register` | `initial=1000 order=BCAED` | `initial=0101 order=CBEAD` |
+| `register` | *(truncated mid-verification — no final answer)* | — |
+| `entropic3b` | `Initial value 143, Order E-B-D-C-A` | `00001111`, `C-A-E-D-B` |
+| `entropic3b` | `Initial value 191, Order B, E, D, C, A` | `00001111`, `C-A-E-D-B` |
+| `entropic3b` | `Initial Value: 167, Order: B, E, D, C, A` | `00001111`, `C-A-E-D-B` |
+
+The predicate charges any exit that is not `finished` as *protocol*, so a
+budget exit is classified protocol even when the transcript ends on a stated,
+wrong answer. **`failure_modes()` therefore under-counts reasoning failures,
+and its `0` is a property of the rule rather than a finding about the models.**
+The corrected reading:
+
+- **muse** — 5 of 6 are *reasoning* failures that also missed the submission
+  protocol: it did the work, reached a definite answer, got it wrong, and never
+  called `finish`. The sixth ran out of budget mid-verification.
+- **cortex** — 6 of 6 are pure collapses: no finish, no synthesis, **no
+  substantive prose at all**. It stated no answer, right or wrong.
+
+The classifier's output is left as it was rather than retuned after seeing the
+data; the correction lives here, where a reader meets the number. Direction of
+the error: it flattered the models by making a wrong answer look like a mere
+protocol slip, and it flattered the *symmetry* by making two very different
+failure profiles report identically.
 
 ### A lenient check that looked like a finding and was not
 

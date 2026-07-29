@@ -374,6 +374,17 @@ def failure_modes(cell: Cell) -> dict[str, int]:
     is not read by :func:`decide`. Its exact wording was settled after the
     pre-registration commit and before any executive run existed, which is
     recorded in the results document rather than left for a reader to notice.
+
+    **KNOWN DEFECT — it under-counts reasoning failures, and the direction is
+    flattering.** A budget exit is charged as *protocol* even when the
+    transcript ends on a definite, wrong answer that simply never went through
+    the ``finish`` tool. In the 2026-07-29 series this reported ``0`` reasoning
+    failures while 5 of the muse's 6 failures stated a wrong final answer in
+    prose. It is left as it was rather than retuned after the data — retuning a
+    measurement to fit the result it just produced is the move this whole
+    harness exists to avoid — and the corrected reading is recorded in
+    ``docs/live-test-results/association-work.md``. **Read the transcripts; do
+    not read this counter as a claim about how a model reasons.**
     """
     modes = {"passed": 0, "protocol": 0, "reasoning": 0}
     for run in cell.runs:

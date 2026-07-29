@@ -125,7 +125,15 @@ contains successes is not evidence of anything.
    [association-work.md](association-work.md) did, it also scored 12/12. The
    original numbers stand; the inference drawn beside them — that this is a
    muse-shaped ability — does not.
-6. **"The three constrained-problem harnesses are committed and verified."**
+6. **"Neither model ever submitted a wrong answer on the executive problems."**
+   Written from a classifier's output, and false. `failure_modes()` charges any
+   non-`finished` exit as a *protocol* failure, so it reported `0` reasoning
+   failures — while **5 of the muse's 6 failures end on a definite, wrong final
+   answer** that simply never went through the `finish` tool. Caught by reading
+   the transcripts the series had committed. The counter is left as-is and
+   documented as defective rather than retuned after the fact. See
+   [association-work.md](association-work.md).
+7. **"The three constrained-problem harnesses are committed and verified."**
    Their *graders* were. The harnesses themselves had never executed: each
    built `Task(system=…, tools=…)` and called `run(task=…, bench=…)`, and the
    contract has none of those names, so every invocation raised `TypeError`
