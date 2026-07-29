@@ -829,8 +829,18 @@ class TestToolSurface:
         assert seat.submitted[-1]["actions"] == [{"unit_id": "blue-u1", "action": "hold"}]
 
     def test_the_house_opponent_is_deterministic(self, tmp_path: Path) -> None:
+        """Same board in, same orders out — and orders that actually say something.
+
+        The equality alone was too weak to mean much: a function returning a
+        cached empty dict would satisfy it. The rival is the *control* half of
+        every arena match, so "deterministic" has to mean "deterministically
+        issues real orders", not "deterministically issues nothing".
+        """
         board = _board(tmp_path / "probe")
-        assert league_seat.rival_orders(board, "red") == league_seat.rival_orders(board, "red")
+        first = league_seat.rival_orders(board, "red")
+        second = league_seat.rival_orders(board, "red")
+        assert first == second, "the house opponent is not deterministic"
+        assert first.get("actions"), "the house opponent issued no orders at all"
 
 
 # ── framing: absent identity ⇒ byte-identical prompts ───────────────────────

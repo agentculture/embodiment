@@ -811,7 +811,11 @@ class ThreadedMuseRunner:
             value = float(seconds)
         except (TypeError, ValueError):
             return
-        if value <= 0 or value != value:  # non-positive or NaN
+        # Rejects non-positive AND NaN in one comparison: every comparison
+        # against NaN is False, so `not (value > 0)` is True for NaN too. The
+        # earlier form spelled the NaN half as `value != value`, which reads as
+        # a typo and which static analysis flags as one.
+        if not value > 0:
             return
         with self._lock:
             self._loop_step_times.append(value)
