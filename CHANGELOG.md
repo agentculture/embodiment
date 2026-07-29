@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.8.0] - 2026-07-29
+
+### Added
+
+- The muse ships as reflective counsel: a five-verb charter in MUSE_AUTHORITY, counsel self-labelled by kind, and kind-aware delivery so durable counsel survives loop distance (t1, t2, t3)
+- Recall bundles: runtime-side fetch over flat eidetic recall with per-record ids and source labels, its own context budget, and truncation recorded as a degradation (t4, t5)
+- Compiled memory reaches the cortex as durable counsel, and a drive it informed carries the compiled-from record ids as links (t6)
+- Subagents as an injected seam: SubagentFn, a strictly-decrementing tree-wide spawn allowance with no upward override, parent-drawn turn budgets, and child degradations attributed in the parent ledger (t9, t10, t11)
+- The scratchpad is promoted into the package with a combined pad+ledger resume report a successor resumes from (t8)
+- examples/league_seat.py — an embodiment team plays league-of-agents through the arena's public CLI only, in both residency arms, with pad+eidetic continuity across matches (t14)
+- examples/echo_probe.py and examples/arena_series.py — the memory echo-chamber probe and the pre-registered arena series runner (t7, t19)
+- docs/live-test-results/corrections.md — every belief this lane held that the work contradicted, recorded as first-class (t20)
+- docs/deliveries/ — the plan-vs-actual delivery record with per-audience artifact checklist (t20)
+
+### Changed
+
+- Perception meets a real model: the gateway 12B is wired into perceive(interpret=...) behind an opt-in flag, with the verbatim invariant and never-raise asserted live (t13)
+- docs/relationships.md gains the function map with its design-metaphor caveat. The map was NOT promoted into README or CLAUDE.md: the pre-registered experiment returned INCONCLUSIVE (all four cells tied, interaction 0.00), and the promotion gate was honoured (t15, t18)
+
+### Fixed
+
+- embodiment#15: perception reads fenced JSON, and degrades rather than claiming health on an interpretation it cannot read (t21)
+- A newline inside a stored record stripped its source label, placing unlabelled store-sourced text into the model's context (t7)
+- `examples/league_seat.py` reported the command arm's degradations as zero: `_play_command` returned nothing, so ten muse-insight-late entries published as [] — a C3 violation inside the harness built to measure C3 (t19)
+- `examples/league_seat.py`'s `read_objective` could not see the mind's own paraphrase, which made the t19 continuity prediction grade FAIL on six matches whose stores held the objective (t19)
+
 ## [0.7.1] - 2026-07-25
 
 ### Added
