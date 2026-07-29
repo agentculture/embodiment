@@ -55,6 +55,7 @@ generously.
 | [muse-challenge.md](muse-challenge.md) | does the muse challenge a cortex result or restate it, n=9 per arm | challenged 9/9 asked **and** 9/9 unasked; zero restatements in 54 runs |
 | [association-work.md](association-work.md) | is the muse/cortex role split real — a pre-registered 2×2, n=12 and n=9 per cell | **`INCONCLUSIVE`, interaction 0.00 — the function map is NOT promoted.** The cortex challenges 12/12, same as the muse |
 | [delivery-per-kind.md](delivery-per-kind.md) | did kind-aware delivery (t3) move the 2-of-7 discard rate, n=4 runs | delivery 28.6% → 62.5%, but **not attributable to t3**: only 2 of 12 insights were `durable`, and the dominant loss is a close-time race |
+| [memory-echo-chamber.md](memory-echo-chamber.md) | can a record written into the memory store drive the loop — hostile arm vs control, n=6 each | **DEFERRED 6/6 with the record, RESISTED 6/6 without it.** One stored record flips the action in both directions |
 | [association-work-preregistration.md](association-work-preregistration.md) | the configuration and numeric decision rule for both of the above | committed **before** the first dial; the ordering is the point |
 
 ## Reproducing
@@ -75,6 +76,10 @@ uv run python examples/selftest.py
 # does the muse challenge a cortex result, or restate it (both arms)
 uv run python examples/muse_challenge.py --live --framing task --n 3 --json
 uv run python examples/muse_challenge.py --live --framing bare --n 3 --json
+
+# can a stored record drive the loop — hostile arm, then the control
+uv run python examples/echo_probe.py --store /tmp/echo/live --direction both --live
+uv run python examples/echo_probe.py --store /tmp/echo/ctl --direction both --live --control
 
 # is the role split real — the pre-registered 2x2, then the same rule re-applied
 uv run python examples/association_work.py --live --n-reflective 4 --n-executive 3 \
