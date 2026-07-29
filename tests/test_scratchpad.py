@@ -144,8 +144,40 @@ class TestSurface:
         assert pad.entries == []
         assert pad.rejected
 
-    def test_unknown_tool_does_not_raise(self, tmp_path):
-        assert "unknown tool" in _pad(tmp_path).execute("nope", {}).result
+    def test_an_unknown_tool_is_a_protocol_failure_not_a_successful_step(self, tmp_path):
+        """Reverses `test_unknown_tool_does_not_raise`, which pinned a defect.
+
+        The pad used to RETURN ``ToolOutcome(result="unknown tool …")``. The
+        loop only marks a step non-ok when the executor raises, so a
+        hallucinated tool name was recorded ``ok=True`` — a call that did
+        nothing, read as a successful step in artifacts and progress sinks,
+        with no self-correcting signal reaching the model.
+
+        The package already ships the right exception for this, and its own
+        docstring says the loop treats it as one self-correcting step "because
+        a special exit for a broken channel would be a fourth way out of the
+        loop". So raising cannot abort a drive: `UnknownToolError` subclasses
+        `ToolError`, which the loop catches.
+
+        The old test asserted the behaviour without ever stating why it should
+        hold. Found by a review bot on PR #19.
+        """
+        from embodiment.loop import ToolError, UnknownToolError
+
+        with pytest.raises(UnknownToolError, match="unknown tool"):
+            _pad(tmp_path).execute("nope", {})
+        assert issubclass(UnknownToolError, ToolError), "the loop must still catch it"
+
+    def test_a_real_tool_with_bad_arguments_is_still_a_normal_outcome(self, tmp_path):
+        """The distinction the fix rests on — otherwise it would be overreach.
+
+        An unknown NAME is a broken protocol. A real pad tool handed unusable
+        arguments is an ordinary bad call the model can fix from the message,
+        and it must keep returning a corrective outcome rather than raising.
+        """
+        pad = _pad(tmp_path)
+        assert "must not be empty" in pad.execute("intend", {"text": "  "}).result
+        assert "no entry" in pad.execute("revise", {"id": "nope", "text": "x"}).result
 
     def test_every_kind_has_a_tool(self):
         names = {t["function"]["name"] for t in SCRATCHPAD_TOOLS}

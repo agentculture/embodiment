@@ -756,6 +756,47 @@ class TestDelegationFailsVisibly:
         assert [r.outcome for r in outcome.spawns] == [SPAWN_REFUSED_SEAM]
         assert [d.code for d in outcome.degradations] == [DEGRADED_SPAWN_UNAVAILABLE]
 
+    def test_a_malformed_spawn_value_costs_one_step_and_never_aborts_the_drive(self) -> None:
+        """The executor is injected host code, so ``spawn`` can be any object.
+
+        ``_delegate`` used to dereference ``.role``/``.allowance`` immediately,
+        so a host returning the wrong type raised ``AttributeError`` out of the
+        loop as ``LoopAborted`` — a **fourth way out**, contradicting this
+        module's own contract that a refused or failed spawn costs exactly one
+        self-correcting step. Found by a review bot on PR #19 and reproduced
+        before the fix.
+        """
+        from embodiment.loop import ToolOutcome
+
+        class MalformedSpawnExecutor:
+            def schema(self) -> list:
+                return []
+
+            def execute(self, name: str, arguments: dict) -> Any:
+                if name == "finish":
+                    return ToolOutcome(result="done", finished=True, finish_summary="done")
+                # A plain dict, not a SpawnRequest — the host got it wrong.
+                return ToolOutcome(result="ok", spawn={"role": "x", "allowance": 1})
+
+        outcome = _drive(
+            _turn(_call("delegate")),
+            _turn(_call("finish", cid="cf")),
+            executor=MalformedSpawnExecutor(),
+            subagent=RecordingSeam(None),
+            spawn_allowance=2,
+            max_steps=9,
+            controls=LoopControls(synthesis=False),
+        )
+        assert [r.outcome for r in outcome.spawns] == [SPAWN_REFUSED_SEAM]
+        assert [d.code for d in outcome.degradations] == [DEGRADED_SPAWN_UNAVAILABLE]
+        # The step is recorded, non-ok, and the drive survived it.
+        assert [s.ok for s in outcome.result.steps if s.tool == "delegate"] == [False]
+        # Nothing was minted for a request that could not even be read.
+        record = outcome.spawns[0]
+        assert record.role is None
+        assert record.child_task_id is None
+        assert outcome.spawn_allowance_remaining == 2
+
     def test_a_raising_seam_costs_one_step_and_never_aborts_the_drive(self) -> None:
         outcome = self._run(RecordingSeam(RuntimeError("child harness down")))
         assert outcome.exit_reason == EXIT_FINISHED

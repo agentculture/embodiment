@@ -165,6 +165,7 @@ class Scratchpad:
 
     def execute(self, name: str, arguments: dict[str, Any]) -> Any:
         from embodiment import ToolOutcome
+        from embodiment.loop import UnknownToolError
 
         if name in ("intend", "observe", "conclude"):
             text = str(arguments.get("text", "")).strip()
@@ -198,7 +199,18 @@ class Scratchpad:
             self._append({"answer": self.answer})
             return ToolOutcome(result="submitted", finished=True, finish_summary=self.answer)
 
-        return ToolOutcome(result=f"unknown tool {name}")
+        # A name the pad does not have is a broken tool-call PROTOCOL, not a bad
+        # call to a real tool — and the package ships `UnknownToolError` for
+        # exactly that. Returning a ToolOutcome here recorded the step `ok=True`,
+        # so a hallucinated tool call read as a successful step in artifacts and
+        # progress sinks and the model never got the self-correcting signal. The
+        # loop treats this identically to any ToolError: one non-ok step, never
+        # an exit.
+        #
+        # The corrective ToolOutcomes above are deliberately NOT this: those are
+        # calls to real pad tools with unusable arguments, which is an ordinary
+        # bad call the model can fix from the message.
+        raise UnknownToolError(f"unknown tool {name}")
 
     def state(self) -> str:
         if not self.entries:
@@ -424,6 +436,7 @@ def judge_journey(
     """
     from embodiment import Task, ToolOutcome
     from embodiment import run as default_run
+    from embodiment.loop import UnknownToolError
 
     drive = run_fn or default_run
 
@@ -439,7 +452,7 @@ def judge_journey(
                     finished=True,
                     finish_summary=str(arguments.get("verdict", "")),
                 )
-            return ToolOutcome(result=f"unknown tool {name}")
+            raise UnknownToolError(f"unknown tool {name}")
 
         def state(self) -> str:
             return "judging" if not self.payload else "judged"

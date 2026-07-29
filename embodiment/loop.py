@@ -1117,6 +1117,23 @@ def _delegate(ctx: _Work, call: ToolCall, outcome: ToolOutcome) -> tuple[ToolOut
     request = outcome.spawn
     if request is None:
         return outcome, True
+    if not isinstance(request, SpawnRequest):
+        # The executor is injected host code, so `spawn` can be any object. It
+        # used to be dereferenced straight away, and a malformed value raised
+        # AttributeError out of the loop as `LoopAborted` — a FOURTH way out,
+        # contradicting this module's own contract that a refused or failed
+        # spawn costs one self-correcting step exactly as a ToolError does.
+        reason = f"a tool set spawn to {type(request).__name__}, not a SpawnRequest"
+        record = _record_spawn(
+            ctx,
+            call,
+            SPAWN_REFUSED_SEAM,
+            reason=reason,
+            role=None,
+            allowance_requested=None,
+        )
+        _degrade(ctx, DEGRADED_SPAWN_UNAVAILABLE, f"{call.name}: {reason}")
+        return _with_note(outcome, _spawn_note(record, None)), False
     common = {"role": request.role, "allowance_requested": request.allowance}
     if ctx.allowance <= NO_SPAWNS:
         record = _record_spawn(

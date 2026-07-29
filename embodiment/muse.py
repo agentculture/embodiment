@@ -1044,8 +1044,13 @@ def _parse_kind(match: "re.Match[str]") -> tuple[str, Optional[str]]:
 def _split_content(
     content: str,
     cap: int,
-) -> tuple[str, str, list[MuseInsight], list[MuseDegradation]]:
-    """Split one thinking turn into ``(narration, guidance, insights, degradations)``.
+) -> tuple[str, str, list[str], list[MuseDegradation]]:
+    """Split one thinking turn into ``(narration, guidance, kinds, degradations)``.
+
+    The third element is the list of counsel **kinds** parsed off the guidance
+    lines — one ``str`` per guidance line, not a list of insights. The
+    annotation said ``list[MuseInsight]`` and the prose said "insights"; both
+    were wrong about a value ``_advance_turn`` already consumes as kinds.
 
     Guidance lines are the ONLY channel into the acting loop, and they arrive as
     plain advisory text — there is no other kind of line this could produce.
