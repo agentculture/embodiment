@@ -22,7 +22,7 @@ import pytest
 
 from embodiment import muse_runner
 from embodiment.muse import MuseDegradation
-from examples import proof
+from examples import delivery_series, proof
 
 
 class TestFoldCodes:
@@ -148,3 +148,90 @@ class TestProofConfigConstants:
         source = inspect.getsource(proof.gateway)
         assert '"temperature": temperature' in source
         assert '"temperature": 0.3' not in source
+
+
+class TestDeliveryFold:
+    """The per-kind fold across runs (``examples/delivery_series.py``)."""
+
+    @staticmethod
+    def _report(**counts: int) -> dict[str, Any]:
+        base = {
+            "insights_delivered": 0,
+            "insights_dropped_stale": 0,
+            "insights_dropped_late": 0,
+            "insights_dropped_overflow": 0,
+        }
+        base.update(counts)
+        return {"muse_counts": base}
+
+    def test_it_reproduces_the_published_baseline_exactly(self) -> None:
+        """2 of 7 — the number in proof.md. If the fold cannot restate the
+        baseline, it cannot be trusted to restate its successor."""
+        folded = delivery_series.fold(
+            [
+                self._report(
+                    insights_delivered=2,
+                    insights_dropped_stale=2,
+                    insights_dropped_late=3,
+                )
+            ]
+        )
+        assert folded["insights_produced"] == 7
+        assert folded["delivery_fraction"] == pytest.approx(0.2857, abs=1e-4)
+        assert folded["baseline"] == delivery_series.BASELINE_COUNTS
+
+    def test_late_and_overflow_drops_are_reported_unattributed(self) -> None:
+        """They cannot carry a kind, so the fold must not pretend they do."""
+        folded = delivery_series.fold(
+            [
+                {
+                    "muse_counts": {
+                        "insights_delivered": 1,
+                        "insights_dropped_stale": 0,
+                        "insights_dropped_late": 2,
+                        "insights_dropped_overflow": 1,
+                    },
+                    "muse_kind_delivered": {"step": 1},
+                }
+            ]
+        )
+        assert folded["unattributable_drops"] == {"late": 2, "overflow": 1}
+        assert folded["kind_delivered"] == {"step": 1}
+        assert folded["kind_dropped_stale"] == {}
+
+    def test_counts_sum_across_runs(self) -> None:
+        folded = delivery_series.fold(
+            [
+                self._report(insights_delivered=3, insights_dropped_late=1),
+                self._report(
+                    insights_delivered=1, insights_dropped_stale=2, insights_dropped_late=1
+                ),
+            ]
+        )
+        assert folded["runs"] == 2
+        assert folded["counts"]["insights_delivered"] == 4
+        assert folded["insights_produced"] == 8
+
+    def test_a_failed_run_is_counted_and_excluded_from_the_totals(self) -> None:
+        folded = delivery_series.fold(
+            [self._report(insights_delivered=2), {"harness_error": "boom"}]
+        )
+        assert folded["runs"] == 2
+        assert folded["harness_errors"] == 1
+        assert folded["counts"]["insights_delivered"] == 2
+
+    def test_no_insights_reports_no_fraction_rather_than_zero(self) -> None:
+        """A fraction with an empty denominator is not zero, it is absent."""
+        assert delivery_series.fold([self._report()])["delivery_fraction"] is None
+
+    def test_an_unfired_code_stays_absent_from_the_fold(self) -> None:
+        folded = delivery_series.fold(
+            [
+                {
+                    "muse_counts": {"insights_delivered": 1},
+                    "muse_degradation_codes": {muse_runner.DROPPED_STALE: 1},
+                }
+            ]
+        )
+        assert folded["degradation_codes"] == {muse_runner.DROPPED_STALE: 1}
+        assert muse_runner.DROPPED_COUNSEL_DISPLACED not in folded["degradation_codes"]

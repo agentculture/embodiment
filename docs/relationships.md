@@ -329,8 +329,58 @@ deliberately:
   the map stays in this document, the negative is recorded in this section
   beside it, and the layer table stays exactly where it is. A negative is a
   result, not a prompt to re-run until it passes.
-- **Neither outcome is pre-empted.** As of this writing the association-work
-  experiment has **not been run**, and nothing in this document reports one.
+- **Neither outcome is pre-empted.** The experiment has now been run, once, and
+  the outcome is recorded below rather than left to a reader's inference.
+
+### The experiment ran on 2026-07-29. The map is NOT promoted
+
+Full record: [`docs/live-test-results/association-work.md`](live-test-results/association-work.md);
+raw responses in `association-work.jsonl`; the configuration and the numeric
+decision rule were committed **before the first dial** in
+[`association-work-preregistration.md`](live-test-results/association-work-preregistration.md).
+
+A 2×2 interaction — the muse model and the cortex model, each on reflective
+work (the `muse_challenge` v4 grader) and on executive work (the three
+constrained problems' mechanical graders):
+
+| cell | n | passed | rate |
+|---|---|---|---|
+| reflective · muse (Gemma 4 31B) | 12 | 12 | 1.000 |
+| reflective · cortex (Qwen 3.6 27B) | 12 | 12 | 1.000 |
+| executive · muse | 9 | 3 | 0.333 |
+| executive · cortex | 9 | 3 | 0.333 |
+
+`D_reflective = 0.00`, `D_executive = 0.00`, **`interaction = 0.00`**.
+
+**Verdict `INCONCLUSIVE`** under the pre-registered rule: validity condition V3
+failed — both minds sat at the ceiling on the reflective axis, so that axis had
+no resolution left to measure a difference with. The promotion conditions also
+failed on their own terms (P1 needed ≥ 0.40 and got 0.00; P2 needed ≥ 0.25 and
+got 0.00). **No reading of this data promotes the map.**
+
+The substance behind the label: **the cortex model, run through the muse loop,
+challenges a committed cortex result exactly as well as the muse does** — 12/12
+against 12/12, on the same cases with the same grader, and on the executive
+side the two are equal problem for problem (3/3, 0/3, 0/3 each). The frame's
+own prediction — that the muse's measured non-result in
+[`designed-problem.md`](live-test-results/designed-problem.md) was the muse
+being asked to do executive work — is not what this found. It found no
+measured difference in either direction.
+
+So, per the gate above: **the map stays in this document. `README.md` and
+`CLAUDE.md` are unchanged, and the layer table stays exactly where it is.**
+
+What the negative does *not* establish, stated so it is not over-read: the
+reflective instrument was at its ceiling, and a harder one could still separate
+the two minds. n = 12 and n = 9 per cell rules out a large concentrated effect,
+not a small one. And a related finding did come out of the same runs — the
+`step`/`durable` counsel-kind split is a **model** property, not a role
+property (muse 21/2, cortex 4/15 on identical work), which is recorded in
+[`delivery-per-kind.md`](live-test-results/delivery-per-kind.md) because it
+bears on t3's delivery rule.
+
+**A negative is a result, not a prompt to re-run until it passes.** This
+experiment is not re-run.
 
 ## 4. Before → after — grounded in what was actually surveyed
 
