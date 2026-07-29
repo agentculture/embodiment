@@ -812,9 +812,16 @@ class ThreadedMuseRunner:
         except (TypeError, ValueError):
             return
         # Rejects non-positive AND NaN in one comparison: every comparison
-        # against NaN is False, so `not (value > 0)` is True for NaN too. The
+        # against NaN is False, so `not value > 0` is True for NaN too. The
         # earlier form spelled the NaN half as `value != value`, which reads as
-        # a typo and which static analysis flags as one.
+        # a typo and which static analysis flags as one (SonarCloud S1764).
+        #
+        # DO NOT "simplify" this to `value <= 0`. SonarCloud S1940 suggests
+        # exactly that, and it is wrong here: `NaN <= 0` is False, so the
+        # opposite operator silently lets NaN through and poisons every later
+        # mean in `_relative_latency`. The rule is right about the general
+        # case and wrong about this one. Pinned by
+        # tests/test_muse_runner.py's junk-value loop, which feeds `nan`.
         if not value > 0:
             return
         with self._lock:
