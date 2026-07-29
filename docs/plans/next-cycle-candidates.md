@@ -115,6 +115,137 @@ where **the cortex alone visibly fails some of the time** — otherwise the
 design cannot resolve any effect, and `INCONCLUSIVE` is the honest ceiling
 forever.
 
+## Tier 2b — split the devague legs across the two minds
+
+**Proposal (operator):** Gemma does `/scope`, `/think`, `/challenge`; Qwen does
+`/spec-to-plan`, `/assign-to-workforce`; Gemma does `/deviate`.
+
+This is the best-motivated muse experiment yet proposed here, and it needs one
+structural correction before it can run.
+
+### Why it is the strongest design available — it brings its own grader
+
+M4 above says the next muse experiment needs a task where **the cortex alone
+visibly fails some of the time**, with an outcome we did not author. The
+plan-side legs have exactly that, already shipped and dogfooded in a sibling
+repo:
+
+- `devague plan converge` returns pass/fail **plus the enumerated gaps** —
+  uncovered targets, criteria-less tasks, dangling deps.
+- `devague plan waves` **refuses** a cyclic or dangling graph, and emits the
+  batches deterministically.
+- The plan's own coaching adds checkable properties: wide waves, file-disjoint
+  tasks, acceptance criteria phrased as testable conditions.
+
+That is a non-subjective dependent variable **we cannot accidentally make
+defective** — the single most valuable property available, given that four
+graders we wrote failed this cycle. It also answers the ceiling problem: plan
+construction is constraint satisfaction, and a mind can visibly fail at it.
+
+### The structural correction: the muse cannot read
+
+`/scope` and `/challenge` both carry the same hard rule — *"Provenance on every
+finding… If you didn't read it, don't claim it."* The muse **cannot satisfy it**:
+
+> "The muse's ENTIRE seam: one tools-off model turn, messages in, response out.
+> No tool schema is ever passed and no tool result is ever read — that is the
+> whole of 'tools-off', and it is enforced by there being nothing else here."
+> — `embodiment/muse.py:513`
+
+There is no executor parameter to pass. Giving the muse a read surface would
+also breach colleague#352's design rule that identity framing **must not modify
+tool authority**, and would collapse the distinction the architecture rests on.
+
+**The split that preserves both contracts is "cortex reads, muse reflects":**
+
+| Leg | Who | Shape |
+|---|---|---|
+| `/scope` | cortex reads, muse proposes | cortex runs `git ls-files` and reads surfaces; muse proposes **what else to look at** and what the findings imply. Provenance stays with the reader |
+| `/think` | either | claim capture is composition, not retrieval — the natural place to A/B the two minds |
+| `/challenge` | **muse** | the best fit. The lenses *are* reframing work. Cortex supplies the exported spec plus what it read; the muse hunts blind spots in it |
+| `/spec-to-plan` | **cortex** | constraint satisfaction against a deterministic gate |
+| `/assign-to-workforce` | **cortex** | wave scheduling, file-disjointness, tool authority |
+| `/deviate` | **muse** | **try this first** — see below |
+
+### `/deviate` is the cheapest and best-motivated slice
+
+It needs no tools (hand it the plan and the observation), and it has a genuine
+cognitive asymmetry rather than a role label: **the mind that authored a plan is
+invested in it; a separate mind is not.** Every `dN` this cycle was noticed by
+the same mind executing the plan, which is the worst possible reviewer of it.
+
+### The sharp objection — this split may amplify the echo chamber
+
+The most consequential result of this cycle is that a record arriving **wearing
+the authority of something we remembered** beat the cortex 6/6, with labelling
+working correctly (S1).
+
+A frame handed from Gemma to Qwen arrives as **`confirmed` claims** — the
+strongest "this is settled" framing in the method, and structurally the same
+shape as the record that won. Worse, the convergence gate *requires* confirmed
+claims, so the pipeline's mechanics push toward exactly that framing.
+
+**The method already carries the mitigation, and it constrains the split:**
+`--origin llm` lands `proposed`, and *only the user confirms*. So the viable
+arrangement is **Gemma proposes → human confirms → Qwen plans**. It cannot be
+"Gemma confirms". That is not a workaround; it is the existing spec gate doing
+the job S1 says needs doing.
+
+**Measure it, don't assume it.** The comparison worth running is whether a plan
+Qwen builds from Gemma's frame converges better — fewer gate iterations, wider
+waves, fewer dangling deps — than one Qwen builds from its own frame. With a
+same-mind control arm, because t18 and t19 both taught that the control is where
+the result actually lives.
+
+## Tier 2c — ledger-based thinking as a working strategy
+
+**Proposal (operator):** apply ledger discipline to the reasoning process, not
+just to code.
+
+C3 says *every degradation records a transition; nothing degrades silently.* We
+enforce that for the loop. We do **not** enforce it for our own working, and
+this cycle is the evidence: **`corrections.md` is a degradation ledger written
+from memory at the end**, when the transitions had already happened and several
+were recoverable only because data happened to be committed.
+
+The recurring entry in it — *"the mechanism was right and the verification was
+the defect"* — is not a bug class. It is a **degradation class**: at some
+moment, "the test passes" was silently substituted for "the mechanism works",
+and no transition was recorded when the substitution happened.
+
+Candidate vocabulary for a working ledger, each recorded **at the moment of the
+transition**:
+
+| Code | The transition |
+|---|---|
+| `assumption-for-measurement` | a number was asserted that could have been measured and was not |
+| `grader-unverified` | a result was read through an instrument nobody probed adversarially |
+| `control-absent` | a comparison was made with no arm that could have falsified it |
+| `n-below-claim` | the wording outran the sample |
+| `instrument-changed-mid-series` | the measuring device moved between observations |
+| `provenance-missing` | a claim cites something that was not actually read |
+
+Two lessons from this cycle constrain the design:
+
+1. **A code with no emitter certifies nothing** ([#18](https://github.com/agentculture/embodiment/issues/18)).
+   `PROVOKERS` accepted "provoke by recording the code directly", so dead
+   vocabulary passed an exhaustiveness guard indefinitely. A working ledger has
+   the same failure mode in a worse form — a code nobody ever files reads as a
+   category nobody ever hit.
+2. **Written late is written flattering.** The value is in recording the
+   transition *when it happens*, which is exactly what `/deviate` already does
+   for plan departures.
+
+**devague has most of this shape and one real gap.** `park`, `question`, `risk`
+and `deviate` are already ledger entries — but every one of them records
+uncertainty about *the subject*. None records degradation of *the reasoning
+process*. You can park "I don't know X"; there is no move for "I asserted X
+without checking, and here is the check I skipped."
+
+That gap is worth proposing upstream to devague rather than building locally —
+it is a method-level idea, and this repo is a consumer of the method, not its
+owner.
+
 ## Tier 3 — known defects, already filed
 
 | Item | State | Next step |

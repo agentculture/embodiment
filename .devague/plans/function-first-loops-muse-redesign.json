@@ -2,300 +2,416 @@
   "slug": "function-first-loops-muse-redesign",
   "title": "function-first loops + muse redesign",
   "frame_slug": "function-first-loops-muse-redesign",
-  "schema_version": 3,
+  "schema_version": 4,
   "status": "exported",
   "created": "2026-07-25T17:58:15Z",
-  "updated": "2026-07-25T20:06:29Z",
+  "updated": "2026-07-29T16:00:20Z",
   "targets": [
     {
       "id": "c1",
       "kind": "announcement",
-      "text": "embodiment's loops and model seams are redesigned around cognitive function: the muse ships as reflective/associative counsel (reflect, reframe, challenge, synthesize alternatives) with machine-readable responsibilities and forbidden authorities instead of a creative lobe; the scratchpad, planner and degradation ledger converge into one survivable record of a mind a successor can resume from; subagents arrive as an injected seam whose budgets compose and whose degradations are attributed; loop and presence events ride the shipped events-cli emitter; and the redesign is validated against the existing live-test challenge suite and adversarial league-of-agents play, with the muse configurable on/off so the comparison is measured rather than assumed"
+      "text": "embodiment's loops and model seams are redesigned around cognitive function: the muse ships as reflective/associative counsel (reflect, reframe, challenge, synthesize alternatives) with machine-readable responsibilities and forbidden authorities instead of a creative lobe; the scratchpad, planner and degradation ledger converge into one survivable record of a mind a successor can resume from; subagents arrive as an injected seam whose budgets compose and whose degradations are attributed; loop and presence events ride the shipped events-cli emitter; and the redesign is validated against the existing live-test challenge suite and adversarial league-of-agents play, with the muse configurable on/off so the comparison is measured rather than assumed",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "h1",
       "kind": "honesty",
-      "text": "every redesign claim traces to a measured live-test result or a recorded issue ask, and every validation claim states its n"
+      "text": "every redesign claim traces to a measured live-test result or a recorded issue ask, and every validation claim states its n",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "c2",
       "kind": "requirement",
-      "text": "the muse role is reframed from creative lobe to reflective/associative cognition: responsibilities reflect/reframe/challenge_assumptions/synthesize/generate_alternatives/consider_long_horizon/improve_meaning, forbidden authoritative_action/default_intake/silent_cortex_fallback; role name, endpoint compatibility, Gemma 4 31B mapping and thor-muse shape preserved (issue 12)"
+      "text": "the muse role is reframed from creative lobe to reflective/associative cognition: responsibilities reflect/reframe/challenge_assumptions/synthesize/generate_alternatives/consider_long_horizon/improve_meaning, forbidden authoritative_action/default_intake/silent_cortex_fallback; role name, endpoint compatibility, Gemma 4 31B mapping and thor-muse shape preserved (issue 12)",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "h2",
       "kind": "honesty",
-      "text": "the reframed role preserves the muse name, endpoint compatibility, Gemma 4 31B mapping and thor-muse shape (issue 12 acceptance criteria)"
+      "text": "the reframed role preserves the muse name, endpoint compatibility, Gemma 4 31B mapping and thor-muse shape (issue 12 acceptance criteria)",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "c3",
       "kind": "requirement",
-      "text": "muse prompt framing must invite disagreement, reframing and alternative synthesis rather than generic creativity, and at least one golden/live-test demonstrates the muse challenging or reframing a cortex-produced result, not merely rewriting it (issue 12 acceptance criteria)"
+      "text": "muse prompt framing must invite disagreement, reframing and alternative synthesis rather than generic creativity, and at least one golden/live-test demonstrates the muse challenging or reframing a cortex-produced result, not merely rewriting it (issue 12 acceptance criteria)",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "h3",
       "kind": "honesty",
-      "text": "at least one golden is checked in as a re-runnable harness in which the muse challenges or reframes a cortex-produced result rather than rewriting it"
+      "text": "at least one golden is checked in as a re-runnable harness in which the muse challenges or reframes a cortex-produced result rather than rewriting it",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "c4",
       "kind": "boundary",
-      "text": "the machine-readable role/responsibility metadata in /capabilities is lobes' contract to change, not embodiment's - issue 12 says it establishes the authoritative Lobes role contract; embodiment's half is its own muse framing, docs and goldens, and any lobes change goes through the communicate skill as a proposal, never a push"
+      "text": "the machine-readable role/responsibility metadata in /capabilities is lobes' contract to change, not embodiment's - issue 12 says it establishes the authoritative Lobes role contract; embodiment's half is its own muse framing, docs and goldens, and any lobes change goes through the communicate skill as a proposal, never a push",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "h15",
       "kind": "honesty",
-      "text": "no PR from this lane touches lobes: the responsibilities metadata reaches lobes only as a communicate-filed issue, and embodiment's docs cite that issue rather than restating the contract as if landed"
+      "text": "no PR from this lane touches lobes: the responsibilities metadata reaches lobes only as a communicate-filed issue, and embodiment's docs cite that issue rather than restating the contract as if landed",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "c5",
       "kind": "requirement",
-      "text": "the function-first frame (senses notice / cortex acts / muse reflects) lands in docs/relationships.md first with the explicit design-metaphor caveat, and is promoted to README/CLAUDE.md only if the association-work experiment supports it (issue 11's own recommendation)"
+      "text": "the function-first frame (senses notice / cortex acts / muse reflects) lands in docs/relationships.md first with the explicit design-metaphor caveat, and is promoted to README/CLAUDE.md only if the association-work experiment supports it (issue 11's own recommendation)",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "h4",
       "kind": "honesty",
-      "text": "README/CLAUDE promotion of the function-first frame happens only after the association-work experiment produces a supporting measured result; a negative result stays recorded in relationships.md and blocks promotion"
+      "text": "README/CLAUDE promotion of the function-first frame happens only after the association-work experiment produces a supporting measured result; a negative result stays recorded in relationships.md and blocks promotion",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "c6",
       "kind": "boundary",
-      "text": "neuroscience vocabulary (association cortex, default-mode, salience) ships only with the stated sentence that it is a design metaphor organising seams, not a claim about how anything works - same C2 discipline as the software-presence blockquote (issue 11)"
+      "text": "neuroscience vocabulary (association cortex, default-mode, salience) ships only with the stated sentence that it is a design metaphor organising seams, not a claim about how anything works - same C2 discipline as the software-presence blockquote (issue 11)",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "h16",
       "kind": "honesty",
-      "text": "everywhere the function vocabulary appears (relationships.md, and README/CLAUDE.md if promoted) the design-metaphor sentence appears in the same section - grep-checkable"
+      "text": "everywhere the function vocabulary appears (relationships.md, and README/CLAUDE.md if promoted) the design-metaphor sentence appears in the same section - grep-checkable",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "c7",
       "kind": "requirement",
-      "text": "the muse redesign in embodiment is additive task-shaping: MUSE_AUTHORITY (muse.py:201-211) and the _MUSE identity appendix (framing.py:153-159) carry an authority boundary and invite comment/question/critique but name no reflective task at all - the reframe adds reflect/reframe/challenge/alternatives prose to the muse prompt and boundary rendering, it removes nothing (no creative language exists in embodiment to remove)"
+      "text": "the muse redesign in embodiment is additive task-shaping: MUSE_AUTHORITY (muse.py:201-211) and the _MUSE identity appendix (framing.py:153-159) carry an authority boundary and invite comment/question/critique but name no reflective task at all - the reframe adds reflect/reframe/challenge/alternatives prose to the muse prompt and boundary rendering, it removes nothing (no creative language exists in embodiment to remove)",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "h5",
       "kind": "honesty",
-      "text": "the added muse task prose passes the framing token-ban tests (test_framing.py:657-741) unchanged, including the museless-composition ban"
+      "text": "the added muse task prose passes the framing token-ban tests (test_framing.py:657-741) unchanged, including the museless-composition ban",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "c8",
       "kind": "requirement",
-      "text": "the scratchpad is promoted from examples/ (not packaged - pyproject packages only embodiment/) to a first-class host-injectable seam: it is already a ToolExecutor with finish and state(), and tests already prove open-intent recovery across a real process boundary and torn-write survival; the planner waits until the pad is used in anger; the ledger sits beside the pad so a successor reads intent, observation and degradation as one record (issue 9)"
+      "text": "the scratchpad is promoted from examples/ (not packaged - pyproject packages only embodiment/) to a first-class host-injectable seam: it is already a ToolExecutor with finish and state(), and tests already prove open-intent recovery across a real process boundary and torn-write survival; the planner waits until the pad is used in anger; the ledger sits beside the pad so a successor reads intent, observation and degradation as one record (issue 9)",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "h6",
       "kind": "honesty",
-      "text": "the shipped scratchpad keeps every property the prototype's tests prove - open-intent recovery across a real process boundary, torn-write survival, per-write persistence - with tests moved or extended, never weakened"
+      "text": "the shipped scratchpad keeps every property the prototype's tests prove - open-intent recovery across a real process boundary, torn-write survival, per-write persistence - with tests moved or extended, never weakened",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "c9",
       "kind": "requirement",
-      "text": "subagents arrive as an injected seam decided by accounting: child budgets compose with the parent's max_steps in a stated tested way, child degradations reach the ledger in their own lane, the AST three-exit tests pass unchanged, a drive that spawns nothing is byte-identical, and recursion has a depth bound with the same structural proof (issue 6)"
+      "text": "subagents arrive as an injected seam decided by accounting: child budgets compose with the parent's max_steps in a stated tested way, child degradations reach the ledger in their own lane, the AST three-exit tests pass unchanged, a drive that spawns nothing is byte-identical, and recursion has a depth bound with the same structural proof (issue 6)",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "h7",
       "kind": "honesty",
-      "text": "the AST three-exit and stdlib-only-import pins on loop.py pass unchanged, and a test asserts a spawn-nothing drive is byte-identical to today"
+      "text": "the AST three-exit and stdlib-only-import pins on loop.py pass unchanged, and a test asserts a spawn-nothing drive is byte-identical to today",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "c11",
       "kind": "boundary",
-      "text": "any loop redesign keeps loop.py importable from stdlib and embodiment only - tests/test_loop.py:255-262 AST-pins module-scope imports, and the three-exit/no-raise/no-EXIT_ABORTED-return structure of _work_loop is pinned at :382-424; new capability enters through injected seams, never new imports"
+      "text": "any loop redesign keeps loop.py importable from stdlib and embodiment only - tests/test_loop.py:255-262 AST-pins module-scope imports, and the three-exit/no-raise/no-EXIT_ABORTED-return structure of _work_loop is pinned at :382-424; new capability enters through injected seams, never new imports",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "h17",
       "kind": "honesty",
-      "text": "tests/test_loop.py's import and exit-structure pins pass unchanged on every PR in this lane; no pin is loosened to admit a feature"
+      "text": "tests/test_loop.py's import and exit-structure pins pass unchanged on every PR in this lane; no pin is loosened to admit a feature",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "c13",
       "kind": "requirement",
-      "text": "a league-of-agents seat host ships under examples/, driving the arena only through its public CLI/harness driver contract (command/resident: prompt in on stdin, orders JSON out on stdout); continuity is demonstrated across matches, the muse is configurable on/off so the comparison is measured, and claims are backed by deterministic replays (issue 7)"
+      "text": "a league-of-agents seat host ships under examples/, driving the arena only through its public CLI/harness driver contract (command/resident: prompt in on stdin, orders JSON out on stdout); continuity is demonstrated across matches, the muse is configurable on/off so the comparison is measured, and claims are backed by deterministic replays (issue 7)",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "h8",
       "kind": "honesty",
-      "text": "the seat host reaches the arena only through league's public CLI/driver contract, and a deterministic replay hash backs every claimed comparison"
+      "text": "the seat host reaches the arena only through league's public CLI/driver contract, and a deterministic replay hash backs every claimed comparison",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "c15",
       "kind": "requirement",
-      "text": "validation reuses the existing challenge suite: proof.py's three problems carry in-file truth functions and graders (truth :75, grade :543, grade_euler :348, grade_audit :454), scratchpad.judge_journey takes injected truth, greenhouse covers continuity and the echo-chamber shape, selftest covers converse/recognise; the designed subset problem (answer 76, trap 72) and both register puzzles exist only as prose in docs/live-test-results/ and must be re-authored into committed harnesses before they can be reused"
+      "text": "validation reuses the existing challenge suite: proof.py's three problems carry in-file truth functions and graders (truth :75, grade :543, grade_euler :348, grade_audit :454), scratchpad.judge_journey takes injected truth, greenhouse covers continuity and the echo-chamber shape, selftest covers converse/recognise; the designed subset problem (answer 76, trap 72) and both register puzzles exist only as prose in docs/live-test-results/ and must be re-authored into committed harnesses before they can be reused",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "h9",
       "kind": "honesty",
-      "text": "each re-authored challenge carries its truth function in code, so grading is mechanical and grader bugs are findable by rerunning"
+      "text": "each re-authored challenge carries its truth function in code, so grading is mechanical and grader bugs are findable by rerunning",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "c16",
       "kind": "requirement",
-      "text": "experiments carry measurement discipline: per-role temperature is chosen deliberately (both minds ran at 0.2 while the muse's declared role is divergent_second_opinion - configurations.md names temperature a hidden variable never deliberately set), configurations are recorded, graders are verified before results are read (the first series logged five author measurement errors against zero genuine model failures), and every claim states its n"
+      "text": "experiments carry measurement discipline: per-role temperature is chosen deliberately (both minds ran at 0.2 while the muse's declared role is divergent_second_opinion - configurations.md names temperature a hidden variable never deliberately set), configurations are recorded, graders are verified before results are read (the first series logged five author measurement errors against zero genuine model failures), and every claim states its n",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "h10",
       "kind": "honesty",
-      "text": "every experiment writes its configuration (per-role temperature, muse turns, stale lag, n) into the results doc before results are read"
+      "text": "every experiment writes its configuration (per-role temperature, muse turns, stale lag, n) into the results doc before results are read",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "c18",
       "kind": "requirement",
-      "text": "the perception seam finally meets a real model: perceive(interpret=...) (perception.py:73-148) has zero call sites outside its tests; wiring Gemma 4 12B into it in a host/example exercises the verbatim invariant and never-raise contract against a real model - the cheap first move the issue 11 comment names, requiring no c30 reversal"
+      "text": "the perception seam finally meets a real model: perceive(interpret=...) (perception.py:73-148) has zero call sites outside its tests; wiring Gemma 4 12B into it in a host/example exercises the verbatim invariant and never-raise contract against a real model - the cheap first move the issue 11 comment names, requiring no c30 reversal",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "h12",
       "kind": "honesty",
-      "text": "the live 12B run preserves ContextPacket.original verbatim against the real transcript, and a dead endpoint degrades to None plus a recorded degradation, never a raise"
+      "text": "the live 12B run preserves ContextPacket.original verbatim against the real transcript, and a dead endpoint degrades to None plus a recorded degradation, never a raise",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "c19",
       "kind": "boundary",
-      "text": "c30 holds throughout: the senses coordination loop and senses framing stay colleague's (recorded on colleague#352); the function-first table is a mesh map, not an embodiment roadmap, and nothing in this redesign ships a senses loop in embodiment"
+      "text": "c30 holds throughout: the senses coordination loop and senses framing stay colleague's (recorded on colleague#352); the function-first table is a mesh map, not an embodiment roadmap, and nothing in this redesign ships a senses loop in embodiment",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "h18",
       "kind": "honesty",
-      "text": "no senses loop module, no senses framing role and no senses token lands in embodiment's framing surface (test_framing.py's ban stays); the colleague#352 comment stands uncontradicted"
+      "text": "no senses loop module, no senses framing role and no senses token lands in embodiment's framing surface (test_framing.py's ban stays); the colleague#352 comment stands uncontradicted",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "c20",
       "kind": "audience",
-      "text": "app authors embedding embodiment (greenhouse-class hosts and the new arena seat host), the Gwen reference-rig operator, and the sibling repos the redesign abuts: lobes (muse role contract), colleague (eventual consumer), league-of-agents (the arena)"
+      "text": "app authors embedding embodiment (greenhouse-class hosts and the new arena seat host), the Gwen reference-rig operator, and the sibling repos the redesign abuts: lobes (muse role contract), colleague (eventual consumer), league-of-agents (the arena)",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "h19",
       "kind": "honesty",
-      "text": "each named audience gets a concrete artifact: hosts the promoted pad and seat example, the rig operator measured muse results, lobes the metadata proposal issue; colleague and league are consulted, never pushed"
+      "text": "each named audience gets a concrete artifact: hosts the promoted pad and seat example, the rig operator measured muse results, lobes the metadata proposal issue; colleague and league are consulted, never pushed",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "c21",
       "kind": "before_state",
-      "text": "the muse ships with an authority boundary but no task prose at all, was measured doing executive supervision (n=4, no effect, unresolved guidance confound) while its staleness rule - built on the assumption the muse is slower - discarded 71 percent of its insights; the scratchpad, the strongest measured fix (25 to 67 percent both arms), is an unshipped example; subagents exist only as defensive contract reads; the challenge problems live as doc prose; perception has never met a model; and no adversarial consumer exists"
+      "text": "the muse ships with an authority boundary but no task prose at all, was measured doing executive supervision (n=4, no effect, unresolved guidance confound) while its staleness rule - built on the assumption the muse is slower - discarded 71 percent of its insights; the scratchpad, the strongest measured fix (25 to 67 percent both arms), is an unshipped example; subagents exist only as defensive contract reads; the challenge problems live as doc prose; perception has never met a model; and no adversarial consumer exists",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "h20",
       "kind": "honesty",
-      "text": "every before-state fact cites its evidence surface (live-test doc, code line or issue) and none was contradicted during scope exploration"
+      "text": "every before-state fact cites its evidence surface (live-test doc, code line or issue) and none was contradicted during scope exploration",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "c22",
       "kind": "after_state",
-      "text": "the muse is reflective/associative counsel: its prompt names reflect/reframe/challenge/alternatives work, its insights reach the cortex under a latency-derived delivery rule, and its value is measured muse-on/off on committed challenges and deterministic arena replays; the scratchpad is a first-class seam a successor resumes from; subagents are an injected seam with composed budgets and ledger-attributed child degradations; and an embodiment-driven team plays league-of-agents through the public surface with continuity across matches"
+      "text": "the muse is reflective/associative counsel: its prompt names reflect/reframe/challenge/alternatives work, its insights reach the cortex under a latency-derived delivery rule, and its value is measured muse-on/off on committed challenges and deterministic arena replays; the scratchpad is a first-class seam a successor resumes from; subagents are an injected seam with composed budgets and ledger-attributed child degradations; and an embodiment-driven team plays league-of-agents through the public surface with continuity across matches",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "h21",
       "kind": "honesty",
-      "text": "every after-state clause maps to at least one requirement claim carrying its own confirmed honesty condition - no clause ships unbacked"
+      "text": "every after-state clause maps to at least one requirement claim carrying its own confirmed honesty condition - no clause ships unbacked",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "c23",
       "kind": "why_it_matters",
-      "text": "the live series proved the loop terminates honestly but left the muse's value unmeasurable (wrong job, wrong delivery rule, hidden temperature variable, n=4) - reframing the muse by cognitive function and validating in a deterministic, cooperation-scored arena turns 'a second mind improves outcomes: unverified' into a claim with a number on it, in either direction"
+      "text": "the live series proved the loop terminates honestly but left the muse's value unmeasurable (wrong job, wrong delivery rule, hidden temperature variable, n=4) - reframing the muse by cognitive function and validating in a deterministic, cooperation-scored arena turns 'a second mind improves outcomes: unverified' into a claim with a number on it, in either direction",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "h22",
       "kind": "honesty",
-      "text": "the redesign leaves the muse-value question with a number or an honest recorded negative - 'unverified' stops being the recorded status either way"
+      "text": "the redesign leaves the muse-value question with a number or an honest recorded negative - 'unverified' stops being the recorded status either way",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "c24",
       "kind": "success_signal",
-      "text": "measured, not asserted: the association-work experiment yields a muse effect or a recorded honest negative (which gates the README promotion either way); scratchpad-armed drives replicate the 25-to-67 lift on the committed suite; an embodiment seat completes a full arena match via the public API with a replay-backed muse-on/off comparison; and the redesigned delivery rule raises the insight delivery fraction from the 29 percent baseline"
+      "text": "measured, not asserted: the association-work experiment yields a muse effect or a recorded honest negative (which gates the README promotion either way); scratchpad-armed drives replicate the 25-to-67 lift on the committed suite; an embodiment seat completes a full arena match via the public API with a replay-backed muse-on/off comparison; and the redesigned delivery rule raises the insight delivery fraction from the 29 percent baseline",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "h23",
       "kind": "honesty",
-      "text": "each signal is mechanically checkable from committed artifacts: results docs with pre-registered configs, replay hashes, delivery-per-kind reports"
+      "text": "each signal is mechanically checkable from committed artifacts: results docs with pre-registered configs, replay hashes, delivery-per-kind reports",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "c28",
       "kind": "requirement",
-      "text": "the insight-delivery redesign folds issue 8 into the role reframe: reflective/associative counsel is not step-anchored supervision, so staleness keys on counsel kind - step-sensitive counsel ages by loop distance, durable counsel (reframings, assumption challenges, long-horizon implications) survives to the next boundary or synthesis; relative latency is measured (the muse measured 3.5x faster than the cortex, inverting d1's assumption), and delivery is re-measured with kind-matched criteria rather than the raw 29 percent delivered fraction (supersedes c17)"
+      "text": "the insight-delivery redesign folds issue 8 into the role reframe: reflective/associative counsel is not step-anchored supervision, so staleness keys on counsel kind - step-sensitive counsel ages by loop distance, durable counsel (reframings, assumption challenges, long-horizon implications) survives to the next boundary or synthesis; relative latency is measured (the muse measured 3.5x faster than the cortex, inverting d1's assumption), and delivery is re-measured with kind-matched criteria rather than the raw 29 percent delivered fraction (supersedes c17)",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "h13",
       "kind": "honesty",
-      "text": "after the change, a live run reports delivery per counsel kind, and no durable-kind insight is dropped for loop-distance staleness alone"
+      "text": "after the change, a live run reports delivery per counsel kind, and no durable-kind insight is dropped for loop-distance staleness alone",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "c29",
       "kind": "requirement",
-      "text": "the muse's task prose adopts the five-verb association/default framing from issue 11's function table, per the user: imagine, reframe, connect memories, simulate futures, construct meaning - and the design consequence is real: 'connect memories' means the muse's boundary rendering gains an optional recall-context channel (recalled records, prior decisions) supplied by the runtime, since today the muse sees only a max_context_chars=600 boundary snapshot and no memory at all"
+      "text": "the muse's task prose adopts the five-verb association/default framing from issue 11's function table, per the user: imagine, reframe, connect memories, simulate futures, construct meaning - and the design consequence is real: 'connect memories' means the muse's boundary rendering gains an optional recall-context channel (recalled records, prior decisions) supplied by the runtime, since today the muse sees only a max_context_chars=600 boundary snapshot and no memory at all",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "h14",
       "kind": "honesty",
-      "text": "memory reaches the muse only as runtime-injected context on the boundary rendering - the muse gains no tool schema, no recall verbs, and no way to query anything (issue 2: memory is runtime, not a tool the model picks; tools-off stays structurally pinned by test_muse.py:343-403)"
+      "text": "memory reaches the muse only as runtime-injected context on the boundary rendering - the muse gains no tool schema, no recall verbs, and no way to query anything (issue 2: memory is runtime, not a tool the model picks; tools-off stays structurally pinned by test_muse.py:343-403)",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "c34",
       "kind": "requirement",
-      "text": "the muse-compiled memory keeps every confirmed boundary: the runtime performs the fetch (embodiment calls eidetic's fetch-only surface; the muse gains no query verbs, preserving h14) and injects the raw bundle into the muse's context; the compiled memory travels to the cortex over the existing counsel channel as durable-kind counsel, never silently replacing the host's Task.context; eidetic gains no synthesis duty in either direction"
+      "text": "the muse-compiled memory keeps every confirmed boundary: the runtime performs the fetch (embodiment calls eidetic's fetch-only surface; the muse gains no query verbs, preserving h14) and injects the raw bundle into the muse's context; the compiled memory travels to the cortex over the existing counsel channel as durable-kind counsel, never silently replacing the host's Task.context; eidetic gains no synthesis duty in either direction",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "h24",
       "kind": "honesty",
-      "text": "provenance survives compilation: the compiled memory cites the record ids it was built from (issue 2's perception-to-memory provenance rule), and a fetch failure degrades to a recorded transition with the muse simply receiving no bundle - never a raise, never an invented memory"
+      "text": "provenance survives compilation: the compiled memory cites the record ids it was built from (issue 2's perception-to-memory provenance rule), and a fetch failure degrades to a recorded transition with the muse simply receiving no bundle - never a raise, never an invented memory",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "c35",
       "kind": "requirement",
-      "text": "the muse-compiler has a degrade floor that contains the cross-repo dependency: compilation works over what eidetic recall already returns today (records with their links/supersedes fields, four search modes) - the composite fetch (graph traverse + node-linked lines) is an enrichment that upgrades the bundle when eidetic ships it, never a gate on the feature; embodiment must not block on a sibling's unbuilt surface"
+      "text": "the muse-compiler has a degrade floor that contains the cross-repo dependency: compilation works over what eidetic recall already returns today (records with their links/supersedes fields, four search modes) - the composite fetch (graph traverse + node-linked lines) is an enrichment that upgrades the bundle when eidetic ships it, never a gate on the feature; embodiment must not block on a sibling's unbuilt surface",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "h25",
       "kind": "honesty",
-      "text": "a rig with only today's eidetic-cli installed still runs the full muse-compiler path end to end, with the bundle marked as flat-fetch in its provenance"
+      "text": "a rig with only today's eidetic-cli installed still runs the full muse-compiler path end to end, with the bundle marked as flat-fetch in its provenance",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "c36",
       "kind": "requirement",
-      "text": "the recall-context bundle gets its own stated budget, separate from MuseControls.max_context_chars=600 (muse.py:355-381): a compiled bundle of notes, vector lines and traversal results will exceed 600 chars by construction, and clipping it through the existing boundary-snapshot limit would silently destroy exactly the material the muse is meant to compile; any truncation of the bundle is a recorded degradation (C3), never silent"
+      "text": "the recall-context bundle gets its own stated budget, separate from MuseControls.max_context_chars=600 (muse.py:355-381): a compiled bundle of notes, vector lines and traversal results will exceed 600 chars by construction, and clipping it through the existing boundary-snapshot limit would silently destroy exactly the material the muse is meant to compile; any truncation of the bundle is a recorded degradation (C3), never silent",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "h26",
       "kind": "honesty",
-      "text": "a live run reports the bundle size delivered and any truncation as a ledger-visible record; no code path clips the bundle through max_context_chars"
+      "text": "a live run reports the bundle size delivered and any truncation as a ledger-visible record; no code path clips the bundle through max_context_chars",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "c37",
       "kind": "requirement",
-      "text": "the compiled-memory lane treats store content as untrusted input: public eidetic records are committed into repos and travel with every clone (contract.md store-resolution), so memory is an attacker-reachable injection path into the cortex via muse compilation; compiled counsel keeps data-not-instruction framing with source labels, and a memory-borne echo-chamber probe - a planted hostile record demanding an action - runs and is RESISTED before the lane is claimed live-safe (extending muse-and-echo-chamber.md's two scripted probes)"
+      "text": "the compiled-memory lane treats store content as untrusted input: public eidetic records are committed into repos and travel with every clone (contract.md store-resolution), so memory is an attacker-reachable injection path into the cortex via muse compilation; compiled counsel keeps data-not-instruction framing with source labels, and a memory-borne echo-chamber probe - a planted hostile record demanding an action - runs and is RESISTED before the lane is claimed live-safe (extending muse-and-echo-chamber.md's two scripted probes)",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "h27",
       "kind": "honesty",
-      "text": "the memory-borne probe exists as a committed harness in the echo-chamber tradition and its result is recorded either way; the compiled counsel rendering never strips the advisory framing from store-sourced text"
+      "text": "the memory-borne probe exists as a committed harness in the echo-chamber tradition and its result is recorded either way; the compiled counsel rendering never strips the advisory framing from store-sourced text",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "c38",
       "kind": "requirement",
-      "text": "the provenance loop closes at the before-memory checkpoint: when muse-compiled memory informed a drive, the drive's durable record carries the compiled-from record ids in its existing links field (eidetic backend.py:267-299 already round-trips links) - so a future recall can trace an action back through the compiled memory to the records it was built from (issue 2's provenance rule, end to end)"
+      "text": "the provenance loop closes at the before-memory checkpoint: when muse-compiled memory informed a drive, the drive's durable record carries the compiled-from record ids in its existing links field (eidetic backend.py:267-299 already round-trips links) - so a future recall can trace an action back through the compiled memory to the records it was built from (issue 2's provenance rule, end to end)",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "h28",
       "kind": "honesty",
-      "text": "a two-process live run shows the second process recalling a record whose links resolve to the records the first process's compiled memory cited"
+      "text": "a two-process live run shows the second process recalling a record whose links resolve to the records the first process's compiled memory cited",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "c39",
       "kind": "requirement",
-      "text": "background compilation must not starve boundary counsel on the shared muse thread: the runner schedules boundary thinking ahead of compilation work, and starvation or displacement in either direction is a recorded, kind-labelled drop - the bounded-deque drop discipline (muse_runner.py DROPPED_OVERFLOW) extended to the new work class, never silent"
+      "text": "background compilation must not starve boundary counsel on the shared muse thread: the runner schedules boundary thinking ahead of compilation work, and starvation or displacement in either direction is a recorded, kind-labelled drop - the bounded-deque drop discipline (muse_runner.py DROPPED_OVERFLOW) extended to the new work class, never silent",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "h29",
       "kind": "honesty",
-      "text": "a live run under load reports drops per work class (boundary counsel vs compilation) and neither class can silently displace the other"
+      "text": "a live run under load reports drops per work class (boundary counsel vs compilation) and neither class can silently displace the other",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "c47",
       "kind": "requirement",
-      "text": "the seam enforces its own half of attenuation: a child's spawn allowance is computed by the seam as strictly less than its parent's with no upward override, and the seam's spawn path hands children the attenuated executor/task the parent built for them - it offers no widening mechanism; tool-boundary enforcement (paths, approval) stays the injected tool surface's job, which embodiment structurally cannot and does not do (no shell-cli reference, test_no_shell_host.py)"
+      "text": "the seam enforces its own half of attenuation: a child's spawn allowance is computed by the seam as strictly less than its parent's with no upward override, and the seam's spawn path hands children the attenuated executor/task the parent built for them - it offers no widening mechanism; tool-boundary enforcement (paths, approval) stays the injected tool surface's job, which embodiment structurally cannot and does not do (no shell-cli reference, test_no_shell_host.py)",
+      "deferred": false,
+      "deferred_reason": ""
     },
     {
       "id": "h32",
       "kind": "honesty",
-      "text": "tests assert a child cannot spawn once its allowance is zero, cannot receive an allowance >= its parent's, and the reference subagent example demonstrates narrowing (a child with a subset tool surface); the no-shell AST guard passes unchanged"
+      "text": "tests assert a child cannot spawn once its allowance is zero, cannot receive an allowance >= its parent's, and the reference subagent example demonstrates narrowing (a child with a subset tool surface); the no-shell AST guard passes unchanged",
+      "deferred": false,
+      "deferred_reason": ""
     }
   ],
   "tasks": [
