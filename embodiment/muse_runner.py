@@ -100,6 +100,7 @@ Stdlib only (constraint C1): ``collections``, ``dataclasses``, ``threading``,
 
 from __future__ import annotations
 
+import math
 import threading
 from collections import deque
 from dataclasses import replace
@@ -811,18 +812,15 @@ class ThreadedMuseRunner:
             value = float(seconds)
         except (TypeError, ValueError):
             return
-        # Rejects non-positive AND NaN in one comparison: every comparison
-        # against NaN is False, so `not value > 0` is True for NaN too. The
-        # earlier form spelled the NaN half as `value != value`, which reads as
-        # a typo and which static analysis flags as one (SonarCloud S1764).
-        #
-        # DO NOT "simplify" this to `value <= 0`. SonarCloud S1940 suggests
-        # exactly that, and it is wrong here: `NaN <= 0` is False, so the
-        # opposite operator silently lets NaN through and poisons every later
-        # mean in `_relative_latency`. The rule is right about the general
-        # case and wrong about this one. Pinned by
-        # tests/test_muse_runner.py's junk-value loop, which feeds `nan`.
-        if not value > 0:
+        # NaN is rejected EXPLICITLY rather than as a side effect of comparison
+        # order. Two earlier spellings were both worse: `value != value` reads
+        # as a typo (and S1764 flags it as one), while `not value > 0` folds the
+        # NaN case into an inverted comparison that S1940 then asks you to
+        # "simplify" to `value <= 0` — which would silently let NaN through,
+        # because every comparison against NaN is False, and one NaN poisons
+        # every later mean in `_relative_latency`. Saying `isnan` out loud costs
+        # one stdlib import and cannot be misread in either direction.
+        if math.isnan(value) or value <= 0:
             return
         with self._lock:
             self._loop_step_times.append(value)

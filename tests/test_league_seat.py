@@ -874,10 +874,14 @@ class TestStoreHygiene:
 
     def test_the_store_flag_is_required_and_has_no_default(self) -> None:
         """An unanchored public record would resolve against the host's own repo."""
+        # The parser is built outside each block, so a SystemExit can only come
+        # from `parse_args` — a construction failure would otherwise satisfy
+        # this test without the missing-flag rule holding at all.
+        parser = league_seat.build_parser()
         with pytest.raises(SystemExit):
-            league_seat.build_parser().parse_args(["play"])
+            parser.parse_args(["play"])
         with pytest.raises(SystemExit):
-            league_seat.build_parser().parse_args(["turn", "--team", "blue"])
+            parser.parse_args(["turn", "--team", "blue"])
 
     def test_this_repo_s_own_store_is_byte_unchanged(self, tmp_path: Path) -> None:
         before = self._ambient()

@@ -416,7 +416,7 @@ class BundleRequest:
     half-passthrough that looks complete and is not.
     """
 
-    queries: Union[str, Sequence[str]] = ()
+    queries: str | Sequence[str] = ()
     data_dir: Optional[_StrPath] = None
     scope: str = DEFAULT_SCOPE
     visibility: str = DEFAULT_VISIBILITY
@@ -833,8 +833,9 @@ def graph_fetch(request: BundleRequest, *, recall_fn: Optional[RecallFn] = None)
         return RecallBundle(
             provenance=provenance_for(request, level=LEVEL_FLAT, adapter=ADAPTER_FLAT_RECALL),
             items=flat.items,
-            degradations=tuple(
-                [*flat.degradations, BundleDegradation(code=code, reason=reason, stage=STAGE_FETCH)]
+            degradations=(
+                *flat.degradations,
+                BundleDegradation(code=code, reason=reason, stage=STAGE_FETCH),
             ),
         )
 

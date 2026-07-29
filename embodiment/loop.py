@@ -111,7 +111,7 @@ import json
 import time
 from collections import Counter
 from dataclasses import dataclass, field, replace
-from typing import Any, Callable, Optional, Protocol, Sequence, Union, runtime_checkable
+from typing import Any, Callable, Optional, Protocol, Sequence, Union, cast, runtime_checkable
 
 from embodiment.context import classify_degradable, is_media_rejection, window_messages
 from embodiment.contract import (
@@ -981,7 +981,9 @@ def _with_note(outcome: ToolOutcome, note: str) -> ToolOutcome:
     honored or refused exactly once, and nothing downstream can act on it twice.
     """
     text = f"{outcome.result}\n\n{note}" if outcome.result else note
-    return replace(outcome, result=text, spawn=None)
+    # `dataclasses.replace` is typed as returning `DataclassInstance`, which
+    # loses the concrete type for callers and for static analysis.
+    return cast(ToolOutcome, replace(outcome, result=text, spawn=None))
 
 
 def _stamp_sub_result(
@@ -1003,8 +1005,9 @@ def _stamp_sub_result(
             f"child {child.task.id}: sub_result was {type(sub).__name__}, not a SubResult",
         )
         return None
-    stamped = replace(
-        sub, role=sub.role if sub.role is not None else child.role, parent=ctx.task.id
+    stamped = cast(
+        SubResult,
+        replace(sub, role=sub.role if sub.role is not None else child.role, parent=ctx.task.id),
     )
     ctx.result.sub_results.append(stamped)
     return stamped

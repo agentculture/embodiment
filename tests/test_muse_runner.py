@@ -799,7 +799,15 @@ class TestExplicitConfiguration:
             assert runner.role == MUSE_ROLE == "muse"
 
     def test_the_module_imports_only_stdlib_and_embodiment(self):
-        stdlib_ok = {"__future__", "collections", "dataclasses", "threading", "typing"}
+        """The guard is about THIRD-PARTY imports (C1/d2), not stdlib breadth.
+
+        The allow-list is explicit so that widening it is a deliberate act with
+        a reason, not a quiet edit — the same discipline `test_zero_deps.py`
+        applies to the dependency set. `math` was added for `math.isnan` in
+        `note_loop_step`, where saying NaN out loud beats two spellings that
+        static analysis reads as bugs.
+        """
+        stdlib_ok = {"__future__", "collections", "dataclasses", "math", "threading", "typing"}
         for module in _imported_modules():
             top = module.split(".")[0]
             assert module in stdlib_ok or top == "embodiment", module

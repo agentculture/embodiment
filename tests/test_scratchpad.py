@@ -164,8 +164,9 @@ class TestSurface:
         """
         from embodiment.loop import ToolError, UnknownToolError
 
+        pad = _pad(tmp_path)
         with pytest.raises(UnknownToolError, match="unknown tool"):
-            _pad(tmp_path).execute("nope", {})
+            pad.execute("nope", {})
         assert issubclass(UnknownToolError, ToolError), "the loop must still catch it"
 
     def test_a_real_tool_with_bad_arguments_is_still_a_normal_outcome(self, tmp_path):

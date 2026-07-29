@@ -206,7 +206,9 @@ class TestTheTruncationRecordAgreesWithTheRenderer:
     """
 
     @pytest.mark.parametrize("cap", [10, 60, 300, 2000, 100000])
-    def test_a_degradation_is_recorded_exactly_when_the_render_was_clipped(self, cap: int) -> None:
+    def test_a_degradation_is_recorded_exactly_when_the_render_was_clipped(
+        self, cap: int, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         items = [
             BundleItem(record_id=f"r{i}", source=SOURCE_RECALL, text=f"material {i} " * 5)
             for i in range(6)
@@ -223,12 +225,11 @@ class TestTheTruncationRecordAgreesWithTheRenderer:
                 self.controls = controls
 
         ctx = _Ctx()
-        original = muse._degrade
-        try:
-            muse._degrade = lambda c, code, why: recorded.append(code)  # type: ignore[assignment]
-            muse._record_bundle_truncation(ctx, bundle)
-        finally:
-            muse._degrade = original  # type: ignore[assignment]
+        # monkeypatch, not a try/finally: it restores even if the call below
+        # raises, and it cannot leak the stub into another test through an
+        # early exit.
+        monkeypatch.setattr(muse, "_degrade", lambda c, code, why: recorded.append(code))
+        muse._record_bundle_truncation(ctx, bundle)
 
         ledger_says_truncated = muse.DEGRADED_BUNDLE_TRUNCATED in recorded
         assert ledger_says_truncated == render_says_truncated, (

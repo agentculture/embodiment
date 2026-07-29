@@ -352,10 +352,12 @@ class TestTheStoreIsNeverSomewhereCommittable:
         subprocess.run(  # nosec B603 B607
             ["git", "init", "-q", str(tmp_path)], check=True, timeout=60
         )
+        # argv is built OUTSIDE the block so only `main` can raise inside it —
+        # otherwise a SystemExit from the setup would pass this test for the
+        # wrong reason.
+        argv = ["--root", str(tmp_path / "root"), "--out", str(tmp_path / "o.jsonl")]
         with pytest.raises(SystemExit) as excinfo:
-            arena_series.main(
-                ["--root", str(tmp_path / "root"), "--out", str(tmp_path / "o.jsonl")]
-            )
+            arena_series.main(argv)
         assert "git work tree" in str(excinfo.value)
 
 

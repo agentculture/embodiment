@@ -586,8 +586,12 @@ class TestNeverRaises:
 
     def test_a_keyboard_interrupt_still_reaches_the_host(self):
         """Never raise means never raise *errors*, not never yield control."""
+        # Store and request are built outside the block so the KeyboardInterrupt
+        # can only have come from `_fetch` — which is the whole claim.
+        store = FakeStore(raises=KeyboardInterrupt())
+        request = _request("a")
         with pytest.raises(KeyboardInterrupt):
-            _fetch(FakeStore(raises=KeyboardInterrupt()), _request("a"))
+            _fetch(store, request)
 
     def test_a_hostile_adapter_degrades_like_a_hostile_store(self):
         def explode(_request: BundleRequest) -> RecallBundle:

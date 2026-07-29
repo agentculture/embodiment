@@ -618,11 +618,11 @@ def from_subagent(source: Any, *, child_task_id: Optional[str] = None) -> list[L
     automatically.
     """
     subagent_module = importlib.import_module("embodiment.subagent")
-    SpawnRecord_cls = subagent_module.SpawnRecord
+    spawn_record_cls = subagent_module.SpawnRecord
 
     if source is None:
         return []
-    if isinstance(source, SpawnRecord_cls):
+    if isinstance(source, spawn_record_cls):
         child_id = source.child_task_id
         raw = list(source.degradations)
     else:
