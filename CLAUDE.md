@@ -335,7 +335,7 @@ Lint stack — CI's `lint` job runs all of these; line length is **100** everywh
 uv run black --check embodiment tests
 uv run isort --check-only embodiment tests
 uv run flake8 embodiment tests
-uv run bandit -c pyproject.toml -r embodiment
+uv run bandit -c pyproject.toml -r embodiment examples
 markdownlint-cli2 "**/*.md" "#node_modules" "#.local" "#.claude/skills" "#.teken"
 ```
 

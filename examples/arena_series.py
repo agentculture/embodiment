@@ -99,7 +99,9 @@ PAIR_MEMORY = "memory"
 PAIR_CONTROL = "control"
 PAIRS = (PAIR_MEMORY, PAIR_CONTROL)
 
-VERDICT_PASS = "PASS"
+#: A continuity grade, not a credential — bandit's B105 reads the name
+#: ``VERDICT_PASS`` bound to ``"PASS"`` as a hardcoded password.
+VERDICT_PASS = "PASS"  # nosec B105
 VERDICT_FAIL = "FAIL"
 VERDICT_UNREADABLE = "UNREADABLE"
 VERDICTS = (VERDICT_PASS, VERDICT_FAIL, VERDICT_UNREADABLE)
