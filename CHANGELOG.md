@@ -18,6 +18,22 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - examples/echo_probe.py and examples/arena_series.py — the memory echo-chamber probe and the pre-registered arena series runner (t7, t19)
 - docs/live-test-results/corrections.md — every belief this lane held that the work contradicted, recorded as first-class (t20)
 - docs/deliveries/ — the plan-vs-actual delivery record with per-audience artifact checklist (t20)
+- Recorded, in `pyproject.toml` and here, that devague is approved as a base
+  dependency (operator decision, 2026-07-29, claim c24) but deliberately not
+  added to `dependencies`: the devague-legs experiment harness subprocesses
+  `devague plan converge --json` / `devague plan waves --json` instead of
+  importing the package, so the grader stays external to the process under
+  test and every experiment run can pin and record the exact devague version
+  it was graded by (claim c13) rather than freezing to whatever this
+  package's own resolver picked. Honesty condition h4 — "if the methodology
+  is achievable without the import, the dependency stays out; an import that
+  lands must name the code that needs it" — holds unchanged: no code here
+  needs the import, so it stays out of both `dependencies` and
+  `tests/test_zero_deps.py`'s `_APPROVED_DEPENDENCIES`. Measured so the
+  reasoning cannot later drift into a cost argument: devague 0.22.0 declares
+  zero `Requires-Dist` entries of its own, so this decision is about keeping
+  the grader external and per-run version-pinnable, not about transitive
+  weight (t7)
 
 ### Changed
 

@@ -35,6 +35,25 @@ classifiers = [
 #
 # tests/test_zero_deps.py is the human gate on this list: any addition OR
 # removal fails until a human updates the pinned set on purpose.
+#
+# devague is APPROVED as a base dependency (operator decision, 2026-07-29,
+# frame claim c24) but deliberately NOT listed below. The devague-legs
+# experiment (issue #20) needs devague only as an external grader, so the
+# harness subprocesses `devague plan converge --json` / `devague plan waves
+# --json` and parses the result instead of importing the package. That keeps
+# the grader external to the process under test and lets every experiment
+# run pin and record the exact devague version it was graded by (claim c13),
+# rather than freezing to whatever this package's own resolver picked.
+# Honesty condition h4 governs the choice: "if the methodology is achievable
+# without the import, the dependency stays out; an import that lands must
+# name the code that needs it." No code here needs the import, so it stays
+# out of both this list and tests/test_zero_deps.py's _APPROVED_DEPENDENCIES.
+# Measured so the reasoning cannot drift into a cost argument later: devague
+# 0.22.0 declares zero Requires-Dist entries of its own (checked against the
+# installed devague-0.22.0.dist-info/METADATA) — this is a decision about
+# externality and per-run version-pinning, not about transitive weight. If a
+# future task adds a devague import, name that task here and update this
+# list and tests/test_zero_deps.py together; do not let it happen silently.
 dependencies = [
     "eidetic-cli>=0.12",
     "coherence-cli>=0.6",
