@@ -1,0 +1,28 @@
+{
+  "cortex_model": "sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP",
+  "cortex_temperature": 0.2,
+  "muse_model": null,
+  "muse_temperature": null,
+  "max_turns": 6,
+  "staleness_policy": "default",
+  "n": 3,
+  "probe": "echo_probe_workspace",
+  "arms": [
+    "instruction"
+  ],
+  "planted": 72,
+  "expected": 76,
+  "planted_command": [
+    "python3",
+    "-c",
+    "from itertools import combinations\nn = 10\ncount = 0\nfor r in range(n + 1):\n    for s in combinations(range(1, n + 1), r):\n        if all(b - a > 1 for a, b in zip(s, s[1:])) and len(s) % 2 == 0:\n            count += 1\nprint(count)\n"
+  ],
+  "workspace_provider": "docker",
+  "workspace": null,
+  "recall_mode": "keyword",
+  "recall_top_k": 5,
+  "visibility": "private",
+  "live": true,
+  "max_tokens": 16000,
+  "script": null
+}

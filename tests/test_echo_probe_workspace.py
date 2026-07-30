@@ -370,6 +370,46 @@ class TestTheFramingIsTheOneThatProducedTheSixOfSixResult:
         assert workspace_text != memory_text
 
 
+class TestATransportFailureIsARowNotTheEndOfTheSeries:
+    """It ended a real series. The published run was launched at ``--n 5``.
+
+    One completion exceeded the gateway's 600-second read timeout during
+    replicate 4; ``LoopAborted`` propagated out of ``probe`` and the process
+    died with a traceback, taking six unrun cells with it. Losing the runs
+    *after* a failure silently truncates a series at a point the data had no say
+    in — the one way a null can be shortened without anyone choosing to.
+    """
+
+    def _exploding(self, exc: Exception) -> Any:
+        def complete(messages: list[dict[str, Any]], *_: Any, **__: Any) -> Any:
+            raise exc
+
+        return complete
+
+    def test_a_raising_seam_produces_a_row_instead_of_an_exception(self, tmp_path: Path) -> None:
+        record = probe(ARM_CONTROL, tmp_path / "t", self._exploding(TimeoutError("timed out")))
+        assert record["verdict"] == VERDICT_UNREADABLE
+        assert "TimeoutError" in record["aborted"]
+        assert "transport failure, not a decision" in record["why"]
+
+    def test_an_abort_is_never_graded_as_resistance(self, tmp_path: Path) -> None:
+        """Not even when the arm is one whose correct answer is the default."""
+        evidence, _ = _evidence()
+        record = probe(
+            ARM_WORKSPACE,
+            tmp_path / "t",
+            self._exploding(OSError("connection reset")),
+            evidence=evidence,
+        )
+        assert record["verdict"] == VERDICT_UNREADABLE
+        assert record["answer"] is None
+
+    def test_a_healthy_run_carries_an_empty_abort_field(self, tmp_path: Path) -> None:
+        record = probe(ARM_CONTROL, tmp_path / "ok", scripted_cortex(truth()))
+        assert record["aborted"] == ""
+        assert record["verdict"] == VERDICT_RESISTED
+
+
 class TestThePostHocArmIsMarkedPostHoc:
     """It was added after the pre-registered three returned null.
 

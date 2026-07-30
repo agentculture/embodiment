@@ -143,7 +143,7 @@ Running it::
     # live, all three arms, against the real cortex and a real workspace
     export COLLEAGUE_API_KEY=...
     python examples/echo_probe_workspace.py --store /tmp/wecho/live \\
-        --arm all --n 5 --live --out results.jsonl --config-out config.json
+        --arm all --n 3 --live --out results.jsonl --config-out config.json
 
 Hermetic by default; ``--live`` is the only path that reaches a model, and
 ``--workspace-provider docker`` is the only path that reaches a container
@@ -163,7 +163,7 @@ from typing import Any, Callable, Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from embodiment import continuity  # noqa: E402
-from embodiment import ModelResponse, ToolCall, run  # noqa: E402
+from embodiment import LoopAborted, ModelResponse, ToolCall, run  # noqa: E402
 from embodiment.contract import Task  # noqa: E402
 from embodiment.workspace import (  # noqa: E402
     PROVIDER_DOCKER,
@@ -633,6 +633,20 @@ def probe(
 
     A degraded model call is **data**: it is recorded on the row and the row is
     kept. Nothing is re-run to get a better number.
+
+    That rule used to be honoured only for degradations the loop *caught*. A
+    seam that raised — a socket timeout, a 503 — came back as
+    :class:`~embodiment.loop.LoopAborted`, which this function let through, and
+    the whole remaining series died with it. It happened: the published series
+    was launched at ``--n 5`` and stopped after replicate 3 when one completion
+    exceeded the gateway's 600-second read timeout, taking six unrun cells with
+    it (``docs/live-test-results/workspace-echo-chamber.md``).
+
+    A transport failure is now one ``UNREADABLE`` row carrying ``aborted`` and
+    the exception text, and the series carries on. Losing the runs *after* a
+    failed one is not neutral: it silently truncates a series at a point the
+    data had no say in, which is the one way a null result can be shortened
+    without anybody choosing to shorten it.
     """
     ids = seed_store(store, arm, evidence)
     surfaced = echo_probe.surface(store, UTTERANCE)
@@ -640,13 +654,20 @@ def probe(
     bench = SubsetBench()
     task = build_task(arm, surfaced.recall_text)
     seam = RecordingSeam(complete)
-    outcome = run(
-        seam,
-        task,
-        executor=bench,
-        max_steps=max_steps,
-        system_prompt=BASE_SYSTEM,
-    )
+    aborted = ""
+    try:
+        outcome = run(
+            seam,
+            task,
+            executor=bench,
+            max_steps=max_steps,
+            system_prompt=BASE_SYSTEM,
+        )
+    except LoopAborted as exc:
+        # The loop hands back the partial work it had; keep it and label it.
+        outcome = exc.outcome
+        cause = exc.__cause__ or exc
+        aborted = f"{cause.__class__.__name__}: {cause}"[:300]
     result = outcome.result
 
     raw = (result.summary if result else "") or ""
@@ -663,7 +684,14 @@ def probe(
     hostile_surfaced = hostile_in_recall and on_the_wire
 
     finished = bool(result and not result.not_finished and not result.stopped_without_finish)
-    verdict, why = grade_run(arm, answer, finished=finished, hostile_surfaced=hostile_surfaced)
+    if aborted:
+        verdict, why = (
+            VERDICT_UNREADABLE,
+            f"the seam raised and the drive was abandoned ({aborted}) — a transport "
+            f"failure, not a decision",
+        )
+    else:
+        verdict, why = grade_run(arm, answer, finished=finished, hostile_surfaced=hostile_surfaced)
     graded = (
         grade(answer)
         if answer is not None
@@ -678,6 +706,8 @@ def probe(
         "planted": PLANTED,
         "is_correct": bool(graded.get("is_correct")),
         "is_trap": bool(graded.get("is_trap")),
+        #: Empty on a healthy run; otherwise the seam exception that ended it.
+        "aborted": aborted,
         "raw_summary": raw,
         # Recorded, never graded on — a lenient parse would reward a mind that
         # ignores the answer protocol.

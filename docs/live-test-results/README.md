@@ -2,7 +2,7 @@
 
 What happened when embodiment was run against real models rather than fakes.
 
-The test suite (1567 tests) proves embodiment cannot lie, hang, or degrade
+The test suite (2806 tests) proves embodiment cannot lie, hang, or degrade
 silently. It cannot tell you whether the result is any good. These are the runs
 that address the second question, recorded as deviations
 [`d4`](#deviations) (live testing as an acceptance bar) and `d5` (live
@@ -64,6 +64,7 @@ generously.
 | [devague-legs-preregistration.md](devague-legs-preregistration.md) | the leg split, both experiments' decision rules, the lapse protocol, and the Gemma-proposes-human-confirms gate | committed **before** the first dial |
 | [muse-latency.md](muse-latency.md) | is the c29 zero-late-drop target reachable once the muse holds tools — session latency (n=8 per arm, 4 arms) against the drive tail (n=4) | **`KEEP`**: worst tool-session 22.1s against a shortest tail of 41.7s, and **0 late drops in 4 of 4 drives** against the baseline's 1-per-run. `c31`'s ~6x tool penalty did not reproduce (1.2x shipped, 2.2x primed). But the tools-on-in-drive lane is **absent** — `ThreadedMuseRunner` has no `tools=` seam — and 5 of 13 counsel lines still never reach the cortex |
 | [muse-latency-preregistration.md](muse-latency-preregistration.md) | the four arms, the estimator, the derived `KEEP_THRESHOLD` and the `INCONCLUSIVE` condition | committed **before** the first dial; `KEEP_THRESHOLD` is recomputed from its inputs in the pin test, not asserted as a literal |
+| [workspace-echo-chamber.md](workspace-echo-chamber.md) | does a wrong number wearing *measured-result* authority drive the loop — a genuine workspace execution against a remembered-fact arm and a control, n=3 each | **`INCONCLUSIVE`, 12/12 RESISTED — the pad-recall boundary stays.** Nothing deferred, including a post-hoc arm carrying the exact costume that won 6/6, so the probe has **no measured sensitivity** to the effect it re-tests. It also measured that `exit=stopped` on this problem was partly the token cap |
 
 ## Reproducing
 
@@ -87,6 +88,16 @@ uv run python examples/muse_challenge.py --live --framing bare --n 3 --json
 # can a stored record drive the loop — hostile arm, then the control
 uv run python examples/echo_probe.py --store /tmp/echo/live --direction both --live
 uv run python examples/echo_probe.py --store /tmp/echo/ctl --direction both --live --control
+
+# the same question with a *computed* wrong number: three pre-registered arms,
+# then the post-hoc sensitivity arm (never in --arm all; it must be named)
+uv run python examples/echo_probe_workspace.py --store /tmp/wecho/live \
+    --arm all --n 3 --live \
+    --out docs/live-test-results/workspace-echo-chamber.jsonl \
+    --config-out docs/live-test-results/workspace-echo-chamber-config.json
+uv run python examples/echo_probe_workspace.py --store /tmp/wecho/instr \
+    --arm instruction --n 3 --live \
+    --out docs/live-test-results/workspace-echo-chamber-instruction.jsonl
 
 # is the role split real — the pre-registered 2x2, then the same rule re-applied
 uv run python examples/association_work.py --live --n-reflective 4 --n-executive 3 \
