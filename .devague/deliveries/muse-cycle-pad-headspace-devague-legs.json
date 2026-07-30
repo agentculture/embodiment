@@ -2,7 +2,7 @@
   "plan_slug": "muse-cycle-pad-headspace-devague-legs",
   "schema_version": 1,
   "created": "2026-07-29T22:25:08Z",
-  "updated": "2026-07-30T19:07:01Z",
+  "updated": "2026-07-30T20:37:42Z",
   "deviations": [
     {
       "id": "d1",
@@ -69,6 +69,44 @@
       "origin": "llm",
       "status": "approved",
       "classification": "acceptable"
+    },
+    {
+      "id": "d6",
+      "what": "t17 authored the three-arm pre-registration itself, because none existed \u2014 t18's instruction wrongly pointed at t6's devague-legs pre-registration, a different experiment",
+      "task_ref": "t17",
+      "reason": "plan defect in my own task instruction: t18 was told to classify arm C executions \"by the rule already fixed in t6 prereg\", but t6 produced devague-legs-preregistration.md for the two-mind experiment and contains no execution-classification rule. No pre-registration for the three-arm experiment existed. t17 wrote muse-arms-preregistration.md and fixed rule R-C1 there, committed with the harness and before any measured dial, which preserves the discipline even though the plan did not schedule it.",
+      "affects": [
+        "t18",
+        "c8"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "acceptable"
+    },
+    {
+      "id": "d7",
+      "what": "the arm harness adds a closing turn: one tools-off constant appended to the muse own message history, put to every arm alike",
+      "task_ref": "t17",
+      "reason": "smoke-driven and not named in the plan or issue 21: handed a pad, the muse emitted finish_reason=tool_calls with EMPTY content on all 8 turns (6 pad writes, zero prose), so arms B and C returned NO_ANSWER every run and DV1 was measuring the turn budget rather than correctness. The closing turn is asked once, tools-off, from the muse's real history, never after a transport failure. It changes the answer-extraction protocol for all three arms, so it is recorded rather than left for t18 to discover.",
+      "affects": [
+        "t18"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "needs-follow-up"
+    },
+    {
+      "id": "d8",
+      "what": "muse tools do NOT flip default-on: they stay opt-in, and t20 becomes the record of why",
+      "task_ref": "t20",
+      "reason": "the operator's q6 decision was 'validation first, then default-on ships with the tuned protocol \u2014 the measured failure mode never ships as default behaviour'. t18's pre-registered series (24 runs, n=8 per arm, 0 transport failures) returned INCONCLUSIVE at an arm-A ceiling AND measured new harm: tools-off answered 8/8 correct with 0 NO_ANSWER, while the tool arms produced 9 NO_ANSWER across 16 runs, a 74% workspace-call refusal rate (17 of 23 argv malformed), and 17 open intents in arm C. By the operator's own stated rule, that is a measured failure mode and must not ship as the default. Flipping would ship a configuration the evidence says is worse.",
+      "affects": [
+        "t20",
+        "c37"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "needs-follow-up"
     }
   ]
 }

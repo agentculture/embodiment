@@ -172,7 +172,7 @@ slug: `muse-cycle-pad-headspace-devague-legs` · status: `exported` · from fram
 
 ### t20 — Flip muse tools default-on after the validation tuning pass
 
-- instruction: Owns the default-config surface + CHANGELOG. Flip only after t18 has published. Ship the tuned protocol, not the measured failure mode; keep tools-off documented as the rollback.
+- instruction: RESCOPED by deviation d8 (operator-confirmed 2026-07-30): muse tools do NOT flip default-on. t18 returned INCONCLUSIVE at an arm-A ceiling and measured harm — tools-off 8/8 correct with 0 `NO_ANSWER` vs 9 `NO_ANSWER` across 16 tool-arm runs, 74% workspace-call refusal, 17 open intents in arm C. This task is now the RECORD of that decision, not a flip. Owns README.md, CLAUDE.md and CHANGELOG. State plainly that tools are opt-in, cite the series, name issues #32 and #33 as what would have to change to revisit, and keep the tools-off path documented as the default rather than as a rollback. README.md:235 still calls the muse "a tools-off mind" — correct it to say tools exist and are opt-in, since that sentence is now wrong in a different way.
 - depends on: t18, t26
 - acceptance:
   - the default flips only after t18 publishes; the tuned pad protocol is what ships; the tools-off path remains available as the documented rollback

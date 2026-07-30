@@ -4,7 +4,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-07-29T16:35:15Z",
-  "updated": "2026-07-30T18:47:12Z",
+  "updated": "2026-07-30T20:05:48Z",
   "claims": [
     {
       "id": "c1",
@@ -1077,6 +1077,54 @@
         "t16",
         "c29",
         "c31"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l8",
+      "code": "grader-unverified",
+      "what": "ArmTools._ran counted a job that exited 127 as a successful execution \u2014 it reads MuseWorkspace refusal strings only and ignores job exit status, inflating the arithmetic-offloaded count",
+      "skipped_check": "checking job exit status when deciding whether an execution ran",
+      "refs": [
+        "t18",
+        "c7"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l9",
+      "code": "assumption-for-measurement",
+      "what": "the d7 closing-turn mitigation was validated on n=1 where all three arms answered; at n=8 it fails in 9 of 16 tool-arm runs, and RecordingSeam stores parsed fields rather than the raw body so a dropped 118-token reply is indistinguishable from silence without an out-of-band replay",
+      "skipped_check": "validating the closing turn at series n before relying on it, and recording raw response bodies",
+      "refs": [
+        "t18",
+        "t17"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l10",
+      "code": "grader-unverified",
+      "what": "R-C1's adjacency-constraint token match turns on a trailing space, so two whole-problem solvers were classified arithmetic-offloaded; the hand audit reversed both",
+      "skipped_check": "testing the classification rule against real solver commands before freezing it",
+      "refs": [
+        "t18",
+        "t17"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l11",
+      "code": "grader-unverified",
+      "what": "the three-arm decision rule's degradation gate does not name which codes count as degraded; the only code present (muse-tool-rounds-exhausted) is declared elsewhere in the same document not to be a fault",
+      "skipped_check": "enumerating the codes the degradation gate counts",
+      "refs": [
+        "t18",
+        "c8"
       ],
       "origin": "llm",
       "status": "proposed"
