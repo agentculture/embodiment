@@ -9,20 +9,69 @@ its temperature was a literal inside ``gateway``.
 
 These tests cover the reporting added to close that, and they pin the finding
 that matters most about it: **a degradation code that never fires reports
-nothing, not a zero.** Two of the runner's nine codes have no producer anywhere
-in ``embodiment``, and a fold that emitted ``0`` for them would make
-"never implemented" indistinguishable from "did not happen this run".
+nothing, not a zero.** A fold that emitted ``0`` for an unfired code would make
+"did not happen this run" indistinguishable from a number somebody measured.
+
+They also carry the guard that caught embodiment#18. Two of the runner's nine
+codes — ``DROPPED_COMPILATION_STARVED`` and ``DROPPED_COUNSEL_DISPLACED`` — were
+declared, exported and had **no producer anywhere in the package**, so a host
+branching exhaustively over ``RUNNER_CODES`` got two arms nothing could reach.
+Both now have production emit sites (``muse_runner``'s background-compilation
+work class), and the pin below was inverted rather than deleted: it now asserts
+that *every* code in ``RUNNER_CODES`` has a producer, which is the check that
+would have failed the original merge.
 """
 
 from __future__ import annotations
 
+import ast
+from pathlib import Path
 from typing import Any
 
 import pytest
 
+import embodiment
 from embodiment import muse_runner
 from embodiment.muse import MuseDegradation
 from examples import delivery_series, proof
+
+#: ``{code: constant name}`` for the runner's whole declared vocabulary.
+_CONSTANT_NAMES = {
+    getattr(muse_runner, name): name
+    for name in muse_runner.__all__
+    if name.startswith(("DEGRADED_", "DROPPED_"))
+}
+
+
+def _record_call_arguments() -> dict[str, list[str]]:
+    """``{identifier: [where]}`` for every name passed to ``_record``/``_degrade``.
+
+    A real AST walk over the package, not a text scan: only a **call argument**
+    counts, so a constant's declaration, its ``__all__`` entry and its place in
+    the ``RUNNER_CODES`` tuple are never mistaken for a producer. That
+    distinction is the whole point — embodiment#18 was two codes that appeared
+    in all three of those places and in no call site.
+    """
+    root = Path(embodiment.__file__).resolve().parent
+    found: dict[str, list[str]] = {}
+    for path in sorted(root.rglob("*.py")):
+        tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            called = func.attr if isinstance(func, ast.Attribute) else getattr(func, "id", "")
+            if called not in {"_record", "_degrade"}:
+                continue
+            for argument in list(node.args) + [kw.value for kw in node.keywords]:
+                if isinstance(argument, ast.Name):
+                    identifier = argument.id
+                elif isinstance(argument, ast.Attribute):
+                    identifier = argument.attr
+                else:
+                    continue
+                found.setdefault(identifier, []).append(f"{path.name}:{node.lineno}")
+    return found
 
 
 class TestFoldCodes:
@@ -50,9 +99,10 @@ class TestFoldCodes:
     def test_a_code_that_never_fired_is_absent_rather_than_zero(self) -> None:
         """Absence and zero are different claims, and only one of them is true.
 
-        ``DROPPED_COMPILATION_STARVED`` and ``DROPPED_COUNSEL_DISPLACED`` have no
-        producer in ``embodiment`` at all. Reporting ``0`` for them would read as
-        "this run did not trip it" when the truth is "nothing can trip it".
+        A code that did not fire in a run must not appear in the fold at all.
+        Reporting ``0`` would read as a measurement of that lane when nothing
+        measured it — and, before embodiment#18 was fixed, would have read as
+        "this run did not trip it" for two codes nothing could trip.
         """
         folded = proof._fold_codes(
             {"degradations": [MuseDegradation(code=muse_runner.DROPPED_STALE, reason="a")]}
@@ -61,50 +111,53 @@ class TestFoldCodes:
         assert muse_runner.DROPPED_COUNSEL_DISPLACED not in folded
 
 
-class TestUnproducedCodes:
-    """The two t3 codes are declared, exported — and never emitted.
+class TestEveryRunnerCodeHasAProducer:
+    """Declared vocabulary must be REACHABLE vocabulary (embodiment#18).
 
-    Recorded as a test rather than only as prose so that wiring a producer for
-    either one breaks this test and forces the results document to be corrected
-    instead of quietly going stale.
+    This class was ``TestUnproducedCodes``. It asserted that
+    ``DROPPED_COMPILATION_STARVED`` and ``DROPPED_COUNSEL_DISPLACED`` were never
+    passed to ``_record`` / ``_degrade``, so that wiring a producer for either
+    would break it and force the results documents to be corrected rather than
+    left to go stale. A producer was wired (``muse_runner``'s background
+    compilation work class), it broke, and this is that correction — inverted
+    into the stronger claim, which is the one that would have failed the merge
+    that created the defect: **every** code in ``RUNNER_CODES`` has at least one
+    call site.
+
+    Reachability is not the same as coverage. ``tests/test_ledger.py``'s
+    PROVOKERS table already required every code to appear in *a record*; both
+    dead codes satisfied it by being recorded directly in a test. This checks
+    the other half — that production code passes the constant somewhere — and
+    task t3 closes the remaining gap by banning provokers that reach a private
+    attribute.
     """
 
-    UNPRODUCED = (
+    ISSUE_18_CODES = (
         muse_runner.DROPPED_COMPILATION_STARVED,
         muse_runner.DROPPED_COUNSEL_DISPLACED,
     )
 
-    @pytest.mark.parametrize("code", UNPRODUCED)
+    @pytest.mark.parametrize("code", muse_runner.RUNNER_CODES)
     def test_the_code_is_part_of_the_declared_vocabulary(self, code: str) -> None:
+        assert code in _CONSTANT_NAMES
         assert code in muse_runner.RUNNER_CODES
 
-    @pytest.mark.parametrize("code", UNPRODUCED)
-    def test_no_module_in_the_package_records_it(self, code: str) -> None:
-        """Nothing calls ``_record``/``_degrade`` with either constant."""
-        import inspect
-        import pkgutil
-
-        import embodiment
-
-        name = {
-            muse_runner.DROPPED_COMPILATION_STARVED: "DROPPED_COMPILATION_STARVED",
-            muse_runner.DROPPED_COUNSEL_DISPLACED: "DROPPED_COUNSEL_DISPLACED",
-        }[code]
-        callers: list[str] = []
-        for module in pkgutil.iter_modules(embodiment.__path__):
-            source = inspect.getsource(__import__(f"embodiment.{module.name}", fromlist=["_"]))
-            for line in source.splitlines():
-                stripped = line.strip()
-                if name not in stripped and code not in stripped:
-                    continue
-                # Declaration, export list and the RUNNER_CODES tuple are not
-                # producers; a producer passes it to _record or _degrade.
-                if "_record(" in stripped or "_degrade(" in stripped:
-                    callers.append(f"{module.name}: {stripped}")
-        assert not callers, (
-            f"{name} now has a producer — the results document says it has none. "
-            f"Update docs/live-test-results/delivery-per-kind.md. Found: {callers}"
+    @pytest.mark.parametrize("code", muse_runner.RUNNER_CODES)
+    def test_some_module_in_the_package_records_it(self, code: str) -> None:
+        """Something in ``embodiment`` passes the constant to ``_record``/``_degrade``."""
+        name = _CONSTANT_NAMES[code]
+        producers = _record_call_arguments().get(name, [])
+        assert producers, (
+            f"{name} is declared and exported but nothing in the package records it — "
+            "a host branching exhaustively over RUNNER_CODES would get an arm that "
+            "cannot fire. Wire an emit site, or drop the constant (embodiment#18)."
         )
+
+    @pytest.mark.parametrize("code", ISSUE_18_CODES)
+    def test_the_two_issue_18_codes_are_produced_by_the_runner(self, code: str) -> None:
+        """The regression pin, named so a reader can find the history."""
+        where = _record_call_arguments()[_CONSTANT_NAMES[code]]
+        assert any(location.startswith("muse_runner.py:") for location in where), where
 
 
 class TestPerKindAttribution:

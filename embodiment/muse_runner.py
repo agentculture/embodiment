@@ -62,6 +62,32 @@ presence layer may not lose one quietly:
 * **Superseded** — a boundary offered while a session is in flight replaces any
   boundary still queued, so the muse always thinks about the most recent
   position. The displaced boundary is recorded.
+* **Starved** — a background compilation item that never reached the thread,
+  because boundary counsel outranked it, a newer compilation request replaced
+  it, or the lane closed first. Recorded.
+* **Displaced** — boundary counsel discarded from a full buffer to make room for
+  compilation output: the lower class evicting the higher. Recorded, and
+  deliberately a *different* code from plain overflow.
+
+Two work classes, one thread
+----------------------------
+The muse has exactly one thread, and two kinds of work want it:
+
+* :data:`WORK_BOUNDARY` — a session the actor's position asked for, offered
+  through :meth:`ThreadedMuseRunner.consider`. It ages: counsel about step 3 is
+  worth less at step 40.
+* :data:`WORK_COMPILATION` — a session that compiles the host's recalled
+  material into counsel, offered through :meth:`ThreadedMuseRunner.compile`.
+  Prompted by nothing in particular, so it does not age the same way.
+
+**Boundary counsel wins, always.** One slot, one policy
+(:meth:`ThreadedMuseRunner._admit`): boundary work displaces queued compilation,
+compilation offered behind queued boundary work loses outright, and only the
+newest compilation request is held. Every loss is a record — the alternative,
+delaying counsel about where the actor *is* in order to finish compiling memory,
+inverts the only priority this lane has. A host that never calls ``compile`` is
+unaffected in every observable way: one class, one slot, the behaviour that
+shipped before the class existed.
 
 The ledger is a bounded window on the most recent transitions
 (:data:`MAX_LEDGER`), so a long run cannot grow it without limit. Nothing
@@ -103,7 +129,7 @@ from __future__ import annotations
 import math
 import threading
 from collections import deque
-from dataclasses import replace
+from dataclasses import dataclass, replace
 from typing import Any, Callable, Optional, cast
 
 from embodiment.muse import (
@@ -141,6 +167,7 @@ __all__ = [
     "WORK_BOUNDARY",
     "WORK_COMPILATION",
     "WORK_CLASSES",
+    "COMPILATION_REASON",
     # defaults
     "DEFAULT_MAX_PENDING",
     "DEFAULT_MAX_FAILED_SESSIONS",
@@ -182,9 +209,18 @@ DROPPED_LATE = "muse-insight-late"
 DROPPED_OVERFLOW = "muse-insight-overflow"
 #: A queued boundary was replaced by a newer one before it was ever thought about.
 DROPPED_BOUNDARY = "muse-boundary-superseded"
-#: Background compilation was starved because boundary counsel took priority.
+#: A background compilation work item never reached the muse's one thread:
+#: boundary counsel outranks it, only the newest compilation request is held,
+#: and a lane that closes takes whatever is still queued with it. Recorded in
+#: :meth:`ThreadedMuseRunner._admit` and :meth:`ThreadedMuseRunner.close`.
 DROPPED_COMPILATION_STARVED = "muse-compilation-starved"
-#: Boundary counsel was displaced by background compilation filling the buffer.
+#: Boundary counsel was discarded from a full drain buffer to make room for
+#: background compilation output — the LOWER-priority work class evicting the
+#: higher one. Distinct from :data:`DROPPED_OVERFLOW`, which is same-class (or
+#: outranking-class) backpressure and means "I am thinking faster than the actor
+#: drains"; this one is a priority INVERSION, and its remediation is different:
+#: raise ``max_pending`` or compile less. Recorded in
+#: :meth:`ThreadedMuseRunner._deliver`.
 DROPPED_COUNSEL_DISPLACED = "muse-counsel-displaced"
 
 #: The complete set this module can record. Session-level codes
@@ -223,11 +259,27 @@ MAX_LEDGER = 100
 #: Cap on one record's reason text, mirroring :mod:`embodiment.muse`.
 _MAX_REASON_LEN = 500
 
-#: Work-class labels for the muse thread's two kinds of work.
+#: Work-class labels for the muse thread's two kinds of work. There is ONE
+#: thread, so the two classes contend for it, and the contention has a policy:
+#: boundary counsel outranks background compilation, always.
+#:
+#: ``boundary`` — a session the actor's own position asked for, offered through
+#: :meth:`ThreadedMuseRunner.consider`. Time-sensitive: it is counsel about a
+#: position the actor is at *now*, and it ages by loop distance.
 WORK_BOUNDARY = "boundary"
+#: ``compilation`` — a session that compiles the host's recalled material into
+#: counsel with no boundary prompting it, offered through
+#: :meth:`ThreadedMuseRunner.compile`. Anchored to no position, so it yields the
+#: thread to boundary work rather than delaying it.
 WORK_COMPILATION = "compilation"
-#: The complete set of work classes.
+#: The complete set of work classes. :meth:`ThreadedMuseRunner._offer` branches
+#: on it, so a label outside it is refused rather than silently scheduled.
 WORK_CLASSES = (WORK_BOUNDARY, WORK_COMPILATION)
+
+#: The cadence reason a compilation work item's synthetic boundary carries, so
+#: an insight compiled in the background is traceable to the work class that
+#: produced it rather than reading as counsel the actor asked for.
+COMPILATION_REASON = "background compilation of recalled material"
 
 #: Builds the worker thread. Injected so a test can assert a museless run
 #: creates none, and so a host with its own thread policy can supply one.
@@ -306,6 +358,22 @@ def _carry(boundary: BoundaryContext) -> BoundaryContext:
         return boundary
 
 
+@dataclass(frozen=True)
+class _Work:
+    """One unit of muse work: what to think about, and which class it belongs to.
+
+    Private on purpose. The two work classes are a scheduling fact about the one
+    thread, not a shape a host hands in: a host offers work through
+    :meth:`ThreadedMuseRunner.consider` or :meth:`ThreadedMuseRunner.compile`
+    and the runner labels it. Frozen so a queued item cannot be edited after the
+    priority decision that admitted it.
+    """
+
+    work_class: str
+    boundary: BoundaryContext
+    recall_bundle: Any = None
+
+
 class ThreadedMuseRunner:
     """Run ONE :class:`~embodiment.muse.MuseLoop` on one daemon thread.
 
@@ -313,7 +381,8 @@ class ThreadedMuseRunner:
     :class:`~embodiment.presence_engine.MuseSeam`: ``consider`` offers a
     boundary and returns, ``drain`` collects whatever finished, ``degradation``
     reports the lane having stopped. None of the three blocks, and none of them
-    raises.
+    raises. :meth:`compile` is the fourth, host-facing verb — the second work
+    class, which the pump does not drive and which yields to ``consider``.
 
     Args:
         complete: the injected tools-off thinking seam
@@ -421,11 +490,21 @@ class ThreadedMuseRunner:
         self._thread: Any = None
         self._closed = False
         self._degradation: Optional[str] = None
-        self._pending: Optional[BoundaryContext] = None
-        self._ready: deque[MuseInsight] = deque(maxlen=max(1, _coerce_int(max_pending, 1)))
+        self._pending: Optional[_Work] = None
+        # Each buffered insight is held with the work class that produced it, so
+        # an eviction can say WHOSE thinking was discarded for WHOSE. Without
+        # that pairing a full buffer is one undifferentiated fact; with it, the
+        # priority inversion (compilation evicting boundary counsel) is a
+        # distinct, separately actionable record.
+        self._ready: deque[tuple[str, MuseInsight]] = deque(
+            maxlen=max(1, _coerce_int(max_pending, 1))
+        )
         self._ledger: deque[MuseDegradation] = deque(maxlen=MAX_LEDGER)
         self._failures = 0
         self._observed_step = 0
+        #: The class of the session currently in flight. Written by ``_take``
+        #: and read by ``_deliver``, both on the worker thread, both under lock.
+        self._current_class = WORK_BOUNDARY
         self._counts = {
             "sessions_started": 0,
             "sessions_completed": 0,
@@ -434,8 +513,15 @@ class ThreadedMuseRunner:
             "insights_dropped_late": 0,
             "insights_dropped_overflow": 0,
             "boundaries_superseded": 0,
+            "compilation_starved": 0,
+            "counsel_displaced": 0,
             "degradations_recorded": 0,
         }
+        # How many sessions each work class actually got. Zero here is a real
+        # measurement, not an absence: a host that sees `compilation_starved`
+        # rising against `compilation: 0` knows its background lane never ran
+        # once, which the drop records alone do not say.
+        self._work_started: dict[str, int] = {name: 0 for name in WORK_CLASSES}
         # Per-kind delivery counters (task t3).
         self._kind_delivered: dict[str, int] = {}
         self._kind_dropped: dict[str, int] = {}
@@ -458,28 +544,116 @@ class ThreadedMuseRunner:
         """
         if boundary is None:
             return
+        self._offer(_Work(WORK_BOUNDARY, _carry(boundary), self._recall_bundle))
+
+    def compile(self, *, recall_bundle: Any = None, step_count: int = 0) -> None:
+        """Offer one BACKGROUND COMPILATION session, then return. Never blocks or raises.
+
+        The muse's second work class: a session with no boundary prompting it,
+        whose job is to compile the host's recalled material
+        (:class:`~embodiment.recall_bundle.RecallBundle`) into counsel the actor
+        can read later. ``eidetic`` fetches, this module never does, and the
+        muse compiles — so a host that has recalled something and wants it
+        chewed on offers it here instead of waiting for the next boundary.
+
+        Compilation **yields to boundary counsel**, which is the whole reason
+        the two classes are named. The muse has one thread; counsel about where
+        the actor is right now ages, and background compilation does not, so
+        boundary work takes the slot and a compilation item that loses it is
+        recorded as :data:`DROPPED_COMPILATION_STARVED` rather than delaying
+        anything. At most one compilation item is queued: a newer request
+        replaces an older one, exactly as boundaries supersede boundaries.
+
+        Args:
+            recall_bundle: the material to compile. Defaults to the bundle the
+                runner was constructed with, so a host that fetched once for the
+                whole work item needs no argument.
+            step_count: the actor's step to stamp the session's provenance with.
+                Defaults to the highest step the runner has observed, so
+                compiled counsel is judged for staleness against where the actor
+                actually is rather than against step zero.
+        """
+        with self._lock:
+            step = max(self._observed_step, _coerce_int(step_count))
+        boundary = BoundaryContext(
+            kind=WORK_COMPILATION,
+            step_count=step,
+            reason=COMPILATION_REASON,
+        )
+        bundle = self._recall_bundle if recall_bundle is None else recall_bundle
+        self._offer(_Work(WORK_COMPILATION, boundary, bundle))
+
+    def _offer(self, work: _Work) -> None:
+        """Queue one work item under the class priority. Never blocks or raises.
+
+        At most one item is ever queued, across BOTH classes: the muse has one
+        thread, and a backlog of stale positions is exactly what the single slot
+        exists to prevent. Whatever loses the slot is recorded, never silently
+        dropped — :meth:`_admit` holds that policy.
+        """
+        if work.work_class not in WORK_CLASSES:  # a label nobody scheduled
+            return
         with self._lock:
             if self._closed or self._degradation is not None:
                 return
-            if self._pending is not None:
-                self._record(
-                    DROPPED_BOUNDARY,
-                    f"boundary {_kind_of(self._pending)!r} superseded before it was "
-                    "thought about",
-                    step_index=_step_of(self._pending),
-                )
-                self._counts["boundaries_superseded"] += 1
-            self._pending = _carry(boundary)
-            self._observed_step = max(self._observed_step, _step_of(boundary))
+            if not self._admit(work):
+                return
+            self._pending = work
+            self._observed_step = max(self._observed_step, _step_of(work.boundary))
             self._idle.clear()
         if not self.start():
             # No thread means nothing will ever pick this up; say so rather than
-            # leaving a boundary queued against a lane that does not exist.
+            # leaving work queued against a lane that does not exist.
             with self._lock:
                 self._pending = None
                 self._idle.set()
             return
         self._wake.set()
+
+    def _admit(self, work: _Work) -> bool:
+        """Decide whether *work* takes the one slot, recording what loses it.
+
+        Call with the lock held. The policy, in one place:
+
+        * an empty slot admits anything;
+        * boundary counsel displaces whatever is queued — another boundary is
+          ``superseded`` (the position moved on), a compilation item is
+          ``starved`` (it never got the thread);
+        * compilation offered behind queued boundary counsel loses outright,
+          because delaying counsel about the actor's current position to compile
+          memory would invert the only priority this lane has;
+        * compilation offered behind queued compilation replaces it, so the
+          freshest material is the one that gets thought about.
+        """
+        queued = self._pending
+        if queued is None:
+            return True
+        if work.work_class == WORK_BOUNDARY:
+            if queued.work_class == WORK_BOUNDARY:
+                self._record(
+                    DROPPED_BOUNDARY,
+                    f"boundary {_kind_of(queued.boundary)!r} superseded before it was "
+                    "thought about",
+                    step_index=_step_of(queued.boundary),
+                )
+                self._counts["boundaries_superseded"] += 1
+            else:
+                self._starve(queued, "boundary counsel took the muse's one thread")
+            return True
+        if queued.work_class == WORK_BOUNDARY:
+            self._starve(work, "boundary counsel was already queued and outranks it")
+            return False
+        self._starve(queued, "a newer compilation request replaced it")
+        return True
+
+    def _starve(self, work: _Work, why: str) -> None:
+        """Record one compilation item that will never run. Call with the lock held."""
+        self._counts["compilation_starved"] += 1
+        self._record(
+            DROPPED_COMPILATION_STARVED,
+            f"background compilation never reached the muse's thread: {why}",
+            step_index=_step_of(work.boundary),
+        )
 
     def drain(self, *, step_count: int = 0) -> list[MuseComment]:
         """Return whatever insights are ready NOW. Never blocks or raises.
@@ -499,7 +673,7 @@ class ThreadedMuseRunner:
             ready = list(self._ready)
             self._ready.clear()
             kept: list[MuseComment] = []
-            for insight in ready:
+            for _work_class, insight in ready:
                 kind = getattr(insight, "kind", COUNSEL_KIND_DURABLE)
                 if kind == COUNSEL_KIND_STEP and is_stale(
                     insight, step_count=current, max_lag=self._max_lag
@@ -565,14 +739,20 @@ class ThreadedMuseRunner:
             thread = self._thread
             stranded = list(self._ready)
             self._ready.clear()
+            queued = self._pending
             self._pending = None
+            # A compilation item queued when the lane stops never gets the
+            # thread, and "the runner closed first" is as real a starvation as
+            # losing the slot to boundary counsel (C3: no silent loss).
+            if first and queued is not None and queued.work_class == WORK_COMPILATION:
+                self._starve(queued, "the runner closed before its turn came")
         self._stop.set()
         self._wake.set()
         _bounded_join(thread, timeout=self._join_timeout if timeout is None else timeout)
         with self._lock:
             self._idle.set()
             if first:
-                for insight in stranded:
+                for _work_class, insight in stranded:
                     self._drop_late(insight, "undrained when the runner closed")
 
     def wait_idle(self, timeout: float) -> bool:
@@ -649,6 +829,11 @@ class ThreadedMuseRunner:
                 "kind_delivered": dict(self._kind_delivered),
                 "kind_dropped": dict(self._kind_dropped),
                 "relative_latency": self._relative_latency(),
+                # How many sessions each work class got. Both classes are always
+                # present, because a scheduled class that ran zero times is a
+                # measurement — unlike a degradation code, which reports nothing
+                # rather than a zero when it never fired.
+                "work_started": dict(self._work_started),
                 # The citation surface, reported so a host's own artifact can
                 # show which remembered records its counsel was compiled from —
                 # provenance a reader can check, not a claim they must trust.
@@ -657,7 +842,7 @@ class ThreadedMuseRunner:
 
     # ── the worker ───────────────────────────────────────────────────────────
     def _work(self) -> None:
-        """The ONE thread's body: take a boundary, think about it, repeat.
+        """The ONE thread's body: take a work item, think about it, repeat.
 
         Exits on the stop signal only. Everything inside
         :meth:`~embodiment.muse.MuseLoop.think` is already guaranteed not to
@@ -667,30 +852,32 @@ class ThreadedMuseRunner:
         """
         try:
             while not self._stop.is_set():
-                boundary = self._take()
-                if boundary is None:
+                work = self._take()
+                if work is None:
                     # Poll-wake: sleep until woken, or until the poll bound, and
                     # re-check the stop flag either way.
                     self._wake.wait(self._poll_interval)
                     self._wake.clear()
                     continue
-                self._absorb(self._loop.think(boundary, recall_bundle=self._recall_bundle))
+                self._absorb(self._loop.think(work.boundary, recall_bundle=work.recall_bundle))
         except Exception as exc:  # a dead worker is recorded, never silent
             with self._lock:
                 self._degrade(DEGRADED_WORKER, f"{type(exc).__name__}: {exc}")
         finally:
             self._idle.set()
 
-    def _take(self) -> Optional[BoundaryContext]:
-        """Claim the queued boundary, or mark the lane idle. Worker thread only."""
+    def _take(self) -> Optional[_Work]:
+        """Claim the queued work item, or mark the lane idle. Worker thread only."""
         with self._lock:
-            boundary = self._pending
+            work = self._pending
             self._pending = None
-            if boundary is None:
+            if work is None:
                 self._idle.set()
                 return None
             self._counts["sessions_started"] += 1
-            return boundary
+            self._work_started[work.work_class] = self._work_started.get(work.work_class, 0) + 1
+            self._current_class = work.work_class
+            return work
 
     def _deliver(self, insight: MuseInsight) -> None:
         """The muse's sink: buffer one insight as it is produced. Never raises.
@@ -705,16 +892,34 @@ class ThreadedMuseRunner:
             if self._closed or self._stop.is_set():
                 self._drop_late(insight, "produced after the runner closed")
                 return
+            work_class = self._current_class
             if len(self._ready) == self._ready.maxlen:
+                # The insight is lost to a full buffer either way, so the
+                # overflow counter stays the honest total of what a full buffer
+                # cost. The CODE splits on whether this was backpressure or a
+                # priority inversion, because the two ask a host for different
+                # things.
                 self._counts["insights_dropped_overflow"] += 1
-                self._record(
-                    DROPPED_OVERFLOW,
-                    f"drain buffer full ({self._ready.maxlen}); the oldest insight was "
-                    "discarded so the freshest thinking survives",
-                    step_index=insight.origin.step_count,
-                    model_turns=insight.turn_index,
-                )
-            self._ready.append(insight)
+                evicted_class = self._ready[0][0]
+                if work_class == WORK_COMPILATION and evicted_class == WORK_BOUNDARY:
+                    self._counts["counsel_displaced"] += 1
+                    self._record(
+                        DROPPED_COUNSEL_DISPLACED,
+                        f"drain buffer full ({self._ready.maxlen}); background "
+                        "compilation displaced undrained boundary counsel, which "
+                        "outranks it",
+                        step_index=insight.origin.step_count,
+                        model_turns=insight.turn_index,
+                    )
+                else:
+                    self._record(
+                        DROPPED_OVERFLOW,
+                        f"drain buffer full ({self._ready.maxlen}); the oldest insight was "
+                        "discarded so the freshest thinking survives",
+                        step_index=insight.origin.step_count,
+                        model_turns=insight.turn_index,
+                    )
+            self._ready.append((work_class, insight))
 
     def _absorb(self, outcome: MuseOutcome) -> None:
         """Fold one finished session's cost and degradations. Worker thread only."""

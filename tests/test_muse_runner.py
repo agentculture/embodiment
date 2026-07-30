@@ -660,6 +660,9 @@ class TestDegradation:
                 "kind_dropped",
                 "relative_latency",
                 "compiled_from",
+                # The two work classes the one thread is shared between, and how
+                # many sessions each actually got (embodiment#18).
+                "work_started",
             }
             snap["counts"]["sessions_started"] = 999
             snap["degradations"].append("forged")
@@ -1162,6 +1165,223 @@ class TestWorkClassPriority:
 
         assert DROPPED_COUNSEL_DISPLACED in RUNNER_CODES
         assert DROPPED_COUNSEL_DISPLACED.startswith("muse-")
+
+
+# ── 12. background compilation: the second work class (embodiment#18) ─────────
+
+
+class TestBackgroundCompilationWork:
+    """``compile()`` is the second work class — and the two dead codes' producer.
+
+    ``DROPPED_COMPILATION_STARVED`` and ``DROPPED_COUNSEL_DISPLACED`` shipped in
+    t3 declared, exported, in ``RUNNER_CODES`` — and **unreachable**
+    (embodiment#18). They belonged to the ``WORK_BOUNDARY`` /
+    ``WORK_COMPILATION`` vocabulary, which described a background-compilation
+    lane nothing implemented, so a host writing an exhaustive branch table over
+    ``RUNNER_CODES`` got two arms that could never fire.
+
+    Every test here drives the codes through the PUBLIC seam — ``compile()``,
+    ``consider()``, ``drain()``, ``close()``, ``counts``, ``snapshot()`` — and
+    reaches no private attribute, which is the contract task t3 then makes
+    structural.
+    """
+
+    # -- the class exists and runs on the one thread --------------------------
+
+    def test_compilation_runs_on_the_same_one_daemon_thread(self):
+        seam = _Scripted(
+            _resp("GUIDANCE: boundary counsel " + MARKER_DONE),
+            _resp("GUIDANCE: compiled counsel " + MARKER_DONE),
+        )
+        with _runner(seam) as runner:
+            runner.consider(_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)
+            runner.compile()
+            assert runner.wait_idle(_TIMEOUT)
+            idents = {t.ident for t in seam.threads}
+            assert len(idents) == 1
+            assert idents != {threading.current_thread().ident}
+            assert runner.counts["sessions_started"] == 2
+            assert runner.snapshot()["work_started"] == {WORK_BOUNDARY: 1, WORK_COMPILATION: 1}
+
+    def test_compiled_counsel_drains_like_any_other(self):
+        seam = _Scripted(_resp("GUIDANCE: compiled counsel " + MARKER_DONE))
+        with _runner(seam) as runner:
+            runner.compile()
+            assert runner.wait_idle(_TIMEOUT)
+            drained = runner.drain(step_count=3)
+            assert [c.guidance for c in drained] == ["compiled counsel"]
+            # Provenance names the work class, so a reader can tell counsel the
+            # actor's position asked for from counsel it did not.
+            assert drained[0].origin.kind == WORK_COMPILATION
+
+    def test_a_runner_never_asked_to_compile_starts_no_thread(self):
+        """The museless-cost rule is unchanged: the second class adds no thread."""
+        before = _live_threads()
+        with _runner(_Scripted()) as runner:
+            assert runner.thread_started is False
+            assert _live_threads() == before
+            assert runner.snapshot()["work_started"] == {WORK_BOUNDARY: 0, WORK_COMPILATION: 0}
+
+    def test_the_work_classes_are_the_only_two_accepted(self):
+        assert set(WORK_CLASSES) == {WORK_BOUNDARY, WORK_COMPILATION}
+
+    # -- DROPPED_COMPILATION_STARVED, three real paths ------------------------
+
+    def test_a_boundary_displaces_queued_compilation_and_records_it(self):
+        """Boundary counsel outranks compilation for the one thread."""
+        seam = _Gated(
+            _resp("GUIDANCE: first " + MARKER_DONE),
+            _resp("GUIDANCE: second " + MARKER_DONE),
+        )
+        with _runner(seam) as runner:
+            runner.consider(_boundary(step=1))
+            assert seam.started.wait(_TIMEOUT), "the muse never started thinking"
+            runner.compile()  # queued behind the in-flight session
+            runner.consider(_boundary(step=2))  # outranks it and takes the slot
+            seam.release.set()
+            assert runner.wait_idle(_TIMEOUT)
+            starved = [d for d in runner.degradations if d.code == DROPPED_COMPILATION_STARVED]
+            assert len(starved) == 1
+            assert runner.counts["compilation_starved"] == 1
+            # The boundary work it lost to actually ran.
+            assert runner.snapshot()["work_started"] == {WORK_BOUNDARY: 2, WORK_COMPILATION: 0}
+
+    def test_compilation_offered_behind_queued_boundary_counsel_is_starved(self):
+        seam = _Gated(
+            _resp("GUIDANCE: first " + MARKER_DONE),
+            _resp("GUIDANCE: second " + MARKER_DONE),
+        )
+        with _runner(seam) as runner:
+            runner.consider(_boundary(step=1))
+            assert seam.started.wait(_TIMEOUT)
+            runner.consider(_boundary(step=2))  # queued boundary counsel
+            runner.compile()  # loses the slot race outright
+            seam.release.set()
+            assert runner.wait_idle(_TIMEOUT)
+            codes = [d.code for d in runner.degradations]
+            assert codes.count(DROPPED_COMPILATION_STARVED) == 1
+            assert codes.count(DROPPED_BOUNDARY) == 0
+            assert runner.snapshot()["work_started"] == {WORK_BOUNDARY: 2, WORK_COMPILATION: 0}
+
+    def test_a_newer_compilation_replaces_the_one_still_queued(self):
+        """The freshest compilation survives, and the displaced one is recorded."""
+        seam = _Gated(
+            _resp("GUIDANCE: first " + MARKER_DONE),
+            _resp("GUIDANCE: compiled " + MARKER_DONE),
+        )
+        with _runner(seam) as runner:
+            runner.consider(_boundary(step=1))
+            assert seam.started.wait(_TIMEOUT)
+            runner.compile()
+            runner.compile()
+            seam.release.set()
+            assert runner.wait_idle(_TIMEOUT)
+            assert runner.counts["compilation_starved"] == 1
+            assert runner.snapshot()["work_started"] == {WORK_BOUNDARY: 1, WORK_COMPILATION: 1}
+
+    def test_compilation_still_queued_when_the_runner_closes_is_starved(self):
+        seam = _Gated(_resp("GUIDANCE: first " + MARKER_DONE))
+        runner = ThreadedMuseRunner(seam)
+        try:
+            runner.consider(_boundary(step=1))
+            assert seam.started.wait(_TIMEOUT)
+            runner.compile()  # it will never get the thread
+            runner.close(timeout=0.05)
+            codes = [d.code for d in runner.degradations]
+            assert codes.count(DROPPED_COMPILATION_STARVED) == 1
+            assert runner.counts["compilation_starved"] == 1
+        finally:
+            seam.release.set()
+            runner.close(timeout=_TIMEOUT)
+
+    def test_compile_on_a_closed_runner_is_a_no_op(self):
+        runner = ThreadedMuseRunner(_Scripted(_resp("GUIDANCE: never " + MARKER_DONE)))
+        runner.close()
+        runner.compile()
+        assert runner.thread_started is False
+        assert runner.counts["sessions_started"] == 0
+        assert runner.degradations == []
+
+    # -- DROPPED_COUNSEL_DISPLACED, and its distinctness from overflow --------
+
+    def test_compilation_filling_the_buffer_displaces_boundary_counsel(self):
+        """The low-priority class evicting the high-priority one: an inversion."""
+        seam = _Scripted(
+            _resp("GUIDANCE: boundary counsel " + MARKER_DONE),
+            _resp("GUIDANCE: compiled counsel " + MARKER_DONE),
+        )
+        with _runner(seam, max_pending=1) as runner:
+            runner.consider(_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)  # buffered, never drained
+            runner.compile()
+            assert runner.wait_idle(_TIMEOUT)
+            assert [d.code for d in runner.degradations] == [DROPPED_COUNSEL_DISPLACED]
+            assert runner.counts["counsel_displaced"] == 1
+            # It is still an insight lost to a full buffer, so the overflow
+            # counter stays the honest total; ``counsel_displaced`` names the
+            # subset a host can act on.
+            assert runner.counts["insights_dropped_overflow"] == 1
+            assert [c.guidance for c in runner.drain(step_count=1)] == ["compiled counsel"]
+
+    def test_boundary_counsel_evicting_boundary_counsel_is_plain_overflow(self):
+        """Same-class backpressure keeps ``DROPPED_OVERFLOW`` — the codes differ."""
+        seam = _Scripted(
+            _resp("GUIDANCE: one " + MARKER_DONE),
+            _resp("GUIDANCE: two " + MARKER_DONE),
+        )
+        with _runner(seam, max_pending=1) as runner:
+            runner.consider(_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)
+            runner.consider(_boundary(step=2))
+            assert runner.wait_idle(_TIMEOUT)
+            assert [d.code for d in runner.degradations] == [DROPPED_OVERFLOW]
+            assert runner.counts["counsel_displaced"] == 0
+            assert runner.counts["insights_dropped_overflow"] == 1
+
+    def test_boundary_counsel_evicting_compiled_counsel_is_plain_overflow(self):
+        """The inversion is directional: outranking work evicting is not a loss."""
+        seam = _Scripted(
+            _resp("GUIDANCE: compiled " + MARKER_DONE),
+            _resp("GUIDANCE: boundary " + MARKER_DONE),
+        )
+        with _runner(seam, max_pending=1) as runner:
+            runner.compile()
+            assert runner.wait_idle(_TIMEOUT)
+            runner.consider(_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)
+            assert [d.code for d in runner.degradations] == [DROPPED_OVERFLOW]
+            assert runner.counts["counsel_displaced"] == 0
+
+    def test_compiled_counsel_evicting_compiled_counsel_is_plain_overflow(self):
+        seam = _Scripted(
+            _resp("GUIDANCE: one"),
+            _resp("GUIDANCE: two " + MARKER_DONE),
+        )
+        with _runner(seam, max_pending=1, controls=MuseControls(max_turns=2)) as runner:
+            runner.compile()
+            assert runner.wait_idle(_TIMEOUT)
+            assert [d.code for d in runner.degradations] == [DROPPED_OVERFLOW]
+            assert runner.counts["counsel_displaced"] == 0
+
+    # -- the host-supplied material -------------------------------------------
+
+    def test_compile_uses_the_runners_bundle_and_accepts_an_override(self):
+        class _Bundle:
+            def __init__(self, *ids: str) -> None:
+                self.record_ids = tuple(ids)
+                self.items = ()
+
+        seam = _Scripted(
+            _resp("GUIDANCE: a " + MARKER_DONE),
+            _resp("GUIDANCE: b " + MARKER_DONE),
+        )
+        with _runner(seam, recall_bundle=_Bundle("m-1")) as runner:
+            runner.compile()
+            assert runner.wait_idle(_TIMEOUT)
+            runner.compile(recall_bundle=_Bundle("m-2"))
+            assert runner.wait_idle(_TIMEOUT)
+            assert set(runner.compiled_from) == {"m-1", "m-2"}
 
 
 # ── mixed-kind resolution + the relative-latency measurement (task t3) ────────
