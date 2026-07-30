@@ -717,17 +717,42 @@ def _repo_path_still_required(root: Path) -> Optional[str]:
 
 
 def _snapshot_still_returns_dataclasses(root: Path) -> Optional[str]:
-    """The rough edge stands while ``snapshot()`` hands back raw records."""
+    """The rough edge stands while ``snapshot()['degradations']`` hands back raw records.
+
+    Scoped to the ``degradations`` VALUE, not to the whole method. The first
+    spelling asked whether ``to_dict`` appeared anywhere inside ``snapshot`` at
+    all, and so declared the edge fixed the moment an unrelated key started
+    serialising itself — which task t5's ``deliveries`` key promptly did, while
+    ``degradations`` went on handing back dataclasses and the caveat went on
+    being true. A false STALE is the one failure mode a staleness probe must not
+    have: it retires a caveat that still stands, which is how an honest list
+    turns into a stale one.
+    """
     source = _read(root, "embodiment/muse_runner.py")
     if source is None:
         return None
     for node in ast.walk(ast.parse(source)):
-        if isinstance(node, ast.FunctionDef) and node.name == "snapshot":
-            body = ast.get_source_segment(source, node) or ""
-            if "to_dict" in body:
-                return "muse_runner.snapshot() now serialises its ledger — the edge is fixed"
-            return None
+        if not (isinstance(node, ast.FunctionDef) and node.name == "snapshot"):
+            continue
+        values = _dict_values_for(node, "degradations")
+        if not values:
+            return "muse_runner.snapshot() no longer reports degradations — re-read this caveat"
+        if any("to_dict" in ast.unparse(value) for value in values):
+            return "muse_runner.snapshot()['degradations'] now serialises — the edge is fixed"
+        return None
     return "muse_runner no longer defines snapshot() — re-read this caveat"
+
+
+def _dict_values_for(node: ast.AST, key: str) -> list[ast.expr]:
+    """Every dict-literal value bound to *key* anywhere inside *node*."""
+    found: list[ast.expr] = []
+    for child in ast.walk(node):
+        if not isinstance(child, ast.Dict):
+            continue
+        for literal, value in zip(child.keys, child.values):
+            if isinstance(literal, ast.Constant) and literal.value == key:
+                found.append(value)
+    return found
 
 
 #: The introspection verbs the console script ships. None of them drives the loop.

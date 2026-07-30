@@ -69,6 +69,22 @@ presence layer may not lose one quietly:
   compilation output: the lower class evicting the higher. Recorded, and
   deliberately a *different* code from plain overflow.
 
+…and so is DELIVERY, in its own stream (task t5)
+------------------------------------------------
+C3 makes loss observable. It does not make *arrival* observable, and the one
+beat whose entire job is arrival — the terminal drain — needs to be: the cycle
+that added it claims counsel formerly stranded at close now reaches the actor,
+and a delivery path with no record would put that claim beyond checking.
+:meth:`ThreadedMuseRunner.drain_terminal` therefore mints a
+:class:`MuseDelivery` carrying the count and the delivered insight ids, **zero
+included**, into a ledger of its own (:attr:`ThreadedMuseRunner.deliveries`).
+
+It is deliberately not a ``DROPPED_*`` code. The degradation vocabulary answers
+*"what went wrong?"*; a terminal drain that delivered three insights is this
+lane working, and minting a degradation for it would make every healthy run
+report one. What was genuinely lost keeps its own codes above, and they still
+fire on that path.
+
 Two work classes, one thread
 ----------------------------
 The muse has exactly one thread, and two kinds of work want it:
@@ -152,6 +168,11 @@ __all__ = [
     # role + thread identity
     "MUSE_ROLE",
     "THREAD_NAME",
+    # the DELIVERY vocabulary — what arrived, not what broke (task t5)
+    "DELIVERY_TERMINAL",
+    "DELIVERY_POINTS",
+    "MAX_DELIVERIES",
+    "MuseDelivery",
     # the transition vocabulary (C3)
     "DEGRADED_THREAD",
     "DEGRADED_WORKER",
@@ -223,9 +244,11 @@ DROPPED_COMPILATION_STARVED = "muse-compilation-starved"
 #: :meth:`ThreadedMuseRunner._deliver`.
 DROPPED_COUNSEL_DISPLACED = "muse-counsel-displaced"
 
-#: The complete set this module can record. Session-level codes
-#: (``muse-thinking-failed`` and friends) come through verbatim from
-#: :mod:`embodiment.muse`; this runner mints no code outside these nine.
+#: The complete set of DEGRADATION codes this module can record. Session-level
+#: codes (``muse-thinking-failed`` and friends) come through verbatim from
+#: :mod:`embodiment.muse`; this runner mints no code outside these nine. The
+#: delivery vocabulary (:data:`DELIVERY_POINTS`) is deliberately not in here —
+#: see :class:`MuseDelivery` for why a delivery is not a degradation.
 RUNNER_CODES = (
     DEGRADED_THREAD,
     DEGRADED_WORKER,
@@ -237,6 +260,24 @@ RUNNER_CODES = (
     DROPPED_COMPILATION_STARVED,
     DROPPED_COUNSEL_DISPLACED,
 )
+
+
+# ── the delivery vocabulary (task t5) — what ARRIVED, not what broke ──────────
+
+#: The drive's LAST drain: the beat whose job is delivery rather than presence
+#: (:meth:`embodiment.presence_engine.PresenceEngine.on_terminal_boundary`,
+#: fired once at drive end by :func:`embodiment.loop.run`). Named on the record
+#: rather than implied by it, so a record copied out of its container into a
+#: host's own artifact still says which beat produced it.
+DELIVERY_TERMINAL = "terminal"
+
+#: Every drain point that mints a :class:`MuseDelivery`. Exhaustive, and
+#: declared so a host may branch over it — and so
+#: ``tests/test_ledger.py``'s ``DELIVERY_PROVOKERS`` can require a real
+#: producing path for each entry. That requirement is embodiment#18's rule,
+#: which was never about degradation vocabulary specifically: a declared
+#: constant nothing produces is dead whichever stream it belongs to.
+DELIVERY_POINTS = (DELIVERY_TERMINAL,)
 
 
 # ── defaults ──────────────────────────────────────────────────────────────────
@@ -255,6 +296,11 @@ DEFAULT_POLL_INTERVAL = 0.5
 #: How many of the most recent transitions the ledger keeps. The counters stay
 #: exact past it, and the terminal degradation is held separately.
 MAX_LEDGER = 100
+#: How many delivery records to keep. One drive produces exactly one, so this
+#: only binds a runner deliberately reused across drives; the counters
+#: (``terminal_drains`` / ``insights_delivered_terminal``) stay exact past it,
+#: the same discipline :data:`MAX_LEDGER` already holds.
+MAX_DELIVERIES = 100
 
 #: Cap on one record's reason text, mirroring :mod:`embodiment.muse`.
 _MAX_REASON_LEN = 500
@@ -356,6 +402,85 @@ def _carry(boundary: BoundaryContext) -> BoundaryContext:
         return cast(BoundaryContext, replace(boundary, history=list(history)))
     except Exception:  # an uncopyable boundary still gets thought about
         return boundary
+
+
+def _insight_id(insight: Any) -> str:
+    """A stable id for one delivered insight. Never raises.
+
+    The key is the one the muse already stamps, not a new invention:
+    :attr:`~embodiment.muse.MuseOrigin.session` is its monotonic thinking
+    session and ``turn_index`` the turn inside that session, which together
+    name exactly one produced thought. Unique within a runner (one runner drives
+    one :class:`~embodiment.muse.MuseLoop`, which mints the session numbers),
+    which is the scope a delivery record is read in.
+
+    An unreadable insight yields ``s0t0`` rather than an exception: this runs
+    on the actor's thread, at the last beat of a drive, and an id derivation
+    that could raise there would be a failure path invented by an observability
+    surface.
+    """
+    origin = _read(insight, "origin")
+    session = _coerce_int(_read(origin, "session", 0))
+    turn = _coerce_int(_read(insight, "turn_index", 0))
+    return f"s{session}t{turn}"
+
+
+@dataclass(frozen=True)
+class MuseDelivery:
+    """What ONE drain actually handed the actor — and NOT a degradation.
+
+    The cycle this record belongs to claims that counsel which used to be
+    stranded at close now reaches the actor: issue #17 measured one late drop
+    per run in 4 of 4 runs, the terminal boundary stopped starting the session
+    that stranded, and drive end became the single trigger that fires it. A
+    delivery path producing no observable record would make that the one place
+    the fix is claimed and cannot be checked (constraint C3).
+
+    **Zero is recorded, never skipped.** *"The terminal drain ran and delivered
+    nothing"* and *"the terminal drain never ran"* are different facts with
+    different remedies; a record that only appeared when something arrived
+    would collapse them. An absent record means the beat did not happen.
+
+    **Why this is not a ``DROPPED_*`` code.** The runner's degradation
+    vocabulary answers *"what went wrong?"*, and
+    :mod:`embodiment.ledger` refuses to fold a budget exit into it precisely
+    because "folding it in would make the stream claim breakage that did not
+    happen". A terminal drain delivering three insights is this lane working;
+    delivering none is the muse having had nothing left. Minting a degradation
+    code for either would make every healthy run report one, and a stream that
+    cries wolf on success is worth less than no stream. Counsel that genuinely
+    IS lost keeps its codes — :data:`DROPPED_STALE`, :data:`DROPPED_LATE`,
+    :data:`DROPPED_OVERFLOW`, :data:`DROPPED_BOUNDARY` — and they still fire on
+    this path.
+
+    Fields
+    ------
+    point:
+        Which drain minted this, from :data:`DELIVERY_POINTS`.
+    count:
+        How many insights the drain handed back. What the ACTOR received, after
+        stale counsel was dropped — never what the muse produced.
+    insight_ids:
+        Those insights' ids, in delivery order (see :func:`_insight_id`). The
+        count is not a bare number a reader has to trust: the ids say which
+        thoughts it counted, and they tie back to the session and turn that
+        produced each one.
+    step_index:
+        The acting loop's step the drain read at.
+    """
+
+    point: str = DELIVERY_TERMINAL
+    count: int = 0
+    insight_ids: tuple[str, ...] = ()
+    step_index: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "point": self.point,
+            "count": self.count,
+            "insight_ids": list(self.insight_ids),
+            "step_index": self.step_index,
+        }
 
 
 @dataclass(frozen=True)
@@ -500,6 +625,10 @@ class ThreadedMuseRunner:
             maxlen=max(1, _coerce_int(max_pending, 1))
         )
         self._ledger: deque[MuseDegradation] = deque(maxlen=MAX_LEDGER)
+        # The DELIVERY ledger — a separate stream from ``_ledger`` because a
+        # delivery is not a degradation (see :class:`MuseDelivery`). Bounded on
+        # the same discipline; the counters below stay exact past it.
+        self._deliveries: deque[MuseDelivery] = deque(maxlen=max(1, MAX_DELIVERIES))
         self._failures = 0
         self._observed_step = 0
         #: The class of the session currently in flight. Written by ``_take``
@@ -516,6 +645,12 @@ class ThreadedMuseRunner:
             "compilation_starved": 0,
             "counsel_displaced": 0,
             "degradations_recorded": 0,
+            # The terminal beat, counted separately from every other drain: how
+            # many ran, and how much counsel they carried. Both stay exact past
+            # the bounded delivery ledger, and a zero here is a measurement —
+            # the drain ran and had nothing — never an absence.
+            "terminal_drains": 0,
+            "insights_delivered_terminal": 0,
         }
         # How many sessions each work class actually got. Zero here is a real
         # measurement, not an absence: a host that sees `compilation_starved`
@@ -696,6 +831,49 @@ class ThreadedMuseRunner:
             self._counts["insights_delivered"] += len(kept)
             return kept
 
+    def drain_terminal(self, *, step_count: int = 0) -> list[MuseComment]:
+        """Drain at the LAST beat, and RECORD what that drain delivered (task t5).
+
+        Identical to :meth:`drain` in everything it hands back — same staleness
+        policy, same records, same non-blocking, non-raising contract — and it
+        adds exactly one thing: a :class:`MuseDelivery` naming how much counsel
+        this beat carried and which insights it was. **Even when that is
+        nothing**, because "the terminal drain ran and delivered nothing" is a
+        different fact from "the terminal drain never ran", and only one of them
+        leaves a record.
+
+        Why it is a separate verb rather than a flag on :meth:`drain`
+        ------------------------------------------------------------
+        "This drain is the last one" is a fact about the ACTOR's lifecycle, and
+        the runner has no view of that — the same reason
+        :meth:`note_loop_step` exists. So it arrives from the one caller that
+        knows: the pump's terminal beat
+        (:meth:`embodiment.presence_engine.PresenceEngine.on_terminal_boundary`,
+        fired once at drive end by :func:`embodiment.loop.run`). A separate verb
+        keeps the three-member :class:`~embodiment.presence_engine.MuseSeam`
+        protocol unchanged, so every seam a host already wrote is untouched: the
+        pump probes for this verb by name and falls back to :meth:`drain`, the
+        same optional-capability shape the loop uses to probe a presence sink
+        for ``on_terminal_boundary``.
+
+        Deviation ``d1`` holds here without exception: this collects what is
+        ready *now*. A muse still mid-thought is not waited for, and the record
+        then honestly says nothing arrived.
+        """
+        delivered = self.drain(step_count=step_count)
+        with self._lock:
+            self._counts["terminal_drains"] += 1
+            self._counts["insights_delivered_terminal"] += len(delivered)
+            self._deliveries.append(
+                MuseDelivery(
+                    point=DELIVERY_TERMINAL,
+                    count=len(delivered),
+                    insight_ids=tuple(_insight_id(item) for item in delivered),
+                    step_index=self._observed_step,
+                )
+            )
+        return delivered
+
     def degradation(self) -> Optional[str]:
         """Why this lane stopped thinking, or ``None`` while it is healthy."""
         with self._lock:
@@ -811,6 +989,18 @@ class ThreadedMuseRunner:
             return list(self._ledger)
 
     @property
+    def deliveries(self) -> list[MuseDelivery]:
+        """What the terminal drains delivered — a SEPARATE stream from degradations.
+
+        Empty means no terminal drain ran; a record with ``count == 0`` means
+        one ran and had nothing to hand over. See :class:`MuseDelivery` for why
+        this is not folded into :attr:`degradations` (or into
+        :mod:`embodiment.ledger`, which answers a different question).
+        """
+        with self._lock:
+            return list(self._deliveries)
+
+    @property
     def counts(self) -> dict[str, int]:
         """Exact counters — never truncated, even when the ledger is."""
         with self._lock:
@@ -838,6 +1028,12 @@ class ThreadedMuseRunner:
                 # show which remembered records its counsel was compiled from —
                 # provenance a reader can check, not a claim they must trust.
                 "compiled_from": list(self._compiled_from),
+                # What the terminal drains delivered (task t5). Rendered to
+                # plain dicts, unlike ``degradations``: a host pipes this fold
+                # to JSON, and the older key's dataclasses are already unpacked
+                # by hand at every call site — a NEW key should not add a
+                # second thing to remember before the report will serialise.
+                "deliveries": [record.to_dict() for record in self._deliveries],
             }
 
     # ── the worker ───────────────────────────────────────────────────────────

@@ -47,7 +47,15 @@ from typing import Any, Callable, Optional
 import pytest
 
 from embodiment import continuity, ledger, lifecycle, loop, muse, muse_runner, subagent
-from embodiment.contract import OK, ModelResponse, SubResult, Task, TaskResult, ToolCall
+from embodiment.contract import (
+    OK,
+    ContextPacket,
+    ModelResponse,
+    SubResult,
+    Task,
+    TaskResult,
+    ToolCall,
+)
 from embodiment.events import EventEmitter
 from embodiment.lifecycle import CHECKPOINT_DEGRADED, ContinuityLifecycle, LifecycleConfig
 from embodiment.loop import (
@@ -60,7 +68,7 @@ from embodiment.loop import (
 )
 from embodiment.muse import MARKER_DONE, MuseControls, MuseDegradation, MuseLoop
 from embodiment.muse_runner import ThreadedMuseRunner
-from embodiment.presence_engine import BoundaryContext
+from embodiment.presence_engine import BoundaryContext, PresenceEngine
 
 #: Every wait on the muse's thread is bounded by this: a broken implementation
 #: fails an assertion instead of hanging CI.
@@ -216,6 +224,12 @@ def _loop_event() -> Any:
 # enumeration can call every one of them the same way.
 
 Provoker = Callable[[Path, pytest.MonkeyPatch], list[ledger.LedgerRecord]]
+
+#: The delivery stream's provoker shape (task t5). It takes nothing and returns
+#: the runner's own delivery records: a delivery is not a degradation and does
+#: not fold through :mod:`embodiment.ledger` at all, so there is no store to
+#: anchor and no fault to inject — only a real drive to run.
+DeliveryProvoker = Callable[[], list["muse_runner.MuseDelivery"]]
 
 
 # -- loop ---------------------------------------------------------------------
@@ -642,6 +656,48 @@ def _runner_counsel_displaced(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledge
         runner.close(timeout=_TIMEOUT)
 
 
+# -- muse_runner, the DELIVERY vocabulary (task t5) ----------------------------
+#
+# Not a degradation path — see :class:`TestADeliveryIsNeverADegradation`. It is
+# held to the same producer rule for the same reason (embodiment#18): a
+# vocabulary entry whose only producer is a test is dead vocabulary, whichever
+# stream it belongs to.
+
+
+def _terminal_delivery() -> list[muse_runner.MuseDelivery]:
+    """The terminal beat of a REAL drive mints the delivery record.
+
+    Nothing here records anything by hand. :func:`embodiment.loop.run` fires
+    its one terminal beat at drive end (task t25), the pump drains without
+    starting a session (task t4), and the runner mints the record on the way
+    through. The muse's seam is GATED and released by the drive's own
+    ``observer`` on the ``exit`` event — which the loop fires after the last
+    per-step presence boundary and before the terminal beat — so the counsel is
+    provably still buffered when that beat runs, with no sleep and no race.
+    """
+    seam = _Gated(_resp("GUIDANCE: check the empty case " + MARKER_DONE))
+    runner = ThreadedMuseRunner(seam)
+    packet = ContextPacket(original="do the thing", ack="on it")
+
+    def observer(event: Any) -> None:
+        if event.kind == "exit":
+            seam.release.set()
+            assert runner.wait_idle(_TIMEOUT)
+
+    try:
+        outcome = _drive(
+            _turn(_call("finish")),
+            task=_task(context_packet=packet),
+            presence=PresenceEngine(muse=runner),
+            observer=observer,
+        )
+        assert outcome.exit_reason == loop.EXIT_FINISHED
+        return list(runner.deliveries)
+    finally:
+        seam.release.set()
+        runner.close(timeout=_TIMEOUT)
+
+
 # -- events -------------------------------------------------------------------
 
 
@@ -938,35 +994,73 @@ PROVOKERS: dict[tuple[str, str], Provoker] = {
 KNOWN = {(entry.source, entry.code) for entry in ledger.known_codes()}
 
 
+# ── the DELIVERY coverage map (task t5) ──────────────────────────────────────
+#
+# A second, separate table for a second, separate stream. The runner's delivery
+# vocabulary is not a degradation vocabulary (see
+# :class:`TestADeliveryIsNeverADegradation`), so it cannot ride ``PROVOKERS`` —
+# but it is held to exactly the same producer rule, because dead vocabulary is
+# dead vocabulary wherever it lives. Keyed by the delivery POINT, which is what
+# ``muse_runner.DELIVERY_POINTS`` enumerates.
+
+DELIVERY_PROVOKERS: dict[str, DeliveryProvoker] = {
+    muse_runner.DELIVERY_TERMINAL: _terminal_delivery,
+}
+
+
+def _declared_delivery_points() -> set[str]:
+    """The runner's own claim to completeness, read at call time.
+
+    Read from the module rather than transcribed, for the reason ``KNOWN`` is:
+    adding a point to :data:`embodiment.muse_runner.DELIVERY_POINTS` must make
+    the coverage test go red with no edit to this line.
+    """
+    return set(muse_runner.DELIVERY_POINTS)
+
+
+DELIVERY_KNOWN = _declared_delivery_points()
+
+
 # ── the provoker contract, enforced over this file's OWN source ───────────────
 #
 # See :class:`TestNoProvokerTakesThePrivateDoor` for the rule and the reasoning.
 
 _THIS_FILE = Path(__file__).resolve()
 
+#: Every provoker table in this file. Both are held to the SAME rule: a
+#: provoker drives its subject through the seam a host uses, or it covers
+#: nothing. A new table that is not listed here would be an escape hatch, so
+#: :class:`TestNoProvokerTakesThePrivateDoor`'s first test checks the resolved
+#: count against the tables' own lengths.
+_PROVOKER_TABLES = ("PROVOKERS", "DELIVERY_PROVOKERS")
+
 
 def _provoker_definitions() -> dict[str, ast.FunctionDef]:
-    """Resolve every ``PROVOKERS`` value to its ``def`` in this file's own source.
+    """Resolve every provoker-table value to its ``def`` in this file's own source.
 
-    The table must name module-level functions by BARE NAME. A lambda, an
+    Each table must name module-level functions by BARE NAME. A lambda, an
     attribute or a call would put the provoker's body somewhere this check
     cannot read, which is itself an escape hatch — so the shape is asserted
     here rather than assumed.
     """
     tree = ast.parse(_THIS_FILE.read_text(encoding="utf-8"))
     functions = {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)}
-    table: Optional[ast.Dict] = None
+    tables: dict[str, ast.Dict] = {}
     for node in tree.body:
         target = getattr(node, "target", None)
-        if isinstance(node, ast.AnnAssign) and getattr(target, "id", "") == "PROVOKERS":
-            table = node.value if isinstance(node.value, ast.Dict) else None
-    assert table is not None, "PROVOKERS is no longer a module-level annotated dict literal"
+        name = getattr(target, "id", "")
+        if isinstance(node, ast.AnnAssign) and name in _PROVOKER_TABLES:
+            if isinstance(node.value, ast.Dict):
+                tables[name] = node.value
+    absent = [name for name in _PROVOKER_TABLES if name not in tables]
+    assert not absent, f"no longer module-level annotated dict literals: {absent}"
     resolved: dict[str, ast.FunctionDef] = {}
-    for value in table.values:
-        assert isinstance(value, ast.Name), f"a provoker is not a plain name: {ast.dump(value)}"
-        assert value.id in functions, f"{value.id} is not a module-level def in this file"
-        assert value.id not in resolved, f"{value.id} appears twice in PROVOKERS"
-        resolved[value.id] = functions[value.id]
+    for table_name, table in tables.items():
+        for value in table.values:
+            assert isinstance(value, ast.Name), f"a provoker is not a plain name: {ast.dump(value)}"
+            assert value.id in functions, f"{value.id} is not a module-level def in this file"
+            assert value.id not in resolved, f"{value.id} appears twice in {table_name}"
+            resolved[value.id] = functions[value.id]
     return resolved
 
 
@@ -1125,7 +1219,7 @@ class TestNoProvokerTakesThePrivateDoor:
 
     def test_the_table_resolves_to_definitions_this_check_can_read(self) -> None:
         """A provoker this check cannot parse would be an escape hatch of its own."""
-        assert len(_PROVOKER_DEFS) == len(PROVOKERS)
+        assert len(_PROVOKER_DEFS) == len(PROVOKERS) + len(DELIVERY_PROVOKERS)
 
     @pytest.mark.parametrize("name", sorted(_PROVOKER_DEFS))
     def test_no_provoker_reaches_a_private_attribute(self, name: str) -> None:
@@ -1166,6 +1260,100 @@ class TestNoProvokerTakesThePrivateDoor:
             "            return self._own\n"
         ).body[0]
         assert _private_doors(allowed) == []
+
+
+# ── 1c. the delivery stream: covered the same way, folded nowhere near here ───
+
+
+class TestEveryDeliveryPointIsCovered:
+    """The runner's delivery vocabulary gets #18's rule too (task t5).
+
+    ``DROPPED_COMPILATION_STARVED`` and ``DROPPED_COUNSEL_DISPLACED`` shipped
+    declared, exported, covered and green with no producing path anywhere
+    (embodiment#18). Nothing about that failure was specific to *degradation*
+    vocabulary — it was a declared constant nothing produced. So the delivery
+    points get the same treatment from the start: derived expectations, a
+    provoker per point, and the provoker held to the private-door rule by
+    :class:`TestNoProvokerTakesThePrivateDoor` along with every other one.
+    """
+
+    def test_no_delivery_point_lacks_a_covering_path(self) -> None:
+        missing = sorted(_declared_delivery_points() - set(DELIVERY_PROVOKERS))
+        assert not missing, (
+            "these delivery points have no covering path — add one to "
+            f"DELIVERY_PROVOKERS in this file: {missing}"
+        )
+
+    def test_no_path_names_a_point_the_runner_does_not_declare(self) -> None:
+        extra = sorted(set(DELIVERY_PROVOKERS) - _declared_delivery_points())
+        assert not extra, f"DELIVERY_PROVOKERS names points the runner drops: {extra}"
+
+    def test_a_newly_added_point_appears_uncovered_without_being_written_down(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The property that makes this a test rather than a checklist."""
+        monkeypatch.setattr(
+            muse_runner,
+            "DELIVERY_POINTS",
+            (*muse_runner.DELIVERY_POINTS, "invented-for-this-test"),
+        )
+        missing = sorted(_declared_delivery_points() - set(DELIVERY_PROVOKERS))
+        assert missing == ["invented-for-this-test"]
+
+    @pytest.mark.parametrize("point", sorted(DELIVERY_KNOWN))
+    def test_the_path_mints_a_record_carrying_a_count_and_the_delivered_ids(
+        self, point: str
+    ) -> None:
+        records = DELIVERY_PROVOKERS[point]()
+
+        assert records, f"{point}: the path produced no delivery record at all"
+        matched = [r for r in records if r.point == point]
+        assert matched, f"{point}: not in {[r.point for r in records]}"
+        record = matched[0]
+        assert record.count == len(record.insight_ids)
+        assert record.count >= 1, "the gated provoker holds counsel back for this beat"
+        assert set(record.to_dict()) == {"point", "count", "insight_ids", "step_index"}
+        json.dumps(record.to_dict())
+
+
+class TestADeliveryIsNeverADegradation:
+    """Why the delivery record is not a ``DROPPED_*`` code, pinned structurally.
+
+    This module's own rule for a budget exit is that folding it in "would make
+    the stream claim breakage that did not happen". A terminal drain handing
+    the actor three insights is this cycle **working**; a terminal drain
+    handing it none is the muse having had nothing left, which is also not
+    breakage. Minting a degradation code for either would make every healthy
+    run report one, and a stream that cries wolf on success is worth less than
+    no stream. The counsel that genuinely IS lost already has codes — stale,
+    late, overflow, superseded — and those still fire.
+    """
+
+    def test_a_real_terminal_delivery_folds_to_no_ledger_record(self) -> None:
+        seam = Scripted(_resp("GUIDANCE: noted " + MARKER_DONE))
+        runner = ThreadedMuseRunner(seam)
+        try:
+            runner.consider(_muse_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)
+            assert len(runner.drain_terminal(step_count=1)) == 1
+            assert runner.deliveries  # it happened…
+            assert ledger.from_muse_runner(runner) == []  # …and it was not breakage
+            assert ledger.read(muse_runner=runner) == []
+        finally:
+            runner.close(timeout=_TIMEOUT)
+
+    def test_no_delivery_point_is_a_known_code(self) -> None:
+        codes = {entry.code for entry in ledger.known_codes()}
+        assert not (_declared_delivery_points() & codes)
+
+    def test_the_runners_vocabulary_registry_reads_only_degradation_prefixes(self) -> None:
+        """``DELIVERY_*`` is outside the prefixes the registry harvests, on purpose."""
+        _module, prefixes, _public = ledger._MODULES[ledger.SOURCE_MUSE_RUNNER]
+        assert prefixes == ("DEGRADED_", "DROPPED_")
+        assert not any("DELIVERY_".startswith(prefix) for prefix in prefixes)
+
+    def test_the_runner_declares_the_two_streams_separately(self) -> None:
+        assert set(muse_runner.RUNNER_CODES) & set(muse_runner.DELIVERY_POINTS) == set()
 
 
 # ── 2. absent fields stay absent ──────────────────────────────────────────────

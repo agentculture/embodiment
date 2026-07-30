@@ -59,18 +59,22 @@ from embodiment.muse import (
 from embodiment.muse_runner import (
     DEGRADED_ENDPOINT,
     DEGRADED_THREAD,
+    DELIVERY_POINTS,
+    DELIVERY_TERMINAL,
     DROPPED_BOUNDARY,
     DROPPED_COMPILATION_STARVED,
     DROPPED_COUNSEL_DISPLACED,
     DROPPED_LATE,
     DROPPED_OVERFLOW,
     DROPPED_STALE,
+    MAX_DELIVERIES,
     MAX_LEDGER,
     MUSE_ROLE,
     THREAD_NAME,
     WORK_BOUNDARY,
     WORK_CLASSES,
     WORK_COMPILATION,
+    MuseDelivery,
     ThreadedMuseRunner,
 )
 from embodiment.presence import UpdateCadence
@@ -663,6 +667,9 @@ class TestDegradation:
                 # The two work classes the one thread is shared between, and how
                 # many sessions each actually got (embodiment#18).
                 "work_started",
+                # What the terminal drain actually handed over (task t5). Not a
+                # degradation, so it is deliberately NOT in ``degradations``.
+                "deliveries",
             }
             snap["counts"]["sessions_started"] = 999
             snap["degradations"].append("forged")
@@ -1533,3 +1540,343 @@ class TestRelativeLatencyIsMeasuredNotAssumed:
             assert runner.snapshot()["relative_latency"] == good
         finally:
             runner.close(timeout=_TIMEOUT)
+
+
+# ── 15. the terminal drain's delivery record (task t5) ───────────────────────
+
+
+class TestTerminalDeliveryIsRecorded:
+    """The one drain whose job is DELIVERY records what it delivered (C3).
+
+    The cycle's whole claim is that counsel which used to be stranded at close
+    now reaches the actor: issue #17 measured one late drop per run in 4 of 4
+    runs, t4 stopped the terminal boundary starting the session that stranded,
+    and t25 made drive end fire that beat once on every exit reason. A delivery
+    path nobody can check would make this the one place the cycle claims to fix
+    delivery while making delivery unobservable.
+
+    So the terminal drain mints a :class:`MuseDelivery` — and mints one even
+    when it delivered nothing, because *"the terminal drain ran and delivered
+    nothing"* and *"the terminal drain never ran"* are different facts and a
+    host must be able to tell them apart.
+
+    It is deliberately **not** a degradation. See
+    :class:`TestADeliveryIsNotADegradation` for the argument and the pins.
+    """
+
+    def test_the_record_carries_the_count_and_the_delivered_ids(self):
+        seam = _Scripted(_resp("noticed\nGUIDANCE: check n=0 " + MARKER_DONE))
+        with _runner(seam) as runner:
+            runner.consider(_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)
+            delivered = runner.drain_terminal(step_count=2)
+            assert len(delivered) == 1
+            [record] = runner.deliveries
+            assert record.point == DELIVERY_TERMINAL
+            assert record.count == 1
+            assert len(record.insight_ids) == 1
+            assert record.step_index == 2
+
+    def test_the_ids_name_the_session_and_turn_that_produced_each_insight(self):
+        """The id is the key the muse already stamps, not a new invention."""
+        seam = _Scripted(_resp("GUIDANCE: one"), _resp("GUIDANCE: two " + MARKER_DONE))
+        with _runner(seam, controls=MuseControls(max_turns=2)) as runner:
+            runner.consider(_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)
+            delivered = runner.drain_terminal(step_count=1)
+            [record] = runner.deliveries
+            assert record.count == len(delivered) == 2
+            expected = tuple(f"s{i.origin.session}t{i.turn_index}" for i in delivered)
+            assert record.insight_ids == expected
+            assert len(set(record.insight_ids)) == 2  # the turns are distinguishable
+
+    def test_a_terminal_drain_that_delivered_NOTHING_still_records_a_zero(self):
+        """The whole reason the record exists: absence must be stated, not implied."""
+        with _runner(_Scripted(_resp(MARKER_DONE))) as runner:
+            runner.consider(_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)
+            assert runner.drain_terminal(step_count=1) == []
+            [record] = runner.deliveries
+            assert record.count == 0
+            assert record.insight_ids == ()
+
+    def test_a_terminal_drain_that_never_RAN_records_nothing_at_all(self):
+        """The contrasting fact — and the reason a zero is not the same claim."""
+        with _runner(_Scripted(_resp("GUIDANCE: unread " + MARKER_DONE))) as runner:
+            runner.consider(_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)
+            assert runner.deliveries == []
+            assert runner.snapshot()["deliveries"] == []
+
+    def test_a_museless_runner_that_is_only_drained_still_records_it(self):
+        """No thread, no session, no counsel — and a record saying exactly that."""
+        with _runner(_Scripted()) as runner:
+            assert runner.drain_terminal(step_count=3) == []
+            assert runner.thread_started is False
+            assert [r.count for r in runner.deliveries] == [0]
+
+    def test_stale_counsel_is_dropped_before_it_is_counted_as_delivered(self):
+        """The count is what the ACTOR got, never what the muse produced."""
+        seam = _Scripted(_resp("GUIDANCE[step]: about step one " + MARKER_DONE))
+        with _runner(seam) as runner:
+            runner.consider(_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)
+            assert runner.drain_terminal(step_count=400) == []
+            assert [r.count for r in runner.deliveries] == [0]
+            assert [d.code for d in runner.degradations] == [DROPPED_STALE]
+
+    def test_the_snapshot_carries_the_record_json_safe(self):
+        seam = _Scripted(_resp("GUIDANCE: noted " + MARKER_DONE))
+        with _runner(seam) as runner:
+            runner.consider(_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)
+            runner.drain_terminal(step_count=1)
+            [rendered] = runner.snapshot()["deliveries"]
+            assert set(rendered) == {"point", "count", "insight_ids", "step_index"}
+            assert rendered["count"] == 1
+            json.dumps(runner.snapshot()["deliveries"])  # a host pipes this
+
+    def test_the_snapshot_hands_back_copies(self):
+        with _runner(_Scripted(_resp(MARKER_DONE))) as runner:
+            runner.drain_terminal(step_count=1)
+            runner.snapshot()["deliveries"].append("forged")
+            assert len(runner.snapshot()["deliveries"]) == 1
+            runner.deliveries.append("forged")
+            assert len(runner.deliveries) == 1
+
+    def test_the_counters_stay_exact_past_the_bounded_record_window(self):
+        with _runner(_Scripted()) as runner:
+            for _ in range(MAX_DELIVERIES + 5):
+                runner.drain_terminal()
+            assert len(runner.deliveries) == MAX_DELIVERIES
+            assert runner.counts["terminal_drains"] == MAX_DELIVERIES + 5
+
+    def test_the_delivered_total_is_counted_separately_from_every_drain(self):
+        seam = _Scripted(_resp("GUIDANCE: noted " + MARKER_DONE))
+        with _runner(seam) as runner:
+            runner.consider(_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)
+            runner.drain_terminal(step_count=1)
+            counts = runner.counts
+            assert counts["insights_delivered_terminal"] == 1
+            assert counts["insights_delivered"] == 1
+
+    def test_a_drain_that_is_not_terminal_records_no_delivery(self):
+        """Only the last beat mints one; an ordinary drain is unchanged."""
+        seam = _Scripted(_resp("GUIDANCE: noted " + MARKER_DONE))
+        with _runner(seam) as runner:
+            runner.consider(_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)
+            assert len(runner.drain(step_count=1)) == 1
+            assert runner.deliveries == []
+            assert runner.counts["terminal_drains"] == 0
+
+    def test_the_terminal_drain_never_waits_on_the_muse(self):
+        """Deviation d1 holds without exception, including at the last beat."""
+        seam = _Gated(_resp("GUIDANCE: too late " + MARKER_DONE))
+        with _runner(seam) as runner:
+            runner.consider(_boundary(step=1))
+            assert seam.started.wait(_TIMEOUT)
+            # The muse is provably mid-thought; the terminal drain returns anyway.
+            assert runner.drain_terminal(step_count=1) == []
+            assert [r.count for r in runner.deliveries] == [0]
+            seam.release.set()
+
+    def test_the_delivery_point_vocabulary_is_declared_and_exhaustive(self):
+        assert DELIVERY_TERMINAL == "terminal"
+        assert DELIVERY_POINTS == (DELIVERY_TERMINAL,)
+        assert MuseDelivery().point == DELIVERY_TERMINAL
+
+
+class TestADeliveryIsNotADegradation:
+    """A healthy delivery must never enter the stream that answers "what broke?".
+
+    ``embodiment.ledger``'s own rule is that a budget exit produces no ledger
+    record because *"folding it in here would make the stream claim breakage
+    that did not happen"*. The mirror of that rule governs this record: the
+    terminal drain delivering three insights is the cycle **working**, and
+    minting a ``DEGRADED_*`` / ``DROPPED_*`` code for it would make every
+    healthy run report a degradation. So the delivery record is a separate,
+    non-degradation surface, and these pin that it stays one.
+    """
+
+    def test_the_record_is_not_appended_to_the_degradation_ledger(self):
+        seam = _Scripted(_resp("GUIDANCE: noted " + MARKER_DONE))
+        with _runner(seam) as runner:
+            runner.consider(_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)
+            before = runner.counts["degradations_recorded"]
+            runner.drain_terminal(step_count=1)
+            assert runner.degradations == []
+            assert runner.counts["degradations_recorded"] == before
+            assert runner.degradation() is None
+
+    def test_no_delivery_reaches_the_host_facing_degradation_stream(self):
+        from embodiment import ledger
+
+        seam = _Scripted(_resp("GUIDANCE: noted " + MARKER_DONE))
+        with _runner(seam) as runner:
+            runner.consider(_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)
+            runner.drain_terminal(step_count=1)
+            assert runner.deliveries  # it happened…
+            assert ledger.read(muse_runner=runner) == []  # …and it is not breakage
+
+    def test_the_delivery_vocabulary_is_not_a_degradation_vocabulary(self):
+        from embodiment import ledger
+
+        codes = {e.code for e in ledger.known_codes()}
+        assert DELIVERY_TERMINAL not in codes
+        for point in DELIVERY_POINTS:
+            assert point not in codes
+
+
+class TestTheTerminalVerbIsOptional:
+    """A seam without ``drain_terminal`` must be untouched by its existence.
+
+    The verb is probed for by name — the same optional-capability shape the
+    loop uses to probe a presence sink for ``on_terminal_boundary`` — precisely
+    so :class:`MuseSeam` keeps exactly three members and no host that wrote one
+    against t10b's contract has to change a line. If that ever stops being
+    true, the cost of an observability record has been paid by every consumer.
+    """
+
+    class _ThreeMemberSeam:
+        """The whole protocol, and nothing else."""
+
+        def __init__(self, *comments: MuseComment) -> None:
+            self.ready = list(comments)
+            self.drains: list[int] = []
+
+        def consider(self, boundary: BoundaryContext) -> None:
+            return None
+
+        def drain(self, *, step_count: int = 0) -> list[MuseComment]:
+            self.drains.append(step_count)
+            ready, self.ready = self.ready, []
+            return ready
+
+        def degradation(self) -> Optional[str]:
+            return None
+
+    def test_a_three_member_seam_still_satisfies_the_protocol(self):
+        assert isinstance(self._ThreeMemberSeam(), MuseSeam)
+        assert "drain_terminal" not in dir(self._ThreeMemberSeam())
+
+    def test_the_terminal_beat_drains_it_exactly_as_before(self):
+        seam = self._ThreeMemberSeam(MuseComment(text="still here", guidance="ship it"))
+        guided: list[str] = []
+        rendered: list[str] = []
+        engine = PresenceEngine(
+            io=PresenceIO(append_guidance=guided.append, render=rendered.append), muse=seam
+        )
+        turns = engine.on_terminal_boundary(step_count=9)
+        assert seam.drains == [9]  # the plain verb, with the same argument
+        assert guided == ["ship it"]
+        assert any("still here" in line for line in rendered)
+        assert turns and engine.muse_degraded is False
+
+    def test_the_runner_is_the_seam_that_has_it(self):
+        with _runner(_Scripted()) as runner:
+            assert isinstance(runner, MuseSeam)
+            assert callable(runner.drain_terminal)
+
+
+class TestTheTerminalDeliveryOfARealDrive:
+    """LIVE-SHAPED: a real ``run``, a real pump, a real muse on a real thread.
+
+    Nothing here is stubbed below the seam a host would supply — the actor's
+    model, its tools and the muse's endpoint. The terminal beat is fired by
+    :func:`embodiment.loop.run` itself (task t25), reaches the runner through
+    :meth:`embodiment.presence_engine.PresenceEngine.on_terminal_boundary`
+    (task t4), and the assertion is the one that matters: the count in the
+    record equals the counsel the actor actually received at that beat.
+
+    Determinism without a sleep: the muse's seam is gated, and the drive's own
+    ``observer`` releases it on the ``exit`` event — which :func:`run` fires
+    **after** the last per-step presence boundary and **before**
+    ``_presence_terminal``. So the insight is provably buffered, provably
+    undrained by any earlier beat, and provably waiting when the last beat runs.
+    """
+
+    @staticmethod
+    def _drive(host: _Host, engine: PresenceEngine, on_exit: Any) -> Any:
+        def observer(event: Any) -> None:
+            if event.kind == "exit":
+                on_exit()
+
+        return run(
+            host.complete,
+            host.task(),
+            executor=host.executor,
+            max_steps=6,
+            hooks=host.hooks,
+            presence=engine,
+            observer=observer,
+        )
+
+    def test_the_count_matches_the_counsel_the_actor_actually_received(self):
+        seam = _Gated(_resp("I notice the tests never ran\nGUIDANCE: run pytest " + MARKER_DONE))
+        host = _Host(turns=[_turn(_call("write_file", path="a.py")), _turn(_call("finish"))])
+        with _runner(seam) as runner:
+            engine = host.engine(muse=runner)
+
+            def release() -> None:
+                seam.release.set()
+                assert runner.wait_idle(_TIMEOUT)
+
+            outcome = self._drive(host, engine, release)
+
+        assert outcome.exit_reason == EXIT_FINISHED
+        [record] = runner.deliveries
+        assert record.point == DELIVERY_TERMINAL
+        # The counsel really did arrive at the LAST beat: the actor's advisory
+        # channel ends with it, and the operator saw the muse's own line.
+        assert host.guidance[-1] == "run pytest"
+        assert any("I notice the tests never ran" in line for line in host.rendered)
+        # …and the record says so, with the count the actor actually got.
+        assert record.count == 1
+        assert record.count == sum(r.point == "muse:synthesis" for r in engine.records)
+        assert len(record.insight_ids) == 1
+        assert runner.counts["insights_delivered_terminal"] == 1
+
+    def test_a_drive_whose_muse_had_nothing_left_records_the_zero(self):
+        """The same live path, the honest zero — the drain ran and delivered none.
+
+        Determinism runs the other way here: the muse is made to finish
+        *before* the first turn (``before_turn`` waits on it), so an ordinary
+        cadence beat collects its counsel and the terminal beat is left with
+        nothing. That is the honest zero — the counsel was delivered, just not
+        by this beat — and it must still leave a record.
+        """
+        seam = _Scripted(_resp("GUIDANCE: early counsel " + MARKER_DONE))
+        host = _Host(turns=[_turn(_call("write_file", path="a.py")), _turn(_call("finish"))])
+        with _runner(seam) as runner:
+            host.before_turn = lambda _n: runner.wait_idle(_TIMEOUT)
+            engine = host.engine(muse=runner)
+            outcome = self._drive(host, engine, lambda: None)
+
+        assert outcome.exit_reason == EXIT_FINISHED
+        assert "early counsel" in host.guidance  # it WAS delivered, just earlier
+        [record] = runner.deliveries
+        assert record.count == 0
+        assert record.insight_ids == ()
+
+    def test_exactly_one_terminal_delivery_per_drive(self):
+        """t25's latch, read back off the delivery record rather than the loop."""
+        seam = _Scripted(_resp("GUIDANCE: noted " + MARKER_DONE))
+        host = _Host(turns=[_turn(_call("finish"))])
+        with _runner(seam) as runner:
+            engine = host.engine(muse=runner)
+            self._drive(host, engine, lambda: None)
+            assert len(runner.deliveries) == 1
+            assert runner.counts["terminal_drains"] == 1
+
+    def test_a_museless_drive_records_no_delivery_and_starts_no_thread(self):
+        """The default path is untouched: no runner, no record, no thread."""
+        before = _live_threads()
+        host = _Host(turns=[_turn(_call("finish"))])
+        outcome = self._drive(host, host.engine(), lambda: None)
+        assert outcome.exit_reason == EXIT_FINISHED
+        assert not any(t.name == THREAD_NAME for t in threading.enumerate())
+        assert _live_threads() == before
