@@ -5,7 +5,7 @@
   "schema_version": 4,
   "status": "exported",
   "created": "2026-07-29T19:25:04Z",
-  "updated": "2026-07-30T20:46:07Z",
+  "updated": "2026-07-30T21:15:57Z",
   "targets": [
     {
       "id": "c1",
@@ -932,6 +932,21 @@
       ],
       "covers": [],
       "instruction": "Owns embodiment/muse_runner.py and tests/test_muse_runner.py. muse_runner.py:596-602 builds MuseLoop(complete, controls=, system=, sink=, clock=) with no tools= argument \u2014 that omission is the whole gap. Thread a bench through the constructor to that call. Keep muse._bench_for as the single depth gate; do not add a second one. Preserve the single-daemon-thread discipline, the bounded join, deviation d1 (the actor never waits), and the stdlib allow-list. Tools-off must stay byte-identical \u2014 t11 pins that at MuseLoop level and it must keep passing."
+    },
+    {
+      "id": "t27",
+      "summary": "Round-robin head-to-head: full-Gemma vs mixed vs full-Qwen across an escalating League of Agents difficulty ladder",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "three arms differing only in which model serves cortex and muse (senses stays Gemma 12B in all three); an escalating ladder run in order until the arms separate or it is exhausted; every rung records its scenario, turn limit, actions cap, max-steps, seed and both model ids; results published either way including INCONCLUSIVE, with any rung that did not run reported absent; a per-arm cost column (completion tokens and wall clock) reported beside outcome, because equal quality at 25x the cost is itself the answer",
+        "the three pairings gemma-vs-mixed, mixed-vs-qwen and qwen-vs-gemma each play the ladder, with both teams driven by model seats rather than the scripted rival policy; the two seats in a match receive identical budgets and that equality is recorded in tokens, noting it is not equality of useful output since the Qwen cortex spends about 1000 tokens reasoning before emitting"
+      ],
+      "deps": [
+        "t24"
+      ],
+      "covers": [],
+      "instruction": "Owns a NEW head-to-head harness under examples/ plus docs/live-test-results/. Do NOT edit examples/league_seat.py \u2014 t24 uses it; import from it or drive the league CLI directly.\n\nTHE HEAD-TO-HEAD REQUIREMENT (deviation d10). league_seat.py drives the rival with rival_orders(), a deterministic scripted policy (lines 1449 and 1592), NOT a model. Round-robin means BOTH teams are model seats. The cli.act(match_id, team, orders) seam is symmetric, so run the seat logic twice per turn, once per team, with different model configs. league_seat.py exposes --cortex-model and --muse-model, so an arm is a flag pair, never a code change.\n\nTHE THREE PAIRINGS: gemma-vs-mixed, mixed-vs-qwen, qwen-vs-gemma. Arms: full-Gemma = Gemma-4-31B as BOTH cortex and muse; full-Qwen = Qwen3.6-27B as BOTH; mixed = today shipped pairing, Qwen cortex + Gemma muse. Senses stays Gemma-4-12B in all three \u2014 the operator was explicit.\n\nTHE LADDER. The operator asked for \"+5 in size\"; board size is NOT a knob \u2014 league arena list ships exactly three fixed scenarios (skirmish-1 12x10 turn_limit 30, recon-1 14x12, skirmish-2 14x12 fogged turn_limit 16). Say that plainly in the write-up and name what you substituted. Escalate with what exists, in rising order: scenario skirmish-1 -> recon-1 -> skirmish-2, plus --max-actions TEAM:N tightening, shorter turn budgets, and --map-read fog / --unit-comms off as the hardest rungs. Run rungs in order and STOP climbing when the arms separate \u2014 separation is the result, exhausting the ladder is the fallback.\n\nFAIRNESS, and it is load-bearing: both seats in a match get identical --max-steps and --max-tokens, and BOTH SIDES PLAY BOTH COLOURS at every rung (swap which arm is blue) or map/seat asymmetry confounds the whole result. Fix seeds and record them. Record that equal token budgets are NOT equal useful output: the Qwen cortex spends about 1000 tokens reasoning before emitting anything (measured \u2014 at max_tokens 300 it returns empty content with finish_reason length), while Gemma answers directly. Budget 3000+ for any Qwen seat.\n\nRIG: gateway http://localhost:8001/v1, auth REQUIRED (Authorization: Bearer $COLLEAGUE_API_KEY, 401 without). cortex sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP, muse nvidia/Gemma-4-31B-IT-NVFP4. Only the cortex is local; a full-Qwen arm therefore puts BOTH roles on the one local GPU while full-Gemma puts both on the proxy \u2014 say so, because wall-clock is not a clean quality signal across arms.\n\nPRE-REGISTER the ladder, the pairings, the fairness rules and the decision rule BEFORE the first dial, house style per docs/live-test-results/*-preregistration.md, thresholds asserted by value in a test.\n\nCOST IS A RESULT, not overhead: report completion tokens and wall clock per arm beside outcome. t9 measured the muse reaching identical verdicts to the cortex for about 1/25 the tokens; if quality ties here, cost decides, and that is a publishable answer to the operator question."
     }
   ],
   "risks": [

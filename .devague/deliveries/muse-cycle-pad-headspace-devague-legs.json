@@ -2,7 +2,7 @@
   "plan_slug": "muse-cycle-pad-headspace-devague-legs",
   "schema_version": 1,
   "created": "2026-07-29T22:25:08Z",
-  "updated": "2026-07-30T20:37:42Z",
+  "updated": "2026-07-30T21:15:06Z",
   "deviations": [
     {
       "id": "d1",
@@ -105,6 +105,31 @@
         "c37"
       ],
       "origin": "llm",
+      "status": "approved",
+      "classification": "needs-follow-up"
+    },
+    {
+      "id": "d9",
+      "what": "add a new experiment: full-Gemma vs full-Qwen homogeneous model arms across an escalating-difficulty League of Agents ladder, to decide whether to consolidate to one model",
+      "task_ref": "t24",
+      "reason": "operator request 2026-07-31. The question no experiment in this cycle answers: every run so far uses the MIXED pairing (Qwen cortex + Gemma muse), so nothing measures whether a single model would do as well or better. t9 already showed the muse reaching identical verdicts to the cortex for about 1/25 the completion tokens and 1/10 the wall clock, which makes consolidation a live economic question rather than a hypothetical. Escalating difficulty is also the direct fix for the ceiling that made association-work, arena-series and muse-arms all INCONCLUSIVE: the ladder keeps rising until the arms separate or the ladder runs out.",
+      "affects": [
+        "t24",
+        "t22"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "needs-follow-up"
+    },
+    {
+      "id": "d10",
+      "what": "the model-consolidation experiment is a round-robin head-to-head, not three solo runs against the house bot: gemma-vs-mixed, mixed-vs-qwen, qwen-vs-gemma",
+      "task_ref": "t27",
+      "reason": "operator refinement 2026-07-31. Head-to-head answers \"which is better\" directly rather than inferring it from three separate scores against a shared scripted opponent. It requires harness work: league_seat.py drives the rival with rival_orders(), a deterministic scripted policy (lines 1449, 1592), not a model \u2014 so both teams must be driven by model seats. The cli.act(match_id, team, orders) seam is symmetric, so this is feasible beside league_seat.py rather than inside it.",
+      "affects": [
+        "t27"
+      ],
+      "origin": "user",
       "status": "approved",
       "classification": "needs-follow-up"
     }

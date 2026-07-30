@@ -245,6 +245,37 @@ the pre-registration described. Written down because "the prediction was fine,
 the harness did not do the thing" is a distinct failure from a wrong prediction,
 and only shows up if you grade rather than glance.
 
+### `exit=stopped` on the subset problem was partly the token cap, not the model
+
+[designed-problem.md](designed-problem.md) reported 3-of-4 runs per arm ending
+`exit=stopped` at `turns=2` and read it as *"the model abandoning tool calls,
+not answering wrongly"* — a protocol failure. Task t19 ran the same problem and
+measured the alternative. Same prompt, same rig, one variable:
+
+| `max_tokens` | `finish_reason` | content | reasoning | tool calls |
+|---|---|---|---|---|
+| 6000 | **`length`** | *empty* | 12 857 chars | **none** |
+| 16000 | `tool_calls` | *empty* | 20 835 chars | `finish({"answer": 76})` |
+
+At 6000 the cortex is **truncated mid-thought**. A truncated turn and an
+abandoned protocol are the same event to the loop — no content, no tool calls —
+so the empty-turn exit path fires either way and the transcript cannot tell them
+apart. `docs/live-test-results/README.md` already warned that this cortex
+returns `finish_reason: length` with `content: None` and that a caller "can
+easily misread that as an empty turn rather than a truncated one". It was
+misread, in a published result, on this repo's own harness.
+
+**Two things were wrong at once**, which is why it survived: the budget was too
+small *and* nothing recorded enough to notice. `RecordingSeam.tail()`
+(`examples/echo_probe_workspace.py`) now keeps the last turn's content, its
+reasoning length and its tool names, so "silent because truncated" and "silent
+because it stopped calling tools" are separable in a committed transcript.
+
+**What is not corrected:** designed-problem's headline — no measured muse
+effect, 1/4 in both arms — is untouched by this. Both arms ran under the same
+cap, so the comparison stands; what changes is the *reading* of the failures
+that produced it, and whether 1/4 was a floor imposed by the budget.
+
 ### The dominant counsel loss is a close-time race, not staleness
 
 **One `muse-insight-late` in every one of four runs**, at steps 13–15,

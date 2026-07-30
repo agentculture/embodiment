@@ -2,7 +2,7 @@
 
 What happened when embodiment was run against real models rather than fakes.
 
-The test suite (1567 tests) proves embodiment cannot lie, hang, or degrade
+The test suite (2806 tests) proves embodiment cannot lie, hang, or degrade
 silently. It cannot tell you whether the result is any good. These are the runs
 that address the second question, recorded as deviations
 [`d4`](#deviations) (live testing as an acceptance bar) and `d5` (live
@@ -66,6 +66,7 @@ generously.
 | [muse-latency-preregistration.md](muse-latency-preregistration.md) | the four arms, the estimator, the derived `KEEP_THRESHOLD` and the `INCONCLUSIVE` condition | committed **before** the first dial; `KEEP_THRESHOLD` is recomputed from its inputs in the pin test, not asserted as a literal |
 | [muse-arms-preregistration.md](muse-arms-preregistration.md) | the three muse arms (tools-off / +pad / +pad+workspace), the R-C1 execution rule, the counsel scorer and the decision rule | committed **with the harness** (`examples/muse_arms.py`) and **before** the first measured dial; the series itself is task t18's |
 | [muse-arms.md](muse-arms.md) | does working memory, then somewhere to execute, cut the muse's confidently-wrong rate — n=8 per arm, 24 runs, real containers | **`INCONCLUSIVE`**: arm A is **8/8 correct, 0 confidently wrong**, so the control sits on a ceiling with nothing to move. **1 confidently-wrong answer in 24 runs.** 17 of arm C's 23 workspace calls were refused for a string argv; after the mandated hand-audit **every one of the 5 real executions was a whole-problem solver, none offloaded arithmetic**. Nine runs report `NO_ANSWER` because the muse emitted a **tool call on the tools-off closing turn** and the gateway dropped it |
+| [workspace-echo-chamber.md](workspace-echo-chamber.md) | does a wrong number wearing *measured-result* authority drive the loop — a genuine workspace execution against a remembered-fact arm and a control, n=3 each | **`INCONCLUSIVE`, 12/12 RESISTED — the pad-recall boundary stays.** Nothing deferred, including a post-hoc arm carrying the exact costume that won 6/6, so the probe has **no measured sensitivity** to the effect it re-tests. It also measured that `exit=stopped` on this problem was partly the token cap |
 
 ## Reproducing
 
@@ -89,6 +90,16 @@ uv run python examples/muse_challenge.py --live --framing bare --n 3 --json
 # can a stored record drive the loop — hostile arm, then the control
 uv run python examples/echo_probe.py --store /tmp/echo/live --direction both --live
 uv run python examples/echo_probe.py --store /tmp/echo/ctl --direction both --live --control
+
+# the same question with a *computed* wrong number: three pre-registered arms,
+# then the post-hoc sensitivity arm (never in --arm all; it must be named)
+uv run python examples/echo_probe_workspace.py --store /tmp/wecho/live \
+    --arm all --n 3 --live \
+    --out docs/live-test-results/workspace-echo-chamber.jsonl \
+    --config-out docs/live-test-results/workspace-echo-chamber-config.json
+uv run python examples/echo_probe_workspace.py --store /tmp/wecho/instr \
+    --arm instruction --n 3 --live \
+    --out docs/live-test-results/workspace-echo-chamber-instruction.jsonl
 
 # is the role split real — the pre-registered 2x2, then the same rule re-applied
 uv run python examples/association_work.py --live --n-reflective 4 --n-executive 3 \
