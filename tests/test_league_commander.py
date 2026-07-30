@@ -811,6 +811,16 @@ class TestTheFold:
         low = _summary("C", [4, 4, 4, 4, 4])
         assert lc.compare(high, low)["verdict"] == lc.VERDICT_INCONCLUSIVE
 
+    def test_a_ceiling_at_unequal_n_is_still_a_ceiling(self) -> None:
+        # The bug this pins: comparing sorted LISTS made [19] and [19,19,19]
+        # look like different distributions, so a flat ceiling would have been
+        # published as NO_EFFECT. The pre-registration says "sets".
+        high = _summary("B", [19])
+        low = _summary("A-gemma", [19, 19, 19])
+        result = lc.compare(high, low)
+        assert result["identical_sets"] is True
+        assert result["verdict"] == lc.VERDICT_INCONCLUSIVE
+
     def test_a_big_mean_with_the_wrong_direction_is_inconclusive(self) -> None:
         high = _summary("B", [40, -5, -5, -5, -5])
         low = _summary("C", [1, 1, 1, 1, 1])

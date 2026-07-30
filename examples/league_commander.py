@@ -1623,7 +1623,14 @@ def compare(
     threshold = float(low[median_key])
     direction = sum(1 for value in high[values_key] if float(value) >= threshold)
     required = direction_required(int(high["matches"]))
-    identical = sorted(high[values_key]) == sorted(low[values_key])
+    # SETS, not multisets. The pre-registration's "no effect" branch requires
+    # that "the instrument demonstrably had variance to detect with", and the
+    # first implementation of this line compared sorted LISTS — so two arms
+    # scoring an identical value at UNEQUAL n compared unequal, and a flat
+    # ceiling would have been published as NO_EFFECT instead of INCONCLUSIVE.
+    # Corrected to match the pre-registered prose after the first dial; the
+    # correction only ever moves a verdict toward INCONCLUSIVE, never away.
+    identical = set(high[values_key]) == set(low[values_key])
     verdict = VERDICT_INCONCLUSIVE
     if delta >= effect and direction >= required:
         verdict = VERDICT_EFFECT
