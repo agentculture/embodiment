@@ -134,11 +134,52 @@ the back door — and firing host code from the muse's thread is exactly how a
 Advisory only — structurally
 ----------------------------
 The runner drains :class:`~embodiment.muse.MuseInsight` values, which carry text
-and provenance and nothing else. It has no executor, no tool surface and no
-decision vocabulary in scope: it never imports :mod:`embodiment.loop`. There is
-no path from anything here to a tool-call decision, and that is held by the
-mechanism rather than by promise (`colleague#352
-<https://github.com/agentculture/colleague/issues/352>`_).
+and provenance and nothing else. It builds no executor, constructs no tool and
+holds no decision vocabulary in scope: it never imports :mod:`embodiment.loop`.
+There is no path from anything here to a tool-call decision, and that is held by
+the mechanism rather than by promise (`colleague#352
+<https://github.com/agentculture/colleague/issues/352>`_). A host-supplied
+thinking bench does not change that — see the next section for what carrying one
+does and does not mean.
+
+The tool bench is CARRIED, never owned (task t26)
+-------------------------------------------------
+:mod:`embodiment.muse` grew a thinking-tool seam in task t10 — a
+:class:`~embodiment.muse.MuseToolBench` of schema, tool-carrying completion and
+executor — and this module was the missing wire. It is the only thing that drives
+the muse inside a live drive, so until now a bench could be reached only by a
+harness building a :class:`~embodiment.muse.MuseLoop` by hand: the seam, the pad
+(t12) and the workspace (t13) all existed and none of them was reachable from a
+running drive (issue #30). ``tools`` and ``depth`` now pass straight through to
+that loop.
+
+*Straight through* is the whole of it, and each half is deliberate:
+
+* **No second gate.** :func:`embodiment.muse._bench_for` decides whether a bench
+  reaches the wire — top-level only, failing closed on a depth it cannot read,
+  recording :data:`~embodiment.muse.DEGRADED_TOOLS_WITHHELD` when it withholds.
+  This module re-implements none of that and compares ``depth`` to nothing; the
+  withholding reaches a host exactly the way every other session-level code
+  does, copied onto this ledger by :meth:`ThreadedMuseRunner._absorb`.
+* **No ownership.** A bench is host state that may hold resources — the muse
+  workspace holds a container — and this runner keeps no reference to one.
+  :meth:`ThreadedMuseRunner.close` therefore *cannot* tear a bench down, which
+  is the right answer twice over. Whoever wired it owns its lifetime, exactly as
+  they own the injected ``complete`` seam this module has never closed either;
+  and the join at teardown is **bounded** by design, so a session parked inside
+  a model call can still be using the bench after ``close`` returns. Destroying
+  it here would be a use-after-teardown the daemon-thread contract deliberately
+  permits.
+* **No inspection.** Nothing here reads a schema, a tool name, an argument or a
+  result. A tool result is text the muse reads, and it reaches this module only
+  as the narration of an insight; the tool authority boundary
+  (:data:`~embodiment.muse.MUSE_TOOL_AUTHORITY`) is applied where the tools are.
+
+What the runner does add is the **measurement**: ``counts["tool_rounds"]`` sums
+the rounds every absorbed session spent, so *"the muse used its tools during this
+drive"* is a number a host can read rather than something only the host's own
+executor could see. Zero is a measurement — a tools-off lane genuinely spent
+none — and not an absence.
 
 Configuration is explicit
 -------------------------
@@ -170,6 +211,7 @@ from embodiment.muse import (
     MuseInsight,
     MuseLoop,
     MuseOutcome,
+    MuseToolBench,
     insight_lag,
     is_stale,
 )
@@ -264,10 +306,13 @@ DROPPED_COMPILATION_STARVED = "muse-compilation-starved"
 DROPPED_COUNSEL_DISPLACED = "muse-counsel-displaced"
 
 #: The complete set of DEGRADATION codes this module can record. Session-level
-#: codes (``muse-thinking-failed`` and friends) come through verbatim from
-#: :mod:`embodiment.muse`; this runner mints no code outside these ten. The
-#: delivery vocabulary (:data:`DELIVERY_POINTS`) is deliberately not in here —
-#: see :class:`MuseDelivery` for why a delivery is not a degradation.
+#: codes come through verbatim from :mod:`embodiment.muse` — the thinking-failure
+#: family, joined in task t26 by
+#: :data:`~embodiment.muse.DEGRADED_TOOLS_WITHHELD`, which a bench wired below
+#: the top level produces. This runner mints no code outside these ten, and
+#: re-implements none of the decisions behind the ones it relays. The delivery
+#: vocabulary (:data:`DELIVERY_POINTS`) is deliberately not in here — see
+#: :class:`MuseDelivery` for why a delivery is not a degradation.
 RUNNER_CODES = (
     DEGRADED_THREAD,
     DEGRADED_WORKER,
@@ -546,9 +591,10 @@ class ThreadedMuseRunner:
 
     Args:
         complete: the injected tools-off thinking seam
-            (:data:`~embodiment.muse.MuseCompleteFn`) — the ONE thing here that
-            may talk to a network, already carrying its own endpoint. This
-            module never infers a model, a role or an address.
+            (:data:`~embodiment.muse.MuseCompleteFn`), already carrying its own
+            endpoint. This module never infers a model, a role or an address.
+            It is the muse's floor: it runs every session no bench reaches the
+            wire on, and it stays required when one is wired.
         role: the role NAME this lane drives, recorded for provenance. It names
             who is thinking, never what may be inferred from it.
         controls: the thinking loop's turn budget and caps.
@@ -558,6 +604,19 @@ class ThreadedMuseRunner:
             loop. Absent, every ``latency`` stays ``None`` rather than a
             fabricated zero. A runner owns a thread, so it may legitimately own
             a clock too — but only if the host gives it one.
+        tools: OPTIONAL :class:`~embodiment.muse.MuseToolBench` of THINKING
+            tools, handed straight to the loop and never kept here (task t26).
+            ``None`` — the default — is the tools-off lane, and on that path the
+            constructed loop and every prompt it sends are what they were before
+            this argument existed. The bench carries the second seam that may
+            talk to a network: its own tool-carrying completion.
+        depth: where this runner's muse sits, passed through to the loop's
+            single depth gate. ``0`` is the top-level muse, the only one that
+            may hold tools this cycle; anything else — including a value that
+            cannot be read as an integer — withholds the bench and records
+            :data:`~embodiment.muse.DEGRADED_TOOLS_WITHHELD`, which
+            :meth:`_absorb` copies onto this lane's ledger. The decision is
+            :func:`embodiment.muse._bench_for`'s alone; nothing here repeats it.
         max_pending: how many undrained insights to hold before discarding the
             oldest (and recording the discard).
         max_lag: how many actor steps an insight may fall behind before
@@ -598,6 +657,8 @@ class ThreadedMuseRunner:
         controls: Optional[MuseControls] = None,
         system: Optional[str] = None,
         clock: Optional[Callable[[], float]] = None,
+        tools: Optional[MuseToolBench] = None,
+        depth: Any = 0,
         max_pending: int = DEFAULT_MAX_PENDING,
         max_lag: int = DEFAULT_STALE_LAG,
         max_failed_sessions: int = DEFAULT_MAX_FAILED_SESSIONS,
@@ -643,12 +704,23 @@ class ThreadedMuseRunner:
             self._compiled_from[str(record_id)] = None
         # ONE loop instance, driven by ONE thread, one session at a time — the
         # protocol embodiment.muse documents for exactly this consumer.
+        #
+        # ``tools`` and ``depth`` are handed over and NOT stored (task t26).
+        # That is the ownership statement made structurally rather than in
+        # prose: there is no attribute here holding a host's bench, so nothing
+        # in this module — ``close`` included — can reach one to inspect it,
+        # call it or tear it down. With no bench this is byte-for-byte the loop
+        # the pre-t26 runner built: ``tools=None`` and ``depth=0`` are
+        # ``MuseLoop``'s own defaults, and its depth gate reads ``depth`` only
+        # when a bench exists to withhold.
         self._loop = MuseLoop(
             complete,
             controls=controls,
             system=system,
             sink=self._deliver,
             clock=clock,
+            tools=tools,
+            depth=depth,
         )
         self._max_lag = max(0, _coerce_int(max_lag, DEFAULT_STALE_LAG))
         self._max_failed = max(1, _coerce_int(max_failed_sessions, DEFAULT_MAX_FAILED_SESSIONS))
@@ -695,6 +767,13 @@ class ThreadedMuseRunner:
             "compilation_starved": 0,
             "counsel_displaced": 0,
             "degradations_recorded": 0,
+            # How many TOOL rounds the absorbed sessions spent between them
+            # (task t26). A tools-off lane spends none, and that zero is a
+            # measurement rather than an absence — the same standard
+            # :attr:`~embodiment.muse.MuseOutcome.tool_rounds` already holds
+            # itself to. Without it, "the muse used its tools in this drive"
+            # would be observable only to whoever owns the executor.
+            "tool_rounds": 0,
             # The terminal beat, counted separately from every other drain: how
             # many ran, and how much counsel they carried. Both stay exact past
             # the bounded delivery ledger, and a zero here is a measurement —
@@ -1199,6 +1278,10 @@ class ThreadedMuseRunner:
         """Fold one finished session's cost and degradations. Worker thread only."""
         with self._lock:
             self._counts["sessions_completed"] += 1
+            # What the session spent on tools, if it had any. Read defensively
+            # like every other host-facing value on this thread: a telemetry
+            # field must not be the thing that kills the worker.
+            self._counts["tool_rounds"] += _coerce_int(_read(outcome, "tool_rounds", 0))
             # Provenance: the ids this session's compiled memory cited. Held so
             # the host can carry them into the durable record's ``links`` — the
             # loop's memory boundary reads them back through

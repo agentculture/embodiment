@@ -51,10 +51,15 @@ from embodiment.muse import (
     COUNSEL_KIND_DURABLE,
     COUNSEL_KIND_STEP,
     DEGRADED_THINKING,
+    DEGRADED_TOOLS_WITHHELD,
     MARKER_DONE,
+    MUSE_AUTHORITY,
+    MUSE_TOOL_AUTHORITY,
     MuseControls,
     MuseDegradation,
     MuseInsight,
+    MuseLoop,
+    MuseToolBench,
 )
 from embodiment.muse_runner import (
     DEGRADED_CLOSER,
@@ -1980,3 +1985,443 @@ class TestTheTerminalDeliveryOfARealDrive:
         assert outcome.exit_reason == EXIT_FINISHED
         assert not any(t.name == THREAD_NAME for t in threading.enumerate())
         assert _live_threads() == before
+
+
+# ── 16. a tool bench reaches the muse INSIDE a live drive (task t26) ──────────
+#
+# The muse's thinking-tool seam (t10), the pad (t12) and the workspace (t13) all
+# landed, and none of them was reachable from a running drive: this runner is the
+# only thing that drives the muse in one, and it built its ``MuseLoop`` with no
+# ``tools=`` (issue #30). These tests hold the wire it grew, and the three things
+# that wire must not disturb — the depth gate, the tools-off floor, and who owns
+# the bench.
+
+
+class _ScriptedTools:
+    """A TOOL-CARRYING muse seam: ``(messages, schema)`` in, scripted replies out.
+
+    Deliberately two-argument, and a separate double rather than a widening of
+    :class:`_Scripted`. The arity IS the tools-off/tools-on distinction in
+    :mod:`embodiment.muse`, so a seam called with the wrong number of arguments
+    raises here instead of quietly answering — which is what makes "the floor
+    ran this session" and "the bench ran it" separately provable.
+    """
+
+    def __init__(self, *replies: Any) -> None:
+        self.replies = list(replies)
+        self.seen: list[list[dict[str, Any]]] = []
+        self.schemas: list[list[dict[str, Any]]] = []
+        self.threads: list[threading.Thread] = []
+
+    def __call__(
+        self, messages: list[dict[str, Any]], schema: list[dict[str, Any]]
+    ) -> ModelResponse:
+        self.seen.append([dict(m) for m in messages])
+        self.schemas.append(list(schema))
+        self.threads.append(threading.current_thread())
+        reply = self.replies.pop(0) if self.replies else _resp(MARKER_DONE)
+        if isinstance(reply, BaseException):
+            raise reply
+        return reply
+
+    @property
+    def turns(self) -> int:
+        return len(self.seen)
+
+
+class _GatedTools(_ScriptedTools):
+    """A tool seam that announces its Nth call and then waits to be released.
+
+    ``gate_on=1`` parks the muse *after* its tool has run and *before* it reads
+    the result back — provably mid-tool-round, with no sleep and no polling.
+    """
+
+    def __init__(self, *replies: Any, gate_on: int = 0) -> None:
+        super().__init__(*replies)
+        self._gate_on = gate_on
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def __call__(
+        self, messages: list[dict[str, Any]], schema: list[dict[str, Any]]
+    ) -> ModelResponse:
+        if len(self.seen) == self._gate_on:
+            self.started.set()
+            assert self.release.wait(_TIMEOUT), "the gated tool seam was never released"
+        return super().__call__(messages, schema)
+
+
+class _ThinkingTool:
+    """A minimal thinking tool: records what it was asked, answers in text.
+
+    It also carries a ``close`` verb, so "the runner does not tear a bench down"
+    is something this file can *observe* rather than a claim about a call nobody
+    ever wrote.
+    """
+
+    def __init__(self, result: str = "the pad says the fig was watered") -> None:
+        self.seen: list[tuple[str, dict[str, Any]]] = []
+        self.closed = False
+        self._result = result
+
+    def __call__(self, name: str, arguments: dict[str, Any]) -> Any:
+        self.seen.append((name, dict(arguments)))
+        return self._result
+
+    def close(self) -> None:
+        self.closed = True
+
+
+#: A host-supplied schema. Nothing in ``embodiment`` ships one: what a thinking
+#: tool is stays the host's to state, which is why the runner can carry a bench
+#: without holding any opinion about what is on it.
+_PEEK_SCHEMA: tuple[dict[str, Any], ...] = (
+    {
+        "type": "function",
+        "function": {
+            "name": "peek",
+            "description": "A thinking-only test tool: read the muse's own pad.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+)
+
+
+@contextlib.contextmanager
+def _tool_runner(
+    seam: Any,
+    *,
+    execute: Any = None,
+    tools_off: Any = None,
+    **kw: Any,
+) -> Iterator[tuple[ThreadedMuseRunner, Any, Any]]:
+    """A runner with a bench wired, plus the two seams behind it.
+
+    Yields ``(runner, tool_seam, tools_off_seam)``. The tools-OFF seam is still
+    supplied and still required: it is the floor a withheld bench degrades onto,
+    so a host that wires tools wires both. Always closed, and never left parked
+    on a gate.
+    """
+    off = tools_off if tools_off is not None else _Scripted(_resp("tools-off " + MARKER_DONE))
+    bench = MuseToolBench(
+        schema=_PEEK_SCHEMA,
+        complete=seam,
+        execute=execute if execute is not None else _ThinkingTool(),
+    )
+    runner = ThreadedMuseRunner(off, tools=bench, **kw)
+    try:
+        yield runner, seam, off
+    finally:
+        for double in (seam, off):
+            release = getattr(double, "release", None)
+            if isinstance(release, threading.Event):
+                release.set()
+        runner.close(timeout=_TIMEOUT)
+
+
+class TestABenchReachesTheMuseInALiveDrive:
+    """LIVE-SHAPED: a real ``run``, a real pump, a real muse on a real thread.
+
+    Nothing is stubbed below the seams a host supplies — the actor's model, the
+    actor's tools, the muse's two completions and the muse's own thinking tool.
+    The claim under test is the one nothing could express before t26: a tool
+    round happens *inside a drive*, not only in a harness that built a
+    :class:`~embodiment.muse.MuseLoop` by hand.
+    """
+
+    def test_the_tool_round_happens_and_its_counsel_reaches_the_actor(self):
+        marker = "PAD-SAW-THE-FIG"
+        tool = _ThinkingTool(result=marker)
+        seam = _ScriptedTools(
+            _turn(_call("peek"), content="let me check the pad"),
+            _resp(f"GUIDANCE: {marker} — revisit the watering schedule " + MARKER_DONE),
+        )
+        host = _Host(
+            turns=[
+                _turn(_call("write_file", path="a.py")),
+                _turn(_call("write_file", path="b.py")),
+                _turn(_call("finish")),
+            ]
+        )
+        with _tool_runner(seam, execute=tool) as (runner, _seam, off):
+            # Turn 2 waits on a REAL condition — the muse's session finishing —
+            # so nothing below races the thread.
+            host.before_turn = lambda n: runner.wait_idle(_TIMEOUT) if n == 1 else None
+            outcome = host.drive(host.engine(muse=runner))
+            rounds = runner.counts["tool_rounds"]
+
+        assert outcome.exit_reason == EXIT_FINISHED
+        # 1. The tool ACTUALLY RAN, once, on the muse's own thread.
+        assert tool.seen == [("peek", {})]
+        assert seam.turns >= 2
+        assert all(t.name == THREAD_NAME for t in seam.threads)
+        assert seam.schemas[0] == list(_PEEK_SCHEMA)
+        # 2. Its result was fed back, in the wire shape the acting loop uses.
+        second = seam.seen[1]
+        assistant = [m for m in second if m.get("role") == "assistant"]
+        assert assistant[0]["tool_calls"][0]["function"]["name"] == "peek"
+        tool_messages = [m for m in second if m.get("role") == "tool"]
+        assert [m["content"] for m in tool_messages] == [marker]
+        assert [m["name"] for m in tool_messages] == ["peek"]
+        # 3. An insight came out of the round and reached the ACTOR's advisory
+        #    channel — the round is not just an exchange the muse had privately.
+        assert any(marker in text for text in host.guidance)
+        assert any(marker in " ".join(seen) for seen in host.guidance_at_turn)
+        # 4. …and the runner counted the round, so a host can see it too.
+        assert rounds == 1
+        # 5. The tools-off floor was never dialled: the bench carried every turn.
+        assert off.calls == 0
+        # 6. The drive itself is untouched — the actor still holds authority.
+        assert [name for name, _ in host.executor.executed] == [
+            "write_file",
+            "write_file",
+            "finish",
+        ]
+
+    def test_the_wired_session_reads_the_tool_authority_boundary(self):
+        """Framing follows the tools: the correction sits under the authority."""
+        with _tool_runner(_ScriptedTools(_resp(MARKER_DONE))) as (runner, seam, _off):
+            runner.consider(_boundary())
+            assert runner.wait_idle(_TIMEOUT)
+        system = seam.seen[0][0]["content"]
+        assert system.startswith(MUSE_AUTHORITY)
+        assert MUSE_TOOL_AUTHORITY in system
+
+    def test_the_actor_never_waits_on_a_tool_round(self):
+        """Deviation ``d1``, at the one moment it is newly testable.
+
+        The muse is parked *between* running its tool and reading the result
+        back. Every actor-facing verb must still return; if one of them waited,
+        this test would hang until ``_TIMEOUT`` and fail rather than pass late.
+        """
+        tool = _ThinkingTool()
+        seam = _GatedTools(
+            _turn(_call("peek"), content="checking"),
+            _resp("GUIDANCE: noted " + MARKER_DONE),
+            gate_on=1,
+        )
+        with _tool_runner(seam, execute=tool) as (runner, _seam, _off):
+            runner.consider(_boundary(step=1))
+            assert seam.started.wait(_TIMEOUT), "the muse never reached its second turn"
+            # Provably mid-round: the tool has run, the result is unread.
+            assert tool.seen == [("peek", {})]
+            assert seam.turns == 1
+            # The actor's whole surface, while the muse is blocked.
+            assert runner.drain(step_count=2) == []
+            runner.consider(_boundary(step=3))
+            assert runner.degradation() is None
+            seam.release.set()
+            assert runner.wait_idle(_TIMEOUT)
+            assert runner.counts["tool_rounds"] == 1
+
+    def test_one_thread_still_and_no_leak_when_a_bench_is_wired(self):
+        """The thread discipline is unchanged: one daemon, joined, gone."""
+        before = _live_threads()
+        seam = _ScriptedTools(_turn(_call("peek"), content="checking"), _resp(MARKER_DONE))
+        with _tool_runner(seam) as (runner, _seam, _off):
+            runner.consider(_boundary())
+            assert runner.wait_idle(_TIMEOUT)
+            named = [t for t in threading.enumerate() if t.name == THREAD_NAME]
+            assert len(named) == 1
+            assert named[0].daemon is True
+            assert all(t is named[0] for t in seam.threads)
+        assert not any(t.name == THREAD_NAME and t.is_alive() for t in threading.enumerate())
+        assert _live_threads() == before
+
+
+class TestDepthGatingIsStillTheMusesAlone:
+    """A bench below the top level is withheld — and the runner does not decide it.
+
+    :func:`embodiment.muse._bench_for` is the single gate: top-level only,
+    failing closed on a depth it cannot read, recording the withholding. The
+    runner's job is to carry ``depth`` there and to carry the record back.
+    """
+
+    @pytest.mark.parametrize("depth", [1, 2, 7, "two", None, object()])
+    def test_a_bench_below_the_top_is_withheld_and_the_withholding_recorded(self, depth):
+        tool = _ThinkingTool()
+        off = _Scripted(_resp("thinking tools-off " + MARKER_DONE))
+        seam = _ScriptedTools(_turn(_call("peek"), content="checking"))
+        with _tool_runner(seam, execute=tool, tools_off=off, depth=depth) as (runner, _s, _o):
+            runner.consider(_boundary())
+            assert runner.wait_idle(_TIMEOUT)
+            records = [d for d in runner.degradations if d.code == DEGRADED_TOOLS_WITHHELD]
+            rounds = runner.counts["tool_rounds"]
+
+        assert seam.turns == 0, "the tool-carrying seam must never be called below the top"
+        assert tool.seen == []
+        assert off.calls == 1, "the session still ran — tools-off is the floor, not a stop"
+        assert rounds == 0
+        assert records, [d.code for d in runner.degradations]
+        assert "top-level only" in records[0].reason
+
+    def test_a_withheld_session_is_byte_identical_to_a_benchless_one(self):
+        """A withheld bench costs the tools, never the prompt."""
+        plain = _Scripted(_resp(MARKER_DONE))
+        with _runner(plain) as runner:
+            runner.consider(_boundary())
+            assert runner.wait_idle(_TIMEOUT)
+
+        withheld = _Scripted(_resp(MARKER_DONE))
+        seam = _ScriptedTools(_resp(MARKER_DONE))
+        with _tool_runner(seam, tools_off=withheld, depth=1) as (runner, _s, _o):
+            runner.consider(_boundary())
+            assert runner.wait_idle(_TIMEOUT)
+
+        assert seam.turns == 0
+        assert json.dumps(withheld.seen) == json.dumps(plain.seen)
+
+    def test_the_withholding_is_visible_on_the_pull_only_surface(self):
+        """C3: a silently tools-off muse is exactly the failure to prevent."""
+        with _tool_runner(_ScriptedTools(_resp(MARKER_DONE)), depth=1) as (runner, _s, _o):
+            runner.consider(_boundary())
+            assert runner.wait_idle(_TIMEOUT)
+            codes = [d.code for d in runner.snapshot()["degradations"]]
+            assert DEGRADED_TOOLS_WITHHELD in codes
+            assert runner.counts["degradations_recorded"] >= 1
+
+    def test_the_runner_holds_no_depth_gate_of_its_own(self):
+        """Structural, not promised: there is nothing here to disagree with muse."""
+        import embodiment.muse_runner as mod
+
+        assert "_bench_for" not in vars(mod), "the gate is muse's, and is not imported here"
+        tree = ast.parse(_RUNNER_SRC.read_text(encoding="utf-8"))
+        names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+        names |= {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
+        assert "_bench_for" not in names
+        assert "DEGRADED_TOOLS_WITHHELD" not in names, "the record is muse's to mint"
+        compared = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Compare)
+            and any(
+                isinstance(operand, ast.Name) and operand.id == "depth"
+                for operand in [node.left, *node.comparators]
+            )
+        ]
+        assert compared == [], "depth is carried, never judged here"
+        params = set(inspect.signature(ThreadedMuseRunner.__init__).parameters)
+        assert {"tools", "depth"} <= params
+
+
+class TestTheNoBenchPathIsUnchanged:
+    """With no bench wired, everything is what it was before t26.
+
+    The rollback path for shipping muse tools default-on runs through here: if a
+    validation pass ever says tools hurt, turning them off has to reproduce the
+    old behaviour exactly, not approximately.
+    ``tests/test_muse_tool_identity.py`` holds that at ``MuseLoop`` level against
+    the pre-seam module read out of git history; this holds the wire *the runner*
+    builds.
+    """
+
+    def test_the_runner_sends_byte_identical_messages_without_a_bench(self):
+        """Differential against a loop built the way the runner used to build one.
+
+        Nothing in this file can be edited to make the two sides agree: one of
+        them is :class:`~embodiment.muse.MuseLoop` driven directly with the
+        pre-t26 argument list, the other is the runner, and there is only the one
+        production module between them.
+        """
+        controls = MuseControls(max_turns=3)
+        script = (_resp("the fig has not been watered"), _resp(MARKER_DONE))
+
+        direct_seam = _Scripted(*script)
+        MuseLoop(
+            direct_seam,
+            controls=controls,
+            system="you are Gwen",
+            sink=None,
+            clock=None,
+        ).think(_boundary(step=3))
+
+        runner_seam = _Scripted(*script)
+        with _runner(runner_seam, controls=controls, system="you are Gwen") as runner:
+            runner.consider(_boundary(step=3))
+            assert runner.wait_idle(_TIMEOUT)
+
+        assert len(runner_seam.seen) == 2, "the comparison must not be vacuous"
+        assert json.dumps(runner_seam.seen) == json.dumps(direct_seam.seen)
+
+    def test_the_system_message_is_exactly_the_authority_without_a_bench(self):
+        seam = _Scripted(_resp(MARKER_DONE))
+        with _runner(seam) as runner:
+            runner.consider(_boundary())
+            assert runner.wait_idle(_TIMEOUT)
+        assert seam.seen[0][0]["content"] == MUSE_AUTHORITY
+        assert MUSE_TOOL_AUTHORITY not in seam.seen[0][0]["content"]
+
+    def test_the_seam_is_called_with_exactly_one_argument_without_a_bench(self):
+        """Strict arity: a two-argument call would raise, degrade, and show here."""
+        seen: list[int] = []
+
+        def strict(messages: list[dict[str, Any]]) -> ModelResponse:
+            seen.append(len(messages))
+            return _resp(MARKER_DONE)
+
+        with _runner(strict) as runner:
+            runner.consider(_boundary())
+            assert runner.wait_idle(_TIMEOUT)
+            assert runner.degradation() is None
+            assert runner.degradations == []
+        assert seen == [2]
+
+    def test_a_reply_carrying_tool_calls_changes_nothing_without_a_bench(self):
+        """On the floor path the muse's own tool-call list is not read at all."""
+        seam = _Scripted(_turn(_call("peek"), content="calling " + MARKER_DONE))
+        with _runner(seam) as runner:
+            runner.consider(_boundary())
+            assert runner.wait_idle(_TIMEOUT)
+            assert runner.counts["tool_rounds"] == 0
+            assert seam.calls == 1
+            assert [d.code for d in runner.degradations] == []
+        assert all(m.get("role") != "tool" for call in seam.seen for m in call)
+
+    def test_a_museless_drive_still_costs_nothing(self):
+        """The default path did not acquire a bench-shaped anything."""
+        before = _live_threads()
+        host = _Host(turns=[_turn(_call("finish"))])
+        outcome = host.drive(host.engine())
+        assert outcome.exit_reason == EXIT_FINISHED
+        assert _live_threads() == before
+
+
+class TestTheBenchIsCarriedNeverOwned:
+    """Whoever wired the bench owns its lifetime; the runner reaches for none of it.
+
+    A bench may hold real resources — ``embodiment.workspace.MuseWorkspace``
+    holds a container — so "who tears it down?" has to be answered rather than
+    left to inference. The answer is *not the runner*, and it is held
+    structurally: nothing here keeps a reference to one, so ``close`` has nothing
+    to reach. It is also the only safe answer, because the join at teardown is
+    bounded on purpose: a session parked inside a model call can still be using
+    the bench after ``close`` has returned.
+    """
+
+    def test_close_does_not_tear_down_a_host_supplied_bench(self):
+        tool = _ThinkingTool()
+        with _tool_runner(_ScriptedTools(_resp(MARKER_DONE)), execute=tool) as (runner, _s, _o):
+            runner.consider(_boundary())
+            assert runner.wait_idle(_TIMEOUT)
+            runner.close(timeout=_TIMEOUT)
+            assert runner.closed is True
+            assert tool.closed is False, "the runner must not tear down a bench it was lent"
+
+    def test_the_runner_keeps_no_reference_to_the_bench(self):
+        """The ownership claim, made where prose cannot drift away from it."""
+        tool = _ThinkingTool()
+        seam = _ScriptedTools()
+        bench = MuseToolBench(schema=_PEEK_SCHEMA, complete=seam, execute=tool)
+        runner = ThreadedMuseRunner(_Scripted(), tools=bench)
+        try:
+            held = list(vars(runner).values())
+            assert not any(value is bench for value in held)
+            assert not any(value is tool for value in held)
+            assert not any(value is seam for value in held)
+        finally:
+            runner.close(timeout=_TIMEOUT)
+
+    def test_the_runner_still_exposes_no_tool_surface(self):
+        """Carrying a bench added no verb a host could act through."""
+        forbidden = {"execute", "run_tool", "tools", "executor", "bench", "schema"}
+        assert not (set(dir(ThreadedMuseRunner)) & forbidden)

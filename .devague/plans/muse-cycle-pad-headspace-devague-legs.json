@@ -5,7 +5,7 @@
   "schema_version": 4,
   "status": "exported",
   "created": "2026-07-29T19:25:04Z",
-  "updated": "2026-07-30T16:30:37Z",
+  "updated": "2026-07-30T18:47:21Z",
   "targets": [
     {
       "id": "c1",
@@ -831,7 +831,8 @@
         "the default flips only after t18 publishes; the tuned pad protocol is what ships; the tools-off path remains available as the documented rollback"
       ],
       "deps": [
-        "t18"
+        "t18",
+        "t26"
       ],
       "covers": [],
       "instruction": "Owns the default-config surface + CHANGELOG. Flip only after t18 has published. Ship the tuned protocol, not the measured failure mode; keep tools-off documented as the rollback."
@@ -917,6 +918,20 @@
       ],
       "covers": [],
       "instruction": "Owns embodiment/loop.py, embodiment/presence_engine.py, tests/test_presence_engine.py, and one host in examples/. The gap t4 measured: _maybe_force_synthesis returns early on a non-empty summary, so clean-finish drives fire no terminal boundary at all. Fire the terminal beat at drive end for EVERY exit reason \u2014 the natural point is after _work_loop returns and before/around _boundary(ctx, BOUNDARY_COMPLETION) at loop.py:2103, which is on all exit paths. Keep c22 intact: no new exit path, no new consumer of turn_budget/reading_budget, tests/test_loop.py untouched. Keep the duck-typed getattr probe so a three-member sink stays byte-compatible. Then wire append_guidance in examples/proof.py (the baseline harness) so the live re-run can actually show counsel reaching the cortex."
+    },
+    {
+      "id": "t26",
+      "summary": "Wire a tool bench through ThreadedMuseRunner so tools are reachable inside a live drive",
+      "origin": "llm",
+      "status": "proposed",
+      "acceptance_criteria": [
+        "ThreadedMuseRunner accepts a tools bench and passes it to its MuseLoop; depth gating still withholds below top level and records DEGRADED_TOOLS_WITHHELD; with no bench wired the constructed loop and its prompts stay byte-identical to today; a test drives a live-shaped run with a bench and observes the tool round"
+      ],
+      "deps": [
+        "t13"
+      ],
+      "covers": [],
+      "instruction": "Owns embodiment/muse_runner.py and tests/test_muse_runner.py. muse_runner.py:596-602 builds MuseLoop(complete, controls=, system=, sink=, clock=) with no tools= argument \u2014 that omission is the whole gap. Thread a bench through the constructor to that call. Keep muse._bench_for as the single depth gate; do not add a second one. Preserve the single-daemon-thread discipline, the bounded join, deviation d1 (the actor never waits), and the stdlib allow-list. Tools-off must stay byte-identical \u2014 t11 pins that at MuseLoop level and it must keep passing."
     }
   ],
   "risks": [

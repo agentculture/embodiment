@@ -2,7 +2,7 @@
   "plan_slug": "muse-cycle-pad-headspace-devague-legs",
   "schema_version": 1,
   "created": "2026-07-29T22:25:08Z",
-  "updated": "2026-07-30T16:27:25Z",
+  "updated": "2026-07-30T18:47:12Z",
   "deviations": [
     {
       "id": "d1",
@@ -42,6 +42,19 @@
       ],
       "origin": "llm",
       "status": "approved",
+      "classification": "needs-follow-up"
+    },
+    {
+      "id": "d4",
+      "what": "ThreadedMuseRunner cannot carry a tool bench, so tools are unreachable inside a live drive and t20 (flip default-on) has nothing to flip; a new task t26 adds the runner seam",
+      "task_ref": "t20",
+      "reason": "measured by t16: muse_runner.py:596-602 constructs MuseLoop with no tools= argument, so no supported path puts a bench inside a live drive. The tool seam (t10), the pad (t12) and the workspace (t13) are all reachable only by a harness constructing MuseLoop directly. Arm C therefore remains measurable at harness level (t17/t18) but tools cannot ship in a drive, and the default-on flip q6 authorised is not executable as specified.",
+      "affects": [
+        "t18",
+        "t20"
+      ],
+      "origin": "llm",
+      "status": "proposed",
       "classification": "needs-follow-up"
     }
   ]

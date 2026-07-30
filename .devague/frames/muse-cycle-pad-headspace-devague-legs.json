@@ -4,7 +4,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-07-29T16:35:15Z",
-  "updated": "2026-07-30T17:42:10Z",
+  "updated": "2026-07-30T18:47:12Z",
   "claims": [
     {
       "id": "c1",
@@ -1064,6 +1064,19 @@
       "refs": [
         "t9",
         "c11"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l7",
+      "code": "assumption-for-measurement",
+      "what": "the tools-on completion odds are an estimate from two measured distributions, not an observed in-drive rate, because ThreadedMuseRunner has no tools= seam \u2014 l1 is closed by measurement but a narrower gap replaces it: the c29 target no longer predates a latency measurement, it predates an in-drive one",
+      "skipped_check": "an in-drive tools-on series measuring the actual late-drop rate with a bench wired into the runner",
+      "refs": [
+        "t16",
+        "c29",
+        "c31"
       ],
       "origin": "llm",
       "status": "proposed"
