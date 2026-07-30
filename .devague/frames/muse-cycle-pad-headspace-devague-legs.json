@@ -4,7 +4,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-07-29T16:35:15Z",
-  "updated": "2026-07-29T19:21:35Z",
+  "updated": "2026-07-30T17:42:10Z",
   "claims": [
     {
       "id": "c1",
@@ -1004,6 +1004,66 @@
         "c29",
         "c31",
         "v3"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l2",
+      "code": "provenance-missing",
+      "what": "the independent-review check on the cycle diff did not run: two ask-colleague review drives ended incomplete with zero tool steps, so no second-mind review has been obtained for the merged code",
+      "skipped_check": "ask-colleague review on the t2/t3/t4/t6/t25 diff \u2014 attempted twice, both drives ended without calling finish",
+      "refs": [
+        "t2",
+        "t3",
+        "t25"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l3",
+      "code": "control-absent",
+      "what": "Experiment 1's control arm and cross arm did not run at all \u2014 0 of 4 pipelines",
+      "skipped_check": "the same-mind control comparing a Qwen plan from a Gemma frame against a Qwen plan from its own frame",
+      "refs": [
+        "t9",
+        "c40"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l4",
+      "code": "n-below-claim",
+      "what": "Experiment 1 reports no dependent-variable values: 0 of 4 pipelines ran, so validity gate V1 is unmet and no gate DV has a value",
+      "skipped_check": "gate iterations, gaps at first converge, wave width, criteria-less tasks, cyclic/dangling refusals",
+      "refs": [
+        "t9"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l5",
+      "code": "assumption-for-measurement",
+      "what": "the pre-registered deviate case pools are separable by input length alone \u2014 positives 506-1228 chars, negatives 123-221, so 'long implies deviation' scores 11/12 without reading a word; the 11/12 result is therefore not evidence either mind can distinguish a deviation from a delivery",
+      "skipped_check": "length-matching or length-controlling the case pools before fixing them in the pre-registration",
+      "refs": [
+        "t9",
+        "t6"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l6",
+      "code": "grader-unverified",
+      "what": "the human-confirm gate is evidenced statically, not exercised: no live devague deviate --origin llm capture was issued, so \"no confirms happened\" is proven by digest while \"the gate fires\" is proven only by reading devague/delivery.py",
+      "skipped_check": "a live --origin llm capture round trip through the confirm gate",
+      "refs": [
+        "t9",
+        "c11"
       ],
       "origin": "llm",
       "status": "proposed"
