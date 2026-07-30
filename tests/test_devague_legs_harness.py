@@ -223,12 +223,29 @@ class TestTheConfirmAssertionCanActuallyFail:
 class TestTheBaseCommitPredatesTheMuseToolSeam:
     """The pre-registration requires a pre-seam commit. It is checked, not claimed."""
 
-    def test_the_evidence_is_recorded_and_true_on_this_checkout(self) -> None:
-        record = harness.base_commit_record()
-        assert record["evidence"]["embodiment/headspace.py exists"] is False
-        assert record["evidence"]["muse.py still declares the tools-off invariant"] is True
-        assert record["predates_muse_tool_seam"] is True
-        assert len(record["base_commit"]) == 40
+    def test_the_recorded_evidence_re_derives_at_the_commit_the_run_named(self) -> None:
+        """Re-derive the run's own claim from the commit it recorded.
+
+        Deliberately not "is this checkout pre-seam" — that was true when the
+        run happened and stops being true the moment the seam merges, which
+        would leave a committed provenance claim permanently unverifiable.
+        Reading the recorded commit keeps the evidence checkable forever.
+        """
+        import json
+
+        results = Path(__file__).resolve().parent.parent / "docs/live-test-results"
+        config = json.loads(
+            (results / "devague-legs-deviate-config.json").read_text(encoding="utf-8")
+        )
+        recorded = config
+        assert len(recorded["base_commit"]) == 40
+        assert recorded["predates_muse_tool_seam"] is True
+
+        re_derived = harness.base_commit_record(recorded["base_commit"])
+        assert re_derived["evidence"] == recorded["evidence"]
+        assert re_derived["predates_muse_tool_seam"] is True
+        assert re_derived["evidence"]["embodiment/headspace.py exists"] is False
+        assert re_derived["evidence"]["muse.py still declares the tools-off invariant"] is True
 
 
 def _judgment(case_id: str, pool: str, mind: str, said: Any, degraded: Any = None) -> dict:

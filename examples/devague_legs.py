@@ -160,7 +160,23 @@ def devague_version() -> str:
     return _run(["devague", "--version"])
 
 
-def base_commit_record() -> dict[str, Any]:
+def _tracked_at(commit: str, path: str) -> str | None:
+    """Return ``path``'s contents at ``commit``, or ``None`` if absent there.
+
+    Reads the commit rather than the working tree, so the evidence a run
+    recorded stays checkable after the seam it predates has merged.
+    """
+    proc = subprocess.run(  # nosec B603 - fixed argv, no shell, operator's own tools
+        ["git", "show", f"{commit}:{path}"],
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def base_commit_record(commit: str = "HEAD") -> dict[str, Any]:
     """The base commit plus the evidence that it predates the muse tool seam.
 
     The pre-registration requires runs to execute against a commit predating
@@ -168,12 +184,18 @@ def base_commit_record() -> dict[str, Any]:
     (``headspace-cli`` as a lazily-imported dependency plus the workspace
     tool). Rather than assert the claim, this records three checkable facts
     that jointly establish it, and the assertion fails loudly if any is false.
+
+    The evidence is read **at** ``commit``, not from the working tree. A live
+    run passes the default and records HEAD; a later reader passes the commit
+    a run recorded and re-derives the same verdict. Checking the working tree
+    instead would make the claim unverifiable the moment the seam merged —
+    the recorded evidence would describe a checkout that no longer exists.
     """
-    head = _run(["git", "rev-parse", "HEAD"])
-    subject = _run(["git", "log", "-1", "--pretty=%s"])
-    headspace_module = (REPO_ROOT / "embodiment/headspace.py").exists()
+    head = _run(["git", "rev-parse", commit])
+    subject = _run(["git", "log", "-1", "--pretty=%s", head])
+    headspace_module = _tracked_at(head, "embodiment/headspace.py") is not None
     muse_tools_off = "No tool schema is ever passed" in (
-        (REPO_ROOT / "embodiment/muse.py").read_text(encoding="utf-8")
+        _tracked_at(head, "embodiment/muse.py") or ""
     )
     predates = (not headspace_module) and muse_tools_off
     return {
