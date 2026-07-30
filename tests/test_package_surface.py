@@ -31,6 +31,10 @@ _HEAVY = (
     "embodiment.perception",
     "embodiment.context",
     "embodiment.contract",
+    # t13's workspace tool imports ``headspace.api`` at module scope. Cheap in
+    # itself (stdlib only, measured), but it is still a third-party package a
+    # host that only wants the loop must not pay for.
+    "embodiment.workspace",
 )
 
 

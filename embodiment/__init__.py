@@ -61,6 +61,7 @@ _SUBMODULES = frozenset(
         "recall_bundle",
         "scratchpad",
         "subagent",
+        "workspace",
     }
 )
 
@@ -154,6 +155,16 @@ _LAZY_NAMES = {
     "MusePadCounts": "muse_pad",
     "MUSE_PAD_TOOLS": "muse_pad",
     "MUSE_PAD_PROTOCOL": "muse_pad",
+    # ── the muse's workspace: one command, in a container that reaches nothing ─
+    # The second thing on that bench (task t13), and the first module here that
+    # imports a sibling CLI's library surface at module scope (`headspace.api`,
+    # the only supported one). No repo, no store, no network, and NO secrets
+    # parameter at all — the leak path cannot be opened by configuration (c34).
+    "MuseWorkspace": "workspace",
+    "WorkspaceCounts": "workspace",
+    "WorkspaceDegradation": "workspace",
+    "WORKSPACE_TOOLS": "workspace",
+    "WORKSPACE_PROTOCOL": "workspace",
     # ── the muse runner: the one place embodiment owns a thread ───────────
     "ThreadedMuseRunner": "muse_runner",
     "ThreadFactory": "muse_runner",
@@ -314,6 +325,7 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
         recall_bundle,
         scratchpad,
         subagent,
+        workspace,
     )
     from embodiment.contract import (  # noqa: F401
         ERROR,
@@ -478,4 +490,11 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
         SubagentCall,
         SubagentFn,
         SubagentResult,
+    )
+    from embodiment.workspace import (  # noqa: F401
+        WORKSPACE_PROTOCOL,
+        WORKSPACE_TOOLS,
+        MuseWorkspace,
+        WorkspaceCounts,
+        WorkspaceDegradation,
     )

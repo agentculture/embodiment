@@ -76,15 +76,27 @@ _APPROVED_DEPENDENCIES: dict[str, str] = {
     #    imports `events_cli` LAZILY (inside the emit path), so paho-mqtt stays
     #    out of the measured top-level import set below.
     "events-cli>=0.10": "pulls paho-mqtt",
+    # -> docker>=7.1 -> requests, urllib3, certifi, charset-normalizer, idna.
+    #    `embodiment/workspace.py` is the consumer and imports `headspace.api`
+    #    at MODULE scope — but that import is measured as stdlib-only, so only
+    #    `headspace` joins the runtime set below and `docker`/`requests` stay
+    #    install-only, exactly as neo4j/pymongo/paho already do.
+    #    `headspace.api` is the ONLY supported import surface (headspace-cli#18,
+    #    answered by 0.11.0): it declares create/run/put/export/destroy under
+    #    headspace's own semver, and `headspace.core` is private — a floor
+    #    below 0.11 would have no declared surface to depend on at all.
+    "headspace-cli>=0.11": "pulls docker>=7.1 -> requests, urllib3, certifi, charset-normalizer",
 }
 
 #: Third-party top-level modules that importing **every** embodiment module
 #: introduces. Measured, not guessed — see :func:`_measure_runtime_imports`.
 #:
-#: Note what is deliberately ABSENT: ``neo4j``, ``pymongo`` and ``paho`` are
-#: *installed* by the approved dependencies but never *imported* at module
-#: scope (data-refinery resolves its store backends lazily, and nothing here
-#: touches events yet). Install footprint and import footprint are different
+#: Note what is deliberately ABSENT: ``neo4j``, ``pymongo``, ``paho``,
+#: ``docker`` and ``requests`` are *installed* by the approved dependencies but
+#: never *imported* at module scope (data-refinery resolves its store backends
+#: lazily, nothing here touches events at import time, and ``headspace.api``
+#: builds a backend — and therefore imports the docker SDK — only inside the
+#: branch that needs one). Install footprint and import footprint are different
 #: costs and this file measures both separately — do not "fix" one to match
 #: the other.
 _REQUIRED_RUNTIME_IMPORTS: frozenset[str] = frozenset(
@@ -92,11 +104,24 @@ _REQUIRED_RUNTIME_IMPORTS: frozenset[str] = frozenset(
         "coherence",  # the assess engine
         "data_refinery",  # eidetic's storage substrate
         "eidetic",  # the memory store
+        "headspace",  # the muse's workspace, via headspace.api (stdlib-only import)
         "httpx",  # coherence's embedding client
         "idna",  # hard dependency of httpx._urls
         "numpy",  # coherence's scoring
     }
 )
+
+#: Which embodiment module each required runtime import is attributable to.
+#: Two costs, two addresses: d2's continuity seam, and t13's workspace tool. A
+#: required import owned by nothing would mean the package pays for something no
+#: identified module asked for, so the two tests below check this map against
+#: the pinned set *and* against a real measurement.
+_IMPORT_OWNERS: dict[str, frozenset[str]] = {
+    "embodiment.continuity": frozenset(
+        {"coherence", "data_refinery", "eidetic", "httpx", "idna", "numpy"}
+    ),
+    "embodiment.workspace": frozenset({"headspace"}),
+}
 
 #: Modules that arrive only because httpx opportunistically imports its own
 #: optional ``cli`` extra when it happens to be installed::
@@ -323,13 +348,20 @@ def test_runtime_imports_match_the_approved_set():
 def test_install_footprint_is_wider_than_import_footprint():
     """Guard the distinction the two pinned sets encode.
 
-    ``neo4j``/``pymongo``/``paho-mqtt`` are installed by the approved
-    dependencies but imported by nothing — data-refinery resolves its store
-    backends lazily, and no events module exists yet. If one of them ever shows
-    up in the runtime set, the gate above fails and *this* test explains why
-    that is a real change rather than noise.
+    These five are installed by the approved dependencies but imported by
+    nothing: data-refinery resolves its store backends lazily, ``events.py``
+    imports ``events_cli`` inside the emit path, and ``headspace.api``
+    constructs a backend — the only thing that reaches the docker SDK, and
+    through it ``requests`` — inside the branch that needs one. If any of them
+    ever shows up in the runtime set, the gate above fails and *this* test
+    explains why that is a real change rather than noise.
+
+    ``docker`` is the one worth stating loudest: it is the single largest thing
+    ``headspace-cli`` drags into every host's install, and keeping it out of the
+    *import* footprint is what makes t13's module-scope import cheap enough to
+    justify at all.
     """
-    for name in ("neo4j", "pymongo", "paho"):
+    for name in ("neo4j", "pymongo", "paho", "docker", "requests"):
         assert name not in _REQUIRED_RUNTIME_IMPORTS
         assert name not in _INCIDENTAL_RUNTIME_IMPORTS
 
@@ -352,15 +384,24 @@ def test_bare_package_import_still_costs_nothing():
     )
 
 
-def test_continuity_is_what_costs():
-    """...and the cost, when paid, is attributable to exactly one module.
+def test_every_required_import_is_attributable_to_a_named_module():
+    """The whole runtime set is accounted for, with no unowned entry.
 
-    Stated positively so the gate above reads as a decision with a location,
-    rather than a mystery about which import is expensive.
+    Stated positively so the gate above reads as a set of decisions with
+    addresses, rather than a mystery about which import is expensive.
     """
-    observed = _measure_runtime_imports(["embodiment.continuity"])
+    owned: set[str] = set()
+    for names in _IMPORT_OWNERS.values():
+        owned |= names
 
-    assert _REQUIRED_RUNTIME_IMPORTS <= observed
+    assert owned == set(_REQUIRED_RUNTIME_IMPORTS)
+
+
+def test_each_named_module_really_costs_what_it_is_charged_for():
+    """...and each owner actually pulls what it is charged for, measured."""
+    for module, expected in _IMPORT_OWNERS.items():
+        observed = _measure_runtime_imports([module])
+        assert expected <= observed, f"{module} did not pull {sorted(expected - observed)}"
 
 
 def test_discovered_modules_not_empty():

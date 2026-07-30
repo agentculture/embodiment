@@ -105,6 +105,17 @@ ABSENT_BY_DESIGN: dict[tuple[str, str], str] = {
         "_now",
     ): "Same rule for intake: a clock failure is not one of the four fault classes.",
     (
+        "workspace.py",
+        "_attr",
+    ): (
+        "The same rule as muse.py's `_attr`, applied to a foreign type: a "
+        "headspace result package is read duck-typed because "
+        "`headspace.core.result` is private, so a section that cannot be read "
+        "is ABSENT and the caller renders the sections that could. A result "
+        "with no readable section at all is NOT silent — it records "
+        "DEGRADED_UNREADABLE_RESULT."
+    ),
+    (
         "continuity.py",
         "traverse._fetch_one",
     ): (
