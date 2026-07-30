@@ -898,3 +898,79 @@ class TestResumeNeverReplaysACompletedMatch:
         )
         assert len(summary["matches_excluded_for_truncation"]) == 1
         assert summary["truncated_turns"] == 1
+
+
+class TestTheInstrumentCheck:
+    """`smoke` asks the one question that could invalidate the series.
+
+    A cortex whose tool calls this harness cannot read would stage no orders,
+    score nothing, and lose every match — and the write-up would report that as
+    a quality difference between the models. So it is checked first, on the
+    real schema, and reported as an instrument check rather than as data.
+    """
+
+    def test_it_checks_every_distinct_cortex_model_exactly_once(self) -> None:
+        seen: list[str] = []
+
+        class _Recorder(league_h2h.MeteredSeam):
+            def _post(self, body: dict[str, Any]) -> dict[str, Any]:
+                seen.append(body["model"])
+                assert body["tools"] == league_h2h.TOOL_SCHEMA
+                assert body["max_tokens"] == league_h2h.MAX_TOKENS
+                # tool_choice is broken on this rig and must never be sent.
+                assert "tool_choice" not in body
+                return {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": "",
+                                "tool_calls": [
+                                    {
+                                        "id": "c1",
+                                        "function": {
+                                            "name": "order",
+                                            "arguments": '{"unit_id":"blue-u1","action":"hold"}',
+                                        },
+                                    }
+                                ],
+                            },
+                            "finish_reason": "tool_calls",
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 100, "completion_tokens": 20},
+                }
+
+        original = league_h2h.MeteredSeam
+        league_h2h.MeteredSeam = _Recorder  # type: ignore[misc]
+        try:
+            checked = league_h2h.smoke(base_url="http://x/v1", api_key="k")
+        finally:
+            league_h2h.MeteredSeam = original  # type: ignore[misc]
+
+        assert sorted(seen) == sorted({arm.cortex for arm in league_h2h.ARMS.values()})
+        assert len(seen) == 2, "two distinct cortex models across three arms"
+        assert checked["every_cortex_can_call_a_tool"] is True
+        assert checked["note"] == "instrument check, not data"
+
+    def test_a_model_that_cannot_call_a_tool_fails_the_check(self) -> None:
+        class _Mute(league_h2h.MeteredSeam):
+            def _post(self, body: dict[str, Any]) -> dict[str, Any]:
+                return {
+                    "choices": [
+                        {"message": {"content": "I would move west."}, "finish_reason": "stop"}
+                    ],
+                    "usage": {"prompt_tokens": 100, "completion_tokens": 5},
+                }
+
+        original = league_h2h.MeteredSeam
+        league_h2h.MeteredSeam = _Mute  # type: ignore[misc]
+        try:
+            checked = league_h2h.smoke(base_url="http://x/v1", api_key="k")
+        finally:
+            league_h2h.MeteredSeam = original  # type: ignore[misc]
+        assert checked["every_cortex_can_call_a_tool"] is False
+
+    def test_the_smoke_board_is_answerable_with_one_order(self) -> None:
+        view = league_h2h.SMOKE_VIEW
+        assert len(view["my_units"]) == 1
+        assert view["legal_actions"]["blue-u1"]["move"]

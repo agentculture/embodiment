@@ -108,6 +108,7 @@ from examples.league_seat import (  # noqa: E402
     API_KEY_ENV,
     BASE_SYSTEM,
     DEFAULT_BASE_URL,
+    OBSERVATION_MARKER,
     TOOL_SCHEMA,
     LeagueCli,
     LeagueError,
@@ -1619,7 +1620,94 @@ def build_parser() -> argparse.ArgumentParser:
 
     plan = sub.add_parser("plan", help="print the ladder and the decision rule; dials nothing")
     plan.add_argument("--json", action="store_true")
+
+    check = sub.add_parser(
+        "smoke",
+        help="one real tool-calling round trip per cortex model — instrument check, not data",
+    )
+    check.add_argument("--base-url", default=DEFAULT_BASE_URL)
+    check.add_argument("--out", default="", help="write the check here as JSON")
+    check.add_argument("--json", action="store_true")
     return parser
+
+
+#: The smallest board that still asks for a real ``order`` tool call.
+SMOKE_VIEW: dict[str, Any] = {
+    "state": {"match_id": "smoke", "turn": 0, "turn_limit": 30, "status": "active"},
+    "team": "blue",
+    "my_units": [{"id": "blue-u1", "role": "scout", "pos": [0, 0], "carrying": 0}],
+    "control_points": [{"id": "cp-west", "pos": [3, 2], "owner": None}],
+    "resource_nodes": [],
+    "legal_actions": {"blue-u1": {"move": [[0, 1], [1, 0], [1, 1]], "hold": True}},
+    "rejections": [],
+}
+
+
+def smoke(*, base_url: str, api_key: str) -> dict[str, Any]:
+    """One real tool-calling round trip per distinct cortex model. NOT data.
+
+    An instrument check, run before the series and reported as such. It answers
+    the one question that could invalidate the whole head-to-head for a reason
+    that has nothing to do with either model's skill: **does each candidate
+    cortex actually return a parseable tool call through this gateway with
+    this schema?** A model whose tool calls this harness cannot read would
+    stage no orders, score nothing, and lose every match — and the write-up
+    would report that as a quality difference.
+
+    It also records each model's own latency and token spend on an identical
+    minimal prompt, which is the honest per-model baseline the cost column is
+    read against.
+
+    ``tool_choice`` is **not** used: it is broken on this rig — ``required``
+    yields ``finish_reason: tool_calls`` with a null call list — so this check
+    asks the same way the series does and accepts whatever comes back.
+    """
+    results: list[dict[str, Any]] = []
+    for model in sorted({arm.cortex for arm in ARMS.values()}):
+        seam = MeteredSeam(
+            base_url=base_url,
+            model=model,
+            api_key=api_key,
+            role="cortex",
+            max_tokens=MAX_TOKENS,
+            temperature=CORTEX_TEMPERATURE,
+            tools=TOOL_SCHEMA,
+        )
+        messages = [
+            {"role": "system", "content": system_prompt(LADDER[0])},
+            {
+                "role": "user",
+                "content": (
+                    f"{directive_for(LADDER[0])}\n\n"
+                    f"{OBSERVATION_MARKER}\n{json.dumps(SMOKE_VIEW, sort_keys=True)}\n\n"
+                    "Order your one unit now."
+                ),
+            },
+        ]
+        failure: Optional[str] = None
+        reply: Optional[ModelResponse] = None
+        try:
+            reply = seam(messages)
+        except LeagueError as exc:
+            failure = str(exc)
+        results.append(
+            {
+                "model": model,
+                "tool_calls": [c.name for c in (reply.tool_calls if reply else [])],
+                "tool_calling_works": bool(reply and reply.tool_calls),
+                "content_chars": len(reply.content) if reply else 0,
+                "reasoning_chars": len(reply.reasoning) if reply else 0,
+                "failure": failure,
+                "cost": seam.meter.to_dict(),
+            }
+        )
+    return {
+        "kind": "smoke",
+        "note": "instrument check, not data",
+        "max_tokens": MAX_TOKENS,
+        "results": results,
+        "every_cortex_can_call_a_tool": all(r["tool_calling_works"] for r in results),
+    }
 
 
 def render_plan() -> str:
@@ -1673,6 +1761,21 @@ def main(argv: Optional[list[str]] = None) -> int:
             else:
                 print(render_plan())
             return 0
+
+        if args.command == "smoke":
+            key = os.environ.get(API_KEY_ENV, "").strip()
+            if not key:
+                print(f"error: smoke needs {API_KEY_ENV} in the environment", file=sys.stderr)
+                print("hint: export it and re-run", file=sys.stderr)
+                return 2
+            checked = smoke(base_url=args.base_url, api_key=key)
+            if args.out:
+                Path(args.out).parent.mkdir(parents=True, exist_ok=True)
+                Path(args.out).write_text(
+                    json.dumps(checked, indent=2, sort_keys=True) + "\n", encoding="utf-8"
+                )
+            print(json.dumps(checked, indent=2, ensure_ascii=False))
+            return 0 if checked["every_cortex_can_call_a_tool"] else 1
 
         log_path = Path(args.log)
         if not getattr(args, "resume", False):
