@@ -140,6 +140,10 @@ _LAZY_NAMES = {
     # ── the muse runner: the one place embodiment owns a thread ───────────
     "ThreadedMuseRunner": "muse_runner",
     "ThreadFactory": "muse_runner",
+    # What the terminal drain handed the actor — count and ids, zero included.
+    # A DELIVERY, not a degradation: it answers "did the last beat arrive?",
+    # which `ledger.read` deliberately does not (task t5).
+    "MuseDelivery": "muse_runner",
     # ── event emission (embodiment#4) — optional, absent by default ───────
     # embodiment produces; `events-cli` owns the envelope contract (c33).
     "EventEmitter": "events",
@@ -383,7 +387,11 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
         insight_lag,
         is_stale,
     )
-    from embodiment.muse_runner import ThreadedMuseRunner, ThreadFactory  # noqa: F401
+    from embodiment.muse_runner import (  # noqa: F401
+        MuseDelivery,
+        ThreadedMuseRunner,
+        ThreadFactory,
+    )
     from embodiment.perception import PerceptionDegradation  # noqa: F401
     from embodiment.perception import perceive  # noqa: F401
     from embodiment.presence import (  # noqa: F401

@@ -377,6 +377,17 @@ class MuseSeam(Protocol):
     propagating — and it owns its own timing and configuration (an endpoint
     arrives through the host's explicit configuration when the seam is built,
     resolved BY ROLE NAME and never inferred from a model name by this module).
+
+    One OPTIONAL fourth capability
+    ------------------------------
+    ``drain_terminal(step_count=…)`` — the same drain, told that no further
+    beat is coming. :meth:`PresenceEngine.on_terminal_boundary` probes for it by
+    name and falls back to ``drain``, so it is deliberately **not** a member of
+    this protocol: three members remain the whole contract and a seam without
+    it behaves byte-identically. A seam that has it (as
+    :class:`embodiment.muse_runner.ThreadedMuseRunner` does) can record what its
+    final delivery was — the one fact about its own lifecycle a seam cannot
+    observe, because only the driving loop knows where the drive ends.
     """
 
     def consider(self, boundary: BoundaryContext) -> None: ...
@@ -434,6 +445,28 @@ def _as_drain_seam(muse: Any) -> Any:
     if hasattr(muse, "consider") and hasattr(muse, "drain"):
         return muse
     return _PullSeam(muse)
+
+
+def _collect(muse: Any, *, step_count: int, terminal: bool) -> Any:
+    """Collect what is ready, telling the seam when this drain is the LAST one.
+
+    ``drain_terminal`` is an OPTIONAL capability, probed for by name exactly as
+    :func:`embodiment.loop._presence_terminal` probes this engine for
+    ``on_terminal_boundary``. :class:`MuseSeam` still declares three members and
+    a seam without the verb is drained exactly as before, byte for byte — so no
+    seam a host already wrote changes shape.
+
+    A seam that HAS it is told the one thing it cannot observe for itself: that
+    no further beat is coming. That is what lets it record what its final
+    delivery actually was — the beat whose job is delivery rather than presence
+    is the one whose outcome a host must be able to check (constraint C3), and
+    a fix to delivery that makes delivery unobservable is not a fix.
+    """
+    if terminal:
+        drain_terminal = getattr(muse, "drain_terminal", None)
+        if callable(drain_terminal):
+            return drain_terminal(step_count=step_count)
+    return muse.drain(step_count=step_count)
 
 
 @runtime_checkable
@@ -768,17 +801,21 @@ class PresenceEngine:
         ``consider=False`` collects without offering. It exists for exactly one
         caller — :meth:`on_terminal_boundary` — because a session started on the
         loop's last boundary has no later boundary to be delivered at and
-        strands by construction (issue #17). The drain and the health probe are
-        unchanged: a terminal beat still records its invocation and still
-        degrades visibly.
+        strands by construction (issue #17). It is therefore also how this
+        method knows the drain is the drive's last one, which
+        :func:`_collect` passes on to a seam that can record its final
+        delivery. The health probe is unchanged: a terminal beat still records
+        its invocation and still degrades visibly.
         """
         muse = self._muse
         if muse is None:
             return []
+        # ``consider=False`` has exactly one caller, and it is the terminal beat.
+        terminal = not consider
         try:
             if consider:
                 muse.consider(boundary)
-            drained = muse.drain(step_count=boundary.step_count)
+            drained = _collect(muse, step_count=boundary.step_count, terminal=terminal)
             reason = muse.degradation()
         except Exception as exc:  # a failing muse degrades, never aborts
             self._latch_degradation(boundary.kind, exc)
