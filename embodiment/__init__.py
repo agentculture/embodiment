@@ -53,6 +53,7 @@ _SUBMODULES = frozenset(
         "loop",
         "media",
         "muse",
+        "muse_pad",
         "muse_runner",
         "perception",
         "presence",
@@ -144,6 +145,15 @@ _LAZY_NAMES = {
     # reasoned about, so relevance is the consumer's judgement to make.
     "insight_lag": "muse",
     "is_stale": "muse",
+    # ── the muse's pad: the actor's scratchpad, offered to the thinking lane ─
+    # The first thing to put on that bench (task t12). Reuses scratchpad's KINDS
+    # and schemas unchanged; `finish` is the one declared omission. Not a memory:
+    # no recall surface reaches it (claim c10). `MusePadCounts` carries the
+    # protocol-adherence counters the pad validation reads.
+    "MusePad": "muse_pad",
+    "MusePadCounts": "muse_pad",
+    "MUSE_PAD_TOOLS": "muse_pad",
+    "MUSE_PAD_PROTOCOL": "muse_pad",
     # ── the muse runner: the one place embodiment owns a thread ───────────
     "ThreadedMuseRunner": "muse_runner",
     "ThreadFactory": "muse_runner",
@@ -296,6 +306,7 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
         loop,
         media,
         muse,
+        muse_pad,
         muse_runner,
         perception,
         presence,
@@ -397,6 +408,12 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
         MuseToolExecuteFn,
         insight_lag,
         is_stale,
+    )
+    from embodiment.muse_pad import (  # noqa: F401
+        MUSE_PAD_PROTOCOL,
+        MUSE_PAD_TOOLS,
+        MusePad,
+        MusePadCounts,
     )
     from embodiment.muse_runner import (  # noqa: F401
         MuseDelivery,
