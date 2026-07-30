@@ -1134,3 +1134,25 @@ class TestTheCommittedSeriesMatchesWhatTheWriteUpClaims:
         for seat in self._records("seat-turn"):
             assert seat["transcript"], seat["match_id"]
             assert any(t["role"] == "cortex" for t in seat["transcript"])
+
+    def test_the_defective_rejections_counter_is_pinned_as_defective(self) -> None:
+        """The harness's own faults counter disagrees with league's, 0 against 2.
+
+        Pinned rather than repaired: the pre-registration is committed and the
+        series is run, so swapping an instrument now would be indistinguishable
+        from tuning one to a result. This test exists so that fixing it is a
+        visible diff against a documented defect rather than a silent
+        improvement to a published number.
+        """
+        mine = 0
+        theirs = 0
+        for match in self._records("match"):
+            for colour in ("blue", "red"):
+                mine += int(match["rejections"][colour])
+                theirs += int(
+                    match["score"]["cooperation"][colour]["components"]["discipline"]["rejected"]
+                )
+        assert (mine, theirs) == (0, 2), "the recorded defect changed shape"
+        # It never decided anything: every match fell to the second tie-break.
+        assert {m["result"]["decided_by"] for m in self._records("match")} == {"cooperation_v1"}
+        assert "defective instrument" in self.DOC.read_text(encoding="utf-8").lower()

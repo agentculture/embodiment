@@ -282,6 +282,34 @@ truncation. No match was resumed.
 
 ---
 
+## A defective instrument, found by auditing my own graders
+
+**The harness's `rejections` counter is wrong, and it is left wrong.**
+
+It reported `0` for all twelve team-records. league's own `discipline`
+component, computed from the match log, records **two** rejected orders — one
+against `full-gemma` in match 2 and one against `mixed` in match 4. The counter
+reads `last_turn_rejections` off a `match show` taken after both teams have
+acted, and it missed both; league's own number is the authoritative one and the
+tables above use it.
+
+**It changed no verdict.** `rejections + cap_dropped` is the *third* tie-break
+and every one of the six matches was decided at the second, so the defective
+number was never consulted. Both misses were also against the arm that lost that
+match anyway, so even a correct counter would not have moved a result.
+
+It is **not repaired here**, deliberately. The pre-registration is committed and
+the series is run; silently swapping an instrument after seeing the data is the
+thing pre-registration exists to prevent, and a counter quietly corrected after
+a result is indistinguishable from one tuned to it. It is recorded as defective,
+pinned by a test so it cannot be fixed into a claim without that being visible
+in a diff, and any future series must fix it **before** its first dial.
+
+This is the same failure shape [corrections.md](corrections.md) already records
+three times over for this lane: *the mechanism was right and the verification
+was the defect.* Found the same way, too — by checking a number this harness
+produced against a number someone else's program produced for the same fact.
+
 ## What this does not show
 
 - **Anything about general model quality.** One task shape, one scenario, three
