@@ -45,11 +45,12 @@ calls, plus a health probe:
   a seam that raises, with the same single operator-facing notice.
 
 There is one beat where that pairing comes apart. The **terminal** boundary
-(:meth:`PresenceEngine.on_terminal_boundary`, fired once before a forced final
-synthesis turn) drains and never considers: the actor reaches no further
-boundary after it, so a session started there is guaranteed to be still
-compiling when the runner closes — the measured loss issue #17 names. It is the
-one beat whose job is delivery rather than presence.
+(:meth:`PresenceEngine.on_terminal_boundary`, fired once at drive end — on
+every exit reason, before any forced final synthesis turn) drains and never
+considers: the actor reaches no further boundary after it, so a session started
+there is guaranteed to be still compiling when the runner closes — the measured
+loss issue #17 names. It is the one beat whose job is delivery rather than
+presence.
 
 t7's callable is still accepted as :class:`MusePullSeam` and adapted internally,
 so hosts (and :class:`embodiment.muse.MuseLoop`) that want one synchronous
@@ -445,8 +446,8 @@ class PresenceSink(Protocol):
     inactive one) the loop is byte-identical to a loop with no presence at all.
 
     These three beats are the whole REQUIRED protocol. There is a fourth,
-    OPTIONAL one — ``on_terminal_boundary(step_count=…)``, the beat before a
-    forced synthesis turn (:meth:`PresenceEngine.on_terminal_boundary`) — which
+    OPTIONAL one — ``on_terminal_boundary(step_count=…)``, the beat at drive end
+    (:meth:`PresenceEngine.on_terminal_boundary`) — which
     the loop *probes for* rather than requires, exactly as
     ``embodiment.lifecycle.ContinuityLifecycle._gather_compiled_from`` probes a
     muse for its citation surface. It is deliberately NOT declared
@@ -641,8 +642,11 @@ class PresenceEngine:
     def on_terminal_boundary(self, *, step_count: int = 0) -> list[PresenceTurn]:
         """The LAST beat: drain the muse, and start no session (issue #17).
 
-        A driving loop fires this once, immediately before the forced final
-        synthesis turn — the last moment counsel can still change the output.
+        A driving loop fires this **once at drive end, on every exit reason**,
+        before its completion boundary and before any forced final synthesis
+        turn — the last moment counsel can still change the output. (It rode the
+        synthesis phase notice at first, which only a summary-less exit ever
+        announces, so a clean ``finish`` fired none at all — issue #23.)
         Two things make it unlike every other beat, and both are the point:
 
         * **It drains without considering.** Offering this boundary would start
