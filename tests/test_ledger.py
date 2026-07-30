@@ -702,6 +702,25 @@ def _runner_compilation_starved(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[led
         runner.close(timeout=_TIMEOUT)
 
 
+def _runner_closer(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    """A host-wired teardown raises at close (task t15).
+
+    ``closers`` is how a host ties something it owns — the muse's workspace is
+    the motivating case — to this lane's close. The runner runs each one and
+    lets none of them raise, so a teardown that failed would be invisible
+    without this record, and what it failed to close is state the host now has
+    to deal with by hand. Public seam only: the callable goes in through the
+    constructor and comes out through ``close``.
+    """
+
+    def explode() -> None:
+        raise OSError("the container engine refused the teardown")
+
+    runner = ThreadedMuseRunner(Scripted(_resp(MARKER_DONE)), closers=(explode,))
+    runner.close(timeout=_TIMEOUT)
+    return ledger.from_muse_runner(runner)
+
+
 def _runner_counsel_displaced(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
     """Compiled counsel evicts undrained boundary counsel — the priority inversion.
 
@@ -1033,6 +1052,7 @@ PROVOKERS: dict[tuple[str, str], Provoker] = {
     (ledger.SOURCE_MUSE_RUNNER, muse_runner.DEGRADED_THREAD): _runner_thread,
     (ledger.SOURCE_MUSE_RUNNER, muse_runner.DEGRADED_WORKER): _runner_worker,
     (ledger.SOURCE_MUSE_RUNNER, muse_runner.DEGRADED_ENDPOINT): _runner_endpoint,
+    (ledger.SOURCE_MUSE_RUNNER, muse_runner.DEGRADED_CLOSER): _runner_closer,
     (ledger.SOURCE_MUSE_RUNNER, muse_runner.DROPPED_STALE): _runner_stale,
     (ledger.SOURCE_MUSE_RUNNER, muse_runner.DROPPED_LATE): _runner_late,
     (ledger.SOURCE_MUSE_RUNNER, muse_runner.DROPPED_OVERFLOW): _runner_overflow,
