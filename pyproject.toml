@@ -23,6 +23,17 @@ classifiers = [
 #   coherence-cli -> numpy + httpx (and httpx's own httpcore/h11/anyio/certifi)
 #   events-cli    -> paho-mqtt  (consumed by embodiment/events.py, which imports
 #                    events_cli lazily so importing embodiment stays cheap)
+#   headspace-cli -> docker>=7.1 -> requests, urllib3, certifi,
+#                    charset-normalizer, idna. Consumed by
+#                    embodiment/workspace.py, which imports `headspace.api` at
+#                    MODULE SCOPE — that import is measured as stdlib-only, so
+#                    `headspace` is the single new entry in
+#                    _REQUIRED_RUNTIME_IMPORTS and `docker`/`requests` stay
+#                    install-only, exactly as neo4j/pymongo/paho already do.
+#                    `headspace.api` is the ONLY supported import surface
+#                    (headspace-cli#18): it declares create/run/put/export/
+#                    destroy under headspace's own semver, and
+#                    `headspace.core` is private — never import it.
 #
 # Consequence, accepted with eyes open: `pip install embodiment` now pulls a
 # graph driver, a Mongo driver, numpy, httpx and an MQTT client, and importing
@@ -58,6 +69,7 @@ dependencies = [
     "eidetic-cli>=0.12",
     "coherence-cli>=0.6",
     "events-cli>=0.10",
+    "headspace-cli>=0.11",
 ]
 
 [project.urls]

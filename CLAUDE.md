@@ -201,7 +201,11 @@ otherwise in writing.
   `.devague/deliveries/`) allows sibling CLIs to be **imported directly at
   module scope as base dependencies**, replacing the subprocess adapter:
   `eidetic-cli` (→ `data-refinery-cli[store]` → neo4j + pymongo),
-  `coherence-cli` (→ numpy + httpx), and `events-cli` (→ paho-mqtt).
+  `coherence-cli` (→ numpy + httpx), `events-cli` (→ paho-mqtt), and — the
+  fourth, added 2026-07-30 by the same gate for the muse's workspace tool —
+  `headspace-cli` (→ `docker>=7.1` → requests, urllib3, certifi,
+  charset-normalizer). Only `headspace.api` may be imported: it is headspace's
+  sole supported surface and `headspace.core` is private (headspace-cli#18).
 
   What survives is the *discipline*, not the zero: **no dependency enters
   without a human deciding.** `tests/test_zero_deps.py` pins the exact approved
@@ -211,10 +215,13 @@ otherwise in writing.
   edit to a requirements list.
 
   **The accepted cost, recorded so it is not rediscovered:** `pip install
-  embodiment` now pulls a graph driver, a Mongo driver, numpy, httpx and
-  paho-mqtt; and importing embodiment transitively imports third-party
+  embodiment` now pulls a graph driver, a Mongo driver, numpy, httpx, paho-mqtt
+  and the docker SDK; and importing embodiment transitively imports third-party
   modules, so colleague's zero-deps test **will fail** if colleague adds
-  embodiment as a dependency.
+  embodiment as a dependency. Note the two footprints stay distinct and are
+  pinned separately: `neo4j`, `pymongo`, `paho` and `docker` are *installed* and
+  never *imported* at module scope, so the runtime-import set is the smaller
+  claim and must not be "fixed" to match the install set.
 - **C1b — no longer an open question; it is now a hard prerequisite.** It used
   to ask whether colleague would allow-list a third base dependency. After
   `d2`, colleague cannot import embodiment at all until it relaxes its
