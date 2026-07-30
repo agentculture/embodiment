@@ -62,6 +62,7 @@ generously.
 | [association-work-preregistration.md](association-work-preregistration.md) | the configuration and numeric decision rule for both of the above | committed **before** the first dial; the ordering is the point |
 | [devague-legs.md](devague-legs.md) | can either mind judge whether a record warrants a `devague deviate` — 12 blind cases, both minds, pre-registered | **Experiment 1 ABSENT (did not run).** Experiment 2: the two minds returned **identical verdicts on all 12 cases**, 11/12 against ground truth each — but the pools are separable by input length alone. The muse reached the same answers for ~1/25 the completion tokens |
 | [devague-legs-preregistration.md](devague-legs-preregistration.md) | the leg split, both experiments' decision rules, the lapse protocol, and the Gemma-proposes-human-confirms gate | committed **before** the first dial |
+| [muse-arms-preregistration.md](muse-arms-preregistration.md) | the three muse arms (tools-off / +pad / +pad+workspace), the R-C1 execution rule, the counsel scorer and the decision rule | committed **with the harness** (`examples/muse_arms.py`) and **before** the first measured dial; the series itself is task t18's |
 
 ## Reproducing
 
