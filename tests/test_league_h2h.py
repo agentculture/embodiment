@@ -974,3 +974,60 @@ class TestTheInstrumentCheck:
         view = league_h2h.SMOKE_VIEW
         assert len(view["my_units"]) == 1
         assert view["legal_actions"]["blue-u1"]["move"]
+
+
+class TestTheVerdictIsReproducibleFromTheArtifactAlone:
+    """`analyse` re-grades a committed log with the same functions.
+
+    A verdict only the process that produced the data can produce is not
+    checkable by a reader. This one is: the committed identical-mind control is
+    re-graded from disk and must agree with what the runner wrote into it.
+    """
+
+    def test_analysing_the_control_reproduces_its_own_verdicts(self) -> None:
+        found = league_h2h.analyse(CONTROL_LOG)
+        written = {
+            r["rung"]: r
+            for r in (
+                json.loads(line) for line in CONTROL_LOG.read_text(encoding="utf-8").splitlines()
+            )
+            if r.get("kind") == "rung"
+        }
+        assert found["verdict"] == "INCONCLUSIVE"
+        for rung in found["rungs"]:
+            assert rung["verdict"] == written[rung["rung"]]["verdict"], rung["rung"]
+            assert rung["matches_played"] == written[rung["rung"]]["matches_played"]
+            for name, pairing in rung["pairings"].items():
+                assert (
+                    pairing["net_margin"] == written[rung["rung"]]["pairings"][name]["net_margin"]
+                )
+
+    def test_an_unplayed_rung_analyses_as_absent_by_name(self, tmp_path: Path) -> None:
+        log = tmp_path / "partial.jsonl"
+        log.write_text(json.dumps({"kind": "config", "config": {}}) + "\n", encoding="utf-8")
+        found = league_h2h.analyse(log)
+        # Every rung, named — not silently missing from the table.
+        assert found["rungs_absent"] == [r.id for r in league_h2h.LADDER]
+        assert found["verdict"] == "INCONCLUSIVE"
+
+    def test_a_half_played_rung_analyses_as_absent_not_as_a_result(self, tmp_path: Path) -> None:
+        rung = league_h2h.LADDER_BY_ID["L1"]
+        lines = []
+        for name, blue, red in league_h2h.rung_matches(rung)[:2]:
+            record = _report(blue_arm=blue.id, red_arm=red.id, coops=(90, 80))
+            record.update(
+                {
+                    "kind": "match",
+                    "rung": "L1",
+                    "match_id": league_h2h.match_id_for(rung, blue.id, red.id),
+                    "truncated_turns": 0,
+                    "cost": {c: {"completion_tokens": 0, "seconds": 0.0} for c in ("blue", "red")},
+                }
+            )
+            lines.append(json.dumps(record))
+        log = tmp_path / "half.jsonl"
+        log.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        found = league_h2h.analyse(log)
+        assert found["rungs"][0]["verdict"] == "ABSENT"
+        assert found["rungs"][0]["matches_played"] == 2
+        assert found["rungs"][0]["matches_planned"] == 6

@@ -1628,6 +1628,13 @@ def build_parser() -> argparse.ArgumentParser:
     check.add_argument("--base-url", default=DEFAULT_BASE_URL)
     check.add_argument("--out", default="", help="write the check here as JSON")
     check.add_argument("--json", action="store_true")
+
+    look = sub.add_parser(
+        "analyse",
+        help="re-apply the pre-registered rule to a committed artifact; dials nothing",
+    )
+    look.add_argument("--log", required=True)
+    look.add_argument("--json", action="store_true")
     return parser
 
 
@@ -1710,6 +1717,80 @@ def smoke(*, base_url: str, api_key: str) -> dict[str, Any]:
     }
 
 
+def read_log(log_path: Path) -> list[dict[str, Any]]:
+    """Every record in an artifact, in order. Unreadable lines are skipped."""
+    records: list[dict[str, Any]] = []
+    for line in log_path.read_text(encoding="utf-8").splitlines():
+        try:
+            records.append(json.loads(line))
+        except ValueError:
+            continue
+    return records
+
+
+def analyse(log_path: Path) -> dict[str, Any]:
+    """Re-apply the pre-registered rule to a committed artifact.
+
+    Separate from the runner on purpose: a verdict that can only be produced by
+    the process that produced the data is not checkable. This reads the JSONL
+    back, re-grades it with the same functions, and reports the tables the
+    write-up needs — including the rungs that were never played, by name.
+    """
+    records = read_log(log_path)
+    matches = [r for r in records if r.get("kind") == "match"]
+    first_arm_of = {name: first for name, first, _ in PAIRINGS}
+
+    rungs: list[dict[str, Any]] = []
+    for rung in LADDER:
+        mine = [m for m in matches if m.get("rung") == rung.id]
+        if not mine:
+            rungs.append({"rung": rung.id, "verdict": VERDICT_ABSENT, "matches_played": 0})
+            continue
+        by_pairing: dict[str, list[dict[str, Any]]] = {name: [] for name, _, _ in PAIRINGS}
+        excluded = []
+        for match in mine:
+            if match.get("truncated_turns"):
+                excluded.append(match["match_id"])
+                continue
+            for name, first, second in PAIRINGS:
+                arms = set(match["arms"].values())
+                if arms == {first, second}:
+                    by_pairing[name].append(match)
+        pairings = {
+            name: decide_pairing(found, first_arm=first_arm_of[name])
+            for name, found in by_pairing.items()
+        }
+        graded = decide_rung(pairings)
+        complete = len(mine) == len(rung_matches(rung))
+        rungs.append(
+            {
+                "rung": rung.id,
+                "scenario": rung.scenario,
+                "seed": rung.seed,
+                "matches_played": len(mine),
+                "matches_planned": len(rung_matches(rung)),
+                "matches_excluded_for_truncation": excluded,
+                "truncated_turns": sum(int(m.get("truncated_turns") or 0) for m in mine),
+                "complete": complete,
+                "pairings": pairings,
+                "cost": cheapest_arm(mine),
+                **({**graded, "verdict": VERDICT_ABSENT} if not complete else graded),
+            }
+        )
+
+    separated = next((r for r in rungs if r["verdict"] == VERDICT_SEPARATED), None)
+    return {
+        "kind": "analysis",
+        "log": str(log_path),
+        "verdict": VERDICT_SEPARATED if separated else VERDICT_INCONCLUSIVE,
+        "separated_at": separated["rung"] if separated else None,
+        "rungs": rungs,
+        "rungs_absent": [r["rung"] for r in rungs if r["verdict"] == VERDICT_ABSENT],
+        "cost": cheapest_arm(matches),
+        "matches_total": len(matches),
+    }
+
+
 def render_plan() -> str:
     lines = [
         "league_h2h — the pre-registered ladder",
@@ -1760,6 +1841,10 @@ def main(argv: Optional[list[str]] = None) -> int:
                 )
             else:
                 print(render_plan())
+            return 0
+
+        if args.command == "analyse":
+            print(json.dumps(analyse(Path(args.log)), indent=2, ensure_ascii=False))
             return 0
 
         if args.command == "smoke":
