@@ -1494,6 +1494,12 @@ def run_ladder(args: argparse.Namespace) -> dict[str, Any]:
     else:
         absent = []
 
+    # A rung the operator did not ask for is still a rung that did not run.
+    # Reporting only the requested ones would let a one-rung invocation read as
+    # a complete ladder, which is exactly the padding this series forbids.
+    requested = {r.id for r in wanted}
+    absent = sorted(set(absent) | {r.id for r in LADDER if r.id not in requested})
+
     played = [r for r in rungs if r["verdict"] != VERDICT_ABSENT]
     separated = next((r for r in played if r["verdict"] == VERDICT_SEPARATED), None)
     all_records: list[dict[str, Any]] = []
@@ -1508,6 +1514,7 @@ def run_ladder(args: argparse.Namespace) -> dict[str, Any]:
         "separated_at": separated["rung"] if separated else None,
         "rungs_run": [r["rung"] for r in rungs],
         "rungs_absent": absent,
+        "rungs_requested": sorted(requested),
         "cost": cheapest_arm(all_records),
         "seconds": round(time.monotonic() - started, 1),
         "log": str(log_path),

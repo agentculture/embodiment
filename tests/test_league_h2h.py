@@ -1031,3 +1031,23 @@ class TestTheVerdictIsReproducibleFromTheArtifactAlone:
         assert found["rungs"][0]["verdict"] == "ABSENT"
         assert found["rungs"][0]["matches_played"] == 2
         assert found["rungs"][0]["matches_planned"] == 6
+
+
+class TestARequestedSubsetStillReportsTheRestAbsent:
+    def test_a_one_rung_invocation_does_not_read_as_a_complete_ladder(self, tmp_path: Path) -> None:
+        args = league_h2h.build_parser().parse_args(
+            [
+                "ladder",
+                "--rungs",
+                "L1",
+                "--home",
+                str(tmp_path / "home"),
+                "--log",
+                str(tmp_path / "log.jsonl"),
+                "--league-bin",
+                FAKE_BIN,
+            ]
+        )
+        report = league_h2h.run_ladder(args)
+        assert report["rungs_requested"] == ["L1"]
+        assert report["rungs_absent"] == ["L2", "L3", "L4"]
