@@ -1051,3 +1051,86 @@ class TestARequestedSubsetStillReportsTheRestAbsent:
         report = league_h2h.run_ladder(args)
         assert report["rungs_requested"] == ["L1"]
         assert report["rungs_absent"] == ["L2", "L3", "L4"]
+
+
+class TestTheCommittedSeriesMatchesWhatTheWriteUpClaims:
+    """The results document is checked against its own artifact.
+
+    Every headline number in ``league-h2h.md`` is recomputed here from the
+    committed JSONL. A write-up that drifts from its data is the failure mode
+    this repo's corrections list keeps recording, so it is a test rather than a
+    proofreading pass.
+    """
+
+    LOG = RESULTS / "league-h2h.jsonl"
+    DOC = RESULTS / "league-h2h.md"
+
+    @classmethod
+    def _records(cls, kind: str) -> list[dict[str, Any]]:
+        return [r for r in league_h2h.read_log(cls.LOG) if r.get("kind") == kind]
+
+    def test_the_series_and_its_write_up_are_committed(self) -> None:
+        assert self.LOG.is_file() and self.DOC.is_file()
+
+    def test_the_verdict_is_separated_at_l1_with_l2_to_l4_absent(self) -> None:
+        found = league_h2h.analyse(self.LOG)
+        assert found["verdict"] == "SEPARATED"
+        assert found["separated_at"] == "L1"
+        assert found["rungs_absent"] == ["L2", "L3", "L4"]
+
+    def test_all_three_pairings_separated_without_a_cycle(self) -> None:
+        rung = self._records("rung")[0]
+        assert rung["separated_count"] == 3
+        assert rung["cyclic"] is False
+        assert rung["implied_ordering"] == ["full-qwen", "mixed", "full-gemma"]
+
+    def test_nothing_truncated_which_is_what_amendment_1_bought(self) -> None:
+        seats = self._records("seat-turn")
+        assert len(seats) == 36
+        truncated = sum(s["cost"][role]["truncated"] for s in seats for role in ("cortex", "muse"))
+        assert truncated == 0
+        # And the Qwen cortex really did spend past the originally briefed cap,
+        # so the amendment was not academic.
+        qwen = [s for s in seats if s["arm"] in ("mixed", "full-qwen")]
+        worst = max(s["cost"]["cortex"]["completion_tokens"] for s in qwen)
+        assert worst > 3000, "the 3000-token brief would have truncated this"
+
+    def test_no_transport_retry_or_failure_so_no_number_is_a_contention_artifact(
+        self,
+    ) -> None:
+        seats = self._records("seat-turn")
+        for field in ("retries", "failures"):
+            assert sum(s["cost"][role][field] for s in seats for role in ("cortex", "muse")) == 0
+        assert all(m["transport_failure"] is None for m in self._records("match"))
+
+    def test_the_game_metric_tied_zero_zero_in_every_match(self) -> None:
+        for match in self._records("match"):
+            outcome = match["score"]["outcome"]
+            assert outcome["blue"]["total"] == outcome["red"]["total"] == 0
+
+    def test_the_separation_is_message_utility_and_the_doc_says_so(self) -> None:
+        rates = {arm: [0, 0] for arm in league_h2h.ARMS}
+        for seat in self._records("seat-turn"):
+            rates[seat["arm"]][1] += 1
+            if seat["orders"].get("messages"):
+                rates[seat["arm"]][0] += 1
+        assert rates["full-gemma"] == [0, 12]
+        assert rates["mixed"] == [4, 12]
+        assert rates["full-qwen"] == [9, 12]
+        text = self.DOC.read_text(encoding="utf-8")
+        assert "0 / 12" in text and "4 / 12" in text and "9 / 12" in text
+        assert "interface compliance, not on" in text
+
+    def test_the_cost_column_in_the_doc_matches_the_artifact(self) -> None:
+        cost = league_h2h.analyse(self.LOG)["cost"]["per_arm"]
+        assert cost["full-gemma"]["completion_tokens_per_match"] == 950.0
+        assert cost["mixed"]["completion_tokens_per_match"] == 12818.8
+        assert cost["full-qwen"]["completion_tokens_per_match"] == 18409.8
+        text = self.DOC.read_text(encoding="utf-8")
+        for number in ("950", "12,819", "18,410"):
+            assert number in text
+
+    def test_every_committed_seat_turn_carries_its_raw_transcript(self) -> None:
+        for seat in self._records("seat-turn"):
+            assert seat["transcript"], seat["match_id"]
+            assert any(t["role"] == "cortex" for t in seat["transcript"])
