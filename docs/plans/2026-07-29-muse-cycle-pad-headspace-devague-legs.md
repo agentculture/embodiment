@@ -141,13 +141,6 @@ slug: `muse-cycle-pad-headspace-devague-legs` · status: `exported` · from fram
 - acceptance:
   - one arm plants a wrong number in a workspace execution result so it arrives wearing measured-result authority; the pad-recall boundary stays asserted until this probe returns clean; the verdict is recorded either way
 
-### t20 — Flip muse tools default-on after the validation tuning pass
-
-- instruction: Owns the default-config surface + CHANGELOG. Flip only after t18 has published. Ship the tuned protocol, not the measured failure mode; keep tools-off documented as the rollback.
-- depends on: t18
-- acceptance:
-  - the default flips only after t18 publishes; the tuned pad protocol is what ships; the tools-off path remains available as the documented rollback
-
 ### t21 — File the sibling-repo asks as issues through the communicate skill
 
 - instruction: No repo files. Use the communicate skill (agtag-backed) to post on colleague#358 and any lobes/headspace ask. Sign as embodiment (Claude) per the scripts. Never push to a sibling repo.
@@ -162,6 +155,13 @@ slug: `muse-cycle-pad-headspace-devague-legs` · status: `exported` · from fram
 - acceptance:
   - a drive that exits via finish, stopped or budget all fire exactly one terminal drain; a test proves the clean-finish path (which produced zero terminal boundaries before) now delivers; at least one checked-in host wires `append_guidance` so delivered counsel reaches the cortex messages; the termination matrix and hook suites still pass unchanged and no new exit path or budget consumer appears
 
+### t26 — Wire a tool bench through ThreadedMuseRunner so tools are reachable inside a live drive
+
+- instruction: Owns embodiment/`muse_runner.py` and tests/`test_muse_runner.py`. `muse_runner.py`:596-602 builds MuseLoop(complete, controls=, system=, sink=, clock=) with no tools= argument — that omission is the whole gap. Thread a bench through the constructor to that call. Keep muse.`_bench_for` as the single depth gate; do not add a second one. Preserve the single-daemon-thread discipline, the bounded join, deviation d1 (the actor never waits), and the stdlib allow-list. Tools-off must stay byte-identical — t11 pins that at MuseLoop level and it must keep passing.
+- depends on: t13
+- acceptance:
+  - ThreadedMuseRunner accepts a tools bench and passes it to its MuseLoop; depth gating still withholds below top level and records `DEGRADED_TOOLS_WITHHELD`; with no bench wired the constructed loop and its prompts stay byte-identical to today; a test drives a live-shaped run with a bench and observes the tool round
+
 ### t14 — No-secrets boundary on the workspace tool
 
 - instruction: Owns the workspace-tool test file (after t15 has finished editing the module). Assert the constructed create/run invocations carry no --env or --env-file and that no secrets parameter exists on the seam at all.
@@ -169,6 +169,13 @@ slug: `muse-cycle-pad-headspace-devague-legs` · status: `exported` · from fram
 - covers: c34, h28
 - acceptance:
   - the constructed create/run invocations carry no --env or --env-file; a test asserts the seam exposes no secrets parameter, so the leak path cannot be opened by configuration
+
+### t20 — Flip muse tools default-on after the validation tuning pass
+
+- instruction: Owns the default-config surface + CHANGELOG. Flip only after t18 has published. Ship the tuned protocol, not the measured failure mode; keep tools-off documented as the rollback.
+- depends on: t18, t26
+- acceptance:
+  - the default flips only after t18 publishes; the tuned pad protocol is what ships; the tools-off path remains available as the documented rollback
 
 ### t23 — Run the live-rig test suite and the assigned challenge harnesses, recording results
 

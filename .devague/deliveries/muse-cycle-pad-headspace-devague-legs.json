@@ -2,7 +2,7 @@
   "plan_slug": "muse-cycle-pad-headspace-devague-legs",
   "schema_version": 1,
   "created": "2026-07-29T22:25:08Z",
-  "updated": "2026-07-30T18:47:12Z",
+  "updated": "2026-07-30T19:07:01Z",
   "deviations": [
     {
       "id": "d1",
@@ -54,8 +54,21 @@
         "t20"
       ],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "classification": "needs-follow-up"
+    },
+    {
+      "id": "d5",
+      "what": "t14's scope was absorbed into t13 and shipped there; no separate task was run",
+      "task_ref": "t14",
+      "reason": "verified in tests/test_workspace.py: TestNoSecretsParameterExists proves there is nothing to set (signature scan over every public callable, with a negative control), an AST call-site allow-list proves there is nowhere to pass it, and test_a_full_session_sends_no_environment_and_no_inputs records the real invocation. That is t14 acceptance in full, delivered inside t13 because the seam and its no-secrets proof are the same change. Spawning t14 would duplicate shipped tests.",
+      "affects": [
+        "t14",
+        "c34"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "acceptable"
     }
   ]
 }

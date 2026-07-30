@@ -5,7 +5,7 @@
   "schema_version": 4,
   "status": "exported",
   "created": "2026-07-29T19:25:04Z",
-  "updated": "2026-07-30T18:47:21Z",
+  "updated": "2026-07-30T19:07:14Z",
   "targets": [
     {
       "id": "c1",
@@ -923,7 +923,7 @@
       "id": "t26",
       "summary": "Wire a tool bench through ThreadedMuseRunner so tools are reachable inside a live drive",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "acceptance_criteria": [
         "ThreadedMuseRunner accepts a tools bench and passes it to its MuseLoop; depth gating still withholds below top level and records DEGRADED_TOOLS_WITHHELD; with no bench wired the constructed loop and its prompts stay byte-identical to today; a test drives a live-shaped run with a bench and observes the tool round"
       ],
