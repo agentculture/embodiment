@@ -1,12 +1,12 @@
 {
   "arm_models": {
-    "A-qwen": [
-      null,
+    "B": [
+      "nvidia/Gemma-4-31B-IT-NVFP4",
       "sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP"
     ]
   },
   "arms": [
-    "A-qwen"
+    "B"
   ],
   "base_url": "http://localhost:8001/v1",
   "commander_max_steps": 6,
@@ -22,7 +22,7 @@
   "live": true,
   "max_retries": 3,
   "max_tokens": 16000,
-  "n_matches": 3,
+  "n_matches": 1,
   "opponent_driver": "bot",
   "our_driver": "stateless",
   "request_timeout": 900.0,
@@ -31,16 +31,15 @@
     "child": "subagent",
     "top_level": "cortex"
   },
-  "scenario": "c-skirmish-1",
+  "scenario": "c-frontier-1",
   "scenario_roles": [
     "defender",
-    "harvester"
+    "harvester",
+    "scout"
   ],
   "seed_is_metadata_only": true,
   "seeds": [
-    101,
-    102,
-    103
+    101
   ],
   "spawn_allowance": 1,
   "task": "t28",
