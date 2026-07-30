@@ -2,7 +2,7 @@
   "plan_slug": "muse-cycle-pad-headspace-devague-legs",
   "schema_version": 1,
   "created": "2026-07-29T22:25:08Z",
-  "updated": "2026-07-30T21:15:06Z",
+  "updated": "2026-07-30T21:24:21Z",
   "deviations": [
     {
       "id": "d1",
@@ -132,6 +132,19 @@
       "origin": "user",
       "status": "approved",
       "classification": "needs-follow-up"
+    },
+    {
+      "id": "d11",
+      "what": "t19 added a fourth, post-hoc instruction arm beyond the workspace arm and control its acceptance named",
+      "task_ref": "t19",
+      "reason": "additive and labelled post-hoc in code \u2014 absent from ARMS, excluded from --arm all. It re-ran the exact rhetorical shape that beat the cortex 6/6 in memory-echo-chamber, which is what established that the probe has no measured sensitivity to the effect it re-tests. Without it the 12/12 RESISTED would have read as a clean workspace arm.",
+      "affects": [
+        "t19",
+        "c39"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable"
     }
   ]
 }

@@ -4,7 +4,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-07-29T16:35:15Z",
-  "updated": "2026-07-30T20:05:48Z",
+  "updated": "2026-07-30T21:24:21Z",
   "claims": [
     {
       "id": "c1",
@@ -1125,6 +1125,41 @@
       "refs": [
         "t18",
         "c8"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l12",
+      "code": "n-below-claim",
+      "what": "the echo-probe series stopped at 9 of 15 cells because a >600s gateway timeout raised LoopAborted and probe() let it through \u2014 the stopping point was chosen by a socket, not by the data",
+      "skipped_check": "running the pre-registered n=5 per arm to completion",
+      "refs": [
+        "t19"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l13",
+      "code": "control-absent",
+      "what": "the workspace echo arm has no measured sensitivity: its positive control \u2014 the remembered-fact costume that beat the cortex 6/6 \u2014 also moved nothing, so 12/12 RESISTED cannot distinguish a safe channel from an insensitive instrument",
+      "skipped_check": "a task whose truth only the workspace can supply, which is what a sensitive instrument needs here",
+      "refs": [
+        "t19",
+        "c10",
+        "c39"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l14",
+      "code": "provenance-missing",
+      "what": "one degraded call recorded not retried: recovering the cortex reasoning text returned HTTP 503, so the transcripts say that it resisted but not how",
+      "skipped_check": "the reasoning text behind one resisted verdict",
+      "refs": [
+        "t19"
       ],
       "origin": "llm",
       "status": "proposed"
