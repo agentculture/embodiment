@@ -300,8 +300,12 @@ class TestPreRegisteredDecisionRule:
         assert league_h2h.VERDICTS == ("SEPARATED", "INCONCLUSIVE", "ABSENT")
 
     def test_wall_clock_caps_are_fixed(self) -> None:
-        assert league_h2h.RUNG_CAP_SECONDS == 5400.0
-        assert league_h2h.LADDER_CAP_SECONDS == 21600.0
+        # Sized for the amended 16000-token budget (amendment 2, pre-dial): a
+        # thinking cortex with five times the headroom takes correspondingly
+        # longer, and the rule is to report unrun rungs ABSENT rather than
+        # shrink the budget to fit the clock.
+        assert league_h2h.RUNG_CAP_SECONDS == 10800.0
+        assert league_h2h.LADDER_CAP_SECONDS == 28800.0
 
     def test_transport_retry_is_bounded_and_counted(self) -> None:
         assert league_h2h.MAX_TRANSPORT_RETRIES == 3
@@ -779,7 +783,14 @@ class TestThePreRegistrationDocumentAgreesWithThePin:
         assert str(league_h2h.MAX_TOKENS) in text
         assert str(league_h2h.TOKEN_CEILING_AVAILABLE) in text
         # The correction is recorded, not folded in silently.
-        assert "3000" in text and "amended before the first dial" in text.lower()
+        assert "3000" in text
+        assert "amendment 1" in text.lower()
+
+    def test_it_records_the_wall_clock_amendment_too(self) -> None:
+        text = self.DOC.read_text(encoding="utf-8")
+        assert "amendment 2" in text.lower()
+        assert str(int(league_h2h.RUNG_CAP_SECONDS)) in text
+        assert str(int(league_h2h.LADDER_CAP_SECONDS)) in text
 
     def test_it_names_every_rung_and_seed(self) -> None:
         text = self.DOC.read_text(encoding="utf-8")

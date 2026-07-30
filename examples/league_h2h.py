@@ -356,8 +356,15 @@ VERDICTS = (VERDICT_SEPARATED, VERDICT_INCONCLUSIVE, VERDICT_ABSENT)
 
 #: Wall-clock caps. A rung that would run past its cap stops, and every rung
 #: above it is reported ABSENT rather than implied.
-RUNG_CAP_SECONDS = 5400.0
-LADDER_CAP_SECONDS = 21600.0
+#:
+#: Sized for the amended 16000-token budget rather than the 3000 this task was
+#: first briefed with (pre-registration amendment 2, made before the first
+#: dial). A thinking cortex given five times the headroom takes correspondingly
+#: longer per turn, and the instruction that came with the budget correction was
+#: explicit: size the ladder to the budget and report unrun rungs ABSENT, never
+#: shrink the budget to fit the clock.
+RUNG_CAP_SECONDS = 10800.0
+LADDER_CAP_SECONDS = 28800.0
 
 # ── prompts, identical for both seats in a match ─────────────────────────────
 

@@ -137,7 +137,7 @@ rising ladder is the direct structural fix.
    splits them. **Wall clock is therefore not a clean quality signal across
    arms** and is reported as cost, never as skill.
 
-### The token budget — amended before the first dial
+### Amendment 1 — the token budget, corrected before the first dial
 
 **This task was briefed with "budget 3000+ for any Qwen seat". That number is
 wrong and it was corrected to 16000 before anything was dialled.** The
@@ -181,6 +181,30 @@ consumption rather than by a cap.
   truncated turn.
 - `REQUEST_TIMEOUT = 1800s`. A slow response on a busy shared GPU is contention,
   not a result.
+
+### Amendment 2 — the wall-clock caps, sized to the amended budget
+
+Also made **before the first dial**, and for the same reason amendment 1 was
+made: a thinking cortex given five times the token headroom takes
+correspondingly longer per turn, and the caps written for a 3000-token budget
+would have cut rungs off for a clock reason rather than a result reason.
+
+- `RUNG_CAP_SECONDS`: 5400 → **10800** (3 h)
+- `LADDER_CAP_SECONDS`: 21600 → **28800** (8 h)
+
+The instruction that arrived with the budget correction was explicit and is
+followed here: **size the ladder to the budget and report unrun rungs `ABSENT`,
+never shrink the budget to fit the clock.** Nothing else moved. In particular
+the n per rung (six matches), the turns per match (three), the seeds and the
+decision rule are unchanged.
+
+A pre-dial measurement that motivated the number, recorded as a rig
+observation rather than as data: with the gateway under load from a sibling
+task, a trivial "reply with exactly: X" prompt cost the Qwen cortex **54.8 s
+for 172 completion tokens** (~3 tokens/s) against a **2.7 s** Gemma answer, and
+`nvidia-smi` showed the single GB10 at 94% utilisation. The README's
+uncontended baseline for the same prompt is 9.3 s. Contention of that size is
+not a property of either model and must not be read as one.
 
 ### Truncation is an instrument event, never a loss
 
@@ -337,9 +361,9 @@ Gemma" — with the n stated loudly enough that nobody reads it as a strong clai
   per match**, **2 seat-turns per league turn**, **≤8 model turns per
   seat-turn**. Measured hermetically: 5 cortex calls and ~4 muse calls per
   seat-turn, so ~30 cortex and ~28 muse calls per match.
-- **`RUNG_CAP_SECONDS = 5400`** (90 min) and **`LADDER_CAP_SECONDS = 21600`**
-  (6 h). A rung that would run past its cap stops, and every rung above it is
-  reported `ABSENT`.
+- **`RUNG_CAP_SECONDS = 10800`** (3 h) and **`LADDER_CAP_SECONDS = 28800`**
+  (8 h) — see amendment 2. A rung that would run past its cap stops, and every
+  rung above it is reported `ABSENT`.
 - **Matches run serially.** The cortex is local and single; parallel matches
   would contend and every latency figure would be fiction.
 - **One live timing pilot may be run before the series** to size the ladder
