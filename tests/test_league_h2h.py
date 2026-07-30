@@ -817,3 +817,84 @@ class TestThePreRegistrationDocumentAgreesWithThePin:
         for verdict in league_h2h.VERDICTS:
             assert f"`{verdict}`" in text
         assert "reported `ABSENT` by name" in text
+
+
+class TestResumeNeverReplaysACompletedMatch:
+    """Pre-registration rule 3, implemented rather than only asserted in prose.
+
+    On a shared rig a run gets cut short by contention. Re-rolling a match that
+    already has an answer is how a series quietly becomes best-of-N, so the
+    resumed match is folded back in exactly as it was recorded.
+    """
+
+    def test_an_absent_log_resumes_from_nothing(self, tmp_path: Path) -> None:
+        assert league_h2h.played_matches(tmp_path / "missing.jsonl") == {}
+
+    def test_only_match_records_are_read_back(self, tmp_path: Path) -> None:
+        log = tmp_path / "log.jsonl"
+        log.write_text(
+            "\n".join(
+                [
+                    json.dumps({"kind": "config", "config": {}}),
+                    json.dumps({"kind": "seat-turn", "match_id": "x", "turn": 0}),
+                    json.dumps({"kind": "match", "match_id": "h2h-L1-a-vs-b"}),
+                    "not json at all",
+                    json.dumps({"kind": "rung", "rung": "L1"}),
+                ]
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        found = league_h2h.played_matches(log)
+        assert set(found) == {"h2h-L1-a-vs-b"}
+
+    def test_a_fully_resumed_rung_plays_nothing_and_still_grades(self, tmp_path: Path) -> None:
+        rung = league_h2h.LADDER_BY_ID["L1"]
+        prior = {}
+        for name, blue, red in league_h2h.rung_matches(rung):
+            match_id = league_h2h.match_id_for(rung, blue.id, red.id)
+            record = _report(blue_arm=blue.id, red_arm=red.id, coops=(90, 80))
+            record.update({"kind": "match", "match_id": match_id, "truncated_turns": 0})
+            prior[match_id] = record
+        summary = league_h2h.run_rung(
+            rung,
+            home=tmp_path,
+            log_path=tmp_path / "out.jsonl",
+            live=False,
+            base_url="http://x/v1",
+            api_key="",
+            league_bin="false",
+            league_timeout=1.0,
+            resume=prior,
+        )
+        # Nothing was dialled and nothing was replayed, yet the rung is graded.
+        assert len(summary["matches_resumed"]) == 6
+        assert summary["matches_played"] == 6
+        assert summary["complete"] is True
+        # Blue wins every match here, which is the colour-bias signature: the
+        # strict rule must refuse to separate on it.
+        assert summary["verdict"] == "INCONCLUSIVE"
+
+    def test_a_resumed_truncated_match_stays_excluded(self, tmp_path: Path) -> None:
+        rung = league_h2h.LADDER_BY_ID["L1"]
+        prior = {}
+        for index, (name, blue, red) in enumerate(league_h2h.rung_matches(rung)):
+            match_id = league_h2h.match_id_for(rung, blue.id, red.id)
+            record = _report(blue_arm=blue.id, red_arm=red.id, coops=(90, 80))
+            record.update(
+                {"kind": "match", "match_id": match_id, "truncated_turns": 1 if index == 0 else 0}
+            )
+            prior[match_id] = record
+        summary = league_h2h.run_rung(
+            rung,
+            home=tmp_path,
+            log_path=tmp_path / "out.jsonl",
+            live=False,
+            base_url="http://x/v1",
+            api_key="",
+            league_bin="false",
+            league_timeout=1.0,
+            resume=prior,
+        )
+        assert len(summary["matches_excluded_for_truncation"]) == 1
+        assert summary["truncated_turns"] == 1

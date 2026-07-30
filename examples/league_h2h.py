@@ -1254,9 +1254,13 @@ def cheapest_arm(rung_records: Sequence[dict[str, Any]]) -> dict[str, Any]:
     for record in rung_records:
         for colour in COLOURS:
             arm = record["arms"][colour]
-            tokens[arm] += int(record["cost"][colour]["completion_tokens"])
-            seconds[arm] += float(record["cost"][colour]["seconds"])
-            truncated[arm] += int(record["cost"][colour].get("truncated") or 0)
+            # Read defensively: this also folds records read back out of an
+            # artifact by --resume, and a log truncated mid-write by a killed
+            # run must not take the whole fold down with it.
+            cost = (record.get("cost") or {}).get(colour) or {}
+            tokens[arm] += int(cost.get("completion_tokens") or 0)
+            seconds[arm] += float(cost.get("seconds") or 0.0)
+            truncated[arm] += int(cost.get("truncated") or 0)
             matches[arm] += 1
     per_match = {
         arm: {
@@ -1293,6 +1297,28 @@ def rung_matches(rung: Rung) -> list[tuple[str, Arm, Arm]]:
     return plan
 
 
+def played_matches(log_path: Path) -> dict[str, dict[str, Any]]:
+    """Matches already in the artifact, by match id.
+
+    The pre-registration's rule 3 says an interrupted series *resumes* and
+    never replays a completed match. This is that rule, and it matters on a
+    shared rig: a run cut short by contention must not silently re-roll a
+    match that already has an answer, because re-rolling until a number looks
+    better is the exact failure the discipline exists to prevent.
+    """
+    if not log_path.exists():
+        return {}
+    found: dict[str, dict[str, Any]] = {}
+    for line in log_path.read_text(encoding="utf-8").splitlines():
+        try:
+            entry = json.loads(line)
+        except ValueError:
+            continue
+        if entry.get("kind") == "match" and entry.get("match_id"):
+            found[str(entry["match_id"])] = entry
+    return found
+
+
 def run_rung(
     rung: Rung,
     *,
@@ -1304,6 +1330,7 @@ def run_rung(
     league_bin: str,
     league_timeout: float,
     deadline: Optional[float] = None,
+    resume: Optional[dict[str, dict[str, Any]]] = None,
 ) -> dict[str, Any]:
     """Play one rung's six matches and grade it.
 
@@ -1322,7 +1349,20 @@ def run_rung(
     excluded: list[str] = []
     stopped: Optional[str] = None
 
+    already = dict(resume or {})
+    resumed: list[str] = []
+
     for name, blue, red in rung_matches(rung):
+        done = already.get(match_id_for(rung, blue.id, red.id))
+        if done is not None:
+            # Already answered. Folded back in exactly as it was recorded.
+            resumed.append(str(done["match_id"]))
+            records.append(done)
+            if done.get("truncated_turns"):
+                excluded.append(str(done["match_id"]))
+            else:
+                by_pairing[name].append(done)
+            continue
         now = time.monotonic()
         if now - started > RUNG_CAP_SECONDS:
             stopped = "rung wall-clock cap reached"
@@ -1378,6 +1418,7 @@ def run_rung(
         "matches_planned": len(rung_matches(rung)),
         "matches_played": len(records),
         "matches_excluded_for_truncation": excluded,
+        "matches_resumed": resumed,
         "truncated_turns": sum(r["truncated_turns"] for r in records),
         "max_tokens": MAX_TOKENS,
         "muse_max_tokens": MUSE_MAX_TOKENS,
@@ -1402,6 +1443,13 @@ def run_ladder(args: argparse.Namespace) -> dict[str, Any]:
     home = Path(args.home).expanduser()
     home.mkdir(parents=True, exist_ok=True)
     log_path = Path(args.log)
+    prior = played_matches(log_path) if getattr(args, "resume", False) else {}
+    if prior:
+        print(
+            f"resuming: {len(prior)} match(es) already in {log_path} will not be replayed",
+            file=sys.stderr,
+            flush=True,
+        )
     api_key = ""
     if args.live:
         api_key = os.environ.get(API_KEY_ENV, "").strip()
@@ -1433,6 +1481,7 @@ def run_ladder(args: argparse.Namespace) -> dict[str, Any]:
             league_bin=args.league_bin,
             league_timeout=args.league_timeout,
             deadline=deadline,
+            resume=prior,
         )
         rungs.append(summary)
         if summary["verdict"] == VERDICT_SEPARATED:
@@ -1552,6 +1601,15 @@ def build_parser() -> argparse.ArgumentParser:
     ladder = sub.add_parser("ladder", help="climb the ladder until the arms separate")
     common(ladder)
     ladder.add_argument("--rungs", default="", help="comma-separated rung ids (default: all)")
+    ladder.add_argument(
+        "--resume",
+        action="store_true",
+        help=(
+            "keep the existing --log and skip every match already recorded in "
+            "it (pre-registration rule 3: an interrupted series resumes, it "
+            "never replays a completed match)"
+        ),
+    )
 
     one = sub.add_parser("match", help="one head-to-head match (pilot/timing use)")
     common(one)
@@ -1617,7 +1675,8 @@ def main(argv: Optional[list[str]] = None) -> int:
             return 0
 
         log_path = Path(args.log)
-        log_path.unlink(missing_ok=True)
+        if not getattr(args, "resume", False):
+            log_path.unlink(missing_ok=True)
         write_preamble(args, log_path)
 
         if args.command == "ladder":
