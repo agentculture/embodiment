@@ -1,0 +1,35 @@
+{
+  "cortex_model": "(none \u2014 this experiment dials no cortex)",
+  "cortex_temperature": 0.3,
+  "muse_model": "nvidia/Gemma-4-31B-IT-NVFP4",
+  "muse_temperature": 0.3,
+  "max_turns": 8,
+  "staleness_policy": "n/a-single-boundary",
+  "n": 8,
+  "experiment": "muse-arms: tools-off / +pad / +pad+workspace (issue #21)",
+  "preregistration": "docs/live-test-results/muse-arms-preregistration.md",
+  "arms": [
+    "A",
+    "B",
+    "C"
+  ],
+  "arm_lanes": {
+    "A": [],
+    "B": [
+      "pad"
+    ],
+    "C": [
+      "pad",
+      "workspace"
+    ]
+  },
+  "base_url": "http://localhost:8001/v1",
+  "muse_max_tokens": 3000,
+  "max_quiet_turns": 2,
+  "max_tool_rounds": 4,
+  "max_tool_result_chars": 2000,
+  "workspace_provider": "docker",
+  "classification_rule": "R-C1",
+  "retries": 0,
+  "measured": true
+}
