@@ -164,3 +164,66 @@ class TestPreRegisteredThresholds:
     def test_every_outcome_is_publishable(self) -> None:
         assert DECISIONS == ("KEEP", "REPLACE", "INCONCLUSIVE")
         assert "INCONCLUSIVE" in DECISIONS
+
+
+class TestHarnessMatchesThePreRegistration:
+    """The probe's own copies must equal the pins. Moving one moves both, visibly."""
+
+    @staticmethod
+    def _probe():
+        from examples import muse_latency
+
+        return muse_latency
+
+    def test_arms_and_governance(self) -> None:
+        probe = self._probe()
+        assert probe.ARMS == ARMS
+        assert probe.TOOLS_ON_ARMS == TOOLS_ON_ARMS
+        assert probe.GOVERNING_ARM_PRIMARY == GOVERNING_ARM_PRIMARY
+        assert probe.GOVERNING_ARM_FALLBACK == GOVERNING_ARM_FALLBACK
+        assert probe.ARM_CONFIG == ARM_CONFIG
+        assert probe.PRIMING == PRIMING
+
+    def test_sample_sizes_and_thresholds(self) -> None:
+        probe = self._probe()
+        assert probe.MIN_DRIVES == MIN_DRIVES
+        assert probe.MIN_SESSIONS_PER_ARM == MIN_SESSIONS_PER_ARM
+        assert probe.N_DRIVES == N_DRIVES
+        assert probe.N_SEQUENCES == N_SEQUENCES
+        assert probe.BOUNDARY_STEPS == BOUNDARY_STEPS
+        assert probe.N_SESSIONS_PER_ARM == N_SESSIONS_PER_ARM
+        assert probe.LATE_BOUNDARY_STEPS == LATE_BOUNDARY_STEPS
+        assert probe.KEEP_THRESHOLD == KEEP_THRESHOLD
+        assert probe.SERIES_CONFIDENCE == SERIES_CONFIDENCE
+        assert probe.MAX_ERROR_FRACTION == MAX_ERROR_FRACTION
+        assert probe.MIN_TOOL_EXERCISE_FRACTION == MIN_TOOL_EXERCISE_FRACTION
+        assert probe.DECISIONS == DECISIONS
+
+    def test_wire_settings_match_the_baseline_harness(self) -> None:
+        """The probe must dial what ``proof.py`` dialled, or it is a new instrument."""
+        from examples import proof
+
+        probe = self._probe()
+        assert probe.MUSE_MAX_TOKENS == proof.MUSE_MAX_TOKENS == MUSE_MAX_TOKENS
+        assert probe.TEMPERATURE == proof.DEFAULT_TEMPERATURE == TEMPERATURE
+        assert proof.MUSE_MAX_TURNS == MUSE_MAX_TURNS_BASELINE
+
+    def test_the_boundary_probe_covers_every_measured_step(self) -> None:
+        probe = self._probe()
+        for step in BOUNDARY_STEPS:
+            boundary = probe.boundary_at(step)
+            assert boundary.step_count == step
+            assert boundary.history, "every measured boundary carries history"
+        # History grows with the step — that is the context axis being measured.
+        sizes = [len(probe.boundary_at(step).history or []) for step in BOUNDARY_STEPS]
+        assert sizes == sorted(sizes)
+        assert sizes[0] < sizes[-1]
+
+    def test_the_estimator_is_the_pre_registered_one(self) -> None:
+        probe = self._probe()
+        # Three sessions against two tails: 4 of 6 pairs land.
+        assert probe._odds([1.0, 5.0, 9.0], [4.0, 12.0]) == pytest.approx(4 / 6, abs=1e-4)
+        assert probe._odds([], [1.0]) is None
+        assert probe._odds([1.0], []) is None
+        assert probe._ceil_2(1 - 0.5) == 0.5
+        assert probe._ceil_2(0.3334) == 0.34
