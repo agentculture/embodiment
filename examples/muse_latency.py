@@ -554,7 +554,8 @@ def run_drive(args: argparse.Namespace, key: str, index: int) -> dict[str, Any]:
             else []
         ),
         "muse_counts": state.get("counts"),
-        "muse_deliveries": [record.to_dict() for record in state.get("deliveries", [])],
+        # ``snapshot()["deliveries"]`` is already plain dicts; ``degradations`` is not.
+        "muse_deliveries": list(state.get("deliveries", []) or []),
         "muse_degradation_codes": _fold_codes(state),
         "guidance_appended": len(relay.appended),
         "guidance_reached_cortex": len(relay.reached_cortex),
