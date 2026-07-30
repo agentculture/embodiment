@@ -1,0 +1,29 @@
+{
+  "cortex_model": "sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP",
+  "cortex_temperature": 0.3,
+  "muse_model": "nvidia/Gemma-4-31B-IT-NVFP4",
+  "muse_temperature": 0.3,
+  "max_turns": 1,
+  "staleness_policy": "n/a-single-completion",
+  "n": 12,
+  "experiment": "devague-legs Experiment 2 (the /deviate cheapest-first slice)",
+  "leg": "deviate",
+  "preregistration": "docs/live-test-results/devague-legs-preregistration.md",
+  "devague_version_output": "devague 0.22.0",
+  "devague_version_pinned": "0.22.0",
+  "devague_version_matches_pin": true,
+  "base_url": "http://localhost:8001/v1",
+  "cortex_max_tokens": 4000,
+  "muse_max_tokens": 2000,
+  "experiment_1_status": "ABSENT unless separately recorded \u2014 see the results document",
+  "state_mutating_devague_commands_issued": 0,
+  "base_commit": "ffaaf4819e8f15b35ed454dd9a6bf5f897465048",
+  "base_commit_short": "ffaaf48",
+  "base_commit_subject": "merge(t5): terminal-drain delivery record on its own stream, not the degradation ledger (#17)",
+  "predates_muse_tool_seam": true,
+  "tool_seam_task": "t13 (headspace-cli dependency + workspace tool)",
+  "evidence": {
+    "embodiment/headspace.py exists": false,
+    "muse.py still declares the tools-off invariant": true
+  }
+}
