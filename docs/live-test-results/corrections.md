@@ -39,6 +39,17 @@ that can certify dead vocabulary indefinitely.
 its weakest permitted provoker. "Every code is covered" and "every code is
 reachable" are different claims and this suite only checked the first.
 
+**Resolved 2026-07-30 (muse cycle, tasks `t2` and `t3`).** Both halves were
+fixed, because fixing only the codes would have left the escape hatch open for
+the next one. `t2` gave both codes real producing paths through a new public
+`compile()` work class and generalised the AST guard to
+`TestEveryRunnerCodeHasAProducer` — it now walks *call arguments* to
+`_record`/`_degrade`, so a declaration, an `__all__` entry or the
+`RUNNER_CODES` tuple can never again be mistaken for a producer, and it checks
+every code rather than the two known offenders. `t3` closed the escape hatch
+itself: a provoker may no longer reach a private attribute of the object it
+constructs, enforced structurally against `tests/test_ledger.py`'s own source.
+
 ### `t14`'s arena seat reported the command arm's degradations as zero
 
 `_play_command` returned nothing, so `match_degradations` stayed `[]` for the

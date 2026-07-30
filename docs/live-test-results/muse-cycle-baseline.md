@@ -198,6 +198,15 @@ constants; nothing in the shipped code ever emits them.
   counsel was displaced by background compilation filling the buffer") — the
   vocabulary is designed, just not yet wired to a real code path.
 
+**Outcome, 2026-07-30 — the baseline moved to 0, as this section predicted.**
+Task `t2` wired both codes to real producing paths through a new public
+`compile()` work class, so the count of declared-but-unemitted runner codes is
+now **0 of 9**. The prediction above held exactly: the structural test forced
+the correction rather than letting it drift. Task `t3` additionally closed the
+guard's escape hatch, so a future code cannot be certified by a provoker that
+records it directly. This baseline stands as what was true before the cycle;
+it is the *before* half of the comparison, not a live figure.
+
 **Citation:** `embodiment/muse_runner.py` (lines 137–139 `__all__`, 186–188
 constant definitions, 193–202 `RUNNER_CODES` and its comment), cross-checked
 against
