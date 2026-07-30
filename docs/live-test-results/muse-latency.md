@@ -57,6 +57,18 @@ than approximated by reaching into a private attribute. It is also a
 prerequisite nobody has scheduled: **task t20 ("flip muse tools default-on")
 has nothing to flip until the runner grows that parameter.**
 
+**Outcome, 2026-07-30 — the seam exists; the measurement still does not.** The
+absence above was filed as issue #30 and closed by task `t26`:
+`ThreadedMuseRunner` now takes `tools=` and `depth=` and hands both to its
+`MuseLoop`, so a tool bench does reach the muse inside a live drive, and t20 has
+something to flip. Two things this does **not** retire, stated so the verdict is
+not read as stronger than it is: the completion odds in this document remain an
+*estimate* combining two measured distributions — `c31`'s honesty condition is
+still unsatisfied until a tools-on drive is dialled on the real rig — and the
+only in-drive tool round observed so far is a scripted one in
+`tests/test_muse_runner.py`, not a live model. This section stands as what was
+true when the numbers below were taken.
+
 ## Lane 1 — the session-latency distribution
 
 n = 8 sessions per arm, 32 total. **Zero degraded sessions, zero failed model
