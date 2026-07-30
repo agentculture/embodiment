@@ -60,6 +60,8 @@ generously.
 | [arena-series-preregistration.md](arena-series-preregistration.md) | the 2×2, the decision rule, and the five rules fixed in advance | committed **before** the first measured match |
 | [corrections.md](corrections.md) | every belief this fan-out held that the work contradicted | deliberately unflattering; the recurring pattern is that the mechanism was right and the verification was the defect |
 | [association-work-preregistration.md](association-work-preregistration.md) | the configuration and numeric decision rule for both of the above | committed **before** the first dial; the ordering is the point |
+| [devague-legs.md](devague-legs.md) | can either mind judge whether a record warrants a `devague deviate` — 12 blind cases, both minds, pre-registered | **Experiment 1 ABSENT (did not run).** Experiment 2: the two minds returned **identical verdicts on all 12 cases**, 11/12 against ground truth each — but the pools are separable by input length alone. The muse reached the same answers for ~1/25 the completion tokens |
+| [devague-legs-preregistration.md](devague-legs-preregistration.md) | the leg split, both experiments' decision rules, the lapse protocol, and the Gemma-proposes-human-confirms gate | committed **before** the first dial |
 
 ## Reproducing
 
@@ -93,6 +95,12 @@ uv run python examples/association_work.py --analyse \
 # per-kind delivery, against the 2-of-7 baseline
 uv run python examples/delivery_series.py --n 4 \
     --out docs/live-test-results/delivery-per-kind.jsonl
+
+# the /deviate leg across both minds — 12 blind cases, pre-registered
+uv run python examples/devague_legs.py \
+    --out docs/live-test-results/devague-legs-deviate.jsonl
+uv run python examples/devague_legs.py --analyse \
+    --out docs/live-test-results/devague-legs-deviate.jsonl
 
 # long-running proof, with and without the muse
 uv run python examples/proof.py --json
