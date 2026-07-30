@@ -121,7 +121,7 @@ operator actually talks to.
 | Loop + presence | `embodiment` (this repo) | the pump |
 | **Teammate identity** | **Gwen** | what the operator addresses |
 | Cortex | Qwen 3.6 27B (`sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP`) | bounded tool loop, repo actions, final synthesis, **final authority** |
-| Muse | Gemma 4 31B (`nvidia/Gemma-4-31B-IT-NVFP4`) | tools-off reflective counsel: reframe the problem, challenge the cortex's assumptions, offer materially different alternatives; proposes, never decides |
+| Muse | Gemma 4 31B (`nvidia/Gemma-4-31B-IT-NVFP4`) | reflective counsel, tools opt-in: reframe the problem, challenge the cortex's assumptions, offer materially different alternatives; proposes, never decides. A host may wire a pad and a bounded workspace onto its tool bench; neither is on by default — see below |
 | Senses | Gemma 4 12B (`coolthor/gemma-4-12B-it-NVFP4A16`) | intake, perception, conversational presence, speak-back; never acts on the repo |
 | Ears / voice | Parakeet STT + Chatterbox TTS behind the lobes audio overlay | the realtime lane (below) |
 
@@ -130,6 +130,29 @@ Roles resolve **by name** from a `lobes` gateway's `/capabilities` contract
 `tts`), never by parsing model names. The 31B muse is opt-in: it needs a
 muse-hosting deployment shape (`lobes init --shape thor-muse`), because a 31B
 cannot co-reside with the cortex+senses duo on a 128 GB box.
+
+**The muse's tools are opt-in too, and stay that way.** `embodiment.muse_pad`
+(write-only working memory) and `embodiment.workspace` (a bounded,
+network-less, disposable container) are tools a host wires onto
+`muse.MuseToolBench` explicitly; with no bench wired the muse is
+byte-identical to the tools-off mind it always was. This was a live question,
+not an assumption: task `t18`'s pre-registered three-arm series
+(`docs/live-test-results/muse-arms.md`, n=8 per arm, real Docker, 0 transport
+failures) measured tools-off against +pad and +pad+workspace and returned
+**`INCONCLUSIVE`** — arm A's confidently-wrong rate was 0 of 8, so there was
+no headroom for a tool lane to reduce, and the 5-of-6 figure that motivated
+the question was measured on a different loop and different problems, not
+this series' control. The series also measured harm the operator's standing
+rule (*the measured failure mode never ships as default behaviour*) will not
+let ship: 9 of the 16 tool-arm runs came back `NO_ANSWER` against 0 for
+tools-off (issue #32 — handed tools, the muse writes a tool call and no
+prose), and 74% of the workspace arm's calls were refused because the muse
+sent `command` as a string rather than an array (issue #33). Arm C's answers
+were never *wrong* (4 correct, 0 wrong, 4 no-answer) and arm B's pad protocol
+adherence was clean (0 open intents in 8 of 8 runs), so this is not a claim
+that tools are harmful — only that the case for a default flip was not made.
+Revisiting the default needs #32 and #33 fixed first, not just another
+tuning pass.
 
 **Design rules for Gwen**, from
 [colleague#352](https://github.com/agentculture/colleague/issues/352) (open;
