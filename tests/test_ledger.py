@@ -474,6 +474,75 @@ def _muse_marker_unreadable(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.
     return ledger.from_muse(thinking.think(_muse_boundary()))
 
 
+# -- muse tool seam (task t10) ------------------------------------------------
+#
+# Every one of these drives a real ``MuseLoop`` with a real ``MuseToolBench``
+# through ``think`` — the seam a host wires — so the codes below are covered by
+# the path that actually mints them, not by a hand-built record.
+
+
+class _ScriptedTools:
+    """A tool-CARRYING muse seam: messages AND a schema in, one response out."""
+
+    def __init__(self, *replies: Any) -> None:
+        self._replies = list(replies) or [_resp(MARKER_DONE)]
+
+    def __call__(self, _messages: list[dict[str, Any]], _tools: list[dict[str, Any]]) -> Any:
+        return self._replies.pop(0) if len(self._replies) > 1 else self._replies[0]
+
+
+#: A host-supplied thinking-tool schema. ``embodiment.muse`` ships none.
+_PAD_SCHEMA: tuple[dict[str, Any], ...] = ({"type": "function", "function": {"name": "intend"}},)
+
+
+def _pad_call(text: str = "x") -> ModelResponse:
+    return ModelResponse(
+        content="calling the pad",
+        tool_calls=[ToolCall(id="c1", name="intend", arguments={"text": text})],
+    )
+
+
+def _bench(*replies: Any, execute: Any = None) -> muse.MuseToolBench:
+    return muse.MuseToolBench(
+        schema=_PAD_SCHEMA,
+        complete=_ScriptedTools(*replies),
+        execute=execute if execute is not None else (lambda _n, _a: "n1 recorded"),
+    )
+
+
+def _muse_tool_failed(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    """A wired thinking tool that raises: readable text to the muse, a record to the host."""
+
+    def explode(_name: str, _arguments: dict[str, Any]) -> Any:
+        raise RuntimeError("the pad is on fire")
+
+    thinking = MuseLoop(
+        Scripted(_resp(MARKER_DONE)),
+        tools=_bench(_pad_call(), _resp(MARKER_DONE), execute=explode),
+    )
+    return ledger.from_muse(thinking.think(_muse_boundary()))
+
+
+def _muse_tool_rounds(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    """A muse that keeps calling tools until its round allowance runs out."""
+    thinking = MuseLoop(
+        Scripted(_resp(MARKER_DONE)),
+        controls=MuseControls(max_turns=3, max_tool_rounds=1),
+        tools=_bench(_pad_call("again")),
+    )
+    return ledger.from_muse(thinking.think(_muse_boundary()))
+
+
+def _muse_tools_withheld(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    """A bench wired to a subagent-depth muse: withheld, and the host is told."""
+    thinking = MuseLoop(
+        Scripted(_resp(MARKER_DONE)),
+        tools=_bench(_resp(MARKER_DONE)),
+        depth=2,
+    )
+    return ledger.from_muse(thinking.think(_muse_boundary()))
+
+
 # -- muse_runner --------------------------------------------------------------
 
 
@@ -958,6 +1027,9 @@ PROVOKERS: dict[tuple[str, str], Provoker] = {
     (ledger.SOURCE_MUSE, muse.DEGRADED_SINK): _muse_sink,
     (ledger.SOURCE_MUSE, muse.DEGRADED_UNREADABLE): _muse_unreadable,
     (ledger.SOURCE_MUSE, muse.DEGRADED_MARKER_UNREADABLE): _muse_marker_unreadable,
+    (ledger.SOURCE_MUSE, muse.DEGRADED_TOOL): _muse_tool_failed,
+    (ledger.SOURCE_MUSE, muse.DEGRADED_TOOL_ROUNDS): _muse_tool_rounds,
+    (ledger.SOURCE_MUSE, muse.DEGRADED_TOOLS_WITHHELD): _muse_tools_withheld,
     (ledger.SOURCE_MUSE_RUNNER, muse_runner.DEGRADED_THREAD): _runner_thread,
     (ledger.SOURCE_MUSE_RUNNER, muse_runner.DEGRADED_WORKER): _runner_worker,
     (ledger.SOURCE_MUSE_RUNNER, muse_runner.DEGRADED_ENDPOINT): _runner_endpoint,

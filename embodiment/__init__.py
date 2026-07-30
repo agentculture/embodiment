@@ -133,6 +133,13 @@ _LAZY_NAMES = {
     "MuseCompleteFn": "muse",
     "MuseSink": "muse",
     "MUSE_AUTHORITY": "muse",
+    # The muse's THINKING tools (task t10). Absent by default: with no bench
+    # wired the muse is tools-off and every prompt is byte-identical to the
+    # pre-seam release's. A bench reaches the wire only on the TOP-LEVEL muse.
+    "MuseToolBench": "muse",
+    "MuseToolCompleteFn": "muse",
+    "MuseToolExecuteFn": "muse",
+    "MUSE_TOOL_AUTHORITY": "muse",
     # Staleness: a parallel loop's insight can arrive long after the step it
     # reasoned about, so relevance is the consumer's judgement to make.
     "insight_lag": "muse",
@@ -376,6 +383,7 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
     )
     from embodiment.muse import (  # noqa: F401
         MUSE_AUTHORITY,
+        MUSE_TOOL_AUTHORITY,
         MuseCompleteFn,
         MuseControls,
         MuseDegradation,
@@ -384,6 +392,9 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
         MuseOrigin,
         MuseOutcome,
         MuseSink,
+        MuseToolBench,
+        MuseToolCompleteFn,
+        MuseToolExecuteFn,
         insight_lag,
         is_stale,
     )
