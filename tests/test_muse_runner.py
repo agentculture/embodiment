@@ -1106,7 +1106,21 @@ class TestKindAwareDelivery:
 
 
 class TestWorkClassPriority:
-    """Boundary counsel is scheduled ahead of compilation; drops are recorded."""
+    """Boundary counsel is scheduled ahead of compilation; drops are recorded.
+
+    The first three tests below are vocabulary pins and are named as such: a
+    constant exists, is in ``RUNNER_CODES``, is picked up by the ledger. That is
+    all they check and all they claim.
+
+    The rest DRIVE the priority. They used to not: two of them asserted only
+    ``code in RUNNER_CODES`` and ``code.startswith("muse-")`` under docstrings
+    promising "is recorded with DROPPED_…", and a third asserted a delivery
+    while promising a recorded displacement. All three shipped green in 0.8.0
+    against a lane that could not produce either code (embodiment#18). A test
+    whose docstring outruns its assertions is worse than an absent one — it
+    reports coverage that does not exist — so each now provokes the drop and
+    reads the record back.
+    """
 
     def test_work_class_constants_are_exported(self):
         assert WORK_BOUNDARY == "boundary"
@@ -1131,40 +1145,88 @@ class TestWorkClassPriority:
     def test_slow_compilation_cannot_displace_boundary_counsel_without_recorded_drop(
         self,
     ):
-        """A slow fake compilation blocks the thread; boundary counsel still
-        flows and the displacement is recorded as a kind-labelled drop."""
-        # Use a gated seam that blocks on compilation work, then a boundary
-        # arrives. The boundary counsel should be delivered, and the
-        # compilation work should be recorded as starved.
+        """A slow compilation holds the thread; boundary counsel still flows.
+
+        Both halves of the name, asserted: the counsel the actor's position
+        asked for is delivered, and the compilation that lost the slot to it
+        leaves a record instead of vanishing.
+        """
         seam = _Gated(
+            _resp("GUIDANCE: compiled counsel " + MARKER_DONE),  # slow, in flight
             _resp("GUIDANCE: boundary counsel " + MARKER_DONE),
+        )
+        with _runner(seam) as runner:
+            runner.compile()
+            assert seam.started.wait(_TIMEOUT), "the compilation session never started"
+            runner.compile()  # queued behind the slow one
+            runner.consider(_boundary(step=1))  # outranks it and takes the slot
+            seam.release.set()
+            assert runner.wait_idle(_TIMEOUT)
+            # The boundary counsel flowed — the priority cost the actor nothing.
+            assert "boundary counsel" in [c.guidance for c in runner.drain(step_count=1)]
+            # And the compilation it displaced is visible, not silent (C3).
+            assert [d.code for d in runner.degradations] == [DROPPED_COMPILATION_STARVED]
+            assert runner.counts["compilation_starved"] == 1
+            assert runner.snapshot()["work_started"] == {WORK_BOUNDARY: 1, WORK_COMPILATION: 1}
+
+    def test_compilation_starved_by_counsel_is_a_recorded_drop(self):
+        """Boundary counsel takes the one thread, and the loss is READABLE.
+
+        Drives the real path — gated session in flight, ``compile`` queued
+        behind it, a second boundary taking the slot — then reads the record
+        back: a host has to be able to tell WHAT was lost, WHY, and where the
+        actor stood when it happened, not merely that a counter moved.
+        """
+        seam = _Gated(
+            _resp("GUIDANCE: first " + MARKER_DONE),
+            _resp("GUIDANCE: second " + MARKER_DONE),
         )
         with _runner(seam) as runner:
             runner.consider(_boundary(step=1))
             assert seam.started.wait(_TIMEOUT)
+            runner.compile(step_count=7)  # queued behind the session in flight
+            runner.consider(_boundary(step=2))  # boundary counsel outranks it
             seam.release.set()
             assert runner.wait_idle(_TIMEOUT)
-            comments = runner.drain(step_count=1)
-            assert len(comments) == 1
-            assert comments[0].guidance == "boundary counsel"
 
-    def test_compilation_starved_by_counsel_is_a_recorded_drop(self):
-        """When boundary counsel takes priority, compilation starvation is
-        recorded with DROPPED_COMPILATION_STARVED."""
-        # The runner's internal scheduling ensures boundary work is prioritised.
-        # We verify the drop code exists and is in the vocabulary.
-        from embodiment.muse_runner import RUNNER_CODES
-
-        assert DROPPED_COMPILATION_STARVED in RUNNER_CODES
-        assert DROPPED_COMPILATION_STARVED.startswith("muse-")
+            dropped = [d for d in runner.degradations if d.code == DROPPED_COMPILATION_STARVED]
+            assert len(dropped) == 1
+            assert "background compilation never reached the muse's thread" in dropped[0].reason
+            assert "boundary counsel took the muse's one thread" in dropped[0].reason
+            # Stamped with the compilation's own step, so the record locates the
+            # loss in the run rather than defaulting to step zero.
+            assert dropped[0].step_index == 7
+            assert runner.counts["compilation_starved"] == 1
+            # It never ran: the count is a loss, not a delay.
+            assert runner.snapshot()["work_started"] == {WORK_BOUNDARY: 2, WORK_COMPILATION: 0}
 
     def test_counsel_displaced_by_compilation_is_a_recorded_drop(self):
-        """When compilation fills the buffer, boundary counsel displacement is
-        recorded with DROPPED_COUNSEL_DISPLACED."""
-        from embodiment.muse_runner import RUNNER_CODES
+        """Compiled counsel evicts undrained boundary counsel — and says so.
 
-        assert DROPPED_COUNSEL_DISPLACED in RUNNER_CODES
-        assert DROPPED_COUNSEL_DISPLACED.startswith("muse-")
+        The priority inversion, driven through the buffer: one slot, boundary
+        counsel nobody drained, then a compiled insight taking its place. The
+        record names the arriving session, which is the one a host can act on.
+        """
+        seam = _Scripted(
+            _resp("GUIDANCE: boundary counsel " + MARKER_DONE),
+            _resp("GUIDANCE: compiled counsel " + MARKER_DONE),
+        )
+        with _runner(seam, max_pending=1) as runner:
+            runner.consider(_boundary(step=5))
+            assert runner.wait_idle(_TIMEOUT)  # buffered, deliberately never drained
+            runner.compile(step_count=9)
+            assert runner.wait_idle(_TIMEOUT)
+
+            dropped = [d for d in runner.degradations if d.code == DROPPED_COUNSEL_DISPLACED]
+            assert len(dropped) == 1
+            assert "displaced undrained boundary counsel" in dropped[0].reason
+            assert dropped[0].step_index == 9
+            assert runner.counts["counsel_displaced"] == 1
+            # The inversion is its OWN code: same-class backpressure stays
+            # DROPPED_OVERFLOW, and a host answers the two differently.
+            assert DROPPED_OVERFLOW not in [d.code for d in runner.degradations]
+            # The boundary counsel really is gone; only the compiled one drains.
+            assert [c.guidance for c in runner.drain(step_count=9)] == ["compiled counsel"]
 
 
 # ── 12. background compilation: the second work class (embodiment#18) ─────────
