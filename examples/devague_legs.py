@@ -166,7 +166,7 @@ def _tracked_at(commit: str, path: str) -> str | None:
     Reads the commit rather than the working tree, so the evidence a run
     recorded stays checkable after the seam it predates has merged.
     """
-    proc = subprocess.run(  # nosec B603 - fixed argv, no shell, operator's own tools
+    proc = subprocess.run(  # nosec B603 B607 - fixed argv, no shell, git off PATH
         ["git", "show", f"{commit}:{path}"],
         cwd=str(REPO_ROOT),
         capture_output=True,
