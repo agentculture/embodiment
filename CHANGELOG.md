@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.0] - 2026-07-30
+
+### Added
+
+- Background compilation as a muse work class: `ThreadedMuseRunner.compile()` offers tools-off compilation of the host's recalled material, admitted behind boundary counsel on the runner's single slot. This gives the two long-dead degradation codes real producing paths — `DROPPED_COMPILATION_STARVED` when a compilation item never reaches the thread, `DROPPED_COUNSEL_DISPLACED` when compilation evicts boundary counsel from a full drain buffer (a priority inversion, and a directional refinement of `DROPPED_OVERFLOW` rather than a separate mechanism). Closes the emitter half of #18 (t2)
+- A terminal drain at drive end: `PresenceEngine.on_terminal_boundary()` drains without calling `consider()`, so the last beat no longer starts the session that used to strand, and `loop._presence_terminal()` fires it exactly once per drive on every exit reason — finish, stopped and budget. Placed before the completion boundary and summary resolution, so counsel delivered there still reaches a forced synthesis turn's messages. The aborted path deliberately fires none. Addresses #17 (t4, t25)
+- A delivery record stream separate from the degradation ledger: `ThreadedMuseRunner.drain_terminal()` records the terminal beat's delivered count and insight ids — zero included, so "delivered nothing" and "never ran" stay distinguishable. `DELIVERY_POINTS` answers "did the last beat arrive?" while `RUNNER_CODES` keeps answering "what went wrong?"; recording a healthy delivery as a degradation would make every successful run cry wolf (t5)
+- `examples/proof.py` wires `append_guidance`, buffering counsel and flushing it at the top of the next completion rather than mid-turn, and reports guidance arrival separately from handover so undelivered counsel stays visible (t25)
+- A pre-registration for the devague-legs experiment (#20), committed before any dial: the leg split across both minds, a mandatory same-mind control arm, dependent variables read off `devague plan converge/waves` rather than a grader we wrote, literal thresholds asserted by value, an explicit INCONCLUSIVE condition, devague 0.22.0 pinned as the graded instrument, and the new `devague lapse` protocol wired into the run rules (t6)
+- A baseline snapshot of the three numbers this cycle moves — the close-time late-drop rate, the confidently-wrong rate and the dead-code count — each cited to its measurement doc with its n and caveats carried forward (t1)
+
+### Changed
+
+- The `PROVOKERS` exhaustiveness guard no longer accepts a provoker that reaches a private attribute of the object it constructs. An audit found five such shortcuts, not the two #18 named. The guard's own gap is now reproduced as a test: with the old self-recording provoker reinstated, `TestEveryCodeIsCovered` stays green and only the new structural check fails (t3)
+- `TestUnproducedCodes` became `TestEveryRunnerCodeHasAProducer`: an AST walk over *call arguments* to `_record`/`_degrade`, generalised from the two known offenders to every code in `RUNNER_CODES`, so a declaration, an `__all__` entry or the vocabulary tuple can never again be mistaken for a producer (t2)
+- Three tests in `TestWorkClassPriority` that asserted only vocabulary membership while their docstrings promised a recorded drop now drive real paths and read the record back, including the step index that locates the loss in the run (t3)
+- `devague` is approved as a base dependency but deliberately not imported — the experiment harness subprocesses its CLI so the externally-authored grader stays external and every run can pin the version it was graded by. Recorded in `pyproject.toml` and here so it is not quietly reversed (t7)
+
+### Fixed
+
+- Three committed docs asserted the two runner codes had no emitter, which stopped being true when t2 wired them. Each carries a superseded note rather than a rewrite; `muse-cycle-baseline.md` records that its own prediction — that a structural test would force the correction rather than let it drift — is what happened
+- A latent false-STALE in `tests/announcement_checklist.py`: a caveat probe asked whether `to_dict` appeared anywhere in `snapshot()`, so an unrelated new key would have retired a caveat that still stands. Scoped to the value it is actually about (t5)
+
 ## [0.8.0] - 2026-07-29
 
 ### Added
@@ -18,22 +41,6 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - examples/echo_probe.py and examples/arena_series.py — the memory echo-chamber probe and the pre-registered arena series runner (t7, t19)
 - docs/live-test-results/corrections.md — every belief this lane held that the work contradicted, recorded as first-class (t20)
 - docs/deliveries/ — the plan-vs-actual delivery record with per-audience artifact checklist (t20)
-- Recorded, in `pyproject.toml` and here, that devague is approved as a base
-  dependency (operator decision, 2026-07-29, claim c24) but deliberately not
-  added to `dependencies`: the devague-legs experiment harness subprocesses
-  `devague plan converge --json` / `devague plan waves --json` instead of
-  importing the package, so the grader stays external to the process under
-  test and every experiment run can pin and record the exact devague version
-  it was graded by (claim c13) rather than freezing to whatever this
-  package's own resolver picked. Honesty condition h4 — "if the methodology
-  is achievable without the import, the dependency stays out; an import that
-  lands must name the code that needs it" — holds unchanged: no code here
-  needs the import, so it stays out of both `dependencies` and
-  `tests/test_zero_deps.py`'s `_APPROVED_DEPENDENCIES`. Measured so the
-  reasoning cannot later drift into a cost argument: devague 0.22.0 declares
-  zero `Requires-Dist` entries of its own, so this decision is about keeping
-  the grader external and per-run version-pinnable, not about transitive
-  weight (t7)
 
 ### Changed
 
