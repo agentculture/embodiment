@@ -21,6 +21,11 @@ Covers:
    PresenceSink entry point (``acknowledge``, ``on_operator_message``,
    ``on_progress_boundary``) visibly and never raises, reusing t7's existing
    ``_degrade_muse`` mechanism rather than a second one.
+7. The TERMINAL boundary (issue #17, plan task t4): the loop's last beat, fired
+   immediately before the forced synthesis turn, **drains without considering**
+   — it delivers counsel into the one turn that can still use it and starts no
+   session of its own, because a session started there is precisely the one
+   that strands undrained at close.
 """
 
 from __future__ import annotations
@@ -34,12 +39,14 @@ from typing import Any, Optional
 
 import pytest
 
-from embodiment.contract import SENSES_CHAT_KINDS, ContextPacket
+from embodiment.contract import SENSES_CHAT_KINDS, ContextPacket, ModelResponse, Task, ToolCall
+from embodiment.loop import ToolOutcome, run
 from embodiment.presence import UpdateCadence
 from embodiment.presence_engine import (
     BOUNDARY_CADENCE_TICK,
     BOUNDARY_INTAKE,
     BOUNDARY_OPERATOR_INPUT,
+    BOUNDARY_SYNTHESIS,
     MODE_CORTEX_ONLY,
     MODE_MUSE,
     MODE_OFF,
@@ -1078,3 +1085,261 @@ class TestSeamContracts:
     def test_presence_turn_defaults(self):
         turn = PresenceTurn(kind="ack", source="packet")
         assert turn.chat_entry is None and turn.injection is None
+
+
+# ── 10. the terminal boundary: drain without consider (issue #17, t4) ─────────
+
+
+class _ThreeBeatSink:
+    """A sink written against the THREE-beat protocol, with no terminal beat.
+
+    The compatibility case: every sink that exists today has exactly this shape,
+    so the loop must keep driving it exactly as it does now.
+    """
+
+    def __init__(self) -> None:
+        self.boundaries: list[tuple[int, bool]] = []
+
+    @property
+    def active(self) -> bool:
+        return True
+
+    def acknowledge(self, packet: Optional[ContextPacket]) -> list[Any]:
+        return []
+
+    def on_operator_message(self, text: str) -> list[Any]:
+        return []
+
+    def on_progress_boundary(self, *, step_count: int = 0, phase_changed: bool = False):
+        self.boundaries.append((step_count, phase_changed))
+        return []
+
+
+class _LaggingMuse:
+    """A muse whose counsel is ready one drain AFTER the boundary that prompted it.
+
+    That single beat of lag is the whole of issue #17. Every ordinary boundary
+    gets its counsel back at the next beat; the LAST boundary considered has no
+    next beat, so before this fix its counsel had nowhere to arrive and was
+    dropped ``muse-insight-late`` at close — measured once per run, 4 of 4.
+    """
+
+    def __init__(self) -> None:
+        self.considered: list[BoundaryContext] = []
+        self.drained_at: list[int] = []
+        self._in_flight: list[MuseComment] = []
+        self._ready: list[MuseComment] = []
+
+    def consider(self, boundary: BoundaryContext) -> None:
+        self.considered.append(boundary)
+        self._in_flight.append(
+            MuseComment(guidance=f"counsel on {boundary.kind}@{boundary.step_count}")
+        )
+
+    def drain(self, *, step_count: int = 0) -> list[MuseComment]:
+        self.drained_at.append(step_count)
+        ready, self._ready = self._ready, self._in_flight
+        self._in_flight = []
+        return ready
+
+    def degradation(self) -> Optional[str]:
+        return None
+
+
+class _SynthesisHost:
+    """A host driving the REAL loop into its forced final synthesis turn.
+
+    The scripted model never calls ``finish``, so the drive spends its whole
+    reading budget, exits on budget with no summary, and ``run`` fires the ONE
+    synthesis turn it reserved. That turn's phase notice is the terminal
+    boundary — the last moment counsel can still change the output.
+
+    ``append_guidance`` appends the advisory text to the LIVE message list the
+    loop hands ``complete`` (``complete`` is handed ``ctx.messages`` itself), so
+    a test can read exactly what the synthesis turn saw.
+    """
+
+    def __init__(self) -> None:
+        self.executed: list[str] = []
+        self.guided: list[str] = []
+        self.rendered: list[str] = []
+        self.messages_at_turn: list[list[dict[str, Any]]] = []
+        self._live: Optional[list[dict[str, Any]]] = None
+
+    # the model seam ----------------------------------------------------------
+    def complete(self, messages: list[dict[str, Any]]) -> ModelResponse:
+        self._live = messages
+        self.messages_at_turn.append([dict(m) for m in messages])
+        turn = len(self.messages_at_turn)
+        return ModelResponse(
+            tool_calls=[ToolCall(id=f"c{turn}", name="read_file", arguments={"path": "a.py"})]
+        )
+
+    # the tool surface --------------------------------------------------------
+    def execute(self, name: str, arguments: dict[str, Any]) -> ToolOutcome:
+        self.executed.append(name)
+        return ToolOutcome(result=f"{name} ok")
+
+    # the presence IO ---------------------------------------------------------
+    def _guide(self, text: str) -> None:
+        self.guided.append(text)
+        if self._live is not None:
+            self._live.append({"role": "user", "content": text})
+
+    def io(self) -> PresenceIO:
+        return PresenceIO(
+            append_guidance=self._guide,
+            render=self.rendered.append,
+            task_state=lambda: f"step {len(self.executed)}",
+        )
+
+    def drive(self, presence: Any, *, max_steps: int = 2) -> Any:
+        return run(
+            self.complete,
+            Task(
+                id="t4",
+                repo_path="/repo",
+                instruction="do the thing",
+                context_packet=ContextPacket(original="do the thing", ack="on it"),
+            ),
+            executor=self,
+            max_steps=max_steps,
+            presence=presence,
+        )
+
+    def synthesis_turn(self) -> list[dict[str, Any]]:
+        """The messages the LAST completion — the synthesis turn — was handed."""
+        return self.messages_at_turn[-1]
+
+
+class TestTerminalBoundaryDrainsWithoutConsidering:
+    """Issue #17: the last counsel of a drive must not be structurally lost.
+
+    Measured before the fix: exactly one ``muse-insight-late`` drop per run in 4
+    of 4 runs — 25% of all counsel produced
+    (``docs/live-test-results/muse-cycle-baseline.md``). The insight that
+    stranded was the one started by the ``consider()`` on the loop's final
+    boundary, so draining harder cannot reach zero: that session must not start.
+    """
+
+    def test_the_terminal_beat_drains_and_starts_no_session(self):
+        muse = _DrainMuse(ready=[MuseComment(text="you never ran the tests", tokens=7)])
+        engine, io = _engine(muse=muse)
+        turns = engine.on_terminal_boundary(step_count=13)
+        assert muse.considered == []  # THE contract: no session starts here
+        assert muse.drained_at == [13]
+        assert [t.source for t in turns] == [SOURCE_MUSE]
+        assert io.rendered == ["presence: you never ran the tests"]
+
+    def test_every_other_beat_still_considers(self):
+        muse = _DrainMuse()
+        engine, _ = _engine(muse=muse, cadence=UpdateCadence(every_steps=1))
+        engine.acknowledge(ContextPacket(original="do x"))
+        engine.on_operator_message("faster")
+        engine.on_progress_boundary(step_count=1)
+        engine.on_terminal_boundary(step_count=2)
+        assert [b.kind for b in muse.considered] == [
+            BOUNDARY_INTAKE,
+            BOUNDARY_OPERATOR_INPUT,
+            BOUNDARY_CADENCE_TICK,
+        ]
+        assert len(muse.drained_at) == 4  # every beat drains; only three consider
+
+    def test_the_terminal_boundary_carries_its_own_kind(self):
+        muse = _DrainMuse(ready=[MuseComment(text="one last thought")])
+        engine, _ = _engine(muse=muse)
+        engine.on_terminal_boundary(step_count=4)
+        snap = engine.snapshot()
+        assert [(r.point, r.degraded) for r in snap["records"]] == [
+            (f"muse:{BOUNDARY_SYNTHESIS}", False)
+        ]
+        assert snap["chat"][-1]["kind"] in SENSES_CHAT_KINDS
+
+    def test_the_terminal_beat_is_never_cadence_gated_or_capped(self):
+        """Delivery is not narration: the cap bounds chatter, never the drain."""
+        muse = _DrainMuse()
+        engine, io = _engine(muse=muse, cadence=UpdateCadence(every_steps=1, max_updates=1))
+        engine.on_progress_boundary(step_count=1)
+        engine.on_progress_boundary(step_count=2)  # capped
+        assert any("update cap reached" in line for line in io.rendered)
+        muse.ready = [MuseComment(text="the last word")]
+        engine.on_terminal_boundary(step_count=3)
+        assert io.rendered[-1] == "presence: the last word"
+
+    def test_the_terminal_beat_never_speaks_for_the_cortex(self):
+        """An empty terminal drain says nothing — it is a delivery beat only."""
+        muse = _DrainMuse()
+        engine, io = _engine(muse=muse)
+        assert engine.on_terminal_boundary(step_count=9) == []
+        assert not any("still working" in line for line in io.rendered)
+
+    def test_a_museless_terminal_beat_is_a_strict_no_op(self):
+        engine, io = _engine()
+        assert engine.on_terminal_boundary(step_count=3) == []
+        assert (io.rendered, io.guided, io.reads) == ([], [], 0)
+
+    def test_a_disarmed_engine_ignores_the_terminal_beat(self):
+        muse = _DrainMuse(ready=[MuseComment(text="never heard")])
+        engine, io = _engine(muse=muse, enabled=False)
+        assert engine.on_terminal_boundary(step_count=1) == []
+        assert (muse.considered, muse.drained_at, io.rendered) == ([], [], [])
+
+    def test_a_failing_terminal_drain_degrades_and_never_raises(self):
+        muse = _DrainMuse(drain_raises=RuntimeError("muse endpoint refused connection"))
+        engine, io = _engine(muse=muse)
+        assert engine.on_terminal_boundary(step_count=2) == []
+        assert engine.mode == MODE_CORTEX_ONLY and engine.muse_degraded is True
+        points = [(r.point, r.degraded) for r in engine.records]
+        assert (f"muse:{BOUNDARY_SYNTHESIS}", True) in points
+        assert any("muse unavailable" in line for line in io.rendered)
+
+    def test_terminal_boundary_signature_is_keyword_only(self):
+        sig = inspect.signature(PresenceEngine.on_terminal_boundary)
+        params = [p for name, p in sig.parameters.items() if name != "self"]
+        assert all(p.kind is inspect.Parameter.KEYWORD_ONLY for p in params)
+        assert [p.name for p in params] == ["step_count"]
+
+    def test_the_terminal_beat_is_an_optional_fourth_beat_not_a_protocol_change(self):
+        """A three-beat sink is still a ``PresenceSink``; the beat is probed for."""
+        assert isinstance(_ThreeBeatSink(), PresenceSink)
+        members = {
+            name for name in vars(PresenceSink) if not name.startswith("_") and name != "active"
+        }
+        assert "on_terminal_boundary" not in members
+
+
+class TestTheLoopDrivesTheTerminalBoundary:
+    """End to end through the real loop: the synthesis turn is the last chance."""
+
+    def test_no_session_starts_on_the_synthesis_boundary(self):
+        host = _SynthesisHost()
+        muse = _LaggingMuse()
+        engine = PresenceEngine(io=host.io(), muse=muse, cadence=UpdateCadence(every_steps=1))
+        host.drive(engine)
+        assert BOUNDARY_SYNTHESIS not in [b.kind for b in muse.considered]
+        # Every considered boundary drained; the terminal beat drained ONE more.
+        assert len(muse.drained_at) == len(muse.considered) + 1
+        assert [r.point for r in engine.records].count(f"muse:{BOUNDARY_SYNTHESIS}") == 1
+
+    def test_drained_counsel_reaches_the_synthesis_turns_messages(self):
+        """The counsel that used to strand at close now lands in the last turn."""
+        host = _SynthesisHost()
+        muse = _LaggingMuse()
+        engine = PresenceEngine(io=host.io(), muse=muse, cadence=UpdateCadence(every_steps=1))
+        outcome = host.drive(engine)
+        # One reading turn (the reserved synthesis turn is held out of the
+        # reading budget) plus the synthesis turn itself.
+        assert outcome.result.stats.model_turns == 2
+        assert len(host.messages_at_turn) == 2
+        last_counsel = f"counsel on {muse.considered[-1].kind}@{muse.considered[-1].step_count}"
+        assert host.guided[-1] == last_counsel
+        contents = [str(m.get("content", "")) for m in host.synthesis_turn()]
+        assert last_counsel in contents
+
+    def test_a_three_beat_sink_keeps_todays_behaviour_exactly(self):
+        host = _SynthesisHost()
+        sink = _ThreeBeatSink()
+        host.drive(sink)
+        # The optional beat is probed for, never required: an older sink still
+        # sees the synthesis phase as an ordinary phase-changed boundary.
+        assert (1, True) in sink.boundaries

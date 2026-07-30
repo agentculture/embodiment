@@ -585,6 +585,13 @@ class PresenceSink(Protocol):
 
     With no sink — or an inactive one — the loop is byte-identical to a loop
     with no presence at all: nothing is called, nothing is recorded.
+
+    These three beats are the whole REQUIRED protocol. The loop additionally
+    *probes* for an optional fourth, ``on_terminal_boundary(step_count=…)``,
+    and drives it in place of the progress beat on the synthesis phase notice —
+    the last boundary of a drive. A sink without it sees exactly today's
+    behaviour, which is why it is not declared here (see
+    :func:`_presence_boundary`).
     """
 
     @property
@@ -820,9 +827,15 @@ def _emit_phase(ctx: _Work, detail: str) -> None:
 
     Encoded with an EMPTY tool name so a sink renders a standalone phase line
     rather than a ``step N:`` line. The step index carries the LIVE step count.
+
+    The synthesis phase notice IS the drive's terminal boundary — it is fired
+    from :func:`_maybe_force_synthesis`, after the work loop has exited, and no
+    further boundary follows it — so the presence beat it drives is the terminal
+    one. Read off the phase text rather than threaded through a parameter,
+    because the phase is already the only thing that distinguishes them.
     """
     _observe(ctx, "phase", detail)
-    _presence_boundary(ctx, phase_changed=True)
+    _presence_boundary(ctx, phase_changed=True, terminal=detail == _PHASE_SYNTHESIZING)
     if ctx.progress is None:
         return
     try:
@@ -859,14 +872,27 @@ def _presence_acknowledge(ctx: _Work) -> None:
         _degrade(ctx, DEGRADED_PRESENCE, f"{type(exc).__name__}: {exc}")
 
 
-def _presence_boundary(ctx: _Work, *, phase_changed: bool = False) -> None:
-    """Drive one progress beat — once per step, and once per phase notice."""
+def _presence_boundary(ctx: _Work, *, phase_changed: bool = False, terminal: bool = False) -> None:
+    """Drive one progress beat — once per step, and once per phase notice.
+
+    The TERMINAL beat (the one before the forced synthesis turn) rides an
+    OPTIONAL fourth sink method, ``on_terminal_boundary``, which is probed for
+    rather than required: a sink written against the three-beat
+    :class:`PresenceSink` protocol has none, and falls through to exactly the
+    call it gets today. That keeps the protocol — and every host implementing it
+    — unchanged, while a sink that wants the last beat can say so. Presence
+    still never aborts a drive: a probe or a beat that raises degrades.
+    """
     if not ctx.presence_armed or ctx.presence is None:
         return
     try:
-        ctx.presence.on_progress_boundary(
-            step_count=len(ctx.result.steps), phase_changed=phase_changed
-        )
+        beat = getattr(ctx.presence, "on_terminal_boundary", None) if terminal else None
+        if beat is not None:
+            beat(step_count=len(ctx.result.steps))
+        else:
+            ctx.presence.on_progress_boundary(
+                step_count=len(ctx.result.steps), phase_changed=phase_changed
+            )
     except Exception as exc:  # noqa: BLE001 - presence never aborts a drive
         _degrade(ctx, DEGRADED_PRESENCE, f"{type(exc).__name__}: {exc}")
 

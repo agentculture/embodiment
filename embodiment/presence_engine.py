@@ -44,6 +44,13 @@ calls, plus a health probe:
   has stopped thinking for good. A seam that reports one is unbound exactly like
   a seam that raises, with the same single operator-facing notice.
 
+There is one beat where that pairing comes apart. The **terminal** boundary
+(:meth:`PresenceEngine.on_terminal_boundary`, fired once before a forced final
+synthesis turn) drains and never considers: the actor reaches no further
+boundary after it, so a session started there is guaranteed to be still
+compiling when the runner closes — the measured loss issue #17 names. It is the
+one beat whose job is delivery rather than presence.
+
 t7's callable is still accepted as :class:`MusePullSeam` and adapted internally,
 so hosts (and :class:`embodiment.muse.MuseLoop`) that want one synchronous
 thinking session per boundary keep working unchanged. **The thread lives in the
@@ -103,6 +110,7 @@ __all__ = [
     "BOUNDARY_INTAKE",
     "BOUNDARY_OPERATOR_INPUT",
     "BOUNDARY_CADENCE_TICK",
+    "BOUNDARY_SYNTHESIS",
     "DEFAULT_SPEAKER",
     "TURN_ACK",
     "TURN_UPDATE",
@@ -132,10 +140,15 @@ __all__ = [
 #: every unconfigured host — identity is configuration, never inference.
 DEFAULT_SPEAKER = "presence"
 
-#: The three boundaries a driving loop hands to the pump.
+#: The boundaries a driving loop hands to the pump. The first three are the
+#: ordinary beats — each one offers the boundary to the muse and collects
+#: whatever finished since the last. :data:`BOUNDARY_SYNTHESIS` is the
+#: TERMINAL beat and behaves differently by design: it drains and never
+#: considers (see :meth:`PresenceEngine.on_terminal_boundary`).
 BOUNDARY_INTAKE = "intake"
 BOUNDARY_OPERATOR_INPUT = "operator-input"
 BOUNDARY_CADENCE_TICK = "cadence-tick"
+BOUNDARY_SYNTHESIS = "synthesis"
 
 #: The lanes of the degradation ladder. ``cortex-only`` is the DEFAULT lane, not
 #: a fault state; only a *transition* into it (a muse that failed) is a
@@ -163,6 +176,7 @@ _CHAT_KIND_BY_BOUNDARY = {
     BOUNDARY_INTAKE: "talk",
     BOUNDARY_OPERATOR_INPUT: "talk",
     BOUNDARY_CADENCE_TICK: TURN_UPDATE,
+    BOUNDARY_SYNTHESIS: TURN_UPDATE,
 }
 
 _CAP_NOTICE = "(update cap reached — staying quiet now; EMBODIMENT_PRESENCE_UPDATE_CAP raises it)"
@@ -429,6 +443,16 @@ class PresenceSink(Protocol):
     first step, :meth:`on_progress_boundary` once per step, and routes any
     operator message through :meth:`on_operator_message`. With no sink (or an
     inactive one) the loop is byte-identical to a loop with no presence at all.
+
+    These three beats are the whole REQUIRED protocol. There is a fourth,
+    OPTIONAL one — ``on_terminal_boundary(step_count=…)``, the beat before a
+    forced synthesis turn (:meth:`PresenceEngine.on_terminal_boundary`) — which
+    the loop *probes for* rather than requires, exactly as
+    ``embodiment.lifecycle.ContinuityLifecycle._gather_compiled_from`` probes a
+    muse for its citation surface. It is deliberately NOT declared
+    here: a sink written against these three beats is still a ``PresenceSink``
+    and still drives identically, and adding a fourth required member would
+    make every such sink fail ``isinstance`` overnight.
     """
 
     @property
@@ -614,6 +638,39 @@ class PresenceEngine:
         self._last_update_step = step_count
         return self._update_turns(step_count, phase_changed, reason)
 
+    def on_terminal_boundary(self, *, step_count: int = 0) -> list[PresenceTurn]:
+        """The LAST beat: drain the muse, and start no session (issue #17).
+
+        A driving loop fires this once, immediately before the forced final
+        synthesis turn — the last moment counsel can still change the output.
+        Two things make it unlike every other beat, and both are the point:
+
+        * **It drains without considering.** Offering this boundary would start
+          the one session that structurally cannot be delivered: the actor never
+          reaches another boundary, so the insight is still compiling when the
+          runner closes and is dropped ``muse-insight-late``. That was measured
+          at exactly one such drop per run in 4 of 4 runs — 25% of all counsel
+          produced (``docs/live-test-results/muse-cycle-baseline.md``). Draining
+          harder cannot reach zero while that session still starts.
+        * **It is neither cadence-gated nor capped, and it narrates nothing.**
+          Its job is delivery, not presence: it never speaks for the cortex (no
+          structural update), never spends an update from the per-run cap, and
+          never polls for operator input — the drive is over, there is no next
+          step to relay into.
+
+        Deviation ``d1`` still holds without exception: this collects what is
+        ready *now* and never waits on the muse. An empty drain is the normal
+        case, and a museless engine makes this a strict no-op — not one host
+        callback is touched.
+        """
+        if not self.active or self._muse is None:
+            return []
+        boundary = self._boundary(BOUNDARY_SYNTHESIS, step_count=step_count, phase_changed=True)
+        turns = self._muse_turns_for(boundary, consider=False)
+        self._emit(turns)
+        self._flush_muse_degradation()
+        return turns
+
     # ── artifact ─────────────────────────────────────────────────────────────
     def snapshot(self) -> dict[str, Any]:
         """A PULL-ONLY fold of what already happened — never a live stream.
@@ -694,19 +751,29 @@ class PresenceEngine:
             return []
         return self._muse_turns_for(self._boundary(kind, operator_input=operator_input))
 
-    def _muse_turns_for(self, boundary: BoundaryContext) -> list[PresenceTurn]:
+    def _muse_turns_for(
+        self, boundary: BoundaryContext, *, consider: bool = True
+    ) -> list[PresenceTurn]:
         """Offer the boundary to the seam, collect what is ready, and record it.
 
         Two non-blocking calls and a health probe — never a wait. A drain that
         comes back empty is the NORMAL case under deviation d1 (the muse is
         still thinking, elsewhere), so it is recorded as a completed, healthy
         invocation, exactly as a silent pull seam was under t7.
+
+        ``consider=False`` collects without offering. It exists for exactly one
+        caller — :meth:`on_terminal_boundary` — because a session started on the
+        loop's last boundary has no later boundary to be delivered at and
+        strands by construction (issue #17). The drain and the health probe are
+        unchanged: a terminal beat still records its invocation and still
+        degrades visibly.
         """
         muse = self._muse
         if muse is None:
             return []
         try:
-            muse.consider(boundary)
+            if consider:
+                muse.consider(boundary)
             drained = muse.drain(step_count=boundary.step_count)
             reason = muse.degradation()
         except Exception as exc:  # a failing muse degrades, never aborts
