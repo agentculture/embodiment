@@ -1,0 +1,59 @@
+{
+  "arm_models": {
+    "A-gemma": [
+      null,
+      "nvidia/Gemma-4-31B-IT-NVFP4"
+    ]
+  },
+  "arms": [
+    "A-gemma"
+  ],
+  "base_url": "http://localhost:8001/v1",
+  "commander_max_steps": 6,
+  "contention_seconds": 600.0,
+  "controls": {
+    "incompletion": false,
+    "synthesis": false,
+    "write_intent": false
+  },
+  "flat_max_steps": 4,
+  "identity": null,
+  "issue": 36,
+  "live": true,
+  "max_retries": 3,
+  "max_tokens": 16000,
+  "n_matches": 3,
+  "opponent_driver": "bot",
+  "our_driver": "stateless",
+  "request_timeout": 900.0,
+  "retry_wait_seconds": 30.0,
+  "roles": {
+    "child": "subagent",
+    "top_level": "cortex"
+  },
+  "scenario": "c-skirmish-1",
+  "scenario_roles": [
+    "defender",
+    "harvester"
+  ],
+  "seed_is_metadata_only": true,
+  "seeds": [
+    101,
+    102,
+    103
+  ],
+  "spawn_allowance": 1,
+  "task": "t28",
+  "temperature": 0.7,
+  "thresholds": {
+    "direction_min": 4,
+    "grade_effect": 200.0,
+    "length_fraction_max": 0.1,
+    "margin_effect": 3.0,
+    "no_effect_band": 1.0,
+    "no_order_fraction_max": 0.2,
+    "spawn_grant_min_fraction": 0.9
+  },
+  "unit_max_steps": 3,
+  "written": "2026-07-31"
+}
