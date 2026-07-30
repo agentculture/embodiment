@@ -64,6 +64,7 @@ generously.
 | [devague-legs-preregistration.md](devague-legs-preregistration.md) | the leg split, both experiments' decision rules, the lapse protocol, and the Gemma-proposes-human-confirms gate | committed **before** the first dial |
 | [muse-latency.md](muse-latency.md) | is the c29 zero-late-drop target reachable once the muse holds tools — session latency (n=8 per arm, 4 arms) against the drive tail (n=4) | **`KEEP`**: worst tool-session 22.1s against a shortest tail of 41.7s, and **0 late drops in 4 of 4 drives** against the baseline's 1-per-run. `c31`'s ~6x tool penalty did not reproduce (1.2x shipped, 2.2x primed). But the tools-on-in-drive lane is **absent** — `ThreadedMuseRunner` had no `tools=` seam (grown since, by `t26`/#30; the measurement is still absent) — and 5 of 13 counsel lines still never reach the cortex |
 | [muse-latency-preregistration.md](muse-latency-preregistration.md) | the four arms, the estimator, the derived `KEEP_THRESHOLD` and the `INCONCLUSIVE` condition | committed **before** the first dial; `KEEP_THRESHOLD` is recomputed from its inputs in the pin test, not asserted as a literal |
+| [muse-arms-preregistration.md](muse-arms-preregistration.md) | the three muse arms (tools-off / +pad / +pad+workspace), the R-C1 execution rule, the counsel scorer and the decision rule | committed **with the harness** (`examples/muse_arms.py`) and **before** the first measured dial; the series itself is task t18's |
 
 ## Reproducing
 
