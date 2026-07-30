@@ -46,6 +46,17 @@ discipline (not its code):
   and a worker that dies each flip a degraded flag and record a transition. No
   exception ever crosses back into the actor loop's main path.
 
+One close, for things this module knows nothing about
+-----------------------------------------------------
+A host that hands the muse a *tool* has a second lifetime to end — whatever the
+tool holds open — and it has to end after the thinking thread stops, not
+before. :data:`Closer` is that seam: ``ThreadedMuseRunner(complete,
+closers=(workspace.close,))`` runs an opaque zero-argument callable once at
+:meth:`ThreadedMuseRunner.close`, after the bounded join. The runner never
+learns what it closed, imports nothing to support it, and a failure is recorded
+(:data:`DEGRADED_CLOSER`) rather than raised. Ownership stays with whoever
+constructed the thing; only the *timing* is delegated here.
+
 Staleness and late arrival are RECORDED, never silent (C3)
 -----------------------------------------------------------
 Parallelism makes two new ways to lose a thought, and constraint C3 says a
@@ -146,7 +157,7 @@ import math
 import threading
 from collections import deque
 from dataclasses import dataclass, replace
-from typing import Any, Callable, Optional, cast
+from typing import Any, Callable, Iterable, Optional, cast
 
 from embodiment.muse import (
     COUNSEL_KIND_DURABLE,
@@ -177,6 +188,7 @@ __all__ = [
     "DEGRADED_THREAD",
     "DEGRADED_WORKER",
     "DEGRADED_ENDPOINT",
+    "DEGRADED_CLOSER",
     "DROPPED_STALE",
     "DROPPED_LATE",
     "DROPPED_OVERFLOW",
@@ -197,6 +209,7 @@ __all__ = [
     "MAX_LEDGER",
     # the runner
     "ThreadFactory",
+    "Closer",
     "ThreadedMuseRunner",
 ]
 
@@ -222,6 +235,12 @@ DEGRADED_THREAD = "muse-thread-unavailable"
 DEGRADED_WORKER = "muse-worker-failed"
 #: Consecutive thinking sessions failed outright; the lane stops dialling.
 DEGRADED_ENDPOINT = "muse-endpoint-dead"
+#: A host-wired teardown callable raised at :meth:`ThreadedMuseRunner.close`.
+#: The lane is already stopping, so this never propagates — but a teardown that
+#: did not happen is exactly the kind of loss C3 refuses to leave unsaid, and
+#: the callable's own subject (a workspace, a socket, a file) is state the host
+#: now has to deal with by hand.
+DEGRADED_CLOSER = "muse-closer-failed"
 #: An insight fell too far behind the actor loop to be worth delivering.
 DROPPED_STALE = "muse-insight-stale"
 #: An insight arrived (or was still buffered) after the runner closed.
@@ -246,13 +265,14 @@ DROPPED_COUNSEL_DISPLACED = "muse-counsel-displaced"
 
 #: The complete set of DEGRADATION codes this module can record. Session-level
 #: codes (``muse-thinking-failed`` and friends) come through verbatim from
-#: :mod:`embodiment.muse`; this runner mints no code outside these nine. The
+#: :mod:`embodiment.muse`; this runner mints no code outside these ten. The
 #: delivery vocabulary (:data:`DELIVERY_POINTS`) is deliberately not in here —
 #: see :class:`MuseDelivery` for why a delivery is not a degradation.
 RUNNER_CODES = (
     DEGRADED_THREAD,
     DEGRADED_WORKER,
     DEGRADED_ENDPOINT,
+    DEGRADED_CLOSER,
     DROPPED_STALE,
     DROPPED_LATE,
     DROPPED_OVERFLOW,
@@ -330,6 +350,21 @@ COMPILATION_REASON = "background compilation of recalled material"
 #: Builds the worker thread. Injected so a test can assert a museless run
 #: creates none, and so a host with its own thread policy can supply one.
 ThreadFactory = Callable[..., Any]
+
+#: One host-owned teardown, tied to this lane's close. A zero-argument callable
+#: and **nothing more** — the runner never inspects it, never learns what it
+#: closes, and imports nothing to accommodate it.
+#:
+#: It exists because a host that gives the muse a tool has two lifetimes that
+#: must coincide: the thinking thread's, and whatever that tool holds open. The
+#: muse's workspace (:meth:`embodiment.workspace.MuseWorkspace.close`) is the
+#: motivating case — destroying it early breaks a session still in flight,
+#: destroying it late leaks a container — and this is the seam that lets a host
+#: say "when the muse lane ends, so does that" in one argument, without
+#: :mod:`embodiment.muse_runner` growing a dependency on
+#: :mod:`embodiment.workspace` or on ``headspace``. Ownership stays where
+#: construction is; only the *timing* is delegated here.
+Closer = Callable[[], Any]
 
 
 def _bounded_join(thread: Any, *, timeout: float = DEFAULT_JOIN_TIMEOUT) -> None:
@@ -534,6 +569,14 @@ class ThreadedMuseRunner:
         poll_interval: the worker's poll-wake bound (a safety net, not a clock).
         thread_factory: builds the worker thread; :class:`threading.Thread` by
             default. Called with ``target``, ``name`` and ``daemon`` keywords.
+        closers: host-owned teardowns to run once at :meth:`close`, in order,
+            after the bounded join and after the late-drop accounting — see
+            :data:`Closer`. Each must **bound itself**; the runner deliberately
+            does not wrap them in a second bound, because an outer timeout
+            would cut off an inner one before it could record what it left
+            behind. The one embodiment ships,
+            :meth:`embodiment.workspace.MuseWorkspace.close`, is bounded, and
+            the default ``()`` leaves every existing host byte-identical.
 
     Lifecycle::
 
@@ -562,8 +605,15 @@ class ThreadedMuseRunner:
         poll_interval: float = DEFAULT_POLL_INTERVAL,
         thread_factory: Optional[ThreadFactory] = None,
         recall_bundle: Any = None,
+        closers: Iterable[Closer] = (),
     ) -> None:
         self._role = str(role or MUSE_ROLE)
+        # Materialised at construction, not at close: a generator handed here
+        # would be consumed by an earlier close and silently empty at the one
+        # that matters. Deliberately NOT wrapped in a try — a `closers` that is
+        # not iterable is a wiring mistake, and failing at construction beats
+        # discovering at teardown that nothing was ever going to be closed.
+        self._closers: tuple[Closer, ...] = tuple(closers)
         # The recall-context material this runner's muse compiles from, fetched
         # ONCE by the host for the whole work item rather than per boundary.
         # That granularity is the honest one: a work item has one recalled
@@ -903,13 +953,26 @@ class ThreadedMuseRunner:
             return True
 
     def close(self, *, timeout: Optional[float] = None) -> None:
-        """Stop the lane: signal, bounded join, then account for what is left.
+        """Stop the lane: signal, bounded join, account for what is left, close what the host wired.
 
-        Idempotent and safe to call from any thread but the worker's. Never
-        hangs: the join is bounded, and a session parked inside an
-        uninterruptible model call is simply left to the daemon thread. Insights
+        Idempotent and safe to call from any thread but the worker's. Insights
         still buffered — and any produced after this returns — have nowhere to
         go, so each is recorded as a late drop (C3) rather than vanishing.
+
+        **The order is load-bearing.** Closers run *last*, after the bounded
+        join, because a closer's subject may still be in use by a session the
+        join is waiting on: tearing a muse's workspace down before its thinking
+        thread has stopped would break a command in flight rather than clean up
+        after it. They also run after the late-drop accounting, so a closer
+        reading :attr:`counts` sees a finished lane rather than one mid-close.
+
+        **What "never hangs" covers.** The join is bounded, and a session parked
+        inside an uninterruptible model call is simply left to the daemon
+        thread — that part is unconditional. A ``closers`` entry is the host's
+        own code on the host's own budget: the runner runs each exactly once
+        and lets none of them raise, but it does not bound them (see
+        :data:`Closer` for why a second bound would do harm). With no closers
+        wired — the default — close is bounded by ``join_timeout`` alone.
         """
         with self._lock:
             first = not self._closed
@@ -932,6 +995,21 @@ class ThreadedMuseRunner:
             if first:
                 for _work_class, insight in stranded:
                     self._drop_late(insight, "undrained when the runner closed")
+        if first:
+            self._run_closers()
+
+    def _run_closers(self) -> None:
+        """Run each host-wired teardown once. Never raises; a failure is recorded."""
+        for closer in self._closers:
+            try:
+                closer()
+            except Exception as exc:  # noqa: BLE001 - a close path never raises
+                with self._lock:
+                    self._record(
+                        DEGRADED_CLOSER,
+                        f"a teardown wired to this lane's close raised and did not "
+                        f"finish: {type(exc).__name__}: {exc}",
+                    )
 
     def wait_idle(self, timeout: float) -> bool:
         """Block until no session is in flight and none is queued.

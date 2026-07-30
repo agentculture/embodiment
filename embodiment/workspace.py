@@ -71,12 +71,100 @@ broken tool-call protocol rather than a failing tool, it is
 treatment :class:`embodiment.muse_pad.MusePad` gives a hallucinated ``finish``.
 
 These codes are this lane's own and are **not** folded into
-:func:`embodiment.ledger.read` today, following
+:func:`embodiment.ledger.read`, following
 :class:`embodiment.recall_bundle.BundleDegradation`'s precedent: a host reads
-them off the object it constructed. Task t15 owns the workspace lifecycle
-(bounded teardown at runner close, a degradation naming a workspace left live)
-and is where that fold belongs if it belongs anywhere — :meth:`destroy` here is
-the plain, unbounded version it will replace.
+them off the object it constructed. Task t15 was where that fold would have
+belonged if it belonged anywhere, and the decision recorded there is **not to
+fold**. The ledger gathers the lanes embodiment *drives* — the loop, the muse,
+the runner, continuity, events. A workspace is constructed by the host and
+closed by the host (see the lifecycle section below), so it is read off the
+object the host owns, exactly as :class:`embodiment.muse_pad.MusePadCounts` is.
+Folding it would put a lane embodiment does not own the lifetime of into the
+stream that answers *"what did embodiment do?"*.
+
+The lifecycle: who closes this, and what a bounded teardown can promise
+----------------------------------------------------------------------
+**The host owns the destroy call**, because the host is the only party that
+constructed the workspace and wired its :meth:`~MuseWorkspace.bench` onto a
+thinking loop. :class:`~embodiment.muse_runner.ThreadedMuseRunner` has no tool
+surface at all — no ``tools`` parameter, no bench, and a module docstring that
+pins it to stdlib imports — so a runner that destroyed workspaces would have to
+import this module, drag ``headspace`` into the thread lane's import graph, and
+learn a vocabulary it has no other use for. Ownership follows construction.
+
+What embodiment owns is the part a host cannot get right on its own:
+
+* :meth:`MuseWorkspace.close` is **bounded**, mirroring
+  :func:`embodiment.muse_runner._bounded_join`'s discipline — the engine call
+  runs on a daemon thread and is joined with a timeout, so a hung container
+  daemon delays a drive's teardown by at most that bound.
+* The daemon-thread *escape* that makes the runner's join safe is **not
+  available here**. An unreapable thread stops mattering when the process
+  exits; an unreaped container does not. So where the runner shrugs, this lane
+  **records**: a workspace that survives its close is named — id, provider and
+  the exact commands that reap it — under :data:`DEGRADED_WORKSPACE_LIVE`. A
+  leaked container nobody can name is the worst outcome available, and it is
+  the one thing this design refuses.
+
+* :meth:`~MuseWorkspace.close` also **latches the lane shut**, so a muse turn
+  that arrives after teardown (the bounded join means the thinking thread can
+  outlive the close) cannot provision a *second* workspace nothing will ever
+  reap. It is refused in text and recorded under :data:`DEGRADED_LANE_CLOSED`.
+
+And a workspace *will* sometimes survive, through no fault of this module.
+Measured on headspace 0.11.0: ``destroy`` refuses a workspace whose job is still
+running (*"illegal lifecycle transition: 'running' -> 'destroyed'"*), and the
+``stop`` that clears it is deliberately **outside** the supported
+``headspace.api`` surface — ``create``, ``run``, ``put``, ``export``,
+``destroy`` — because it has to run in a different process from the ``run`` it
+interrupts (headspace-cli#18). Through the one supported import surface, a
+workspace with a job in flight cannot be reaped from inside this process at all.
+And because the actor never waits on the muse (``d1``), *"the drive ended while
+a thinking session still had a command running"* is the **ordinary** case, not
+an edge one.
+
+Three options, two rejected:
+
+1. **Wait for the job, bounded.** headspace's default wall clock is 300s, so a
+   bounded wait mostly expires rather than succeeds — and one long enough to
+   work would stall every drive end, which is ``d1``'s whole objection.
+2. **Shell out to the CLI's ``stop``.** Mixing an import and a subprocess for
+   one lifecycle, having taken this dependency under ``d2`` *specifically* to
+   stop subprocessing.
+3. **Attempt the teardown, and when it is refused, hand the operator the id and
+   the commands that finish the job.** What ships.
+
+That makes the record's *content* load-bearing rather than decorative, which is
+why :func:`_reap_command` and :data:`REAP_NOTE` are built from measurements and
+why an ``EMBODIMENT_LIVE_RIG`` test runs the recorded remedy and asserts it
+reaps. A first draft chained the two commands with ``&&`` and would have left
+every operator who trusted it holding the container: ``stop --apply`` exits **5**
+on success. The relaxation is asked for in headspace-cli#22; this is built for
+today's surface, not that one.
+
+A host that wants that teardown tied to the muse lane's close wires it in one
+argument — ``ThreadedMuseRunner(complete, closers=(workspace.close,))`` — which
+is an opaque zero-argument callable to the runner and stays so. The total
+default close budget is then ``DEFAULT_JOIN_TIMEOUT`` (1.0s) plus
+:data:`DEFAULT_DESTROY_TIMEOUT` (2.0s): three seconds, paid once at drive end,
+never on the actor's hot path (deviation ``d1``).
+
+One budget is **advisory rather than enforced**, and saying so is the point:
+under the default local volume driver headspace *measures* a workspace's
+storage and warns, but does not cap it, so a runaway write is reported and not
+stopped. Nothing here can change that — an enforced quota is a property of the
+volume driver, not of a caller — so what this lane does instead is refuse to
+swallow the warning: :func:`_render` carries the result package's ``warnings``
+section into the text the muse reads, and a host's transcript keeps it. The CPU,
+memory, pid and wall-clock bounds are headspace's own closed defaults and are
+enforced.
+
+``destroy(force=…)`` is deliberately never passed, so headspace's own default —
+refuse rather than discard un-exported declared artifacts — is the only reachable
+policy. The refusal cannot fire from here anyway: ``run`` is never called with
+``declares``, so this lane declares no artifacts. Passing ``force=True`` would
+pre-authorise discarding artifacts a *future* change might declare, which is
+exactly the kind of standing permission the no-reach mechanisms exist to avoid.
 
 Which import surface, and why only that one
 -------------------------------------------
@@ -98,17 +186,24 @@ nothing, because this module is reached lazily like every other.
 
 Wiring one up::
 
-    workspace = MuseWorkspace()                      # docker, closed by default
-    loop = MuseLoop(complete, tools=workspace.bench(tool_complete))
-    outcome = loop.think(boundary)
-    transcript["workspace"] = workspace.counts().to_dict()
-    workspace.destroy()
+    with MuseWorkspace() as workspace:                # docker, closed by default
+        loop = MuseLoop(complete, tools=workspace.bench(tool_complete))
+        outcome = loop.think(boundary)
+        transcript["workspace"] = workspace.counts().to_dict()
+    # closed: teardown bounded, anything left live named on `degradations`
+
+…or, tied to the muse lane's own close::
+
+    workspace = MuseWorkspace()
+    with ThreadedMuseRunner(complete, closers=(workspace.close,)) as muse:
+        ...
 """
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import headspace.api
 
@@ -131,11 +226,21 @@ __all__ = [
     "STAGE_CREATE",
     "STAGE_RUN",
     "STAGE_DESTROY",
+    "STAGE_CLOSE",
     "DEGRADED_ENGINE_UNAVAILABLE",
     "DEGRADED_RUN_FAILED",
     "DEGRADED_UNREADABLE_RESULT",
     "DEGRADED_DESTROY_FAILED",
+    "DEGRADED_DESTROY_TIMEOUT",
+    "DEGRADED_WORKSPACE_LIVE",
+    "DEGRADED_LANE_CLOSED",
     "WORKSPACE_CODES",
+    # lifecycle
+    "DEFAULT_DESTROY_TIMEOUT",
+    "TEARDOWN_THREAD_NAME",
+    "CLOSED_TEXT",
+    "LIVE_WORKSPACE_HINT",
+    "REAP_NOTE",
     # shapes
     "MuseWorkspace",
     "WorkspaceCounts",
@@ -251,6 +356,10 @@ STAGE_CREATE = "create"
 STAGE_RUN = "run"
 #: Tearing it down.
 STAGE_DESTROY = "destroy"
+#: Ending the lane — the drive is over and nothing more will be provisioned.
+#: Distinct from :data:`STAGE_DESTROY`, which is one teardown attempt: a close
+#: *contains* a destroy, and only the close can say what survived it.
+STAGE_CLOSE = "close"
 
 #: No workspace could be provisioned: no container engine, an unreachable
 #: daemon, or a policy the host cannot enforce. The muse is told so in words and
@@ -262,9 +371,28 @@ DEGRADED_ENGINE_UNAVAILABLE = "workspace-engine-unavailable"
 DEGRADED_RUN_FAILED = "workspace-run-failed"
 #: A result package came back in a shape this module could not read.
 DEGRADED_UNREADABLE_RESULT = "workspace-result-unreadable"
-#: Teardown failed and the workspace may still exist. Named so a host can go and
-#: look; task t15 owns bounding this path.
+#: Teardown was attempted and the engine refused it. The workspace may still
+#: exist; the record names it.
 DEGRADED_DESTROY_FAILED = "workspace-destroy-failed"
+#: Teardown did not finish inside its bound. Deliberately a *different* code
+#: from :data:`DEGRADED_DESTROY_FAILED`: a refusal is an answer, a timeout is
+#: the absence of one, and the remediations differ — read the engine's message
+#: versus go and look at whether the daemon is wedged. The teardown thread is a
+#: daemon and may yet succeed after this fires, which is why the reason says the
+#: workspace *may* still exist rather than claiming it does.
+DEGRADED_DESTROY_TIMEOUT = "workspace-destroy-timeout"
+#: The lane closed and a workspace survived it. **This is the record an operator
+#: greps for**: it names the id, the provider and the exact command that reaps
+#: it, whatever the cause was. It is emitted *beside* the cause record
+#: (:data:`DEGRADED_DESTROY_FAILED` or :data:`DEGRADED_DESTROY_TIMEOUT`), never
+#: instead of it — one answers "what do I have to clean up?", the other "why".
+DEGRADED_WORKSPACE_LIVE = "workspace-left-live"
+#: A tool call reached a closed lane. Reachable because the muse's thread is
+#: joined with a *bound*, so a thinking session can outlive the close that
+#: tore its workspace down. Nothing is provisioned — a second container minted
+#: after the drive ended is precisely the leak this lane exists to prevent — and
+#: the muse is told so in words.
+DEGRADED_LANE_CLOSED = "workspace-lane-closed"
 
 #: This lane's whole vocabulary, in one tuple, so a host can enumerate it.
 WORKSPACE_CODES: tuple[str, ...] = (
@@ -272,6 +400,9 @@ WORKSPACE_CODES: tuple[str, ...] = (
     DEGRADED_RUN_FAILED,
     DEGRADED_UNREADABLE_RESULT,
     DEGRADED_DESTROY_FAILED,
+    DEGRADED_DESTROY_TIMEOUT,
+    DEGRADED_WORKSPACE_LIVE,
+    DEGRADED_LANE_CLOSED,
 )
 
 #: Cap on one degradation's reason text, mirroring every sibling lane's cap.
@@ -284,6 +415,61 @@ _MAX_REASON_LEN = 500
 DEFAULT_MAX_RESULT_CHARS = 2000
 
 _RESULT_TRUNCATED = "\n[... workspace result truncated]"
+
+#: Bound on one teardown attempt, in seconds. Mirrors
+#: :data:`embodiment.muse_runner.DEFAULT_JOIN_TIMEOUT`'s *discipline* rather
+#: than its value, and is deliberately larger than its 1.0s: that bound covers a
+#: local thread hand-off, this one covers a round trip to a container engine
+#: which, on the reference rig, contends for the same box as a 27B cortex (an
+#: unprofiled load — plan risk, recorded there). Two seconds gives the engine
+#: room without letting a drive's teardown become a stall, and overrunning it
+#: costs a *record*, never a lost container.
+#:
+#: The whole default close budget is therefore ``DEFAULT_JOIN_TIMEOUT + 2.0`` =
+#: **3.0s**, paid once at drive end and never on the actor's hot path.
+DEFAULT_DESTROY_TIMEOUT = 2.0
+
+#: The teardown thread's name, fixed so a host's stack dump names it — the same
+#: reason :data:`embodiment.muse_runner.THREAD_NAME` is fixed.
+TEARDOWN_THREAD_NAME = "embodiment-workspace-teardown"
+
+#: What the muse is told when a tool call reaches a closed lane. Held as a
+#: constant so a host can recognise it without matching on prose.
+CLOSED_TEXT = (
+    "the workspace lane is closed, so nothing was run — the drive it belonged " "to has ended"
+)
+
+#: Why a workspace can outlive its close through no fault of this module, told
+#: to the host in the record rather than left to be rediscovered. Kept SHORT on
+#: purpose: it rides inside a reason capped at :data:`_MAX_REASON_LEN`, and the
+#: full argument — including the two options rejected in favour of naming the
+#: leak — belongs in this module's docstring, where it costs a reader nothing.
+LIVE_WORKSPACE_HINT = (
+    "headspace 0.11.0 cannot destroy a workspace whose job is still running, "
+    "and its 'stop' verb is not importable (headspace-cli#18, #22)"
+)
+
+#: The two things about the remedy that are not guessable, both **measured on
+#: this rig** rather than read off a help page — and both fatal to an operator
+#: who assumed otherwise:
+#:
+#: * ``headspace stop --apply`` **exits 5 on success**. That is its documented
+#:   contract (a job ended this way reports ``cancelled``), which means a
+#:   remedy chained with ``&&`` stops dead at the *successful* first command and
+#:   never runs the ``destroy``. The commands are joined with ``;``.
+#: * ``stop`` returns as soon as the job has been **signalled**, not once it has
+#:   ended — the run invocation that started the job is what observes the
+#:   ending. So an immediate ``destroy`` can still be refused with the same
+#:   ``'running' -> 'destroyed'`` error; observed here, and clean on the retry
+#:   two seconds later.
+#:
+#: An operator who follows this reaps the workspace. One who follows a plain
+#: ``stop && destroy`` does not, and has no idea why.
+REAP_NOTE = (
+    "'stop' exits 5 on success and returns once the job is signalled rather "
+    "than ended, so the commands are chained with ';' not '&&' and 'destroy' "
+    "may need repeating until the job reports cancelled"
+)
 
 
 # ── shapes ────────────────────────────────────────────────────────────────────
@@ -485,6 +671,47 @@ def _failure_text(exc: Exception) -> str:
     return message + (f" ({remediation})" if remediation else "")
 
 
+def _reap_command(workspace_id: str, provider: str) -> str:
+    """The exact two commands that remove a workspace this lane could not.
+
+    A degradation that names the remedy costs nothing extra and is the
+    difference between "something leaked" and "run this" — the same argument
+    :data:`ENGINE_HINT` already makes, applied to the outcome that actually
+    leaves state behind on a host's machine.
+
+    Every part of this was measured against the real engine rather than read
+    off a help page, because three separate details would each have produced a
+    remedy that fails in the operator's hands: ``destroy`` refuses a workspace
+    whose job is still running, ``stop`` without ``--apply`` is a preview that
+    ends nothing, and ``stop`` **exits 5 on success** — so the separator is
+    ``;`` and not ``&&``. See :data:`REAP_NOTE`, which ships beside this in the
+    record and carries the last of those plus the retry.
+    """
+    return (
+        f"headspace stop --apply {workspace_id} --provider {provider}; "
+        f"headspace destroy {workspace_id} --provider {provider}"
+    )
+
+
+def _finished(thread: Any, timeout: float) -> bool:
+    """Join *thread* under a bound; return whether it finished. Never raises.
+
+    :func:`embodiment.muse_runner._bounded_join`'s discipline, inherited rather
+    than imported — importing it would put the muse *thread* module in this
+    lane's import graph for four lines of join. The one difference is the
+    return value, and it is the whole point of this task: the runner can shrug
+    at a thread it could not reap, because a daemon thread stops existing when
+    the process does. A container does not. So this reports whether the
+    teardown actually finished, and the caller turns a ``False`` into a record
+    naming what is still out there.
+    """
+    try:
+        thread.join(timeout=timeout)
+        return not thread.is_alive()
+    except RuntimeError:  # pragma: no cover - a thread object that refuses a join
+        return False
+
+
 # ── the workspace ─────────────────────────────────────────────────────────────
 
 
@@ -513,6 +740,14 @@ class MuseWorkspace:
             rather than promised.
         max_result_chars: cap on the text one result contributes to the muse's
             context. ``0`` disables this module's own cap; the seam still caps.
+        destroy_timeout: bound on ONE teardown attempt, in seconds. See
+            :data:`DEFAULT_DESTROY_TIMEOUT` for why it is 2.0 and what the whole
+            close budget adds up to.
+        thread_factory: builds the teardown thread; :class:`threading.Thread` by
+            default. Injected for the same reason
+            :class:`~embodiment.muse_runner.ThreadedMuseRunner` injects one — so
+            a test can drive the "no thread could be started" path through the
+            public constructor instead of reaching inside.
     """
 
     def __init__(
@@ -522,17 +757,30 @@ class MuseWorkspace:
         workspace_id: Optional[str] = None,
         api: Any = None,
         max_result_chars: int = DEFAULT_MAX_RESULT_CHARS,
+        destroy_timeout: float = DEFAULT_DESTROY_TIMEOUT,
+        thread_factory: Optional[Callable[..., Any]] = None,
     ) -> None:
         self._provider = str(provider)
         self._requested_id = str(workspace_id) if workspace_id else None
         self._api = api if api is not None else headspace.api
         self._cap = int(max_result_chars)
+        self._destroy_timeout = float(destroy_timeout)
+        self._thread_factory: Callable[..., Any] = thread_factory or threading.Thread
         self._workspace_id = ""
         self._degradations: list[WorkspaceDegradation] = []
         self._statuses: dict[str, int] = {}
         self._runs = 0
         self._rejected = 0
         self._off_protocol = 0
+        # The lane is driven from TWO threads once a host wires it behind
+        # ``ThreadedMuseRunner``: the muse's worker calls ``execute``, and the
+        # host's own thread calls ``close``. The lock guards the two state
+        # transitions where that actually matters — latching the lane shut, and
+        # claiming or releasing the workspace id — and is deliberately NOT held
+        # across any engine call, so a create or a run in flight can never make
+        # a close wait past its bound.
+        self._lock = threading.RLock()
+        self._closed = False
 
     # ── what it is ────────────────────────────────────────────────────────────
 
@@ -543,8 +791,20 @@ class MuseWorkspace:
 
     @property
     def workspace_id(self) -> str:
-        """The provisioned workspace id, or ``""`` before anything was provisioned."""
-        return self._workspace_id
+        """The provisioned workspace id, or ``""`` before anything was provisioned.
+
+        After a clean teardown this returns to ``""``. After one that failed or
+        timed out it keeps reporting the id, because the workspace may still be
+        out there and an empty string would be a claim nobody checked.
+        """
+        with self._lock:
+            return self._workspace_id
+
+    @property
+    def closed(self) -> bool:
+        """Whether the lane has been closed. A closed lane provisions nothing."""
+        with self._lock:
+            return self._closed
 
     @property
     def schema(self) -> tuple[dict[str, Any], ...]:
@@ -554,7 +814,8 @@ class MuseWorkspace:
     @property
     def degradations(self) -> tuple[WorkspaceDegradation, ...]:
         """Every recorded degradation, in the order it happened (constraint C3)."""
-        return tuple(self._degradations)
+        with self._lock:
+            return tuple(self._degradations)
 
     # ── the tool seam ─────────────────────────────────────────────────────────
 
@@ -590,6 +851,18 @@ class MuseWorkspace:
                 "command must be a non-empty list of strings, already split — "
                 "e.g. ['python3', '-c', 'print(2 + 2)']"
             )
+
+        # Checked AFTER the argument validation: a malformed call is malformed
+        # whether the lane is open or shut, and recording a lifecycle
+        # degradation for it would blame the wrong thing.
+        if self.closed:
+            self._degrade(
+                DEGRADED_LANE_CLOSED,
+                "a tool call arrived after the lane closed; nothing was provisioned",
+                STAGE_RUN,
+                self.workspace_id,
+            )
+            return CLOSED_TEXT
 
         workspace_id = self._ensure_workspace()
         if not workspace_id:
@@ -634,44 +907,91 @@ class MuseWorkspace:
 
     # ── lifecycle ─────────────────────────────────────────────────────────────
 
-    def destroy(self) -> bool:
-        """Tear the workspace down. Returns whether there was one to tear down.
+    def destroy(self, *, timeout: Optional[float] = None) -> bool:
+        """Tear the workspace down under a bound. Returns whether one went away.
+
+        The mid-drive verb: the lane stays **open**, so a later tool call
+        provisions a fresh workspace exactly as the first one did. Use
+        :meth:`close` at drive end, which is this plus latching the lane shut
+        and accounting for anything that survived.
 
         Never raises: teardown runs on a close path, and a close path that
-        raises loses whatever was being closed. A failure is recorded under
-        :data:`DEGRADED_DESTROY_FAILED` naming the workspace, so a host can go
-        and look for what is left.
+        raises loses whatever was being closed. Never hangs either — the engine
+        call runs on a daemon thread joined under *timeout* (default
+        :data:`DEFAULT_DESTROY_TIMEOUT`), so a wedged container daemon costs a
+        bounded delay and a record rather than a parked host.
 
-        This is the plain version. Bounding it — so a hung engine cannot park a
-        host's close forever, the way ``muse_runner``'s ``_bounded_join``
-        already refuses to — is task t15's, along with the record for a drive
-        that ends with a workspace still live.
+        Two distinct failures, two codes, both naming the workspace so a host
+        can go and look: :data:`DEGRADED_DESTROY_FAILED` when the engine
+        refused, :data:`DEGRADED_DESTROY_TIMEOUT` when it did not answer in
+        time.
         """
-        workspace_id = self._workspace_id
+        with self._lock:
+            workspace_id = self._workspace_id
         if not workspace_id:
             return False
-        try:
-            self._api.destroy(workspace_id, provider=self._provider)
-        except Exception as exc:  # noqa: BLE001 - a close path never raises
-            self._degrade(DEGRADED_DESTROY_FAILED, _failure_text(exc), STAGE_DESTROY, workspace_id)
-            return False
-        self._workspace_id = ""
-        return True
+        return self._teardown(workspace_id, timeout)
+
+    def close(self, *, timeout: Optional[float] = None) -> bool:
+        """End the lane at drive end. Returns whether nothing is left live.
+
+        Idempotent, never raises, never hangs, and safe to call from any thread
+        — a host wires it as ``ThreadedMuseRunner(complete,
+        closers=(workspace.close,))`` and it runs after that runner's bounded
+        join, or drives it directly through ``with``.
+
+        Three things happen, in this order:
+
+        1. **The lane latches shut.** Nothing will be provisioned again, so a
+           thinking session that outlived the bounded join cannot mint a second
+           container after the drive ended. A tool call that arrives anyway is
+           refused in text and recorded (:data:`DEGRADED_LANE_CLOSED`).
+        2. **The workspace is torn down under a bound** (:meth:`destroy`'s
+           mechanism and its two failure codes).
+        3. **Whatever survived is named.** If the workspace is still live after
+           that attempt, one :data:`DEGRADED_WORKSPACE_LIVE` record carries the
+           id, the provider and the exact ``headspace destroy`` line that reaps
+           it. That record is the acceptance condition of this whole path: a
+           leaked container an operator cannot name is the worst outcome
+           available, and it is the one this refuses to produce.
+
+        Returns ``True`` when nothing is left behind — including the ordinary
+        case where nothing was ever provisioned — and ``False`` when a
+        workspace outlived the close, which is exactly when a record was
+        written.
+        """
+        with self._lock:
+            first = not self._closed
+            self._closed = True
+            workspace_id = self._workspace_id
+        if not first or not workspace_id:
+            return not workspace_id
+        if self._teardown(workspace_id, timeout):
+            return True
+        self._name_as_live(workspace_id)
+        return False
+
+    def __enter__(self) -> "MuseWorkspace":
+        return self
+
+    def __exit__(self, *exc_info: Any) -> None:
+        self.close()
 
     # ── what it can answer about itself ───────────────────────────────────────
 
     def counts(self) -> WorkspaceCounts:
         """What the muse did with the workspace — read it when a session returns."""
-        return WorkspaceCounts(
-            provider=self._provider,
-            workspace_id=self._workspace_id,
-            created=bool(self._workspace_id),
-            runs=self._runs,
-            statuses=dict(self._statuses),
-            rejected_calls=self._rejected,
-            off_protocol_calls=self._off_protocol,
-            degradations=len(self._degradations),
-        )
+        with self._lock:
+            return WorkspaceCounts(
+                provider=self._provider,
+                workspace_id=self._workspace_id,
+                created=bool(self._workspace_id),
+                runs=self._runs,
+                statuses=dict(self._statuses),
+                rejected_calls=self._rejected,
+                off_protocol_calls=self._off_protocol,
+                degradations=len(self._degradations),
+            )
 
     # ── internals ─────────────────────────────────────────────────────────────
 
@@ -695,6 +1015,76 @@ class MuseWorkspace:
         command = [text for text in (_text(item) for item in raw) if text.strip()]
         return command or None
 
+    def _teardown(self, workspace_id: str, timeout: Optional[float]) -> bool:
+        """One bounded teardown attempt. Returns whether the workspace went away.
+
+        The engine call runs on a **daemon** thread so a wedged daemon cannot
+        park the host: the join is bounded, and a thread still running when the
+        bound expires is simply left to the process. That much is
+        ``_bounded_join``'s discipline verbatim. What is *not* inherited is its
+        conclusion — an unreaped thread stops mattering at process exit and an
+        unreaped container does not — so the caller is told, and says so.
+        """
+        bound = self._destroy_timeout if timeout is None else float(timeout)
+        failure: list[Exception] = []
+
+        def _run_destroy() -> None:
+            try:
+                self._api.destroy(workspace_id, provider=self._provider)
+            except Exception as exc:  # noqa: BLE001 - carried back, never raised out of a thread
+                failure.append(exc)
+
+        try:
+            thread = self._thread_factory(
+                target=_run_destroy, name=TEARDOWN_THREAD_NAME, daemon=True
+            )
+            thread.start()
+        except Exception as exc:  # noqa: BLE001 - no thread is a degradation, not a crash
+            self._degrade(
+                DEGRADED_DESTROY_FAILED,
+                f"no teardown thread could be started, so nothing was attempted: "
+                f"{type(exc).__name__}: {exc}",
+                STAGE_DESTROY,
+                workspace_id,
+            )
+            return False
+
+        if not _finished(thread, bound):
+            self._degrade(
+                DEGRADED_DESTROY_TIMEOUT,
+                f"teardown did not finish within {bound}s; the workspace may still exist",
+                STAGE_DESTROY,
+                workspace_id,
+            )
+            return False
+        if failure:
+            self._degrade(
+                DEGRADED_DESTROY_FAILED, _failure_text(failure[0]), STAGE_DESTROY, workspace_id
+            )
+            return False
+        with self._lock:
+            if self._workspace_id == workspace_id:
+                self._workspace_id = ""
+        return True
+
+    def _name_as_live(self, workspace_id: str) -> None:
+        """Record the one thing an operator needs: what to reap, and how.
+
+        The **remedy is written before the explanation**, because the reason is
+        capped at :data:`_MAX_REASON_LEN` like every other lane's and a long
+        workspace id could otherwise push the two commands past the cut. What
+        survives a truncation here has to be the part someone can act on.
+        """
+        self._degrade(
+            DEGRADED_WORKSPACE_LIVE,
+            f"the lane closed with workspace {workspace_id} still live on provider "
+            f"{self._provider}; reap it with: "
+            f"{_reap_command(workspace_id, self._provider)} — {REAP_NOTE} — "
+            f"{LIVE_WORKSPACE_HINT}",
+            STAGE_CLOSE,
+            workspace_id,
+        )
+
     def _ensure_workspace(self) -> str:
         """Provision on first use; return the id, or ``""`` when none could be.
 
@@ -704,9 +1094,22 @@ class MuseWorkspace:
         posture — network disabled, no host paths, small budgets — is the only
         posture reachable from here. And no ``profile``, so the pinned default
         image is the only image.
+
+        The lock is released across the create call, so a close can land while
+        one is in flight. That race is real — the muse thinks on its own thread
+        — and it is resolved on the far side rather than by holding a lock a
+        close would then wait on: a workspace that arrives into a closed lane is
+        torn down again immediately instead of becoming a container nothing
+        will ever reap.
         """
-        if self._workspace_id:
-            return self._workspace_id
+        # No closed-check here: :meth:`execute` is this method's only caller and
+        # makes it before calling, which is what keeps the refusal's record and
+        # its message in the right order. The check that matters is the one
+        # AFTER the create returns — that is the window a lock could not close
+        # without making a close wait on an engine call.
+        with self._lock:
+            if self._workspace_id:
+                return self._workspace_id
         try:
             if self._requested_id is None:
                 package = self._api.create(provider=self._provider)
@@ -724,20 +1127,44 @@ class MuseWorkspace:
                 "",
             )
             return ""
-        self._workspace_id = workspace_id
-        return workspace_id
+        with self._lock:
+            if not self._closed:
+                self._workspace_id = workspace_id
+                return workspace_id
+        # The lane closed while this create was on the wire. The workspace is
+        # real and nothing is going to use it, so it is torn down here rather
+        # than left for an operator to find — and if THAT fails, it is named
+        # like any other survivor.
+        self._degrade(
+            DEGRADED_LANE_CLOSED,
+            f"the lane closed while workspace {workspace_id} was being provisioned; "
+            "it was torn down again and nothing was run",
+            STAGE_CREATE,
+            workspace_id,
+        )
+        if not self._teardown(workspace_id, None):
+            self._name_as_live(workspace_id)
+        return ""
 
     def _degrade(self, code: str, reason: str, stage: str, workspace_id: str) -> None:
-        """Record one host-visible transition. The only way this lane reports harm."""
-        self._degradations.append(
-            WorkspaceDegradation(
-                code=code,
-                reason=reason[:_MAX_REASON_LEN],
-                stage=stage,
-                workspace_id=workspace_id,
+        """Record one host-visible transition. The only way this lane reports harm.
+
+        Appends under the lock: ``execute`` runs on the muse's thread and
+        ``close`` on the host's, so two records can genuinely be minted at once
+        and a list append is not the place to find that out.
+        """
+        with self._lock:
+            self._degradations.append(
+                WorkspaceDegradation(
+                    code=code,
+                    reason=reason[:_MAX_REASON_LEN],
+                    stage=stage,
+                    workspace_id=workspace_id,
+                )
             )
-        )
 
     def _last_reason(self) -> str:
         """The most recent degradation's reason, for the text the muse reads."""
-        return self._degradations[-1].reason if self._degradations else "no engine was reachable"
+        with self._lock:
+            records = self._degradations
+            return records[-1].reason if records else "no engine was reachable"

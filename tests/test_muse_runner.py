@@ -57,6 +57,7 @@ from embodiment.muse import (
     MuseInsight,
 )
 from embodiment.muse_runner import (
+    DEGRADED_CLOSER,
     DEGRADED_ENDPOINT,
     DEGRADED_THREAD,
     DELIVERY_POINTS,
@@ -444,6 +445,105 @@ class TestThreadDiscipline:
         assert runner.thread_started is False
         assert runner.drain(step_count=1) == []
         assert seam.calls == 0
+
+
+class TestClosersEndWhatTheHostOpened:
+    """One close for two lifetimes, without the runner learning about either.
+
+    A host that hands the muse a tool has something to shut down when the lane
+    ends, and the timing is not obvious: too early breaks a session the bounded
+    join is still waiting on, too late leaks whatever it held. ``closers`` is
+    the seam that fixes the timing without the runner acquiring a dependency —
+    each entry is an opaque zero-argument callable, and the default ``()``
+    leaves every host that wires none byte-identical.
+    """
+
+    def test_no_closers_is_the_default_and_changes_nothing(self):
+        runner = ThreadedMuseRunner(_Scripted())
+        runner.close()
+
+        assert runner.degradations == []
+        assert runner.counts["degradations_recorded"] == 0
+
+    def test_a_closer_runs_at_close(self):
+        closed: list[str] = []
+        runner = ThreadedMuseRunner(_Scripted(), closers=(lambda: closed.append("tool"),))
+        runner.close()
+
+        assert closed == ["tool"]
+
+    def test_closers_run_in_the_order_they_were_wired(self):
+        order: list[int] = []
+        runner = ThreadedMuseRunner(
+            _Scripted(),
+            closers=(lambda: order.append(1), lambda: order.append(2)),
+        )
+        runner.close()
+
+        assert order == [1, 2]
+
+    def test_a_closer_runs_exactly_once_however_often_close_is_called(self):
+        """A second teardown of the same thing is at best wasted, at worst harmful."""
+        calls: list[int] = []
+        runner = ThreadedMuseRunner(_Scripted(), closers=(lambda: calls.append(1),))
+        runner.close()
+        runner.close()
+
+        assert calls == [1]
+
+    def test_a_closer_sees_a_lane_that_has_already_finished_accounting(self):
+        """Closers run LAST — after the bounded join and after the late drops.
+
+        The ordering matters twice over: a closer must not tear down something
+        a still-running session is using, and a closer that reads the lane's
+        counters must see final numbers rather than mid-close ones. Both are
+        observable through ``counts``, which only carries the stranded
+        insight's late drop once the accounting has run.
+        """
+        seen: list[int] = []
+        runner = ThreadedMuseRunner(
+            _Scripted(_resp("GUIDANCE: never drained " + MARKER_DONE)),
+            closers=(lambda: seen.append(runner.counts["insights_dropped_late"]),),
+        )
+        runner.consider(_boundary(step=1))
+        assert runner.wait_idle(_TIMEOUT)
+        runner.close(timeout=_TIMEOUT)
+
+        assert seen == [1], "the closer ran before the late-drop accounting"
+
+    def test_a_closer_that_raises_is_recorded_rather_than_propagated(self):
+        def explode() -> None:
+            raise OSError("the container engine refused")
+
+        runner = ThreadedMuseRunner(_Scripted(), closers=(explode,))
+        runner.close()  # must not raise
+
+        codes = [d.code for d in runner.degradations]
+        assert codes == [DEGRADED_CLOSER]
+        assert "the container engine refused" in runner.degradations[0].reason
+
+    def test_a_raising_closer_does_not_stop_the_next_one(self):
+        """Teardowns are independent; one host bug must not strand the others."""
+        closed: list[str] = []
+
+        def explode() -> None:
+            raise OSError("first one broke")
+
+        runner = ThreadedMuseRunner(_Scripted(), closers=(explode, lambda: closed.append("second")))
+        runner.close()
+
+        assert closed == ["second"]
+        assert [d.code for d in runner.degradations] == [DEGRADED_CLOSER]
+
+    def test_closers_are_materialised_at_construction(self):
+        """A generator consumed by an earlier close would be silently empty later."""
+        calls: list[int] = []
+        runner = ThreadedMuseRunner(
+            _Scripted(), closers=(lambda: calls.append(1) for _ in range(1))
+        )
+        runner.close()
+
+        assert calls == [1]
 
 
 # ── 4. staleness and late arrival are RECORDED (C3) ───────────────────────────

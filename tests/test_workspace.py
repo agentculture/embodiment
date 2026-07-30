@@ -26,6 +26,12 @@ Four things have to be true, and none of them is self-evident from reading
    (constraint ``C3``).
 4. **It behaves like a muse tool.** Bench-shaped, top-level only, results capped,
    an unoffered name refused rather than guessed at.
+5. **Its lifetime ends, and what survives is findable** (task t15). Teardown is
+   bounded like the muse thread's join, a closed lane provisions nothing, and a
+   workspace that outlives its close is named with the commands that reap it —
+   measured against headspace 0.11.0's real refusal, which is why
+   :class:`_LifecycleRefusal` reproduces that message rather than a generic
+   ``OSError``.
 
 The always-on tests use ``provider="fake"`` — headspace's in-memory backend,
 which is a real implementation of its provider seam rather than a stub — plus a
@@ -40,6 +46,8 @@ import ast
 import inspect
 import os
 import subprocess  # nosec B404 - fixed argv, no shell, reads the host's route table
+import threading
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -49,15 +57,24 @@ import pytest
 from embodiment import workspace as workspace_module
 from embodiment.contract import ModelResponse, ToolCall
 from embodiment.muse import DEGRADED_TOOL, MARKER_DONE, MuseControls, MuseLoop, MuseToolBench
+from embodiment.muse_runner import DEFAULT_JOIN_TIMEOUT, ThreadedMuseRunner
 from embodiment.presence_engine import BoundaryContext
 from embodiment.workspace import (
+    CLOSED_TEXT,
+    DEFAULT_DESTROY_TIMEOUT,
     DEGRADED_DESTROY_FAILED,
+    DEGRADED_DESTROY_TIMEOUT,
     DEGRADED_ENGINE_UNAVAILABLE,
+    DEGRADED_LANE_CLOSED,
     DEGRADED_RUN_FAILED,
     DEGRADED_UNREADABLE_RESULT,
+    DEGRADED_WORKSPACE_LIVE,
     ENGINE_HINT,
     NO_REACH,
     PROVIDER_FAKE,
+    REAP_NOTE,
+    STAGE_CLOSE,
+    STAGE_DESTROY,
     WORKSPACE_CODES,
     WORKSPACE_LANE,
     WORKSPACE_PROTOCOL,
@@ -142,6 +159,55 @@ class RecordingApi:
         if self._destroy_error is not None:
             raise self._destroy_error
         return _Package(status="success")
+
+
+#: Every wait on a real thread in this file is bounded by this, so a broken
+#: implementation fails an assertion instead of hanging CI — the discipline
+#: ``tests/test_ledger.py`` and ``tests/test_muse_runner.py`` already hold.
+_TIMEOUT = 5.0
+
+#: The bound the teardown tests give the engine. Small enough that a hung
+#: teardown is over in a blink, large enough not to race a loaded CI box into
+#: reporting a timeout for a destroy that was merely slow to be scheduled.
+_TINY_BOUND = 0.05
+
+
+class GatedApi(RecordingApi):
+    """A ``headspace.api`` whose ``destroy`` parks until the test releases it.
+
+    A wedged container daemon, reproduced without one. The bounded teardown has
+    to come back on **its own** bound rather than on the engine's, and that is
+    not observable against an engine that always answers.
+    """
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def destroy(self, *args: Any, **kwargs: Any) -> Any:
+        self.entered.set()
+        self.release.wait(_TIMEOUT)
+        return super().destroy(*args, **kwargs)
+
+
+class GatedCreateApi(RecordingApi):
+    """A ``headspace.api`` whose ``create`` parks until the test releases it.
+
+    For the one genuine race in the lane: the muse thinks on its own thread, so
+    a ``close`` can land while a ``create`` is on the wire. The workspace that
+    arrives afterwards belongs to nobody.
+    """
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def create(self, *args: Any, **kwargs: Any) -> Any:
+        self.entered.set()
+        self.release.wait(_TIMEOUT)
+        return super().create(*args, **kwargs)
 
 
 class _Provenance:
@@ -784,12 +850,21 @@ class TestTheOtherDegradationsAreReachedThroughThePublicSeam:
         assert workspace.degradations[-1].workspace_id == "ws-1"
 
     def test_every_declared_code_was_provoked_here(self) -> None:
-        """Exhaustiveness, so a code added later cannot ship without a producer."""
+        """Exhaustiveness, so a code added later cannot ship without a producer.
+
+        Each entry names the class below that drives it through ``execute``,
+        ``destroy`` or ``close`` — never through a private attribute, which is
+        the t3 rule that makes this table mean something. Adding a code to
+        ``WORKSPACE_CODES`` without adding a row here turns the suite red.
+        """
         provoked = {
-            DEGRADED_ENGINE_UNAVAILABLE,
-            DEGRADED_RUN_FAILED,
-            DEGRADED_UNREADABLE_RESULT,
-            DEGRADED_DESTROY_FAILED,
+            DEGRADED_ENGINE_UNAVAILABLE,  # this class + TestAMissingEngineDegradesObservably
+            DEGRADED_RUN_FAILED,  # this class
+            DEGRADED_UNREADABLE_RESULT,  # this class
+            DEGRADED_DESTROY_FAILED,  # this class + TestALiveWorkspaceAtCloseIsFindable
+            DEGRADED_DESTROY_TIMEOUT,  # TestTeardownIsBounded
+            DEGRADED_WORKSPACE_LIVE,  # TestALiveWorkspaceAtCloseIsFindable
+            DEGRADED_LANE_CLOSED,  # TestAClosedLaneProvisionsNothing
         }
         assert set(WORKSPACE_CODES) == provoked
 
@@ -829,6 +904,592 @@ class TestDestroyIsSafeToCallAnyTime:
         assert workspace.destroy() is True
         assert api.calls[-1] == ("destroy", ("ws-1",), {"provider": "docker"})
         assert workspace.workspace_id == ""
+
+
+# ── 5. the lifecycle: bounded teardown, and a leak nobody has to guess at ─────
+
+
+class _LifecycleRefusal(Exception):
+    """headspace 0.11.0's real refusal, reproduced from a probe of the rig.
+
+    Not an invented failure: ``headspace destroy --json <ws>`` five seconds into
+    a running job answers with exactly this message and this remediation. It is
+    the shape the *common* case takes — the actor never waits on the muse
+    (``d1``), so a drive routinely ends with a command still running — and the
+    thing a `RecordingApi(destroy_error=OSError(...))` cannot tell us is whether
+    the record an operator ends up reading is actionable.
+    """
+
+    MESSAGE = "illegal lifecycle transition: 'running' -> 'destroyed'"
+
+    def __init__(self) -> None:
+        super().__init__(self.MESSAGE)
+        self.message = self.MESSAGE
+        self.remediation = (
+            "from 'running', the legal next states are: cancelled, completed, failed, ready"
+        )
+
+
+class TestTeardownIsBounded:
+    """A wedged engine costs a bounded delay and a record, never a parked host.
+
+    ``muse_runner._bounded_join``'s discipline, applied one layer out: signal,
+    wait under a bound, and stop waiting. Every test here drives a ``destroy``
+    that never answers, which is the only way to observe that the bound is the
+    thing that ended the wait.
+    """
+
+    def test_a_hung_engine_does_not_park_the_close(self) -> None:
+        api = GatedApi()
+        workspace = MuseWorkspace(api=api)
+        workspace.execute(WORKSPACE_TOOL_NAME, {"command": ["true"]})
+        try:
+            started = time.monotonic()
+            left_clean = workspace.close(timeout=_TINY_BOUND)
+            elapsed = time.monotonic() - started
+        finally:
+            api.release.set()
+
+        assert left_clean is False
+        assert api.entered.is_set(), "the teardown never reached the engine"
+        assert elapsed < _TIMEOUT, f"close waited {elapsed}s on a hung engine"
+
+    def test_a_hung_teardown_is_recorded_against_the_workspace(self) -> None:
+        api = GatedApi()
+        workspace = MuseWorkspace(api=api)
+        workspace.execute(WORKSPACE_TOOL_NAME, {"command": ["true"]})
+        try:
+            workspace.close(timeout=_TINY_BOUND)
+        finally:
+            api.release.set()
+
+        timeouts = [d for d in workspace.degradations if d.code == DEGRADED_DESTROY_TIMEOUT]
+        assert len(timeouts) == 1
+        assert timeouts[0].workspace_id == "ws-1"
+        assert timeouts[0].stage == STAGE_DESTROY
+
+    def test_the_timeout_record_says_may_rather_than_did(self) -> None:
+        """The teardown thread is a daemon and can still succeed after the bound.
+
+        Claiming the workspace survived would be a fact nobody checked; the
+        record says what is actually known.
+        """
+        api = GatedApi()
+        workspace = MuseWorkspace(api=api)
+        workspace.execute(WORKSPACE_TOOL_NAME, {"command": ["true"]})
+        try:
+            workspace.close(timeout=_TINY_BOUND)
+        finally:
+            api.release.set()
+
+        reason = workspace.degradations[0].reason
+        assert "may still exist" in reason
+        assert str(_TINY_BOUND) in reason
+
+    def test_the_mid_drive_destroy_is_bounded_too(self) -> None:
+        """``destroy`` and ``close`` share one mechanism; neither can hang."""
+        api = GatedApi()
+        workspace = MuseWorkspace(api=api)
+        workspace.execute(WORKSPACE_TOOL_NAME, {"command": ["true"]})
+        try:
+            assert workspace.destroy(timeout=_TINY_BOUND) is False
+        finally:
+            api.release.set()
+
+        assert workspace.degradations[-1].code == DEGRADED_DESTROY_TIMEOUT
+
+    def test_a_timed_out_teardown_keeps_reporting_the_id(self) -> None:
+        """An empty ``workspace_id`` would claim a teardown that did not happen."""
+        api = GatedApi()
+        workspace = MuseWorkspace(api=api)
+        workspace.execute(WORKSPACE_TOOL_NAME, {"command": ["true"]})
+        try:
+            workspace.close(timeout=_TINY_BOUND)
+        finally:
+            api.release.set()
+
+        assert workspace.workspace_id == "ws-1"
+
+    def test_a_teardown_thread_that_cannot_start_is_recorded_not_raised(self) -> None:
+        def refuse(**_kwargs: Any) -> Any:
+            raise RuntimeError("can't start new thread")
+
+        api = RecordingApi()
+        workspace = MuseWorkspace(api=api, thread_factory=refuse)
+        workspace.execute(WORKSPACE_TOOL_NAME, {"command": ["true"]})
+
+        assert workspace.close() is False
+        codes = [d.code for d in workspace.degradations]
+        assert codes == [DEGRADED_DESTROY_FAILED, DEGRADED_WORKSPACE_LIVE]
+        assert "no teardown thread" in workspace.degradations[0].reason
+
+    def test_the_whole_close_budget_is_the_join_plus_one_teardown(self) -> None:
+        """Issue #27's question, answered by arithmetic rather than by assertion.
+
+        A host wiring ``closers=(workspace.close,)`` pays the runner's bounded
+        join and then this lane's bounded teardown, in series. Three seconds,
+        once, at drive end — and never on the actor's hot path, which is the
+        constraint ``d1`` actually imposes.
+        """
+        assert DEFAULT_JOIN_TIMEOUT == 1.0
+        assert DEFAULT_DESTROY_TIMEOUT == 2.0
+        assert DEFAULT_JOIN_TIMEOUT + DEFAULT_DESTROY_TIMEOUT == 3.0
+
+
+class TestALiveWorkspaceAtCloseIsFindable:
+    """The acceptance criterion: a drive that leaks names what it leaked.
+
+    Measured on headspace 0.11.0: ``destroy`` refuses a workspace whose job is
+    still running, and the ``stop`` that clears it is outside the supported
+    ``headspace.api`` surface (headspace-cli#18). Under ``d1`` that makes a
+    survivor an ordinary outcome, so the record has to be good enough to act on
+    — the id, and the commands that actually finish the job.
+    """
+
+    @staticmethod
+    def _refused() -> MuseWorkspace:
+        workspace = MuseWorkspace(api=RecordingApi(destroy_error=_LifecycleRefusal()))
+        workspace.execute(WORKSPACE_TOOL_NAME, {"command": ["sleep", "120"]})
+        return workspace
+
+    def test_a_refused_teardown_leaves_the_cause_and_the_survivor(self) -> None:
+        workspace = self._refused()
+
+        assert workspace.close() is False
+        assert [d.code for d in workspace.degradations] == [
+            DEGRADED_DESTROY_FAILED,
+            DEGRADED_WORKSPACE_LIVE,
+        ]
+
+    def test_the_survivor_record_names_the_workspace(self) -> None:
+        workspace = self._refused()
+        workspace.close()
+
+        leaked = workspace.degradations[-1]
+        assert leaked.workspace_id == "ws-1"
+        assert leaked.stage == STAGE_CLOSE
+        assert "ws-1" in leaked.reason
+
+    def test_the_survivor_record_carries_both_commands_that_reap_it(self) -> None:
+        """One command would not work: ``destroy`` alone is what just failed."""
+        workspace = self._refused()
+        workspace.close()
+
+        reason = workspace.degradations[-1].reason
+        assert "headspace stop --apply ws-1 --provider docker" in reason
+        assert "headspace destroy ws-1 --provider docker" in reason
+
+    def test_the_two_commands_are_chained_with_a_semicolon_not_and(self) -> None:
+        """Measured, and the first draft got it wrong: ``stop`` exits 5 on success.
+
+        Its documented contract is that a job it ended reports ``cancelled`` and
+        the verb exits 5. An ``&&`` therefore stops dead at the *successful*
+        first command and never runs the destroy — a remedy that fails in the
+        operator's hands precisely when it worked. The live test below runs the
+        recorded line for real, which is how this was caught.
+        """
+        workspace = self._refused()
+        workspace.close()
+
+        reason = workspace.degradations[-1].reason
+        remedy = reason.split("reap it with: ", 1)[1].split(" — ", 1)[0]
+        assert remedy == (
+            "headspace stop --apply ws-1 --provider docker; "
+            "headspace destroy ws-1 --provider docker"
+        )
+        assert "&&" not in remedy  # the note explains why; the command must not use one
+
+    def test_the_record_says_destroy_may_need_repeating(self) -> None:
+        """``stop`` returns once the job is signalled, not once it has ended."""
+        workspace = self._refused()
+        workspace.close()
+
+        assert REAP_NOTE in workspace.degradations[-1].reason
+
+    def test_the_remedy_survives_the_reason_cap(self) -> None:
+        """A long id must not push the actionable half past the truncation."""
+        long_id = "ws-" + "0123456789abcdef" * 4
+        api = RecordingApi(workspace_id=long_id, destroy_error=_LifecycleRefusal())
+        workspace = MuseWorkspace(api=api)
+        workspace.execute(WORKSPACE_TOOL_NAME, {"command": ["true"]})
+        workspace.close()
+
+        reason = workspace.degradations[-1].reason
+        assert len(reason) <= 500
+        assert f"headspace stop --apply {long_id}" in reason
+        assert f"headspace destroy {long_id}" in reason
+
+    def test_the_cause_keeps_the_engines_own_words(self) -> None:
+        workspace = self._refused()
+        workspace.close()
+
+        cause = workspace.degradations[0].reason
+        assert "illegal lifecycle transition" in cause
+        assert "cancelled" in cause  # the engine's remediation, carried through
+
+    def test_the_survivor_record_serialises_for_a_committed_transcript(self) -> None:
+        workspace = self._refused()
+        workspace.close()
+
+        payload = workspace.degradations[-1].to_dict()
+        assert payload["lane"] == WORKSPACE_LANE
+        assert payload["code"] == DEGRADED_WORKSPACE_LIVE
+        assert payload["workspace_id"] == "ws-1"
+
+    def test_a_clean_close_records_nothing_at_all(self) -> None:
+        """The healthy path must not cry wolf — most drives leak nothing."""
+        workspace = MuseWorkspace(provider=PROVIDER_FAKE)
+        workspace.execute(WORKSPACE_TOOL_NAME, {"command": ["true"]})
+
+        assert workspace.close() is True
+        assert workspace.degradations == ()
+        assert workspace.workspace_id == ""
+
+    def test_closing_a_workspace_that_was_never_provisioned_is_clean(self) -> None:
+        api = RecordingApi()
+        workspace = MuseWorkspace(api=api)
+
+        assert workspace.close() is True
+        assert api.calls == []
+        assert workspace.degradations == ()
+
+    def test_close_is_idempotent_and_records_the_leak_once(self) -> None:
+        workspace = self._refused()
+
+        assert workspace.close() is False
+        assert workspace.close() is False
+        assert [d.code for d in workspace.degradations].count(DEGRADED_WORKSPACE_LIVE) == 1
+
+    def test_the_context_manager_closes_it(self) -> None:
+        api = RecordingApi()
+        with MuseWorkspace(api=api) as workspace:
+            workspace.execute(WORKSPACE_TOOL_NAME, {"command": ["true"]})
+
+        assert api.calls[-1] == ("destroy", ("ws-1",), {"provider": "docker"})
+        assert workspace.workspace_id == ""
+
+    def test_the_context_manager_closes_it_when_the_body_raises(self) -> None:
+        api = RecordingApi()
+        workspace = MuseWorkspace(api=api)
+        with pytest.raises(ValueError):
+            with workspace:
+                workspace.execute(WORKSPACE_TOOL_NAME, {"command": ["true"]})
+                raise ValueError("the host's own bug")
+
+        assert api.calls[-1][0] == "destroy"
+
+
+class TestAClosedLaneProvisionsNothing:
+    """The leak vector a bounded join creates, closed by construction.
+
+    The muse's thread is joined with a *bound*, so a thinking session can
+    genuinely outlive the close that tore its workspace down. If a late tool
+    call could still provision, every such session would mint a second
+    container after the drive ended — a leak created by the very teardown meant
+    to prevent one.
+    """
+
+    def test_a_tool_call_after_close_provisions_nothing(self) -> None:
+        api = RecordingApi()
+        workspace = MuseWorkspace(api=api)
+        workspace.execute(WORKSPACE_TOOL_NAME, {"command": ["true"]})
+        workspace.close()
+
+        result = workspace.execute(WORKSPACE_TOOL_NAME, {"command": ["true"]})
+
+        assert result == CLOSED_TEXT
+        assert len(api.kwargs_for("create")) == 1, "a second workspace was minted after close"
+
+    def test_that_refusal_is_recorded(self) -> None:
+        workspace = MuseWorkspace(provider=PROVIDER_FAKE)
+        workspace.close()
+
+        workspace.execute(WORKSPACE_TOOL_NAME, {"command": ["true"]})
+
+        assert [d.code for d in workspace.degradations] == [DEGRADED_LANE_CLOSED]
+
+    def test_a_late_thinking_session_keeps_thinking_through_it(self) -> None:
+        """It is a closed tool, not a broken protocol — the session survives."""
+        workspace = MuseWorkspace(provider=PROVIDER_FAKE)
+        workspace.close()
+        outcome, _tools, _floor = _drive(
+            workspace,
+            _resp("checking", _call(WORKSPACE_TOOL_NAME, command=["true"])),
+            _resp("GUIDANCE: reasoning it out instead " + MARKER_DONE),
+        )
+
+        assert outcome.insights
+        assert not [d for d in outcome.degradations if d.code == DEGRADED_TOOL]
+
+    def test_a_malformed_call_after_close_is_still_only_malformed(self) -> None:
+        """Blaming the lifecycle for the model's bad argv would misdirect a reader."""
+        workspace = MuseWorkspace(provider=PROVIDER_FAKE)
+        workspace.close()
+
+        result = workspace.execute(WORKSPACE_TOOL_NAME, {"command": []})
+
+        assert "must be a non-empty list of strings" in result
+        assert workspace.degradations == ()
+
+    def test_a_workspace_provisioned_into_a_closing_lane_is_torn_down_again(self) -> None:
+        """The one genuine race: ``close`` lands while a ``create`` is on the wire.
+
+        Driven with two real threads rather than reasoned about, because the
+        window only exists because the lock is deliberately *not* held across
+        the engine call — a design decision that would otherwise be untested.
+        """
+        api = GatedCreateApi()
+        workspace = MuseWorkspace(api=api)
+        results: list[str] = []
+
+        def _think() -> None:
+            results.append(workspace.execute(WORKSPACE_TOOL_NAME, {"command": ["true"]}))
+
+        worker = threading.Thread(target=_think, daemon=True)
+        worker.start()
+        assert api.entered.wait(_TIMEOUT), "the create never reached the engine"
+        workspace.close()
+        api.release.set()
+        worker.join(_TIMEOUT)
+
+        assert not worker.is_alive()
+        assert ("destroy", ("ws-1",), {"provider": "docker"}) in api.calls
+        assert workspace.workspace_id == ""
+        assert [d.code for d in workspace.degradations] == [DEGRADED_LANE_CLOSED]
+        assert "torn down again" in workspace.degradations[0].reason
+
+    def test_the_raced_workspace_is_named_when_it_cannot_be_torn_down(self) -> None:
+        api = GatedCreateApi(destroy_error=_LifecycleRefusal())
+        workspace = MuseWorkspace(api=api)
+        worker = threading.Thread(
+            target=lambda: workspace.execute(WORKSPACE_TOOL_NAME, {"command": ["true"]}),
+            daemon=True,
+        )
+        worker.start()
+        assert api.entered.wait(_TIMEOUT)
+        workspace.close()
+        api.release.set()
+        worker.join(_TIMEOUT)
+
+        assert [d.code for d in workspace.degradations] == [
+            DEGRADED_LANE_CLOSED,
+            DEGRADED_DESTROY_FAILED,
+            DEGRADED_WORKSPACE_LIVE,
+        ]
+
+
+class TestTheLiveTeardown:
+    """The teardown against a real engine — including the leak, and its remedy.
+
+    Everything above runs on doubles and on the in-memory backend, which proves
+    the *logic*. Two things it cannot prove are exactly the two this task turns
+    on, so they are checked here against real containers and gated like every
+    other live test (``EMBODIMENT_LIVE_RIG=1``):
+
+    1. a clean close really removes the container, rather than merely returning
+       ``True``; and
+    2. the two commands the leak record hands an operator **actually reap the
+       workspace**. A remedy nobody has run is a guess, and this record's whole
+       value is that someone can act on it.
+
+    The second test deliberately produces a real leak and then cleans it up in
+    a ``finally`` — including on failure — so the suite never leaves a
+    container behind on a developer's machine.
+    """
+
+    LIVE = os.environ.get("EMBODIMENT_LIVE_RIG") == "1"
+
+    #: After a run reaches the engine, how long to let the container settle into
+    #: a genuinely *running* job before closing. The one timing assumption in
+    #: this file: ``destroy``'s refusal is a fact about the job's state, so the
+    #: job has to have started for the case under test to be the case tested.
+    SETTLE = 2.0
+
+    #: How many times to repeat the recorded ``destroy``, and how long to wait
+    #: between attempts. ``stop`` returns once the job is *signalled*, so the
+    #: first destroy can still be refused — which is exactly what
+    #: :data:`~embodiment.workspace.REAP_NOTE` tells an operator to expect.
+    REAP_ATTEMPTS = 8
+    REAP_WAIT = 2.0
+
+    @staticmethod
+    def _run_argv(argv: list[str]) -> int:
+        try:
+            proc = subprocess.run(  # nosec B603 - fixed argv, shell=False, no user input
+                argv, capture_output=True, text=True, timeout=120
+            )
+        except (OSError, subprocess.SubprocessError):
+            return -1
+        return proc.returncode
+
+    @classmethod
+    def _reap(cls, remedy: str) -> bool:
+        """Follow the recorded remedy exactly, and report whether it worked.
+
+        The record hands an operator a ``;``-separated line plus
+        :data:`~embodiment.workspace.REAP_NOTE`, which says to repeat the final
+        ``destroy`` until the job reports cancelled. This does both — one argv
+        per command, so no shell is involved — and returns whether the
+        workspace ended up gone. What is under test is the *instruction*, not
+        this helper: a remedy nobody has executed is a guess.
+        """
+        commands = [part.split() for part in remedy.split(";") if part.split()]
+        for argv in commands[:-1]:
+            cls._run_argv(argv)
+        for attempt in range(cls.REAP_ATTEMPTS):
+            if cls._run_argv(commands[-1]) == 0:
+                return True
+            if attempt < cls.REAP_ATTEMPTS - 1:
+                time.sleep(cls.REAP_WAIT)
+        return False
+
+    @pytest.mark.skipif(not LIVE, reason="set EMBODIMENT_LIVE_RIG=1 to test the real engine")
+    def test_a_live_close_removes_the_container(self) -> None:
+        workspace = MuseWorkspace()
+        workspace.execute(WORKSPACE_TOOL_NAME, {"command": ["python3", "-c", "print(2 + 2)"]})
+        workspace_id = workspace.workspace_id
+        assert workspace_id
+
+        assert workspace.close() is True
+        assert workspace.degradations == ()
+        assert workspace.workspace_id == ""
+        # Really gone: destroying it again is refused by the engine.
+        assert self._run_argv(["headspace", "destroy", workspace_id, "--provider", "docker"]) != 0
+
+    @pytest.mark.skipif(not LIVE, reason="set EMBODIMENT_LIVE_RIG=1 to test the real engine")
+    def test_a_live_job_in_flight_leaves_a_workspace_the_record_can_reap(self) -> None:
+        workspace = MuseWorkspace()
+        worker = threading.Thread(
+            target=lambda: workspace.execute(
+                WORKSPACE_TOOL_NAME,
+                {"command": ["python3", "-c", "import time; time.sleep(120)"]},
+            ),
+            daemon=True,
+        )
+        worker.start()
+
+        deadline = time.monotonic() + 60.0
+        while workspace.counts().runs == 0 and time.monotonic() < deadline:
+            time.sleep(0.1)
+        assert workspace.counts().runs == 1, "the run never reached the engine"
+        workspace_id = workspace.workspace_id
+        assert workspace_id
+        time.sleep(self.SETTLE)
+
+        remedy = ""
+        try:
+            assert workspace.close() is False, "destroy did not refuse a running job"
+            leaked = [d for d in workspace.degradations if d.code == DEGRADED_WORKSPACE_LIVE]
+            assert len(leaked) == 1
+            assert leaked[0].workspace_id == workspace_id
+            remedy = leaked[0].reason.split("reap it with: ", 1)[1].split(" — ", 1)[0]
+
+            assert self._reap(remedy), f"the recorded remedy did not reap: {remedy}"
+            # And now it really is gone.
+            assert (
+                self._run_argv(["headspace", "destroy", workspace_id, "--provider", "docker"]) != 0
+            )
+        finally:
+            # Unconditional, and spelled out rather than read back off the
+            # record: if an assertion failed before ``remedy`` was parsed, the
+            # container is still the test's to clean up.
+            self._run_argv(["headspace", "stop", "--apply", workspace_id, "--provider", "docker"])
+            self._run_argv(["headspace", "destroy", workspace_id, "--provider", "docker"])
+
+
+class TestTheDestroyForcePolicyIsExplicit:
+    """``force`` is never passed, and that is a decision rather than an omission.
+
+    ``headspace.api.destroy`` takes ``force=`` to discard declared artifacts
+    that were never exported. This lane declares none — ``run`` is never called
+    with ``declares`` — so the refusal it would override cannot fire from here,
+    and passing ``force=True`` would pre-authorise discarding artifacts a
+    *future* change might declare. The closed default is left as the only
+    reachable policy, the way no ``policy`` and no ``profile`` already are.
+    """
+
+    def test_no_call_site_passes_force(self) -> None:
+        for node in _headspace_calls():
+            names = {keyword.arg for keyword in node.keywords}
+            assert "force" not in names, ast.dump(node)
+
+    def test_no_call_site_declares_an_artifact(self) -> None:
+        """Which is why the refusal ``force`` exists to override is unreachable."""
+        for node in _headspace_calls():
+            names = {keyword.arg for keyword in node.keywords}
+            assert "declares" not in names, ast.dump(node)
+
+
+class TestTheRunnerCloseTearsTheWorkspaceDown:
+    """The acceptance path end to end: one argument ties the two lifetimes.
+
+    The runner learns nothing about workspaces to make this work — ``closers``
+    is a tuple of zero-argument callables and stays opaque — which is the whole
+    reason the seam is honest. Ownership stays with the host that constructed
+    the workspace; only the *timing* is delegated.
+    """
+
+    @staticmethod
+    def _runner(workspace: MuseWorkspace, **kwargs: Any) -> ThreadedMuseRunner:
+        return ThreadedMuseRunner(
+            Scripted(_resp("GUIDANCE: nothing to add " + MARKER_DONE)),
+            closers=(workspace.close,),
+            **kwargs,
+        )
+
+    def test_closing_the_runner_destroys_the_workspace(self) -> None:
+        api = RecordingApi()
+        workspace = MuseWorkspace(api=api)
+        workspace.execute(WORKSPACE_TOOL_NAME, {"command": ["true"]})
+
+        with self._runner(workspace):
+            pass
+
+        assert api.calls[-1] == ("destroy", ("ws-1",), {"provider": "docker"})
+        assert workspace.workspace_id == ""
+        assert workspace.closed is True
+
+    def test_a_drive_ending_with_a_live_workspace_records_it(self) -> None:
+        """The criterion, on the path a host actually wires."""
+        workspace = MuseWorkspace(api=RecordingApi(destroy_error=_LifecycleRefusal()))
+        workspace.execute(WORKSPACE_TOOL_NAME, {"command": ["sleep", "120"]})
+
+        with self._runner(workspace):
+            pass
+
+        leaked = [d for d in workspace.degradations if d.code == DEGRADED_WORKSPACE_LIVE]
+        assert len(leaked) == 1
+        assert leaked[0].workspace_id == "ws-1"
+
+    def test_the_runner_closes_it_exactly_once(self) -> None:
+        api = RecordingApi()
+        workspace = MuseWorkspace(api=api)
+        workspace.execute(WORKSPACE_TOOL_NAME, {"command": ["true"]})
+
+        runner = self._runner(workspace)
+        runner.close(timeout=_TIMEOUT)
+        runner.close(timeout=_TIMEOUT)
+
+        assert [verb for verb, _args, _kwargs in api.calls].count("destroy") == 1
+
+    def test_the_runner_never_learns_what_it_closed(self) -> None:
+        """The layering claim, checked over the runner's own imports.
+
+        If the runner reached for the workspace itself it would have to import
+        this module — and with it ``headspace`` — into the one file embodiment
+        keeps stdlib-only. The seam exists precisely so that never happens.
+        """
+        runner_source = Path(workspace_module.__file__).resolve().parent / "muse_runner.py"
+        tree = ast.parse(runner_source.read_text(encoding="utf-8"))
+        imported: set[str] = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported |= {alias.name for alias in node.names}
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                imported.add(node.module)
+
+        assert "embodiment.workspace" not in imported
+        assert not {name for name in imported if name.split(".")[0] == "headspace"}
 
 
 # ── 4. it behaves like a muse tool ────────────────────────────────────────────
@@ -994,6 +1655,23 @@ class TestTheResultTheMuseReads:
 
         assert "findings:\n  - exit status: 0" in result
         assert "warnings:\n  - storage is measured" in result
+
+    def test_a_resource_warning_is_never_swallowed(self) -> None:
+        """The storage cap is *measured*, not enforced, under the default volume driver.
+
+        Nothing in this lane can turn that into a quota — enforcement is the
+        volume driver's, not a caller's — so the only honest thing left is to
+        not lose the engine's own warning. It reaches the muse, and a host's
+        transcript keeps it (constraint C3 applied to a budget rather than to a
+        failure).
+        """
+        api = RecordingApi(
+            package=_Package(warnings=["storage is measured, not enforced: job wrote 4.2 GiB"])
+        )
+        result = MuseWorkspace(api=api).execute(WORKSPACE_TOOL_NAME, {"command": ["true"]})
+
+        assert "storage is measured, not enforced" in result
+        assert "4.2 GiB" in result
 
     def test_an_oversized_result_is_capped_and_says_so(self) -> None:
         api = RecordingApi(package=_Package(evidence=[_Evidence(excerpt="x" * 5000)]))
