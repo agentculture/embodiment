@@ -5,7 +5,7 @@
   "schema_version": 4,
   "status": "exported",
   "created": "2026-07-29T19:25:04Z",
-  "updated": "2026-07-29T22:20:57Z",
+  "updated": "2026-07-30T16:30:37Z",
   "targets": [
     {
       "id": "c1",
@@ -712,7 +712,7 @@
         "h15",
         "c32"
       ],
-      "instruction": "Owns pyproject.toml, tests/test_zero_deps.py, tests/test_package_surface.py, CHANGELOG.md, and a new workspace-tool module + its test file. ONE change: the pin and the first import together \u2014 a pin without an importer fails test_runtime_imports_match_the_approved_set (vanished set non-empty, tests/test_zero_deps.py:303) and violates h2. Import headspace lazily (function scope) so bare `import embodiment` stays clean. Read the _gate_message banner and follow its numbered remedy. Port the executed probe into the suite: create a workspace, assert policy network=disabled, connect to the docker-bridge gateway from inside (discover it with `ip route`, never hardcode 172.17.0.1), assert unreachable. Missing docker degrades with a CliError-style hint, never raises."
+      "instruction": "Owns pyproject.toml, tests/test_zero_deps.py, tests/test_package_surface.py, CHANGELOG.md, and a new workspace-tool module + its test file. ONE change: the pin and the first import together \u2014 a pin without an importer fails test_runtime_imports_match_the_approved_set (vanished set non-empty, tests/test_zero_deps.py:303) and violates h2. RESOLVED 2026-07-30 (deviation d2, headspace-cli#18 answered by 0.11.0): import `headspace.api` ONLY \u2014 it declares exactly create/run/put/export/destroy in __all__ under semver; `headspace.core` is private and must never be imported. Pin headspace-cli>=0.11. MEASURED: `import headspace.api` adds only stdlib \u2014 docker and requests are NOT imported \u2014 so a module-scope import adds exactly one third-party top-level module (`headspace`) to _REQUIRED_RUNTIME_IMPORTS, and docker stays install-only like neo4j/pymongo; consider extending test_install_footprint_is_wider_than_import_footprint to name docker. Use provider=\"fake\" (in-memory, no Docker daemon) for the CI-safe tests, and gate the real-docker no-reach probe behind an env flag like the other live tests. Port the executed probe: create a workspace, assert policy network=disabled, connect to the docker-bridge gateway from inside (discover it with `ip route`, never hardcode 172.17.0.1), assert unreachable. Missing docker degrades with a CliError-style hint, never raises."
     },
     {
       "id": "t14",
@@ -862,7 +862,8 @@
       "deps": [
         "t18",
         "t9",
-        "t20"
+        "t20",
+        "t24"
       ],
       "covers": [
         "c1",
@@ -873,6 +874,49 @@
         "h22"
       ],
       "instruction": "Owns docs/deliveries/ + the delivery summary. Use the summarize-delivery skill; run devague summary for the skeleton. Report planned vs actual honestly \u2014 a lane that did not run is reported absent, never implied. Map every done-condition to an openable artifact path."
+    },
+    {
+      "id": "t23",
+      "summary": "Run the live-rig test suite and the assigned challenge harnesses, recording results",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "the EMBODIMENT_LIVE_RIG-gated tests run against the real rig and their results are committed; the challenge harnesses (challenge_subset and any sibling assigned challenge) run live with raw transcripts committed; a lane that could not run is reported absent, never implied"
+      ],
+      "deps": [
+        "t20",
+        "t25"
+      ],
+      "covers": [],
+      "instruction": "Owns docs/live-test-results/ (new live-evidence records). Run with EMBODIMENT_LIVE_RIG=1 for the rig-gated tests (test_demo_greenhouse, test_echo_probe) and drive examples/challenge_subset.py against the real cortex. Only the cortex is local \u2014 muse and senses are proxied, so budget wall-clock accordingly. Record degraded runs as data; never re-run for a better number."
+    },
+    {
+      "id": "t24",
+      "summary": "Run the league/arena benchmark and record the series",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "examples/league_seat.py runs with EMBODIMENT_LIVE_ARENA=1 against the real arena; the series is recorded in docs/live-test-results/ with n, rig and model pair stated; results are published either way including INCONCLUSIVE"
+      ],
+      "deps": [
+        "t23"
+      ],
+      "covers": [],
+      "instruction": "Owns docs/live-test-results/ (new arena series record). Drive examples/league_seat.py live; the arena-series-preregistration.md discipline applies \u2014 rules fixed in advance, a degraded match is data, nothing re-run for a better number. Fold muse-runner degradations into the match report via ledger.read(..., muse_runner=runner)."
+    },
+    {
+      "id": "t25",
+      "summary": "Widen the terminal drain to fire at drive end on every exit reason, and wire append_guidance in an in-repo host",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "a drive that exits via finish, stopped or budget all fire exactly one terminal drain; a test proves the clean-finish path (which produced zero terminal boundaries before) now delivers; at least one checked-in host wires append_guidance so delivered counsel reaches the cortex messages; the termination matrix and hook suites still pass unchanged and no new exit path or budget consumer appears"
+      ],
+      "deps": [
+        "t4"
+      ],
+      "covers": [],
+      "instruction": "Owns embodiment/loop.py, embodiment/presence_engine.py, tests/test_presence_engine.py, and one host in examples/. The gap t4 measured: _maybe_force_synthesis returns early on a non-empty summary, so clean-finish drives fire no terminal boundary at all. Fire the terminal beat at drive end for EVERY exit reason \u2014 the natural point is after _work_loop returns and before/around _boundary(ctx, BOUNDARY_COMPLETION) at loop.py:2103, which is on all exit paths. Keep c22 intact: no new exit path, no new consumer of turn_budget/reading_budget, tests/test_loop.py untouched. Keep the duck-typed getattr probe so a three-member sink stays byte-compatible. Then wire append_guidance in examples/proof.py (the baseline harness) so the live re-run can actually show counsel reaching the cortex."
     }
   ],
   "risks": [

@@ -94,7 +94,7 @@ slug: `muse-cycle-pad-headspace-devague-legs` · status: `exported` · from fram
 
 ### t13 — Land headspace-cli as a lazily-imported base dependency AND the workspace tool with its no-reach suite, in one change
 
-- instruction: Owns pyproject.toml, tests/`test_zero_deps.py`, tests/`test_package_surface.py`, CHANGELOG.md, and a new workspace-tool module + its test file. ONE change: the pin and the first import together — a pin without an importer fails `test_runtime_imports_match_the_approved_set` (vanished set non-empty, tests/`test_zero_deps.py`:303) and violates h2. Import headspace lazily (function scope) so bare `import embodiment` stays clean. Read the `_gate_message` banner and follow its numbered remedy. Port the executed probe into the suite: create a workspace, assert policy network=disabled, connect to the docker-bridge gateway from inside (discover it with `ip route`, never hardcode 172.17.0.1), assert unreachable. Missing docker degrades with a CliError-style hint, never raises.
+- instruction: Owns pyproject.toml, tests/`test_zero_deps.py`, tests/`test_package_surface.py`, CHANGELOG.md, and a new workspace-tool module + its test file. ONE change: the pin and the first import together — a pin without an importer fails `test_runtime_imports_match_the_approved_set` (vanished set non-empty, tests/`test_zero_deps.py`:303) and violates h2. RESOLVED 2026-07-30 (deviation d2, headspace-cli#18 answered by 0.11.0): import `headspace.api` ONLY — it declares exactly create/run/put/export/destroy in `__all__` under semver; `headspace.core` is private and must never be imported. Pin headspace-cli>=0.11. MEASURED: `import headspace.api` adds only stdlib — docker and requests are NOT imported — so a module-scope import adds exactly one third-party top-level module (`headspace`) to `_REQUIRED_RUNTIME_IMPORTS`, and docker stays install-only like neo4j/pymongo; consider extending `test_install_footprint_is_wider_than_import_footprint` to name docker. Use provider="fake" (in-memory, no Docker daemon) for the CI-safe tests, and gate the real-docker no-reach probe behind an env flag like the other live tests. Port the executed probe: create a workspace, assert policy network=disabled, connect to the docker-bridge gateway from inside (discover it with `ip route`, never hardcode 172.17.0.1), assert unreachable. Missing docker degrades with a CliError-style hint, never raises.
 - depends on: t10, t12
 - covers: c5, h8, c33, h27, c18, h17, h26, c14, h2, c16, h15, c32
 - acceptance:
@@ -155,13 +155,12 @@ slug: `muse-cycle-pad-headspace-devague-legs` · status: `exported` · from fram
 - acceptance:
   - colleague#358 is updated with the widened C1b consequence (embodiment now carries four base dependencies); any lobes or headspace ask is filed on their repos, never assumed here
 
-### t22 — Demonstrate the full flow end to end and publish the delivery summary
+### t25 — Widen the terminal drain to fire at drive end on every exit reason, and wire `append_guidance` in an in-repo host
 
-- instruction: Owns docs/deliveries/ + the delivery summary. Use the summarize-delivery skill; run devague summary for the skeleton. Report planned vs actual honestly — a lane that did not run is reported absent, never implied. Map every done-condition to an openable artifact path.
-- depends on: t18, t9, t20
-- covers: c1, h1, c25, h5, c28, h22
+- instruction: Owns embodiment/loop.py, embodiment/`presence_engine.py`, tests/`test_presence_engine.py`, and one host in examples/. The gap t4 measured: `_maybe_force_synthesis` returns early on a non-empty summary, so clean-finish drives fire no terminal boundary at all. Fire the terminal beat at drive end for EVERY exit reason — the natural point is after `_work_loop` returns and before/around `_boundary`(ctx, `BOUNDARY_COMPLETION`) at loop.py:2103, which is on all exit paths. Keep c22 intact: no new exit path, no new consumer of `turn_budget`/`reading_budget`, tests/`test_loop.py` untouched. Keep the duck-typed getattr probe so a three-member sink stays byte-compatible. Then wire `append_guidance` in examples/proof.py (the baseline harness) so the live re-run can actually show counsel reaching the cortex.
+- depends on: t4
 - acceptance:
-  - one scope-think-challenge-spec-to-plan-fan-out-summary cycle completes across the two minds with the human confirm gate intact; frame, plan and delivery summary are committed; every done-condition maps to an openable artifact path and any lane that did not run is reported absent
+  - a drive that exits via finish, stopped or budget all fire exactly one terminal drain; a test proves the clean-finish path (which produced zero terminal boundaries before) now delivers; at least one checked-in host wires `append_guidance` so delivered counsel reaches the cortex messages; the termination matrix and hook suites still pass unchanged and no new exit path or budget consumer appears
 
 ### t14 — No-secrets boundary on the workspace tool
 
@@ -170,6 +169,28 @@ slug: `muse-cycle-pad-headspace-devague-legs` · status: `exported` · from fram
 - covers: c34, h28
 - acceptance:
   - the constructed create/run invocations carry no --env or --env-file; a test asserts the seam exposes no secrets parameter, so the leak path cannot be opened by configuration
+
+### t23 — Run the live-rig test suite and the assigned challenge harnesses, recording results
+
+- instruction: Owns docs/live-test-results/ (new live-evidence records). Run with `EMBODIMENT_LIVE_RIG`=1 for the rig-gated tests (`test_demo_greenhouse`, `test_echo_probe`) and drive examples/`challenge_subset.py` against the real cortex. Only the cortex is local — muse and senses are proxied, so budget wall-clock accordingly. Record degraded runs as data; never re-run for a better number.
+- depends on: t20, t25
+- acceptance:
+  - the `EMBODIMENT_LIVE_RIG`-gated tests run against the real rig and their results are committed; the challenge harnesses (`challenge_subset` and any sibling assigned challenge) run live with raw transcripts committed; a lane that could not run is reported absent, never implied
+
+### t24 — Run the league/arena benchmark and record the series
+
+- instruction: Owns docs/live-test-results/ (new arena series record). Drive examples/`league_seat.py` live; the arena-series-preregistration.md discipline applies — rules fixed in advance, a degraded match is data, nothing re-run for a better number. Fold muse-runner degradations into the match report via ledger.read(..., `muse_runner`=runner).
+- depends on: t23
+- acceptance:
+  - examples/`league_seat.py` runs with `EMBODIMENT_LIVE_ARENA`=1 against the real arena; the series is recorded in docs/live-test-results/ with n, rig and model pair stated; results are published either way including INCONCLUSIVE
+
+### t22 — Demonstrate the full flow end to end and publish the delivery summary
+
+- instruction: Owns docs/deliveries/ + the delivery summary. Use the summarize-delivery skill; run devague summary for the skeleton. Report planned vs actual honestly — a lane that did not run is reported absent, never implied. Map every done-condition to an openable artifact path.
+- depends on: t18, t9, t20, t24
+- covers: c1, h1, c25, h5, c28, h22
+- acceptance:
+  - one scope-think-challenge-spec-to-plan-fan-out-summary cycle completes across the two minds with the human confirm gate intact; frame, plan and delivery summary are committed; every done-condition maps to an openable artifact path and any lane that did not run is reported absent
 
 ## Risks
 

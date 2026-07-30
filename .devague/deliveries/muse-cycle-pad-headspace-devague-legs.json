@@ -1,0 +1,48 @@
+{
+  "plan_slug": "muse-cycle-pad-headspace-devague-legs",
+  "schema_version": 1,
+  "created": "2026-07-29T22:25:08Z",
+  "updated": "2026-07-30T16:27:25Z",
+  "deviations": [
+    {
+      "id": "d1",
+      "what": "the plan gains a live-evidence gate before the delivery summary: live-rig testing, assigned challenge harnesses, and league/arena benchmarking must all run and be recorded before any lane is declared done",
+      "task_ref": "t22",
+      "reason": "operator instruction during execution (2026-07-30): live-testing, assigning challenges and league benchmarking are steps before declaring done and summary; the confirmed plan had t9/t16/t18/t19 as live tasks but no arena/league benchmark task and no explicit pre-summary evidence gate",
+      "affects": [
+        "t18",
+        "t22"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "needs-follow-up"
+    },
+    {
+      "id": "d2",
+      "what": "headspace-cli is imported at module scope per the d2 precedent only if its Python API is declared public; otherwise the workspace tool subprocesses the CLI and the dependency pin covers the subprocess, not an import",
+      "task_ref": "t13",
+      "reason": "measured 2026-07-30: headspace 0.10.0 advertises only __version__ in __all__ and headspace.core declares no public surface, so t13 as written would import an undeclared API that a minor release could reshape without deprecation; the ask is filed as headspace-cli#18 and is theirs to answer",
+      "affects": [
+        "t13"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "risky"
+    },
+    {
+      "id": "d3",
+      "what": "the terminal drain must fire at drive end on every exit reason, not only when a forced synthesis turn fires \u2014 and at least one in-repo host must wire append_guidance so delivered counsel actually reaches the cortex",
+      "task_ref": "t4",
+      "reason": "measured by task t4 during implementation: _maybe_force_synthesis returns early when the model finished cleanly with a non-empty summary, so a clean-finish drive produces ZERO terminal boundaries and the t4 fix never fires; the baseline series that measured one late drop per run (4 of 4) looks like clean finishes, so as scoped the fix would not address the failure it was written for and c22 honesty could pass vacuously. Separately, no checked-in host (greenhouse, league_seat, proof) wires append_guidance, so counsel lands on _noop_guidance and cannot reach the synthesis messages in a live run.",
+      "affects": [
+        "t5",
+        "t23",
+        "c22",
+        "c29"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "needs-follow-up"
+    }
+  ]
+}
