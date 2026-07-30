@@ -4,17 +4,27 @@ Six properties are load-bearing and every one of them is pinned here:
 
 1. **Pure and deterministic** — no thread, no clock, no wall-time anywhere.
 2. **Bounded**, with a *structural* termination proof (AST, not just scenarios).
-3. **Tools-off** — the seam is a completion callable and nothing else.
+3. **Tools-off by default** — with no bench wired the seam is a completion
+   callable and nothing else, and that path is the degrade floor (task t10).
 4. **Advisory only** — an insight is text; it can never become a tool decision.
 5. **Insights carry the boundary they reasoned about** — the staleness key that
    deviation d1's parallel loop makes essential.
 6. **Degrade, never raise** — a failing seam records and stops cleanly.
+
+Property 3 changed in task t10 and the change is deliberate. The muse may now be
+handed a :class:`~embodiment.muse.MuseToolBench` — a tool schema plus a way to
+run one — and when it is, it puts that schema on the wire and reads the tool
+results back. What did **not** change is the muse's authority: the tools are
+*thinking* tools, the muse still proposes and never decides, and with no bench
+wired every byte of every prompt is what it was before. ``TestToolsOff`` carries
+the ledger of which pins were revised and what replaced each one.
 """
 
 from __future__ import annotations
 
 import ast
-from dataclasses import fields
+import json
+from dataclasses import MISSING, fields
 from pathlib import Path
 from typing import Any
 
@@ -31,6 +41,9 @@ from embodiment.muse import (
     DEGRADED_MARKER_UNREADABLE,
     DEGRADED_SINK,
     DEGRADED_THINKING,
+    DEGRADED_TOOL,
+    DEGRADED_TOOL_ROUNDS,
+    DEGRADED_TOOLS_WITHHELD,
     DEGRADED_UNREADABLE,
     MARKER_DONE,
     MUSE_AUTHORITY,
@@ -39,12 +52,14 @@ from embodiment.muse import (
     MUSE_EXIT_DEGRADED,
     MUSE_EXIT_QUIET,
     MUSE_EXIT_REASONS,
+    MUSE_TOOL_AUTHORITY,
     MuseControls,
     MuseDegradation,
     MuseInsight,
     MuseLoop,
     MuseOrigin,
     MuseOutcome,
+    MuseToolBench,
     insight_lag,
     is_stale,
 )
@@ -91,6 +106,75 @@ class Scripted:
         return len(self.calls)
 
 
+class ScriptedTools:
+    """A tool-CARRYING completion seam: messages AND a schema in, response out.
+
+    Deliberately a different callable shape from :class:`Scripted`, because
+    ``MuseToolCompleteFn`` is a different type from ``MuseCompleteFn``. A seam
+    that only accepts messages cannot be handed a schema by accident, and that
+    arity difference is exactly what "tools-off" means structurally.
+    """
+
+    def __init__(self, *replies: Any) -> None:
+        self._replies = list(replies) or [_resp("thinking")]
+        self.calls: list[list[dict[str, Any]]] = []
+        self.schemas: list[list[dict[str, Any]]] = []
+
+    def __call__(self, messages: list[dict[str, Any]], tools: list[dict[str, Any]]) -> Any:
+        self.calls.append([dict(m) for m in messages])
+        self.schemas.append([dict(t) for t in tools])
+        reply = self._replies.pop(0) if len(self._replies) > 1 else self._replies[0]
+        if isinstance(reply, BaseException):
+            raise reply
+        return reply
+
+    @property
+    def turns(self) -> int:
+        return len(self.calls)
+
+
+class Pad:
+    """A minimal THINKING tool: it records what it was asked and answers in text."""
+
+    def __init__(self, result: Any = "n1 recorded", *, boom: Any = None) -> None:
+        self.seen: list[tuple[str, dict[str, Any]]] = []
+        self._result = result
+        self._boom = boom
+
+    def __call__(self, name: str, arguments: dict[str, Any]) -> Any:
+        self.seen.append((name, dict(arguments)))
+        if self._boom is not None:
+            raise self._boom
+        return self._result
+
+
+#: A host-supplied schema. Nothing in ``embodiment.muse`` ships one — every tool
+#: the muse is offered comes from the host, which is what keeps the module free
+#: of any opinion about what a thinking tool is.
+_PAD_SCHEMA: list[dict[str, Any]] = [
+    {
+        "type": "function",
+        "function": {
+            "name": "intend",
+            "description": "Record what you are about to think about.",
+            "parameters": {
+                "type": "object",
+                "properties": {"text": {"type": "string"}},
+                "required": ["text"],
+            },
+        },
+    }
+]
+
+
+def _call(name: str = "intend", **arguments: Any) -> ToolCall:
+    return ToolCall(id=f"call-{name}", name=name, arguments=dict(arguments) or {"text": "x"})
+
+
+def _tool_resp(*calls: ToolCall, content: str = "", **kw: Any) -> ModelResponse:
+    return ModelResponse(content=content, tool_calls=list(calls), **kw)
+
+
 def _boundary(**kw: Any) -> BoundaryContext:
     fields_ = {"kind": BOUNDARY_CADENCE_TICK, "step_count": 3}
     fields_.update(kw)
@@ -100,6 +184,30 @@ def _boundary(**kw: Any) -> BoundaryContext:
 def _loop(*replies: Any, **kw: Any) -> tuple[MuseLoop, Scripted]:
     complete = Scripted(*replies)
     return MuseLoop(complete, **kw), complete
+
+
+def _benched(
+    *replies: Any,
+    execute: Any = None,
+    schema: Any = None,
+    tools_off: Any = None,
+    **kw: Any,
+) -> tuple[MuseLoop, ScriptedTools, Any]:
+    """A muse with a bench on the wire, plus the doubles behind it.
+
+    Returns ``(loop, tool_seam, executor)``. The tools-OFF seam is still wired
+    (and still required): it is the floor the muse degrades onto when the bench
+    is withheld, so a host that wires tools supplies both.
+    """
+    tool_seam = ScriptedTools(*replies)
+    executor = execute if execute is not None else Pad()
+    bench = MuseToolBench(
+        schema=tuple(schema if schema is not None else _PAD_SCHEMA),
+        complete=tool_seam,
+        execute=executor,
+    )
+    off = tools_off if tools_off is not None else Scripted(_resp("tools-off " + MARKER_DONE))
+    return MuseLoop(off, tools=bench, **kw), tool_seam, executor
 
 
 def _muse_tree() -> ast.Module:
@@ -347,15 +455,48 @@ class TestTerminationMatrix:
 
 
 class TestToolsOff:
-    """The muse reasons; it does not act. The seam is a completion, full stop."""
+    """Tools-off is the DEFAULT and the FLOOR — and the muse still never acts.
 
-    def test_the_module_names_no_tool_surface(self):
+    Task t10 gave the muse tools, so three pins in this class stopped being true
+    as written. The rule the task set is that a pin may be revised but never
+    simply deleted, so the revision ledger is here, in the class the pins lived
+    in:
+
+    ================================== ===========================================
+    revised pin                        named replacement(s) in this diff
+    ================================== ===========================================
+    ``test_the_module_names_no_tool_   ``test_the_module_names_no_acting_surface``
+    surface``                          + ``test_the_module_reaches_no_repo_store_
+                                       or_network`` + ``test_the_module_declares_
+                                       no_tool_schema_of_its_own``
+    ``test_the_constructor_accepts_no_ ``test_the_constructor_accepts_no_acting_
+    acting_seam``                      seam_only_a_thinking_bench`` + ``test_the_
+                                       bench_names_a_thinking_surface_not_an_
+                                       acting_one``
+    ``test_tool_calls_on_a_response_   ``test_tool_calls_are_ignored_when_no_
+    are_never_read``                   bench_is_wired`` + ``test_tool_calls_are_
+                                       read_only_through_a_wired_bench``
+    ================================== ===========================================
+
+    Two pins are NOT revised, because they are the ones the tool seam must not
+    cost: ``test_an_insight_never_carries_a_callable`` and
+    ``test_the_loop_exposes_no_acting_surface``. The first is strengthened by
+    ``test_no_shape_the_muse_returns_carries_a_callable_after_a_tool_session``,
+    which runs it again after a session that actually called tools.
+    """
+
+    def test_the_module_names_no_acting_surface(self):
+        """The ACTING half of the original token list, kept verbatim.
+
+        The three tokens dropped from it — ``tool_calls``, ``ToolCall`` and
+        ``ToolExecutor``/``tool_executor`` — were standing in for "this module
+        cannot act", which they no longer measure: reading a thinking tool's
+        result is not acting. What they were really guarding is now pinned
+        directly by the two tests below, and by the muse's own authority
+        framing (``TestTheToolAuthorityBoundary``).
+        """
         source = _MUSE_SRC.read_text(encoding="utf-8")
         for token in (
-            "tool_calls",
-            "ToolCall",
-            "ToolExecutor",
-            "tool_executor",
             "subprocess",
             "shlex",
             "os.system",
@@ -364,11 +505,68 @@ class TestToolsOff:
         ):
             assert token not in source, token
 
-    def test_the_constructor_accepts_no_acting_seam(self):
+    def test_the_module_reaches_no_repo_store_or_network(self):
+        """The muse never acts on the repo — proved where it can be: the source.
+
+        embodiment cannot stop a host wiring a destructive executor; what it
+        CAN guarantee is that nothing in this module opens a file, walks a
+        path, or dials anything. Every tool the muse is offered is injected,
+        so the reach is the host's to state and this module's to never have.
+        """
+        source = _MUSE_SRC.read_text(encoding="utf-8")
+        for token in (
+            "import os",
+            "import io",
+            "import socket",
+            "import urllib",
+            "import pathlib",
+            "from pathlib",
+            "open(",
+            "Path(",
+            "urlopen",
+            "requests.",
+            "httpx.",
+        ):
+            assert token not in source, token
+
+    def test_the_module_declares_no_tool_schema_of_its_own(self):
+        """No default tools, and no way to acquire one but injection.
+
+        The module cannot act on the repository partly because it does not know
+        what a tool *is*: it declares no schema, and ``MuseToolBench.schema``
+        has no default, so a bench cannot be constructed without a host naming
+        every tool on it. (``"type": "function"`` does appear in the source —
+        in the wire ECHO of a call the model already made — which is why the
+        scan is for the keys a schema DECLARATION needs instead.)
+        """
+        source = _MUSE_SRC.read_text(encoding="utf-8")
+        for token in ('"parameters"', '"properties"', '"required"', "SCRATCHPAD_TOOLS"):
+            assert token not in source, token
+        schema_field = next(f for f in fields(MuseToolBench) if f.name == "schema")
+        assert schema_field.default is MISSING and schema_field.default_factory is MISSING
+
+    def test_the_constructor_accepts_no_acting_seam_only_a_thinking_bench(self):
         import inspect
 
         params = set(inspect.signature(MuseLoop.__init__).parameters)
-        assert params == {"self", "complete", "controls", "system", "sink", "clock"}
+        assert params == {
+            "self",
+            "complete",
+            "controls",
+            "system",
+            "sink",
+            "clock",
+            # the whole of the tool seam: one optional bench, and the depth that
+            # decides whether it is allowed on the wire at all.
+            "tools",
+            "depth",
+        }
+
+    def test_the_bench_names_a_thinking_surface_not_an_acting_one(self):
+        names = {f.name for f in fields(MuseToolBench)}
+        assert names == {"schema", "complete", "execute"}
+        # No approval, decision or rewrite path can bind to a bench either.
+        assert not (names & {"decision", "deny", "approve", "rewrite", "allow", "veto"})
 
     def test_the_loop_exposes_no_acting_surface(self):
         forbidden = {
@@ -384,8 +582,8 @@ class TestToolsOff:
         }
         assert not (set(dir(MuseLoop)) & forbidden)
 
-    def test_tool_calls_on_a_response_are_never_read(self):
-        """A seam that hands back tool calls gets them ignored, not executed."""
+    def test_tool_calls_are_ignored_when_no_bench_is_wired(self):
+        """The degrade floor, unchanged: no bench, no tool call is ever read."""
         reply = _resp(
             "I would like to write a file " + MARKER_DONE,
             tool_calls=[ToolCall(id="1", name="write_file", arguments={"path": "/etc/passwd"})],
@@ -395,6 +593,20 @@ class TestToolsOff:
         assert outcome.insights[0].text == "I would like to write a file"
         assert not hasattr(outcome.insights[0], "tool_calls")
         assert "write_file" not in outcome.insights[0].guidance
+        assert outcome.tool_rounds == 0
+
+    def test_tool_calls_are_read_only_through_a_wired_bench(self):
+        """The same reply, the same muse — the bench is the only difference."""
+        watcher = Pad()
+        loop, seam, _ = _benched(
+            _tool_resp(_call("intend", text="check the parity claim"), content="one moment"),
+            _resp("the pad agrees " + MARKER_DONE),
+            execute=watcher,
+        )
+        outcome = loop.think(_boundary())
+        assert watcher.seen == [("intend", {"text": "check the parity claim"})]
+        assert outcome.exit_reason == MUSE_EXIT_CONCLUDED
+        assert seam.turns == 2
 
     def test_an_insight_never_carries_a_callable(self):
         loop, _ = _loop(_resp("thought\nGUIDANCE: advice " + MARKER_DONE))
@@ -403,6 +615,23 @@ class TestToolsOff:
             value = getattr(insight, f.name)
             assert not callable(value), f.name
             assert isinstance(value, (str, int, float, MuseOrigin, type(None))), f.name
+
+    def test_no_shape_the_muse_returns_carries_a_callable_after_a_tool_session(self):
+        """The pin above, re-run on a session that actually called tools.
+
+        A bench holds callables; nothing the muse HANDS BACK may. This is the
+        mechanism behind "proposes, never decides": there is no field on an
+        insight or an outcome that a consumer could invoke.
+        """
+        loop, _, _ = _benched(
+            _tool_resp(_call("intend", text="a thought"), content="working"),
+            _resp("done thinking\nGUIDANCE: try the other branch " + MARKER_DONE),
+        )
+        outcome = loop.think(_boundary())
+        assert outcome.insights, "the session must actually have produced something"
+        for shape in [outcome, *outcome.insights]:
+            for f in fields(shape):
+                assert not callable(getattr(shape, f.name)), f"{type(shape).__name__}.{f.name}"
 
 
 # ── 4. advisory only — proposes, never decides ────────────────────────────────
@@ -932,9 +1161,28 @@ class TestImportPosture:
             assert token not in source, token
 
     def test_imports_only_stdlib_and_embodiment(self):
-        stdlib_ok = {"__future__", "dataclasses", "re", "typing"}
+        """The allow-list is a DECLARATION, and ``json`` joined it in task t10.
+
+        A muse with tools has to hand a tool call back to the model in the wire
+        shape the model emitted it in, and ``embodiment.loop`` already builds
+        exactly that shape with ``json.dumps`` (``loop.py``'s
+        ``_assistant_message``). Rebuilding it without ``json`` would mean
+        hand-rolling a serializer, and pushing it onto the host would mean every
+        seam adapter writing one. ``json`` is stdlib, adds no dependency, and
+        leaves every forbidden-import pin in this class byte-identical — which
+        is the property the allow-list exists to protect.
+        """
+        stdlib_ok = {"__future__", "dataclasses", "json", "re", "typing"}
         for module in _imported_modules():
             assert module in stdlib_ok or module.split(".")[0] == "embodiment", module
+
+    def test_the_tool_seam_added_no_third_party_import(self):
+        """The named replacement for the line above: stdlib or embodiment, still."""
+        import sys
+
+        for module in _imported_modules():
+            head = module.split(".")[0]
+            assert head == "embodiment" or head in sys.stdlib_module_names, module
 
     def test_no_colleague_import(self):
         assert not any(m.split(".")[0] == "colleague" for m in _imported_modules())
@@ -1220,3 +1468,413 @@ class TestTheRecallChannelAddsNoQueryPath:
         source = inspect.getsource(MuseLoop)
         for verb in ("def recall", "def search", "def query", "def fetch"):
             assert verb not in source
+
+
+# ── the tool seam (task t10) ─────────────────────────────────────────────────
+
+
+class TestTheToolSeam:
+    """A bench on the wire: the schema goes out, the results come back.
+
+    The seam is a distinct type from the tools-off one — ``MuseToolCompleteFn``
+    takes ``(messages, schema)`` where ``MuseCompleteFn`` takes ``(messages)``
+    — so a one-argument seam cannot be handed a schema by accident and a
+    two-argument seam cannot be driven tools-off by accident.
+    """
+
+    def test_the_tools_off_seam_is_still_called_with_exactly_one_argument(self):
+        seen: list[int] = []
+
+        def complete(messages: list[dict[str, Any]]) -> ModelResponse:
+            seen.append(len(messages))
+            return _resp(MARKER_DONE)
+
+        MuseLoop(complete).think(_boundary())
+        assert seen == [2]
+
+    def test_a_wired_bench_puts_its_schema_on_the_wire_every_turn(self):
+        loop, seam, _ = _benched(_resp("thinking"), _resp(MARKER_DONE))
+        loop.think(_boundary())
+        assert seam.turns == 2
+        assert seam.schemas == [_PAD_SCHEMA, _PAD_SCHEMA]
+
+    def test_the_muse_reads_a_tool_result_back(self):
+        loop, seam, pad = _benched(
+            _tool_resp(_call("intend", text="count the even-sum subsets"), content="one moment"),
+            _resp("the pad has it " + MARKER_DONE),
+            execute=Pad(result="n1 recorded"),
+        )
+        outcome = loop.think(_boundary())
+        assert pad.seen == [("intend", {"text": "count the even-sum subsets"})]
+        # The result reached the model as a tool message, in the wire shape.
+        second = seam.calls[1]
+        tool_messages = [m for m in second if m.get("role") == "tool"]
+        assert len(tool_messages) == 1
+        assert tool_messages[0]["content"] == "n1 recorded"
+        assert tool_messages[0]["tool_call_id"] == "call-intend"
+        assert outcome.exit_reason == MUSE_EXIT_CONCLUDED
+
+    def test_the_assistant_message_carries_the_calls_in_wire_shape(self):
+        loop, seam, _ = _benched(
+            _tool_resp(_call("intend", text="a plan"), content="thinking out loud"),
+            _resp(MARKER_DONE),
+        )
+        loop.think(_boundary())
+        assistant = [m for m in seam.calls[1] if m.get("role") == "assistant"]
+        assert len(assistant) == 1
+        call = assistant[0]["tool_calls"][0]
+        assert call["id"] == "call-intend"
+        assert call["type"] == "function"
+        assert call["function"]["name"] == "intend"
+        # Arguments ride as a JSON *string*, exactly as ``embodiment.loop`` sends
+        # them, so one seam adapter serves both loops.
+        assert json.loads(call["function"]["arguments"]) == {"text": "a plan"}
+
+    def test_a_whole_tool_resolved_turn_becomes_one_insight(self):
+        """One thinking turn is still one insight, tool rounds and all.
+
+        The turn's text is everything the muse wrote across the rounds — a
+        preamble before a call, and what it made of the result afterwards — so
+        the shape ``turn_index`` describes stays true and nothing the muse said
+        while a tool was in flight is dropped.
+        """
+        loop, _, _ = _benched(
+            _tool_resp(_call("intend", text="x"), content="checking the pad"),
+            _resp("the recurrence holds " + MARKER_DONE),
+        )
+        outcome = loop.think(_boundary())
+        assert [i.text for i in outcome.insights] == ["checking the pad\nthe recurrence holds"]
+        # ``turn_index`` is the MODEL turn the insight settled on, which the
+        # runner reads as ``model_turns``: a turn that spent a round to settle
+        # cost two, and stamping ``1`` would under-report what it cost.
+        assert [i.turn_index for i in outcome.insights] == [2]
+        assert all(not i.guidance for i in outcome.insights)
+
+    def test_guidance_written_before_a_tool_call_is_not_lost(self):
+        """The counsel-loss trap: a GUIDANCE line ahead of a call still arrives."""
+        loop, _, _ = _benched(
+            _tool_resp(
+                _call("intend", text="x"),
+                content="GUIDANCE: the budget assumption looks wrong",
+            ),
+            _resp("confirmed by the pad " + MARKER_DONE),
+        )
+        insight = loop.think(_boundary()).insights[0]
+        assert insight.guidance == "the budget assumption looks wrong"
+        assert insight.text == "confirmed by the pad"
+
+    def test_tool_rounds_are_counted_on_the_outcome(self):
+        loop, _, _ = _benched(
+            _tool_resp(_call("intend", text="a"), content="one"),
+            _tool_resp(_call("intend", text="b"), content="two"),
+            _resp(MARKER_DONE),
+            controls=MuseControls(max_turns=6, max_tool_rounds=4),
+        )
+        outcome = loop.think(_boundary())
+        assert outcome.tool_rounds == 2
+        assert outcome.to_dict()["tool_rounds"] == 2
+
+    def test_a_session_with_no_tool_call_counts_no_rounds(self):
+        loop, _, _ = _benched(_resp("just thinking " + MARKER_DONE))
+        assert loop.think(_boundary()).tool_rounds == 0
+
+    def test_a_tool_that_claims_it_finished_does_not_end_the_session(self):
+        """Only the four declared exits end a session; a tool cannot mint a fifth."""
+
+        class Finisher:
+            result = "submitted"
+            finished = True
+            finish_summary = "all done"
+
+        loop, seam, _ = _benched(
+            _tool_resp(_call("intend", text="x"), content="calling"),
+            _resp("still here"),
+            execute=lambda _n, _a: Finisher(),
+            controls=MuseControls(max_turns=4, max_tool_rounds=2),
+        )
+        outcome = loop.think(_boundary())
+        assert outcome.exit_reason == MUSE_EXIT_BUDGET
+        assert seam.turns == 4
+
+
+class TestTheToolLoopIsBoundedInPractice:
+    """The executable counterpart to ``tests/test_muse_tool_loop_ast.py``."""
+
+    def test_tool_rounds_cannot_outspend_the_session_turn_budget(self):
+        """A muse that calls a tool on EVERY turn still spends exactly ``max_turns``."""
+        loop, seam, pad = _benched(
+            _tool_resp(_call("intend", text="again"), content="again"),
+            controls=MuseControls(max_turns=4, max_tool_rounds=99),
+        )
+        outcome = loop.think(_boundary())
+        assert seam.turns == 4
+        assert outcome.turns == 4
+        assert outcome.exit_reason == MUSE_EXIT_BUDGET
+
+    @pytest.mark.parametrize("max_turns", [0, 1, 2, 3, 9])
+    def test_turns_never_exceed_the_budget_with_tools_wired(self, max_turns):
+        loop, seam, _ = _benched(
+            _tool_resp(_call("intend", text="again"), content="again"),
+            controls=MuseControls(max_turns=max_turns, max_tool_rounds=50),
+        )
+        outcome = loop.think(_boundary())
+        assert seam.turns <= max(1, max_turns)
+        assert outcome.turns == seam.turns
+
+    def test_the_round_allowance_stops_a_tool_conversation_short(self):
+        """The round allowance bites long before the turn budget does."""
+        loop, seam, _ = _benched(
+            _tool_resp(_call("intend", text="again"), content="again"),
+            controls=MuseControls(max_turns=20, max_tool_rounds=2),
+        )
+        outcome = loop.think(_boundary())
+        assert seam.turns == 20  # the turn budget is still the outer bound
+        assert 0 < outcome.tool_rounds < 20
+        assert DEGRADED_TOOL_ROUNDS in [d.code for d in outcome.degradations]
+
+    def test_unresolved_tool_calls_are_recorded_never_silent(self):
+        loop, _, _ = _benched(
+            _tool_resp(_call("intend", text="again"), content="again"),
+            controls=MuseControls(max_turns=2, max_tool_rounds=1),
+        )
+        outcome = loop.think(_boundary())
+        records = [d for d in outcome.degradations if d.code == DEGRADED_TOOL_ROUNDS]
+        assert records, [d.code for d in outcome.degradations]
+        assert outcome.degraded is True
+
+    def test_every_tool_scenario_exits_through_one_of_the_declared(self):
+        scenarios = [
+            _resp(MARKER_DONE),
+            _resp(""),
+            _tool_resp(_call("intend", text="x")),
+            _tool_resp(_call("intend", text="x"), content="text and a call"),
+            RuntimeError("the muse endpoint died"),
+            None,
+        ]
+        for reply in scenarios:
+            loop, _, _ = _benched(reply, controls=MuseControls(max_turns=3, max_tool_rounds=2))
+            assert loop.think(_boundary()).exit_reason in MUSE_EXIT_REASONS
+
+
+class TestToolsDegradeNeverRaise:
+    """A tool is one more thing that can fail; none of them may reach the host."""
+
+    def test_a_failing_tool_is_readable_text_and_a_recorded_transition(self):
+        loop, seam, _ = _benched(
+            _tool_resp(_call("intend", text="x"), content="calling"),
+            _resp("noted, the pad is broken " + MARKER_DONE),
+            execute=Pad(boom=RuntimeError("the pad is on fire")),
+        )
+        outcome = loop.think(_boundary())
+        assert outcome.exit_reason == MUSE_EXIT_CONCLUDED
+        codes = [d.code for d in outcome.degradations]
+        assert codes == [DEGRADED_TOOL]
+        assert "the pad is on fire" in outcome.degradations[0].reason
+        # The muse can read the failure and think about it.
+        tool_message = [m for m in seam.calls[1] if m.get("role") == "tool"][0]
+        assert "the pad is on fire" in tool_message["content"]
+
+    def test_a_tool_result_that_cannot_be_rendered_is_named(self):
+        class Landmine:
+            def __str__(self) -> str:
+                raise RuntimeError("cannot render")
+
+        loop, _, _ = _benched(
+            _tool_resp(_call("intend", text="x"), content="calling"),
+            _resp(MARKER_DONE),
+            execute=lambda _n, _a: Landmine(),
+        )
+        outcome = loop.think(_boundary())
+        assert outcome.exit_reason == MUSE_EXIT_CONCLUDED
+        assert [d.code for d in outcome.degradations] == [DEGRADED_TOOL]
+
+    def test_a_runaway_tool_result_is_clipped_and_the_clip_is_recorded(self):
+        loop, seam, _ = _benched(
+            _tool_resp(_call("intend", text="x"), content="calling"),
+            _resp(MARKER_DONE),
+            execute=lambda _n, _a: "y" * 9000,
+            controls=MuseControls(max_turns=4, max_tool_result_chars=100),
+        )
+        outcome = loop.think(_boundary())
+        tool_message = [m for m in seam.calls[1] if m.get("role") == "tool"][0]
+        assert len(tool_message["content"]) < 200
+        assert DEGRADED_TOOL in [d.code for d in outcome.degradations]
+
+    def test_more_calls_in_one_turn_than_the_cap_are_dropped_and_recorded(self):
+        many = [_call("intend", text=f"n{i}") for i in range(40)]
+        pad = Pad()
+        loop, _, _ = _benched(
+            _tool_resp(*many, content="a flood"),
+            _resp(MARKER_DONE),
+            execute=pad,
+        )
+        outcome = loop.think(_boundary())
+        assert 0 < len(pad.seen) < 40
+        assert DEGRADED_TOOL in [d.code for d in outcome.degradations]
+
+    def test_a_response_whose_tool_calls_explode_degrades(self):
+        class Hostile:
+            content = "thinking"
+
+            @property
+            def tool_calls(self) -> list[Any]:
+                raise RuntimeError("tool_calls is a landmine")
+
+        loop, _, _ = _benched(Hostile())
+        outcome = loop.think(_boundary())
+        assert outcome.exit_reason == MUSE_EXIT_DEGRADED
+        assert outcome.degradations[0].code == DEGRADED_THINKING
+
+    def test_a_tool_carrying_seam_that_dies_mid_round_stops_cleanly(self):
+        loop, _, _ = _benched(
+            _tool_resp(_call("intend", text="x"), content="calling"),
+            RuntimeError("the muse endpoint died mid-round"),
+        )
+        outcome = loop.think(_boundary())
+        assert outcome.exit_reason == MUSE_EXIT_DEGRADED
+        assert DEGRADED_THINKING in [d.code for d in outcome.degradations]
+        # A turn that died mid-resolution yields no insight, exactly as a turn
+        # that died on its first completion always has: the preamble to an
+        # unfinished tool round is not counsel, and pretending otherwise would
+        # hand the acting loop half a thought as if it were a whole one.
+        assert [i.text for i in outcome.insights] == []
+
+    def test_a_base_exception_still_interrupts_the_host_with_tools_wired(self):
+        def hostile(_messages: Any, _tools: Any) -> Any:
+            raise KeyboardInterrupt
+
+        bench = MuseToolBench(schema=tuple(_PAD_SCHEMA), complete=hostile, execute=Pad())
+        loop = MuseLoop(Scripted(), tools=bench)
+        with pytest.raises(KeyboardInterrupt):
+            loop.think(_boundary())
+
+    def test_a_tool_call_with_unserializable_arguments_degrades_rather_than_raises(self):
+        class Unserializable:
+            def __repr__(self) -> str:
+                raise RuntimeError("no repr for you")
+
+        call = ToolCall(id="c", name="intend", arguments={"text": Unserializable()})
+        loop, _, _ = _benched(_tool_resp(call, content="calling"), _resp(MARKER_DONE))
+        outcome = loop.think(_boundary())
+        assert outcome.exit_reason == MUSE_EXIT_CONCLUDED
+
+
+class TestToolsAreTopLevelOnly:
+    """Scope limit, enforced rather than documented: subagent-depth muses get none."""
+
+    def test_depth_zero_is_the_default_and_gets_the_bench(self):
+        loop, seam, _ = _benched(_resp(MARKER_DONE))
+        loop.think(_boundary())
+        assert seam.turns == 1
+        assert seam.schemas == [_PAD_SCHEMA]
+
+    @pytest.mark.parametrize("depth", [1, 2, 7])
+    def test_a_subagent_depth_muse_never_sees_the_bench(self, depth):
+        off = Scripted(_resp("thinking tools-off " + MARKER_DONE))
+        loop, seam, pad = _benched(_resp(MARKER_DONE), tools_off=off, depth=depth)
+        outcome = loop.think(_boundary())
+        assert seam.turns == 0, "the tool-carrying seam must never be called below the top"
+        assert off.turns == 1
+        assert pad.seen == []
+        assert outcome.exit_reason == MUSE_EXIT_CONCLUDED
+
+    def test_withholding_the_bench_is_recorded_never_silent(self):
+        loop, _, _ = _benched(_resp(MARKER_DONE), depth=2)
+        outcome = loop.think(_boundary())
+        record = [d for d in outcome.degradations if d.code == DEGRADED_TOOLS_WITHHELD]
+        assert record, [d.code for d in outcome.degradations]
+        assert "2" in record[0].reason
+
+    def test_a_withheld_bench_leaves_the_prompt_byte_identical_to_tools_off(self):
+        off_only = Scripted(_resp(MARKER_DONE))
+        MuseLoop(off_only).think(_boundary())
+        withheld = Scripted(_resp(MARKER_DONE))
+        loop, _, _ = _benched(_resp(MARKER_DONE), tools_off=withheld, depth=1)
+        loop.think(_boundary())
+        assert withheld.calls[0] == off_only.calls[0]
+
+    @pytest.mark.parametrize("depth", ["two", None, object()])
+    def test_a_depth_that_cannot_be_read_fails_closed(self, depth):
+        """An unreadable depth withholds the bench; it never grants it.
+
+        The default on a junk value is deliberately ``1`` and not ``0``: a
+        muse whose position cannot be established is not provably the top-level
+        one, and the cheap failure is a tools-off muse, not a tool-wielding
+        subagent.
+        """
+        off = Scripted(_resp(MARKER_DONE))
+        loop, seam, pad = _benched(_resp(MARKER_DONE), tools_off=off, depth=depth)
+        outcome = loop.think(_boundary())
+        assert seam.turns == 0
+        assert off.turns == 1
+        assert pad.seen == []
+        assert DEGRADED_TOOLS_WITHHELD in [d.code for d in outcome.degradations]
+
+    def test_no_bench_at_any_depth_records_nothing(self):
+        loop, _ = _loop(_resp(MARKER_DONE), depth=3)
+        outcome = loop.think(_boundary())
+        assert [d.code for d in outcome.degradations] == []
+
+
+class TestTheToolAuthorityBoundary:
+    """``MUSE_AUTHORITY`` is unconditional; the tool boundary is appended to it."""
+
+    def test_no_bench_means_the_system_message_is_exactly_the_authority(self):
+        loop, complete = _loop(_resp(MARKER_DONE))
+        loop.think(_boundary())
+        assert complete.calls[0][0]["content"] == MUSE_AUTHORITY
+
+    def test_a_wired_bench_appends_the_tool_boundary_after_the_authority(self):
+        loop, seam, _ = _benched(_resp(MARKER_DONE))
+        loop.think(_boundary())
+        system = seam.calls[0][0]["content"]
+        assert system.startswith(MUSE_AUTHORITY)
+        assert MUSE_TOOL_AUTHORITY in system
+        assert system.index(MUSE_AUTHORITY) < system.index(MUSE_TOOL_AUTHORITY)
+
+    def test_host_framing_still_comes_after_both(self):
+        loop, seam, _ = _benched(_resp(MARKER_DONE), system="You are Gwen's inner voice.")
+        loop.think(_boundary())
+        system = seam.calls[0][0]["content"]
+        assert system.index(MUSE_AUTHORITY) < system.index(MUSE_TOOL_AUTHORITY)
+        assert system.index(MUSE_TOOL_AUTHORITY) < system.index("You are Gwen's inner voice.")
+
+    def test_the_authority_rides_every_tool_round_not_just_the_first(self):
+        loop, seam, _ = _benched(
+            _tool_resp(_call("intend", text="x"), content="calling"),
+            _tool_resp(_call("intend", text="y"), content="again"),
+            _resp(MARKER_DONE),
+            controls=MuseControls(max_turns=6, max_tool_rounds=4),
+        )
+        loop.think(_boundary())
+        assert seam.turns >= 3
+        for call in seam.calls:
+            assert call[0]["role"] == "system"
+            assert call[0]["content"].startswith(MUSE_AUTHORITY)
+            assert MUSE_TOOL_AUTHORITY in call[0]["content"]
+
+    def test_the_tool_boundary_still_says_the_muse_proposes_and_never_decides(self):
+        lowered = MUSE_TOOL_AUTHORITY.lower()
+        assert "propose" in lowered
+        assert "never decide" in lowered or "not decide" in lowered
+
+    def test_the_tool_boundary_names_the_reach_the_muse_does_not_have(self):
+        lowered = MUSE_TOOL_AUTHORITY.lower()
+        for phrase in ("thinking", "repositor", "memory store", "network"):
+            assert phrase in lowered, phrase
+
+    def test_the_tool_boundary_claims_no_identity_and_no_second_mind(self):
+        lowered = MUSE_TOOL_AUTHORITY.lower()
+        for token in ("gwen", "qwen", "gemma", "colleague", "claude"):
+            assert token not in lowered, token
+
+    def test_the_authority_text_itself_is_untouched_by_the_tool_seam(self):
+        """t11 pins byte-identity against the release; this pins the one string.
+
+        ``MUSE_AUTHORITY`` reaches BOTH paths, so any edit to it would break
+        tools-off byte-identity. The tool boundary is therefore an appended
+        block, and the sentence it corrects is still there to be corrected.
+        """
+        assert "no tools" in MUSE_AUTHORITY.lower()
+        assert "final authority" in MUSE_AUTHORITY.lower()
+        assert MUSE_TOOL_AUTHORITY not in MUSE_AUTHORITY
