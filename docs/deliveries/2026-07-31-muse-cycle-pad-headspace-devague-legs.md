@@ -418,6 +418,33 @@ assumption. Grouped by code:
 | **frame, plan and delivery summary are committed** | all three above, in-tree | ✅ |
 | **any lane that did not run is reported absent** | *(amended)* Experiment 1 (`t9`), rungs L2–L4 (`t27`), escalation E2 (`t28`), `challenge_entropic` variant 3 and the no-muse `proof.py` control (`t23`), the tools-on-in-drive lane (`t16` / `t26`). Two entries came off this list when `t24` landed: **`t24` itself** and the **4 `EMBODIMENT_LIVE_ARENA` tests**, which it ran 4/4 | ✅ |
 
+## The review round — what two reviewers found that this cycle did not
+
+Added after PR #38 opened. It belongs in the accountability artifact because
+**both reviewers found real defects, and one of them was a C3 violation this
+cycle shipped while writing a great deal of prose about C3.**
+
+| Finding | Source | Verdict |
+|---|---|---|
+| **TOCTOU between `execute()`'s closed-check and its run** — a tool call could reach `_api.run` against a workspace `close` had already destroyed, **with the degradation list empty** | Qodo | **Real, and worse than reported.** Confirmed with a failing test before any production change: 4 of 5 new tests failed, and the headline one recorded a *silent success*. `_ensure_workspace`'s comment argued the check was unnecessary *because the caller made one* — a check on the muse's thread and a run on the host's are not one act. Fixed at `4048c74`; the window is **narrowed to one statement, not closed**, and the code says so, because closing it means holding the lock across `run` and `close` must never wait on an engine call |
+| **`headspace-cli>=0.11` had no ledger entry** naming the dependency, its floor, and a justification | Qodo | **Real hole in the audit trail.** `d2` recorded the *condition* for importing headspace; nothing recorded how it **resolved**. Three surfaces carried the dependency — `CHANGELOG.md`, `CLAUDE.md`, `tests/test_zero_deps.py` — and the one that *is* the audit trail did not. Now `d17`, with `pyproject.toml` pointing at the ledger |
+| **`new_reliability_rating` C** | SonarCloud | **Real, and 1 of the 4 causes was an empty test**: `assert controls() == controls()` could only fail if the factory were nondeterministic, and never checked the property its name claimed |
+| 65 further maintainability issues | SonarCloud | **13 fixed, 10 refused with reasons** (posted on the PR). The refusals were checked, not waved off — `S7632`'s four are `# noqa: BLE001` comments parsed with flake8's own regex to confirm they are *targeted*, and `S8997`'s four are flagging `try/finally` restore lines whose asserts already sit after the `finally` |
+
+Two things this round is worth remembering for:
+
+- **A knock-on the fix surfaced.** `examples/muse_arms.py`'s `_ran()` classifier
+  matched four refusal texts and was missing `CLOSED_TEXT`, so a refused call
+  counted as a call that ran — in the number arm C is graded on. The gap
+  *predates* the fix. No published result changes (the committed series holds
+  zero closed-lane refusals), and the constant is now imported rather than
+  retyped so the two cannot part again in silence.
+- **A CI failure that was not flaky.** `publish.yml` checked out shallow, so
+  the provenance test that re-derives a run's evidence *at the commit that run
+  named* failed with `bad object` while passing locally. The test now skips
+  with a named reason on a shallow clone — an absent instrument, not a
+  failure, which is the distinction this whole cycle turns on.
+
 ## Remaining Work / Follow-up
 
 **Blocking nothing in this PR.** Everything here is recorded rather than hidden.
