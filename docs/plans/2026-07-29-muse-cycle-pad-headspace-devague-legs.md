@@ -208,6 +208,7 @@ RIG: gateway <http://localhost:8001/v1>, auth REQUIRED (Authorization: Bearer $`
 PRE-REGISTER the ladder, the pairings, the fairness rules and the decision rule BEFORE the first dial, house style per docs/live-test-results/\*-preregistration.md, thresholds asserted by value in a test.
 
 COST IS A RESULT, not overhead: report completion tokens and wall clock per arm beside outcome. t9 measured the muse reaching identical verdicts to the cortex for about 1/25 the tokens; if quality ties here, cost decides, and that is a publishable answer to the operator question.
+
 - depends on: t24
 - acceptance:
   - three arms differing only in which model serves cortex and muse (senses stays Gemma 12B in all three); an escalating ladder run in order until the arms separate or it is exhausted; every rung records its scenario, turn limit, actions cap, max-steps, seed and both model ids; results published either way including INCONCLUSIVE, with any rung that did not run reported absent; a per-arm cost column (completion tokens and wall clock) reported beside outcome, because equal quality at 25x the cost is itself the answer
@@ -236,6 +237,7 @@ RIG: gateway <http://localhost:8001/v1>, auth REQUIRED (Authorization: Bearer $`
 PRE-REGISTER before the first dial (house style: docs/live-test-results/\*-preregistration.md, thresholds asserted by value in a test). State the CEILING RISK and an ESCALATION PATH — four experiments in this cycle died at a ceiling (see issue 35); if the arms tie, climb rather than publish INCONCLUSIVE and stop.
 
 Publish either way. Any arm that did not run is reported ABSENT, prominently.
+
 - depends on: t27
 - acceptance:
   - three arms driven entirely by host wiring with no embodiment source change — A: today, Qwen actor with final authority plus a tools-off Gemma muse that proposes and never decides; B: Gemma top-level coordinator delegating to a Qwen subagent developer; C: the mirror, Qwen coordinator delegating to a Gemma subagent developer; the mirror arm is mandatory because B changes both who coordinates and which model coordinates, and without C neither can be attributed; every arm records both model ids per level, the spawn allowance, and tokens consumed per level
