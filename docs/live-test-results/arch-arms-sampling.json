@@ -1,0 +1,206 @@
+{
+  "kind": "arch-arms-sampling-table",
+  "version": 1,
+  "series": "orchestrator-worker-architectures",
+  "task": "t5",
+  "read_by": "examples/arch_arms.py",
+  "why": [
+    "This file is an INPUT, not a run artifact. Every other *-config.json in this",
+    "directory was written BY a harness; this one is read by one. It exists because",
+    "configurations.md records temperature as a hidden variable that confounded an",
+    "entire prior series: each harness hard-coded a value, and one of them set 0.8",
+    "by vibe. A value that lives in code is a value nobody reviewed. So the sampling",
+    "table -- temperature, thinking mode and max_tokens, per role per arm -- lives",
+    "here, and examples/arch_arms.py defines no fallback for any of it: a missing",
+    "cell raises rather than quietly becoming 0.3.",
+    "Model identities live here too, and for a second reason: the cortex is being",
+    "upgraded to a vision-capable model as this lands. A model id hard-coded in a",
+    "harness would name a mind that no longer exists, and arm E would silently",
+    "measure the wrong rig. Its 'model' is null on purpose -- see roles.cortex.why."
+  ],
+  "roles": {
+    "cortex": {
+      "model": null,
+      "model_env": "EMBODIMENT_CORTEX_MODEL",
+      "base_url": "http://localhost:8001/v1",
+      "base_url_env": "EMBODIMENT_BASE_URL",
+      "api_key_env": "COLLEAGUE_API_KEY",
+      "why": [
+        "NULL DELIBERATELY. The rig's cortex is mid-upgrade to a vision-capable",
+        "model, so no id can be pinned honestly today. Absence is not a default:",
+        "arch_arms resolves the id from EMBODIMENT_CORTEX_MODEL or the --cortex-model",
+        "flag, and with neither it records the arm ABSENT rather than substituting a",
+        "predecessor. Arm E is therefore NOT 'the rig we already measured' -- the",
+        "numbers in arena-budget.md, league-h2h.md and league-commander.md describe a",
+        "cortex that will not exist, and are never this series' baseline. E is",
+        "re-measured against whatever id is dialled here."
+      ]
+    },
+    "worker": {
+      "model": "unsloth/Qwen3.6-35B-A3B-NVFP4",
+      "model_env": "EMBODIMENT_WORKER_MODEL",
+      "base_url": "http://thor.tail0be7e0.ts.net:8000/v1",
+      "base_url_env": "EMBODIMENT_WORKER_URL",
+      "api_key_env": "COLLEAGUE_API_KEY",
+      "why": [
+        "Served on Thor and verified from its own /capabilities advert (spec s1), so",
+        "it can be pinned. Dialled DIRECTLY at Thor: the spark gateway advertises no",
+        "worker role (spec s2), and examples/worker_seam.py refuses to fall back to",
+        "it. These two values are handed to worker_seam.resolve_worker_config as the",
+        "explicit operator statement they are; that function still checks the key and",
+        "the scheme, and still degrades to a recorded ABSENT rather than substituting."
+      ]
+    },
+    "senses": {
+      "model": "coolthor/gemma-4-12B-it-NVFP4A16",
+      "model_env": "EMBODIMENT_SENSES_MODEL",
+      "base_url": "http://localhost:8001/v1",
+      "base_url_env": "EMBODIMENT_BASE_URL",
+      "api_key_env": "COLLEAGUE_API_KEY",
+      "why": [
+        "Constant in every arm, and NOT DIALLED by the text-only challenge rungs --",
+        "recorded so the configuration is complete, exactly as league_h2h records",
+        "SENSES_MODEL for a seat that has no senses lane. It is hashed rather than",
+        "merely written down: arch_arms refuses to run when any two arms' senses",
+        "configuration differs, and every per-call record carries the hash, so the",
+        "invariant is checkable from a committed artifact alone. The hash starts",
+        "biting on real traffic when the perception-routing rung dials senses."
+      ]
+    }
+  },
+  "thinking_wire": {
+    "why": [
+      "What 'thinking: on' actually puts on the wire, stated here rather than",
+      "assumed in code. The convention differs across servers and model families,",
+      "and the upgraded cortex's is not yet known -- a harness that hard-coded one",
+      "would be inventing a fact about a model nobody has dialled. A mode with no",
+      "entry here is a config error, never a silent no-op; an entry of {} is an",
+      "explicit 'send no extra keys'."
+    ],
+    "modes": {
+      "on": {
+        "chat_template_kwargs": {
+          "enable_thinking": true
+        }
+      },
+      "off": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "sampling": {
+    "why": [
+      "Per role PER ARM, because 'the same value for both minds' is precisely the",
+      "mistake configurations.md records. temperature 0.3 follows the operator's",
+      "stated heuristic (0.1-0.3 for correctness work); every rung on this ladder is",
+      "a correctness task. max_tokens 16000 is d16: t24 measured the shipped 2048",
+      "default truncating 6.0% of completions with ZERO degradations recorded,",
+      "because ModelResponse carries no finish_reason (#37). Both acting minds are",
+      "thinking models, so the budget is sufficient rather than merely equal and cost",
+      "is read off tokens actually consumed."
+    ],
+    "E": {
+      "cortex": {
+        "temperature": 0.3,
+        "thinking": "on",
+        "max_tokens": 16000
+      },
+      "senses": {
+        "temperature": 0.3,
+        "thinking": "off",
+        "max_tokens": 16000
+      }
+    },
+    "W": {
+      "worker": {
+        "temperature": 0.3,
+        "thinking": "on",
+        "max_tokens": 16000
+      },
+      "senses": {
+        "temperature": 0.3,
+        "thinking": "off",
+        "max_tokens": 16000
+      }
+    },
+    "M": {
+      "cortex": {
+        "temperature": 0.3,
+        "thinking": "on",
+        "max_tokens": 16000
+      },
+      "worker": {
+        "temperature": 0.3,
+        "thinking": "on",
+        "max_tokens": 16000
+      },
+      "senses": {
+        "temperature": 0.3,
+        "thinking": "off",
+        "max_tokens": 16000
+      }
+    },
+    "H": {
+      "cortex": {
+        "temperature": 0.3,
+        "thinking": "on",
+        "max_tokens": 16000
+      },
+      "worker": {
+        "temperature": 0.3,
+        "thinking": "on",
+        "max_tokens": 16000
+      },
+      "senses": {
+        "temperature": 0.3,
+        "thinking": "off",
+        "max_tokens": 16000
+      }
+    }
+  },
+  "budgets": {
+    "why": [
+      "Drive budgets, not sampling -- but config for the same reason. They are",
+      "SUFFICIENT rather than equal: the loop charges every child turn to the",
+      "parent's max_steps, so an orchestrated arm needs headroom for the same ground",
+      "work PLUS the orchestration turns around it. Capping M and H at the flat arms'",
+      "14 would measure the budget, not the architecture. Fairness in cost terms is",
+      "recovered by reporting turns and tokens actually consumed, which is the",
+      "sufficient-not-equal doctrine league-h2h-preregistration.md already fixed."
+    ],
+    "E": {
+      "max_steps": 14,
+      "worker_max_steps": 0,
+      "spawn_allowance": 0
+    },
+    "W": {
+      "max_steps": 14,
+      "worker_max_steps": 0,
+      "spawn_allowance": 0
+    },
+    "M": {
+      "max_steps": 24,
+      "worker_max_steps": 6,
+      "spawn_allowance": 3
+    },
+    "H": {
+      "max_steps": 24,
+      "worker_max_steps": 6,
+      "spawn_allowance": 3
+    }
+  },
+  "decision": {
+    "why": [
+      "PROVISIONAL, and named as such. The pre-registration (task t11) is the",
+      "authority on the ladder, the decision rule and the stop rule; it is not",
+      "committed yet, and t5 must not pre-empt it. The rule lives here as data so",
+      "t11 can pin or amend it without a code change -- analyse() reads these",
+      "numbers, it does not carry them."
+    ],
+    "separation_margin": 1,
+    "exclude_truncated_cells": true,
+    "grade_hybrid_only_on_heterogeneous_rungs": true
+  }
+}
