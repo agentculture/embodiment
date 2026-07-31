@@ -65,6 +65,15 @@ classifiers = [
 # externality and per-run version-pinning, not about transitive weight. If a
 # future task adds a devague import, name that task here and update this
 # list and tests/test_zero_deps.py together; do not let it happen silently.
+#
+# Every entry below has an approval record in the deviation ledger
+# (`devague deviate --list`), naming its version floor and why the floor is
+# where it is. headspace-cli>=0.11 is d17: the floor is 0.11 precisely because
+# 0.11.0 is the release that resolved d2's open condition, declaring
+# create/run/put/export/destroy on `headspace.api` under headspace's own semver
+# with `headspace.core` private (headspace-cli#18). 0.10.0 advertised only
+# `__version__` in `__all__`, which is why the condition existed at all. A
+# dependency whose floor is not explained here is a floor nobody chose.
 dependencies = [
     "eidetic-cli>=0.12",
     "coherence-cli>=0.6",

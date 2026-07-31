@@ -2,7 +2,7 @@
   "plan_slug": "muse-cycle-pad-headspace-devague-legs",
   "schema_version": 1,
   "created": "2026-07-29T22:25:08Z",
-  "updated": "2026-07-31T05:28:11Z",
+  "updated": "2026-07-31T06:04:48Z",
   "deviations": [
     {
       "id": "d1",
@@ -205,6 +205,19 @@
       "affects": [
         "t28",
         "t23"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable"
+    },
+    {
+      "id": "d17",
+      "what": "headspace-cli>=0.11 enters as the fourth base dependency: the version floor is 0.11 precisely because 0.11.0 is the release that answered d2's open condition \u2014 headspace.api became the declared public surface under headspace's own semver, with headspace.core private (headspace-cli#18, closed by them)",
+      "task_ref": "t13",
+      "reason": "d2 recorded the conditional (import at module scope only if the Python API is declared public, otherwise subprocess the CLI) but nothing recorded how it resolved, so the ledger did not name the dependency, its floor, or the justification. Resolution: 0.10.0 advertised only __version__ in __all__, which is why the condition existed; 0.11.0 declares create/run/put/export/destroy on headspace.api, so the import path is the one taken and the floor cannot go below 0.11. Costs measured rather than assumed \u2014 install adds docker>=7.1 plus requests, urllib3, certifi, charset-normalizer, idna; 'import headspace.api' pulls stdlib only, so the runtime-import set gains exactly one entry while docker and requests stay install-only. Pinned in three places that move together or the gate is red: pyproject.toml, _APPROVED_DEPENDENCIES and _REQUIRED_RUNTIME_IMPORTS in tests/test_zero_deps.py. Filed by the Qodo reviewer on PR #38 as a compliance gap in the audit trail, and it was one",
+      "affects": [
+        "t14",
+        "t21"
       ],
       "origin": "user",
       "status": "approved",
