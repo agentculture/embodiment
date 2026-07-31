@@ -1,0 +1,22 @@
+{
+  "plan_slug": "orchestrator-worker-architectures",
+  "schema_version": 1,
+  "created": "2026-07-31T14:13:02Z",
+  "updated": "2026-07-31T14:13:02Z",
+  "deviations": [
+    {
+      "id": "d1",
+      "what": "the vision rung is rescoped from a two-path asymmetry to a three-route perception-ROUTING screen: the cortex is being upgraded to a vision+video-capable Qwen mid-build, so the flat arm is no longer text-only and c17's structural asymmetry no longer exists. Routes: (a) native at the cortex, (b) Gemma senses description read as text, (c) both. Screening runs on the FLAT arm only, then the winning route alone is carried into the four architectures \u2014 a full 4x3 crossing is refused as underpowered at achievable n, the failure mode that killed t18 and t19",
+      "task_ref": "t8",
+      "reason": "operator upgraded the cortex model mid-build (2026-07-31); the confirmed vision-rung design assumed a text-only cortex and its motivating asymmetry evaporated",
+      "affects": [
+        "t8",
+        "t11",
+        "t12"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "needs-follow-up"
+    }
+  ]
+}

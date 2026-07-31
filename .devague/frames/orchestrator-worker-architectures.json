@@ -4,7 +4,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-07-31T11:55:50Z",
-  "updated": "2026-07-31T13:59:20Z",
+  "updated": "2026-07-31T14:30:48Z",
   "claims": [
     {
       "id": "c1",
@@ -273,16 +273,24 @@
       "kind": "requirement",
       "text": "a vision rung enters the ladder: image tasks ride media.py's existing image parts; the flat-27B arm sees images only as senses-described text (the cortex model is text-only), worker arms see them natively \u2014 the one rung where the existing architecture cannot tie at a ceiling, and the arm design must state that asymmetry rather than hide it",
       "origin": "user",
-      "status": "confirmed",
+      "status": "rejected",
       "honesty_conditions": [
         {
           "id": "h11",
           "text": "the vision rung's images derive from the same fog snapshot as the text control via the committed renderer, and the flat-27B arm's senses-described path actually runs live \u2014 it is dialled, not scored structurally absent without a run",
-          "status": "confirmed",
+          "status": "rejected",
           "instruction": ""
         }
       ],
-      "hard_questions": [],
+      "hard_questions": [
+        {
+          "id": "q1",
+          "text": "contradiction with the cortex is being upgraded to a vision+video-capable Qwen (operator, 2026-07-31), so 'the cortex model is text-only' is false and the rung's motivating asymmetry no longer exists \u2014 superseded by c41 and deviation d1?",
+          "resolved": false,
+          "blocking": true,
+          "resolution": ""
+        }
+      ],
       "links": [],
       "instruction": "27B arm: senses describes the image into the context packet; worker arms: image parts via media.py; both paths logged per call",
       "revisions": []
@@ -664,6 +672,56 @@
       "links": [],
       "instruction": "",
       "revisions": []
+    },
+    {
+      "id": "c39",
+      "kind": "requirement",
+      "text": "a vision-capable cortex adds a PERCEPTION-ROUTING factor orthogonal to the architecture factor: an image can reach the deciding mind (a) natively at the cortex, (b) as a Gemma senses description the cortex reads as text, or (c) both \u2014 senses description plus native image at the Qwen(s). Routing is a separate experimental dimension from flat/manager/hybrid, and the spec must say how the two factors combine rather than silently crossing them",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h30",
+          "text": "the routing rung's three routes are defined in the pre-registration with the exact content each mind receives per route, every route's fog scoping is asserted by the same renderer fixtures (h15), and stage 2 dials only the route stage 1 selected \u2014 never a post-hoc pick after seeing stage 2 data",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "stage 1: three routes, flat arm, n per the pre-registration; stage 2: winning route across the four architectures",
+      "revisions": []
+    },
+    {
+      "id": "c40",
+      "kind": "boundary",
+      "text": "the perception-routing rung is EXEMPT from the information-matching rule (c22/h16): that rule exists so an image cell cannot smuggle extra state past its text twin, but routing arms deliberately vary information content \u2014 a senses description is lossy compression of the image by design. The exemption is stated per-rung in the pre-registration, and the fog-scoping rule (h15) still binds every route: no route may show a mind a cell its visibility excludes",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h31",
+          "text": "the pre-registration states the exemption per rung and names which rung it applies to, and the fog-scoping fixtures (h15) run against every route unchanged \u2014 the exemption relaxes information matching only, never visibility",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c41",
+      "kind": "decision",
+      "text": "vision-rung design after the cortex upgrade: a two-stage screen. Stage 1 runs the three perception routes on the FLAT arm alone (~3 cells) to answer whether senses still earns its place on visual input once the cortex can see; stage 2 carries ONLY the winning route into the four architectures (~4 cells). Full crossing is refused by rule, not by budget: 12 cells at achievable n cannot resolve an interaction, which is exactly how t18 and t19 died",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
     }
   ],
   "open_vagueness": [
@@ -891,6 +949,14 @@
       "finding": "concretises the manager arm for the league lane and aligns the parallel fan-out rung with the arena's natural unit parallelism; refines rather than contradicts the confirmed manager/hybrid definitions",
       "seeds": [
         "c38"
+      ]
+    },
+    {
+      "id": "s25",
+      "surface": "challenge pass / unstated-assumptions lens (post-upgrade): c22/h16 information matching vs the routing factor's deliberate information variance",
+      "finding": "the two confirmed rules collide on the routing rung \u2014 matching would forbid the very contrast routing measures; resolved by an explicit per-rung exemption that leaves fog-scoping untouched",
+      "seeds": [
+        "c40"
       ]
     }
   ],

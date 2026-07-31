@@ -36,9 +36,6 @@
 - the worker enters the reference rig's identity table only on a supporting measured result from this series — until then it is experiment-only, the same promotion gate the function map lives under; d15's muse-off reference rig stays the shipped default while the series runs
   - instruction: check rig tables in CLAUDE.md/README against the verdict in the PR that lands results
   - honesty: no reference-rig table or identity doc changes this cycle unless the pre-registered decision rule returned a supporting verdict; an INCONCLUSIVE leaves d15's rig untouched
-- a vision rung enters the ladder: image tasks ride media.py's existing image parts; the flat-27B arm sees images only as senses-described text (the cortex model is text-only), worker arms see them natively — the one rung where the existing architecture cannot tie at a ceiling, and the arm design must state that asymmetry rather than hide it
-  - instruction: 27B arm: senses describes the image into the context packet; worker arms: image parts via media.py; both paths logged per call
-  - honesty: the vision rung's images derive from the same fog snapshot as the text control via the committed renderer, and the flat-27B arm's senses-described path actually runs live — it is dialled, not scored structurally absent without a run
 - a coding rung is authored this cycle: a committed coding task set + grader under the M2 grader-kit discipline, with the problem statements and verified answers landing in docs/challenge-problems.md first, per that file's own rule
   - instruction: follow M2's four grader-kit requirements verbatim; grader tests are hermetic
   - honesty: the coding grader ships with adversarial fixtures, a paraphrase case, a vacuity assertion and committed raw responses, and the problems plus verified answers land in docs/challenge-problems.md before the first measured run
@@ -66,6 +63,9 @@
   - honesty: no test or harness path executes model-written coding-rung output outside the workspace container; the containment is asserted by a hermetic test that fails if an execution seam reaches the host
 - v1 map images render the TEAM-scoped fog view for every mind, byte-matched in information to the text twin; true per-unit cones enter only when a league-side surface provides them and are never derived from harness-duplicated vision stats — the briefing carries no radii, and a stats change in league would silently desync a duplicated fog computation into exactly the fog-leak defect h15 forbids
   - honesty: v1 renders team-scoped views for every mind from the fogged briefing alone (zero league-side changes), the information-match check (h16) passes against the team-scoped text twin, and no vision-radius constant exists anywhere in embodiment's harness code
+- a vision-capable cortex adds a PERCEPTION-ROUTING factor orthogonal to the architecture factor: an image can reach the deciding mind (a) natively at the cortex, (b) as a Gemma senses description the cortex reads as text, or (c) both — senses description plus native image at the Qwen(s). Routing is a separate experimental dimension from flat/manager/hybrid, and the spec must say how the two factors combine rather than silently crossing them
+  - instruction: stage 1: three routes, flat arm, n per the pre-registration; stage 2: winning route across the four architectures
+  - honesty: the routing rung's three routes are defined in the pre-registration with the exact content each mind receives per route, every route's fog scoping is asserted by the same renderer fixtures (h15), and stage 2 dials only the route stage 1 selected — never a post-hoc pick after seeing stage 2 data
 
 ## Honesty conditions
 
@@ -80,6 +80,7 @@
 - the speed claim is measured, not narrated: wall-clock and tokens are reported per arm at every rung, so 'faster' is always a number with a direction
 - a verdict is only quoted with its pre-registered decision rule beside it, and INCONCLUSIVE is reported as INCONCLUSIVE — never softened into a win
 - the worker's tool surface per arm is enumerated in the pre-registration and the harness passes exactly that surface — a tool absent from the enumeration raising UnknownToolError is the desired behaviour, as delegation.py already demonstrates
+- the pre-registration states the exemption per rung and names which rung it applies to, and the fog-scoping fixtures (h15) run against every route unchanged — the exemption relaxes information matching only, never visibility
 
 ## Success signals
 
@@ -96,6 +97,7 @@
 - no muse deletion this cycle: d15 stands verbatim — the muse modules, tests and harnesses ship unchanged as opt-in code, off by default
   - instruction: assert via PR diff review
 - no arm's delegate tool hands the worker repo access: the worker's tool surface in this series is enumerated in the pre-registration (league moves, finish, workspace-scoped execution) regardless of the advert's `repo_action` allowance — containment is the arm design's, not the advert's
+- the perception-routing rung is EXEMPT from the information-matching rule (c22/h16): that rule exists so an image cell cannot smuggle extra state past its text twin, but routing arms deliberately vary information content — a senses description is lossy compression of the image by design. The exemption is stated per-rung in the pre-registration, and the fog-scoping rule (h15) still binds every route: no route may show a mind a cell its visibility excludes
 
 ## Non-goals
 
@@ -140,7 +142,7 @@
 - `s13` — `embodiment/media.py (_MEDIA_TYPES, build_part)`: png/jpg/jpeg/gif/webp images and wav/mp3/ogg/flac audio only; a video lane needs a new media type, part builder and flatten placeholder — new work, not configuration
   - seeds: `c15`
 - `s14` — `operator decisions 2026-07-31 (AskUserQuestion, four answers)`: muse code kept per d15; worker dialled direct at Thor; coding rung authored under M2; vision rung added with the senses-described vs native-vision asymmetry stated
-  - seeds: `c17`, `c18`, `c19`, `c20`
+  - seeds: `c17` (rejected), `c18`, `c19`, `c20`
 - `s15` — `league-of-agents repo: engine/vision.py, engine/knowledge.py, charness.py (briefing + fog filters), replay/video.py, replay/tui.py, faces/brief.py, match.py CLI, exported fog frame`: per-team fog is engine-computed and shipped (briefing fog:true, `team_view`, `latest_knowledge`, TUI overlay, brief face); per-unit visibility exists only as the unconsumed `visible_cells` primitive; no image renderer is fog-aware and the only raster path emits whole-match GIF from ground truth; a seat-view PNG verb is assemblable from `_Canvas` draw primitives plus the fogged snapshot shapes but is new league work
   - seeds: `c21`, `c22`, `c23`, `c24`, `c25`
 - `s16` — `challenge pass / concurrency lens: embodiment/subagent.py charge-back (_charge_child, attenuate) + loop.py termination proof`: serial charging: SubagentResult.`model_turns` charges the parent per spawn; N concurrent children could exhaust or race the budget and partial-failure semantics are undefined in the frame — routed as a spec requirement
@@ -159,10 +161,13 @@
 - `s23` — `challenge pass / reversibility+data-loss lens: promotion gate c16, experiment-only diffs, committed artifacts discipline`: clean pass: arms live in examples/tests, the reference rig cannot change without a supporting verdict, no user data is touched, all measurement artifacts are committed — nothing to add
 - `s24` — `operator framing 2026-07-31 (mid-fan-out): worker as explorer/actor, cortex as leader`: concretises the manager arm for the league lane and aligns the parallel fan-out rung with the arena's natural unit parallelism; refines rather than contradicts the confirmed manager/hybrid definitions
   - seeds: `c38`
+- `s25` — `challenge pass / unstated-assumptions lens (post-upgrade): c22/h16 information matching vs the routing factor's deliberate information variance`: the two confirmed rules collide on the routing rung — matching would forbid the very contrast routing measures; resolved by an explicit per-rung exemption that leaves fog-scoping untouched
+  - seeds: `c40`
 
 ## Decisions
 
 - role mapping for the league lane: the 27B cortex is the LEADER/player seat (commands, decides, keeps final authority) and the 35B worker drives THE UNITS — all of them — as the explorer/actor that moves, takes locations and gathers; the worker's x14 concurrency makes driving every unit simultaneously the natural shape rather than a stretch goal, so the manager arm's league instantiation is 27B commander over 35B unit agents
+- vision-rung design after the cortex upgrade: a two-stage screen. Stage 1 runs the three perception routes on the FLAT arm alone (~3 cells) to answer whether senses still earns its place on visual input once the cortex can see; stage 2 carries ONLY the winning route into the four architectures (~4 cells). Full crossing is refused by rule, not by budget: 12 cells at achievable n cannot resolve an interaction, which is exactly how t18 and t19 died
 
 ## Open parks
 
