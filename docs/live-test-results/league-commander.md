@@ -15,37 +15,48 @@ Is that better than what we run today — and if it is, is it better because
 
 ## The short answer
 
-**On the primary arena the data does not say, and it says so at a perfect
-ceiling: all four arms won 19–0 in all twelve matches.** That is the
+**The data does not say — on two arenas, and it says so at a ceiling both
+times.** All four arms won every match: 19–0 in 12 of 12 on `c-skirmish-1`,
+then 10–0 in 6 of 6 on a decision surface **5.6× larger**. That is the
 pre-registered `INCONCLUSIVE`, not "no effect", and the escalation ladder was
 climbed rather than published around.
 
-But two things the ceiling did **not** hide, because they are measured per
+But three things the ceiling did **not** hide, because they are measured per
 level rather than per match:
 
-1. **Hierarchy cost 2.4× a flat Qwen and 4.4× a flat Gemma, for the identical
-   result.** 25,459 tokens per match in arm B against 10,703 flat-Qwen and
-   5,827 flat-Gemma.
-2. **The commander never once overrode a unit — 0 of 30 opportunities, in
-   BOTH directions.** Gemma-on-top accepted every Qwen proposal, and
-   Qwen-on-top accepted every Gemma proposal. Pre-registered prediction **P2
-   is FALSIFIED at the 0.0 endpoint**: on this problem the commander is a
-   relay, not a judge, and arms B and C are the *unit* model playing with an
-   expensive rubber stamp on top.
+1. **Hierarchy cost 2.4–4.4× a flat mind, for the identical result.** 25,459
+   tokens per match in arm B against 10,703 flat-Qwen and 5,827 flat-Gemma;
+   185,369 against 69,198 and 45,727 on the bigger arena. **The commander's
+   bill is ~95% prompt** — it re-reads the whole board twice per decision and
+   writes about 65 tokens.
+2. **The commander overrode a unit once in eighty-two opportunities**, while
+   consulting at 100% of decision points. Pre-registered prediction **P2 is
+   FALSIFIED at the 0.0 endpoint for arm B (0 of 43)** and all but falsified
+   for the mirror (1 of 39). On these problems the commander is a **relay**,
+   not a judge, and arms B and C are the *unit* model playing with an expensive
+   rubber stamp on top.
+3. **The one override was substantive** — the commander caught a unit about to
+   walk to a delivery site empty-handed. So the mechanism works. It simply had
+   almost nothing to do.
 
-That second finding is the one worth carrying out of this experiment. It is
-not a claim that a commander can never add value; it is a measurement that at
-this decision granularity, on this problem, with these prompts, it did not.
+The third finding is the one worth carrying forward, and it reframes the
+operator's question. The reason this experiment could not tell you whether
+Gemma is the better commander is not that the models are alike; it is that
+**a commander is a mechanism for resolving disagreement, and neither arena
+produced any.** The next version has to *construct* disagreement rather than
+hope for it.
 
 ## What ran, and what did not
+
+**No arm is ABSENT. Every arm ran on both lanes.**
 
 | lane | arm | n | status |
 |---|---|---|---|
 | primary — `c-skirmish-1` | B, C, A-qwen, A-gemma | 3 each | **complete** (12 matches) |
 | escalation E1 — `c-frontier-1` | A-gemma | 3 | **complete** |
-| escalation E1 — `c-frontier-1` | B, C, A-qwen | 1 each | see [E1](#escalation-e1--the-bigger-decision-surface) |
-| escalation E2 — n doubled | — | — | **ABSENT** — not reached; E1's decision surface is 5.6× larger and was the higher-value rung |
-| escalation E3 — the finer metric | applied | — | applied to the primary series; also `INCONCLUSIVE` |
+| escalation E1 — `c-frontier-1` | B, C, A-qwen | **1 each** | **complete, at unequal n** — reported below, not smoothed |
+| escalation E2 — n doubled | — | — | **ABSENT** — see [the ladder](#the-escalation-ladder-rung-by-rung) for why, and it is not only cost |
+| escalation E3 — the finer metric | both lanes | — | applied; `INCONCLUSIVE` on the primary, and a mechanical `EFFECT` on E1 that is **not interpretable** |
 
 **Two departures from the pre-registration, both reported rather than
 absorbed:**
@@ -199,11 +210,14 @@ climbed.
 
 ## The finding the ceiling did not hide: the commander is a relay
 
-**0 overrides in 30 opportunities**, across both hierarchical arms, with the
-commander consulting at 15 of 15 decision points in each. The pre-registered
-P2 said an override rate at either endpoint means "the hierarchy is decorative
-and the arms are not measuring what they claim". It is at the 0.0 endpoint, in
-both directions.
+**0 overrides in 30 opportunities on the primary lane**, across both
+hierarchical arms, with the commander consulting at 15 of 15 decision points in
+each. The pre-registered P2 said an override rate at either endpoint means
+"the hierarchy is decorative and the arms are not measuring what they claim".
+It is at the 0.0 endpoint, in both directions. (E1 then found **1 override in
+52 more opportunities** — see [E1](#what-e1-did-establish-sharply), where the
+one that fired is quoted in full, because it is the single most informative
+decision in the run.)
 
 It is not that the commander was idle. The transcripts show it engaging with
 the board — this is Gemma's own `consult_unit` question at the opening
@@ -242,10 +256,91 @@ match** instead of 5, time limit 30 instead of 20. Verified to run before the
 pre-registration was committed, and chosen as rung 1 precisely because a
 ceiling caused by too few decisions is not cured by more samples.
 
-**It is not at a ceiling.** Flat Gemma scores **10–0** there, well inside the
-range, where it scored the maximum 19–0 on `c-skirmish-1`.
+Flat Gemma scores **10–0** there, well inside the range, where it scored the
+maximum 19–0 on `c-skirmish-1` — so the arena itself is not saturated.
 
-<!-- E1-RESULTS -->
+**All four arms still scored 10–0.**
+
+| arm | commander | units | n | margins | decisions | mean blue grade | tok / match |
+|---|---|---|---|---|---|---|---|
+| **B** | Gemma 4 31B | Qwen 3.6 27B | 1 | [10] | 28 | 3950 | **185,369** |
+| **C** (mirror) | Qwen 3.6 27B | Gemma 4 31B | 1 | [10] | 24 | 4150 | **166,230** |
+| **A-qwen** (flat) | *none* | Qwen 3.6 27B | 1 | [10] | 24 | 3000 | **69,198** |
+| **A-gemma** (flat) | *none* | Gemma 4 31B | 3 | [10, 10, 10] | 28 each | 3950 | **45,727** |
+
+**The n is unequal and that is reported, not smoothed.** A-gemma ran 3 matches
+because it costs ~2 minutes each; B, C and A-qwen ran 1 each because they cost
+21–28 minutes each on a rig already shared with t23. Every fold below uses
+`direction_required(n)`, so nothing was re-chosen after the fact — but at n=1
+that test is `1 of 1` and therefore **cannot fail**, which is stated here
+rather than left for a reader to notice.
+
+### The E1 fold
+
+| hypothesis | delta | identical sets | **verdict** |
+|---|---|---|---|
+| **H1 — hierarchy vs flat** (B vs A-qwen) | 0.00 | yes | **`INCONCLUSIVE`** |
+| **H2 — Gemma on top vs Qwen on top** (B vs C) | 0.00 | yes | **`INCONCLUSIVE`** |
+| **E3 (secondary) — blue unit grade** (B vs A-qwen) | 950.0 | no | `EFFECT` — **and not interpretable; see below** |
+
+**On E3, the unflattering reading is the correct one, and it is recorded here
+rather than in the summary.** The rule fired mechanically: 950 > the
+pre-registered 200, direction 1 of 1. Three reasons it cannot carry a
+conclusion, all visible in the table above:
+
+1. **n=1 against n=1.** The direction test is vacuous at that sample size.
+2. **The grade ordering does not track hierarchy.** A-gemma is a *flat* arm and
+   scores **3950 — identical to arm B's**. If hierarchy were doing the work,
+   the two flat arms would not straddle the two hierarchical ones.
+3. **Grade is a per-unit attribution, and the arms did not play the same number
+   of decisions** (28 vs 24), so the denominator differs between the arms being
+   compared.
+
+The pre-registration required E3 to be "labelled **secondary** wherever it
+appears and never presented as the primary result". It is, and it is not.
+The honest statement is that **E1 replicated the primary series' tie on a
+5.6× larger decision surface**.
+
+### What E1 did establish, sharply
+
+**The relay finding replicates, and it is not a small-sample artefact.**
+
+| lane | arm | overrides / opportunities |
+|---|---|---|
+| `c-skirmish-1` | B | 0 / 15 |
+| `c-skirmish-1` | C | 0 / 15 |
+| `c-frontier-1` | B | 0 / 28 |
+| `c-frontier-1` | C | **1 / 24** |
+| **total** | | **1 / 82** |
+
+**One override in eighty-two opportunities**, with the commander consulting at
+100% of decision points in every arm. And the single override is not noise —
+it is a substantive, well-argued disagreement, which makes it the most
+informative decision in the whole run. Arm C, decision 4, a scout at
+`cp-frontier` with three options:
+
+- **Gemma (unit) proposed** index 1: *"Moving to the supply mission location
+  now allows me to prepare for delivery as soon as our harvester (bluec-u2)
+  finishes gathering."*
+- **Qwen (commander) ordered** index 0 instead: *"I need to gather resources to
+  complete ms-supply mission; moving to rn-west lets me gather resources
+  directly rather than going to the delivery location empty-handed."*
+
+The commander caught that the unit was planning to arrive at a delivery site
+with nothing to deliver. That is exactly the class of error a coordinator is
+supposed to catch — and it happened **once in eighty-two chances**, and the
+match still ended 10–0, the same as every other arm.
+
+So the mechanism is real and it fired. What is missing is a problem where it
+has to fire often enough to matter.
+
+### The escalation ladder, rung by rung
+
+| rung | what it was | status |
+|---|---|---|
+| **E1 — bigger decision surface** | all four arms on `c-frontier-1`, 28 vs 5 decision points | **climbed.** Still tied, at a different value |
+| **E2 — more samples** | double n on whichever lane showed variance | **ABSENT.** No lane showed between-match variance to double into: 12 of 12 primary matches and 3 of 3 A-gemma E1 matches returned identical values. Doubling n multiplies a constant. Also unaffordable — one E1 match costs 21–28 minutes on a shared rig |
+| **E3 — finer metric** | blue unit grade | **applied to both lanes.** `INCONCLUSIVE` on the primary; a mechanical `EFFECT` on E1 that three separate defects make uninterpretable (above) |
 
 ## Cost and contention, recorded because it must be visible
 
@@ -303,11 +398,28 @@ observable in the artifact (30 spawns, all granted, depth 1, allowance 0).
 shape costs 2.4–4.4× and its bill is 95% prompt.
 
 **It does NOT license** any claim that Gemma is or is not the better commander.
-Both hierarchical arms and both flat arms produced identical results on the
-primary arena, and the escalation is partial. *The data does not say.*
+All four arms produced identical outcomes on **both** arenas. *The data does
+not say*, and one match per arm on E1 is not a basis for saying it either.
 
-**It does NOT license** treating the 0.0 override rate as a property of these
-models. It is a property of this problem: a decision surface that offered
-nothing to disagree about. The next version of this experiment should
-*construct* disagreement — a scenario where the role-obvious move is wrong —
-rather than hope for it.
+**It does NOT license** the E1 grade `EFFECT`. Three independent defects, all
+named above, and a flat arm ties the winner.
+
+**It does NOT license** treating the ~0 override rate as a property of these
+models. It is a property of these problems: decision surfaces that offered
+almost nothing to disagree about. The one disagreement that did arise was
+caught, correctly, by the commander.
+
+### What the next version has to do differently
+
+The design flaw is now measurable rather than suspected: **both arenas award
+the same score to every reasonable policy.** More samples cannot fix that (E2
+would multiply a constant) and a bigger board did not either. What is needed is
+a scenario in which the **role-obvious move is wrong** — where a harvester
+standing on a resource node should *not* gather, and only a mind holding the
+whole team's state can see it. Then an override is forced to matter, the
+override rate becomes a measurement rather than a near-constant, and the
+question "is Gemma the better commander" finally has something to bite on.
+
+Until then, the defensible summary for the operator is narrow and worth
+stating plainly: **the arrangement works, costs 2.4–4.4×, and on these problems
+bought nothing.**

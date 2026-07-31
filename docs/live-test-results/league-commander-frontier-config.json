@@ -1,12 +1,12 @@
 {
   "arm_models": {
-    "B": [
-      "nvidia/Gemma-4-31B-IT-NVFP4",
+    "A-qwen": [
+      null,
       "sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP"
     ]
   },
   "arms": [
-    "B"
+    "A-qwen"
   ],
   "base_url": "http://localhost:8001/v1",
   "commander_max_steps": 6,

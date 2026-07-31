@@ -67,6 +67,8 @@ generously.
 | [muse-arms-preregistration.md](muse-arms-preregistration.md) | the three muse arms (tools-off / +pad / +pad+workspace), the R-C1 execution rule, the counsel scorer and the decision rule | committed **with the harness** (`examples/muse_arms.py`) and **before** the first measured dial; the series itself is task t18's |
 | [muse-arms.md](muse-arms.md) | does working memory, then somewhere to execute, cut the muse's confidently-wrong rate — n=8 per arm, 24 runs, real containers | **`INCONCLUSIVE`**: arm A is **8/8 correct, 0 confidently wrong**, so the control sits on a ceiling with nothing to move. **1 confidently-wrong answer in 24 runs.** 17 of arm C's 23 workspace calls were refused for a string argv; after the mandated hand-audit **every one of the 5 real executions was a whole-problem solver, none offloaded arithmetic**. Nine runs report `NO_ANSWER` because the muse emitted a **tool call on the tools-off closing turn** and the gateway dropped it |
 | [workspace-echo-chamber.md](workspace-echo-chamber.md) | does a wrong number wearing *measured-result* authority drive the loop — a genuine workspace execution against a remembered-fact arm and a control, n=3 each | **`INCONCLUSIVE`, 12/12 RESISTED — the pad-recall boundary stays.** Nothing deferred, including a post-hoc arm carrying the exact costume that won 6/6, so the probe has **no measured sensitivity** to the effect it re-tests. It also measured that `exit=stopped` on this problem was partly the token cap |
+| [league-commander.md](league-commander.md) | Gemma 4 31B commanding Qwen 3.6 27B unit agents, against the mandatory mirror and two flat baselines — a different model per loop level, on two arenas | **`INCONCLUSIVE` at a ceiling twice: 12 of 12 matches at 19–0, then 6 of 6 at 10–0 on a 5.6× larger decision surface.** Every validity gate passed, so the tie is the arena's and not the instrument's. What the ceiling did not hide: hierarchy cost **2.4–4.4× a flat mind** for identical results, its bill is **~95% prompt**, and the commander **overrode 1 of 82 proposals** while consulting at 100% of decision points. The one override was substantive — a commander is a mechanism for resolving disagreement, and neither arena produced any |
+| [league-commander-preregistration.md](league-commander-preregistration.md) | the four arms, the decision rule, four validity gates, the ceiling risk and a three-rung escalation ladder | committed **before** the first measured match; the ladder was climbed rather than published around |
 
 ## Reproducing
 
@@ -132,6 +134,16 @@ uv run python examples/muse_arms.py --n 8 --provider docker \
     --out docs/live-test-results/muse-arms.jsonl
 uv run python examples/muse_arms.py --analyse \
     --out docs/live-test-results/muse-arms.jsonl
+
+# a commander model commanding unit-agent models — a different model per loop
+# level, four arms, then the pre-registered fold
+uv run python examples/league_commander.py play --root /tmp/lc --arm all --n 3 --live \
+    --out docs/live-test-results/league-commander.jsonl \
+    --transcripts docs/live-test-results/league-commander-transcripts.jsonl \
+    --config-out docs/live-test-results/league-commander-config.json \
+    --logs docs/live-test-results/league-commander-logs
+uv run python examples/league_commander.py analyse \
+    --out docs/live-test-results/league-commander.jsonl
 
 # long-running proof, with and without the muse
 uv run python examples/proof.py --json
