@@ -92,6 +92,7 @@
 - a verdict is only quoted with its pre-registered decision rule beside it, and INCONCLUSIVE is reported as INCONCLUSIVE — never softened into a win
 - the worker's tool surface per arm is enumerated in the pre-registration and the harness passes exactly that surface — a tool absent from the enumeration raising UnknownToolError is the desired behaviour, as delegation.py already demonstrates
 - the pre-registration states the exemption per rung and names which rung it applies to, and the fog-scoping fixtures (h15) run against every route unchanged — the exemption relaxes information matching only, never visibility
+- the limitation is stated in every artifact preamble (`PERCEPTION_DELIVERY`, asserted by test) and the results doc refuses to attribute any stage-2 image-route difference between flat and orchestrated arms to orchestration while it holds
 
 ## Success signals
 
@@ -126,6 +127,7 @@
 - the new cortex `unsloth/Qwen3.6-27B-NVFP4` has MEASURED vision — probed 2026-07-31 through the spark gateway: a 4-band image with an unguessable palette returned '4, purple' for band count and second-from-top colour, after a first probe was discarded for asking a question whose answer ('Red, Green, Blue') a blind model would guess. Deviation d1's premise holds and the three-route screening design is live-supported, not merely assumed
 - the cortex upgrade is expected to be a broad quality win beyond vision — video direction understanding, more stable tool calling (the operator's 'real win here'), and possibly stronger reasoning, on the grounds that unsloth's quantisation is professionally done
 - the operator's 50 tok/s x14 figure did NOT reproduce on this rig and is recorded as falsified rather than quietly dropped: per-stream at width 14 measured 29.8 tok/s (60% of target) and aggregate 268 tok/s (38% of a 700 tok/s reading); single-stream at 76.4 tok/s exceeds 50, so it is specifically the x14 compounding that fails
+- on an image route the orchestrated arms are perceptually asymmetric: the commander's seat carries the map but a unit routed to the worker is briefed with the perception TEXT alone, because a fan-out subtask is a plain string in `orchestrator_tools` (t4). So if native or both wins stage 1, an M or H loss in stage 2 is not attributable to orchestration quality — the workers were briefed blind. The asymmetry does NOT bite if the described route wins, where every arm sees text by construction
 
 ## Scope exploration
 

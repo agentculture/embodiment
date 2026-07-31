@@ -109,7 +109,7 @@ slug: `orchestrator-worker-architectures` · status: `exported` · from frame: `
 
 ### t12 — Run the series up the ladder with the stop rule, committing artifacts as they land
 
-- instruction: the live series; do not start without the operator's go-ahead. Cell sizing must respect the measured ~57s median cortex turn with a 204s tail
+- instruction: the live series; operator confirmed 2026-07-31. Cell sizing per t11 (n=6, derived from the measured 57.2s cortex turn). STAGE-1 GATE: if 'native' or 'both' wins the perception screen, STOP before stage 2 and report — widening t4's fan-out surface to carry parts is a decision the operator takes on that result, not a step to assume. If 'described' wins, the asymmetry is moot and stage 2 proceeds.
 - depends on: t4, t5, t6, t7, t8, t10, t11
 - covers: c27, h19
 - acceptance:

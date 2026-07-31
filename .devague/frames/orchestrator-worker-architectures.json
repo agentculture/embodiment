@@ -4,7 +4,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-07-31T11:55:50Z",
-  "updated": "2026-07-31T17:13:15Z",
+  "updated": "2026-07-31T17:45:17Z",
   "claims": [
     {
       "id": "c1",
@@ -877,6 +877,25 @@
         {
           "id": "h36",
           "text": "a hermetic test asserts that dialling an image route produces an outgoing message containing an image part built through embodiment.media, and that same test fails if the parts are dropped \u2014 the assertion is on the payload, never on the route's own record",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c52",
+      "kind": "assumption",
+      "text": "on an image route the orchestrated arms are perceptually asymmetric: the commander's seat carries the map but a unit routed to the worker is briefed with the perception TEXT alone, because a fan-out subtask is a plain string in orchestrator_tools (t4). So if native or both wins stage 1, an M or H loss in stage 2 is not attributable to orchestration quality \u2014 the workers were briefed blind. The asymmetry does NOT bite if the described route wins, where every arm sees text by construction",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h37",
+          "text": "the limitation is stated in every artifact preamble (PERCEPTION_DELIVERY, asserted by test) and the results doc refuses to attribute any stage-2 image-route difference between flat and orchestrated arms to orchestration while it holds",
           "status": "confirmed",
           "instruction": ""
         }
