@@ -191,6 +191,56 @@ slug: `muse-cycle-pad-headspace-devague-legs` · status: `exported` · from fram
 - acceptance:
   - examples/`league_seat.py` runs with `EMBODIMENT_LIVE_ARENA`=1 against the real arena; the series is recorded in docs/live-test-results/ with n, rig and model pair stated; results are published either way including INCONCLUSIVE
 
+### t27 — Round-robin head-to-head: full-Gemma vs mixed vs full-Qwen across an escalating League of Agents difficulty ladder
+
+- instruction: Owns a NEW head-to-head harness under examples/ plus docs/live-test-results/. Do NOT edit examples/`league_seat.py` — t24 uses it; import from it or drive the league CLI directly.
+
+THE HEAD-TO-HEAD REQUIREMENT (deviation d10). `league_seat.py` drives the rival with `rival_orders`(), a deterministic scripted policy (lines 1449 and 1592), NOT a model. Round-robin means BOTH teams are model seats. The cli.act(`match_id`, team, orders) seam is symmetric, so run the seat logic twice per turn, once per team, with different model configs. `league_seat.py` exposes --cortex-model and --muse-model, so an arm is a flag pair, never a code change.
+
+THE THREE PAIRINGS: gemma-vs-mixed, mixed-vs-qwen, qwen-vs-gemma. Arms: full-Gemma = Gemma-4-31B as BOTH cortex and muse; full-Qwen = Qwen3.6-27B as BOTH; mixed = today shipped pairing, Qwen cortex + Gemma muse. Senses stays Gemma-4-12B in all three — the operator was explicit.
+
+THE LADDER. The operator asked for "+5 in size"; board size is NOT a knob — league arena list ships exactly three fixed scenarios (skirmish-1 12x10 `turn_limit` 30, recon-1 14x12, skirmish-2 14x12 fogged `turn_limit` 16). Say that plainly in the write-up and name what you substituted. Escalate with what exists, in rising order: scenario skirmish-1 -> recon-1 -> skirmish-2, plus --max-actions TEAM:N tightening, shorter turn budgets, and --map-read fog / --unit-comms off as the hardest rungs. Run rungs in order and STOP climbing when the arms separate — separation is the result, exhausting the ladder is the fallback.
+
+FAIRNESS, and it is load-bearing: both seats in a match get identical --max-steps and --max-tokens, and BOTH SIDES PLAY BOTH COLOURS at every rung (swap which arm is blue) or map/seat asymmetry confounds the whole result. Fix seeds and record them. Record that equal token budgets are NOT equal useful output: the Qwen cortex spends about 1000 tokens reasoning before emitting anything (measured — at `max_tokens` 300 it returns empty content with `finish_reason` length), while Gemma answers directly. Budget 3000+ for any Qwen seat.
+
+RIG: gateway <http://localhost:8001/v1>, auth REQUIRED (Authorization: Bearer $`COLLEAGUE_API_KEY`, 401 without). cortex sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP, muse nvidia/Gemma-4-31B-IT-NVFP4. Only the cortex is local; a full-Qwen arm therefore puts BOTH roles on the one local GPU while full-Gemma puts both on the proxy — say so, because wall-clock is not a clean quality signal across arms.
+
+PRE-REGISTER the ladder, the pairings, the fairness rules and the decision rule BEFORE the first dial, house style per docs/live-test-results/\*-preregistration.md, thresholds asserted by value in a test.
+
+COST IS A RESULT, not overhead: report completion tokens and wall clock per arm beside outcome. t9 measured the muse reaching identical verdicts to the cortex for about 1/25 the tokens; if quality ties here, cost decides, and that is a publishable answer to the operator question.
+- depends on: t24
+- acceptance:
+  - three arms differing only in which model serves cortex and muse (senses stays Gemma 12B in all three); an escalating ladder run in order until the arms separate or it is exhausted; every rung records its scenario, turn limit, actions cap, max-steps, seed and both model ids; results published either way including INCONCLUSIVE, with any rung that did not run reported absent; a per-arm cost column (completion tokens and wall clock) reported beside outcome, because equal quality at 25x the cost is itself the answer
+  - the three pairings gemma-vs-mixed, mixed-vs-qwen and qwen-vs-gemma each play the ladder, with both teams driven by model seats rather than the scripted rival policy; the two seats in a match receive identical budgets and that equality is recorded in tokens, noting it is not equality of useful output since the Qwen cortex spends about 1000 tokens reasoning before emitting
+
+### t28 — League of Agents commander experiment: Gemma commands Qwen unit agents on the continuous lane, against a mirror and flat baselines
+
+- instruction: Owns a NEW harness under examples/ plus docs/live-test-results/. NO embodiment source change is needed or permitted.
+
+THE ARCHITECTURE. loop.run(complete=..., subagent=..., `spawn_allowance`=N, lineage=...) already lets the host pick a different model per level — verified. Commander = the top-level run(). Unit agent = the child your SubagentFn drives. subagent.py states the protocol verbatim: pass SubagentCall.allowance through as `spawn_allowance`, .lineage as lineage, .`max_steps` as `max_steps`. `spawn_allowance` defaults to `NO_SPAWNS` and MUST be strictly positive or no child can exist. framing.py already types the two levels (`ROLE_CORTEX` top-level, `ROLE_SUBAGENT` children) per colleague 352.
+
+THE ARENA — use the CONTINUOUS lane, this is why it fits. `league cmatch` asks for exactly ONE unit action at a decision point (the instant that unit goes idle), where `league match` asks for a whole-team turn order. So the commander/unit split is native. Verified working: scenario c-skirmish-1 exists and requires roster roles defender and harvester; `league team register <id> --agent ID:MODEL:ROLE --apply` declares the model per unit, so the arena keeps its own fairness record; cmatch verbs are new/show/act/tick/run, all DRY-RUN BY DEFAULT and needing --apply. `league explain cmatch` and docs/continuous-contract.md are the mind-facing contract — read them first. State is a pure fold of the log, so a killed harness resumes from the same working directory.
+
+THE ARMS (fixed house-bot opponent, same seeds across arms):
+ B — Gemma-4-31B commands, Qwen3.6-27B unit agents  \[the proposal\]
+ C — Qwen commands, Gemma unit agents               \[the mirror — MANDATORY\]
+ A — flat: one model decides every unit, no commander \[baseline; run for both models if budget allows, else Gemma since it is cheaper\]
+The mirror separates architecture from model assignment; the flat baseline is what says whether hierarchy helps at all. Without both, a B win is unattributable.
+
+BUDGETS: 16000 tokens for any Qwen level. Record `finish_reason` on every call — a `length` finish is TRUNCATION, an instrument event, and must never be scored as a bad decision or a lost match. At 6000 this cortex returns `finish_reason`=length with empty content and 12857 chars of reasoning; that already caused one published misreading.
+
+REPORT TOKENS PER LEVEL (commander vs units, separately) — the entire question is whether paying for a large commander is worth it.
+
+RIG: gateway <http://localhost:8001/v1>, auth REQUIRED (Authorization: Bearer $`COLLEAGUE_API_KEY`, 401 without). Only the cortex model is local; Gemma is proxied — so wall-clock is not a clean quality signal across arms. `tool_choice` is broken on this rig. Tasks t23 and t27 may be using the rig: a >600s timeout is CONTENTION, not a result — wait, retry, record the retry.
+
+PRE-REGISTER before the first dial (house style: docs/live-test-results/\*-preregistration.md, thresholds asserted by value in a test). State the CEILING RISK and an ESCALATION PATH — four experiments in this cycle died at a ceiling (see issue 35); if the arms tie, climb rather than publish INCONCLUSIVE and stop.
+
+Publish either way. Any arm that did not run is reported ABSENT, prominently.
+- depends on: t27
+- acceptance:
+  - three arms driven entirely by host wiring with no embodiment source change — A: today, Qwen actor with final authority plus a tools-off Gemma muse that proposes and never decides; B: Gemma top-level coordinator delegating to a Qwen subagent developer; C: the mirror, Qwen coordinator delegating to a Gemma subagent developer; the mirror arm is mandatory because B changes both who coordinates and which model coordinates, and without C neither can be attributed; every arm records both model ids per level, the spawn allowance, and tokens consumed per level
+  - the continuous lane is driven through league cmatch so each decision is one unit acting; the team roster declares the model per unit via --agent ID:MODEL:ROLE so the arena carries its own record of who played what; arms B (Gemma commands, Qwen units) and C (the mirror) run against the same fixed house-bot opponent with the same seeds, plus at least one flat single-model baseline; tokens are reported per level, not just per match
+
 ### t22 — Demonstrate the full flow end to end and publish the delivery summary
 
 - instruction: Owns docs/deliveries/ + the delivery summary. Use the summarize-delivery skill; run devague summary for the skeleton. Report planned vs actual honestly — a lane that did not run is reported absent, never implied. Map every done-condition to an openable artifact path.
