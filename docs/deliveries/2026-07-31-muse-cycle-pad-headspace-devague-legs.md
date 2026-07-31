@@ -66,7 +66,16 @@ planning and never entered the run; `t14` entered the plan and was absorbed into
 
 ## Actual Delivery
 
-**26 of 27 delivered · 1 blocked.** Every task is accounted for. "Delivered"
+> **Amended 2026-07-31, after this summary was first written: `t24` landed.**
+> It is the one task this document reported blocked. Its series completed and
+> merged (`f83d6b3`) a few hours later, so the count below is now **27 of 27
+> delivered · 0 blocked**. Every `t24` row is corrected in place and marked
+> **amended**; the original text is quoted inside each so the correction is
+> auditable rather than silent. Nothing else in this document changed, and no
+> other task's status moved.
+
+**26 of 27 delivered · 1 blocked** *(as first written — now 27 of 27; see the
+amendment above)*. Every task is accounted for. "Delivered"
 means the task's acceptance criteria are met by a committed artifact — for the
 experiment tasks that means *the series ran and published*, which is a different
 claim from *the series found something*. Several found nothing resolvable, and
@@ -96,7 +105,7 @@ say so on the tin.
 | `t21` | delivered | [colleague#358](https://github.com/agentculture/colleague/issues/358) commented 2026-07-29 with the widened C1b consequence (a fourth base dependency); [headspace-cli#18](https://github.com/agentculture/headspace-cli/issues/18) filed 2026-07-29 (**answered by their 0.11.0, closed**) and [headspace-cli#22](https://github.com/agentculture/headspace-cli/issues/22) filed 2026-07-30 (open). No commit pushed to any sibling repo |
 | `t22` | delivered | This document |
 | `t23` | delivered | [`live-suite-and-challenges.md`](../live-test-results/live-suite-and-challenges.md) — **13 of 13** `EMBODIMENT_LIVE_RIG` tests passed; `challenge_subset` 3/3 CORRECT; `challenge_register` and `challenge_entropic` 3b relabelled **`INCONCLUSIVE`** (the token cap, not the model). Merged `45aed76` |
-| `t24` | **blocked** | **ABSENT.** The pre-registration and the instrument landed on branch `muse-cycle/t24` (`a223ab4`, unmerged): `docs/live-test-results/arena-budget-preregistration.md` and a `--trace-out` on `examples/league_seat.py` carrying the `finish_reason` `ModelResponse` cannot (`#37`). **No measured match was recorded by the time this summary was written.** See [Remaining Work](#remaining-work--follow-up) |
+| `t24` | delivered *(amended)* | [`arena-budget.md`](../live-test-results/arena-budget.md) — 12 matches, 12 completed, 0 degraded, n=3 per cell over arm × budget. **P1 and P5 FALSIFIED, P2/P3/P4 CONFIRMED.** Truncation at the shipped 2048 default is real but **intermittent** (5 of 83 completions, 3 of 6 matches) and **invisible**: 0 degradations recorded series-wide, because `ModelResponse` carries no `finish_reason` (`#37`). One truncation cost blue a whole opening turn that `turns_played` scored as played. Also lands the 4 `EMBODIMENT_LIVE_ARENA` tests `t23` reported ABSENT (**4/4 PASSED**) and a post-series muse wiring check (`--muse` on `league_seat.py` dials for real: 4 Gemma completions, 4/4 delivered, 0 late drops, `tool_rounds: 0`). Merged `f83d6b3`. *Originally: "**blocked** — **ABSENT.** … No measured match was recorded by the time this summary was written."* |
 | `t25` | delivered | `loop._presence_terminal()` fires exactly once per drive on **every** exit reason (finish, stopped, budget); `examples/proof.py` wires `append_guidance`. Merged `37bbe9f` (`#17`, `#23`) |
 | `t26` | delivered, **unexercised** | `ThreadedMuseRunner(complete, tools=bench, depth=0)` reaches its `MuseLoop`; `counts["tool_rounds"]` is a readable number. **No checked-in host wires it** — `tool_rounds: 0` in the live gate (`l21`). Merged `9a51cc0` (`#30`) |
 | `t27` | delivered | [`league-h2h.md`](../live-test-results/league-h2h.md) — **`SEPARATED` at L1**, full-qwen > mixed > full-gemma, 3/3 pairings, no cycle. L2–L4 **ABSENT** (the climb stops at the first separating rung, as pre-registered). Merged `aaddc9d` (`#34`) |
@@ -196,8 +205,10 @@ here.
 | `t27` (`d12`) | operator proposal 2026-07-31; verified expressible today with no embodiment change via `loop.run`'s `subagent` seam, and the mirror arm is required because two variables move at once | `needs-follow-up` |
 | `t28` (`d13`) | the arena supports the commander/unit split natively on the continuous lane, so rescoping beats adding a `t29` | `acceptable` |
 | `t28` (`d14`) | the operator delegated further design decisions rather than being asked for each | `needs-follow-up` |
+| `t27` (`d15`) *(added after this summary was first written)* | operator decision 2026-07-31 on the question `t27` was set to inform: **the reference rig consolidates on Qwen as the only actor** — cortex Qwen, senses Gemma 4 12B, the Gemma 4 31B muse **not dialled**. The muse stays a shipped opt-in seam and is not deleted, so this changes no code. Recorded with its support named explicitly, because the obvious citation is the wrong one: `t27`'s ranking measured **interface compliance, not play**, and muse-off was not one of its three arms. The support is `t18` (`INCONCLUSIVE` with measured harm, `#32`/`#33`), `#29`, and `t28`'s **1.2%** intervention rate at 2.4–4.4× cost | `acceptable` |
+| `t24` (`d16`) *(added after this summary was first written)* | direct consequence of `d15` + `t24`: with Qwen the only actor, the cortex is the only mind that can silently lose a turn, and `t24` measured the shipped 2048 default doing exactly that. Every checked-in cortex budget raised to 16000 (700, 2048 ×2, 6000 ×5) under the operator's standing rule that a measured failure mode does not ship as default behaviour. **No published result was re-run or re-graded**; each affected doc names the `--max-tokens` value that reproduces it | `acceptable` |
 | `t9` | **No record covers this.** Experiment 1 — the `/think` and `/spec-to-plan` legs across both minds — did not run: 0 of 4 pipelines. It is structurally blocked: the operator forbade state-mutating `devague` commands, *and* the pre-registration requires a human `--confirm` per claim across all four pipelines. Reported ABSENT rather than `INCONCLUSIVE`, because a mechanical `INCONCLUSIVE` would imply an instrument that ran | `needs-follow-up` |
-| `t24` | **No record covers this.** The task did not complete within the cycle. Its pre-registration and instrument are committed on `muse-cycle/t24` (`a223ab4`); no measured match exists. The plan made `t22` depend on `t24`, so this summary ships with one of its four dependencies unmet, and says so | `needs-follow-up` |
+| `t24` *(amended — resolved)* | **Resolved 2026-07-31.** As first written: "the task did not complete within the cycle … no measured match exists … this summary ships with one of its four dependencies unmet". The series completed and merged at `f83d6b3`; all four of `t22`'s dependencies are now met. What survives as a real gap is narrower: **rungs beyond the 2×2 did not run**, and every number is n=3 on one rig on one day, which the results doc states in its second paragraph | `acceptable` |
 | `t16` | **No record covers this.** The task's own acceptance is met — the probe reports session latencies against the drive tail and `c29` is `KEEP` — but the **tools-on-in-drive lane is absent, and the `KEEP` odds are an estimate compounding two separately-measured distributions**, never an observed in-drive rate. `d4` and `t26` grew the seam; `l7` and `l21` record that the measurement is still absent | `needs-follow-up` |
 | `t19` | **No record covers this.** The pre-registered n was 5 per arm; 3 ran. A >600s gateway read timeout raised `LoopAborted` and `probe()` let it through, ending the series at 9 of 15 cells (`l12`). The stopping point was chosen by a socket, not by the data | `risky` |
 | `t27` | **No record covers this.** L2–L4 did not run. This is *not* drift — the pre-registration says stop climbing once the arms separate, and they separated at L1. Recorded here so three absent rungs are never read as an oversight | `acceptable` |
@@ -212,7 +223,11 @@ Every check below was run read-only against merge commit `f6c423f` on branch
   task is docs-only; the count is unchanged from the pre-`t22` baseline.
 - tests (skips, all opt-in live gates): 13 × `EMBODIMENT_LIVE_RIG`, 4 ×
   `EMBODIMENT_LIVE_ARENA`. The 13 rig-gated tests **were run and passed** under
-  `t23`; the 4 arena-gated tests belong to `t24` and were **not run**.
+  `t23`. *(Amended: this line originally said the 4 arena-gated tests "were
+  **not run**". `t24` ran them on 2026-07-31 — **4 of 4 PASSED**, raw output in
+  `docs/live-test-results/arena-budget-raw/live-arena-tests.txt`. All 17
+  opt-in live-gated tests in this repo have now been run green at least once
+  this cycle.)*
 - lint: `markdownlint-cli2 "**/*.md" "#node_modules" "#.local" "#.claude/skills" "#.teken"` — pass.
 - lint: `uv run black --check`, `uv run isort --check-only`, `uv run flake8`,
   `uv run bandit -c pyproject.toml -r embodiment examples` — unchanged by this
@@ -306,7 +321,11 @@ general form of the defect is filed as
 carries no `finish_reason`, so a truncated turn and a stopped turn are
 indistinguishable to the loop.** That is a C3 violation in embodiment's own
 contract, found by this cycle and **not fixed by it**; `l20` records it. `t24`'s
-unmerged `--trace-out` is a harness-level workaround, not the contract fix.
+`--trace-out` *(amended: merged, not unmerged)* is a harness-level workaround,
+not the contract fix — and `t24` went on to show why the distinction matters.
+It reproduced the defect a **third** time, in the arena, where a truncated turn
+cost blue an entire opening move that league's own `turns_played` metric scored
+as played. Three independent shapes, zero degradations recorded in any of them.
 
 ### The five `INCONCLUSIVE` verdicts — what they are, and are not
 
@@ -396,27 +415,39 @@ assumption. Grouped by code:
 | the cycle ran **across the two minds** | **PARTIAL.** One leg — `/deviate` — was measured on both minds: [`devague-legs.md`](../live-test-results/devague-legs.md), 12 cases × 2 minds, 24/24 completions. The `/think` and `/spec-to-plan` legs across both minds are **Experiment 1, ABSENT** (`l3`, `l4`). The *authoring* of this cycle's own frame and plan was single-mind | ⚠️ |
 | the **human confirm gate** is intact | `devague-legs-deviate.jsonl` + `devague-legs-deviate-config.json` — 24/24 `origin=llm`, `status=proposed`, `confirmed_by=null`; ledger sha256 digests unchanged before and after; `devague deviate --list --json` unchanged. `d11` is still `proposed` and is not treated here as a decision | ✅ intact; ⚠️ *fired* is static-only (`l6`) |
 | **frame, plan and delivery summary are committed** | all three above, in-tree | ✅ |
-| **any lane that did not run is reported absent** | `t24` (the whole task), Experiment 1 (`t9`), rungs L2–L4 (`t27`), escalation E2 (`t28`), the 4 `EMBODIMENT_LIVE_ARENA` tests and `challenge_entropic` variant 3 and the no-muse `proof.py` control (`t23`), the tools-on-in-drive lane (`t16` / `t26`) | ✅ |
+| **any lane that did not run is reported absent** | *(amended)* Experiment 1 (`t9`), rungs L2–L4 (`t27`), escalation E2 (`t28`), `challenge_entropic` variant 3 and the no-muse `proof.py` control (`t23`), the tools-on-in-drive lane (`t16` / `t26`). Two entries came off this list when `t24` landed: **`t24` itself** and the **4 `EMBODIMENT_LIVE_ARENA` tests**, which it ran 4/4 | ✅ |
 
 ## Remaining Work / Follow-up
 
 **Blocking nothing in this PR.** Everything here is recorded rather than hidden.
 
-### The one blocked task
+### The one blocked task — *amended 2026-07-31: it landed*
 
-- **`t24` — the league/arena series, ABSENT.** Its pre-registration
-  (`docs/live-test-results/arena-budget-preregistration.md`) and its instrument
-  (`examples/league_seat.py --trace-out`, appending one JSON object per live
-  completion carrying the `finish_reason` `ModelResponse` cannot) are committed
-  on branch `muse-cycle/t24` at `a223ab4` and **not merged**. No measured match
-  exists. What it would have covered: a 2×2 of arm × cortex `max_tokens`, n=3,
-  seeds 4242/4243/4244, muse off, the seat playing blue against the house bot —
-  i.e. **the token cap as an independent variable**, which is precisely the
-  hidden variable `t23` and `t27` both tripped over. It also carries the only
-  measurement that would retire a known preamble defect: the `t19` arena series
-  ran its whole 24-match matrix at the 2048 default and its config record did not
-  say so. Next step: finish the series, then merge. Owner: this repo.
-  **This summary ships with one of `t22`'s four declared dependencies unmet.**
+- **`t24` — the league/arena series. RESOLVED.** This section originally read
+  "**ABSENT** … no measured match exists … **this summary ships with one of
+  `t22`'s four declared dependencies unmet**." The series ran and merged at
+  `f83d6b3`, so that sentence no longer holds and `t22`'s four dependencies are
+  all met.
+
+  It covered what this section said it would — a 2×2 of arm × cortex
+  `max_tokens`, n=3, seeds 4242/4243/4244, muse off, the seat playing blue
+  against the house bot — and answered the question it was set: **the token cap
+  is a real hidden variable, and a worse-shaped one than expected.** Truncation
+  at the shipped 2048 default is intermittent (5 of 83 completions, 3 of 6
+  matches, 0 of 58 at 16000), so most turns look fine and a few are silently
+  empty. Series-wide degradations: **0** — `#37` again, now with a lost turn of
+  play attached rather than a lost puzzle answer.
+
+  Two things this section anticipated are now discharged: the 4
+  `EMBODIMENT_LIVE_ARENA` tests it inherited from `t23` ran (**4/4 PASSED**),
+  and the `t19` preamble defect is retired — the config record now names the
+  budget, and `d16` raised every checked-in cortex default to 16000 so the
+  measured failure mode is not what ships.
+
+  What remains genuinely open is smaller and is stated in the results doc
+  itself: **n=3 per cell, one rig, one day, one colour, one opponent**, no rung
+  beyond the 2×2, and the per-drive asymmetry in P3 read off a single
+  falsifying drive.
 
 ### Filed, not fixed
 

@@ -120,8 +120,8 @@ operator actually talks to.
 | Runtime | `colleague` | the harness |
 | Loop + presence | `embodiment` (this repo) | the pump |
 | **Teammate identity** | **Gwen** | what the operator addresses |
-| Cortex | Qwen 3.6 27B (`sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP`) | bounded tool loop, repo actions, final synthesis, **final authority** |
-| Muse | Gemma 4 31B (`nvidia/Gemma-4-31B-IT-NVFP4`) | reflective counsel, tools opt-in: reframe the problem, challenge the cortex's assumptions, offer materially different alternatives; proposes, never decides. A host may wire a pad and a bounded workspace onto its tool bench; neither is on by default — see below |
+| Cortex | Qwen 3.6 27B (`sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP`) | bounded tool loop, repo actions, final synthesis, **final authority** — and, per `d15`, **the only actor** |
+| Muse *(opt-in; not in the reference rig)* | Gemma 4 31B (`nvidia/Gemma-4-31B-IT-NVFP4`) | reflective counsel, tools opt-in: reframe the problem, challenge the cortex's assumptions, offer materially different alternatives; proposes, never decides. A host may wire a pad and a bounded workspace onto its tool bench; neither is on by default — see below |
 | Senses | Gemma 4 12B (`coolthor/gemma-4-12B-it-NVFP4A16`) | intake, perception, conversational presence, speak-back; never acts on the repo |
 | Ears / voice | Parakeet STT + Chatterbox TTS behind the lobes audio overlay | the realtime lane (below) |
 
@@ -130,6 +130,39 @@ Roles resolve **by name** from a `lobes` gateway's `/capabilities` contract
 `tts`), never by parsing model names. The 31B muse is opt-in: it needs a
 muse-hosting deployment shape (`lobes init --shape thor-muse`), because a 31B
 cannot co-reside with the cortex+senses duo on a 128 GB box.
+
+**The reference rig runs muse-off — operator decision, 2026-07-31, recorded
+as `d15`.** Qwen is the only actor; Gemma 4 12B stays senses (intake,
+perception, speak-back); the Gemma 4 31B muse is **not dialled**. This changes
+no code — the muse was already opt-in and off by default — and it does **not**
+retire the seam: `muse.py`, `muse_runner.py` and the tool bench ship
+unchanged, and a host that wants counsel wires one.
+
+Be precise about what supports this, because the obvious citation is the wrong
+one. The model-consolidation head-to-head
+(`docs/live-test-results/league-h2h.md`) ranked `full-qwen > mixed >
+full-gemma`, but league's outcome metric tied 0–0 in all six matches and the
+entire ranking rests on one optional team-message field — it measured
+**interface compliance, not play**, and is not the support for this decision.
+Nor is the chosen configuration one of the three arms it ran: those all
+carried a muse, and a muse-off control does not exist there. What supports
+`d15` is the muse-side evidence: `t18`'s three-arm series returned
+`INCONCLUSIVE` while measuring real harm (#32, #33); 5 of 13 counsel lines
+still never reach the cortex (#29); and `t28` measured a **1.2%** intervention
+rate (1 override in 82) for **2.4–4.4×** the token cost. Cost is the one
+unambiguous axis — full-Gemma 950 tokens/match against full-Qwen's 18,410
+(19.4×) — and it argues *against* Qwen, not for it. This decision is a
+judgement the operator is entitled to make on top of that evidence, not a
+result the evidence produced.
+
+One consequence is load-bearing and was acted on (`d16`): with Qwen the only
+actor, the cortex is the only mind that can silently lose a turn. `t24`
+measured the shipped 2048 token default truncating **6.0%** of completions
+(5 of 83) with **zero** degradations recorded — `ModelResponse` carries no
+`finish_reason` (#37), so a truncated turn and a deliberate one arrive at the
+loop as the same object. At 16000: 0 of 58. The example hosts' defaults were
+raised accordingly; the value the series was measured at stays recorded in
+`docs/live-test-results/arena-budget.md`.
 
 **The muse's tools are opt-in too, and stay that way.** `embodiment.muse_pad`
 (write-only working memory) and `embodiment.workspace` (a bounded,

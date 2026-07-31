@@ -87,7 +87,7 @@ EXECUTIVE_TEMPERATURE = 0.3
 #: this budget on a reasoning field before writing any content, and the rig's
 #: README records it returning ``content: None`` on a budget that ran out
 #: mid-thought. A cell graded on a truncation would measure the harness.
-MAX_TOKENS = 6000
+MAX_TOKENS = 16000
 
 #: The muse loop's thinking turns per boundary (the golden's value).
 REFLECTIVE_MAX_TURNS = 3

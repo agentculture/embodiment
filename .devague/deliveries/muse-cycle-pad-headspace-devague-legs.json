@@ -2,7 +2,7 @@
   "plan_slug": "muse-cycle-pad-headspace-devague-legs",
   "schema_version": 1,
   "created": "2026-07-29T22:25:08Z",
-  "updated": "2026-07-30T21:59:41Z",
+  "updated": "2026-07-31T05:28:11Z",
   "deviations": [
     {
       "id": "d1",
@@ -182,6 +182,33 @@
       "origin": "user",
       "status": "approved",
       "classification": "needs-follow-up"
+    },
+    {
+      "id": "d15",
+      "what": "the reference rig consolidates on Qwen as the only actor: cortex Qwen 3.6 27B, senses Gemma 4 12B for intake and speak-back, and the Gemma 4 31B muse not used \u2014 the muse stays a shipped opt-in seam, off by default, not deleted code",
+      "task_ref": "t27",
+      "reason": "operator decision 2026-07-31. Note the chosen configuration is muse-OFF, which was not one of the three h2h arms \u2014 the h2h ranking rested on the optional team-message field (interface compliance, not play) and is NOT the support for this. The support is separate: muse-arms returned INCONCLUSIVE with measured harm (issue #32 NO_ANSWER 9/16 tool-arm runs, issue #33 74% of workspace calls refused), 5 of 13 counsel lines still never reach the cortex (issue #29), t28 measured a 1.2% intervention rate for 2.4-4.4x cost, and the 31B needs its own deployment shape. Costs nothing to adopt: the muse is already opt-in and off by default, so no code changes",
+      "affects": [
+        "t24",
+        "t28",
+        "t20"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable"
+    },
+    {
+      "id": "d16",
+      "what": "raise the shipped cortex token default from 2048 to 16000 in the example hosts, as a direct consequence of t24 and d15: with Qwen the only actor, the budget t24 measured as silently truncating 6.0% of completions is now the budget every act runs at",
+      "task_ref": "t24",
+      "reason": "decision taken under delegated authority 2026-07-31. t24 measured 5 of 83 completions truncating at 2048 with zero degradations recorded, because ModelResponse carries no finish_reason (issue #37) \u2014 a truncated turn and a deliberate one are the same object at the seam. At 16000: 0 of 58. d15 removes the muse, so the cortex is the only mind that can lose a turn this way. The measured value stays recorded in arena-budget.md so the series' instrument is not made retroactively unreadable by the change it caused",
+      "affects": [
+        "t28",
+        "t23"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable"
     }
   ]
 }

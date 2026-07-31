@@ -113,7 +113,13 @@ DEFAULT_TEMPERATURE = 0.2
 #: Step budget. The correct run is read -> act-or-not -> finish; three tools.
 #: Generous enough for one self-correction, small enough that a lost run is cheap.
 DEFAULT_MAX_STEPS = 8
-DEFAULT_MAX_TOKENS = 700
+#: Raised 700 -> 16000 (``d16``). t23's budget audit found 700 sits far below
+#: one turn of this cortex's reasoning (~10,000 characters before it emits
+#: anything), and t24 then measured what a truncated turn costs: it arrives
+#: empty, and nothing records it (#37). The published
+#: ``memory-echo-chamber.md`` series was measured at 700 and is **not**
+#: re-graded here — pass ``--max-tokens 700`` to reproduce it.
+DEFAULT_MAX_TOKENS = 16000
 
 #: eidetic scope for the probe's scratch store. Its own, never the repo's.
 SCOPE = "echo-probe"

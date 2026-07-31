@@ -530,7 +530,7 @@ def gateway(
     *,
     tools=None,
     temperature: float = DEFAULT_TEMPERATURE,
-    max_tokens: int = 6000,
+    max_tokens: int = 16000,
 ):
     """One completion against the gateway.
 
@@ -681,8 +681,8 @@ def main() -> int:
     parser.add_argument(
         "--max-tokens",
         type=int,
-        default=6000,
-        help="cortex token budget per turn; the reference rig needs ~16000",
+        default=16000,
+        help="cortex token budget per turn; 16000 is this rig's measured floor (d16)",
     )
     parser.add_argument(
         "--results",

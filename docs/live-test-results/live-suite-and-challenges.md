@@ -354,6 +354,19 @@ This is not a hypothetical. These budgets are checked in today:
 | `association_work.py` | 6000 | ″ |
 | `echo_probe_workspace.py` | 16000 | the only one already correct |
 
+> **Superseded 2026-07-31 — the table above is the audit as it stood, not the
+> current tree.** Task `t24` went on to *measure* what this audit inferred:
+> 5 of 83 completions truncated at 2048 against 0 of 58 at 16000, one of them
+> costing an entire league turn that the outcome metric scored as played
+> ([arena-budget.md](arena-budget.md)). Under the standing rule that a
+> measured failure mode does not ship as default behaviour, deviation `d16`
+> raised **every** cortex budget in this table to `16000`: `echo_probe.py`
+> 700, `greenhouse.py` 2048, `league_seat.py` 2048, `association_work.py`
+> 6000, and `proof.py` / `challenge_*.py` 6000. **No result in this directory
+> was re-run or re-graded** — this task's decision not to re-run stands, and
+> each affected doc names the `--max-tokens` value that reproduces its
+> published run.
+
 `echo_probe.py` at **700** is the one worth flagging hardest: this model spends
 ~10,000 characters of reasoning before it emits anything, and 700 tokens does
 not cover the thinking, let alone the answer. The published

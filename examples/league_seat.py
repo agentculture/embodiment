@@ -187,7 +187,14 @@ DEFAULT_BASE_URL = "http://localhost:8001/v1"
 CORTEX_MODEL = "sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP"
 MUSE_MODEL = "nvidia/Gemma-4-31B-IT-NVFP4"
 
-DEFAULT_MAX_TOKENS = 2048
+#: Raised 2048 -> 16000 (``d16``), on this harness's own measurement: task
+#: t24 played 12 matches at both budgets and found 5 of 83 completions
+#: truncating at 2048 against 0 of 58 at 16000, with zero degradations
+#: recorded either way (#37). One of those truncations cost blue an entire
+#: opening league turn that ``turns_played`` scored as played. The published
+#: ``arena-budget.md`` and ``arena-series.md`` runs were measured at 2048;
+#: pass ``--max-tokens 2048`` to reproduce them.
+DEFAULT_MAX_TOKENS = 16000
 DEFAULT_MUSE_MAX_TOKENS = 512
 DEFAULT_TEMPERATURE = 0.3
 DEFAULT_MUSE_TEMPERATURE = 0.7
