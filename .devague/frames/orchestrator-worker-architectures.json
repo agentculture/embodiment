@@ -1,0 +1,675 @@
+{
+  "slug": "orchestrator-worker-architectures",
+  "title": "orchestrator-worker architectures",
+  "schema_version": 5,
+  "status": "exported",
+  "created": "2026-07-31T11:55:50Z",
+  "updated": "2026-07-31T13:19:24Z",
+  "claims": [
+    {
+      "id": "c1",
+      "kind": "announcement",
+      "text": "Gwen gains an orchestrator: the Qwen 27B cortex delegates ground work to the Thor-hosted Qwen 3.6 35B A3B worker role, in two architectures \u2014 manager (cortex orchestrates, worker executes) and hybrid (cortex routes simple work to the worker, keeps complex work itself) \u2014 and a pre-registered escalating series measures both against the existing single-actor rig on the math, league and logic/coding ladders",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h1",
+          "text": "every architecture named in the announcement exists as committed, runnable harness code, and every verdict quoted traces to a pre-registered decision rule applied to committed raw records",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "verify by re-running the series commands recorded in docs/live-test-results/README.md and comparing the results doc's numbers to the raw jsonl",
+      "revisions": []
+    },
+    {
+      "id": "c2",
+      "kind": "assumption",
+      "text": "Thor's lobes gateway already advertises the worker role live: `unsloth/Qwen3.6-35B-A3B-NVFP4`, context 262144, `tools: true`, `ready: true`, `loaded: true`, responsibilities `execution, ground_work, bulk_transform, drafting, image_understanding, video_understanding, tool_use, repo_action`, forbidden `final_decision, security_decision` \u2014 the Opus-to-Sonnet authority split is already encoded server-side",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c3",
+      "kind": "requirement",
+      "text": "the spark gateway (localhost:8001) must expose the worker role by name before any live arm dials it: embodiment resolves roles from ONE gateway's /capabilities, spark's advert set today is cortex/senses/muse/embedder/reranker/stt/tts with no worker, and its muse entry is stale (`ready: false`) \u2014 either spark's lobes config proxies worker the way it already proxies senses, or the harness takes an explicit worker-endpoint override",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h2",
+          "text": "before the first measured match, a smoke completion through the exact harness dial path returns from unsloth/Qwen3.6-35B-A3B-NVFP4 with its finish_reason recorded \u2014 reachability is measured, not assumed from the advert",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "add explicit --worker-url/--worker-model (env-overridable) harness config; run a wiring-smoke lane first, as league-h2h did",
+      "revisions": []
+    },
+    {
+      "id": "c4",
+      "kind": "assumption",
+      "text": "the muse is now un-hosted on this rig \u2014 Thor's advert shows `ready: false, loaded: false` \u2014 so muse-dependent experiments cannot run regardless of embodiment's code; d15's ruling stands that the muse seam ships as opt-in code, off by default, not deleted",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c5",
+      "kind": "boundary",
+      "text": "lobes-cli's role contract is closed and does not know `worker`: `ROLES` is a seven-name tuple (`lobes/roles.py:59`) validated in ~5 places, no `worker` exists in code, docs or git history, and the served Thor gateway is running ahead of the checkout \u2014 adding the role to lobes is sibling work embodiment proposes via issue, never pushes; this series must not depend on it and dials Thor's gateway directly (or via env override) instead",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h3",
+          "text": "no commit in this cycle touches lobes-cli; the worker-role ask exists as a lobes-cli issue filed via the communicate skill with the Thor advert JSON as evidence",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "file the issue before results publish; link it from the results doc",
+      "revisions": []
+    },
+    {
+      "id": "c6",
+      "kind": "assumption",
+      "text": "the worker's operational figures are operator-supplied, not advertised: /capabilities has no concurrency, throughput or modality fields, and lobes' own 50-tok/s-class numbers were measured on a different model variant and box class \u2014 the series must measure worker throughput and effective concurrency itself before any arm's design leans on x14 fan-out",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c7",
+      "kind": "requirement",
+      "text": "the delegation architectures ride the existing subagent seam unchanged: the host executor exposes a delegate tool returning `ToolOutcome(spawn=SpawnRequest(role='worker', model=...))`, the loop's spawn machinery (attenuation, step charging, `SOURCE_SUBAGENT` ledger attribution) already handles the rest, and `examples/league_commander.py` is the live-tested reference pattern \u2014 no `embodiment/` source change is required for the manager arm",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h4",
+          "text": "the delegation mechanics require zero embodiment/ source change \u2014 arms live in examples/ and tests/; if a worker framing block is added to framing.py it is additive, follows colleague#352's authority rules, and changes no existing framing byte",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "assert via PR diff review; existing framing tests stay green unmodified",
+      "revisions": []
+    },
+    {
+      "id": "c8",
+      "kind": "assumption",
+      "text": "league-commander (t28) is the direct prior and its economics invert here: hierarchy cost 2.4-4.4x a flat mind for identical results because the commander AND units were expensive minds contending for the outcome at a ceiling \u2014 the worker is a faster-per-token MoE on a box that does not contend with the local cortex, so orchestration can plausibly reduce wall-clock instead of only adding cost; that is the hypothesis the series must actually test rather than assume",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c9",
+      "kind": "requirement",
+      "text": "every arm's every model call records `finish_reason` via the harness-local parallel record (the #37 workaround every existing harness carries), the cortex and worker token budgets are 16000 per d16, and truncation counts are a reported outcome column \u2014 a second model whose truncation is invisible would reintroduce the exact silent-lost-turn failure t24 measured",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h5",
+          "text": "every model call in every arm lands one per-call record carrying finish_reason and token counts, truncation is a first-class results column, and a cell with missing records is reported ABSENT rather than summarized",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "reuse league_h2h's MeteredSeam pattern; budgets 16000 for both minds per d16",
+      "revisions": []
+    },
+    {
+      "id": "c10",
+      "kind": "requirement",
+      "text": "the series reuses the committed ladders and escalates until separation per #35: math/logic from docs/challenge-problems.md (subset-76 with its planted trap, corrupted register 1920-state, entropic register 17-solution under-determination plus its 3b matched pair), the league lane from the league_h2h escalating ladder and league_seat/arena instruments \u2014 and the pre-registration commits the ladder and decision rule before the first measured dial, as every prior series did",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h6",
+          "text": "the pre-registration (arms, rungs, decision rule, stop rule) is committed before the first measured dial \u2014 provable from git history \u2014 and the climb stops at the first separating rung",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "follow league-h2h-preregistration.md's structure; pin its constants with a test as prior series did",
+      "revisions": []
+    },
+    {
+      "id": "c11",
+      "kind": "requirement",
+      "text": "the arm set includes a flat-35B-solo control (the worker alone, no orchestrator) alongside flat-27B (today's rig), the manager arm (27B orchestrates, 35B executes all ground work) and the hybrid arm (27B routes simple work to 35B, keeps complex work) \u2014 every prior series taught that the control is where the result lives, and without worker-solo a hybrid win cannot be attributed to routing rather than to the 35B simply being sufficient",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h7",
+          "text": "arm W (flat 35B) runs at every rung flat-27B runs, and no orchestration claim is stated except relative to BOTH flat arms",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "the analyse verb refuses to emit a verdict when either flat arm's cell is missing",
+      "revisions": []
+    },
+    {
+      "id": "c12",
+      "kind": "assumption",
+      "text": "the worker's x14 concurrency on Thor is the first genuinely parallel lane this rig has had \u2014 next-cycle M1 recorded parallel cells as blocked on a second cortex, and the worker is that second-plus mind on a non-contended box \u2014 so the ladder includes a parallel fan-out rung (manager dispatches N workers concurrently) that no flat arm can structurally match; wall-clock and tokens are primary outcome axes there, since cost/latency separation is guaranteed even where correctness ties",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c13",
+      "kind": "boundary",
+      "text": "senses (Gemma 4 12B) stays intake, perception and speak-back in every arm, unchanged \u2014 it never acts on the repo and never orchestrates; the architecture change is entirely on the acting side (cortex/worker), and `framing.py` explicitly keeps senses out of the framing surface",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h8",
+          "text": "senses' code path and prompts are byte-identical across arms \u2014 a senses change would confound every arm and is out of scope this cycle",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "hold the senses prompt constant in harness config; assert its hash is identical across arm configs",
+      "revisions": []
+    },
+    {
+      "id": "c14",
+      "kind": "boundary",
+      "text": "the cortex keeps final authority in every arm: the worker's advert already forbids `final_decision` and `security_decision`, the worker is framed through the existing subagent framing (or a new worker framing that follows colleague#352's rule that identity framing never modifies tool authority), and no arm makes the worker a second final authority \u2014 a single-model run must not claim another mind exists, and a delegating run must expose which role actually produced each contribution in traces",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h9",
+          "text": "in every arm except worker-solo the finish authority is the cortex's alone (in worker-solo the worker IS the top-level mind and is framed as such), and traces expose the actual role, model and machine behind every contribution",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "the delegate tool's child surface excludes parent-level finish; per-call trace records carry role+model",
+      "revisions": []
+    },
+    {
+      "id": "c15",
+      "kind": "non_goal",
+      "text": "video understanding is out of scope for this series: `media.py` supports images and audio only, no video content-part exists anywhere in the repo, and the named ladders are text-only \u2014 the worker's video capability is a later cycle's question, recorded here so the capability is not silently forgotten",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c16",
+      "kind": "requirement",
+      "text": "the worker enters the reference rig's identity table only on a supporting measured result from this series \u2014 until then it is experiment-only, the same promotion gate the function map lives under; d15's muse-off reference rig stays the shipped default while the series runs",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h10",
+          "text": "no reference-rig table or identity doc changes this cycle unless the pre-registered decision rule returned a supporting verdict; an INCONCLUSIVE leaves d15's rig untouched",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "check rig tables in CLAUDE.md/README against the verdict in the PR that lands results",
+      "revisions": []
+    },
+    {
+      "id": "c17",
+      "kind": "requirement",
+      "text": "a vision rung enters the ladder: image tasks ride media.py's existing image parts; the flat-27B arm sees images only as senses-described text (the cortex model is text-only), worker arms see them natively \u2014 the one rung where the existing architecture cannot tie at a ceiling, and the arm design must state that asymmetry rather than hide it",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h11",
+          "text": "the vision rung's images derive from the same fog snapshot as the text control via the committed renderer, and the flat-27B arm's senses-described path actually runs live \u2014 it is dialled, not scored structurally absent without a run",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "27B arm: senses describes the image into the context packet; worker arms: image parts via media.py; both paths logged per call",
+      "revisions": []
+    },
+    {
+      "id": "c18",
+      "kind": "requirement",
+      "text": "a coding rung is authored this cycle: a committed coding task set + grader under the M2 grader-kit discipline, with the problem statements and verified answers landing in docs/challenge-problems.md first, per that file's own rule",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h12",
+          "text": "the coding grader ships with adversarial fixtures, a paraphrase case, a vacuity assertion and committed raw responses, and the problems plus verified answers land in docs/challenge-problems.md before the first measured run",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "follow M2's four grader-kit requirements verbatim; grader tests are hermetic",
+      "revisions": []
+    },
+    {
+      "id": "c19",
+      "kind": "requirement",
+      "text": "the live series dials the worker directly at Thor's gateway via an explicit harness endpoint + model id; a worker-role proposal goes to lobes-cli as an issue (communicate skill), and nothing in the series blocks on lobes accepting it",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h13",
+          "text": "the worker endpoint and model id come only from explicit flags/env with no silent fallback to the spark gateway; missing worker config degrades to a recorded ABSENT arm, never a silent substitution",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "config precedence documented in the harness; degradation recorded through the ledger, not a log line",
+      "revisions": []
+    },
+    {
+      "id": "c20",
+      "kind": "boundary",
+      "text": "no muse deletion this cycle: d15 stands verbatim \u2014 the muse modules, tests and harnesses ship unchanged as opt-in code, off by default",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h14",
+          "text": "the cycle's diffs delete no muse module, test or harness; d15 stands verbatim",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "assert via PR diff review",
+      "revisions": []
+    },
+    {
+      "id": "c21",
+      "kind": "requirement",
+      "text": "the league lane gains a map-image experiment: each mind receives a rendered map of the board scoped to its own visibility \u2014 every unit its own view, the orchestrator the team-knowledge view \u2014 alongside the existing text briefing lane",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h15",
+          "text": "each mind's map is scoped to exactly its own visibility at that decision point \u2014 a unit's map never contains a cell its fog computation excludes, asserted by adversarial renderer fixtures \u2014 and the orchestrator's map is the team-knowledge view, never ground truth",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "unit view from visible_cells (or its harness-side equivalent) at the decision turn; commander view from latest_knowledge; both committed per measured turn",
+      "revisions": []
+    },
+    {
+      "id": "c22",
+      "kind": "requirement",
+      "text": "the map-image arm must be information-matched to a text control: the same fog-scoped state rendered once as prose briefing and once as an image, so any separation attributes to presentation modality and not to information content \u2014 an image carrying more (or staler) state than the text arm would measure the leak, not vision",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h16",
+          "text": "every image briefing has a committed text twin derived from the same fog snapshot (same turn, seat, snapshot hash), and the harness refuses to run a cell whose pairing check fails",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "pairing asserted in the harness before dialling; snapshot hashes ride the per-call record",
+      "revisions": []
+    },
+    {
+      "id": "c23",
+      "kind": "assumption",
+      "text": "fog substrate exists and is reusable as-is at team scope: the continuous lane's briefing already applies team-union fog when a match config sets fog true (ground truth is the default), and the grid lane exposes `team_view` and `latest_knowledge` \u2014 but every mind-facing payload folds to TEAM scope; true per-unit cones (`visible_cells` per unit) exist only as an unconsumed engine primitive, so per-unit map scoping is new surface work in league or a harness-side derivation",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c24",
+      "kind": "requirement",
+      "text": "rendering is the new instrument: no fog-aware image renderer exists in league (raster primitives in replay/video.py draw ground-truth GIF only; the fogged views are markdown/JSON and ANSI TUI) \u2014 the series renders seat-view PNGs harness-side from the fogged briefing JSON first (unblocked, mirrors the direct-Thor precedent), and a `league match render --team/--unit --fog --turn` verb is proposed upstream to league-of-agents in parallel, propose-never-push; the renderer is an instrument and falls under the M2 grader-kit discipline (a wrong map fed to a mind is a defective instrument)",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h17",
+          "text": "the renderer carries its own adversarial test kit \u2014 including a fog-leak fixture where an entity outside visibility must not be drawn, and golden images \u2014 and every measured turn's rendered map is committed so any dial can be re-inspected",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "renderer tests hermetic under tests/ with goldens; rendered maps land in the raw results dir",
+      "revisions": []
+    },
+    {
+      "id": "c25",
+      "kind": "assumption",
+      "text": "the commander in manager/hybrid arms is the text-only 27B: it cannot consume map images, so in those arms units (35B) see images while the commander reads text knowledge briefs \u2014 the image lane tests unit-level perception and the commander's fusion of visually-informed unit reports; only worker-solo (and any all-35B arm) can put an image in front of the top-level mind, and the arm table must state this asymmetry",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c26",
+      "kind": "audience",
+      "text": "the rig operator (who owns architecture promotion decisions), embodiment's maintainers (whose subagent seam the arms exercise), and the sibling repos: lobes-cli and league-of-agents receive proposals, colleague consumes the measured architecture story",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h18",
+          "text": "the sibling proposals (lobes-cli worker role, league-of-agents fog-scoped render verb) are filed as issues on those repos, and the results doc links both",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c27",
+      "kind": "after_state",
+      "text": "the repo carries pre-registered, live-measured verdicts comparing today's flat-27B rig against worker-solo, manager and hybrid architectures up an escalating ladder \u2014 committed math/logic problems, the league arena including the new fog-scoped map-image lane, a new coding rung and a vision rung \u2014 with cost, wall-clock, truncation and correctness reported per arm; the worker enters the reference rig only if the decision rule supports it",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h19",
+          "text": "the after-state is demonstrated by artifacts, not description: each climbed rung has its preregistration and results doc pair in docs/live-test-results/ with raw jsonl beside it",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c28",
+      "kind": "before_state",
+      "text": "the rig acts through one serial mind: the 27B cortex performs every act (d15), the 35B worker sits ready and idle on Thor with no harness dialling it, no coding or vision rung exists, and parallel execution is structurally absent \u2014 M1 recorded it blocked on a second mind",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h20",
+          "text": "the before-state is cited from the repo's own records \u2014 d15, next-cycle M1, and the live Thor advert \u2014 never asserted from memory",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c29",
+      "kind": "why_it_matters",
+      "text": "the cortex is slow and serial while the worker is fast, concurrent and idle: if orchestration wins, Gwen gets faster and gains vision and parallel lanes without surrendering final authority; if it loses, a measured negative stops a tempting architecture from shipping on vibes \u2014 either way the next architecture decision is made on evidence, the way d15 was",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h21",
+          "text": "the speed claim is measured, not narrated: wall-clock and tokens are reported per arm at every rung, so 'faster' is always a number with a direction",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c30",
+      "kind": "success_signal",
+      "text": "the series returns a verdict at some rung of the pre-registered ladder \u2014 SEPARATED with a direction, or INCONCLUSIVE with the ceiling documented \u2014 with the pre-registration committed before the first measured dial, raw per-call records including finish_reason committed beside the results doc, and a corrections section recording every belief the runs contradicted",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h22",
+          "text": "a verdict is only quoted with its pre-registered decision rule beside it, and INCONCLUSIVE is reported as INCONCLUSIVE \u2014 never softened into a win",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    }
+  ],
+  "open_vagueness": [
+    {
+      "id": "v1",
+      "text": "whether the served unsloth/Qwen3.6-35B-A3B-NVFP4 build stays stable under sustained x14 concurrent load on Thor \u2014 lobes' catalog records a sibling variant (mmangkad) crash-looping on GB10 hardware, but that was a different build on a different box; unknown until the throughput pre-measurement runs",
+      "kind": "unknown_nonblocking",
+      "claim_id": null,
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v2",
+      "text": "whether hybrid routing (27B deciding per-task simple-vs-complex) can be graded without a defective instrument \u2014 routing quality is a new grader class with no precedent in the repo",
+      "kind": "unknown_nonblocking",
+      "claim_id": null,
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    }
+  ],
+  "scope_entries": [
+    {
+      "id": "s1",
+      "surface": "Thor lobes gateway /capabilities (live dial, 2026-07-31)",
+      "finding": "worker role is live on thor.tail0be7e0.ts.net:8000 with the model, context, tool support and authority boundary verified from the advert itself, not trusted from the operator's description",
+      "seeds": [
+        "c2"
+      ]
+    },
+    {
+      "id": "s2",
+      "surface": "spark lobes gateway /capabilities (live dial, localhost:8001, 2026-07-31)",
+      "finding": "no worker advert locally; senses and muse show the proxied-role pattern (hosted_by orin/thor) that a worker proxy entry would follow; muse shows ready:false loaded:false confirming its removal from Thor",
+      "seeds": [
+        "c3"
+      ]
+    },
+    {
+      "id": "s3",
+      "surface": "deviation ledger (devague deviate --list): d15, d16, d12-d14",
+      "finding": "d15 consolidates the rig on Qwen as only actor with the muse seam shipped-but-off; d16 raised cortex token defaults to 16000 after t24 measured 6.0% silent truncation at 2048; d12-d14 record the prior coordinator-delegates-to-developer experiment lineage (t28)",
+      "seeds": [
+        "c4"
+      ]
+    },
+    {
+      "id": "s4",
+      "surface": "lobes-cli repo (/home/spark/git/lobes-cli): roles.py, profiles/schema.py, profiles/shapes.py, catalog.py, gateway/_config.py",
+      "finding": "role set closed at cortex/senses/muse/embedder/reranker/stt/tts; worker absent from all branches and history; RoleInfo schema carries no concurrency/throughput/modality fields; catalog's only 35B A3B entry is mmangkad text-only role_hint=candidate with a flaky GB10 history \u2014 a different variant from the served unsloth model",
+      "seeds": [
+        "c5"
+      ]
+    },
+    {
+      "id": "s5",
+      "surface": "lobes-cli docs/qwen3.6-35b-a3b-nvfp4.md + RoleInfo dataclass (lobes/roles.py:207-297)",
+      "finding": "no structured channel exists for tok/s, concurrency, vision or video in the capabilities contract; those claims ride prose only, and the cataloged benchmark numbers belong to mmangkad/nvidia variants, not the served unsloth build",
+      "seeds": [
+        "c6"
+      ]
+    },
+    {
+      "id": "s6",
+      "surface": "embodiment/subagent.py + embodiment/loop.py (ToolExecutor protocol, spawn machinery) + examples/delegation.py + examples/league_commander.py",
+      "finding": "SubagentFn is an injected seam; SpawnRequest.role and .model are free strings resolved by the host, not a registry; league_commander already ran a commander-delegates-to-units architecture live today with zero embodiment source changes; delegation.py is the hermetic structural proof (never live-tested)",
+      "seeds": [
+        "c7"
+      ]
+    },
+    {
+      "id": "s7",
+      "surface": "docs/live-test-results/league-commander.md + league-commander-preregistration.md",
+      "finding": "INCONCLUSIVE at a ceiling twice (12/12 at 19-0, 6/6 at 10-0); hierarchy 2.4-4.4x cost, ~95% prompt tokens; 1 override in 82 consultations \u2014 the commander was an expensive relay; every validity gate passed so the tie is the arena's, and the next design must escalate difficulty until separation (#35)",
+      "seeds": [
+        "c8"
+      ]
+    },
+    {
+      "id": "s8",
+      "surface": "embodiment/contract.py ModelResponse + issue #37 + examples/league_seat.py:1880, league_commander.py:427-490",
+      "finding": "ModelResponse still carries no finish_reason; every live harness builds its own record from the raw choice; d16 raised example-host defaults to 16000 after 6.0% silent truncation at 2048",
+      "seeds": [
+        "c9"
+      ]
+    },
+    {
+      "id": "s9",
+      "surface": "docs/challenge-problems.md + examples/league_h2h.py + examples/arena_series.py + issue #35",
+      "finding": "the authoritative problem statements, verified answers and escalation-ladder discipline all exist; league is the repo's own resource-skirmish arena (not Riot's game); four prior experiments tied at a ceiling, so difficulty escalation is the pre-registered fix, not larger n",
+      "seeds": [
+        "c10"
+      ]
+    },
+    {
+      "id": "s10",
+      "surface": "docs/plans/next-cycle-candidates.md (M4, control lessons) + docs/live-test-results/corrections.md pattern",
+      "finding": "M4: ceiling designs measure nothing \u2014 the next experiment needs tasks where the flat mind visibly fails; the recurring correction is a missing control arm or defective grader, so arms and graders are designed under the M2 grader-kit discipline",
+      "seeds": [
+        "c11"
+      ]
+    },
+    {
+      "id": "s11",
+      "surface": "docs/plans/next-cycle-candidates.md M1 + rig topology (cortex local on spark, worker on thor)",
+      "finding": "M1's parallelism blocker was the single local cortex; the worker role removes it for delegated work while the cortex stays serial; latency figures stay honest because the two boxes do not contend",
+      "seeds": [
+        "c12"
+      ]
+    },
+    {
+      "id": "s12",
+      "surface": "embodiment/framing.py (ROLE_CORTEX/ROLE_SUBAGENT/ROLE_MUSE, senses exclusion) + colleague#352 design rules + Thor worker advert forbidden_responsibilities",
+      "finding": "framing has exactly three roles and deliberately no senses role; worker framing either rides ROLE_SUBAGENT or adds a fourth block under the same authority rules; the advert's forbidden set already encodes the Opus-Sonnet split",
+      "seeds": [
+        "c13",
+        "c14"
+      ]
+    },
+    {
+      "id": "s13",
+      "surface": "embodiment/media.py (_MEDIA_TYPES, build_part)",
+      "finding": "png/jpg/jpeg/gif/webp images and wav/mp3/ogg/flac audio only; a video lane needs a new media type, part builder and flatten placeholder \u2014 new work, not configuration",
+      "seeds": [
+        "c15"
+      ]
+    },
+    {
+      "id": "s14",
+      "surface": "operator decisions 2026-07-31 (AskUserQuestion, four answers)",
+      "finding": "muse code kept per d15; worker dialled direct at Thor; coding rung authored under M2; vision rung added with the senses-described vs native-vision asymmetry stated",
+      "seeds": [
+        "c17",
+        "c18",
+        "c19",
+        "c20"
+      ]
+    },
+    {
+      "id": "s15",
+      "surface": "league-of-agents repo: engine/vision.py, engine/knowledge.py, charness.py (briefing + fog filters), replay/video.py, replay/tui.py, faces/brief.py, match.py CLI, exported fog frame",
+      "finding": "per-team fog is engine-computed and shipped (briefing fog:true, team_view, latest_knowledge, TUI overlay, brief face); per-unit visibility exists only as the unconsumed visible_cells primitive; no image renderer is fog-aware and the only raster path emits whole-match GIF from ground truth; a seat-view PNG verb is assemblable from _Canvas draw primitives plus the fogged snapshot shapes but is new league work",
+      "seeds": [
+        "c21",
+        "c22",
+        "c23",
+        "c24",
+        "c25"
+      ]
+    }
+  ],
+  "lapses": []
+}
