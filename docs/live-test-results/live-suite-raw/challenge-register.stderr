@@ -1,0 +1,50 @@
+Traceback (most recent call last):
+  File "/home/spark/git/.worktrees.embodiment/t23/embodiment/loop.py", line 2152, in run
+    outcome = _work_loop(ctx, reading_budget)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/spark/git/.worktrees.embodiment/t23/embodiment/loop.py", line 1760, in _work_loop
+    resp = _complete_with_degradation(ctx)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/spark/git/.worktrees.embodiment/t23/embodiment/loop.py", line 1680, in _complete_with_degradation
+    effective, retries_left = _classify_complete_error(
+                              ^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/spark/git/.worktrees.embodiment/t23/embodiment/loop.py", line 1675, in _complete_with_degradation
+    return ctx.complete(ctx.messages)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/spark/git/.worktrees.embodiment/t23/examples/challenge_register.py", line 306, in complete
+    with urllib.request.urlopen(request, timeout=600) as response:  # nosec B310
+         ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/spark/.local/share/uv/python/cpython-3.12.12-linux-aarch64-gnu/lib/python3.12/urllib/request.py", line 215, in urlopen
+    return opener.open(url, data, timeout)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/spark/.local/share/uv/python/cpython-3.12.12-linux-aarch64-gnu/lib/python3.12/urllib/request.py", line 521, in open
+    response = meth(req, response)
+               ^^^^^^^^^^^^^^^^^^^
+  File "/home/spark/.local/share/uv/python/cpython-3.12.12-linux-aarch64-gnu/lib/python3.12/urllib/request.py", line 630, in http_response
+    response = self.parent.error(
+               ^^^^^^^^^^^^^^^^^^
+  File "/home/spark/.local/share/uv/python/cpython-3.12.12-linux-aarch64-gnu/lib/python3.12/urllib/request.py", line 559, in error
+    return self._call_chain(*args)
+           ^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/spark/.local/share/uv/python/cpython-3.12.12-linux-aarch64-gnu/lib/python3.12/urllib/request.py", line 492, in _call_chain
+    result = func(*args)
+             ^^^^^^^^^^^
+  File "/home/spark/.local/share/uv/python/cpython-3.12.12-linux-aarch64-gnu/lib/python3.12/urllib/request.py", line 639, in http_error_default
+    raise HTTPError(req.full_url, code, msg, hdrs, fp)
+urllib.error.HTTPError: HTTP Error 503: Service Unavailable
+
+The above exception was the direct cause of the following exception:
+
+Traceback (most recent call last):
+  File "/home/spark/git/.worktrees.embodiment/t23/examples/challenge_register.py", line 459, in <module>
+    raise SystemExit(main())
+                     ^^^^^^
+  File "/home/spark/git/.worktrees.embodiment/t23/examples/challenge_register.py", line 433, in main
+    g = run_once(complete, max_steps=args.max_steps)
+        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/spark/git/.worktrees.embodiment/t23/examples/challenge_register.py", line 352, in run_once
+    outcome = run(complete, task, executor=bench, max_steps=max_steps)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/home/spark/git/.worktrees.embodiment/t23/embodiment/loop.py", line 2175, in run
+    raise LoopAborted(_outcome(ctx, outcome)) from aborted
+embodiment.loop.LoopAborted: HTTPError: HTTP Error 503: Service Unavailable

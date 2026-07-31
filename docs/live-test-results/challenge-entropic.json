@@ -1,0 +1,46 @@
+{
+  "config": {
+    "cortex_model": "sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP",
+    "cortex_temperature": 0.3,
+    "muse_model": null,
+    "muse_temperature": null,
+    "max_turns": 14,
+    "staleness_policy": "default",
+    "n": 1,
+    "variant": "3b",
+    "max_tokens": 16000
+  },
+  "results": [
+    {
+      "answer": "__COLLEAGUE_NO_RESULT_PRODUCED__",
+      "is_correct": false,
+      "verdict": "WRONG \u2014 expected initial 00001111, order C->A->E->D->B",
+      "variant": "3b",
+      "raw_summary": "__COLLEAGUE_NO_RESULT_PRODUCED__",
+      "exit_reason": "stopped",
+      "model_turns": 8,
+      "tool_calls": [
+        "hamming_distance",
+        "hamming_distance",
+        "hamming_distance",
+        "apply_routine",
+        "hamming_distance",
+        "hamming_distance",
+        "hamming_distance",
+        "hamming_distance",
+        "hamming_distance"
+      ],
+      "degradations": [],
+      "finish_reasons": [
+        "tool_calls",
+        "tool_calls",
+        "tool_calls",
+        "length",
+        "tool_calls",
+        "tool_calls",
+        "length",
+        "length"
+      ]
+    }
+  ]
+}

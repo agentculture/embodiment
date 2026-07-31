@@ -1,0 +1,68 @@
+{
+  "config": {
+    "cortex_model": "sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP",
+    "cortex_temperature": 0.3,
+    "muse_model": null,
+    "muse_temperature": null,
+    "max_turns": 14,
+    "staleness_policy": "default",
+    "n": 3,
+    "max_tokens": 16000
+  },
+  "results": [
+    {
+      "answer": 76,
+      "expected": 76,
+      "is_correct": true,
+      "is_trap": false,
+      "verdict": "CORRECT",
+      "raw_summary": "76",
+      "lenient_answer": 76,
+      "exit_reason": "finished",
+      "model_turns": 1,
+      "tool_calls": [
+        "finish"
+      ],
+      "degradations": [],
+      "finish_reasons": [
+        "tool_calls"
+      ]
+    },
+    {
+      "answer": 76,
+      "expected": 76,
+      "is_correct": true,
+      "is_trap": false,
+      "verdict": "CORRECT",
+      "raw_summary": "76",
+      "lenient_answer": 76,
+      "exit_reason": "finished",
+      "model_turns": 1,
+      "tool_calls": [
+        "finish"
+      ],
+      "degradations": [],
+      "finish_reasons": [
+        "tool_calls"
+      ]
+    },
+    {
+      "answer": 76,
+      "expected": 76,
+      "is_correct": true,
+      "is_trap": false,
+      "verdict": "CORRECT",
+      "raw_summary": "76",
+      "lenient_answer": 76,
+      "exit_reason": "finished",
+      "model_turns": 1,
+      "tool_calls": [
+        "finish"
+      ],
+      "degradations": [],
+      "finish_reasons": [
+        "tool_calls"
+      ]
+    }
+  ]
+}

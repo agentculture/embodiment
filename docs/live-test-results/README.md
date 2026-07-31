@@ -67,6 +67,7 @@ generously.
 | [muse-arms-preregistration.md](muse-arms-preregistration.md) | the three muse arms (tools-off / +pad / +pad+workspace), the R-C1 execution rule, the counsel scorer and the decision rule | committed **with the harness** (`examples/muse_arms.py`) and **before** the first measured dial; the series itself is task t18's |
 | [muse-arms.md](muse-arms.md) | does working memory, then somewhere to execute, cut the muse's confidently-wrong rate — n=8 per arm, 24 runs, real containers | **`INCONCLUSIVE`**: arm A is **8/8 correct, 0 confidently wrong**, so the control sits on a ceiling with nothing to move. **1 confidently-wrong answer in 24 runs.** 17 of arm C's 23 workspace calls were refused for a string argv; after the mandated hand-audit **every one of the 5 real executions was a whole-problem solver, none offloaded arithmetic**. Nine runs report `NO_ANSWER` because the muse emitted a **tool call on the tools-off closing turn** and the gateway dropped it |
 | [workspace-echo-chamber.md](workspace-echo-chamber.md) | does a wrong number wearing *measured-result* authority drive the loop — a genuine workspace execution against a remembered-fact arm and a control, n=3 each | **`INCONCLUSIVE`, 12/12 RESISTED — the pad-recall boundary stays.** Nothing deferred, including a post-hoc arm carrying the exact costume that won 6/6, so the probe has **no measured sensitivity** to the effect it re-tests. It also measured that `exit=stopped` on this problem was partly the token cap |
+| [live-suite-and-challenges.md](live-suite-and-challenges.md) | the live-evidence gate (`d1`): every `EMBODIMENT_LIVE_RIG`-gated test plus the challenge harnesses, run rather than assumed | **13 of 13 live-gated tests PASSED.** `challenge_subset` **3/3 CORRECT**; `challenge_register` graded WRONG but **INCONCLUSIVE** — two of four turns hit `finish_reason: length` at a full **16000/16000**. The terminal drain (t4/t25) fires on a clean finish and delivers, and its counsel **provably cannot reach the cortex** there; t26's muse tool bench is **unwired in every checked-in host** (`tool_rounds: 0`). Cross-cutting: the cortex token budget is a hidden variable at **700 / 2048 / 6000** across five harnesses, and `ModelResponse` carries no `finish_reason` to make truncation visible |
 
 ## Reproducing
 
@@ -137,6 +138,22 @@ uv run python examples/muse_arms.py --analyse \
 uv run python examples/proof.py --json
 uv run python examples/proof.py --muse --identity Gwen --json
 uv run python examples/proof.py --problem euler --max-steps 20 --json
+
+# the live-evidence gate: every rig-gated test, then the challenge harnesses.
+# --max-tokens 16000 is NOT optional on this rig — the harness default of 6000
+# truncates roughly one turn in three on the subset problem, and a truncated
+# turn is indistinguishable from a refusal without --trace-out.
+EMBODIMENT_LIVE_RIG=1 uv run pytest -p no:randomly -v \
+    tests/test_workspace.py tests/test_muse_challenge.py \
+    tests/test_association_work.py tests/test_demo_greenhouse.py \
+    tests/test_echo_probe.py tests/test_echo_probe_workspace.py
+
+uv run python examples/challenge_subset.py --n 3 --json --max-tokens 16000 \
+    --results docs/live-test-results/challenge-subset-config.json \
+    --trace-out docs/live-test-results/challenge-subset-trace.json
+uv run python examples/challenge_register.py --n 1 --json --max-tokens 16000 \
+    --results docs/live-test-results/challenge-register-config.json \
+    --trace-out docs/live-test-results/challenge-register-trace.json
 ```
 
 The hermetic suite never touches any of this: live paths are opt-in and skip

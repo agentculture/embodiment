@@ -679,6 +679,12 @@ def main() -> int:
     parser.add_argument("--muse-temperature", type=float, default=DEFAULT_TEMPERATURE)
     parser.add_argument("--identity", default=None)
     parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=6000,
+        help="cortex token budget per turn; the reference rig needs ~16000",
+    )
+    parser.add_argument(
         "--results",
         default="results/proof_config.json",
         help="where the config preamble is written, BEFORE the first result line",
@@ -710,6 +716,7 @@ def main() -> int:
             "identity": args.identity,
             "muse_max_turns": MUSE_MAX_TURNS,
             "muse_max_tokens": MUSE_MAX_TOKENS,
+            "cortex_max_tokens": args.max_tokens,
             "stale_lag": DEFAULT_STALE_LAG,
         },
     )
@@ -743,6 +750,7 @@ def main() -> int:
             key,
             tools=tool_schema,
             temperature=args.cortex_temperature,
+            max_tokens=args.max_tokens,
         )
     )
     presence = PresenceEngine(
