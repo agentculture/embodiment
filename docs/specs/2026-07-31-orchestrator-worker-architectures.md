@@ -157,6 +157,12 @@
   - seeds: `c37`
 - `s22` — `challenge pass / operations lens: MeteredSeam transport-retry pattern (league_h2h) + cross-box dial path spark->thor`: clean pass: wall-clock across the tailnet is legitimately part of architecture cost; the existing per-call transport-retry recording makes a flaky-network confound visible; no new claim needed
 - `s23` — `challenge pass / reversibility+data-loss lens: promotion gate c16, experiment-only diffs, committed artifacts discipline`: clean pass: arms live in examples/tests, the reference rig cannot change without a supporting verdict, no user data is touched, all measurement artifacts are committed — nothing to add
+- `s24` — `operator framing 2026-07-31 (mid-fan-out): worker as explorer/actor, cortex as leader`: concretises the manager arm for the league lane and aligns the parallel fan-out rung with the arena's natural unit parallelism; refines rather than contradicts the confirmed manager/hybrid definitions
+  - seeds: `c38`
+
+## Decisions
+
+- role mapping for the league lane: the 27B cortex is the LEADER/player seat (commands, decides, keeps final authority) and the 35B worker drives THE UNITS — all of them — as the explorer/actor that moves, takes locations and gathers; the worker's x14 concurrency makes driving every unit simultaneously the natural shape rather than a stretch goal, so the manager arm's league instantiation is 27B commander over 35B unit agents
 
 ## Open parks
 

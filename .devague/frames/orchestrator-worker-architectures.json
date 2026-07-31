@@ -4,7 +4,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-07-31T11:55:50Z",
-  "updated": "2026-07-31T13:36:37Z",
+  "updated": "2026-07-31T13:59:20Z",
   "claims": [
     {
       "id": "c1",
@@ -652,6 +652,18 @@
       "links": [],
       "instruction": "",
       "revisions": []
+    },
+    {
+      "id": "c38",
+      "kind": "decision",
+      "text": "role mapping for the league lane: the 27B cortex is the LEADER/player seat (commands, decides, keeps final authority) and the 35B worker drives THE UNITS \u2014 all of them \u2014 as the explorer/actor that moves, takes locations and gathers; the worker's x14 concurrency makes driving every unit simultaneously the natural shape rather than a stretch goal, so the manager arm's league instantiation is 27B commander over 35B unit agents",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
     }
   ],
   "open_vagueness": [
@@ -872,6 +884,14 @@
       "surface": "challenge pass / reversibility+data-loss lens: promotion gate c16, experiment-only diffs, committed artifacts discipline",
       "finding": "clean pass: arms live in examples/tests, the reference rig cannot change without a supporting verdict, no user data is touched, all measurement artifacts are committed \u2014 nothing to add",
       "seeds": []
+    },
+    {
+      "id": "s24",
+      "surface": "operator framing 2026-07-31 (mid-fan-out): worker as explorer/actor, cortex as leader",
+      "finding": "concretises the manager arm for the league lane and aligns the parallel fan-out rung with the arena's natural unit parallelism; refines rather than contradicts the confirmed manager/hybrid definitions",
+      "seeds": [
+        "c38"
+      ]
     }
   ],
   "lapses": []
