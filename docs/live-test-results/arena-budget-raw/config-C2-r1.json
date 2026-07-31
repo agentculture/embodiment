@@ -1,0 +1,13 @@
+{
+  "cortex_model": "sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP",
+  "cortex_temperature": 0.3,
+  "muse_model": null,
+  "muse_temperature": null,
+  "max_turns": 2,
+  "staleness_policy": "default",
+  "n": 1,
+  "cortex_max_tokens": 2048,
+  "muse_max_tokens": null,
+  "max_steps": 16,
+  "trace_out": "/tmp/claude-1000/-home-spark-git-embodiment/1ae44a3f-8a54-46a9-a37d-28e779b3bd39/scratchpad/series/trace-C2-r1.jsonl"
+}

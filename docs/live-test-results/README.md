@@ -70,6 +70,8 @@ generously.
 | [league-h2h.md](league-h2h.md) | full-Gemma vs mixed vs full-Qwen, round-robin head-to-head, both teams driven by model seats — n=4 matches per arm | **`SEPARATED` at L1**, the easiest rung, 3/3 pairings and no cycle: **full-qwen > mixed > full-gemma**. But three of the four cooperation signals sit on a ceiling and **the whole ranking is one optional field** — the Gemma cortex sent a team message on **0 of 12** seat-turns against full-Qwen's 9. Cost: **950 vs 12,819 vs 18,410** completion tokens per match, **zero truncation in 196 model calls**. L2-L4 **`ABSENT`** (the climb stops at the first separating rung) |
 | [league-h2h-preregistration.md](league-h2h-preregistration.md) | full-Gemma vs mixed vs full-Qwen, round-robin head-to-head up an escalating arena ladder: the three arms, the four rungs, the fairness rules and the decision rule | committed **before the first dial**, with the harness (`examples/league_h2h.py`) and its pin in the same change. Carries two **pre-dial amendments**: the token budget 3000 -> 16000 (an identical cap that truncates one arm measures truncation, not skill) and the wall-clock caps sized to match |
 | [league-h2h-scripted-control.jsonl](league-h2h-scripted-control.jsonl) | the same ladder with the SAME hermetic mind in all three arms — map and seed bias with the models removed, 24 matches, offline | identical minds **never separate** (4/4 rungs `INCONCLUSIVE`), the colour bias is real and under fog is **90 vs 45** between byte-identical minds, and the paired `net_margin` cancels it **exactly** (0.0 everywhere) |
+| [arena-budget.md](arena-budget.md) | the second half of the live-evidence gate (`d1`): the 4 `EMBODIMENT_LIVE_ARENA` tests, plus the cortex token budget as a measured arena variable — 2×2 (arm × `max_tokens` 2048/16000), n=3 per cell, 12 matches, muse off, seat plays **blue** vs the house bot | **4/4 arena tests PASSED.** Truncation at the shipped 2048 default is **real but intermittent — 6.0% of completions (5/83), zero at 16000 (0/58)**. The one drive that exited `stopped` did so because it was **cut off twice**, and filed a league turn with **no orders** while `degradations: []` and league's cooperation score read **100** — [#37](https://github.com/agentculture/embodiment/issues/37) with a lost turn attached. `turns_played` is **structurally blind** to it (12/12 played 3 turns), which is the metric series B graded its muse factor on. **P1 and P5 FALSIFIED**, P2/P3/P4 confirmed; P5 contradicted a result `league-h2h.md` already held |
+| [arena-budget-preregistration.md](arena-budget-preregistration.md) | the 2×2, five falsifiable predictions, the decision rule, the colour statement and the declared instrument change | committed **before** the first measured match, together with the `--trace-out` capture without which the series could not be run |
 | [live-suite-and-challenges.md](live-suite-and-challenges.md) | the live-evidence gate (`d1`): every `EMBODIMENT_LIVE_RIG`-gated test plus the challenge harnesses, run rather than assumed | **13 of 13 live-gated tests PASSED.** `challenge_subset` **3/3 CORRECT**; `challenge_register` graded WRONG but **INCONCLUSIVE** — two of four turns hit `finish_reason: length` at a full **16000/16000**. The terminal drain (t4/t25) fires on a clean finish and delivers, and its counsel **provably cannot reach the cortex** there; t26's muse tool bench is **unwired in every checked-in host** (`tool_rounds: 0`). Cross-cutting: the cortex token budget is a hidden variable at **700 / 2048 / 6000** across five harnesses, and `ModelResponse` carries no `finish_reason` to make truncation visible |
 
 ## Reproducing
@@ -166,6 +168,21 @@ uv run python examples/challenge_subset.py --n 3 --json --max-tokens 16000 \
 uv run python examples/challenge_register.py --n 1 --json --max-tokens 16000 \
     --results docs/live-test-results/challenge-register-config.json \
     --trace-out docs/live-test-results/challenge-register-trace.json
+
+# the other 4 live-gated tests: the REAL league CLI, scripted mind, no network
+EMBODIMENT_LIVE_ARENA=1 uv run pytest -p no:randomly -q \
+    tests/test_league_seat.py tests/test_arena_series.py -k LiveArena
+
+# the arena token-budget series (task t24), 12 matches, ~71 min serial.
+# --trace-out is NOT optional: finish_reason is the whole measurement and
+# ModelResponse cannot carry it (embodiment#37).
+OUT=/tmp/arena-budget bash docs/live-test-results/arena-budget-raw/run-series.sh
+
+# one match by hand, the way the runner spells it
+uv run python examples/league_seat.py play --arm command --live \
+    --max-tokens 16000 --max-turns 3 --seed 4242 --match-id demo \
+    --store /tmp/seat/memory --workdir /tmp/seat/arena \
+    --trace-out /tmp/seat/trace.jsonl --json
 ```
 
 The hermetic suite never touches any of this: live paths are opt-in and skip

@@ -1,0 +1,582 @@
+{
+  "arm": "resident",
+  "muse": false,
+  "pid": 2037705,
+  "arena": {
+    "binary": "league",
+    "workdir": "/tmp/claude-1000/-home-spark-git-embodiment/1ae44a3f-8a54-46a9-a37d-28e779b3bd39/scratchpad/series/scratch/R16-r2/arena",
+    "match_id": "R16-r2",
+    "scenario": "skirmish-1",
+    "seed": 4244,
+    "teams": {
+      "seat": "blue",
+      "rival": "red"
+    },
+    "driver_kinds": {
+      "blue": "resident",
+      "red": "bot"
+    },
+    "turn_limit": 30,
+    "turn_budget": 3,
+    "arm": "resident",
+    "residency": "resident",
+    "muse": false,
+    "identity": null,
+    "store": "/tmp/claude-1000/-home-spark-git-embodiment/1ae44a3f-8a54-46a9-a37d-28e779b3bd39/scratchpad/series/scratch/R16-r2/memory",
+    "pad": "/tmp/claude-1000/-home-spark-git-embodiment/1ae44a3f-8a54-46a9-a37d-28e779b3bd39/scratchpad/series/scratch/R16-r2/arena/pad.jsonl",
+    "scope": "league-seat-demo",
+    "directive": "Operator directive: take cp-west and hold it; ignore cp-east."
+  },
+  "config": {
+    "cortex_model": "sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP",
+    "cortex_temperature": 0.3,
+    "muse_model": null,
+    "muse_temperature": null,
+    "max_turns": 2,
+    "staleness_policy": "default",
+    "n": 1,
+    "cortex_max_tokens": 16000,
+    "muse_max_tokens": null,
+    "max_steps": 16,
+    "trace_out": "/tmp/claude-1000/-home-spark-git-embodiment/1ae44a3f-8a54-46a9-a37d-28e779b3bd39/scratchpad/series/trace-R16-r2.jsonl"
+  },
+  "mind": {
+    "cortex": "sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP",
+    "muse": null,
+    "identity": null,
+    "speaker": "presence"
+  },
+  "turns": [
+    {
+      "turn": 0,
+      "arm": "resident",
+      "residency": "resident",
+      "pid": 2037705,
+      "orders": {
+        "plan": "Move all units towards cp-west [3, 8]. Prioritize getting units to the control point to capture it. Once captured, hold it. Ignore cp-east.",
+        "actions": [
+          {
+            "unit_id": "blue-u1",
+            "action": "move",
+            "to": [
+              0,
+              3
+            ]
+          },
+          {
+            "unit_id": "blue-u2",
+            "action": "move",
+            "to": [
+              3,
+              0
+            ]
+          },
+          {
+            "unit_id": "blue-u3",
+            "action": "move",
+            "to": [
+              1,
+              2
+            ]
+          }
+        ],
+        "messages": [
+          {
+            "from": "b1",
+            "text": "Moving units towards cp-west."
+          }
+        ]
+      },
+      "pad_entries": 1,
+      "open_intent": "n1",
+      "recalled": [],
+      "recalled_text": [],
+      "remembered": null,
+      "directive_given": true,
+      "objective_seen": "",
+      "muse": null,
+      "drive": null,
+      "mind": {
+        "cortex": "sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP",
+        "muse": null
+      },
+      "degradations": []
+    },
+    {
+      "turn": 1,
+      "arm": "resident",
+      "residency": "resident",
+      "pid": 2037705,
+      "orders": {
+        "plan": "Move all units towards cp-west [3, 8]. Prioritize getting units to the control point to capture it. Once captured, hold it. Ignore cp-east.",
+        "actions": [
+          {
+            "unit_id": "blue-u1",
+            "action": "move",
+            "to": [
+              3,
+              3
+            ]
+          },
+          {
+            "unit_id": "blue-u2",
+            "action": "move",
+            "to": [
+              3,
+              2
+            ]
+          },
+          {
+            "unit_id": "blue-u3",
+            "action": "move",
+            "to": [
+              2,
+              3
+            ]
+          }
+        ],
+        "messages": [
+          {
+            "from": "b1",
+            "text": "Continuing movement towards cp-west."
+          }
+        ]
+      },
+      "pad_entries": 2,
+      "open_intent": "n2",
+      "recalled": [],
+      "recalled_text": [],
+      "remembered": null,
+      "directive_given": false,
+      "objective_seen": "",
+      "muse": null,
+      "drive": null,
+      "mind": {
+        "cortex": "sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP",
+        "muse": null
+      },
+      "degradations": []
+    },
+    {
+      "turn": 2,
+      "arm": "resident",
+      "residency": "resident",
+      "pid": 2037705,
+      "orders": {
+        "plan": "Move all units towards cp-west [3, 8]. Prioritize getting units to the control point to capture it. Once captured, hold it. Ignore cp-east.",
+        "actions": [
+          {
+            "unit_id": "blue-u1",
+            "action": "move",
+            "to": [
+              3,
+              6
+            ]
+          },
+          {
+            "unit_id": "blue-u2",
+            "action": "move",
+            "to": [
+              3,
+              4
+            ]
+          },
+          {
+            "unit_id": "blue-u3",
+            "action": "move",
+            "to": [
+              3,
+              3
+            ]
+          }
+        ],
+        "messages": [
+          {
+            "from": "b1",
+            "text": "Continuing movement towards cp-west."
+          }
+        ]
+      },
+      "pad_entries": 2,
+      "open_intent": "n2",
+      "recalled": [],
+      "recalled_text": [],
+      "remembered": null,
+      "directive_given": false,
+      "objective_seen": "",
+      "muse": null,
+      "drive": null,
+      "mind": {
+        "cortex": "sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP",
+        "muse": null
+      },
+      "degradations": []
+    }
+  ],
+  "drive": {
+    "scope": "match",
+    "exit_reason": "finished",
+    "status": "ok",
+    "summary": "Turn 2: Moved units towards cp-west [3, 8]. u1->[3,6], u2->[3,4], u3->[3,3]. Objective: Capture and hold cp-west.",
+    "model_turns": 9,
+    "max_steps": 56,
+    "tools": [
+      "note",
+      "order",
+      "order",
+      "order",
+      "submit",
+      "note",
+      "order",
+      "order",
+      "order",
+      "submit",
+      "order",
+      "order",
+      "order",
+      "submit"
+    ],
+    "aborted": null,
+    "pad_entries": 2,
+    "recalled": [],
+    "recalled_text": [],
+    "remembered": {
+      "record_id": "embodiment-task-R16-r2-resident",
+      "links": [],
+      "supersedes": null,
+      "added_by": "league-seat-demo"
+    },
+    "muse": null,
+    "presence_mode": "cortex-only"
+  },
+  "match": {
+    "status": "active",
+    "winner": null,
+    "turn": 3,
+    "turns_played": 3,
+    "score": {
+      "match_id": "R16-r2",
+      "scenario_id": "skirmish-1",
+      "mode": "competitive",
+      "turns_played": 3,
+      "winner": null,
+      "outcome": {
+        "blue": {
+          "total": 0,
+          "missions": 0,
+          "control": 0,
+          "resources": 0
+        },
+        "red": {
+          "total": 0,
+          "missions": 0,
+          "control": 0,
+          "resources": 0
+        }
+      },
+      "cooperation": {
+        "blue": {
+          "score": 100,
+          "signals": {
+            "delegation_spread": 1.0,
+            "communication": 1.0,
+            "plan_coherence": 1.0,
+            "discipline": 1.0
+          }
+        },
+        "red": {
+          "score": 77,
+          "signals": {
+            "delegation_spread": 1.0,
+            "communication": 0.0,
+            "plan_coherence": 1.0,
+            "discipline": 0.8889
+          }
+        }
+      },
+      "tempo": {
+        "blue": {
+          "raw": null,
+          "version": "t0"
+        },
+        "red": {
+          "raw": null,
+          "version": "t0"
+        }
+      },
+      "units": {
+        "match_id": "R16-r2",
+        "purposes": [
+          "economy",
+          "control",
+          "recon",
+          "coordination"
+        ],
+        "units": {
+          "blue-u1": {
+            "team_id": "blue",
+            "role": "scout",
+            "home_purpose": "recon",
+            "grade": 9,
+            "breakdown": {
+              "economy": 0,
+              "control": 0,
+              "recon": 6,
+              "coordination": 3
+            },
+            "mvp": true,
+            "lvp": false
+          },
+          "blue-u2": {
+            "team_id": "blue",
+            "role": "harvester",
+            "home_purpose": "economy",
+            "grade": 3,
+            "breakdown": {
+              "economy": 0,
+              "control": 0,
+              "recon": 3,
+              "coordination": 0
+            },
+            "mvp": false,
+            "lvp": true
+          },
+          "blue-u3": {
+            "team_id": "blue",
+            "role": "defender",
+            "home_purpose": "control",
+            "grade": 3,
+            "breakdown": {
+              "economy": 0,
+              "control": 0,
+              "recon": 3,
+              "coordination": 0
+            },
+            "mvp": false,
+            "lvp": false
+          },
+          "red-u1": {
+            "team_id": "red",
+            "role": "scout",
+            "home_purpose": "recon",
+            "grade": 6,
+            "breakdown": {
+              "economy": 0,
+              "control": 0,
+              "recon": 6,
+              "coordination": 0
+            },
+            "mvp": false,
+            "lvp": false
+          },
+          "red-u2": {
+            "team_id": "red",
+            "role": "harvester",
+            "home_purpose": "economy",
+            "grade": 3,
+            "breakdown": {
+              "economy": 0,
+              "control": 0,
+              "recon": 3,
+              "coordination": 0
+            },
+            "mvp": false,
+            "lvp": false
+          },
+          "red-u3": {
+            "team_id": "red",
+            "role": "defender",
+            "home_purpose": "control",
+            "grade": 3,
+            "breakdown": {
+              "economy": 0,
+              "control": 0,
+              "recon": 3,
+              "coordination": 0
+            },
+            "mvp": false,
+            "lvp": false
+          }
+        },
+        "mvp": {
+          "unit_id": "blue-u1",
+          "team_id": "blue",
+          "grade": 9
+        },
+        "lvp": {
+          "unit_id": "blue-u2",
+          "team_id": "blue",
+          "grade": 3
+        }
+      }
+    },
+    "replay_sha256": "20f0e1fad49dc56aa5d48d3019fadb4e3e1c53f0bd0dd5c9e7f88a6e93699ec1",
+    "driver_kinds": {
+      "blue": "resident",
+      "red": "bot"
+    }
+  },
+  "degradations": [],
+  "log": "/tmp/claude-1000/-home-spark-git-embodiment/1ae44a3f-8a54-46a9-a37d-28e779b3bd39/scratchpad/series/scratch/R16-r2/arena/match-log.jsonl",
+  "config_log": "/tmp/claude-1000/-home-spark-git-embodiment/1ae44a3f-8a54-46a9-a37d-28e779b3bd39/scratchpad/series/scratch/R16-r2/arena/match-log.config.json",
+  "league_calls": [
+    [
+      "team",
+      "register",
+      "blue",
+      "--name",
+      "Blue",
+      "--agent",
+      "b1:sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP:scout",
+      "--agent",
+      "b2:sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP:harvester",
+      "--agent",
+      "b3:sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP:defender",
+      "--apply",
+      "--json"
+    ],
+    [
+      "team",
+      "register",
+      "red",
+      "--name",
+      "Red",
+      "--agent",
+      "r1:bot:house:scout",
+      "--agent",
+      "r2:bot:house:harvester",
+      "--agent",
+      "r3:bot:house:defender",
+      "--apply",
+      "--json"
+    ],
+    [
+      "match",
+      "new",
+      "--scenario",
+      "skirmish-1",
+      "--seed",
+      "4244",
+      "--id",
+      "R16-r2",
+      "--team",
+      "blue",
+      "--team",
+      "red",
+      "--driver",
+      "blue:resident",
+      "--driver",
+      "red:bot",
+      "--apply",
+      "--json"
+    ],
+    [
+      "match",
+      "show",
+      "R16-r2",
+      "--json"
+    ],
+    [
+      "match",
+      "act",
+      "R16-r2",
+      "--team",
+      "blue",
+      "--orders-json",
+      "{\"actions\": [{\"action\": \"move\", \"to\": [0, 3], \"unit_id\": \"blue-u1\"}, {\"action\": \"move\", \"to\": [3, 0], \"unit_id\": \"blue-u2\"}, {\"action\": \"move\", \"to\": [1, 2], \"unit_id\": \"blue-u3\"}], \"messages\": [{\"from\": \"b1\", \"text\": \"Moving units towards cp-west.\"}], \"plan\": \"Move all units towards cp-west [3, 8]. Prioritize getting units to the control point to capture it. Once captured, hold it. Ignore cp-east.\"}",
+      "--apply",
+      "--json"
+    ],
+    [
+      "match",
+      "act",
+      "R16-r2",
+      "--team",
+      "red",
+      "--orders-json",
+      "{\"actions\": [{\"action\": \"move\", \"to\": [8, 9], \"unit_id\": \"red-u1\"}, {\"action\": \"move\", \"to\": [8, 9], \"unit_id\": \"red-u2\"}, {\"action\": \"move\", \"to\": [9, 8], \"unit_id\": \"red-u3\"}], \"plan\": \"converge on the nearest control point\"}",
+      "--apply",
+      "--json"
+    ],
+    [
+      "match",
+      "show",
+      "R16-r2",
+      "--json"
+    ],
+    [
+      "match",
+      "act",
+      "R16-r2",
+      "--team",
+      "blue",
+      "--orders-json",
+      "{\"actions\": [{\"action\": \"move\", \"to\": [3, 3], \"unit_id\": \"blue-u1\"}, {\"action\": \"move\", \"to\": [3, 2], \"unit_id\": \"blue-u2\"}, {\"action\": \"move\", \"to\": [2, 3], \"unit_id\": \"blue-u3\"}], \"messages\": [{\"from\": \"b1\", \"text\": \"Continuing movement towards cp-west.\"}], \"plan\": \"Move all units towards cp-west [3, 8]. Prioritize getting units to the control point to capture it. Once captured, hold it. Ignore cp-east.\"}",
+      "--apply",
+      "--json"
+    ],
+    [
+      "match",
+      "act",
+      "R16-r2",
+      "--team",
+      "red",
+      "--orders-json",
+      "{\"actions\": [{\"action\": \"move\", \"to\": [6, 8], \"unit_id\": \"red-u1\"}, {\"action\": \"move\", \"to\": [6, 9], \"unit_id\": \"red-u2\"}, {\"action\": \"move\", \"to\": [7, 8], \"unit_id\": \"red-u3\"}], \"plan\": \"converge on the nearest control point\"}",
+      "--apply",
+      "--json"
+    ],
+    [
+      "match",
+      "show",
+      "R16-r2",
+      "--json"
+    ],
+    [
+      "match",
+      "act",
+      "R16-r2",
+      "--team",
+      "blue",
+      "--orders-json",
+      "{\"actions\": [{\"action\": \"move\", \"to\": [3, 6], \"unit_id\": \"blue-u1\"}, {\"action\": \"move\", \"to\": [3, 4], \"unit_id\": \"blue-u2\"}, {\"action\": \"move\", \"to\": [3, 3], \"unit_id\": \"blue-u3\"}], \"messages\": [{\"from\": \"b1\", \"text\": \"Continuing movement towards cp-west.\"}], \"plan\": \"Move all units towards cp-west [3, 8]. Prioritize getting units to the control point to capture it. Once captured, hold it. Ignore cp-east.\"}",
+      "--apply",
+      "--json"
+    ],
+    [
+      "match",
+      "act",
+      "R16-r2",
+      "--team",
+      "red",
+      "--orders-json",
+      "{\"actions\": [{\"action\": \"move\", \"to\": [6, 5], \"unit_id\": \"red-u1\"}, {\"action\": \"move\", \"to\": [6, 7], \"unit_id\": \"red-u2\"}, {\"action\": \"move\", \"to\": [6, 7], \"unit_id\": \"red-u3\"}], \"plan\": \"converge on the nearest control point\"}",
+      "--apply",
+      "--json"
+    ],
+    [
+      "match",
+      "show",
+      "R16-r2",
+      "--json"
+    ],
+    [
+      "match",
+      "show",
+      "R16-r2",
+      "--json"
+    ],
+    [
+      "match",
+      "score",
+      "R16-r2",
+      "--json"
+    ],
+    [
+      "match",
+      "replay",
+      "R16-r2",
+      "--json"
+    ]
+  ]
+}

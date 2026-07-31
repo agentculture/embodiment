@@ -1,0 +1,9 @@
+....                                                                     [100%]
+============================= slowest 10 durations =============================
+4.45s call     tests/test_league_seat.py::TestLiveArena::test_both_arms_play_the_real_arena_and_it_records_the_residency
+3.82s call     tests/test_arena_series.py::TestLiveArenaSeries::test_the_runner_drives_the_real_seat
+2.63s call     tests/test_league_seat.py::TestLiveArena::test_the_real_arena_carries_the_directive_across_processes
+0.60s call     tests/test_league_seat.py::TestLiveArena::test_league_can_drive_the_seat_as_its_own_command_driver
+
+(6 durations < 0.005s hidden.  Use -vv to show these durations.)
+4 passed, 103 deselected in 11.64s
