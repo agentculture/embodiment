@@ -478,12 +478,25 @@ The M2 requirement, applied. Four graders shipped defective last cycle and
 every one was caught by a human reading data rather than by a test:
 
 1. **Adversarial fixtures** — committed as `FIXTURES` in the harness, with the
-   captured container output each one really produced. They include a solver
-   that hardcodes the values quoted in the statement, the `Fib//2` halving
-   trap, a solver that drops the empty set, one that returns an object whose
-   `__eq__` is always `True`, one that returns `True` where `1` is expected,
-   one that silences `print`, one that forges a result line, and one that exits
-   before the driver can run. Every one is required to fail.
+   captured container output each one really produced. Eleven of them, each a
+   different way to look right:
+
+   | fixture | what it does |
+   |---|---|
+   | `hardcoded_statement_values` | memorises the small values any mind can enumerate by hand, guesses beyond them — and passes 5 of 9 |
+   | `halving_trap` | `Fib(n+2)//2`, which lands on **72** at `n=10` |
+   | `drops_the_empty_set` | the right recurrence, off by one everywhere |
+   | `always_equal_object` | returns an object whose `__eq__` is always `True` |
+   | `bool_for_int` | returns `True` where `1` is expected — `True == 1` in Python |
+   | `silences_print` | rebinds `builtins.print` to a no-op |
+   | `forges_a_result_line` | scrapes the nonce from `/proc/self/cmdline` and prints its own all-correct line claiming `CORRECT` |
+   | `exits_before_the_driver` | ends the process at import time |
+   | `writes_a_sentinel_to_the_host` | writes a file at import time — the empirical half of the containment claim |
+   | `inverts_the_lossy_routines` | assumes all five routines are invertible; right on the three that are |
+   | `at_most_hamming` | reads "exactly `d`" as "at most `d`", turning a unique answer into 24 |
+
+   Every one is required to fail, and required to fail *for its own reason* —
+   a fixture that failed by accident is not a control.
 2. **Paraphrase cases** — the grader's fragile half is the *extractor*, so the
    fixtures include the same correct solution in wording it was not written
    against: bare fences, `~~~` fences, an uppercase language tag, no fence at
@@ -502,8 +515,31 @@ every one was caught by a human reading data rather than by a test:
 
 **And the containment.** Model-written code executes **only** inside the
 network-less workspace. Neither the harness nor its tests contain an execution
-primitive — no `exec`, no `eval`, no `compile`, no `subprocess`, no `os.system`
-— and that is asserted by walking both files' ASTs rather than by reading them.
-The single execution path hands the program to `MuseWorkspace.execute` as an
-argv element and nothing else; when no container can be provisioned the run is
-recorded `NO_WORKSPACE` and the code is simply never run.
+primitive — no `exec`, no `eval`, no bare `compile`, no `__import__`, no
+`subprocess`, no `os.system`, no `runpy` — and that is asserted by walking
+**both** files' ASTs rather than by reading them. Both, because a test suite
+that ran a fixture "just to see what it produces" would be the exact hole this
+closes. The guard distinguishes a bare `compile(...)` from `re.compile(...)`,
+because a guard that cries wolf is a guard someone disables. The single
+execution path hands the program to `MuseWorkspace.execute` as an argv element
+and nothing else; when no container can be provisioned the run is recorded
+`NO_WORKSPACE` and the code is simply never run.
+
+### What the kit caught before it shipped
+
+Recorded because M2 exists for exactly this. The first live capture of the
+fixtures — every one run in a real docker container — had
+`memoised_recursion`, the paraphrase fixture, coming back `WRONG` while the
+reference solution came back `CORRECT`. The paraphrase was right and both the
+others were wrong: `truth_parity_subsets` and the committed reference shared
+an implementation, so they shared its off-by-one seed and **agreed with each
+other while disagreeing with the answers in the tables above**.
+
+Two things follow, and both are in the code:
+
+- the truth function and the reference are now written in deliberately
+  different styles, and the reason is a comment on both;
+- a structurally different correct solution is a permanent fixture, not a
+  courtesy. It is the only member of the kit that could have caught this: every
+  adversarial fixture was failing exactly as declared, and an all-negative
+  table is satisfied by a grader whose notion of "correct" is wrong.
