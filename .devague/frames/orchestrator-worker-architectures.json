@@ -4,7 +4,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-07-31T11:55:50Z",
-  "updated": "2026-07-31T14:30:48Z",
+  "updated": "2026-07-31T15:34:44Z",
   "claims": [
     {
       "id": "c1",
@@ -722,6 +722,30 @@
       "links": [],
       "instruction": "",
       "revisions": []
+    },
+    {
+      "id": "c42",
+      "kind": "assumption",
+      "text": "the new cortex `unsloth/Qwen3.6-27B-NVFP4` has MEASURED vision \u2014 probed 2026-07-31 through the spark gateway: a 4-band image with an unguessable palette returned '4, purple' for band count and second-from-top colour, after a first probe was discarded for asking a question whose answer ('Red, Green, Blue') a blind model would guess. Deviation d1's premise holds and the three-route screening design is live-supported, not merely assumed",
+      "origin": "llm",
+      "status": "proposed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c43",
+      "kind": "requirement",
+      "text": "the gateway advert UNDERSTATES the new cortex and must not be the sole capability source for this series: `/capabilities` lists the cortex's responsibilities as reasoning/deciding/planning/tool_use/code_repo_actions/validation/final_authority with NO `image_understanding`, while the worker advertises image and video \u2014 yet the cortex demonstrably accepts image parts. A consumer obeying this repo's own 'resolve by name, never parse model names' rule would conclude the cortex is blind and silently drop the native-vision route, so the routing rung's capability facts come from a committed measured probe, and the advert gap is filed with lobes-cli as evidence",
+      "origin": "llm",
+      "status": "proposed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
     }
   ],
   "open_vagueness": [
@@ -957,6 +981,15 @@
       "finding": "the two confirmed rules collide on the routing rung \u2014 matching would forbid the very contrast routing measures; resolved by an explicit per-rung exemption that leaves fog-scoping untouched",
       "seeds": [
         "c40"
+      ]
+    },
+    {
+      "id": "s26",
+      "surface": "challenge pass / adjacent-systems lens (post-upgrade): live probe of cortex vision vs its /capabilities advert",
+      "finding": "vision measured working with a guess-proof control; the advert does not declare it, so the roles contract is understating a served capability \u2014 the 'never parse model names' rule would produce a WRONG conclusion here, which is measured evidence for the modality-field ask already drafted for lobes-cli",
+      "seeds": [
+        "c42",
+        "c43"
       ]
     }
   ],
