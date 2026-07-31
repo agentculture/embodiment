@@ -954,7 +954,9 @@ class TestTheInstrumentCheck:
     real schema, and reported as an instrument check rather than as data.
     """
 
-    def test_it_checks_every_distinct_cortex_model_exactly_once(self) -> None:
+    def test_it_checks_every_distinct_cortex_model_exactly_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         seen: list[str] = []
 
         class _Recorder(league_h2h.MeteredSeam):
@@ -985,19 +987,17 @@ class TestTheInstrumentCheck:
                     "usage": {"prompt_tokens": 100, "completion_tokens": 20},
                 }
 
-        original = league_h2h.MeteredSeam
-        league_h2h.MeteredSeam = _Recorder  # type: ignore[misc]
-        try:
-            checked = league_h2h.smoke(base_url="http://x/v1", api_key="k")
-        finally:
-            league_h2h.MeteredSeam = original  # type: ignore[misc]
+        monkeypatch.setattr(league_h2h, "MeteredSeam", _Recorder)
+        checked = league_h2h.smoke(base_url="http://x/v1", api_key="k")
 
         assert sorted(seen) == sorted({arm.cortex for arm in league_h2h.ARMS.values()})
         assert len(seen) == 2, "two distinct cortex models across three arms"
         assert checked["every_cortex_can_call_a_tool"] is True
         assert checked["note"] == "instrument check, not data"
 
-    def test_a_model_that_cannot_call_a_tool_fails_the_check(self) -> None:
+    def test_a_model_that_cannot_call_a_tool_fails_the_check(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         class _Mute(league_h2h.MeteredSeam):
             def _post(self, body: dict[str, Any]) -> dict[str, Any]:
                 return {
@@ -1007,12 +1007,8 @@ class TestTheInstrumentCheck:
                     "usage": {"prompt_tokens": 100, "completion_tokens": 5},
                 }
 
-        original = league_h2h.MeteredSeam
-        league_h2h.MeteredSeam = _Mute  # type: ignore[misc]
-        try:
-            checked = league_h2h.smoke(base_url="http://x/v1", api_key="k")
-        finally:
-            league_h2h.MeteredSeam = original  # type: ignore[misc]
+        monkeypatch.setattr(league_h2h, "MeteredSeam", _Mute)
+        checked = league_h2h.smoke(base_url="http://x/v1", api_key="k")
         assert checked["every_cortex_can_call_a_tool"] is False
 
     def test_the_smoke_board_is_answerable_with_one_order(self) -> None:
