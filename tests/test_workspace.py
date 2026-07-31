@@ -1233,15 +1233,20 @@ class TestALiveWorkspaceAtCloseIsFindable:
     def test_the_context_manager_closes_it_when_the_body_raises(self) -> None:
         api = RecordingApi()
         workspace = MuseWorkspace(api=api)
-        # The raise has to sit *inside* ``with workspace:`` — that placement is
-        # the assertion, so the two calls in this block cannot be hoisted out
-        # (python:S5778). ``match=`` buys back what hoisting would have: only
-        # the host's own bug can satisfy it, never a stray ValueError from
+
+        # The raise has to sit *inside* ``with workspace:`` — that placement IS
+        # the assertion — so it is extracted into a local rather than hoisted
+        # out, leaving ``pytest.raises`` wrapping exactly one call
+        # (python:S5778). ``match=`` stays load-bearing either way: only the
+        # host's own bug can satisfy it, never a stray ValueError from
         # ``__enter__`` or ``execute``.
-        with pytest.raises(ValueError, match="the host's own bug"):
+        def body_raises_inside_the_workspace() -> None:
             with workspace:
                 workspace.execute(WORKSPACE_TOOL_NAME, {"command": ["true"]})
                 raise ValueError("the host's own bug")
+
+        with pytest.raises(ValueError, match="the host's own bug"):
+            body_raises_inside_the_workspace()
 
         assert api.calls[-1][0] == "destroy"
 
