@@ -54,6 +54,18 @@
 - rendering is the new instrument: no fog-aware image renderer exists in league (raster primitives in replay/video.py draw ground-truth GIF only; the fogged views are markdown/JSON and ANSI TUI) — the series renders seat-view PNGs harness-side from the fogged briefing JSON first (unblocked, mirrors the direct-Thor precedent), and a `league match render --team/--unit --fog --turn` verb is proposed upstream to league-of-agents in parallel, propose-never-push; the renderer is an instrument and falls under the M2 grader-kit discipline (a wrong map fed to a mind is a defective instrument)
   - instruction: renderer tests hermetic under tests/ with goldens; rendered maps land in the raw results dir
   - honesty: the renderer carries its own adversarial test kit — including a fog-leak fixture where an entity outside visibility must not be drawn, and golden images — and every measured turn's rendered map is committed so any dial can be re-inspected
+- the parallel fan-out rung's semantics are defined before any live dial: the fan-out is one delegate tool call, its total charged child turns are bounded and the accounting rule pinned in the pre-registration, and a child failure degrades to a recorded partial result (C3) rather than aborting the drive — the subagent seam's serial charge-back was never designed for concurrent children and the spec previously left this undefined
+  - honesty: hermetic tests assert the fan-out's bounded total charge and recorded partial-failure degradation before any live dial; the accounting rule appears verbatim in the pre-registration
+- every rung that grades the hybrid arm contains subtasks of heterogeneous difficulty so the routing decision can actually vary — on a single-difficulty rung the hybrid arm is structurally identical to manager or flat and its cell measures nothing; league's mixed unit/commander decision points qualify, single challenge problems do not
+  - honesty: the pre-registration names, for every hybrid-graded rung, which subtasks are routable and why the rung is heterogeneous; a degenerate rung's hybrid cell is excluded from the verdict by rule, not by judgement after the data arrives
+- temperature, thinking mode and sampling parameters are pinned per role per arm in the committed pre-registration, and reasoning tokens are reported separately from content tokens in every cell — configurations.md records temperature as a hidden variable that confounded an entire prior series, and both minds here are thinking models whose reasoning spend dominates token counts
+  - honesty: the committed pre-registration contains the per-role per-arm sampling table (temperature, thinking mode, `max_tokens`), and every results cell reports reasoning tokens separately from content tokens
+- the wiring-smoke lane exercises a bounded TOOL LOOP through the exact harness path — schema call, result fed back, clean finish — not just a bare completion: two prior models exhibited tool-protocol defects (#32 tool-calls-no-prose, #33 string argv) that would masquerade as capability failures mid-series if first encountered there
+  - honesty: the smoke lane's tool loop runs through the identical code path the measured arms use — same executor, same seam, same budgets — and its transcript is committed with the series artifacts
+- model-written code from the coding rung executes only inside the bounded, network-less workspace (`embodiment.workspace` / headspace) — no execution path touches the host; the grader's execution seam is part of the M2 kit and asserted by hermetic tests
+  - honesty: no test or harness path executes model-written coding-rung output outside the workspace container; the containment is asserted by a hermetic test that fails if an execution seam reaches the host
+- v1 map images render the TEAM-scoped fog view for every mind, byte-matched in information to the text twin; true per-unit cones enter only when a league-side surface provides them and are never derived from harness-duplicated vision stats — the briefing carries no radii, and a stats change in league would silently desync a duplicated fog computation into exactly the fog-leak defect h15 forbids
+  - honesty: v1 renders team-scoped views for every mind from the fogged briefing alone (zero league-side changes), the information-match check (h16) passes against the team-scoped text twin, and no vision-radius constant exists anywhere in embodiment's harness code
 
 ## Honesty conditions
 
@@ -67,6 +79,7 @@
 - the before-state is cited from the repo's own records — d15, next-cycle M1, and the live Thor advert — never asserted from memory
 - the speed claim is measured, not narrated: wall-clock and tokens are reported per arm at every rung, so 'faster' is always a number with a direction
 - a verdict is only quoted with its pre-registered decision rule beside it, and INCONCLUSIVE is reported as INCONCLUSIVE — never softened into a win
+- the worker's tool surface per arm is enumerated in the pre-registration and the harness passes exactly that surface — a tool absent from the enumeration raising UnknownToolError is the desired behaviour, as delegation.py already demonstrates
 
 ## Success signals
 
@@ -82,6 +95,7 @@
   - instruction: the delegate tool's child surface excludes parent-level finish; per-call trace records carry role+model
 - no muse deletion this cycle: d15 stands verbatim — the muse modules, tests and harnesses ship unchanged as opt-in code, off by default
   - instruction: assert via PR diff review
+- no arm's delegate tool hands the worker repo access: the worker's tool surface in this series is enumerated in the pre-registration (league moves, finish, workspace-scoped execution) regardless of the advert's `repo_action` allowance — containment is the arm design's, not the advert's
 
 ## Non-goals
 
@@ -129,8 +143,23 @@
   - seeds: `c17`, `c18`, `c19`, `c20`
 - `s15` — `league-of-agents repo: engine/vision.py, engine/knowledge.py, charness.py (briefing + fog filters), replay/video.py, replay/tui.py, faces/brief.py, match.py CLI, exported fog frame`: per-team fog is engine-computed and shipped (briefing fog:true, `team_view`, `latest_knowledge`, TUI overlay, brief face); per-unit visibility exists only as the unconsumed `visible_cells` primitive; no image renderer is fog-aware and the only raster path emits whole-match GIF from ground truth; a seat-view PNG verb is assemblable from `_Canvas` draw primitives plus the fogged snapshot shapes but is new league work
   - seeds: `c21`, `c22`, `c23`, `c24`, `c25`
+- `s16` — `challenge pass / concurrency lens: embodiment/subagent.py charge-back (_charge_child, attenuate) + loop.py termination proof`: serial charging: SubagentResult.`model_turns` charges the parent per spawn; N concurrent children could exhaust or race the budget and partial-failure semantics are undefined in the frame — routed as a spec requirement
+  - seeds: `c31`
+- `s17` — `challenge pass / unstated-assumptions lens: spec arms table vs docs/challenge-problems.md task shapes`: the hybrid arm's defining behaviour (per-subtask routing) has no room to express itself on single-problem rungs; nothing in the frame said so — routed as a rung-design requirement
+  - seeds: `c32`
+- `s18` — `challenge pass / missing-counter-evidence lens: docs/live-test-results/configurations.md + worker probe usage (138 completion tokens with reasoning for a one-call answer)`: the sampling/thinking configuration surface is exactly where the last confound lived; the worker probe confirms reasoning is emitted and material — routed as a pre-registration requirement
+  - seeds: `c33`
+- `s19` — `challenge pass / failure-modes lens: issues #32, #33 + live worker probe (Thor, 2026-07-31)`: probe: one tool call round-tripped clean (`finish_reason`=`tool_calls`, well-formed JSON args, same-key auth works against Thor directly) — n=1 removes the reachability unknown but not the protocol-under-load one; routed as a smoke-lane requirement
+  - seeds: `c34`
+- `s20` — `challenge pass / security lens: embodiment/workspace.py (network-less container), Thor worker advert repo_action allowance, coding-rung grader shape`: the coding rung executes model-written code and the worker advert would permit repo action; both contained by explicit spec claims — execution jailed to the workspace, worker tool surface enumerated
+  - seeds: `c35`, `c36`
+- `s21` — `challenge pass / adjacent-systems lens: league charness._board_projection (probe: full schema read) + _fog_filter_board team-union rule`: the fogged briefing carries width/height and all entity positions — sufficient for a team-view renderer with zero league changes; it carries NO vision radii, so per-unit cones are not harness-derivable; and the text briefing itself is team-scoped, so per-unit images would break h16's information matching in the other direction
+  - seeds: `c37`
+- `s22` — `challenge pass / operations lens: MeteredSeam transport-retry pattern (league_h2h) + cross-box dial path spark->thor`: clean pass: wall-clock across the tailnet is legitimately part of architecture cost; the existing per-call transport-retry recording makes a flaky-network confound visible; no new claim needed
+- `s23` — `challenge pass / reversibility+data-loss lens: promotion gate c16, experiment-only diffs, committed artifacts discipline`: clean pass: arms live in examples/tests, the reference rig cannot change without a supporting verdict, no user data is touched, all measurement artifacts are committed — nothing to add
 
 ## Open parks
 
 - [unknown_nonblocking] whether the served unsloth/Qwen3.6-35B-A3B-NVFP4 build stays stable under sustained x14 concurrent load on Thor — lobes' catalog records a sibling variant (mmangkad) crash-looping on GB10 hardware, but that was a different build on a different box; unknown until the throughput pre-measurement runs
 - [unknown_nonblocking] whether hybrid routing (27B deciding per-task simple-vs-complex) can be graded without a defective instrument — routing quality is a new grader class with no precedent in the repo
+- [unknown_nonblocking] whether the subagent seam's attenuation semantics (allowance strictly parent-1 per child) are the right bound for a 14-wide fan-out, or whether width itself needs a first-class budget — not decidable until the parallel rung's design lands in the plan
