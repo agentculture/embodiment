@@ -324,8 +324,11 @@ class TestReAnalysisReadsTheTranscript:
     def test_concordance_denominator_excludes_only_degraded_calls(self, tmp_path: Path) -> None:
         records = harness.load_records(self._transcript(tmp_path))
         cortex = harness.concordance(records, "cortex")
-        assert cortex["n_cases"] == 2 and cortex["n_scored"] == 1
-        assert cortex["hits"] == 1 and cortex["accuracy"] == 1.0
+        assert cortex["n_cases"] == 2
+        assert cortex["n_scored"] == 1
+        assert cortex["hits"] == 1
+        assert cortex["accuracy"] == 1.0
         muse = harness.concordance(records, "muse")
         assert muse["n_scored"] == 2
-        assert muse["misses"] == 1 and muse["correct_rejections"] == 1
+        assert muse["misses"] == 1
+        assert muse["correct_rejections"] == 1

@@ -187,7 +187,8 @@ class TestOneRunner:
     def test_controls_and_boundary_take_no_arm_argument(self) -> None:
         for name in ("controls", "boundary"):
             args = _function(name).args
-            assert not args.args and not args.kwonlyargs, f"{name} varies by arm"
+            assert not args.args, f"{name} varies by arm"
+            assert not args.kwonlyargs, f"{name} varies by arm"
 
 
 class TestTheArmsPutTheSameThingOnTheWire:
