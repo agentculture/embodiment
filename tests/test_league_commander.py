@@ -33,7 +33,13 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from embodiment import ROLE_SUBAGENT, ModelResponse, ToolCall, ToolError  # noqa: E402
+from embodiment import (  # noqa: E402
+    ROLE_SUBAGENT,
+    ModelResponse,
+    ToolCall,
+    ToolError,
+    UnknownToolError,
+)
 from embodiment.subagent import attenuate  # noqa: E402
 from examples import league_commander as lc  # noqa: E402
 
@@ -197,19 +203,19 @@ class TestTheWiring:
 class TestAuthority:
     def test_a_unit_agent_has_no_way_to_order(self) -> None:
         executor = lc.UnitExecutor(3)
-        with pytest.raises(Exception) as excinfo:
+        with pytest.raises(UnknownToolError) as excinfo:
             executor.execute("order", {"menu_index": 0})
         assert "not available to a unit agent" in str(excinfo.value)
 
     def test_a_commander_cannot_propose(self) -> None:
         executor = lc.CommanderExecutor(briefing=briefing(), decision_id="d", unit_model=lc.QWEN)
-        with pytest.raises(Exception) as excinfo:
+        with pytest.raises(UnknownToolError) as excinfo:
             executor.execute("propose", {"menu_index": 0})
         assert "not available to the commander" in str(excinfo.value)
 
     def test_a_flat_arm_cannot_delegate(self) -> None:
         executor = lc.FlatExecutor(3)
-        with pytest.raises(Exception) as excinfo:
+        with pytest.raises(UnknownToolError) as excinfo:
             executor.execute("consult_unit", {"question": "?"})
         assert "not available in the flat arm" in str(excinfo.value)
 

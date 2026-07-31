@@ -436,7 +436,7 @@ TEARDOWN_THREAD_NAME = "embodiment-workspace-teardown"
 #: What the muse is told when a tool call reaches a closed lane. Held as a
 #: constant so a host can recognise it without matching on prose.
 CLOSED_TEXT = (
-    "the workspace lane is closed, so nothing was run — the drive it belonged " "to has ended"
+    "the workspace lane is closed, so nothing was run — the drive it belonged to has ended"
 )
 
 #: Why a workspace can outlive its close through no fault of this module, told
