@@ -394,7 +394,7 @@ class MusePad:
             from embodiment.loop import UnknownToolError
 
             raise UnknownToolError(
-                f"the muse pad has no {name!r} tool; it offers " f"{', '.join(MUSE_PAD_TOOL_NAMES)}"
+                f"the muse pad has no {name!r} tool; it offers {', '.join(MUSE_PAD_TOOL_NAMES)}"
             )
         return self._pad.execute(name, dict(arguments) if isinstance(arguments, dict) else {})
 

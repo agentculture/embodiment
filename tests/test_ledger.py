@@ -1177,7 +1177,7 @@ def _private_doors(node: ast.AST) -> list[tuple[int, str]]:
 _PROVOKER_DEFS = _provoker_definitions()
 
 
-@pytest.fixture()
+@pytest.fixture
 def clean_store_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """No ambient eidetic store pin leaks into (or out of) a provoker."""
     monkeypatch.delenv("EIDETIC_DATA_DIR", raising=False)

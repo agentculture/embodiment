@@ -1750,8 +1750,9 @@ class TestToolsDegradeNeverRaise:
 
         bench = MuseToolBench(schema=tuple(_PAD_SCHEMA), complete=hostile, execute=Pad())
         loop = MuseLoop(Scripted(), tools=bench)
+        boundary = _boundary()
         with pytest.raises(KeyboardInterrupt):
-            loop.think(_boundary())
+            loop.think(boundary)
 
     def test_a_tool_call_with_unserializable_arguments_degrades_rather_than_raises(self):
         class Unserializable:

@@ -33,6 +33,7 @@ import pytest
 
 from embodiment import ledger, muse_pad, scratchpad
 from embodiment.contract import ModelResponse, ToolCall
+from embodiment.loop import UnknownToolError
 from embodiment.muse import (
     DEGRADED_TOOL,
     DEGRADED_TOOLS_WITHHELD,
@@ -180,14 +181,14 @@ class TestFinishIsRefusedRatherThanQuietlyHonoured:
 
     def test_a_finish_call_raises_rather_than_recording_an_answer(self, tmp_path: Path) -> None:
         pad = MusePad.in_directory(tmp_path)
-        with pytest.raises(Exception) as excinfo:
+        with pytest.raises(UnknownToolError) as excinfo:
             pad.execute("finish", {"answer": "76"})
         assert "finish" in str(excinfo.value)
         assert pad.pad.answer is None
 
     def test_a_refused_finish_is_counted_as_off_protocol(self, tmp_path: Path) -> None:
         pad = MusePad.in_directory(tmp_path)
-        with pytest.raises(Exception):
+        with pytest.raises(UnknownToolError):
             pad.execute("finish", {"answer": "76"})
         assert pad.counts().off_protocol_calls == 1
 
