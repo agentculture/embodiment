@@ -191,6 +191,132 @@
       "spawn_allowance": 3
     }
   },
+  "perception_routes": {
+    "task": "t8",
+    "read_by": "examples/arch_vision.py",
+    "rung": "V1",
+    "why": [
+      "ADDITIVE to t5's table, and read by a different harness. The perception-",
+      "routing rung (deviation d1) varies HOW an image reaches the deciding mind,",
+      "orthogonally to the architecture factor. The original vision-rung design",
+      "assumed a text-only cortex, so the rung was an asymmetry: the worker could",
+      "see and the cortex could not. That premise died when the cortex was upgraded",
+      "mid-build and its vision was measured (cortex-vision-probe.md), so what is",
+      "left is a routing question -- does the senses role still earn its place on",
+      "visual input once the deciding mind can see?",
+      "Each route states EXACTLY what each mind receives, in the closed vocabulary",
+      "below, and examples/arch_vision.py asserts the payload it builds against",
+      "this declaration rather than merely reading it back. A declaration nobody",
+      "checks is a comment."
+    ],
+    "content_vocabulary": {
+      "question": "the rung's question text, identical on every route",
+      "map-image": "the fog-scoped map PNG as an OpenAI image_url content part",
+      "senses-description": "the senses role's prose description of that same PNG",
+      "describe-instruction": "the fixed instruction handed to the senses role"
+    },
+    "stages": {
+      "why": [
+        "A two-stage screen, per c41. Stage 1 runs the three routes on the FLAT arm",
+        "alone; stage 2 carries ONLY the route stage 1 selected into the four",
+        "architectures. A full 4x3 crossing is refused BY RULE rather than by",
+        "budget: 12 cells at achievable n cannot resolve an interaction, which is",
+        "how t18 and t19 died. run_stage2 takes no route argument at all -- it",
+        "re-derives the route from the stage-1 artifact -- so a post-hoc pick after",
+        "seeing stage-2 data is not a discouraged practice but an unexpressible one."
+      ],
+      "stage1_arms": ["E"],
+      "stage2_arms": ["E", "W", "M", "H"]
+    },
+    "selection_rule": {
+      "id": "perception-screen/1",
+      "why": [
+        "Committed BEFORE any measured dial, tie-breaks included, because a rule",
+        "that only covers the case where the data separates is a rule that hands",
+        "the tied case back to judgement. Primary axis is correctness. A tie falls",
+        "to total tokens (the cheapest route wins), then to a fixed precedence:",
+        "fewest minds and fewest content parts first, since each one is a failure",
+        "mode the rig would have to carry forever. Only a correctness win is",
+        "reported as a separation; a tie-broken pick is recorded as a tie-broken",
+        "pick and must never be quoted as 'route X won'.",
+        "min_attempts_per_route is the floor for a screen to be gradeable at all --",
+        "one full pass of the rung. The measured n is task t11's to pin."
+      ],
+      "primary": "correct",
+      "tie_breakers": ["total_tokens_asc", "precedence"],
+      "precedence": ["native", "described", "both"],
+      "min_attempts_per_route": 4
+    },
+    "information_matching_exemption": {
+      "why": [
+        "c40/h31. The information-matching rule (c22/h16) exists so an image cell",
+        "cannot smuggle extra state past its text twin. Routing arms deliberately",
+        "vary information content -- a senses description is lossy compression of",
+        "the image by design -- so matching would forbid the very contrast this",
+        "rung measures. The exemption is stated PER RUNG, relaxes matching ONLY,",
+        "and the fog-scoping rule keeps binding every route unchanged: no route",
+        "may show a mind a cell its visibility excludes. arch_vision refuses to",
+        "load a config that tries to widen this."
+      ],
+      "applies_to_rung": "V1",
+      "relaxes": ["information-matching"],
+      "still_binds": ["fog-scoping"]
+    },
+    "capability_source": {
+      "why": [
+        "c43/h32. The gateway advert UNDERSTATES the cortex: its responsibilities",
+        "list carries no image_understanding, yet the cortex demonstrably reads",
+        "image parts. A consumer obeying this repo's own 'resolve by name, never",
+        "parse model names' rule would conclude the deciding mind is blind and",
+        "silently drop the native route. So this rung's capability facts come from",
+        "committed measured probes and never from the advert, for as long as the",
+        "two disagree. If the advert is corrected the probes stay as the record of",
+        "what was true when the design was fixed."
+      ],
+      "never_from": "/capabilities",
+      "probes": [
+        "docs/live-test-results/cortex-vision-probe.md",
+        "docs/live-test-results/video-perception-probe.md"
+      ]
+    },
+    "routes": {
+      "native": {
+        "cortex_receives": ["question", "map-image"],
+        "senses_receives": [],
+        "native_image": true,
+        "senses_description": false,
+        "why": [
+          "The image goes straight to the deciding mind as an image part. This is",
+          "the route the advert would have made us drop; it is dialable only",
+          "because the vision probe measured it working with a guess-proof",
+          "control. Zero senses calls -- which is the whole point of the screen."
+        ]
+      },
+      "described": {
+        "cortex_receives": ["question", "senses-description"],
+        "senses_receives": ["describe-instruction", "map-image"],
+        "native_image": false,
+        "senses_description": true,
+        "why": [
+          "Today's shape: the senses role sees the image and the deciding mind",
+          "reads only text. Lossy by construction -- that loss is the variable,",
+          "not a defect, and it is why this rung is exempt from information",
+          "matching."
+        ]
+      },
+      "both": {
+        "cortex_receives": ["question", "senses-description", "map-image"],
+        "senses_receives": ["describe-instruction", "map-image"],
+        "native_image": true,
+        "senses_description": true,
+        "why": [
+          "The description AND the native image. The most expensive route and the",
+          "only one that could show a description helping a mind that can already",
+          "see -- which is the outcome that would keep senses on the visual path."
+        ]
+      }
+    }
+  },
   "decision": {
     "why": [
       "PROVISIONAL, and named as such. The pre-registration (task t11) is the",
