@@ -959,7 +959,7 @@ class PresenceEngine:
         """
         try:
             self._io.narrate(text)
-        except Exception:  # nosec B110 # noqa: BLE001 - voice must never disturb text
+        except Exception:  # nosec B110 # noqa: BLE001  # voice must never disturb text
             pass
 
 

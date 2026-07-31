@@ -800,7 +800,7 @@ def _observe(ctx: _Work, kind: str, detail: str = "", **data: Any) -> None:
         return
     try:
         ctx.observer(LoopEvent(kind=kind, detail=detail, data=dict(data)))
-    except Exception as exc:  # noqa: BLE001 - observability never aborts a drive
+    except Exception as exc:  # noqa: BLE001  # observability never aborts a drive
         ctx.observer_failed = True
         _degrade(ctx, DEGRADED_OBSERVER, f"{type(exc).__name__}: {exc}")
 
@@ -824,7 +824,7 @@ def _emit_progress(ctx: _Work, step_index: int, tool: str, arguments: Any, ok: b
         return
     try:
         ctx.progress(step_index, tool, arguments, ok)
-    except Exception as exc:  # noqa: BLE001 - a sink must never abort a drive
+    except Exception as exc:  # noqa: BLE001  # a sink must never abort a drive
         _degrade(ctx, DEGRADED_PROGRESS, f"{type(exc).__name__}: {exc}")
 
 
@@ -855,7 +855,7 @@ def _emit_phase(ctx: _Work, detail: str) -> None:
         return
     try:
         ctx.progress(len(ctx.result.steps), "", detail, True)
-    except Exception as exc:  # noqa: BLE001 - a sink must never abort a drive
+    except Exception as exc:  # noqa: BLE001  # a sink must never abort a drive
         _degrade(ctx, DEGRADED_PROGRESS, f"{type(exc).__name__}: {exc}")
 
 
@@ -873,7 +873,7 @@ def _presence_arm(ctx: _Work) -> None:
         return
     try:
         ctx.presence_armed = bool(ctx.presence.active)
-    except Exception as exc:  # noqa: BLE001 - presence never aborts a drive
+    except Exception as exc:  # noqa: BLE001  # presence never aborts a drive
         _degrade(ctx, DEGRADED_PRESENCE, f"{type(exc).__name__}: {exc}")
 
 
@@ -883,7 +883,7 @@ def _presence_acknowledge(ctx: _Work) -> None:
         return
     try:
         ctx.presence.acknowledge(ctx.task.context_packet)
-    except Exception as exc:  # noqa: BLE001 - presence never aborts a drive
+    except Exception as exc:  # noqa: BLE001  # presence never aborts a drive
         _degrade(ctx, DEGRADED_PRESENCE, f"{type(exc).__name__}: {exc}")
 
 
@@ -895,7 +895,7 @@ def _presence_boundary(ctx: _Work, *, phase_changed: bool = False) -> None:
         ctx.presence.on_progress_boundary(
             step_count=len(ctx.result.steps), phase_changed=phase_changed
         )
-    except Exception as exc:  # noqa: BLE001 - presence never aborts a drive
+    except Exception as exc:  # noqa: BLE001  # presence never aborts a drive
         _degrade(ctx, DEGRADED_PRESENCE, f"{type(exc).__name__}: {exc}")
 
 
@@ -942,7 +942,7 @@ def _presence_terminal(ctx: _Work) -> None:
     ctx.terminal_beat_fired = True
     try:
         beat(step_count=len(ctx.result.steps))
-    except Exception as exc:  # noqa: BLE001 - presence never aborts a drive
+    except Exception as exc:  # noqa: BLE001  # presence never aborts a drive
         _degrade(ctx, DEGRADED_PRESENCE, f"{type(exc).__name__}: {exc}")
 
 
@@ -956,7 +956,7 @@ def _drain_operator_inbox(ctx: _Work) -> None:
         return
     try:
         pending = ctx.operator_inbox() or ()
-    except Exception as exc:  # noqa: BLE001 - an inbox never aborts a drive
+    except Exception as exc:  # noqa: BLE001  # an inbox never aborts a drive
         _degrade(ctx, DEGRADED_PRESENCE, f"operator inbox: {type(exc).__name__}: {exc}")
         return
     for text in pending:
@@ -965,7 +965,7 @@ def _drain_operator_inbox(ctx: _Work) -> None:
             continue
         try:
             ctx.presence.on_operator_message(text)
-        except Exception as exc:  # noqa: BLE001 - presence never aborts a drive
+        except Exception as exc:  # noqa: BLE001  # presence never aborts a drive
             _degrade(ctx, DEGRADED_PRESENCE, f"{type(exc).__name__}: {exc}")
 
 
@@ -991,7 +991,7 @@ def _boundary(ctx: _Work, name: str, **extra: Any) -> None:
     )
     try:
         ctx.continuity(point)
-    except Exception as exc:  # noqa: BLE001 - continuity never aborts a drive
+    except Exception as exc:  # noqa: BLE001  # continuity never aborts a drive
         _degrade(ctx, DEGRADED_CONTINUITY, f"{name}: {type(exc).__name__}: {exc}")
 
 
@@ -1136,7 +1136,7 @@ def _run_child(
     }
     try:
         reply = seam(child) if seam is not None else None
-    except Exception as exc:  # noqa: BLE001 - a failed child never aborts its parent
+    except Exception as exc:  # noqa: BLE001  # a failed child never aborts its parent
         reason = f"{type(exc).__name__}: {exc}"
         record = _record_spawn(ctx, call, SPAWN_FAILED, reason=reason, **shared)
         _degrade(ctx, DEGRADED_SPAWN_FAILED, f"child {child.task.id}: {reason}")
@@ -1356,7 +1356,7 @@ def _arguments_json(ctx: _Work, tool_name: str, arguments: Any) -> str:
         )
     try:
         return json.dumps(arguments, ensure_ascii=False, default=str)
-    except Exception:  # noqa: BLE001 - default=str runs arbitrary __str__; must not abort
+    except Exception:  # noqa: BLE001  # default=str runs arbitrary __str__; must not abort
         return json.dumps(
             {"_unserializable_arguments": f"{tool_name}: {type(arguments).__name__} instance"},
             ensure_ascii=False,
@@ -1862,7 +1862,7 @@ def _maybe_force_synthesis(ctx: _Work, outcome: str) -> None:
     ctx.messages.append({"role": "user", "content": prompt})
     try:
         resp = _complete_with_degradation(ctx, phase=_PHASE_SYNTHESIZING)
-    except Exception as exc:  # noqa: BLE001 - a finalize-time turn never raises
+    except Exception as exc:  # noqa: BLE001  # a finalize-time turn never raises
         _degrade(ctx, DEGRADED_SYNTHESIS, f"{type(exc).__name__}: {exc}")
         return
     _account_turn(ctx, resp)
@@ -2150,7 +2150,7 @@ def run(
     outcome = EXIT_ABORTED
     try:
         outcome = _work_loop(ctx, reading_budget)
-    except Exception as exc:  # noqa: BLE001 - preserve partial work on any seam failure
+    except Exception as exc:  # noqa: BLE001  # preserve partial work on any seam failure
         aborted = exc
         result.status = ERROR
         result.error = f"{type(exc).__name__}: {exc}"

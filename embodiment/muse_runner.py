@@ -451,7 +451,7 @@ def _read(obj: Any, name: str, default: Any = None) -> Any:
     """
     try:
         return getattr(obj, name, default)
-    except Exception:  # noqa: BLE001 - an unreadable attribute is simply absent
+    except Exception:  # noqa: BLE001  # an unreadable attribute is simply absent
         return default
 
 
@@ -1082,7 +1082,7 @@ class ThreadedMuseRunner:
         for closer in self._closers:
             try:
                 closer()
-            except Exception as exc:  # noqa: BLE001 - a close path never raises
+            except Exception as exc:  # noqa: BLE001  # a close path never raises
                 with self._lock:
                     self._record(
                         DEGRADED_CLOSER,

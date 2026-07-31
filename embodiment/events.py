@@ -309,7 +309,7 @@ class EventEmitter:
             return
         try:
             self._emit(event)
-        except Exception as exc:  # noqa: BLE001 - an ObserverFn must never abort a drive
+        except Exception as exc:  # noqa: BLE001  # an ObserverFn must never abort a drive
             self._degrade(DEGRADED_EMIT, f"{type(exc).__name__}: {exc}")
 
     def close(self) -> None:
@@ -327,7 +327,7 @@ class EventEmitter:
             return
         try:
             client.close()
-        except Exception:  # nosec B110 # noqa: BLE001 - teardown must never raise either
+        except Exception:  # nosec B110 # noqa: BLE001  # teardown must never raise either
             pass
 
     def __enter__(self) -> "EventEmitter":
@@ -417,5 +417,5 @@ class EventEmitter:
         if self._on_degrade is not None:
             try:
                 self._on_degrade(record)
-            except Exception:  # nosec B110 # noqa: BLE001 - a hook must never raise either
+            except Exception:  # nosec B110 # noqa: BLE001  # a hook must never raise either
                 pass
