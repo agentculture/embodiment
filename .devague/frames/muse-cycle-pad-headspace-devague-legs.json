@@ -4,7 +4,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-07-29T16:35:15Z",
-  "updated": "2026-07-31T00:47:13Z",
+  "updated": "2026-07-31T01:13:38Z",
   "claims": [
     {
       "id": "c1",
@@ -1240,6 +1240,40 @@
       "refs": [
         "t23",
         "t26"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l22",
+      "code": "provenance-missing",
+      "what": "tasks t27 and t28 were added, instructed and confirmed but the plan-md was never re-exported, so the committed contract stopped at t26 and t28 read its brief from uncommitted working state",
+      "skipped_check": "exporting and committing the plan after adding a task, so the brief an agent builds against is auditable",
+      "refs": [
+        "t27",
+        "t28"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l23",
+      "code": "instrument-changed-mid-series",
+      "what": "t28 departed from its pre-registration twice: n=3 instead of 5 because the rig was held at 95% by a sibling task, and a decision-rule bug was fixed after the first dial \u2014 the ceiling clause compared multisets where the prose said sets, so a flat ceiling would have published as NO_EFFECT",
+      "skipped_check": "running the pre-registered n, and testing the decision rule against a flat-ceiling case before the first dial",
+      "refs": [
+        "t28"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l24",
+      "code": "assumption-for-measurement",
+      "what": "t28's seeds are labels, not samples: --seed is metadata only on c-skirmish-1, where two seeds produce a byte-identical initial state, so sampling is the only source of between-match variation",
+      "skipped_check": "checking that the seed changes the initial state before treating seeds as independent replicates",
+      "refs": [
+        "t28"
       ],
       "origin": "llm",
       "status": "proposed"
