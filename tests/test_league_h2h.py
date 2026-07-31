@@ -586,16 +586,54 @@ class TestBothTeamsAreModelSeats:
         assert {"arm", "team"} <= fields
 
     def test_league_seat_py_is_not_modified_by_this_lane(self) -> None:
-        head = subprocess.run(  # nosec B603 B607
-            ["git", "diff", "--name-only", "main...HEAD"],
+        """No commit that edits the h2h harness may also edit the seat it reuses.
+
+        **Scoped to this lane's own commits (task t24).** It used to read the
+        whole branch — ``git diff --name-only main...HEAD`` — and assert the seat
+        appeared nowhere in it. That is not the claim in this test's name, and on
+        this repo it is not even close to it: the entire muse cycle lives on one
+        branch that has never merged, so ``main...HEAD`` is every file every task
+        in the cycle has touched. Any *other* lane with a legitimate reason to
+        edit ``league_seat.py`` failed a test about the head-to-head lane.
+
+        Task t24 was authorised to add ``--trace-out`` to the seat — without it
+        ``finish_reason`` is unreachable and its arena token-budget series cannot
+        be run at all (embodiment#37) — and this test failed on that change while
+        the h2h lane had not been touched at all.
+
+        So it now asks what it says: walk the commits that modified
+        ``examples/league_h2h.py`` and assert none of them also modified
+        ``examples/league_seat.py``. Deviation d10's guarantee — the h2h lane
+        reuses the seat rather than forking or bending it — is unchanged and is
+        now enforced against the lane that could actually break it. The two
+        structural tests above (imported-not-copied, and the scripted rival never
+        reached) are the rest of that guarantee and are untouched.
+
+        A branch with no h2h commits vacuously passes, which is correct: a lane
+        that did not act cannot have modified anything.
+        """
+        commits = subprocess.run(  # nosec B603 B607
+            ["git", "log", "--format=%H", "main...HEAD", "--", "examples/league_h2h.py"],
             cwd=str(REPO_ROOT),
             capture_output=True,
             text=True,
             check=False,
             timeout=60,
         )
-        touched = set(head.stdout.split())
-        assert "examples/league_seat.py" not in touched
+        for sha in commits.stdout.split():
+            files = subprocess.run(  # nosec B603 B607
+                ["git", "show", "--name-only", "--format=", sha],
+                cwd=str(REPO_ROOT),
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=60,
+            )
+            touched = set(files.stdout.split())
+            assert "examples/league_seat.py" not in touched, (
+                f"commit {sha[:12]} modifies BOTH the h2h harness and the seat it "
+                "reuses — d10 says this lane imports the seat, it does not bend it"
+            )
 
 
 # ── the committed identical-mind control ─────────────────────────────────────

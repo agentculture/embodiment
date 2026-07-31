@@ -1,0 +1,12 @@
+{"cell":"C2","rep":0,"arm":"command","max_tokens":2048,"seed":4242,"returncode":0,"seconds":492}
+{"cell":"C2","rep":1,"arm":"command","max_tokens":2048,"seed":4243,"returncode":0,"seconds":454}
+{"cell":"C2","rep":2,"arm":"command","max_tokens":2048,"seed":4244,"returncode":0,"seconds":260}
+{"cell":"C16","rep":0,"arm":"command","max_tokens":16000,"seed":4242,"returncode":0,"seconds":437}
+{"cell":"C16","rep":1,"arm":"command","max_tokens":16000,"seed":4243,"returncode":0,"seconds":268}
+{"cell":"C16","rep":2,"arm":"command","max_tokens":16000,"seed":4244,"returncode":0,"seconds":283}
+{"cell":"R2","rep":0,"arm":"resident","max_tokens":2048,"seed":4242,"returncode":0,"seconds":474}
+{"cell":"R2","rep":1,"arm":"resident","max_tokens":2048,"seed":4243,"returncode":0,"seconds":330}
+{"cell":"R2","rep":2,"arm":"resident","max_tokens":2048,"seed":4244,"returncode":0,"seconds":369}
+{"cell":"R16","rep":0,"arm":"resident","max_tokens":16000,"seed":4242,"returncode":0,"seconds":337}
+{"cell":"R16","rep":1,"arm":"resident","max_tokens":16000,"seed":4243,"returncode":0,"seconds":257}
+{"cell":"R16","rep":2,"arm":"resident","max_tokens":16000,"seed":4244,"returncode":0,"seconds":281}
