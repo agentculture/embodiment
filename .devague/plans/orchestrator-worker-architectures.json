@@ -5,7 +5,7 @@
   "schema_version": 4,
   "status": "exported",
   "created": "2026-07-31T13:42:27Z",
-  "updated": "2026-07-31T17:13:15Z",
+  "updated": "2026-07-31T17:18:45Z",
   "targets": [
     {
       "id": "c1",
@@ -867,6 +867,22 @@
         "h36"
       ],
       "instruction": "found by grep after t10 merged: zero consumers of Perception.parts and zero media references in any harness. t17 already landed the media builder, so this is wiring plus the assertion that proves it fired."
+    },
+    {
+      "id": "t19",
+      "summary": "Report the series' findings to colleague: a second communicate post once results exist, including the negatives",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "the post carries what the series measured including INCONCLUSIVE and CEILING verdicts, never only the favourable ones",
+        "it links colleague#361 (the rig-facts post) and states which of its numbers the series revised",
+        "no commit touches the colleague repo"
+      ],
+      "deps": [
+        "t14"
+      ],
+      "covers": [],
+      "instruction": "operator asked for two posts: the rig facts (colleague#361, DONE 2026-07-31) and this one after the series, so colleague can learn from the studies rather than only the configuration"
     }
   ],
   "risks": [

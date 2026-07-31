@@ -163,6 +163,15 @@ slug: `orchestrator-worker-architectures` · status: `exported` · from frame: `
   - the text route's payload is byte-identical to today's, so wiring multimodal support changes no existing cell
   - an image route whose parts cannot be built degrades to a recorded ABSENT cell, never to a silent text dial
 
+### t19 — Report the series' findings to colleague: a second communicate post once results exist, including the negatives
+
+- instruction: operator asked for two posts: the rig facts (colleague#361, DONE 2026-07-31) and this one after the series, so colleague can learn from the studies rather than only the configuration
+- depends on: t14
+- acceptance:
+  - the post carries what the series measured including INCONCLUSIVE and CEILING verdicts, never only the favourable ones
+  - it links colleague#361 (the rig-facts post) and states which of its numbers the series revised
+  - no commit touches the colleague repo
+
 ## Risks
 
 - [unknown_nonblocking] the served worker build's stability under sustained x14 load is unknown until t3 reports; a sibling variant crash-looped on GB10 hardware (task t3)
