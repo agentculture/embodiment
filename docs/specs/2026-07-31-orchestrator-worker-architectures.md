@@ -69,6 +69,12 @@
 - the gateway advert UNDERSTATES the new cortex and must not be the sole capability source for this series: `/capabilities` lists the cortex's responsibilities as reasoning/deciding/planning/`tool_use`/`code_repo_actions`/validation/`final_authority` with NO `image_understanding`, while the worker advertises image and video — yet the cortex demonstrably accepts image parts. A consumer obeying this repo's own 'resolve by name, never parse model names' rule would conclude the cortex is blind and silently drop the native-vision route, so the routing rung's capability facts come from a committed measured probe, and the advert gap is filed with lobes-cli as evidence
   - instruction: capability facts cited from the probe, never from /capabilities responsibilities, for as long as the two disagree
   - honesty: the committed vision probe (docs/live-test-results/cortex-vision-probe.md) is the series' capability source for the cortex's native-vision route, its guess-proof control is stated in the file, and if the advert is later corrected the probe stays as the record of what was true when the design was fixed
+- tool-call stability is MEASURED on the new cortex before the series cites it: prior series recorded protocol failure as a first-class failure mode (the exit=stopped collapse, the scratchpad repairing it 25%->67%, and issues #32/#33 where a mind emitted a tool call and no prose or sent argv as a string), so 'more stable tool calling' is a testable claim with a documented baseline to beat — not a property to assume from the quantiser's reputation
+  - honesty: the new cortex's tool-call protocol reliability is measured and committed before the series cites stability, reported against the documented old-cortex baseline (the exit=stopped collapse and its 25%->67% scratchpad repair) rather than as a bare number
+- a smarter cortex RAISES the ceiling risk that already killed two experiments, so the ladder's difficulty must be re-checked against the new model rather than inherited: M4's lesson is that a rung the flat arm always passes measures nothing, and every prior arm-comparison here died tied at the top of its range — if arm E aces a rung the ladder must escalate past it rather than report a tie
+  - honesty: the ladder's difficulty is re-checked against the NEW cortex before the series climbs it, and any rung where arm E scores at ceiling is escalated past rather than reported as a tie
+- the fan-out width default is re-derived from MEASURED saturation, not from the advertised stream count: t3 measured effective concurrency of 8.99 at width 14 against 6.14 at width 8, with width 14 buying only +5.5% aggregate throughput for +75% concurrent load, a 28% per-stream drop and a 79% p95 latency rise — `MAX_FANOUT_WIDTH = 14` was set to the operator-supplied stream count and the measurement does not support it; t11 pins the width it pre-registers
+  - honesty: the pre-registration states the fan-out width it uses and derives it from the committed throughput series, and any width above the measured saturation point is justified in writing rather than inherited from the advert
 
 ## Honesty conditions
 
@@ -116,6 +122,8 @@
 - fog substrate exists and is reusable as-is at team scope: the continuous lane's briefing already applies team-union fog when a match config sets fog true (ground truth is the default), and the grid lane exposes `team_view` and `latest_knowledge` — but every mind-facing payload folds to TEAM scope; true per-unit cones (`visible_cells` per unit) exist only as an unconsumed engine primitive, so per-unit map scoping is new surface work in league or a harness-side derivation
 - the commander in manager/hybrid arms is the text-only 27B: it cannot consume map images, so in those arms units (35B) see images while the commander reads text knowledge briefs — the image lane tests unit-level perception and the commander's fusion of visually-informed unit reports; only worker-solo (and any all-35B arm) can put an image in front of the top-level mind, and the arm table must state this asymmetry
 - the new cortex `unsloth/Qwen3.6-27B-NVFP4` has MEASURED vision — probed 2026-07-31 through the spark gateway: a 4-band image with an unguessable palette returned '4, purple' for band count and second-from-top colour, after a first probe was discarded for asking a question whose answer ('Red, Green, Blue') a blind model would guess. Deviation d1's premise holds and the three-route screening design is live-supported, not merely assumed
+- the cortex upgrade is expected to be a broad quality win beyond vision — video direction understanding, more stable tool calling (the operator's 'real win here'), and possibly stronger reasoning, on the grounds that unsloth's quantisation is professionally done
+- the operator's 50 tok/s x14 figure did NOT reproduce on this rig and is recorded as falsified rather than quietly dropped: per-stream at width 14 measured 29.8 tok/s (60% of target) and aggregate 268 tok/s (38% of a 700 tok/s reading); single-stream at 76.4 tok/s exceeds 50, so it is specifically the x14 compounding that fails
 
 ## Scope exploration
 
@@ -169,11 +177,16 @@
   - seeds: `c40`
 - `s26` — `challenge pass / adjacent-systems lens (post-upgrade): live probe of cortex vision vs its /capabilities advert`: vision measured working with a guess-proof control; the advert does not declare it, so the roles contract is understating a served capability — the 'never parse model names' rule would produce a WRONG conclusion here, which is measured evidence for the modality-field ask already drafted for lobes-cli
   - seeds: `c42`, `c43`
+- `s27` — `operator framing 2026-07-31 (post-upgrade): tool-call stability as the real win; unsloth quant quality`: records the expectation as an assumption and routes it to measurement against a documented protocol-failure baseline; also raises the ceiling risk a stronger cortex creates, and re-states video's blocker as the repo's media layer rather than model capability
+  - seeds: `c44`, `c45`, `c46`, `c47` (rejected)
+- `s28` — `challenge pass / operations lens (post-measurement): t3 throughput series + cortex tool-call and latency probe`: tool protocol held 10/10 but at a ceiling that measures nothing; cortex median turn 57.2s with a 204s tail; worker saturates near width 9 — together these re-cost the series and contradict `MAX_FANOUT_WIDTH`=14
+  - seeds: `c48`, `c49`
 
 ## Decisions
 
 - role mapping for the league lane: the 27B cortex is the LEADER/player seat (commands, decides, keeps final authority) and the 35B worker drives THE UNITS — all of them — as the explorer/actor that moves, takes locations and gathers; the worker's x14 concurrency makes driving every unit simultaneously the natural shape rather than a stretch goal, so the manager arm's league instantiation is 27B commander over 35B unit agents
 - vision-rung design after the cortex upgrade: a two-stage screen. Stage 1 runs the three perception routes on the FLAT arm alone (~3 cells) to answer whether senses still earns its place on visual input once the cortex can see; stage 2 carries ONLY the winning route into the four architectures (~4 cells). Full crossing is refused by rule, not by budget: 12 cells at achievable n cannot resolve an interaction, which is exactly how t18 and t19 died
+- video moves from parked non-goal to a scheduled, scoped task (t17, embodiment#39): both minds read league's existing GIFs as motion via a `video_url` content part — measured, at LOWER token cost than a single still image — so the work is a media.py video builder, not a frame sampler, an ordering protocol or a budget policy. It remains outside the orchestrator-worker series' measured ladder; only the capability lands this cycle
 
 ## Open parks
 

@@ -2,7 +2,7 @@
   "plan_slug": "orchestrator-worker-architectures",
   "schema_version": 1,
   "created": "2026-07-31T14:13:02Z",
-  "updated": "2026-07-31T14:13:02Z",
+  "updated": "2026-07-31T16:25:49Z",
   "deviations": [
     {
       "id": "d1",
@@ -17,6 +17,19 @@
       "origin": "user",
       "status": "approved",
       "classification": "needs-follow-up"
+    },
+    {
+      "id": "d2",
+      "what": "a video-perception task (t17) is added to the confirmed plan, wired to embodiment#39: cheapness was measured rather than assumed, and the measurement first produced a WRONG conclusion (that league's GIFs cannot carry motion) which the operator's configuration-symmetry argument corrected \u2014 the same GIF bytes sent as a video_url part carry motion to both minds at 86 prompt tokens, cheaper than a single still image",
+      "task_ref": "t17",
+      "reason": "operator asked for a video task if and only if it proved cheap; it is cheap, via league's existing GIFs on the video_url transport, needing a modest media.py builder rather than the frame sampler the first probe wrongly concluded was necessary",
+      "affects": [
+        "t12",
+        "t14"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable"
     }
   ]
 }

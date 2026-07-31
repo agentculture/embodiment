@@ -5,7 +5,7 @@
   "schema_version": 4,
   "status": "exported",
   "created": "2026-07-31T13:42:27Z",
-  "updated": "2026-07-31T13:50:40Z",
+  "updated": "2026-07-31T16:36:29Z",
   "targets": [
     {
       "id": "c1",
@@ -144,20 +144,6 @@
       "id": "h10",
       "kind": "honesty",
       "text": "no reference-rig table or identity doc changes this cycle unless the pre-registered decision rule returned a supporting verdict; an INCONCLUSIVE leaves d15's rig untouched",
-      "deferred": false,
-      "deferred_reason": ""
-    },
-    {
-      "id": "c17",
-      "kind": "requirement",
-      "text": "a vision rung enters the ladder: image tasks ride media.py's existing image parts; the flat-27B arm sees images only as senses-described text (the cortex model is text-only), worker arms see them natively \u2014 the one rung where the existing architecture cannot tie at a ceiling, and the arm design must state that asymmetry rather than hide it",
-      "deferred": false,
-      "deferred_reason": ""
-    },
-    {
-      "id": "h11",
-      "kind": "honesty",
-      "text": "the vision rung's images derive from the same fog snapshot as the text control via the committed renderer, and the flat-27B arm's senses-described path actually runs live \u2014 it is dialled, not scored structurally absent without a run",
       "deferred": false,
       "deferred_reason": ""
     },
@@ -412,6 +398,90 @@
       "text": "v1 renders team-scoped views for every mind from the fogged briefing alone (zero league-side changes), the information-match check (h16) passes against the team-scoped text twin, and no vision-radius constant exists anywhere in embodiment's harness code",
       "deferred": false,
       "deferred_reason": ""
+    },
+    {
+      "id": "c39",
+      "kind": "requirement",
+      "text": "a vision-capable cortex adds a PERCEPTION-ROUTING factor orthogonal to the architecture factor: an image can reach the deciding mind (a) natively at the cortex, (b) as a Gemma senses description the cortex reads as text, or (c) both \u2014 senses description plus native image at the Qwen(s). Routing is a separate experimental dimension from flat/manager/hybrid, and the spec must say how the two factors combine rather than silently crossing them",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h30",
+      "kind": "honesty",
+      "text": "the routing rung's three routes are defined in the pre-registration with the exact content each mind receives per route, every route's fog scoping is asserted by the same renderer fixtures (h15), and stage 2 dials only the route stage 1 selected \u2014 never a post-hoc pick after seeing stage 2 data",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c40",
+      "kind": "boundary",
+      "text": "the perception-routing rung is EXEMPT from the information-matching rule (c22/h16): that rule exists so an image cell cannot smuggle extra state past its text twin, but routing arms deliberately vary information content \u2014 a senses description is lossy compression of the image by design. The exemption is stated per-rung in the pre-registration, and the fog-scoping rule (h15) still binds every route: no route may show a mind a cell its visibility excludes",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h31",
+      "kind": "honesty",
+      "text": "the pre-registration states the exemption per rung and names which rung it applies to, and the fog-scoping fixtures (h15) run against every route unchanged \u2014 the exemption relaxes information matching only, never visibility",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c43",
+      "kind": "requirement",
+      "text": "the gateway advert UNDERSTATES the new cortex and must not be the sole capability source for this series: `/capabilities` lists the cortex's responsibilities as reasoning/deciding/planning/tool_use/code_repo_actions/validation/final_authority with NO `image_understanding`, while the worker advertises image and video \u2014 yet the cortex demonstrably accepts image parts. A consumer obeying this repo's own 'resolve by name, never parse model names' rule would conclude the cortex is blind and silently drop the native-vision route, so the routing rung's capability facts come from a committed measured probe, and the advert gap is filed with lobes-cli as evidence",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h32",
+      "kind": "honesty",
+      "text": "the committed vision probe (docs/live-test-results/cortex-vision-probe.md) is the series' capability source for the cortex's native-vision route, its guess-proof control is stated in the file, and if the advert is later corrected the probe stays as the record of what was true when the design was fixed",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c45",
+      "kind": "requirement",
+      "text": "tool-call stability is MEASURED on the new cortex before the series cites it: prior series recorded protocol failure as a first-class failure mode (the exit=stopped collapse, the scratchpad repairing it 25%->67%, and issues #32/#33 where a mind emitted a tool call and no prose or sent argv as a string), so 'more stable tool calling' is a testable claim with a documented baseline to beat \u2014 not a property to assume from the quantiser's reputation",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h33",
+      "kind": "honesty",
+      "text": "the new cortex's tool-call protocol reliability is measured and committed before the series cites stability, reported against the documented old-cortex baseline (the exit=stopped collapse and its 25%->67% scratchpad repair) rather than as a bare number",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c46",
+      "kind": "requirement",
+      "text": "a smarter cortex RAISES the ceiling risk that already killed two experiments, so the ladder's difficulty must be re-checked against the new model rather than inherited: M4's lesson is that a rung the flat arm always passes measures nothing, and every prior arm-comparison here died tied at the top of its range \u2014 if arm E aces a rung the ladder must escalate past it rather than report a tie",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h34",
+      "kind": "honesty",
+      "text": "the ladder's difficulty is re-checked against the NEW cortex before the series climbs it, and any rung where arm E scores at ceiling is escalated past rather than reported as a tie",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c48",
+      "kind": "requirement",
+      "text": "the fan-out width default is re-derived from MEASURED saturation, not from the advertised stream count: t3 measured effective concurrency of 8.99 at width 14 against 6.14 at width 8, with width 14 buying only +5.5% aggregate throughput for +75% concurrent load, a 28% per-stream drop and a 79% p95 latency rise \u2014 `MAX_FANOUT_WIDTH = 14` was set to the operator-supplied stream count and the measurement does not support it; t11 pins the width it pre-registers",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h35",
+      "kind": "honesty",
+      "text": "the pre-registration states the fan-out width it uses and derives it from the committed throughput series, and any width above the measured saturation point is justified in writing rather than inherited from the advert",
+      "deferred": false,
+      "deferred_reason": ""
     }
   ],
   "tasks": [
@@ -434,7 +504,7 @@
         "c36",
         "h28"
       ],
-      "instruction": ""
+      "instruction": "merged: examples/orchestrator_tools.py \u2014 the delegate tool rides the subagent seam with the worker surface enumerated as the dispatch condition"
     },
     {
       "id": "t2",
@@ -455,7 +525,7 @@
         "c34",
         "h26"
       ],
-      "instruction": ""
+      "instruction": "merged: examples/worker_seam.py \u2014 explicit config, no silent fallback, live tool-loop smoke committed"
     },
     {
       "id": "t3",
@@ -471,7 +541,7 @@
         "t2"
       ],
       "covers": [],
-      "instruction": ""
+      "instruction": "merged: worker saturates near width 9; the operator's 50 tok/s x14 did not reproduce \u2014 see docs/live-test-results/worker-throughput.md"
     },
     {
       "id": "t4",
@@ -489,7 +559,7 @@
         "c31",
         "h23"
       ],
-      "instruction": ""
+      "instruction": "merged: the fan-out partitions one grant before dispatch; FANOUT_ACCOUNTING_RULE is quotable verbatim for t11"
     },
     {
       "id": "t5",
@@ -515,7 +585,7 @@
         "h8",
         "c33"
       ],
-      "instruction": ""
+      "instruction": "merged: arms are data not code branches; the cortex model id stays null in committed config until dialled by env"
     },
     {
       "id": "t6",
@@ -533,7 +603,7 @@
         "c32",
         "h24"
       ],
-      "instruction": ""
+      "instruction": "merged: one drive per decision ROUND so the fan-out has units to dispatch; routing basis distinguishes architecture from judgement"
     },
     {
       "id": "t7",
@@ -552,7 +622,7 @@
         "c35",
         "h27"
       ],
-      "instruction": ""
+      "instruction": "merged: three problems verified two independent ways; the M2 kit caught a shared-seed defect between truth function and reference before shipping"
     },
     {
       "id": "t8",
@@ -568,9 +638,11 @@
       ],
       "covers": [
         "c17",
-        "h11"
+        "h11",
+        "c39",
+        "h30"
       ],
-      "instruction": ""
+      "instruction": "RESCOPED by deviation d1: no longer a two-path asymmetry (the cortex now sees). Build the three-route perception screen \u2014 native at the cortex, senses description as text, both \u2014 stage 1 on the flat arm only, per c41"
     },
     {
       "id": "t9",
@@ -591,7 +663,7 @@
         "c37",
         "h29"
       ],
-      "instruction": ""
+      "instruction": "merged: renders only what the fogged briefing places, so unobserved ground is a strict lower bound on visibility and can never overstate it"
     },
     {
       "id": "t10",
@@ -610,7 +682,7 @@
         "c22",
         "h16"
       ],
-      "instruction": ""
+      "instruction": "register an image route against t6's PerceptionRoute seam using map_render's fog_snapshot/write_turn_map; snapshot_hash is the twin key"
     },
     {
       "id": "t11",
@@ -628,9 +700,19 @@
         "c10",
         "h6",
         "h24",
-        "h25"
+        "h25",
+        "c40",
+        "h31",
+        "c43",
+        "h32",
+        "c45",
+        "h33",
+        "c46",
+        "h34",
+        "c48",
+        "h35"
       ],
-      "instruction": ""
+      "instruction": "the pre-registration must state: the ladder re-checked against the NEW cortex (c46), fan-out width derived from the measured saturation not the advert (c48), capability facts cited from the committed probes not /capabilities (c43), the routing rung's per-rung exemption from information matching (c40), and tool-call stability against its documented baseline (c45)"
     },
     {
       "id": "t12",
@@ -654,7 +736,7 @@
         "c27",
         "h19"
       ],
-      "instruction": ""
+      "instruction": "the live series; do not start without the operator's go-ahead. Cell sizing must respect the measured ~57s median cortex turn with a 204s tail"
     },
     {
       "id": "t13",
@@ -671,7 +753,7 @@
         "h3",
         "c26"
       ],
-      "instruction": ""
+      "instruction": "drafts are written and reviewed; post only on the operator's explicit approval. embodiment#39 is already filed"
     },
     {
       "id": "t14",
@@ -699,7 +781,7 @@
         "h22",
         "h18"
       ],
-      "instruction": ""
+      "instruction": "record what the runs contradicted, not only what they confirmed \u2014 including that the video probe's first conclusion was wrong and how it was caught"
     },
     {
       "id": "t15",
@@ -717,7 +799,41 @@
         "c20",
         "h14"
       ],
+      "instruction": "merged: guards verified to fail when provoked, not merely to pass"
+    },
+    {
+      "id": "t16",
+      "summary": "Video-perception lane: an ordered frame sequence from a league match, delivered as image parts, wired to embodiment#39",
+      "origin": "llm",
+      "status": "rejected",
+      "acceptance_criteria": [
+        "frames are sampled from a real league match log and delivered as an ORDERED, labelled image sequence; no video content-part and no media.py change is introduced, because the probe showed none is needed",
+        "a hermetic test proves the sequence is built in chronological order and that a shuffled sequence is detectably different \u2014 order is the signal, so an unordered lane measures nothing",
+        "a frame-count and token budget policy is committed: cost scales linearly with frames, and the policy states what a long match does rather than discovering it live",
+        "the committed probe (docs/live-test-results/video-perception-probe.md) is cited as the reason the GIF path was not taken, so the dead end is not silently re-explored"
+      ],
+      "deps": [
+        "t6"
+      ],
+      "covers": [],
       "instruction": ""
+    },
+    {
+      "id": "t17",
+      "summary": "Video-perception lane: league's existing GIFs delivered as video_url parts, plus the media.py builder that makes them reachable \u2014 wired to embodiment#39",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "media.py gains a video content-part builder and a flatten_parts placeholder; a hermetic test proves a text-only surface degrades cleanly rather than dropping the part silently",
+        "a league match GIF is delivered unchanged as a video_url part \u2014 no frame sampler, no re-encode \u2014 and a hermetic test pins that the image_url path is NOT used for video",
+        "the committed probe (docs/live-test-results/video-perception-probe.md) is cited for why video_url is used over image_url and over frame sequences, so neither dead end is re-explored",
+        "the unknown the probe leaves open is measured before any claim about playthroughs: how many frames of a long match actually survive the server's internal sampling"
+      ],
+      "deps": [
+        "t6"
+      ],
+      "covers": [],
+      "instruction": "land the capability only: a media.py video_url builder plus a flatten placeholder. league's GIFs are used unchanged \u2014 the probe rules out both image_url and frame sampling"
     }
   ],
   "risks": [
@@ -750,6 +866,22 @@
       "text": "the ladder may separate at the first rung, leaving coding and vision rungs ABSENT by rule \u2014 their harnesses still land hermetically tested, only the live cells go unmeasured",
       "kind": "unknown_nonblocking",
       "task_id": "t12",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r5",
+      "text": "the frame-sequence probe is n=1 on a moving square, not a tactical board; whether a mind reads a fogged league map in sequence is untested and is the real question the lane rests on",
+      "kind": "unknown_nonblocking",
+      "task_id": "t16",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r6",
+      "text": "the server's internal frame sampling is unmeasured \u2014 86 prompt tokens for a 6-frame clip implies aggressive downsampling, so a 40-turn match may reach the model as a handful of frames; this bounds what any playthrough experiment can claim",
+      "kind": "unknown_nonblocking",
+      "task_id": "t17",
       "resolved": false,
       "resolution": ""
     }
