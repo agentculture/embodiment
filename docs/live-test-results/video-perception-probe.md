@@ -105,6 +105,29 @@ would have required.
   ([cortex-vision-probe.md](cortex-vision-probe.md)); both read video fine. The
   advert is now 0 for 2 as a guide to what a route can do on this rig.
 
+## Round 3 — the format we actually ship
+
+Rounds 1 and 2 both declared `data:video/mp4;base64,…` on GIF bytes, because
+that is what the exploratory probe happened to send. The shipped builder
+(`media.build_part`, task `t17`) deliberately does **not** lie about the MIME —
+it emits `data:image/gif;base64,…` *inside* a `video_url` part. That is a
+different wire format from the one measured above, and t17 flagged it as
+unverified rather than assuming the transport cared only about the part type.
+
+Verified by building the request from the shipped code path itself
+(`validate_attachment(path, as_video=True)` → `build_part`) and dialling it:
+
+| | value |
+|---|---|
+| part | `{"type": "video_url", "video_url": {"url": "data:image/gif;base64,…"}}` |
+| answered | **`left-to-right`** |
+| truth | left-to-right |
+| prompt tokens | **86** — identical to the mislabelled variant |
+
+So the honest label rides the same transport at the same cost. The part **type**
+selects the decoder here; the declared MIME does not. Both facts are now
+measured rather than one being measured and the other assumed.
+
 ## Filed upstream
 
 Reported to league as
