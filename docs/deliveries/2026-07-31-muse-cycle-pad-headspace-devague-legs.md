@@ -221,9 +221,12 @@ Every check below was run read-only against merge commit `f6c423f` on branch
   of them are `merge(tN)` commits, one per task worktree.
 - deviation ledger: `devague deviate --list` — 14 records `d1`–`d14`; `d11` is
   `proposed`, the other thirteen `approved`.
-- lapse ledger: `devague lapse --list` — **21 records `l1`–`l21`**, all
-  `proposed`. (The brief for this task said 24; the committed ledger at `f6c423f`
-  holds 21. The gap is reported rather than filled in.)
+- lapse ledger: `devague lapse --list` — **24 records `l1`–`l24`**, all
+  `proposed`. (This task reported 21, correctly: at `f6c423f` the *committed*
+  ledger held 21 while `l22`–`l24` sat in uncommitted working state. Resolved
+  at `c3e6065`, which committed them. The discrepancy is itself an instance of
+  `l22` — a record that exists only in working state is not a record anyone
+  else can read — and it had by then happened twice.)
 - raw data, all committed under `docs/live-test-results/`: `*.jsonl`,
   `*-config.json`, `*-trace.json`, `league-commander-logs/`,
   `league-commander-frontier-logs/`, `live-suite-raw/`.
@@ -351,7 +354,7 @@ above. None of them is supported.
 
 ### The lapse ledger
 
-`devague lapse --list` holds **21 records** (`l1`–`l21`), every one `proposed`,
+`devague lapse --list` holds **24 records** (`l1`–`l24`), every one `proposed`,
 every one filed by the task that made the substitution rather than reconstructed
 afterwards. They are the cycle's own record of where a check was replaced by an
 assumption. Grouped by code:
@@ -443,7 +446,7 @@ assumption. Grouped by code:
 
 ### Method debt this cycle created
 
-- **All 21 lapses are `proposed`.** None has been adjudicated. They are the
+- **All 24 lapses are `proposed`.** None has been adjudicated. They are the
   honest record of substituted checks, and they stay open until someone decides
   each one is acceptable or must be redone.
 - **`d11` is still `proposed`** — `t19`'s post-hoc `instruction` arm. It is
