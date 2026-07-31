@@ -66,6 +66,9 @@
 - a vision-capable cortex adds a PERCEPTION-ROUTING factor orthogonal to the architecture factor: an image can reach the deciding mind (a) natively at the cortex, (b) as a Gemma senses description the cortex reads as text, or (c) both — senses description plus native image at the Qwen(s). Routing is a separate experimental dimension from flat/manager/hybrid, and the spec must say how the two factors combine rather than silently crossing them
   - instruction: stage 1: three routes, flat arm, n per the pre-registration; stage 2: winning route across the four architectures
   - honesty: the routing rung's three routes are defined in the pre-registration with the exact content each mind receives per route, every route's fog scoping is asserted by the same renderer fixtures (h15), and stage 2 dials only the route stage 1 selected — never a post-hoc pick after seeing stage 2 data
+- the gateway advert UNDERSTATES the new cortex and must not be the sole capability source for this series: `/capabilities` lists the cortex's responsibilities as reasoning/deciding/planning/`tool_use`/`code_repo_actions`/validation/`final_authority` with NO `image_understanding`, while the worker advertises image and video — yet the cortex demonstrably accepts image parts. A consumer obeying this repo's own 'resolve by name, never parse model names' rule would conclude the cortex is blind and silently drop the native-vision route, so the routing rung's capability facts come from a committed measured probe, and the advert gap is filed with lobes-cli as evidence
+  - instruction: capability facts cited from the probe, never from /capabilities responsibilities, for as long as the two disagree
+  - honesty: the committed vision probe (docs/live-test-results/cortex-vision-probe.md) is the series' capability source for the cortex's native-vision route, its guess-proof control is stated in the file, and if the advert is later corrected the probe stays as the record of what was true when the design was fixed
 
 ## Honesty conditions
 
@@ -112,6 +115,7 @@
 - the worker's x14 concurrency on Thor is the first genuinely parallel lane this rig has had — next-cycle M1 recorded parallel cells as blocked on a second cortex, and the worker is that second-plus mind on a non-contended box — so the ladder includes a parallel fan-out rung (manager dispatches N workers concurrently) that no flat arm can structurally match; wall-clock and tokens are primary outcome axes there, since cost/latency separation is guaranteed even where correctness ties
 - fog substrate exists and is reusable as-is at team scope: the continuous lane's briefing already applies team-union fog when a match config sets fog true (ground truth is the default), and the grid lane exposes `team_view` and `latest_knowledge` — but every mind-facing payload folds to TEAM scope; true per-unit cones (`visible_cells` per unit) exist only as an unconsumed engine primitive, so per-unit map scoping is new surface work in league or a harness-side derivation
 - the commander in manager/hybrid arms is the text-only 27B: it cannot consume map images, so in those arms units (35B) see images while the commander reads text knowledge briefs — the image lane tests unit-level perception and the commander's fusion of visually-informed unit reports; only worker-solo (and any all-35B arm) can put an image in front of the top-level mind, and the arm table must state this asymmetry
+- the new cortex `unsloth/Qwen3.6-27B-NVFP4` has MEASURED vision — probed 2026-07-31 through the spark gateway: a 4-band image with an unguessable palette returned '4, purple' for band count and second-from-top colour, after a first probe was discarded for asking a question whose answer ('Red, Green, Blue') a blind model would guess. Deviation d1's premise holds and the three-route screening design is live-supported, not merely assumed
 
 ## Scope exploration
 
@@ -163,6 +167,8 @@
   - seeds: `c38`
 - `s25` — `challenge pass / unstated-assumptions lens (post-upgrade): c22/h16 information matching vs the routing factor's deliberate information variance`: the two confirmed rules collide on the routing rung — matching would forbid the very contrast routing measures; resolved by an explicit per-rung exemption that leaves fog-scoping untouched
   - seeds: `c40`
+- `s26` — `challenge pass / adjacent-systems lens (post-upgrade): live probe of cortex vision vs its /capabilities advert`: vision measured working with a guess-proof control; the advert does not declare it, so the roles contract is understating a served capability — the 'never parse model names' rule would produce a WRONG conclusion here, which is measured evidence for the modality-field ask already drafted for lobes-cli
+  - seeds: `c42`, `c43`
 
 ## Decisions
 

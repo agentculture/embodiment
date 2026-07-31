@@ -4,7 +4,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-07-31T11:55:50Z",
-  "updated": "2026-07-31T15:34:44Z",
+  "updated": "2026-07-31T15:48:35Z",
   "claims": [
     {
       "id": "c1",
@@ -728,7 +728,7 @@
       "kind": "assumption",
       "text": "the new cortex `unsloth/Qwen3.6-27B-NVFP4` has MEASURED vision \u2014 probed 2026-07-31 through the spark gateway: a 4-band image with an unguessable palette returned '4, purple' for band count and second-from-top colour, after a first probe was discarded for asking a question whose answer ('Red, Green, Blue') a blind model would guess. Deviation d1's premise holds and the three-route screening design is live-supported, not merely assumed",
       "origin": "llm",
-      "status": "proposed",
+      "status": "confirmed",
       "honesty_conditions": [],
       "hard_questions": [],
       "links": [],
@@ -740,11 +740,18 @@
       "kind": "requirement",
       "text": "the gateway advert UNDERSTATES the new cortex and must not be the sole capability source for this series: `/capabilities` lists the cortex's responsibilities as reasoning/deciding/planning/tool_use/code_repo_actions/validation/final_authority with NO `image_understanding`, while the worker advertises image and video \u2014 yet the cortex demonstrably accepts image parts. A consumer obeying this repo's own 'resolve by name, never parse model names' rule would conclude the cortex is blind and silently drop the native-vision route, so the routing rung's capability facts come from a committed measured probe, and the advert gap is filed with lobes-cli as evidence",
       "origin": "llm",
-      "status": "proposed",
-      "honesty_conditions": [],
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h32",
+          "text": "the committed vision probe (docs/live-test-results/cortex-vision-probe.md) is the series' capability source for the cortex's native-vision route, its guess-proof control is stated in the file, and if the advert is later corrected the probe stays as the record of what was true when the design was fixed",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
       "hard_questions": [],
       "links": [],
-      "instruction": "",
+      "instruction": "capability facts cited from the probe, never from /capabilities responsibilities, for as long as the two disagree",
       "revisions": []
     }
   ],
