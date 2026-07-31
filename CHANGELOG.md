@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.9.1] - 2026-07-31
+
+### Added
+
+- Spec and plan for the orchestrator-worker-architectures cycle (devague /scope -> /think -> /challenge -> /spec-to-plan): the Qwen 27B cortex delegates to the Thor-hosted Qwen 3.6 35B A3B worker role in manager and hybrid architectures, measured against both flat controls up an escalating ladder (math/logic, league with fog-scoped map images, a new coding rung, a vision rung), 15 tasks in 5 waves with 4 recorded risks
+
 ## [0.9.0] - 2026-07-30
 
 ### Added
