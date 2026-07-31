@@ -4,7 +4,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-07-29T16:35:15Z",
-  "updated": "2026-07-31T00:01:40Z",
+  "updated": "2026-07-31T00:47:13Z",
   "claims": [
     {
       "id": "c1",
@@ -1205,6 +1205,41 @@
       "skipped_check": "more matches per arm, and the L2-L4 rungs which are reported absent",
       "refs": [
         "t27"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l19",
+      "code": "provenance-missing",
+      "what": "the --muse flag on all three challenge harnesses is dead: help says it runs the advisory lane, the files contain zero muse machinery, and its only effect is writing muse_model into the config preamble \u2014 so it produces a config record naming a muse for a run where none was dialled, in the artifact that exists to prevent exactly that",
+      "skipped_check": "checking the flag does what its help says before shipping harnesses that record it",
+      "refs": [
+        "t23"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l20",
+      "code": "grader-unverified",
+      "what": "a truncated model turn is indistinguishable from a stopped one on the documented seam: ModelResponse carries no finish_reason, so two challenge harnesses truncating at a full 16000 budget reported exit=stopped with an empty degradation list",
+      "skipped_check": "recording finish_reason so truncation is separable from behaviour",
+      "refs": [
+        "t23",
+        "c22"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l21",
+      "code": "assumption-for-measurement",
+      "what": "t26 wired a tool bench into ThreadedMuseRunner but no checked-in host uses it: the live gate measured tool_rounds 0, so the in-drive tool lane is shipped and unexercised",
+      "skipped_check": "wiring a bench in at least one host so the runner seam is exercised rather than only unit-tested",
+      "refs": [
+        "t23",
+        "t26"
       ],
       "origin": "llm",
       "status": "proposed"
