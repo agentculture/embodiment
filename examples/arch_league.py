@@ -72,6 +72,29 @@ and **why**:
 varied measured nothing. Whether such a cell is graded is task ``t11``'s rule to
 pin, not this module's to invent.
 
+Perception is delivered, not merely described (task ``t18``)
+-------------------------------------------------------------
+:class:`Perception` has always carried a ``parts`` field and t10's image route
+has always filled it — and for one cycle **nothing consumed it**: an image cell
+rendered its map, hashed it, passed the twin check, and dialled the model with
+text only. :func:`run_round` now stages whatever a route rendered as
+``Task.attachments`` (``examples/perception_media.py``), so the parts ride the
+same user turn as the words. Three properties are load-bearing:
+
+* the wiring is **route-blind** and lives at message assembly, so a route
+  registered by a later task is delivered without having to remember to wire
+  itself up — the defect was a per-route obligation nobody was checking;
+* a route that renders **no** parts stages nothing and its task is byte-identical
+  to what t6 shipped, which is what keeps the text control a control;
+* parts that cannot be built raise :class:`PerceptionRefused` **before**
+  ``seams.build``, so the round costs no model turn, :func:`play_match` writes a
+  :data:`KIND_REFUSAL` record, and the cell is ``ABSENT`` rather than a text
+  result wearing an image route's label (C3).
+
+:data:`PERCEPTION_DELIVERY` states the boundary that survives, and is recorded
+on every artifact: parts ride the **seat's** dial only. A unit routed to the
+worker is briefed with the perception text alone.
+
 What a scripted run may claim: nothing
 --------------------------------------
 The scripted minds answer by rule and are deliberately bad at the game — the
@@ -105,6 +128,7 @@ Usage::
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import re
@@ -132,6 +156,7 @@ from embodiment import (  # noqa: E402
 from examples import arch_arms as aa  # noqa: E402
 from examples import league_commander as lc  # noqa: E402
 from examples import orchestrator_tools as ot  # noqa: E402
+from examples import perception_media as pm  # noqa: E402
 
 __all__ = [
     "ARCHITECTURE_REASON",
@@ -145,6 +170,7 @@ __all__ = [
     "DEFAULT_MAX_ROUNDS",
     "FANOUT_ACCOUNTING_RULE",
     "KIND_MATCH",
+    "KIND_REFUSAL",
     "KIND_ROUND",
     "KIND_ROUTE",
     "LADDER_BY_ID",
@@ -160,8 +186,11 @@ __all__ = [
     "ORDER_MARKER",
     "ORDER_TOOL",
     "Order",
+    "PERCEPTION_DELIVERY",
     "Perception",
+    "PerceptionRefused",
     "PerceptionRoute",
+    "REFUSED_PERCEPTION_MEDIA",
     "ROLE_MAPPING",
     "ROUND_MARKER",
     "ROUTED_CORTEX",
@@ -171,6 +200,7 @@ __all__ = [
     "ROUTE_TEXT",
     "ROUTE_TOOL",
     "RoundRecord",
+    "RoundRefusal",
     "RoundView",
     "RouteRecord",
     "RoutingIntent",
@@ -267,6 +297,19 @@ OUR_DRIVER = "stateless"
 #: Finite by construction: a match whose status never leaves ``active`` must not
 #: park the series forever.
 DEFAULT_MAX_ROUNDS = 64
+
+#: Where a route's rendered ``Perception.parts`` actually go, stated on every
+#: artifact this lane writes (task ``t18``). It is recorded rather than merely
+#: commented because the gap it names is exactly the kind a reader would
+#: otherwise infer wrongly from ``route=map_image`` on a routed decision (C3).
+PERCEPTION_DELIVERY = (
+    "A route's Perception.parts ride the SEAT's dial and only the seat's: run_round "
+    "stages them as Task.attachments, so the seat's first user turn carries one text "
+    "part plus one media part per due unit. A unit ROUTED TO THE WORKER is briefed "
+    "with the perception TEXT alone -- a fan-out subtask is a plain string in "
+    "orchestrator_tools (t4), whose surface this lane does not own. So on an image "
+    "route the orchestrated arms' workers see words where their commander sees a map."
+)
 
 #: Recorded when a round arrives with no unit holding a legal action.
 NO_LEGAL_ACTIONS = "no-legal-actions"
@@ -804,6 +847,61 @@ KIND_ROUTE = "route"
 KIND_ROUND = "round"
 KIND_MATCH = "match"
 
+#: A round that was refused before any mind was dialled (task ``t18``). It is a
+#: record kind rather than only an exception because a refusal that exists only
+#: as a traceback is a degradation the artifact cannot show (C3).
+KIND_REFUSAL = "refusal"
+
+#: Why a round was refused: a route rendered perception parts this harness
+#: could not turn into a validated attachment.
+REFUSED_PERCEPTION_MEDIA = "perception-media-unbuildable"
+
+
+@dataclass(frozen=True)
+class RoundRefusal:
+    """One round refused before it cost a single model turn, and why."""
+
+    arm: str
+    rung: str
+    match_key: str
+    match_id: str
+    round_index: int
+    route: str
+    code: str
+    reason: str
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": KIND_REFUSAL,
+            "arm": self.arm,
+            "rung": self.rung,
+            "match_key": self.match_key,
+            "match_id": self.match_id,
+            "round_index": self.round_index,
+            "route": self.route,
+            "code": self.code,
+            "reason": self.reason,
+        }
+
+
+class PerceptionRefused(RuntimeError):
+    """A route's perception could not be delivered, so the round was not run.
+
+    Structural, in exactly the sense t10's twin rule is structural: this is
+    raised from inside :func:`run_round` **before** ``seams.build``, so no tool
+    schema was built, no mind was dialled and no call landed in the log. The
+    cell is therefore never recorded, and ``analyse`` reports it ``ABSENT``
+    rather than grading a cell that silently measured text.
+
+    :attr:`refusal` carries the record :func:`play_match` writes to the
+    artifact before re-raising, so "nothing degraded silently" holds for a
+    reader who only ever sees the JSONL.
+    """
+
+    def __init__(self, refusal: RoundRefusal) -> None:
+        super().__init__(f"{refusal.code}: {refusal.reason}")
+        self.refusal = refusal
+
 
 def degenerate(routed_to: Sequence[str]) -> bool:
     """Did the routing never vary? Only meaningful for the hybrid arm.
@@ -1234,6 +1332,53 @@ def _drive(mind: Any, task: Task, **kwargs: Any) -> tuple[Any, bool]:
         return aborted.outcome, True
 
 
+@contextlib.contextmanager
+def _staged_perception(
+    units: Sequence[UnitBrief],
+    *,
+    arm: aa.Arm,
+    rung_id: str,
+    match_key: str,
+    match_id: str,
+    round_index: int,
+    route: str,
+) -> Any:
+    """This round's rendered perception, as ``Task.attachments``, for the drive.
+
+    The one place a route's ``parts`` become a dial (task ``t18``). It is
+    deliberately route-blind — ``examples/perception_media.py`` sees only
+    ``(unit_id, parts)`` pairs — so a route registered by a later task is
+    dialled with whatever it renders **without** having to remember to wire
+    itself up. That is the whole reason the wiring sits at message assembly and
+    not inside ``describe``: the defect this closes was a per-route obligation
+    nobody was checking.
+
+    A part that cannot be built is a :class:`PerceptionRefused` raised **before**
+    ``seams.build``. Continuing text-only here would recreate the exact defect
+    with a nicer log line: a cell whose record says ``route=map_image`` and
+    whose dial was words.
+    """
+    try:
+        with pm.staged_attachments(
+            ((unit.unit_id, unit.perception.parts) for unit in units),
+            label=f"{arm.id}-{match_id}-r{round_index}",
+        ) as attachments:
+            yield attachments
+    except pm.PerceptionMediaError as broken:
+        raise PerceptionRefused(
+            RoundRefusal(
+                arm=arm.id,
+                rung=rung_id,
+                match_key=match_key,
+                match_id=match_id,
+                round_index=round_index,
+                route=route,
+                code=REFUSED_PERCEPTION_MEDIA,
+                reason=str(broken),
+            )
+        ) from broken
+
+
 def run_round(
     *,
     arm: aa.Arm,
@@ -1312,28 +1457,47 @@ def run_round(
         units=units,
         board=(briefings[0].get("board") if briefings else {}) or {},
     )
-    task = Task(id=seat.task_id, repo_path=ot.NO_REPO, instruction=round_instruction(view, arm=arm))
-    extra: dict[str, Any] = {}
-    if arm.delegates:
-        worker = seams.build(aa.ROLE_WORKER, ctx, unit_schema())
-        extra["subagent"] = ot.build_fanout_seam(
-            worker,
-            log=delegation_log,
-            plans=plans,
-            timeout=fanout_timeout,
-            width_limit=width_limit,
-        )
-        extra["spawn_allowance"] = budget.spawn_allowance
-    mind = seams.build(arm.top_level_role, ctx, seat_schema(arm))
-    outcome, aborted = _drive(
-        mind,
-        task,
-        executor=seat,
-        max_steps=budget.max_steps,
-        system_prompt=aa.top_level_prompt(system_for(arm), identity=identity),
-        model=seams.model_for(arm.top_level_role),
-        **extra,
+    # The perception seam's second half (t18). Whatever a route rendered rides
+    # the SAME dial as its words, staged for exactly the life of the drive. A
+    # route that rendered nothing stages nothing and the task is byte-identical
+    # to what t6 shipped.
+    staging = _staged_perception(
+        units,
+        arm=arm,
+        rung_id=rung_id,
+        match_key=match_key,
+        match_id=match_id,
+        round_index=round_index,
+        route=route,
     )
+    with staging as attachments:
+        task = Task(
+            id=seat.task_id,
+            repo_path=ot.NO_REPO,
+            instruction=round_instruction(view, arm=arm),
+            attachments=attachments or None,
+        )
+        extra: dict[str, Any] = {}
+        if arm.delegates:
+            worker = seams.build(aa.ROLE_WORKER, ctx, unit_schema())
+            extra["subagent"] = ot.build_fanout_seam(
+                worker,
+                log=delegation_log,
+                plans=plans,
+                timeout=fanout_timeout,
+                width_limit=width_limit,
+            )
+            extra["spawn_allowance"] = budget.spawn_allowance
+        mind = seams.build(arm.top_level_role, ctx, seat_schema(arm))
+        outcome, aborted = _drive(
+            mind,
+            task,
+            executor=seat,
+            max_steps=budget.max_steps,
+            system_prompt=aa.top_level_prompt(system_for(arm), identity=identity),
+            model=seams.model_for(arm.top_level_role),
+            **extra,
+        )
 
     record.aborted = aborted
     record.exit_reason = outcome.exit_reason
@@ -1666,23 +1830,31 @@ def play_match(
             cli("cmatch", "tick", match_id, "--apply", "--json")
             continue
         briefings = [dict(entry.get("briefing") or {}) for entry in decisions]
-        round_record = run_round(
-            arm=arm,
-            rung_id=rung.id,
-            match_key=match_key,
-            match_id=match_id,
-            team_id=ours,
-            round_index=record.rounds,
-            decision_base=decision_index,
-            briefings=briefings,
-            seams=seams,
-            config=config,
-            senses_hash=senses_hash,
-            route=route,
-            identity=identity,
-            fanout_timeout=fanout_timeout,
-            width_limit=width_limit,
-        )
+        try:
+            round_record = run_round(
+                arm=arm,
+                rung_id=rung.id,
+                match_key=match_key,
+                match_id=match_id,
+                team_id=ours,
+                round_index=record.rounds,
+                decision_base=decision_index,
+                briefings=briefings,
+                seams=seams,
+                config=config,
+                senses_hash=senses_hash,
+                route=route,
+                identity=identity,
+                fanout_timeout=fanout_timeout,
+                width_limit=width_limit,
+            )
+        except PerceptionRefused as refused:
+            # Record, then re-raise unchanged. The refusal must be readable off
+            # the artifact (C3) AND must not leave a cell behind: this match
+            # writes no attempt and no cell, so ``analyse`` reports it ABSENT
+            # rather than grading a round that never happened.
+            append_jsonl(out, refused.refusal.to_dict())
+            raise
         _fold_round(record, round_record)
         for entry in round_record.routes:
             append_jsonl(out, entry.to_dict())
@@ -1834,6 +2006,7 @@ def preamble(
             "rung": rung.to_dict(),
             "route": route,
             "routes": {name: entry.why for name, entry in sorted(ROUTE_REGISTRY.items())},
+            "perception_delivery": PERCEPTION_DELIVERY,
             "role_mapping": ROLE_MAPPING,
             "seat_tools": {arm: list(seat_tools(aa.ARMS[arm])) for arm in arms},
             "unit_tools": list(UNIT_TOOLS),
@@ -2034,7 +2207,11 @@ def scripted_commander(arm: aa.Arm) -> Callable[[list[dict[str, Any]]], ModelRes
     """
 
     def complete(messages: list[dict[str, Any]]) -> ModelResponse:
-        transcript = "\n".join(str(message.get("content") or "") for message in messages)
+        # `aa.message_text`, not `str(content)`: a multi-modal user turn's
+        # content is a LIST of parts, whose repr has no real newlines — the
+        # round marker would stop being a line and this mind would silently
+        # forget what it was asked.
+        transcript = "\n".join(aa.message_text(message) for message in messages)
         view = read_round(transcript)
         units = [dict(entry) for entry in (view.get("units") or [])]
         unit_ids = [str(entry.get("unit_id") or "") for entry in units]
@@ -2110,6 +2287,9 @@ def render_plan() -> str:
         f"  {BASIS_ARM_MANDATE}: the manager may not order a unit it did not route",
         f"  {BASIS_ORCHESTRATOR}: the hybrid chose, and said why",
         "",
+        "perception delivery (t18):",
+        f"  {PERCEPTION_DELIVERY}",
+        "",
         f"gates: {LIVE_GATE_ENV} (models), {LIVE_ARENA_ENV} (the real arena)",
     ]
     return "\n".join(lines)
@@ -2183,6 +2363,7 @@ def _plan_payload() -> dict[str, Any]:
         "final_authority_tools": list(LEAGUE_FINAL_AUTHORITY_TOOLS),
         "bases": list(BASES),
         "routes": {name: entry.why for name, entry in sorted(ROUTE_REGISTRY.items())},
+        "perception_delivery": PERCEPTION_DELIVERY,
         "fanout": {"max_width": ot.MAX_FANOUT_WIDTH},
         "gates": {"models": LIVE_GATE_ENV, "arena": LIVE_ARENA_ENV},
     }

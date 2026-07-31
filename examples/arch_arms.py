@@ -133,6 +133,7 @@ from embodiment import (  # noqa: E402
     run,
 )
 from embodiment.contract import ToolCall  # noqa: E402
+from embodiment.media import flatten_parts  # noqa: E402
 from examples import challenge_entropic, challenge_register, challenge_subset  # noqa: E402
 from examples import orchestrator_tools as ot  # noqa: E402
 from examples import worker_seam as ws  # noqa: E402
@@ -178,6 +179,7 @@ __all__ = [
     "assert_senses_identical",
     "load_config",
     "main",
+    "message_text",
     "orchestration_schema",
     "require_live_rig",
     "resolve_dial",
@@ -2286,6 +2288,25 @@ def _grade_row(
 SCRIPTED_ANSWER = "SCRIPTED-NO-ANSWER"
 
 
+def message_text(message: Mapping[str, Any]) -> str:
+    """One message's content as text, whether or not it carries media parts.
+
+    Every scripted mind in this repo reads its own state back off the
+    transcript, and a multi-modal user turn's ``content`` is a **list of
+    content parts**, not a string. ``str(content)`` on that list yields a Python
+    repr whose newlines are escape sequences — so ``splitlines`` stops finding
+    the round marker and a scripted mind silently forgets what it was asked.
+    That is the same class of defect task t18 exists to close (a mechanism that
+    was right, and a reader that quietly was not), so the flattening goes
+    through :func:`embodiment.media.flatten_parts`, which is where the
+    placeholder vocabulary already lives.
+
+    A plain string passes through UNCHANGED, so a media-less transcript is
+    byte-identical to what it was before this function existed.
+    """
+    return flatten_parts(message.get("content") or "")
+
+
 def default_scripted_mind(
     role: str, tools: Optional[list[dict[str, Any]]]
 ) -> Callable[[list[dict[str, Any]]], ModelResponse]:
@@ -2299,7 +2320,7 @@ def default_scripted_mind(
     names = {entry["function"]["name"] for entry in (tools or [])}
 
     def complete(messages: list[dict[str, Any]]) -> ModelResponse:
-        transcript = " ".join(str(message.get("content") or "") for message in messages)
+        transcript = " ".join(message_text(message) for message in messages)
         if "delegate" in names and DELEGATION_MARKER not in transcript:
             return ModelResponse(
                 content="Handing the ground work to the worker.",
