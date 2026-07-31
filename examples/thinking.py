@@ -204,7 +204,7 @@ def embed_texts(
         with urllib.request.urlopen(request, timeout=timeout) as response:  # nosec B310
             payload = json.load(response)
         return [row["embedding"] for row in payload["data"]]
-    except Exception:  # noqa: BLE001 - a diagnostic must not break its subject
+    except Exception:  # noqa: BLE001  # a diagnostic must not break its subject
         return None
 
 

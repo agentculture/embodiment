@@ -589,7 +589,7 @@ def _attr(obj: Any, name: str) -> Any:
     """One attribute, or ``None``. A hostile object degrades the read, not the run."""
     try:
         return getattr(obj, name, None)
-    except Exception:  # noqa: BLE001 - a property on a foreign object runs arbitrary code
+    except Exception:  # noqa: BLE001  # a property on a foreign object runs arbitrary code
         return None
 
 
@@ -599,7 +599,7 @@ def _text(value: Any) -> str:
         return ""
     try:
         return str(value)
-    except Exception:  # noqa: BLE001 - __str__ on a foreign object runs arbitrary code
+    except Exception:  # noqa: BLE001  # __str__ on a foreign object runs arbitrary code
         return ""
 
 
@@ -908,7 +908,7 @@ class MuseWorkspace:
         self._runs += 1
         try:
             package = self._api.run(workspace_id, command, provider=self._provider)
-        except Exception as exc:  # noqa: BLE001 - an engine failure is text, never a raise
+        except Exception as exc:  # noqa: BLE001  # an engine failure is text, never a raise
             self._degrade(DEGRADED_RUN_FAILED, _failure_text(exc), STAGE_RUN, workspace_id)
             return f"the command could not be run: {_failure_text(exc)}"
 
@@ -1065,7 +1065,7 @@ class MuseWorkspace:
         def _run_destroy() -> None:
             try:
                 self._api.destroy(workspace_id, provider=self._provider)
-            except Exception as exc:  # noqa: BLE001 - carried back, never raised out of a thread
+            except Exception as exc:  # noqa: BLE001  # carried back, never raised out of a thread
                 failure.append(exc)
 
         try:
@@ -1073,7 +1073,7 @@ class MuseWorkspace:
                 target=_run_destroy, name=TEARDOWN_THREAD_NAME, daemon=True
             )
             thread.start()
-        except Exception as exc:  # noqa: BLE001 - no thread is a degradation, not a crash
+        except Exception as exc:  # noqa: BLE001  # no thread is a degradation, not a crash
             self._degrade(
                 DEGRADED_DESTROY_FAILED,
                 f"no teardown thread could be started, so nothing was attempted: "
@@ -1169,7 +1169,7 @@ class MuseWorkspace:
                 package = self._api.create(provider=self._provider)
             else:
                 package = self._api.create(provider=self._provider, workspace_id=self._requested_id)
-        except Exception as exc:  # noqa: BLE001 - a missing engine is text, never a raise
+        except Exception as exc:  # noqa: BLE001  # a missing engine is text, never a raise
             self._degrade(DEGRADED_ENGINE_UNAVAILABLE, _failure_text(exc), STAGE_CREATE, "")
             return ""
         workspace_id = _text(_attr(_attr(package, "provenance"), "workspace_id"))

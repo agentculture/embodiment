@@ -748,7 +748,7 @@ def remember(
     try:
         with _pinned_store(anchor):
             _eidetic_get_backend(backend).upsert(built)
-    except Exception as exc:  # noqa: BLE001 - a store failure never reaches the host
+    except Exception as exc:  # noqa: BLE001  # a store failure never reaches the host
         return RememberOutcome(
             ok=False, record_id=None, degradation=_error_degradation("eidetic", "remember", exc)
         )
@@ -880,11 +880,11 @@ def recall(
             if reinforce and hits:
                 try:
                     _reinforce(store, hits, moment)
-                except Exception as exc:  # noqa: BLE001 - a read must survive a failed write-back
+                except Exception as exc:  # noqa: BLE001  # a read must survive a failed write-back
                     degradation = _error_degradation(
                         "eidetic", "recall", exc, code=CODE_REINFORCE_FAILED
                     )
-    except Exception as exc:  # noqa: BLE001 - a store failure never reaches the host
+    except Exception as exc:  # noqa: BLE001  # a store failure never reaches the host
         return RecallOutcome(
             ok=False, records=[], degradation=_error_degradation("eidetic", "recall", exc)
         )
@@ -1010,7 +1010,7 @@ def traverse(
         store = _eidetic_get_backend("files", data_dir=str(data_dir))
         query_scope = _EideticScope(scope, visibility)
         seed_records = [_EideticRecord.from_dict(dict(seed)) for seed in seeds]
-    except Exception as exc:  # noqa: BLE001 - a store failure never reaches the host
+    except Exception as exc:  # noqa: BLE001  # a store failure never reaches the host
         return TraverseOutcome(
             ok=False,
             nodes=[],
@@ -1022,7 +1022,7 @@ def traverse(
         """Resolve one id, or ``None``. A dangling id is absent, not an error."""
         try:
             return store.get_many([record_id], query_scope).get(record_id)
-        except Exception:  # noqa: BLE001 - one bad id never loses the walk
+        except Exception:  # noqa: BLE001  # one bad id never loses the walk
             return None
 
     def _can_serve(record: Any) -> bool:
@@ -1032,7 +1032,7 @@ def traverse(
             if record_scope is None:
                 return False
             return bool(query_scope.can_serve(record_scope))
-        except Exception:  # noqa: BLE001 - cannot authorise means not authorised
+        except Exception:  # noqa: BLE001  # cannot authorise means not authorised
             return False
 
     try:
@@ -1047,7 +1047,7 @@ def traverse(
             {"record": node.record.to_dict(), "depth": int(node.depth)}
             for node in getattr(result, "nodes", ())
         ]
-    except Exception as exc:  # noqa: BLE001 - a traversal failure never reaches the host
+    except Exception as exc:  # noqa: BLE001  # a traversal failure never reaches the host
         return TraverseOutcome(
             ok=False,
             nodes=[],
@@ -1126,7 +1126,7 @@ def assess(
                 "coherence", "assess", exc, code=CODE_ARTIFACT_UNREADABLE
             ),
         )
-    except Exception as exc:  # noqa: BLE001 - an engine failure never reaches the host
+    except Exception as exc:  # noqa: BLE001  # an engine failure never reaches the host
         return AssessOutcome(
             ok=False,
             domains={},

@@ -542,7 +542,7 @@ def _fold(source: Any, *, lane: str) -> list[LedgerRecord]:
     for record in raw:
         try:
             folded.append(_adapt(record, lane=lane))
-        except Exception as exc:  # noqa: BLE001 - one bad record never loses the rest
+        except Exception as exc:  # noqa: BLE001  # one bad record never loses the rest
             folded.append(_unreadable(f"{lane} record: {type(exc).__name__}: {exc}", record))
     return folded
 
@@ -614,7 +614,7 @@ def from_lifecycle(source: Any) -> list[LedgerRecord]:
             if getattr(event, "kind", None) != degraded_kind:
                 continue
             folded.append(_adapt_lifecycle_event(event))
-        except Exception as exc:  # noqa: BLE001 - one bad event never loses the rest
+        except Exception as exc:  # noqa: BLE001  # one bad event never loses the rest
             folded.append(
                 _unreadable(f"{SOURCE_LIFECYCLE} event: {type(exc).__name__}: {exc}", event)
             )
@@ -666,7 +666,7 @@ def from_subagent(source: Any, *, child_task_id: Optional[str] = None) -> list[L
                     original=adapted.original,
                 )
             )
-        except Exception as exc:  # noqa: BLE001 - one bad record never loses the rest
+        except Exception as exc:  # noqa: BLE001  # one bad record never loses the rest
             folded.append(
                 _unreadable(
                     f"{SOURCE_SUBAGENT} record: {type(exc).__name__}: {exc}",

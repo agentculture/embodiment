@@ -779,7 +779,7 @@ def _emit(ctx: _Session, insight: MuseInsight) -> None:
         return
     try:
         sink(insight)
-    except Exception as exc:  # noqa: BLE001 - a drain never controls the thinking
+    except Exception as exc:  # noqa: BLE001  # a drain never controls the thinking
         ctx.sink_failed = True
         _degrade(ctx, DEGRADED_SINK, f"{exc}")
 
@@ -835,7 +835,7 @@ def _model_turn(ctx: _Session) -> Optional[str]:
         content = _content(response)
         calls = _requested_calls(ctx, response)
         tokens = _token_total(response)
-    except Exception as exc:  # noqa: BLE001 - every fault degrades identically (C3)
+    except Exception as exc:  # noqa: BLE001  # every fault degrades identically (C3)
         _degrade(ctx, DEGRADED_THINKING, f"{exc}")
         return None
     ctx.last_tokens = tokens
@@ -1008,7 +1008,7 @@ def _arguments_json(ctx: _Session, arguments: Any) -> str:
     payload = arguments if isinstance(arguments, dict) else {}
     try:
         return json.dumps(payload, ensure_ascii=False, default=str)
-    except Exception as exc:  # noqa: BLE001 - default=str runs arbitrary __str__
+    except Exception as exc:  # noqa: BLE001  # default=str runs arbitrary __str__
         _degrade(ctx, DEGRADED_TOOL, f"tool-call arguments were not serializable: {exc}")
         return "{}"
 
@@ -1028,7 +1028,7 @@ def _run_tool(ctx: _Session, call: Any, name: str) -> str:
     arguments = _attr(call, "arguments")
     try:
         outcome = bench.execute(name, dict(arguments) if isinstance(arguments, dict) else {})
-    except Exception as exc:  # noqa: BLE001 - a failing tool never stops the thinking
+    except Exception as exc:  # noqa: BLE001  # a failing tool never stops the thinking
         _degrade(ctx, DEGRADED_TOOL, f"{name}: {exc}")
         return f"tool {name!r} failed: {exc}"
     return _result_text(ctx, name, outcome)
@@ -1676,7 +1676,7 @@ def _attr(obj: Any, name: str) -> Any:
     """``getattr`` that cannot raise — a hostile property reads as absent."""
     try:
         return getattr(obj, name, None)
-    except Exception:  # noqa: BLE001 - an unreadable attribute is simply absent
+    except Exception:  # noqa: BLE001  # an unreadable attribute is simply absent
         return None
 
 
@@ -1688,7 +1688,7 @@ def _plain(value: Any, unreadable: Optional[list[str]] = None, label: str = "") 
         return value
     try:
         return str(value)
-    except Exception:  # noqa: BLE001 - recorded by the caller as DEGRADED_UNREADABLE
+    except Exception:  # noqa: BLE001  # recorded by the caller as DEGRADED_UNREADABLE
         if unreadable is not None:
             unreadable.append(label or "value")
         return ""
@@ -1698,7 +1698,7 @@ def _safe_text(obj: Any, name: str, unreadable: list[str], *, mapping: bool = Fa
     """Read one context value as text, naming it if it cannot be rendered."""
     try:
         raw = obj.get(name) if mapping else getattr(obj, name, None)
-    except Exception:  # noqa: BLE001 - recorded by the caller as DEGRADED_UNREADABLE
+    except Exception:  # noqa: BLE001  # recorded by the caller as DEGRADED_UNREADABLE
         unreadable.append(name)
         return ""
     return _plain(raw, unreadable, name)
@@ -1730,7 +1730,7 @@ def _now(clock: Optional[Callable[[], float]]) -> Optional[float]:
         return None
     try:
         return float(clock())
-    except Exception:  # noqa: BLE001 - a clock failure is not a thinking failure
+    except Exception:  # noqa: BLE001  # a clock failure is not a thinking failure
         return None
 
 

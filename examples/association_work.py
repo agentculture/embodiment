@@ -440,7 +440,7 @@ def executive_runs(
             try:
                 graded = _executive_once(problem, gateway_for(problem))
                 transport_error = False
-            except Exception as exc:  # noqa: BLE001 - every fault is recorded alike
+            except Exception as exc:  # noqa: BLE001  # every fault is recorded alike
                 graded = {
                     "verdict": "HARNESS ERROR",
                     "is_correct": False,

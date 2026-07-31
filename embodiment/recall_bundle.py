@@ -711,7 +711,7 @@ def flat_fetch(request: BundleRequest, *, recall_fn: Optional[RecallFn] = None) 
                 include_shadowed=request.include_shadowed,
                 include_archived=request.include_archived,
             )
-        except Exception as exc:  # noqa: BLE001 - a store failure never reaches the host
+        except Exception as exc:  # noqa: BLE001  # a store failure never reaches the host
             degradations.append(
                 BundleDegradation(
                     code=DEGRADED_FETCH_FAILED,
@@ -985,7 +985,7 @@ def fetch_bundle(request: BundleRequest, *, fetch: Optional[FetchFn] = None) -> 
 
     try:
         bundle: Any = adapter(narrowed)
-    except Exception as exc:  # noqa: BLE001 - an adapter failure never reaches the host
+    except Exception as exc:  # noqa: BLE001  # an adapter failure never reaches the host
         opening.append(
             BundleDegradation(
                 code=DEGRADED_FETCH_FAILED,

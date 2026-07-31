@@ -840,7 +840,7 @@ class ArmTools:
             )
         try:
             outcome = self.lane(label).execute(name, record["arguments"])
-        except Exception as exc:  # noqa: BLE001 - recorded, then re-raised for the seam
+        except Exception as exc:  # noqa: BLE001  # recorded, then re-raised for the seam
             record["error"] = f"{type(exc).__name__}: {exc}"
             self.calls.append(record)
             raise
@@ -1299,7 +1299,7 @@ def ask_for_the_answer(seam: Any, turns: list[dict[str, Any]]) -> Optional[str]:
         return "the session's last turn failed in transport; not re-dialling"
     try:
         seam.floor(messages)
-    except Exception as exc:  # noqa: BLE001 - a closing failure is recorded, never retried
+    except Exception as exc:  # noqa: BLE001  # a closing failure is recorded, never retried
         return f"{type(exc).__name__}: {exc}"
     seam.turns[-1]["closing"] = True
     return None

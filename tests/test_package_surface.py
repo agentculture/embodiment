@@ -71,7 +71,7 @@ class TestEveryAdvertisedNameResolves:
 
     def test_an_unknown_attribute_still_raises(self) -> None:
         with pytest.raises(AttributeError, match="no attribute 'definitely_not_here'"):
-            embodiment.definitely_not_here  # noqa: B018 - attribute access IS the assertion
+            embodiment.definitely_not_here  # noqa: B018  # attribute access IS the assertion
 
 
 class TestResolutionIsCorrect:
