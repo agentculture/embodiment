@@ -110,6 +110,9 @@ What embodiment owns is the part a host cannot get right on its own:
   that arrives after teardown (the bounded join means the thinking thread can
   outlive the close) cannot provision a *second* workspace nothing will ever
   reap. It is refused in text and recorded under :data:`DEGRADED_LANE_CLOSED`.
+  The latch is read on the near side of the run as well as on the way in,
+  because a turn can be *inside* :meth:`~MuseWorkspace.execute` when the close
+  lands — one thread's check and another's close are not one act.
 
 And a workspace *will* sometimes survive, through no fault of this module.
 Measured on headspace 0.11.0: ``destroy`` refuses a workspace whose job is still
@@ -865,6 +868,37 @@ class MuseWorkspace:
             return CLOSED_TEXT
 
         workspace_id = self._ensure_workspace()
+        # Read again, because the check above is a *reading* and not a latch the
+        # rest of this method sits inside: it happens on the muse's thread while
+        # ``close`` happens on the host's, so the lane can shut in between — and
+        # the gap it leaves is not a hair's breadth, it spans a whole
+        # provisioning round trip. Without this second look, a call that found
+        # the lane open would be handed an id whose workspace the close had
+        # already torn down, and run against it.
+        #
+        # Whichever side refuses writes the record, so a closing lane still
+        # costs exactly one: ``_ensure_workspace`` owns the two ways it comes
+        # back empty (closed before the id was claimed, or closed while a create
+        # was on the wire), this owns the one where it hands over an id the close
+        # has just orphaned. Both answer in :data:`CLOSED_TEXT` rather than the
+        # provisioning message below, which would name a missing engine for
+        # something the drive ending caused.
+        #
+        # The window is narrowed to a single statement, not closed. Closing it
+        # would mean holding the lock across ``run`` — the one thing ``close``
+        # must never wait on. What still slips through meets a destroyed
+        # workspace and comes back as an ordinary :data:`DEGRADED_RUN_FAILED`:
+        # readable text and a record, never a silent success.
+        if self.closed:
+            if workspace_id:
+                self._degrade(
+                    DEGRADED_LANE_CLOSED,
+                    f"the lane closed while workspace {workspace_id} was in hand; "
+                    "nothing was run",
+                    STAGE_RUN,
+                    workspace_id,
+                )
+            return CLOSED_TEXT
         if not workspace_id:
             return (
                 "no workspace is available, so nothing was run: "
@@ -1101,15 +1135,35 @@ class MuseWorkspace:
         close would then wait on: a workspace that arrives into a closed lane is
         torn down again immediately instead of becoming a container nothing
         will ever reap.
+
+        A closed lane returns ``""`` too, and records why — see the first check.
         """
-        # No closed-check here: :meth:`execute` is this method's only caller and
-        # makes it before calling, which is what keeps the refusal's record and
-        # its message in the right order. The check that matters is the one
-        # AFTER the create returns — that is the window a lock could not close
-        # without making a close wait on an engine call.
+        # Closed-checked here as well as in :meth:`execute`, which the comment
+        # this replaces argued was unnecessary. It was wrong: ``execute``'s check
+        # runs on the muse's thread and ``close`` on the host's, so the lane can
+        # be shut by the time control arrives here even though the caller found
+        # it open. Without this, that call would be handed back the id of a
+        # workspace the close was tearing down — or, once the teardown had
+        # cleared it, would mint a *second* container after the drive ended,
+        # which is the leak the latch exists to prevent.
+        #
+        # Reading ``_closed`` and ``_workspace_id`` under one acquisition is what
+        # makes the refusal a fact rather than two readings that were each true
+        # at a different moment. The lock is let go again before anything reaches
+        # the engine, so ``close`` still waits on nothing here.
         with self._lock:
-            if self._workspace_id:
-                return self._workspace_id
+            closed, existing = self._closed, self._workspace_id
+            if not closed and existing:
+                return existing
+        if closed:
+            self._degrade(
+                DEGRADED_LANE_CLOSED,
+                "the lane closed while a tool call was in flight; nothing was provisioned "
+                "and nothing was run",
+                STAGE_RUN,
+                existing,
+            )
+            return ""
         try:
             if self._requested_id is None:
                 package = self._api.create(provider=self._provider)

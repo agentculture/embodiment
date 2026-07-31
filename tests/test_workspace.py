@@ -75,6 +75,7 @@ from embodiment.workspace import (
     REAP_NOTE,
     STAGE_CLOSE,
     STAGE_DESTROY,
+    STAGE_RUN,
     WORKSPACE_CODES,
     WORKSPACE_LANE,
     WORKSPACE_PROTOCOL,
@@ -208,6 +209,67 @@ class GatedCreateApi(RecordingApi):
         self.entered.set()
         self.release.wait(_TIMEOUT)
         return super().create(*args, **kwargs)
+
+
+class GatedRunApi(RecordingApi):
+    """A ``headspace.api`` whose ``run`` parks until the test releases it.
+
+    A command still on the wire when the drive ends — the ordinary case, since
+    the actor never waits on the muse (``d1``). It is here to keep the
+    closed-check guarding that run honest: the check reads the lane under the
+    lock and lets it go again, and this is what notices a "fix" that held the
+    lock across the engine call instead, because a ``close`` arriving mid-run
+    would then queue behind the engine rather than come back on its own bound.
+    """
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.entered = threading.Event()
+        self.release = threading.Event()
+
+    def run(self, *args: Any, **kwargs: Any) -> Any:
+        self.entered.set()
+        self.release.wait(_TIMEOUT)
+        return super().run(*args, **kwargs)
+
+
+class ClosingAfterProvisioning(MuseWorkspace):
+    """A lane whose ``close`` lands with an id already in ``execute``'s hand.
+
+    The window between the closed-check and the run, forced. ``close`` runs on
+    the host's thread while the muse's thread is inside ``execute``, and that
+    window holds **no engine call** — so there is nothing for an event to gate
+    on and two real threads would only be hoping about the scheduler. Overriding
+    the provisioning hook puts the close exactly there, every time, which is
+    what makes the interleaving a fact of the test rather than a wish.
+    """
+
+    def _ensure_workspace(self) -> str:
+        workspace_id = super()._ensure_workspace()
+        self.close()
+        return workspace_id
+
+
+class ClosingBeforeProvisioning(MuseWorkspace):
+    """A lane whose ``close`` lands just before ``execute`` asks for an id.
+
+    The other side of the same window, and the one that reaches *inside*
+    :meth:`~embodiment.workspace.MuseWorkspace._ensure_workspace`: whether the
+    id is still claimed when it looks depends on whether that close's teardown
+    got to clear it, and the two answers take different paths. Armed rather than
+    always-on, so an ordinary first call can provision the workspace the second
+    one races.
+    """
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self.arm = False
+
+    def _ensure_workspace(self) -> str:
+        if self.arm:
+            self.arm = False
+            self.close()
+        return super()._ensure_workspace()
 
 
 class _Provenance:
@@ -1281,6 +1343,112 @@ class TestAClosedLaneProvisionsNothing:
             DEGRADED_DESTROY_FAILED,
             DEGRADED_WORKSPACE_LIVE,
         ]
+
+
+class TestACloseThatLandsMidCall:
+    """The window between ``execute``'s closed-check and its run.
+
+    ``execute`` reads the lane, then provisions, then runs — three statements on
+    the muse's thread, with the host's ``close`` free to land between any two of
+    them. That first read is a *reading*, not a latch the rest of the method
+    sits inside, so on its own it leaves a window spanning a whole provisioning
+    round trip: long enough for a close to tear the workspace down and for the
+    run to be handed its id and land on it anyway.
+
+    The class above covers the calls that arrive *after* a close has finished,
+    and the one that races a ``create``. This covers the one in between, which
+    the two together left open: the close that arrives while a call is already
+    inside ``execute``.
+
+    Every test here forces the interleaving rather than racing for it — the
+    window contains no engine call, so there is nothing to gate an event on. The
+    one test that *does* use two real threads is about the opposite property:
+    that guarding the window did not park the close.
+    """
+
+    def test_a_run_never_lands_on_a_workspace_the_close_tore_down(self) -> None:
+        api = RecordingApi()
+        workspace = ClosingAfterProvisioning(api=api)
+
+        result = workspace.execute(WORKSPACE_TOOL_NAME, {"command": ["true"]})
+
+        assert api.kwargs_for("run") == [], "a run landed after the close tore the workspace down"
+        assert result == CLOSED_TEXT
+
+    def test_that_refusal_names_the_lane_closing(self) -> None:
+        """C3, and the cause has to be the right one: a stale id is not a dead engine."""
+        workspace = ClosingAfterProvisioning(api=RecordingApi())
+
+        workspace.execute(WORKSPACE_TOOL_NAME, {"command": ["true"]})
+
+        assert [d.code for d in workspace.degradations] == [DEGRADED_LANE_CLOSED]
+        assert workspace.degradations[0].stage == STAGE_RUN
+        assert workspace.degradations[0].workspace_id == "ws-1"
+
+    def test_a_lane_that_closed_first_hands_back_no_id(self) -> None:
+        """The close got there first, and its teardown was refused — so the id survives.
+
+        The shape a leaked workspace takes: ``workspace_id`` still reports it,
+        deliberately, because nobody checked whether it went away. Reporting it
+        must not amount to offering it to the next tool call.
+        """
+        api = RecordingApi(destroy_error=_LifecycleRefusal())
+        workspace = ClosingBeforeProvisioning(api=api)
+        workspace.execute(WORKSPACE_TOOL_NAME, {"command": ["true"]})
+        workspace.arm = True
+
+        result = workspace.execute(WORKSPACE_TOOL_NAME, {"command": ["true"]})
+
+        assert len(api.kwargs_for("run")) == 1, "the surviving id was handed out and run against"
+        assert result == CLOSED_TEXT
+        assert workspace.degradations[-1].code == DEGRADED_LANE_CLOSED
+
+    def test_a_lane_that_closed_first_provisions_nothing_new(self) -> None:
+        """...and where the teardown DID clear the id, nothing mints a replacement.
+
+        The same refusal seen from the other path. A second container minted
+        after the drive ended is the leak the latch exists to prevent, and
+        minting one only to tear it down again still means an engine round trip
+        the closed lane promised nobody.
+        """
+        api = RecordingApi()
+        workspace = ClosingBeforeProvisioning(api=api)
+        workspace.execute(WORKSPACE_TOOL_NAME, {"command": ["true"]})
+        workspace.arm = True
+
+        result = workspace.execute(WORKSPACE_TOOL_NAME, {"command": ["true"]})
+
+        assert len(api.kwargs_for("create")) == 1, "a second container was minted after the close"
+        assert result == CLOSED_TEXT
+        assert workspace.degradations[-1].code == DEGRADED_LANE_CLOSED
+
+    def test_the_guard_does_not_park_a_close_behind_a_run(self) -> None:
+        """The one thing the guard must not buy: a close that waits on the engine.
+
+        Reading the lane under the lock is safe only because the lock is let go
+        again before the run. Held across it, every close arriving mid-command
+        would queue behind a container engine — and since the actor never waits
+        on the muse (``d1``), mid-command is exactly when closes ordinarily
+        arrive. Driven with two real threads because that is the claim.
+        """
+        api = GatedRunApi()
+        workspace = MuseWorkspace(api=api)
+        worker = threading.Thread(
+            target=lambda: workspace.execute(WORKSPACE_TOOL_NAME, {"command": ["true"]}),
+            daemon=True,
+        )
+        worker.start()
+        try:
+            assert api.entered.wait(_TIMEOUT), "the run never reached the engine"
+            started = time.monotonic()
+            workspace.close()
+            elapsed = time.monotonic() - started
+        finally:
+            api.release.set()
+        worker.join(_TIMEOUT)
+
+        assert not worker.is_alive()
+        assert elapsed < _TIMEOUT / 2, f"close waited {elapsed}s on a run in flight"
 
 
 class TestTheLiveTeardown:
