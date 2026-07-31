@@ -543,3 +543,45 @@ Two things follow, and both are in the code:
   courtesy. It is the only member of the kit that could have caught this: every
   adversarial fixture was failing exactly as declared, and an all-negative
   table is satisfied by a grader whose notion of "correct" is wrong.
+
+## 6. The perception-routing rung (V1) — a board, not a puzzle
+
+Four questions about ONE fog-scoped board — the fixture in
+`examples/map_render.fog_leak_fixture()`, rendered by `examples/map_render.py`.
+Every answer below is **computed** from that fixture's fog snapshot
+(`cb936a1c489da756…`) by `examples/arch_vision.py`, never typed in:
+a hand-written answer and a rendered map can disagree silently.
+
+Acting team: `blue`.
+
+### units
+
+> You are commanding team Blue. You have been given this turn's board as it is known to you — blank ground is UNOBSERVED, not empty. Answer the question below and submit it with `finish`.
+>
+> How many units of your own team are on the board? Answer with a number.
+
+**Answer: 2.** (simple) the floor: a count. A mind that cannot do this cannot read the map at all.
+
+### holding
+
+> You are commanding team Blue. You have been given this turn's board as it is known to you — blank ground is UNOBSERVED, not empty. Answer the question below and submit it with `finish`.
+>
+> Which control point does your team currently hold? Answer with its id.
+
+**Answer: cp-west.** (simple) a lookup with an owner test, and a distractor the fog removed.
+
+### rival
+
+> You are commanding team Blue. You have been given this turn's board as it is known to you — blank ground is UNOBSERVED, not empty. Answer the question below and submit it with `finish`.
+>
+> Name the id of any rival unit you can see. If you can see none, answer exactly NONE VISIBLE.
+
+**Answer: NONE VISIBLE.** (simple) the confabulation trap, and the only question whose right answer is a refusal. Unobserved ground is where a vision model invents, and a rung that never asks about absence never measures it.
+
+### closest
+
+> You are commanding team Blue. You have been given this turn's board as it is known to you — blank ground is UNOBSERVED, not empty. Answer the question below and submit it with `finish`.
+>
+> Which of your units is closest to the resource node? Answer with its unit id.
+
+**Answer: blue-2.** (complex) two positions and a comparison rather than one lookup — the routable 'complex' end of the rung, and what makes the hybrid arm's routing decision able to vary at all.
