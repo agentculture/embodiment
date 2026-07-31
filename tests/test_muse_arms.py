@@ -36,6 +36,7 @@ from embodiment.loop import UnknownToolError
 from embodiment.muse import MARKER_DONE, MUSE_AUTHORITY, MUSE_TOOL_AUTHORITY
 from embodiment.muse_pad import MUSE_PAD_PROTOCOL, MUSE_PAD_TOOL_NAMES, MusePad
 from embodiment.workspace import (
+    CLOSED_TEXT,
     PROVIDER_FAKE,
     WORKSPACE_PROTOCOL,
     WORKSPACE_TOOL_NAME,
@@ -520,6 +521,20 @@ class TestArmTools:
     def test_a_refused_workspace_argv_is_recorded_as_not_run(self) -> None:
         tools = self._tools()
         tools.execute(WORKSPACE_TOOL_NAME, {"command": "python3 -c 'print(1)'"})
+        assert tools.calls[-1]["ran"] is False
+
+    def test_a_call_into_a_closed_lane_is_recorded_as_not_run(self) -> None:
+        """The refusal list drifted from the module it reads once already.
+
+        ``CLOSED_TEXT`` was missing from it, so a call the lane had refused
+        because the drive ended would have been counted as a call that ran —
+        inflating the very number arm C is graded on. It is imported now
+        rather than retyped, so the two cannot part again silently.
+        """
+        tools = self._tools()
+        tools.lane(LANE_WORKSPACE).close()
+        result = tools.execute(WORKSPACE_TOOL_NAME, {"command": ["python3", "-c", "print(1)"]})
+        assert CLOSED_TEXT in str(result)
         assert tools.calls[-1]["ran"] is False
 
     def test_every_call_is_recorded_with_its_arguments_and_result(self) -> None:

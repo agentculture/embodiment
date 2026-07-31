@@ -167,6 +167,7 @@ from embodiment.muse_pad import (  # noqa: E402
 )
 from embodiment.presence_engine import BoundaryContext  # noqa: E402
 from embodiment.workspace import (  # noqa: E402
+    CLOSED_TEXT,
     PROVIDER_DOCKER,
     PROVIDER_FAKE,
     WORKSPACE_PROTOCOL,
@@ -855,8 +856,16 @@ class ArmTools:
 
         :meth:`embodiment.workspace.MuseWorkspace.execute` never raises for an
         engine problem — it returns readable text — so "did this run?" is read
-        off the three refusal texts that module documents. Pad calls always
-        "ran"; a pad has nothing to be unavailable.
+        off the refusal texts that module documents. Pad calls always "ran"; a
+        pad has nothing to be unavailable.
+
+        :data:`~embodiment.workspace.CLOSED_TEXT` is imported rather than
+        retyped, because this list drifted from that module once already: it
+        was missing the closed-lane refusal entirely, so a call the lane had
+        refused would have been counted as a call that ran. **No published
+        result changes** — the committed series contains zero closed-lane
+        refusals (grep the run's own JSONL), so this corrects the instrument
+        for future runs rather than re-grading a past one.
         """
         if label != LANE_WORKSPACE:
             return True
@@ -865,6 +874,7 @@ class ArmTools:
             "no workspace is available",
             "the command could not be run",
             "its result could not be read",
+            CLOSED_TEXT,
         )
         return not any(refusal in result for refusal in refusals)
 
