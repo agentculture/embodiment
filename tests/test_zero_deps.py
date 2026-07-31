@@ -327,7 +327,12 @@ def test_runtime_imports_match_the_approved_set():
     unapproved = observed - _REQUIRED_RUNTIME_IMPORTS - _INCIDENTAL_RUNTIME_IMPORTS
     vanished = _REQUIRED_RUNTIME_IMPORTS - observed
 
-    assert not unapproved and not vanished, _gate_message(
+    # ONE message for one indivisible question — built from both directions, so
+    # it names both whichever assertion trips. Split into two asserts only so the
+    # failure also says WHICH direction moved (python:S9073); `_gate_message` is
+    # a pure string builder, so evaluating it eagerly costs nothing next to the
+    # subprocess above.
+    message = _gate_message(
         subject="third-party modules imported by embodiment",
         added=unapproved,
         removed=vanished,
@@ -343,6 +348,8 @@ def test_runtime_imports_match_the_approved_set():
             "     pulls it and why."
         ),
     )
+    assert not unapproved, message
+    assert not vanished, message
 
 
 def test_install_footprint_is_wider_than_import_footprint():
