@@ -1,0 +1,15 @@
+{
+  "cortex_model": "sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP",
+  "cortex_temperature": 0.3,
+  "muse_model": "nvidia/Gemma-4-31B-IT-NVFP4",
+  "muse_temperature": 0.3,
+  "max_turns": 14,
+  "staleness_policy": "default (DEFAULT_STALE_LAG=5)",
+  "n": 1,
+  "problem": "factorial",
+  "identity": "Gwen",
+  "muse_max_turns": 2,
+  "muse_max_tokens": 1200,
+  "cortex_max_tokens": 16000,
+  "stale_lag": 5
+}

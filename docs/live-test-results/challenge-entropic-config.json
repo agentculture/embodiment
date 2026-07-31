@@ -1,0 +1,11 @@
+{
+  "cortex_model": "sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP",
+  "cortex_temperature": 0.3,
+  "muse_model": null,
+  "muse_temperature": null,
+  "max_turns": 14,
+  "staleness_policy": "default",
+  "n": 1,
+  "variant": "3b",
+  "max_tokens": 16000
+}

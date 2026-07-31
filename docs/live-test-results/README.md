@@ -70,6 +70,7 @@ generously.
 | [league-h2h.md](league-h2h.md) | full-Gemma vs mixed vs full-Qwen, round-robin head-to-head, both teams driven by model seats — n=4 matches per arm | **`SEPARATED` at L1**, the easiest rung, 3/3 pairings and no cycle: **full-qwen > mixed > full-gemma**. But three of the four cooperation signals sit on a ceiling and **the whole ranking is one optional field** — the Gemma cortex sent a team message on **0 of 12** seat-turns against full-Qwen's 9. Cost: **950 vs 12,819 vs 18,410** completion tokens per match, **zero truncation in 196 model calls**. L2-L4 **`ABSENT`** (the climb stops at the first separating rung) |
 | [league-h2h-preregistration.md](league-h2h-preregistration.md) | full-Gemma vs mixed vs full-Qwen, round-robin head-to-head up an escalating arena ladder: the three arms, the four rungs, the fairness rules and the decision rule | committed **before the first dial**, with the harness (`examples/league_h2h.py`) and its pin in the same change. Carries two **pre-dial amendments**: the token budget 3000 -> 16000 (an identical cap that truncates one arm measures truncation, not skill) and the wall-clock caps sized to match |
 | [league-h2h-scripted-control.jsonl](league-h2h-scripted-control.jsonl) | the same ladder with the SAME hermetic mind in all three arms — map and seed bias with the models removed, 24 matches, offline | identical minds **never separate** (4/4 rungs `INCONCLUSIVE`), the colour bias is real and under fog is **90 vs 45** between byte-identical minds, and the paired `net_margin` cancels it **exactly** (0.0 everywhere) |
+| [live-suite-and-challenges.md](live-suite-and-challenges.md) | the live-evidence gate (`d1`): every `EMBODIMENT_LIVE_RIG`-gated test plus the challenge harnesses, run rather than assumed | **13 of 13 live-gated tests PASSED.** `challenge_subset` **3/3 CORRECT**; `challenge_register` graded WRONG but **INCONCLUSIVE** — two of four turns hit `finish_reason: length` at a full **16000/16000**. The terminal drain (t4/t25) fires on a clean finish and delivers, and its counsel **provably cannot reach the cortex** there; t26's muse tool bench is **unwired in every checked-in host** (`tool_rounds: 0`). Cross-cutting: the cortex token budget is a hidden variable at **700 / 2048 / 6000** across five harnesses, and `ModelResponse` carries no `finish_reason` to make truncation visible |
 
 ## Reproducing
 
@@ -149,6 +150,22 @@ uv run python examples/league_h2h.py ladder --live --rungs L1 --home /tmp/h2h \
 uv run python examples/proof.py --json
 uv run python examples/proof.py --muse --identity Gwen --json
 uv run python examples/proof.py --problem euler --max-steps 20 --json
+
+# the live-evidence gate: every rig-gated test, then the challenge harnesses.
+# --max-tokens 16000 is NOT optional on this rig — the harness default of 6000
+# truncates roughly one turn in three on the subset problem, and a truncated
+# turn is indistinguishable from a refusal without --trace-out.
+EMBODIMENT_LIVE_RIG=1 uv run pytest -p no:randomly -v \
+    tests/test_workspace.py tests/test_muse_challenge.py \
+    tests/test_association_work.py tests/test_demo_greenhouse.py \
+    tests/test_echo_probe.py tests/test_echo_probe_workspace.py
+
+uv run python examples/challenge_subset.py --n 3 --json --max-tokens 16000 \
+    --results docs/live-test-results/challenge-subset-config.json \
+    --trace-out docs/live-test-results/challenge-subset-trace.json
+uv run python examples/challenge_register.py --n 1 --json --max-tokens 16000 \
+    --results docs/live-test-results/challenge-register-config.json \
+    --trace-out docs/live-test-results/challenge-register-trace.json
 ```
 
 The hermetic suite never touches any of this: live paths are opt-in and skip

@@ -4,7 +4,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-07-29T16:35:15Z",
-  "updated": "2026-07-30T21:24:21Z",
+  "updated": "2026-07-31T00:01:40Z",
   "claims": [
     {
       "id": "c1",
@@ -1160,6 +1160,51 @@
       "skipped_check": "the reasoning text behind one resisted verdict",
       "refs": [
         "t19"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l15",
+      "code": "grader-unverified",
+      "what": "t27's rejections counter reported 0 while league's own discipline record held 2 \u2014 left wrong on purpose, pinned by a test and recorded in corrections.md rather than retuned after the data",
+      "skipped_check": "cross-checking the harness counter against league's own discipline field before the series",
+      "refs": [
+        "t27"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l16",
+      "code": "assumption-for-measurement",
+      "what": "t27's pre-registered tie-break was chosen to measure play and measured interface compliance instead: league's outcome metric tied 0-0 in all six matches, three of the four tie-break signals sit at a ceiling for every arm, and the entire ranking rests on one optional team-message field",
+      "skipped_check": "checking that the tie-break signals could discriminate on play before fixing them",
+      "refs": [
+        "t27",
+        "c40"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l17",
+      "code": "control-absent",
+      "what": "t27 has no muse-off cell, so the mixed vs full-qwen difference \u2014 same cortex, muse swapped \u2014 cannot be attributed; flagged in the doc as an observation rather than a claim",
+      "skipped_check": "a muse-off arm isolating the muse swap",
+      "refs": [
+        "t27"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l18",
+      "code": "n-below-claim",
+      "what": "t27 ran n=4 matches per arm, below what a ranking claim needs",
+      "skipped_check": "more matches per arm, and the L2-L4 rungs which are reported absent",
+      "refs": [
+        "t27"
       ],
       "origin": "llm",
       "status": "proposed"
