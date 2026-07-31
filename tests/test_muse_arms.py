@@ -24,6 +24,7 @@ uses headspace's in-memory ``fake`` provider, never a daemon.
 from __future__ import annotations
 
 import ast
+import inspect
 import io
 import json
 from pathlib import Path
@@ -240,8 +241,23 @@ class TestTheArmsPutTheSameThingOnTheWire:
             assert "finish" not in report["captures"][arm]["tool_names"]
 
     def test_the_controls_are_one_object_shared_by_every_arm(self) -> None:
-        assert controls() == controls()
-        assert controls().max_turns == muse_arms.MAX_TURNS
+        """No arm argument, so no arm can be handed different bounds.
+
+        This asserted ``controls() == controls()``, which can only fail if the
+        factory is nondeterministic — it never checked the property its own
+        name claims. What actually makes the controls shared is that the
+        factory takes no parameters at all: there is no seam through which an
+        arm could ask for its own, so the bounds cannot differ by arm.
+        """
+        assert len(inspect.signature(muse_arms.controls).parameters) == 0
+
+        built = controls()
+        assert built.max_turns == muse_arms.MAX_TURNS
+        assert built.max_quiet_turns == muse_arms.MAX_QUIET_TURNS
+        assert built.max_context_chars == muse_arms.BOUNDARY_CHARS
+        assert built.max_insight_chars == muse_arms.INSIGHT_CHARS
+        assert built.max_tool_rounds == muse_arms.MAX_TOOL_ROUNDS
+        assert built.max_tool_result_chars == muse_arms.MAX_TOOL_RESULT_CHARS
 
 
 # ── 3a. the answer reader ─────────────────────────────────────────────────────

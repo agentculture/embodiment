@@ -1471,9 +1471,11 @@ class TestNothingIsFabricated:
             )
         )[0]
         data = record.to_dict()
-        assert "step_index" not in data and "model_turns" not in data
+        assert "step_index" not in data
+        assert "model_turns" not in data
         assert "boundary" not in data
-        assert data["subsystem"] == "eidetic" and data["stage"] == "recall"
+        assert data["subsystem"] == "eidetic"
+        assert data["stage"] == "recall"
 
     def test_an_events_record_carries_only_what_events_records(self) -> None:
         emitter = EventEmitter(client_factory=lambda: FakeClient(ok=False))
@@ -1484,7 +1486,8 @@ class TestNothingIsFabricated:
     def test_a_genuine_zero_survives_as_a_zero(self) -> None:
         """The loop stamps a REAL step index; ``0`` there means step zero."""
         record = ledger.from_loop(LoopDegradation(code="hook-error", reason="x"))[0]
-        assert record.step_index == 0 and record.model_turns == 0
+        assert record.step_index == 0
+        assert record.model_turns == 0
         assert record.to_dict()["step_index"] == 0
 
     def test_an_exception_free_continuity_record_omits_the_exception(self) -> None:
@@ -1493,7 +1496,8 @@ class TestNothingIsFabricated:
                 subsystem="coherence", stage="assess", code="domain-unavailable", reason="partial"
             )
         )[0]
-        assert record.exception is None and "exception" not in record.to_dict()
+        assert record.exception is None
+        assert "exception" not in record.to_dict()
 
     def test_an_instance_level_lifecycle_event_has_no_boundary(self) -> None:
         event = lifecycle.LifecycleEvent(
@@ -1596,7 +1600,8 @@ class TestAttribution:
         record = ledger.from_lifecycle([event])[0]
         assert record.source == ledger.SOURCE_CONTINUITY
         assert record.boundary == "before-memory"
-        assert record.subsystem == "eidetic" and record.exception == "RuntimeError"
+        assert record.subsystem == "eidetic"
+        assert record.exception == "RuntimeError"
 
     def test_an_unknown_code_falls_back_to_the_container_lane(self) -> None:
         """Honest fallback: the reader knows what it was handed, so it says so."""

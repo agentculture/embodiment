@@ -337,12 +337,14 @@ class TestTheGuardItself:
     )
     def test_every_broad_form_is_recognised(self, clause: str) -> None:
         found = scan(f"def f():\n    try:\n        g()\n    {clause}\n        pass\n", "b.py")
-        assert found[0].broad is True and found[0].inert is True
+        assert found[0].broad is True
+        assert found[0].inert is True
 
     def test_a_narrow_inert_handler_is_not_flagged(self) -> None:
         snippet = "def f():\n    try:\n        g()\n    except (ValueError, OverflowError):\n        pass\n"  # noqa: E501
         found = scan(snippet, "n.py")
-        assert found[0].broad is False and found[0].inert is True
+        assert found[0].broad is False
+        assert found[0].inert is True
 
     def test_a_recording_handler_is_not_inert(self) -> None:
         snippet = "def f():\n    try:\n        g()\n    except Exception as exc:\n        record(exc)\n"  # noqa: E501

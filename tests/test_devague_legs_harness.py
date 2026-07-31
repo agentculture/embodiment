@@ -145,16 +145,19 @@ class TestJudgmentParsing:
             '"classification": null, "reason": "y"}\n```'
         )
         assert degraded is None
-        assert parsed is not None and parsed["warrants_deviation"] is False
+        assert parsed is not None
+        assert parsed["warrants_deviation"] is False
 
     def test_empty_content_is_degraded_not_guessed(self) -> None:
         parsed, degraded = harness.parse_judgment("   ")
-        assert parsed is None and degraded == "empty-content"
+        assert parsed is None
+        assert degraded == "empty-content"
 
     def test_a_non_bool_verdict_is_refused(self) -> None:
         parsed, degraded = harness.parse_judgment('{"warrants_deviation": "yes"}')
         assert parsed is None
-        assert degraded is not None and degraded.startswith("warrants_deviation-not-a-bool")
+        assert degraded is not None
+        assert degraded.startswith("warrants_deviation-not-a-bool")
 
     def test_an_off_vocabulary_classification_is_labelled_not_dropped(self) -> None:
         parsed, _ = harness.parse_judgment(
@@ -230,8 +233,15 @@ class TestTheBaseCommitPredatesTheMuseToolSeam:
         run happened and stops being true the moment the seam merges, which
         would leave a committed provenance claim permanently unverifiable.
         Reading the recorded commit keeps the evidence checkable forever.
+
+        "Forever" is bounded by the object store, not by the claim: a shallow
+        clone holds one commit, and the recorded one is not in it. That is an
+        absent instrument rather than a failed check, so it skips with the
+        reason named — the same distinction the experiments themselves draw
+        between ABSENT and a verdict.
         """
         import json
+        import subprocess  # nosec B404 - reading this repo's own object store
 
         results = Path(__file__).resolve().parent.parent / "docs/live-test-results"
         config = json.loads(
@@ -240,6 +250,18 @@ class TestTheBaseCommitPredatesTheMuseToolSeam:
         recorded = config
         assert len(recorded["base_commit"]) == 40
         assert recorded["predates_muse_tool_seam"] is True
+
+        reachable = subprocess.run(  # nosec B603 B607 - fixed argv, no shell
+            ["git", "cat-file", "-e", f"{recorded['base_commit']}^{{commit}}"],
+            cwd=str(Path(__file__).resolve().parent.parent),
+            capture_output=True,
+            check=False,
+        )
+        if reachable.returncode != 0:
+            pytest.skip(
+                f"commit {recorded['base_commit'][:7]} is not in this object store "
+                "(shallow clone) — clone with full history to re-derive the evidence"
+            )
 
         re_derived = harness.base_commit_record(recorded["base_commit"])
         assert re_derived["evidence"] == recorded["evidence"]

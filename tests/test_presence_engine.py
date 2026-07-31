@@ -922,8 +922,11 @@ class TestOffLane:
         assert engine.acknowledge(ContextPacket(original="x", ack="on it")) == []
         assert engine.on_progress_boundary(step_count=5, phase_changed=True) == []
         assert engine.on_operator_message("anything") == []
-        assert io.dispatched == [] and io.guided == [] and io.rendered == []
-        assert io.polls == 0 and muse.boundaries == []
+        assert io.dispatched == []
+        assert io.guided == []
+        assert io.rendered == []
+        assert io.polls == 0
+        assert muse.boundaries == []
         assert engine.snapshot() == {"records": [], "chat": [], "injections": []}
 
 
@@ -1087,8 +1090,10 @@ class TestSeamContracts:
 
     def test_muse_comment_defaults_are_inert(self):
         comment = MuseComment()
-        assert comment.text == "" and comment.guidance == ""
-        assert comment.tokens is None and comment.latency is None
+        assert comment.text == ""
+        assert comment.guidance == ""
+        assert comment.tokens is None
+        assert comment.latency is None
 
     def test_boundary_context_is_frozen(self):
         boundary = BoundaryContext(kind=BOUNDARY_INTAKE)
@@ -1097,7 +1102,8 @@ class TestSeamContracts:
 
     def test_presence_turn_defaults(self):
         turn = PresenceTurn(kind="ack", source="packet")
-        assert turn.chat_entry is None and turn.injection is None
+        assert turn.chat_entry is None
+        assert turn.injection is None
 
 
 # ── 10. the terminal boundary: drain without consider (issue #17, t4) ─────────
@@ -1301,7 +1307,8 @@ class TestTerminalBoundaryDrainsWithoutConsidering:
         muse = _DrainMuse(drain_raises=RuntimeError("muse endpoint refused connection"))
         engine, io = _engine(muse=muse)
         assert engine.on_terminal_boundary(step_count=2) == []
-        assert engine.mode == MODE_CORTEX_ONLY and engine.muse_degraded is True
+        assert engine.mode == MODE_CORTEX_ONLY
+        assert engine.muse_degraded is True
         points = [(r.point, r.degraded) for r in engine.records]
         assert (f"muse:{BOUNDARY_SYNTHESIS}", True) in points
         assert any("muse unavailable" in line for line in io.rendered)

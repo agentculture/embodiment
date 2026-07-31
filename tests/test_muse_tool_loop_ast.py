@@ -153,7 +153,8 @@ class TestTheToolLoopIsBounded:
         node = _function(_TOOL_LOOP)
         whiles = [n for n in ast.walk(node) if isinstance(n, ast.While)]
         fors = [n for n in ast.walk(node) if isinstance(n, ast.For)]
-        assert len(whiles) == 1 and not fors
+        assert len(whiles) == 1
+        assert not fors
         # ``while True:`` would be an ast.Constant test — the bound must be a
         # comparison against the ceiling, so exhausting it is the only outcome.
         assert isinstance(whiles[0].test, ast.Compare), ast.dump(whiles[0].test)
@@ -221,7 +222,8 @@ class TestOneCounterBoundsBothLoops:
         write = writes[0]
         assert isinstance(write, ast.AugAssign), ast.dump(write)
         assert isinstance(write.op, ast.Add), ast.dump(write)
-        assert isinstance(write.value, ast.Constant) and write.value.value == 1
+        assert isinstance(write.value, ast.Constant)
+        assert write.value.value == 1
 
     def test_the_turn_counter_is_advanced_where_the_model_is_called(self):
         assert _enclosing(_COUNTER) == _TURN_SPENDER
@@ -244,7 +246,8 @@ class TestOneCounterBoundsBothLoops:
         assert len(returns) == 1, ast.dump(node)
         call = returns[0].value
         assert isinstance(call, ast.Call), ast.dump(returns[0])
-        assert isinstance(call.func, ast.Name) and call.func.id == "min", ast.dump(call)
+        assert isinstance(call.func, ast.Name), ast.dump(call)
+        assert call.func.id == "min", ast.dump(call)
         reached = {child.attr for child in ast.walk(call) if isinstance(child, ast.Attribute)}
         assert _BUDGET in reached, f"the ceiling ignores ctx.{_BUDGET}: {ast.dump(call)}"
 

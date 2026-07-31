@@ -427,7 +427,8 @@ class TestTerminationMatrix:
         node = _think_loop_node()
         whiles = [n for n in ast.walk(node) if isinstance(n, ast.While)]
         fors = [n for n in ast.walk(node) if isinstance(n, ast.For)]
-        assert len(whiles) == 1 and not fors
+        assert len(whiles) == 1
+        assert not fors
         # ``while True:`` would be an ast.Constant test — the bound must be a
         # comparison against the budget, so exhausting it is the only outcome.
         assert isinstance(whiles[0].test, ast.Compare), ast.dump(whiles[0].test)
@@ -543,7 +544,8 @@ class TestToolsOff:
         for token in ('"parameters"', '"properties"', '"required"', "SCRATCHPAD_TOOLS"):
             assert token not in source, token
         schema_field = next(f for f in fields(MuseToolBench) if f.name == "schema")
-        assert schema_field.default is MISSING and schema_field.default_factory is MISSING
+        assert schema_field.default is MISSING
+        assert schema_field.default_factory is MISSING
 
     def test_the_constructor_accepts_no_acting_seam_only_a_thinking_bench(self):
         import inspect
@@ -790,7 +792,8 @@ class TestCostWithoutAClock:
         ticks = iter([100.0, 100.5, 101.0, 101.5, 102.0, 102.5, 103.0, 103.5])
         loop, _ = _loop(_resp("a"), _resp(MARKER_DONE), clock=lambda: next(ticks))
         outcome = loop.think(_boundary())
-        assert outcome.latency is not None and outcome.latency > 0
+        assert outcome.latency is not None
+        assert outcome.latency > 0
         assert all(i.latency is not None for i in outcome.insights)
 
     def test_a_raising_clock_degrades_the_measurement_not_the_thinking(self):
@@ -1132,7 +1135,8 @@ class TestAuthorityFraming:
             _boundary(history=[{"role": "user", "content": "earlier"}, "a bare line"]),
         )
         rendered = complete.calls[0][1]["content"]
-        assert "earlier" in rendered and "a bare line" in rendered
+        assert "earlier" in rendered
+        assert "a bare line" in rendered
 
     def test_context_fields_are_capped(self):
         loop, complete = _loop(_resp(MARKER_DONE), controls=MuseControls(max_context_chars=20))
@@ -1434,7 +1438,8 @@ class TestStoreTextArrivesAsDataNotInstruction:
             recall_bundle=_Bundle(_BundleItem("rec-42", "the fig was watered", "eidetic-graph")),
         )
         wire = _wire(scripted)
-        assert "rec-42" in wire and "eidetic-graph" in wire
+        assert "rec-42" in wire
+        assert "eidetic-graph" in wire
 
     def test_the_block_says_it_is_data(self):
         loop, scripted = _loop(_resp(MARKER_DONE))

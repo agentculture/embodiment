@@ -209,7 +209,8 @@ class TestTruncationIsAnInstrumentEventNeverALoss:
         assert cortex.tools == other_cortex.tools == league_h2h.TOOL_SCHEMA
         # The muse lane passes NO tool schema at all. That absence is the whole
         # of "tools-off" and it must hold in every arm.
-        assert muse.tools is None and other_muse.tools is None
+        assert muse.tools is None
+        assert other_muse.tools is None
         assert cortex.model != other_cortex.model
 
 
@@ -468,12 +469,14 @@ class TestCapTruncation:
     def test_no_cap_leaves_orders_untouched(self) -> None:
         orders = {"plan": "p", "actions": [{"unit_id": "u1"}, {"unit_id": "u2"}]}
         trimmed, dropped = league_h2h.apply_cap(orders, None)
-        assert trimmed is orders and dropped == 0
+        assert trimmed is orders
+        assert dropped == 0
 
     def test_under_the_cap_is_untouched(self) -> None:
         orders = {"plan": "p", "actions": [{"unit_id": "u1"}]}
         trimmed, dropped = league_h2h.apply_cap(orders, 2)
-        assert trimmed["actions"] == orders["actions"] and dropped == 0
+        assert trimmed["actions"] == orders["actions"]
+        assert dropped == 0
 
     def test_over_the_cap_truncates_to_the_seats_own_priority_order(self) -> None:
         orders = {
@@ -557,9 +560,12 @@ class TestPromptsAreSymmetric:
     def test_the_cap_and_fog_framings_appear_only_on_their_own_rungs(self) -> None:
         easy = league_h2h.system_prompt(league_h2h.LADDER_BY_ID["L1"])
         hard = league_h2h.system_prompt(league_h2h.LADDER_BY_ID["L4"])
-        assert "HANDICAP" not in easy and "FOG" not in easy
-        assert "HANDICAP" in hard and "FOG" in hard
-        assert league_h2h.BASE_SYSTEM in easy and league_h2h.BASE_SYSTEM in hard
+        assert "HANDICAP" not in easy
+        assert "FOG" not in easy
+        assert "HANDICAP" in hard
+        assert "FOG" in hard
+        assert league_h2h.BASE_SYSTEM in easy
+        assert league_h2h.BASE_SYSTEM in hard
 
 
 class TestBothTeamsAreModelSeats:
@@ -841,7 +847,8 @@ class TestThePreRegistrationDocumentAgreesWithThePin:
         text = self.DOC.read_text(encoding="utf-8")
         for arm in league_h2h.ARMS.values():
             assert f"`{arm.id}`" in text
-            assert arm.cortex in text and arm.muse in text
+            assert arm.cortex in text
+            assert arm.muse in text
         for name, _, _ in league_h2h.PAIRINGS:
             assert f"`{name}`" in text
 
@@ -1108,7 +1115,8 @@ class TestTheCommittedSeriesMatchesWhatTheWriteUpClaims:
         return [r for r in league_h2h.read_log(cls.LOG) if r.get("kind") == kind]
 
     def test_the_series_and_its_write_up_are_committed(self) -> None:
-        assert self.LOG.is_file() and self.DOC.is_file()
+        assert self.LOG.is_file()
+        assert self.DOC.is_file()
 
     def test_the_verdict_is_separated_at_l1_with_l2_to_l4_absent(self) -> None:
         found = league_h2h.analyse(self.LOG)
@@ -1156,7 +1164,9 @@ class TestTheCommittedSeriesMatchesWhatTheWriteUpClaims:
         assert rates["mixed"] == [4, 12]
         assert rates["full-qwen"] == [9, 12]
         text = self.DOC.read_text(encoding="utf-8")
-        assert "0 / 12" in text and "4 / 12" in text and "9 / 12" in text
+        assert "0 / 12" in text
+        assert "4 / 12" in text
+        assert "9 / 12" in text
         assert "interface compliance, not on" in text
 
     def test_the_cost_column_in_the_doc_matches_the_artifact(self) -> None:

@@ -19,6 +19,14 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        with:
+          # The live-run provenance tests re-derive a recorded experiment's
+          # evidence at the commit that run named, so they need that commit in
+          # the object store. A shallow clone has one commit and `git show
+          # <sha>:<path>` fails with `bad object`. tests.yml already fetches
+          # full history (for Sonar's blame attribution); this job needs it for
+          # the same reason the assertion exists — evidence stays checkable.
+          fetch-depth: 0
 
       - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
 

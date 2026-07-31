@@ -413,7 +413,8 @@ class TestTheInstrument:
                 seam([{"role": "user", "content": "hi"}])
         finally:
             urllib.request.urlopen = original
-        assert sink and sink[0].error
+        assert sink
+        assert sink[0].error
         assert sink[0].retries == lc.MAX_RETRIES + 1
 
     def test_the_tool_schema_never_carries_a_tool_choice(self) -> None:

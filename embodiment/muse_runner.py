@@ -785,7 +785,7 @@ class ThreadedMuseRunner:
         # measurement, not an absence: a host that sees `compilation_starved`
         # rising against `compilation: 0` knows its background lane never ran
         # once, which the drop records alone do not say.
-        self._work_started: dict[str, int] = {name: 0 for name in WORK_CLASSES}
+        self._work_started: dict[str, int] = dict.fromkeys(WORK_CLASSES, 0)
         # Per-kind delivery counters (task t3).
         self._kind_delivered: dict[str, int] = {}
         self._kind_dropped: dict[str, int] = {}

@@ -621,7 +621,8 @@ class TestTheBench:
             _resp(MARKER_DONE),
         )
         tool_messages = [m for m in tools.calls[-1] if m.get("role") == "tool"]
-        assert tool_messages and tool_messages[0]["content"] == "n1 recorded"
+        assert tool_messages
+        assert tool_messages[0]["content"] == "n1 recorded"
 
     def test_the_pad_never_ends_a_thinking_session(self) -> None:
         """The four MUSE_EXIT reasons are the only exits; a tool is not one."""

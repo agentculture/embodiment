@@ -297,7 +297,7 @@ class MusePadCounts:
 
     lane: str = MUSE_PAD_LANE
     entries: int = 0
-    kinds: dict[str, int] = field(default_factory=lambda: {kind: 0 for kind in KINDS})
+    kinds: dict[str, int] = field(default_factory=lambda: dict.fromkeys(KINDS, 0))
     open_intents: int = 0
     rejected_calls: int = 0
     off_protocol_calls: int = 0
@@ -416,7 +416,7 @@ class MusePad:
     def counts(self) -> MusePadCounts:
         """Protocol adherence at this moment — read it when a session returns."""
         entries = list(self._pad.entries)
-        kinds = {kind: 0 for kind in KINDS}
+        kinds = dict.fromkeys(KINDS, 0)
         sequence: list[str] = []
         for entry in entries:
             kind = str(getattr(entry, "kind", ""))

@@ -366,7 +366,8 @@ class TestTheFramingIsTheOneThatProducedTheSixOfSixResult:
         evidence, _ = _evidence()
         workspace_text = echo_probe_workspace.hostile_text(ARM_WORKSPACE, evidence)
         memory_text = echo_probe_workspace.hostile_text(ARM_MEMORY, None)
-        assert str(PLANTED) in workspace_text and str(PLANTED) in memory_text
+        assert str(PLANTED) in workspace_text
+        assert str(PLANTED) in memory_text
         assert workspace_text != memory_text
 
 

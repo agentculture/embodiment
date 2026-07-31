@@ -660,7 +660,8 @@ class TestDegradation:
             runner.consider(_boundary(step=1))
             assert runner.wait_idle(_TIMEOUT)
             reason = runner.degradation()
-            assert reason is not None and "muse" in reason
+            assert reason is not None
+            assert "muse" in reason
             codes = [d.code for d in runner.degradations]
             assert DEGRADED_THINKING in codes  # the session's own record (t10a)
             assert DEGRADED_ENDPOINT in codes  # the lane stopping (t10b)
@@ -709,7 +710,8 @@ class TestDegradation:
         with _runner(seam, thread_factory=refuse) as runner:
             assert runner.consider(_boundary(step=1)) is None
             reason = runner.degradation()
-            assert reason is not None and "thread" in reason
+            assert reason is not None
+            assert "thread" in reason
             assert [d.code for d in runner.degradations] == [DEGRADED_THREAD]
             assert runner.drain(step_count=1) == []
             assert runner.wait_idle(_TIMEOUT) is True
@@ -1093,7 +1095,8 @@ class TestDefensiveEdges:
             # leaving a host with a lane that looks quiet but is gone.
             assert [d.code for d in runner.degradations] == ["muse-worker-failed"]
             reason = runner.degradation()
-            assert reason is not None and "the controls exploded" in reason
+            assert reason is not None
+            assert "the controls exploded" in reason
             assert runner.drain(step_count=1) == []
 
     def test_the_ledger_stops_growing_but_the_counter_does_not(self):
@@ -1627,7 +1630,8 @@ class TestRelativeLatencyIsMeasuredNotAssumed:
             for _ in range(3):
                 runner.note_loop_step(2.0)
             ratio = runner.snapshot()["relative_latency"]
-            assert ratio is not None and 0.0 < ratio < 1.0, ratio
+            assert ratio is not None, ratio
+            assert 0.0 < ratio < 1.0, ratio
         finally:
             runner.close(timeout=_TIMEOUT)
 
@@ -1879,7 +1883,8 @@ class TestTheTerminalVerbIsOptional:
         assert seam.drains == [9]  # the plain verb, with the same argument
         assert guided == ["ship it"]
         assert any("still here" in line for line in rendered)
-        assert turns and engine.muse_degraded is False
+        assert turns
+        assert engine.muse_degraded is False
 
     def test_the_runner_is_the_seam_that_has_it(self):
         with _runner(_Scripted()) as runner:
