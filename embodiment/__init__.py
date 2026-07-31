@@ -53,6 +53,7 @@ _SUBMODULES = frozenset(
         "loop",
         "media",
         "muse",
+        "muse_pad",
         "muse_runner",
         "perception",
         "presence",
@@ -60,6 +61,7 @@ _SUBMODULES = frozenset(
         "recall_bundle",
         "scratchpad",
         "subagent",
+        "workspace",
     }
 )
 
@@ -133,13 +135,43 @@ _LAZY_NAMES = {
     "MuseCompleteFn": "muse",
     "MuseSink": "muse",
     "MUSE_AUTHORITY": "muse",
+    # The muse's THINKING tools (task t10). Absent by default: with no bench
+    # wired the muse is tools-off and every prompt is byte-identical to the
+    # pre-seam release's. A bench reaches the wire only on the TOP-LEVEL muse.
+    "MuseToolBench": "muse",
+    "MuseToolCompleteFn": "muse",
+    "MuseToolExecuteFn": "muse",
+    "MUSE_TOOL_AUTHORITY": "muse",
     # Staleness: a parallel loop's insight can arrive long after the step it
     # reasoned about, so relevance is the consumer's judgement to make.
     "insight_lag": "muse",
     "is_stale": "muse",
+    # ── the muse's pad: the actor's scratchpad, offered to the thinking lane ─
+    # The first thing to put on that bench (task t12). Reuses scratchpad's KINDS
+    # and schemas unchanged; `finish` is the one declared omission. Not a memory:
+    # no recall surface reaches it (claim c10). `MusePadCounts` carries the
+    # protocol-adherence counters the pad validation reads.
+    "MusePad": "muse_pad",
+    "MusePadCounts": "muse_pad",
+    "MUSE_PAD_TOOLS": "muse_pad",
+    "MUSE_PAD_PROTOCOL": "muse_pad",
+    # ── the muse's workspace: one command, in a container that reaches nothing ─
+    # The second thing on that bench (task t13), and the first module here that
+    # imports a sibling CLI's library surface at module scope (`headspace.api`,
+    # the only supported one). No repo, no store, no network, and NO secrets
+    # parameter at all — the leak path cannot be opened by configuration (c34).
+    "MuseWorkspace": "workspace",
+    "WorkspaceCounts": "workspace",
+    "WorkspaceDegradation": "workspace",
+    "WORKSPACE_TOOLS": "workspace",
+    "WORKSPACE_PROTOCOL": "workspace",
     # ── the muse runner: the one place embodiment owns a thread ───────────
     "ThreadedMuseRunner": "muse_runner",
     "ThreadFactory": "muse_runner",
+    # What the terminal drain handed the actor — count and ids, zero included.
+    # A DELIVERY, not a degradation: it answers "did the last beat arrive?",
+    # which `ledger.read` deliberately does not (task t5).
+    "MuseDelivery": "muse_runner",
     # ── event emission (embodiment#4) — optional, absent by default ───────
     # embodiment produces; `events-cli` owns the envelope contract (c33).
     "EventEmitter": "events",
@@ -285,6 +317,7 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
         loop,
         media,
         muse,
+        muse_pad,
         muse_runner,
         perception,
         presence,
@@ -292,6 +325,7 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
         recall_bundle,
         scratchpad,
         subagent,
+        workspace,
     )
     from embodiment.contract import (  # noqa: F401
         ERROR,
@@ -372,6 +406,7 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
     )
     from embodiment.muse import (  # noqa: F401
         MUSE_AUTHORITY,
+        MUSE_TOOL_AUTHORITY,
         MuseCompleteFn,
         MuseControls,
         MuseDegradation,
@@ -380,10 +415,23 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
         MuseOrigin,
         MuseOutcome,
         MuseSink,
+        MuseToolBench,
+        MuseToolCompleteFn,
+        MuseToolExecuteFn,
         insight_lag,
         is_stale,
     )
-    from embodiment.muse_runner import ThreadedMuseRunner, ThreadFactory  # noqa: F401
+    from embodiment.muse_pad import (  # noqa: F401
+        MUSE_PAD_PROTOCOL,
+        MUSE_PAD_TOOLS,
+        MusePad,
+        MusePadCounts,
+    )
+    from embodiment.muse_runner import (  # noqa: F401
+        MuseDelivery,
+        ThreadedMuseRunner,
+        ThreadFactory,
+    )
     from embodiment.perception import PerceptionDegradation  # noqa: F401
     from embodiment.perception import perceive  # noqa: F401
     from embodiment.presence import (  # noqa: F401
@@ -442,4 +490,11 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
         SubagentCall,
         SubagentFn,
         SubagentResult,
+    )
+    from embodiment.workspace import (  # noqa: F401
+        WORKSPACE_PROTOCOL,
+        WORKSPACE_TOOLS,
+        MuseWorkspace,
+        WorkspaceCounts,
+        WorkspaceDegradation,
     )

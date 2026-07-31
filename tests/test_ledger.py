@@ -1,6 +1,6 @@
 """Tests for :mod:`embodiment.ledger` — the degradation fold (task t9).
 
-Two things are proved here, and the first is the acceptance criterion.
+Three things are proved here, and the first is the acceptance criterion.
 
 **1. The enumeration is exhaustive by construction.** Every degradation code
 embodiment can record is provoked through the REAL module that mints it, and the
@@ -14,7 +14,16 @@ test and a checklist — and it has already paid: the task brief listed 36 codes
 and the derivation found 37 (``continuity.CODE_INVALID_RECORD`` was missed by
 hand).
 
-**2. Nothing is fabricated.** ``continuity.Degradation`` carries no step index,
+**2. Every covering path is a REAL one.** Exhaustive-by-construction is worth
+exactly what the provokers do, and two of them satisfied it by calling the
+runner's own ``_record`` with the code they were named for — which proves a
+code can appear in a record and nothing about any path producing it
+(embodiment#18). :class:`TestNoProvokerTakesThePrivateDoor` reads this file's
+own AST and fails when a provoker touches a private attribute on an object;
+its docstring holds the exact rule, its three exemptions, and the one thing it
+deliberately does not claim.
+
+**3. Nothing is fabricated.** ``continuity.Degradation`` carries no step index,
 so a continuity-sourced record's ``step_index`` is ``None`` and its ``to_dict``
 omits the key — never a ``0`` a host could read as "step zero". A genuine zero
 from a lane that does stamp one survives unchanged.
@@ -27,18 +36,28 @@ thread is bounded so a broken implementation fails rather than hangs.
 
 from __future__ import annotations
 
+import ast
 import json
 import threading
 from dataclasses import FrozenInstanceError, dataclass, fields
 from pathlib import Path
+from types import ModuleType
 from typing import Any, Callable, Optional
 
 import pytest
 
 from embodiment import continuity, ledger, lifecycle, loop, muse, muse_runner, subagent
-from embodiment.contract import OK, ModelResponse, SubResult, Task, TaskResult, ToolCall
+from embodiment.contract import (
+    OK,
+    ContextPacket,
+    ModelResponse,
+    SubResult,
+    Task,
+    TaskResult,
+    ToolCall,
+)
 from embodiment.events import EventEmitter
-from embodiment.lifecycle import CHECKPOINT_DEGRADED, ContinuityLifecycle, LifecycleConfig, _Trace
+from embodiment.lifecycle import CHECKPOINT_DEGRADED, ContinuityLifecycle, LifecycleConfig
 from embodiment.loop import (
     Boundary,
     LoopAborted,
@@ -49,7 +68,7 @@ from embodiment.loop import (
 )
 from embodiment.muse import MARKER_DONE, MuseControls, MuseDegradation, MuseLoop
 from embodiment.muse_runner import ThreadedMuseRunner
-from embodiment.presence_engine import BoundaryContext
+from embodiment.presence_engine import BoundaryContext, PresenceEngine
 
 #: Every wait on the muse's thread is bounded by this: a broken implementation
 #: fails an assertion instead of hanging CI.
@@ -152,6 +171,24 @@ class _AssessStub:
         )
 
 
+class _RememberStub:
+    """Stands in for ``continuity.remember`` so the durable write touches no store.
+
+    The lifecycle provokers below need the ``before-memory`` boundary to run to
+    completion — that is where the record is built and its links are counted —
+    but the eidetic write itself belongs to a different lane, with its own
+    provokers. Isolating it here keeps these two paths hermetic and fast, the
+    same reason :class:`_AssessStub` stands in for coherence.
+    """
+
+    def __call__(self, record: Any, **_kwargs: Any) -> continuity.RememberOutcome:
+        return continuity.RememberOutcome(
+            ok=True,
+            record_id=str(record.get("id")) if isinstance(record, dict) else None,
+            degradation=None,
+        )
+
+
 class _FakeResult:
     def __init__(self, ok: bool, reason: str = "no_conn") -> None:
         self.ok = ok
@@ -187,6 +224,12 @@ def _loop_event() -> Any:
 # enumeration can call every one of them the same way.
 
 Provoker = Callable[[Path, pytest.MonkeyPatch], list[ledger.LedgerRecord]]
+
+#: The delivery stream's provoker shape (task t5). It takes nothing and returns
+#: the runner's own delivery records: a delivery is not a degradation and does
+#: not fold through :mod:`embodiment.ledger` at all, so there is no store to
+#: anchor and no fault to inject — only a real drive to run.
+DeliveryProvoker = Callable[[], list["muse_runner.MuseDelivery"]]
 
 
 # -- loop ---------------------------------------------------------------------
@@ -431,6 +474,75 @@ def _muse_marker_unreadable(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.
     return ledger.from_muse(thinking.think(_muse_boundary()))
 
 
+# -- muse tool seam (task t10) ------------------------------------------------
+#
+# Every one of these drives a real ``MuseLoop`` with a real ``MuseToolBench``
+# through ``think`` — the seam a host wires — so the codes below are covered by
+# the path that actually mints them, not by a hand-built record.
+
+
+class _ScriptedTools:
+    """A tool-CARRYING muse seam: messages AND a schema in, one response out."""
+
+    def __init__(self, *replies: Any) -> None:
+        self._replies = list(replies) or [_resp(MARKER_DONE)]
+
+    def __call__(self, _messages: list[dict[str, Any]], _tools: list[dict[str, Any]]) -> Any:
+        return self._replies.pop(0) if len(self._replies) > 1 else self._replies[0]
+
+
+#: A host-supplied thinking-tool schema. ``embodiment.muse`` ships none.
+_PAD_SCHEMA: tuple[dict[str, Any], ...] = ({"type": "function", "function": {"name": "intend"}},)
+
+
+def _pad_call(text: str = "x") -> ModelResponse:
+    return ModelResponse(
+        content="calling the pad",
+        tool_calls=[ToolCall(id="c1", name="intend", arguments={"text": text})],
+    )
+
+
+def _bench(*replies: Any, execute: Any = None) -> muse.MuseToolBench:
+    return muse.MuseToolBench(
+        schema=_PAD_SCHEMA,
+        complete=_ScriptedTools(*replies),
+        execute=execute if execute is not None else (lambda _n, _a: "n1 recorded"),
+    )
+
+
+def _muse_tool_failed(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    """A wired thinking tool that raises: readable text to the muse, a record to the host."""
+
+    def explode(_name: str, _arguments: dict[str, Any]) -> Any:
+        raise RuntimeError("the pad is on fire")
+
+    thinking = MuseLoop(
+        Scripted(_resp(MARKER_DONE)),
+        tools=_bench(_pad_call(), _resp(MARKER_DONE), execute=explode),
+    )
+    return ledger.from_muse(thinking.think(_muse_boundary()))
+
+
+def _muse_tool_rounds(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    """A muse that keeps calling tools until its round allowance runs out."""
+    thinking = MuseLoop(
+        Scripted(_resp(MARKER_DONE)),
+        controls=MuseControls(max_turns=3, max_tool_rounds=1),
+        tools=_bench(_pad_call("again")),
+    )
+    return ledger.from_muse(thinking.think(_muse_boundary()))
+
+
+def _muse_tools_withheld(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    """A bench wired to a subagent-depth muse: withheld, and the host is told."""
+    thinking = MuseLoop(
+        Scripted(_resp(MARKER_DONE)),
+        tools=_bench(_resp(MARKER_DONE)),
+        depth=2,
+    )
+    return ledger.from_muse(thinking.think(_muse_boundary()))
+
+
 # -- muse_runner --------------------------------------------------------------
 
 
@@ -463,21 +575,35 @@ def _runner_thread(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRec
         runner.close(timeout=_TIMEOUT)
 
 
+class _HostileControls:
+    """A host's controls object whose first read explodes — a harness bug.
+
+    Carries every field :class:`~embodiment.muse.MuseControls` does so nothing
+    fails for the wrong reason; only ``max_context_chars`` detonates, and it
+    detonates on the WORKER thread, inside the muse's prompt building.
+    """
+
+    max_turns = 4
+    max_quiet_turns = 1
+    max_insight_chars = 2000
+    max_bundle_chars = 2000
+
+    @property
+    def max_context_chars(self) -> int:
+        raise RuntimeError("the controls exploded")
+
+
 def _runner_worker(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
     """The 'should be unreachable' rung: the worker itself dies.
 
-    ``MuseLoop.think`` never raises, so this path is only reachable by injecting
-    the module's own bug. The record is the whole point of the guard — without
-    it a dead worker is an absent mind a host mistakes for a quiet one — so it
-    is provoked by substituting the loop the worker drives.
+    ``MuseLoop.think`` is documented never to raise, so the runner's outer guard
+    exists for bugs *around* it — and a host handing in a controls object whose
+    read explodes is exactly that bug. It arrives through the public
+    ``controls=`` seam, so the guard is provoked rather than simulated: the
+    record is the whole point, because without it a dead worker is an absent
+    mind a host mistakes for a quiet one.
     """
-
-    class _Detonating:
-        def think(self, _boundary: Any) -> Any:
-            raise RuntimeError("the worker itself died")
-
-    runner = ThreadedMuseRunner(Scripted(_resp(MARKER_DONE)))
-    runner._loop = _Detonating()  # the injected bug this rung exists to catch
+    runner = ThreadedMuseRunner(Scripted(_resp(MARKER_DONE)), controls=_HostileControls())
     try:
         runner.consider(_muse_boundary(step=1))
         assert runner.wait_idle(_TIMEOUT)
@@ -554,30 +680,109 @@ def _runner_boundary(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerR
 
 
 def _runner_compilation_starved(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
-    """Provoke DROPPED_COMPILATION_STARVED by recording the code directly."""
-    runner = ThreadedMuseRunner(Scripted())
+    """Background compilation loses the muse's ONE thread to boundary counsel.
+
+    The real path (embodiment#18), driven entirely through the public seam: a
+    gated boundary session holds the thread, ``compile`` queues behind it, and a
+    second boundary outranks the queued compilation and takes the slot. The
+    compilation never runs, and saying so is what this code is for.
+    """
+    seam = _Gated(_resp("a " + MARKER_DONE), _resp("b " + MARKER_DONE))
+    runner = ThreadedMuseRunner(seam)
     try:
-        with runner._lock:
-            runner._record(
-                muse_runner.DROPPED_COMPILATION_STARVED,
-                "compilation work starved by boundary counsel priority",
-            )
+        runner.consider(_muse_boundary(step=1))
+        assert seam.started.wait(_TIMEOUT)
+        runner.compile()  # queued behind the session in flight
+        runner.consider(_muse_boundary(step=2))  # boundary counsel outranks it
+        seam.release.set()
+        assert runner.wait_idle(_TIMEOUT)
+        return ledger.from_muse_runner(runner)
+    finally:
+        seam.release.set()
+        runner.close(timeout=_TIMEOUT)
+
+
+def _runner_closer(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    """A host-wired teardown raises at close (task t15).
+
+    ``closers`` is how a host ties something it owns — the muse's workspace is
+    the motivating case — to this lane's close. The runner runs each one and
+    lets none of them raise, so a teardown that failed would be invisible
+    without this record, and what it failed to close is state the host now has
+    to deal with by hand. Public seam only: the callable goes in through the
+    constructor and comes out through ``close``.
+    """
+
+    def explode() -> None:
+        raise OSError("the container engine refused the teardown")
+
+    runner = ThreadedMuseRunner(Scripted(_resp(MARKER_DONE)), closers=(explode,))
+    runner.close(timeout=_TIMEOUT)
+    return ledger.from_muse_runner(runner)
+
+
+def _runner_counsel_displaced(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    """Compiled counsel evicts undrained boundary counsel — the priority inversion.
+
+    Also public-seam only: a one-slot drain buffer holds boundary counsel nobody
+    drained, ``compile`` produces the next insight, and the lower-ranked work
+    displaces the higher-ranked. Distinct from ``DROPPED_OVERFLOW``, which is
+    the same-class backpressure a host answers differently.
+    """
+    seam = Scripted(
+        _resp("GUIDANCE: boundary counsel " + MARKER_DONE),
+        _resp("GUIDANCE: compiled counsel " + MARKER_DONE),
+    )
+    runner = ThreadedMuseRunner(seam, max_pending=1)
+    try:
+        runner.consider(_muse_boundary(step=1))
+        assert runner.wait_idle(_TIMEOUT)  # buffered, deliberately never drained
+        runner.compile()
+        assert runner.wait_idle(_TIMEOUT)
         return ledger.from_muse_runner(runner)
     finally:
         runner.close(timeout=_TIMEOUT)
 
 
-def _runner_counsel_displaced(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
-    """Provoke DROPPED_COUNSEL_DISPLACED by recording the code directly."""
-    runner = ThreadedMuseRunner(Scripted())
+# -- muse_runner, the DELIVERY vocabulary (task t5) ----------------------------
+#
+# Not a degradation path — see :class:`TestADeliveryIsNeverADegradation`. It is
+# held to the same producer rule for the same reason (embodiment#18): a
+# vocabulary entry whose only producer is a test is dead vocabulary, whichever
+# stream it belongs to.
+
+
+def _terminal_delivery() -> list[muse_runner.MuseDelivery]:
+    """The terminal beat of a REAL drive mints the delivery record.
+
+    Nothing here records anything by hand. :func:`embodiment.loop.run` fires
+    its one terminal beat at drive end (task t25), the pump drains without
+    starting a session (task t4), and the runner mints the record on the way
+    through. The muse's seam is GATED and released by the drive's own
+    ``observer`` on the ``exit`` event — which the loop fires after the last
+    per-step presence boundary and before the terminal beat — so the counsel is
+    provably still buffered when that beat runs, with no sleep and no race.
+    """
+    seam = _Gated(_resp("GUIDANCE: check the empty case " + MARKER_DONE))
+    runner = ThreadedMuseRunner(seam)
+    packet = ContextPacket(original="do the thing", ack="on it")
+
+    def observer(event: Any) -> None:
+        if event.kind == "exit":
+            seam.release.set()
+            assert runner.wait_idle(_TIMEOUT)
+
     try:
-        with runner._lock:
-            runner._record(
-                muse_runner.DROPPED_COUNSEL_DISPLACED,
-                "boundary counsel displaced by compilation filling buffer",
-            )
-        return ledger.from_muse_runner(runner)
+        outcome = _drive(
+            _turn(_call("finish")),
+            task=_task(context_packet=packet),
+            presence=PresenceEngine(muse=runner),
+            observer=observer,
+        )
+        assert outcome.exit_reason == loop.EXIT_FINISHED
+        return list(runner.deliveries)
     finally:
+        seam.release.set()
         runner.close(timeout=_TIMEOUT)
 
 
@@ -766,29 +971,37 @@ def _lifecycle_consequential(
 def _lifecycle_links_truncated(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> list[ledger.LedgerRecord]:
-    """Trigger links-truncated by exceeding max_links with compiled_from ids."""
+    """More cited ids than ``max_links``, over the REAL ``before-memory`` boundary.
+
+    The muse's citation surface is the public source of those ids: a wired muse
+    reports two, ``max_links`` is one, and the checkpoint builds the durable
+    record itself — so the truncation is the lifecycle's own, not a hand-called
+    ``_build_record``.
+    """
     monkeypatch.setattr(continuity, "assess", _AssessStub())
-    checkpoints = ContinuityLifecycle(_lifecycle_config(tmp_path, max_links=1))
-    # Populate a trace with enough ids to exceed max_links.
-    task_id = "truncate-test"
-    checkpoints._traces[task_id] = _Trace(
-        compiled_from=["id-a", "id-b"],
-        recalled_ids=["id-c"],
-    )
-    boundary = _lifecycle_boundary(
-        "before-memory",
-        task=_task(id=task_id),
-        result=TaskResult(task_id=task_id, status=OK, summary="done"),
-    )
-    checkpoints._build_record(boundary, checkpoints._traces[task_id])
+    monkeypatch.setattr(continuity, "remember", _RememberStub())
+
+    class _CitingMuse:
+        """Anything exposing ``compiled_from`` — the duck type lifecycle documents."""
+
+        compiled_from = ("id-a", "id-b")
+
+    checkpoints = ContinuityLifecycle(_lifecycle_config(tmp_path, max_links=1), muse=_CitingMuse())
+    checkpoints(_lifecycle_boundary("before-memory"))
     return ledger.from_lifecycle(checkpoints)
 
 
 def _lifecycle_compiled_from_lost(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> list[ledger.LedgerRecord]:
-    """A muse whose citation surface cannot be read costs links, not the record."""
+    """A muse whose citation surface cannot be read costs links, not the record.
+
+    Driven over the same real boundary: the checkpoint reaches for the muse's
+    ``compiled_from`` on its own, the read explodes, and the write goes ahead
+    without the links rather than failing with them.
+    """
     monkeypatch.setattr(continuity, "assess", _AssessStub())
+    monkeypatch.setattr(continuity, "remember", _RememberStub())
 
     class _HostileMuse:
         @property
@@ -796,7 +1009,7 @@ def _lifecycle_compiled_from_lost(
             raise RuntimeError("the provenance source is broken")
 
     checkpoints = ContinuityLifecycle(_lifecycle_config(tmp_path), muse=_HostileMuse())
-    checkpoints._gather_compiled_from(_Trace())
+    checkpoints(_lifecycle_boundary("before-memory"))
     return ledger.from_lifecycle(checkpoints)
 
 
@@ -833,9 +1046,13 @@ PROVOKERS: dict[tuple[str, str], Provoker] = {
     (ledger.SOURCE_MUSE, muse.DEGRADED_SINK): _muse_sink,
     (ledger.SOURCE_MUSE, muse.DEGRADED_UNREADABLE): _muse_unreadable,
     (ledger.SOURCE_MUSE, muse.DEGRADED_MARKER_UNREADABLE): _muse_marker_unreadable,
+    (ledger.SOURCE_MUSE, muse.DEGRADED_TOOL): _muse_tool_failed,
+    (ledger.SOURCE_MUSE, muse.DEGRADED_TOOL_ROUNDS): _muse_tool_rounds,
+    (ledger.SOURCE_MUSE, muse.DEGRADED_TOOLS_WITHHELD): _muse_tools_withheld,
     (ledger.SOURCE_MUSE_RUNNER, muse_runner.DEGRADED_THREAD): _runner_thread,
     (ledger.SOURCE_MUSE_RUNNER, muse_runner.DEGRADED_WORKER): _runner_worker,
     (ledger.SOURCE_MUSE_RUNNER, muse_runner.DEGRADED_ENDPOINT): _runner_endpoint,
+    (ledger.SOURCE_MUSE_RUNNER, muse_runner.DEGRADED_CLOSER): _runner_closer,
     (ledger.SOURCE_MUSE_RUNNER, muse_runner.DROPPED_STALE): _runner_stale,
     (ledger.SOURCE_MUSE_RUNNER, muse_runner.DROPPED_LATE): _runner_late,
     (ledger.SOURCE_MUSE_RUNNER, muse_runner.DROPPED_OVERFLOW): _runner_overflow,
@@ -869,7 +1086,98 @@ PROVOKERS: dict[tuple[str, str], Provoker] = {
 KNOWN = {(entry.source, entry.code) for entry in ledger.known_codes()}
 
 
-@pytest.fixture()
+# ── the DELIVERY coverage map (task t5) ──────────────────────────────────────
+#
+# A second, separate table for a second, separate stream. The runner's delivery
+# vocabulary is not a degradation vocabulary (see
+# :class:`TestADeliveryIsNeverADegradation`), so it cannot ride ``PROVOKERS`` —
+# but it is held to exactly the same producer rule, because dead vocabulary is
+# dead vocabulary wherever it lives. Keyed by the delivery POINT, which is what
+# ``muse_runner.DELIVERY_POINTS`` enumerates.
+
+DELIVERY_PROVOKERS: dict[str, DeliveryProvoker] = {
+    muse_runner.DELIVERY_TERMINAL: _terminal_delivery,
+}
+
+
+def _declared_delivery_points() -> set[str]:
+    """The runner's own claim to completeness, read at call time.
+
+    Read from the module rather than transcribed, for the reason ``KNOWN`` is:
+    adding a point to :data:`embodiment.muse_runner.DELIVERY_POINTS` must make
+    the coverage test go red with no edit to this line.
+    """
+    return set(muse_runner.DELIVERY_POINTS)
+
+
+DELIVERY_KNOWN = _declared_delivery_points()
+
+
+# ── the provoker contract, enforced over this file's OWN source ───────────────
+#
+# See :class:`TestNoProvokerTakesThePrivateDoor` for the rule and the reasoning.
+
+_THIS_FILE = Path(__file__).resolve()
+
+#: Every provoker table in this file. Both are held to the SAME rule: a
+#: provoker drives its subject through the seam a host uses, or it covers
+#: nothing. A new table that is not listed here would be an escape hatch, so
+#: :class:`TestNoProvokerTakesThePrivateDoor`'s first test checks the resolved
+#: count against the tables' own lengths.
+_PROVOKER_TABLES = ("PROVOKERS", "DELIVERY_PROVOKERS")
+
+
+def _provoker_definitions() -> dict[str, ast.FunctionDef]:
+    """Resolve every provoker-table value to its ``def`` in this file's own source.
+
+    Each table must name module-level functions by BARE NAME. A lambda, an
+    attribute or a call would put the provoker's body somewhere this check
+    cannot read, which is itself an escape hatch — so the shape is asserted
+    here rather than assumed.
+    """
+    tree = ast.parse(_THIS_FILE.read_text(encoding="utf-8"))
+    functions = {node.name: node for node in tree.body if isinstance(node, ast.FunctionDef)}
+    tables: dict[str, ast.Dict] = {}
+    for node in tree.body:
+        target = getattr(node, "target", None)
+        name = getattr(target, "id", "")
+        if isinstance(node, ast.AnnAssign) and name in _PROVOKER_TABLES:
+            if isinstance(node.value, ast.Dict):
+                tables[name] = node.value
+    absent = [name for name in _PROVOKER_TABLES if name not in tables]
+    assert not absent, f"no longer module-level annotated dict literals: {absent}"
+    resolved: dict[str, ast.FunctionDef] = {}
+    for table_name, table in tables.items():
+        for value in table.values:
+            assert isinstance(value, ast.Name), f"a provoker is not a plain name: {ast.dump(value)}"
+            assert value.id in functions, f"{value.id} is not a module-level def in this file"
+            assert value.id not in resolved, f"{value.id} appears twice in {table_name}"
+            resolved[value.id] = functions[value.id]
+    return resolved
+
+
+def _private_doors(node: ast.AST) -> list[tuple[int, str]]:
+    """Every private-attribute reach inside *node*, as ``(line, source)`` pairs."""
+    found: list[tuple[int, str]] = []
+    for child in ast.walk(node):
+        if not isinstance(child, ast.Attribute) or not child.attr.startswith("_"):
+            continue
+        if child.attr.startswith("__") and child.attr.endswith("__"):
+            continue  # a dunder is the public protocol surface, not a door
+        base = child.value
+        if isinstance(base, ast.Name):
+            if base.id in {"self", "cls"}:
+                continue  # a double the provoker itself defines owns its internals
+            if isinstance(child.ctx, ast.Load) and isinstance(globals().get(base.id), ModuleType):
+                continue  # reading a lane's own vocabulary constant off its module
+        found.append((child.lineno, ast.unparse(child)))
+    return found
+
+
+_PROVOKER_DEFS = _provoker_definitions()
+
+
+@pytest.fixture
 def clean_store_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """No ambient eidetic store pin leaks into (or out of) a provoker."""
     monkeypatch.delenv("EIDETIC_DATA_DIR", raising=False)
@@ -951,6 +1259,195 @@ class TestEveryCodeIsCovered:
         assert record.to_dict()["code"] == code
 
 
+# ── 1b. …and every covering path is a REAL one ────────────────────────────────
+
+
+class TestNoProvokerTakesThePrivateDoor:
+    """The exhaustiveness check above is only worth what its provokers DO.
+
+    :class:`TestEveryCodeIsCovered` proves every code is reachable *from this
+    table*. That is a weaker claim than it looks. Two provokers satisfied it
+    like this::
+
+        with runner._lock:
+            runner._record(muse_runner.DROPPED_COMPILATION_STARVED, "…")
+
+    Recording a code directly proves a code can appear in a record. It proves
+    nothing about any code path producing it — and both of those codes shipped
+    in 0.8.0 with no producing path at all (embodiment#18), covered and green
+    the whole time. An exhaustiveness check whose escape hatch is "record it
+    yourself" can certify dead vocabulary indefinitely. This closes the hatch
+    structurally, over this file's own AST.
+
+    **The rule.** Inside a provoker, no underscore-prefixed attribute may be
+    touched on an OBJECT — a local, a parameter, a call result, an attribute
+    chain, in a read, a call or an assignment. A provoker drives the subject
+    through the door its host uses, or it does not cover the code.
+
+    Three exemptions, each narrow and each for a reason:
+
+    * **dunders** (``__class__``, ``__str__``) — the public protocol surface,
+      not a private door;
+    * **``self`` / ``cls``** — no provoker is a method, so those names can only
+      belong to a double the provoker itself defines, and a test's own stand-in
+      owns its internals;
+    * **reading** a private name off a MODULE (``lifecycle._FAULT_SINK``) — a
+      lane's own degradation vocabulary is a constant, not a door. Reading
+      only: a direct assignment to a module private outlives the test that
+      made it, which is what ``monkeypatch`` exists to prevent.
+
+    Bare ``_``-prefixed NAMES — this file's helpers (``_task``, ``_fake_embed``,
+    ``_AssessStub``) — are :class:`ast.Name` nodes, never attributes, so the
+    rule never touches them.
+
+    **What this deliberately does not claim.**
+    ``monkeypatch.setattr(module, "_private", …)`` names its target as a
+    string and is invisible to any AST check. That is fault injection at a
+    module seam — making eidetic unimportable, making a backend explode — and
+    it is how several degradations are reachable at all. It is a different act
+    from reaching through the subject's own back door, and this rule does not
+    pretend to cover it.
+    """
+
+    def test_the_table_resolves_to_definitions_this_check_can_read(self) -> None:
+        """A provoker this check cannot parse would be an escape hatch of its own."""
+        assert len(_PROVOKER_DEFS) == len(PROVOKERS) + len(DELIVERY_PROVOKERS)
+
+    @pytest.mark.parametrize("name", sorted(_PROVOKER_DEFS))
+    def test_no_provoker_reaches_a_private_attribute(self, name: str) -> None:
+        doors = _private_doors(_PROVOKER_DEFS[name])
+        assert not doors, (
+            f"{name} reaches past the public seam at "
+            + ", ".join(f"line {line}: {source}" for line, source in doors)
+            + " — a provoker must drive its code through the seam a host uses. "
+            "Recording (or hand-calling) the path proves only that the code can "
+            "appear in a record, never that any code path produces it; see "
+            "embodiment#18 for what that costs."
+        )
+
+    def test_the_check_would_catch_the_shape_it_exists_to_ban(self) -> None:
+        """The check's own red case, kept as a test instead of a memory.
+
+        Demonstrating the guard red once during development proves it fires;
+        keeping the demonstration proves it still does. The three exemptions are
+        asserted here too, so narrowing them is a visible act.
+        """
+        offender = ast.parse(
+            "def _p(tmp, mp):\n"
+            "    runner = ThreadedMuseRunner(Scripted())\n"
+            "    with runner._lock:\n"
+            "        runner._record(muse_runner.DROPPED_STALE, 'x')\n"
+        ).body[0]
+        assert [source for _line, source in _private_doors(offender)] == [
+            "runner._lock",
+            "runner._record",
+        ]
+
+        allowed = ast.parse(
+            "def _p(tmp, mp):\n"
+            "    code = lifecycle._FAULT_SINK\n"
+            "    kind = boundary.__class__\n"
+            "    class _Double:\n"
+            "        def go(self):\n"
+            "            return self._own\n"
+        ).body[0]
+        assert _private_doors(allowed) == []
+
+
+# ── 1c. the delivery stream: covered the same way, folded nowhere near here ───
+
+
+class TestEveryDeliveryPointIsCovered:
+    """The runner's delivery vocabulary gets #18's rule too (task t5).
+
+    ``DROPPED_COMPILATION_STARVED`` and ``DROPPED_COUNSEL_DISPLACED`` shipped
+    declared, exported, covered and green with no producing path anywhere
+    (embodiment#18). Nothing about that failure was specific to *degradation*
+    vocabulary — it was a declared constant nothing produced. So the delivery
+    points get the same treatment from the start: derived expectations, a
+    provoker per point, and the provoker held to the private-door rule by
+    :class:`TestNoProvokerTakesThePrivateDoor` along with every other one.
+    """
+
+    def test_no_delivery_point_lacks_a_covering_path(self) -> None:
+        missing = sorted(_declared_delivery_points() - set(DELIVERY_PROVOKERS))
+        assert not missing, (
+            "these delivery points have no covering path — add one to "
+            f"DELIVERY_PROVOKERS in this file: {missing}"
+        )
+
+    def test_no_path_names_a_point_the_runner_does_not_declare(self) -> None:
+        extra = sorted(set(DELIVERY_PROVOKERS) - _declared_delivery_points())
+        assert not extra, f"DELIVERY_PROVOKERS names points the runner drops: {extra}"
+
+    def test_a_newly_added_point_appears_uncovered_without_being_written_down(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The property that makes this a test rather than a checklist."""
+        monkeypatch.setattr(
+            muse_runner,
+            "DELIVERY_POINTS",
+            (*muse_runner.DELIVERY_POINTS, "invented-for-this-test"),
+        )
+        missing = sorted(_declared_delivery_points() - set(DELIVERY_PROVOKERS))
+        assert missing == ["invented-for-this-test"]
+
+    @pytest.mark.parametrize("point", sorted(DELIVERY_KNOWN))
+    def test_the_path_mints_a_record_carrying_a_count_and_the_delivered_ids(
+        self, point: str
+    ) -> None:
+        records = DELIVERY_PROVOKERS[point]()
+
+        assert records, f"{point}: the path produced no delivery record at all"
+        matched = [r for r in records if r.point == point]
+        assert matched, f"{point}: not in {[r.point for r in records]}"
+        record = matched[0]
+        assert record.count == len(record.insight_ids)
+        assert record.count >= 1, "the gated provoker holds counsel back for this beat"
+        assert set(record.to_dict()) == {"point", "count", "insight_ids", "step_index"}
+        json.dumps(record.to_dict())
+
+
+class TestADeliveryIsNeverADegradation:
+    """Why the delivery record is not a ``DROPPED_*`` code, pinned structurally.
+
+    This module's own rule for a budget exit is that folding it in "would make
+    the stream claim breakage that did not happen". A terminal drain handing
+    the actor three insights is this cycle **working**; a terminal drain
+    handing it none is the muse having had nothing left, which is also not
+    breakage. Minting a degradation code for either would make every healthy
+    run report one, and a stream that cries wolf on success is worth less than
+    no stream. The counsel that genuinely IS lost already has codes — stale,
+    late, overflow, superseded — and those still fire.
+    """
+
+    def test_a_real_terminal_delivery_folds_to_no_ledger_record(self) -> None:
+        seam = Scripted(_resp("GUIDANCE: noted " + MARKER_DONE))
+        runner = ThreadedMuseRunner(seam)
+        try:
+            runner.consider(_muse_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)
+            assert len(runner.drain_terminal(step_count=1)) == 1
+            assert runner.deliveries  # it happened…
+            assert ledger.from_muse_runner(runner) == []  # …and it was not breakage
+            assert ledger.read(muse_runner=runner) == []
+        finally:
+            runner.close(timeout=_TIMEOUT)
+
+    def test_no_delivery_point_is_a_known_code(self) -> None:
+        codes = {entry.code for entry in ledger.known_codes()}
+        assert not (_declared_delivery_points() & codes)
+
+    def test_the_runners_vocabulary_registry_reads_only_degradation_prefixes(self) -> None:
+        """``DELIVERY_*`` is outside the prefixes the registry harvests, on purpose."""
+        _module, prefixes, _public = ledger._MODULES[ledger.SOURCE_MUSE_RUNNER]
+        assert prefixes == ("DEGRADED_", "DROPPED_")
+        assert not any("DELIVERY_".startswith(prefix) for prefix in prefixes)
+
+    def test_the_runner_declares_the_two_streams_separately(self) -> None:
+        assert set(muse_runner.RUNNER_CODES) & set(muse_runner.DELIVERY_POINTS) == set()
+
+
 # ── 2. absent fields stay absent ──────────────────────────────────────────────
 
 
@@ -974,9 +1471,11 @@ class TestNothingIsFabricated:
             )
         )[0]
         data = record.to_dict()
-        assert "step_index" not in data and "model_turns" not in data
+        assert "step_index" not in data
+        assert "model_turns" not in data
         assert "boundary" not in data
-        assert data["subsystem"] == "eidetic" and data["stage"] == "recall"
+        assert data["subsystem"] == "eidetic"
+        assert data["stage"] == "recall"
 
     def test_an_events_record_carries_only_what_events_records(self) -> None:
         emitter = EventEmitter(client_factory=lambda: FakeClient(ok=False))
@@ -987,7 +1486,8 @@ class TestNothingIsFabricated:
     def test_a_genuine_zero_survives_as_a_zero(self) -> None:
         """The loop stamps a REAL step index; ``0`` there means step zero."""
         record = ledger.from_loop(LoopDegradation(code="hook-error", reason="x"))[0]
-        assert record.step_index == 0 and record.model_turns == 0
+        assert record.step_index == 0
+        assert record.model_turns == 0
         assert record.to_dict()["step_index"] == 0
 
     def test_an_exception_free_continuity_record_omits_the_exception(self) -> None:
@@ -996,7 +1496,8 @@ class TestNothingIsFabricated:
                 subsystem="coherence", stage="assess", code="domain-unavailable", reason="partial"
             )
         )[0]
-        assert record.exception is None and "exception" not in record.to_dict()
+        assert record.exception is None
+        assert "exception" not in record.to_dict()
 
     def test_an_instance_level_lifecycle_event_has_no_boundary(self) -> None:
         event = lifecycle.LifecycleEvent(
@@ -1099,7 +1600,8 @@ class TestAttribution:
         record = ledger.from_lifecycle([event])[0]
         assert record.source == ledger.SOURCE_CONTINUITY
         assert record.boundary == "before-memory"
-        assert record.subsystem == "eidetic" and record.exception == "RuntimeError"
+        assert record.subsystem == "eidetic"
+        assert record.exception == "RuntimeError"
 
     def test_an_unknown_code_falls_back_to_the_container_lane(self) -> None:
         """Honest fallback: the reader knows what it was handed, so it says so."""
@@ -1317,8 +1819,6 @@ class TestPosture:
     """What the fold must not become."""
 
     def test_the_ledger_imports_no_colleague(self) -> None:
-        import ast
-
         source = Path(ledger.__file__).read_text(encoding="utf-8")
         for node in ast.walk(ast.parse(source)):
             if isinstance(node, ast.Import):
@@ -1328,8 +1828,6 @@ class TestPosture:
 
     def test_no_embodiment_submodule_is_imported_at_module_scope(self) -> None:
         """Keeps ``import embodiment.ledger`` cheap and cycle-free."""
-        import ast
-
         tree = ast.parse(Path(ledger.__file__).read_text(encoding="utf-8"))
         for node in tree.body:
             names: list[str] = []

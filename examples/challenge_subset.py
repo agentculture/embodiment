@@ -198,7 +198,8 @@ def gateway(
     *,
     tools=None,
     temperature: float = DEFAULT_TEMPERATURE,
-    max_tokens: int = 6000,
+    max_tokens: int = 16000,
+    trace: Optional[list[dict[str, Any]]] = None,
 ):
     """One completion against the gateway.
 
@@ -206,6 +207,13 @@ def gateway(
     to accept ``--cortex-temperature``, record it in the config preamble, and
     then send a hardcoded 0.3 — a recorded value that was not the value on the
     wire, which is precisely the hidden variable the preamble exists to prevent.
+
+    ``trace``, when given, collects one raw record per completion — including
+    ``finish_reason``, which this seam otherwise discards. A turn truncated by
+    the token cap (``finish_reason == "length"``) and a model that simply
+    stopped both arrive as empty content, and without the finish reason a
+    reader cannot tell them apart; ``designed-problem.md`` read one as the
+    other. Records append in call order, so the list is the raw transcript.
     """
     endpoint = f"{base_url.rstrip('/')}/chat/completions"
     if not endpoint.startswith(("http://", "https://")):
@@ -230,7 +238,8 @@ def gateway(
         )
         with urllib.request.urlopen(request, timeout=600) as response:  # nosec B310
             payload = json.load(response)
-        message = payload["choices"][0]["message"]
+        choice = payload["choices"][0]
+        message = choice["message"]
         calls = [
             ToolCall(
                 id=call.get("id", ""),
@@ -239,11 +248,25 @@ def gateway(
             )
             for call in (message.get("tool_calls") or [])
         ]
-        return ModelResponse(
+        answer = ModelResponse(
             content=message.get("content") or "",
             reasoning=message.get("reasoning") or "",
             tool_calls=calls,
         )
+        if trace is not None:
+            usage = payload.get("usage") or {}
+            trace.append(
+                {
+                    "finish_reason": choice.get("finish_reason"),
+                    "content": answer.content,
+                    "reasoning": answer.reasoning,
+                    "tool_calls": [call.to_dict() for call in calls],
+                    "prompt_tokens": usage.get("prompt_tokens"),
+                    "completion_tokens": usage.get("completion_tokens"),
+                    "max_tokens": max_tokens,
+                }
+            )
+        return answer
 
     return complete
 
@@ -301,6 +324,17 @@ def main() -> int:
     parser.add_argument("--muse-temperature", type=float, default=None)
     parser.add_argument("--n", type=int, default=1, help="number of runs")
     parser.add_argument("--results", default="results/subset_config.json")
+    parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=16000,
+        help="cortex token budget per turn; 16000 is this rig's measured floor (d16)",
+    )
+    parser.add_argument(
+        "--trace-out",
+        default=None,
+        help="write the raw per-completion transcript (with finish_reason) here as JSON",
+    )
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
@@ -319,22 +353,59 @@ def main() -> int:
         muse_temperature=args.muse_temperature,
         max_turns=args.max_steps,
         n=args.n,
+        extra={"max_tokens": args.max_tokens},
     )
 
     results: list[dict[str, Any]] = []
+    trace: list[dict[str, Any]] = []
     complete = gateway(
         args.base_url,
         args.cortex_model,
         key,
         tools=TOOLS,
         temperature=args.cortex_temperature,
+        max_tokens=args.max_tokens,
+        trace=trace,
     )
 
+    def flush_trace() -> None:
+        """Write the transcript so far — after every run, not once at the end.
+
+        A transient ``HTTP 503`` from the gateway 41 minutes into a live series
+        destroyed every turn already recorded, because the transcript was
+        written only after the last run completed. A live series must survive a
+        transient gateway failure holding the evidence it has already paid for.
+        """
+        if not args.trace_out:
+            return
+        trace_path = Path(args.trace_out).expanduser()
+        trace_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(trace_path, "w", encoding="utf-8") as f:
+            json.dump({"config": config, "turns": trace, "results": results}, f, indent=2)
+            f.write("\n")
+
     for i in range(args.n):
-        g = run_once(complete, max_steps=args.max_steps)
-        if args.json:
-            results.append(g)
-        else:
+        seen = len(trace)
+        try:
+            g = run_once(complete, max_steps=args.max_steps)
+        except Exception as exc:
+            # A dead or overloaded gateway is an infrastructure event, and it is
+            # DATA: recorded as its own run rather than killing the series and
+            # discarding the runs that already succeeded.
+            g = {
+                "verdict": "ABORTED",
+                "error": f"{type(exc).__name__}: {exc}",
+                "answer": None,
+                "is_correct": False,
+            }
+        for record in trace[seen:]:
+            record["run"] = i
+        # The verdict alone cannot separate "the model stopped" from "the token
+        # cap cut it off", so every run carries its turns' finish reasons.
+        g["finish_reasons"] = [record["finish_reason"] for record in trace[seen:]]
+        results.append(g)
+        flush_trace()
+        if not args.json:
             print(f"Run {i + 1}: {g['verdict']} (answer={g.get('answer', 'N/A')})")
 
     if args.json:

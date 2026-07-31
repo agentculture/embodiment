@@ -141,7 +141,14 @@ SENSES_MODEL = "coolthor/gemma-4-12B-it-NVFP4A16"
 
 #: Generous by design: the measured cortex spent 209 completion tokens on a
 #: three-word answer, and at 64 it returned ``content: None`` mid-thought.
-DEFAULT_MAX_TOKENS = 2048
+#:
+#: Raised 2048 -> 16000 (``d16``). At 2048 task t24 measured this cortex
+#: truncating 6.0% of completions (5 of 83) with **zero** degradations
+#: recorded, because ``ModelResponse`` carries no ``finish_reason`` (#37) —
+#: see ``docs/live-test-results/arena-budget.md``. At 16000: 0 of 58. The
+#: published greenhouse runs in ``configurations.md`` were measured at 2048;
+#: pass ``--max-tokens 2048`` to reproduce them.
+DEFAULT_MAX_TOKENS = 16000
 DEFAULT_MUSE_MAX_TOKENS = 512
 
 # ── the greenhouse itself ────────────────────────────────────────────────────

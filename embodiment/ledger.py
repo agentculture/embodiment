@@ -85,6 +85,24 @@ opposite direction, that C3 exists to prevent. A budget exit whose forced final
 synthesis *also* failed does record one, under
 :data:`~embodiment.loop.DEGRADED_SYNTHESIS`.
 
+…and neither is delivery
+------------------------
+The same rule, applied to a surface that arrived later. The muse's terminal
+drain records what it handed the actor — a count, the delivered insight ids,
+zero included — as a
+:class:`~embodiment.muse_runner.MuseDelivery` on
+:attr:`~embodiment.muse_runner.ThreadedMuseRunner.deliveries`. That record does
+**not** fold through here, and its vocabulary
+(:data:`~embodiment.muse_runner.DELIVERY_POINTS`) is deliberately outside the
+``DEGRADED_`` / ``DROPPED_`` prefixes :data:`_MODULES` harvests, so it cannot
+arrive by accident either. A terminal drain delivering three insights is that
+lane working; delivering none is the muse having had nothing left. Reporting
+either in a stream a host reads to answer *"what went wrong?"* would make every
+healthy run look broken — and a stream that cries wolf on success gets ignored,
+which costs exactly the C3 visibility it was built for. Counsel that genuinely
+was lost keeps its codes (``muse-insight-stale`` / ``-late`` / ``-overflow``),
+and they still fire on that path.
+
 Never raises into the host
 --------------------------
 This is an observability surface; it must not become a new failure source. A
@@ -524,7 +542,7 @@ def _fold(source: Any, *, lane: str) -> list[LedgerRecord]:
     for record in raw:
         try:
             folded.append(_adapt(record, lane=lane))
-        except Exception as exc:  # noqa: BLE001 - one bad record never loses the rest
+        except Exception as exc:  # noqa: BLE001  # one bad record never loses the rest
             folded.append(_unreadable(f"{lane} record: {type(exc).__name__}: {exc}", record))
     return folded
 
@@ -596,7 +614,7 @@ def from_lifecycle(source: Any) -> list[LedgerRecord]:
             if getattr(event, "kind", None) != degraded_kind:
                 continue
             folded.append(_adapt_lifecycle_event(event))
-        except Exception as exc:  # noqa: BLE001 - one bad event never loses the rest
+        except Exception as exc:  # noqa: BLE001  # one bad event never loses the rest
             folded.append(
                 _unreadable(f"{SOURCE_LIFECYCLE} event: {type(exc).__name__}: {exc}", event)
             )
@@ -648,7 +666,7 @@ def from_subagent(source: Any, *, child_task_id: Optional[str] = None) -> list[L
                     original=adapted.original,
                 )
             )
-        except Exception as exc:  # noqa: BLE001 - one bad record never loses the rest
+        except Exception as exc:  # noqa: BLE001  # one bad record never loses the rest
             folded.append(
                 _unreadable(
                     f"{SOURCE_SUBAGENT} record: {type(exc).__name__}: {exc}",

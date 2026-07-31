@@ -51,26 +51,36 @@ from embodiment.muse import (
     COUNSEL_KIND_DURABLE,
     COUNSEL_KIND_STEP,
     DEGRADED_THINKING,
+    DEGRADED_TOOLS_WITHHELD,
     MARKER_DONE,
+    MUSE_AUTHORITY,
+    MUSE_TOOL_AUTHORITY,
     MuseControls,
     MuseDegradation,
     MuseInsight,
+    MuseLoop,
+    MuseToolBench,
 )
 from embodiment.muse_runner import (
+    DEGRADED_CLOSER,
     DEGRADED_ENDPOINT,
     DEGRADED_THREAD,
+    DELIVERY_POINTS,
+    DELIVERY_TERMINAL,
     DROPPED_BOUNDARY,
     DROPPED_COMPILATION_STARVED,
     DROPPED_COUNSEL_DISPLACED,
     DROPPED_LATE,
     DROPPED_OVERFLOW,
     DROPPED_STALE,
+    MAX_DELIVERIES,
     MAX_LEDGER,
     MUSE_ROLE,
     THREAD_NAME,
     WORK_BOUNDARY,
     WORK_CLASSES,
     WORK_COMPILATION,
+    MuseDelivery,
     ThreadedMuseRunner,
 )
 from embodiment.presence import UpdateCadence
@@ -442,6 +452,105 @@ class TestThreadDiscipline:
         assert seam.calls == 0
 
 
+class TestClosersEndWhatTheHostOpened:
+    """One close for two lifetimes, without the runner learning about either.
+
+    A host that hands the muse a tool has something to shut down when the lane
+    ends, and the timing is not obvious: too early breaks a session the bounded
+    join is still waiting on, too late leaks whatever it held. ``closers`` is
+    the seam that fixes the timing without the runner acquiring a dependency —
+    each entry is an opaque zero-argument callable, and the default ``()``
+    leaves every host that wires none byte-identical.
+    """
+
+    def test_no_closers_is_the_default_and_changes_nothing(self):
+        runner = ThreadedMuseRunner(_Scripted())
+        runner.close()
+
+        assert runner.degradations == []
+        assert runner.counts["degradations_recorded"] == 0
+
+    def test_a_closer_runs_at_close(self):
+        closed: list[str] = []
+        runner = ThreadedMuseRunner(_Scripted(), closers=(lambda: closed.append("tool"),))
+        runner.close()
+
+        assert closed == ["tool"]
+
+    def test_closers_run_in_the_order_they_were_wired(self):
+        order: list[int] = []
+        runner = ThreadedMuseRunner(
+            _Scripted(),
+            closers=(lambda: order.append(1), lambda: order.append(2)),
+        )
+        runner.close()
+
+        assert order == [1, 2]
+
+    def test_a_closer_runs_exactly_once_however_often_close_is_called(self):
+        """A second teardown of the same thing is at best wasted, at worst harmful."""
+        calls: list[int] = []
+        runner = ThreadedMuseRunner(_Scripted(), closers=(lambda: calls.append(1),))
+        runner.close()
+        runner.close()
+
+        assert calls == [1]
+
+    def test_a_closer_sees_a_lane_that_has_already_finished_accounting(self):
+        """Closers run LAST — after the bounded join and after the late drops.
+
+        The ordering matters twice over: a closer must not tear down something
+        a still-running session is using, and a closer that reads the lane's
+        counters must see final numbers rather than mid-close ones. Both are
+        observable through ``counts``, which only carries the stranded
+        insight's late drop once the accounting has run.
+        """
+        seen: list[int] = []
+        runner = ThreadedMuseRunner(
+            _Scripted(_resp("GUIDANCE: never drained " + MARKER_DONE)),
+            closers=(lambda: seen.append(runner.counts["insights_dropped_late"]),),
+        )
+        runner.consider(_boundary(step=1))
+        assert runner.wait_idle(_TIMEOUT)
+        runner.close(timeout=_TIMEOUT)
+
+        assert seen == [1], "the closer ran before the late-drop accounting"
+
+    def test_a_closer_that_raises_is_recorded_rather_than_propagated(self):
+        def explode() -> None:
+            raise OSError("the container engine refused")
+
+        runner = ThreadedMuseRunner(_Scripted(), closers=(explode,))
+        runner.close()  # must not raise
+
+        codes = [d.code for d in runner.degradations]
+        assert codes == [DEGRADED_CLOSER]
+        assert "the container engine refused" in runner.degradations[0].reason
+
+    def test_a_raising_closer_does_not_stop_the_next_one(self):
+        """Teardowns are independent; one host bug must not strand the others."""
+        closed: list[str] = []
+
+        def explode() -> None:
+            raise OSError("first one broke")
+
+        runner = ThreadedMuseRunner(_Scripted(), closers=(explode, lambda: closed.append("second")))
+        runner.close()
+
+        assert closed == ["second"]
+        assert [d.code for d in runner.degradations] == [DEGRADED_CLOSER]
+
+    def test_closers_are_materialised_at_construction(self):
+        """A generator consumed by an earlier close would be silently empty later."""
+        calls: list[int] = []
+        runner = ThreadedMuseRunner(
+            _Scripted(), closers=(lambda: calls.append(1) for _ in range(1))
+        )
+        runner.close()
+
+        assert calls == [1]
+
+
 # ── 4. staleness and late arrival are RECORDED (C3) ───────────────────────────
 
 
@@ -551,7 +660,8 @@ class TestDegradation:
             runner.consider(_boundary(step=1))
             assert runner.wait_idle(_TIMEOUT)
             reason = runner.degradation()
-            assert reason is not None and "muse" in reason
+            assert reason is not None
+            assert "muse" in reason
             codes = [d.code for d in runner.degradations]
             assert DEGRADED_THINKING in codes  # the session's own record (t10a)
             assert DEGRADED_ENDPOINT in codes  # the lane stopping (t10b)
@@ -600,7 +710,8 @@ class TestDegradation:
         with _runner(seam, thread_factory=refuse) as runner:
             assert runner.consider(_boundary(step=1)) is None
             reason = runner.degradation()
-            assert reason is not None and "thread" in reason
+            assert reason is not None
+            assert "thread" in reason
             assert [d.code for d in runner.degradations] == [DEGRADED_THREAD]
             assert runner.drain(step_count=1) == []
             assert runner.wait_idle(_TIMEOUT) is True
@@ -660,6 +771,12 @@ class TestDegradation:
                 "kind_dropped",
                 "relative_latency",
                 "compiled_from",
+                # The two work classes the one thread is shared between, and how
+                # many sessions each actually got (embodiment#18).
+                "work_started",
+                # What the terminal drain actually handed over (task t5). Not a
+                # degradation, so it is deliberately NOT in ``degradations``.
+                "deliveries",
             }
             snap["counts"]["sessions_started"] = 999
             snap["degradations"].append("forged")
@@ -978,7 +1095,8 @@ class TestDefensiveEdges:
             # leaving a host with a lane that looks quiet but is gone.
             assert [d.code for d in runner.degradations] == ["muse-worker-failed"]
             reason = runner.degradation()
-            assert reason is not None and "the controls exploded" in reason
+            assert reason is not None
+            assert "the controls exploded" in reason
             assert runner.drain(step_count=1) == []
 
     def test_the_ledger_stops_growing_but_the_counter_does_not(self):
@@ -1103,7 +1221,21 @@ class TestKindAwareDelivery:
 
 
 class TestWorkClassPriority:
-    """Boundary counsel is scheduled ahead of compilation; drops are recorded."""
+    """Boundary counsel is scheduled ahead of compilation; drops are recorded.
+
+    The first three tests below are vocabulary pins and are named as such: a
+    constant exists, is in ``RUNNER_CODES``, is picked up by the ledger. That is
+    all they check and all they claim.
+
+    The rest DRIVE the priority. They used to not: two of them asserted only
+    ``code in RUNNER_CODES`` and ``code.startswith("muse-")`` under docstrings
+    promising "is recorded with DROPPED_…", and a third asserted a delivery
+    while promising a recorded displacement. All three shipped green in 0.8.0
+    against a lane that could not produce either code (embodiment#18). A test
+    whose docstring outruns its assertions is worse than an absent one — it
+    reports coverage that does not exist — so each now provokes the drop and
+    reads the record back.
+    """
 
     def test_work_class_constants_are_exported(self):
         assert WORK_BOUNDARY == "boundary"
@@ -1128,40 +1260,305 @@ class TestWorkClassPriority:
     def test_slow_compilation_cannot_displace_boundary_counsel_without_recorded_drop(
         self,
     ):
-        """A slow fake compilation blocks the thread; boundary counsel still
-        flows and the displacement is recorded as a kind-labelled drop."""
-        # Use a gated seam that blocks on compilation work, then a boundary
-        # arrives. The boundary counsel should be delivered, and the
-        # compilation work should be recorded as starved.
+        """A slow compilation holds the thread; boundary counsel still flows.
+
+        Both halves of the name, asserted: the counsel the actor's position
+        asked for is delivered, and the compilation that lost the slot to it
+        leaves a record instead of vanishing.
+        """
         seam = _Gated(
+            _resp("GUIDANCE: compiled counsel " + MARKER_DONE),  # slow, in flight
             _resp("GUIDANCE: boundary counsel " + MARKER_DONE),
+        )
+        with _runner(seam) as runner:
+            runner.compile()
+            assert seam.started.wait(_TIMEOUT), "the compilation session never started"
+            runner.compile()  # queued behind the slow one
+            runner.consider(_boundary(step=1))  # outranks it and takes the slot
+            seam.release.set()
+            assert runner.wait_idle(_TIMEOUT)
+            # The boundary counsel flowed — the priority cost the actor nothing.
+            assert "boundary counsel" in [c.guidance for c in runner.drain(step_count=1)]
+            # And the compilation it displaced is visible, not silent (C3).
+            assert [d.code for d in runner.degradations] == [DROPPED_COMPILATION_STARVED]
+            assert runner.counts["compilation_starved"] == 1
+            assert runner.snapshot()["work_started"] == {WORK_BOUNDARY: 1, WORK_COMPILATION: 1}
+
+    def test_compilation_starved_by_counsel_is_a_recorded_drop(self):
+        """Boundary counsel takes the one thread, and the loss is READABLE.
+
+        Drives the real path — gated session in flight, ``compile`` queued
+        behind it, a second boundary taking the slot — then reads the record
+        back: a host has to be able to tell WHAT was lost, WHY, and where the
+        actor stood when it happened, not merely that a counter moved.
+        """
+        seam = _Gated(
+            _resp("GUIDANCE: first " + MARKER_DONE),
+            _resp("GUIDANCE: second " + MARKER_DONE),
         )
         with _runner(seam) as runner:
             runner.consider(_boundary(step=1))
             assert seam.started.wait(_TIMEOUT)
+            runner.compile(step_count=7)  # queued behind the session in flight
+            runner.consider(_boundary(step=2))  # boundary counsel outranks it
             seam.release.set()
             assert runner.wait_idle(_TIMEOUT)
-            comments = runner.drain(step_count=1)
-            assert len(comments) == 1
-            assert comments[0].guidance == "boundary counsel"
 
-    def test_compilation_starved_by_counsel_is_a_recorded_drop(self):
-        """When boundary counsel takes priority, compilation starvation is
-        recorded with DROPPED_COMPILATION_STARVED."""
-        # The runner's internal scheduling ensures boundary work is prioritised.
-        # We verify the drop code exists and is in the vocabulary.
-        from embodiment.muse_runner import RUNNER_CODES
-
-        assert DROPPED_COMPILATION_STARVED in RUNNER_CODES
-        assert DROPPED_COMPILATION_STARVED.startswith("muse-")
+            dropped = [d for d in runner.degradations if d.code == DROPPED_COMPILATION_STARVED]
+            assert len(dropped) == 1
+            assert "background compilation never reached the muse's thread" in dropped[0].reason
+            assert "boundary counsel took the muse's one thread" in dropped[0].reason
+            # Stamped with the compilation's own step, so the record locates the
+            # loss in the run rather than defaulting to step zero.
+            assert dropped[0].step_index == 7
+            assert runner.counts["compilation_starved"] == 1
+            # It never ran: the count is a loss, not a delay.
+            assert runner.snapshot()["work_started"] == {WORK_BOUNDARY: 2, WORK_COMPILATION: 0}
 
     def test_counsel_displaced_by_compilation_is_a_recorded_drop(self):
-        """When compilation fills the buffer, boundary counsel displacement is
-        recorded with DROPPED_COUNSEL_DISPLACED."""
-        from embodiment.muse_runner import RUNNER_CODES
+        """Compiled counsel evicts undrained boundary counsel — and says so.
 
-        assert DROPPED_COUNSEL_DISPLACED in RUNNER_CODES
-        assert DROPPED_COUNSEL_DISPLACED.startswith("muse-")
+        The priority inversion, driven through the buffer: one slot, boundary
+        counsel nobody drained, then a compiled insight taking its place. The
+        record names the arriving session, which is the one a host can act on.
+        """
+        seam = _Scripted(
+            _resp("GUIDANCE: boundary counsel " + MARKER_DONE),
+            _resp("GUIDANCE: compiled counsel " + MARKER_DONE),
+        )
+        with _runner(seam, max_pending=1) as runner:
+            runner.consider(_boundary(step=5))
+            assert runner.wait_idle(_TIMEOUT)  # buffered, deliberately never drained
+            runner.compile(step_count=9)
+            assert runner.wait_idle(_TIMEOUT)
+
+            dropped = [d for d in runner.degradations if d.code == DROPPED_COUNSEL_DISPLACED]
+            assert len(dropped) == 1
+            assert "displaced undrained boundary counsel" in dropped[0].reason
+            assert dropped[0].step_index == 9
+            assert runner.counts["counsel_displaced"] == 1
+            # The inversion is its OWN code: same-class backpressure stays
+            # DROPPED_OVERFLOW, and a host answers the two differently.
+            assert DROPPED_OVERFLOW not in [d.code for d in runner.degradations]
+            # The boundary counsel really is gone; only the compiled one drains.
+            assert [c.guidance for c in runner.drain(step_count=9)] == ["compiled counsel"]
+
+
+# ── 12. background compilation: the second work class (embodiment#18) ─────────
+
+
+class TestBackgroundCompilationWork:
+    """``compile()`` is the second work class — and the two dead codes' producer.
+
+    ``DROPPED_COMPILATION_STARVED`` and ``DROPPED_COUNSEL_DISPLACED`` shipped in
+    t3 declared, exported, in ``RUNNER_CODES`` — and **unreachable**
+    (embodiment#18). They belonged to the ``WORK_BOUNDARY`` /
+    ``WORK_COMPILATION`` vocabulary, which described a background-compilation
+    lane nothing implemented, so a host writing an exhaustive branch table over
+    ``RUNNER_CODES`` got two arms that could never fire.
+
+    Every test here drives the codes through the PUBLIC seam — ``compile()``,
+    ``consider()``, ``drain()``, ``close()``, ``counts``, ``snapshot()`` — and
+    reaches no private attribute, which is the contract task t3 then makes
+    structural.
+    """
+
+    # -- the class exists and runs on the one thread --------------------------
+
+    def test_compilation_runs_on_the_same_one_daemon_thread(self):
+        seam = _Scripted(
+            _resp("GUIDANCE: boundary counsel " + MARKER_DONE),
+            _resp("GUIDANCE: compiled counsel " + MARKER_DONE),
+        )
+        with _runner(seam) as runner:
+            runner.consider(_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)
+            runner.compile()
+            assert runner.wait_idle(_TIMEOUT)
+            idents = {t.ident for t in seam.threads}
+            assert len(idents) == 1
+            assert idents != {threading.current_thread().ident}
+            assert runner.counts["sessions_started"] == 2
+            assert runner.snapshot()["work_started"] == {WORK_BOUNDARY: 1, WORK_COMPILATION: 1}
+
+    def test_compiled_counsel_drains_like_any_other(self):
+        seam = _Scripted(_resp("GUIDANCE: compiled counsel " + MARKER_DONE))
+        with _runner(seam) as runner:
+            runner.compile()
+            assert runner.wait_idle(_TIMEOUT)
+            drained = runner.drain(step_count=3)
+            assert [c.guidance for c in drained] == ["compiled counsel"]
+            # Provenance names the work class, so a reader can tell counsel the
+            # actor's position asked for from counsel it did not.
+            assert drained[0].origin.kind == WORK_COMPILATION
+
+    def test_a_runner_never_asked_to_compile_starts_no_thread(self):
+        """The museless-cost rule is unchanged: the second class adds no thread."""
+        before = _live_threads()
+        with _runner(_Scripted()) as runner:
+            assert runner.thread_started is False
+            assert _live_threads() == before
+            assert runner.snapshot()["work_started"] == {WORK_BOUNDARY: 0, WORK_COMPILATION: 0}
+
+    def test_the_work_classes_are_the_only_two_accepted(self):
+        assert set(WORK_CLASSES) == {WORK_BOUNDARY, WORK_COMPILATION}
+
+    # -- DROPPED_COMPILATION_STARVED, three real paths ------------------------
+
+    def test_a_boundary_displaces_queued_compilation_and_records_it(self):
+        """Boundary counsel outranks compilation for the one thread."""
+        seam = _Gated(
+            _resp("GUIDANCE: first " + MARKER_DONE),
+            _resp("GUIDANCE: second " + MARKER_DONE),
+        )
+        with _runner(seam) as runner:
+            runner.consider(_boundary(step=1))
+            assert seam.started.wait(_TIMEOUT), "the muse never started thinking"
+            runner.compile()  # queued behind the in-flight session
+            runner.consider(_boundary(step=2))  # outranks it and takes the slot
+            seam.release.set()
+            assert runner.wait_idle(_TIMEOUT)
+            starved = [d for d in runner.degradations if d.code == DROPPED_COMPILATION_STARVED]
+            assert len(starved) == 1
+            assert runner.counts["compilation_starved"] == 1
+            # The boundary work it lost to actually ran.
+            assert runner.snapshot()["work_started"] == {WORK_BOUNDARY: 2, WORK_COMPILATION: 0}
+
+    def test_compilation_offered_behind_queued_boundary_counsel_is_starved(self):
+        seam = _Gated(
+            _resp("GUIDANCE: first " + MARKER_DONE),
+            _resp("GUIDANCE: second " + MARKER_DONE),
+        )
+        with _runner(seam) as runner:
+            runner.consider(_boundary(step=1))
+            assert seam.started.wait(_TIMEOUT)
+            runner.consider(_boundary(step=2))  # queued boundary counsel
+            runner.compile()  # loses the slot race outright
+            seam.release.set()
+            assert runner.wait_idle(_TIMEOUT)
+            codes = [d.code for d in runner.degradations]
+            assert codes.count(DROPPED_COMPILATION_STARVED) == 1
+            assert codes.count(DROPPED_BOUNDARY) == 0
+            assert runner.snapshot()["work_started"] == {WORK_BOUNDARY: 2, WORK_COMPILATION: 0}
+
+    def test_a_newer_compilation_replaces_the_one_still_queued(self):
+        """The freshest compilation survives, and the displaced one is recorded."""
+        seam = _Gated(
+            _resp("GUIDANCE: first " + MARKER_DONE),
+            _resp("GUIDANCE: compiled " + MARKER_DONE),
+        )
+        with _runner(seam) as runner:
+            runner.consider(_boundary(step=1))
+            assert seam.started.wait(_TIMEOUT)
+            runner.compile()
+            runner.compile()
+            seam.release.set()
+            assert runner.wait_idle(_TIMEOUT)
+            assert runner.counts["compilation_starved"] == 1
+            assert runner.snapshot()["work_started"] == {WORK_BOUNDARY: 1, WORK_COMPILATION: 1}
+
+    def test_compilation_still_queued_when_the_runner_closes_is_starved(self):
+        seam = _Gated(_resp("GUIDANCE: first " + MARKER_DONE))
+        runner = ThreadedMuseRunner(seam)
+        try:
+            runner.consider(_boundary(step=1))
+            assert seam.started.wait(_TIMEOUT)
+            runner.compile()  # it will never get the thread
+            runner.close(timeout=0.05)
+            codes = [d.code for d in runner.degradations]
+            assert codes.count(DROPPED_COMPILATION_STARVED) == 1
+            assert runner.counts["compilation_starved"] == 1
+        finally:
+            seam.release.set()
+            runner.close(timeout=_TIMEOUT)
+
+    def test_compile_on_a_closed_runner_is_a_no_op(self):
+        runner = ThreadedMuseRunner(_Scripted(_resp("GUIDANCE: never " + MARKER_DONE)))
+        runner.close()
+        runner.compile()
+        assert runner.thread_started is False
+        assert runner.counts["sessions_started"] == 0
+        assert runner.degradations == []
+
+    # -- DROPPED_COUNSEL_DISPLACED, and its distinctness from overflow --------
+
+    def test_compilation_filling_the_buffer_displaces_boundary_counsel(self):
+        """The low-priority class evicting the high-priority one: an inversion."""
+        seam = _Scripted(
+            _resp("GUIDANCE: boundary counsel " + MARKER_DONE),
+            _resp("GUIDANCE: compiled counsel " + MARKER_DONE),
+        )
+        with _runner(seam, max_pending=1) as runner:
+            runner.consider(_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)  # buffered, never drained
+            runner.compile()
+            assert runner.wait_idle(_TIMEOUT)
+            assert [d.code for d in runner.degradations] == [DROPPED_COUNSEL_DISPLACED]
+            assert runner.counts["counsel_displaced"] == 1
+            # It is still an insight lost to a full buffer, so the overflow
+            # counter stays the honest total; ``counsel_displaced`` names the
+            # subset a host can act on.
+            assert runner.counts["insights_dropped_overflow"] == 1
+            assert [c.guidance for c in runner.drain(step_count=1)] == ["compiled counsel"]
+
+    def test_boundary_counsel_evicting_boundary_counsel_is_plain_overflow(self):
+        """Same-class backpressure keeps ``DROPPED_OVERFLOW`` — the codes differ."""
+        seam = _Scripted(
+            _resp("GUIDANCE: one " + MARKER_DONE),
+            _resp("GUIDANCE: two " + MARKER_DONE),
+        )
+        with _runner(seam, max_pending=1) as runner:
+            runner.consider(_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)
+            runner.consider(_boundary(step=2))
+            assert runner.wait_idle(_TIMEOUT)
+            assert [d.code for d in runner.degradations] == [DROPPED_OVERFLOW]
+            assert runner.counts["counsel_displaced"] == 0
+            assert runner.counts["insights_dropped_overflow"] == 1
+
+    def test_boundary_counsel_evicting_compiled_counsel_is_plain_overflow(self):
+        """The inversion is directional: outranking work evicting is not a loss."""
+        seam = _Scripted(
+            _resp("GUIDANCE: compiled " + MARKER_DONE),
+            _resp("GUIDANCE: boundary " + MARKER_DONE),
+        )
+        with _runner(seam, max_pending=1) as runner:
+            runner.compile()
+            assert runner.wait_idle(_TIMEOUT)
+            runner.consider(_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)
+            assert [d.code for d in runner.degradations] == [DROPPED_OVERFLOW]
+            assert runner.counts["counsel_displaced"] == 0
+
+    def test_compiled_counsel_evicting_compiled_counsel_is_plain_overflow(self):
+        seam = _Scripted(
+            _resp("GUIDANCE: one"),
+            _resp("GUIDANCE: two " + MARKER_DONE),
+        )
+        with _runner(seam, max_pending=1, controls=MuseControls(max_turns=2)) as runner:
+            runner.compile()
+            assert runner.wait_idle(_TIMEOUT)
+            assert [d.code for d in runner.degradations] == [DROPPED_OVERFLOW]
+            assert runner.counts["counsel_displaced"] == 0
+
+    # -- the host-supplied material -------------------------------------------
+
+    def test_compile_uses_the_runners_bundle_and_accepts_an_override(self):
+        class _Bundle:
+            def __init__(self, *ids: str) -> None:
+                self.record_ids = tuple(ids)
+                self.items = ()
+
+        seam = _Scripted(
+            _resp("GUIDANCE: a " + MARKER_DONE),
+            _resp("GUIDANCE: b " + MARKER_DONE),
+        )
+        with _runner(seam, recall_bundle=_Bundle("m-1")) as runner:
+            runner.compile()
+            assert runner.wait_idle(_TIMEOUT)
+            runner.compile(recall_bundle=_Bundle("m-2"))
+            assert runner.wait_idle(_TIMEOUT)
+            assert set(runner.compiled_from) == {"m-1", "m-2"}
 
 
 # ── mixed-kind resolution + the relative-latency measurement (task t3) ────────
@@ -1233,7 +1630,8 @@ class TestRelativeLatencyIsMeasuredNotAssumed:
             for _ in range(3):
                 runner.note_loop_step(2.0)
             ratio = runner.snapshot()["relative_latency"]
-            assert ratio is not None and 0.0 < ratio < 1.0, ratio
+            assert ratio is not None, ratio
+            assert 0.0 < ratio < 1.0, ratio
         finally:
             runner.close(timeout=_TIMEOUT)
 
@@ -1251,3 +1649,784 @@ class TestRelativeLatencyIsMeasuredNotAssumed:
             assert runner.snapshot()["relative_latency"] == good
         finally:
             runner.close(timeout=_TIMEOUT)
+
+
+# ── 15. the terminal drain's delivery record (task t5) ───────────────────────
+
+
+class TestTerminalDeliveryIsRecorded:
+    """The one drain whose job is DELIVERY records what it delivered (C3).
+
+    The cycle's whole claim is that counsel which used to be stranded at close
+    now reaches the actor: issue #17 measured one late drop per run in 4 of 4
+    runs, t4 stopped the terminal boundary starting the session that stranded,
+    and t25 made drive end fire that beat once on every exit reason. A delivery
+    path nobody can check would make this the one place the cycle claims to fix
+    delivery while making delivery unobservable.
+
+    So the terminal drain mints a :class:`MuseDelivery` — and mints one even
+    when it delivered nothing, because *"the terminal drain ran and delivered
+    nothing"* and *"the terminal drain never ran"* are different facts and a
+    host must be able to tell them apart.
+
+    It is deliberately **not** a degradation. See
+    :class:`TestADeliveryIsNotADegradation` for the argument and the pins.
+    """
+
+    def test_the_record_carries_the_count_and_the_delivered_ids(self):
+        seam = _Scripted(_resp("noticed\nGUIDANCE: check n=0 " + MARKER_DONE))
+        with _runner(seam) as runner:
+            runner.consider(_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)
+            delivered = runner.drain_terminal(step_count=2)
+            assert len(delivered) == 1
+            [record] = runner.deliveries
+            assert record.point == DELIVERY_TERMINAL
+            assert record.count == 1
+            assert len(record.insight_ids) == 1
+            assert record.step_index == 2
+
+    def test_the_ids_name_the_session_and_turn_that_produced_each_insight(self):
+        """The id is the key the muse already stamps, not a new invention."""
+        seam = _Scripted(_resp("GUIDANCE: one"), _resp("GUIDANCE: two " + MARKER_DONE))
+        with _runner(seam, controls=MuseControls(max_turns=2)) as runner:
+            runner.consider(_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)
+            delivered = runner.drain_terminal(step_count=1)
+            [record] = runner.deliveries
+            assert record.count == len(delivered) == 2
+            expected = tuple(f"s{i.origin.session}t{i.turn_index}" for i in delivered)
+            assert record.insight_ids == expected
+            assert len(set(record.insight_ids)) == 2  # the turns are distinguishable
+
+    def test_a_terminal_drain_that_delivered_NOTHING_still_records_a_zero(self):
+        """The whole reason the record exists: absence must be stated, not implied."""
+        with _runner(_Scripted(_resp(MARKER_DONE))) as runner:
+            runner.consider(_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)
+            assert runner.drain_terminal(step_count=1) == []
+            [record] = runner.deliveries
+            assert record.count == 0
+            assert record.insight_ids == ()
+
+    def test_a_terminal_drain_that_never_RAN_records_nothing_at_all(self):
+        """The contrasting fact — and the reason a zero is not the same claim."""
+        with _runner(_Scripted(_resp("GUIDANCE: unread " + MARKER_DONE))) as runner:
+            runner.consider(_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)
+            assert runner.deliveries == []
+            assert runner.snapshot()["deliveries"] == []
+
+    def test_a_museless_runner_that_is_only_drained_still_records_it(self):
+        """No thread, no session, no counsel — and a record saying exactly that."""
+        with _runner(_Scripted()) as runner:
+            assert runner.drain_terminal(step_count=3) == []
+            assert runner.thread_started is False
+            assert [r.count for r in runner.deliveries] == [0]
+
+    def test_stale_counsel_is_dropped_before_it_is_counted_as_delivered(self):
+        """The count is what the ACTOR got, never what the muse produced."""
+        seam = _Scripted(_resp("GUIDANCE[step]: about step one " + MARKER_DONE))
+        with _runner(seam) as runner:
+            runner.consider(_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)
+            assert runner.drain_terminal(step_count=400) == []
+            assert [r.count for r in runner.deliveries] == [0]
+            assert [d.code for d in runner.degradations] == [DROPPED_STALE]
+
+    def test_the_snapshot_carries_the_record_json_safe(self):
+        seam = _Scripted(_resp("GUIDANCE: noted " + MARKER_DONE))
+        with _runner(seam) as runner:
+            runner.consider(_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)
+            runner.drain_terminal(step_count=1)
+            [rendered] = runner.snapshot()["deliveries"]
+            assert set(rendered) == {"point", "count", "insight_ids", "step_index"}
+            assert rendered["count"] == 1
+            json.dumps(runner.snapshot()["deliveries"])  # a host pipes this
+
+    def test_the_snapshot_hands_back_copies(self):
+        with _runner(_Scripted(_resp(MARKER_DONE))) as runner:
+            runner.drain_terminal(step_count=1)
+            runner.snapshot()["deliveries"].append("forged")
+            assert len(runner.snapshot()["deliveries"]) == 1
+            runner.deliveries.append("forged")
+            assert len(runner.deliveries) == 1
+
+    def test_the_counters_stay_exact_past_the_bounded_record_window(self):
+        with _runner(_Scripted()) as runner:
+            for _ in range(MAX_DELIVERIES + 5):
+                runner.drain_terminal()
+            assert len(runner.deliveries) == MAX_DELIVERIES
+            assert runner.counts["terminal_drains"] == MAX_DELIVERIES + 5
+
+    def test_the_delivered_total_is_counted_separately_from_every_drain(self):
+        seam = _Scripted(_resp("GUIDANCE: noted " + MARKER_DONE))
+        with _runner(seam) as runner:
+            runner.consider(_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)
+            runner.drain_terminal(step_count=1)
+            counts = runner.counts
+            assert counts["insights_delivered_terminal"] == 1
+            assert counts["insights_delivered"] == 1
+
+    def test_a_drain_that_is_not_terminal_records_no_delivery(self):
+        """Only the last beat mints one; an ordinary drain is unchanged."""
+        seam = _Scripted(_resp("GUIDANCE: noted " + MARKER_DONE))
+        with _runner(seam) as runner:
+            runner.consider(_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)
+            assert len(runner.drain(step_count=1)) == 1
+            assert runner.deliveries == []
+            assert runner.counts["terminal_drains"] == 0
+
+    def test_the_terminal_drain_never_waits_on_the_muse(self):
+        """Deviation d1 holds without exception, including at the last beat."""
+        seam = _Gated(_resp("GUIDANCE: too late " + MARKER_DONE))
+        with _runner(seam) as runner:
+            runner.consider(_boundary(step=1))
+            assert seam.started.wait(_TIMEOUT)
+            # The muse is provably mid-thought; the terminal drain returns anyway.
+            assert runner.drain_terminal(step_count=1) == []
+            assert [r.count for r in runner.deliveries] == [0]
+            seam.release.set()
+
+    def test_the_delivery_point_vocabulary_is_declared_and_exhaustive(self):
+        assert DELIVERY_TERMINAL == "terminal"
+        assert DELIVERY_POINTS == (DELIVERY_TERMINAL,)
+        assert MuseDelivery().point == DELIVERY_TERMINAL
+
+
+class TestADeliveryIsNotADegradation:
+    """A healthy delivery must never enter the stream that answers "what broke?".
+
+    ``embodiment.ledger``'s own rule is that a budget exit produces no ledger
+    record because *"folding it in here would make the stream claim breakage
+    that did not happen"*. The mirror of that rule governs this record: the
+    terminal drain delivering three insights is the cycle **working**, and
+    minting a ``DEGRADED_*`` / ``DROPPED_*`` code for it would make every
+    healthy run report a degradation. So the delivery record is a separate,
+    non-degradation surface, and these pin that it stays one.
+    """
+
+    def test_the_record_is_not_appended_to_the_degradation_ledger(self):
+        seam = _Scripted(_resp("GUIDANCE: noted " + MARKER_DONE))
+        with _runner(seam) as runner:
+            runner.consider(_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)
+            before = runner.counts["degradations_recorded"]
+            runner.drain_terminal(step_count=1)
+            assert runner.degradations == []
+            assert runner.counts["degradations_recorded"] == before
+            assert runner.degradation() is None
+
+    def test_no_delivery_reaches_the_host_facing_degradation_stream(self):
+        from embodiment import ledger
+
+        seam = _Scripted(_resp("GUIDANCE: noted " + MARKER_DONE))
+        with _runner(seam) as runner:
+            runner.consider(_boundary(step=1))
+            assert runner.wait_idle(_TIMEOUT)
+            runner.drain_terminal(step_count=1)
+            assert runner.deliveries  # it happened…
+            assert ledger.read(muse_runner=runner) == []  # …and it is not breakage
+
+    def test_the_delivery_vocabulary_is_not_a_degradation_vocabulary(self):
+        from embodiment import ledger
+
+        codes = {e.code for e in ledger.known_codes()}
+        assert DELIVERY_TERMINAL not in codes
+        for point in DELIVERY_POINTS:
+            assert point not in codes
+
+
+class TestTheTerminalVerbIsOptional:
+    """A seam without ``drain_terminal`` must be untouched by its existence.
+
+    The verb is probed for by name — the same optional-capability shape the
+    loop uses to probe a presence sink for ``on_terminal_boundary`` — precisely
+    so :class:`MuseSeam` keeps exactly three members and no host that wrote one
+    against t10b's contract has to change a line. If that ever stops being
+    true, the cost of an observability record has been paid by every consumer.
+    """
+
+    class _ThreeMemberSeam:
+        """The whole protocol, and nothing else."""
+
+        def __init__(self, *comments: MuseComment) -> None:
+            self.ready = list(comments)
+            self.drains: list[int] = []
+
+        def consider(self, boundary: BoundaryContext) -> None:
+            return None
+
+        def drain(self, *, step_count: int = 0) -> list[MuseComment]:
+            self.drains.append(step_count)
+            ready, self.ready = self.ready, []
+            return ready
+
+        def degradation(self) -> Optional[str]:
+            return None
+
+    def test_a_three_member_seam_still_satisfies_the_protocol(self):
+        assert isinstance(self._ThreeMemberSeam(), MuseSeam)
+        assert "drain_terminal" not in dir(self._ThreeMemberSeam())
+
+    def test_the_terminal_beat_drains_it_exactly_as_before(self):
+        seam = self._ThreeMemberSeam(MuseComment(text="still here", guidance="ship it"))
+        guided: list[str] = []
+        rendered: list[str] = []
+        engine = PresenceEngine(
+            io=PresenceIO(append_guidance=guided.append, render=rendered.append), muse=seam
+        )
+        turns = engine.on_terminal_boundary(step_count=9)
+        assert seam.drains == [9]  # the plain verb, with the same argument
+        assert guided == ["ship it"]
+        assert any("still here" in line for line in rendered)
+        assert turns
+        assert engine.muse_degraded is False
+
+    def test_the_runner_is_the_seam_that_has_it(self):
+        with _runner(_Scripted()) as runner:
+            assert isinstance(runner, MuseSeam)
+            assert callable(runner.drain_terminal)
+
+
+class TestTheTerminalDeliveryOfARealDrive:
+    """LIVE-SHAPED: a real ``run``, a real pump, a real muse on a real thread.
+
+    Nothing here is stubbed below the seam a host would supply — the actor's
+    model, its tools and the muse's endpoint. The terminal beat is fired by
+    :func:`embodiment.loop.run` itself (task t25), reaches the runner through
+    :meth:`embodiment.presence_engine.PresenceEngine.on_terminal_boundary`
+    (task t4), and the assertion is the one that matters: the count in the
+    record equals the counsel the actor actually received at that beat.
+
+    Determinism without a sleep: the muse's seam is gated, and the drive's own
+    ``observer`` releases it on the ``exit`` event — which :func:`run` fires
+    **after** the last per-step presence boundary and **before**
+    ``_presence_terminal``. So the insight is provably buffered, provably
+    undrained by any earlier beat, and provably waiting when the last beat runs.
+    """
+
+    @staticmethod
+    def _drive(host: _Host, engine: PresenceEngine, on_exit: Any) -> Any:
+        def observer(event: Any) -> None:
+            if event.kind == "exit":
+                on_exit()
+
+        return run(
+            host.complete,
+            host.task(),
+            executor=host.executor,
+            max_steps=6,
+            hooks=host.hooks,
+            presence=engine,
+            observer=observer,
+        )
+
+    def test_the_count_matches_the_counsel_the_actor_actually_received(self):
+        seam = _Gated(_resp("I notice the tests never ran\nGUIDANCE: run pytest " + MARKER_DONE))
+        host = _Host(turns=[_turn(_call("write_file", path="a.py")), _turn(_call("finish"))])
+        with _runner(seam) as runner:
+            engine = host.engine(muse=runner)
+
+            def release() -> None:
+                seam.release.set()
+                assert runner.wait_idle(_TIMEOUT)
+
+            outcome = self._drive(host, engine, release)
+
+        assert outcome.exit_reason == EXIT_FINISHED
+        [record] = runner.deliveries
+        assert record.point == DELIVERY_TERMINAL
+        # The counsel really did arrive at the LAST beat: the actor's advisory
+        # channel ends with it, and the operator saw the muse's own line.
+        assert host.guidance[-1] == "run pytest"
+        assert any("I notice the tests never ran" in line for line in host.rendered)
+        # …and the record says so, with the count the actor actually got.
+        assert record.count == 1
+        assert record.count == sum(r.point == "muse:synthesis" for r in engine.records)
+        assert len(record.insight_ids) == 1
+        assert runner.counts["insights_delivered_terminal"] == 1
+
+    def test_a_drive_whose_muse_had_nothing_left_records_the_zero(self):
+        """The same live path, the honest zero — the drain ran and delivered none.
+
+        Determinism runs the other way here: the muse is made to finish
+        *before* the first turn (``before_turn`` waits on it), so an ordinary
+        cadence beat collects its counsel and the terminal beat is left with
+        nothing. That is the honest zero — the counsel was delivered, just not
+        by this beat — and it must still leave a record.
+        """
+        seam = _Scripted(_resp("GUIDANCE: early counsel " + MARKER_DONE))
+        host = _Host(turns=[_turn(_call("write_file", path="a.py")), _turn(_call("finish"))])
+        with _runner(seam) as runner:
+            host.before_turn = lambda _n: runner.wait_idle(_TIMEOUT)
+            engine = host.engine(muse=runner)
+            outcome = self._drive(host, engine, lambda: None)
+
+        assert outcome.exit_reason == EXIT_FINISHED
+        assert "early counsel" in host.guidance  # it WAS delivered, just earlier
+        [record] = runner.deliveries
+        assert record.count == 0
+        assert record.insight_ids == ()
+
+    def test_exactly_one_terminal_delivery_per_drive(self):
+        """t25's latch, read back off the delivery record rather than the loop."""
+        seam = _Scripted(_resp("GUIDANCE: noted " + MARKER_DONE))
+        host = _Host(turns=[_turn(_call("finish"))])
+        with _runner(seam) as runner:
+            engine = host.engine(muse=runner)
+            self._drive(host, engine, lambda: None)
+            assert len(runner.deliveries) == 1
+            assert runner.counts["terminal_drains"] == 1
+
+    def test_a_museless_drive_records_no_delivery_and_starts_no_thread(self):
+        """The default path is untouched: no runner, no record, no thread."""
+        before = _live_threads()
+        host = _Host(turns=[_turn(_call("finish"))])
+        outcome = self._drive(host, host.engine(), lambda: None)
+        assert outcome.exit_reason == EXIT_FINISHED
+        assert not any(t.name == THREAD_NAME for t in threading.enumerate())
+        assert _live_threads() == before
+
+
+# ── 16. a tool bench reaches the muse INSIDE a live drive (task t26) ──────────
+#
+# The muse's thinking-tool seam (t10), the pad (t12) and the workspace (t13) all
+# landed, and none of them was reachable from a running drive: this runner is the
+# only thing that drives the muse in one, and it built its ``MuseLoop`` with no
+# ``tools=`` (issue #30). These tests hold the wire it grew, and the three things
+# that wire must not disturb — the depth gate, the tools-off floor, and who owns
+# the bench.
+
+
+class _ScriptedTools:
+    """A TOOL-CARRYING muse seam: ``(messages, schema)`` in, scripted replies out.
+
+    Deliberately two-argument, and a separate double rather than a widening of
+    :class:`_Scripted`. The arity IS the tools-off/tools-on distinction in
+    :mod:`embodiment.muse`, so a seam called with the wrong number of arguments
+    raises here instead of quietly answering — which is what makes "the floor
+    ran this session" and "the bench ran it" separately provable.
+    """
+
+    def __init__(self, *replies: Any) -> None:
+        self.replies = list(replies)
+        self.seen: list[list[dict[str, Any]]] = []
+        self.schemas: list[list[dict[str, Any]]] = []
+        self.threads: list[threading.Thread] = []
+
+    def __call__(
+        self, messages: list[dict[str, Any]], schema: list[dict[str, Any]]
+    ) -> ModelResponse:
+        self.seen.append([dict(m) for m in messages])
+        self.schemas.append(list(schema))
+        self.threads.append(threading.current_thread())
+        reply = self.replies.pop(0) if self.replies else _resp(MARKER_DONE)
+        if isinstance(reply, BaseException):
+            raise reply
+        return reply
+
+    @property
+    def turns(self) -> int:
+        return len(self.seen)
+
+
+class _GatedTools(_ScriptedTools):
+    """A tool seam that announces its Nth call and then waits to be released.
+
+    ``gate_on=1`` parks the muse *after* its tool has run and *before* it reads
+    the result back — provably mid-tool-round, with no sleep and no polling.
+    """
+
+    def __init__(self, *replies: Any, gate_on: int = 0) -> None:
+        super().__init__(*replies)
+        self._gate_on = gate_on
+        self.started = threading.Event()
+        self.release = threading.Event()
+
+    def __call__(
+        self, messages: list[dict[str, Any]], schema: list[dict[str, Any]]
+    ) -> ModelResponse:
+        if len(self.seen) == self._gate_on:
+            self.started.set()
+            assert self.release.wait(_TIMEOUT), "the gated tool seam was never released"
+        return super().__call__(messages, schema)
+
+
+class _ThinkingTool:
+    """A minimal thinking tool: records what it was asked, answers in text.
+
+    It also carries a ``close`` verb, so "the runner does not tear a bench down"
+    is something this file can *observe* rather than a claim about a call nobody
+    ever wrote.
+    """
+
+    def __init__(self, result: str = "the pad says the fig was watered") -> None:
+        self.seen: list[tuple[str, dict[str, Any]]] = []
+        self.closed = False
+        self._result = result
+
+    def __call__(self, name: str, arguments: dict[str, Any]) -> Any:
+        self.seen.append((name, dict(arguments)))
+        return self._result
+
+    def close(self) -> None:
+        self.closed = True
+
+
+#: A host-supplied schema. Nothing in ``embodiment`` ships one: what a thinking
+#: tool is stays the host's to state, which is why the runner can carry a bench
+#: without holding any opinion about what is on it.
+_PEEK_SCHEMA: tuple[dict[str, Any], ...] = (
+    {
+        "type": "function",
+        "function": {
+            "name": "peek",
+            "description": "A thinking-only test tool: read the muse's own pad.",
+            "parameters": {"type": "object", "properties": {}},
+        },
+    },
+)
+
+
+@contextlib.contextmanager
+def _tool_runner(
+    seam: Any,
+    *,
+    execute: Any = None,
+    tools_off: Any = None,
+    **kw: Any,
+) -> Iterator[tuple[ThreadedMuseRunner, Any, Any]]:
+    """A runner with a bench wired, plus the two seams behind it.
+
+    Yields ``(runner, tool_seam, tools_off_seam)``. The tools-OFF seam is still
+    supplied and still required: it is the floor a withheld bench degrades onto,
+    so a host that wires tools wires both. Always closed, and never left parked
+    on a gate.
+    """
+    off = tools_off if tools_off is not None else _Scripted(_resp("tools-off " + MARKER_DONE))
+    bench = MuseToolBench(
+        schema=_PEEK_SCHEMA,
+        complete=seam,
+        execute=execute if execute is not None else _ThinkingTool(),
+    )
+    runner = ThreadedMuseRunner(off, tools=bench, **kw)
+    try:
+        yield runner, seam, off
+    finally:
+        for double in (seam, off):
+            release = getattr(double, "release", None)
+            if isinstance(release, threading.Event):
+                release.set()
+        runner.close(timeout=_TIMEOUT)
+
+
+class TestABenchReachesTheMuseInALiveDrive:
+    """LIVE-SHAPED: a real ``run``, a real pump, a real muse on a real thread.
+
+    Nothing is stubbed below the seams a host supplies — the actor's model, the
+    actor's tools, the muse's two completions and the muse's own thinking tool.
+    The claim under test is the one nothing could express before t26: a tool
+    round happens *inside a drive*, not only in a harness that built a
+    :class:`~embodiment.muse.MuseLoop` by hand.
+    """
+
+    def test_the_tool_round_happens_and_its_counsel_reaches_the_actor(self):
+        marker = "PAD-SAW-THE-FIG"
+        tool = _ThinkingTool(result=marker)
+        seam = _ScriptedTools(
+            _turn(_call("peek"), content="let me check the pad"),
+            _resp(f"GUIDANCE: {marker} — revisit the watering schedule " + MARKER_DONE),
+        )
+        host = _Host(
+            turns=[
+                _turn(_call("write_file", path="a.py")),
+                _turn(_call("write_file", path="b.py")),
+                _turn(_call("finish")),
+            ]
+        )
+        with _tool_runner(seam, execute=tool) as (runner, _seam, off):
+            # Turn 2 waits on a REAL condition — the muse's session finishing —
+            # so nothing below races the thread.
+            host.before_turn = lambda n: runner.wait_idle(_TIMEOUT) if n == 1 else None
+            outcome = host.drive(host.engine(muse=runner))
+            rounds = runner.counts["tool_rounds"]
+
+        assert outcome.exit_reason == EXIT_FINISHED
+        # 1. The tool ACTUALLY RAN, once, on the muse's own thread.
+        assert tool.seen == [("peek", {})]
+        assert seam.turns >= 2
+        assert all(t.name == THREAD_NAME for t in seam.threads)
+        assert seam.schemas[0] == list(_PEEK_SCHEMA)
+        # 2. Its result was fed back, in the wire shape the acting loop uses.
+        second = seam.seen[1]
+        assistant = [m for m in second if m.get("role") == "assistant"]
+        assert assistant[0]["tool_calls"][0]["function"]["name"] == "peek"
+        tool_messages = [m for m in second if m.get("role") == "tool"]
+        assert [m["content"] for m in tool_messages] == [marker]
+        assert [m["name"] for m in tool_messages] == ["peek"]
+        # 3. An insight came out of the round and reached the ACTOR's advisory
+        #    channel — the round is not just an exchange the muse had privately.
+        assert any(marker in text for text in host.guidance)
+        assert any(marker in " ".join(seen) for seen in host.guidance_at_turn)
+        # 4. …and the runner counted the round, so a host can see it too.
+        assert rounds == 1
+        # 5. The tools-off floor was never dialled: the bench carried every turn.
+        assert off.calls == 0
+        # 6. The drive itself is untouched — the actor still holds authority.
+        assert [name for name, _ in host.executor.executed] == [
+            "write_file",
+            "write_file",
+            "finish",
+        ]
+
+    def test_the_wired_session_reads_the_tool_authority_boundary(self):
+        """Framing follows the tools: the correction sits under the authority."""
+        with _tool_runner(_ScriptedTools(_resp(MARKER_DONE))) as (runner, seam, _off):
+            runner.consider(_boundary())
+            assert runner.wait_idle(_TIMEOUT)
+        system = seam.seen[0][0]["content"]
+        assert system.startswith(MUSE_AUTHORITY)
+        assert MUSE_TOOL_AUTHORITY in system
+
+    def test_the_actor_never_waits_on_a_tool_round(self):
+        """Deviation ``d1``, at the one moment it is newly testable.
+
+        The muse is parked *between* running its tool and reading the result
+        back. Every actor-facing verb must still return; if one of them waited,
+        this test would hang until ``_TIMEOUT`` and fail rather than pass late.
+        """
+        tool = _ThinkingTool()
+        seam = _GatedTools(
+            _turn(_call("peek"), content="checking"),
+            _resp("GUIDANCE: noted " + MARKER_DONE),
+            gate_on=1,
+        )
+        with _tool_runner(seam, execute=tool) as (runner, _seam, _off):
+            runner.consider(_boundary(step=1))
+            assert seam.started.wait(_TIMEOUT), "the muse never reached its second turn"
+            # Provably mid-round: the tool has run, the result is unread.
+            assert tool.seen == [("peek", {})]
+            assert seam.turns == 1
+            # The actor's whole surface, while the muse is blocked.
+            assert runner.drain(step_count=2) == []
+            runner.consider(_boundary(step=3))
+            assert runner.degradation() is None
+            seam.release.set()
+            assert runner.wait_idle(_TIMEOUT)
+            assert runner.counts["tool_rounds"] == 1
+
+    def test_one_thread_still_and_no_leak_when_a_bench_is_wired(self):
+        """The thread discipline is unchanged: one daemon, joined, gone."""
+        before = _live_threads()
+        seam = _ScriptedTools(_turn(_call("peek"), content="checking"), _resp(MARKER_DONE))
+        with _tool_runner(seam) as (runner, _seam, _off):
+            runner.consider(_boundary())
+            assert runner.wait_idle(_TIMEOUT)
+            named = [t for t in threading.enumerate() if t.name == THREAD_NAME]
+            assert len(named) == 1
+            assert named[0].daemon is True
+            assert all(t is named[0] for t in seam.threads)
+        assert not any(t.name == THREAD_NAME and t.is_alive() for t in threading.enumerate())
+        assert _live_threads() == before
+
+
+class TestDepthGatingIsStillTheMusesAlone:
+    """A bench below the top level is withheld — and the runner does not decide it.
+
+    :func:`embodiment.muse._bench_for` is the single gate: top-level only,
+    failing closed on a depth it cannot read, recording the withholding. The
+    runner's job is to carry ``depth`` there and to carry the record back.
+    """
+
+    @pytest.mark.parametrize("depth", [1, 2, 7, "two", None, object()])
+    def test_a_bench_below_the_top_is_withheld_and_the_withholding_recorded(self, depth):
+        tool = _ThinkingTool()
+        off = _Scripted(_resp("thinking tools-off " + MARKER_DONE))
+        seam = _ScriptedTools(_turn(_call("peek"), content="checking"))
+        with _tool_runner(seam, execute=tool, tools_off=off, depth=depth) as (runner, _s, _o):
+            runner.consider(_boundary())
+            assert runner.wait_idle(_TIMEOUT)
+            records = [d for d in runner.degradations if d.code == DEGRADED_TOOLS_WITHHELD]
+            rounds = runner.counts["tool_rounds"]
+
+        assert seam.turns == 0, "the tool-carrying seam must never be called below the top"
+        assert tool.seen == []
+        assert off.calls == 1, "the session still ran — tools-off is the floor, not a stop"
+        assert rounds == 0
+        assert records, [d.code for d in runner.degradations]
+        assert "top-level only" in records[0].reason
+
+    def test_a_withheld_session_is_byte_identical_to_a_benchless_one(self):
+        """A withheld bench costs the tools, never the prompt."""
+        plain = _Scripted(_resp(MARKER_DONE))
+        with _runner(plain) as runner:
+            runner.consider(_boundary())
+            assert runner.wait_idle(_TIMEOUT)
+
+        withheld = _Scripted(_resp(MARKER_DONE))
+        seam = _ScriptedTools(_resp(MARKER_DONE))
+        with _tool_runner(seam, tools_off=withheld, depth=1) as (runner, _s, _o):
+            runner.consider(_boundary())
+            assert runner.wait_idle(_TIMEOUT)
+
+        assert seam.turns == 0
+        assert json.dumps(withheld.seen) == json.dumps(plain.seen)
+
+    def test_the_withholding_is_visible_on_the_pull_only_surface(self):
+        """C3: a silently tools-off muse is exactly the failure to prevent."""
+        with _tool_runner(_ScriptedTools(_resp(MARKER_DONE)), depth=1) as (runner, _s, _o):
+            runner.consider(_boundary())
+            assert runner.wait_idle(_TIMEOUT)
+            codes = [d.code for d in runner.snapshot()["degradations"]]
+            assert DEGRADED_TOOLS_WITHHELD in codes
+            assert runner.counts["degradations_recorded"] >= 1
+
+    def test_the_runner_holds_no_depth_gate_of_its_own(self):
+        """Structural, not promised: there is nothing here to disagree with muse."""
+        import embodiment.muse_runner as mod
+
+        assert "_bench_for" not in vars(mod), "the gate is muse's, and is not imported here"
+        tree = ast.parse(_RUNNER_SRC.read_text(encoding="utf-8"))
+        names = {node.id for node in ast.walk(tree) if isinstance(node, ast.Name)}
+        names |= {node.attr for node in ast.walk(tree) if isinstance(node, ast.Attribute)}
+        assert "_bench_for" not in names
+        assert "DEGRADED_TOOLS_WITHHELD" not in names, "the record is muse's to mint"
+        compared = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Compare)
+            and any(
+                isinstance(operand, ast.Name) and operand.id == "depth"
+                for operand in [node.left, *node.comparators]
+            )
+        ]
+        assert compared == [], "depth is carried, never judged here"
+        params = set(inspect.signature(ThreadedMuseRunner.__init__).parameters)
+        assert {"tools", "depth"} <= params
+
+
+class TestTheNoBenchPathIsUnchanged:
+    """With no bench wired, everything is what it was before t26.
+
+    The rollback path for shipping muse tools default-on runs through here: if a
+    validation pass ever says tools hurt, turning them off has to reproduce the
+    old behaviour exactly, not approximately.
+    ``tests/test_muse_tool_identity.py`` holds that at ``MuseLoop`` level against
+    the pre-seam module read out of git history; this holds the wire *the runner*
+    builds.
+    """
+
+    def test_the_runner_sends_byte_identical_messages_without_a_bench(self):
+        """Differential against a loop built the way the runner used to build one.
+
+        Nothing in this file can be edited to make the two sides agree: one of
+        them is :class:`~embodiment.muse.MuseLoop` driven directly with the
+        pre-t26 argument list, the other is the runner, and there is only the one
+        production module between them.
+        """
+        controls = MuseControls(max_turns=3)
+        script = (_resp("the fig has not been watered"), _resp(MARKER_DONE))
+
+        direct_seam = _Scripted(*script)
+        MuseLoop(
+            direct_seam,
+            controls=controls,
+            system="you are Gwen",
+            sink=None,
+            clock=None,
+        ).think(_boundary(step=3))
+
+        runner_seam = _Scripted(*script)
+        with _runner(runner_seam, controls=controls, system="you are Gwen") as runner:
+            runner.consider(_boundary(step=3))
+            assert runner.wait_idle(_TIMEOUT)
+
+        assert len(runner_seam.seen) == 2, "the comparison must not be vacuous"
+        assert json.dumps(runner_seam.seen) == json.dumps(direct_seam.seen)
+
+    def test_the_system_message_is_exactly_the_authority_without_a_bench(self):
+        seam = _Scripted(_resp(MARKER_DONE))
+        with _runner(seam) as runner:
+            runner.consider(_boundary())
+            assert runner.wait_idle(_TIMEOUT)
+        assert seam.seen[0][0]["content"] == MUSE_AUTHORITY
+        assert MUSE_TOOL_AUTHORITY not in seam.seen[0][0]["content"]
+
+    def test_the_seam_is_called_with_exactly_one_argument_without_a_bench(self):
+        """Strict arity: a two-argument call would raise, degrade, and show here."""
+        seen: list[int] = []
+
+        def strict(messages: list[dict[str, Any]]) -> ModelResponse:
+            seen.append(len(messages))
+            return _resp(MARKER_DONE)
+
+        with _runner(strict) as runner:
+            runner.consider(_boundary())
+            assert runner.wait_idle(_TIMEOUT)
+            assert runner.degradation() is None
+            assert runner.degradations == []
+        assert seen == [2]
+
+    def test_a_reply_carrying_tool_calls_changes_nothing_without_a_bench(self):
+        """On the floor path the muse's own tool-call list is not read at all."""
+        seam = _Scripted(_turn(_call("peek"), content="calling " + MARKER_DONE))
+        with _runner(seam) as runner:
+            runner.consider(_boundary())
+            assert runner.wait_idle(_TIMEOUT)
+            assert runner.counts["tool_rounds"] == 0
+            assert seam.calls == 1
+            assert [d.code for d in runner.degradations] == []
+        assert all(m.get("role") != "tool" for call in seam.seen for m in call)
+
+    def test_a_museless_drive_still_costs_nothing(self):
+        """The default path did not acquire a bench-shaped anything."""
+        before = _live_threads()
+        host = _Host(turns=[_turn(_call("finish"))])
+        outcome = host.drive(host.engine())
+        assert outcome.exit_reason == EXIT_FINISHED
+        assert _live_threads() == before
+
+
+class TestTheBenchIsCarriedNeverOwned:
+    """Whoever wired the bench owns its lifetime; the runner reaches for none of it.
+
+    A bench may hold real resources — ``embodiment.workspace.MuseWorkspace``
+    holds a container — so "who tears it down?" has to be answered rather than
+    left to inference. The answer is *not the runner*, and it is held
+    structurally: nothing here keeps a reference to one, so ``close`` has nothing
+    to reach. It is also the only safe answer, because the join at teardown is
+    bounded on purpose: a session parked inside a model call can still be using
+    the bench after ``close`` has returned.
+    """
+
+    def test_close_does_not_tear_down_a_host_supplied_bench(self):
+        tool = _ThinkingTool()
+        with _tool_runner(_ScriptedTools(_resp(MARKER_DONE)), execute=tool) as (runner, _s, _o):
+            runner.consider(_boundary())
+            assert runner.wait_idle(_TIMEOUT)
+            runner.close(timeout=_TIMEOUT)
+            assert runner.closed is True
+            assert tool.closed is False, "the runner must not tear down a bench it was lent"
+
+    def test_the_runner_keeps_no_reference_to_the_bench(self):
+        """The ownership claim, made where prose cannot drift away from it."""
+        tool = _ThinkingTool()
+        seam = _ScriptedTools()
+        bench = MuseToolBench(schema=_PEEK_SCHEMA, complete=seam, execute=tool)
+        runner = ThreadedMuseRunner(_Scripted(), tools=bench)
+        try:
+            held = list(vars(runner).values())
+            assert not any(value is bench for value in held)
+            assert not any(value is tool for value in held)
+            assert not any(value is seam for value in held)
+        finally:
+            runner.close(timeout=_TIMEOUT)
+
+    def test_the_runner_still_exposes_no_tool_surface(self):
+        """Carrying a bench added no verb a host could act through."""
+        forbidden = {"execute", "run_tool", "tools", "executor", "bench", "schema"}
+        assert not (set(dir(ThreadedMuseRunner)) & forbidden)

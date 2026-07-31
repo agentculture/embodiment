@@ -31,6 +31,10 @@ _HEAVY = (
     "embodiment.perception",
     "embodiment.context",
     "embodiment.contract",
+    # t13's workspace tool imports ``headspace.api`` at module scope. Cheap in
+    # itself (stdlib only, measured), but it is still a third-party package a
+    # host that only wants the loop must not pay for.
+    "embodiment.workspace",
 )
 
 
@@ -67,7 +71,7 @@ class TestEveryAdvertisedNameResolves:
 
     def test_an_unknown_attribute_still_raises(self) -> None:
         with pytest.raises(AttributeError, match="no attribute 'definitely_not_here'"):
-            embodiment.definitely_not_here  # noqa: B018 - attribute access IS the assertion
+            embodiment.definitely_not_here  # noqa: B018  # attribute access IS the assertion
 
 
 class TestResolutionIsCorrect:

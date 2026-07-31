@@ -60,6 +60,18 @@ when the truth is that nothing can.
 fails if a producer ever appears, so wiring one forces this section to be
 corrected rather than quietly going stale.
 
+> **Superseded 2026-07-30 — and this is the guard working as designed.** Task
+> `t2` of the muse cycle wired both codes to real producing paths, which turned
+> that test red and forced this correction rather than allowing it to go stale.
+> `DROPPED_COMPILATION_STARVED` now fires when a `compile()` work item never
+> reaches the thread; `DROPPED_COUNSEL_DISPLACED` fires when background
+> compilation evicts boundary counsel from a full drain buffer — a priority
+> inversion, and a directional refinement of `DROPPED_OVERFLOW` rather than an
+> independent mechanism. The measurement above stands as what was true when it
+> was taken: at the time of this series, nothing could emit either code. The
+> test was generalised to `TestEveryRunnerCodeHasAProducer`, which now checks
+> every code in `RUNNER_CODES` rather than only these two.
+
 ## The number moved. It cannot be credited to kind-aware delivery
 
 This is the part that matters, and the honest answer is not the flattering one.

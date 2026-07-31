@@ -1,0 +1,1001 @@
+{
+  "slug": "muse-cycle-pad-headspace-devague-legs",
+  "title": "muse cycle: pad, headspace, devague legs",
+  "frame_slug": "muse-cycle-pad-headspace-devague-legs",
+  "schema_version": 4,
+  "status": "exported",
+  "created": "2026-07-29T19:25:04Z",
+  "updated": "2026-07-31T01:58:19Z",
+  "targets": [
+    {
+      "id": "c1",
+      "kind": "announcement",
+      "text": "The next muse cycle shipped: a pre-registered three-arm pad+headspace validation graded by the verified subset oracle, the devague legs split across both minds behind the human confirm gate, and the muse lane's close-time counsel loss and dead degradation codes resolved by explicit decision",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h1",
+      "kind": "honesty",
+      "text": "every measured claim in the shipped cycle cites a committed raw artifact; a lane that did not run is reported absent, never implied",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c3",
+      "kind": "requirement",
+      "text": "arm B reuses the existing actor-side pad protocol in embodiment/scratchpad.py \u2014 KINDS intend/observe/conclude/revise (scratchpad.py:63), `SCRATCHPAD_TOOLS` schemas (239-282), disk persistence (104-221) \u2014 rather than inventing a second pad; nothing in the muse lane references it today",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h6",
+      "kind": "honesty",
+      "text": "if the muse pad diverges from the actor pad protocol, the divergence is recorded with a reason \u2014 a silent second protocol is the failure this claim forbids",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c4",
+      "kind": "requirement",
+      "text": "the experiment reuses the verified oracle: truth() enumerates 76 of 144 non-consecutive subsets and grade() flags trap 72 (examples/challenge_subset.py:61-85, pinned by tests/test_challenge_harnesses.py, cross-validated four ways per designed-problem.md:46-63); run_once() is cortex-only \u2014 the muse flag only fills the recorded config preamble \u2014 so all three arm harnesses are new plumbing",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h7",
+      "kind": "honesty",
+      "text": "the oracle is reused unmodified \u2014 truth() and grade() stay byte-stable during the experiment; any change to either invalidates prior arm results and restarts the series",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c5",
+      "kind": "requirement",
+      "text": "arm C sandbox boundary is the load-bearing control (operator comment on issue 21): no repo, no eidetic store, no network \u2014 asserted by test, not intent; headspace-cli 0.10.0 verified installed 2026-07-29 with run env forwarding by name never argv, input/put under a disabled network, digest-verified export, and destroy that refuses on unexported artifacts (CHANGELOG 0.10.0 closes headspace-cli 13 and 14)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h8",
+      "kind": "honesty",
+      "text": "the sandbox boundary test fails the suite if the workspace can reach the repo, the eidetic store or the network \u2014 asserted before the first measured arm C run, not after",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c7",
+      "kind": "requirement",
+      "text": "arm C measures what the workspace was used for, not only answer correctness: classify each execution as arithmetic-offloaded vs reasoning-displaced, and score counsel quality independently of correctness (operator reframing on issue 21: headspace lets the muse stop pretending to be a calculator; the counter-prediction is execution substituting for reasoning)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h9",
+      "kind": "honesty",
+      "text": "every arm C execution is classified before verdicts are drawn, and the classification rule is fixed in the pre-registration \u2014 not invented after seeing the data",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c8",
+      "kind": "requirement",
+      "text": "pre-registration follows the practiced discipline, not a template: committed before the first dial, thresholds as literal constants asserted by value in tests, rules fixed in advance so INCONCLUSIVE is reportable (association-work-preregistration.md, arena-series-preregistration.md; no standalone standing-discipline doc exists \u2014 grep confirms)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h10",
+      "kind": "honesty",
+      "text": "the pre-registration commit predates the first measured run in git history; thresholds changed after data invalidate the run",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c10",
+      "kind": "boundary",
+      "text": "the muse pad stays non-recallable until the echo probe re-runs clean: a hostile record surfaced via recall beat the cortex DEFERRED 6/6 vs control RESISTED 6/6 with labelling working correctly (memory-echo-chamber.md, n=6 per arm)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h11",
+      "kind": "honesty",
+      "text": "no recall path surfaces muse pad entries until an echo probe re-run on the pad lane is committed with a clean result",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c11",
+      "kind": "requirement",
+      "text": "the issue 20 pipeline is Gemma proposes, human confirms, Qwen plans \u2014 never Gemma confirms; the existing origin-llm lands-proposed gate is the mitigation the echo-chamber result demands (next-cycle-candidates.md:192-214)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h12",
+      "kind": "honesty",
+      "text": "no frame claim authored by the muse reaches confirmed without a recorded human confirm; the experiment logs prove the gate was exercised",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c12",
+      "kind": "boundary",
+      "text": "the devague-legs experiment runs on today's seams \u2014 no muse tool surface inside it (issue 20's own not-in-scope: it would collapse the distinction the experiment measures); the pad question is issue 21's separate lane",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h13",
+      "kind": "honesty",
+      "text": "the issue 20 runs execute against a commit predating the muse tool seam, and the run config records that commit hash",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c13",
+      "kind": "requirement",
+      "text": "the issue 20 grader is version-pinned at run time: devague 0.21.0 installed; plan converge and waves verified present and deterministic (json output, metadata only); an assign-to-workforce fan-out on devague issue 13 is in flight across four agent worktrees, so the pre-registration records the devague version rather than assuming a stable gate",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h14",
+      "kind": "honesty",
+      "text": "each issue 20 run records the devague version in its committed config; results across differing versions are not pooled",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c14",
+      "kind": "requirement",
+      "text": "headspace-cli becomes a base dependency of embodiment \u2014 the operator decision of 2026-07-29 exercising the d2 human gate; measured transitive cost: docker>=7.1 alone, which pulls requests, urllib3, certifi, charset-normalizer and idna; the installed package is importable (`headspace` module with core/ and cli/ layers), so the d2 precedent of module-scope import over a subprocess seam is available",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h2",
+      "kind": "honesty",
+      "text": "the gate is exercised for real: the tests/test_zero_deps.py pinned sets update in the same change that adds the import, transitive cost recorded; the dependency is never added speculatively ahead of the code that needs it",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c15",
+      "kind": "requirement",
+      "text": "the muse gains tool use: a tool-wiring seam on the muse lane so hosts wire tools to it \u2014 the scratchpad and a headspace workspace first \u2014 superseding the structurally tools-off seam as design intent (operator decision, 2026-07-29); issue 21 measured Gemma emitting valid tool calls over five fed-back turns, so the model side is established",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h3",
+      "kind": "honesty",
+      "text": "the seam change is proved structurally, not asserted: the muse tool loop carries its own AST termination pins and a no-reach authority test before any live run claims safety",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c16",
+      "kind": "requirement",
+      "text": "the dependency enters through the gate, not around it: update `_APPROVED_DEPENDENCIES` (tests/test_zero_deps.py:68-79) and `_REQUIRED_RUNTIME_IMPORTS` (90-99) deliberately with the recorded transitive cost, plus pyproject and CHANGELOG rationale per the gate banner \u2014 updating the pinned set IS the approval; the C1b consequence (colleague cannot import embodiment) was already accepted under d2 and widens by one more dependency",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h15",
+      "kind": "honesty",
+      "text": "the pinned-set update, pyproject change and CHANGELOG rationale land in the same commit as the first import \u2014 the gate is never satisfied retroactively",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c17",
+      "kind": "requirement",
+      "text": "the muse tool loop carries the same structural guarantee shape its siblings prove: import-posture pins, an exit-constant AST walk, a counter-bounded while (test_muse.py:318-325 is the precedent), and a no-reach test for the authority boundary; the TestToolsOff pins (test_muse.py:349-409) are revised deliberately as part of the seam redesign, never silently deleted; new public modules join the package-surface lazy map and are auto-measured by test_zero_deps",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h16",
+      "kind": "honesty",
+      "text": "the muse tool loop AST tests exist and fail on an unbounded loop before any live run; deleting a TestToolsOff pin without a replacement pin is a violation, not a cleanup",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c18",
+      "kind": "boundary",
+      "text": "the authority contract survives the seam change: muse tools are thinking tools \u2014 a pad and a bounded workspace \u2014 never acting tools; the workspace reaches no repo, no eidetic store, no network, and that reach is the load-bearing control (issue 21 operator comment); MUSE_AUTHORITY stays prepended on every path and traces keep exposing the actual role, model and machine (colleague 352)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h17",
+      "kind": "honesty",
+      "text": "the no-reach test is part of the suite, and every trace shows the actual role and model \u2014 a run where the muse acted on the repo is a contract breach to report, never to smooth over",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c19",
+      "kind": "requirement",
+      "text": "the issue 18 fix tightens the guard either way: an AST check banning provokers from reaching private attributes \u2014 only test_ledger.py:556-581 call `runner._record` directly, with nothing but prose marking them \u2014 following the structural-pin precedents (test_loop.py:281-287, test_muse.py:311-316); and the two vocabulary-only tests at test_muse_runner.py:1148-1164 are rewritten to assert behaviour or renamed to claim less",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h18",
+      "kind": "honesty",
+      "text": "after the change, a provoker reaching a private attribute fails the suite \u2014 demonstrated by a deliberate red test during development, then removed",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c22",
+      "kind": "requirement",
+      "text": "any issue 17 change preserves the structural pins: `_work_loop` returns only the three EXIT constants with no new raise (test_loop.py:480-522), hooks add no exit path or budget (test_loop.py:565-617), and no fourth consumer of the turn or reading budgets appears; delivery-to-memory stays C3-observable \u2014 a new LifecycleEvent kind beside CHECKPOINT_REMEMBERED (lifecycle.py:808-818) needs no events.py change, while LoopEvent.kind is a closed vocabulary (loop.py:525-526)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h19",
+      "kind": "honesty",
+      "text": "the termination matrix and hook tests pass unchanged after the drain change; delivery-to-memory emits an observable record in the same run that exercises it",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c24",
+      "kind": "requirement",
+      "text": "devague is approved as a base dependency if implementation needs it (operator decision, 2026-07-29): measured transitive cost is zero \u2014 devague 0.21.0 declares no dependencies and its installed venv holds only the `devague` package itself; the import is optional per need \u2014 the goal is the methodology (scope, think, challenge, spec-to-plan, fan-out, summary), not the package",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h4",
+      "kind": "honesty",
+      "text": "if the methodology is achievable without the import, the dependency stays out; an import that lands must name the code that needs it",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c25",
+      "kind": "after_state",
+      "text": "the end state is the method running end to end \u2014 scope, think, challenge, then spec-to-plan, fan-out to subagents, and a delivery summary \u2014 as the flow this embodiment can carry; achieving that flow is the point of the cycle (operator statement, 2026-07-29)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h5",
+      "kind": "honesty",
+      "text": "the flow counts as achieved only when run end to end with the human confirm gate intact \u2014 a partial demo of individual legs does not satisfy it",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c26",
+      "kind": "audience",
+      "text": "the audience is the operator running Gwen on the reference rig and any host embedding the embodiment package; secondarily the sibling repos this cycle touches \u2014 colleague as first consumer, headspace-cli and devague as newly-approved dependencies, lobes as the role gateway",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h20",
+      "kind": "honesty",
+      "text": "sibling-repo impact is proposed to those repos through their own issues, never assumed on their behalf",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c27",
+      "kind": "before_state",
+      "text": "today the muse is a tools-off counsel lane that goes confidently wrong on arithmetic (five of six failures state a definite wrong answer), loses its last counsel at every drive close (25 percent of counsel, one per run), certifies two dead degradation codes through a guard escape hatch, and the devague method legs run in one mind only",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h21",
+      "kind": "honesty",
+      "text": "every number in the before-state cites its committed measurement doc; if a re-measurement moves a number, the claim is amended, not defended",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c28",
+      "kind": "success_signal",
+      "text": "the cycle is done when: both dead codes have real producing paths and the tightened provoker contract rejects direct-record provokers; a live run shows formerly-stranded counsel reaching the synthesis turn; the three-arm validation publishes a pre-registered result either way with raw transcripts committed; and one full scope-think-challenge-spec-to-plan-fan-out-summary flow completes across the two minds with the human confirm gate intact",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h22",
+      "kind": "honesty",
+      "text": "each done-condition maps to a committed artifact \u2014 a test, transcript or summary a reviewer can open; a condition without an artifact is not done",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c29",
+      "kind": "success_signal",
+      "text": "measurable targets: the close-time late drop goes from exactly one per run (4 of 4 runs, 25 percent of counsel) to zero per run across a live series of at least four drives; both dead codes reach 2-of-2 emitter coverage with real-path provokers; the three-arm validation reports the confidently-wrong rate against the 5-of-6 baseline with n at least 6 per arm \u2014 published either way",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h23",
+      "kind": "honesty",
+      "text": "the targets are compared against runs recorded with the same config discipline as the baselines; a series shorter than four drives or an arm under n=6 reports INCONCLUSIVE, never a pass",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c30",
+      "kind": "requirement",
+      "text": "option 1 must pair with the skip-final-consider variant: the synthesis boundary drains WITHOUT starting a new muse session \u2014 otherwise the consider() fired on that same boundary (presence_engine.py:709-710) starts one more session that structurally strands, and the c29 zero-late-drop target stays unreachable by design",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h24",
+      "kind": "honesty",
+      "text": "a live series after the change shows zero muse sessions started on the terminal boundary and zero undrained-at-close drops attributable to the synthesis-boundary session",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c32",
+      "kind": "requirement",
+      "text": "the headspace import stays lazy: bare `import embodiment` pulls no docker or requests \u2014 the continuity precedent, pinned by test_bare_package_import_still_costs_nothing and test_continuity_is_what_costs in tests/test_zero_deps.py (337-363); the muse tool module joins `_HEAVY` in test_package_surface.py",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h26",
+      "kind": "honesty",
+      "text": "test_bare_package_import_still_costs_nothing stays green after the dependency lands; docker and requests appear in no bare-import measurement",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c33",
+      "kind": "requirement",
+      "text": "the no-reach test asserts the recorded network=disabled policy AND a failed bridge connect from inside the workspace: measured today (workspace hs-6fd6fa930508) \u2014 interfaces are loopback only and connects to the docker bridge gateway fail Errno 101 on 8001 (lobes), 7687 (neo4j) and 27017 (mongo); the bridge IP is the documented host-escape path when network is enabled, so the test must pin the disabled posture",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h27",
+      "kind": "honesty",
+      "text": "the no-reach test asserts both the recorded network=disabled policy and a failed bridge connect from inside the workspace; a green test with network enabled is impossible by construction",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c34",
+      "kind": "boundary",
+      "text": "muse workspaces receive no secrets: the env-forwarding channel (run --env / --env-file) is operator tooling and the muse tool seam exposes no secrets parameter at all \u2014 a job that prints its env leaks it into captured output (headspace documented edge), and captured output flows into counsel text, which can reach the committed public eidetic store",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h28",
+      "kind": "honesty",
+      "text": "no muse workspace invocation passes --env or --env-file; the seam exposes no secrets parameter at all, so the leak path cannot be opened by configuration",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c35",
+      "kind": "requirement",
+      "text": "workspace lifecycle is owned and bounded: workspaces are destroyed at runner close with a bounded teardown mirroring the bounded thread join; a drive ending with a live workspace records a degradation naming the workspace id; the destroy --force policy is explicit; resource budgets are advisory on this host \u2014 the storage cap is measured, not enforced (probe warning, default local volume driver)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h29",
+      "kind": "honesty",
+      "text": "a drive that ends with a live workspace records a degradation naming the workspace id; teardown joins are bounded like the runner thread join",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c36",
+      "kind": "requirement",
+      "text": "the muse tool lane ships its degradation codes with emitters and real-path provokers from day one \u2014 the issue 18 lesson applied forward; once declared, the exhaustive-by-construction PROVOKERS table forces coverage, and the tightened contract (no private-attribute provokers) makes vacuous coverage impossible",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h30",
+      "kind": "honesty",
+      "text": "each new code has an emit site in production logic and a provoker that drives it through the public seam before the PR merges \u2014 verified by the tightened PROVOKERS contract",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c37",
+      "kind": "requirement",
+      "text": "the tools-off muse path remains available and byte-identical when no tools are wired \u2014 the degrade floor and the rollback path for default-on; it also keeps the issue 20 todays-seams design reproducible after the seam lands (the colleague 352 acceptance criterion \u2014 absent config means byte-identical prompts \u2014 applied to tools)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h31",
+      "kind": "honesty",
+      "text": "with no tools wired, prompts and behaviour are byte-identical to the pre-seam release",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c38",
+      "kind": "requirement",
+      "text": "the terminal drain records what it delivered to the synthesis turn \u2014 count and insight ids, zero included \u2014 as an observable ledger record; a silent delivery path would violate C3 exactly where the cycle claims to fix delivery",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h32",
+      "kind": "honesty",
+      "text": "a live run ledger shows the synthesis-drain record with its count; zero-delivered runs still show the record",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c39",
+      "kind": "requirement",
+      "text": "the echo-probe re-run covers workspace results as well as pad entries: an execution result returns wearing measured-result authority \u2014 structurally the record shape that beat the cortex 6/6 \u2014 so the probe needs an arm where a workspace result carries a planted wrong number",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h33",
+      "kind": "honesty",
+      "text": "the re-run echo probe includes an arm where a workspace result carries a planted wrong number, and the verdict is recorded either way",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c41",
+      "kind": "requirement",
+      "text": "the cycle targets devague 0.22.0 (PR 101, reasoning-degradation ledger, merging imminently): experiments file `devague lapse` records mid-flight instead of reconstructing corrections from memory at the end \u2014 the six starting codes name exactly the failure classes this repos last cycle hit (grader-unverified, control-absent, n-below-claim, instrument-changed-mid-series) \u2014 and the SCHEMA_VERSION 4-to-5 bump is hard, so the operator upgrades once before plan work begins and never mixes binaries on one frame mid-cycle",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h35",
+      "kind": "honesty",
+      "text": "the pre-registration records devague 0.22.0 or later with the lapse ledger available; an instrument change mid-series is itself filed as a lapse, not silently absorbed",
+      "deferred": false,
+      "deferred_reason": ""
+    }
+  ],
+  "tasks": [
+    {
+      "id": "t1",
+      "summary": "Snapshot the baseline numbers before any fix lands",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "a committed baseline doc records the late-drop rate (one per run, 4 of 4), the confidently-wrong rate (5 of 6) and the dead-code count (2), each citing its measurement doc"
+      ],
+      "deps": [],
+      "covers": [
+        "c27",
+        "h21"
+      ],
+      "instruction": "Owns docs/live-test-results/ (new baseline doc only). Read delivery-per-kind.md, association-work.md and proof.md; transcribe the three baseline numbers with their n and caveats. No code changes."
+    },
+    {
+      "id": "t2",
+      "summary": "Wire the two dead degradation codes to real background-compilation paths in muse_runner",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "both codes have production emit sites driven through the public seam by tests; the test_proof_reporting non-emission pin is updated to assert the emission paths instead"
+      ],
+      "deps": [
+        "t1"
+      ],
+      "covers": [
+        "c29"
+      ],
+      "instruction": "Owns embodiment/muse_runner.py, tests/test_muse_runner.py, tests/test_proof_reporting.py. Decide what compilation-starvation and counsel-displacement actually mean against the WORK_* vocabulary at muse_runner.py:227-230; keep DROPPED_OVERFLOW distinct. TestUnproducedCodes at test_proof_reporting.py:64-100 must be updated, not deleted."
+    },
+    {
+      "id": "t3",
+      "summary": "Tighten the PROVOKERS contract and rewrite the two vocabulary-only tests",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "an AST check fails the suite when a provoker reaches a private attribute, demonstrated red once during development; the two TestWorkClassPriority tests drive real paths and assert drop records"
+      ],
+      "deps": [
+        "t2"
+      ],
+      "covers": [
+        "c19",
+        "h18"
+      ],
+      "instruction": "Owns tests/test_ledger.py, tests/test_muse_runner.py. Add the AST provoker check following test_loop.py:281-287 as the structural-pin precedent; the two provokers at test_ledger.py:556-581 must be rewritten to drive t2 real paths. Demonstrate the check red once, then remove the deliberate violation."
+    },
+    {
+      "id": "t4",
+      "summary": "Terminal-boundary drain-without-consider: the synthesis boundary drains and never starts a muse session",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "a test asserts no session starts on the synthesis boundary; the termination matrix and hook suites pass unchanged; drained counsel reaches the synthesis turn messages"
+      ],
+      "deps": [
+        "t1"
+      ],
+      "covers": [
+        "c22",
+        "c30",
+        "h19",
+        "h24"
+      ],
+      "instruction": "Owns embodiment/presence_engine.py, tests/test_presence_engine.py. The change is in _muse_turns_for (presence_engine.py:697-723): on the synthesis boundary, drain without calling consider. Do not touch loop.py budgets \u2014 no fourth consumer of turn_budget/reading_budget."
+    },
+    {
+      "id": "t5",
+      "summary": "Synthesis-drain observability record",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "a ledger record carries the delivered count and insight ids, zero included; a live-shaped test emits it with an accurate count"
+      ],
+      "deps": [
+        "t4",
+        "t3"
+      ],
+      "covers": [
+        "c38",
+        "h32"
+      ],
+      "instruction": "Owns embodiment/muse_runner.py + embodiment/ledger.py surfaces and their tests. Record the terminal-drain delivery (count + insight ids, zero included) with a code that has an emit site and a real-path provoker from the start."
+    },
+    {
+      "id": "t6",
+      "summary": "Pre-register the devague-legs experiment under devague 0.22.0 with the lapse protocol wired",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "the prereg commits before the first dial with literal thresholds asserted by value in tests; it names the same-mind control, the gate DVs and the Gemma-proposes-human-confirms pipeline, pins devague 0.22.0, and wires llm-origin lapse filing into the run protocol"
+      ],
+      "deps": [
+        "t1"
+      ],
+      "covers": [
+        "c8",
+        "c11",
+        "c13",
+        "c41",
+        "h10",
+        "h12",
+        "h14",
+        "h35"
+      ],
+      "instruction": "Owns docs/live-test-results/ (new prereg doc). Follow association-work-preregistration.md verbatim as the template; incorporate t1 baseline numbers; hold thresholds as literal constants and assert them by value in a test."
+    },
+    {
+      "id": "t7",
+      "summary": "Record the devague-import decision: the experiment harness shells out to the devague CLI rather than importing it",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "the harness invokes devague plan converge/waves as a subprocess and parses --json; no embodiment or examples module imports devague; the reason (keeping the grader external and version-pinnable per c13) is recorded in pyproject and CHANGELOG beside the unused approval"
+      ],
+      "deps": [],
+      "covers": [
+        "c24",
+        "h4"
+      ],
+      "instruction": "Owns pyproject.toml + CHANGELOG.md (after t8 has landed its pin). Record that devague is approved but deliberately not imported: the harness subprocesses `devague plan converge --json` to keep the grader external and per-run version-pinnable."
+    },
+    {
+      "id": "t8",
+      "summary": "Land headspace-cli as a base dependency through the zero-deps gate, lazily imported",
+      "origin": "llm",
+      "status": "rejected",
+      "acceptance_criteria": [
+        "pyproject, _APPROVED_DEPENDENCIES, _REQUIRED_RUNTIME_IMPORTS and CHANGELOG rationale land in one commit with the first import; test_bare_package_import_still_costs_nothing stays green (docker and requests absent from bare import); the new module joins _HEAVY in test_package_surface.py"
+      ],
+      "deps": [],
+      "covers": [
+        "c14",
+        "h2",
+        "c16",
+        "h15",
+        "c32",
+        "h26"
+      ],
+      "instruction": "Owns pyproject.toml, tests/test_zero_deps.py, tests/test_package_surface.py, CHANGELOG.md. Import headspace lazily (function scope or lazy submodule) so bare `import embodiment` stays clean; read the gate banner in _gate_message and follow its numbered remedy exactly."
+    },
+    {
+      "id": "t9",
+      "summary": "Run the devague-legs experiment across both minds on a pre-seam commit, starting with the /deviate leg",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "each run config records the devague version and a base commit hash asserted to predate the tool-seam merge; muse-authored claims are captured --origin llm and the confirm log shows zero confirms not attributable to the human; gate DVs and the same-mind control are reported together"
+      ],
+      "deps": [
+        "t6",
+        "t3",
+        "t5"
+      ],
+      "covers": [
+        "c12",
+        "h13"
+      ],
+      "instruction": "Owns examples/ (new devague-legs harness) + docs/live-test-results/. Start with the /deviate leg \u2014 cheapest slice, no tools needed. Subprocess the devague CLI; record its version and the base commit hash in every run config. Gemma proposes with --origin llm; only the human confirms."
+    },
+    {
+      "id": "t10",
+      "summary": "The muse tool seam: a MuseCompleteFn successor carrying a tool schema, with structural pins",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "the new seam type carries a tool schema and reads tool results; its loop is proved by AST to be one counter-bounded while with exits drawn only from declared constants; import-posture pins hold; every revised TestToolsOff pin has a named replacement pin in the same diff"
+      ],
+      "deps": [
+        "t9"
+      ],
+      "covers": [
+        "c15",
+        "h3",
+        "c17",
+        "h16"
+      ],
+      "instruction": "Owns embodiment/muse.py, tests/test_muse.py, plus a new AST test file. Design the MuseCompleteFn successor at muse.py:513-516 to carry a tool schema and read tool results. Mirror test_muse.py:318-325 for the counter-bounded while proof. Every TestToolsOff pin you revise needs a named replacement in the same diff \u2014 deleting one without a replacement is the violation."
+    },
+    {
+      "id": "t11",
+      "summary": "Tools-off byte-identity: the degrade floor and the rollback path for default-on",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "with no tools wired, prompts are byte-identical to the pre-seam release, asserted in tests/test_muse_tool_identity.py (a new file, keeping it disjoint from test_muse.py); MUSE_AUTHORITY stays prepended on every path"
+      ],
+      "deps": [
+        "t10"
+      ],
+      "covers": [
+        "c37",
+        "h31"
+      ],
+      "instruction": "Owns tests/test_muse_tool_identity.py ONLY (new file, deliberately not test_muse.py, which t10 owns). Assert byte-identical prompts with no tools wired, and MUSE_AUTHORITY still first on every path."
+    },
+    {
+      "id": "t12",
+      "summary": "Wire the scratchpad as the muse first tool, top-level only",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "the muse pad uses scratchpad.py KINDS and schemas unchanged, or records any divergence with a reason in the PR; a test asserts subagent-depth muses receive no tools; a test asserts no recall surface includes pad entries"
+      ],
+      "deps": [
+        "t10"
+      ],
+      "covers": [
+        "c3",
+        "h6"
+      ],
+      "instruction": "Owns a new pad-tool module + its test file. Reuse scratchpad.py KINDS (line 63) and SCRATCHPAD_TOOLS (239-282) unchanged; if the muse pad must diverge, record why in the PR. Top-level muse only \u2014 assert subagent-depth muses get no tools. Assert the pad is not in any recall surface."
+    },
+    {
+      "id": "t13",
+      "summary": "Land headspace-cli as a lazily-imported base dependency AND the workspace tool with its no-reach suite, in one change",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "the no-reach suite asserts the recorded network=disabled policy AND a failed docker-bridge connect from inside a live workspace (the executed probe, ported); no repo path and no eidetic store are reachable; a missing docker daemon degrades observably and never raises",
+        "pyproject, _APPROVED_DEPENDENCIES, _REQUIRED_RUNTIME_IMPORTS and the CHANGELOG rationale land in the same commit as the first headspace import \u2014 never ahead of it; test_bare_package_import_still_costs_nothing stays green so docker and requests are absent from a bare import; the new module joins _HEAVY in test_package_surface.py"
+      ],
+      "deps": [
+        "t10",
+        "t12"
+      ],
+      "covers": [
+        "c5",
+        "h8",
+        "c33",
+        "h27",
+        "c18",
+        "h17",
+        "h26",
+        "c14",
+        "h2",
+        "c16",
+        "h15",
+        "c32"
+      ],
+      "instruction": "Owns pyproject.toml, tests/test_zero_deps.py, tests/test_package_surface.py, CHANGELOG.md, and a new workspace-tool module + its test file. ONE change: the pin and the first import together \u2014 a pin without an importer fails test_runtime_imports_match_the_approved_set (vanished set non-empty, tests/test_zero_deps.py:303) and violates h2. RESOLVED 2026-07-30 (deviation d2, headspace-cli#18 answered by 0.11.0): import `headspace.api` ONLY \u2014 it declares exactly create/run/put/export/destroy in __all__ under semver; `headspace.core` is private and must never be imported. Pin headspace-cli>=0.11. MEASURED: `import headspace.api` adds only stdlib \u2014 docker and requests are NOT imported \u2014 so a module-scope import adds exactly one third-party top-level module (`headspace`) to _REQUIRED_RUNTIME_IMPORTS, and docker stays install-only like neo4j/pymongo; consider extending test_install_footprint_is_wider_than_import_footprint to name docker. Use provider=\"fake\" (in-memory, no Docker daemon) for the CI-safe tests, and gate the real-docker no-reach probe behind an env flag like the other live tests. Port the executed probe: create a workspace, assert policy network=disabled, connect to the docker-bridge gateway from inside (discover it with `ip route`, never hardcode 172.17.0.1), assert unreachable. Missing docker degrades with a CliError-style hint, never raises."
+    },
+    {
+      "id": "t14",
+      "summary": "No-secrets boundary on the workspace tool",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "the constructed create/run invocations carry no --env or --env-file; a test asserts the seam exposes no secrets parameter, so the leak path cannot be opened by configuration"
+      ],
+      "deps": [
+        "t13",
+        "t15"
+      ],
+      "covers": [
+        "c34",
+        "h28"
+      ],
+      "instruction": "Owns the workspace-tool test file (after t15 has finished editing the module). Assert the constructed create/run invocations carry no --env or --env-file and that no secrets parameter exists on the seam at all."
+    },
+    {
+      "id": "t15",
+      "summary": "Workspace lifecycle: bounded teardown and day-one degradation codes",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "workspaces are destroyed at runner close under a bounded timeout mirroring the bounded thread join; a drive ending with a live workspace records a degradation naming the workspace id; every new code has a production emit site and a real-path provoker"
+      ],
+      "deps": [
+        "t13"
+      ],
+      "covers": [
+        "c35",
+        "h29",
+        "c36",
+        "h30"
+      ],
+      "instruction": "Owns the workspace-tool module + runner close path. Bound the teardown like _bounded_join in muse_runner.py; a live workspace at close records a degradation naming the workspace id. Declare each new code WITH its emitter and a real-path provoker in the same commit."
+    },
+    {
+      "id": "t16",
+      "summary": "Measure the tool-session latency distribution through the lobes proxy, then fix the c29 targets",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "the committed probe reports tool-session completion latencies against the drive tail; the c29 late-drop target is fixed against that measurement before the series runs; a series under four drives or an arm under n=6 reports INCONCLUSIVE"
+      ],
+      "deps": [
+        "t12"
+      ],
+      "covers": [
+        "h23"
+      ],
+      "instruction": "Owns examples/ (new latency probe). Measure tool-session completion latency through the real lobes proxy against the drive tail; the issue 21 probe saw 5.5s to 30.4s over five turns. Report the distribution, then fix the c29 late-drop target against it."
+    },
+    {
+      "id": "t17",
+      "summary": "Build the three-arm harness on the verified oracle",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "truth() and grade() are imported unchanged from examples/challenge_subset.py and pinned by asserting 76 and trap-72 rejection; arms A (tools-off), B (+scratchpad) and C (+scratchpad +headspace) share one runner differing only in wired tools; raw transcripts are committed per run"
+      ],
+      "deps": [
+        "t12",
+        "t13"
+      ],
+      "covers": [
+        "c4",
+        "h7"
+      ],
+      "instruction": "Owns examples/ (new three-arm harness). Import truth() and grade() from examples/challenge_subset.py UNCHANGED \u2014 byte-stable for the whole series. One runner, three wired-tool configurations; commit raw transcripts per run, not just verdicts."
+    },
+    {
+      "id": "t18",
+      "summary": "Run the three arms and classify every execution",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "each arm C execution is classified arithmetic-offloaded vs reasoning-displaced by the rule fixed in the pre-registration; counsel quality is scored independently of answer correctness; the confidently-wrong rate is reported against the 5-of-6 baseline, published either way"
+      ],
+      "deps": [
+        "t17",
+        "t16"
+      ],
+      "covers": [
+        "c7",
+        "h9"
+      ],
+      "instruction": "Owns docs/live-test-results/ (results + verdict). Classify every arm C execution by the rule already fixed in t6 prereg \u2014 never invented after seeing data. Report counsel quality separately from correctness. File a devague lapse mid-flight for any substitution of assumption for check; publish either way, INCONCLUSIVE included."
+    },
+    {
+      "id": "t19",
+      "summary": "Re-run the echo probe with a workspace-result arm",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "one arm plants a wrong number in a workspace execution result so it arrives wearing measured-result authority; the pad-recall boundary stays asserted until this probe returns clean; the verdict is recorded either way"
+      ],
+      "deps": [
+        "t13"
+      ],
+      "covers": [
+        "c10",
+        "h11",
+        "c39",
+        "h33"
+      ],
+      "instruction": "Owns examples/ (echo-probe extension). Add the arm where a workspace execution result carries a planted wrong number, so it arrives wearing measured-result authority \u2014 the shape that beat the cortex 6/6. Assert the hostile result actually surfaced, as memory-echo-chamber.md learned to."
+    },
+    {
+      "id": "t20",
+      "summary": "Flip muse tools default-on after the validation tuning pass",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "the default flips only after t18 publishes; the tuned pad protocol is what ships; the tools-off path remains available as the documented rollback"
+      ],
+      "deps": [
+        "t18",
+        "t26"
+      ],
+      "covers": [],
+      "instruction": "RESCOPED by deviation d8 (operator-confirmed 2026-07-30): muse tools do NOT flip default-on. t18 returned INCONCLUSIVE at an arm-A ceiling and measured harm \u2014 tools-off 8/8 correct with 0 NO_ANSWER vs 9 NO_ANSWER across 16 tool-arm runs, 74% workspace-call refusal, 17 open intents in arm C. This task is now the RECORD of that decision, not a flip. Owns README.md, CLAUDE.md and CHANGELOG. State plainly that tools are opt-in, cite the series, name issues #32 and #33 as what would have to change to revisit, and keep the tools-off path documented as the default rather than as a rollback. README.md:235 still calls the muse \"a tools-off mind\" \u2014 correct it to say tools exist and are opt-in, since that sentence is now wrong in a different way."
+    },
+    {
+      "id": "t21",
+      "summary": "File the sibling-repo asks as issues through the communicate skill",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "colleague#358 is updated with the widened C1b consequence (embodiment now carries four base dependencies); any lobes or headspace ask is filed on their repos, never assumed here"
+      ],
+      "deps": [],
+      "covers": [
+        "c26",
+        "h20"
+      ],
+      "instruction": "No repo files. Use the communicate skill (agtag-backed) to post on colleague#358 and any lobes/headspace ask. Sign as embodiment (Claude) per the scripts. Never push to a sibling repo."
+    },
+    {
+      "id": "t22",
+      "summary": "Demonstrate the full flow end to end and publish the delivery summary",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "one scope-think-challenge-spec-to-plan-fan-out-summary cycle completes across the two minds with the human confirm gate intact; frame, plan and delivery summary are committed; every done-condition maps to an openable artifact path and any lane that did not run is reported absent"
+      ],
+      "deps": [
+        "t18",
+        "t9",
+        "t20",
+        "t24"
+      ],
+      "covers": [
+        "c1",
+        "h1",
+        "c25",
+        "h5",
+        "c28",
+        "h22"
+      ],
+      "instruction": "Owns docs/deliveries/ + the delivery summary. Use the summarize-delivery skill; run devague summary for the skeleton. Report planned vs actual honestly \u2014 a lane that did not run is reported absent, never implied. Map every done-condition to an openable artifact path."
+    },
+    {
+      "id": "t23",
+      "summary": "Run the live-rig test suite and the assigned challenge harnesses, recording results",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "the EMBODIMENT_LIVE_RIG-gated tests run against the real rig and their results are committed; the challenge harnesses (challenge_subset and any sibling assigned challenge) run live with raw transcripts committed; a lane that could not run is reported absent, never implied"
+      ],
+      "deps": [
+        "t20",
+        "t25"
+      ],
+      "covers": [],
+      "instruction": "Owns docs/live-test-results/ (new live-evidence records). Run with EMBODIMENT_LIVE_RIG=1 for the rig-gated tests (test_demo_greenhouse, test_echo_probe) and drive examples/challenge_subset.py against the real cortex. Only the cortex is local \u2014 muse and senses are proxied, so budget wall-clock accordingly. Record degraded runs as data; never re-run for a better number."
+    },
+    {
+      "id": "t24",
+      "summary": "Run the league/arena benchmark and record the series",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "examples/league_seat.py runs with EMBODIMENT_LIVE_ARENA=1 against the real arena; the series is recorded in docs/live-test-results/ with n, rig and model pair stated; results are published either way including INCONCLUSIVE"
+      ],
+      "deps": [
+        "t23"
+      ],
+      "covers": [],
+      "instruction": "Owns docs/live-test-results/ (new arena series record). Drive examples/league_seat.py live; the arena-series-preregistration.md discipline applies \u2014 rules fixed in advance, a degraded match is data, nothing re-run for a better number. Fold muse-runner degradations into the match report via ledger.read(..., muse_runner=runner)."
+    },
+    {
+      "id": "t25",
+      "summary": "Widen the terminal drain to fire at drive end on every exit reason, and wire append_guidance in an in-repo host",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "a drive that exits via finish, stopped or budget all fire exactly one terminal drain; a test proves the clean-finish path (which produced zero terminal boundaries before) now delivers; at least one checked-in host wires append_guidance so delivered counsel reaches the cortex messages; the termination matrix and hook suites still pass unchanged and no new exit path or budget consumer appears"
+      ],
+      "deps": [
+        "t4"
+      ],
+      "covers": [],
+      "instruction": "Owns embodiment/loop.py, embodiment/presence_engine.py, tests/test_presence_engine.py, and one host in examples/. The gap t4 measured: _maybe_force_synthesis returns early on a non-empty summary, so clean-finish drives fire no terminal boundary at all. Fire the terminal beat at drive end for EVERY exit reason \u2014 the natural point is after _work_loop returns and before/around _boundary(ctx, BOUNDARY_COMPLETION) at loop.py:2103, which is on all exit paths. Keep c22 intact: no new exit path, no new consumer of turn_budget/reading_budget, tests/test_loop.py untouched. Keep the duck-typed getattr probe so a three-member sink stays byte-compatible. Then wire append_guidance in examples/proof.py (the baseline harness) so the live re-run can actually show counsel reaching the cortex."
+    },
+    {
+      "id": "t26",
+      "summary": "Wire a tool bench through ThreadedMuseRunner so tools are reachable inside a live drive",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "ThreadedMuseRunner accepts a tools bench and passes it to its MuseLoop; depth gating still withholds below top level and records DEGRADED_TOOLS_WITHHELD; with no bench wired the constructed loop and its prompts stay byte-identical to today; a test drives a live-shaped run with a bench and observes the tool round"
+      ],
+      "deps": [
+        "t13"
+      ],
+      "covers": [],
+      "instruction": "Owns embodiment/muse_runner.py and tests/test_muse_runner.py. muse_runner.py:596-602 builds MuseLoop(complete, controls=, system=, sink=, clock=) with no tools= argument \u2014 that omission is the whole gap. Thread a bench through the constructor to that call. Keep muse._bench_for as the single depth gate; do not add a second one. Preserve the single-daemon-thread discipline, the bounded join, deviation d1 (the actor never waits), and the stdlib allow-list. Tools-off must stay byte-identical \u2014 t11 pins that at MuseLoop level and it must keep passing."
+    },
+    {
+      "id": "t27",
+      "summary": "Round-robin head-to-head: full-Gemma vs mixed vs full-Qwen across an escalating League of Agents difficulty ladder",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "three arms differing only in which model serves cortex and muse (senses stays Gemma 12B in all three); an escalating ladder run in order until the arms separate or it is exhausted; every rung records its scenario, turn limit, actions cap, max-steps, seed and both model ids; results published either way including INCONCLUSIVE, with any rung that did not run reported absent; a per-arm cost column (completion tokens and wall clock) reported beside outcome, because equal quality at 25x the cost is itself the answer",
+        "the three pairings gemma-vs-mixed, mixed-vs-qwen and qwen-vs-gemma each play the ladder, with both teams driven by model seats rather than the scripted rival policy; the two seats in a match receive identical budgets and that equality is recorded in tokens, noting it is not equality of useful output since the Qwen cortex spends about 1000 tokens reasoning before emitting"
+      ],
+      "deps": [
+        "t24"
+      ],
+      "covers": [],
+      "instruction": "Owns a NEW head-to-head harness under examples/ plus docs/live-test-results/. Do NOT edit examples/league_seat.py \u2014 t24 uses it; import from it or drive the league CLI directly.\n\nTHE HEAD-TO-HEAD REQUIREMENT (deviation d10). league_seat.py drives the rival with rival_orders(), a deterministic scripted policy (lines 1449 and 1592), NOT a model. Round-robin means BOTH teams are model seats. The cli.act(match_id, team, orders) seam is symmetric, so run the seat logic twice per turn, once per team, with different model configs. league_seat.py exposes --cortex-model and --muse-model, so an arm is a flag pair, never a code change.\n\nTHE THREE PAIRINGS: gemma-vs-mixed, mixed-vs-qwen, qwen-vs-gemma. Arms: full-Gemma = Gemma-4-31B as BOTH cortex and muse; full-Qwen = Qwen3.6-27B as BOTH; mixed = today shipped pairing, Qwen cortex + Gemma muse. Senses stays Gemma-4-12B in all three \u2014 the operator was explicit.\n\nTHE LADDER. The operator asked for \"+5 in size\"; board size is NOT a knob \u2014 league arena list ships exactly three fixed scenarios (skirmish-1 12x10 turn_limit 30, recon-1 14x12, skirmish-2 14x12 fogged turn_limit 16). Say that plainly in the write-up and name what you substituted. Escalate with what exists, in rising order: scenario skirmish-1 -> recon-1 -> skirmish-2, plus --max-actions TEAM:N tightening, shorter turn budgets, and --map-read fog / --unit-comms off as the hardest rungs. Run rungs in order and STOP climbing when the arms separate \u2014 separation is the result, exhausting the ladder is the fallback.\n\nFAIRNESS, and it is load-bearing: both seats in a match get identical --max-steps and --max-tokens, and BOTH SIDES PLAY BOTH COLOURS at every rung (swap which arm is blue) or map/seat asymmetry confounds the whole result. Fix seeds and record them. Record that equal token budgets are NOT equal useful output: the Qwen cortex spends about 1000 tokens reasoning before emitting anything (measured \u2014 at max_tokens 300 it returns empty content with finish_reason length), while Gemma answers directly. Budget 3000+ for any Qwen seat.\n\nRIG: gateway http://localhost:8001/v1, auth REQUIRED (Authorization: Bearer $COLLEAGUE_API_KEY, 401 without). cortex sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP, muse nvidia/Gemma-4-31B-IT-NVFP4. Only the cortex is local; a full-Qwen arm therefore puts BOTH roles on the one local GPU while full-Gemma puts both on the proxy \u2014 say so, because wall-clock is not a clean quality signal across arms.\n\nPRE-REGISTER the ladder, the pairings, the fairness rules and the decision rule BEFORE the first dial, house style per docs/live-test-results/*-preregistration.md, thresholds asserted by value in a test.\n\nCOST IS A RESULT, not overhead: report completion tokens and wall clock per arm beside outcome. t9 measured the muse reaching identical verdicts to the cortex for about 1/25 the tokens; if quality ties here, cost decides, and that is a publishable answer to the operator question."
+    },
+    {
+      "id": "t28",
+      "summary": "League of Agents commander experiment: Gemma commands Qwen unit agents on the continuous lane, against a mirror and flat baselines",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "three arms driven entirely by host wiring with no embodiment source change \u2014 A: today, Qwen actor with final authority plus a tools-off Gemma muse that proposes and never decides; B: Gemma top-level coordinator delegating to a Qwen subagent developer; C: the mirror, Qwen coordinator delegating to a Gemma subagent developer; the mirror arm is mandatory because B changes both who coordinates and which model coordinates, and without C neither can be attributed; every arm records both model ids per level, the spawn allowance, and tokens consumed per level",
+        "the continuous lane is driven through league cmatch so each decision is one unit acting; the team roster declares the model per unit via --agent ID:MODEL:ROLE so the arena carries its own record of who played what; arms B (Gemma commands, Qwen units) and C (the mirror) run against the same fixed house-bot opponent with the same seeds, plus at least one flat single-model baseline; tokens are reported per level, not just per match"
+      ],
+      "deps": [
+        "t27"
+      ],
+      "covers": [],
+      "instruction": "Owns a NEW harness under examples/ plus docs/live-test-results/. NO embodiment source change is needed or permitted.\n\nTHE ARCHITECTURE. loop.run(complete=..., subagent=..., spawn_allowance=N, lineage=...) already lets the host pick a different model per level \u2014 verified. Commander = the top-level run(). Unit agent = the child your SubagentFn drives. subagent.py states the protocol verbatim: pass SubagentCall.allowance through as spawn_allowance, .lineage as lineage, .max_steps as max_steps. spawn_allowance defaults to NO_SPAWNS and MUST be strictly positive or no child can exist. framing.py already types the two levels (ROLE_CORTEX top-level, ROLE_SUBAGENT children) per colleague 352.\n\nTHE ARENA \u2014 use the CONTINUOUS lane, this is why it fits. `league cmatch` asks for exactly ONE unit action at a decision point (the instant that unit goes idle), where `league match` asks for a whole-team turn order. So the commander/unit split is native. Verified working: scenario c-skirmish-1 exists and requires roster roles defender and harvester; `league team register <id> --agent ID:MODEL:ROLE --apply` declares the model per unit, so the arena keeps its own fairness record; cmatch verbs are new/show/act/tick/run, all DRY-RUN BY DEFAULT and needing --apply. `league explain cmatch` and docs/continuous-contract.md are the mind-facing contract \u2014 read them first. State is a pure fold of the log, so a killed harness resumes from the same working directory.\n\nTHE ARMS (fixed house-bot opponent, same seeds across arms):\n B \u2014 Gemma-4-31B commands, Qwen3.6-27B unit agents  [the proposal]\n C \u2014 Qwen commands, Gemma unit agents               [the mirror \u2014 MANDATORY]\n A \u2014 flat: one model decides every unit, no commander [baseline; run for both models if budget allows, else Gemma since it is cheaper]\nThe mirror separates architecture from model assignment; the flat baseline is what says whether hierarchy helps at all. Without both, a B win is unattributable.\n\nBUDGETS: 16000 tokens for any Qwen level. Record finish_reason on every call \u2014 a `length` finish is TRUNCATION, an instrument event, and must never be scored as a bad decision or a lost match. At 6000 this cortex returns finish_reason=length with empty content and 12857 chars of reasoning; that already caused one published misreading.\n\nREPORT TOKENS PER LEVEL (commander vs units, separately) \u2014 the entire question is whether paying for a large commander is worth it.\n\nRIG: gateway http://localhost:8001/v1, auth REQUIRED (Authorization: Bearer $COLLEAGUE_API_KEY, 401 without). Only the cortex model is local; Gemma is proxied \u2014 so wall-clock is not a clean quality signal across arms. tool_choice is broken on this rig. Tasks t23 and t27 may be using the rig: a >600s timeout is CONTENTION, not a result \u2014 wait, retry, record the retry.\n\nPRE-REGISTER before the first dial (house style: docs/live-test-results/*-preregistration.md, thresholds asserted by value in a test). State the CEILING RISK and an ESCALATION PATH \u2014 four experiments in this cycle died at a ceiling (see issue 35); if the arms tie, climb rather than publish INCONCLUSIVE and stop.\n\nPublish either way. Any arm that did not run is reported ABSENT, prominently."
+    }
+  ],
+  "risks": [
+    {
+      "id": "r1",
+      "text": "docker workspace contention with local cortex inference on the shared 128 GB box is unprofiled: workspaces default to 0.5 GB and 1 CPU, but N concurrent muse sessions each holding a workspace is an unmeasured load beside a 27B model",
+      "kind": "unknown_nonblocking",
+      "task_id": "t13",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r2",
+      "text": "the storage ceiling is measured, not enforced, under the default local volume driver (probe warning) \u2014 a runaway workspace write is reported, not capped",
+      "kind": "unknown_nonblocking",
+      "task_id": "t15",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r3",
+      "text": "the devague grader surface may move mid-cycle: 0.22.0 just landed and further work is in flight, so pooling runs across versions would confound the gate DVs",
+      "kind": "unknown_nonblocking",
+      "task_id": "t9",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r4",
+      "text": "a tool-wielding muse session may never complete within the drive tail, leaving the terminal drain with nothing to deliver and the zero-late-drop target unreachable in practice",
+      "kind": "unknown_nonblocking",
+      "task_id": "t16",
+      "resolved": false,
+      "resolution": ""
+    }
+  ]
+}

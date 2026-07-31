@@ -232,7 +232,7 @@ def perceive(
     text = original if isinstance(original, str) else str(original)
     try:
         return _intake(text, interpret=interpret, point=point, clock=clock, on_degrade=on_degrade)
-    except Exception:  # noqa: BLE001 - never-raise is this module's headline promise
+    except Exception:  # noqa: BLE001  # never-raise is this module's headline promise
         # The last guard, and deliberately not reachable by any named fault
         # class: those are handled inside _intake, with a code. What lands here
         # is the unforeseen — a hostile response object, or the host's own
@@ -283,7 +283,7 @@ def _intake(
         _require_interpretation(fields)
     except _IntakeFault as fault:
         return _degraded(text, point, _since(clock, start), fault.code, fault.reason, on_degrade)
-    except Exception as exc:  # noqa: BLE001 - every seam fault degrades identically (C3)
+    except Exception as exc:  # noqa: BLE001  # every seam fault degrades identically (C3)
         return _degraded(
             text,
             point,
@@ -335,7 +335,7 @@ def _now(clock: Optional[Callable[[], float]]) -> Optional[float]:
         return None
     try:
         return clock()
-    except Exception:  # noqa: BLE001 - a clock failure is not an intake failure
+    except Exception:  # noqa: BLE001  # a clock failure is not an intake failure
         return None
 
 

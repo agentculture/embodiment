@@ -1,0 +1,707 @@
+[
+  {
+    "id": "C2-r0",
+    "cell": "C2",
+    "arm": "command",
+    "max_tokens": 2048,
+    "seed": 4242,
+    "turns_played": 3,
+    "status": "active",
+    "replay": "af2dd52c",
+    "cortex_completions": 15,
+    "length_turns": 2,
+    "length_with_content": 0,
+    "length_with_tools": 0,
+    "max_completion_tokens": 2048,
+    "total_completion_tokens": 12129,
+    "exits": [
+      "finished",
+      "finished",
+      "finished"
+    ],
+    "model_turns": [
+      6,
+      4,
+      5
+    ],
+    "drives": [
+      {
+        "key": 1937908,
+        "completions": 6,
+        "length": 1
+      },
+      {
+        "key": 1940744,
+        "completions": 4,
+        "length": 1
+      },
+      {
+        "key": 1943631,
+        "completions": 5,
+        "length": 0
+      }
+    ],
+    "degradations": [],
+    "turn_degradations": [],
+    "communication": 0.6667,
+    "coop_score": 93,
+    "blue_total": 0,
+    "red_total": 0,
+    "winner": null,
+    "message_turns": 1,
+    "empty_order_turns": 0,
+    "finish_reasons": [
+      "tool_calls",
+      "length",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "length",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls"
+    ]
+  },
+  {
+    "id": "C2-r1",
+    "cell": "C2",
+    "arm": "command",
+    "max_tokens": 2048,
+    "seed": 4243,
+    "turns_played": 3,
+    "status": "active",
+    "replay": "41de8b69",
+    "cortex_completions": 14,
+    "length_turns": 2,
+    "length_with_content": 0,
+    "length_with_tools": 0,
+    "max_completion_tokens": 2048,
+    "total_completion_tokens": 11403,
+    "exits": [
+      "stopped",
+      "finished",
+      "finished"
+    ],
+    "model_turns": [
+      4,
+      5,
+      5
+    ],
+    "drives": [
+      {
+        "key": 1947383,
+        "completions": 4,
+        "length": 2
+      },
+      {
+        "key": 1954675,
+        "completions": 5,
+        "length": 0
+      },
+      {
+        "key": 1957224,
+        "completions": 5,
+        "length": 0
+      }
+    ],
+    "degradations": [],
+    "turn_degradations": [],
+    "communication": 1.0,
+    "coop_score": 100,
+    "blue_total": 0,
+    "red_total": 0,
+    "winner": null,
+    "message_turns": 2,
+    "empty_order_turns": 1,
+    "finish_reasons": [
+      "length",
+      "tool_calls",
+      "length",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls"
+    ]
+  },
+  {
+    "id": "C2-r2",
+    "cell": "C2",
+    "arm": "command",
+    "max_tokens": 2048,
+    "seed": 4244,
+    "turns_played": 3,
+    "status": "active",
+    "replay": "002f11b8",
+    "cortex_completions": 11,
+    "length_turns": 0,
+    "length_with_content": 0,
+    "length_with_tools": 0,
+    "max_completion_tokens": 955,
+    "total_completion_tokens": 6413,
+    "exits": [
+      "finished",
+      "finished",
+      "finished"
+    ],
+    "model_turns": [
+      3,
+      5,
+      3
+    ],
+    "drives": [
+      {
+        "key": 1958879,
+        "completions": 3,
+        "length": 0
+      },
+      {
+        "key": 1959996,
+        "completions": 5,
+        "length": 0
+      },
+      {
+        "key": 1961489,
+        "completions": 3,
+        "length": 0
+      }
+    ],
+    "degradations": [],
+    "turn_degradations": [],
+    "communication": 1.0,
+    "coop_score": 100,
+    "blue_total": 0,
+    "red_total": 0,
+    "winner": null,
+    "message_turns": 3,
+    "empty_order_turns": 0,
+    "finish_reasons": [
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls"
+    ]
+  },
+  {
+    "id": "C16-r0",
+    "cell": "C16",
+    "arm": "command",
+    "max_tokens": 16000,
+    "seed": 4242,
+    "turns_played": 3,
+    "status": "active",
+    "replay": "db2d7abc",
+    "cortex_completions": 13,
+    "length_turns": 0,
+    "length_with_content": 0,
+    "length_with_tools": 0,
+    "max_completion_tokens": 3191,
+    "total_completion_tokens": 11086,
+    "exits": [
+      "finished",
+      "finished",
+      "finished"
+    ],
+    "model_turns": [
+      3,
+      5,
+      5
+    ],
+    "drives": [
+      {
+        "key": 1965349,
+        "completions": 3,
+        "length": 0
+      },
+      {
+        "key": 1972601,
+        "completions": 5,
+        "length": 0
+      },
+      {
+        "key": 1976150,
+        "completions": 5,
+        "length": 0
+      }
+    ],
+    "degradations": [],
+    "turn_degradations": [],
+    "communication": 0.6667,
+    "coop_score": 93,
+    "blue_total": 0,
+    "red_total": 0,
+    "winner": null,
+    "message_turns": 1,
+    "empty_order_turns": 0,
+    "finish_reasons": [
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls"
+    ]
+  },
+  {
+    "id": "C16-r1",
+    "cell": "C16",
+    "arm": "command",
+    "max_tokens": 16000,
+    "seed": 4243,
+    "turns_played": 3,
+    "status": "active",
+    "replay": "830f9d6e",
+    "cortex_completions": 9,
+    "length_turns": 0,
+    "length_with_content": 0,
+    "length_with_tools": 0,
+    "max_completion_tokens": 2308,
+    "total_completion_tokens": 6531,
+    "exits": [
+      "finished",
+      "finished",
+      "finished"
+    ],
+    "model_turns": [
+      1,
+      5,
+      3
+    ],
+    "drives": [
+      {
+        "key": 1979361,
+        "completions": 1,
+        "length": 0
+      },
+      {
+        "key": 1982106,
+        "completions": 5,
+        "length": 0
+      },
+      {
+        "key": 1984128,
+        "completions": 3,
+        "length": 0
+      }
+    ],
+    "degradations": [],
+    "turn_degradations": [],
+    "communication": 0.6667,
+    "coop_score": 93,
+    "blue_total": 0,
+    "red_total": 0,
+    "winner": null,
+    "message_turns": 1,
+    "empty_order_turns": 0,
+    "finish_reasons": [
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls"
+    ]
+  },
+  {
+    "id": "C16-r2",
+    "cell": "C16",
+    "arm": "command",
+    "max_tokens": 16000,
+    "seed": 4244,
+    "turns_played": 3,
+    "status": "active",
+    "replay": "38f78529",
+    "cortex_completions": 15,
+    "length_turns": 0,
+    "length_with_content": 0,
+    "length_with_tools": 0,
+    "max_completion_tokens": 1324,
+    "total_completion_tokens": 6953,
+    "exits": [
+      "finished",
+      "finished",
+      "finished"
+    ],
+    "model_turns": [
+      5,
+      5,
+      5
+    ],
+    "drives": [
+      {
+        "key": 1986160,
+        "completions": 5,
+        "length": 0
+      },
+      {
+        "key": 1992179,
+        "completions": 5,
+        "length": 0
+      },
+      {
+        "key": 1994156,
+        "completions": 5,
+        "length": 0
+      }
+    ],
+    "degradations": [],
+    "turn_degradations": [],
+    "communication": 0.0,
+    "coop_score": 80,
+    "blue_total": 0,
+    "red_total": 0,
+    "winner": null,
+    "message_turns": 0,
+    "empty_order_turns": 0,
+    "finish_reasons": [
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls"
+    ]
+  },
+  {
+    "id": "R2-r0",
+    "cell": "R2",
+    "arm": "resident",
+    "max_tokens": 2048,
+    "seed": 4242,
+    "turns_played": 3,
+    "status": "active",
+    "replay": "55a9cd7f",
+    "cortex_completions": 17,
+    "length_turns": 0,
+    "length_with_content": 0,
+    "length_with_tools": 0,
+    "max_completion_tokens": 1880,
+    "total_completion_tokens": 11596,
+    "exits": [
+      "finished"
+    ],
+    "model_turns": [
+      17
+    ],
+    "drives": [
+      {
+        "key": "resident",
+        "completions": 17,
+        "length": 0
+      }
+    ],
+    "degradations": [],
+    "turn_degradations": [],
+    "communication": 0.0,
+    "coop_score": 77,
+    "blue_total": 0,
+    "red_total": 0,
+    "winner": null,
+    "message_turns": 0,
+    "empty_order_turns": 0,
+    "finish_reasons": [
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls"
+    ]
+  },
+  {
+    "id": "R2-r1",
+    "cell": "R2",
+    "arm": "resident",
+    "max_tokens": 2048,
+    "seed": 4243,
+    "turns_played": 3,
+    "status": "active",
+    "replay": "d2eef9fc",
+    "cortex_completions": 11,
+    "length_turns": 1,
+    "length_with_content": 0,
+    "length_with_tools": 0,
+    "max_completion_tokens": 2048,
+    "total_completion_tokens": 8131,
+    "exits": [
+      "finished"
+    ],
+    "model_turns": [
+      11
+    ],
+    "drives": [
+      {
+        "key": "resident",
+        "completions": 11,
+        "length": 1
+      }
+    ],
+    "degradations": [],
+    "turn_degradations": [],
+    "communication": 0.0,
+    "coop_score": 80,
+    "blue_total": 0,
+    "red_total": 0,
+    "winner": null,
+    "message_turns": 0,
+    "empty_order_turns": 0,
+    "finish_reasons": [
+      "length",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls"
+    ]
+  },
+  {
+    "id": "R2-r2",
+    "cell": "R2",
+    "arm": "resident",
+    "max_tokens": 2048,
+    "seed": 4244,
+    "turns_played": 3,
+    "status": "active",
+    "replay": "75314799",
+    "cortex_completions": 15,
+    "length_turns": 0,
+    "length_with_content": 0,
+    "length_with_tools": 0,
+    "max_completion_tokens": 1836,
+    "total_completion_tokens": 9007,
+    "exits": [
+      "finished"
+    ],
+    "model_turns": [
+      15
+    ],
+    "drives": [
+      {
+        "key": "resident",
+        "completions": 15,
+        "length": 0
+      }
+    ],
+    "degradations": [],
+    "turn_degradations": [],
+    "communication": 1.0,
+    "coop_score": 100,
+    "blue_total": 0,
+    "red_total": 0,
+    "winner": null,
+    "message_turns": 3,
+    "empty_order_turns": 0,
+    "finish_reasons": [
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls"
+    ]
+  },
+  {
+    "id": "R16-r0",
+    "cell": "R16",
+    "arm": "resident",
+    "max_tokens": 16000,
+    "seed": 4242,
+    "turns_played": 3,
+    "status": "active",
+    "replay": "de8980bf",
+    "cortex_completions": 9,
+    "length_turns": 0,
+    "length_with_content": 0,
+    "length_with_tools": 0,
+    "max_completion_tokens": 2245,
+    "total_completion_tokens": 8345,
+    "exits": [
+      "finished"
+    ],
+    "model_turns": [
+      9
+    ],
+    "drives": [
+      {
+        "key": "resident",
+        "completions": 9,
+        "length": 0
+      }
+    ],
+    "degradations": [],
+    "turn_degradations": [],
+    "communication": 1.0,
+    "coop_score": 100,
+    "blue_total": 0,
+    "red_total": 0,
+    "winner": null,
+    "message_turns": 3,
+    "empty_order_turns": 0,
+    "finish_reasons": [
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls"
+    ]
+  },
+  {
+    "id": "R16-r1",
+    "cell": "R16",
+    "arm": "resident",
+    "max_tokens": 16000,
+    "seed": 4243,
+    "turns_played": 3,
+    "status": "active",
+    "replay": "1eeb5f99",
+    "cortex_completions": 3,
+    "length_turns": 0,
+    "length_with_content": 0,
+    "length_with_tools": 0,
+    "max_completion_tokens": 2727,
+    "total_completion_tokens": 6421,
+    "exits": [
+      "finished"
+    ],
+    "model_turns": [
+      3
+    ],
+    "drives": [
+      {
+        "key": "resident",
+        "completions": 3,
+        "length": 0
+      }
+    ],
+    "degradations": [],
+    "turn_degradations": [],
+    "communication": 1.0,
+    "coop_score": 100,
+    "blue_total": 0,
+    "red_total": 0,
+    "winner": null,
+    "message_turns": 3,
+    "empty_order_turns": 0,
+    "finish_reasons": [
+      "tool_calls",
+      "tool_calls",
+      "tool_calls"
+    ]
+  },
+  {
+    "id": "R16-r2",
+    "cell": "R16",
+    "arm": "resident",
+    "max_tokens": 16000,
+    "seed": 4244,
+    "turns_played": 3,
+    "status": "active",
+    "replay": "20f0e1fa",
+    "cortex_completions": 9,
+    "length_turns": 0,
+    "length_with_content": 0,
+    "length_with_tools": 0,
+    "max_completion_tokens": 1468,
+    "total_completion_tokens": 7032,
+    "exits": [
+      "finished"
+    ],
+    "model_turns": [
+      9
+    ],
+    "drives": [
+      {
+        "key": "resident",
+        "completions": 9,
+        "length": 0
+      }
+    ],
+    "degradations": [],
+    "turn_degradations": [],
+    "communication": 1.0,
+    "coop_score": 100,
+    "blue_total": 0,
+    "red_total": 0,
+    "winner": null,
+    "message_turns": 3,
+    "empty_order_turns": 0,
+    "finish_reasons": [
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls",
+      "tool_calls"
+    ]
+  }
+]

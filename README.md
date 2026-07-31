@@ -232,7 +232,7 @@ the operator talks to.
 | Loop + presence | `embodiment` | the pump |
 | **Teammate identity** | **Gwen** | who the operator addresses |
 | Cortex | Qwen 3.6 27B (`sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP`) | bounded tool loop, repo actions, final synthesis — **final authority**. Framed by embodiment. |
-| Muse | Gemma 4 31B (`nvidia/Gemma-4-31B-IT-NVFP4`) | reflective counsel: a tools-off mind running its own parallel thinking loop, there to reframe the problem, challenge assumptions and offer materially different alternatives — it proposes, never decides. Framed by embodiment. |
+| Muse | Gemma 4 31B (`nvidia/Gemma-4-31B-IT-NVFP4`) | reflective counsel, tools opt-in: reframes the problem, challenges the cortex's assumptions and offers materially different alternatives, running its own parallel thinking loop — it proposes, never decides. A host may wire a working-memory pad and a bounded workspace onto its tool bench; neither is on by default (see below). Framed by embodiment. |
 | Senses | Gemma 4 12B (`coolthor/gemma-4-12B-it-NVFP4A16`) | intake, perception, speak-back; never acts on the repo. **Lives in colleague, not here** — see the scope note below. |
 | Ears / voice | Parakeet STT + Chatterbox TTS (lobes audio overlay) | the realtime lane below |
 
@@ -243,6 +243,30 @@ the operator talks to.
 > [colleague#352](https://github.com/agentculture/colleague/issues/352#issuecomment-5073964358).
 > A single-model run — the default tested path — starts no muse and claims no
 > second mind.
+>
+> **Muse tools are opt-in, and a validation pass kept them that way.** A host
+> may hand the muse's thinking loop `embodiment.muse_pad.MusePad` (write-only
+> working memory) and `embodiment.workspace.MuseWorkspace` (a bounded,
+> network-less, disposable container) as tools on its bench; with no bench
+> wired the muse stays exactly the tools-off mind it always was, byte for
+> byte. Task `t18`'s pre-registered three-arm series
+> ([`docs/live-test-results/muse-arms.md`](docs/live-test-results/muse-arms.md),
+> n=8 per arm, real Docker, 0 transport failures) tested that default against
+> +pad and +pad+workspace and returned **`INCONCLUSIVE`**: arm A's
+> confidently-wrong rate was 0 of 8, so there was no headroom left for a tool
+> lane to reduce — the 5-of-6 figure that motivated the question was measured
+> on a different loop and different problems, and is not this series' control.
+> Alongside that inconclusive headline the series measured harm the
+> operator's standing rule (*the measured failure mode never ships as default
+> behaviour*) will not let ship: 9 of the 16 tool-arm runs came back
+> `NO_ANSWER` against 0 for tools-off (issue #32 — handed tools, the muse
+> writes a tool call and no prose), and 74% of the workspace arm's calls were
+> refused because the muse sent `command` as a string rather than an array
+> (issue #33). Arm C's answers were never *wrong* (4 correct, 0 wrong, 4
+> no-answer) and arm B's pad protocol adherence was clean (0 open intents in 8
+> of 8 runs) — this is not a finding that tools are harmful, only that the
+> case for a default flip was not made. Revisiting the default needs #32 and
+> #33 fixed first.
 
 Roles resolve **by name** from a [`lobes`](https://github.com/agentculture/lobes-cli)
 gateway's `/capabilities` contract — never by parsing model names. The identity

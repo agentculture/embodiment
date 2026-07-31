@@ -585,6 +585,15 @@ class PresenceSink(Protocol):
 
     With no sink — or an inactive one — the loop is byte-identical to a loop
     with no presence at all: nothing is called, nothing is recorded.
+
+    These three beats are the whole REQUIRED protocol. The loop additionally
+    *probes* for an optional fourth, ``on_terminal_boundary(step_count=…)``,
+    and drives it ONCE at drive end — after the turn loop has exited, on every
+    exit reason, before the completion boundary and before any forced synthesis
+    turn (see :func:`_presence_terminal`). A sink without it sees exactly
+    today's behaviour: the probe finds nothing, no fallback beat is invented,
+    and the drive is byte-identical to one with no terminal beat at all. That
+    is why it is not declared here.
     """
 
     @property
@@ -754,6 +763,10 @@ class _Work:
     last_substantive: str = ""
     observer_failed: bool = False
     presence_armed: bool = False
+    #: Whether the drive's ONE terminal presence beat has been driven. Written
+    #: only by :func:`_presence_terminal`, and read by :func:`_emit_phase` so
+    #: the forced-synthesis phase notice cannot become a second one.
+    terminal_beat_fired: bool = False
     #: The whole drive's model-turn budget — the reading budget the turn loop
     #: runs against PLUS any reserved synthesis turn. Nothing spends past it.
     turn_budget: int = 1
@@ -787,7 +800,7 @@ def _observe(ctx: _Work, kind: str, detail: str = "", **data: Any) -> None:
         return
     try:
         ctx.observer(LoopEvent(kind=kind, detail=detail, data=dict(data)))
-    except Exception as exc:  # noqa: BLE001 - observability never aborts a drive
+    except Exception as exc:  # noqa: BLE001  # observability never aborts a drive
         ctx.observer_failed = True
         _degrade(ctx, DEGRADED_OBSERVER, f"{type(exc).__name__}: {exc}")
 
@@ -811,7 +824,7 @@ def _emit_progress(ctx: _Work, step_index: int, tool: str, arguments: Any, ok: b
         return
     try:
         ctx.progress(step_index, tool, arguments, ok)
-    except Exception as exc:  # noqa: BLE001 - a sink must never abort a drive
+    except Exception as exc:  # noqa: BLE001  # a sink must never abort a drive
         _degrade(ctx, DEGRADED_PROGRESS, f"{type(exc).__name__}: {exc}")
 
 
@@ -820,14 +833,29 @@ def _emit_phase(ctx: _Work, detail: str) -> None:
 
     Encoded with an EMPTY tool name so a sink renders a standalone phase line
     rather than a ``step N:`` line. The step index carries the LIVE step count.
+
+    The synthesis phase notice used to BE the drive's terminal boundary. It is
+    not any more (issue #23): a forced synthesis turn happens only on a
+    summary-less exit, so a drive that finished cleanly announced no such phase
+    and got no terminal beat at all — on exactly the workload the loss was
+    measured on. :func:`_presence_terminal` now fires that beat once at drive
+    end, on every exit, and this notice is a plain phase notice again.
+
+    One consequence is guarded here rather than left to ordering luck: on the
+    exits that DO force synthesis, the terminal beat has already been driven by
+    the time this runs, so announcing the phase to a terminal-capable sink would
+    offer it a boundary after its last one — starting the very session issue #17
+    proved strands. So the notice is skipped for that sink, and kept verbatim
+    for a three-beat sink, which never had a terminal beat to be after.
     """
     _observe(ctx, "phase", detail)
-    _presence_boundary(ctx, phase_changed=True)
+    if not (detail == _PHASE_SYNTHESIZING and ctx.terminal_beat_fired):
+        _presence_boundary(ctx, phase_changed=True)
     if ctx.progress is None:
         return
     try:
         ctx.progress(len(ctx.result.steps), "", detail, True)
-    except Exception as exc:  # noqa: BLE001 - a sink must never abort a drive
+    except Exception as exc:  # noqa: BLE001  # a sink must never abort a drive
         _degrade(ctx, DEGRADED_PROGRESS, f"{type(exc).__name__}: {exc}")
 
 
@@ -845,7 +873,7 @@ def _presence_arm(ctx: _Work) -> None:
         return
     try:
         ctx.presence_armed = bool(ctx.presence.active)
-    except Exception as exc:  # noqa: BLE001 - presence never aborts a drive
+    except Exception as exc:  # noqa: BLE001  # presence never aborts a drive
         _degrade(ctx, DEGRADED_PRESENCE, f"{type(exc).__name__}: {exc}")
 
 
@@ -855,7 +883,7 @@ def _presence_acknowledge(ctx: _Work) -> None:
         return
     try:
         ctx.presence.acknowledge(ctx.task.context_packet)
-    except Exception as exc:  # noqa: BLE001 - presence never aborts a drive
+    except Exception as exc:  # noqa: BLE001  # presence never aborts a drive
         _degrade(ctx, DEGRADED_PRESENCE, f"{type(exc).__name__}: {exc}")
 
 
@@ -867,7 +895,54 @@ def _presence_boundary(ctx: _Work, *, phase_changed: bool = False) -> None:
         ctx.presence.on_progress_boundary(
             step_count=len(ctx.result.steps), phase_changed=phase_changed
         )
-    except Exception as exc:  # noqa: BLE001 - presence never aborts a drive
+    except Exception as exc:  # noqa: BLE001  # presence never aborts a drive
+        _degrade(ctx, DEGRADED_PRESENCE, f"{type(exc).__name__}: {exc}")
+
+
+def _presence_terminal(ctx: _Work) -> None:
+    """Drive the LAST beat of a drive — exactly once, on every exit reason.
+
+    The beat rides an OPTIONAL fourth sink method, ``on_terminal_boundary``,
+    probed for rather than required: a sink written against the three-beat
+    :class:`PresenceSink` protocol has none, and gets **nothing** here — no
+    invented fallback beat, so its drive stays byte-identical to today's.
+
+    Three properties are the contract, and each is held by construction rather
+    than by convention:
+
+    * **Once.** :func:`run` calls this from the one place all three exits
+      converge on, and ``terminal_beat_fired`` closes the door behind it so no
+      later announcement can drive a second one.
+    * **On every exit.** It is placed after :func:`_work_loop` returns, so
+      ``finish``, ``stopped`` and ``budget`` reach it identically. It used to
+      ride the forced-synthesis phase notice, which only a summary-less exit
+      ever announces — so a clean finish fired none at all (issue #23), on
+      exactly the runs the counsel loss was measured on.
+    * **Early enough to still matter.** It runs BEFORE the completion boundary
+      and before :func:`_resolve_terminal_summary`, so counsel delivered here is
+      in ``ctx.messages`` before a forced synthesis turn is composed and can
+      still change the answer. Fired after that turn it could only reach the
+      durable record. On a clean finish there is no later turn by construction;
+      the counsel reaches the host and the record, and the loop does not pretend
+      otherwise by manufacturing one.
+
+    The aborted path never reaches this — deliberately. A raising seam is not an
+    exit reason (``_work_loop`` returns only the three), there is no synthesis
+    turn and no durable write on that path, and a last beat there would deliver
+    counsel into a host that is already handling an exception.
+
+    Presence still never aborts a drive: a probe or a beat that raises degrades.
+    """
+    if ctx.terminal_beat_fired or not ctx.presence_armed or ctx.presence is None:
+        return
+    beat = getattr(ctx.presence, "on_terminal_boundary", None)
+    if beat is None:
+        return
+    # Latched BEFORE the call: a beat that raises has still had its one turn.
+    ctx.terminal_beat_fired = True
+    try:
+        beat(step_count=len(ctx.result.steps))
+    except Exception as exc:  # noqa: BLE001  # presence never aborts a drive
         _degrade(ctx, DEGRADED_PRESENCE, f"{type(exc).__name__}: {exc}")
 
 
@@ -881,7 +956,7 @@ def _drain_operator_inbox(ctx: _Work) -> None:
         return
     try:
         pending = ctx.operator_inbox() or ()
-    except Exception as exc:  # noqa: BLE001 - an inbox never aborts a drive
+    except Exception as exc:  # noqa: BLE001  # an inbox never aborts a drive
         _degrade(ctx, DEGRADED_PRESENCE, f"operator inbox: {type(exc).__name__}: {exc}")
         return
     for text in pending:
@@ -890,7 +965,7 @@ def _drain_operator_inbox(ctx: _Work) -> None:
             continue
         try:
             ctx.presence.on_operator_message(text)
-        except Exception as exc:  # noqa: BLE001 - presence never aborts a drive
+        except Exception as exc:  # noqa: BLE001  # presence never aborts a drive
             _degrade(ctx, DEGRADED_PRESENCE, f"{type(exc).__name__}: {exc}")
 
 
@@ -916,7 +991,7 @@ def _boundary(ctx: _Work, name: str, **extra: Any) -> None:
     )
     try:
         ctx.continuity(point)
-    except Exception as exc:  # noqa: BLE001 - continuity never aborts a drive
+    except Exception as exc:  # noqa: BLE001  # continuity never aborts a drive
         _degrade(ctx, DEGRADED_CONTINUITY, f"{name}: {type(exc).__name__}: {exc}")
 
 
@@ -1061,7 +1136,7 @@ def _run_child(
     }
     try:
         reply = seam(child) if seam is not None else None
-    except Exception as exc:  # noqa: BLE001 - a failed child never aborts its parent
+    except Exception as exc:  # noqa: BLE001  # a failed child never aborts its parent
         reason = f"{type(exc).__name__}: {exc}"
         record = _record_spawn(ctx, call, SPAWN_FAILED, reason=reason, **shared)
         _degrade(ctx, DEGRADED_SPAWN_FAILED, f"child {child.task.id}: {reason}")
@@ -1281,7 +1356,7 @@ def _arguments_json(ctx: _Work, tool_name: str, arguments: Any) -> str:
         )
     try:
         return json.dumps(arguments, ensure_ascii=False, default=str)
-    except Exception:  # noqa: BLE001 - default=str runs arbitrary __str__; must not abort
+    except Exception:  # noqa: BLE001  # default=str runs arbitrary __str__; must not abort
         return json.dumps(
             {"_unserializable_arguments": f"{tool_name}: {type(arguments).__name__} instance"},
             ensure_ascii=False,
@@ -1787,7 +1862,7 @@ def _maybe_force_synthesis(ctx: _Work, outcome: str) -> None:
     ctx.messages.append({"role": "user", "content": prompt})
     try:
         resp = _complete_with_degradation(ctx, phase=_PHASE_SYNTHESIZING)
-    except Exception as exc:  # noqa: BLE001 - a finalize-time turn never raises
+    except Exception as exc:  # noqa: BLE001  # a finalize-time turn never raises
         _degrade(ctx, DEGRADED_SYNTHESIS, f"{type(exc).__name__}: {exc}")
         return
     _account_turn(ctx, resp)
@@ -2075,7 +2150,7 @@ def run(
     outcome = EXIT_ABORTED
     try:
         outcome = _work_loop(ctx, reading_budget)
-    except Exception as exc:  # noqa: BLE001 - preserve partial work on any seam failure
+    except Exception as exc:  # noqa: BLE001  # preserve partial work on any seam failure
         aborted = exc
         result.status = ERROR
         result.error = f"{type(exc).__name__}: {exc}"
@@ -2100,6 +2175,11 @@ def run(
         raise LoopAborted(_outcome(ctx, outcome)) from aborted
 
     _apply_outcome_flags(ctx, outcome)
+    # The drive's ONE terminal presence beat, on every exit reason and before
+    # both remaining consumers: the completion boundary a continuity seam reads
+    # (which may fold the presence snapshot into a durable record) and the
+    # forced synthesis turn, which is the last turn counsel can still change.
+    _presence_terminal(ctx)
     _boundary(ctx, BOUNDARY_COMPLETION)
     _resolve_terminal_summary(ctx, outcome)
     # Re-finalize the turn-derived stats: a synthesis turn happens after the

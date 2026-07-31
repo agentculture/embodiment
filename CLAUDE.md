@@ -120,8 +120,8 @@ operator actually talks to.
 | Runtime | `colleague` | the harness |
 | Loop + presence | `embodiment` (this repo) | the pump |
 | **Teammate identity** | **Gwen** | what the operator addresses |
-| Cortex | Qwen 3.6 27B (`sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP`) | bounded tool loop, repo actions, final synthesis, **final authority** |
-| Muse | Gemma 4 31B (`nvidia/Gemma-4-31B-IT-NVFP4`) | tools-off reflective counsel: reframe the problem, challenge the cortex's assumptions, offer materially different alternatives; proposes, never decides |
+| Cortex | Qwen 3.6 27B (`sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP`) | bounded tool loop, repo actions, final synthesis, **final authority** — and, per `d15`, **the only actor** |
+| Muse *(opt-in; not in the reference rig)* | Gemma 4 31B (`nvidia/Gemma-4-31B-IT-NVFP4`) | reflective counsel, tools opt-in: reframe the problem, challenge the cortex's assumptions, offer materially different alternatives; proposes, never decides. A host may wire a pad and a bounded workspace onto its tool bench; neither is on by default — see below |
 | Senses | Gemma 4 12B (`coolthor/gemma-4-12B-it-NVFP4A16`) | intake, perception, conversational presence, speak-back; never acts on the repo |
 | Ears / voice | Parakeet STT + Chatterbox TTS behind the lobes audio overlay | the realtime lane (below) |
 
@@ -130,6 +130,62 @@ Roles resolve **by name** from a `lobes` gateway's `/capabilities` contract
 `tts`), never by parsing model names. The 31B muse is opt-in: it needs a
 muse-hosting deployment shape (`lobes init --shape thor-muse`), because a 31B
 cannot co-reside with the cortex+senses duo on a 128 GB box.
+
+**The reference rig runs muse-off — operator decision, 2026-07-31, recorded
+as `d15`.** Qwen is the only actor; Gemma 4 12B stays senses (intake,
+perception, speak-back); the Gemma 4 31B muse is **not dialled**. This changes
+no code — the muse was already opt-in and off by default — and it does **not**
+retire the seam: `muse.py`, `muse_runner.py` and the tool bench ship
+unchanged, and a host that wants counsel wires one.
+
+Be precise about what supports this, because the obvious citation is the wrong
+one. The model-consolidation head-to-head
+(`docs/live-test-results/league-h2h.md`) ranked `full-qwen > mixed >
+full-gemma`, but league's outcome metric tied 0–0 in all six matches and the
+entire ranking rests on one optional team-message field — it measured
+**interface compliance, not play**, and is not the support for this decision.
+Nor is the chosen configuration one of the three arms it ran: those all
+carried a muse, and a muse-off control does not exist there. What supports
+`d15` is the muse-side evidence: `t18`'s three-arm series returned
+`INCONCLUSIVE` while measuring real harm (#32, #33); 5 of 13 counsel lines
+still never reach the cortex (#29); and `t28` measured a **1.2%** intervention
+rate (1 override in 82) for **2.4–4.4×** the token cost. Cost is the one
+unambiguous axis — full-Gemma 950 tokens/match against full-Qwen's 18,410
+(19.4×) — and it argues *against* Qwen, not for it. This decision is a
+judgement the operator is entitled to make on top of that evidence, not a
+result the evidence produced.
+
+One consequence is load-bearing and was acted on (`d16`): with Qwen the only
+actor, the cortex is the only mind that can silently lose a turn. `t24`
+measured the shipped 2048 token default truncating **6.0%** of completions
+(5 of 83) with **zero** degradations recorded — `ModelResponse` carries no
+`finish_reason` (#37), so a truncated turn and a deliberate one arrive at the
+loop as the same object. At 16000: 0 of 58. The example hosts' defaults were
+raised accordingly; the value the series was measured at stays recorded in
+`docs/live-test-results/arena-budget.md`.
+
+**The muse's tools are opt-in too, and stay that way.** `embodiment.muse_pad`
+(write-only working memory) and `embodiment.workspace` (a bounded,
+network-less, disposable container) are tools a host wires onto
+`muse.MuseToolBench` explicitly; with no bench wired the muse is
+byte-identical to the tools-off mind it always was. This was a live question,
+not an assumption: task `t18`'s pre-registered three-arm series
+(`docs/live-test-results/muse-arms.md`, n=8 per arm, real Docker, 0 transport
+failures) measured tools-off against +pad and +pad+workspace and returned
+**`INCONCLUSIVE`** — arm A's confidently-wrong rate was 0 of 8, so there was
+no headroom for a tool lane to reduce, and the 5-of-6 figure that motivated
+the question was measured on a different loop and different problems, not
+this series' control. The series also measured harm the operator's standing
+rule (*the measured failure mode never ships as default behaviour*) will not
+let ship: 9 of the 16 tool-arm runs came back `NO_ANSWER` against 0 for
+tools-off (issue #32 — handed tools, the muse writes a tool call and no
+prose), and 74% of the workspace arm's calls were refused because the muse
+sent `command` as a string rather than an array (issue #33). Arm C's answers
+were never *wrong* (4 correct, 0 wrong, 4 no-answer) and arm B's pad protocol
+adherence was clean (0 open intents in 8 of 8 runs), so this is not a claim
+that tools are harmful — only that the case for a default flip was not made.
+Revisiting the default needs #32 and #33 fixed first, not just another
+tuning pass.
 
 **Design rules for Gwen**, from
 [colleague#352](https://github.com/agentculture/colleague/issues/352) (open;
@@ -201,7 +257,11 @@ otherwise in writing.
   `.devague/deliveries/`) allows sibling CLIs to be **imported directly at
   module scope as base dependencies**, replacing the subprocess adapter:
   `eidetic-cli` (→ `data-refinery-cli[store]` → neo4j + pymongo),
-  `coherence-cli` (→ numpy + httpx), and `events-cli` (→ paho-mqtt).
+  `coherence-cli` (→ numpy + httpx), `events-cli` (→ paho-mqtt), and — the
+  fourth, added 2026-07-30 by the same gate for the muse's workspace tool —
+  `headspace-cli` (→ `docker>=7.1` → requests, urllib3, certifi,
+  charset-normalizer). Only `headspace.api` may be imported: it is headspace's
+  sole supported surface and `headspace.core` is private (headspace-cli#18).
 
   What survives is the *discipline*, not the zero: **no dependency enters
   without a human deciding.** `tests/test_zero_deps.py` pins the exact approved
@@ -211,10 +271,13 @@ otherwise in writing.
   edit to a requirements list.
 
   **The accepted cost, recorded so it is not rediscovered:** `pip install
-  embodiment` now pulls a graph driver, a Mongo driver, numpy, httpx and
-  paho-mqtt; and importing embodiment transitively imports third-party
+  embodiment` now pulls a graph driver, a Mongo driver, numpy, httpx, paho-mqtt
+  and the docker SDK; and importing embodiment transitively imports third-party
   modules, so colleague's zero-deps test **will fail** if colleague adds
-  embodiment as a dependency.
+  embodiment as a dependency. Note the two footprints stay distinct and are
+  pinned separately: `neo4j`, `pymongo`, `paho` and `docker` are *installed* and
+  never *imported* at module scope, so the runtime-import set is the smaller
+  claim and must not be "fixed" to match the install set.
 - **C1b — no longer an open question; it is now a hard prerequisite.** It used
   to ask whether colleague would allow-list a third base dependency. After
   `d2`, colleague cannot import embodiment at all until it relaxes its

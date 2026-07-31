@@ -37,14 +37,39 @@ path that does not increment it returns immediately). ``tests/test_muse.py``
 proves all of that by AST, exactly as ``tests/test_loop.py`` does for the actor
 loop.
 
-Tools-off, and structurally so
-------------------------------
-The muse's whole seam is :data:`MuseCompleteFn` — *messages in, one model
-response out*. There is no executor parameter, no tool schema, and nothing here
-ever reads a response's tool-call list: a response that carries tool calls
-simply has them ignored, because no code in this module looks at them. The
-module never imports :mod:`embodiment.loop`, so no hook or decision type is even
-in scope. ``tests/test_muse.py`` scans this file for the whole tool vocabulary.
+Tools-off by default; thinking tools when a bench is wired (task t10)
+---------------------------------------------------------------------
+This section used to say the muse's whole seam was :data:`MuseCompleteFn` and
+that no tool schema was ever passed. That was **embodiment's architectural
+choice, never a model limit** — the reference muse emits well-formed tool calls
+— and on 2026-07-29 the operator reversed it. The muse may now be handed a
+:class:`MuseToolBench`: a tool schema, a tool-carrying completion, and a way to
+run one call. When it has one it puts the schema on the wire and reads the
+results back through :func:`_tool_loop`.
+
+Three things did **not** change, and they are what the reversal costs nothing:
+
+* **The old path is intact.** With no bench wired, :data:`MuseCompleteFn` is
+  called with exactly the messages the pre-seam release sent — one argument, no
+  schema, no tool-call list read anywhere. That is the degrade floor and the
+  rollback path for shipping tools default-on, and ``tests/test_muse.py`` plus
+  ``tests/test_muse_tool_identity.py`` hold it byte for byte.
+* **The muse's authority.** The tools are *thinking* tools — a pad, a bounded
+  workspace — never acting tools. Nothing in this module reads a file, walks a
+  path or dials anything; every tool is injected, so the reach is the host's to
+  state. :data:`MUSE_AUTHORITY` is still prepended unconditionally, and
+  :data:`MUSE_TOOL_AUTHORITY` is *appended* to it when a bench is on the wire.
+* **The budget.** Tool rounds spend the SAME turn counter thinking turns spend,
+  against a ceiling drawn with ``min`` from the session's own budget. There is
+  no second allowance and no arithmetic here that could produce a larger bound.
+
+Tool wiring is **top-level muse only** this cycle: a bench handed to a muse at
+subagent depth is withheld and the withholding is recorded
+(:data:`DEGRADED_TOOLS_WITHHELD`), never silently honoured or silently dropped.
+
+The module still never imports :mod:`embodiment.loop`, so no hook or decision
+type is in scope: a tool result is text the muse reads, and there is nothing
+here for a tool-approval path to bind to.
 
 Advisory only — proposes, never decides
 ---------------------------------------
@@ -117,11 +142,15 @@ This module is built for exactly that:
 6. **Keep the import direction.** ``muse`` imports ``presence_engine``; the
    reverse would cycle. A runner that needs both belongs in its own module.
 
-Stdlib only (constraint C1): ``dataclasses``, ``re``, ``typing``.
+Stdlib only (constraint C1): ``dataclasses``, ``json``, ``re``, ``typing``.
+``json`` joined the list in task t10 and only for the wire: a tool call handed
+back to the model rides the same OpenAI shape :mod:`embodiment.loop` already
+builds for the acting loop, so one host seam adapter serves both loops.
 """
 
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
@@ -136,12 +165,21 @@ __all__ = [
     "MUSE_EXIT_BUDGET",
     "MUSE_EXIT_DEGRADED",
     "MUSE_EXIT_REASONS",
+    # tool-round exits (the tool loop's own bounded vocabulary, task t10)
+    "MUSE_TOOL_EXIT_ANSWERED",
+    "MUSE_TOOL_EXIT_ROUNDS",
+    "MUSE_TOOL_EXIT_BUDGET",
+    "MUSE_TOOL_EXIT_DEGRADED",
+    "MUSE_TOOL_EXIT_REASONS",
     # degradation vocabulary (C3)
     "DEGRADED_THINKING",
     "DEGRADED_SINK",
     "DEGRADED_UNREADABLE",
     "DEGRADED_MARKER_UNREADABLE",
     "DEGRADED_BUNDLE_TRUNCATED",
+    "DEGRADED_TOOL",
+    "DEGRADED_TOOL_ROUNDS",
+    "DEGRADED_TOOLS_WITHHELD",
     # counsel kinds (t2)
     "COUNSEL_KIND_STEP",
     "COUNSEL_KIND_DURABLE",
@@ -149,6 +187,7 @@ __all__ = [
     "DEFAULT_KIND",
     # protocol
     "MUSE_AUTHORITY",
+    "MUSE_TOOL_AUTHORITY",
     "MARKER_DONE",
     "MARKER_GUIDANCE",
     # shapes
@@ -158,6 +197,9 @@ __all__ = [
     "MuseOrigin",
     "MuseOutcome",
     "MuseCompleteFn",
+    "MuseToolBench",
+    "MuseToolCompleteFn",
+    "MuseToolExecuteFn",
     "MuseSink",
     # driving
     "MuseLoop",
@@ -187,6 +229,31 @@ MUSE_EXIT_REASONS = (
 )
 
 
+# ── tool-round exits (task t10) ───────────────────────────────────────────────
+#
+# The tool loop resolves the calls of ONE thinking turn, so its exits describe
+# that turn, never the session. The values are prefixed and provably disjoint
+# from :data:`MUSE_EXIT_REASONS` (``tests/test_muse_tool_loop_ast.py``) so a
+# record can never be ambiguous about which loop it is describing.
+
+#: The muse settled on plain text — no further tool call. The nominal exit.
+MUSE_TOOL_EXIT_ANSWERED = "tool-answered"
+#: The per-turn round allowance was spent with a call still outstanding.
+MUSE_TOOL_EXIT_ROUNDS = "tool-rounds"
+#: The SESSION's turn budget ran out mid-resolution. The lower of the two
+#: ceilings won, which is the whole point of drawing it with ``min``.
+MUSE_TOOL_EXIT_BUDGET = "tool-budget"
+#: The thinking seam failed during resolution; recorded, then a clean stop.
+MUSE_TOOL_EXIT_DEGRADED = "tool-degraded"
+#: The complete set. There is no fifth.
+MUSE_TOOL_EXIT_REASONS = (
+    MUSE_TOOL_EXIT_ANSWERED,
+    MUSE_TOOL_EXIT_ROUNDS,
+    MUSE_TOOL_EXIT_BUDGET,
+    MUSE_TOOL_EXIT_DEGRADED,
+)
+
+
 # ── degradation vocabulary (C3) ───────────────────────────────────────────────
 
 #: The injected ``complete`` raised, returned nothing, or returned something
@@ -204,6 +271,20 @@ DEGRADED_MARKER_UNREADABLE = "muse-marker-unreadable"
 #: The recall-context bundle exceeded its own budget; the truncation is
 #: recorded, never silent (constraint C3).
 DEGRADED_BUNDLE_TRUNCATED = "muse-bundle-truncated"
+#: One wired thinking tool did not produce a usable result: it raised, returned
+#: something whose text could not be read, produced more than the result budget
+#: allows, or was one of more calls than a single round runs. The muse reads the
+#: failure as ordinary text and keeps thinking; the host sees the transition.
+DEGRADED_TOOL = "muse-tool-failed"
+#: A thinking turn ran out of room with a tool call still outstanding — the
+#: per-turn round allowance or the session's turn budget, whichever bit first.
+#: The reason names which.
+DEGRADED_TOOL_ROUNDS = "muse-tool-rounds-exhausted"
+#: A tool bench was wired to a muse that is not the top-level one. Muse tools
+#: are top-level only this cycle, so the bench was NOT put on the wire and the
+#: session ran tools-off. Recorded because a silently tools-off muse is exactly
+#: the "looks attentive, is not" failure constraint C3 exists to prevent.
+DEGRADED_TOOLS_WITHHELD = "muse-tools-withheld"
 
 
 # ── counsel kinds (t2) ────────────────────────────────────────────────────────
@@ -248,6 +329,32 @@ MUSE_AUTHORITY = (
     "said."
 )
 
+#: Appended to :data:`MUSE_AUTHORITY` — never substituted for it — on the turns
+#: of a session that has a :class:`MuseToolBench` on the wire (task t10).
+#:
+#: It opens by *correcting* the sentence above it rather than replacing it,
+#: because :data:`MUSE_AUTHORITY` cannot change: it reaches the tools-off path
+#: too, and every byte of that path is pinned against the pre-seam release
+#: (claim c37). A muse with tools would otherwise be told it has none.
+#:
+#: Identity-neutral, exactly as :data:`MUSE_AUTHORITY` is: it names no teammate,
+#: no model and no vendor, and it names no specific tool either — what the bench
+#: holds is the host's to describe, in the schema it supplies.
+MUSE_TOOL_AUTHORITY = (
+    "One correction to the paragraph above, and only that one: you do have a "
+    "small set of tools now. They are listed for you separately. Everything "
+    "else that paragraph says still holds exactly as written.\n"
+    "They are thinking tools, not acting tools. They do not reach the "
+    "repository the acting loop is working in, they do not reach the memory "
+    "store, and they do not reach the network. Nothing you do with them is "
+    "executed on the acting loop's behalf, and calling one is never an "
+    "instruction to it.\n"
+    "So you still propose and never decide. A tool result is something you "
+    "learned, not something you did to the world: say what it changed in your "
+    "thinking as ordinary narration, and put anything the acting loop should "
+    "weigh on a 'GUIDANCE:' line exactly as before."
+)
+
 #: Written by the muse to end its own session.
 MARKER_DONE = "[done]"
 #: Line prefix marking advisory text meant for the acting loop.
@@ -290,6 +397,13 @@ _GUIDANCE_RE = re.compile(r"^\s*+guidance(\s*+\[([^\]]*)\]?)?\s*+:\s*+", re.IGNO
 _MAX_REASON_LEN = 500
 #: How many trailing history entries are rendered into the opening prompt.
 _MAX_HISTORY_ENTRIES = 6
+#: How many tool calls ONE round runs. A bound on the model's exuberance rather
+#: than a host policy: a turn that asks for hundreds of calls gets the first few
+#: run and the discard recorded, never an unbounded walk through the list.
+_MAX_CALLS_PER_ROUND = 8
+#: Marks a tool result the result budget clipped, in the text the muse reads —
+#: so the party that matters sees the loss, not only the host's ledger.
+_RESULT_TRUNCATED = "\n[... tool result truncated by budget]"
 #: Cap on a rendered history entry's role label.
 _MAX_ROLE_LEN = 32
 
@@ -448,6 +562,17 @@ class MuseControls:
         Distinct from :attr:`max_context_chars` because a realistic bundle
         exceeds 600 characters by construction. ``0`` disables the cap.
         Truncation is recorded (:data:`DEGRADED_BUNDLE_TRUNCATED`), never silent.
+    max_tool_rounds:
+        How many tool rounds ONE thinking turn may spend when a
+        :class:`MuseToolBench` is wired. It is a ceiling *on top of* the turn
+        budget, never an addition to it: a round costs a model turn from
+        ``max_turns`` like any other, so this can only ever make a turn end
+        sooner. Ignored entirely when no bench is wired.
+    max_tool_result_chars:
+        Cap on ONE tool result's text before it goes back to the muse. A tool
+        that hands back a megabyte would otherwise evict the thinking it was
+        meant to serve. ``0`` disables the cap; a clip is recorded
+        (:data:`DEGRADED_TOOL`) and marked in the text the muse reads.
     """
 
     max_turns: int = 4
@@ -455,6 +580,8 @@ class MuseControls:
     max_context_chars: int = 600
     max_insight_chars: int = 2000
     max_bundle_chars: int = 2000
+    max_tool_rounds: int = 3
+    max_tool_result_chars: int = 2000
 
 
 @dataclass(frozen=True)
@@ -469,6 +596,10 @@ class MuseOutcome:
     so a durable record written afterwards can link to the material the muse
     actually compiled (:attr:`RecallBundle.record_ids`).  ``None`` when no
     bundle was supplied.
+
+    ``tool_rounds`` is how many tool rounds the session spent across all its
+    turns — ``0`` for every tools-off session, which is a measurement rather
+    than an absence.
     """
 
     origin: MuseOrigin
@@ -479,6 +610,7 @@ class MuseOutcome:
     latency: Optional[float] = None
     degradations: list[MuseDegradation] = field(default_factory=list)
     compiled_from: Optional[tuple[str, ...]] = None
+    tool_rounds: int = 0
 
     @property
     def degraded(self) -> bool:
@@ -507,17 +639,79 @@ class MuseOutcome:
             "tokens": self.tokens,
             "latency": self.latency,
             "degradations": [d.to_dict() for d in self.degradations],
+            "tool_rounds": self.tool_rounds,
         }
 
 
-#: The muse's ENTIRE seam: one tools-off model turn, messages in, response out.
-#: No tool schema is ever passed and no tool result is ever read — that is the
-#: whole of "tools-off", and it is enforced by there being nothing else here.
+# ── the two completion seams ──────────────────────────────────────────────────
+
+#: The muse's TOOLS-OFF seam, unchanged and still the default: one model turn,
+#: messages in, response out. On this path no tool schema is passed and no tool
+#: result is read — a response that carries tool calls simply has them ignored,
+#: because :func:`_requested_calls` refuses to look at them without a bench.
+#: This is the degrade floor and the rollback path for shipping tools default-on
+#: (claim c37), so it is byte-identical to the pre-seam release's call.
 MuseCompleteFn = Callable[[list[dict[str, Any]]], ModelResponse]
+
+#: The successor (task t10): messages AND the tool schema in, response out.
+#:
+#: A **distinct type** rather than a widening of :data:`MuseCompleteFn`, chosen
+#: deliberately over the alternative of one callable invoked with an optional
+#: extra argument. The arity difference *is* the tools-off/tools-on difference:
+#: a one-argument seam cannot be handed a schema by accident, a two-argument
+#: seam cannot be driven tools-off by accident, and the old type keeps the exact
+#: guarantee its docstring has always made instead of quietly acquiring a second
+#: meaning. It also makes byte-identity trivially provable — with no bench the
+#: tool-carrying seam is never constructed, let alone called.
+MuseToolCompleteFn = Callable[[list[dict[str, Any]], list[dict[str, Any]]], ModelResponse]
+
+#: How one wired thinking tool runs: ``(name, arguments)`` in, a result out.
+#:
+#: The result is read duck-typed — ``.result`` when there is one, otherwise
+#: ``str()`` — so a host may hand back an
+#: :class:`embodiment.loop.ToolOutcome` without this module importing the actor
+#: loop (which would drag a decision vocabulary into a lane that must not have
+#: one). Everything else on such an outcome is ignored on purpose, ``finished``
+#: included: a thinking tool cannot end a thinking session, because the only
+#: things that end one are the four :data:`MUSE_EXIT_REASONS`.
+MuseToolExecuteFn = Callable[[str, dict[str, Any]], Any]
 
 #: An optional drain, called with each insight AS IT IS PRODUCED. Task t10b
 #: hands it a queue. Never control-bearing: a raise disables it and is recorded.
 MuseSink = Callable[[MuseInsight], None]
+
+
+@dataclass(frozen=True)
+class MuseToolBench:
+    """The muse's THINKING tools: a schema, a seam that carries it, a way to run one.
+
+    Everything about *what* the tools are is the host's. This module ships no
+    schema of its own and constructs no executor, so "the muse never acts on the
+    repository" is not a promise made by this file's good intentions — there is
+    nothing here that could.
+
+    Fields
+    ------
+    schema:
+        The tool schema put on the wire, verbatim, every turn of a top-level
+        session. Any sequence of OpenAI-shaped tool mappings.
+    complete:
+        The tool-carrying completion (:data:`MuseToolCompleteFn`). Used for
+        every model turn of a session whose bench reached the wire. The
+        tools-off :data:`MuseCompleteFn` handed to :class:`MuseLoop` is still
+        required and still used whenever the bench is withheld — a bench with no
+        floor beneath it would have nothing to degrade onto.
+    execute:
+        Runs one call (:data:`MuseToolExecuteFn`). Injected, never constructed
+        here.
+
+    A bench holds callables; nothing the muse hands *back* does. That asymmetry
+    is the mechanism behind "proposes, never decides".
+    """
+
+    schema: tuple[dict[str, Any], ...]
+    complete: MuseToolCompleteFn
+    execute: MuseToolExecuteFn
 
 
 # ── the session context ───────────────────────────────────────────────────────
@@ -540,6 +734,25 @@ class _Session:
     last_tokens: Optional[int] = None
     turn_started: Optional[float] = None
     sink_failed: bool = False
+    #: The bench that reached the wire — ``None`` on every tools-off session,
+    #: including one whose bench was withheld for depth. Every "are tools on?"
+    #: question in this module is this one field, asked once.
+    bench: Optional[MuseToolBench] = None
+    #: The session's whole model-turn budget. Computed ONCE by
+    #: :meth:`MuseLoop.think` and never written again — both loops read it, so
+    #: neither can be bounded by a number the other does not know about.
+    budget: int = 1
+    #: Tool rounds spent across the whole session, for the outcome.
+    tool_rounds: int = 0
+    #: The tool calls the last completion asked for and nothing has run yet.
+    pending: list[Any] = field(default_factory=list)
+    #: The last completion's raw content — what the wire needs echoed back on
+    #: the assistant message that carried the calls.
+    last_content: str = ""
+    #: Everything the muse wrote across the CURRENT thinking turn, in order.
+    #: One turn is still one insight, so a guidance line written before a tool
+    #: call has to survive the round that follows it.
+    turn_parts: list[str] = field(default_factory=list)
 
 
 def _degrade(ctx: _Session, code: str, reason: str) -> None:
@@ -566,34 +779,280 @@ def _emit(ctx: _Session, insight: MuseInsight) -> None:
         return
     try:
         sink(insight)
-    except Exception as exc:  # noqa: BLE001 - a drain never controls the thinking
+    except Exception as exc:  # noqa: BLE001  # a drain never controls the thinking
         ctx.sink_failed = True
         _degrade(ctx, DEGRADED_SINK, f"{exc}")
 
 
-def _complete_turn(ctx: _Session) -> Optional[str]:
-    """Run ONE tools-off model turn; return its content, or ``None`` if it failed.
+def _call_seam(ctx: _Session) -> Any:
+    """ONE model call — tools-off unless a bench reached the wire.
+
+    The tools-off call is byte-for-byte the call the pre-seam release made:
+    ``complete(list(messages))``, one argument, no schema anywhere near it. That
+    is claim c37's degrade floor and the rollback path for shipping tools
+    default-on, and it is a separate line here rather than a conditional
+    argument precisely so it cannot drift.
+    """
+    bench = ctx.bench
+    if bench is None:
+        return ctx.complete(list(ctx.messages))
+    return bench.complete(list(ctx.messages), [dict(tool) for tool in bench.schema])
+
+
+def _requested_calls(ctx: _Session, response: Any) -> list[Any]:
+    """The tool calls *response* asked for — ``[]`` whenever no bench is wired.
+
+    The ONE place in this module that reads a response's tool-call list, and it
+    refuses to read one without a bench. A tools-off muse handed a response
+    carrying tool calls therefore ignores them exactly as it always has.
+    """
+    if ctx.bench is None:
+        return []
+    calls = getattr(response, "tool_calls", None)
+    if not isinstance(calls, (list, tuple)):
+        return []
+    return list(calls)
+
+
+def _model_turn(ctx: _Session) -> Optional[str]:
+    """Run ONE model turn; return its content, or ``None`` if it failed.
 
     The turn is counted before the call, so a degraded attempt is accounted
-    honestly rather than vanishing. Reading the response happens inside the same
-    ``try``: a dead port, a request error, an overflow, a ``None`` reply and a
-    response whose ``content`` explodes are all one fault class, all recorded
+    honestly rather than vanishing. **This is the only statement in the module
+    that advances ``ctx.turns``**, which is what makes both loops' termination
+    arguments the same argument; ``tests/test_muse_tool_loop_ast.py`` pins that.
+
+    Reading the response happens inside the same ``try``: a dead port, a request
+    error, an overflow, a ``None`` reply, a response whose ``content`` explodes
+    and one whose ``tool_calls`` explodes are all one fault class, all recorded
     identically, and none of them reaches the caller as an exception.
     """
     ctx.turns += 1
-    ctx.turn_started = _now(ctx.clock)
     try:
-        response = ctx.complete(list(ctx.messages))
+        response = _call_seam(ctx)
         if response is None:
             raise ValueError("the thinking seam returned no response")
         content = _content(response)
+        calls = _requested_calls(ctx, response)
         tokens = _token_total(response)
-    except Exception as exc:  # noqa: BLE001 - every fault degrades identically (C3)
+    except Exception as exc:  # noqa: BLE001  # every fault degrades identically (C3)
         _degrade(ctx, DEGRADED_THINKING, f"{exc}")
         return None
     ctx.last_tokens = tokens
     ctx.tokens = _add_tokens(ctx.tokens, tokens)
+    ctx.last_content = content
+    ctx.pending = calls
+    if content.strip():
+        ctx.turn_parts.append(content)
     return content
+
+
+def _tool_ceiling(ctx: _Session) -> int:
+    """The turn number :func:`_tool_loop` must stop at — the LOWER of two bounds.
+
+    ``ctx.budget`` is the session's whole model-turn budget and is written
+    exactly once, when the session is constructed. Drawing the ceiling from it
+    with ``min`` is the whole of "tool rounds cannot outspend the budget": there
+    is no arithmetic in this module that produces a larger number, so a round
+    allowance can only ever make a turn end *sooner*.
+
+    The control is read through :func:`_attr`, so a duck-typed ``controls``
+    object whose attribute access explodes degrades the round allowance rather
+    than the session. The tool seam therefore adds no new raise surface to the
+    one issue #26 already names.
+    """
+    rounds = max(0, _coerce_int(_attr(ctx.controls, "max_tool_rounds")))
+    return min(ctx.budget, ctx.turns + rounds)
+
+
+def _tool_loop(ctx: _Session) -> str:
+    """Resolve one turn's tool calls; return one of the four ``MUSE_TOOL_EXIT_*``.
+
+    Termination, in full — the same argument :func:`_think_loop` makes:
+
+    * ``ceiling`` is a fixed integer computed before the loop and never written
+      to again, and it is ``min``-drawn from the session's own budget;
+    * every iteration calls :func:`_model_turn`, whose FIRST statement
+      increments ``ctx.turns``, unconditionally;
+    * ``ctx.turns`` is decremented nowhere in this module;
+    * so the ``while`` runs at most ``ceiling - ctx.turns`` times, and the
+      session's total model turns still cannot exceed ``ctx.budget``.
+
+    There are exactly four ``return`` statements, no ``raise``, no ``try`` and
+    no ``for``. A failing tool is handled one frame down in :func:`_run_tool`,
+    which records it and hands the muse readable text, so a fifth way out does
+    not exist even in principle. ``tests/test_muse_tool_loop_ast.py`` asserts
+    each of those properties by AST.
+    """
+    ceiling = _tool_ceiling(ctx)
+    while ctx.turns < ceiling:
+        _run_pending(ctx)
+        content = _model_turn(ctx)
+        if content is None:
+            return MUSE_TOOL_EXIT_DEGRADED
+        if not ctx.pending:
+            return MUSE_TOOL_EXIT_ANSWERED
+    if ctx.turns >= ctx.budget:
+        return MUSE_TOOL_EXIT_BUDGET
+    return MUSE_TOOL_EXIT_ROUNDS
+
+
+def _complete_turn(ctx: _Session) -> Optional[str]:
+    """Run ONE thinking turn — a model turn, plus any tool rounds it asks for.
+
+    With no bench wired ``ctx.pending`` is always empty and this is exactly the
+    single guarded completion the pre-seam release ran, returning exactly that
+    completion's content.
+
+    With a bench, the turn is the whole exchange: preamble, rounds, and what the
+    muse made of the results. All of it becomes ONE insight, so a ``GUIDANCE:``
+    line written *before* a tool call is not lost to the round that follows it.
+    A turn that dies mid-resolution yields no insight at all, exactly as a turn
+    that dies on its first completion always has.
+    """
+    ctx.turn_started = _now(ctx.clock)
+    ctx.turn_parts = []
+    content = _model_turn(ctx)
+    if content is None:
+        return None
+    if not ctx.pending:
+        return content
+    reason = _tool_loop(ctx)
+    ctx.pending = []
+    if reason == MUSE_TOOL_EXIT_DEGRADED:
+        return None
+    _record_unresolved(ctx, reason)
+    return "\n".join(ctx.turn_parts)
+
+
+def _record_unresolved(ctx: _Session, reason: str) -> None:
+    """Record a tool resolution that ran out of room. ANSWERED records nothing."""
+    if reason == MUSE_TOOL_EXIT_ROUNDS:
+        rounds = _coerce_int(_attr(ctx.controls, "max_tool_rounds"))
+        _degrade(
+            ctx,
+            DEGRADED_TOOL_ROUNDS,
+            f"a tool call was left unresolved after {rounds} round(s)",
+        )
+    if reason == MUSE_TOOL_EXIT_BUDGET:
+        _degrade(
+            ctx,
+            DEGRADED_TOOL_ROUNDS,
+            f"a tool call was left unresolved: the session's {ctx.budget}-turn budget was spent",
+        )
+
+
+def _run_pending(ctx: _Session) -> None:
+    """Run the pending calls and append what the next model turn reads.
+
+    One assistant message carrying the calls, then one ``tool`` message per
+    call — the OpenAI-shaped protocol :mod:`embodiment.loop` already builds for
+    the acting loop, so a host's existing seam adapter serves both.
+
+    Never raises. The per-round cap is a bound on the model's own exuberance: a
+    turn that asks for hundreds of calls gets the first few run and the discard
+    recorded, rather than an unbounded walk through whatever it sent.
+    """
+    calls = ctx.pending[:_MAX_CALLS_PER_ROUND]
+    discarded = len(ctx.pending) - len(calls)
+    ctx.pending = []
+    ctx.tool_rounds += 1
+    if discarded > 0:
+        _degrade(
+            ctx,
+            DEGRADED_TOOL,
+            f"{discarded} tool call(s) beyond the {_MAX_CALLS_PER_ROUND}-per-round cap "
+            "were not run",
+        )
+    ctx.messages.append(_assistant_call_message(ctx, calls))
+    for call in calls:
+        ctx.messages.append(_tool_result_message(ctx, call))
+
+
+def _assistant_call_message(ctx: _Session, calls: list[Any]) -> dict[str, Any]:
+    """Echo the turn that asked for tools, in the shape it was asked in."""
+    return {
+        "role": "assistant",
+        "content": ctx.last_content,
+        "tool_calls": [
+            {
+                "id": _plain(_attr(call, "id")),
+                "type": "function",
+                "function": {
+                    "name": _plain(_attr(call, "name")),
+                    "arguments": _arguments_json(ctx, _attr(call, "arguments")),
+                },
+            }
+            for call in calls
+        ],
+    }
+
+
+def _tool_result_message(ctx: _Session, call: Any) -> dict[str, Any]:
+    """Run one call and render its result as the tool message the muse reads."""
+    name = _plain(_attr(call, "name"))
+    return {
+        "role": "tool",
+        "tool_call_id": _plain(_attr(call, "id")),
+        "name": name,
+        "content": _run_tool(ctx, call, name),
+    }
+
+
+def _arguments_json(ctx: _Session, arguments: Any) -> str:
+    """Serialize one call's arguments for the wire. Never raises.
+
+    ``default=str`` runs arbitrary ``__str__``, so this is guarded: a hostile
+    argument object degrades the *echo*, never the thinking.
+    """
+    payload = arguments if isinstance(arguments, dict) else {}
+    try:
+        return json.dumps(payload, ensure_ascii=False, default=str)
+    except Exception as exc:  # noqa: BLE001  # default=str runs arbitrary __str__
+        _degrade(ctx, DEGRADED_TOOL, f"tool-call arguments were not serializable: {exc}")
+        return "{}"
+
+
+def _run_tool(ctx: _Session, call: Any, name: str) -> str:
+    """Run ONE wired thinking tool. Never raises; a failure becomes readable text.
+
+    A tool that fails is a fact the muse can think about, so the result text
+    says so and the session continues — the same self-correcting treatment the
+    acting loop gives a ``ToolError``. The transition is recorded either way
+    (constraint C3): a host must never watch an attentive-looking muse whose
+    tools have all been failing.
+    """
+    bench = ctx.bench
+    if bench is None:
+        return "no tools are wired"
+    arguments = _attr(call, "arguments")
+    try:
+        outcome = bench.execute(name, dict(arguments) if isinstance(arguments, dict) else {})
+    except Exception as exc:  # noqa: BLE001  # a failing tool never stops the thinking
+        _degrade(ctx, DEGRADED_TOOL, f"{name}: {exc}")
+        return f"tool {name!r} failed: {exc}"
+    return _result_text(ctx, name, outcome)
+
+
+def _result_text(ctx: _Session, name: str, outcome: Any) -> str:
+    """One tool result as capped text. A result that cannot be read is NAMED.
+
+    ``.result`` when the host handed back an outcome object, otherwise the value
+    itself — which is what lets a host return a bare string without wrapping it,
+    and lets it return an :class:`embodiment.loop.ToolOutcome` without this
+    module importing the actor loop.
+    """
+    unreadable: list[str] = []
+    value = _attr(outcome, "result")
+    text = _plain(outcome if value is None else value, unreadable, name)
+    if unreadable:
+        _degrade(ctx, DEGRADED_TOOL, f"{name}: the tool result could not be rendered")
+        return f"tool {name!r} returned a result that could not be read"
+    cap = _coerce_int(_attr(ctx.controls, "max_tool_result_chars"))
+    if 0 < cap < len(text):
+        _degrade(ctx, DEGRADED_TOOL, f"{name}: a {len(text)}-char result was clipped to {cap}")
+        return text[:cap] + _RESULT_TRUNCATED
+    return text
 
 
 def _advance_turn(ctx: _Session, content: str, quiet: int) -> tuple[int, Optional[str]]:
@@ -643,27 +1102,31 @@ def _advance_turn(ctx: _Session, content: str, quiet: int) -> tuple[int, Optiona
     return quiet, None
 
 
-def _think_loop(ctx: _Session, max_turns: int) -> str:
+def _think_loop(ctx: _Session) -> str:
     """Run the bounded thinking loop; return one of the four ``MUSE_EXIT_*``.
 
     Termination, in full:
 
-    * ``budget`` is a fixed positive integer computed before the loop and never
-      written to again — nothing in this module can extend it;
-    * every iteration begins with :func:`_complete_turn`, whose FIRST statement
-      increments ``ctx.turns``, unconditionally;
+    * ``ctx.budget`` is a fixed positive integer computed once by
+      :meth:`MuseLoop.think` and never written again — nothing in this module
+      can extend it, and :func:`_tool_loop` draws its own ceiling from it with
+      ``min``, so tool rounds spend this same budget rather than a second one;
+    * every iteration begins with :func:`_complete_turn`, which reaches
+      :func:`_model_turn`, whose FIRST statement increments ``ctx.turns``,
+      unconditionally;
     * ``ctx.turns`` is decremented nowhere in this module;
     * so every iteration that continues has strictly increased the loop variable
       toward its fixed bound, and the ``while`` runs at most ``budget`` times.
 
     There are exactly four ``return`` statements, no ``raise``, no ``try`` and no
-    second loop. Whatever the injected seam raises is caught and recorded one
-    frame down, so a fifth way out does not exist even in principle.
-    ``tests/test_muse.py`` asserts each of those properties by AST.
+    second loop *here* — the tool loop is a sibling function held to the same
+    standard in ``tests/test_muse_tool_loop_ast.py``. Whatever the injected seam
+    raises is caught and recorded one frame down, so a fifth way out does not
+    exist even in principle. ``tests/test_muse.py`` asserts each of those
+    properties by AST.
     """
     quiet = 0
-    budget = max(1, _coerce_int(max_turns, 1))
-    while ctx.turns < budget:
+    while ctx.turns < ctx.budget:
         content = _complete_turn(ctx)
         if content is None:
             return MUSE_EXIT_DEGRADED
@@ -697,6 +1160,17 @@ class MuseLoop:
         clock: the ONLY source of a latency measurement. ``None`` — the default
             — leaves every ``latency`` at ``None`` rather than fabricating a
             zero.
+        tools: OPTIONAL :class:`MuseToolBench` (task t10). ``None`` — the
+            default — is a tools-off muse whose every prompt and every call is
+            what it was before the tool seam existed. A bench reaches the wire
+            only at ``depth`` 0; see below.
+        depth: where this muse sits. ``0`` is the top-level muse, the only one
+            that may hold tools this cycle. Anything else — including a value
+            that cannot be read as an integer — withholds the bench and records
+            :data:`DEGRADED_TOOLS_WITHHELD`. It **fails closed** on purpose: a
+            muse whose position cannot be established is not provably the
+            top-level one, and the cheap failure is a tools-off muse rather than
+            a tool-wielding subagent.
 
     Not thread-safe by itself: run one session at a time per instance. Owning
     the thread, and the lifecycle around it, is task t10b's job.
@@ -710,12 +1184,16 @@ class MuseLoop:
         system: Optional[str] = None,
         sink: Optional[MuseSink] = None,
         clock: Optional[Callable[[], float]] = None,
+        tools: Optional[MuseToolBench] = None,
+        depth: Any = 0,
     ) -> None:
         self._complete = complete
         self._controls = controls if controls is not None else MuseControls()
         self._system = system
         self._sink = sink
         self._clock = clock
+        self._tools = tools
+        self._depth = depth
         self._sessions = 0
 
     @property
@@ -749,6 +1227,7 @@ class MuseLoop:
         self._sessions += 1
         origin = MuseOrigin.of(boundary, session=self._sessions)
         unreadable: list[str] = []
+        bench = _bench_for(self._tools, self._depth)
         ctx = _Session(
             complete=self._complete,
             controls=self._controls,
@@ -759,10 +1238,20 @@ class MuseLoop:
                 self._controls,
                 unreadable,
                 recall_bundle,
+                tools=bench is not None,
             ),
             sink=self._sink,
             clock=self._clock,
+            bench=bench,
+            budget=max(1, _coerce_int(self._controls.max_turns, 1)),
         )
+        if self._tools is not None and bench is None:
+            _degrade(
+                ctx,
+                DEGRADED_TOOLS_WITHHELD,
+                f"a tool bench was wired to a muse at depth {self._depth!r}; muse tools are "
+                "top-level only, so this session ran tools-off",
+            )
         if unreadable:
             _degrade(
                 ctx,
@@ -778,7 +1267,7 @@ class MuseLoop:
             if _ids is not None:
                 compiled_from = tuple(_ids)
         started = _now(self._clock)
-        exit_reason = _think_loop(ctx, self._controls.max_turns)
+        exit_reason = _think_loop(ctx)
         return MuseOutcome(
             origin=origin,
             exit_reason=exit_reason,
@@ -788,6 +1277,7 @@ class MuseLoop:
             latency=_since(self._clock, started),
             degradations=list(ctx.degradations),
             compiled_from=compiled_from,
+            tool_rounds=ctx.tool_rounds,
         )
 
     def __call__(self, boundary: Optional[BoundaryContext]) -> Optional[MuseComment]:
@@ -804,16 +1294,33 @@ class MuseLoop:
 # ── prompt building ───────────────────────────────────────────────────────────
 
 
+def _bench_for(bench: Optional[MuseToolBench], depth: Any) -> Optional[MuseToolBench]:
+    """The bench that actually reaches the wire: ``None`` anywhere but the top.
+
+    Muse tool wiring is **top-level muse only** this cycle, and this is the one
+    place that rule lives. The default on an unreadable depth is ``1``, not
+    ``0``: failing closed costs a tools-off muse, failing open would hand tools
+    to a subagent-depth one, and only one of those is recoverable.
+    """
+    if bench is None:
+        return None
+    if _coerce_int(depth, 1) != 0:
+        return None
+    return bench
+
+
 def _build_messages(
     boundary: Optional[BoundaryContext],
     system: Optional[str],
     controls: MuseControls,
     unreadable: list[str],
     recall_bundle: Optional[Any] = None,
+    *,
+    tools: bool = False,
 ) -> list[dict[str, Any]]:
     """The opening two messages: the authority framing, then the boundary."""
     return [
-        {"role": "system", "content": _system_message(system)},
+        {"role": "system", "content": _system_message(system, tools=tools)},
         {
             "role": "user",
             "content": _render_boundary(
@@ -826,12 +1333,22 @@ def _build_messages(
     ]
 
 
-def _system_message(extra: Optional[str]) -> str:
-    """:data:`MUSE_AUTHORITY` always first; host framing only ever appended."""
-    if extra is None:
-        return MUSE_AUTHORITY
-    text = _plain(extra).strip()
-    return f"{MUSE_AUTHORITY}\n\n{text}" if text else MUSE_AUTHORITY
+def _system_message(extra: Optional[str], *, tools: bool = False) -> str:
+    """:data:`MUSE_AUTHORITY` always first; everything else only ever appended.
+
+    With a bench on the wire, :data:`MUSE_TOOL_AUTHORITY` comes immediately
+    after it — a correction has to sit against the sentence it corrects — and
+    host framing after both. With no bench the returned string is byte-identical
+    to the pre-seam release's (claim c37), which is why the tool block is
+    appended rather than folded into the authority text.
+    """
+    blocks = [MUSE_AUTHORITY]
+    if tools:
+        blocks.append(MUSE_TOOL_AUTHORITY)
+    text = _plain(extra).strip() if extra is not None else ""
+    if text:
+        blocks.append(text)
+    return "\n\n".join(blocks)
 
 
 def _render_boundary(
@@ -1159,7 +1676,7 @@ def _attr(obj: Any, name: str) -> Any:
     """``getattr`` that cannot raise — a hostile property reads as absent."""
     try:
         return getattr(obj, name, None)
-    except Exception:  # noqa: BLE001 - an unreadable attribute is simply absent
+    except Exception:  # noqa: BLE001  # an unreadable attribute is simply absent
         return None
 
 
@@ -1171,7 +1688,7 @@ def _plain(value: Any, unreadable: Optional[list[str]] = None, label: str = "") 
         return value
     try:
         return str(value)
-    except Exception:  # noqa: BLE001 - recorded by the caller as DEGRADED_UNREADABLE
+    except Exception:  # noqa: BLE001  # recorded by the caller as DEGRADED_UNREADABLE
         if unreadable is not None:
             unreadable.append(label or "value")
         return ""
@@ -1181,7 +1698,7 @@ def _safe_text(obj: Any, name: str, unreadable: list[str], *, mapping: bool = Fa
     """Read one context value as text, naming it if it cannot be rendered."""
     try:
         raw = obj.get(name) if mapping else getattr(obj, name, None)
-    except Exception:  # noqa: BLE001 - recorded by the caller as DEGRADED_UNREADABLE
+    except Exception:  # noqa: BLE001  # recorded by the caller as DEGRADED_UNREADABLE
         unreadable.append(name)
         return ""
     return _plain(raw, unreadable, name)
@@ -1213,7 +1730,7 @@ def _now(clock: Optional[Callable[[], float]]) -> Optional[float]:
         return None
     try:
         return float(clock())
-    except Exception:  # noqa: BLE001 - a clock failure is not a thinking failure
+    except Exception:  # noqa: BLE001  # a clock failure is not a thinking failure
         return None
 
 

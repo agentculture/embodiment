@@ -115,6 +115,7 @@ import shutil
 import subprocess  # nosec B404
 import sys
 import tempfile
+import time
 import urllib.request
 import uuid
 from pathlib import Path
@@ -186,7 +187,14 @@ DEFAULT_BASE_URL = "http://localhost:8001/v1"
 CORTEX_MODEL = "sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP"
 MUSE_MODEL = "nvidia/Gemma-4-31B-IT-NVFP4"
 
-DEFAULT_MAX_TOKENS = 2048
+#: Raised 2048 -> 16000 (``d16``), on this harness's own measurement: task
+#: t24 played 12 matches at both budgets and found 5 of 83 completions
+#: truncating at 2048 against 0 of 58 at 16000, with zero degradations
+#: recorded either way (#37). One of those truncations cost blue an entire
+#: opening league turn that ``turns_played`` scored as played. The published
+#: ``arena-budget.md`` and ``arena-series.md`` runs were measured at 2048;
+#: pass ``--max-tokens 2048`` to reproduce them.
+DEFAULT_MAX_TOKENS = 16000
 DEFAULT_MUSE_MAX_TOKENS = 512
 DEFAULT_TEMPERATURE = 0.3
 DEFAULT_MUSE_TEMPERATURE = 0.7
@@ -864,6 +872,59 @@ def _call(name: str, **arguments: Any) -> ModelResponse:
 # ── the live seam: one HTTP round trip per model turn ────────────────────────
 
 
+def completion_trace(role: str, model: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """What :class:`ModelResponse` cannot carry, kept beside the run.
+
+    ``finish_reason`` is the field that separates *the model stopped* from *the
+    model was cut off*, and ``embodiment.contract.ModelResponse`` does not carry
+    it (embodiment#37). Both arrive at the loop as empty content with no tool
+    calls, so a host reading only the loop's own record cannot tell a truncated
+    turn from a deliberate one — and t23 measured this cortex returning
+    ``length`` with **zero** content characters at a full 16000-token budget.
+
+    This function reads it off the raw payload the seam already has in hand and
+    is otherwise about to discard. It is instrumentation, not contract: nothing
+    in the loop consumes it, and with no ``--trace-out`` nothing calls it.
+    """
+    choices = payload.get("choices") or [{}]
+    message = (choices[0] or {}).get("message") or {}
+    usage = payload.get("usage") or {}
+    calls = [
+        str(((raw or {}).get("function") or {}).get("name") or "")
+        for raw in (message.get("tool_calls") or [])
+    ]
+    return {
+        "ts": round(time.time(), 3),
+        "pid": os.getpid(),
+        "role": role,
+        "model": model,
+        "finish_reason": (choices[0] or {}).get("finish_reason"),
+        "prompt_tokens": int(usage.get("prompt_tokens") or 0),
+        "completion_tokens": int(usage.get("completion_tokens") or 0),
+        "content_chars": len(str(message.get("content") or "")),
+        "reasoning_chars": len(
+            str(message.get("reasoning_content") or message.get("reasoning") or "")
+        ),
+        "tool_calls": calls,
+    }
+
+
+def trace_writer(path: Path, role: str, model: str) -> Callable[[dict[str, Any]], None]:
+    """Append one JSON object **per completion**, flushed as it goes.
+
+    Per completion, not per run. A harness that writes only when the last run
+    returns hands back a zero-byte file when the gateway 503s mid-series, which
+    is how one sibling task lost 41 minutes of live cortex work. The command arm
+    makes this sharper still: every turn is a different process appending to the
+    same file, and they run strictly serially.
+    """
+
+    def write(payload: dict[str, Any]) -> None:
+        append_jsonl(path, completion_trace(role, model, payload))
+
+    return write
+
+
 def parse_completion(payload: dict[str, Any]) -> ModelResponse:
     """Shape one OpenAI-compatible completion into a :class:`ModelResponse`.
 
@@ -909,12 +970,17 @@ def gateway_seam(
     temperature: float = DEFAULT_TEMPERATURE,
     tools: Optional[list[dict[str, Any]]] = None,
     timeout: float = 300.0,
+    trace: Optional[Callable[[dict[str, Any]], None]] = None,
 ) -> Callable[[list[dict[str, Any]]], ModelResponse]:
     """Build a model seam that talks to one OpenAI-compatible endpoint.
 
     Roles are addressed **by name**: this function is handed a model id and
     infers nothing from it. The muse lane passes no ``tools`` at all — that
     absence is the whole of "tools-off".
+
+    ``trace`` is optional instrumentation and defaults to ``None``, so the
+    shipped path is byte-for-byte what it was: the raw payload is parsed and
+    dropped exactly as before unless a caller asks to keep a record of it.
     """
     endpoint = f"{base_url.rstrip('/')}/chat/completions"
     if not endpoint.startswith(("http://", "https://")):
@@ -942,7 +1008,10 @@ def gateway_seam(
         # The scheme is pinned to http(s) above and the endpoint is the
         # operator's own --base-url; audited once, here.
         with urllib.request.urlopen(request, timeout=timeout) as response:  # nosec B310
-            return parse_completion(json.loads(response.read().decode("utf-8")))
+            payload = json.loads(response.read().decode("utf-8"))
+        if trace is not None:
+            trace(payload)
+        return parse_completion(payload)
 
     return complete
 
@@ -968,6 +1037,7 @@ def build_minds(args: argparse.Namespace) -> tuple[Any, Optional[Any], str, Opti
         )
         raise SystemExit(2)
 
+    trace_out = getattr(args, "trace_out", "") or ""
     cortex = gateway_seam(
         args.base_url,
         args.cortex_model,
@@ -975,6 +1045,7 @@ def build_minds(args: argparse.Namespace) -> tuple[Any, Optional[Any], str, Opti
         max_tokens=args.max_tokens,
         temperature=args.cortex_temperature,
         tools=TOOL_SCHEMA,
+        trace=trace_writer(Path(trace_out), "cortex", args.cortex_model) if trace_out else None,
     )
     muse = None
     if args.muse:
@@ -985,6 +1056,7 @@ def build_minds(args: argparse.Namespace) -> tuple[Any, Optional[Any], str, Opti
             key,
             max_tokens=args.muse_max_tokens,
             temperature=args.muse_temperature,
+            trace=trace_writer(Path(trace_out), "muse", args.muse_model) if trace_out else None,
         )
     return cortex, muse, args.cortex_model, (args.muse_model if args.muse else None)
 
@@ -1168,6 +1240,18 @@ def write_preamble(args: argparse.Namespace, log_path: Path, arena: dict[str, An
         max_turns=args.muse_max_turns,
         staleness_policy="default",
         n=1,
+        # The token budget is a hidden variable until it is written down. The
+        # t19 arena series ran its whole 24-match matrix at this file's default
+        # of 2048 — ``arena_series.seat_argv`` passes no ``--max-tokens`` — and
+        # its config preamble recorded temperature but not the cap, so nothing
+        # in the published record says what budget the numbers were measured
+        # through (embodiment#37, and t23's token-budget finding).
+        extra={
+            "cortex_max_tokens": args.max_tokens if args.live else None,
+            "muse_max_tokens": args.muse_max_tokens if (args.live and args.muse) else None,
+            "max_steps": args.max_steps,
+            "trace_out": getattr(args, "trace_out", "") or None,
+        },
     )
     append_jsonl(log_path, {"kind": "config", "config": config, "arena": arena})
     return config
@@ -1653,6 +1737,10 @@ def turn_argv(args: argparse.Namespace, *, record_path: Path, directive: str) ->
             "--muse-temperature",
             str(args.muse_temperature),
         ]
+        if getattr(args, "trace_out", ""):
+            # Every turn is a different process; they append to one file, in
+            # turn order, because this arm is strictly serial.
+            argv += ["--trace-out", args.trace_out]
     return argv
 
 
@@ -1784,6 +1872,15 @@ def _add_common(parser: argparse.ArgumentParser) -> None:
     live.add_argument("--muse-max-tokens", type=int, default=DEFAULT_MUSE_MAX_TOKENS)
     live.add_argument("--cortex-temperature", type=float, default=DEFAULT_TEMPERATURE)
     live.add_argument("--muse-temperature", type=float, default=DEFAULT_MUSE_TEMPERATURE)
+    live.add_argument(
+        "--trace-out",
+        default="",
+        help=(
+            "append one JSON object per live completion here, carrying the "
+            "finish_reason ModelResponse cannot (embodiment#37). Off by default; "
+            "in the command arm every turn's child appends to the same file."
+        ),
+    )
 
 
 def build_parser() -> argparse.ArgumentParser:

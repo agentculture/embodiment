@@ -659,7 +659,7 @@ class ContinuityLifecycle:
             # raised: LOOP_BOUNDARIES is the loop's closed vocabulary today, and
             # staying permissive lets this policy keep working if the loop ever
             # adds a fourth without a lock-step release of this module.
-        except Exception as exc:  # noqa: BLE001 - never raise into the host
+        except Exception as exc:  # noqa: BLE001  # never raise into the host
             self._emit(
                 getattr(boundary, "name", ""),
                 CHECKPOINT_DEGRADED,
@@ -715,7 +715,7 @@ class ContinuityLifecycle:
         if predicate is not None:
             try:
                 return bool(predicate(boundary)), _SKIP_NOT_CONSEQUENTIAL
-            except Exception as exc:  # noqa: BLE001 - a host predicate never breaks a checkpoint
+            except Exception as exc:  # noqa: BLE001  # a host predicate never breaks a checkpoint
                 self._emit(
                     BOUNDARY_ACTION,
                     CHECKPOINT_DEGRADED,
@@ -884,7 +884,7 @@ class ContinuityLifecycle:
             return
         try:
             cited = tuple(getattr(self._muse, "compiled_from", ()) or ())
-        except Exception as exc:  # noqa: BLE001 - provenance never aborts a write
+        except Exception as exc:  # noqa: BLE001  # provenance never aborts a write
             self._emit(
                 BOUNDARY_MEMORY,
                 CHECKPOINT_DEGRADED,
@@ -1064,7 +1064,7 @@ class ContinuityLifecycle:
             return
         try:
             self._on_event(event)
-        except Exception as exc:  # noqa: BLE001 - a sink never breaks a checkpoint
+        except Exception as exc:  # noqa: BLE001  # a sink never breaks a checkpoint
             self._sink_failed = True
             self._append(
                 LifecycleEvent(

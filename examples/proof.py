@@ -19,6 +19,13 @@ Tools are deliberately a closed surface — ``sum_terms``, ``factorial``,
 test of sandboxing, not of reasoning, and embodiment's whole tool posture is that
 the host decides what may be done (c35: not every host even has a shell).
 
+This harness is also the first checked-in host to wire the presence pump's
+advisory channel into the cortex's conversation (:class:`GuidanceRelay`, issue
+#23). Until it did, ``append_guidance`` was unwired everywhere, so counsel the
+pump "delivered" reached the operator's transcript and never the acting mind —
+which means every delivery number this harness has published measured delivery
+to presence, not to the cortex. The report now counts both, separately.
+
 Usage::
 
     export COLLEAGUE_API_KEY=...
@@ -37,7 +44,7 @@ import sys
 import time
 import urllib.request
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -67,6 +74,10 @@ DEFAULT_TEMPERATURE = 0.3
 MUSE_MAX_TURNS = 2
 #: The muse's completion budget per turn, likewise.
 MUSE_MAX_TOKENS = 1200
+#: How advisory counsel is labelled when it enters the cortex's conversation.
+#: The muse proposes and never decides, so its authority boundary travels WITH
+#: the words rather than living only in the system prompt that produced them.
+GUIDANCE_PREFIX = "[counsel — advisory. Weigh it; the decision stays yours.] "
 
 PROBLEM = (
     "Find a closed form for the sum S(n) = 1*1! + 2*2! + 3*3! + ... + n*n!, "
@@ -519,7 +530,7 @@ def gateway(
     *,
     tools=None,
     temperature: float = DEFAULT_TEMPERATURE,
-    max_tokens: int = 6000,
+    max_tokens: int = 16000,
 ):
     """One completion against the gateway.
 
@@ -564,6 +575,55 @@ def gateway(
         )
 
     return complete
+
+
+class GuidanceRelay:
+    """Wire the presence pump's advisory channel into the cortex's messages.
+
+    **No checked-in host wired ``append_guidance`` before this one** (issue
+    #23). This harness, ``greenhouse.py`` and ``league_seat.py`` all built a
+    ``PresenceIO`` with ``render`` and ``task_state`` only, so every muse comment
+    the pump delivered landed on the engine's ``_noop_guidance``: it reached the
+    operator's transcript and the run's records, and never reached the mind that
+    could act on it. Every delivery number this harness has published therefore
+    measured delivery to *presence*, not to the cortex.
+
+    Guidance is **buffered and flushed at the top of the next completion**,
+    never appended at the moment it arrives. A progress boundary fires after
+    each tool call, which is *inside* a multi-call turn — appending there would
+    interleave a user message between one turn's tool results, a shape a strict
+    gateway rejects and every chat template renders confusingly. At completion
+    time the previous turn is closed, so the append is always well-formed.
+
+    The buffer is also what makes the accounting honest. Counsel that never
+    reaches a completion — a clean ``finish`` has no later turn by construction,
+    so the drive-end terminal drain's counsel has nowhere to go — stays in
+    ``pending`` and is reported as undelivered, rather than being counted as
+    having reached the cortex because it was handed to a callback.
+    """
+
+    def __init__(self, complete: Callable[[list[dict[str, Any]]], ModelResponse]) -> None:
+        self._complete = complete
+        #: Counsel handed over but not yet seen by a completion.
+        self.pending: list[str] = []
+        #: Every line the pump appended, in order.
+        self.appended: list[str] = []
+        #: The subset a completion actually carried on the wire.
+        self.reached_cortex: list[str] = []
+
+    def append_guidance(self, text: str) -> None:
+        line = (text or "").strip()
+        if not line:
+            return
+        self.appended.append(line)
+        self.pending.append(line)
+
+    def complete(self, messages: list[dict[str, Any]]) -> ModelResponse:
+        while self.pending:
+            line = self.pending.pop(0)
+            messages.append({"role": "user", "content": f"{GUIDANCE_PREFIX}{line}"})
+            self.reached_cortex.append(line)
+        return self._complete(messages)
 
 
 def grade(proof: str, bench: ProofBench) -> dict[str, Any]:
@@ -619,6 +679,12 @@ def main() -> int:
     parser.add_argument("--muse-temperature", type=float, default=DEFAULT_TEMPERATURE)
     parser.add_argument("--identity", default=None)
     parser.add_argument(
+        "--max-tokens",
+        type=int,
+        default=16000,
+        help="cortex token budget per turn; 16000 is this rig's measured floor (d16)",
+    )
+    parser.add_argument(
         "--results",
         default="results/proof_config.json",
         help="where the config preamble is written, BEFORE the first result line",
@@ -650,6 +716,7 @@ def main() -> int:
             "identity": args.identity,
             "muse_max_turns": MUSE_MAX_TURNS,
             "muse_max_tokens": MUSE_MAX_TOKENS,
+            "cortex_max_tokens": args.max_tokens,
             "stale_lag": DEFAULT_STALE_LAG,
         },
     )
@@ -673,20 +740,31 @@ def main() -> int:
             system=frame_muse(None, identity=args.identity),
             controls=MuseControls(max_turns=MUSE_MAX_TURNS),
         )
+    # The cortex seam is built BEFORE the pump because the pump's advisory
+    # channel now feeds it: the relay wraps the gateway, and `run` is handed the
+    # relay's `complete`, not the gateway's.
+    relay = GuidanceRelay(
+        gateway(
+            args.base_url,
+            args.cortex_model,
+            key,
+            tools=tool_schema,
+            temperature=args.cortex_temperature,
+            max_tokens=args.max_tokens,
+        )
+    )
     presence = PresenceEngine(
-        io=PresenceIO(render=lines.append, task_state=bench.state),
+        io=PresenceIO(
+            render=lines.append,
+            task_state=bench.state,
+            append_guidance=relay.append_guidance,
+        ),
         muse=runner,
         speaker=args.identity or "presence",
     )
 
     task = Task(id=f"proof-{args.problem}", repo_path="", instruction=problem_text)
-    cortex = gateway(
-        args.base_url,
-        args.cortex_model,
-        key,
-        tools=tool_schema,
-        temperature=args.cortex_temperature,
-    )
+    cortex = relay.complete
     started = time.time()
     if runner is not None:
         with runner:
@@ -728,6 +806,14 @@ def main() -> int:
         "tool_calls": [name for name, _ in bench.calls],
         "degradations": [record.to_dict() for record in outcome.degradations],
         "presence_lines": len(lines),
+        # Delivery to the CORTEX, reported separately from delivery to presence.
+        # Before the relay above, every one of these would have been zero while
+        # `muse_counts` still reported counsel "delivered" — delivered to a
+        # no-op callback. `guidance_undelivered` is the honest residue: counsel
+        # the pump handed over after the drive's last completion.
+        "guidance_appended": len(relay.appended),
+        "guidance_reached_cortex": len(relay.reached_cortex),
+        "guidance_undelivered": len(relay.pending),
         "problem": args.problem,
         "grade": (grade_audit if audit_mode else grade_euler if euler else grade)(
             outcome.result.summary or "", bench
@@ -760,6 +846,11 @@ def main() -> int:
     print(f"tool calls   : {report['tool_call_count']}   in {elapsed:.0f}s")
     print(f"             : {report['tool_calls']}")
     print(f"presence     : {report['presence_lines']} line(s)")
+    print(
+        f"guidance     : {report['guidance_reached_cortex']} of "
+        f"{report['guidance_appended']} counsel line(s) reached the cortex "
+        f"({report['guidance_undelivered']} arrived after its last turn)"
+    )
     print(f"degradations : {len(report['degradations'])}")
     if muse_state:
         print(f"muse         : {report['muse_counts']}")

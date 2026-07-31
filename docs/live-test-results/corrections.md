@@ -39,6 +39,17 @@ that can certify dead vocabulary indefinitely.
 its weakest permitted provoker. "Every code is covered" and "every code is
 reachable" are different claims and this suite only checked the first.
 
+**Resolved 2026-07-30 (muse cycle, tasks `t2` and `t3`).** Both halves were
+fixed, because fixing only the codes would have left the escape hatch open for
+the next one. `t2` gave both codes real producing paths through a new public
+`compile()` work class and generalised the AST guard to
+`TestEveryRunnerCodeHasAProducer` — it now walks *call arguments* to
+`_record`/`_degrade`, so a declaration, an `__all__` entry or the
+`RUNNER_CODES` tuple can never again be mistaken for a producer, and it checks
+every code rather than the two known offenders. `t3` closed the escape hatch
+itself: a provoker may no longer reach a private attribute of the object it
+constructs, enforced structurally against `tests/test_ledger.py`'s own source.
+
 ### `t14`'s arena seat reported the command arm's degradations as zero
 
 `_play_command` returned nothing, so `match_degradations` stayed `[]` for the
@@ -234,6 +245,37 @@ the pre-registration described. Written down because "the prediction was fine,
 the harness did not do the thing" is a distinct failure from a wrong prediction,
 and only shows up if you grade rather than glance.
 
+### `exit=stopped` on the subset problem was partly the token cap, not the model
+
+[designed-problem.md](designed-problem.md) reported 3-of-4 runs per arm ending
+`exit=stopped` at `turns=2` and read it as *"the model abandoning tool calls,
+not answering wrongly"* — a protocol failure. Task t19 ran the same problem and
+measured the alternative. Same prompt, same rig, one variable:
+
+| `max_tokens` | `finish_reason` | content | reasoning | tool calls |
+|---|---|---|---|---|
+| 6000 | **`length`** | *empty* | 12 857 chars | **none** |
+| 16000 | `tool_calls` | *empty* | 20 835 chars | `finish({"answer": 76})` |
+
+At 6000 the cortex is **truncated mid-thought**. A truncated turn and an
+abandoned protocol are the same event to the loop — no content, no tool calls —
+so the empty-turn exit path fires either way and the transcript cannot tell them
+apart. `docs/live-test-results/README.md` already warned that this cortex
+returns `finish_reason: length` with `content: None` and that a caller "can
+easily misread that as an empty turn rather than a truncated one". It was
+misread, in a published result, on this repo's own harness.
+
+**Two things were wrong at once**, which is why it survived: the budget was too
+small *and* nothing recorded enough to notice. `RecordingSeam.tail()`
+(`examples/echo_probe_workspace.py`) now keeps the last turn's content, its
+reasoning length and its tool names, so "silent because truncated" and "silent
+because it stopped calling tools" are separable in a committed transcript.
+
+**What is not corrected:** designed-problem's headline — no measured muse
+effect, 1/4 in both arms — is untouched by this. Both arms ran under the same
+cap, so the comparison stands; what changes is the *reading* of the failures
+that produced it, and whether 1/4 was a floor imposed by the budget.
+
 ### The dominant counsel loss is a close-time race, not staleness
 
 **One `muse-insight-late` in every one of four runs**, at steps 13–15,
@@ -373,3 +415,33 @@ it is colleague's decision to make
   collapse was initially described as possibly deterministic on the strength of
   one pilot. Two further pilots played 3 turns each: it is stochastic, 1 in 3.
   Recorded because "run it again before naming it" is the whole lesson.
+
+## 8. The head-to-head series (t27)
+
+- **A fourth defective grader, found the same way as the first three.** The
+  head-to-head harness's own `rejections` counter reported 0 across all twelve
+  team-records; league's own `discipline` component records 2. It changed no
+  verdict — faults are the third tie-break and every match was decided at the
+  second — and it is recorded as defective and pinned by a test rather than
+  repaired after the fact. See [league-h2h.md](league-h2h.md). The recurring
+  pattern in this list holds again: *the mechanism was right and the
+  verification was the defect*, and it was caught by checking a number this
+  harness produced against a number someone else's program produced for the
+  same fact.
+- **A pre-registered metric that measured something other than what it was
+  chosen for.** `cooperation_v1` was picked as the tie-break because it is
+  league's own content-aware metric and moves at short horizons. It moved — but
+  three of its four signals sat on a ceiling for all three arms, so the entire
+  three-way separation rests on `message_utility`, i.e. whether the seat filled
+  in one optional field. The verdict stands as pre-registered and the write-up
+  leads with the mechanism rather than the ranking, because "full-qwen >
+  mixed > full-gemma" read alone would be an overclaim about play.
+- **The brief's token budget would have inverted the result.** t27 was briefed
+  with "budget 3000+ for any Qwen seat". Measured spend was ~4,000 completion
+  tokens per seat-turn for the Qwen cortex. At the briefed cap it would have
+  truncated on essentially every turn, returned empty content, staged no
+  orders and lost every match — and the write-up would have reported Gemma as
+  better. The correction to 16000 arrived before the first dial and is recorded
+  as amendment 1 in the pre-registration. Recorded here because the near-miss
+  is the lesson: *an identical budget is not a fair budget when one model
+  thinks before it speaks.*
