@@ -1,0 +1,120 @@
+{
+  "kind": "worker-smoke",
+  "note": "instrument check, not data",
+  "worker": {
+    "base_url": "http://thor.tail0be7e0.ts.net:8000/v1",
+    "model": "unsloth/Qwen3.6-35B-A3B-NVFP4"
+  },
+  "max_tokens": 16000,
+  "temperature": 0.3,
+  "max_steps": 6,
+  "bare_completion": {
+    "kind": "bare-completion",
+    "prompt": "Reply with exactly: WORKER-OK",
+    "content": "\n\nWORKER-OK",
+    "cost": {
+      "role": "worker-bare",
+      "model": "unsloth/Qwen3.6-35B-A3B-NVFP4",
+      "calls": 1,
+      "prompt_tokens": 18,
+      "completion_tokens": 176,
+      "seconds": 4.498,
+      "retries": 0,
+      "failures": 0,
+      "empty_content": 0,
+      "truncated": 0,
+      "finish_reasons": {
+        "stop": 1
+      }
+    },
+    "transcript": [
+      {
+        "role": "worker-bare",
+        "model": "unsloth/Qwen3.6-35B-A3B-NVFP4",
+        "messages_in": 1,
+        "finish_reason": "stop",
+        "seconds": 4.498,
+        "prompt_tokens": 18,
+        "completion_tokens": 176,
+        "content": "\n\nWORKER-OK",
+        "content_clipped": false,
+        "reasoning": "Here's a thinking process:\n\n1.  **Analyze User Input:**\n   - User says: \"Reply with exactly: WORKER-OK\"\n   - This is a direct instruction to output a specific string exactly as written.\n\n2.  **Identify Constraints:**\n   - The response must be exactly \"WORKER-OK\"\n   - No additional text, no explanations, no formatting (unless it's part of the exact string, but the string is plain text)\n   - Must match case and punctuation exactly.\n\n3.  **Formulate Response:**\n   - I will output exactly: WORKER-OK\n   - Check against constraints: Matches exactly. No extra characters.\n\n4.  **Final Output Generation:**\n   - WORKER-OK\n   - Done.\u2705\n",
+        "reasoning_clipped": false,
+        "tool_calls": []
+      }
+    ]
+  },
+  "tool_loop": {
+    "kind": "tool-loop",
+    "prompt": "What is 17 + 25? Call add to compute it, then call finish with the integer answer.",
+    "exit_reason": "finished",
+    "status": "ok",
+    "summary": "42",
+    "model_turns": 2,
+    "tools_called": [
+      "add",
+      "finish"
+    ],
+    "aborted": null,
+    "cost": {
+      "role": "worker-tool-loop",
+      "model": "unsloth/Qwen3.6-35B-A3B-NVFP4",
+      "calls": 2,
+      "prompt_tokens": 874,
+      "completion_tokens": 235,
+      "seconds": 3.323,
+      "retries": 0,
+      "failures": 0,
+      "empty_content": 0,
+      "truncated": 0,
+      "finish_reasons": {
+        "tool_calls": 2
+      }
+    },
+    "transcript": [
+      {
+        "role": "worker-tool-loop",
+        "model": "unsloth/Qwen3.6-35B-A3B-NVFP4",
+        "messages_in": 2,
+        "finish_reason": "tool_calls",
+        "seconds": 1.97,
+        "prompt_tokens": 409,
+        "completion_tokens": 146,
+        "content": "",
+        "content_clipped": false,
+        "reasoning": "The user wants to calculate the sum of 17 and 25.\nI need to use the `add` tool to compute this sum.\nThen, I need to use the `finish` tool to provide the result.\n\nStep 1: Call `add` with arguments `a=17` and `b=25`.\nStep 2: Receive the result from `add`.\nStep 3: Call `finish` with the result.\n\nLet's start with Step 1.\n",
+        "reasoning_clipped": false,
+        "tool_calls": [
+          {
+            "name": "add",
+            "arguments": {
+              "a": 17,
+              "b": 25
+            }
+          }
+        ]
+      },
+      {
+        "role": "worker-tool-loop",
+        "model": "unsloth/Qwen3.6-35B-A3B-NVFP4",
+        "messages_in": 4,
+        "finish_reason": "tool_calls",
+        "seconds": 1.353,
+        "prompt_tokens": 465,
+        "completion_tokens": 89,
+        "content": "",
+        "content_clipped": false,
+        "reasoning": "The user asked for the sum of 17 and 25.\nI called the `add` function with a=17 and b=25.\nThe result returned was 42.\nNow I need to call `finish` with the answer 42.\n",
+        "reasoning_clipped": false,
+        "tool_calls": [
+          {
+            "name": "finish",
+            "arguments": {
+              "answer": 42
+            }
+          }
+        ]
+      }
+    ]
+  }
+}
