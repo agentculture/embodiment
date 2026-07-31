@@ -153,6 +153,16 @@ slug: `orchestrator-worker-architectures` · status: `exported` · from frame: `
   - the committed probe (docs/live-test-results/video-perception-probe.md) is cited for why `video_url` is used over `image_url` and over frame sequences, so neither dead end is re-explored
   - the unknown the probe leaves open is measured before any claim about playthroughs: how many frames of a long match actually survive the server's internal sampling
 
+### t18 — Wire Perception.parts to the wire: image and video routes must produce real multimodal payloads, with a vacuity assertion that fails when parts are dropped
+
+- instruction: found by grep after t10 merged: zero consumers of Perception.parts and zero media references in any harness. t17 already landed the media builder, so this is wiring plus the assertion that proves it fired.
+- depends on: t10
+- covers: c51, h36
+- acceptance:
+  - a hermetic test asserts an image route's dial produces an outgoing message carrying an image part built through embodiment.media, and the same test FAILS when the parts are dropped — asserted on the payload, never on the route's own record
+  - the text route's payload is byte-identical to today's, so wiring multimodal support changes no existing cell
+  - an image route whose parts cannot be built degrades to a recorded ABSENT cell, never to a silent text dial
+
 ## Risks
 
 - [unknown_nonblocking] the served worker build's stability under sustained x14 load is unknown until t3 reports; a sibling variant crash-looped on GB10 hardware (task t3)

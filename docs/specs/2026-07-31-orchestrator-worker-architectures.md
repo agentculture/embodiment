@@ -75,6 +75,8 @@
   - honesty: the ladder's difficulty is re-checked against the NEW cortex before the series climbs it, and any rung where arm E scores at ceiling is escalated past rather than reported as a tie
 - the fan-out width default is re-derived from MEASURED saturation, not from the advertised stream count: t3 measured effective concurrency of 8.99 at width 14 against 6.14 at width 8, with width 14 buying only +5.5% aggregate throughput for +75% concurrent load, a 28% per-stream drop and a 79% p95 latency rise — `MAX_FANOUT_WIDTH = 14` was set to the operator-supplied stream count and the measurement does not support it; t11 pins the width it pre-registers
   - honesty: the pre-registration states the fan-out width it uses and derives it from the committed throughput series, and any width above the measured saturation point is justified in writing rather than inherited from the advert
+- the image routes must be proven to REACH THE WIRE before any image cell is measured: `Perception.parts` carries rendered PNG bytes but no harness consumes it — no seam references media.`build_part`, `image_url` or `video_url` — so a map-image cell today would render, hash, twin-check and commit its images and then dial the model with TEXT ONLY, reporting an image result that is a text result with every guard passing; the lane needs a wiring task plus a vacuity assertion that FAILS when an image route's parts do not appear in the outgoing payload
+  - honesty: a hermetic test asserts that dialling an image route produces an outgoing message containing an image part built through embodiment.media, and that same test fails if the parts are dropped — the assertion is on the payload, never on the route's own record
 
 ## Honesty conditions
 
@@ -181,6 +183,8 @@
   - seeds: `c44`, `c45`, `c46`, `c47` (rejected)
 - `s28` — `challenge pass / operations lens (post-measurement): t3 throughput series + cortex tool-call and latency probe`: tool protocol held 10/10 but at a ceiling that measures nothing; cortex median turn 57.2s with a 204s tail; worker saturates near width 9 — together these re-cost the series and contradict `MAX_FANOUT_WIDTH`=14
   - seeds: `c48`, `c49`
+- `s29` — `challenge pass / failure-modes lens (post-merge): grep for parts/build_part/image_url across arch_arms.py, arch_league.py, arch_league_maps.py`: zero consumers of Perception.parts and zero media references in any harness; t10 flagged this as a scope note and it is in fact a silent-measurement defect that would make every image cell a text cell
+  - seeds: `c51`
 
 ## Decisions
 

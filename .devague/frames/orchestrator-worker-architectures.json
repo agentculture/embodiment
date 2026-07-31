@@ -4,7 +4,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-07-31T11:55:50Z",
-  "updated": "2026-07-31T16:35:22Z",
+  "updated": "2026-07-31T17:13:15Z",
   "claims": [
     {
       "id": "c1",
@@ -866,6 +866,25 @@
       "links": [],
       "instruction": "",
       "revisions": []
+    },
+    {
+      "id": "c51",
+      "kind": "requirement",
+      "text": "the image routes must be proven to REACH THE WIRE before any image cell is measured: `Perception.parts` carries rendered PNG bytes but no harness consumes it \u2014 no seam references media.build_part, image_url or video_url \u2014 so a map-image cell today would render, hash, twin-check and commit its images and then dial the model with TEXT ONLY, reporting an image result that is a text result with every guard passing; the lane needs a wiring task plus a vacuity assertion that FAILS when an image route's parts do not appear in the outgoing payload",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h36",
+          "text": "a hermetic test asserts that dialling an image route produces an outgoing message containing an image part built through embodiment.media, and that same test fails if the parts are dropped \u2014 the assertion is on the payload, never on the route's own record",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
     }
   ],
   "open_vagueness": [
@@ -1130,6 +1149,14 @@
       "seeds": [
         "c48",
         "c49"
+      ]
+    },
+    {
+      "id": "s29",
+      "surface": "challenge pass / failure-modes lens (post-merge): grep for parts/build_part/image_url across arch_arms.py, arch_league.py, arch_league_maps.py",
+      "finding": "zero consumers of Perception.parts and zero media references in any harness; t10 flagged this as a scope note and it is in fact a silent-measurement defect that would make every image cell a text cell",
+      "seeds": [
+        "c51"
       ]
     }
   ],

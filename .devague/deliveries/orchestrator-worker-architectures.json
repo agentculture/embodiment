@@ -2,7 +2,7 @@
   "plan_slug": "orchestrator-worker-architectures",
   "schema_version": 1,
   "created": "2026-07-31T14:13:02Z",
-  "updated": "2026-07-31T16:25:49Z",
+  "updated": "2026-07-31T17:13:07Z",
   "deviations": [
     {
       "id": "d1",
@@ -30,6 +30,19 @@
       "origin": "user",
       "status": "approved",
       "classification": "acceptable"
+    },
+    {
+      "id": "d3",
+      "what": "a wiring task (t18) is added before the live series: Perception.parts carries rendered PNGs that no harness consumes, so every image cell would have dialled text-only and reported an image result \u2014 a silent-measurement defect caught by grep after t10 merged, not by any test",
+      "task_ref": "t18",
+      "reason": "operator chose to fix before t12 rather than run the series on an instrument that cannot see its own images",
+      "affects": [
+        "t12",
+        "t14"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "needs-follow-up"
     }
   ]
 }

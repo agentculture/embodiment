@@ -5,7 +5,7 @@
   "schema_version": 4,
   "status": "exported",
   "created": "2026-07-31T13:42:27Z",
-  "updated": "2026-07-31T16:43:47Z",
+  "updated": "2026-07-31T17:13:15Z",
   "targets": [
     {
       "id": "c1",
@@ -482,6 +482,20 @@
       "text": "the pre-registration states the fan-out width it uses and derives it from the committed throughput series, and any width above the measured saturation point is justified in writing rather than inherited from the advert",
       "deferred": false,
       "deferred_reason": ""
+    },
+    {
+      "id": "c51",
+      "kind": "requirement",
+      "text": "the image routes must be proven to REACH THE WIRE before any image cell is measured: `Perception.parts` carries rendered PNG bytes but no harness consumes it \u2014 no seam references media.build_part, image_url or video_url \u2014 so a map-image cell today would render, hash, twin-check and commit its images and then dial the model with TEXT ONLY, reporting an image result that is a text result with every guard passing; the lane needs a wiring task plus a vacuity assertion that FAILS when an image route's parts do not appear in the outgoing payload",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h36",
+      "kind": "honesty",
+      "text": "a hermetic test asserts that dialling an image route produces an outgoing message containing an image part built through embodiment.media, and that same test fails if the parts are dropped \u2014 the assertion is on the payload, never on the route's own record",
+      "deferred": false,
+      "deferred_reason": ""
     }
   ],
   "tasks": [
@@ -834,6 +848,25 @@
       ],
       "covers": [],
       "instruction": "land the capability only: a media.py video_url builder plus a flatten placeholder. league's GIFs are used unchanged \u2014 the probe rules out both image_url and frame sampling"
+    },
+    {
+      "id": "t18",
+      "summary": "Wire Perception.parts to the wire: image and video routes must produce real multimodal payloads, with a vacuity assertion that fails when parts are dropped",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "a hermetic test asserts an image route's dial produces an outgoing message carrying an image part built through embodiment.media, and the same test FAILS when the parts are dropped \u2014 asserted on the payload, never on the route's own record",
+        "the text route's payload is byte-identical to today's, so wiring multimodal support changes no existing cell",
+        "an image route whose parts cannot be built degrades to a recorded ABSENT cell, never to a silent text dial"
+      ],
+      "deps": [
+        "t10"
+      ],
+      "covers": [
+        "c51",
+        "h36"
+      ],
+      "instruction": "found by grep after t10 merged: zero consumers of Perception.parts and zero media references in any harness. t17 already landed the media builder, so this is wiring plus the assertion that proves it fired."
     }
   ],
   "risks": [
