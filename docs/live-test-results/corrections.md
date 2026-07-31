@@ -415,3 +415,33 @@ it is colleague's decision to make
   collapse was initially described as possibly deterministic on the strength of
   one pilot. Two further pilots played 3 turns each: it is stochastic, 1 in 3.
   Recorded because "run it again before naming it" is the whole lesson.
+
+## 8. The head-to-head series (t27)
+
+- **A fourth defective grader, found the same way as the first three.** The
+  head-to-head harness's own `rejections` counter reported 0 across all twelve
+  team-records; league's own `discipline` component records 2. It changed no
+  verdict — faults are the third tie-break and every match was decided at the
+  second — and it is recorded as defective and pinned by a test rather than
+  repaired after the fact. See [league-h2h.md](league-h2h.md). The recurring
+  pattern in this list holds again: *the mechanism was right and the
+  verification was the defect*, and it was caught by checking a number this
+  harness produced against a number someone else's program produced for the
+  same fact.
+- **A pre-registered metric that measured something other than what it was
+  chosen for.** `cooperation_v1` was picked as the tie-break because it is
+  league's own content-aware metric and moves at short horizons. It moved — but
+  three of its four signals sat on a ceiling for all three arms, so the entire
+  three-way separation rests on `message_utility`, i.e. whether the seat filled
+  in one optional field. The verdict stands as pre-registered and the write-up
+  leads with the mechanism rather than the ranking, because "full-qwen >
+  mixed > full-gemma" read alone would be an overclaim about play.
+- **The brief's token budget would have inverted the result.** t27 was briefed
+  with "budget 3000+ for any Qwen seat". Measured spend was ~4,000 completion
+  tokens per seat-turn for the Qwen cortex. At the briefed cap it would have
+  truncated on essentially every turn, returned empty content, staged no
+  orders and lost every match — and the write-up would have reported Gemma as
+  better. The correction to 16000 arrived before the first dial and is recorded
+  as amendment 1 in the pre-registration. Recorded here because the near-miss
+  is the lesson: *an identical budget is not a fair budget when one model
+  thinks before it speaks.*

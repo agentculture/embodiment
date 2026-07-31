@@ -2,7 +2,7 @@
   "plan_slug": "muse-cycle-pad-headspace-devague-legs",
   "schema_version": 1,
   "created": "2026-07-29T22:25:08Z",
-  "updated": "2026-07-30T21:24:21Z",
+  "updated": "2026-07-30T21:59:41Z",
   "deviations": [
     {
       "id": "d1",
@@ -145,6 +145,43 @@
       "origin": "llm",
       "status": "proposed",
       "classification": "acceptable"
+    },
+    {
+      "id": "d12",
+      "what": "add an architecture experiment: Gemma as top-level coordinator with final authority delegating to a Qwen subagent developer, against today actor-plus-advisor arrangement and a mirror arm",
+      "task_ref": "t27",
+      "reason": "operator proposal 2026-07-31. Verified expressible today with no embodiment change: loop.run takes complete (this level model) and subagent: SubagentFn = Callable[[SubagentCall], Optional[SubagentResult]], so the HOST drives the child and picks its model \u2014 subagent.py documents passing allowance/max_steps/lineage through as \"the whole protocol\". It also maps onto colleague 352 framing, which already frames cortex only on the top-level acting loop and types subagents separately. The proposal changes TWO variables against today at once \u2014 who holds final authority (Qwen to Gemma) and whether the second model executes or advises (Gemma advising to Qwen executing) \u2014 so a mirror arm is required to attribute any effect.",
+      "affects": [
+        "t27",
+        "t22"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "needs-follow-up"
+    },
+    {
+      "id": "d13",
+      "what": "t28 is rescoped from an abstract coordinator-plus-developer experiment to the concrete League of Agents instantiation: Gemma commands, Qwen drives the unit agents, on the continuous lane",
+      "task_ref": "t28",
+      "reason": "operator instantiation 2026-07-31, and the arena supports it natively \u2014 verified: league cmatch is the continuous lane and asks for exactly ONE unit's action at a decision point, where the grid lane asks for a whole-team turn order, so the commander/unit split is native rather than simulated. league team register --agent ID:MODEL:ROLE declares a model per unit, giving the arena its own fairness record of which model played which unit. c-skirmish-1 exists and validates roster roles (defender, harvester). Rescoping rather than adding t29 avoids two overlapping tasks for one question.",
+      "affects": [
+        "t28"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable"
+    },
+    {
+      "id": "d14",
+      "what": "design decisions taken under delegated authority for t28: continuous lane over grid lane, four arms with two flat baselines, house bot as the fixed opponent, and per-level token accounting",
+      "task_ref": "t28",
+      "reason": "the operator delegated further decisions to me rather than being asked. (1) Continuous lane, because cmatch asks per-unit natively. (2) Arms: B Gemma-commands-Qwen-units (the proposal), C the mirror Qwen-commands-Gemma-units, plus flat single-model baselines \u2014 the mirror separates architecture from model assignment, and a flat baseline is what says whether hierarchy helps at all. (3) A fixed house-bot opponent rather than hierarchy-vs-hierarchy, because t27 already covers head-to-head at team level and doubling the arms again would not finish. (4) Tokens reported per LEVEL, since the question is whether a large commander pays for itself.",
+      "affects": [
+        "t28"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "needs-follow-up"
     }
   ]
 }

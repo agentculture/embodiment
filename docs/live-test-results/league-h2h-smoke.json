@@ -1,0 +1,62 @@
+{
+  "every_cortex_can_call_a_tool": true,
+  "kind": "smoke",
+  "max_tokens": 16000,
+  "note": "instrument check, not data",
+  "results": [
+    {
+      "content_chars": 0,
+      "cost": {
+        "calls": 1,
+        "completion_tokens": 123,
+        "empty_content": 0,
+        "failures": 0,
+        "finish_reasons": {
+          "tool_calls": 1
+        },
+        "model": "nvidia/Gemma-4-31B-IT-NVFP4",
+        "prompt_tokens": 656,
+        "retries": 0,
+        "role": "cortex",
+        "seconds": 12.215,
+        "truncated": 0
+      },
+      "failure": null,
+      "model": "nvidia/Gemma-4-31B-IT-NVFP4",
+      "reasoning_chars": 0,
+      "tool_calling_works": true,
+      "tool_calls": [
+        "note",
+        "order",
+        "submit"
+      ]
+    },
+    {
+      "content_chars": 0,
+      "cost": {
+        "calls": 1,
+        "completion_tokens": 497,
+        "empty_content": 0,
+        "failures": 0,
+        "finish_reasons": {
+          "tool_calls": 1
+        },
+        "model": "sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP",
+        "prompt_tokens": 880,
+        "retries": 0,
+        "role": "cortex",
+        "seconds": 149.695,
+        "truncated": 0
+      },
+      "failure": null,
+      "model": "sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP",
+      "reasoning_chars": 703,
+      "tool_calling_works": true,
+      "tool_calls": [
+        "note",
+        "order",
+        "submit"
+      ]
+    }
+  ]
+}

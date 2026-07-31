@@ -67,6 +67,9 @@ generously.
 | [muse-arms-preregistration.md](muse-arms-preregistration.md) | the three muse arms (tools-off / +pad / +pad+workspace), the R-C1 execution rule, the counsel scorer and the decision rule | committed **with the harness** (`examples/muse_arms.py`) and **before** the first measured dial; the series itself is task t18's |
 | [muse-arms.md](muse-arms.md) | does working memory, then somewhere to execute, cut the muse's confidently-wrong rate — n=8 per arm, 24 runs, real containers | **`INCONCLUSIVE`**: arm A is **8/8 correct, 0 confidently wrong**, so the control sits on a ceiling with nothing to move. **1 confidently-wrong answer in 24 runs.** 17 of arm C's 23 workspace calls were refused for a string argv; after the mandated hand-audit **every one of the 5 real executions was a whole-problem solver, none offloaded arithmetic**. Nine runs report `NO_ANSWER` because the muse emitted a **tool call on the tools-off closing turn** and the gateway dropped it |
 | [workspace-echo-chamber.md](workspace-echo-chamber.md) | does a wrong number wearing *measured-result* authority drive the loop — a genuine workspace execution against a remembered-fact arm and a control, n=3 each | **`INCONCLUSIVE`, 12/12 RESISTED — the pad-recall boundary stays.** Nothing deferred, including a post-hoc arm carrying the exact costume that won 6/6, so the probe has **no measured sensitivity** to the effect it re-tests. It also measured that `exit=stopped` on this problem was partly the token cap |
+| [league-h2h.md](league-h2h.md) | full-Gemma vs mixed vs full-Qwen, round-robin head-to-head, both teams driven by model seats — n=4 matches per arm | **`SEPARATED` at L1**, the easiest rung, 3/3 pairings and no cycle: **full-qwen > mixed > full-gemma**. But three of the four cooperation signals sit on a ceiling and **the whole ranking is one optional field** — the Gemma cortex sent a team message on **0 of 12** seat-turns against full-Qwen's 9. Cost: **950 vs 12,819 vs 18,410** completion tokens per match, **zero truncation in 196 model calls**. L2-L4 **`ABSENT`** (the climb stops at the first separating rung) |
+| [league-h2h-preregistration.md](league-h2h-preregistration.md) | full-Gemma vs mixed vs full-Qwen, round-robin head-to-head up an escalating arena ladder: the three arms, the four rungs, the fairness rules and the decision rule | committed **before the first dial**, with the harness (`examples/league_h2h.py`) and its pin in the same change. Carries two **pre-dial amendments**: the token budget 3000 -> 16000 (an identical cap that truncates one arm measures truncation, not skill) and the wall-clock caps sized to match |
+| [league-h2h-scripted-control.jsonl](league-h2h-scripted-control.jsonl) | the same ladder with the SAME hermetic mind in all three arms — map and seed bias with the models removed, 24 matches, offline | identical minds **never separate** (4/4 rungs `INCONCLUSIVE`), the colour bias is real and under fog is **90 vs 45** between byte-identical minds, and the paired `net_margin` cancels it **exactly** (0.0 everywhere) |
 
 ## Reproducing
 
@@ -132,6 +135,15 @@ uv run python examples/muse_arms.py --n 8 --provider docker \
     --out docs/live-test-results/muse-arms.jsonl
 uv run python examples/muse_arms.py --analyse \
     --out docs/live-test-results/muse-arms.jsonl
+
+# three model arms, round-robin, up the escalating league ladder (task t27).
+# The ladder with NO --live is the identical-mind control: same scripted mind
+# in all three arms, so every number it returns is map bias, not model.
+uv run python examples/league_h2h.py plan
+uv run python examples/league_h2h.py ladder --home /tmp/h2h-ctl \
+    --log /tmp/h2h-ctl/scripted-control.jsonl
+uv run python examples/league_h2h.py ladder --live --rungs L1 --home /tmp/h2h \
+    --log docs/live-test-results/league-h2h.jsonl
 
 # long-running proof, with and without the muse
 uv run python examples/proof.py --json

@@ -1,0 +1,121 @@
+{
+  "arms": {
+    "full-gemma": {
+      "cortex": "nvidia/Gemma-4-31B-IT-NVFP4",
+      "muse": "nvidia/Gemma-4-31B-IT-NVFP4"
+    },
+    "full-qwen": {
+      "cortex": "sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP",
+      "muse": "sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP"
+    },
+    "mixed": {
+      "cortex": "sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP",
+      "muse": "nvidia/Gemma-4-31B-IT-NVFP4"
+    }
+  },
+  "base_url": null,
+  "budget_fairness": "sufficient (neither model truncates); cost measured by consumption",
+  "colours": [
+    "blue",
+    "red"
+  ],
+  "control_arm": "mixed",
+  "cortex_temperature": 0.3,
+  "experiment": "league-h2h",
+  "ladder": [
+    {
+      "fogged": false,
+      "id": "L1",
+      "map_read": null,
+      "max_actions": null,
+      "objective": "cp-west",
+      "roster": [
+        "scout",
+        "harvester",
+        "defender"
+      ],
+      "scenario": "skirmish-1",
+      "seed": 4242,
+      "turns": 3,
+      "unit_comms": null,
+      "why": "12x10, turn limit 30, three units, full board view, no handicap"
+    },
+    {
+      "fogged": false,
+      "id": "L2",
+      "map_read": null,
+      "max_actions": null,
+      "objective": "cp-alpha",
+      "roster": [
+        "explorer",
+        "planner",
+        "harvester",
+        "defender"
+      ],
+      "scenario": "recon-1",
+      "seed": 4243,
+      "turns": 3,
+      "unit_comms": null,
+      "why": "14x12, turn limit 20, four units of which the explorer and the planner can neither gather nor capture \u2014 role reasoning is engine-enforced, not prompt convention"
+    },
+    {
+      "fogged": false,
+      "id": "L3",
+      "map_read": null,
+      "max_actions": 2,
+      "objective": "cp-relay",
+      "roster": [
+        "scout",
+        "harvester",
+        "defender"
+      ],
+      "scenario": "skirmish-2",
+      "seed": 4244,
+      "turns": 3,
+      "unit_comms": null,
+      "why": "14x12 under a turn limit of 16, and only two of three units may be ordered per turn \u2014 the seat has to choose"
+    },
+    {
+      "fogged": true,
+      "id": "L4",
+      "map_read": "fog",
+      "max_actions": 2,
+      "objective": "cp-relay",
+      "roster": [
+        "scout",
+        "harvester",
+        "defender"
+      ],
+      "scenario": "skirmish-2",
+      "seed": 4245,
+      "turns": 3,
+      "unit_comms": "off",
+      "why": "the L3 board, seen only through league's own fogged brief: at turn 0 a team knows fifteen cells, its own units, and no control point at all"
+    }
+  ],
+  "ladder_cap_seconds": 21600.0,
+  "live": false,
+  "match_turns": 3,
+  "max_steps": 8,
+  "max_tokens": 16000,
+  "max_transport_retries": 3,
+  "min_separated_pairings": 2,
+  "muse_max_tokens": 16000,
+  "muse_max_turns": 2,
+  "muse_temperature": 0.7,
+  "pairings": [
+    "gemma-vs-mixed",
+    "mixed-vs-qwen",
+    "qwen-vs-gemma"
+  ],
+  "rung_cap_seconds": 5400.0,
+  "senses_dialled": false,
+  "senses_model": "coolthor/gemma-4-12B-it-NVFP4A16",
+  "task": "t27",
+  "tie_breaks": [
+    "outcome_total",
+    "cooperation_v1",
+    "fewer_rejections_and_cap_violations"
+  ],
+  "token_ceiling_available": 32000
+}
