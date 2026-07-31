@@ -71,6 +71,8 @@ generously.
 | [league-h2h-preregistration.md](league-h2h-preregistration.md) | full-Gemma vs mixed vs full-Qwen, round-robin head-to-head up an escalating arena ladder: the three arms, the four rungs, the fairness rules and the decision rule | committed **before the first dial**, with the harness (`examples/league_h2h.py`) and its pin in the same change. Carries two **pre-dial amendments**: the token budget 3000 -> 16000 (an identical cap that truncates one arm measures truncation, not skill) and the wall-clock caps sized to match |
 | [league-h2h-scripted-control.jsonl](league-h2h-scripted-control.jsonl) | the same ladder with the SAME hermetic mind in all three arms — map and seed bias with the models removed, 24 matches, offline | identical minds **never separate** (4/4 rungs `INCONCLUSIVE`), the colour bias is real and under fog is **90 vs 45** between byte-identical minds, and the paired `net_margin` cancels it **exactly** (0.0 everywhere) |
 | [live-suite-and-challenges.md](live-suite-and-challenges.md) | the live-evidence gate (`d1`): every `EMBODIMENT_LIVE_RIG`-gated test plus the challenge harnesses, run rather than assumed | **13 of 13 live-gated tests PASSED.** `challenge_subset` **3/3 CORRECT**; `challenge_register` graded WRONG but **INCONCLUSIVE** — two of four turns hit `finish_reason: length` at a full **16000/16000**. The terminal drain (t4/t25) fires on a clean finish and delivers, and its counsel **provably cannot reach the cortex** there; t26's muse tool bench is **unwired in every checked-in host** (`tool_rounds: 0`). Cross-cutting: the cortex token budget is a hidden variable at **700 / 2048 / 6000** across five harnesses, and `ModelResponse` carries no `finish_reason` to make truncation visible |
+| [league-commander.md](league-commander.md) | Gemma 4 31B commanding Qwen 3.6 27B unit agents, against the mandatory mirror and two flat baselines — a different model per loop level, on two arenas | **`INCONCLUSIVE` at a ceiling twice: 12 of 12 matches at 19–0, then 6 of 6 at 10–0 on a 5.6× larger decision surface.** Every validity gate passed, so the tie is the arena's and not the instrument's. What the ceiling did not hide: hierarchy cost **2.4–4.4× a flat mind** for identical results, its bill is **~95% prompt**, and the commander **overrode 1 of 82 proposals** while consulting at 100% of decision points. The one override was substantive — a commander is a mechanism for resolving disagreement, and neither arena produced any |
+| [league-commander-preregistration.md](league-commander-preregistration.md) | the four arms, the decision rule, four validity gates, the ceiling risk and a three-rung escalation ladder | committed **before** the first measured match; the ladder was climbed rather than published around |
 
 ## Reproducing
 
@@ -145,6 +147,15 @@ uv run python examples/league_h2h.py ladder --home /tmp/h2h-ctl \
     --log /tmp/h2h-ctl/scripted-control.jsonl
 uv run python examples/league_h2h.py ladder --live --rungs L1 --home /tmp/h2h \
     --log docs/live-test-results/league-h2h.jsonl
+# a commander model commanding unit-agent models — a different model per loop
+# level, four arms, then the pre-registered fold
+uv run python examples/league_commander.py play --root /tmp/lc --arm all --n 3 --live \
+    --out docs/live-test-results/league-commander.jsonl \
+    --transcripts docs/live-test-results/league-commander-transcripts.jsonl \
+    --config-out docs/live-test-results/league-commander-config.json \
+    --logs docs/live-test-results/league-commander-logs
+uv run python examples/league_commander.py analyse \
+    --out docs/live-test-results/league-commander.jsonl
 
 # long-running proof, with and without the muse
 uv run python examples/proof.py --json
