@@ -105,6 +105,15 @@ would have required.
   ([cortex-vision-probe.md](cortex-vision-probe.md)); both read video fine. The
   advert is now 0 for 2 as a guide to what a route can do on this rig.
 
+## Filed upstream
+
+Reported to league as
+[league-of-agents#43](https://github.com/agentculture/league-of-agents/issues/43),
+because this is a property of *their* artifact: `render_gif` output is directly
+consumable as model-readable video, with no re-encode and no frame extraction.
+They had no particular reason to have tested that. The round-1 error is
+included there too, so the dead end is not re-walked by whoever picks it up.
+
 ## The transferable lesson
 
 The round-1 error was not a bad measurement — the numbers were right and the

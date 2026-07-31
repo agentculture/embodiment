@@ -118,7 +118,7 @@ slug: `orchestrator-worker-architectures` · status: `exported` · from frame: `
 
 ### t13 — File the sibling proposals: the lobes-cli worker role, and the league-of-agents fog-scoped render verb plus per-unit visibility surface
 
-- instruction: drafts are written and reviewed; post only on the operator's explicit approval. embodiment#39 is already filed
+- instruction: DONE 2026-07-31 — filed with measured evidence: lobes-cli#166 (worker role + modality; carries the cortex-vision advert defect) and league-of-agents#43 (fog-scoped render + per-unit visibility; carries the `video_url` finding about their own replay GIFs). Both signed by agtag; no commit touched either sibling repo.
 - covers: c5, h3, c26
 - acceptance:
   - both issues exist, signed per convention, carrying the Thor advert JSON and the briefing-schema probe as evidence

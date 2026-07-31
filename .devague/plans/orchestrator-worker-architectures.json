@@ -5,7 +5,7 @@
   "schema_version": 4,
   "status": "exported",
   "created": "2026-07-31T13:42:27Z",
-  "updated": "2026-07-31T16:36:29Z",
+  "updated": "2026-07-31T16:43:47Z",
   "targets": [
     {
       "id": "c1",
@@ -753,7 +753,7 @@
         "h3",
         "c26"
       ],
-      "instruction": "drafts are written and reviewed; post only on the operator's explicit approval. embodiment#39 is already filed"
+      "instruction": "DONE 2026-07-31 \u2014 filed with measured evidence: lobes-cli#166 (worker role + modality; carries the cortex-vision advert defect) and league-of-agents#43 (fog-scoped render + per-unit visibility; carries the video_url finding about their own replay GIFs). Both signed by agtag; no commit touched either sibling repo."
     },
     {
       "id": "t14",

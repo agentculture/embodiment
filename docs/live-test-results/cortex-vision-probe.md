@@ -69,6 +69,15 @@ nothing in the contract made that visible** — recorded here because a consumer
 following the documented rule would have silently dropped a route the rig
 supports.
 
+## Filed upstream
+
+This discrepancy is reported to the gateway's owners as
+[lobes-cli#166](https://github.com/agentculture/lobes-cli/issues/166), which
+asks for `worker` as a first-class role name and for modality somewhere a
+caller can trust. The probe above is its evidence: the ask would otherwise be a
+design preference, and with the measurement it is a demonstrated case of the
+contract understating a served role.
+
 ## Consequence for the series
 
 The routing rung's capability facts come from this committed measurement, not
