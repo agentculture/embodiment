@@ -1,0 +1,167 @@
+{
+  "worker": {
+    "base_url": "http://thor.tail0be7e0.ts.net:8000/v1",
+    "model": "unsloth/Qwen3.6-35B-A3B-NVFP4"
+  },
+  "max_tokens": 1200,
+  "temperature": 0.3,
+  "prompt_set_size": 8,
+  "warmup": {
+    "width": 0,
+    "batch": -1,
+    "slot": 0,
+    "prompt_id": 0,
+    "warmup": true,
+    "ok": true,
+    "error": null,
+    "latency_seconds": 14.763,
+    "prompt_tokens": 21,
+    "completion_tokens": 970,
+    "reasoning_tokens": null,
+    "reasoning_token_source": "absent",
+    "content_chars": 300,
+    "reasoning_chars": 4235,
+    "finish_reason": "stop",
+    "truncated": false,
+    "retries": 0,
+    "tokens_per_second": 65.706
+  },
+  "widths": [
+    {
+      "width": 1,
+      "batches": 3,
+      "batch_elapsed_seconds": [
+        10.87,
+        15.258,
+        10.363
+      ],
+      "summary": {
+        "width": 1,
+        "batches": 3,
+        "calls": 3,
+        "ok": 3,
+        "errors": 0,
+        "timeouts": 0,
+        "truncated": 0,
+        "finish_reasons": {
+          "stop": 3
+        },
+        "aggregate_seconds": 36.49,
+        "aggregate_completion_tokens": 2778,
+        "aggregate_tokens_per_second": 76.13,
+        "per_stream_tokens_per_second_mean": 76.426,
+        "per_stream_tokens_per_second_median": 77.56,
+        "latency_seconds_mean": 12.163,
+        "latency_seconds_median": 10.869,
+        "latency_seconds_p95": 14.818,
+        "effective_concurrency": 0.996,
+        "reasoning_tokens_sum": 0,
+        "reasoning_tokens_reported": 0
+      }
+    },
+    {
+      "width": 2,
+      "batches": 2,
+      "batch_elapsed_seconds": [
+        13.23,
+        11.789
+      ],
+      "summary": {
+        "width": 2,
+        "batches": 2,
+        "calls": 4,
+        "ok": 4,
+        "errors": 0,
+        "timeouts": 0,
+        "truncated": 0,
+        "finish_reasons": {
+          "stop": 4
+        },
+        "aggregate_seconds": 25.019,
+        "aggregate_completion_tokens": 2561,
+        "aggregate_tokens_per_second": 102.361,
+        "per_stream_tokens_per_second_mean": 64.001,
+        "per_stream_tokens_per_second_median": 64.376,
+        "latency_seconds_mean": 9.909,
+        "latency_seconds_median": 10.182,
+        "latency_seconds_p95": 13.012,
+        "effective_concurrency": 1.599,
+        "reasoning_tokens_sum": 0,
+        "reasoning_tokens_reported": 0
+      }
+    },
+    {
+      "width": 8,
+      "batches": 2,
+      "batch_elapsed_seconds": [
+        22.37,
+        23.138
+      ],
+      "summary": {
+        "width": 8,
+        "batches": 2,
+        "calls": 16,
+        "ok": 16,
+        "errors": 0,
+        "timeouts": 0,
+        "truncated": 0,
+        "finish_reasons": {
+          "stop": 16
+        },
+        "aggregate_seconds": 45.507,
+        "aggregate_completion_tokens": 11567,
+        "aggregate_tokens_per_second": 254.178,
+        "per_stream_tokens_per_second_mean": 41.4,
+        "per_stream_tokens_per_second_median": 41.542,
+        "latency_seconds_mean": 17.322,
+        "latency_seconds_median": 18.56,
+        "latency_seconds_p95": 22.756,
+        "effective_concurrency": 6.14,
+        "reasoning_tokens_sum": 0,
+        "reasoning_tokens_reported": 0
+      }
+    },
+    {
+      "width": 14,
+      "batches": 2,
+      "batch_elapsed_seconds": [
+        39.14,
+        41.278
+      ],
+      "summary": {
+        "width": 14,
+        "batches": 2,
+        "calls": 28,
+        "ok": 28,
+        "errors": 0,
+        "timeouts": 0,
+        "truncated": 2,
+        "finish_reasons": {
+          "stop": 26,
+          "length": 2
+        },
+        "aggregate_seconds": 80.418,
+        "aggregate_completion_tokens": 21563,
+        "aggregate_tokens_per_second": 268.135,
+        "per_stream_tokens_per_second_mean": 29.816,
+        "per_stream_tokens_per_second_median": 31.53,
+        "latency_seconds_mean": 27.608,
+        "latency_seconds_median": 28.344,
+        "latency_seconds_p95": 40.778,
+        "effective_concurrency": 8.993,
+        "reasoning_tokens_sum": 0,
+        "reasoning_tokens_reported": 0
+      }
+    }
+  ],
+  "operator_claim": {
+    "claim": "50 tok/s x 14 concurrency",
+    "per_stream_reading_target_tok_s": 50.0,
+    "aggregate_reading_target_tok_s": 700.0,
+    "measured_width": 14,
+    "measured_per_stream_mean_tok_s": 29.816,
+    "measured_aggregate_tok_s": 268.135,
+    "per_stream_reading_reproduced": false,
+    "aggregate_reading_reproduced": false
+  }
+}
