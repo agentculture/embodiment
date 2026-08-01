@@ -161,6 +161,11 @@ __all__ = [
     "ACCEPTED",
     "ABSENT_TIMEOUT",
     "ABSENT_TRANSPORT",
+    "ABSENT_TRUNCATED",
+    "ABSENCES",
+    "FINISH_TRUNCATED",
+    "REFUSALS",
+    "finish_reason_of",
     "ANSWERER_CODE",
     "ANSWERER_WORKER",
     "AUTHORITY_ADVISORY",
@@ -767,21 +772,56 @@ ABSENT_TIMEOUT = "absent-timeout"
 #: deadline so a dead endpoint and a slow one are told apart.
 ABSENT_TRANSPORT = "absent-transport"
 
+#: The turn ran out of token budget mid-answer. **The #37 defect shape, one
+#: layer up, and the reason this outcome exists at all**:
+#: ``ModelResponse`` carries no ``finish_reason``, so a truncated turn and a
+#: deliberate one arrive at a reader as the same object — and a truncated turn
+#: that produced no complete answer line looks *exactly* like a schema refusal.
+#: Counting it as one would inflate the very refusal rate the frame's falsifiable
+#: prediction is measured on, in the flattering-to-nobody direction: the arm
+#: would be published as refuted by an instrument setting. So the finish reason
+#: is read off the transport where one is available, and a refusal that
+#: coincides with truncation is reclassified as an ABSENCE.
+ABSENT_TRUNCATED = "absent-truncated"
+
 ACCEPTANCE_OUTCOMES: tuple[str, ...] = (
     ACCEPTED,
     REFUSED_OFF_SPACE,
     REFUSED_EMPTY,
     ABSENT_TIMEOUT,
     ABSENT_TRANSPORT,
+    ABSENT_TRUNCATED,
 )
+
+#: league's word for a completion that ran out of budget mid-thought, reused so
+#: one vocabulary spans every harness here.
+FINISH_TRUNCATED = ws.FINISH_TRUNCATED
 
 #: The two outcomes that are the SCHEMA's fault, and the pair the frame's
 #: falsifiable prediction is measured on: the #32/#33 interface-failure class
 #: should disappear when the cortex authors the schema it delegates across.
 REFUSALS: tuple[str, ...] = (REFUSED_OFF_SPACE, REFUSED_EMPTY)
 
-#: The two that are the RIG's. Reported, never counted as refusals.
-ABSENCES: tuple[str, ...] = (ABSENT_TIMEOUT, ABSENT_TRANSPORT)
+#: The three that are the RIG's or the INSTRUMENT's. Reported, never counted as
+#: refusals — the distinction is the whole point of measuring acceptance apart
+#: from outcome, and it would be lost if a slow rig or a small budget could be
+#: read as a broken schema.
+ABSENCES: tuple[str, ...] = (ABSENT_TIMEOUT, ABSENT_TRANSPORT, ABSENT_TRUNCATED)
+
+
+def finish_reason_of(mind: Any) -> str:
+    """The last turn's ``finish_reason``, where the transport records one.
+
+    Duck-typed on purpose. ``examples/worker_seam.py``'s ``WorkerSeam`` keeps a
+    ``Meter`` whose ``transcript`` carries the field ``ModelResponse`` cannot
+    (issue #37); a scripted mind has neither, and gets ``""`` — which reads as
+    "not reported", never as "not truncated".
+    """
+    meter = getattr(mind, "meter", None)
+    transcript = getattr(meter, "transcript", None) or ()
+    if not transcript:
+        return ""
+    return str(transcript[-1].get("finish_reason") or "")
 
 
 @dataclass(frozen=True)
@@ -1059,6 +1099,13 @@ def answer_by_worker(
             completion_tokens=0,
         )
     answers, acceptance, detail = parse_answers(reply.content or "", call)
+    # A refusal that coincides with a truncated turn is an INSTRUMENT event, not
+    # a schema failure. See :data:`ABSENT_TRUNCATED` for why folding the two
+    # together would corrupt the arm's headline metric. A truncated turn that
+    # still produced every in-space answer stays ACCEPTED: the answer arrived.
+    if acceptance in REFUSALS and finish_reason_of(mind) == FINISH_TRUNCATED:
+        acceptance = ABSENT_TRUNCATED
+        detail = f"the turn was truncated ({FINISH_TRUNCATED}) before answering: {detail}"
     return ScopedResult(
         call_id=call.id,
         question=call.question,

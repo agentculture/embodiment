@@ -43,6 +43,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from embodiment.contract import ModelResponse, ToolCall  # noqa: E402
 from examples import arch_arms as aa  # noqa: E402
 from examples import arch_hive as ah  # noqa: E402
+from examples import worker_seam as ws  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 SOURCE = REPO_ROOT / "examples" / "arch_hive.py"
@@ -88,6 +89,27 @@ def _run(
         senses_hash="test-hash",
         worker_factory=lambda call: mind,
     )
+
+
+class _TruncatingMind:
+    """A mind shaped like ``worker_seam.WorkerSeam``: it carries a ``Meter``
+    whose transcript records the ``finish_reason`` ``ModelResponse`` cannot."""
+
+    def __init__(self, *, content: str, finish_reason: str) -> None:
+        self.meter = ws.Meter(role="hive-test", model="scripted")
+        self._content = content
+        self._finish_reason = finish_reason
+
+    def __call__(self, messages: list[dict[str, Any]]) -> ModelResponse:
+        reply = ModelResponse(content=self._content, prompt_tokens=40, completion_tokens=256)
+        self.meter.record_turn(
+            reply, finish_reason=self._finish_reason, seconds=0.0, messages=len(messages)
+        )
+        return reply
+
+
+def _truncating_mind(*, content: str) -> _TruncatingMind:
+    return _TruncatingMind(content=content, finish_reason=ah.FINISH_TRUNCATED)
 
 
 def _call(question: str = "pick_option", count: int = 2) -> ah.ScopedCall:
@@ -1176,6 +1198,34 @@ class TestCallAcceptanceIsItsOwnAxis:
         ledger.extend([ah._timed_out(_call("classify_load", count=1), 1.0)])
         assert ledger.refusal_rate() == 0.0
         assert ledger.rate() == 0.0
+
+    def test_a_truncated_turn_is_an_absence_not_a_refusal(self) -> None:
+        """Issue #37, one layer up. ``ModelResponse`` carries no
+        ``finish_reason``, so a turn that ran out of budget mid-answer looks
+        exactly like a schema refusal — and counting it as one would inflate the
+        very rate the frame's falsifiable prediction is measured on."""
+        result = ah.answer_by_worker(
+            _call("classify_load", count=1), mind=_truncating_mind(content="")
+        )
+        assert result.acceptance == ah.ABSENT_TRUNCATED
+        assert ah.FINISH_TRUNCATED in result.detail
+        assert result.acceptance not in ah.REFUSALS
+
+    def test_a_truncated_turn_that_still_answered_stays_accepted(self) -> None:
+        """The answer arrived. Reclassifying it would be the mirror error."""
+        call = _call("classify_load", count=1)
+        content = f"{call.item_ids[0]} = {call.spaces[0][0]}"
+        result = ah.answer_by_worker(call, mind=_truncating_mind(content=content))
+        assert result.acceptance == ah.ACCEPTED
+
+    def test_a_mind_that_reports_no_finish_reason_is_not_read_as_untruncated(self) -> None:
+        """A scripted mind has no meter; ``""`` means "not reported", and a
+        refusal on such a mind stays the refusal it was measured as."""
+        assert ah.finish_reason_of(object()) == ""
+        result = ah.answer_by_worker(
+            _call("classify_load", count=1), mind=ah.scripted_worker(silent=True)
+        )
+        assert result.acceptance == ah.REFUSED_EMPTY
 
     def test_an_arm_that_made_no_calls_has_no_acceptance_rate(self) -> None:
         ledger = ah.AcceptanceLedger()
