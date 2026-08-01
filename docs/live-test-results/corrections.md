@@ -370,6 +370,58 @@ Reported failure counts of 101, 11, 105, 102 and 106 against **0–4 real**.
 **Five for five.** `uv run pytest -n auto` from the repo root is the only
 verdict, and every task brief says so.
 
+### The cortex was never contended — the timeout was eating its own turns
+
+[#41](https://github.com/agentculture/embodiment/issues/41) was filed claiming
+the cortex on `localhost:8001` was shared with a four-day-old
+`reachy behavior engine run` process, that the effective rate was 5.0–25.4
+tok/s "driven by whether a neighbour happened to be dialling", and that **no
+uncontended baseline exists**. All three were wrong.
+
+The connection was real. What it dials was never checked:
+
+```text
+# ~/.config/environment.d/10-reachy-llm.conf
+REACHY_OPENAI_MODEL_ID=coolthor/gemma-4-12B-it-NVFP4A16
+```
+
+**Senses, not the cortex** — and the file's own commented-out alternative names
+the *previous* cortex model id, so reachy was moved off the cortex before the
+upgrade and never moved back. The `Running: 2 reqs` line read as proof of a
+second tenant is the cortex server's own `--max-num-seqs=2` cap, visible in its
+`ps` line.
+
+Corrected for retry overhead, the generation rate across ten calls spans
+**21.5–25.4 tok/s — a 1.19× band** over wall clocks from 147 s to 1,260 s, and
+both exhausted calls land on `4 × 300 + 3 × 20 = 1260.0` s against 1260.4 and
+1260.3 observed. A constant rate and an exact arithmetic identity are what a
+*free* lane looks like. The "5× spread" was wall clock **including retry
+overhead** divided by tokens — an artifact of the real defect, not a
+measurement of throughput.
+
+Three errors, the third being the expensive one:
+
+1. **"The series is running cells in parallel."** It was not — one driver, one
+   cell at a time. Asserted from a subagent's phrase *"two-request
+   contention"* without reading its output.
+2. **"`wall_clock_s` is `None`."** The field is `seconds`, populated on every
+   call. The schema was never checked before a gap was reported.
+3. **"The subagent may be mistaken."** It was not. Its results document already
+   recorded the reachy process, its pid, its uptime and the vLLM line before
+   any of it was relayed. Its *diagnosis* was wrong — but so was the one that
+   replaced it, and its observations were sound and already written down. The
+   error was relaying a summary of work without reading the work.
+
+The operator caught (1) and (2) by asking whether the code had been read, and
+(3) by asking reachy's maintainer rather than accepting the inference.
+
+**An environmental explanation blames nothing you own, which is exactly why it
+needs the same evidentiary bar as any other claim.** A four-day-old connection
+to the right *port* is not a measurement of what it dials. The real defect —
+`REQUEST_TIMEOUT` at 300 s in front of a model that needs 175–290 s per turn —
+was in our own harness the whole time, and it had already cost two scored
+answers.
+
 ### A drift entry in `CLAUDE.md` asserted an upstream bug that did not exist
 
 The "vendored-script drift (upstream bug)" entry claimed eidetic-cli shipped
