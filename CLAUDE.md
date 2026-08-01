@@ -418,12 +418,24 @@ embodiment/
                         pre-set from raw argv so parse-time errors honour --json
   cli/_errors.py        CliError{code,message,remediation} + exit-code policy
   cli/_output.py        emit_result / emit_error / emit_diagnostic
-  cli/_commands/        whoami, learn, explain, overview, doctor, cli
+  cli/_commands/        whoami, learn, explain, overview, doctor, cli, drone
   explain/              catalog.py: markdown keyed by command-path tuples
-tests/                  CLI smoke + introspection tests (22 tests)
-.claude/skills/         18 vendored skills (cite-don't-import)
+  drone.py              the drone artifact: manifest schema, smoke-before-save,
+                        invoke (returns a record, never raises), the catalog
+tests/                  CLI smoke + introspection tests
+.claude/skills/         19 skills — 18 vendored (cite-don't-import) + `drone`,
+                        first-party to this repo and never re-synced
 docs/skill-sources.md   provenance ledger + re-sync procedure
 ```
+
+`drone` is the one noun group whose verbs *act*: `create` authors a drone
+(stage → smoke → save; a drone that fails its smoke invocation is never
+written) and `evoke` **imports and runs model-written Python in-process, with
+no sandbox** — per C2 that threat model is stated in the README, in `explain
+drone`, in `drone overview` and in every generated drone README, never left to
+inference. It is still not a loop-driving verb: nothing under `cli/_commands/`
+reaches `embodiment.loop`, and `tests/announcement_checklist.py`'s `cli1`
+caveat now checks both the verb list *and* that import.
 
 Contracts worth knowing before you add a verb:
 

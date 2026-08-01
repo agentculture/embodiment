@@ -191,10 +191,62 @@ EMBODIMENT_LIVE_RIG=1 COLLEAGUE_API_KEY=… uv run pytest tests/test_demo_greenh
 | `overview` | Read-only descriptive snapshot of the agent. |
 | `doctor` | Check the agent-identity invariants (prompt-file-present, backend-consistency). |
 | `cli overview` | Describe the CLI surface itself. |
+| `drone create <name>` | Author a drone. Refuses to save one that fails its smoke invocation. |
+| `drone evoke <name>` | Run a saved drone. |
+| `drone list` | What drones exist, what each does, how old, and their status. |
+| `drone overview` | Describe the drone surface and its threat model. |
 
 Every command supports `--json`. Results go to stdout, errors/diagnostics to
 stderr (never mixed). Exit codes: `0` success, `1` user error, `2` environment
 error, `3+` reserved.
+
+### Drones
+
+A **drone** is a named unit that does small-smart tasks — explore, review,
+search — as a mix of code and *minor* intelligence: deterministic logic for
+structure, traversal and bookkeeping, plus **scoped** calls to a worker where
+judgement is genuinely needed.
+
+A subagent re-derives its approach on every invocation: no drift, full cost
+every time. A drone pays the authoring cost **once** and then runs on code plus
+tens of tokens — fast, repeatable, and carrying staleness risk. Authoring costs
+one cortex turn (measured on this rig at 5,000–14,265 completion tokens and
+400–730 s), so a task done **once** is pure loss, **2–3 times** roughly breaks
+even, and a task done **often on a stable surface** wins by a widening margin.
+**A drone is worth creating when the task recurs and the surface is stable.**
+The failure mode is quiet waste, not a crash.
+
+Each drone is a committed, reviewable directory — model-written code that will
+run on someone else's checkout gets the same review a script would:
+
+```text
+.drones/<name>/
+  manifest.json    name, one-line description, purpose, author model/date/
+                   commit, the assumed surface, and every question it asks the
+                   worker with that question's answer schema
+  drone.py         the code the cortex wrote; entry point `run(request)`
+  README.md        what it does, when it is wrong, how to re-author it
+```
+
+`create` stages those three files, runs a **smoke invocation against the staged
+copy**, and saves only on a pass — *well-shaped is not runnable*, and a saved
+broken drone is a trap. The one-line description is required at create time,
+because a drone nobody can pick from `list` is dead weight that still cost a
+cortex turn.
+
+> **Threat model — stated, not implied by a name.** `drone evoke` **imports and
+> runs model-written Python in the calling process**, with exactly the
+> permissions that process already has. **There is no sandbox.** The manifest's
+> `capabilities` list is a *declaration for review*, not an enforcement
+> boundary — nothing in embodiment restricts what `drone.py` may do. Read
+> `drone.py` before evoking a drone you did not author. The network-less
+> workspace jail stays available for a host that wants it; it is not the
+> default.
+
+Two v1 limits worth knowing before you build on this: an undecidable case
+returns **"I cannot"** — there is no escalate-to-cortex path, which is the whole
+point of the cost model — and `list`'s `status` column reads `unchecked` until a
+host wires an assumed-surface check. No check ran is reported as no check ran.
 
 ## Where embodiment sits
 
