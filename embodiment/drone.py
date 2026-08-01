@@ -50,25 +50,50 @@ approval policy, with every capability declared so review is possible. The
 network-less workspace jail (:mod:`embodiment.workspace`) stays *available* for
 a host that wants to run a drone under it; it is not the default.
 
-No escalation (c46)
--------------------
-A drone that hits a case it cannot decide returns **"I cannot"**
-(:attr:`DroneAnswer.cannot`). There is no escalate-to-cortex path in v1 — that
-is the whole point of the cost model. The record-keeping for refusals belongs
-to the safeguards task (t12), not here.
+The four safeguards (task t12)
+------------------------------
+The design this module implements is **unvalidated** — issue #44's experiment
+has not run. So the guards below are not decoration; each one is a named
+failure mode from issue #45, and each is proven able to fail in
+``tests/test_drone_safeguards.py``.
 
-Seams deliberately left open for the safeguards task (t12)
-----------------------------------------------------------
-* **opt-in** — nothing in this module consults an opt-in switch. t12 owns the
-  guard that makes a fresh checkout evoke nothing.
-* **staleness** — :func:`catalog` renders a ``status`` column computed by an
-  injected ``status_fn``. With none wired the status is
-  :data:`STATUS_UNCHECKED`, which is the honest answer: no check ran. t12
-  supplies the assumed-surface re-check that turns it into ``ok`` / ``STALE``.
-* **audit trail** — :func:`invoke` *returns* an :class:`Evocation` (it does not
-  raise on a failed run) carrying the drone name, the source content hash, the
-  declared capabilities and every :class:`DroneCall`'s acceptance. t12 owns
-  writing those records; this module owns producing them.
+1. **Opt-in, and off** (claim c25). :func:`invoke` refuses to run unless
+   something explicitly turned drones on: a host passing ``opt_in=``, or
+   ``$EMBODIMENT_DRONES_ENABLED``. A fresh checkout evokes **nothing**. This
+   is the standing rule's mirror image — a *measured* failure mode never ships
+   as default behaviour, and an **unmeasured** one does not either.
+2. **Staleness refusal.** Code written against a codebase encodes assumptions
+   that expire, and the defect is not a crash: the drone keeps passing,
+   authoritatively, on a check that no longer means anything.
+   :func:`check_surface` re-checks the manifest's ``assumed_surface``;
+   :func:`catalog` renders the verdict so a stale drone is visible **without
+   being executed** (you see it while *choosing* a drone), and :func:`invoke`
+   **refuses to run** a drone whose assumptions no longer hold rather than
+   letting it report. An assumption this build cannot re-check is
+   :data:`STATUS_UNVERIFIABLE` — never ``ok``.
+3. **The audit trail** (claim c45). Every evocation — answers, refusals,
+   "I cannot" and harness failures alike — produces an :class:`Evocation`
+   carrying the drone name, the **sha256 of the bytes that ran**, the declared
+   capability set and per-call acceptance, and :func:`invoke` appends it to a
+   JSONL ledger. There is no code path through :func:`invoke` that runs a
+   drone and leaves no record. It runs model-written code in this process
+   (see the threat model above), so the record *is* the containment story.
+4. **No escalation** (recorded decision c46). A drone that hits a case it
+   cannot decide returns **"I cannot"** (:attr:`DroneAnswer.cannot`). There is
+   no escalate-to-cortex path in v1 — that is the whole point of the cost
+   model, and it is what keeps the success signal exact (*a drone's second
+   evocation makes zero cortex calls*) with no exception clause. Structurally:
+   a drone's only outward seam is :attr:`DroneRequest.ask`, bounded by its
+   declared questions. Escalation stays an open question for #44 to answer.
+
+What the audit trail is *not*
+-----------------------------
+It is traceability, not tamper-proofing. The manifest records the source hash
+at authoring time and :func:`invoke` reports whether the bytes it ran still
+match (:attr:`Evocation.source_matches_manifest`) — but anyone who can edit
+``drone.py`` can edit ``manifest.json`` beside it. Git history and review are
+the integrity boundary; these records tell you *what ran*, so a stale or
+misbehaving drone is traceable from its records alone.
 """
 
 from __future__ import annotations
@@ -84,31 +109,53 @@ import sys
 import tempfile
 import traceback
 import types
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable, Mapping, Optional, Sequence
+from typing import Any, Callable, Mapping, Optional, Sequence, Union
 
 __all__ = [
     "AskFn",
     "DRONES_DIRNAME",
+    "DRONES_ENABLED_BY_DEFAULT",
+    "DRONES_ENABLED_ENV",
     "DRONE_ENTRYPOINT",
+    "DRONE_LEDGER_ENV",
     "DRONE_STATUSES",
     "Drone",
     "DroneAnswer",
     "DroneCall",
     "DroneError",
+    "DroneOptIn",
     "DroneRecord",
     "DroneRequest",
+    "EVOCATIONS_FILENAME",
+    "EVOCATION_OUTCOMES",
     "Evocation",
     "MANIFEST_SCHEMA_VERSION",
+    "OPT_IN_OFF",
+    "OPT_IN_SOURCES",
+    "OUTCOME_ANSWERED",
+    "OUTCOME_CANNOT",
+    "OUTCOME_FAILED",
+    "OUTCOME_REFUSED_OPT_IN",
+    "OUTCOME_REFUSED_STALE",
+    "SURFACE_KINDS",
     "SmokeResult",
     "STATUS_BROKEN",
+    "STATUS_OK",
+    "STATUS_STALE",
     "STATUS_UNCHECKED",
+    "STATUS_UNVERIFIABLE",
     "StatusFn",
+    "SurfaceCheck",
+    "SurfaceReport",
     "UndeclaredQuestion",
+    "append_evocation",
     "catalog",
+    "check_surface",
     "create",
+    "default_ledger",
     "find_drones_dir",
     "git_commit",
     "humanize_age",
@@ -116,10 +163,14 @@ __all__ = [
     "load",
     "mapping_ask",
     "no_worker_ask",
+    "opt_in_from_env",
+    "read_ledger",
     "render_catalog",
     "render_readme",
+    "resolve_opt_in",
     "smoke",
     "source_hash",
+    "surface_status_fn",
     "validate_answer",
     "validate_manifest",
 ]
@@ -136,6 +187,10 @@ MANIFEST_FILENAME = "manifest.json"
 SOURCE_FILENAME = "drone.py"
 README_FILENAME = "README.md"
 
+#: The append-only JSONL audit trail, written beside the drones it records.
+#: Dot-prefixed so :func:`catalog` (which walks directories) never sees it.
+EVOCATIONS_FILENAME = ".evocations.jsonl"
+
 #: The module-level callable every ``drone.py`` must define:
 #: ``run(request: DroneRequest) -> DroneAnswer``.
 DRONE_ENTRYPOINT = "run"
@@ -143,7 +198,56 @@ DRONE_ENTRYPOINT = "run"
 #: Environment override for where drones live. ``--drones-dir`` beats it.
 DRONES_DIR_ENV = "EMBODIMENT_DRONES_DIR"
 
+#: Environment override for where the evocation ledger is appended. An explicit
+#: ``ledger=`` argument beats it; with neither, records land in
+#: ``<drones dir>/.evocations.jsonl``.
+DRONE_LEDGER_ENV = "EMBODIMENT_DRONE_LEDGER"
+
+# ── the opt-in switch (claim c25) ───────────────────────────────────────────
+
+#: The single environment variable that turns drone execution on.
+DRONES_ENABLED_ENV = "EMBODIMENT_DRONES_ENABLED"
+
+#: **False, and this is the feature.** The drone design is unvalidated (#44's
+#: experiment has not run), and this repo's standing rule — *the measured
+#: failure mode never ships as default behaviour* — has a mirror image: an
+#: **unmeasured** one does not either. A fresh checkout with nothing set
+#: evokes nothing. A governance guard asserts this constant is ``False``
+#: without running a drone; flipping it is a deliberate, reviewable act that
+#: needs #44's verdict behind it, exactly like
+#: ``tests/test_zero_deps.py``'s pinned dependency set.
+DRONES_ENABLED_BY_DEFAULT = False
+
+#: Where an opt-in decision came from — recorded on every evocation so the
+#: audit trail answers *who authorised this run*, not only *what ran*.
+#: ``authoring`` is :func:`create`'s smoke invocation: the one named,
+#: non-ambient way execution is enabled, and only for a drone being staged.
+OPT_IN_SOURCES = ("default", "env", "explicit", "authoring")
+
+#: Values that read as "on". Anything else — including an unrecognised value
+#: like ``maybe`` — fails **closed**, with the reason recorded rather than
+#: guessed at. An opt-in guard that resolves ambiguity in favour of running is
+#: not a guard.
+_TRUTHY = frozenset({"1", "true", "yes", "on", "enable", "enabled"})
+
 # ── statuses ────────────────────────────────────────────────────────────────
+
+#: Every declared assumption was re-checked and holds. Only ever the result of
+#: a check that actually ran against a real root.
+STATUS_OK = "ok"
+
+#: At least one declared assumption was re-checked and **failed**. The drone
+#: is out of date with the surface it was written against, so :func:`invoke`
+#: refuses to run it: a stale drone does not crash, it reports confidently on
+#: a check that no longer means anything.
+STATUS_STALE = "stale"
+
+#: Checks ran, none failed, and at least one could not be verified — an
+#: assumption whose ``kind`` this build cannot re-check, or a drone that
+#: declares no surface at all and therefore cannot detect its own
+#: obsolescence. Deliberately not ``ok``, and deliberately not ``stale``:
+#: nothing was found wrong, and nothing was confirmed right either.
+STATUS_UNVERIFIABLE = "unverifiable"
 
 #: No assumed-surface check ran. The default, and deliberately not ``"ok"``:
 #: reporting a drone healthy because nobody looked is exactly the confident
@@ -155,8 +259,45 @@ STATUS_UNCHECKED = "unchecked"
 #: visible at the moment you are choosing one.
 STATUS_BROKEN = "broken"
 
-#: The vocabulary this task ships. t12's staleness re-check adds its own.
-DRONE_STATUSES = (STATUS_UNCHECKED, STATUS_BROKEN)
+#: The whole vocabulary ``list``'s status column may render.
+DRONE_STATUSES = (
+    STATUS_OK,
+    STATUS_STALE,
+    STATUS_UNVERIFIABLE,
+    STATUS_UNCHECKED,
+    STATUS_BROKEN,
+)
+
+# ── evocation outcomes ──────────────────────────────────────────────────────
+#
+# Distinguishable by field value alone, never by inference over a message —
+# the #37 lesson (``ModelResponse`` carries no ``finish_reason``, so a
+# truncated turn and a deliberate one arrive as the same object) applied
+# forward. A refusal to run and a run that failed must never be one number.
+
+#: The drone answered.
+OUTCOME_ANSWERED = "answered"
+
+#: The drone ran and returned "I cannot" — working correctly, not failing (c46).
+OUTCOME_CANNOT = "cannot"
+
+#: The harness or the drone's own code failed: it raised, did not compile, had
+#: no entry point, or returned nothing usable.
+OUTCOME_FAILED = "failed"
+
+#: Nothing ran: drones are off and nothing turned them on (c25).
+OUTCOME_REFUSED_OPT_IN = "refused-opt-in"
+
+#: Nothing ran: the drone's declared assumptions no longer hold.
+OUTCOME_REFUSED_STALE = "refused-stale"
+
+EVOCATION_OUTCOMES = (
+    OUTCOME_ANSWERED,
+    OUTCOME_CANNOT,
+    OUTCOME_FAILED,
+    OUTCOME_REFUSED_OPT_IN,
+    OUTCOME_REFUSED_STALE,
+)
 
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{0,39}$")
 _QUESTION_ID_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
@@ -210,6 +351,102 @@ class UndeclaredQuestion(DroneError):
 #: unavailable or was refused for shape — never raises for that case, so a
 #: drone can degrade to "I cannot" instead of crashing.
 AskFn = Callable[[str, Mapping[str, Any]], Any]
+
+
+@dataclass(frozen=True)
+class DroneOptIn:
+    """The resolved answer to *is drone execution turned on, and who turned it on*.
+
+    Carried on every :class:`Evocation` so a record answers "who authorised
+    this run" as well as "what ran". Frozen and cheap to construct, so a host
+    can build one inline: ``DroneOptIn(True, "explicit", "wired by MyApp")``.
+    """
+
+    enabled: bool
+    source: str = "default"
+    detail: str = ""
+
+
+#: The shipped default: off, because nobody said otherwise (c25).
+OPT_IN_OFF = DroneOptIn(
+    enabled=False,
+    source="default",
+    detail=(
+        "drones are off by default; nothing set "
+        f"${DRONES_ENABLED_ENV} and no host passed opt_in="
+    ),
+)
+
+#: :func:`create`'s smoke invocation. The ONE named bypass of the ambient
+#: switch, and it is not a hole: it runs only against the copy being staged in
+#: a temporary directory, from source the caller handed in this second — never
+#: against a saved drone. ``create`` proving that its own candidate runs is not
+#: the default-on execution path c25 forbids. A structural test pins that this
+#: is the only ``enabled=True`` literal in the module.
+_AUTHORING_OPT_IN = DroneOptIn(
+    enabled=True,
+    source="authoring",
+    detail="create's smoke invocation against the staged copy",
+)
+
+
+@dataclass(frozen=True)
+class SurfaceCheck:
+    """One re-checked assumption from the manifest's ``assumed_surface``.
+
+    ``held`` is a **tri-state** on purpose: ``True`` verified, ``False``
+    refuted, ``None`` *could not be checked*. Collapsing the third into either
+    of the first two is the confident false claim this whole module argues
+    against — an unverifiable assumption is not a passing one.
+    """
+
+    kind: str
+    value: str
+    held: Optional[bool]
+    reason: str = ""
+
+
+@dataclass(frozen=True)
+class SurfaceReport:
+    """The verdict on a drone's assumed surface, and the checks behind it."""
+
+    status: str
+    checks: tuple[SurfaceCheck, ...] = ()
+
+    @property
+    def stale(self) -> bool:
+        return self.status == STATUS_STALE
+
+    @property
+    def failed(self) -> tuple[SurfaceCheck, ...]:
+        return tuple(check for check in self.checks if check.held is False)
+
+    @property
+    def unverified(self) -> tuple[SurfaceCheck, ...]:
+        return tuple(check for check in self.checks if check.held is None)
+
+    @property
+    def summary(self) -> str:
+        """One line naming what actually failed — or what could not be checked."""
+        if self.failed:
+            detail = "; ".join(f"{c.kind} {c.value!r}: {c.reason}" for c in self.failed)
+            return f"assumed surface no longer holds — {detail}"
+        if self.unverified:
+            detail = "; ".join(f"{c.kind} {c.value!r}: {c.reason}" for c in self.unverified)
+            return f"assumed surface could not be fully re-checked — {detail}"
+        if not self.checks:
+            return "no assumed surface declared, so staleness cannot be checked"
+        return f"assumed surface re-checked: {len(self.checks)} assumption(s) hold"
+
+    def to_json(self) -> dict[str, Any]:
+        return {
+            "status": self.status,
+            "summary": self.summary,
+            "checks": [
+                {"kind": c.kind, "value": c.value, "held": c.held, "reason": c.reason}
+                for c in self.checks
+            ],
+        }
 
 
 @dataclass(frozen=True)
@@ -270,25 +507,72 @@ class Drone:
     def questions(self) -> tuple[Mapping[str, Any], ...]:
         return tuple(self.manifest.get("questions", ()))
 
+    @property
+    def declared_hash(self) -> str:
+        """The ``drone.py`` sha256 the manifest recorded at authoring time.
+
+        ``""`` when the manifest declares none — a hand-rolled manifest, or one
+        written before this field existed. Absent is reported as *unknown*, and
+        never as a match.
+        """
+        return str(self.manifest.get("source_sha256", ""))
+
 
 @dataclass(frozen=True)
 class Evocation:
-    """The record of one run — produced whether it succeeded, refused or failed.
+    """The audit record of one run — produced whether it answered, refused or failed.
 
-    ``ok`` is False only for a *harness* failure (the drone raised, had no
-    entry point, or returned nothing usable). A clean "I cannot" is ``ok`` with
-    ``cannot`` set: refusing is working correctly, not failing.
+    This is claim c45's artifact. Four things are on it for every outcome, so a
+    compromised, stale or misbehaving drone is traceable from its records
+    alone: the drone :attr:`name`, the :attr:`source_sha256` **of the bytes
+    that ran**, the declared :attr:`capabilities`, and :attr:`call_acceptance`.
+    :func:`invoke` appends one of these to a ledger on every single path.
+
+    ``ok`` is a **derived property**, not a field: it and :attr:`outcome` are
+    one fact and cannot disagree. A clean "I cannot" is ``ok`` — refusing is
+    working correctly, not failing (c46).
     """
 
     name: str
     source_sha256: str
     capabilities: tuple[str, ...]
     calls: tuple[DroneCall, ...]
-    ok: bool
+    outcome: str
     answer: Optional[str] = None
     cannot: Optional[str] = None
     detail: Mapping[str, Any] = field(default_factory=dict)
     failure: str = ""
+    #: Was model-written code executed in this process? ``True`` from the
+    #: moment the drone's module body is exec'd — so an import that raised
+    #: still reports ``True``, because it still ran. Both refusals report
+    #: ``False``: they are the paths on which nothing executed at all.
+    ran: bool = False
+    #: Who authorised this run.
+    opt_in: DroneOptIn = OPT_IN_OFF
+    #: The assumed-surface verdict, or ``None`` when the check was skipped.
+    surface: Optional[SurfaceReport] = None
+    #: Do the bytes that ran still match the hash the manifest recorded at
+    #: authoring time? ``None`` when the manifest declares no hash — unknown,
+    #: never "yes". Traceability, not tamper-proofing: see the module
+    #: docstring.
+    source_matches_manifest: Optional[bool] = None
+    recorded_at: str = ""
+    #: Where the record was appended, and whether that append succeeded. A
+    #: ledger that could not be written is a degradation the host must see
+    #: (C3), not an exception out of a never-raise call.
+    ledger_path: str = ""
+    recorded: bool = False
+    record_error: str = ""
+
+    @property
+    def ok(self) -> bool:
+        """The drone ran to a usable conclusion — an answer or an honest refusal."""
+        return self.outcome in (OUTCOME_ANSWERED, OUTCOME_CANNOT)
+
+    @property
+    def refused(self) -> bool:
+        """A safeguard stopped this run before any drone code executed."""
+        return self.outcome in (OUTCOME_REFUSED_OPT_IN, OUTCOME_REFUSED_STALE)
 
     @property
     def calls_accepted(self) -> int:
@@ -301,10 +585,45 @@ class Evocation:
         ``None`` rather than ``1.0``: a drone that asked nothing has no
         acceptance rate, and reporting a perfect one would be the same
         confident-about-nothing claim the whole module argues against.
+
+        Its own axis, never folded into the outcome: #33 measured 17 of 23
+        worker calls refused on a *shape* error, and a drone whose calls are
+        mostly refused runs to completion and reports confidently on nothing.
+        Interface failure and task failure must never share a number.
         """
         if not self.calls:
             return None
         return self.calls_accepted / len(self.calls)
+
+    def to_json(self) -> dict[str, Any]:
+        """The ledger line — plain JSON-serialisable types only."""
+        return {
+            "name": self.name,
+            "outcome": self.outcome,
+            "ok": self.ok,
+            "ran": self.ran,
+            "recorded_at": self.recorded_at,
+            "source_sha256": self.source_sha256,
+            "source_matches_manifest": self.source_matches_manifest,
+            "capabilities": list(self.capabilities),
+            "calls": [
+                {"question": c.question, "accepted": c.accepted, "reason": c.reason}
+                for c in self.calls
+            ],
+            "calls_asked": len(self.calls),
+            "calls_accepted": self.calls_accepted,
+            "call_acceptance": self.call_acceptance,
+            "answer": self.answer,
+            "cannot": self.cannot,
+            "detail": dict(self.detail),
+            "failure": self.failure,
+            "opt_in": {
+                "enabled": self.opt_in.enabled,
+                "source": self.opt_in.source,
+                "detail": self.opt_in.detail,
+            },
+            "surface": self.surface.to_json() if self.surface is not None else None,
+        }
 
 
 @dataclass(frozen=True)
@@ -330,8 +649,182 @@ class DroneRecord:
     problem: str = ""
 
 
-#: ``status_fn(drone) -> status``. t12 wires the assumed-surface re-check here.
-StatusFn = Callable[[Drone], str]
+#: ``status_fn(drone) -> status``. Returning a :class:`SurfaceReport` instead of
+#: a bare status string also carries the *reason* into the rendered row, which
+#: is what :func:`surface_status_fn` does — a status column that says ``stale``
+#: without saying which assumption broke sends you reading the drone's code.
+StatusFn = Callable[[Drone], Union[str, SurfaceReport]]
+
+
+# ── safeguard 1: the opt-in switch (claim c25) ──────────────────────────────
+
+
+def opt_in_from_env(env: Optional[Mapping[str, str]] = None) -> DroneOptIn:
+    """Read the opt-in switch out of *env*. Never raises on a malformed value.
+
+    Follows this package's ``*_from_env`` convention (see
+    :func:`embodiment.presence.cadence_from_env`): the mapping is an argument,
+    so a test asserts on what it supplies rather than on the developer's shell.
+    Pass ``{}`` for "a fresh checkout" — the answer is off.
+
+    An unrecognised value fails **closed** and says so. ``DRONES=maybe`` must
+    not resolve to "run model-written code in this process".
+    """
+    if env is None:
+        env = os.environ
+    raw = env.get(DRONES_ENABLED_ENV)
+    if raw is None:
+        return OPT_IN_OFF
+    value = raw.strip().lower()
+    if value in _TRUTHY:
+        return DroneOptIn(
+            enabled=True,
+            source="env",
+            detail=f"${DRONES_ENABLED_ENV}={raw!r}",
+        )
+    return DroneOptIn(
+        enabled=False,
+        source="env",
+        detail=(
+            f"${DRONES_ENABLED_ENV}={raw!r} does not read as on "
+            f"(use one of {', '.join(sorted(_TRUTHY))}); refusing rather than guessing"
+        ),
+    )
+
+
+def resolve_opt_in(
+    opt_in: Optional[DroneOptIn] = None,
+    *,
+    env: Optional[Mapping[str, str]] = None,
+) -> DroneOptIn:
+    """An explicit host decision beats the environment, which beats the default off.
+
+    The whole ladder ends at :data:`DRONES_ENABLED_BY_DEFAULT`, which is
+    ``False``. There is no fourth rung and no config file that can quietly
+    become one: a hermetic test can assert this function returns disabled for
+    an empty environment **without running a drone**.
+    """
+    if opt_in is not None:
+        return opt_in
+    resolved = opt_in_from_env(env)
+    if not DRONES_ENABLED_BY_DEFAULT:
+        return resolved
+    # Unreachable while the constant is False, and deliberately written out:
+    # flipping the default is a governance act, and this is what it would do.
+    if resolved.source == "default":  # pragma: no cover - the constant is False
+        return DroneOptIn(True, "default", "DRONES_ENABLED_BY_DEFAULT is True")
+    return resolved  # pragma: no cover - the constant is False
+
+
+# ── safeguard 2: the assumed-surface re-check ───────────────────────────────
+
+#: The assumption kinds this build can actually re-check. Anything else is
+#: reported :data:`STATUS_UNVERIFIABLE`, never ``ok`` — an assumption nobody
+#: knows how to check has not been checked.
+SURFACE_KINDS = ("path", "glob", "contains")
+
+
+def _resolve_under(root: Path, value: str) -> Optional[Path]:
+    """*value* as a path under *root*, or ``None`` if it escapes the root.
+
+    Manifests are model-written, so an ``assumed_surface`` entry of ``/etc`` or
+    ``../../secrets`` is a thing that can happen. A staleness check that walks
+    out of the repo is answering a different question than the one asked.
+    """
+    candidate = (root / value).resolve()
+    root = root.resolve()
+    if candidate == root or root in candidate.parents:
+        return candidate
+    return None
+
+
+def _check_entry(entry: Mapping[str, Any], root: Path) -> SurfaceCheck:
+    kind = str(entry.get("kind", ""))
+    value = str(entry.get("value", ""))
+    if kind not in SURFACE_KINDS:
+        return SurfaceCheck(
+            kind=kind,
+            value=value,
+            held=None,
+            reason=(
+                f"kind {kind!r} is not one this build can re-check "
+                f"({', '.join(SURFACE_KINDS)}) — reported as unverified, not as passing"
+            ),
+        )
+    if kind == "glob":
+        try:
+            match = next(iter(root.glob(value)), None)
+        except (OSError, ValueError) as exc:
+            return SurfaceCheck(kind, value, None, f"glob could not be evaluated: {exc}")
+        if match is None:
+            return SurfaceCheck(kind, value, False, "no file matches this glob any more")
+        return SurfaceCheck(kind, value, True, "")
+
+    target = _resolve_under(root, value)
+    if target is None:
+        return SurfaceCheck(
+            kind,
+            value,
+            None,
+            "resolves outside the root, so this check was not run",
+        )
+    if kind == "path":
+        if target.exists():
+            return SurfaceCheck(kind, value, True, "")
+        return SurfaceCheck(kind, value, False, "no longer exists")
+
+    # kind == "contains": the check that catches a *convention* moving, which
+    # a bare exists-check never would — the actual staleness story in #45.
+    text = entry.get("text")
+    if not isinstance(text, str) or not text:
+        return SurfaceCheck(
+            kind, value, None, "declares no non-empty 'text' to look for, so nothing was checked"
+        )
+    try:
+        body = target.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return SurfaceCheck(kind, value, False, f"cannot be read any more: {exc.strerror or exc}")
+    if text in body:
+        return SurfaceCheck(kind, value, True, "")
+    return SurfaceCheck(kind, value, False, f"no longer contains {text!r}")
+
+
+def check_surface(drone: Drone, *, root: Path) -> SurfaceReport:
+    """Re-check every assumption the drone's manifest declared.
+
+    The failure this exists for is not a crash. A ``review`` drone authored
+    today may check a convention that changes next month, and it will **keep
+    passing, authoritatively, on a check that no longer means anything** —
+    exactly the defect class ``corrections.md`` §3 records (tests that passed
+    while the thing they tested was broken). A drone that cannot detect its own
+    obsolescence should not be shipped.
+
+    One failed assumption makes the whole drone :data:`STATUS_STALE`; a drone
+    is not partly trustworthy. Never raises: a check that blows up is reported
+    as unverified, because a staleness check that can take down ``list`` makes
+    the stale drone *less* visible, not more.
+    """
+    entries = drone.manifest.get("assumed_surface") or ()
+    checks = tuple(_check_entry(entry, root) for entry in entries if isinstance(entry, Mapping))
+    if any(check.held is False for check in checks):
+        return SurfaceReport(STATUS_STALE, checks)
+    if not checks or any(check.held is None for check in checks):
+        return SurfaceReport(STATUS_UNVERIFIABLE, checks)
+    return SurfaceReport(STATUS_OK, checks)
+
+
+def surface_status_fn(root: Path) -> StatusFn:
+    """The :data:`StatusFn` ``list`` wires, bound to the root to check against.
+
+    This is what makes a stale drone visible **without being executed** — you
+    see it while *choosing* a drone, not after it has run and reported
+    confidently on a surface that moved.
+    """
+
+    def _status(drone: Drone) -> SurfaceReport:
+        return check_surface(drone, root=root)
+
+    return _status
 
 
 # ── answer-schema validation (deliberately minimal, stdlib only) ────────────
@@ -559,6 +1052,14 @@ def validate_manifest(data: Any) -> None:
                 "each assumed_surface entry needs a non-blank 'kind'",
                 "e.g. {'kind': 'path', 'value': 'embodiment/cli/_commands/'}",
             )
+        if entry["kind"] == "contains" and not str(entry.get("text") or "").strip():
+            raise DroneError(
+                f"assumed_surface entry {entry['value']!r} is kind 'contains' "
+                "but declares no non-blank 'text' to look for",
+                "a 'contains' assumption names the convention it depends on: "
+                "{'kind': 'contains', 'value': 'embodiment/cli/__init__.py', "
+                "'text': 'def register('} — without it nothing can be re-checked",
+            )
     capabilities = _require(data, "capabilities", list, "")
     for capability in capabilities:
         if not isinstance(capability, str) or not capability.strip():
@@ -685,14 +1186,70 @@ class _RecordingAsk:
         return answer
 
 
+# ── safeguard 3: the audit ledger (claim c45) ───────────────────────────────
+
+
+def default_ledger(drones_dir: Path, env: Optional[Mapping[str, str]] = None) -> Path:
+    """Where evocation records are appended: ``$EMBODIMENT_DRONE_LEDGER``, else
+    ``<drones_dir>/.evocations.jsonl``."""
+    if env is None:
+        env = os.environ
+    override = env.get(DRONE_LEDGER_ENV)
+    if override:
+        return Path(override).expanduser()
+    return drones_dir / EVOCATIONS_FILENAME
+
+
+def append_evocation(evocation: Evocation, ledger: Path) -> tuple[bool, str]:
+    """Append one record as a JSONL line. Returns ``(written, error)``.
+
+    Never raises. A read-only filesystem is a degradation the host must be told
+    about (C3) — but a harness that dies while *recording* a run that already
+    happened is strictly worse than one that reports it could not record.
+    """
+    try:
+        line = json.dumps(evocation.to_json(), ensure_ascii=False, sort_keys=True)
+    except (TypeError, ValueError) as exc:  # pragma: no cover - to_json is plain types
+        return False, f"record is not JSON-serialisable: {exc}"
+    try:
+        ledger.parent.mkdir(parents=True, exist_ok=True)
+        with ledger.open("a", encoding="utf-8") as handle:
+            handle.write(line + "\n")
+    except OSError as exc:
+        return False, f"cannot append to {ledger}: {exc.strerror or exc}"
+    return True, ""
+
+
+def read_ledger(ledger: Path) -> list[dict[str, Any]]:
+    """Every record in *ledger*, oldest first. Never raises.
+
+    An unreadable ledger reads as empty and a corrupt line is skipped: this is
+    for reading an audit trail back, and one bad line must not hide the rest.
+    """
+    try:
+        text = ledger.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    records: list[dict[str, Any]] = []
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(record, dict):
+            records.append(record)
+    return records
+
+
 # ── running ─────────────────────────────────────────────────────────────────
 
 
-def _load_entrypoint(source: Path, name: str, source_bytes: bytes) -> Callable[..., Any]:
-    """Compile and run *source_bytes* in a fresh namespace; return its ``run``.
+def _compile_source(source: Path, source_bytes: bytes) -> types.CodeType:
+    """Compile **the exact bytes the caller already read and hashed**.
 
-    Compiled from **the exact bytes the caller already read and hashed**, not
-    re-read from the path, and deliberately NOT through
+    Not re-read from the path, and deliberately NOT loaded through
     ``importlib.util.spec_from_file_location``. Two reasons, both load-bearing:
 
     1. **The bytecode cache can serve stale code.** ``SourceFileLoader``
@@ -707,6 +1264,22 @@ def _load_entrypoint(source: Path, name: str, source_bytes: bytes) -> Callable[.
        gap where the bytes hashed for the audit trail and the bytes executed
        could differ.
 
+    Compiling is separated from executing so the audit record can say whether
+    model-written code actually ran: a source that does not compile never
+    executed a line, and :attr:`Evocation.ran` must not claim otherwise.
+    """
+    try:
+        return compile(source_bytes, str(source), "exec")
+    except (SyntaxError, ValueError) as exc:
+        raise DroneError(
+            f"{SOURCE_FILENAME} does not compile: {exc.__class__.__name__}: {exc}",
+            "drone.py must be a valid Python source file; re-author the drone",
+        ) from exc
+
+
+def _load_entrypoint(source: Path, name: str, code: types.CodeType) -> Callable[..., Any]:
+    """Execute *code* in a fresh namespace and return its ``run``.
+
     The module is registered in ``sys.modules`` only *while* the body executes
     (dataclasses and similar machinery look the module up by name during class
     creation) and removed afterwards — otherwise ``sys.modules`` would grow by
@@ -714,13 +1287,6 @@ def _load_entrypoint(source: Path, name: str, source_bytes: bytes) -> Callable[.
     through ``__globals__``.
     """
     module_name = f"_embodiment_drone_{re.sub(r'[^a-z0-9_]', '_', name)}_{next(_MODULE_COUNTER)}"
-    try:
-        code = compile(source_bytes, str(source), "exec")
-    except (SyntaxError, ValueError) as exc:
-        raise DroneError(
-            f"{SOURCE_FILENAME} does not compile: {exc.__class__.__name__}: {exc}",
-            "drone.py must be a valid Python source file; re-author the drone",
-        ) from exc
     module = types.ModuleType(module_name)
     module.__file__ = str(source)
     sys.modules[module_name] = module
@@ -772,40 +1338,110 @@ def invoke(
     root: Path,
     args: Optional[Mapping[str, str]] = None,
     ask: AskFn = no_worker_ask,
+    opt_in: Optional[DroneOptIn] = None,
+    stale_ok: bool = False,
+    ledger: Optional[Path] = None,
 ) -> Evocation:
-    """Run *drone* and return the record — including for a failed run.
+    """Run *drone* under the safeguards and return the record — always.
 
     Never raises for a failure inside the drone: a harness that raises cannot
-    hand t12 a record of what went wrong, and C3 requires every degradation to
+    hand back a record of what went wrong, and C3 requires every degradation to
     be observable to the host rather than escaping as an exception.
 
-    **This imports and executes model-written Python in this process.** See the
-    module docstring's threat model.
+    **Every path through this function produces exactly one
+    :class:`Evocation` and appends it to the ledger** — answers, "I cannot",
+    harness failures, and both safeguard refusals. There is no way to run a
+    drone here and leave no record; that property is what claim c45 asks for,
+    and a test asserts a run that leaves no record is a failure.
+
+    Two guards run *before* a byte of model-written code executes:
+
+    * ``opt_in`` — an explicit :class:`DroneOptIn`, else
+      ``$EMBODIMENT_DRONES_ENABLED``, else off (c25). Refusal is
+      :data:`OUTCOME_REFUSED_OPT_IN`.
+    * the assumed surface — refusal is :data:`OUTCOME_REFUSED_STALE` unless
+      *stale_ok*. A stale drone reports confidently on a check that no longer
+      means anything, which is worse than not running.
+
+    **When it does run, this imports and executes model-written Python in this
+    process.** See the module docstring's threat model.
     """
     questions = {str(q["id"]): q for q in drone.questions}
     recorder = _RecordingAsk(questions, ask)
     capabilities = drone.capabilities
-    sha = ""
+    resolved = resolve_opt_in(opt_in)
+    if ledger is None:
+        ledger = default_ledger(drone.home.parent)
+    state: dict[str, Any] = {"sha": "", "ran": False, "surface": None}
 
-    def _fail(message: str) -> Evocation:
-        return Evocation(
+    def _record(outcome: str, **fields: Any) -> Evocation:
+        sha = str(state["sha"])
+        declared = drone.declared_hash
+        evocation = Evocation(
             name=drone.name,
             source_sha256=sha,
             capabilities=capabilities,
             calls=tuple(recorder.calls),
-            ok=False,
-            failure=message,
+            outcome=outcome,
+            ran=bool(state["ran"]),
+            opt_in=resolved,
+            surface=state["surface"],
+            source_matches_manifest=(sha == declared) if (declared and sha) else None,
+            recorded_at=datetime.now(timezone.utc).isoformat(),
+            ledger_path=str(ledger),
+            **fields,
         )
+        written, error = append_evocation(evocation, ledger)
+        return replace(evocation, recorded=written, record_error=error)
+
+    def _fail(message: str) -> Evocation:
+        return _record(OUTCOME_FAILED, failure=message)
+
+    if not resolved.enabled:
+        # Read and hash first: the record names WHICH bytes were refused, so a
+        # refusal is as traceable as a run. `ran` stays False — nothing about
+        # this hash claims the code executed.
+        state["sha"] = source_hash(drone.source)
+        return _record(
+            OUTCOME_REFUSED_OPT_IN,
+            failure=(
+                f"{resolved.detail}. Turn them on deliberately with "
+                f"{DRONES_ENABLED_ENV}=1, or pass opt_in= from the host. The design is "
+                "unvalidated (issue #44's experiment has not run) and an unmeasured "
+                "behaviour does not ship on by default."
+            ),
+        )
+
+    if not stale_ok:
+        surface = check_surface(drone, root=root)
+        state["surface"] = surface
+        if surface.stale:
+            state["sha"] = source_hash(drone.source)
+            return _record(
+                OUTCOME_REFUSED_STALE,
+                failure=(
+                    f"{surface.summary}. Re-author it ('embodiment drone create "
+                    f"{drone.name} --force'), or run it anyway with --stale-ok and read "
+                    "its answer knowing an assumption it depends on is false."
+                ),
+            )
 
     # ONE read: the bytes hashed for the audit trail are the bytes executed.
     try:
         source_bytes = drone.source.read_bytes()
     except OSError as exc:
         return _fail(f"cannot read {drone.source}: {exc.strerror or exc}")
-    sha = hashlib.sha256(source_bytes).hexdigest()
+    state["sha"] = hashlib.sha256(source_bytes).hexdigest()
 
     try:
-        entrypoint = _load_entrypoint(drone.source, drone.name, source_bytes)
+        code = _compile_source(drone.source, source_bytes)
+    except DroneError as exc:
+        return _fail(exc.message)
+
+    # From here on, model-written code has executed in this process.
+    state["ran"] = True
+    try:
+        entrypoint = _load_entrypoint(drone.source, drone.name, code)
     except DroneError as exc:
         return _fail(exc.message)
 
@@ -840,25 +1476,38 @@ def invoke(
             "a drone that reports nothing has not run, it has only been shaped"
         )
 
-    return Evocation(
-        name=drone.name,
-        source_sha256=sha,
-        capabilities=capabilities,
-        calls=tuple(recorder.calls),
-        ok=True,
+    return _record(
+        OUTCOME_ANSWERED if has_answer else OUTCOME_CANNOT,
         answer=answer.answer if has_answer else None,
         cannot=answer.cannot if has_refusal else None,
         detail=dict(answer.detail),
     )
 
 
-def smoke(drone: Drone, *, root: Path) -> SmokeResult:
+def smoke(
+    drone: Drone,
+    *,
+    root: Path,
+    opt_in: Optional[DroneOptIn] = None,
+    ledger: Optional[Path] = None,
+) -> SmokeResult:
     """Prove the drone actually runs, using only its manifest's canned answers.
 
     Hermetic by construction: every declared question carries a canned answer
     validated against its own schema, so no worker is dialled. Passing means
     the code imports, the entry point exists, the run completes, every question
     it asked was declared, and it returned an answer or a refusal.
+
+    Under the same opt-in guard as :func:`invoke`, and for the same reason:
+    this executes the drone. :func:`create` passes the authoring opt-in for the
+    copy it is staging, so authoring a drone works on a checkout where drones
+    are off — but calling ``smoke`` on a *saved* drone does not become a way
+    around the switch.
+
+    The assumed-surface check is skipped (``stale_ok``): authoring is where the
+    surface is *declared*, and re-checking a claim against the moment it was
+    made proves nothing about later. Staleness is ``list``'s and ``evoke``'s
+    question.
     """
     smoke_block = drone.manifest.get("smoke", {})
     evocation = invoke(
@@ -866,6 +1515,9 @@ def smoke(drone: Drone, *, root: Path) -> SmokeResult:
         root=root,
         args=smoke_block.get("args", {}),
         ask=mapping_ask(smoke_block.get("answers", {})),
+        opt_in=opt_in,
+        stale_ok=True,
+        ledger=ledger,
     )
     if not evocation.ok:
         return SmokeResult(False, evocation.failure, evocation)
@@ -1036,7 +1688,12 @@ def create(
         staged.mkdir()
         _write_artifacts(staged, manifest, source_text, notes)
         candidate = Drone(name=name, home=staged, manifest=manifest)
-        result = smoke(candidate, root=root)
+        # The authoring opt-in, and the staged copy only: `create` proving its
+        # own candidate runs is not the default-on execution path c25 forbids,
+        # so authoring works on a checkout where drones are off. The smoke
+        # record lands in the staging directory and is discarded with it; what
+        # survives is the summary written into the manifest below.
+        result = smoke(candidate, root=root, opt_in=_AUTHORING_OPT_IN)
         if not result.passed:
             raise DroneError(
                 f"drone {name!r} failed its smoke invocation and was NOT saved: "
@@ -1061,13 +1718,21 @@ def create(
 
 
 def _write_artifacts(
-    home: Path, manifest: Mapping[str, Any], source_text: str, notes: Optional[str]
+    home: Path, manifest: dict[str, Any], source_text: str, notes: Optional[str]
 ) -> None:
+    """Write the three artifacts, stamping the source hash the audit trail compares against.
+
+    The hash is taken from the file **after** it is written, never from
+    ``source_text`` in memory: what a later :func:`invoke` reads back is the
+    only thing worth recording, and the two can differ (text-mode newline
+    translation) on a platform that is not this one.
+    """
+    (home / SOURCE_FILENAME).write_text(source_text, encoding="utf-8")
+    manifest["source_sha256"] = source_hash(home / SOURCE_FILENAME)
     (home / MANIFEST_FILENAME).write_text(
         json.dumps(manifest, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
         encoding="utf-8",
     )
-    (home / SOURCE_FILENAME).write_text(source_text, encoding="utf-8")
     (home / README_FILENAME).write_text(render_readme(manifest, notes), encoding="utf-8")
 
 
@@ -1084,6 +1749,19 @@ Read `drone.py` before evoking a drone you did not author, exactly as you would
 any committed script. The network-less workspace jail
 (`embodiment/workspace.py`) is available for a host that wants to run a drone
 under it; it is not the default.
+
+Because there is no sandbox, **the audit trail is the containment story**:
+every evocation — answers, refusals and failures alike — appends a record
+naming this drone, the sha256 of the bytes that actually ran, the declared
+capabilities above and the acceptance of every scoped call, to
+`.drones/.evocations.jsonl`.
+
+## Turning drones on
+
+Drones are **opt-in and off**. `evoke` refuses to run this drone unless
+`EMBODIMENT_DRONES_ENABLED=1` is set (or a host passes `opt_in=` through the
+library). The design is unvalidated, and an unmeasured behaviour does not ship
+on by default.
 """
 
 
@@ -1214,8 +1892,12 @@ def catalog(
     authoring turn. A drone that cannot be read is still rendered, with status
     :data:`STATUS_BROKEN` — a drone you cannot see is one you re-author.
 
-    *status_fn* is the seam t12 fills with the assumed-surface re-check. With
-    none wired every readable drone reports :data:`STATUS_UNCHECKED`.
+    It is also where **staleness becomes visible without being executed**:
+    wire ``status_fn=surface_status_fn(root)`` (which is what the ``list`` verb
+    does) and each row's status is a re-checked verdict — you learn a drone is
+    stale while *choosing* it, not after it has run and reported confidently on
+    a surface that moved. With no ``status_fn`` wired every readable drone
+    reports :data:`STATUS_UNCHECKED`, because no check ran.
     """
     if not drones_dir.is_dir():
         return []
@@ -1245,10 +1927,19 @@ def _record_for(
     problem = ""
     if status_fn is not None:
         try:
-            status = status_fn(drone)
+            verdict = status_fn(drone)
         except Exception as exc:  # noqa: BLE001 - an injected check must not break `list`
             status = STATUS_BROKEN
             problem = f"status check raised {exc.__class__.__name__}: {exc}"
+        else:
+            if isinstance(verdict, SurfaceReport):
+                status = verdict.status
+                # Only a verdict that should change what you do reaches the
+                # row's problem line. "3 assumptions hold" is not a problem.
+                if verdict.status != STATUS_OK:
+                    problem = verdict.summary
+            else:
+                status = verdict
     return DroneRecord(
         name=drone.name,
         description=drone.description,

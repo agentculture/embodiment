@@ -180,23 +180,37 @@ _LAZY_NAMES = {
     # `drone.create(...)`. Only the SHAPES a host composes against are here.
     # `invoke` RETURNS a record for a failed run rather than raising, which is
     # the seam the evocation audit trail is built on.
+    #
+    # `DRONES_ENABLED_BY_DEFAULT` and `DroneOptIn` ARE hoisted, unlike the
+    # verbs: drones ship opt-in and off (claim c25), and a governance guard has
+    # to be able to assert that from the package surface without running one.
     "Drone": "drone",
     "DroneAnswer": "drone",
     "DroneCall": "drone",
     "DroneError": "drone",
+    "DroneOptIn": "drone",
     "DroneRecord": "drone",
     "DroneRequest": "drone",
     "Evocation": "drone",
     "SmokeResult": "drone",
+    "SurfaceCheck": "drone",
+    "SurfaceReport": "drone",
     "UndeclaredQuestion": "drone",
     "AskFn": "drone",
     "StatusFn": "drone",
     "DRONE_ENTRYPOINT": "drone",
     "DRONE_STATUSES": "drone",
     "DRONES_DIRNAME": "drone",
+    "DRONES_ENABLED_BY_DEFAULT": "drone",
+    "DRONES_ENABLED_ENV": "drone",
+    "EVOCATION_OUTCOMES": "drone",
     "MANIFEST_SCHEMA_VERSION": "drone",
+    "OPT_IN_OFF": "drone",
     "STATUS_BROKEN": "drone",
+    "STATUS_OK": "drone",
+    "STATUS_STALE": "drone",
     "STATUS_UNCHECKED": "drone",
+    "STATUS_UNVERIFIABLE": "drone",
     # ── event emission (embodiment#4) — optional, absent by default ───────
     # embodiment produces; `events-cli` owns the envelope contract (c33).
     "EventEmitter": "events",
@@ -369,19 +383,29 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
         DRONE_ENTRYPOINT,
         DRONE_STATUSES,
         DRONES_DIRNAME,
+        DRONES_ENABLED_BY_DEFAULT,
+        DRONES_ENABLED_ENV,
+        EVOCATION_OUTCOMES,
         MANIFEST_SCHEMA_VERSION,
+        OPT_IN_OFF,
         STATUS_BROKEN,
+        STATUS_OK,
+        STATUS_STALE,
         STATUS_UNCHECKED,
+        STATUS_UNVERIFIABLE,
         AskFn,
         Drone,
         DroneAnswer,
         DroneCall,
         DroneError,
+        DroneOptIn,
         DroneRecord,
         DroneRequest,
         Evocation,
         SmokeResult,
         StatusFn,
+        SurfaceCheck,
+        SurfaceReport,
         UndeclaredQuestion,
     )
     from embodiment.events import EventDegradation, EventEmitter  # noqa: F401
