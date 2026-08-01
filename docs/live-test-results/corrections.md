@@ -497,3 +497,120 @@ it is colleague's decision to make
   as amendment 1 in the pre-registration. Recorded here because the near-miss
   is the lesson: *an identical budget is not a fair budget when one model
   thinks before it speaks.*
+
+## 9. The `league_commander` records re-exam (t28's figures, re-checked)
+
+**Verdict: CLEAN. No committed call was cut by the 900 s clock, and the
+2.4–4.4× hierarchy-cost figures stand exactly as published.**
+
+This is recorded because the suspicion was reasonable and the answer could have
+gone the other way. [Issue #42](https://github.com/agentculture/embodiment/issues/42)
+audited every timeout in this repo against `max_tokens / slowest measured rate`.
+At the cortex's 21.5 tok/s and a 16000-token budget that bound is **744 s**;
+`examples/league_commander.py` ships `REQUEST_TIMEOUT = 900.0` — passing, but at
+**1.21×**, the narrowest margin in the audit. The same harness produced the
+**2.4–4.4×** figure this repo cites regularly, so if its turns had been cut the
+way `worker_seam.py`'s cell `C1-E` was (§5, *the timeout was eating its own
+turns*), its cost numbers would be inflated and its correctness numbers
+understated. They were not.
+
+The analysis is a committed, re-runnable script rather than a claim to trust:
+
+```bash
+uv run python docs/live-test-results/league-commander-reexam.py   # exits 0 clean, 1 dirty
+uv run pytest tests/test_league_commander_reexam.py               # 13 pins on the same records
+```
+
+### What the records say
+
+Across **both** committed series — the primary `c-skirmish-1` run (12 matches,
+120 calls) and the `c-frontier-1` escalation (6 matches, 264 calls), **384 calls
+total**:
+
+| tell | what a cut turn would look like | what is recorded |
+|---|---|---|
+| `retries > 0` | any retry at all is the first tell | **0**, in the ledger *and* per call |
+| transport `error` | set on the discarded call | **0** |
+| wall clock ≥ `REQUEST_TIMEOUT` | ≥ 900 s, unavoidably | **0** — slowest single call **193.6 s**, 21.5% of the clock |
+| the retry arithmetic | 930 s (one cut), … , **3690 s** exhausted | **0** calls within 5 s of any rung |
+| `finish_reason` | `length` on truncation, absent on a lost call | **`tool_calls` 384 / 384**; zero `length`, zero missing |
+| a discarded *match* | transcript lines with no ledger row | **0 orphans**; per-key counts agree for all 18 matches; arena logs are exactly the ledger's 18 keys |
+
+Two details make that stronger than a row of zeroes usually is.
+
+- **The stopwatch cannot hide a cut.** `gateway_seam` starts `time.monotonic()`
+  *before* the first attempt and never resets it, so a call that timed out even
+  once records at least `900 + 30 = 930 s`. The slowest call in either series is
+  193.6 s. A clock-cut call that reached disk is arithmetically impossible here.
+- **A crashed match cannot hide either.** `run_series` wraps `play_match` in no
+  `try`, so an exhausted-retry call raises straight through and the ledger row is
+  never appended — while every call that match already paid for is *already* in
+  the append-only transcript file. Orphaned transcript keys are the signature of
+  a discarded match and there are none. Note this harness waits **30 s** between
+  attempts, not the 20 s of the `worker_seam` example the audit quoted; the
+  exhausted-call identity here is `4 × 900 + 3 × 30 = 3690 s`.
+
+**The clock was never in a position to bind, because the budget never was.** The
+largest completion in 384 calls is **2,253 tokens — 14.1% of the 16000 budget**,
+needing ~105 s at 21.5 tok/s. Zero `length` finishes is not a lucky escape; this
+workload asks for short, structured tool calls.
+
+### The published figures, recomputed rather than trusted
+
+From the raw ledger, not the write-up's table:
+
+| arm | n | prompt | completion | tok/match | published |
+|---|---|---|---|---|---|
+| B | 3 | 59,927 | 16,452 | 25,459.7 | 25,459 |
+| C | 3 | 64,358 | 14,402 | 26,253.3 | 26,253 |
+| A-qwen | 3 | 19,302 | 12,807 | 10,703.0 | 10,703 |
+| A-gemma | 3 | 16,842 | 639 | 5,827.0 | 5,827 |
+
+`B / A-qwen = 2.379` → **2.4×**. `B / A-gemma = 4.369` → **4.4×**. Both agree
+with [league-commander.md](league-commander.md) to the digit it rounded to.
+**Nothing citing 2.4–4.4× needs revision.**
+
+A useful side-effect: this harness's fastest implied Qwen rate is **25.43
+tok/s**, which lands on the top of the 21.5–25.4 tok/s band §5 measured on a
+different harness, different scenario, different week. Two independent
+instruments agreeing on the cortex's rate is worth more than either alone.
+
+### What the clean verdict does **not** cover
+
+Two findings that do not touch t28's numbers but do touch the constant. Neither
+is a defect that shipped; both are places the audit's own framing was thinner
+than it read.
+
+- **The 1.21× margin is generation-only, and this series already exceeds its
+  slack.** 900 s over a 744 s bound leaves **155.8 s** for everything that is not
+  generation — queue wait, prompt processing, transport. In this series one Qwen
+  call spent **179.3 s** not generating (`A-qwen-2`, flat: 193.6 s of wall clock
+  for 365 completion tokens). A full-budget completion arriving behind that same
+  queue would total ~923 s and **be cut**. The margin passed the audit and the
+  records are clean; it should still be read as thin rather than comfortable,
+  because the number it is thin against has already been observed.
+- **One constant, two models — and the bound was derived for only one of them.**
+  `league_commander` dials Gemma 4 31B through the *same* `REQUEST_TIMEOUT` with
+  the same `MAX_TOKENS = 16000`, but #42 derived the bound at the cortex rate.
+  This harness's own records put Gemma at **12.1 tok/s** fastest-implied (13.5
+  tok/s by regression, fixed cost 1.61 s, r² 0.814), so its budget-derived bound
+  is **1,322 s** and 900 s is **0.68× — below bound**. It never mattered here
+  because Gemma's largest completion was **236 tokens**, 1.5% of budget. Handed
+  to `t2` as a finding, not fixed here: *a bound must be derived at the slowest
+  model the constant fronts, not at the cortex by default.*
+
+  Stated with its limits, because they are real: Gemma's rate is measured only
+  over 31–236-token completions, so extrapolating to 16000 is a ~68×
+  extrapolation on a narrow fit; and on this rig Gemma is proxied rather than
+  local, so that figure includes a network hop the cortex's does not.
+
+### The one thing committed records cannot exclude
+
+This evidence is complete for anything that reached disk. It could not detect a
+run whose transcript file and arena root were deleted and restarted from empty —
+no trace would survive that. Nothing suggests it happened: all four record files
+landed in a single commit (`3dafbac`) and were never amended, the ledger is
+append-only and resume-aware, and the two departures from the pre-registered n
+(primary 5 → 3; escalation 3/1/1/1) are attributed in the write-up to a rig
+shared with `t23` and to per-match cost, not to failures. Recorded anyway, so
+the verdict's reach is stated rather than assumed.

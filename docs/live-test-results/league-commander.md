@@ -186,6 +186,16 @@ first.
 calls over the 600-second contention line.** The 16000-token budget was the
 right call and the instrument recorded nothing to explain away.
 
+**Re-examined later, and the table held.** Task `t4` re-read these records —
+plus E1's — asking whether the `REQUEST_TIMEOUT = 900.0` clock had been cutting
+turns and re-running them the way `worker_seam.py`'s did, which would have
+inflated the cost figures below and understated correctness. It had not: across
+all 384 calls, zero retries, no wall clock within 5 s of the retry arithmetic
+(the slowest single call is 193.6 s against a 900 s clock), and no orphaned
+transcript line that would mark a discarded match. The verdict, the two
+advisories it raised about the *constant*, and the reproduce lines are in
+[corrections.md §9](corrections.md#9-the-league_commander-records-re-exam-t28s-figures-re-checked).
+
 - **V1 (truncation)** — 0% against a 10% ceiling. Pass.
 - **V2 (orders reached the arena)** — 0 parked against a 20% ceiling. Pass.
 - **V3 (the hierarchy is real)** — 100% spawn grants against a 90% floor. The
@@ -375,6 +385,7 @@ only thing kept.
 | `league-commander-logs/` | the **arena's own** match log per match — its record, not ours |
 | `league-commander-frontier*.jsonl` | the same three artifacts for escalation E1 |
 | `league-commander-wiring-smoke*.jsonl` | the pilot match, named as a pilot and counted nowhere |
+| `league-commander-reexam.py` | task `t4`'s censoring re-exam of every artifact above — re-runnable, exits non-zero if a clock-cut turn is ever found in them |
 
 Reproduce with:
 
