@@ -31,6 +31,7 @@ construction, and call-acceptance never shares a key with outcome.
 from __future__ import annotations
 
 import ast
+import inspect
 import json
 import sys
 from pathlib import Path
@@ -1450,3 +1451,62 @@ class TestCli:
         broken.write_text("{", encoding="utf-8")
         assert ah.main(["config", "--config", str(broken)]) == 2
         assert "hint:" in capsys.readouterr().err
+
+
+class TestTheScopedLaneDoesNotStream:
+    """The width rung's outcome metric is this lane's clock — so its transport is pinned.
+
+    Deviation ``d3`` made streaming the default for *"every cortex/worker
+    dial"*. `bee-hive-width-preregistration.md` §2 registered the narrower
+    reading and it governs here: every baseline the rung is sized against was
+    measured non-streaming on this exact path, and under streaming a client's
+    stopwatch starts and stops at different events.
+
+    Without this pin the lane inherits whatever ``WorkerSeam``'s default
+    becomes, which is precisely how an instrument changes without anyone
+    deciding to change it.
+    """
+
+    def test_the_scoped_seam_is_built_with_streaming_off(self) -> None:
+        import examples.worker_seam as ws
+
+        built: list[dict] = []
+        real_seam = ws.WorkerSeam
+
+        class Recording(real_seam):  # type: ignore[misc, valid-type]
+            def __init__(self, *args, **kwargs):
+                built.append(kwargs)
+                super().__init__(*args, **kwargs)
+
+        ah.ws.WorkerSeam = Recording  # type: ignore[misc]
+        try:
+            factory = ah.build_worker_factory(
+                dial=aa.Dial(role="worker", model="m", base_url="http://x/v1", api_key="k"),
+                sampling=aa.Sampling(temperature=0.3, thinking="off", max_tokens=256),
+            )
+            factory(
+                ah.ScopedCall(
+                    id="s1",
+                    question="looks_risky",
+                    item_ids=("i1",),
+                    prompt="p",
+                    spaces=(("yes", "no", "unclear"),),
+                )
+            )
+        finally:
+            ah.ws.WorkerSeam = real_seam  # type: ignore[misc]
+
+        assert built, "the factory did not construct a WorkerSeam"
+        assert built[0].get("stream") is False, (
+            "the scoped lane must dial with stream=False — its clock is the width rung's "
+            "outcome metric and every baseline it is sized against was measured non-streaming "
+            "(bee-hive-width-preregistration.md §2)"
+        )
+
+    def test_the_reason_travels_with_the_code(self) -> None:
+        """A bare ``stream=False`` invites a well-meaning cleanup. The why must be adjacent."""
+        source = inspect.getsource(ah.build_worker_factory)
+        assert "outcome metric" in source, (
+            "build_worker_factory lost the explanation of why it does not stream; a future "
+            "reader deleting the kwarg would silently re-instrument the width rung"
+        )

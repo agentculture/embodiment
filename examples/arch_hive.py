@@ -1132,6 +1132,22 @@ def build_worker_factory(
     ``Meter`` that is not written for concurrent use, and this is the same shape
     ``examples/worker_throughput.py`` uses to measure the width this arm sizes
     itself from. ``tools`` is never passed — there is nothing to pass.
+
+    **This lane does not stream** (``stream=False``), and the reason is
+    measurement rather than taste. Deviation ``d3`` made streaming the default
+    for *"every cortex/worker dial"*; `bee-hive-width-preregistration.md` §2
+    registered the narrower reading, and it governs here because **this lane's
+    clock is the width rung's outcome metric**. Every baseline the rung is
+    sized and predicted against — 1.8931 and 3.4593 calls per second, 0.2891 s
+    per call — was measured non-streaming on this exact path, and under
+    streaming a client's stopwatch starts and stops at different events. Left
+    streaming, the one committed measurement the rung derives from stops being
+    its baseline, and §8's cell sizing would need re-deriving under an
+    amendment.
+
+    ``d3``'s own reasons do not reach here either: they are facts about long
+    completions — a censoring per-request clock, a 43 s silent think, reasoning
+    worth watching arrive — and a scoped answer is ~15 tokens.
     """
 
     def factory(call: ScopedCall) -> Callable[[list[dict[str, Any]]], ModelResponse]:
@@ -1142,6 +1158,7 @@ def build_worker_factory(
             role=f"hive-{call.question}",
             max_tokens=sampling.max_tokens,
             temperature=sampling.temperature,
+            stream=False,
         )
 
     return factory
