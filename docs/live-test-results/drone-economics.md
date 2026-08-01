@@ -1,0 +1,119 @@
+# The drone economics, measured — and the success signal fails
+
+**Dialled 2026-08-01**, cortex and worker both idle. Raw records:
+[`drone-authoring-cost.json`](drone-authoring-cost.json),
+[`drone-evocation-cost.json`](drone-evocation-cost.json). Harnesses:
+[`examples/author_drone.py`](../../examples/author_drone.py),
+[`examples/drone_host.py`](../../examples/drone_host.py).
+
+## The claim under test
+
+`c30`'s third success signal:
+
+> a drone's second evocation makes **0 cortex calls** at **≤5%** of its
+> authoring tokens
+
+Until now this had **no denominator** — nobody had ever paid an authoring turn,
+so the signal could only be reported `ABSENT` (plan risk `r6`). Both halves are
+now measured.
+
+## Result: half passes, half fails
+
+| | measured | target | |
+|---|---:|---:|---|
+| cortex calls, second evocation | **0** | 0 | **PASS** |
+| completion tokens, second evocation | **1,532** | ≤ 239 | **FAIL** |
+| ratio of authoring cost | **32.0%** | ≤ 5% | **FAIL** |
+
+Authoring: **4,785 completion tokens over 199.3 s**, `finish_reason: stop`,
+one cortex turn, streamed. Second evocation: **3 scoped worker calls, all
+accepted**, 277 prompt and 1,532 completion tokens, correct answer.
+
+**Zero cortex calls is structural, not lucky.** A drone's only outward seam is
+`DroneRequest.ask`, which reaches the worker the host wires and nothing else;
+there is no escalation path in v1 (`c46`). That half of the signal cannot fail
+without the design changing.
+
+## Why the token half fails, precisely
+
+**511 completion tokens per scoped call.** `t8` measured the same class of call
+at **~15 tokens** with `enable_thinking: false`
+([`worker-scoped-overhead.md`](worker-scoped-overhead.md)) — a **34×**
+difference, and it is not the prompt. It is that **the drone tier has no way to
+turn thinking off.**
+
+`examples/worker_seam.py`'s `WorkerSeam.__init__` takes `base_url`, `model`,
+`api_key`, `role`, `max_tokens`, `temperature`, `tools`, `sleep`, `stream` and
+`stream_queue_width`. There is **no thinking parameter and no extra-body seam**,
+so nothing downstream of it — a drone, a host, or anything else dialling through
+it — can send `chat_template_kwargs`. The mode is whatever the server defaults
+to, and for this prompt shape that default is *on*.
+
+The first attempt made the failure mode visible in the cleanest possible way: at
+`max_tokens=256` the call spent **all 256 tokens thinking and emitted no
+content**, and the drone recorded `outcome: failed` with zero calls accepted.
+That is `#32`'s exact shape — a model handed a budget it cannot answer within —
+reproduced in a second lane.
+
+**With thinking off the signal would pass comfortably**: 3 calls × ~15 tokens ≈
+45 tokens, **0.94%** of the authoring turn against a 5% target. The economics
+claim in [#45](https://github.com/agentculture/embodiment/issues/45) is *right*;
+the tier as wired cannot reach it.
+
+## The same gap, found twice in one hour
+
+This is not a drone-only defect. `examples/arch_hive.py` — the Bee-Hive arm —
+**defines** `wire_extra(thinking)`, which maps a sampling table's declared mode
+onto the wire, and **never calls it**. Its `build_worker_factory` constructs a
+plain `WorkerSeam`, which as established has nowhere to put the result. So the
+`thinking` field in
+[`arch-hive-sampling.json`](arch-hive-sampling.json) is **inert**: declared,
+validated, never sent.
+
+`examples/arch_arms.py` does wire it (its seam merges `wire_extra` into the
+request body), which is why the gap is easy to miss — the vocabulary exists and
+one consumer uses it.
+
+**What this does and does not do to the width rung.** The
+[width results](bee-hive-width.md) spent **102,336 completion tokens over 7,200
+calls — 14.2 tokens per call**, which matches `t8`'s thinking-*off* figure of
+~15 almost exactly. So that series did run effectively thinking-off, its numbers
+stand, and every arm in it shared the same setting, which is what a within-arm
+width comparison requires. What is **not** true is that the harness *pinned* it:
+the mode came from the server's default, not from the committed sampling table,
+so the reproduction instruction is unenforced. A server-side default change
+would silently re-instrument the rung.
+
+This is the `t18` defect class — *a configuration value with no consumer* —
+found the same way `t18` was: by trying to use the seam rather than by reading
+it. `t18`'s remedy was a provoked vacuity assertion, and the same is owed here.
+
+## What is owed
+
+1. **`WorkerSeam` gains a thinking/extra-body parameter**, so a caller can send
+   `chat_template_kwargs` at all.
+2. **`arch_hive` calls `wire_extra`** and passes the result, with a vacuity
+   assertion that fails if the declared mode stops reaching the payload.
+3. **Re-measure this signal** once thinking is controllable. The prediction,
+   stated before the re-run: ≈45 completion tokens, ≈0.94% of authoring, a
+   comfortable pass.
+
+Filed rather than fixed here, because fixing it changes the transport the width
+rung was measured on and this cycle is closing.
+
+## Reproduce
+
+```bash
+# authoring — one cortex turn, streamed
+COLLEAGUE_API_KEY=… OUT_DIR=. uv run python examples/author_drone.py
+
+# evocation — two runs against the live worker
+EMBODIMENT_LIVE_RIG=1 EMBODIMENT_DRONES_ENABLED=1 \
+EMBODIMENT_WORKER_URL=http://thor…:8000/v1 \
+EMBODIMENT_WORKER_MODEL=unsloth/Qwen3.6-35B-A3B-NVFP4 \
+  uv run python examples/drone_host.py index-gaps --repo .
+```
+
+The drone under test is `.drones/index-gaps`, authored by the cortex for a task
+this repo genuinely needed twice: finding results documents missing from the
+index. On the run above it found **3**, correctly.
