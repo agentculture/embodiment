@@ -48,6 +48,28 @@ bar was met but every result is n≤4 on one rig with one model pair. Check
 ledger (`devague deviate --list`) records every approved departure from the plan
 and is the authority on what changed and why.
 
+**What the 0.11.0 cycle added**, so this section does not drift behind a third
+time. One package module, and the rest in `examples/` and `tests/`:
+
+| What | Where |
+|------|-------|
+| The drone tier — `create` / `evoke` / `list`, smoke-before-save, staleness refusal, a content-hashed evocation ledger. **Opt-in and off**: the design it implements is unvalidated | `drone.py`, `cli/_commands/drone.py`, `.claude/skills/drone/` |
+| Arm **B** — the worker as a *tool*: no loop, no turn, no goal. `B0`/`B1` differ in exactly one field, so `B0` is a control rather than a second experiment | `examples/arch_hive.py` |
+| Arm **P** — the cortex compiles a policy once and the policy plays, graded in a network-less jail, with random / hand-written / no-op controls | `examples/arch_policy.py` |
+| Timeout bounds **enforced in CI** — every clock derived from `max_tokens / rate`, recomputed from a dated committed rate config, with a test-of-the-test | `tests/test_timeout_bounds.py`, `tests/rate_config.py` |
+| Streaming as the default transport for cortex dials, both bounds derived (queue-aware first-chunk, then inter-chunk idle) | `examples/worker_seam.py` |
+
+The load-bearing lesson of that cycle, because it recurred four times: **a clock
+sized against the wrong quantity silently becomes the measurement.** A 300 s
+request timeout censored a completion-length distribution; a 60 s fan-out
+deadline bounded a whole unit drive at 1/248th of it; a 20 s retry backoff timed
+*inside* the call it retries corrupted three separate results; and a 600 s
+`GATEWAY_READ_TIMEOUT` — **in the lobes process, where no client value can reach
+it** — cost a live series two repetitions. Three of the four were invisible in
+the record at the moment they fired. Hence the CI bound, and hence streaming:
+with chunks flowing, generation length stops being the binding quantity at every
+hop at once.
+
 Keep this file's claims grounded in checked-in reality. When a section drifts
 ahead of what exists, mark it `(planned)` or move it under a roadmap heading —
 and when it drifts *behind*, as this one did, fix it.
