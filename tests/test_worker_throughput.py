@@ -684,6 +684,8 @@ class TestCLI:
             return scripted
 
         monkeypatch.setattr(wt, "run_sweep", fake_run_sweep)
+        # Supplied, not inherited — see tests/conftest.py.
+        monkeypatch.setenv(ws.API_KEY_ENV, "test-key-not-a-real-credential")
 
         out_path = tmp_path / "raw.jsonl"
         summary_path = tmp_path / "summary.json"

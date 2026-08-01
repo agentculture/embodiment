@@ -205,6 +205,10 @@ class TestCliRefusesToDialWithoutConfig:
             return {"kind": "worker-smoke", "worker": config.to_dict()}
 
         monkeypatch.setattr(ws, "run_smoke", _fake_run_smoke)
+        # Supplied, not inherited: conftest strips the ambient key so a test can
+        # only pass on what it states. This one asserts exit 0, which requires a
+        # resolvable config — so it provides one.
+        monkeypatch.setenv(ws.API_KEY_ENV, "test-key-not-a-real-credential")
         out_path = tmp_path / "smoke.json"
 
         exit_code = ws.main(
