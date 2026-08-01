@@ -5,7 +5,7 @@
   "schema_version": 4,
   "status": "exported",
   "created": "2026-08-01T07:31:01Z",
-  "updated": "2026-08-01T08:26:49Z",
+  "updated": "2026-08-01T08:41:55Z",
   "targets": [
     {
       "id": "c1",
@@ -787,6 +787,14 @@
       "text": "arch_arms' ARMS table is a shared surface: t6 and t7 are serialized by dependency; any third arm task must re-check file disjointness before joining a wave",
       "kind": "unknown_nonblocking",
       "task_id": "t7",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r5",
+      "text": "A verified fix for a destroy-then-move window in drone 'create --force' is staged but UNAPPLIED: rmtree(target) runs before shutil.move, and because the staged copy lives in system temp the move is usually a cross-filesystem copytree that can fail partway \u2014 destroying a working drone after the point of no return, which costs a cortex turn to rebuild. Found by colleague review AFTER t11 merged. The patch (fallible copy first, then two same-filesystem renames with restore-on-failure) applies cleanly and was verified green, but is held until t12 merges because t12 is actively editing the same file. Apply immediately after t12's merge.",
+      "kind": "follow_up",
+      "task_id": "t12",
       "resolved": false,
       "resolution": ""
     }
