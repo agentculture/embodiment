@@ -3,7 +3,7 @@
 **Config:** [`timeout-rate-measurements.json`](timeout-rate-measurements.json) ·
 **Loader:** `tests/rate_config.py` ·
 **Frame:** [error-derived-timeouts-bee-hive-architecture](../specs/2026-08-01-error-derived-timeouts-bee-hive-architecture.md),
-task `t1`, claims `c39` / `h27` / `c40`
+task `t1` (extended by `t2`), claims `c39` / `h27` / `c40` / `c13` / `h5`
 
 Every model-call timeout and fan-out deadline in `examples/` is derived, not
 chosen:
@@ -15,6 +15,20 @@ REQUEST_TIMEOUT >= max_tokens / slowest_measured_generation_rate
 The rule is issue [#42](https://github.com/agentculture/embodiment/issues/42)'s.
 This page is about its right-hand side — the one input that can rot without
 anything failing.
+
+Task `t2` added two things to that right-hand side, both because the rule as
+written was one term short of the clock it guards:
+
+- **a rate per *model*, not per convenient role.** A constant fronts every
+  model dialled through it. `league_commander` puts Gemma 4 31B and the Qwen
+  cortex on one `REQUEST_TIMEOUT`; #42 derived it at the cortex and called
+  900 s passing, when at Gemma's rate it was 0.68× and below bound
+  ([`corrections.md`](corrections.md) §9). Four of the seven audited constants
+  front that model, so it has an entry here.
+- **a non-generation allowance.** `max_tokens / tok_s` bounds *generation*. The
+  clock in front of the request also covers queue wait and prompt processing,
+  and one committed call spent **179.3 s** there — more than the entire slack a
+  passing constant had left.
 
 ## Why the rate lives in a file
 
@@ -41,10 +55,16 @@ at an empty `tmp_path` rather than touching the real file.
 
 ## What is recorded today
 
-| role | slowest | mean | fastest | n | condition | measured |
-|---|---|---|---|---|---|---|
-| cortex | **21.452** tok/s | 23.249 | 25.448 | 10 calls, 8 rate-bearing | single-stream, `--max-num-seqs=2` server | 2026-08-01 |
-| worker | **12.921** tok/s | 38.873 | 77.590 | 51 calls | floor across widths 1/2/8/14; occurs at width 14 | 2026-07-31 |
+| role | divisor | slowest | mean | fastest | n | condition | measured |
+|---|---|---|---|---|---|---|---|
+| cortex | **21.452** tok/s | 21.452 | 23.249 | 25.448 | 10 calls, 8 rate-bearing | single-stream, `--max-num-seqs=2` server | 2026-08-01 |
+| worker | **12.921** tok/s | 12.921 | 38.873 | 77.590 | 51 calls | floor across widths 1/2/8/14; occurs at width 14 | 2026-07-31 |
+| muse | **12.103** tok/s | 5.175 | 9.574 | 12.103 | 224 calls | one call in flight, shared gateway | 2026-07-31 |
+
+**Divisor** is the figure a bound actually divides into — `bound_input` in the
+config, and `slowest_tok_s` wherever the config does not say otherwise. The
+muse is the one role where it is not the slowest reading, and that is a
+judgement stated and cited rather than left implicit in a number; see below.
 
 The worker's headline is an envelope, not a reading. Its per-width
 measurements are the measurement:
@@ -86,6 +106,89 @@ retry-clean width-14 floor. That is the safe direction and it is deliberate: an
 over-long timeout costs only when something is genuinely hung, while an
 under-long one censors the evidence — the defect this whole lane exists to
 close.
+
+### Why the muse's divisor is its *fastest* implied rate
+
+It is the only reading of that instrument that is a rate at all, and reaching
+for the slowest out of habit would be a different way of being wrong rather
+than a safe one.
+
+Every muse call in the cited records is 31–236 completion tokens, median 45. At
+that length implied rate (`completion_tokens / seconds`) is dominated by fixed
+cost: the slowest call, **5.17 tok/s**, is a 31-token completion whose ~6 s of
+wall clock is mostly the 1.61 s fixed cost plus queue. Extrapolating 5.17 tok/s
+to a 16000-token budget claims **3092 s** for a generation the regression puts
+near **1187 s** — a 2.6× inflation produced by treating a one-off cost as a
+per-token cost.
+
+The fastest implied rate is the honest floor. Queue wait and prompt processing
+can only push implied rate *down*, so the fastest call is the least
+contaminated observation and still a lower bound on true generation rate. Two
+independent checks agree with it:
+
+- the regression over all 224 points — 0.07407 s/token, fixed 1.610 s,
+  r² 0.8142 — gives **13.5 tok/s** marginal, *faster* than the divisor;
+- `league-h2h.jsonl`'s 36 Gemma seat-turns, a different harness on a different
+  week, put the fastest implied rate at **12.238 tok/s**.
+
+The standing gap, recorded in the config's `remeasure_when`: this is a ~68×
+extrapolation from 236-token completions. The first committed record of this
+model generating at length should **replace** this entry, not confirm it.
+
+## The non-generation allowance
+
+```json
+"non_generation_allowance": { "seconds": 179.2564, ... }
+```
+
+The rule bounds generation; the clock does not. `corrections.md` §9 measured
+one call (`A-qwen-2`) at 193.6 s of wall clock for 365 completion tokens —
+**179.3 s** of it not generating. `league_commander` at 900 s over a 744 s
+generation bound had 155.8 s of slack, so a full-budget completion behind that
+same queue would have totalled ~923 s and been cut, by a constant the audit had
+recorded as passing.
+
+It is computed as wall clock minus `completion_tokens / fastest implied rate in
+the same series` — a residual over the model's own best observed speed, so it
+is a lower bound on the gap rather than an estimate of it.
+
+**One figure, applied repo-wide**, because it is the only such measurement that
+exists. That over-protects wherever the true gap is smaller, which is the safe
+direction, and it is said here rather than left implicit.
+
+**It is not added where the rate already contains it.** A role whose rate is
+wall-clock-over-tokens on short completions — the worker, per caveat 2 above —
+has queue and prefill amortised into it already, and adding the allowance would
+double-count. That is the `rate_includes_non_generation` flag, and
+`tests/test_timeout_bounds.py` does **not** take the flag on trust: absorption
+is allowed only where the cited rate is slower than the role's own retry-clean
+floor by at least the whole allowance, *at that budget*. The check is per
+(budget, role) pair because a rate's conservatism scales with the tokens
+divided by it while queue wait does not — so the worker absorbs at 16000 tokens
+and does not at 1200.
+
+## Roles a constant fronts that nobody has timed
+
+```json
+"unmeasured_roles": { "senses": { ... } }
+```
+
+`examples/arch_vision.py` dials the **senses** role
+(`coolthor/gemma-4-12B-it-NVFP4A16`) at a 16000-token budget through
+`examples/arch_arms.py`'s `ArchSeam`, which subclasses `WorkerSeam` — so
+`worker_seam.py`'s `REQUEST_TIMEOUT` fronts it. No committed record times that
+model.
+
+No proxy is substituted. "A 12B on the same rig cannot be slower than the 31B
+whose rate we do have" is a plausible argument and still an argument; a rate
+that appears where none was taken is exactly `c39`. The consequence is stated
+instead: **that constant is proven against the cortex and the worker and is not
+proven against a full-budget senses turn.**
+
+The gap is self-closing. `tests/rate_config.py` refuses a config that lists a
+role as both measured and unmeasured, so the first committed senses rate forces
+the pair into the bound test's walk rather than leaving a stale hole recorded
+beside a filled one.
 
 ## When to re-measure
 
@@ -167,6 +270,31 @@ the real `max_tokens`, recording `seconds`, `completion_tokens`, `retries` and
 `finish_reason` per call, with `EMBODIMENT_LIVE_RIG=1` set and every other
 consumer of port 8001 quiet. Commit the raw rows beside this file and cite them
 in `sources`.
+
+### Muse (`nvidia/Gemma-4-31B-IT-NVFP4`, proxied through the spark gateway)
+
+Also harvested from a real series rather than a dedicated probe — the
+`league_commander` runs, whose 224 Gemma calls are committed in
+`league-commander-transcripts.jsonl` and
+`league-commander-frontier-transcripts.jsonl` with `seconds`,
+`completion_tokens` and `retries` per call. Zero retries and zero transport
+errors across all of them, so unlike the worker nothing here needs a retry
+correction:
+
+```text
+implied_tok_s = completion_tokens / seconds        # per call
+divisor       = max(implied_tok_s)                 # the fastest, see above
+```
+
+`tests/test_rate_config.py::TestMuseRatesMatchRawRecords` recomputes the
+headline figures, the call count and the divisor from those two files, and pins
+the published `12.1` against the text of [`corrections.md`](corrections.md) — so
+a re-measurement that drifts from its own citation fails.
+
+To re-measure deliberately, the same probe shape the cortex needs applies, at
+this model's id and **at completion lengths near the budget the bound is
+derived for**. The 236-token ceiling in these records is the one weakness of
+the current entry and a long-completion probe is what retires it.
 
 **Citation status, stated plainly:** the full ten-row per-call table lives in
 `orchestrator-worker-preregistration.md` §18 (*Amendment 1 — the request

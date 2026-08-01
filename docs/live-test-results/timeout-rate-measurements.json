@@ -2,8 +2,8 @@
   "kind": "timeout-rate-measurements",
   "version": 1,
   "frame": "error-derived-timeouts-bee-hive-architecture",
-  "task": "t1",
-  "covers": ["c39", "h27", "c40"],
+  "task": "t1, extended by t2",
+  "covers": ["c39", "h27", "c40", "c13", "h5"],
   "read_by": "tests/rate_config.py",
   "procedure": "timeout-rate-measurements.md",
   "why": [
@@ -32,7 +32,25 @@
     "",
     "tests/rate_config.py is the only way in, and it defines NO fallback: a",
     "missing file raises and names this file plus the re-derivation procedure.",
-    "A rate that appears when the measurement is gone is a rate nobody took."
+    "A rate that appears when the measurement is gone is a rate nobody took.",
+    "",
+    "TASK t2 ADDED TWO THINGS, both because t4 found the audit's framing was",
+    "thinner than it read (corrections.md section 9).",
+    "",
+    "(1) THE MUSE ROLE. A constant fronts EVERY model dialled through it, not",
+    "the one whose rate someone happened to have. examples/league_commander.py",
+    "dials Gemma 4 31B through the same REQUEST_TIMEOUT as the Qwen cortex, and",
+    "#42 derived that bound at the cortex rate alone -- so a bound that read as",
+    "the narrowest PASSING margin in the audit (1.21x) was in fact 0.68x and",
+    "BELOW BOUND for the other model on the same wire. league_h2h, muse_arms",
+    "and devague_legs dial the same model. Four of the seven audited constants",
+    "had no committed rate for a model they front.",
+    "",
+    "(2) THE NON-GENERATION ALLOWANCE. max_tokens / tok_s bounds GENERATION",
+    "only, and a request's clock also covers queue wait and prompt processing.",
+    "One committed call spent 179.3 s not generating. A bound that ignores that",
+    "is a bound that cuts a full-budget completion queued behind a slow one --",
+    "which is the exact failure this whole lane exists to close, one term short."
   ],
   "rule": {
     "formula": "REQUEST_TIMEOUT >= max_tokens / slowest_measured_generation_rate",
@@ -49,6 +67,55 @@
       "that reports itself."
     ]
   },
+  "non_generation_allowance": {
+    "seconds": 179.2564,
+    "cited_as": 179.3,
+    "measured_on": "2026-07-31",
+    "measured_role": "cortex",
+    "measured_model": "sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP",
+    "call": "A-qwen-2, 193.609 s of wall clock for 365 completion tokens",
+    "why": [
+      "THE BOUND IS GENERATION-ONLY AND THE CLOCK IS NOT. max_tokens / tok_s",
+      "answers 'how long does generating the whole budget take'. A client",
+      "timeout also covers the time before generation starts: queue wait behind",
+      "another sequence, and prompt processing. corrections.md section 9 found a",
+      "committed call where that gap was 179.3 s -- computed as wall clock minus",
+      "completion_tokens / the fastest implied rate in the same 160-call series,",
+      "so it is a residual over the model's own best observed speed rather than",
+      "an estimate. league_commander's 900 s over a 744 s generation bound left",
+      "155.8 s, LESS than that observed gap: a full-budget completion arriving",
+      "behind the same queue would total ~923 s and be cut, by a constant the",
+      "audit had recorded as passing.",
+      "",
+      "ONE FIGURE, APPLIED REPO-WIDE. It was measured on the cortex through the",
+      "spark gateway and is used for every role, because it is the only such",
+      "measurement that exists. That over-protects wherever the true gap is",
+      "smaller -- the safe direction for a bound whose failure mode is",
+      "censoring -- and it is stated here rather than left implicit in a number.",
+      "",
+      "IT IS NOT ADDED WHERE THE RATE ALREADY CONTAINS IT. A role whose measured",
+      "rate is wall-clock-over-tokens on short completions has queue and prefill",
+      "already amortised into it; adding the allowance there double-counts. That",
+      "is the rate_includes_non_generation flag below, and tests/",
+      "test_timeout_bounds.py does not take the claim on trust: it only lets the",
+      "allowance be absorbed when the cited rate is demonstrably slower than the",
+      "role's own retry-clean floor by at least the allowance, at that budget.",
+      "The check is per (budget, role) pair because the rate's conservatism",
+      "scales with the budget while queue wait does not."
+    ],
+    "remeasure_when": [
+      "a harness can put a second concurrent request on the same server -- queue",
+      "wait is what this figure is, and concurrency is what produces it",
+      "the gateway, its admission limits or its proxying topology change",
+      "a longer non-generation interval is observed in any committed record; this",
+      "is a measured maximum, not a modelled one"
+    ],
+    "sources": [
+      "docs/live-test-results/corrections.md",
+      "docs/live-test-results/league-commander-transcripts.jsonl",
+      "docs/live-test-results/league-commander-frontier-transcripts.jsonl"
+    ]
+  },
   "roles": {
     "cortex": {
       "model": "unsloth/Qwen3.6-27B-NVFP4",
@@ -63,6 +130,14 @@
       "aggregate_tok_s": 22.992,
       "cited_as": 21.5,
       "cited_fastest_as": 25.4,
+      "rate_includes_non_generation": false,
+      "rate_includes_non_generation_why": [
+        "Measured single-stream on a free lane -- the condition below records that",
+        "the server's second seat was never occupied -- so these figures contain",
+        "no queue wait to speak of. The 179.3 s gap the allowance carries was",
+        "observed on this same model through the same gateway in a DIFFERENT",
+        "series, so the exposure is real and this rate does not cover it."
+      ],
       "condition": {
         "concurrency": 1,
         "server_max_num_seqs": 2,
@@ -101,6 +176,22 @@
       "slowest_tok_s": 12.921,
       "mean_tok_s": 38.873,
       "fastest_tok_s": 77.59,
+      "rate_includes_non_generation": true,
+      "rate_includes_non_generation_why": [
+        "The caveats below say it in this file's own words: even retry-clean, the",
+        "slowest per-call rates at high width include fixed per-call overhead --",
+        "queueing and prefill -- amortised over a short completion, because the",
+        "harness does not parse SSE and cannot separate time-to-first-token from",
+        "decode time. So this rate is a wall-clock floor, not a marginal",
+        "generation rate, and adding a queue allowance on top double-counts.",
+        "The claim is CHECKED rather than believed: tests/test_timeout_bounds.py",
+        "absorbs the allowance only where max_tokens / 12.921 is at least",
+        "max_tokens / (the retry-clean floor below) plus the allowance. At 16000",
+        "tokens that holds with room to spare; at 1200 it does not, and the",
+        "allowance is added there. Same role, same rate, different answer,",
+        "because the rate's conservatism scales with the budget and queue wait",
+        "does not."
+      ],
       "condition": {
         "concurrency": 14,
         "description": "the headline slowest is the floor across ALL dialled widths (1, 2, 8, 14) and occurs at width 14. It is not a single-stream number and must never be read as one -- by_width below is the measurement; this headline is the conservative envelope.",
@@ -164,6 +255,108 @@
         "docs/live-test-results/worker-throughput-summary.json"
       ],
       "pending_sources": []
+    },
+    "muse": {
+      "model": "nvidia/Gemma-4-31B-IT-NVFP4",
+      "base_url": "http://localhost:8001/v1",
+      "measured_on": "2026-07-31",
+      "max_tokens": 16000,
+      "n_calls": 224,
+      "n_rate_bearing": 224,
+      "slowest_tok_s": 5.1745,
+      "mean_tok_s": 9.5742,
+      "fastest_tok_s": 12.1026,
+      "aggregate_tok_s": 9.588,
+      "bound_input": {
+        "from": "fastest_tok_s",
+        "tok_s": 12.1026,
+        "cited_as": 12.1,
+        "why": [
+          "THE DIVISOR IS THE FASTEST IMPLIED RATE, NOT THE SLOWEST, AND THAT IS",
+          "DELIBERATE -- it is the only reading of this instrument that is a rate",
+          "at all. Every call here is 31-236 completion tokens, so implied rate",
+          "(completion_tokens / seconds) is dominated by FIXED cost: the slowest",
+          "call, 5.17 tok/s, is a 31-token completion whose 6 s of wall clock is",
+          "mostly the 1.61 s fixed cost the regression below separates out plus",
+          "queue. Extrapolating 5.17 tok/s to a 16000-token budget claims 3092 s",
+          "for a generation the regression puts at ~1187 s -- a 2.6x inflation",
+          "produced by treating a one-off cost as a per-token cost. That is not",
+          "conservatism, it is a category error, and it would be a different way",
+          "of getting the number wrong rather than a safe one.",
+          "",
+          "The FASTEST implied rate is the honest floor: queue wait and prompt",
+          "processing can only push implied rate DOWN, so the fastest call is the",
+          "least-contaminated observation and still a lower bound on the true",
+          "generation rate. corrections.md section 9 published exactly this",
+          "figure and derived 16000 / 12.1 = 1322 s from it.",
+          "",
+          "Two independent checks agree. The regression over all 224 points --",
+          "0.07407 s/token, fixed 1.610 s, r-squared 0.8142 -- gives 13.5 tok/s",
+          "marginal, FASTER than the divisor, so the divisor is the conservative",
+          "of the two. And league-h2h.jsonl's 36 Gemma seat-turns, a different",
+          "harness on a different week, put the fastest implied rate at 12.238",
+          "tok/s. Two instruments agreeing on a rate is worth more than either."
+        ]
+      },
+      "rate_includes_non_generation": false,
+      "rate_includes_non_generation_why": [
+        "The divisor is the FASTEST implied rate, which is by construction the",
+        "call with the least queue and prefill in it -- so the queue exposure is",
+        "excluded from the divisor and has to be carried separately."
+      ],
+      "condition": {
+        "concurrency": 1,
+        "description": "one match at a time, one call in flight: examples/league_commander.py plays matches sequentially and issues one decision call per idle unit. Both models in the series share the spark gateway, so a Gemma call can queue behind a Qwen one -- which is where the non-generation allowance figure came from, measured in this same series.",
+        "host": "spark (local gateway), model proxied",
+        "contention": "within-series only. The two arms alternate models on one gateway; nothing outside the series was dialling it."
+      },
+      "remeasure_when": [
+        "a harness dials this model on completions materially longer than 236 tokens -- THE STANDING GAP HERE. Extrapolating a 236-token measurement to a 16000-token budget is a ~68x extrapolation on a narrow fit, and the first long-completion Gemma record this repo commits should replace this entry rather than confirm it.",
+        "the muse model id changes, or it stops being proxied and becomes local -- this figure includes a network hop the cortex's does not",
+        "the gateway's admission limits change"
+      ],
+      "caveats": [
+        "MEASURED OVER SHORT COMPLETIONS. 31-236 tokens, median 45. Gemma's largest completion in 384 calls was 236 tokens, 1.5% of the 16000-token budget the bound is derived for, so nothing here observes the model near its cap. The bound is what the budget IMPLIES at this rate, not a rate measured at that budget.",
+        "PROXIED, NOT LOCAL. On this rig Gemma 4 31B is reached through the spark gateway rather than served on the box, so this rate includes a network hop the cortex's does not. That makes it conservative for the bound and wrong for any claim about the model itself.",
+        "Zero retries and zero transport errors across all 224 calls, so unlike the worker entry nothing here is retry-contaminated. corrections.md section 9 is the re-exam that established that.",
+        "The role is named 'muse' because that is the lobes role this model serves on the reference rig. It is NOT dialled as a muse in every harness that fronts it -- league_h2h runs it as the acting cortex in the full-gemma arm, league_commander as a commander or a unit. The role name identifies the MODEL whose rate this is; what a harness asks it to do does not change how fast it generates."
+      ],
+      "sources": [
+        "docs/live-test-results/corrections.md",
+        "docs/live-test-results/league-commander-transcripts.jsonl",
+        "docs/live-test-results/league-commander-frontier-transcripts.jsonl",
+        "docs/live-test-results/league-commander.md"
+      ],
+      "pending_sources": []
+    }
+  },
+  "unmeasured_roles": {
+    "why": [
+      "A ROLE A CONSTANT FRONTS BUT NOBODY HAS TIMED. Listed rather than",
+      "omitted, because an omission reads as coverage. tests/",
+      "test_timeout_bounds.py asserts every entry here is complete AND fails the",
+      "moment the role gains a measurement above -- so the gap closes when the",
+      "rate lands instead of being remembered."
+    ],
+    "senses": {
+      "model": "coolthor/gemma-4-12B-it-NVFP4A16",
+      "fronted_by": ["examples/worker_seam.py:REQUEST_TIMEOUT"],
+      "max_tokens": 16000,
+      "reached_through": "examples/arch_arms.py's ArchSeam subclasses worker_seam.WorkerSeam, and examples/arch_vision.py dials the senses role through it at the senses cell of arch-arms-sampling.json (max_tokens 16000).",
+      "why_unmeasured": [
+        "No committed record times this model. It is constant across every arm of",
+        "the architecture series and NOT dialled by the text-only rungs, so the",
+        "series that would have produced a rate never put it on the wire.",
+        "",
+        "No proxy is substituted. Gemma 4 12B is a fifth the size of the 31B",
+        "whose rate IS committed, so 'a smaller model on the same rig cannot be",
+        "slower' is a plausible argument and still an argument, not a",
+        "measurement -- and a rate that appears where none was taken is exactly",
+        "c39. The consequence is stated instead: worker_seam.py's REQUEST_TIMEOUT",
+        "is proven against the cortex and the worker and is NOT proven against a",
+        "full-budget senses turn."
+      ],
+      "would_be_produced_by": "one width-1 pass of examples/worker_throughput.py against the senses model and base_url, committed the way the worker's was; or the first arch_vision run that records per-call seconds and completion tokens for the senses role"
     }
   }
 }

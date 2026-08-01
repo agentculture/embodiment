@@ -711,3 +711,92 @@ the one that reports the outcome.
 
 `tests/test_worker_throughput_retries.py` now recomputes the retry count from
 the committed records, so this claim cannot drift back to zero in silence.
+
+## 11. The derived timeout that was itself below bound
+
+**Found 2026-08-01** by task `t2` of the follow-up cycle
+([#46](https://github.com/agentculture/embodiment/issues/46)), while building
+the CI gate that recomputes every timeout in this repo. Two findings, one
+document each. Neither changes a published measurement.
+
+### Amendment 1's own value fails amendment 1's own rule
+
+`orchestrator-worker-preregistration.md` §18 (branch `owa/t12`) raised
+`examples/worker_seam.py`'s `REQUEST_TIMEOUT` from 300.0 to **1200.0 s** and
+derived it:
+
+> `REQUEST_TIMEOUT >= max_tokens / slowest_measured_rate = 16000 / 21.5 tok/s
+> = 744.2 s`
+
+21.5 tok/s is the **cortex**. `WorkerSeam` is not the cortex's transport alone
+— `examples/arch_arms.py`'s `ArchSeam` **subclasses** it, so arms `W`, `M` and
+`H` dial the *worker* through the same constant at the same 16000-token `d16`
+budget, and `examples/arch_hive.py` and `examples/worker_scoped_overhead.py`
+add two more budgets on the same wire. At the worker's committed rate the
+per-turn bound is `16000 / 12.921 = 1238.3 s`, so **1200.0 is 0.97× — below
+bound.**
+
+The figure was not unavailable. **Amendment 2, appended hours later on the same
+branch, computes `16000 / 12.921 = 1238.3 s` explicitly** and multiplies it by
+the fan-out turn budget. The two amendments sit in one document, derive from
+one rate table, and disagree about the bound on one constant.
+
+This is §9's finding — *a bound must be derived at the slowest model the
+constant fronts, not at the cortex by default* — reappearing in the very
+document that first applied the rule, which is why it is recorded rather than
+quietly fixed. Nothing about it is unique to that amendment: deriving at the
+model whose rate is to hand is the natural mistake, and it is exactly what a
+recomputing test removes.
+
+**What changed.** `main` now ships `REQUEST_TIMEOUT = 1300.0`, derived at the
+worker: 1238.3 s bound, 1.05× margin. `main` never carried 1200.0 (c2: it was
+still at 300.0 while `CHANGELOG.md` 0.10.0 claimed otherwise), so nothing on
+this branch is being reversed — but the CHANGELOG's claim is now wrong in a
+second way and needs the version-bump lane's attention: it names a value that
+neither branch ships.
+
+**What did not change.** No measured cell. `C1-E` at 300 s is published in
+full as the discarded cell it is, and the re-run at 1200 s on `owa/t12` was
+never cut by its clock — the largest completion in that cell was 6,372 tokens,
+needing ~493 s at the worker's floor and ~297 s at the cortex's. The defect is
+in the derivation, not in the records it produced.
+
+### A second finding: `league_commander`'s 900 s, acted on
+
+§9 handed `t2` the Gemma figure and it has now been applied.
+`examples/league_commander.py` ships **1600.0 s**, derived at
+`16000 / 12.103 tok/s + 179.3 s = 1501.3 s` — the Gemma rate §9 measured, plus
+the non-generation allowance §9 measured on the same records. Recorded as
+**Amendment 1** in `league-commander-preregistration.md`, appended and dated
+after the runs and after the write-up, because a pre-registration is not edited
+to match the code it registered.
+
+**No published figure moves.** §9's verdict — 384 calls, zero retries, zero
+errors, slowest call 193.6 s against a 900 s clock — is exactly why: the raise
+is about the next run, not this one.
+
+One consequence that had to be fixed with it. `league-commander-reexam.py`
+computed its retry rungs from `lc.REQUEST_TIMEOUT`, the **live** constant. The
+moment the constant was raised, the re-exam began searching 384 committed
+records for a `4 × 1600 + 3 × 30 = 6490 s` signature they could not possibly
+carry, and would have reported them clean for the wrong reason. It now reads
+the as-run values from the committed `league-commander-config.json`. This is
+the `§10` shape once more — *read the field that reports the event* — and the
+general form is worth stating: **an analysis of committed records must read the
+instrument that produced them, never the one the repo ships today.**
+
+### An eighth constant nobody had listed
+
+Issue #42's audit table names six client timeouts; `c16` found the fan-out wait
+deadline it had missed, making seven, and plan task `t2` was scoped against
+those seven. `tests/test_timeout_bounds.py` closes the category by **AST**
+rather than by list — every module-level float in `examples/` whose name looks
+like a timeout or a deadline must be walked — and it immediately turned up an
+eighth: `examples/worker_scoped_overhead.py`'s `BATCH_WAIT_TIMEOUT_SECONDS`,
+which landed with `t8`'s probe after the audit was written and inherited a
+sibling's value.
+
+It passes (bound 231.0 s against a shipped 300.0). The point is that nothing
+had checked, four days after an audit whose entire subject was underived
+clocks. A list somebody maintains goes stale the first time it is not
+maintained; a category that closes itself does not.
