@@ -45,6 +45,7 @@ _SUBMODULES = frozenset(
         "context",
         "continuity",
         "contract",
+        "drone",
         "events",
         "framing",
         "identity",
@@ -172,6 +173,30 @@ _LAZY_NAMES = {
     # A DELIVERY, not a degradation: it answers "did the last beat arrive?",
     # which `ledger.read` deliberately does not (task t5).
     "MuseDelivery": "muse_runner",
+    # ── drones: authored once, then run on code plus tens of tokens ───────
+    # The verbs (`create` / `evoke` / `catalog`) stay on the module — they read
+    # far too generically at package level, the same reason continuity's
+    # remember/recall are not hoisted. `from embodiment import drone` then
+    # `drone.create(...)`. Only the SHAPES a host composes against are here.
+    # `invoke` RETURNS a record for a failed run rather than raising, which is
+    # the seam the evocation audit trail is built on.
+    "Drone": "drone",
+    "DroneAnswer": "drone",
+    "DroneCall": "drone",
+    "DroneError": "drone",
+    "DroneRecord": "drone",
+    "DroneRequest": "drone",
+    "Evocation": "drone",
+    "SmokeResult": "drone",
+    "UndeclaredQuestion": "drone",
+    "AskFn": "drone",
+    "StatusFn": "drone",
+    "DRONE_ENTRYPOINT": "drone",
+    "DRONE_STATUSES": "drone",
+    "DRONES_DIRNAME": "drone",
+    "MANIFEST_SCHEMA_VERSION": "drone",
+    "STATUS_BROKEN": "drone",
+    "STATUS_UNCHECKED": "drone",
     # ── event emission (embodiment#4) — optional, absent by default ───────
     # embodiment produces; `events-cli` owns the envelope contract (c33).
     "EventEmitter": "events",
@@ -309,6 +334,7 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
         context,
         continuity,
         contract,
+        drone,
         events,
         framing,
         identity,
@@ -338,6 +364,25 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
         TaskResult,
         ToolCall,
         WorkAborted,
+    )
+    from embodiment.drone import (  # noqa: F401
+        DRONE_ENTRYPOINT,
+        DRONE_STATUSES,
+        DRONES_DIRNAME,
+        MANIFEST_SCHEMA_VERSION,
+        STATUS_BROKEN,
+        STATUS_UNCHECKED,
+        AskFn,
+        Drone,
+        DroneAnswer,
+        DroneCall,
+        DroneError,
+        DroneRecord,
+        DroneRequest,
+        Evocation,
+        SmokeResult,
+        StatusFn,
+        UndeclaredQuestion,
     )
     from embodiment.events import EventDegradation, EventEmitter  # noqa: F401
     from embodiment.framing import (  # noqa: F401

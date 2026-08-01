@@ -755,18 +755,36 @@ def _dict_values_for(node: ast.AST, key: str) -> list[ast.expr]:
     return found
 
 
-#: The introspection verbs the console script ships. None of them drives the loop.
-_CLI_VERBS = frozenset({"cli", "doctor", "explain", "learn", "overview", "whoami"})
+#: What the console script ships. None of these drives the loop.
+#:
+#: ``drone`` joined in task t11 and is the first NON-introspection group here —
+#: ``drone evoke`` executes an authored drone (code plus scoped worker calls).
+#: That is deliberately not a loop: it never calls :func:`embodiment.loop.run`,
+#: holds no turn, and has no step budget to spend. The caveat below is titled
+#: on the loop, not on introspection, precisely so this distinction survives.
+_CLI_VERBS = frozenset({"cli", "doctor", "drone", "explain", "learn", "overview", "whoami"})
 
 
 def _cli_still_introspection_only(root: Path) -> Optional[str]:
-    """The caveat stands while the CLI ships exactly the introspection verbs."""
+    """The caveat stands while no shipped verb drives the loop.
+
+    Two checks, because the verb list alone is a weak guard: a new *module*
+    trips the first, and a verb module that starts importing the loop trips the
+    second even if the list was updated to match.
+    """
     commands = root / "embodiment" / "cli" / "_commands"
     if not commands.is_dir():
         return None
     verbs = {path.stem for path in commands.glob("*.py") if not path.stem.startswith("__")}
     if verbs != _CLI_VERBS:
         return f"the CLI's verbs changed to {sorted(verbs)} — does one drive the loop now?"
+    drivers = sorted(
+        path.stem
+        for path in commands.glob("*.py")
+        if "embodiment.loop" in path.read_text(encoding="utf-8")
+    )
+    if drivers:
+        return f"CLI verb module(s) {drivers} now reach embodiment.loop — the caveat is stale"
     return None
 
 
@@ -821,10 +839,12 @@ CAVEATS: tuple[Caveat, ...] = (
         id="cli1",
         title="the shipped console script carries no loop-driving verb",
         detail=(
-            "embodiment's own CLI is introspection only (whoami / learn / explain / overview / "
-            "doctor / cli). 'usable as a library or CLI' means an app builds its CLI on the "
-            "library — examples/greenhouse.py is that host — not that embodiment ships a verb "
-            "that runs your loop"
+            "embodiment's own CLI is introspection (whoami / learn / explain / overview / "
+            "doctor / cli) plus the drone verbs (create / evoke / list). 'usable as a library "
+            "or CLI' means an app builds its CLI on the library — examples/greenhouse.py is "
+            "that host — not that embodiment ships a verb that runs your loop. `drone evoke` "
+            "is the closest thing and is still not one: it runs an authored drone's code plus "
+            "its scoped worker calls, never embodiment.loop.run, and holds no turn"
         ),
         state="a boundary of clause a2, stated rather than implied",
         check=_cli_still_introspection_only,
