@@ -58,6 +58,27 @@
 - the harness family adopts SSE streaming for model calls (the operator's direction, 2026-08-01): with a stream, the client timeout becomes an inter-chunk idle bound orthogonal to generation length — no amount of thinking can hit the clock, and reasoning is visible as it arrives; the derived total bound (c13) stays as the outer backstop for dead transports
   - instruction: adopt streaming first in one harness (`worker_seam`) behind a flag: SSE parse, inter-chunk idle bound (~60s), the c13 bound as outer backstop for dead transports; partial reasoning kept in the transcript record; discovery rides lobes-cli#168's advert when it lands
   - honesty: verified in lobes source that the gateway relays SSE chunk-by-chunk, and the retry-semantics change is designed for: a stream that dies mid-body is never blindly re-run whole — partial thinking is kept where the record allows, and only a dead transport triggers the outer bound
+- main is never red on its own bound: `test_timeout_bounds.py` and the raise of main's below-bound constant land together (one PR), or the test lands only after `owa/t12` merges — main's current 300.0 is 0.40x its bound, so the test alone would fail main's CI on arrival
+  - instruction: land test + constant raise atomically; if owa/t12 merges first the test simply pins what amendment 1 already fixed
+  - honesty: at every commit on main the bound test is green — proven by running it at the landing commit, not assumed from intent
+- streaming preserves the metering contract: the SSE client requests `stream_options: {"include_usage": true}`, accumulates deltas, and reads `finish_reason` plus all four token counts from the terminal usage chunk — `worker_seam.py`:318 reads `usage` from the final payload today, and losing it would un-measure the rig; verified in lobes source that the gateway rewrites only `model` and relays the body verbatim, so the option survives the proxy
+  - instruction: parse SSE in the client, accumulate content/reasoning deltas, read the terminal usage chunk; if the backend omits usage under streaming, the documented fallback is reconstruction or streaming stays off for measured lanes
+  - honesty: a streamed call's committed record is field-identical to a non-streamed one (`finish_reason` + four token counts) — asserted by a test comparing record shapes, not by reading the code
+- streaming bounds are two-phase, both derived: time-to-first-chunk gets a queue-aware bound (with `--max-num-seqs=2` a queued request legitimately receives nothing for up to a full neighbouring generation — a fixed 60s idle clock would kill it, the same censoring shape on a new clock), and the inter-chunk idle bound applies only after the first chunk arrives
+  - instruction: TTFC bound = visible queue depth x the derived per-request bound (or an explicitly stated queue model); inter-chunk bound derived from measured chunk cadence with a stated margin; both cited like every other bound
+  - honesty: no phase of a streamed call is bounded by an underived constant, and queue wait is never charged as idle — provable from the client's bound derivation comments and a queued-request test
+- the bound test's rate input is a committed, dated measurement config (date, n, model, condition — the arch-arms-sampling.json pattern), never a bare literal in the test; a rig change re-derives every bound by editing one cited file, and the re-derivation procedure is documented beside it
+  - instruction: config in docs/live-test-results/ carrying rate, date, n, condition; the test loads it and recomputes need-vs-timeout per constant
+  - honesty: no rate literal appears in test code; deleting the config fails the test with a message naming the missing measurement, not a silent default
+- a died stream's record is distinguishable by field, never by inference: an explicit marker (e.g. `stream_died: true`) plus whatever partial content and reasoning arrived — the #37 lesson applied forward; a died stream and a deliberate short turn must never arrive at the record as the same object
+  - instruction: add the marker to the per-call record shape; the no-retry-once-streaming semantics (lobes catalog) make this the only honest representation of a died stream
+  - honesty: a provoked mid-stream death in tests produces a record a reader can distinguish from a completed turn by field value alone
+- a scoped-call overhead pre-measurement runs before the B0/B1/B2 sweep fixes its call granularity: the ~9x effective concurrency was measured on 1200-token completions, and per-call prefill of repeated context is the unmeasured cost that could dominate tens-of-token answers — prompt-token accounting per call at realistic context sizes, the t3 pattern applied to B1
+  - instruction: N-call probe at widths 1 and 8 with realistic league-unit prompts and small completions, committed like worker-throughput.md; runs on Thor only, post-series or in a declared idle window
+  - honesty: the sweep's pre-registration cites the overhead measurement's numbers for its chosen granularity; no arm design cites the 9x figure for small calls without it
+- every drone evocation records what actually ran: drone name, a content hash (or commit) of drone.py, the capability set used, and call-acceptance — including refused and failed runs — so a compromised, stale, or misbehaving drone is traceable from its records alone
+  - instruction: record shape beside the manifest schema; hash computed at evoke time, compared against the saved artifact so tampering surfaces as a mismatch
+  - honesty: the evocation record exists for every evoke including failures and refusals — asserted by test; a run that leaves no record is itself a test failure
 
 ## Honesty conditions
 
@@ -72,6 +93,7 @@
 - the mis-load claim rests on the measured numbers (23 tok/s sequential cortex, ~9x worker concurrency, saturation near 8); if remeasurement moves them the claim is restated, not defended
 - each after-state promise maps to a plan task with acceptance criteria — no promise reaches the spec without a coverage target
 - each signal is machine-checkable when it fires: a red CI run, a published verdict document, a drone evocation record showing zero cortex calls
+- the new pre-registration quotes t14's results doc by section, or states that it was registered before t14 existed and why that is sound
 
 ## Success signals
 
@@ -90,6 +112,8 @@
   - instruction: the pre-registration names the outcome metric and asserts it is mandatorily populated for every arm — league outcome, never an optional team-message field
 - drones ship opt-in and off until #44's experiment validates the tier — the standing rule's mirror image: an unmeasured behaviour does not ship as default either; and the execution-security model for model-written code is decided before a line is written — `shell-cli` owns the tool surface, and C2 means stating the threat model rather than letting a name imply a sandbox
   - instruction: a test proves a fresh checkout with no explicit opt-in evokes nothing; the manifest carries declared capabilities per the q5 decision
+- the new series' pre-registration states its relationship to the running series' remaining rungs and t14's verdicts — extend, supersede, or wait — before any dial; if the old ladder reaches its own fan-out rung, the width rung reconciles with it rather than duplicating with drift
+  - instruction: check ladder-decisions.jsonl and the t14 results doc at pre-registration time; record the relationship in the pre-registration's opening section
 
 ## Non-goals
 
@@ -102,6 +126,8 @@
 - the flat-favouring verdict measured the axis where orchestration cannot win — counsel and sequential reasoning — while rung F (fan-out width), where separation is structural because a flat arm cannot dispatch concurrent units at all, was never reached; the width rung runs first as the cheapest decisive experiment (#44: 'run the width rung first')
 - scope size is the independent variable, swept rather than toggled: B0 rigid (0 calls) / B1 scoped questions (typed, small answer space, code keeps control flow) / B2 agentic (= M, an open goal, worker holds control); pre-registered prediction — quality rises then plateaus while cost rises monotonically, so the knee is the finding, and no on/off design can locate a knee (every prior arm comparison here died tied at a ceiling)
 - drone economics, stated before building: authoring costs one cortex turn (measured 5,000-14,265 completion tokens, 400-730s); a one-shot task is pure loss, 2-3 uses roughly break even, recurring tasks on stable surfaces win by a widening margin and ~9x again under fan-out — the failure mode is quiet waste, not a crash
+- the 21.5 tok/s floor was measured single-stream; the cortex server admits 2 concurrent seqs, and per-stream rate under contention can fall below the floor — the rate config names its concurrency condition, and if a harness can produce 2 concurrent cortex requests the rate is re-measured at that width before its bound is trusted
+  - instruction: record the condition field in the c39 config; a concurrent-cortex harness (none exists today — B/P deliberately avoid it) triggers re-measurement first
 
 ## Scope exploration
 
@@ -132,6 +158,25 @@
   - seeds: `c23`, `c24`, `c25`
 - `s14` — `issue #42's audit table vs examples/orchestrator_tools.py`: the audit covers six client timeouts and omits the fan-out wait deadline — a 60.0s bound on a whole unit drive; this scope pass's addition to #42, not a repeat of it
   - seeds: `c16`
+- `s15` — `challenge pass / adjacent-systems lens: owa/t12 x main CI`: main's 300.0 is 0.40x its bound; the CI test arriving alone would redden main — merge-order interlock captured
+  - seeds: `c36`
+- `s16` — `challenge pass / adjacent-systems lens: worker_seam.py:318 + lobes gateway relay`: token counts come from the final payload's usage; SSE delivers usage only in an explicitly requested terminal chunk; gateway rewrites only model, so `stream_options` survives the proxy — probe done in source, zero dials
+  - seeds: `c37`
+- `s17` — `challenge pass / counter-evidence lens: idle bound x vLLM queueing`: with --max-num-seqs=2 a queued request receives nothing for up to a neighbouring generation; a fixed idle clock recreates the censoring shape — two-phase bounds captured
+  - seeds: `c38`
+- `s18` — `challenge pass / operations lens: the rate literal`: 21.5 tok/s is a dated, single-stream measurement; a bare literal in the test under- or over-protects silently after a rig change; contention can push per-stream rate below the floor
+  - seeds: `c39`, `c40`
+- `s19` — `challenge pass / observability lens: died-stream records`: no-retry-once-streaming means a died stream yields a partial body; without an explicit marker it is indistinguishable from a short turn — the #37 defect shape recreated one layer up
+  - seeds: `c41`
+- `s20` — `challenge pass / concurrency lens: streaming x fan-out threads`: SSE reads are blocking and long-held; the concurrent worker path has tens-of-token completions with nothing to stream — streaming scoped to the serial cortex lane
+  - seeds: `c42`
+- `s21` — `challenge pass / counter-evidence lens: the 9x figure x tiny calls`: worker-throughput measured 1200-token completions; B1's calls are tens of tokens where per-call prefill dominates — the economics claim needs its own measurement before the sweep design hardens
+  - seeds: `c43`
+- `s22` — `challenge pass / lifecycle lens: the in-flight ladder`: the running series is mid-C2 with rungs remaining; its ladder could still reach a fan-out rung — sequencing interlock captured as boundary
+  - seeds: `c44`
+- `s23` — `challenge pass / security lens: committed model-written code, in-process evoke`: q5's in-process decision makes the audit trail the containment story: evocation records with content hashes; the escalation question routed to the user
+  - seeds: `c45`
+- `s24` — `challenge pass / clean lenses: reversibility, migration, muse governance, colleague seam`: nothing migrates and every artifact is additive (constants revert by git, .drones/ is new); muse modules pinned untouched by the governance guard; no colleague-facing change beyond the already-planned t19 post — clean pass recorded, residual risk parked as v4, not concluded absent
 
 ## Decisions
 
@@ -139,9 +184,12 @@
 - the timeout bound stays per-harness — each constant cites its inputs where it lives — with one shared CI test (`test_timeout_bounds.py`) enforcing the bound repo-wide; moving transport policy into embodiment/ is parked as a follow-up, respecting #42's own deferral. The operator's felt sense of the cortex clock (300s too small, maybe 600s) is answered by derivation, not suspicion: at 21.5 tok/s a 16000-token budget needs 744s, and a real 14,265-token turn (~663s) would have outrun 600 — the bound is recomputed, never intuited
 - drone v1 executes in-process under the host's existing approval policy, with every capability declared in the manifest so review is possible; the workspace jail stays available per-drone — the threat model is stated per C2, never implied by a name
 - whether the cortex's reasoning streams in deltas is a deployment question, answered by probe only after the series (never mid-series against the contended cortex); the ask to lobes — advertise streaming and reasoning-delta support in /capabilities so consumers discover it by name rather than probe — is filed via communicate
+- streaming targets the long-completion cortex lane; B1's scoped worker calls (tens of tokens) stay non-streaming — there is nothing to stream, and the concurrent fan-out path keeps the simple blocking client instead of inheriting SSE-read thread teardown discipline it does not need
+- v1 drones never escalate: an undecidable case returns 'I cannot' and the evocation record shows the refusal; escalation stays a #44 experimental question until the tier validates — c30's zero-cortex-calls target is exact, no exception clause
 
 ## Open parks
 
 - [unknown_nonblocking] whether a runtime-adaptive timeout — one that adjusts during a run according to errors — can stay honest under pre-registration: a constant that moves mid-series is an instrument change mid-measurement; the likely resolution is derive-before-freeze-during, but no series has tested it
 - [unknown_nonblocking] issue #45's remaining open questions ride with it: repo-scoped vs user-scoped .drones/, whether evoke may escalate to the cortex, whether create should prefer a pure code-drone when no judgement is needed, and skill vs CLI verb — decided at /think or build time, none blocking the frame
+- [unknown_nonblocking] whether this rig's vLLM emits the SSE terminal usage chunk and reasoning deltas — undialable mid-series; the streaming pilot's first live run answers it, and if usage is absent under streaming, c37's fallback governs
 - [follow_up] whether the derived-timeout rule should eventually live in embodiment/ as a transport-policy seam all harnesses import — deferred per #42 and the q4 decision

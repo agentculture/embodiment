@@ -4,7 +4,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-08-01T06:48:09Z",
-  "updated": "2026-08-01T07:13:26Z",
+  "updated": "2026-08-01T07:27:51Z",
   "claims": [
     {
       "id": "c1",
@@ -602,6 +602,194 @@
       "links": [],
       "instruction": "",
       "revisions": []
+    },
+    {
+      "id": "c36",
+      "kind": "requirement",
+      "text": "main is never red on its own bound: `test_timeout_bounds.py` and the raise of main's below-bound constant land together (one PR), or the test lands only after `owa/t12` merges \u2014 main's current 300.0 is 0.40x its bound, so the test alone would fail main's CI on arrival",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h24",
+          "text": "at every commit on main the bound test is green \u2014 proven by running it at the landing commit, not assumed from intent",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "land test + constant raise atomically; if owa/t12 merges first the test simply pins what amendment 1 already fixed",
+      "revisions": []
+    },
+    {
+      "id": "c37",
+      "kind": "requirement",
+      "text": "streaming preserves the metering contract: the SSE client requests `stream_options: {\"include_usage\": true}`, accumulates deltas, and reads `finish_reason` plus all four token counts from the terminal usage chunk \u2014 worker_seam.py:318 reads `usage` from the final payload today, and losing it would un-measure the rig; verified in lobes source that the gateway rewrites only `model` and relays the body verbatim, so the option survives the proxy",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h25",
+          "text": "a streamed call's committed record is field-identical to a non-streamed one (finish_reason + four token counts) \u2014 asserted by a test comparing record shapes, not by reading the code",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "parse SSE in the client, accumulate content/reasoning deltas, read the terminal usage chunk; if the backend omits usage under streaming, the documented fallback is reconstruction or streaming stays off for measured lanes",
+      "revisions": []
+    },
+    {
+      "id": "c38",
+      "kind": "requirement",
+      "text": "streaming bounds are two-phase, both derived: time-to-first-chunk gets a queue-aware bound (with `--max-num-seqs=2` a queued request legitimately receives nothing for up to a full neighbouring generation \u2014 a fixed 60s idle clock would kill it, the same censoring shape on a new clock), and the inter-chunk idle bound applies only after the first chunk arrives",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h26",
+          "text": "no phase of a streamed call is bounded by an underived constant, and queue wait is never charged as idle \u2014 provable from the client's bound derivation comments and a queued-request test",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "TTFC bound = visible queue depth x the derived per-request bound (or an explicitly stated queue model); inter-chunk bound derived from measured chunk cadence with a stated margin; both cited like every other bound",
+      "revisions": []
+    },
+    {
+      "id": "c39",
+      "kind": "requirement",
+      "text": "the bound test's rate input is a committed, dated measurement config (date, n, model, condition \u2014 the arch-arms-sampling.json pattern), never a bare literal in the test; a rig change re-derives every bound by editing one cited file, and the re-derivation procedure is documented beside it",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h27",
+          "text": "no rate literal appears in test code; deleting the config fails the test with a message naming the missing measurement, not a silent default",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "config in docs/live-test-results/ carrying rate, date, n, condition; the test loads it and recomputes need-vs-timeout per constant",
+      "revisions": []
+    },
+    {
+      "id": "c40",
+      "kind": "assumption",
+      "text": "the 21.5 tok/s floor was measured single-stream; the cortex server admits 2 concurrent seqs, and per-stream rate under contention can fall below the floor \u2014 the rate config names its concurrency condition, and if a harness can produce 2 concurrent cortex requests the rate is re-measured at that width before its bound is trusted",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "record the condition field in the c39 config; a concurrent-cortex harness (none exists today \u2014 B/P deliberately avoid it) triggers re-measurement first",
+      "revisions": []
+    },
+    {
+      "id": "c41",
+      "kind": "requirement",
+      "text": "a died stream's record is distinguishable by field, never by inference: an explicit marker (e.g. `stream_died: true`) plus whatever partial content and reasoning arrived \u2014 the #37 lesson applied forward; a died stream and a deliberate short turn must never arrive at the record as the same object",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h28",
+          "text": "a provoked mid-stream death in tests produces a record a reader can distinguish from a completed turn by field value alone",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "add the marker to the per-call record shape; the no-retry-once-streaming semantics (lobes catalog) make this the only honest representation of a died stream",
+      "revisions": []
+    },
+    {
+      "id": "c42",
+      "kind": "decision",
+      "text": "streaming targets the long-completion cortex lane; B1's scoped worker calls (tens of tokens) stay non-streaming \u2014 there is nothing to stream, and the concurrent fan-out path keeps the simple blocking client instead of inheriting SSE-read thread teardown discipline it does not need",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c43",
+      "kind": "requirement",
+      "text": "a scoped-call overhead pre-measurement runs before the B0/B1/B2 sweep fixes its call granularity: the ~9x effective concurrency was measured on 1200-token completions, and per-call prefill of repeated context is the unmeasured cost that could dominate tens-of-token answers \u2014 prompt-token accounting per call at realistic context sizes, the t3 pattern applied to B1",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h29",
+          "text": "the sweep's pre-registration cites the overhead measurement's numbers for its chosen granularity; no arm design cites the 9x figure for small calls without it",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "N-call probe at widths 1 and 8 with realistic league-unit prompts and small completions, committed like worker-throughput.md; runs on Thor only, post-series or in a declared idle window",
+      "revisions": []
+    },
+    {
+      "id": "c44",
+      "kind": "boundary",
+      "text": "the new series' pre-registration states its relationship to the running series' remaining rungs and t14's verdicts \u2014 extend, supersede, or wait \u2014 before any dial; if the old ladder reaches its own fan-out rung, the width rung reconciles with it rather than duplicating with drift",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h30",
+          "text": "the new pre-registration quotes t14's results doc by section, or states that it was registered before t14 existed and why that is sound",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "check ladder-decisions.jsonl and the t14 results doc at pre-registration time; record the relationship in the pre-registration's opening section",
+      "revisions": []
+    },
+    {
+      "id": "c45",
+      "kind": "requirement",
+      "text": "every drone evocation records what actually ran: drone name, a content hash (or commit) of drone.py, the capability set used, and call-acceptance \u2014 including refused and failed runs \u2014 so a compromised, stale, or misbehaving drone is traceable from its records alone",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h31",
+          "text": "the evocation record exists for every evoke including failures and refusals \u2014 asserted by test; a run that leaves no record is itself a test failure",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "record shape beside the manifest schema; hash computed at evoke time, compared against the saved artifact so tampering surfaces as a mismatch",
+      "revisions": []
+    },
+    {
+      "id": "c46",
+      "kind": "decision",
+      "text": "v1 drones never escalate: an undecidable case returns 'I cannot' and the evocation record shows the refusal; escalation stays a #44 experimental question until the tier validates \u2014 c30's zero-cortex-calls target is exact, no exception clause",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
     }
   ],
   "open_vagueness": [
@@ -627,6 +815,15 @@
       "id": "v3",
       "text": "whether the derived-timeout rule should eventually live in embodiment/ as a transport-policy seam all harnesses import \u2014 deferred per #42 and the q4 decision",
       "kind": "follow_up",
+      "claim_id": null,
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v4",
+      "text": "whether this rig's vLLM emits the SSE terminal usage chunk and reasoning deltas \u2014 undialable mid-series; the streaming pilot's first live run answers it, and if usage is absent under streaming, c37's fallback governs",
+      "kind": "unknown_nonblocking",
       "claim_id": null,
       "resolved": false,
       "resolution": "",
@@ -754,6 +951,85 @@
       "seeds": [
         "c16"
       ]
+    },
+    {
+      "id": "s15",
+      "surface": "challenge pass / adjacent-systems lens: owa/t12 x main CI",
+      "finding": "main's 300.0 is 0.40x its bound; the CI test arriving alone would redden main \u2014 merge-order interlock captured",
+      "seeds": [
+        "c36"
+      ]
+    },
+    {
+      "id": "s16",
+      "surface": "challenge pass / adjacent-systems lens: worker_seam.py:318 + lobes gateway relay",
+      "finding": "token counts come from the final payload's usage; SSE delivers usage only in an explicitly requested terminal chunk; gateway rewrites only model, so stream_options survives the proxy \u2014 probe done in source, zero dials",
+      "seeds": [
+        "c37"
+      ]
+    },
+    {
+      "id": "s17",
+      "surface": "challenge pass / counter-evidence lens: idle bound x vLLM queueing",
+      "finding": "with --max-num-seqs=2 a queued request receives nothing for up to a neighbouring generation; a fixed idle clock recreates the censoring shape \u2014 two-phase bounds captured",
+      "seeds": [
+        "c38"
+      ]
+    },
+    {
+      "id": "s18",
+      "surface": "challenge pass / operations lens: the rate literal",
+      "finding": "21.5 tok/s is a dated, single-stream measurement; a bare literal in the test under- or over-protects silently after a rig change; contention can push per-stream rate below the floor",
+      "seeds": [
+        "c39",
+        "c40"
+      ]
+    },
+    {
+      "id": "s19",
+      "surface": "challenge pass / observability lens: died-stream records",
+      "finding": "no-retry-once-streaming means a died stream yields a partial body; without an explicit marker it is indistinguishable from a short turn \u2014 the #37 defect shape recreated one layer up",
+      "seeds": [
+        "c41"
+      ]
+    },
+    {
+      "id": "s20",
+      "surface": "challenge pass / concurrency lens: streaming x fan-out threads",
+      "finding": "SSE reads are blocking and long-held; the concurrent worker path has tens-of-token completions with nothing to stream \u2014 streaming scoped to the serial cortex lane",
+      "seeds": [
+        "c42"
+      ]
+    },
+    {
+      "id": "s21",
+      "surface": "challenge pass / counter-evidence lens: the 9x figure x tiny calls",
+      "finding": "worker-throughput measured 1200-token completions; B1's calls are tens of tokens where per-call prefill dominates \u2014 the economics claim needs its own measurement before the sweep design hardens",
+      "seeds": [
+        "c43"
+      ]
+    },
+    {
+      "id": "s22",
+      "surface": "challenge pass / lifecycle lens: the in-flight ladder",
+      "finding": "the running series is mid-C2 with rungs remaining; its ladder could still reach a fan-out rung \u2014 sequencing interlock captured as boundary",
+      "seeds": [
+        "c44"
+      ]
+    },
+    {
+      "id": "s23",
+      "surface": "challenge pass / security lens: committed model-written code, in-process evoke",
+      "finding": "q5's in-process decision makes the audit trail the containment story: evocation records with content hashes; the escalation question routed to the user",
+      "seeds": [
+        "c45"
+      ]
+    },
+    {
+      "id": "s24",
+      "surface": "challenge pass / clean lenses: reversibility, migration, muse governance, colleague seam",
+      "finding": "nothing migrates and every artifact is additive (constants revert by git, .drones/ is new); muse modules pinned untouched by the governance guard; no colleague-facing change beyond the already-planned t19 post \u2014 clean pass recorded, residual risk parked as v4, not concluded absent",
+      "seeds": []
     }
   ],
   "lapses": []
