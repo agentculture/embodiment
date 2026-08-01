@@ -1,0 +1,18 @@
+{
+  "plan_slug": "error-derived-timeouts-bee-hive-architecture",
+  "schema_version": 1,
+  "created": "2026-08-01T07:48:50Z",
+  "updated": "2026-08-01T07:48:53Z",
+  "deviations": [
+    {
+      "id": "d1",
+      "what": "task t13 (governance continuity) moves from wave 0 to wave 1, gaining a dependency on t11 (drone core)",
+      "task_ref": "t13",
+      "reason": "t13's second acceptance criterion \u2014 the drones-default-off guard joins the governance suite \u2014 cannot be written against code that does not exist yet. Both tasks sat in wave 0 and are file-disjoint, so the dependency graph permitted it, but a guard authored in an isolated worktree with no drone surface to check would be vacuous: exactly the 'tests that passed while the thing they tested was broken' failure corrections.md section 3 records. Found at fan-out time, before either agent was spawned.",
+      "affects": [],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "acceptable"
+    }
+  ]
+}
