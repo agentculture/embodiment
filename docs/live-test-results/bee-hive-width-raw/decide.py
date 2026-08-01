@@ -631,9 +631,7 @@ def stop_rule(decisions: Sequence[GrainDecision]) -> StopDecision:
     if verdicts and all(verdict in stopping for verdict in verdicts.values()):
         return StopDecision(
             decision=STOP_STOP,
-            reason=(
-                "§10 rule 2: INCONCLUSIVE-WIDTH or VOID at every grain stops the whole ladder"
-            ),
+            reason=("§10 rule 2: INCONCLUSIVE-WIDTH or VOID at every grain stops the whole ladder"),
             absent_rungs=LADDER_ABOVE_W1,
             published_answer=STOPPED_ANSWER,
             verdicts=verdicts,

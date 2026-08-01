@@ -24,6 +24,10 @@ from typing import Any, Optional, Sequence
 
 import pytest
 
+from examples import arch_arms as aa
+from examples import arch_hive as ah
+from examples import worker_seam as ws
+
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RAW = REPO_ROOT / "docs" / "live-test-results" / "bee-hive-width-raw"
 
@@ -48,6 +52,7 @@ def _load(name: str) -> ModuleType:
 
 clock = _load("clock")
 decide = _load("decide")
+drive = _load("drive")
 
 ITEMS_PER_CELL = decide.ITEMS_PER_CELL
 GRAIN_LADDER = decide.GRAIN_LADDER
@@ -491,3 +496,180 @@ class TestTheClock:
         path.write_text("", encoding="utf-8")
         assert clock.load_cells(path) == []
         assert clock.load_cells(tmp_path / "missing.jsonl") == []
+
+
+# ── the driver, hermetically ─────────────────────────────────────────────────
+
+
+def _scripted_payload(body: dict[str, Any]) -> dict[str, Any]:
+    """A canned completion that answers in-space, read off the prompt itself.
+
+    ``arch_hive.scripted_worker``'s rule, applied to a raw request body so the
+    whole real path — ``WireSeam._post``, the retry loop, ``parse_completion``,
+    ``parse_answers``, the ledger — runs with no socket.
+    """
+    prompt = str((body.get("messages") or [{}])[-1].get("content") or "")
+    lines: list[str] = []
+    for block in prompt.split("item ")[1:]:
+        item_id = block.split(":", 1)[0].strip()
+        allowed = ah._allowed_from(block)
+        lines.append(f"{item_id} = {allowed[0]}" if allowed else f"{item_id} = ?")
+    return {
+        "choices": [{"message": {"content": "\n".join(lines)}, "finish_reason": "stop"}],
+        "usage": {"prompt_tokens": 240, "completion_tokens": 4 * len(lines)},
+    }
+
+
+class TestThePlanCannotBeClamped:
+    def test_every_grain_plans_exactly_items_per_cell(self) -> None:
+        config = ah.load_hive_config()
+        for grain_name, per_call in zip(GRAIN_LADDER, GRAIN_ITEMS):
+            calls = drive.plan_cell(config.grain(grain_name))
+            assert len(calls) * per_call == ITEMS_PER_CELL
+            assert sum(len(call.item_ids) for call in calls) == ITEMS_PER_CELL
+
+    def test_the_registered_widths_all_divide_the_call_count(self) -> None:
+        """No wave is ever short, so ``batch_elapsed_seconds`` is uniform."""
+        config = ah.load_hive_config()
+        for grain_name in GRAIN_LADDER:
+            calls = drive.plan_cell(config.grain(grain_name))
+            for width in WIDTH_LADDER:
+                assert len(calls) % width == 0
+
+    def test_the_coarsest_grain_at_the_widest_width_hits_the_batch_floor(self) -> None:
+        """320 is ``MIN_BATCHES_PER_CELL x MAX_HIVE_WIDTH x MAX_ITEMS_PER_CALL``."""
+        config = ah.load_hive_config()
+        calls = drive.plan_cell(config.grain("batch8"))
+        assert len(calls) // 8 == decide.MIN_BATCHES_PER_CELL
+
+    def test_no_call_straddles_two_questions(self) -> None:
+        config = ah.load_hive_config()
+        items = {item.id: item for item in drive.cell_items()}
+        for grain_name in GRAIN_LADDER:
+            for call in drive.plan_cell(config.grain(grain_name)):
+                asked = {items[item_id].question for item_id in call.item_ids}
+                assert asked == {call.question}
+
+    def test_the_item_set_is_deterministic_and_carries_no_truth(self) -> None:
+        first, second = drive.cell_items(), drive.cell_items()
+        assert first == second
+        assert len(first) == ITEMS_PER_CELL
+        assert len({item.id for item in first}) == ITEMS_PER_CELL
+        assert {item.truth for item in first} == {""}
+
+    def test_all_three_registered_questions_are_asked(self) -> None:
+        asked = {item.question for item in drive.cell_items()}
+        assert asked == set(ah.QUESTION_ORDER)
+
+
+class TestTheSeamMatchesTheShippedFactory:
+    def test_it_dials_non_streaming_without_tools(self) -> None:
+        seam = drive.build_factory(
+            dial=aa.Dial(role="worker", model="m", base_url="http://x/v1", api_key="k"),
+            sampling=aa.Sampling(temperature=0.3, thinking="off", max_tokens=256),
+            wire_extra={},
+        )(_a_call())
+        assert seam.stream is False
+        assert seam.tools is None
+        assert seam.max_tokens == 256
+        assert seam.temperature == 0.3
+
+    def test_every_construction_argument_matches_build_worker_factory(self) -> None:
+        dial = aa.Dial(role="worker", model="m", base_url="http://x/v1", api_key="k")
+        sampling = aa.Sampling(temperature=0.3, thinking="off", max_tokens=256)
+        call = _a_call()
+        shipped = ah.build_worker_factory(dial=dial, sampling=sampling)(call)
+        mine = drive.build_factory(dial=dial, sampling=sampling, wire_extra={})(call)
+        for field in ("endpoint", "model", "max_tokens", "temperature", "tools", "stream"):
+            assert getattr(mine, field) == getattr(shipped, field), field
+        assert mine.meter.role == shipped.meter.role
+
+    def test_the_thinking_key_goes_on_the_wire(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """§6: asserted on the wire, never assumed."""
+        config = ah.load_hive_config()
+        wire = config.wire_extra(config.sampling_for("B1", "worker").thinking)
+        assert wire == {"chat_template_kwargs": {"enable_thinking": False}}
+
+        monkeypatch.setattr(ws.WorkerSeam, "_post", lambda self, body: _scripted_payload(body))
+        seam = drive.build_factory(
+            dial=aa.Dial(role="worker", model="m", base_url="http://x/v1", api_key="k"),
+            sampling=aa.Sampling(temperature=0.3, thinking="off", max_tokens=256),
+            wire_extra=wire,
+        )(_a_call())
+        seam([{"role": "user", "content": "item u1:\n  allowed answers: clear, risky"}])
+        assert seam.last_body is not None
+        assert seam.last_body["chat_template_kwargs"] == {"enable_thinking": False}
+        # Non-streaming bodies carry no ``stream`` key at all — the clock this
+        # rung reports is a blocking-transport clock.
+        assert "stream" not in seam.last_body
+
+
+class TestTheRegisteredOrder:
+    def test_grains_ascend_and_width_one_leads_every_grain(self) -> None:
+        order = drive.block_order()
+        assert len(order) == len(GRAIN_LADDER) * len(WIDTH_LADDER)
+        assert [grain for grain, _ in order[:: len(WIDTH_LADDER)]] == list(GRAIN_LADDER)
+        for index in range(0, len(order), len(WIDTH_LADDER)):
+            chunk = order[index : index + len(WIDTH_LADDER)]
+            assert [width for _, width in chunk] == list(WIDTH_LADDER)
+            assert chunk[0][1] == 1
+
+
+class TestOneCellEndToEnd:
+    def test_a_scripted_cell_passes_its_own_gates(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The driver's own record shape, run through §9 with no socket."""
+        monkeypatch.setattr(ws.WorkerSeam, "_post", lambda self, body: _scripted_payload(body))
+        config = ah.load_hive_config()
+        record, calls = drive.dial_cell(
+            config=config,
+            dial=aa.Dial(role="worker", model="m", base_url="http://x/v1", api_key="k"),
+            grain_name="batch8",
+            width=8,
+            repetition=0,
+            run_id="hermetic",
+            senses_hash=HASH_A,
+        )
+        assert record["batches"] == decide.MIN_BATCHES_PER_CELL
+        assert record["calls_planned"] == 40
+        assert record["acceptance"]["dispatched"] == 40
+        assert record["acceptance"]["counts"][decide.ACCEPTED] == 40
+        assert record["thinking_wire_asserted"] is True
+        assert record["transport"] == "blocking"
+        assert record["retries"] == 0
+        assert len(record["batch_elapsed_seconds"]) == decide.MIN_BATCHES_PER_CELL
+        assert len(calls) == 40
+        assert decide.cell_gates(record) == ()
+        assert decide.items_per_second(record) is not None
+
+    def test_a_truncated_turn_reaches_the_gate(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """A budget-exhausted turn must arrive as ``absent-truncated``, not a refusal."""
+
+        def cut(self: Any, body: dict[str, Any]) -> dict[str, Any]:
+            return {
+                "choices": [{"message": {"content": "thinking"}, "finish_reason": "length"}],
+                "usage": {"prompt_tokens": 240, "completion_tokens": 256},
+            }
+
+        monkeypatch.setattr(ws.WorkerSeam, "_post", cut)
+        config = ah.load_hive_config()
+        record, _calls = drive.dial_cell(
+            config=config,
+            dial=aa.Dial(role="worker", model="m", base_url="http://x/v1", api_key="k"),
+            grain_name="batch8",
+            width=8,
+            repetition=0,
+            run_id="hermetic",
+            senses_hash=HASH_A,
+        )
+        assert record["acceptance"]["counts"][decide.ABSENT_TRUNCATED] == 40
+        assert decide.GATE_TRUNCATED in decide.cell_gates(record)
+
+
+def _a_call() -> Any:
+    return ah.ScopedCall(
+        id="s1",
+        question="looks_risky",
+        item_ids=("u1",),
+        prompt="item u1:\n  allowed answers: clear, risky, unclear",
+        spaces=(("clear", "risky", "unclear"),),
+    )
