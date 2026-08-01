@@ -585,17 +585,20 @@ class TestUnbuildablePartsRefuseTheCell:
         log = al.ThreadSafeCallLog()
         root = tmp_path / "arena"
         root.mkdir(parents=True, exist_ok=True)
+        cli = lc.LeagueCli(root=root, binary=FAKE_BIN)
+        seams = al.scripted_seams(aa.ARMS[aa.ARM_EXISTING], config=cfg, log=log)
+        senses_hash = aa.assert_senses_identical(cfg)
         with route_yielding("t18-broken", (JUNK_BYTES,)) as route:
             with pytest.raises(al.PerceptionRefused):
                 al.play_match(
-                    cli=lc.LeagueCli(root=root, binary=FAKE_BIN),
+                    cli=cli,
                     arm=aa.ARMS[aa.ARM_EXISTING],
                     rung=al.LEAGUE_LADDER[0],
                     match_index=0,
                     seed=al.LEAGUE_LADDER[0].seeds[0],
-                    seams=al.scripted_seams(aa.ARMS[aa.ARM_EXISTING], config=cfg, log=log),
+                    seams=seams,
                     config=cfg,
-                    senses_hash=aa.assert_senses_identical(cfg),
+                    senses_hash=senses_hash,
                     route=route,
                     out=out,
                 )
@@ -609,13 +612,15 @@ class TestUnbuildablePartsRefuseTheCell:
     def test_the_artifact_then_analyses_as_absent_not_as_a_text_cell(self, tmp_path: Path) -> None:
         """The whole criterion in one assertion: recorded, and ABSENT."""
         out = tmp_path / "series.jsonl"
+        cfg = config()
+        log = al.ThreadSafeCallLog()
         with route_yielding("t18-broken", (JUNK_BYTES,)) as route:
             with pytest.raises(al.PerceptionRefused):
                 al.run_series(
-                    config=config(),
+                    config=cfg,
                     arena=FAKE_BIN,
                     root=tmp_path / "arena",
-                    log=al.ThreadSafeCallLog(),
+                    log=log,
                     arms=(aa.ARM_EXISTING,),
                     out=out,
                     route=route,
@@ -688,8 +693,9 @@ class TestUnbuildablePartsRefuseTheCell:
     ) -> None:
         """The cap is ``embodiment.media``'s, read at call time so this test can shrink it."""
         monkeypatch.setattr(media, "MAX_ATTACHMENT_BYTES", 8)
+        png = mr.render_map(rich_briefing()).png
         with pytest.raises(pm.PerceptionMediaError) as caught:
-            with pm.staged_attachments([("bluee-u1", (mr.render_map(rich_briefing()).png,))]):
+            with pm.staged_attachments([("bluee-u1", (png,))]):
                 pass  # pragma: no cover - the context manager raises on entry
         assert "MAX_ATTACHMENT_BYTES" in str(caught.value)
         assert list(tmp_path.iterdir()) == []
@@ -720,8 +726,9 @@ class TestBytesMeetMediasFileValidation:
     def test_a_still_container_declared_as_a_replay_is_still_refused(self) -> None:
         """``media``'s rule, not a copy of it: a PNG cannot be delivered as video."""
         png = mr.render_map(rich_briefing()).png
+        replay = pm.MediaBytes(data=png, as_video=True)
         with pytest.raises(pm.PerceptionMediaError) as caught:
-            with pm.staged_attachments([("u", (pm.MediaBytes(data=png, as_video=True),))]):
+            with pm.staged_attachments([("u", (replay,))]):
                 pass  # pragma: no cover - the context manager raises on entry
         assert "single-frame" in str(caught.value)
 
@@ -747,12 +754,13 @@ class TestBytesMeetMediasFileValidation:
 
     def test_the_staging_directory_is_removed_even_when_the_body_raises(self) -> None:
         png = mr.render_map(rich_briefing()).png
-        staged: Path
+        boom = RuntimeError("boom")
+        staged_path: str
         with pytest.raises(RuntimeError):
             with pm.staged_attachments([("u", (png,))]) as attachments:
-                staged = Path(attachments[0]["path"])
-                raise RuntimeError("boom")
-        assert not staged.exists()
+                staged_path = attachments[0]["path"]
+                raise boom
+        assert not Path(staged_path).exists()
 
     @pytest.mark.parametrize(
         "payload,suffix",
