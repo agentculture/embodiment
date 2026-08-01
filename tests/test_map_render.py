@@ -36,6 +36,7 @@ Plus the properties that make the image worth showing a model at all:
 from __future__ import annotations
 
 import ast
+import copy
 import json
 import re
 import zlib
@@ -307,8 +308,16 @@ class TestGoldens:
             assert first.read_bytes() == second.read_bytes()
 
     def test_render_is_deterministic(self) -> None:
-        briefing = map_render.demo_briefings()["fog_scoped"]
-        assert map_render.render_png(briefing) == map_render.render_png(briefing)
+        # Two INDEPENDENTLY constructed briefings, not one object rendered
+        # twice. Rendering the same object twice would also pass if the
+        # renderer keyed a cache on identity, or if object identity leaked into
+        # the output; equal-but-distinct inputs rule both out. (Sonar S5863
+        # flagged the original as an assertion comparing an expression to
+        # itself, and it was right for a reason beyond the syntax.)
+        first = map_render.demo_briefings()["fog_scoped"]
+        second = map_render.demo_briefings()["fog_scoped"]
+        assert first is not second
+        assert map_render.render_png(first) == map_render.render_png(second)
 
 
 class TestUnknownIsNotEmpty:
@@ -459,10 +468,42 @@ class TestCommitSeam:
         assert meta["renderer"].endswith("map_render.py")
 
     def test_the_snapshot_hash_covers_exactly_what_was_rendered(self) -> None:
+        """*Exactly* is a two-sided claim, and this test used to make neither.
+
+        It asserted ``snapshot_hash(b) == snapshot_hash(b)`` — the same
+        expression twice, which measures that the digest is stable across two
+        calls and says nothing about what it covers (Sonar S5863). A hash that
+        ignored ``board`` entirely, or one that folded in the fog-leaking
+        fields ``fog_snapshot`` deliberately drops, would both have passed.
+
+        So: every field the map draws must change the hash, and every field it
+        does not draw must not.
+        """
         briefing = map_render.demo_briefings()["fog_scoped"]
         snapshot = map_render.fog_snapshot(briefing)
         assert set(snapshot) == {"game_time", "team_id", "board"}
-        assert map_render.snapshot_hash(briefing) == map_render.snapshot_hash(briefing)
+        baseline = map_render.snapshot_hash(briefing)
+
+        # Under-coverage: each rendered field must reach the digest.
+        moved = copy.deepcopy(briefing)
+        moved["game_time"] = briefing["game_time"] + 1
+        assert map_render.snapshot_hash(moved) != baseline, "game_time is not covered"
+
+        reboarded = copy.deepcopy(briefing)
+        reboarded["board"] = map_render.demo_briefings()["blind_spot"]["board"]
+        assert map_render.snapshot_hash(reboarded) != baseline, "board is not covered"
+
+        # Over-coverage: a field the map does not draw must not move the
+        # digest, or two cells that rendered identical pictures would look
+        # unpaired to the twin rule.
+        chatty = copy.deepcopy(briefing)
+        chatty["messages"] = [{"from": "ally", "text": "push mid"}]
+        chatty["menu"] = ["attack", "hold"]
+        chatty["outlook"] = "confident"
+        assert map_render.snapshot_hash(chatty) == baseline, (
+            "an off-map field reached the digest; the twin rule would refuse "
+            "two cells that drew the same picture"
+        )
 
     def test_fogged_and_fogless_snapshots_hash_differently(self) -> None:
         """The twin check must be able to tell the two apart."""
