@@ -5,7 +5,7 @@
   "schema_version": 4,
   "status": "exported",
   "created": "2026-08-01T07:31:01Z",
-  "updated": "2026-08-01T07:58:43Z",
+  "updated": "2026-08-01T08:14:31Z",
   "targets": [
     {
       "id": "c1",
@@ -587,7 +587,7 @@
         "c18",
         "h10"
       ],
-      "instruction": ""
+      "instruction": "t6 hands arm P a structural prerequisite: arch_arms._drive takes **kwargs, so the 'no subagent seam' property cannot be read off run's call site. Arm P needs ENUMERATED arguments to make the same structural claim arm B makes (HIVE_WORKER_TOOLS = () is the enforcement, one run call with exactly known keywords). Also note t6 left arch_arms' ARMS table untouched, so P inherits a clean surface \u2014 keep it that way or the shared-surface risk r4 becomes live."
     },
     {
       "id": "t8",
@@ -631,7 +631,7 @@
         "c44",
         "h30"
       ],
-      "instruction": ""
+      "instruction": "Two findings from t6 that bind the pre-registration. (1) DO NOT re-introduce a security-shaped question into the B1 sweep: issue #44's own example, 'is this safe?', names a security_decision \u2014 a FORBIDDEN responsibility in lobes' worker contract, the exact contract arm B claims to take literally. t6 ships looks_risky (an observation, with 'unclear' first-class) instead; a sweep that asks the worker to decide safety drops arm B's central claim. (2) Issue #37 bites the acceptance metric: a truncated worker turn is indistinguishable from a schema refusal, so a max_tokens setting could inflate the refusal rate the falsifiable prediction is measured on and publish arm B as refuted by its own budget. The pre-registration must read ABSENT_TRUNCATED separately from refusal, and must confirm the committed 256-token worker budget is sufficient for a multi-line answer (cite t8's overhead probe)."
     },
     {
       "id": "t10",
