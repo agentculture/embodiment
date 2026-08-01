@@ -5,7 +5,7 @@
   "schema_version": 4,
   "status": "exported",
   "created": "2026-08-01T07:31:01Z",
-  "updated": "2026-08-01T08:22:23Z",
+  "updated": "2026-08-01T08:26:49Z",
   "targets": [
     {
       "id": "c1",
@@ -702,7 +702,8 @@
         "the drones-default-off guard joins the governance suite so the standing rule is enforced, not remembered"
       ],
       "deps": [
-        "t11"
+        "t11",
+        "t12"
       ],
       "covers": [
         "c10",
