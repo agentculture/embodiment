@@ -255,12 +255,21 @@ class TestTheSavedArtifact:
         assert (created.home / "drone.py").read_text(encoding="utf-8") == GOOD_SOURCE
 
     def test_readme_always_states_the_threat_model(self, drones_dir: Path) -> None:
-        """C2: state the threat model rather than letting a name imply a sandbox."""
+        """C2: state the threat model rather than letting a name imply a sandbox.
+
+        Asserted on the *collapsed* text so the checks are about the claims
+        being present, not about where the generator happened to wrap lines —
+        a reflow must not silently drop a threat-model sentence, and it must
+        not fail this test either.
+        """
         created = author(drones_dir, GOOD_SOURCE)
         readme = (created.home / "README.md").read_text(encoding="utf-8")
-        assert "no sandbox" in readme.lower()
-        assert "in the\ncalling process" in readme or "calling process" in readme
-        assert "declaration\nfor review" in readme or "declaration" in readme
+        flat = " ".join(readme.split()).lower()
+        assert "## threat model" in readme.lower()
+        assert "there is **no sandbox**" in flat
+        assert "runs this model-written python in the calling process" in flat
+        assert "is a *declaration for review*, not an enforcement boundary" in flat
+        assert "read `drone.py` before evoking a drone you did not author" in flat
 
     def test_readme_covers_what_when_wrong_and_reauthor(self, drones_dir: Path) -> None:
         readme = (author(drones_dir, GOOD_SOURCE).home / "README.md").read_text(encoding="utf-8")
@@ -515,16 +524,28 @@ class TestCatalog:
         assert [r.name for r in drone_lib.catalog(drones_dir)] == ["alpha", "zebra"]
 
     def test_render_has_the_four_columns_aligned(self, drones_dir: Path) -> None:
+        """Every column starts at its header's offset, on every row.
+
+        Deliberately uses names and descriptions of DIFFERENT lengths — equal
+        widths would make a renderer that ignores padding entirely look
+        aligned, which is the way this kind of test passes while broken.
+        """
         author(drones_dir, GOOD_SOURCE, name="import-graph", description=DESCRIPTION)
-        author(drones_dir, GOOD_SOURCE, name="find-callers", description="finds call sites")
+        author(drones_dir, GOOD_SOURCE, name="fc", description="finds call sites")
         text = drone_lib.render_catalog(drone_lib.catalog(drones_dir))
         header, *rows = text.splitlines()
         assert header.split() == ["name", "does", "authored", "status"]
-        # Alignment: every row starts its `does` column at the header's offset.
-        offset = header.index("does")
+        assert len(rows) == 2
+        offsets = {column: header.index(column) for column in ("name", "does", "status")}
         for row in rows:
-            assert row[offset] != " ", f"description column misaligned in {row!r}"
-        assert len({len(r) - len(r.rstrip()) for r in rows}) == 1
+            for column, offset in offsets.items():
+                assert row[offset] != " ", f"{column} column misaligned in {row!r}"
+                if offset:
+                    assert row[offset - 1] == " ", f"{column} column not separated in {row!r}"
+        # And the columns really are in the declared order on each row.
+        for row in rows:
+            assert row.index(row.split()[0]) == offsets["name"]
+        assert all(not row.endswith(" ") for row in rows)
 
     def test_render_of_an_empty_catalog_points_at_create(self) -> None:
         text = drone_lib.render_catalog([])
