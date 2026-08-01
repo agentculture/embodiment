@@ -391,7 +391,15 @@ class TestWorkerSeamMetering:
         assert seam.meter.calls == 0
 
     def _urlopen_returning(self, monkeypatch: pytest.MonkeyPatch, raw: bytes) -> dict[str, int]:
-        """Stub the socket, not ``_post`` — so ``_post``'s own body runs."""
+        """Stub the socket, not ``_post`` — so ``_post``'s own body runs.
+
+        The seams these three tests build pass ``stream=False`` deliberately:
+        this is the **blocking** transport's body-parse path, the one a gateway
+        returning an HTML error page exercises, and it must keep working
+        unchanged now that streaming is the default (deviation ``d3``). The
+        streaming path's own unparseable-body and died-stream behaviour lives in
+        ``tests/test_worker_seam_streaming.py``.
+        """
         calls = {"n": 0}
 
         class _Response:
@@ -426,7 +434,7 @@ class TestWorkerSeamMetering:
         went unexercised and the first version of this fix referenced a
         ``self.role`` that does not exist.
         """
-        seam = self._seam(sleep=lambda _seconds: None)
+        seam = self._seam(sleep=lambda _seconds: None, stream=False)
         reads = self._urlopen_returning(monkeypatch, b"<html>502 Bad Gateway</html>")
 
         with pytest.raises(ws.WorkerTransportError):
@@ -440,7 +448,7 @@ class TestWorkerSeamMetering:
     def test_a_body_that_is_not_utf8_is_handled_the_same_way(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        seam = self._seam(sleep=lambda _seconds: None)
+        seam = self._seam(sleep=lambda _seconds: None, stream=False)
         self._urlopen_returning(monkeypatch, b"\xff\xfe not utf-8 at all")
 
         with pytest.raises(ws.WorkerTransportError):
@@ -452,7 +460,7 @@ class TestWorkerSeamMetering:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         """The preview is what makes a 502 diagnosable rather than mysterious."""
-        seam = self._seam(sleep=lambda _seconds: None)
+        seam = self._seam(sleep=lambda _seconds: None, stream=False)
         self._urlopen_returning(monkeypatch, b"<html>502 Bad Gateway</html>")
 
         with pytest.raises(ws.WorkerTransportError) as caught:

@@ -85,6 +85,25 @@ before, in `video-perception-probe.md`: *a capability probe must vary the
 delivery path before reporting a capability absent.* Here the delivery path was
 right and the **field name** was wrong; the correction is the same.
 
+**The committed record above still carries the defect, and is left as measured.**
+Both runs in [`stream-probe.json`](stream-probe.json) report
+`reasoning_deltas: 0`, because both were produced by the pre-correction harness
+— the finding was made by dumping delta keys beside it, not by re-running. The
+zero is an artifact of the field name, not a fact about the rig, and the table
+above already reads the truth off the gap between it and the 390 chunks. The
+harness was fixed in task `t5` (it now counts either name and reports every
+delta key it saw, so a rig that renames the field shows up as a **new key**
+rather than as a silent zero) and the record was **not** re-run: nothing here
+turns on the count, and re-dialling to make an artifact look tidier is how a
+record stops meaning what it says.
+
+Task `t5` also checked the **non**-streamed shape on the same rig
+(2026-08-01, one completion): message keys are
+`['annotations', 'audio', 'content', 'function_call', 'reasoning', 'refusal', 'role']`.
+So `reasoning` is this deployment's name on *both* transports, and
+`reasoning_content` appears nowhere — which is why the SSE reader's reassembled
+message emits that one key rather than both. It still *accepts* both on input.
+
 ## What this settles, and what it does not
 
 **Settled — streaming retires the total-request clocks.** Both
@@ -107,6 +126,43 @@ fan-out no progress signal. `RETRY_SLEEP_SECONDS` is an instrumentation defect �
 a backoff timed inside the stopwatch of the call it retries — which no transport
 change repairs. Streaming makes retries rarer; it does not make that constant
 right.
+
+## What `t5` built on this, and what it derived instead
+
+`examples/worker_seam.py` — the transport for every cortex and worker dial in
+the harness family, since `arch_arms.ArchSeam`, `arch_hive`,
+`worker_throughput.ThroughputSeam` and `worker_scoped_overhead.ScopedSeam` all
+ride it — now streams **by default** (deviation `d3`). `--no-stream` restores
+the previous blocking transport.
+
+Two clocks replace the one total-request deadline, and only one of them comes
+from this page:
+
+| Clock | Value | Where it comes from |
+|---|---:|---|
+| `STREAM_FIRST_CHUNK_TIMEOUT` | 2958.6 s | **Derived, not measured.** `STREAM_QUEUE_MARGIN × ((SERVER_MAX_NUM_SEQS − 1) × REQUEST_TIMEOUT + queue allowance)` = `2 × (1 × 1300.0 + 179.3)`. Queue depth 1 because the server admits 2 sequences; the allowance is the 179.3 s in `timeout-rate-measurements.json` |
+| `STREAM_IDLE_TIMEOUT` | 60.0 s | Sized from cadence, cross-checked two ways: **484×** the 0.124 s largest gap above, and **310×** the 0.193 s mean inter-token interval the slowest committed per-stream rate (5.17 tok/s) implies |
+| `STREAM_TOTAL_TIMEOUT` | 4258.6 s | The two phases summed — the outer backstop for a transport that dribbles forever |
+
+The idle bound is installed on the socket **only after the first chunk arrives**,
+which is the part this page could not settle: both dials here ran against an
+idle cortex, so the ~0.25 s time-to-first-chunk says nothing about a queued
+request, and an idle clock started at `t = 0` would kill one. That is why phase
+one is derived from the queue model rather than from anything measured here, and
+why the derivation is written down beside the constant rather than left in a
+commit message. `tests/test_timeout_bounds.py` recomputes all three from
+committed inputs and goes red if any drifts below its floor.
+
+Two figures on this page are now **pinned** by that test: the 0.124 s largest
+gap is read out of `stream-probe.json` rather than retyped, and
+`--max-num-seqs=2` is read out of `timeout-rate-measurements.json`. Neither can
+go stale silently.
+
+**Transport, named:** every figure on this page was produced by the SSE
+transport. Every *other* live-test result in this directory was produced by the
+blocking one, and none of them was re-run or re-graded for this change (the
+`d16` line). Latency figures are not comparable across the two; token accounting
+is unaffected, because the terminal usage chunk is passed through verbatim.
 
 ## Reproduce
 

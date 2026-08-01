@@ -881,8 +881,15 @@ class TestTheWalkCoversTheAuditedSurface:
         wait deadline must be walked. A new harness that adds one and forgets
         this file fails here rather than shipping an underived clock — which is
         how ``DEFAULT_FANOUT_TIMEOUT`` escaped #42's audit in the first place.
+
+        The streaming clocks ``t5`` added are walked too, by
+        :class:`TestStreamingBounds` rather than by :data:`CLOCKS` — their bound
+        is not ``max_tokens / tok_s``, so they get their own derivation. They
+        count as walked here; being under *a* derivation is the property this
+        guard is closing over.
         """
         walked = {(clock.module.rsplit(".", 1)[-1], clock.constant) for clock in CLOCKS}
+        walked |= {(clock.module.rsplit(".", 1)[-1], clock.constant) for clock in STREAM_CLOCKS}
         stray = [
             f"{module}.{name}"
             for module, name, _ in _module_level_floats(_TIMEOUT_NAME_HINTS)
@@ -1110,6 +1117,359 @@ class TestClockLayering:
 
         one_retry_cycle = ws.REQUEST_TIMEOUT + ws.RETRY_SLEEP_SECONDS
         assert wt.BATCH_WAIT_TIMEOUT_SECONDS < one_retry_cycle
+
+
+# ── the streaming bounds: two phases, both derived ───────────────────────────
+
+
+#: The seam whose per-request bound the queue model multiplies. Named rather
+#: than indexed so a reordering of :data:`CLOCKS` cannot silently change which
+#: bound the streaming clocks are built on.
+STREAM_SEAM_CLOCK_ID = "worker_seam.REQUEST_TIMEOUT"
+
+#: The committed probe the inter-chunk bound cites. Read, never retyped.
+STREAM_PROBE_RECORD = "stream-probe.json"
+
+#: The margin policy for the inter-chunk idle bound, as a number this file
+#: owns. Not derived — it is the answer to "how much slower than anything
+#: measured may a healthy stream get before we call it dead", and nothing
+#: measures that. Stated at 100x, which both derivations clear by a further
+#: factor of 3-5; the shipped 60 s carries 484x over the probe's largest
+#: observed gap and 310x over the slowest committed per-stream rate.
+MIN_INTER_CHUNK_MARGIN = 100.0
+
+
+@dataclass(frozen=True)
+class StreamClock:
+    """One streaming clock, and the committed inputs its floor comes from.
+
+    Separate from :class:`Clock` because the bound is a different shape. A
+    client timeout is ``max_tokens / tok_s``: a *generation* bound. These two
+    are not — the queue bound multiplies a per-request bound by a queue depth
+    read off the deployment, and the idle bound divides one into a chunk
+    cadence. Same discipline (committed inputs only, ``h5``), different
+    arithmetic, so a different walk rather than a special case inside the old
+    one.
+    """
+
+    module: str
+    constant: str
+    phase: str
+    why: str
+
+    @property
+    def id(self) -> str:
+        return f"{self.module.rsplit('.', 1)[-1]}.{self.constant}"
+
+    @property
+    def source_path(self) -> Path:
+        return EXAMPLES_DIR / f"{self.module.rsplit('.', 1)[-1]}.py"
+
+    def shipped(self) -> float:
+        return float(getattr(importlib.import_module(self.module), self.constant))
+
+
+STREAM_CLOCKS: tuple[StreamClock, ...] = (
+    StreamClock(
+        module="examples.worker_seam",
+        constant="STREAM_FIRST_CHUNK_TIMEOUT",
+        phase="queue",
+        why="phase one: how long a request may receive NOTHING before it is scheduled. "
+        "Derived from the queue model, never measured — both streaming-probe dials ran "
+        "against an idle cortex and say nothing about a queued request.",
+    ),
+    StreamClock(
+        module="examples.worker_seam",
+        constant="STREAM_IDLE_TIMEOUT",
+        phase="idle",
+        why="phase two: the largest gap between chunks a live stream may show. Armed on "
+        "the socket only after the first chunk, so queue wait is never charged as idle.",
+    ),
+    StreamClock(
+        module="examples.worker_seam",
+        constant="STREAM_TOTAL_TIMEOUT",
+        phase="total",
+        why="the outer backstop the deviation instruction keeps: a stream that dribbles "
+        "one chunk just inside the idle bound forever trips neither phase clock.",
+    ),
+)
+
+STREAM_CLOCK_IDS = [clock.id for clock in STREAM_CLOCKS]
+
+
+def derived_per_request_bound(config: rc.RateConfig) -> float:
+    """The seam's own derived bound — the quantity a queued request waits through."""
+    clock = next(entry for entry in CLOCKS if entry.id == STREAM_SEAM_CLOCK_ID)
+    return evaluate(clock, config).bound
+
+
+def slowest_committed_rate(config: rc.RateConfig) -> float:
+    """The slowest per-stream generation rate any role was measured at.
+
+    Read from the config rather than typed here, per ``c39`` — and it is the
+    honest input for a *cadence* bound because it is the condition the probe
+    could not create: the probe ran on an idle cortex, while these rates were
+    measured with neighbours in flight, where a stream's own cadence halves.
+    """
+    return min(measurement.slowest_tok_s for measurement in config.roles.values())
+
+
+def measured_max_inter_chunk_gap() -> float:
+    """The largest inter-chunk gap in the committed streaming probe."""
+    payload = json.loads((RESULTS_DIR / STREAM_PROBE_RECORD).read_text(encoding="utf-8"))
+    gaps = [
+        float(run["max_inter_chunk_gap"])
+        for run in payload
+        if isinstance(run, Mapping) and run.get("max_inter_chunk_gap") is not None
+    ]
+    assert gaps, f"{STREAM_PROBE_RECORD} records no inter-chunk gap to derive from"
+    return max(gaps)
+
+
+def stream_bound_floor(clock: StreamClock, config: rc.RateConfig) -> float:
+    """The derived floor for one streaming clock, from committed inputs only."""
+    import examples.worker_seam as ws
+
+    if clock.phase == "queue":
+        waiters = ws.SERVER_MAX_NUM_SEQS - 1
+        return ws.STREAM_QUEUE_MARGIN * (
+            waiters * derived_per_request_bound(config) + config.non_generation_allowance.seconds
+        )
+    if clock.phase == "idle":
+        cadence = max(measured_max_inter_chunk_gap(), 1.0 / slowest_committed_rate(config))
+        return MIN_INTER_CHUNK_MARGIN * cadence
+    return ws.STREAM_FIRST_CHUNK_TIMEOUT + ws.REQUEST_TIMEOUT
+
+
+def stream_clock_ok(clock: StreamClock, config: rc.RateConfig) -> bool:
+    """``>=`` its derived floor. One function, so the walk and its mutation agree."""
+    return clock.shipped() >= stream_bound_floor(clock, config)
+
+
+class TestStreamingBounds:
+    """``c38``/``h26``: no phase of a streamed call is bounded by an underived constant.
+
+    The failure this walk exists to prevent is specific and was named before it
+    could happen: a fixed idle clock applied from ``t = 0`` would kill a request
+    that is legitimately queued behind another sequence — the same censoring
+    shape as the 300 s and 600 s constants, wearing a new clock. So the bound is
+    two-phase, and both phases derive from things this repo has committed.
+    """
+
+    @pytest.mark.parametrize("clock", STREAM_CLOCKS, ids=STREAM_CLOCK_IDS)
+    def test_the_constant_clears_its_derived_floor(
+        self, clock: StreamClock, config: rc.RateConfig
+    ) -> None:
+        assert stream_clock_ok(clock, config), (
+            f"{clock.id} = {clock.shipped()} but its derived floor is "
+            f"{stream_bound_floor(clock, config):.2f} s. {clock.why}"
+        )
+
+    @pytest.mark.parametrize("clock", STREAM_CLOCKS, ids=STREAM_CLOCK_IDS)
+    def test_one_constant_mutated_below_its_floor_goes_red(
+        self, clock: StreamClock, config: rc.RateConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The test of the test, on the new clocks too — through the same path.
+
+        The mutation is applied to the module attribute the walk reads, so what
+        is proven is that this file's route to the constant is live, not that an
+        inequality between two locals holds.
+        """
+        floor = stream_bound_floor(clock, config)
+        monkeypatch.setattr(importlib.import_module(clock.module), clock.constant, floor - 1.0)
+        assert not stream_clock_ok(clock, config)
+
+    @pytest.mark.parametrize("clock", STREAM_CLOCKS, ids=STREAM_CLOCK_IDS)
+    def test_exactly_at_the_floor_passes(
+        self, clock: StreamClock, config: rc.RateConfig, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The other half: the mutation harness is not simply always-red."""
+        floor = stream_bound_floor(clock, config)
+        monkeypatch.setattr(importlib.import_module(clock.module), clock.constant, floor)
+        assert stream_clock_ok(clock, config)
+
+    def test_the_queue_depth_is_the_deployments_and_not_a_guess(
+        self, config: rc.RateConfig
+    ) -> None:
+        """``--max-num-seqs`` is a fact about the server, so it is read from the config.
+
+        The cortex measurement records it because that is the server the figure
+        was taken against; the harness constant must equal it, or the queue
+        model is built on a number nobody checked.
+        """
+        import examples.worker_seam as ws
+
+        recorded = config.rate("cortex").server_max_num_seqs
+        assert recorded is not None, (
+            "the cortex rate entry no longer records server_max_num_seqs, so the "
+            "time-to-first-chunk bound has no committed queue depth to derive from"
+        )
+        assert ws.SERVER_MAX_NUM_SEQS == recorded
+
+    def test_the_prefill_allowance_is_the_committed_one(self, config: rc.RateConfig) -> None:
+        import examples.worker_seam as ws
+
+        assert ws.STREAM_PREFILL_ALLOWANCE_SECONDS == config.non_generation_allowance.cited_as
+
+    def test_the_cited_chunk_gap_is_the_measured_one(self) -> None:
+        """A figure retyped beside its derivation is a figure that can drift."""
+        import examples.worker_seam as ws
+
+        assert ws.MEASURED_MAX_INTER_CHUNK_GAP_SECONDS == measured_max_inter_chunk_gap()
+
+    def test_the_idle_bound_clears_both_of_its_derivations(self, config: rc.RateConfig) -> None:
+        """Probe-measured cadence AND committed contended rates, not one of them.
+
+        The probe ran on an idle cortex; the committed rates were measured with
+        neighbours in flight. Either alone would be a bound sized against one
+        condition, and the contended one is slower — so it is the binding term.
+        """
+        import examples.worker_seam as ws
+
+        from_probe = ws.STREAM_IDLE_TIMEOUT / measured_max_inter_chunk_gap()
+        from_rates = ws.STREAM_IDLE_TIMEOUT * slowest_committed_rate(config)
+        assert from_probe >= MIN_INTER_CHUNK_MARGIN
+        assert from_rates >= MIN_INTER_CHUNK_MARGIN
+        assert from_rates < from_probe, (
+            "the contended-rate derivation is expected to be the tighter of the two; if "
+            "it is not, the probe has become the binding term and the margin policy "
+            "should be re-read rather than assumed"
+        )
+
+    def test_the_total_backstop_is_the_two_phases_summed(self) -> None:
+        import examples.worker_seam as ws
+
+        assert ws.STREAM_TOTAL_TIMEOUT == ws.STREAM_FIRST_CHUNK_TIMEOUT + ws.REQUEST_TIMEOUT
+
+    def test_the_phases_are_ordered_so_each_clock_can_speak(self) -> None:
+        """A phase bound that is not tighter than the one outside it is decoration."""
+        import examples.worker_seam as ws
+
+        assert ws.STREAM_IDLE_TIMEOUT < ws.REQUEST_TIMEOUT
+        assert ws.REQUEST_TIMEOUT < ws.STREAM_FIRST_CHUNK_TIMEOUT
+        assert ws.STREAM_FIRST_CHUNK_TIMEOUT < ws.STREAM_TOTAL_TIMEOUT
+
+    def test_the_queue_bound_grows_with_the_width_the_caller_dials(self) -> None:
+        """``c38``'s model, exercised rather than described.
+
+        A harness with 8 requests in flight against a server admitting 2 has 6
+        of its own siblings queued ahead of the last one, and the bound must
+        move with that. The shipped constant is the width-1 value — a wider dial
+        that keeps it is knowingly under-bounded, which is why the seam takes
+        ``stream_queue_width`` rather than reading the constant.
+        """
+        import examples.worker_seam as ws
+
+        widths = [1, 2, 8, 14]
+        bounds = [ws.derive_first_chunk_timeout(dialled_width=width) for width in widths]
+        assert bounds == sorted(bounds)
+        assert bounds[0] == ws.STREAM_FIRST_CHUNK_TIMEOUT
+        assert ws.derive_first_chunk_timeout(dialled_width=14) > bounds[0]
+
+    def test_the_margin_is_a_margin(self) -> None:
+        import examples.worker_seam as ws
+
+        assert ws.STREAM_QUEUE_MARGIN >= 1.0
+
+    @pytest.mark.parametrize("clock", STREAM_CLOCKS, ids=STREAM_CLOCK_IDS)
+    def test_the_comment_names_the_inputs_the_derivation_uses(self, clock: StreamClock) -> None:
+        """``c4``/``h4`` again, on the clocks that replaced the total deadline."""
+        comment = comment_above(clock.source_path, clock.constant)
+        assert comment.strip(), f"{clock.id} carries no module-level comment"
+        lowered = comment.lower()
+        for needle in ("queue", "bound", "margin"):
+            assert needle in lowered, (
+                f"{clock.id}'s comment never mentions {needle!r}. These two clocks "
+                "replaced a total-request deadline; a reader has to be able to see what "
+                "each phase is bounded by and where the margin came from."
+            )
+        assert rc.DEFAULT_CONFIG_PATH.name in comment or STREAM_PROBE_RECORD in comment, (
+            f"{clock.id}'s comment cites neither {rc.DEFAULT_CONFIG_PATH.name} nor "
+            f"{STREAM_PROBE_RECORD} — the two committed inputs these bounds derive from"
+        )
+
+    @pytest.mark.parametrize("clock", STREAM_CLOCKS, ids=STREAM_CLOCK_IDS)
+    def test_the_comment_names_every_role_the_clock_fronts(self, clock: StreamClock) -> None:
+        """The same seam, so the same roles — including the unmeasured one.
+
+        ``worker_seam.REQUEST_TIMEOUT`` fronts worker, cortex and the unmeasured
+        senses role; these clocks sit on the identical wire, so an omission here
+        would be exactly the finding-1 mistake that read 900 s as passing.
+        """
+        comment = comment_above(clock.source_path, clock.constant)
+        if clock.phase == "total":
+            pytest.skip("the total backstop's roles are the two phases' it sums")
+        for role in ("worker", "cortex", "senses"):
+            assert role in comment, f"{clock.id}'s comment never mentions the {role!r} role"
+
+
+class TestStreamingClockLayering:
+    """Streaming moved the governing per-call clock. The layering must be re-checked.
+
+    ``TestClockLayering`` proves a dead endpoint surfaces as a *transport*
+    failure rather than as ``fanout-unit-absent``, and it proves it against
+    ``REQUEST_TIMEOUT``. Under streaming that is no longer the clock a stuck
+    call waits on: the first-chunk bound is, and it is larger. The property has
+    to hold on the new clock or the raise quietly reintroduced the fan-out
+    censoring it was written to prevent.
+    """
+
+    def test_the_streaming_ladder_still_fits_inside_the_fanout_deadline(self) -> None:
+        import examples.orchestrator_tools as ot
+        import examples.worker_seam as ws
+
+        # The queue bound is measured from the START of the call, not per
+        # attempt, so the ladder is one queue bound plus the backoffs between
+        # attempts — not four of them. That choice is what keeps this assertion
+        # comfortable instead of marginal.
+        exhausted = (
+            ws.STREAM_FIRST_CHUNK_TIMEOUT + ws.MAX_TRANSPORT_RETRIES * ws.RETRY_SLEEP_SECONDS
+        )
+        assert exhausted < ot.DEFAULT_FANOUT_TIMEOUT, (
+            f"a unit whose endpoint never sends a byte now takes {exhausted:.0f} s to say "
+            f"so, past the {ot.DEFAULT_FANOUT_TIMEOUT:.0f} s fan-out deadline — so it "
+            "would be recorded as fanout-unit-absent, which names a straggler rather "
+            "than a dead transport."
+        )
+
+    def test_the_queue_bound_is_not_multiplied_by_the_retry_ladder(self) -> None:
+        """The property the assertion above rests on, stated as its own test."""
+        import examples.worker_seam as ws
+
+        per_attempt_ladder = (ws.MAX_TRANSPORT_RETRIES + 1) * ws.STREAM_FIRST_CHUNK_TIMEOUT
+        from_call_start = ws.STREAM_FIRST_CHUNK_TIMEOUT + (
+            ws.MAX_TRANSPORT_RETRIES * ws.RETRY_SLEEP_SECONDS
+        )
+        assert from_call_start < per_attempt_ladder
+
+    def test_every_concurrent_dial_is_governed_by_its_own_batch_wait(self) -> None:
+        """The answer to "isn't the width-1 queue bound wrong for a wide dial?".
+
+        It would be, if it were the governing clock. It is not. All three
+        harnesses that dial this seam concurrently — ``worker_throughput``,
+        ``worker_scoped_overhead`` and ``arch_hive`` — cap a batch at 300 s,
+        an order of magnitude below the queue bound, so their own circuit
+        breaker always speaks first and the shipped width-1 constant is never
+        reached. That is each harness's declared choice (a batch slower than any
+        healthy call is a stability finding, reported rather than waited out),
+        and it is asserted here so a later raise of any of the four numbers
+        cannot make the relationship accidental. A harness that *does* raise its
+        batch wait past this must pass ``stream_queue_width`` to the seam, which
+        recomputes the bound for the width it actually dials.
+        """
+        import examples.worker_scoped_overhead as wso
+        import examples.worker_seam as ws
+        import examples.worker_throughput as wt
+
+        hive = json.loads((RESULTS_DIR / ARCH_HIVE_SAMPLING).read_text(encoding="utf-8"))
+        hive_batch = float(hive["dispatch"]["batch_timeout_seconds"])
+
+        for label, batch in (
+            ("worker_throughput", wt.BATCH_WAIT_TIMEOUT_SECONDS),
+            ("worker_scoped_overhead", wso.BATCH_WAIT_TIMEOUT_SECONDS),
+            ("arch_hive", hive_batch),
+        ):
+            assert batch < ws.STREAM_FIRST_CHUNK_TIMEOUT, label
 
 
 # ── the gap, kept visible ────────────────────────────────────────────────────
