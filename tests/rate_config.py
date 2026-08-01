@@ -281,6 +281,14 @@ class RateMeasurement:
     base_url: str
     max_tokens: int
     concurrency: int
+    #: ``--max-num-seqs`` on the server this role was measured against: how many
+    #: sequences it admits at once. Distinct from :attr:`concurrency`, which is
+    #: how many the *measurement* had in flight — the cortex entry records 1 in
+    #: flight against a server admitting 2, and the difference is exactly the
+    #: queue depth ``t5``'s time-to-first-chunk bound derives from. Optional,
+    #: because only a role measured against a server whose flag was read can
+    #: honestly carry one.
+    server_max_num_seqs: Optional[int]
     condition: str
     remeasure_when: tuple[str, ...]
     caveats: tuple[str, ...]
@@ -391,6 +399,11 @@ class RateMeasurement:
             base_url=str(_require(raw, "base_url", where)),
             max_tokens=int(_require(raw, "max_tokens", where)),
             concurrency=int(_require(condition, "concurrency", f"{where}.condition")),
+            server_max_num_seqs=(
+                None
+                if condition.get("server_max_num_seqs") is None
+                else int(condition["server_max_num_seqs"])
+            ),
             condition=str(_require(condition, "description", f"{where}.condition")),
             remeasure_when=tuple(str(x) for x in raw.get("remeasure_when", ())),
             caveats=tuple(str(x) for x in raw.get("caveats", ())),

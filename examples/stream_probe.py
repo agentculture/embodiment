@@ -13,10 +13,13 @@ the whole think, and a long think trips an idle bound exactly the way a long
 generation tripped a total bound. If reasoning streams as deltas, chunks flow
 throughout and nothing can trip.
 
-Measures, per request: time to first chunk, every inter-chunk gap, whether
-`delta.reasoning_content` ever appears, whether `delta.content` appears, and
-whether a terminal usage chunk arrives when `stream_options.include_usage` is
-asked for (the metering property the harness records depend on).
+Measures, per request: time to first chunk, every inter-chunk gap, whether a
+reasoning delta ever appears -- under EITHER `delta.reasoning` (what this rig
+sends) or `delta.reasoning_content` (what vLLM documents) -- whether
+`delta.content` appears, and whether a terminal usage chunk arrives when
+`stream_options.include_usage` is asked for (the metering property the harness
+records depend on). Every delta key seen is reported, so a rig that renames the
+field shows up as a new key rather than as a silent zero.
 
 Run only when the cortex is idle.
 """
@@ -74,6 +77,7 @@ def probe(*, thinking: bool, max_tokens: int = 2000, timeout: float = 900.0) -> 
     finish_reason: str | None = None
     first_reasoning_at: float | None = None
     first_content_at: float | None = None
+    delta_keys: set[str] = set()
 
     with urllib.request.urlopen(request, timeout=timeout) as response:  # nosec B310
         for raw in response:
@@ -102,7 +106,14 @@ def probe(*, thinking: bool, max_tokens: int = 2000, timeout: float = 900.0) -> 
                 delta = choice.get("delta") or {}
                 if choice.get("finish_reason"):
                     finish_reason = choice["finish_reason"]
-                if delta.get("reasoning_content"):
+                delta_keys.update(delta)
+                # `reasoning` is the field THIS RIG sends; `reasoning_content`
+                # is the one vLLM documents. The first run of this probe read
+                # only the documented name, reported 0 reasoning deltas across
+                # 390 chunks arriving 0.11 s apart, and would have concluded the
+                # cortex does not stream its thinking — the opposite of the
+                # truth. See streaming-probe.md §3.
+                if delta.get("reasoning") or delta.get("reasoning_content"):
                     reasoning_deltas += 1
                     if first_reasoning_at is None:
                         first_reasoning_at = now - started
@@ -119,6 +130,10 @@ def probe(*, thinking: bool, max_tokens: int = 2000, timeout: float = 900.0) -> 
         "mean_inter_chunk_gap": round(sum(gaps) / len(gaps), 4) if gaps else None,
         "chunks": len(gaps) + (1 if first_chunk_at is not None else 0),
         "reasoning_deltas": reasoning_deltas,
+        # Reported so a future rig change shows up as a NEW KEY rather than as
+        # a silent zero. The absence of a count is not evidence of absence when
+        # the count is keyed on a name.
+        "delta_keys": sorted(delta_keys),
         "content_deltas": content_deltas,
         "first_reasoning_at": round(first_reasoning_at, 3) if first_reasoning_at else None,
         "first_content_at": round(first_content_at, 3) if first_content_at else None,
