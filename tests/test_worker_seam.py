@@ -390,6 +390,79 @@ class TestWorkerSeamMetering:
         assert seam.meter.failures == 1
         assert seam.meter.calls == 0
 
+    def _urlopen_returning(self, monkeypatch: pytest.MonkeyPatch, raw: bytes) -> dict[str, int]:
+        """Stub the socket, not ``_post`` — so ``_post``'s own body runs."""
+        calls = {"n": 0}
+
+        class _Response:
+            def __enter__(self_inner: Any) -> Any:
+                return self_inner
+
+            def __exit__(self_inner: Any, *exc: Any) -> bool:
+                return False
+
+            def read(self_inner: Any) -> bytes:
+                calls["n"] += 1
+                return raw
+
+        monkeypatch.setattr(
+            ws.urllib.request, "urlopen", lambda *a, **k: _Response()  # noqa: ARG005
+        )
+        return calls
+
+    def test_a_body_that_is_not_json_is_metered_as_transport_not_raised_raw(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """qodo caught this: a non-JSON body escaped the retry loop entirely.
+
+        A gateway returning an HTML error page — realistic here, since the
+        Spark proxies `worker` while reporting `feasible: false` — aborted the
+        drive with **no retry and no meter entry**. The failure did not appear
+        in the per-call record at all, which is a C3 violation in the one
+        module whose job is per-call accounting.
+
+        Note this stubs ``urlopen`` rather than ``_post``: every other test in
+        this class replaces ``_post`` wholesale, which is exactly why its body
+        went unexercised and the first version of this fix referenced a
+        ``self.role`` that does not exist.
+        """
+        seam = self._seam(sleep=lambda _seconds: None)
+        reads = self._urlopen_returning(monkeypatch, b"<html>502 Bad Gateway</html>")
+
+        with pytest.raises(ws.WorkerTransportError):
+            seam([{"role": "user", "content": "hi"}])
+
+        assert reads["n"] == ws.MAX_TRANSPORT_RETRIES + 1, "it was not retried"
+        assert seam.meter.retries == ws.MAX_TRANSPORT_RETRIES + 1, "retries not metered"
+        assert seam.meter.failures == 1, "the failure was not counted"
+        assert seam.meter.calls == 0
+
+    def test_a_body_that_is_not_utf8_is_handled_the_same_way(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seam = self._seam(sleep=lambda _seconds: None)
+        self._urlopen_returning(monkeypatch, b"\xff\xfe not utf-8 at all")
+
+        with pytest.raises(ws.WorkerTransportError):
+            seam([{"role": "user", "content": "hi"}])
+
+        assert seam.meter.failures == 1
+
+    def test_the_unparseable_body_reaches_the_error_text(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The preview is what makes a 502 diagnosable rather than mysterious."""
+        seam = self._seam(sleep=lambda _seconds: None)
+        self._urlopen_returning(monkeypatch, b"<html>502 Bad Gateway</html>")
+
+        with pytest.raises(ws.WorkerTransportError) as caught:
+            seam([{"role": "user", "content": "hi"}])
+
+        # The role resolves from the meter; an earlier draft read `self.role`,
+        # which does not exist, and would have raised AttributeError from
+        # inside the handler instead.
+        assert "502 Bad Gateway" in str(caught.value)
+
     def test_a_transient_failure_then_success_is_counted_but_still_returns(self) -> None:
         seam = self._seam(sleep=lambda _seconds: None)
         attempts = {"n": 0}

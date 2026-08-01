@@ -381,7 +381,7 @@ uncontended baseline exists**. All three were wrong.
 The connection was real. What it dials was never checked:
 
 ```text
-# ~/.config/environment.d/10-reachy-llm.conf
+# $XDG_CONFIG_HOME/environment.d/10-reachy-llm.conf
 REACHY_OPENAI_MODEL_ID=coolthor/gemma-4-12B-it-NVFP4A16
 ```
 

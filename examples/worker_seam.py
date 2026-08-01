@@ -449,7 +449,28 @@ class WorkerSeam:
         # The scheme is pinned to http(s) in __init__ and the endpoint is the
         # operator's own --worker-url; audited once, here.
         with urllib.request.urlopen(request, timeout=REQUEST_TIMEOUT) as response:  # nosec B310
-            return json.loads(response.read().decode("utf-8"))
+            raw = response.read()
+        try:
+            return json.loads(raw.decode("utf-8"))
+        except (UnicodeDecodeError, json.JSONDecodeError) as bad_body:
+            # A body we cannot parse is a TRANSPORT event, not an answer.
+            #
+            # Raised as OSError so ``__call__``'s existing retry path catches
+            # it: without this it escaped the loop entirely, so a gateway
+            # returning an HTML error page, or a truncated body, would abort
+            # the drive with no retry AND no meter entry — the failure would
+            # not appear in the per-call record at all. That is a C3 violation
+            # (every degradation records a transition) in the one module whose
+            # job is per-call accounting.
+            #
+            # Realistic on this rig rather than theoretical: the Spark gateway
+            # proxies `worker` but reports `feasible: false`, and a misdialled
+            # proxy is exactly what returns a non-JSON error body.
+            preview = raw[:200].decode("utf-8", errors="replace")
+            raise OSError(
+                f"{self.meter.role} returned a body that is not JSON "
+                f"({type(bad_body).__name__}): {preview!r}"
+            ) from bad_body
 
     def __call__(self, messages: list[dict[str, Any]]) -> ModelResponse:
         body: dict[str, Any] = {
