@@ -1,0 +1,1036 @@
+{
+  "slug": "error-derived-timeouts-bee-hive-architecture",
+  "title": "error-derived timeouts + bee-hive architecture",
+  "schema_version": 5,
+  "status": "exported",
+  "created": "2026-08-01T06:48:09Z",
+  "updated": "2026-08-01T07:27:51Z",
+  "claims": [
+    {
+      "id": "c1",
+      "kind": "announcement",
+      "text": "The harness family's model-call and fan-out timeouts are derived from measured error evidence \u2014 never chosen per file, never retried on a clock that already censored \u2014 and the orchestrator harness gains a bee-hive architecture: a cortex queen holding final authority over a saturation-sized swarm of workers coordinating through a bounded shared surface",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h1",
+          "text": "the shipped surface matches the announcement: budget-derived timeouts CI-enforced, and the bee-hive measured \u2014 B and P dialled against E/W/M/H \u2014 not merely designed; an unmeasured design does not count as shipped",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "ships as one cycle: the CI timeout-bound test and fan-out deadline derivation on main; B and P arms pre-registered then dialled with the width rung first; the drone skill opt-in and off. Verified when all three c30 signals have fired or honestly failed",
+      "revisions": []
+    },
+    {
+      "id": "c2",
+      "kind": "requirement",
+      "text": "main ships `REQUEST_TIMEOUT = 300.0` in examples/worker_seam.py while its own CHANGELOG 0.10.0 records the derived raise to 1200.0 (amendment 1, deviation d4) \u2014 the raise exists only on branch `owa/t12` (commit 25a65b7); the timeout work must reconcile main with the changelog claim it already carries",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h2",
+          "text": "when this frame's work ships, main's `REQUEST_TIMEOUT` satisfies the c13 bound and equals what the CHANGELOG claims \u2014 verified by the c14 CI test reading the constant, not by prose",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "when owa/t12 merges, assert main's REQUEST_TIMEOUT equals the CHANGELOG value; add the constant to the c14 test's walked set so it can never drift silently again",
+      "revisions": []
+    },
+    {
+      "id": "c3",
+      "kind": "requirement",
+      "text": "`DEFAULT_FANOUT_TIMEOUT = 60.0` (examples/orchestrator_tools.py, unchanged on main and `owa/t12`) sits against the worker's measured p95 latency of 40.78s at width 14 on 1200-token completions; at series budgets a dispatched unit outruns it and is declared `fanout-unit-absent` \u2014 the same evidence-censoring shape amendment 1 fixed at the transport layer, waiting one layer up before any manager/hybrid cell dials",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h3",
+          "text": "before any manager/hybrid cell dials, the fan-out deadline is raised to its derived bound \u2014 or every `fanout-unit-absent` in committed results is re-examined as potential censoring and the outcome published",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "raise DEFAULT_FANOUT_TIMEOUT to its derived bound (c16 formula) in the same PR that lands the CI test; grep committed fan-out results for fanout-unit-absent and publish the re-exam either way",
+      "revisions": []
+    },
+    {
+      "id": "c4",
+      "kind": "requirement",
+      "text": "timeout lengths are derived from measured evidence, not chosen per file: the amendment-1 rule (`max_tokens` / slowest measured tok/s, so the token budget binds instead of the clock) becomes the family-wide policy for the scattered constants \u2014 60s fan-out, 300s worker seam and batch wait, 600s muse-arms and devague-legs, 900s league-commander, 1800s h2h",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h4",
+          "text": "each harness's timeout cites the `max_tokens` and the measured rate it derives from, in committed config or a constant the CI test recomputes \u2014 a value with no citable inputs fails the test",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "one module-level comment per harness naming budget, rate and derivation; the CI test recomputes and compares \u2014 #42's audit table enumerates the seven constants",
+      "revisions": []
+    },
+    {
+      "id": "c5",
+      "kind": "assumption",
+      "text": "retrying a clock-timeout on the same clock re-runs the whole generation and discards it \u2014 4x300s + 3x20s = 1260.0s of work recorded as NO ANSWER while `truncated: false` was logged throughout; an error-informed retry escalates the allowance on a timeout error rather than repeating the clock that just censored",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c6",
+      "kind": "boundary",
+      "text": "the running t12 series (worktree .worktrees.embodiment/t12, ladder mid-C2 with C1 recorded CEILING) is pre-registered; no timeout value or architecture changes mid-series except through the pre-registration's own amendment protocol plus a recorded deviation \u2014 the path amendment 1 already walked",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h13",
+          "text": "no commit on owa/t12 changes a timeout constant or arm set mid-series except as a dated, appended amendment plus a recorded deviation \u2014 verifiable from branch history",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "verify from owa/t12 branch history: any mid-series timeout or arm change appears only as a dated appended amendment plus a devague deviation record",
+      "revisions": []
+    },
+    {
+      "id": "c7",
+      "kind": "requirement",
+      "text": "the bee-hive keeps the deciding verb on the queen: the cortex holds final authority (`FINAL_AUTHORITY_TOOLS` discipline from examples/arch_league.py) whatever the workers do below it \u2014 worker-to-worker recruitment never bypasses the queen's finish authority",
+      "origin": "llm",
+      "status": "rejected",
+      "honesty_conditions": [],
+      "hard_questions": [
+        {
+          "id": "q1",
+          "text": "contradiction with #44 supersedes the swarm reading: nothing worker-to-worker exists in the Bee-Hive \u2014 B's worker never holds a turn, so 'recruitment' has no referent; the surviving content (final authority stays on the cortex) already lives in c17 and c22 \u2014 recommend reject?",
+          "resolved": false,
+          "blocking": true,
+          "resolution": ""
+        }
+      ],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c8",
+      "kind": "requirement",
+      "text": "the hive builds on existing seams, not new ones: dispatch rides examples/orchestrator_tools.py's partitioned grant (`partition(grant, width)`, `MIN_UNIT_GRANT` refusal floor), and hive coordination state is a bounded shared surface whose every drop and failure lands a recorded degradation, per C3",
+      "origin": "llm",
+      "status": "rejected",
+      "honesty_conditions": [],
+      "hard_questions": [
+        {
+          "id": "q2",
+          "text": "contradiction with #44 has no 'bounded shared coordination surface', and B's concurrency is scoped tool calls, not partitioned-grant unit dispatch (see the c31 decision); the partitioned grant remains the M/H seam only \u2014 recommend reject in favour of c20 and c31?",
+          "resolved": false,
+          "blocking": true,
+          "resolution": ""
+        }
+      ],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c9",
+      "kind": "assumption",
+      "text": "hive width is sized from measured saturation \u2014 8, where effective concurrency reads 77% of ideal \u2014 never the advertised x14, which lobes has relabelled a KV-pool ceiling; docs/live-test-results/worker-throughput.md is the sizing authority",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c10",
+      "kind": "boundary",
+      "text": "the hive lives in examples/ and changes nothing under embodiment/; the worker role enters no reference-rig table without a supporting verdict \u2014 tests/test_governance.py pins `_WORKER_ROLE_HAS_SUPPORTING_VERDICT = False`",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h14",
+          "text": "tests/test_governance.py stays green throughout: no hive or drone work touches embodiment/ muse modules or promotes the worker role without a supporting verdict",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "run tests/test_governance.py in every hive/drone PR's CI; the worker-promotion flag flips only in the PR that lands a supporting verdict document",
+      "revisions": []
+    },
+    {
+      "id": "c11",
+      "kind": "boundary",
+      "text": "bounded termination survives the swarm: every hive worker runs under a bounded grant, every wait is finite, and a hung worker cannot park the queen's drive \u2014 the fan-out's own stated construction, inherited rather than reinvented",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h15",
+          "text": "every hive/B/P execution path carries the same structural termination assertion the fan-out has (AST or step-count bound), not only behavioural tests",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "reuse the fan-out's structural termination test shape (AST or step-count bound) for every B and P execution path; a behavioural pass alone does not close this",
+      "revisions": []
+    },
+    {
+      "id": "c12",
+      "kind": "non_goal",
+      "text": "the muse seam and d15's muse-off reference rig are untouched \u2014 a hive is orchestration below the cortex, not counsel beside it; no muse module is edited (the governance guard already pins this)",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c13",
+      "kind": "requirement",
+      "text": "the timeout rule is #42's: `REQUEST_TIMEOUT >= max_tokens / slowest_measured_generation_rate` \u2014 derived from the budget, never a latency percentile, because the timeout censors the tail a percentile would be sized from; above the bound an over-long turn self-reports as `finish_reason == \"length\"`, below it the identical turn vanishes into a transport retry. The rate is cited per rig (21.5 tok/s slowest, pre-registration section 18), never guessed",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h5",
+          "text": "the bound is computed only from committed inputs (budget and cited rate) \u2014 never from an observed latency distribution, which the current timeout may already have censored",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "implement as a pure helper derive_timeout(max_tokens, rate_tok_s) in the test module (not embodiment/, per the q4 decision); rate cited from preregistration section 18 \u2014 21.5 tok/s slowest",
+      "revisions": []
+    },
+    {
+      "id": "c14",
+      "kind": "requirement",
+      "text": "the bound is enforced in CI: `test_timeout_bounds.py` walks the harnesses, recomputes `max_tokens` / RATE per file from committed inputs, and fails on any timeout below its bound \u2014 a timeout that drifts below the bound breaks CI rather than waiting for a series to notice (#42 proposed work 1)",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h6",
+          "text": "`test_timeout_bounds.py` is proven able to fail: with any one constant mutated below its bound the test goes red \u2014 a test-of-the-test, per the M2/M3 discipline",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "tests/test_timeout_bounds.py walks the seven constants; include a test-of-the-test mutating one below bound and asserting red",
+      "revisions": []
+    },
+    {
+      "id": "c15",
+      "kind": "requirement",
+      "text": "league_commander's committed records are re-examined before its figures are re-cited: at 1.21x it is the narrowest passing margin in #42's audit, and it produced the 2.4-4.4x hierarchy-cost figure this repo cites; `retries > 0` per call decides whether cut turns inflated cost and understated correctness \u2014 if clean, say so and the margin stands (#42 proposed work 2)",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h7",
+          "text": "the re-exam reads committed records \u2014 `retries` per call and wall-clock against tokens/rate \u2014 and publishes the outcome either way: clean stands recorded, dirty triggers the same treatment C1-E got",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "read league-commander's committed jsonl: retries per call, and wall clocks matching the 4x timeout + 3x 20s retry arithmetic; publish the verdict in corrections.md whichever way it lands",
+      "revisions": []
+    },
+    {
+      "id": "c16",
+      "kind": "requirement",
+      "text": "#42's audit covers six client timeouts but not the fan-out wait deadline: `DEFAULT_FANOUT_TIMEOUT = 60.0` bounds a whole unit drive (up to `max_steps` turns, each up to the unit's `max_tokens`), so its bound is the per-turn bound times the turn budget, not one turn's \u2014 below it, units land `fanout-unit-absent` and the fan-out layer censors exactly the way the transport layer did",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h8",
+          "text": "the fan-out bound multiplies the per-turn bound by the turn budget actually granted to the unit, and the derived value is asserted by the same CI test that guards client timeouts",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "fan-out bound = derive_timeout(unit max_tokens, rate) x the turn budget actually granted (DEFAULT_FANOUT_MAX_STEPS clamped); asserted by the same CI test",
+      "revisions": []
+    },
+    {
+      "id": "c17",
+      "kind": "requirement",
+      "text": "arm B \u2014 the Bee-Hive's core claim: the worker is a tool the cortex calls, never an agent \u2014 no loop, no turn, no goal, `transform(N things) -> N results`; the only arm that takes lobes' `worker.forbidden_responsibilities = [final_decision, security_decision]` literally, and it is measured against M and H before further investment in either",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h9",
+          "text": "arm B's worker calls carry no goal-shaped prompt: every call's schema is authored by the harness and its answer space enumerable \u2014 asserted structurally by schema inspection in hermetic tests, not by intent",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "B's call sites declare literal JSON schemas in the harness; a hermetic test walks every declared call and asserts an enumerable answer space with no free-text goal field",
+      "revisions": []
+    },
+    {
+      "id": "c18",
+      "kind": "requirement",
+      "text": "arm P \u2014 the cortex authors a unit-control policy as code once (one model call per episode), the policy plays at ~0ms per decision; graded by the machinery that already exists (`challenge_coding.py`'s workspace jail, adapted as k1.py was); three controls are mandatory \u2014 random policy, hand-written baseline, no-op \u2014 and escalation rate and call-acceptance are reported axes that never share a number with outcome",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h10",
+          "text": "P's three controls (random policy, hand-written baseline, no-op) are pre-registered before any measured dial, and escalation rate and call-acceptance are reported as separate axes from outcome in the committed results",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "P adapts challenge_coding.py's jail to grade policy source against league episodes; the three controls are registered in the pre-registration before any dial; escalation rate and call-acceptance are separate result columns",
+      "revisions": []
+    },
+    {
+      "id": "c19",
+      "kind": "assumption",
+      "text": "the flat-favouring verdict measured the axis where orchestration cannot win \u2014 counsel and sequential reasoning \u2014 while rung F (fan-out width), where separation is structural because a flat arm cannot dispatch concurrent units at all, was never reached; the width rung runs first as the cheapest decisive experiment (#44: 'run the width rung first')",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c20",
+      "kind": "requirement",
+      "text": "the caste vocabulary and its structural claim: every delegation is to an artifact the cortex authored \u2014 a worker-harness (code borrowing bounded worker intelligence for scoped typed questions) or a code-drone (the mind's strategy compiled, frozen at authoring time); nothing is delegated to a raw mind. Falsifiable prediction: the #32/#33 interface-failure class disappears because the cortex authors the schema it delegates across, measured as call-acceptance",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h11",
+          "text": "call-acceptance is measured per arm and the prediction is falsifiable both ways: a B arm showing #33-class refusal rates is published as refuting the delegate-to-authored-artifacts claim, not smoothed over",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "call-acceptance per arm is a first-class results column; a B refusal rate at #33's level (74%) is published as refuting this claim, by name",
+      "revisions": []
+    },
+    {
+      "id": "c21",
+      "kind": "assumption",
+      "text": "scope size is the independent variable, swept rather than toggled: B0 rigid (0 calls) / B1 scoped questions (typed, small answer space, code keeps control flow) / B2 agentic (= M, an open goal, worker holds control); pre-registered prediction \u2014 quality rises then plateaus while cost rises monotonically, so the knee is the finding, and no on/off design can locate a knee (every prior arm comparison here died tied at a ceiling)",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c22",
+      "kind": "boundary",
+      "text": "the environment is the league lane \u2014 the grader is not ours (corrections.md section 2: four self-authored graders wrong in the flattering direction in one cycle), it is genuinely multi-unit so width is real, and the harnesses are committed; hard exclusion: no metric may be an optional field one arm happens to populate more often \u2014 the league-h2h lesson",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h16",
+          "text": "the pre-registration names its outcome metric and proves it is not an optional field \u2014 a metric any arm can decline to populate is rejected at registration time",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "the pre-registration names the outcome metric and asserts it is mandatorily populated for every arm \u2014 league outcome, never an optional team-message field",
+      "revisions": []
+    },
+    {
+      "id": "c23",
+      "kind": "requirement",
+      "text": "the drone skill: /drone create / evoke / list \u2014 a drone is a named, committed, legible artifact (.drones/<name>/ with manifest, drone.py, README), its one-line description is required at create, it is smoke-proven before save (well-shaped is not runnable \u2014 the K1 lesson), and list surfaces staleness by re-checking each drone's assumed surface; a drone whose assumptions fail refuses rather than reports",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h12",
+          "text": "`create` refuses to save a drone that has not passed a smoke invocation, and `list` runs each drone's assumed-surface check \u2014 both proven by tests before any drone is authored for real use",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "skill wrapper plus embodiment drone CLI verbs; .drones/<name>/ holds manifest.json, drone.py, README.md; create refuses to save without a passing smoke run; list runs assumed-surface checks; explain/catalog.py entry per repo convention",
+      "revisions": []
+    },
+    {
+      "id": "c24",
+      "kind": "assumption",
+      "text": "drone economics, stated before building: authoring costs one cortex turn (measured 5,000-14,265 completion tokens, 400-730s); a one-shot task is pure loss, 2-3 uses roughly break even, recurring tasks on stable surfaces win by a widening margin and ~9x again under fan-out \u2014 the failure mode is quiet waste, not a crash",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c25",
+      "kind": "boundary",
+      "text": "drones ship opt-in and off until #44's experiment validates the tier \u2014 the standing rule's mirror image: an unmeasured behaviour does not ship as default either; and the execution-security model for model-written code is decided before a line is written \u2014 `shell-cli` owns the tool surface, and C2 means stating the threat model rather than letting a name imply a sandbox",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h17",
+          "text": "no default-on drone path ships: a fresh checkout with no explicit opt-in evokes nothing, asserted by a test",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "a test proves a fresh checkout with no explicit opt-in evokes nothing; the manifest carries declared capabilities per the q5 decision",
+      "revisions": []
+    },
+    {
+      "id": "c26",
+      "kind": "audience",
+      "text": "the operator running the rig; the arch-series experiment itself; and harness consumers \u2014 colleague and future hosts \u2014 who inherit the timeout rule everywhere and the drone skill if the tier validates",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h18",
+          "text": "the spec names all three audiences, and colleague inherits through the t19 findings post \u2014 never by a push into their repo",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "the spec names the three audiences; colleague learns via the t19 findings post and lobes via lobes-cli#168 \u2014 no push into either repo",
+      "revisions": []
+    },
+    {
+      "id": "c27",
+      "kind": "before_state",
+      "text": "seven per-file timeout constants, one of which already censored a completion-length distribution while recording `truncated: false`; a flat-favouring verdict measured entirely on the counsel/sequential axis with the width rung never reached; and no reuse of authored intelligence \u2014 every recurring task re-pays a full cortex turn (5,000-14,265 tokens, 400-730s)",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h19",
+          "text": "every before-state figure stays cited to its measurement doc and is corrected there if superseded, never restated from memory",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "each figure cites its doc: the censoring record (CHANGELOG 0.10.0 / #41), the off-axis verdict (#44 section 0), the authoring cost (5000-14265 tokens, 400-730s)",
+      "revisions": []
+    },
+    {
+      "id": "c28",
+      "kind": "why_it_matters",
+      "text": "the rig is mis-loaded: the 27B cortex thinks at ~23 tok/s strictly sequentially while ~9x of measured worker concurrency and unbounded bot-code width sit unused; maximizing the models means putting each unit of work on the cheapest tier that holds quality \u2014 and the only axis where the unused capacity must win by construction (width) has no evidence either way",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h20",
+          "text": "the mis-load claim rests on the measured numbers (23 tok/s sequential cortex, ~9x worker concurrency, saturation near 8); if remeasurement moves them the claim is restated, not defended",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "cite the measured numbers where used: 23 tok/s sequential cortex, ~9x effective worker concurrency, saturation near width 8 (worker-throughput.md); restate if remeasured",
+      "revisions": []
+    },
+    {
+      "id": "c29",
+      "kind": "after_state",
+      "text": "no timeout can censor evidence again \u2014 every client timeout and wait deadline is derived from its token budget and CI breaks on drift below the bound; the tier question has a measured dose-response curve (B0/B1/B2 sweep, P with its controls) instead of priors; and authored intelligence is reusable \u2014 an evoked drone repeats a recurring task for tens of worker tokens and zero cortex turns",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h21",
+          "text": "each after-state promise maps to a plan task with acceptance criteria \u2014 no promise reaches the spec without a coverage target",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "each promise maps to a plan task at /spec-to-plan time: CI bound test, streaming client, width rung, B0/B1/B2 sweep, P controls, drone verbs",
+      "revisions": []
+    },
+    {
+      "id": "c30",
+      "kind": "success_signal",
+      "text": "three signals, one per lane: `test_timeout_bounds.py` goes red on any timeout mutated below its derived bound; the width rung produces either measured separation or an honest CEILING/INCONCLUSIVE published either way; and a drone's second evocation completes its task with zero cortex turns, reporting call-acceptance as its own axis",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h22",
+          "text": "each signal is machine-checkable when it fires: a red CI run, a published verdict document, a drone evocation record showing zero cortex calls",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "measured targets: 0 clock-discarded completions in the next measured series; 7 of 7 timeout constants under the CI test; a drone's second evocation makes 0 cortex calls at <=5 percent of its authoring tokens; the width rung publishes a verdict \u2014 separation, CEILING or INCONCLUSIVE \u2014 either way",
+      "revisions": []
+    },
+    {
+      "id": "c31",
+      "kind": "decision",
+      "text": "B1's ~9-way concurrency is plain concurrent scoped calls from harness code \u2014 the `worker_seam` path the throughput probe already measured \u2014 not fan-out unit dispatch; the partitioned-grant fan-out remains the M/H seam, because only units that hold turns need turn budgets partitioned",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c32",
+      "kind": "decision",
+      "text": "the timeout bound stays per-harness \u2014 each constant cites its inputs where it lives \u2014 with one shared CI test (`test_timeout_bounds.py`) enforcing the bound repo-wide; moving transport policy into embodiment/ is parked as a follow-up, respecting #42's own deferral. The operator's felt sense of the cortex clock (300s too small, maybe 600s) is answered by derivation, not suspicion: at 21.5 tok/s a 16000-token budget needs 744s, and a real 14,265-token turn (~663s) would have outrun 600 \u2014 the bound is recomputed, never intuited",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c33",
+      "kind": "decision",
+      "text": "drone v1 executes in-process under the host's existing approval policy, with every capability declared in the manifest so review is possible; the workspace jail stays available per-drone \u2014 the threat model is stated per C2, never implied by a name",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c34",
+      "kind": "requirement",
+      "text": "the harness family adopts SSE streaming for model calls (the operator's direction, 2026-08-01): with a stream, the client timeout becomes an inter-chunk idle bound orthogonal to generation length \u2014 no amount of thinking can hit the clock, and reasoning is visible as it arrives; the derived total bound (c13) stays as the outer backstop for dead transports",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h23",
+          "text": "verified in lobes source that the gateway relays SSE chunk-by-chunk, and the retry-semantics change is designed for: a stream that dies mid-body is never blindly re-run whole \u2014 partial thinking is kept where the record allows, and only a dead transport triggers the outer bound",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "adopt streaming first in one harness (worker_seam) behind a flag: SSE parse, inter-chunk idle bound (~60s), the c13 bound as outer backstop for dead transports; partial reasoning kept in the transcript record; discovery rides lobes-cli#168's advert when it lands",
+      "revisions": []
+    },
+    {
+      "id": "c35",
+      "kind": "decision",
+      "text": "whether the cortex's reasoning streams in deltas is a deployment question, answered by probe only after the series (never mid-series against the contended cortex); the ask to lobes \u2014 advertise streaming and reasoning-delta support in /capabilities so consumers discover it by name rather than probe \u2014 is filed via communicate",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c36",
+      "kind": "requirement",
+      "text": "main is never red on its own bound: `test_timeout_bounds.py` and the raise of main's below-bound constant land together (one PR), or the test lands only after `owa/t12` merges \u2014 main's current 300.0 is 0.40x its bound, so the test alone would fail main's CI on arrival",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h24",
+          "text": "at every commit on main the bound test is green \u2014 proven by running it at the landing commit, not assumed from intent",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "land test + constant raise atomically; if owa/t12 merges first the test simply pins what amendment 1 already fixed",
+      "revisions": []
+    },
+    {
+      "id": "c37",
+      "kind": "requirement",
+      "text": "streaming preserves the metering contract: the SSE client requests `stream_options: {\"include_usage\": true}`, accumulates deltas, and reads `finish_reason` plus all four token counts from the terminal usage chunk \u2014 worker_seam.py:318 reads `usage` from the final payload today, and losing it would un-measure the rig; verified in lobes source that the gateway rewrites only `model` and relays the body verbatim, so the option survives the proxy",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h25",
+          "text": "a streamed call's committed record is field-identical to a non-streamed one (finish_reason + four token counts) \u2014 asserted by a test comparing record shapes, not by reading the code",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "parse SSE in the client, accumulate content/reasoning deltas, read the terminal usage chunk; if the backend omits usage under streaming, the documented fallback is reconstruction or streaming stays off for measured lanes",
+      "revisions": []
+    },
+    {
+      "id": "c38",
+      "kind": "requirement",
+      "text": "streaming bounds are two-phase, both derived: time-to-first-chunk gets a queue-aware bound (with `--max-num-seqs=2` a queued request legitimately receives nothing for up to a full neighbouring generation \u2014 a fixed 60s idle clock would kill it, the same censoring shape on a new clock), and the inter-chunk idle bound applies only after the first chunk arrives",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h26",
+          "text": "no phase of a streamed call is bounded by an underived constant, and queue wait is never charged as idle \u2014 provable from the client's bound derivation comments and a queued-request test",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "TTFC bound = visible queue depth x the derived per-request bound (or an explicitly stated queue model); inter-chunk bound derived from measured chunk cadence with a stated margin; both cited like every other bound",
+      "revisions": []
+    },
+    {
+      "id": "c39",
+      "kind": "requirement",
+      "text": "the bound test's rate input is a committed, dated measurement config (date, n, model, condition \u2014 the arch-arms-sampling.json pattern), never a bare literal in the test; a rig change re-derives every bound by editing one cited file, and the re-derivation procedure is documented beside it",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h27",
+          "text": "no rate literal appears in test code; deleting the config fails the test with a message naming the missing measurement, not a silent default",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "config in docs/live-test-results/ carrying rate, date, n, condition; the test loads it and recomputes need-vs-timeout per constant",
+      "revisions": []
+    },
+    {
+      "id": "c40",
+      "kind": "assumption",
+      "text": "the 21.5 tok/s floor was measured single-stream; the cortex server admits 2 concurrent seqs, and per-stream rate under contention can fall below the floor \u2014 the rate config names its concurrency condition, and if a harness can produce 2 concurrent cortex requests the rate is re-measured at that width before its bound is trusted",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "record the condition field in the c39 config; a concurrent-cortex harness (none exists today \u2014 B/P deliberately avoid it) triggers re-measurement first",
+      "revisions": []
+    },
+    {
+      "id": "c41",
+      "kind": "requirement",
+      "text": "a died stream's record is distinguishable by field, never by inference: an explicit marker (e.g. `stream_died: true`) plus whatever partial content and reasoning arrived \u2014 the #37 lesson applied forward; a died stream and a deliberate short turn must never arrive at the record as the same object",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h28",
+          "text": "a provoked mid-stream death in tests produces a record a reader can distinguish from a completed turn by field value alone",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "add the marker to the per-call record shape; the no-retry-once-streaming semantics (lobes catalog) make this the only honest representation of a died stream",
+      "revisions": []
+    },
+    {
+      "id": "c42",
+      "kind": "decision",
+      "text": "streaming targets the long-completion cortex lane; B1's scoped worker calls (tens of tokens) stay non-streaming \u2014 there is nothing to stream, and the concurrent fan-out path keeps the simple blocking client instead of inheriting SSE-read thread teardown discipline it does not need",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c43",
+      "kind": "requirement",
+      "text": "a scoped-call overhead pre-measurement runs before the B0/B1/B2 sweep fixes its call granularity: the ~9x effective concurrency was measured on 1200-token completions, and per-call prefill of repeated context is the unmeasured cost that could dominate tens-of-token answers \u2014 prompt-token accounting per call at realistic context sizes, the t3 pattern applied to B1",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h29",
+          "text": "the sweep's pre-registration cites the overhead measurement's numbers for its chosen granularity; no arm design cites the 9x figure for small calls without it",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "N-call probe at widths 1 and 8 with realistic league-unit prompts and small completions, committed like worker-throughput.md; runs on Thor only, post-series or in a declared idle window",
+      "revisions": []
+    },
+    {
+      "id": "c44",
+      "kind": "boundary",
+      "text": "the new series' pre-registration states its relationship to the running series' remaining rungs and t14's verdicts \u2014 extend, supersede, or wait \u2014 before any dial; if the old ladder reaches its own fan-out rung, the width rung reconciles with it rather than duplicating with drift",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h30",
+          "text": "the new pre-registration quotes t14's results doc by section, or states that it was registered before t14 existed and why that is sound",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "check ladder-decisions.jsonl and the t14 results doc at pre-registration time; record the relationship in the pre-registration's opening section",
+      "revisions": []
+    },
+    {
+      "id": "c45",
+      "kind": "requirement",
+      "text": "every drone evocation records what actually ran: drone name, a content hash (or commit) of drone.py, the capability set used, and call-acceptance \u2014 including refused and failed runs \u2014 so a compromised, stale, or misbehaving drone is traceable from its records alone",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h31",
+          "text": "the evocation record exists for every evoke including failures and refusals \u2014 asserted by test; a run that leaves no record is itself a test failure",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "record shape beside the manifest schema; hash computed at evoke time, compared against the saved artifact so tampering surfaces as a mismatch",
+      "revisions": []
+    },
+    {
+      "id": "c46",
+      "kind": "decision",
+      "text": "v1 drones never escalate: an undecidable case returns 'I cannot' and the evocation record shows the refusal; escalation stays a #44 experimental question until the tier validates \u2014 c30's zero-cortex-calls target is exact, no exception clause",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    }
+  ],
+  "open_vagueness": [
+    {
+      "id": "v1",
+      "text": "whether a runtime-adaptive timeout \u2014 one that adjusts during a run according to errors \u2014 can stay honest under pre-registration: a constant that moves mid-series is an instrument change mid-measurement; the likely resolution is derive-before-freeze-during, but no series has tested it",
+      "kind": "unknown_nonblocking",
+      "claim_id": null,
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v2",
+      "text": "issue #45's remaining open questions ride with it: repo-scoped vs user-scoped .drones/, whether evoke may escalate to the cortex, whether create should prefer a pure code-drone when no judgement is needed, and skill vs CLI verb \u2014 decided at /think or build time, none blocking the frame",
+      "kind": "unknown_nonblocking",
+      "claim_id": null,
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v3",
+      "text": "whether the derived-timeout rule should eventually live in embodiment/ as a transport-policy seam all harnesses import \u2014 deferred per #42 and the q4 decision",
+      "kind": "follow_up",
+      "claim_id": null,
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v4",
+      "text": "whether this rig's vLLM emits the SSE terminal usage chunk and reasoning deltas \u2014 undialable mid-series; the streaming pilot's first live run answers it, and if usage is absent under streaming, c37's fallback governs",
+      "kind": "unknown_nonblocking",
+      "claim_id": null,
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    }
+  ],
+  "scope_entries": [
+    {
+      "id": "s1",
+      "surface": "examples/worker_seam.py:272 + CHANGELOG.md 0.10.0 + branch owa/t12",
+      "finding": "main's checked-in `REQUEST_TIMEOUT` is 300.0 while CHANGELOG 0.10.0 claims the derived raise to 1200.0; commit 25a65b7 carrying the raise is only on `owa/t12` \u2014 main documents a change it does not contain",
+      "seeds": [
+        "c2"
+      ]
+    },
+    {
+      "id": "s2",
+      "surface": "examples/orchestrator_tools.py:197 + docs/live-test-results/worker-throughput.md",
+      "finding": "fan-out deadline 60.0s against measured worker p95 40.78s at width 14 on 1200-token completions; series rungs budget 16000 tokens, so real units will outrun the deadline and land `fanout-unit-absent` degradations",
+      "seeds": [
+        "c3"
+      ]
+    },
+    {
+      "id": "s3",
+      "surface": "grep REQUEST_TIMEOUT across examples/",
+      "finding": "seven independent timeout constants, each chosen per harness: 60s fan-out, 300s worker seam and batch wait, 600s muse-arms and devague-legs, 900s league-commander, 1800s h2h \u2014 none derived from a shared rule",
+      "seeds": [
+        "c4"
+      ]
+    },
+    {
+      "id": "s4",
+      "surface": "docs/live-test-results/corrections.md + CHANGELOG.md 0.10.0 Fixed",
+      "finding": "the 300s clock censored the completion-length distribution while recording `truncated: false`; retry arithmetic 4x300 + 3x20 = 1260.0s matched to tenths of a second \u2014 the evidence base for error-informed retry escalation",
+      "seeds": [
+        "c5"
+      ]
+    },
+    {
+      "id": "s5",
+      "surface": ".worktrees.embodiment/t12 (branch owa/t12, ladder-decisions.jsonl, C2-E.jsonl)",
+      "finding": "the series is live: C1 verdict CEILING (arm E 6/6, 3544.9s wall), climb to C2, C2-E five records deep and uncommitted; manager/hybrid cells not yet dialled at C2 \u2014 any change here is mid-measurement",
+      "seeds": [
+        "c6"
+      ]
+    },
+    {
+      "id": "s6",
+      "surface": "examples/arch_arms.py (ARMS) + examples/arch_league.py",
+      "finding": "arms are data (`top_level_role`, `delegates`, `keeps_work`) and the league lane pins `FINAL_AUTHORITY_TOOLS = ('order',)` on the top-level actor whatever the architecture \u2014 the exact seams a fifth hive arm extends",
+      "seeds": [
+        "c7"
+      ]
+    },
+    {
+      "id": "s7",
+      "surface": "examples/orchestrator_tools.py (partition, MIN_UNIT_GRANT, fan-out construction)",
+      "finding": "partitioned grant with a refusal floor and finite waits already exists as the dispatch substrate; the fan-out's stated construction \u2014 a hung unit cannot park the parent's drive \u2014 is the termination discipline the hive inherits",
+      "seeds": [
+        "c8",
+        "c11"
+      ]
+    },
+    {
+      "id": "s8",
+      "surface": "docs/live-test-results/worker-throughput.md",
+      "finding": "saturation near width 8: going 8 to 14 buys +5.5% aggregate for +75% concurrent load, and the series' only two truncations happened at width 14; lobes relabelled the 50 tok/s x14 figure a KV-pool ceiling",
+      "seeds": [
+        "c9"
+      ]
+    },
+    {
+      "id": "s9",
+      "surface": "tests/test_governance.py",
+      "finding": "hermetic guards pin the muse modules untouched and the worker role out of reference-rig tables until a supporting verdict exists \u2014 both bind a hive arm",
+      "seeds": [
+        "c10",
+        "c12"
+      ]
+    },
+    {
+      "id": "s10",
+      "surface": "the user's pasted error text (13 lines)",
+      "finding": "never reached the agent \u2014 the paste arrived as a collapsed placeholder; the concrete errors behind the timeout ask are unverified, and every timeout claim above rests on repo evidence instead",
+      "seeds": []
+    },
+    {
+      "id": "s11",
+      "surface": "issue #42 (opened by the operator, read in full)",
+      "finding": "the general timeout rule already argued: budget-derived, never percentile (the timeout censors the tail a percentile is sized from); repo audit shows only the failed harness below bound, league_commander 1.21x the narrowest pass; proposes the CI test, the records re-exam, and defers the embodiment/-placement decision as a genuine open question",
+      "seeds": [
+        "c13",
+        "c14",
+        "c15"
+      ]
+    },
+    {
+      "id": "s12",
+      "surface": "issue #44 + operator comment (read in full)",
+      "finding": "the Bee-Hive named and argued: five-arm table with B as worker-as-tool, P as programmed policy, the B0/B1/B2 spectrum with scope size as a swept variable, the delegate-to-authored-artifacts structural claim, the width-rung-first order, and the league environment with the optional-field metric exclusion",
+      "seeds": [
+        "c17",
+        "c18",
+        "c19",
+        "c20",
+        "c21",
+        "c22"
+      ]
+    },
+    {
+      "id": "s13",
+      "surface": "issue #45 (read in full)",
+      "finding": "the worker-harness caste as an operator-facing skill: three verbs, committed legible artifacts, three named failure modes (staleness, the unscoped call, model-written code execution), break-even economics, and an honest status \u2014 the design it implements is unvalidated, so it ships opt-in and off",
+      "seeds": [
+        "c23",
+        "c24",
+        "c25"
+      ]
+    },
+    {
+      "id": "s14",
+      "surface": "issue #42's audit table vs examples/orchestrator_tools.py",
+      "finding": "the audit covers six client timeouts and omits the fan-out wait deadline \u2014 a 60.0s bound on a whole unit drive; this scope pass's addition to #42, not a repeat of it",
+      "seeds": [
+        "c16"
+      ]
+    },
+    {
+      "id": "s15",
+      "surface": "challenge pass / adjacent-systems lens: owa/t12 x main CI",
+      "finding": "main's 300.0 is 0.40x its bound; the CI test arriving alone would redden main \u2014 merge-order interlock captured",
+      "seeds": [
+        "c36"
+      ]
+    },
+    {
+      "id": "s16",
+      "surface": "challenge pass / adjacent-systems lens: worker_seam.py:318 + lobes gateway relay",
+      "finding": "token counts come from the final payload's usage; SSE delivers usage only in an explicitly requested terminal chunk; gateway rewrites only model, so stream_options survives the proxy \u2014 probe done in source, zero dials",
+      "seeds": [
+        "c37"
+      ]
+    },
+    {
+      "id": "s17",
+      "surface": "challenge pass / counter-evidence lens: idle bound x vLLM queueing",
+      "finding": "with --max-num-seqs=2 a queued request receives nothing for up to a neighbouring generation; a fixed idle clock recreates the censoring shape \u2014 two-phase bounds captured",
+      "seeds": [
+        "c38"
+      ]
+    },
+    {
+      "id": "s18",
+      "surface": "challenge pass / operations lens: the rate literal",
+      "finding": "21.5 tok/s is a dated, single-stream measurement; a bare literal in the test under- or over-protects silently after a rig change; contention can push per-stream rate below the floor",
+      "seeds": [
+        "c39",
+        "c40"
+      ]
+    },
+    {
+      "id": "s19",
+      "surface": "challenge pass / observability lens: died-stream records",
+      "finding": "no-retry-once-streaming means a died stream yields a partial body; without an explicit marker it is indistinguishable from a short turn \u2014 the #37 defect shape recreated one layer up",
+      "seeds": [
+        "c41"
+      ]
+    },
+    {
+      "id": "s20",
+      "surface": "challenge pass / concurrency lens: streaming x fan-out threads",
+      "finding": "SSE reads are blocking and long-held; the concurrent worker path has tens-of-token completions with nothing to stream \u2014 streaming scoped to the serial cortex lane",
+      "seeds": [
+        "c42"
+      ]
+    },
+    {
+      "id": "s21",
+      "surface": "challenge pass / counter-evidence lens: the 9x figure x tiny calls",
+      "finding": "worker-throughput measured 1200-token completions; B1's calls are tens of tokens where per-call prefill dominates \u2014 the economics claim needs its own measurement before the sweep design hardens",
+      "seeds": [
+        "c43"
+      ]
+    },
+    {
+      "id": "s22",
+      "surface": "challenge pass / lifecycle lens: the in-flight ladder",
+      "finding": "the running series is mid-C2 with rungs remaining; its ladder could still reach a fan-out rung \u2014 sequencing interlock captured as boundary",
+      "seeds": [
+        "c44"
+      ]
+    },
+    {
+      "id": "s23",
+      "surface": "challenge pass / security lens: committed model-written code, in-process evoke",
+      "finding": "q5's in-process decision makes the audit trail the containment story: evocation records with content hashes; the escalation question routed to the user",
+      "seeds": [
+        "c45"
+      ]
+    },
+    {
+      "id": "s24",
+      "surface": "challenge pass / clean lenses: reversibility, migration, muse governance, colleague seam",
+      "finding": "nothing migrates and every artifact is additive (constants revert by git, .drones/ is new); muse modules pinned untouched by the governance guard; no colleague-facing change beyond the already-planned t19 post \u2014 clean pass recorded, residual risk parked as v4, not concluded absent",
+      "seeds": []
+    }
+  ],
+  "lapses": []
+}

@@ -1,0 +1,752 @@
+{
+  "kind": "worker-scoped-overhead",
+  "worker": {
+    "base_url": "http://thor.tail0be7e0.ts.net:8000/v1",
+    "model": "unsloth/Qwen3.6-35B-A3B-NVFP4"
+  },
+  "temperature": 0.3,
+  "reference": {
+    "source": "docs/live-test-results/worker-throughput.md",
+    "decode_tok_s_width1": 76.43,
+    "aggregate_tok_s_width8": 254.18,
+    "effective_concurrency_width8": 6.14,
+    "effective_concurrency_width14": 8.993,
+    "measured_on_completion_tokens": 1200
+  },
+  "situations": 8,
+  "window": {
+    "declared": true,
+    "source": "/home/spark/git/.worktrees.embodiment/t8/docs/live-test-results/worker-scoped-overhead-raw/window-log.jsonl",
+    "checks": [
+      {
+        "label": "pre-harness",
+        "at": "2026-08-01T10:48:59+03:00",
+        "verdict": "idle"
+      },
+      {
+        "label": "before",
+        "at": "2026-08-01T10:56:43+03:00",
+        "verdict": "idle"
+      },
+      {
+        "label": "before",
+        "at": "2026-08-01T10:57:12+03:00",
+        "verdict": "idle"
+      }
+    ]
+  },
+  "warmup": {
+    "cell": "warmup",
+    "width": 0,
+    "batch": -1,
+    "slot": 0,
+    "situation_id": 0,
+    "context": "lean",
+    "thinking": "off",
+    "max_tokens": 48,
+    "warmup": true,
+    "ok": true,
+    "error": null,
+    "latency_seconds": 2.5316,
+    "prompt_tokens": 248,
+    "completion_tokens": 14,
+    "content_chars": 56,
+    "reasoning_chars": 0,
+    "finish_reason": "stop",
+    "truncated": false,
+    "retries": 0,
+    "tokens_per_second": 5.5302,
+    "menu_index": 1,
+    "answered": true,
+    "modelled_decode_seconds": 0.1832,
+    "residual_seconds": 2.3484,
+    "residual_fraction": 0.9276
+  },
+  "cells": [
+    {
+      "spec": {
+        "id": "lean-off-w1",
+        "budget": "scoped",
+        "thinking": "off",
+        "context": "lean",
+        "width": 1,
+        "max_tokens": 48,
+        "batches": 4,
+        "calls": 4,
+        "why": "the floor: smallest prompt, smallest completion, one stream"
+      },
+      "batch_elapsed_seconds": [
+        0.345,
+        0.3843,
+        0.3811,
+        0.3787
+      ],
+      "summary": {
+        "cell": "lean-off-w1",
+        "budget": "scoped",
+        "thinking": "off",
+        "context": "lean",
+        "width": 1,
+        "max_tokens": 48,
+        "batches": 4,
+        "calls": 4,
+        "ok": 4,
+        "errors": 0,
+        "timeouts": 0,
+        "truncated": 0,
+        "answered": 4,
+        "finish_reasons": {
+          "stop": 4
+        },
+        "prompt_tokens_mean": 238.75,
+        "prompt_tokens_median": 239.0,
+        "prompt_tokens_total": 955,
+        "completion_tokens_mean": 13.0,
+        "completion_tokens_median": 13.0,
+        "completion_tokens_total": 52,
+        "latency_seconds_mean": 0.3716,
+        "latency_seconds_median": 0.3791,
+        "latency_seconds_p95": 0.3832,
+        "per_stream_tokens_per_second_mean": 35.0539,
+        "aggregate_seconds": 1.4891,
+        "aggregate_tokens_per_second": 34.9204,
+        "effective_concurrency": 0.9962,
+        "seconds_per_call_wallclock": 0.3723,
+        "calls_per_second": 2.6862,
+        "residual_seconds_mean": 0.2015,
+        "residual_seconds_median": 0.2091,
+        "residual_fraction_mean": 0.5413,
+        "residual_fraction_median": 0.5514,
+        "content_chars_total": 214,
+        "reasoning_chars_total": 0
+      }
+    },
+    {
+      "spec": {
+        "id": "rich-off-w1",
+        "budget": "scoped",
+        "thinking": "off",
+        "context": "rich",
+        "width": 1,
+        "max_tokens": 48,
+        "batches": 4,
+        "calls": 4,
+        "why": "the prefill axis at width 1: same call, realistic repeated context"
+      },
+      "batch_elapsed_seconds": [
+        0.5224,
+        1.8791,
+        0.6602,
+        0.5538
+      ],
+      "summary": {
+        "cell": "rich-off-w1",
+        "budget": "scoped",
+        "thinking": "off",
+        "context": "rich",
+        "width": 1,
+        "max_tokens": 48,
+        "batches": 4,
+        "calls": 4,
+        "ok": 4,
+        "errors": 0,
+        "timeouts": 0,
+        "truncated": 0,
+        "answered": 4,
+        "finish_reasons": {
+          "stop": 4
+        },
+        "prompt_tokens_mean": 1008.75,
+        "prompt_tokens_median": 1008.0,
+        "prompt_tokens_total": 4035,
+        "completion_tokens_mean": 15.0,
+        "completion_tokens_median": 14.5,
+        "completion_tokens_total": 60,
+        "latency_seconds_mean": 0.9032,
+        "latency_seconds_median": 0.6063,
+        "latency_seconds_p95": 1.6956,
+        "per_stream_tokens_per_second_mean": 21.7499,
+        "aggregate_seconds": 3.6155,
+        "aggregate_tokens_per_second": 16.5952,
+        "effective_concurrency": 0.763,
+        "seconds_per_call_wallclock": 0.9039,
+        "calls_per_second": 1.1063,
+        "residual_seconds_mean": 0.707,
+        "residual_seconds_median": 0.4035,
+        "residual_fraction_mean": 0.7154,
+        "residual_fraction_median": 0.6677,
+        "content_chars_total": 234,
+        "reasoning_chars_total": 0
+      }
+    },
+    {
+      "spec": {
+        "id": "lean-off-w8",
+        "budget": "scoped",
+        "thinking": "off",
+        "context": "lean",
+        "width": 8,
+        "max_tokens": 48,
+        "batches": 2,
+        "calls": 16,
+        "why": "does the concurrency figure transfer to tiny calls at all"
+      },
+      "batch_elapsed_seconds": [
+        0.9372,
+        22.5536
+      ],
+      "summary": {
+        "cell": "lean-off-w8",
+        "budget": "scoped",
+        "thinking": "off",
+        "context": "lean",
+        "width": 8,
+        "max_tokens": 48,
+        "batches": 2,
+        "calls": 16,
+        "ok": 16,
+        "errors": 0,
+        "timeouts": 0,
+        "truncated": 0,
+        "answered": 16,
+        "finish_reasons": {
+          "stop": 16
+        },
+        "prompt_tokens_mean": 239.75,
+        "prompt_tokens_median": 240.0,
+        "prompt_tokens_total": 3836,
+        "completion_tokens_mean": 14.0625,
+        "completion_tokens_median": 13.0,
+        "completion_tokens_total": 225,
+        "latency_seconds_mean": 2.2079,
+        "latency_seconds_median": 0.868,
+        "latency_seconds_p95": 6.3388,
+        "per_stream_tokens_per_second_mean": 15.1689,
+        "aggregate_seconds": 23.4908,
+        "aggregate_tokens_per_second": 9.5782,
+        "effective_concurrency": 0.6314,
+        "seconds_per_call_wallclock": 1.4682,
+        "calls_per_second": 0.6811,
+        "residual_seconds_mean": 2.0239,
+        "residual_seconds_median": 0.6727,
+        "residual_fraction_mean": 0.8015,
+        "residual_fraction_median": 0.7981,
+        "content_chars_total": 762,
+        "reasoning_chars_total": 0
+      }
+    },
+    {
+      "spec": {
+        "id": "rich-off-w8",
+        "budget": "scoped",
+        "thinking": "off",
+        "context": "rich",
+        "width": 8,
+        "max_tokens": 48,
+        "batches": 2,
+        "calls": 16,
+        "why": "the cell the B1 sweep would actually run"
+      },
+      "batch_elapsed_seconds": [
+        2.3518,
+        2.2876
+      ],
+      "summary": {
+        "cell": "rich-off-w8",
+        "budget": "scoped",
+        "thinking": "off",
+        "context": "rich",
+        "width": 8,
+        "max_tokens": 48,
+        "batches": 2,
+        "calls": 16,
+        "ok": 16,
+        "errors": 0,
+        "timeouts": 0,
+        "truncated": 0,
+        "answered": 16,
+        "finish_reasons": {
+          "stop": 16
+        },
+        "prompt_tokens_mean": 1007.75,
+        "prompt_tokens_median": 1008.0,
+        "prompt_tokens_total": 16124,
+        "completion_tokens_mean": 15.375,
+        "completion_tokens_median": 15.5,
+        "completion_tokens_total": 246,
+        "latency_seconds_mean": 2.1995,
+        "latency_seconds_median": 2.1919,
+        "latency_seconds_p95": 2.3375,
+        "per_stream_tokens_per_second_mean": 6.9775,
+        "aggregate_seconds": 4.6394,
+        "aggregate_tokens_per_second": 53.0241,
+        "effective_concurrency": 7.5993,
+        "seconds_per_call_wallclock": 0.29,
+        "calls_per_second": 3.4487,
+        "residual_seconds_mean": 1.9984,
+        "residual_seconds_median": 2.0126,
+        "residual_fraction_mean": 0.9087,
+        "residual_fraction_median": 0.9095,
+        "content_chars_total": 997,
+        "reasoning_chars_total": 0
+      }
+    },
+    {
+      "spec": {
+        "id": "rich-on-w1",
+        "budget": "scoped",
+        "thinking": "on",
+        "context": "rich",
+        "width": 1,
+        "max_tokens": 48,
+        "batches": 4,
+        "calls": 4,
+        "why": "what a tens-of-tokens cap costs a thinking model that was not suppressed"
+      },
+      "batch_elapsed_seconds": [
+        0.9767,
+        0.9753,
+        0.9949,
+        0.9672
+      ],
+      "summary": {
+        "cell": "rich-on-w1",
+        "budget": "scoped",
+        "thinking": "on",
+        "context": "rich",
+        "width": 1,
+        "max_tokens": 48,
+        "batches": 4,
+        "calls": 4,
+        "ok": 4,
+        "errors": 0,
+        "timeouts": 0,
+        "truncated": 4,
+        "answered": 0,
+        "finish_reasons": {
+          "length": 4
+        },
+        "prompt_tokens_mean": 1004.75,
+        "prompt_tokens_median": 1005.0,
+        "prompt_tokens_total": 4019,
+        "completion_tokens_mean": 48.0,
+        "completion_tokens_median": 48.0,
+        "completion_tokens_total": 192,
+        "latency_seconds_mean": 0.9778,
+        "latency_seconds_median": 0.9752,
+        "latency_seconds_p95": 0.9915,
+        "per_stream_tokens_per_second_mean": 49.0951,
+        "aggregate_seconds": 3.9141,
+        "aggregate_tokens_per_second": 49.0534,
+        "effective_concurrency": 0.9992,
+        "seconds_per_call_wallclock": 0.9785,
+        "calls_per_second": 1.0219,
+        "residual_seconds_mean": 0.3498,
+        "residual_seconds_median": 0.3472,
+        "residual_fraction_mean": 0.3577,
+        "residual_fraction_median": 0.356,
+        "content_chars_total": 0,
+        "reasoning_chars_total": 614
+      }
+    },
+    {
+      "spec": {
+        "id": "rich-on-w8",
+        "budget": "scoped",
+        "thinking": "on",
+        "context": "rich",
+        "width": 8,
+        "max_tokens": 48,
+        "batches": 2,
+        "calls": 16,
+        "why": "the same, concurrent \u2014 a sweep that forgets the toggle runs this cell"
+      },
+      "batch_elapsed_seconds": [
+        3.0396,
+        3.0945
+      ],
+      "summary": {
+        "cell": "rich-on-w8",
+        "budget": "scoped",
+        "thinking": "on",
+        "context": "rich",
+        "width": 8,
+        "max_tokens": 48,
+        "batches": 2,
+        "calls": 16,
+        "ok": 16,
+        "errors": 0,
+        "timeouts": 0,
+        "truncated": 16,
+        "answered": 0,
+        "finish_reasons": {
+          "length": 16
+        },
+        "prompt_tokens_mean": 1005.75,
+        "prompt_tokens_median": 1006.0,
+        "prompt_tokens_total": 16092,
+        "completion_tokens_mean": 48.0,
+        "completion_tokens_median": 48.0,
+        "completion_tokens_total": 768,
+        "latency_seconds_mean": 2.9666,
+        "latency_seconds_median": 2.9584,
+        "latency_seconds_p95": 3.0647,
+        "per_stream_tokens_per_second_mean": 16.1924,
+        "aggregate_seconds": 6.1341,
+        "aggregate_tokens_per_second": 125.2017,
+        "effective_concurrency": 7.7321,
+        "seconds_per_call_wallclock": 0.3834,
+        "calls_per_second": 2.6084,
+        "residual_seconds_mean": 2.3386,
+        "residual_seconds_median": 2.3304,
+        "residual_fraction_mean": 0.7881,
+        "residual_fraction_median": 0.7877,
+        "content_chars_total": 0,
+        "reasoning_chars_total": 2380
+      }
+    },
+    {
+      "spec": {
+        "id": "rich-off-natural-w1",
+        "budget": "natural",
+        "thinking": "off",
+        "context": "rich",
+        "width": 1,
+        "max_tokens": 2000,
+        "batches": 4,
+        "calls": 4,
+        "why": "does a suppressed-thinking scoped answer actually FIT in tens of tokens"
+      },
+      "batch_elapsed_seconds": [
+        0.5152,
+        0.4789,
+        0.5427,
+        0.6932
+      ],
+      "summary": {
+        "cell": "rich-off-natural-w1",
+        "budget": "natural",
+        "thinking": "off",
+        "context": "rich",
+        "width": 1,
+        "max_tokens": 2000,
+        "batches": 4,
+        "calls": 4,
+        "ok": 4,
+        "errors": 0,
+        "timeouts": 0,
+        "truncated": 0,
+        "answered": 4,
+        "finish_reasons": {
+          "stop": 4
+        },
+        "prompt_tokens_mean": 1008.75,
+        "prompt_tokens_median": 1008.0,
+        "prompt_tokens_total": 4035,
+        "completion_tokens_mean": 16.0,
+        "completion_tokens_median": 16.5,
+        "completion_tokens_total": 64,
+        "latency_seconds_mean": 0.5569,
+        "latency_seconds_median": 0.5283,
+        "latency_seconds_p95": 0.6701,
+        "per_stream_tokens_per_second_mean": 28.7683,
+        "aggregate_seconds": 2.23,
+        "aggregate_tokens_per_second": 28.6996,
+        "effective_concurrency": 0.9976,
+        "seconds_per_call_wallclock": 0.5575,
+        "calls_per_second": 1.7937,
+        "residual_seconds_mean": 0.3476,
+        "residual_seconds_median": 0.3263,
+        "residual_fraction_mean": 0.6236,
+        "residual_fraction_median": 0.629,
+        "content_chars_total": 253,
+        "reasoning_chars_total": 0
+      }
+    },
+    {
+      "spec": {
+        "id": "rich-on-natural-w1",
+        "budget": "natural",
+        "thinking": "on",
+        "context": "rich",
+        "width": 1,
+        "max_tokens": 2000,
+        "batches": 4,
+        "calls": 4,
+        "why": "what one scoped question really costs a thinking model, uncapped"
+      },
+      "batch_elapsed_seconds": [
+        19.8017,
+        27.6549,
+        17.547,
+        25.0779
+      ],
+      "summary": {
+        "cell": "rich-on-natural-w1",
+        "budget": "natural",
+        "thinking": "on",
+        "context": "rich",
+        "width": 1,
+        "max_tokens": 2000,
+        "batches": 4,
+        "calls": 4,
+        "ok": 4,
+        "errors": 0,
+        "timeouts": 0,
+        "truncated": 1,
+        "answered": 3,
+        "finish_reasons": {
+          "stop": 3,
+          "length": 1
+        },
+        "prompt_tokens_mean": 1004.75,
+        "prompt_tokens_median": 1005.0,
+        "prompt_tokens_total": 4019,
+        "completion_tokens_mean": 1660.5,
+        "completion_tokens_median": 1666.0,
+        "completion_tokens_total": 6642,
+        "latency_seconds_mean": 22.5195,
+        "latency_seconds_median": 22.439,
+        "latency_seconds_p95": 27.2677,
+        "per_stream_tokens_per_second_mean": 73.8764,
+        "aggregate_seconds": 90.0815,
+        "aggregate_tokens_per_second": 73.7332,
+        "effective_concurrency": 0.9981,
+        "seconds_per_call_wallclock": 22.5204,
+        "calls_per_second": 0.0444,
+        "residual_seconds_mean": 0.7937,
+        "residual_seconds_median": 0.6412,
+        "residual_fraction_mean": 0.0334,
+        "residual_fraction_median": 0.0284,
+        "content_chars_total": 174,
+        "reasoning_chars_total": 22363
+      }
+    }
+  ],
+  "transport": {
+    "calls": 69,
+    "calls_with_retries": 1,
+    "retry_rate": 0.0145,
+    "retries_total": 1,
+    "failed_calls": 0,
+    "retry_backoff_seconds": 20.0,
+    "median_healthy_latency_seconds": 2.1384,
+    "backoff_over_median_healthy_latency": 9.3526,
+    "retried_calls": [
+      {
+        "cell": "lean-off-w8",
+        "batch": 1,
+        "slot": 6,
+        "latency_seconds": 22.5506,
+        "retries": 1,
+        "ok": true
+      }
+    ]
+  },
+  "retry_contaminated_batches": {
+    "lean-off-w8": [
+      1
+    ]
+  },
+  "cells_excluding_retry_batches": [
+    {
+      "spec": {
+        "id": "lean-off-w8",
+        "budget": "scoped",
+        "thinking": "off",
+        "context": "lean",
+        "width": 8,
+        "max_tokens": 48,
+        "batches": 2,
+        "calls": 16,
+        "why": "does the concurrency figure transfer to tiny calls at all"
+      },
+      "batch_elapsed_seconds": [
+        0.9372
+      ],
+      "summary": {
+        "cell": "lean-off-w8",
+        "budget": "scoped",
+        "thinking": "off",
+        "context": "lean",
+        "width": 8,
+        "max_tokens": 48,
+        "batches": 2,
+        "calls": 8,
+        "ok": 8,
+        "errors": 0,
+        "timeouts": 0,
+        "truncated": 0,
+        "answered": 8,
+        "finish_reasons": {
+          "stop": 8
+        },
+        "prompt_tokens_mean": 239.75,
+        "prompt_tokens_median": 240.0,
+        "prompt_tokens_total": 1918,
+        "completion_tokens_mean": 13.375,
+        "completion_tokens_median": 13.0,
+        "completion_tokens_total": 107,
+        "latency_seconds_mean": 0.8534,
+        "latency_seconds_median": 0.8429,
+        "latency_seconds_p95": 0.9225,
+        "per_stream_tokens_per_second_mean": 15.5909,
+        "aggregate_seconds": 0.9372,
+        "aggregate_tokens_per_second": 114.1699,
+        "effective_concurrency": 7.3229,
+        "seconds_per_call_wallclock": 0.1172,
+        "calls_per_second": 8.5361,
+        "residual_seconds_mean": 0.6784,
+        "residual_seconds_median": 0.6727,
+        "residual_fraction_mean": 0.796,
+        "residual_fraction_median": 0.7982,
+        "content_chars_total": 365,
+        "reasoning_chars_total": 0
+      }
+    }
+  ],
+  "concurrency_transfer": {
+    "lean": {
+      "measured": true,
+      "width1_cell": "lean-off-w1",
+      "width8_cell": "lean-off-w8",
+      "reference_effective_concurrency_1200_token_calls": 6.14,
+      "measured_effective_concurrency": 0.6314,
+      "effective_concurrency_transfer_ratio": 0.1028,
+      "width1_calls_per_second": 2.6862,
+      "width8_calls_per_second": 0.6811,
+      "call_throughput_speedup": 0.2536,
+      "ideal_speedup": 8.0,
+      "call_throughput_efficiency": 0.0317
+    },
+    "rich": {
+      "measured": true,
+      "width1_cell": "rich-off-w1",
+      "width8_cell": "rich-off-w8",
+      "reference_effective_concurrency_1200_token_calls": 6.14,
+      "measured_effective_concurrency": 7.5993,
+      "effective_concurrency_transfer_ratio": 1.2377,
+      "width1_calls_per_second": 1.1063,
+      "width8_calls_per_second": 3.4487,
+      "call_throughput_speedup": 3.1172,
+      "ideal_speedup": 8.0,
+      "call_throughput_efficiency": 0.3897
+    }
+  },
+  "concurrency_transfer_excluding_retry_batches": {
+    "lean": {
+      "measured": true,
+      "width1_cell": "lean-off-w1",
+      "width8_cell": "lean-off-w8",
+      "reference_effective_concurrency_1200_token_calls": 6.14,
+      "measured_effective_concurrency": 7.3229,
+      "effective_concurrency_transfer_ratio": 1.1926,
+      "width1_calls_per_second": 2.6862,
+      "width8_calls_per_second": 8.5361,
+      "call_throughput_speedup": 3.1778,
+      "ideal_speedup": 8.0,
+      "call_throughput_efficiency": 0.3972
+    },
+    "rich": {
+      "measured": true,
+      "width1_cell": "rich-off-w1",
+      "width8_cell": "rich-off-w8",
+      "reference_effective_concurrency_1200_token_calls": 6.14,
+      "measured_effective_concurrency": 7.5993,
+      "effective_concurrency_transfer_ratio": 1.2377,
+      "width1_calls_per_second": 1.1063,
+      "width8_calls_per_second": 3.4487,
+      "call_throughput_speedup": 3.1172,
+      "ideal_speedup": 8.0,
+      "call_throughput_efficiency": 0.3897
+    }
+  },
+  "prefill_cost": {
+    "width1": {
+      "measured": true,
+      "lean_cell": "lean-off-w1",
+      "rich_cell": "rich-off-w1",
+      "width": 1,
+      "lean_prompt_tokens_mean": 238.75,
+      "rich_prompt_tokens_mean": 1008.75,
+      "extra_prompt_tokens": 770.0,
+      "lean_latency_seconds_mean": 0.3716,
+      "rich_latency_seconds_mean": 0.9032,
+      "extra_latency_seconds": 0.5316,
+      "implied_prefill_tokens_per_second": 1448.3894,
+      "lean_calls_per_second": 2.6862,
+      "rich_calls_per_second": 1.1063,
+      "throughput_ratio_rich_over_lean": 0.4119
+    },
+    "width8": {
+      "measured": true,
+      "lean_cell": "lean-off-w8",
+      "rich_cell": "rich-off-w8",
+      "width": 8,
+      "lean_prompt_tokens_mean": 239.75,
+      "rich_prompt_tokens_mean": 1007.75,
+      "extra_prompt_tokens": 768.0,
+      "lean_latency_seconds_mean": 0.8534,
+      "rich_latency_seconds_mean": 2.1995,
+      "extra_latency_seconds": 1.3461,
+      "implied_prefill_tokens_per_second": 570.5371,
+      "lean_calls_per_second": 8.5361,
+      "rich_calls_per_second": 3.4487,
+      "throughput_ratio_rich_over_lean": 0.404
+    }
+  },
+  "thinking_cost": {
+    "scoped_budget": {
+      "measured": true,
+      "thinking_off_cell": "rich-off-w1",
+      "thinking_on_cell": "rich-on-w1",
+      "max_tokens": 48,
+      "off_completion_tokens_mean": 15.0,
+      "on_completion_tokens_mean": 48.0,
+      "completion_token_multiple": 3.2,
+      "off_latency_seconds_mean": 0.9032,
+      "on_latency_seconds_mean": 0.9778,
+      "latency_multiple": 1.0826,
+      "off_answered": "4/4",
+      "on_answered": "0/4",
+      "off_truncated": 0,
+      "on_truncated": 4
+    },
+    "natural_budget": {
+      "measured": true,
+      "thinking_off_cell": "rich-off-natural-w1",
+      "thinking_on_cell": "rich-on-natural-w1",
+      "max_tokens": 2000,
+      "off_completion_tokens_mean": 16.0,
+      "on_completion_tokens_mean": 1660.5,
+      "completion_token_multiple": 103.7812,
+      "off_latency_seconds_mean": 0.5569,
+      "on_latency_seconds_mean": 22.5195,
+      "latency_multiple": 40.4372,
+      "off_answered": "4/4",
+      "on_answered": "3/4",
+      "off_truncated": 0,
+      "on_truncated": 1
+    }
+  },
+  "scoped_calls_per_cortex_turn": {
+    "measured": true,
+    "cell": "rich-off-w8",
+    "seconds_per_scoped_call_at_width8": 0.29,
+    "completion_tokens_per_scoped_call": 15.375,
+    "prompt_tokens_per_scoped_call": 1007.75,
+    "cortex_turn_seconds_range": [
+      400.0,
+      730.0
+    ],
+    "cortex_turn_completion_tokens_range": [
+      5000,
+      14265
+    ],
+    "scoped_calls_per_cortex_turn_wallclock_low": 1379.4887,
+    "scoped_calls_per_cortex_turn_wallclock_high": 2517.5669,
+    "scoped_calls_per_cortex_turn_completion_tokens_low": 325.2033,
+    "scoped_calls_per_cortex_turn_completion_tokens_high": 927.8049,
+    "note": "prompt tokens are NOT charged against the cortex-turn completion-token range: the two are different budgets on different boxes. The prompt figure is reported so a granularity choice can price prefill itself."
+  }
+}

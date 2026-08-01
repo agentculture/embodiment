@@ -2,11 +2,56 @@
 
 from __future__ import annotations
 
+import argparse
 import json
 
 import pytest
 
-from embodiment.cli import main
+from embodiment.cli import _build_parser, main
+from embodiment.explain.catalog import ENTRIES
+
+# --- catalog coverage -----------------------------------------------------
+
+
+def _command_paths(
+    parser: argparse.ArgumentParser, prefix: tuple[str, ...] = ()
+) -> list[tuple[str, ...]]:
+    """Every noun/verb path the parser actually registers.
+
+    Walked from the live parser rather than a hand-maintained list, so a verb
+    added without a catalog entry fails here instead of shipping undocumented.
+    """
+    paths: list[tuple[str, ...]] = []
+    for action in parser._actions:
+        if not isinstance(action, argparse._SubParsersAction):
+            continue
+        for name, subparser in action.choices.items():
+            path = prefix + (name,)
+            paths.append(path)
+            paths.extend(_command_paths(subparser, path))
+    return paths
+
+
+def test_explain_catalog_covers_every_registered_command() -> None:
+    """`Register a verb` means three edits; this is the one that gets forgotten.
+
+    ``embodiment/explain/catalog.py`` is the agent-readable documentation
+    surface, and the rubric gate checks it exists — but only for the paths it
+    happens to probe. This walks the whole parser tree.
+    """
+    missing = sorted(path for path in _command_paths(_build_parser()) if path not in ENTRIES)
+    assert not missing, (
+        "these registered commands have no embodiment/explain/catalog.py entry: "
+        f"{[' '.join(p) for p in missing]}"
+    )
+
+
+def test_catalog_documents_no_command_that_does_not_exist() -> None:
+    """The reverse: a catalog entry for a removed verb is stale documentation."""
+    registered = set(_command_paths(_build_parser())) | {(), ("embodiment",)}
+    extra = sorted(path for path in ENTRIES if path not in registered)
+    assert not extra, f"catalog entries with no registered command: {extra}"
+
 
 # --- overview -------------------------------------------------------------
 

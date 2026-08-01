@@ -213,6 +213,23 @@ DEFAULT_TEMPERATURE = 0.3
 #: budget returns an empty body with ``finish_reason=length``, which is
 #: indistinguishable from model failure. Recorded, and identical per arm.
 DEFAULT_MAX_TOKENS = 3000
+
+#: **Derived, never chosen** — issue #42's rule, at the slowest model this
+#: constant fronts.
+#:
+#: ``bound = max over every (model, max_tokens) pair on this wire of
+#: max_tokens / rate + queue allowance``, rates from
+#: ``docs/live-test-results/timeout-rate-measurements.json`` and recomputed by
+#: `tests/test_timeout_bounds.py`. This harness dials exactly one model, the
+#: Gemma 4 31B **muse**: 3000 / 12.1 tok/s = 247.9 s of generation, plus the
+#: 179.3 s measured **queue** allowance (corrections.md §9), for a bound of
+#: 427.1 s. Shipped 600.0 is 1.40x — unchanged, and now derived.
+#:
+#: The margin matters more here than the number does. Arm A's `NO_ANSWER` rate
+#: was 0 of 8 against 9 of 16 in the tool arms (issue #32); a clock that cut a
+#: long counsel turn would arrive as a transport failure and be indistinguishable
+#: from the muse declining to answer, which is the exact axis that series
+#: measures.
 REQUEST_TIMEOUT_S = 600.0
 
 

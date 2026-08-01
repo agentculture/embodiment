@@ -315,3 +315,74 @@ required outcome; a series quietly reduced to the arms that finished is not.
 Raw transcripts — every model call's messages, response, `finish_reason`,
 tokens and latency — and the arena's own match logs are committed beside the
 verdict, not just the verdict.
+
+## Amendment 1 — the request timeout, raised after the series, on the series' own records
+
+**Dated 2026-08-01, after both runs completed and after
+[league-commander.md](league-commander.md) published.** Appended and dated,
+never edited into the sections above: a pre-registration whose prose is
+rewritten after the dial is not a pre-registration. Same convention as
+`orchestrator-worker-preregistration.md` §18.
+
+`REQUEST_TIMEOUT` is raised **900.0 → 1600.0 s** in
+`examples/league_commander.py`. Plan task `t2` of
+`error-derived-timeouts-bee-hive-architecture`.
+
+### Why
+
+*Fixed configuration* above registers `REQUEST_TIMEOUT` = 900 and reads it
+against the Qwen cortex. It fronts **two** models. `ARM_MODELS` puts Gemma 4
+31B on the commander seat in arm `B` and on every unit in arm `C`, at the same
+`MAX_TOKENS` = 16000, through the same `gateway_seam`. Issue
+[#42](https://github.com/agentculture/embodiment/issues/42) derived the bound
+at the cortex rate alone — `16000 / 21.5 = 744 s` — and recorded 900 s as the
+audit's narrowest *passing* margin at 1.21×.
+
+This series' own records put Gemma at **12.1 tok/s** (fastest implied over 224
+calls; 13.5 by regression, fixed cost 1.61 s, r² 0.814), so its budget-derived
+bound is **1322 s** and 900 s was **0.68× — below bound**. Recorded in
+[corrections.md](corrections.md) §9 as part of the `t4` re-exam.
+
+A second term the original derivation had no place for: the bound covers
+**generation only**, and one call in this series (`A-qwen-2`) spent **179.3 s**
+not generating — queue wait plus prompt processing. 900 s over a 744 s
+generation bound left 155.8 s of slack, *less* than that observed gap.
+
+```text
+bound = max over every (model, budget) pair on this wire of
+        max_tokens / rate + measured non-generation allowance
+      = 16000 / 12.103 tok/s + 179.3 s        (Gemma)   = 1501.3 s
+      = 16000 / 21.452 tok/s + 179.3 s        (Qwen)    =  925.1 s
+REQUEST_TIMEOUT = 1600.0                                  (1.07x)
+```
+
+Both inputs are committed and neither is a percentile:
+`docs/live-test-results/timeout-rate-measurements.json` carries the rates with
+their dates, conditions and provenance, and `tests/test_timeout_bounds.py`
+recomputes this bound in CI rather than trusting the arithmetic above.
+
+### What this changes about the published results
+
+**Nothing.** The `t4` re-exam is a committed, re-runnable check
+(`league-commander-reexam.py`, exit 0 clean) over all **384 calls** in both
+series: zero retries, zero transport errors, zero calls within 5 s of any retry
+rung, `finish_reason` `tool_calls` on 384 of 384, and a slowest single call of
+**193.6 s — 21.5% of the 900 s clock**. Gemma's largest completion was **236
+tokens**, 1.5% of budget. No call was cut, so **no figure in
+[league-commander.md](league-commander.md) is revised**, and the 2.4–4.4×
+hierarchy-cost result stands exactly as published.
+
+The raise is about the **next** run, not this one. A harder scenario that let
+Gemma think at length would have been cut at 900 s, and the record would have
+shown a transport retry rather than a truncation.
+
+### What moved with it
+
+The exhausted-call identity — the arithmetic the re-exam searches the records
+for — is now `4 × 1600 + 3 × 30 = 6490 s`, not `4 × 900 + 3 × 30 = 3690 s`.
+`league-commander-reexam.py` therefore reads the **as-run** constants from the
+committed `*-config.json` artifacts rather than the harness's live ones. It
+previously read the live ones, which meant this raise made it hunt for a
+signature these records could never carry. `RETRY_WAIT_SECONDS`,
+`MAX_RETRIES`, `CONTENTION_SECONDS`, `MAX_TOKENS` and `TEMPERATURE` are
+unchanged.

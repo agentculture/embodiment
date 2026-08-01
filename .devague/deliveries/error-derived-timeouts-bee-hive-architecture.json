@@ -1,0 +1,38 @@
+{
+  "plan_slug": "error-derived-timeouts-bee-hive-architecture",
+  "schema_version": 1,
+  "created": "2026-08-01T07:48:50Z",
+  "updated": "2026-08-01T09:37:18Z",
+  "deviations": [
+    {
+      "id": "d1",
+      "what": "task t13 (governance continuity) moves from wave 0 to wave 1, gaining a dependency on t11 (drone core)",
+      "task_ref": "t13",
+      "reason": "t13's second acceptance criterion \u2014 the drones-default-off guard joins the governance suite \u2014 cannot be written against code that does not exist yet. Both tasks sat in wave 0 and are file-disjoint, so the dependency graph permitted it, but a guard authored in an isolated worktree with no drone surface to check would be vacuous: exactly the 'tests that passed while the thing they tested was broken' failure corrections.md section 3 records. Found at fan-out time, before either agent was spawned.",
+      "affects": [],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "acceptable"
+    },
+    {
+      "id": "d2",
+      "what": "task t13 gains a second dependency, on t12 (drone safeguards) as well as t11 (drone core)",
+      "task_ref": "t13",
+      "reason": "t13's drones-default-off guard asserts a switch that t12 implements \u2014 t11 deliberately shipped no opt-in switch, leaving it as a seam. A governance guard written before the switch exists would assert nothing, the same vacuity d1 avoided one step earlier. Serialises t13 behind t12.",
+      "affects": [],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "acceptable"
+    },
+    {
+      "id": "d3",
+      "what": "streaming is promoted from a flag-gated pilot in one harness (t5 as planned) to the DEFAULT transport for every cortex/worker dial in the harness family, landing before t10's measured series rather than after it",
+      "task_ref": "t5",
+      "reason": "Measured 2026-08-01 on the idle rig (docs/live-test-results/streaming-probe.md): the gateway's read timeout is per-READ, so under streaming the 600 s bound no client can raise becomes an inter-chunk idle bound; chunks flow throughout a 43 s think at a max gap of 0.124 s, a ~4800x margin; reasoning streams live in delta.reasoning; and the terminal usage chunk preserves finish_reason and all token counts, so metering survives. The plan's original shape \u2014 pilot behind a flag, default off \u2014 was written when none of that was known and when the cortex was unavailable to probe. Landing it AFTER t10 would mean the width rung runs on the transport that has already censored this repo four times, one of those clocks being in another process entirely. The two-phase bound c38 requires is DERIVED from the queue model rather than measured (queue depth x per-request bound), so adoption does not wait on a contended dial; that dial validates the derivation instead of gating it.",
+      "affects": [],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "risky"
+    }
+  ]
+}

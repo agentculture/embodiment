@@ -497,3 +497,491 @@ it is colleague's decision to make
   as amendment 1 in the pre-registration. Recorded here because the near-miss
   is the lesson: *an identical budget is not a fair budget when one model
   thinks before it speaks.*
+
+## 9. The `league_commander` records re-exam (t28's figures, re-checked)
+
+**Verdict: CLEAN. No committed call was cut by the 900 s clock, and the
+2.4–4.4× hierarchy-cost figures stand exactly as published.**
+
+This is recorded because the suspicion was reasonable and the answer could have
+gone the other way. [Issue #42](https://github.com/agentculture/embodiment/issues/42)
+audited every timeout in this repo against `max_tokens / slowest measured rate`.
+At the cortex's 21.5 tok/s and a 16000-token budget that bound is **744 s**;
+`examples/league_commander.py` ships `REQUEST_TIMEOUT = 900.0` — passing, but at
+**1.21×**, the narrowest margin in the audit. The same harness produced the
+**2.4–4.4×** figure this repo cites regularly, so if its turns had been cut the
+way `worker_seam.py`'s cell `C1-E` was (§5, *the timeout was eating its own
+turns*), its cost numbers would be inflated and its correctness numbers
+understated. They were not.
+
+The analysis is a committed, re-runnable script rather than a claim to trust:
+
+```bash
+uv run python docs/live-test-results/league-commander-reexam.py   # exits 0 clean, 1 dirty
+uv run pytest tests/test_league_commander_reexam.py               # 13 pins on the same records
+```
+
+### What the records say
+
+Across **both** committed series — the primary `c-skirmish-1` run (12 matches,
+120 calls) and the `c-frontier-1` escalation (6 matches, 264 calls), **384 calls
+total**:
+
+| tell | what a cut turn would look like | what is recorded |
+|---|---|---|
+| `retries > 0` | any retry at all is the first tell | **0**, in the ledger *and* per call |
+| transport `error` | set on the discarded call | **0** |
+| wall clock ≥ `REQUEST_TIMEOUT` | ≥ 900 s, unavoidably | **0** — slowest single call **193.6 s**, 21.5% of the clock |
+| the retry arithmetic | 930 s (one cut), … , **3690 s** exhausted | **0** calls within 5 s of any rung |
+| `finish_reason` | `length` on truncation, absent on a lost call | **`tool_calls` 384 / 384**; zero `length`, zero missing |
+| a discarded *match* | transcript lines with no ledger row | **0 orphans**; per-key counts agree for all 18 matches; arena logs are exactly the ledger's 18 keys |
+
+Two details make that stronger than a row of zeroes usually is.
+
+- **The stopwatch cannot hide a cut.** `gateway_seam` starts `time.monotonic()`
+  *before* the first attempt and never resets it, so a call that timed out even
+  once records at least `900 + 30 = 930 s`. The slowest call in either series is
+  193.6 s. A clock-cut call that reached disk is arithmetically impossible here.
+- **A crashed match cannot hide either.** `run_series` wraps `play_match` in no
+  `try`, so an exhausted-retry call raises straight through and the ledger row is
+  never appended — while every call that match already paid for is *already* in
+  the append-only transcript file. Orphaned transcript keys are the signature of
+  a discarded match and there are none. Note this harness waits **30 s** between
+  attempts, not the 20 s of the `worker_seam` example the audit quoted; the
+  exhausted-call identity here is `4 × 900 + 3 × 30 = 3690 s`.
+
+**The clock was never in a position to bind, because the budget never was.** The
+largest completion in 384 calls is **2,253 tokens — 14.1% of the 16000 budget**,
+needing ~105 s at 21.5 tok/s. Zero `length` finishes is not a lucky escape; this
+workload asks for short, structured tool calls.
+
+### The published figures, recomputed rather than trusted
+
+From the raw ledger, not the write-up's table:
+
+| arm | n | prompt | completion | tok/match | published |
+|---|---|---|---|---|---|
+| B | 3 | 59,927 | 16,452 | 25,459.7 | 25,459 |
+| C | 3 | 64,358 | 14,402 | 26,253.3 | 26,253 |
+| A-qwen | 3 | 19,302 | 12,807 | 10,703.0 | 10,703 |
+| A-gemma | 3 | 16,842 | 639 | 5,827.0 | 5,827 |
+
+`B / A-qwen = 2.379` → **2.4×**. `B / A-gemma = 4.369` → **4.4×**. Both agree
+with [league-commander.md](league-commander.md) to the digit it rounded to.
+**Nothing citing 2.4–4.4× needs revision.**
+
+A useful side-effect: this harness's fastest implied Qwen rate is **25.43
+tok/s**, which lands on the top of the 21.5–25.4 tok/s band §5 measured on a
+different harness, different scenario, different week. Two independent
+instruments agreeing on the cortex's rate is worth more than either alone.
+
+### What the clean verdict does **not** cover
+
+Two findings that do not touch t28's numbers but do touch the constant. Neither
+is a defect that shipped; both are places the audit's own framing was thinner
+than it read.
+
+- **The 1.21× margin is generation-only, and this series already exceeds its
+  slack.** 900 s over a 744 s bound leaves **155.8 s** for everything that is not
+  generation — queue wait, prompt processing, transport. In this series one Qwen
+  call spent **179.3 s** not generating (`A-qwen-2`, flat: 193.6 s of wall clock
+  for 365 completion tokens). A full-budget completion arriving behind that same
+  queue would total ~923 s and **be cut**. The margin passed the audit and the
+  records are clean; it should still be read as thin rather than comfortable,
+  because the number it is thin against has already been observed.
+- **One constant, two models — and the bound was derived for only one of them.**
+  `league_commander` dials Gemma 4 31B through the *same* `REQUEST_TIMEOUT` with
+  the same `MAX_TOKENS = 16000`, but #42 derived the bound at the cortex rate.
+  This harness's own records put Gemma at **12.1 tok/s** fastest-implied (13.5
+  tok/s by regression, fixed cost 1.61 s, r² 0.814), so its budget-derived bound
+  is **1,322 s** and 900 s is **0.68× — below bound**. It never mattered here
+  because Gemma's largest completion was **236 tokens**, 1.5% of budget. Handed
+  to `t2` as a finding, not fixed here: *a bound must be derived at the slowest
+  model the constant fronts, not at the cortex by default.*
+
+  Stated with its limits, because they are real: Gemma's rate is measured only
+  over 31–236-token completions, so extrapolating to 16000 is a ~68×
+  extrapolation on a narrow fit; and on this rig Gemma is proxied rather than
+  local, so that figure includes a network hop the cortex's does not.
+
+### The one thing committed records cannot exclude
+
+This evidence is complete for anything that reached disk. It could not detect a
+run whose transcript file and arena root were deleted and restarted from empty —
+no trace would survive that. Nothing suggests it happened: all four record files
+landed in a single commit (`3dafbac`) and were never amended, the ledger is
+append-only and resume-aware, and the two departures from the pre-registered n
+(primary 5 → 3; escalation 3/1/1/1) are attributed in the write-up to a rig
+shared with `t23` and to per-match cost, not to failures. Recorded anyway, so
+the verdict's reach is stated rather than assumed.
+
+## 10. `worker-throughput.md` reported zero retries against records holding nine
+
+**Found 2026-08-01** by task `t1` of the follow-up cycle
+([#46](https://github.com/agentculture/embodiment/issues/46)), while deriving
+the committed rate config, and verified against the raw records before being
+acted on. This is a correction to a **published measurement's stability
+section**, not to its headline.
+
+### The claim, and what the records say
+
+> **Zero errors, zero timeouts, zero transport retries, and zero refusals
+> across all 51 measured calls plus the warm-up** … No `WorkerTransportError`
+> fired at any width, meaning `WorkerSeam`'s bounded retry path
+> (`MAX_TRANSPORT_RETRIES = 3`, 20s backoff) **was never exercised for real** —
+> this measurement did not need it.
+
+`worker-throughput.jsonl` carries **nine measured calls with `retries: 1`**,
+every one of them at **width 14** — two in batch 0 (slots 12–13) and seven in
+batch 1 (slots 7–13). **9 of 28 width-14 calls, or 32%.**
+
+The second half of that sentence is the false part, and precisely: **no
+`WorkerTransportError` fired** is true — no call exhausted its three retries —
+but the retry path was *not* unexercised. It fired nine times and **rescued
+nine calls**. "Nothing raised" and "nothing failed" are different claims, and
+the record only supports the first.
+
+The ambiguity worth ruling out, because a cumulative counter would have made
+this a non-finding: `WorkerSeam.meter.retries` accumulates, so nine records
+reading `1` *could* have been nine threads racing on one shared counter. They
+are not. `worker_throughput.py`'s own docstring settles it — *"One fresh seam
+per call, never shared across threads … Every call in a batch gets its own
+`ThroughputSeam`, so there is nothing to race"* — and the values confirm it: a
+shared counter across batch 1's slots 7–13 would read 1, 2, 3, … 7, not `1`
+seven times.
+
+### What it changes
+
+`WorkerSeam`'s stopwatch starts **before** the first attempt and is never
+reset, so a retried call has its failed attempt **and** its 20 s backoff timed
+into `latency_seconds`. Every width-14 per-call rate below the width-8 band is
+that artifact, not a generation rate. Subtracting exactly 20.0 s — a
+*conservative* correction, since it leaves the failed attempt's own duration in
+— lifts all nine to **35.8–44.5 tok/s**, back above width 14's own retry-clean
+floor of 30.558. Four of the nine still sit below the width-8 floor of 38.68,
+which is what genuine width-14 contention looks like; the claim is only that
+none was anomalously slow once the backoff is removed:
+
+| figure | published | retry-corrected |
+|---|---:|---:|
+| width-14 per-stream mean (tok/s) | 29.82 | **37.00** |
+| width-14 slowest call (tok/s) | 12.92 | **30.56** (retry-clean floor, n=19) |
+| width-14 effective concurrency | 8.99 | **7.25** |
+| width-14 efficiency (eff. conc. / width) | 64% | **52%** |
+| per-stream drop, width 8 → 14 | −28% | **−11%** |
+
+Widths 1, 2 and 8 carry **zero** retries and are unaffected.
+
+**The headline conclusion is unchanged and in fact strengthened.** *"Saturates
+around width 8, not 14"* rests on the falling efficiency curve, and correcting
+the artifact makes that curve **steeper**: 77% efficiency at width 8 against
+52% (not 64%) at width 14. Going 8 → 14 buys even less than published.
+
+**One conclusion is reversed.** *"Width 14 is not unsafe on this rig (zero
+errors, zero timeouts …)"* does not survive: **width 14 produced transport
+failures in 32% of its calls**, and every failure in the entire series happened
+there. The plan's parked stability risk — *"the served worker build's stability
+under sustained ×14 load is unknown"* — was answered *"clean"* when the honest
+answer is *"failures begin at width 14 and the retry path absorbed all of
+them."* That is a stronger reason to size fan-outs at 8 than the throughput
+argument the document actually made.
+
+### What it does to the derived bounds
+
+`docs/live-test-results/timeout-rate-measurements.json` and pre-registration
+**amendment 2** both take **12.921 tok/s** as the worker's slowest measured
+rate. That figure is one of the nine contaminated calls.
+
+Both are left as they are, deliberately: 12.921 over-protects by **~2.4×**
+against the retry-clean floor of 30.558, which is the **safe direction** for a
+bound whose failure mode is censoring. Amendment 2's fan-out deadline of
+14860 s would be 6283 s if derived from the clean floor — the shipped value is
+larger, so nothing it guards can be cut by it. The caveat is recorded in the
+config rather than silently corrected, so the input's provenance is legible to
+whoever re-derives it next.
+
+### Why nothing caught it
+
+`ok: true` is set **after** a retry succeeds, so the flag the stability section
+read cannot distinguish a clean call from a rescued one. The document then
+reported the flag rather than the counter sitting in the same row. This is the
+`#37` shape again — *a failure the record carries but the reader is never told
+about* — and the fix is the same: read the field that reports the event, not
+the one that reports the outcome.
+
+`tests/test_worker_throughput_retries.py` now recomputes the retry count from
+the committed records, so this claim cannot drift back to zero in silence.
+
+## 11. The derived timeout that was itself below bound
+
+**Found 2026-08-01** by task `t2` of the follow-up cycle
+([#46](https://github.com/agentculture/embodiment/issues/46)), while building
+the CI gate that recomputes every timeout in this repo. Two findings, one
+document each. Neither changes a published measurement.
+
+### Amendment 1's own value fails amendment 1's own rule
+
+`orchestrator-worker-preregistration.md` §18 (branch `owa/t12`) raised
+`examples/worker_seam.py`'s `REQUEST_TIMEOUT` from 300.0 to **1200.0 s** and
+derived it:
+
+> `REQUEST_TIMEOUT >= max_tokens / slowest_measured_rate = 16000 / 21.5 tok/s
+> = 744.2 s`
+
+21.5 tok/s is the **cortex**. `WorkerSeam` is not the cortex's transport alone
+— `examples/arch_arms.py`'s `ArchSeam` **subclasses** it, so arms `W`, `M` and
+`H` dial the *worker* through the same constant at the same 16000-token `d16`
+budget, and `examples/arch_hive.py` and `examples/worker_scoped_overhead.py`
+add two more budgets on the same wire. At the worker's committed rate the
+per-turn bound is `16000 / 12.921 = 1238.3 s`, so **1200.0 is 0.97× — below
+bound.**
+
+The figure was not unavailable. **Amendment 2, appended hours later on the same
+branch, computes `16000 / 12.921 = 1238.3 s` explicitly** and multiplies it by
+the fan-out turn budget. The two amendments sit in one document, derive from
+one rate table, and disagree about the bound on one constant.
+
+This is §9's finding — *a bound must be derived at the slowest model the
+constant fronts, not at the cortex by default* — reappearing in the very
+document that first applied the rule, which is why it is recorded rather than
+quietly fixed. Nothing about it is unique to that amendment: deriving at the
+model whose rate is to hand is the natural mistake, and it is exactly what a
+recomputing test removes.
+
+**What changed.** `main` now ships `REQUEST_TIMEOUT = 1300.0`, derived at the
+worker: 1238.3 s bound, 1.05× margin. `main` never carried 1200.0 (c2: it was
+still at 300.0 while `CHANGELOG.md` 0.10.0 claimed otherwise), so nothing on
+this branch is being reversed — but the CHANGELOG's claim is now wrong in a
+second way and needs the version-bump lane's attention: it names a value that
+neither branch ships.
+
+**What did not change.** No measured cell. `C1-E` at 300 s is published in
+full as the discarded cell it is, and the re-run at 1200 s on `owa/t12` was
+never cut by its clock — the largest completion in that cell was 6,372 tokens,
+needing ~493 s at the worker's floor and ~297 s at the cortex's. The defect is
+in the derivation, not in the records it produced.
+
+### A second finding: `league_commander`'s 900 s, acted on
+
+§9 handed `t2` the Gemma figure and it has now been applied.
+`examples/league_commander.py` ships **1600.0 s**, derived at
+`16000 / 12.103 tok/s + 179.3 s = 1501.3 s` — the Gemma rate §9 measured, plus
+the non-generation allowance §9 measured on the same records. Recorded as
+**Amendment 1** in `league-commander-preregistration.md`, appended and dated
+after the runs and after the write-up, because a pre-registration is not edited
+to match the code it registered.
+
+**No published figure moves.** §9's verdict — 384 calls, zero retries, zero
+errors, slowest call 193.6 s against a 900 s clock — is exactly why: the raise
+is about the next run, not this one.
+
+One consequence that had to be fixed with it. `league-commander-reexam.py`
+computed its retry rungs from `lc.REQUEST_TIMEOUT`, the **live** constant. The
+moment the constant was raised, the re-exam began searching 384 committed
+records for a `4 × 1600 + 3 × 30 = 6490 s` signature they could not possibly
+carry, and would have reported them clean for the wrong reason. It now reads
+the as-run values from the committed `league-commander-config.json`. This is
+the `§10` shape once more — *read the field that reports the event* — and the
+general form is worth stating: **an analysis of committed records must read the
+instrument that produced them, never the one the repo ships today.**
+
+### An eighth constant nobody had listed
+
+Issue #42's audit table names six client timeouts; `c16` found the fan-out wait
+deadline it had missed, making seven, and plan task `t2` was scoped against
+those seven. `tests/test_timeout_bounds.py` closes the category by **AST**
+rather than by list — every module-level float in `examples/` whose name looks
+like a timeout or a deadline must be walked — and it immediately turned up an
+eighth: `examples/worker_scoped_overhead.py`'s `BATCH_WAIT_TIMEOUT_SECONDS`,
+which landed with `t8`'s probe after the audit was written and inherited a
+sibling's value.
+
+It passes (bound 231.0 s against a shipped 300.0). The point is that nothing
+had checked, four days after an audit whose entire subject was underived
+clocks. A list somebody maintains goes stale the first time it is not
+maintained; a category that closes itself does not.
+
+---
+
+## 12. I published a defect against the width rung that the rung's own records refute
+
+**Found by `t14`, hours after writing it.** `drone-economics.md` §"The same gap,
+found twice in one hour" correctly established that `examples/arch_hive.py`
+defines `wire_extra(thinking)` and never calls it, so its declared thinking mode
+never reaches the wire. It then extended that finding one step too far:
+
+> What is **not** true is that the harness *pinned* it: the mode came from the
+> server's default, not from the committed sampling table, so the reproduction
+> instruction is unenforced.
+
+**The width rung's records say the opposite, in every cell.** The rung does not
+dial through `arch_hive`'s factory. Its driver
+[`bee-hive-width-raw/drive.py`](bee-hive-width-raw/drive.py) defines a
+`WireSeam` that merges `config.wire_extra(sampling.thinking)` inside `_post`,
+then reads `last_body` back and asserts what actually went out. All **48 of 48**
+cells carry `thinking_wire = {"chat_template_kwargs": {"enable_thinking":
+false}}` and `thinking_wire_asserted: true`. Zero cells recorded otherwise.
+
+### Why this one is worth its own entry
+
+The direction of the error is the unusual part. Nearly every other entry in this
+file is a claim that flattered the work — a grader that scored too kindly, a
+guard that certified something it did not check, a figure restated from memory
+in the favourable direction. **This one was too harsh**, and that makes it a
+different failure with the same root: a conclusion drawn from reading one
+module's source instead of from the records the run actually produced.
+
+It is also self-refuting in a useful way. The very discipline the paragraph said
+was missing — *assert what went on the wire, never assume it* — is implemented,
+executed and recorded 48 times in the artifact being criticised. The
+pre-registration required it (§6), the driver implemented it, the records prove
+it, and the prose asserted its absence anyway.
+
+### What it does not change
+
+- The `arch_hive` defect is **real and still open**. `build_worker_factory`
+  takes `dial` and `sampling` only; there is nowhere to put `wire_extra`'s
+  result, so `arch-hive-sampling.json`'s `thinking` field is inert **for that
+  harness**.
+- The drone lane's defect is **real and still open**. `examples/drone_host.py`
+  builds a plain `WorkerSeam`, which has no thinking parameter at all — that is
+  why the second evocation cost 511 completion tokens per scoped call against
+  `t8`'s ~15.
+- The width rung's numbers were never in doubt in either direction: 14.21
+  completion tokens per call across 7,200 calls is thinking-off arithmetic
+  whether or not anything pinned it. What moved is the *provenance* of that
+  setting — from "inherited from a server default" to "declared, sent, and
+  asserted".
+
+**The lesson, stated so it generalises:** a defect found by reading source must
+still be checked against the records of any run it is claimed to affect. Source
+tells you what one code path does; the run's records tell you which path ran.
+Here they disagreed, and the records were right.
+
+---
+
+## 13. The drone tier shipped a surface check that read outside the repo — and a drone that answered about the wrong tree
+
+**Found by automated review on [PR #49](https://github.com/agentculture/embodiment/pull/49),
+then verified adversarially rather than taken at face value.** Four findings were
+filed; **two were real, one was real-but-overstated, and one was a false positive
+refuted by measurement.** All four are recorded, because a triage that only lists
+the confirmed ones teaches the wrong lesson about automated review.
+
+### 13.1 The `glob` surface kind bypassed its own containment guard — REAL
+
+`_resolve_under` exists for one stated reason, in its own docstring:
+
+> Manifests are model-written, so an ``assumed_surface`` entry of ``/etc`` or
+> ``../../secrets`` is a thing that can happen.
+
+`path` and `contains` routed through it. **`glob` did not** — it called
+`root.glob(value)` and returned before containment was ever applied. So a
+manifest declaring `{"kind": "glob", "value": "../*.pem"}` got a confident
+`held: true` **because a file outside the repository existed**.
+
+The blast radius is worth stating precisely rather than inflating: it is an
+**existence oracle, one bit per manifest entry**. `SurfaceCheck` stores the
+*pattern*, never the matched path, so no filename is echoed back and no content
+is read — content reading lives in the `contains` branch, which *was* contained.
+
+What makes it worth a security label is **where it runs**. `check_surface` is
+called by `drone list`, which is gated by nothing: not
+`$EMBODIMENT_DRONES_ENABLED`, not `--stale-ok`, and it never executes
+`drone.py`. `list`'s whole design claim is that it makes a drone's state visible
+*without running it*. So this was the one place in the tier where **a manifest
+alone, with the executor off, reached the filesystem** — a small capability the
+stated threat model does not grant, and therefore not covered by "runs
+model-written Python in-process with no sandbox".
+
+**And it broke `c45`, which nobody had noticed.** `Path.glob` raises
+**`NotImplementedError`** on an absolute pattern. The branch caught
+`(OSError, ValueError)`. So `{"kind": "glob", "value": "/etc/pass*"}` escaped
+`check_surface`'s never-raise promise, escaped `invoke`, and the run left **no
+ledger record at all** — the audit trail deleted for its own evocation by a
+manifest string. That is the property the entire tier's safety story rests on.
+
+Fixed with containment applied **twice**: the pattern is refused structurally
+before it is walked (so an escaping pattern never costs a traversal), and each
+match is re-checked with `_resolve_under` after (so an in-repo symlink cannot
+launder an escape back in). The `except` widened to `Exception`, deliberately,
+as second line of defence. Pinned by `tests/test_drone_surface_containment.py`,
+including a **test-of-the-test** that the secret really is reachable without the
+guard — otherwise every case would pass against a threat that was not there.
+
+### 13.2 The shipped drone answered about whichever tree you were standing in — REAL
+
+`.drones/index-gaps/drone.py` read `request.args.get("repo", "")` and never
+touched `request.root`, so with no `--arg repo=…` every path resolved against
+the **process CWD**. Demonstrated with the same drone, the same `root`, and only
+the CWD changed:
+
+| CWD | surface | answer |
+|---|---|---|
+| the checkout | `ok`, 2 assumptions hold | "Found 2 unlinked" |
+| a sibling worktree | `ok`, 2 assumptions hold | "Found 6 unlinked" |
+| `/tmp` | `ok`, 2 assumptions hold | `cannot: README.md not found` |
+
+The middle row is the sharp one. The harness verified the surface **under the
+main checkout** and printed `surface: ok` on the same record where the drone
+answered about a **different tree**. Outcome `answered`, exit 0.
+
+This is `check_surface`'s stated failure class reached from the other side: the
+check is right, and the drone is looking somewhere else. Fixed in the drone
+(`request.args.get("repo") or str(request.root)`); the manifest's
+`source_sha256` was re-derived, so the artifact measured in
+[`drone-economics.md`](drone-economics.md) now carries a different content hash
+than the run recorded there. The measured numbers are unaffected — that run
+passed `repo` explicitly — but the hash moved and saying so here is the point of
+having a hash.
+
+### 13.3 CLI root not validated — REAL BUT OVERSTATED
+
+The report said an unusual `--drones-dir` would make the drone *run* against an
+unintended root and *possibly write markers outside the checkout*. Checking it:
+
+- **"the drone runs"** — usually it does not. A wrong root makes `path`/`contains`
+  checks fail, so the staleness guard refuses **before a byte executes**. This
+  fails *closed*. The genuine residual is narrower: an `assumed_surface` of `[]`
+  is valid, reports `unverifiable` rather than `stale`, and therefore runs.
+- **"writing markers outside the checkout"** — **not supported.** `invoke` derives
+  the ledger from `drone.home.parent`, never from `root`. Confirmed by directory
+  listing: the only file written was `<drones-dir>/.evocations.jsonl`.
+
+Left as filed rather than fixed: the real cost is a *misleading* refusal, where
+`stale` names the drone as the problem when the root is.
+
+### 13.4 Ledger writes not serialized — FALSE POSITIVE
+
+The report said concurrent evocations could interleave into garbled lines.
+Measured instead of argued. `append_evocation` does one `json.dumps` and one
+`write`, in `"a"` mode, so `O_APPEND` is set:
+
+| processes | records | avg record | torn lines |
+|---:|---:|---:|---:|
+| 8 | 3,200 | 620 B | **0** |
+| 8 | 1,600 | 6.6 KB | **0** |
+| 12 | 1,200 | 60 KB | **0** |
+
+`strace` showed exactly **one** `write(2)` per record at every payload size from
+1 KB to 100 KB — Python's buffered writer hands an over-sized payload to the raw
+layer whole rather than chunking it. And the report's own framing pointed at the
+wrong invariant: `PIPE_BUF` bounds atomicity for **pipes**, not regular files,
+where the guarantee comes from the kernel's inode lock and is size-independent.
+Real records are 841–1,222 bytes.
+
+Adding `flock` here would be cargo-cult locking against a race the platform
+already prevents. **Two narrow residuals recorded so they are not rediscovered
+as this finding:** `O_APPEND` is not atomic over NFS (nothing here ships that
+way), and a partial write followed by `ENOSPC` leaves a truncated line that
+`read_ledger` then **discards silently** — which needs no concurrency at all,
+and is a different and better finding than the one filed.
+
+### The lesson
+
+**Verify an automated finding against the running code before acting on it, and
+report the refutations as loudly as the confirmations.** Two of these four would
+have produced changes this codebase did not need — one of them a lock. The one
+that mattered most was also the one the report *under*-stated: it named the
+traversal and missed that the same defect broke the never-raise contract and the
+audit trail with it.

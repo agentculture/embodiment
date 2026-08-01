@@ -64,6 +64,7 @@ def _argv_has_json(argv: list[str] | None) -> bool:
 def _build_parser() -> argparse.ArgumentParser:
     from embodiment.cli._commands import cli as _cli_group
     from embodiment.cli._commands import doctor as _doctor_cmd
+    from embodiment.cli._commands import drone as _drone_group
     from embodiment.cli._commands import explain as _explain_cmd
     from embodiment.cli._commands import learn as _learn_cmd
     from embodiment.cli._commands import overview as _overview_cmd
@@ -88,6 +89,7 @@ def _build_parser() -> argparse.ArgumentParser:
     _overview_cmd.register(sub)
     _doctor_cmd.register(sub)
     _cli_group.register(sub)
+    _drone_group.register(sub)
     # Register your own noun groups here:
     #   from embodiment.cli._commands import my_noun as _my_noun_group
     #   _my_noun_group.register(sub)

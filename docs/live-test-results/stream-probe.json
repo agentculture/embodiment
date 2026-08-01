@@ -1,0 +1,42 @@
+[
+ {
+  "thinking": true,
+  "total_seconds": 43.45,
+  "time_to_first_chunk": 0.263,
+  "max_inter_chunk_gap": 0.124,
+  "mean_inter_chunk_gap": 0.111,
+  "chunks": 390,
+  "reasoning_deltas": 0,
+  "content_deltas": 2,
+  "first_reasoning_at": null,
+  "first_content_at": 43.221,
+  "finish_reason": "stop",
+  "usage_in_terminal_chunk": true,
+  "usage": {
+   "prompt_tokens": 44,
+   "total_tokens": 1145,
+   "completion_tokens": 1101
+  },
+  "unparsed_frames": 0
+ },
+ {
+  "thinking": false,
+  "total_seconds": 18.16,
+  "time_to_first_chunk": 0.248,
+  "max_inter_chunk_gap": 0.116,
+  "mean_inter_chunk_gap": 0.1099,
+  "chunks": 164,
+  "reasoning_deltas": 0,
+  "content_deltas": 161,
+  "first_reasoning_at": null,
+  "first_content_at": 0.248,
+  "finish_reason": "stop",
+  "usage_in_terminal_chunk": true,
+  "usage": {
+   "prompt_tokens": 46,
+   "total_tokens": 514,
+   "completion_tokens": 468
+  },
+  "unparsed_frames": 0
+ }
+]

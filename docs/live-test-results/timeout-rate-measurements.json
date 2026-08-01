@@ -1,0 +1,362 @@
+{
+  "kind": "timeout-rate-measurements",
+  "version": 1,
+  "frame": "error-derived-timeouts-bee-hive-architecture",
+  "task": "t1, extended by t2",
+  "covers": ["c39", "h27", "c40", "c13", "h5"],
+  "read_by": "tests/rate_config.py",
+  "procedure": "timeout-rate-measurements.md",
+  "why": [
+    "This file is an INPUT, not a run artifact -- the arch-arms-sampling.json",
+    "pattern, for a closely related reason. Issue #42 fixed the timeout rule:",
+    "REQUEST_TIMEOUT >= max_tokens / slowest_measured_generation_rate. The rule",
+    "is only as good as the rate on its right-hand side, and the challenge pass",
+    "found two ways that input goes wrong.",
+    "",
+    "c39 -- a bare rate literal in test code goes STALE SILENTLY. The rig",
+    "changes, the literal does not, and nothing fails: the bound quietly stops",
+    "protecting (or starts over-protecting) and nobody is told. That is not",
+    "hypothetical here. The cortex rate below was measured on",
+    "unsloth/Qwen3.6-27B-NVFP4, while culture.yaml and every examples/*.py",
+    "default name sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP -- a DIFFERENT",
+    "build. Pre-registration section 1 already states the rule that follows:",
+    "'a run whose recorded cortex id is not the probed id does not inherit this",
+    "section's capability facts'. Same discipline applies to its rate.",
+    "",
+    "c40 -- the rate is CONDITION-DEPENDENT. 21.5 tok/s was measured",
+    "single-stream against a server that admits two concurrent sequences; the",
+    "worker's per-call rate falls from 76.4 to 29.8 tok/s between width 1 and",
+    "width 14. A rate with no stated concurrency is not a measurement. So every",
+    "entry below carries a condition object, and the worker carries one",
+    "measurement per width actually dialled rather than a single headline.",
+    "",
+    "tests/rate_config.py is the only way in, and it defines NO fallback: a",
+    "missing file raises and names this file plus the re-derivation procedure.",
+    "A rate that appears when the measurement is gone is a rate nobody took.",
+    "",
+    "TASK t2 ADDED TWO THINGS, both because t4 found the audit's framing was",
+    "thinner than it read (corrections.md section 9).",
+    "",
+    "(1) THE MUSE ROLE. A constant fronts EVERY model dialled through it, not",
+    "the one whose rate someone happened to have. examples/league_commander.py",
+    "dials Gemma 4 31B through the same REQUEST_TIMEOUT as the Qwen cortex, and",
+    "#42 derived that bound at the cortex rate alone -- so a bound that read as",
+    "the narrowest PASSING margin in the audit (1.21x) was in fact 0.68x and",
+    "BELOW BOUND for the other model on the same wire. league_h2h, muse_arms",
+    "and devague_legs dial the same model. Four of the seven audited constants",
+    "had no committed rate for a model they front.",
+    "",
+    "(2) THE NON-GENERATION ALLOWANCE. max_tokens / tok_s bounds GENERATION",
+    "only, and a request's clock also covers queue wait and prompt processing.",
+    "One committed call spent 179.3 s not generating. A bound that ignores that",
+    "is a bound that cuts a full-budget completion queued behind a slow one --",
+    "which is the exact failure this whole lane exists to close, one term short."
+  ],
+  "rule": {
+    "formula": "REQUEST_TIMEOUT >= max_tokens / slowest_measured_generation_rate",
+    "source": "issue #42, and orchestrator-worker-preregistration.md section 18 (amendment 1) where it was first applied",
+    "why": [
+      "Derived from the BUDGET, never from a latency percentile. A percentile is",
+      "sized from a tail the current timeout may already have censored -- the",
+      "exact defect amendment 1 found: eight completions all landed under the",
+      "~6,975-token ceiling that 300 s at ~23 tok/s implies, because the ones",
+      "above it could not be recorded, while every call logged truncated: false.",
+      "Above the bound an over-long turn self-reports as finish_reason ==",
+      "'length'. Below it the identical turn vanishes into a transport retry.",
+      "The budget must be the binding constraint, because the budget is the one",
+      "that reports itself."
+    ]
+  },
+  "non_generation_allowance": {
+    "seconds": 179.2564,
+    "cited_as": 179.3,
+    "measured_on": "2026-07-31",
+    "measured_role": "cortex",
+    "measured_model": "sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP",
+    "call": "A-qwen-2, 193.609 s of wall clock for 365 completion tokens",
+    "why": [
+      "THE BOUND IS GENERATION-ONLY AND THE CLOCK IS NOT. max_tokens / tok_s",
+      "answers 'how long does generating the whole budget take'. A client",
+      "timeout also covers the time before generation starts: queue wait behind",
+      "another sequence, and prompt processing. corrections.md section 9 found a",
+      "committed call where that gap was 179.3 s -- computed as wall clock minus",
+      "completion_tokens / the fastest implied rate in the same 160-call series,",
+      "so it is a residual over the model's own best observed speed rather than",
+      "an estimate. league_commander's 900 s over a 744 s generation bound left",
+      "155.8 s, LESS than that observed gap: a full-budget completion arriving",
+      "behind the same queue would total ~923 s and be cut, by a constant the",
+      "audit had recorded as passing.",
+      "",
+      "ONE FIGURE, APPLIED REPO-WIDE. It was measured on the cortex through the",
+      "spark gateway and is used for every role, because it is the only such",
+      "measurement that exists. That over-protects wherever the true gap is",
+      "smaller -- the safe direction for a bound whose failure mode is",
+      "censoring -- and it is stated here rather than left implicit in a number.",
+      "",
+      "IT IS NOT ADDED WHERE THE RATE ALREADY CONTAINS IT. A role whose measured",
+      "rate is wall-clock-over-tokens on short completions has queue and prefill",
+      "already amortised into it; adding the allowance there double-counts. That",
+      "is the rate_includes_non_generation flag below, and tests/",
+      "test_timeout_bounds.py does not take the claim on trust: it only lets the",
+      "allowance be absorbed when the cited rate is demonstrably slower than the",
+      "role's own retry-clean floor by at least the allowance, at that budget.",
+      "The check is per (budget, role) pair because the rate's conservatism",
+      "scales with the budget while queue wait does not."
+    ],
+    "remeasure_when": [
+      "a harness can put a second concurrent request on the same server -- queue",
+      "wait is what this figure is, and concurrency is what produces it",
+      "the gateway, its admission limits or its proxying topology change",
+      "a longer non-generation interval is observed in any committed record; this",
+      "is a measured maximum, not a modelled one"
+    ],
+    "sources": [
+      "docs/live-test-results/corrections.md",
+      "docs/live-test-results/league-commander-transcripts.jsonl",
+      "docs/live-test-results/league-commander-frontier-transcripts.jsonl"
+    ]
+  },
+  "roles": {
+    "cortex": {
+      "model": "unsloth/Qwen3.6-27B-NVFP4",
+      "base_url": "http://localhost:8001/v1",
+      "measured_on": "2026-08-01",
+      "max_tokens": 16000,
+      "n_calls": 10,
+      "n_rate_bearing": 8,
+      "slowest_tok_s": 21.452,
+      "mean_tok_s": 23.249,
+      "fastest_tok_s": 25.448,
+      "aggregate_tok_s": 22.992,
+      "cited_as": 21.5,
+      "cited_fastest_as": 25.4,
+      "rate_includes_non_generation": false,
+      "rate_includes_non_generation_why": [
+        "Measured single-stream on a free lane -- the condition below records that",
+        "the server's second seat was never occupied -- so these figures contain",
+        "no queue wait to speak of. The 179.3 s gap the allowance carries was",
+        "observed on this same model through the same gateway in a DIFFERENT",
+        "series, so the exposure is real and this rate does not cover it."
+      ],
+      "condition": {
+        "concurrency": 1,
+        "server_max_num_seqs": 2,
+        "description": "single-stream: one driver, one cell at a time, one request in flight. The vLLM server admits 2 concurrent sequences (--max-num-seqs=2, visible in its ps line) but the second seat was never occupied during this measurement.",
+        "host": "spark (local)",
+        "contention": "none. An earlier reading blamed a four-day-old `reachy behavior engine run` connection; reachy dials coolthor/gemma-4-12B-it-NVFP4A16 (senses), pinned in $XDG_CONFIG_HOME/environment.d/10-reachy-llm.conf, and never the cortex. Corrected in corrections.md section 5."
+      },
+      "remeasure_when": [
+        "the cortex model id changes -- and it has: the harnesses default to sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP, which is NOT the build measured here. A bound derived from this rate for that model is an assumption, not a derivation.",
+        "any harness can put two concurrent requests on the cortex. --max-num-seqs=2 means a second stream is admitted, not queued, so per-stream rate under contention can fall below this floor. No harness does this today (the B and P arms deliberately avoid it), which is why concurrency 1 is honest right now and not forever.",
+        "the server's launch flags change (--max-num-seqs, quantisation, MTP on/off, KV cache size)",
+        "the box gains a second real tenant on port 8001"
+      ],
+      "caveats": [
+        "The per-call rates are computed AFTER removing retry overhead: generation seconds = recorded seconds - retries * (300 s timeout + 20 s backoff), the arithmetic section 18 states and this file reproduces. The uncorrected wall-clock-over-tokens figure spans 5.0-25.4 tok/s and is an artifact of the 300 s timeout, not a measurement of throughput -- corrections.md section 5 records that misdiagnosis by name.",
+        "n = 10 calls but only 8 bear a rate: two exhausted all four attempts and returned zero tokens (finish_reason transport_failure), so they have no rate to contribute. Both land on 4 x 300 + 3 x 20 = 1260.0 s against 1260.4 and 1260.3 observed.",
+        "The residual 1.19x spread tracks completion length (3,741 tokens at 25.4 tok/s, 6,372 at 22.2) -- ordinary decode slowdown as the KV cache grows, not a neighbour.",
+        "Measured with thinking on and temperature 0.3, on the C1-E cell of the orchestrator-worker series (an easy correctness task). A harder rung is not expected to change tok/s -- it changes how many tokens are generated, which is what max_tokens bounds."
+      ],
+      "sources": [
+        "docs/live-test-results/corrections.md",
+        "CHANGELOG.md"
+      ],
+      "pending_sources": [
+        "docs/live-test-results/orchestrator-worker-preregistration.md section 18 ('Amendment 1 -- the request timeout, raised on measured evidence') carries the full ten-row per-call table. It is on branch owa/t12 (commit 25a65b7) and reaches main only when that branch merges.",
+        "docs/live-test-results/orchestrator-worker-series-raw/superseded/C1-E-at-300s.jsonl is the raw record set these figures recompute from. Also owa/t12 only. Until it lands, the worker entry below is the only role whose numbers a test on main can re-derive from committed raw data -- stated here rather than left for a reader to discover."
+      ]
+    },
+    "worker": {
+      "model": "unsloth/Qwen3.6-35B-A3B-NVFP4",
+      "base_url": "http://thor.tail0be7e0.ts.net:8000/v1",
+      "measured_on": "2026-07-31",
+      "max_tokens": 1200,
+      "n_calls": 51,
+      "n_rate_bearing": 51,
+      "slowest_tok_s": 12.921,
+      "mean_tok_s": 38.873,
+      "fastest_tok_s": 77.59,
+      "rate_includes_non_generation": true,
+      "rate_includes_non_generation_why": [
+        "The caveats below say it in this file's own words: even retry-clean, the",
+        "slowest per-call rates at high width include fixed per-call overhead --",
+        "queueing and prefill -- amortised over a short completion, because the",
+        "harness does not parse SSE and cannot separate time-to-first-token from",
+        "decode time. So this rate is a wall-clock floor, not a marginal",
+        "generation rate, and adding a queue allowance on top double-counts.",
+        "The claim is CHECKED rather than believed: tests/test_timeout_bounds.py",
+        "absorbs the allowance only where max_tokens / 12.921 is at least",
+        "max_tokens / (the retry-clean floor below) plus the allowance. At 16000",
+        "tokens that holds with room to spare; at 1200 it does not, and the",
+        "allowance is added there. Same role, same rate, different answer,",
+        "because the rate's conservatism scales with the budget and queue wait",
+        "does not."
+      ],
+      "condition": {
+        "concurrency": 14,
+        "description": "the headline slowest is the floor across ALL dialled widths (1, 2, 8, 14) and occurs at width 14. It is not a single-stream number and must never be read as one -- by_width below is the measurement; this headline is the conservative envelope.",
+        "host": "thor (remote, Tailscale)",
+        "contention": "none from this repo: every call in the sweep dialled Thor exclusively and nothing on spark was touched. Thor's own other tenants, if any, are not observable from here."
+      },
+      "remeasure_when": [
+        "a harness dials a width not in by_width -- rates are not interpolated; tests/rate_config.py refuses",
+        "the worker model id or Thor's server flags change",
+        "completion length moves far from the 1200-token budget measured here: at high width the fixed per-call cost is amortised over the completion, so short completions read slower per token (see caveats)",
+        "a second consumer of Thor appears"
+      ],
+      "caveats": [
+        "THE SLOWEST PER-CALL RATES AT WIDTH 14 ARE RETRY-CONTAMINATED. 9 of the 28 width-14 calls carry retries: 1, and examples/worker_throughput.py measures latency_seconds around the WHOLE call -- including examples/worker_seam.py's RETRY_SLEEP_SECONDS = 20.0 backoff. Subtracting exactly 20.0 s from those nine rows lifts them to 35.8-44.5 tok/s, back into the width-8/14 band; and all nine are strictly slower than every retry-clean width-14 call (floor 30.558). That is the same wall-clock-including-retry-overhead artifact corrections.md section 5 corrected for the cortex, one rig over. slowest_retry_clean_tok_s is recorded per width beside the raw floor so a reader can choose.",
+        "docs/live-test-results/worker-throughput.md's 'Sustained-load stability' section states 'Zero errors, zero timeouts, zero transport retries' and that WorkerSeam's 'bounded retry path ... was never exercised for real'. The committed raw records contradict this: 9 of 51 measured calls retried once. The write-up's other claims (zero errors, zero timeouts, 52/52 ok) hold. Recorded here because this file publishes a number that depends on it; routing the correction is not t1's to do.",
+        "Even retry-clean, the slowest per-call rates at high width include fixed per-call overhead -- queueing and prefill -- amortised over a short completion, because this harness does not parse SSE and so cannot separate time-to-first-token from decode time (its own stated limitation). They are therefore a CONSERVATIVE FLOOR for long generations, not a marginal generation rate. The two full-budget calls (finish_reason == 'length', 1200 tokens) are the least contaminated reading available at width 14: 33.861 and 33.483 tok/s.",
+        "Deriving a bound from 12.921 over-protects by roughly 2.4x against the retry-clean width-14 floor. That is the safe direction and is deliberate: an over-long timeout costs only when something is genuinely hung, while an under-long one censors the evidence -- which is the defect this whole lane exists to close.",
+        "The warm-up call (recorded with width 0) is excluded from every figure here, matching the harness's own warm-up policy.",
+        "Rates in the raw jsonl are rounded to three decimals at write time, so a recomputed mean can differ from worker-throughput-summary.json's in the last digit; the summary computed from unrounded in-memory values."
+      ],
+      "by_width": {
+        "1": {
+          "n_calls": 3,
+          "slowest_tok_s": 74.129,
+          "mean_tok_s": 76.426,
+          "fastest_tok_s": 77.59,
+          "retry_bearing_calls": 0,
+          "slowest_retry_clean_tok_s": 74.129,
+          "note": "the single-stream baseline everything else is measured against"
+        },
+        "2": {
+          "n_calls": 4,
+          "slowest_tok_s": 60.405,
+          "mean_tok_s": 64.001,
+          "fastest_tok_s": 66.846,
+          "retry_bearing_calls": 0,
+          "slowest_retry_clean_tok_s": 60.405
+        },
+        "8": {
+          "n_calls": 16,
+          "slowest_tok_s": 38.678,
+          "mean_tok_s": 41.4,
+          "fastest_tok_s": 44.778,
+          "retry_bearing_calls": 0,
+          "slowest_retry_clean_tok_s": 38.678,
+          "note": "saturation width -- effective concurrency 6.14, 77% of ideal. worker-throughput.md is the sizing authority and names this as the width to prefer."
+        },
+        "14": {
+          "n_calls": 28,
+          "slowest_tok_s": 12.921,
+          "mean_tok_s": 29.816,
+          "fastest_tok_s": 42.622,
+          "retry_bearing_calls": 9,
+          "slowest_retry_clean_tok_s": 30.558,
+          "note": "the advertised x14. Effective concurrency 8.99 (64% of ideal), and the only two truncated completions in the series happened here. All nine retry-bearing calls in the whole sweep are at this width, and all nine are slower than every retry-clean call at it."
+        }
+      },
+      "sources": [
+        "docs/live-test-results/worker-throughput.jsonl",
+        "docs/live-test-results/worker-throughput.md",
+        "docs/live-test-results/worker-throughput-summary.json"
+      ],
+      "pending_sources": []
+    },
+    "muse": {
+      "model": "nvidia/Gemma-4-31B-IT-NVFP4",
+      "base_url": "http://localhost:8001/v1",
+      "measured_on": "2026-07-31",
+      "max_tokens": 16000,
+      "n_calls": 224,
+      "n_rate_bearing": 224,
+      "slowest_tok_s": 5.1745,
+      "mean_tok_s": 9.5742,
+      "fastest_tok_s": 12.1026,
+      "aggregate_tok_s": 9.588,
+      "bound_input": {
+        "from": "fastest_tok_s",
+        "tok_s": 12.1026,
+        "cited_as": 12.1,
+        "why": [
+          "THE DIVISOR IS THE FASTEST IMPLIED RATE, NOT THE SLOWEST, AND THAT IS",
+          "DELIBERATE -- it is the only reading of this instrument that is a rate",
+          "at all. Every call here is 31-236 completion tokens, so implied rate",
+          "(completion_tokens / seconds) is dominated by FIXED cost: the slowest",
+          "call, 5.17 tok/s, is a 31-token completion whose 6 s of wall clock is",
+          "mostly the 1.61 s fixed cost the regression below separates out plus",
+          "queue. Extrapolating 5.17 tok/s to a 16000-token budget claims 3092 s",
+          "for a generation the regression puts at ~1187 s -- a 2.6x inflation",
+          "produced by treating a one-off cost as a per-token cost. That is not",
+          "conservatism, it is a category error, and it would be a different way",
+          "of getting the number wrong rather than a safe one.",
+          "",
+          "The FASTEST implied rate is the honest floor: queue wait and prompt",
+          "processing can only push implied rate DOWN, so the fastest call is the",
+          "least-contaminated observation and still a lower bound on the true",
+          "generation rate. corrections.md section 9 published exactly this",
+          "figure and derived 16000 / 12.1 = 1322 s from it.",
+          "",
+          "Two independent checks agree. The regression over all 224 points --",
+          "0.07407 s/token, fixed 1.610 s, r-squared 0.8142 -- gives 13.5 tok/s",
+          "marginal, FASTER than the divisor, so the divisor is the conservative",
+          "of the two. And league-h2h.jsonl's 36 Gemma seat-turns, a different",
+          "harness on a different week, put the fastest implied rate at 12.238",
+          "tok/s. Two instruments agreeing on a rate is worth more than either."
+        ]
+      },
+      "rate_includes_non_generation": false,
+      "rate_includes_non_generation_why": [
+        "The divisor is the FASTEST implied rate, which is by construction the",
+        "call with the least queue and prefill in it -- so the queue exposure is",
+        "excluded from the divisor and has to be carried separately."
+      ],
+      "condition": {
+        "concurrency": 1,
+        "description": "one match at a time, one call in flight: examples/league_commander.py plays matches sequentially and issues one decision call per idle unit. Both models in the series share the spark gateway, so a Gemma call can queue behind a Qwen one -- which is where the non-generation allowance figure came from, measured in this same series.",
+        "host": "spark (local gateway), model proxied",
+        "contention": "within-series only. The two arms alternate models on one gateway; nothing outside the series was dialling it."
+      },
+      "remeasure_when": [
+        "a harness dials this model on completions materially longer than 236 tokens -- THE STANDING GAP HERE. Extrapolating a 236-token measurement to a 16000-token budget is a ~68x extrapolation on a narrow fit, and the first long-completion Gemma record this repo commits should replace this entry rather than confirm it.",
+        "the muse model id changes, or it stops being proxied and becomes local -- this figure includes a network hop the cortex's does not",
+        "the gateway's admission limits change"
+      ],
+      "caveats": [
+        "MEASURED OVER SHORT COMPLETIONS. 31-236 tokens, median 45. Gemma's largest completion in 384 calls was 236 tokens, 1.5% of the 16000-token budget the bound is derived for, so nothing here observes the model near its cap. The bound is what the budget IMPLIES at this rate, not a rate measured at that budget.",
+        "PROXIED, NOT LOCAL. On this rig Gemma 4 31B is reached through the spark gateway rather than served on the box, so this rate includes a network hop the cortex's does not. That makes it conservative for the bound and wrong for any claim about the model itself.",
+        "Zero retries and zero transport errors across all 224 calls, so unlike the worker entry nothing here is retry-contaminated. corrections.md section 9 is the re-exam that established that.",
+        "The role is named 'muse' because that is the lobes role this model serves on the reference rig. It is NOT dialled as a muse in every harness that fronts it -- league_h2h runs it as the acting cortex in the full-gemma arm, league_commander as a commander or a unit. The role name identifies the MODEL whose rate this is; what a harness asks it to do does not change how fast it generates."
+      ],
+      "sources": [
+        "docs/live-test-results/corrections.md",
+        "docs/live-test-results/league-commander-transcripts.jsonl",
+        "docs/live-test-results/league-commander-frontier-transcripts.jsonl",
+        "docs/live-test-results/league-commander.md"
+      ],
+      "pending_sources": []
+    }
+  },
+  "unmeasured_roles": {
+    "why": [
+      "A ROLE A CONSTANT FRONTS BUT NOBODY HAS TIMED. Listed rather than",
+      "omitted, because an omission reads as coverage. tests/",
+      "test_timeout_bounds.py asserts every entry here is complete AND fails the",
+      "moment the role gains a measurement above -- so the gap closes when the",
+      "rate lands instead of being remembered."
+    ],
+    "senses": {
+      "model": "coolthor/gemma-4-12B-it-NVFP4A16",
+      "fronted_by": ["examples/worker_seam.py:REQUEST_TIMEOUT"],
+      "max_tokens": 16000,
+      "reached_through": "examples/arch_arms.py's ArchSeam subclasses worker_seam.WorkerSeam, and examples/arch_vision.py dials the senses role through it at the senses cell of arch-arms-sampling.json (max_tokens 16000).",
+      "why_unmeasured": [
+        "No committed record times this model. It is constant across every arm of",
+        "the architecture series and NOT dialled by the text-only rungs, so the",
+        "series that would have produced a rate never put it on the wire.",
+        "",
+        "No proxy is substituted. Gemma 4 12B is a fifth the size of the 31B",
+        "whose rate IS committed, so 'a smaller model on the same rig cannot be",
+        "slower' is a plausible argument and still an argument, not a",
+        "measurement -- and a rate that appears where none was taken is exactly",
+        "c39. The consequence is stated instead: worker_seam.py's REQUEST_TIMEOUT",
+        "is proven against the cortex and the worker and is NOT proven against a",
+        "full-budget senses turn."
+      ],
+      "would_be_produced_by": "one width-1 pass of examples/worker_throughput.py against the senses model and base_url, committed the way the worker's was; or the first arch_vision run that records per-call seconds and completion tokens for the senses role"
+    }
+  }
+}

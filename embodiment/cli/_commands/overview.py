@@ -30,6 +30,9 @@ _VERBS = [
     "explain <path> — markdown docs for a topic",
     "overview — this descriptive snapshot",
     "doctor — check the agent-identity invariants",
+    "drone list — what drones exist, what each does, and how old they are",
+    "drone create <name> — author a drone; refuses to save one that fails its smoke run",
+    "drone evoke <name> — run a saved drone (runs model-written code in-process)",
 ]
 
 

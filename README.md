@@ -191,10 +191,87 @@ EMBODIMENT_LIVE_RIG=1 COLLEAGUE_API_KEY=… uv run pytest tests/test_demo_greenh
 | `overview` | Read-only descriptive snapshot of the agent. |
 | `doctor` | Check the agent-identity invariants (prompt-file-present, backend-consistency). |
 | `cli overview` | Describe the CLI surface itself. |
+| `drone create <name>` | Author a drone. Refuses to save one that fails its smoke invocation. |
+| `drone evoke <name>` | Run a saved drone. Off by default — needs `EMBODIMENT_DRONES_ENABLED=1`. |
+| `drone list` | What drones exist, what each does, how old, and whether their assumptions still hold. |
+| `drone overview` | Describe the drone surface and its threat model. |
 
 Every command supports `--json`. Results go to stdout, errors/diagnostics to
 stderr (never mixed). Exit codes: `0` success, `1` user error, `2` environment
 error, `3+` reserved.
+
+### Drones
+
+A **drone** is a named unit that does small-smart tasks — explore, review,
+search — as a mix of code and *minor* intelligence: deterministic logic for
+structure, traversal and bookkeeping, plus **scoped** calls to a worker where
+judgement is genuinely needed.
+
+A subagent re-derives its approach on every invocation: no drift, full cost
+every time. A drone pays the authoring cost **once** and then runs on code plus
+tens of tokens — fast, repeatable, and carrying staleness risk. Authoring costs
+one cortex turn (measured on this rig at 5,000–14,265 completion tokens and
+400–730 s), so a task done **once** is pure loss, **2–3 times** roughly breaks
+even, and a task done **often on a stable surface** wins by a widening margin.
+**A drone is worth creating when the task recurs and the surface is stable.**
+The failure mode is quiet waste, not a crash.
+
+Each drone is a committed, reviewable directory — model-written code that will
+run on someone else's checkout gets the same review a script would:
+
+```text
+.drones/<name>/
+  manifest.json    name, one-line description, purpose, author model/date/
+                   commit, the assumed surface, and every question it asks the
+                   worker with that question's answer schema
+  drone.py         the code the cortex wrote; entry point `run(request)`
+  README.md        what it does, when it is wrong, how to re-author it
+```
+
+`create` stages those three files, runs a **smoke invocation against the staged
+copy**, and saves only on a pass — *well-shaped is not runnable*, and a saved
+broken drone is a trap. The one-line description is required at create time,
+because a drone nobody can pick from `list` is dead weight that still cost a
+cortex turn.
+
+> **Threat model — stated, not implied by a name.** `drone evoke` **imports and
+> runs model-written Python in the calling process**, with exactly the
+> permissions that process already has. **There is no sandbox.** The manifest's
+> `capabilities` list is a *declaration for review*, not an enforcement
+> boundary — nothing in embodiment restricts what `drone.py` may do. Read
+> `drone.py` before evoking a drone you did not author. The network-less
+> workspace jail stays available for a host that wants it; it is not the
+> default.
+
+#### The four safeguards
+
+**Drones are opt-in and off.** A fresh checkout evokes nothing. `evoke` refuses
+until `EMBODIMENT_DRONES_ENABLED=1` is set, or a host passes `opt_in=` through
+the library. The design is unvalidated — [#44][i44]'s experiment has not run —
+and this repo's standing rule that a *measured* failure mode never ships as
+default behaviour has a mirror image: an **unmeasured** one does not either.
+
+**A stale drone refuses rather than reports.** Code written against a codebase
+encodes assumptions that expire, and the failure is not a crash: the drone keeps
+passing, authoritatively, on a check that no longer means anything. `list`
+re-checks each drone's declared `assumed_surface`, so a stale drone is visible
+**without being executed** — at the moment you are choosing one. `evoke` then
+refuses to run it (`--stale-ok` overrides). An assumption this build cannot
+re-check reads `unverifiable`, never `ok`.
+
+**Every evocation leaves a record.** Answers, "I cannot", refusals and harness
+failures alike append one JSON line to `.drones/.evocations.jsonl` carrying the
+drone name, the **sha256 of the bytes that ran**, whether they still match the
+hash the manifest recorded at authoring time, the declared capability set, and
+every scoped call with its acceptance. Because there is no sandbox, the record
+is the containment story — traceability, not tamper-proofing.
+
+**There is no escalation.** An undecidable case returns **"I cannot"**; v1 has
+no escalate-to-cortex path. That is the whole point of the cost model, and it is
+what keeps *a drone's second evocation makes zero cortex calls* exact, with no
+exception clause.
+
+[i44]: https://github.com/agentculture/embodiment/issues/44
 
 ## Where embodiment sits
 

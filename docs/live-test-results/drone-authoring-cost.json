@@ -1,0 +1,13 @@
+{
+ "kind": "drone-authoring-cost",
+ "model": "unsloth/Qwen3.6-27B-NVFP4",
+ "elapsed_seconds": 199.29,
+ "finish_reason": "stop",
+ "reasoning_chars": 16800,
+ "usage": {
+  "prompt_tokens": 347,
+  "total_tokens": 5132,
+  "completion_tokens": 4785
+ },
+ "source_lines": 38
+}

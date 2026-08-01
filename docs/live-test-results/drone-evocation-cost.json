@@ -1,0 +1,40 @@
+{
+ "runs": [
+  {
+   "run": 1,
+   "outcome": "answered",
+   "ran": true,
+   "calls_asked": 3,
+   "calls_accepted": 3,
+   "call_acceptance": 1.0,
+   "worker_calls": 3,
+   "prompt_tokens": 277,
+   "completion_tokens": 913,
+   "cortex_calls": 0,
+   "answer": "Found 3 unlinked markdown file(s) in docs/live-test-results/."
+  },
+  {
+   "run": 2,
+   "outcome": "answered",
+   "ran": true,
+   "calls_asked": 3,
+   "calls_accepted": 3,
+   "call_acceptance": 1.0,
+   "worker_calls": 3,
+   "prompt_tokens": 277,
+   "completion_tokens": 1532,
+   "cortex_calls": 0,
+   "answer": "Found 3 unlinked markdown file(s) in docs/live-test-results/."
+  }
+ ],
+ "verdict": {
+  "kind": "drone-evocation-cost",
+  "authoring_completion_tokens": 4785,
+  "second_evocation_completion_tokens": 1532,
+  "second_evocation_prompt_tokens": 277,
+  "ratio_of_authoring": 0.32017,
+  "target": 0.05,
+  "meets_target": false,
+  "cortex_calls": 0
+ }
+}
