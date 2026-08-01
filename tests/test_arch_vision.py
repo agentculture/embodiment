@@ -234,16 +234,18 @@ class TestRoutesAreCommittedConfig:
         def drop(raw: dict[str, Any]) -> None:
             del raw[av.CONFIG_KEY]["routes"][av.ROUTE_BOTH]
 
+        path = _config(tmp_path, drop)
         with pytest.raises(aa.ConfigError) as caught:
-            av.load_perception_config(_config(tmp_path, drop))
+            av.load_perception_config(path)
         assert av.ROUTE_BOTH in str(caught.value)
 
     def test_a_route_missing_its_declared_contents_raises(self, tmp_path: Path) -> None:
         def drop(raw: dict[str, Any]) -> None:
             del raw[av.CONFIG_KEY]["routes"][av.ROUTE_NATIVE]["cortex_receives"]
 
+        path = _config(tmp_path, drop)
         with pytest.raises(aa.ConfigError):
-            av.load_perception_config(_config(tmp_path, drop))
+            av.load_perception_config(path)
 
     def test_the_module_carries_no_fallback_route_table(self) -> None:
         """No dict in the code may map a route id to its contents.
@@ -312,7 +314,8 @@ class TestStageTwoCannotBeToldARoute:
         ]
         assert len(assignments) == 1, "the selection is assigned more than once"
         value = assignments[0].value
-        assert isinstance(value, ast.Call) and getattr(value.func, "id", "") == "select_route"
+        assert isinstance(value, ast.Call)
+        assert getattr(value.func, "id", "") == "select_route"
 
     def test_the_parameter_guard_would_catch_a_planted_route(self) -> None:
         """Vacuity guard: the AST scan must fail on a source that *does* take one."""
@@ -569,11 +572,13 @@ class TestFogScopingBindsEveryRoute:
         leaking = _senses_saying(f"I can clearly see {av.HIDDEN[0]['id']} to the east.")
         config = aa.load_config()
         log = aa.CallLog()
+        perception = av.load_perception_config()
+        seams = _seams(log, config, minds={aa.ROLE_SENSES: leaking})
         with pytest.raises(av.FogLeak) as caught:
             av.run_stage1(
                 config=config,
-                perception=av.load_perception_config(),
-                seams=_seams(log, config, minds={aa.ROLE_SENSES: leaking}),
+                perception=perception,
+                seams=seams,
                 log=log,
                 raw_dir=tmp_path / "raw",
                 out=tmp_path / "s1.jsonl",
@@ -684,8 +689,9 @@ class TestInformationMatchingExemption:
                 av.RULE_FOG_SCOPING
             )
 
+        path = _config(tmp_path, widen)
         with pytest.raises(aa.ConfigError) as caught:
-            av.load_perception_config(_config(tmp_path, widen))
+            av.load_perception_config(path)
         assert av.RULE_FOG_SCOPING in str(caught.value)
 
     def test_a_config_that_dropped_visibility_from_still_binds_is_refused(
@@ -694,8 +700,9 @@ class TestInformationMatchingExemption:
         def drop(raw: dict[str, Any]) -> None:
             raw[av.CONFIG_KEY]["information_matching_exemption"]["still_binds"] = []
 
+        path = _config(tmp_path, drop)
         with pytest.raises(aa.ConfigError):
-            av.load_perception_config(_config(tmp_path, drop))
+            av.load_perception_config(path)
 
     def test_the_exemption_is_what_the_routes_actually_need(self, tmp_path: Path) -> None:
         """The routes really do carry different information — hence the exemption."""

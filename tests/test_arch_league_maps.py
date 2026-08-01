@@ -181,8 +181,9 @@ class TestTheTwinRuleRefusesStructurally:
     def test_describe_raises_when_no_twin_was_ever_committed(self) -> None:
         ledger = alm.TwinLedger()
         route = alm.build_image_route(ledger)
+        brief = _rich_briefing()
         with pytest.raises(alm.MissingTwinError):
-            route.describe(_rich_briefing(), "bluee")
+            route.describe(brief, "bluee")
 
     def test_describe_raises_when_the_committed_twin_is_stale(self) -> None:
         ledger = alm.TwinLedger()
@@ -201,7 +202,8 @@ class TestTheTwinRuleRefusesStructurally:
         assert perception.route == alm.ROUTE_IMAGE
         assert perception.snapshot_hash == twin.snapshot_hash
         assert perception.snapshot_hash == mr.snapshot_hash(brief, "bluee")
-        assert perception.parts and perception.parts[0].startswith(mr.PNG_SIGNATURE)
+        assert perception.parts
+        assert perception.parts[0].startswith(mr.PNG_SIGNATURE)
 
     def test_the_scan_would_catch_a_planted_bypass(self) -> None:
         """Vacuity guard: prove the exception types themselves are distinguishable."""
@@ -214,6 +216,8 @@ class TestTheTwinRuleRefusesStructurally:
         cfg = _config()
         log = al.ThreadSafeCallLog()
         seams = al.scripted_seams(aa.ARMS[aa.ARM_EXISTING], config=cfg, log=log)
+        brief = _rich_briefing()
+        senses_hash = aa.assert_senses_identical(cfg)
         with alm.image_route_registered():
             with pytest.raises(alm.TwinError):
                 al.run_round(
@@ -224,10 +228,10 @@ class TestTheTwinRuleRefusesStructurally:
                     team_id="bluee",
                     round_index=0,
                     decision_base=0,
-                    briefings=[_rich_briefing()],
+                    briefings=[brief],
                     seams=seams,
                     config=cfg,
-                    senses_hash=aa.assert_senses_identical(cfg),
+                    senses_hash=senses_hash,
                     route=alm.ROUTE_IMAGE,
                 )
         assert log.records == [], "a refused twin must not still have dialled a mind"
@@ -237,6 +241,7 @@ class TestTheTwinRuleRefusesStructurally:
         log = al.ThreadSafeCallLog()
         seams = al.scripted_seams(aa.ARMS[aa.ARM_EXISTING], config=cfg, log=log)
         brief = _rich_briefing()
+        senses_hash = aa.assert_senses_identical(cfg)
         with alm.image_route_registered() as ledger:
             ledger.commit(_mutate_board(brief))
             with pytest.raises(alm.MismatchedTwinError):
@@ -251,7 +256,7 @@ class TestTheTwinRuleRefusesStructurally:
                     briefings=[brief],
                     seams=seams,
                     config=cfg,
-                    senses_hash=aa.assert_senses_identical(cfg),
+                    senses_hash=senses_hash,
                     route=alm.ROUTE_IMAGE,
                 )
         assert log.records == []
@@ -298,17 +303,19 @@ class TestTheTwinRuleRefusesStructurally:
         cfg = _config()
         log = al.ThreadSafeCallLog()
         seams = al.scripted_seams(aa.ARMS[aa.ARM_EXISTING], config=cfg, log=log)
+        cli = Recording(root=root, binary=FAKE_BIN)
+        senses_hash = aa.assert_senses_identical(cfg)
         with alm.image_route_registered():
             with pytest.raises(alm.TwinError):
                 al.play_match(
-                    cli=Recording(root=root, binary=FAKE_BIN),
+                    cli=cli,
                     arm=aa.ARMS[aa.ARM_EXISTING],
                     rung=al.LEAGUE_LADDER[0],
                     match_index=0,
                     seed=al.LEAGUE_LADDER[0].seeds[0],
                     seams=seams,
                     config=cfg,
-                    senses_hash=aa.assert_senses_identical(cfg),
+                    senses_hash=senses_hash,
                     route=alm.ROUTE_IMAGE,
                 )
         assert ("cmatch", "show") in seen, "the refusal happened too early to be about pairing"
@@ -394,10 +401,13 @@ class TestRegistrationHygiene:
         assert alm.ROUTE_IMAGE not in al.ROUTE_REGISTRY
 
     def test_the_context_manager_pops_even_on_exception(self) -> None:
-        with pytest.raises(RuntimeError):
+        def raise_inside_the_registration() -> None:
             with alm.image_route_registered():
                 assert alm.ROUTE_IMAGE in al.ROUTE_REGISTRY
                 raise RuntimeError("boom")
+
+        with pytest.raises(RuntimeError):
+            raise_inside_the_registration()
         assert alm.ROUTE_IMAGE not in al.ROUTE_REGISTRY
 
     def test_run_map_series_leaves_no_trace_in_the_registry(self, tmp_path: Path) -> None:
@@ -541,7 +551,8 @@ class TestWiredIntoTheLeagueLane:
         match = report["matches"][0]
         assert match["routing_mix"] == [al.ROUTED_CORTEX, al.ROUTED_WORKER]
         assert match["degenerate_routing"] is False
-        assert match["routed"] > 0 and match["kept"] > 0
+        assert match["routed"] > 0
+        assert match["kept"] > 0
 
     def test_image_dir_persists_a_png_per_committed_twin(self, tmp_path: Path) -> None:
         image_dir = tmp_path / "maps"
