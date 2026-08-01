@@ -1,0 +1,53 @@
+{
+  "assumed_surface": [
+    {
+      "kind": "path",
+      "note": "the index it diffs against",
+      "value": "docs/live-test-results/README.md"
+    },
+    {
+      "kind": "contains",
+      "note": "the table the index rows live under; a restructure invalidates the parse",
+      "text": "## The experiments",
+      "value": "docs/live-test-results/README.md"
+    }
+  ],
+  "author": {
+    "commit": "b65016867f01fbc1315e0bfc0e23cfff0f2624af",
+    "date": "2026-08-01T12:32:05.875562+00:00",
+    "model": "unsloth/Qwen3.6-27B-NVFP4"
+  },
+  "capabilities": [
+    "read-repo"
+  ],
+  "description": "finds results docs missing from the live-test-results index",
+  "name": "index-gaps",
+  "purpose": "The index is the entry point to docs/live-test-results/, so an unlinked document is a measurement nobody re-reads. This drone walks the directory, parses which files README.md already links, and asks the worker only whether each unlinked file is substantive enough to index — the judgement a set difference cannot make.",
+  "questions": [
+    {
+      "id": "substantive",
+      "prompt": "A results directory contains this document. Answer with exactly one word: index if it is a substantive results document worth listing in the index, skip if it is a generated sub-artifact or fragment, unclear if you cannot tell.",
+      "schema": {
+        "enum": [
+          "index",
+          "skip",
+          "unclear"
+        ],
+        "type": "string"
+      }
+    }
+  ],
+  "schema": 1,
+  "smoke": {
+    "answers": {
+      "substantive": "index"
+    },
+    "args": {
+      "repo": "."
+    },
+    "at": "2026-08-01T12:32:05.875562+00:00",
+    "passed": true,
+    "summary": "answered after 2 scoped call(s), all accepted"
+  },
+  "source_sha256": "c2591e2393ed0cafdb6226902a0a6c2cb4a6d16d83041d34ec305dea505b6f64"
+}
