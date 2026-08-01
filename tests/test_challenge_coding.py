@@ -274,7 +274,8 @@ class TestPreimageCountTruth:
             for perm in permutations("ABCDE")
             for t in range(0, 256, 17)
         }
-        assert seen <= {0, 2, 4} and seen == {0, 2, 4}
+        assert seen <= {0, 2, 4}
+        assert seen == {0, 2, 4}
 
     def test_the_lossy_edges_have_no_preimage(self) -> None:
         assert truth_preimage_count("C", 200) == 0, "LSR cannot produce y > 127"
@@ -518,7 +519,8 @@ class TestTheExtractorTakesTheParaphrase:
         code = extract_code(PARAPHRASES[name], entry="parity_subsets")
         assert code is not None, name
         assert "def parity_subsets" in code
-        assert "```" not in code and "~~~" not in code
+        assert "```" not in code
+        assert "~~~" not in code
 
     def test_the_last_correct_block_wins_over_an_abandoned_first(self) -> None:
         code = extract_code(PARAPHRASES["second_block_wins"], entry="parity_subsets")
@@ -535,7 +537,8 @@ class TestTheExtractorTakesTheParaphrase:
         protocol slip into an unreadable ``NO_CODE`` and hide a real answer.
         """
         code = extract_code("```python\ndef solve(n):\n    return 1\n```", entry="parity_subsets")
-        assert code is not None and "def solve" in code
+        assert code is not None
+        assert "def solve" in code
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -624,11 +627,13 @@ class TestTheAdversariesFailForTheRightReason:
         record = self._grade("halving_trap")
         cases = {row["i"]: row for row in record["cases"]}
         index = PROBLEMS["parity_subsets"].cases.index([10])
-        assert cases[index]["got"] == 72 and cases[index]["expected"] == 76
+        assert cases[index]["got"] == 72
+        assert cases[index]["expected"] == 76
 
     def test_dropping_the_empty_set_is_caught_at_n_zero(self) -> None:
         record = self._grade("drops_the_empty_set")
-        assert record["cases"][0]["got"] == 0 and record["cases"][0]["expected"] == 1
+        assert record["cases"][0]["got"] == 0
+        assert record["cases"][0]["expected"] == 1
 
     def test_an_always_equal_object_cannot_pass_by_comparison(self) -> None:
         """The container serialises, and the host compares JSON — never ``==``."""
@@ -1212,8 +1217,10 @@ class TestTheCommittedFixtureOutputsAreReal:
                 return
         pytest.skip(f"no container engine after a retry: {reasons[-1]}")
 
-    def test_every_fixture_reproduces_its_committed_output(self, tmp_path: Path) -> None:
-        os.environ["HEADSPACE_HOME"] = str(tmp_path / "headspace")
+    def test_every_fixture_reproduces_its_committed_output(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("HEADSPACE_HOME", str(tmp_path / "headspace"))
         workspace = MuseWorkspace(provider=PROVIDER_DOCKER, max_result_chars=0)
         try:
             self._warm(workspace)
