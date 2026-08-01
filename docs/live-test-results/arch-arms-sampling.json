@@ -1,0 +1,332 @@
+{
+  "kind": "arch-arms-sampling-table",
+  "version": 1,
+  "series": "orchestrator-worker-architectures",
+  "task": "t5",
+  "read_by": "examples/arch_arms.py",
+  "why": [
+    "This file is an INPUT, not a run artifact. Every other *-config.json in this",
+    "directory was written BY a harness; this one is read by one. It exists because",
+    "configurations.md records temperature as a hidden variable that confounded an",
+    "entire prior series: each harness hard-coded a value, and one of them set 0.8",
+    "by vibe. A value that lives in code is a value nobody reviewed. So the sampling",
+    "table -- temperature, thinking mode and max_tokens, per role per arm -- lives",
+    "here, and examples/arch_arms.py defines no fallback for any of it: a missing",
+    "cell raises rather than quietly becoming 0.3.",
+    "Model identities live here too, and for a second reason: the cortex is being",
+    "upgraded to a vision-capable model as this lands. A model id hard-coded in a",
+    "harness would name a mind that no longer exists, and arm E would silently",
+    "measure the wrong rig. Its 'model' is null on purpose -- see roles.cortex.why."
+  ],
+  "roles": {
+    "cortex": {
+      "model": null,
+      "model_env": "EMBODIMENT_CORTEX_MODEL",
+      "base_url": "http://localhost:8001/v1",
+      "base_url_env": "EMBODIMENT_BASE_URL",
+      "api_key_env": "COLLEAGUE_API_KEY",
+      "why": [
+        "NULL DELIBERATELY. The rig's cortex is mid-upgrade to a vision-capable",
+        "model, so no id can be pinned honestly today. Absence is not a default:",
+        "arch_arms resolves the id from EMBODIMENT_CORTEX_MODEL or the --cortex-model",
+        "flag, and with neither it records the arm ABSENT rather than substituting a",
+        "predecessor. Arm E is therefore NOT 'the rig we already measured' -- the",
+        "numbers in arena-budget.md, league-h2h.md and league-commander.md describe a",
+        "cortex that will not exist, and are never this series' baseline. E is",
+        "re-measured against whatever id is dialled here."
+      ]
+    },
+    "worker": {
+      "model": "unsloth/Qwen3.6-35B-A3B-NVFP4",
+      "model_env": "EMBODIMENT_WORKER_MODEL",
+      "base_url": "http://thor.tail0be7e0.ts.net:8000/v1",
+      "base_url_env": "EMBODIMENT_WORKER_URL",
+      "api_key_env": "COLLEAGUE_API_KEY",
+      "why": [
+        "Served on Thor and verified from its own /capabilities advert (spec s1), so",
+        "it can be pinned. Dialled DIRECTLY at Thor: the spark gateway advertises no",
+        "worker role (spec s2), and examples/worker_seam.py refuses to fall back to",
+        "it. These two values are handed to worker_seam.resolve_worker_config as the",
+        "explicit operator statement they are; that function still checks the key and",
+        "the scheme, and still degrades to a recorded ABSENT rather than substituting."
+      ]
+    },
+    "senses": {
+      "model": "coolthor/gemma-4-12B-it-NVFP4A16",
+      "model_env": "EMBODIMENT_SENSES_MODEL",
+      "base_url": "http://localhost:8001/v1",
+      "base_url_env": "EMBODIMENT_BASE_URL",
+      "api_key_env": "COLLEAGUE_API_KEY",
+      "why": [
+        "Constant in every arm, and NOT DIALLED by the text-only challenge rungs --",
+        "recorded so the configuration is complete, exactly as league_h2h records",
+        "SENSES_MODEL for a seat that has no senses lane. It is hashed rather than",
+        "merely written down: arch_arms refuses to run when any two arms' senses",
+        "configuration differs, and every per-call record carries the hash, so the",
+        "invariant is checkable from a committed artifact alone. The hash starts",
+        "biting on real traffic when the perception-routing rung dials senses."
+      ]
+    }
+  },
+  "thinking_wire": {
+    "why": [
+      "What 'thinking: on' actually puts on the wire, stated here rather than",
+      "assumed in code. The convention differs across servers and model families,",
+      "and the upgraded cortex's is not yet known -- a harness that hard-coded one",
+      "would be inventing a fact about a model nobody has dialled. A mode with no",
+      "entry here is a config error, never a silent no-op; an entry of {} is an",
+      "explicit 'send no extra keys'."
+    ],
+    "modes": {
+      "on": {
+        "chat_template_kwargs": {
+          "enable_thinking": true
+        }
+      },
+      "off": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "sampling": {
+    "why": [
+      "Per role PER ARM, because 'the same value for both minds' is precisely the",
+      "mistake configurations.md records. temperature 0.3 follows the operator's",
+      "stated heuristic (0.1-0.3 for correctness work); every rung on this ladder is",
+      "a correctness task. max_tokens 16000 is d16: t24 measured the shipped 2048",
+      "default truncating 6.0% of completions with ZERO degradations recorded,",
+      "because ModelResponse carries no finish_reason (#37). Both acting minds are",
+      "thinking models, so the budget is sufficient rather than merely equal and cost",
+      "is read off tokens actually consumed."
+    ],
+    "E": {
+      "cortex": {
+        "temperature": 0.3,
+        "thinking": "on",
+        "max_tokens": 16000
+      },
+      "senses": {
+        "temperature": 0.3,
+        "thinking": "off",
+        "max_tokens": 16000
+      }
+    },
+    "W": {
+      "worker": {
+        "temperature": 0.3,
+        "thinking": "on",
+        "max_tokens": 16000
+      },
+      "senses": {
+        "temperature": 0.3,
+        "thinking": "off",
+        "max_tokens": 16000
+      }
+    },
+    "M": {
+      "cortex": {
+        "temperature": 0.3,
+        "thinking": "on",
+        "max_tokens": 16000
+      },
+      "worker": {
+        "temperature": 0.3,
+        "thinking": "on",
+        "max_tokens": 16000
+      },
+      "senses": {
+        "temperature": 0.3,
+        "thinking": "off",
+        "max_tokens": 16000
+      }
+    },
+    "H": {
+      "cortex": {
+        "temperature": 0.3,
+        "thinking": "on",
+        "max_tokens": 16000
+      },
+      "worker": {
+        "temperature": 0.3,
+        "thinking": "on",
+        "max_tokens": 16000
+      },
+      "senses": {
+        "temperature": 0.3,
+        "thinking": "off",
+        "max_tokens": 16000
+      }
+    }
+  },
+  "budgets": {
+    "why": [
+      "Drive budgets, not sampling -- but config for the same reason. They are",
+      "SUFFICIENT rather than equal: the loop charges every child turn to the",
+      "parent's max_steps, so an orchestrated arm needs headroom for the same ground",
+      "work PLUS the orchestration turns around it. Capping M and H at the flat arms'",
+      "14 would measure the budget, not the architecture. Fairness in cost terms is",
+      "recovered by reporting turns and tokens actually consumed, which is the",
+      "sufficient-not-equal doctrine league-h2h-preregistration.md already fixed."
+    ],
+    "E": {
+      "max_steps": 14,
+      "worker_max_steps": 0,
+      "spawn_allowance": 0
+    },
+    "W": {
+      "max_steps": 14,
+      "worker_max_steps": 0,
+      "spawn_allowance": 0
+    },
+    "M": {
+      "max_steps": 24,
+      "worker_max_steps": 6,
+      "spawn_allowance": 3
+    },
+    "H": {
+      "max_steps": 24,
+      "worker_max_steps": 6,
+      "spawn_allowance": 3
+    }
+  },
+  "perception_routes": {
+    "task": "t8",
+    "read_by": "examples/arch_vision.py",
+    "rung": "V1",
+    "why": [
+      "ADDITIVE to t5's table, and read by a different harness. The perception-",
+      "routing rung (deviation d1) varies HOW an image reaches the deciding mind,",
+      "orthogonally to the architecture factor. The original vision-rung design",
+      "assumed a text-only cortex, so the rung was an asymmetry: the worker could",
+      "see and the cortex could not. That premise died when the cortex was upgraded",
+      "mid-build and its vision was measured (cortex-vision-probe.md), so what is",
+      "left is a routing question -- does the senses role still earn its place on",
+      "visual input once the deciding mind can see?",
+      "Each route states EXACTLY what each mind receives, in the closed vocabulary",
+      "below, and examples/arch_vision.py asserts the payload it builds against",
+      "this declaration rather than merely reading it back. A declaration nobody",
+      "checks is a comment."
+    ],
+    "content_vocabulary": {
+      "question": "the rung's question text, identical on every route",
+      "map-image": "the fog-scoped map PNG as an OpenAI image_url content part",
+      "senses-description": "the senses role's prose description of that same PNG",
+      "describe-instruction": "the fixed instruction handed to the senses role"
+    },
+    "stages": {
+      "why": [
+        "A two-stage screen, per c41. Stage 1 runs the three routes on the FLAT arm",
+        "alone; stage 2 carries ONLY the route stage 1 selected into the four",
+        "architectures. A full 4x3 crossing is refused BY RULE rather than by",
+        "budget: 12 cells at achievable n cannot resolve an interaction, which is",
+        "how t18 and t19 died. run_stage2 takes no route argument at all -- it",
+        "re-derives the route from the stage-1 artifact -- so a post-hoc pick after",
+        "seeing stage-2 data is not a discouraged practice but an unexpressible one."
+      ],
+      "stage1_arms": ["E"],
+      "stage2_arms": ["E", "W", "M", "H"]
+    },
+    "selection_rule": {
+      "id": "perception-screen/1",
+      "why": [
+        "Committed BEFORE any measured dial, tie-breaks included, because a rule",
+        "that only covers the case where the data separates is a rule that hands",
+        "the tied case back to judgement. Primary axis is correctness. A tie falls",
+        "to total tokens (the cheapest route wins), then to a fixed precedence:",
+        "fewest minds and fewest content parts first, since each one is a failure",
+        "mode the rig would have to carry forever. Only a correctness win is",
+        "reported as a separation; a tie-broken pick is recorded as a tie-broken",
+        "pick and must never be quoted as 'route X won'.",
+        "min_attempts_per_route is the floor for a screen to be gradeable at all --",
+        "one full pass of the rung. The measured n is task t11's to pin."
+      ],
+      "primary": "correct",
+      "tie_breakers": ["total_tokens_asc", "precedence"],
+      "precedence": ["native", "described", "both"],
+      "min_attempts_per_route": 4
+    },
+    "information_matching_exemption": {
+      "why": [
+        "c40/h31. The information-matching rule (c22/h16) exists so an image cell",
+        "cannot smuggle extra state past its text twin. Routing arms deliberately",
+        "vary information content -- a senses description is lossy compression of",
+        "the image by design -- so matching would forbid the very contrast this",
+        "rung measures. The exemption is stated PER RUNG, relaxes matching ONLY,",
+        "and the fog-scoping rule keeps binding every route unchanged: no route",
+        "may show a mind a cell its visibility excludes. arch_vision refuses to",
+        "load a config that tries to widen this."
+      ],
+      "applies_to_rung": "V1",
+      "relaxes": ["information-matching"],
+      "still_binds": ["fog-scoping"]
+    },
+    "capability_source": {
+      "why": [
+        "c43/h32. The gateway advert UNDERSTATES the cortex: its responsibilities",
+        "list carries no image_understanding, yet the cortex demonstrably reads",
+        "image parts. A consumer obeying this repo's own 'resolve by name, never",
+        "parse model names' rule would conclude the deciding mind is blind and",
+        "silently drop the native route. So this rung's capability facts come from",
+        "committed measured probes and never from the advert, for as long as the",
+        "two disagree. If the advert is corrected the probes stay as the record of",
+        "what was true when the design was fixed."
+      ],
+      "never_from": "/capabilities",
+      "probes": [
+        "docs/live-test-results/cortex-vision-probe.md",
+        "docs/live-test-results/video-perception-probe.md"
+      ]
+    },
+    "routes": {
+      "native": {
+        "cortex_receives": ["question", "map-image"],
+        "senses_receives": [],
+        "native_image": true,
+        "senses_description": false,
+        "why": [
+          "The image goes straight to the deciding mind as an image part. This is",
+          "the route the advert would have made us drop; it is dialable only",
+          "because the vision probe measured it working with a guess-proof",
+          "control. Zero senses calls -- which is the whole point of the screen."
+        ]
+      },
+      "described": {
+        "cortex_receives": ["question", "senses-description"],
+        "senses_receives": ["describe-instruction", "map-image"],
+        "native_image": false,
+        "senses_description": true,
+        "why": [
+          "Today's shape: the senses role sees the image and the deciding mind",
+          "reads only text. Lossy by construction -- that loss is the variable,",
+          "not a defect, and it is why this rung is exempt from information",
+          "matching."
+        ]
+      },
+      "both": {
+        "cortex_receives": ["question", "senses-description", "map-image"],
+        "senses_receives": ["describe-instruction", "map-image"],
+        "native_image": true,
+        "senses_description": true,
+        "why": [
+          "The description AND the native image. The most expensive route and the",
+          "only one that could show a description helping a mind that can already",
+          "see -- which is the outcome that would keep senses on the visual path."
+        ]
+      }
+    }
+  },
+  "decision": {
+    "why": [
+      "PROVISIONAL, and named as such. The pre-registration (task t11) is the",
+      "authority on the ladder, the decision rule and the stop rule; it is not",
+      "committed yet, and t5 must not pre-empt it. The rule lives here as data so",
+      "t11 can pin or amend it without a code change -- analyse() reads these",
+      "numbers, it does not carry them."
+    ],
+    "separation_margin": 1,
+    "exclude_truncated_cells": true,
+    "grade_hybrid_only_on_heterogeneous_rungs": true
+  }
+}

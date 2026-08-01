@@ -1,0 +1,938 @@
+{
+  "slug": "orchestrator-worker-architectures",
+  "title": "orchestrator-worker architectures",
+  "frame_slug": "orchestrator-worker-architectures",
+  "schema_version": 4,
+  "status": "exported",
+  "created": "2026-07-31T13:42:27Z",
+  "updated": "2026-08-01T04:05:16Z",
+  "targets": [
+    {
+      "id": "c1",
+      "kind": "announcement",
+      "text": "Gwen gains an orchestrator: the Qwen 27B cortex delegates ground work to the Thor-hosted Qwen 3.6 35B A3B worker role, in two architectures \u2014 manager (cortex orchestrates, worker executes) and hybrid (cortex routes simple work to the worker, keeps complex work itself) \u2014 and a pre-registered escalating series measures both against the existing single-actor rig on the math, league and logic/coding ladders",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h1",
+      "kind": "honesty",
+      "text": "every architecture named in the announcement exists as committed, runnable harness code, and every verdict quoted traces to a pre-registered decision rule applied to committed raw records",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c3",
+      "kind": "requirement",
+      "text": "the spark gateway (localhost:8001) must expose the worker role by name before any live arm dials it: embodiment resolves roles from ONE gateway's /capabilities, spark's advert set today is cortex/senses/muse/embedder/reranker/stt/tts with no worker, and its muse entry is stale (`ready: false`) \u2014 either spark's lobes config proxies worker the way it already proxies senses, or the harness takes an explicit worker-endpoint override",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h2",
+      "kind": "honesty",
+      "text": "before the first measured match, a smoke completion through the exact harness dial path returns from unsloth/Qwen3.6-35B-A3B-NVFP4 with its finish_reason recorded \u2014 reachability is measured, not assumed from the advert",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c5",
+      "kind": "boundary",
+      "text": "lobes-cli's role contract is closed and does not know `worker`: `ROLES` is a seven-name tuple (`lobes/roles.py:59`) validated in ~5 places, no `worker` exists in code, docs or git history, and the served Thor gateway is running ahead of the checkout \u2014 adding the role to lobes is sibling work embodiment proposes via issue, never pushes; this series must not depend on it and dials Thor's gateway directly (or via env override) instead",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h3",
+      "kind": "honesty",
+      "text": "no commit in this cycle touches lobes-cli; the worker-role ask exists as a lobes-cli issue filed via the communicate skill with the Thor advert JSON as evidence",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c7",
+      "kind": "requirement",
+      "text": "the delegation architectures ride the existing subagent seam unchanged: the host executor exposes a delegate tool returning `ToolOutcome(spawn=SpawnRequest(role='worker', model=...))`, the loop's spawn machinery (attenuation, step charging, `SOURCE_SUBAGENT` ledger attribution) already handles the rest, and `examples/league_commander.py` is the live-tested reference pattern \u2014 no `embodiment/` source change is required for the manager arm",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h4",
+      "kind": "honesty",
+      "text": "the delegation mechanics require zero embodiment/ source change \u2014 arms live in examples/ and tests/; if a worker framing block is added to framing.py it is additive, follows colleague#352's authority rules, and changes no existing framing byte",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c9",
+      "kind": "requirement",
+      "text": "every arm's every model call records `finish_reason` via the harness-local parallel record (the #37 workaround every existing harness carries), the cortex and worker token budgets are 16000 per d16, and truncation counts are a reported outcome column \u2014 a second model whose truncation is invisible would reintroduce the exact silent-lost-turn failure t24 measured",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h5",
+      "kind": "honesty",
+      "text": "every model call in every arm lands one per-call record carrying finish_reason and token counts, truncation is a first-class results column, and a cell with missing records is reported ABSENT rather than summarized",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c10",
+      "kind": "requirement",
+      "text": "the series reuses the committed ladders and escalates until separation per #35: math/logic from docs/challenge-problems.md (subset-76 with its planted trap, corrupted register 1920-state, entropic register 17-solution under-determination plus its 3b matched pair), the league lane from the league_h2h escalating ladder and league_seat/arena instruments \u2014 and the pre-registration commits the ladder and decision rule before the first measured dial, as every prior series did",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h6",
+      "kind": "honesty",
+      "text": "the pre-registration (arms, rungs, decision rule, stop rule) is committed before the first measured dial \u2014 provable from git history \u2014 and the climb stops at the first separating rung",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c11",
+      "kind": "requirement",
+      "text": "the arm set includes a flat-35B-solo control (the worker alone, no orchestrator) alongside flat-27B (today's rig), the manager arm (27B orchestrates, 35B executes all ground work) and the hybrid arm (27B routes simple work to 35B, keeps complex work) \u2014 every prior series taught that the control is where the result lives, and without worker-solo a hybrid win cannot be attributed to routing rather than to the 35B simply being sufficient",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h7",
+      "kind": "honesty",
+      "text": "arm W (flat 35B) runs at every rung flat-27B runs, and no orchestration claim is stated except relative to BOTH flat arms",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c13",
+      "kind": "boundary",
+      "text": "senses (Gemma 4 12B) stays intake, perception and speak-back in every arm, unchanged \u2014 it never acts on the repo and never orchestrates; the architecture change is entirely on the acting side (cortex/worker), and `framing.py` explicitly keeps senses out of the framing surface",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h8",
+      "kind": "honesty",
+      "text": "senses' code path and prompts are byte-identical across arms \u2014 a senses change would confound every arm and is out of scope this cycle",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c14",
+      "kind": "boundary",
+      "text": "the cortex keeps final authority in every arm: the worker's advert already forbids `final_decision` and `security_decision`, the worker is framed through the existing subagent framing (or a new worker framing that follows colleague#352's rule that identity framing never modifies tool authority), and no arm makes the worker a second final authority \u2014 a single-model run must not claim another mind exists, and a delegating run must expose which role actually produced each contribution in traces",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h9",
+      "kind": "honesty",
+      "text": "in every arm except worker-solo the finish authority is the cortex's alone (in worker-solo the worker IS the top-level mind and is framed as such), and traces expose the actual role, model and machine behind every contribution",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c16",
+      "kind": "requirement",
+      "text": "the worker enters the reference rig's identity table only on a supporting measured result from this series \u2014 until then it is experiment-only, the same promotion gate the function map lives under; d15's muse-off reference rig stays the shipped default while the series runs",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h10",
+      "kind": "honesty",
+      "text": "no reference-rig table or identity doc changes this cycle unless the pre-registered decision rule returned a supporting verdict; an INCONCLUSIVE leaves d15's rig untouched",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c18",
+      "kind": "requirement",
+      "text": "a coding rung is authored this cycle: a committed coding task set + grader under the M2 grader-kit discipline, with the problem statements and verified answers landing in docs/challenge-problems.md first, per that file's own rule",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h12",
+      "kind": "honesty",
+      "text": "the coding grader ships with adversarial fixtures, a paraphrase case, a vacuity assertion and committed raw responses, and the problems plus verified answers land in docs/challenge-problems.md before the first measured run",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c19",
+      "kind": "requirement",
+      "text": "the live series dials the worker directly at Thor's gateway via an explicit harness endpoint + model id; a worker-role proposal goes to lobes-cli as an issue (communicate skill), and nothing in the series blocks on lobes accepting it",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h13",
+      "kind": "honesty",
+      "text": "the worker endpoint and model id come only from explicit flags/env with no silent fallback to the spark gateway; missing worker config degrades to a recorded ABSENT arm, never a silent substitution",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c20",
+      "kind": "boundary",
+      "text": "no muse deletion this cycle: d15 stands verbatim \u2014 the muse modules, tests and harnesses ship unchanged as opt-in code, off by default",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h14",
+      "kind": "honesty",
+      "text": "the cycle's diffs delete no muse module, test or harness; d15 stands verbatim",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c21",
+      "kind": "requirement",
+      "text": "the league lane gains a map-image experiment: each mind receives a rendered map of the board scoped to its own visibility \u2014 every unit its own view, the orchestrator the team-knowledge view \u2014 alongside the existing text briefing lane",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h15",
+      "kind": "honesty",
+      "text": "each mind's map is scoped to exactly its own visibility at that decision point \u2014 a unit's map never contains a cell its fog computation excludes, asserted by adversarial renderer fixtures \u2014 and the orchestrator's map is the team-knowledge view, never ground truth",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c22",
+      "kind": "requirement",
+      "text": "the map-image arm must be information-matched to a text control: the same fog-scoped state rendered once as prose briefing and once as an image, so any separation attributes to presentation modality and not to information content \u2014 an image carrying more (or staler) state than the text arm would measure the leak, not vision",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h16",
+      "kind": "honesty",
+      "text": "every image briefing has a committed text twin derived from the same fog snapshot (same turn, seat, snapshot hash), and the harness refuses to run a cell whose pairing check fails",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c24",
+      "kind": "requirement",
+      "text": "rendering is the new instrument: no fog-aware image renderer exists in league (raster primitives in replay/video.py draw ground-truth GIF only; the fogged views are markdown/JSON and ANSI TUI) \u2014 the series renders seat-view PNGs harness-side from the fogged briefing JSON first (unblocked, mirrors the direct-Thor precedent), and a `league match render --team/--unit --fog --turn` verb is proposed upstream to league-of-agents in parallel, propose-never-push; the renderer is an instrument and falls under the M2 grader-kit discipline (a wrong map fed to a mind is a defective instrument)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h17",
+      "kind": "honesty",
+      "text": "the renderer carries its own adversarial test kit \u2014 including a fog-leak fixture where an entity outside visibility must not be drawn, and golden images \u2014 and every measured turn's rendered map is committed so any dial can be re-inspected",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c26",
+      "kind": "audience",
+      "text": "the rig operator (who owns architecture promotion decisions), embodiment's maintainers (whose subagent seam the arms exercise), and the sibling repos: lobes-cli and league-of-agents receive proposals, colleague consumes the measured architecture story",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h18",
+      "kind": "honesty",
+      "text": "the sibling proposals (lobes-cli worker role, league-of-agents fog-scoped render verb) are filed as issues on those repos, and the results doc links both",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c27",
+      "kind": "after_state",
+      "text": "the repo carries pre-registered, live-measured verdicts comparing today's flat-27B rig against worker-solo, manager and hybrid architectures up an escalating ladder \u2014 committed math/logic problems, the league arena including the new fog-scoped map-image lane, a new coding rung and a vision rung \u2014 with cost, wall-clock, truncation and correctness reported per arm; the worker enters the reference rig only if the decision rule supports it",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h19",
+      "kind": "honesty",
+      "text": "the after-state is demonstrated by artifacts, not description: each climbed rung has its preregistration and results doc pair in docs/live-test-results/ with raw jsonl beside it",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c28",
+      "kind": "before_state",
+      "text": "the rig acts through one serial mind: the 27B cortex performs every act (d15), the 35B worker sits ready and idle on Thor with no harness dialling it, no coding or vision rung exists, and parallel execution is structurally absent \u2014 M1 recorded it blocked on a second mind",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h20",
+      "kind": "honesty",
+      "text": "the before-state is cited from the repo's own records \u2014 d15, next-cycle M1, and the live Thor advert \u2014 never asserted from memory",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c29",
+      "kind": "why_it_matters",
+      "text": "the cortex is slow and serial while the worker is fast, concurrent and idle: if orchestration wins, Gwen gets faster and gains vision and parallel lanes without surrendering final authority; if it loses, a measured negative stops a tempting architecture from shipping on vibes \u2014 either way the next architecture decision is made on evidence, the way d15 was",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h21",
+      "kind": "honesty",
+      "text": "the speed claim is measured, not narrated: wall-clock and tokens are reported per arm at every rung, so 'faster' is always a number with a direction",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c30",
+      "kind": "success_signal",
+      "text": "the series returns a verdict at some rung of the pre-registered ladder \u2014 SEPARATED with a direction, or INCONCLUSIVE with the ceiling documented \u2014 with the pre-registration committed before the first measured dial, raw per-call records including finish_reason committed beside the results doc, and a corrections section recording every belief the runs contradicted",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h22",
+      "kind": "honesty",
+      "text": "a verdict is only quoted with its pre-registered decision rule beside it, and INCONCLUSIVE is reported as INCONCLUSIVE \u2014 never softened into a win",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c31",
+      "kind": "requirement",
+      "text": "the parallel fan-out rung's semantics are defined before any live dial: the fan-out is one delegate tool call, its total charged child turns are bounded and the accounting rule pinned in the pre-registration, and a child failure degrades to a recorded partial result (C3) rather than aborting the drive \u2014 the subagent seam's serial charge-back was never designed for concurrent children and the spec previously left this undefined",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h23",
+      "kind": "honesty",
+      "text": "hermetic tests assert the fan-out's bounded total charge and recorded partial-failure degradation before any live dial; the accounting rule appears verbatim in the pre-registration",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c32",
+      "kind": "requirement",
+      "text": "every rung that grades the hybrid arm contains subtasks of heterogeneous difficulty so the routing decision can actually vary \u2014 on a single-difficulty rung the hybrid arm is structurally identical to manager or flat and its cell measures nothing; league's mixed unit/commander decision points qualify, single challenge problems do not",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h24",
+      "kind": "honesty",
+      "text": "the pre-registration names, for every hybrid-graded rung, which subtasks are routable and why the rung is heterogeneous; a degenerate rung's hybrid cell is excluded from the verdict by rule, not by judgement after the data arrives",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c33",
+      "kind": "requirement",
+      "text": "temperature, thinking mode and sampling parameters are pinned per role per arm in the committed pre-registration, and reasoning tokens are reported separately from content tokens in every cell \u2014 configurations.md records temperature as a hidden variable that confounded an entire prior series, and both minds here are thinking models whose reasoning spend dominates token counts",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h25",
+      "kind": "honesty",
+      "text": "the committed pre-registration contains the per-role per-arm sampling table (temperature, thinking mode, max_tokens), and every results cell reports reasoning tokens separately from content tokens",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c34",
+      "kind": "requirement",
+      "text": "the wiring-smoke lane exercises a bounded TOOL LOOP through the exact harness path \u2014 schema call, result fed back, clean finish \u2014 not just a bare completion: two prior models exhibited tool-protocol defects (#32 tool-calls-no-prose, #33 string argv) that would masquerade as capability failures mid-series if first encountered there",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h26",
+      "kind": "honesty",
+      "text": "the smoke lane's tool loop runs through the identical code path the measured arms use \u2014 same executor, same seam, same budgets \u2014 and its transcript is committed with the series artifacts",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c35",
+      "kind": "requirement",
+      "text": "model-written code from the coding rung executes only inside the bounded, network-less workspace (`embodiment.workspace` / headspace) \u2014 no execution path touches the host; the grader's execution seam is part of the M2 kit and asserted by hermetic tests",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h27",
+      "kind": "honesty",
+      "text": "no test or harness path executes model-written coding-rung output outside the workspace container; the containment is asserted by a hermetic test that fails if an execution seam reaches the host",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c36",
+      "kind": "boundary",
+      "text": "no arm's delegate tool hands the worker repo access: the worker's tool surface in this series is enumerated in the pre-registration (league moves, finish, workspace-scoped execution) regardless of the advert's `repo_action` allowance \u2014 containment is the arm design's, not the advert's",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h28",
+      "kind": "honesty",
+      "text": "the worker's tool surface per arm is enumerated in the pre-registration and the harness passes exactly that surface \u2014 a tool absent from the enumeration raising UnknownToolError is the desired behaviour, as delegation.py already demonstrates",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c37",
+      "kind": "requirement",
+      "text": "v1 map images render the TEAM-scoped fog view for every mind, byte-matched in information to the text twin; true per-unit cones enter only when a league-side surface provides them and are never derived from harness-duplicated vision stats \u2014 the briefing carries no radii, and a stats change in league would silently desync a duplicated fog computation into exactly the fog-leak defect h15 forbids",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h29",
+      "kind": "honesty",
+      "text": "v1 renders team-scoped views for every mind from the fogged briefing alone (zero league-side changes), the information-match check (h16) passes against the team-scoped text twin, and no vision-radius constant exists anywhere in embodiment's harness code",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c39",
+      "kind": "requirement",
+      "text": "a vision-capable cortex adds a PERCEPTION-ROUTING factor orthogonal to the architecture factor: an image can reach the deciding mind (a) natively at the cortex, (b) as a Gemma senses description the cortex reads as text, or (c) both \u2014 senses description plus native image at the Qwen(s). Routing is a separate experimental dimension from flat/manager/hybrid, and the spec must say how the two factors combine rather than silently crossing them",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h30",
+      "kind": "honesty",
+      "text": "the routing rung's three routes are defined in the pre-registration with the exact content each mind receives per route, every route's fog scoping is asserted by the same renderer fixtures (h15), and stage 2 dials only the route stage 1 selected \u2014 never a post-hoc pick after seeing stage 2 data",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c40",
+      "kind": "boundary",
+      "text": "the perception-routing rung is EXEMPT from the information-matching rule (c22/h16): that rule exists so an image cell cannot smuggle extra state past its text twin, but routing arms deliberately vary information content \u2014 a senses description is lossy compression of the image by design. The exemption is stated per-rung in the pre-registration, and the fog-scoping rule (h15) still binds every route: no route may show a mind a cell its visibility excludes",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h31",
+      "kind": "honesty",
+      "text": "the pre-registration states the exemption per rung and names which rung it applies to, and the fog-scoping fixtures (h15) run against every route unchanged \u2014 the exemption relaxes information matching only, never visibility",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c43",
+      "kind": "requirement",
+      "text": "the gateway advert UNDERSTATES the new cortex and must not be the sole capability source for this series: `/capabilities` lists the cortex's responsibilities as reasoning/deciding/planning/tool_use/code_repo_actions/validation/final_authority with NO `image_understanding`, while the worker advertises image and video \u2014 yet the cortex demonstrably accepts image parts. A consumer obeying this repo's own 'resolve by name, never parse model names' rule would conclude the cortex is blind and silently drop the native-vision route, so the routing rung's capability facts come from a committed measured probe, and the advert gap is filed with lobes-cli as evidence",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h32",
+      "kind": "honesty",
+      "text": "the committed vision probe (docs/live-test-results/cortex-vision-probe.md) is the series' capability source for the cortex's native-vision route, its guess-proof control is stated in the file, and if the advert is later corrected the probe stays as the record of what was true when the design was fixed",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c45",
+      "kind": "requirement",
+      "text": "tool-call stability is MEASURED on the new cortex before the series cites it: prior series recorded protocol failure as a first-class failure mode (the exit=stopped collapse, the scratchpad repairing it 25%->67%, and issues #32/#33 where a mind emitted a tool call and no prose or sent argv as a string), so 'more stable tool calling' is a testable claim with a documented baseline to beat \u2014 not a property to assume from the quantiser's reputation",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h33",
+      "kind": "honesty",
+      "text": "the new cortex's tool-call protocol reliability is measured and committed before the series cites stability, reported against the documented old-cortex baseline (the exit=stopped collapse and its 25%->67% scratchpad repair) rather than as a bare number",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c46",
+      "kind": "requirement",
+      "text": "a smarter cortex RAISES the ceiling risk that already killed two experiments, so the ladder's difficulty must be re-checked against the new model rather than inherited: M4's lesson is that a rung the flat arm always passes measures nothing, and every prior arm-comparison here died tied at the top of its range \u2014 if arm E aces a rung the ladder must escalate past it rather than report a tie",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h34",
+      "kind": "honesty",
+      "text": "the ladder's difficulty is re-checked against the NEW cortex before the series climbs it, and any rung where arm E scores at ceiling is escalated past rather than reported as a tie",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c48",
+      "kind": "requirement",
+      "text": "the fan-out width default is re-derived from MEASURED saturation, not from the advertised stream count: t3 measured effective concurrency of 8.99 at width 14 against 6.14 at width 8, with width 14 buying only +5.5% aggregate throughput for +75% concurrent load, a 28% per-stream drop and a 79% p95 latency rise \u2014 `MAX_FANOUT_WIDTH = 14` was set to the operator-supplied stream count and the measurement does not support it; t11 pins the width it pre-registers",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h35",
+      "kind": "honesty",
+      "text": "the pre-registration states the fan-out width it uses and derives it from the committed throughput series, and any width above the measured saturation point is justified in writing rather than inherited from the advert",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c51",
+      "kind": "requirement",
+      "text": "the image routes must be proven to REACH THE WIRE before any image cell is measured: `Perception.parts` carries rendered PNG bytes but no harness consumes it \u2014 no seam references media.build_part, image_url or video_url \u2014 so a map-image cell today would render, hash, twin-check and commit its images and then dial the model with TEXT ONLY, reporting an image result that is a text result with every guard passing; the lane needs a wiring task plus a vacuity assertion that FAILS when an image route's parts do not appear in the outgoing payload",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h36",
+      "kind": "honesty",
+      "text": "a hermetic test asserts that dialling an image route produces an outgoing message containing an image part built through embodiment.media, and that same test fails if the parts are dropped \u2014 the assertion is on the payload, never on the route's own record",
+      "deferred": false,
+      "deferred_reason": ""
+    }
+  ],
+  "tasks": [
+    {
+      "id": "t1",
+      "summary": "Serial delegate tool: host executor exposing delegate-to-worker via SpawnRequest(role='worker'), tool surface enumerated, no repo access, cortex keeps finish authority",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "hermetic tests prove the child surface excludes parent-level finish and an un-enumerated tool raises UnknownToolError",
+        "zero diffs under embodiment/ \u2014 the tool lives in examples/, riding the existing subagent seam",
+        "per-child ledger attribution (SOURCE_SUBAGENT, child_task_id) is verified in tests"
+      ],
+      "deps": [],
+      "covers": [
+        "c7",
+        "h4",
+        "c14",
+        "h9",
+        "c36",
+        "h28"
+      ],
+      "instruction": "merged: examples/orchestrator_tools.py \u2014 the delegate tool rides the subagent seam with the worker surface enumerated as the dispatch condition"
+    },
+    {
+      "id": "t2",
+      "summary": "Worker dial config and wiring smoke: explicit endpoint/model config plus a smoke lane running a bare completion and a bounded tool loop through the exact harness path",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "worker endpoint and model come only from explicit flags/env; absent config yields a recorded ABSENT degradation, never a silent fallback to the spark gateway",
+        "the smoke lane completes one bare completion and one bounded tool loop (schema call, result fed back, clean finish) against the live worker and commits both transcripts",
+        "per-call records carry finish_reason and token counts"
+      ],
+      "deps": [],
+      "covers": [
+        "c3",
+        "h2",
+        "c19",
+        "h13",
+        "c34",
+        "h26"
+      ],
+      "instruction": "merged: examples/worker_seam.py \u2014 explicit config, no silent fallback, live tool-loop smoke committed"
+    },
+    {
+      "id": "t3",
+      "summary": "Worker throughput and effective-concurrency pre-measurement at widths 1, 2, 8, 14",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "measured tok/s and per-call latency at each width are committed to docs/live-test-results/ before any arm design cites concurrency",
+        "sustained-load stability (errors and timeouts per width) is reported, addressing the parked stability unknown",
+        "the report states whether the operator-supplied 50 tok/s x14 figure reproduced on this rig"
+      ],
+      "deps": [
+        "t2"
+      ],
+      "covers": [],
+      "instruction": "merged: worker saturates near width 9; the operator's 50 tok/s x14 did not reproduce \u2014 see docs/live-test-results/worker-throughput.md"
+    },
+    {
+      "id": "t4",
+      "summary": "Parallel fan-out tool: one tool call dispatching N workers with bounded total charge and recorded partial-failure degradation",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "hermetic tests assert the bounded total charge per the pre-registered accounting rule, and that a failed child lands a recorded degradation plus partial results, never an abort",
+        "the loop's termination guarantee is preserved, asserted structurally (AST or step-count bound), not just behaviourally"
+      ],
+      "deps": [
+        "t1"
+      ],
+      "covers": [
+        "c31",
+        "h23"
+      ],
+      "instruction": "merged: the fan-out partitions one grant before dispatch; FANOUT_ACCOUNTING_RULE is quotable verbatim for t11"
+    },
+    {
+      "id": "t5",
+      "summary": "Architecture arms harness (existing / worker-solo / manager / hybrid) for the challenge rungs, with metered per-call records and the pinned sampling table",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "every model call lands one record with finish_reason, prompt, completion and reasoning tokens, role, model and arm; budgets 16000 per d16",
+        "the analyse verb refuses to emit a verdict when either flat arm's cell is missing, and reports missing cells ABSENT",
+        "senses configuration is byte-identical across arms, asserted by config hash",
+        "the sampling table (temperature, thinking mode, max_tokens per role per arm) is read from committed config, not code defaults"
+      ],
+      "deps": [
+        "t1",
+        "t2"
+      ],
+      "covers": [
+        "c9",
+        "h5",
+        "c11",
+        "h7",
+        "c13",
+        "h8",
+        "c33"
+      ],
+      "instruction": "merged: arms are data not code branches; the cortex model id stays null in committed config until dialled by env"
+    },
+    {
+      "id": "t6",
+      "summary": "League lane arms: all four architectures drive cmatch decision points, with hybrid routing exercised and logged",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "all four arms complete a scripted, no-network cmatch end-to-end in hermetic tests",
+        "the hybrid arm's routing decision is exercised per decision point and logged with its stated reason"
+      ],
+      "deps": [
+        "t1"
+      ],
+      "covers": [
+        "c32",
+        "h24"
+      ],
+      "instruction": "merged: one drive per decision ROUND so the fan-out has units to dispatch; routing basis distinguishes architecture from judgement"
+    },
+    {
+      "id": "t7",
+      "summary": "Coding rung: problems with brute-force-verified answers in docs/challenge-problems.md, an M2-kit grader, and workspace-jailed execution",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "problem statements and verified answers land in docs/challenge-problems.md before any measured run",
+        "the grader ships adversarial fixtures, a paraphrase case, a vacuity assertion, and commits raw responses",
+        "a hermetic test proves model-written code cannot execute outside the network-less workspace"
+      ],
+      "deps": [],
+      "covers": [
+        "c18",
+        "h12",
+        "c35",
+        "h27"
+      ],
+      "instruction": "merged: three problems verified two independent ways; the M2 kit caught a shared-seed defect between truth function and reference before shipping"
+    },
+    {
+      "id": "t8",
+      "summary": "Vision rung: image tasks, the senses-description path for the 27B arm, native image parts for worker arms",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "both perception paths run live and are logged per call; no video path exists anywhere in the rung",
+        "the 27B arm's senses-described lane is dialled, not scored structurally absent"
+      ],
+      "deps": [
+        "t5"
+      ],
+      "covers": [
+        "c17",
+        "h11",
+        "c39",
+        "h30"
+      ],
+      "instruction": "RESCOPED by deviation d1: no longer a two-path asymmetry (the cortex now sees). Build the three-route perception screen \u2014 native at the cortex, senses description as text, both \u2014 stage 1 on the flat arm only, per c41"
+    },
+    {
+      "id": "t9",
+      "summary": "Team-scoped map renderer: PNG from the fogged briefing alone, adversarial fog-leak fixtures, goldens, committed maps",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "the renderer consumes only the fogged briefing JSON; no vision-radius constant exists anywhere in harness code",
+        "a fog-leak fixture (an entity outside visibility must not be drawn) fails the suite if violated; goldens are committed",
+        "every measured turn's rendered map is committed to the raw results dir"
+      ],
+      "deps": [],
+      "covers": [
+        "c21",
+        "h15",
+        "c24",
+        "h17",
+        "c37",
+        "h29"
+      ],
+      "instruction": "merged: renders only what the fogged briefing places, so unobserved ground is a strict lower bound on visibility and can never overstate it"
+    },
+    {
+      "id": "t10",
+      "summary": "Map-image league cells with enforced text/image twins",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "the harness refuses to run a cell whose image lacks a committed text twin from the same fog snapshot (same turn, seat, snapshot hash)",
+        "twin snapshot hashes ride the per-call records"
+      ],
+      "deps": [
+        "t6",
+        "t9"
+      ],
+      "covers": [
+        "c22",
+        "h16"
+      ],
+      "instruction": "register an image route against t6's PerceptionRoute seam using map_render's fog_snapshot/write_turn_map; snapshot_hash is the twin key"
+    },
+    {
+      "id": "t11",
+      "summary": "Pre-registration: ladder, arms, decision and stop rules, sampling table, tool-surface enumeration, fan-out accounting rule, heterogeneous-rung declarations \u2014 pinned by test",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "committed before the first measured dial, provable from git history; a pin test recomputes its constants rather than asserting literals",
+        "it names, for every hybrid-graded rung, why that rung is heterogeneous, and excludes degenerate cells from the verdict by rule"
+      ],
+      "deps": [
+        "t3"
+      ],
+      "covers": [
+        "c10",
+        "h6",
+        "h24",
+        "h25",
+        "c40",
+        "h31",
+        "c43",
+        "h32",
+        "c45",
+        "h33",
+        "c46",
+        "h34",
+        "c48",
+        "h35"
+      ],
+      "instruction": "the pre-registration must state: the ladder re-checked against the NEW cortex (c46), fan-out width derived from the measured saturation not the advert (c48), capability facts cited from the committed probes not /capabilities (c43), the routing rung's per-rung exemption from information matching (c40), and tool-call stability against its documented baseline (c45)"
+    },
+    {
+      "id": "t12",
+      "summary": "Run the series up the ladder with the stop rule, committing artifacts as they land",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "each climbed rung lands its raw jsonl and per-call records beside the results doc; a skipped rung is recorded ABSENT citing the stop rule",
+        "smoke transcripts and throughput pre-measurements are committed with the series artifacts"
+      ],
+      "deps": [
+        "t4",
+        "t5",
+        "t6",
+        "t7",
+        "t8",
+        "t10",
+        "t11"
+      ],
+      "covers": [
+        "c27",
+        "h19"
+      ],
+      "instruction": "the live series; operator confirmed 2026-07-31. Cell sizing per t11 (n=6, derived from the measured 57.2s cortex turn). STAGE-1 GATE: if 'native' or 'both' wins the perception screen, STOP before stage 2 and report \u2014 widening t4's fan-out surface to carry parts is a decision the operator takes on that result, not a step to assume. If 'described' wins, the asymmetry is moot and stage 2 proceeds."
+    },
+    {
+      "id": "t13",
+      "summary": "File the sibling proposals: the lobes-cli worker role, and the league-of-agents fog-scoped render verb plus per-unit visibility surface",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "both issues exist, signed per convention, carrying the Thor advert JSON and the briefing-schema probe as evidence",
+        "no commit touches either sibling repo"
+      ],
+      "deps": [],
+      "covers": [
+        "c5",
+        "h3",
+        "c26"
+      ],
+      "instruction": "DONE 2026-07-31 \u2014 filed with measured evidence: lobes-cli#166 (worker role + modality; carries the cortex-vision advert defect) and league-of-agents#43 (fog-scoped render + per-unit visibility; carries the video_url finding about their own replay GIFs). Both signed by agtag; no commit touched either sibling repo."
+    },
+    {
+      "id": "t14",
+      "summary": "Results and verdicts: decision rules quoted beside every verdict, wall-clock and token tables per arm per rung, corrections section, README reproduce lines",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "every verdict quotes its pre-registered rule; INCONCLUSIVE is reported as INCONCLUSIVE, never softened",
+        "wall-clock and token tables (content and reasoning separately) per arm per climbed rung",
+        "the before-state is cited from d15, next-cycle M1 and the live Thor advert; both sibling issues are linked",
+        "the announcement's claims are verified by re-running the README reproduce commands"
+      ],
+      "deps": [
+        "t12",
+        "t13"
+      ],
+      "covers": [
+        "c1",
+        "h1",
+        "c28",
+        "h20",
+        "c29",
+        "h21",
+        "c30",
+        "h22",
+        "h18"
+      ],
+      "instruction": "record what the runs contradicted, not only what they confirmed \u2014 including that the video probe's first conclusion was wrong and how it was caught"
+    },
+    {
+      "id": "t15",
+      "summary": "Governance guard: muse modules untouched and the promotion gate honored in the landing PRs",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "the cycle's PRs delete no muse module, test or harness, verified by diff review",
+        "reference-rig tables change only with a supporting verdict; INCONCLUSIVE leaves d15's rig untouched"
+      ],
+      "deps": [],
+      "covers": [
+        "c16",
+        "h10",
+        "c20",
+        "h14"
+      ],
+      "instruction": "merged: guards verified to fail when provoked, not merely to pass"
+    },
+    {
+      "id": "t16",
+      "summary": "Video-perception lane: an ordered frame sequence from a league match, delivered as image parts, wired to embodiment#39",
+      "origin": "llm",
+      "status": "rejected",
+      "acceptance_criteria": [
+        "frames are sampled from a real league match log and delivered as an ORDERED, labelled image sequence; no video content-part and no media.py change is introduced, because the probe showed none is needed",
+        "a hermetic test proves the sequence is built in chronological order and that a shuffled sequence is detectably different \u2014 order is the signal, so an unordered lane measures nothing",
+        "a frame-count and token budget policy is committed: cost scales linearly with frames, and the policy states what a long match does rather than discovering it live",
+        "the committed probe (docs/live-test-results/video-perception-probe.md) is cited as the reason the GIF path was not taken, so the dead end is not silently re-explored"
+      ],
+      "deps": [
+        "t6"
+      ],
+      "covers": [],
+      "instruction": ""
+    },
+    {
+      "id": "t17",
+      "summary": "Video-perception lane: league's existing GIFs delivered as video_url parts, plus the media.py builder that makes them reachable \u2014 wired to embodiment#39",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "media.py gains a video content-part builder and a flatten_parts placeholder; a hermetic test proves a text-only surface degrades cleanly rather than dropping the part silently",
+        "a league match GIF is delivered unchanged as a video_url part \u2014 no frame sampler, no re-encode \u2014 and a hermetic test pins that the image_url path is NOT used for video",
+        "the committed probe (docs/live-test-results/video-perception-probe.md) is cited for why video_url is used over image_url and over frame sequences, so neither dead end is re-explored",
+        "the unknown the probe leaves open is measured before any claim about playthroughs: how many frames of a long match actually survive the server's internal sampling"
+      ],
+      "deps": [
+        "t6"
+      ],
+      "covers": [],
+      "instruction": "land the capability only: a media.py video_url builder plus a flatten placeholder. league's GIFs are used unchanged \u2014 the probe rules out both image_url and frame sampling"
+    },
+    {
+      "id": "t18",
+      "summary": "Wire Perception.parts to the wire: image and video routes must produce real multimodal payloads, with a vacuity assertion that fails when parts are dropped",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "a hermetic test asserts an image route's dial produces an outgoing message carrying an image part built through embodiment.media, and the same test FAILS when the parts are dropped \u2014 asserted on the payload, never on the route's own record",
+        "the text route's payload is byte-identical to today's, so wiring multimodal support changes no existing cell",
+        "an image route whose parts cannot be built degrades to a recorded ABSENT cell, never to a silent text dial"
+      ],
+      "deps": [
+        "t10"
+      ],
+      "covers": [
+        "c51",
+        "h36"
+      ],
+      "instruction": "found by grep after t10 merged: zero consumers of Perception.parts and zero media references in any harness. t17 already landed the media builder, so this is wiring plus the assertion that proves it fired."
+    },
+    {
+      "id": "t19",
+      "summary": "Report the series' findings to colleague: a second communicate post once results exist, including the negatives",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "the post carries what the series measured including INCONCLUSIVE and CEILING verdicts, never only the favourable ones",
+        "it links colleague#361 (the rig-facts post) and states which of its numbers the series revised",
+        "no commit touches the colleague repo"
+      ],
+      "deps": [
+        "t14"
+      ],
+      "covers": [],
+      "instruction": "operator asked for two posts: the rig facts (colleague#361, DONE 2026-07-31) and this one after the series, so colleague can learn from the studies rather than only the configuration"
+    }
+  ],
+  "risks": [
+    {
+      "id": "r1",
+      "text": "the served worker build's stability under sustained x14 load is unknown until t3 reports; a sibling variant crash-looped on GB10 hardware",
+      "kind": "unknown_nonblocking",
+      "task_id": "t3",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r2",
+      "text": "hybrid routing quality has no precedent grader; if a non-defective instrument cannot be designed, the hybrid verdict degrades to cost-plus-outcome only, and the pre-registration must say so",
+      "kind": "unknown_nonblocking",
+      "task_id": "t11",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r3",
+      "text": "the subagent seam's parent-minus-one attenuation may be the wrong bound for a 14-wide fan-out; if a width budget is needed it is a proposed embodiment change, never a harness hack",
+      "kind": "unknown_nonblocking",
+      "task_id": "t4",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r4",
+      "text": "the ladder may separate at the first rung, leaving coding and vision rungs ABSENT by rule \u2014 their harnesses still land hermetically tested, only the live cells go unmeasured",
+      "kind": "unknown_nonblocking",
+      "task_id": "t12",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r5",
+      "text": "the frame-sequence probe is n=1 on a moving square, not a tactical board; whether a mind reads a fogged league map in sequence is untested and is the real question the lane rests on",
+      "kind": "unknown_nonblocking",
+      "task_id": "t16",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r6",
+      "text": "the server's internal frame sampling is unmeasured \u2014 86 prompt tokens for a 6-frame clip implies aggressive downsampling, so a 40-turn match may reach the model as a handful of frames; this bounds what any playthrough experiment can claim",
+      "kind": "unknown_nonblocking",
+      "task_id": "t17",
+      "resolved": false,
+      "resolution": ""
+    }
+  ]
+}

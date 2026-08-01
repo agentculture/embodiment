@@ -240,3 +240,348 @@ host framing is byte-identical for every case within an arm.
 bare` runs on `MUSE_AUTHORITY` alone. The first measures whether the muse *can*
 challenge, the second whether it *does*. A golden with only the first arm scores
 its own prompt.
+
+## 5. The coding rung — three graded problems
+
+Problems 1–3b hand a mind a puzzle and read one answer off its prose. The
+coding rung is a different instrument: the mind **writes a program**, the
+program runs in a bounded, network-less container
+(`embodiment.workspace` → headspace), and the grader compares the values the
+program returned against truth computed **on the host**. Nothing about the
+answers ever enters the container.
+
+Harness: `examples/challenge_coding.py`. Grader tests:
+`tests/test_challenge_coding.py`. Authored under task `t7` of the
+orchestrator-worker-architectures plan, to the M2 grader-kit discipline
+(`docs/plans/next-cycle-candidates.md` §M2), and committed **before** the first
+measured run.
+
+### The protocol the mind is given
+
+One function per problem, an exact name and signature, returned as Python
+source. The harness extracts the source, appends a committed driver, and runs
+`python3 -c "<model source>\n<driver>"` in the container. The driver calls the
+function once per graded case and prints the returned values as JSON on a line
+carrying a per-run nonce. It carries **no expected values** — so there is
+nothing in the container to read the answers off, and a program that forges a
+result line still has to forge *correct outputs*, which means solving the
+problem.
+
+Three rungs, graded separately, because a rung everything passes measures
+nothing:
+
+| id | rung | what it is | why it can separate |
+|---|---|---|---|
+| `parity_subsets` | easy | problem 1, generalised to any `n` | the `n=0` and halving traps; `n=90` refuses any exponential search |
+| `preimage_count` | medium | how many 8-bit states map to a target | two of the five routines are **lossy**, so inverting step-by-step is wrong |
+| `register_recover` | hard | write the solver for problems 2, 3 and 3b | exact-Hamming, the volatility fault, and returning *all* solutions |
+
+### 5.1 `parity_subsets` — the easy rung
+
+> Write `parity_subsets(n: int) -> int` returning the number of subsets of
+> `{1, 2, …, n}` that contain no two consecutive integers and have an even
+> element-sum. The empty set counts; its sum is 0. `n` is between 0 and 200.
+> Your function must return an answer for `n = 90` within the container's
+> wall-clock budget.
+
+**Answers — verified two independent ways.** Exhaustive enumeration of all
+`2^n` subsets agrees with a parity-carrying recurrence for every `n` in
+`0..22`, and for every `n` in `0..22` the two parity classes sum to
+`Fib(n+2)` — a third, external identity.
+
+| n | answer | odd-sum | total = Fib(n+2) |
+|---|---|---|---|
+| 0 | 1 | 0 | 1 |
+| 1 | 1 | 1 | 2 |
+| 2 | 2 | 1 | 3 |
+| 3 | 3 | 2 | 5 |
+| 5 | 7 | 6 | 13 |
+| 10 | **76** | 68 | 144 |
+| 20 | 8900 | 8811 | 17711 |
+| 45 | 1485616392 | 1485598681 | 2971215073 |
+| 90 | 3770056903291329166 | 3770056901455017263 | 7540113804746346429 |
+
+`n = 10` reproduces **problem 1's** verified 76 exactly — the rung is anchored
+to an answer this file already established, not to a fresh assertion.
+
+```python
+from itertools import combinations
+
+def exhaustive(n):                       # method A — enumerate every subset
+    return sum(
+        1
+        for r in range(n + 1)
+        for s in combinations(range(1, n + 1), r)
+        if all(b - a > 1 for a, b in zip(s, s[1:])) and sum(s) % 2 == 0
+    )
+
+def recurrence(n):                       # method B — carry parity as state
+    e, o = [1] + [0] * n, [0] * (n + 1)
+    if n >= 1:
+        e[1], o[1] = 1, 1
+    for k in range(2, n + 1):
+        if k % 2 == 0:
+            e[k], o[k] = e[k - 1] + e[k - 2], o[k - 1] + o[k - 2]
+        else:
+            e[k], o[k] = e[k - 1] + o[k - 2], o[k - 1] + e[k - 2]
+    return e[n], o[n]
+
+assert all(exhaustive(n) == recurrence(n)[0] for n in range(23))
+```
+
+**Three traps, all of them observed failure shapes rather than invented ones:**
+
+- **the halving trap** — `Fib(n+2) // 2` gives **72** at `n = 10`, the exact
+  trap problem 1 already names;
+- **the empty set** — a solver that iterates non-empty subsets returns 0 at
+  `n = 0` and is off by one everywhere;
+- **the budget** — `n = 90` is `2^90` subsets. An exponential enumerator is not
+  slow here, it is impossible, and the container's wall clock says so.
+
+### 5.2 `preimage_count` — the medium rung
+
+The 8-bit routines are **problem 3's**, unchanged:
+
+> - **A**: add 47, modulo 256
+> - **B**: XOR with `10101010` (0xAA)
+> - **C**: logical shift right by 1
+> - **D**: bitwise AND with `11011111` (0xDF)
+> - **E**: multiply by 3, modulo 256
+>
+> Write `preimage_count(sequence: str, target: int) -> int` returning how many
+> of the 256 possible initial states `s` satisfy: applying the routines named
+> in `sequence`, left to right, to `s` yields `target`. `sequence` is a
+> non-empty string over `ABCDE`; routines may repeat. There is no volatility
+> fault in this problem — every sequence runs.
+>
+> Worked example: `preimage_count("BE", 17) == 1`.
+
+**Answers — verified two independent ways.** Method A applies the sequence
+forward to all 256 starts. Method B propagates a preimage *set* backwards
+using per-routine inverse relations derived analytically: A and B and E are
+bijections (`E`'s inverse is ×171 mod 256, since 3·171 ≡ 1); `C`'s preimages of
+`y` are `{2y, 2y+1}` when `y ≤ 127` and **empty** otherwise; `D`'s are
+`{y, y|0x20}` when bit 5 of `y` is clear and **empty** otherwise.
+
+The two agree on **all 30,720** `(permutation of ABCDE, target)` pairs and on
+**all 39,680** `(sequence, target)` pairs for `|sequence|` in 1..3, and every
+permutation's counts sum to 256 — every start lands somewhere.
+
+| sequence | target | answer |
+|---|---|---|
+| `ABCDE` | 0 | 4 |
+| `ABCDE` | 1 | 0 |
+| `CADEB` | 0 | 4 |
+| `BCDEA` | 47 | 4 |
+| `ABE` | 200 | 1 |
+| `C` | 200 | 0 |
+| `C` | 100 | 2 |
+| `D` | 32 | 0 |
+| `D` | 0 | 2 |
+| `CCC` | 31 | 8 |
+| `DCDC` | 6 | 16 |
+| `CCCCC` | 3 | 32 |
+| `AAAAA` | 235 | 1 |
+| `EBADC` | 128 | 0 |
+
+**Why it separates.** A solver that assumes the routines are invertible — the
+natural reading, and true of three of the five — inverts step by step and
+returns 0 or 1 every time. It is right on `ABE` and wrong on everything else.
+The exhaustive-over-256 route is correct and cheap; the analytic route is
+correct only if the lossy pair is handled. Note also that a *permutation* of
+`ABCDE` can only ever yield 0, 2 or 4 (exactly one lossy `C` and one lossy `D`
+appear), which is why the graded set deliberately includes repeats.
+
+### 5.3 `register_recover` — the hard rung
+
+> Two register families, selected by `width`:
+>
+> **`width = 4`** — the routines of problem 2: **A** add 3 mod 16; **B** XOR
+> `1011`; **C** rotate left by one bit; **D** multiply by 5 mod 16; **E**
+> reverse the four bits. No fault rule.
+>
+> **`width = 8`** — the routines of problem 3: **A** add 47 mod 256; **B** XOR
+> `0xAA`; **C** logical shift right by 1; **D** AND `0xDF`; **E** multiply by 3
+> mod 256. **C mandates an odd input**: if the state handed to C is even, the
+> run faults and is not a solution.
+>
+> All five routines execute exactly once each, in some order. The register was
+> recorded after some of them. Every recorded value is at Hamming distance
+> **exactly** `distance` from the true state at that point — not "at most".
+>
+> Write:
+>
+> ```python
+> def register_recover(width, records, distance,
+>                      require_before=None, require_adjacent=None): ...
+> ```
+>
+> where `records` maps a 1-based position (how many routines have run) to a
+> recorded bit-string of length `width`; `require_before=(X, Y)` means X runs
+> somewhere before Y; `require_adjacent=(X, Y)` means Y runs *immediately*
+> after X; either may be `None`. Return a list of `(initial_bits, order)`
+> pairs — `initial_bits` a bit-string of length `width`, `order` a
+> five-character permutation of `ABCDE`. Order of the list does not matter and
+> duplicates are not expected.
+
+**Answers — verified two independent ways, and against this file.** Method A
+uses integer arithmetic, enumerates start-major, and simulates forward. Method
+B uses bit-list manipulation (rotation as a list slice, ×5 as a shifted
+addition, AND as a per-bit mask), enumerates order-major, and tests membership
+in the precomputed set of states at exact distance `d` from each record. The
+two op implementations agree on **every** state of both families (16 and 256),
+and the two searches agree on every case below.
+
+| # | instance | solutions |
+|---|---|---|
+| 1 | `width=4`, `{1:0010, 3:0000, 5:1111}`, `d=1`, `require_before=(A,D)` | 1 — `(0101, CBEAD)` |
+| 2 | `width=8`, `{1:11000111, 3:10101011, 5:11101000}`, `d=2` | 17 — the table in §3 |
+| 3 | as #2 plus `require_adjacent=(C,A)` | 1 — `(00001111, CAEDB)` |
+| 4 | as #1 but `require_adjacent=(C,B)` instead | 4 — see below |
+| 5 | `width=4`, `{1:0011, 3:1000, 5:1000}`, `d=0` | 1 — `(0000, ABDCE)` |
+| 6 | `width=4`, `{1:0000, 3:0000, 5:0000}`, `d=0` | **0 — the empty list** |
+| 7 | as #2 plus `require_adjacent=(B,A)` | 5 — see below |
+
+Cases 1, 2 and 3 are **problems 2, 3 and 3b of this file**, reproduced exactly:
+one solution, seventeen, and one. That is the strongest verification available
+here — the search is checked against answers established independently, before
+this rung existed.
+
+Case 4's four: `(0011, CBDEA)`, `(0101, CBEAD)`, `(0101, CBEDA)`,
+`(1001, CBDAE)`.
+
+Case 7's five: `(10000111, CDBAE)`, `(11001101, EDCBA)`, `(11010011, DCEBA)`,
+`(11110011, DCEBA)`, `(11111101, EDCBA)`.
+
+Search spaces: 16 × 120 = 1,920 for `width=4` and 256 × 120 = 30,720 for
+`width=8`, before constraints.
+
+**Why it separates.** Four things have to be right at once and each has been
+seen to go wrong: Hamming distance **exactly** `d` rather than at most `d`; the
+volatility fault checked on the state *entering* C, including when C runs
+first; the same initial value legitimately appearing with two different orders
+(case 2 and case 7 both do); and an unsatisfiable instance returning `[]`
+rather than raising or returning a best guess.
+
+### Why the answers can be written down here
+
+Same reason as problems 1–3b, and it is stronger for this rung than for any
+other in this file: **the truth functions run on the host and the expected
+values are never put into the container.** The prompt is built from the
+statements above; the driver appended to the model's code carries only the
+*inputs*. A model can read the graded inputs out of its own command line if it
+wants to; it cannot read a single answer, because none is there.
+
+### What the grader ships, and why
+
+The M2 requirement, applied. Four graders shipped defective last cycle and
+every one was caught by a human reading data rather than by a test:
+
+1. **Adversarial fixtures** — committed as `FIXTURES` in the harness, with the
+   captured container output each one really produced. Eleven of them, each a
+   different way to look right:
+
+   | fixture | what it does |
+   |---|---|
+   | `hardcoded_statement_values` | memorises the small values any mind can enumerate by hand, guesses beyond them — and passes 5 of 9 |
+   | `halving_trap` | `Fib(n+2)//2`, which lands on **72** at `n=10` |
+   | `drops_the_empty_set` | the right recurrence, off by one everywhere |
+   | `always_equal_object` | returns an object whose `__eq__` is always `True` |
+   | `bool_for_int` | returns `True` where `1` is expected — `True == 1` in Python |
+   | `silences_print` | rebinds `builtins.print` to a no-op |
+   | `forges_a_result_line` | scrapes the nonce from `/proc/self/cmdline` and prints its own all-correct line claiming `CORRECT` |
+   | `exits_before_the_driver` | ends the process at import time |
+   | `writes_a_sentinel_to_the_host` | writes a file at import time — the empirical half of the containment claim |
+   | `inverts_the_lossy_routines` | assumes all five routines are invertible; right on the three that are |
+   | `at_most_hamming` | reads "exactly `d`" as "at most `d`", turning a unique answer into 24 |
+
+   Every one is required to fail, and required to fail *for its own reason* —
+   a fixture that failed by accident is not a control.
+2. **Paraphrase cases** — the grader's fragile half is the *extractor*, so the
+   fixtures include the same correct solution in wording it was not written
+   against: bare fences, `~~~` fences, an uppercase language tag, no fence at
+   all, prose on both sides, a wrong first block followed by a correct second,
+   and a structurally different correct implementation (memoised recursion,
+   different names, a `__main__` demo block).
+3. **A vacuity assertion** — a verdict of `CORRECT` is refused unless the
+   workspace actually ran something, the nonce line was found exactly once, and
+   the driver returned one row per graded case. The gate is recorded on every
+   result (`vacuity`), not merely checked, so a reader of a results file can
+   see it fired.
+4. **Raw responses, always** — every result carries the model's full response
+   text and the extracted source, and the transcript is flushed after every
+   run, so any verdict can be re-graded later. Last cycle 15 of 18 responses
+   were unrecoverable because a series stored verdicts and not responses.
+
+**And the containment.** Model-written code executes **only** inside the
+network-less workspace. Neither the harness nor its tests contain an execution
+primitive — no `exec`, no `eval`, no bare `compile`, no `__import__`, no
+`subprocess`, no `os.system`, no `runpy` — and that is asserted by walking
+**both** files' ASTs rather than by reading them. Both, because a test suite
+that ran a fixture "just to see what it produces" would be the exact hole this
+closes. The guard distinguishes a bare `compile(...)` from `re.compile(...)`,
+because a guard that cries wolf is a guard someone disables. The single
+execution path hands the program to `MuseWorkspace.execute` as an argv element
+and nothing else; when no container can be provisioned the run is recorded
+`NO_WORKSPACE` and the code is simply never run.
+
+### What the kit caught before it shipped
+
+Recorded because M2 exists for exactly this. The first live capture of the
+fixtures — every one run in a real docker container — had
+`memoised_recursion`, the paraphrase fixture, coming back `WRONG` while the
+reference solution came back `CORRECT`. The paraphrase was right and both the
+others were wrong: `truth_parity_subsets` and the committed reference shared
+an implementation, so they shared its off-by-one seed and **agreed with each
+other while disagreeing with the answers in the tables above**.
+
+Two things follow, and both are in the code:
+
+- the truth function and the reference are now written in deliberately
+  different styles, and the reason is a comment on both;
+- a structurally different correct solution is a permanent fixture, not a
+  courtesy. It is the only member of the kit that could have caught this: every
+  adversarial fixture was failing exactly as declared, and an all-negative
+  table is satisfied by a grader whose notion of "correct" is wrong.
+
+## 6. The perception-routing rung (V1) — a board, not a puzzle
+
+Four questions about ONE fog-scoped board — the fixture in
+`examples/map_render.fog_leak_fixture()`, rendered by `examples/map_render.py`.
+Every answer below is **computed** from that fixture's fog snapshot
+(`cb936a1c489da756…`) by `examples/arch_vision.py`, never typed in:
+a hand-written answer and a rendered map can disagree silently.
+
+Acting team: `blue`.
+
+### units
+
+> You are commanding team Blue. You have been given this turn's board as it is known to you — blank ground is UNOBSERVED, not empty. Answer the question below and submit it with `finish`.
+>
+> How many units of your own team are on the board? Answer with a number.
+
+**Answer: 2.** (simple) the floor: a count. A mind that cannot do this cannot read the map at all.
+
+### holding
+
+> You are commanding team Blue. You have been given this turn's board as it is known to you — blank ground is UNOBSERVED, not empty. Answer the question below and submit it with `finish`.
+>
+> Which control point does your team currently hold? Answer with its id.
+
+**Answer: cp-west.** (simple) a lookup with an owner test, and a distractor the fog removed.
+
+### rival
+
+> You are commanding team Blue. You have been given this turn's board as it is known to you — blank ground is UNOBSERVED, not empty. Answer the question below and submit it with `finish`.
+>
+> Name the id of any rival unit you can see. If you can see none, answer exactly NONE VISIBLE.
+
+**Answer: NONE VISIBLE.** (simple) the confabulation trap, and the only question whose right answer is a refusal. Unobserved ground is where a vision model invents, and a rung that never asks about absence never measures it.
+
+### closest
+
+> You are commanding team Blue. You have been given this turn's board as it is known to you — blank ground is UNOBSERVED, not empty. Answer the question below and submit it with `finish`.
+>
+> Which of your units is closest to the resource node? Answer with its unit id.
+
+**Answer: blue-2.** (complex) two positions and a comparison rather than one lookup — the routable 'complex' end of the rung, and what makes the hybrid arm's routing decision able to vary at all.
