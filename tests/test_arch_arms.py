@@ -301,7 +301,8 @@ class TestSamplingTableComesFromConfig:
         with pytest.raises(aa.ConfigError) as caught:
             aa.load_config(path)
         assert "temperature" in str(caught.value)
-        assert "E" in str(caught.value) and "cortex" in str(caught.value)
+        assert "E" in str(caught.value)
+        assert "cortex" in str(caught.value)
 
     def test_a_missing_role_cell_raises_naming_the_arm_and_role(self, tmp_path: Path) -> None:
         def drop_worker(raw: dict[str, Any]) -> None:
@@ -311,7 +312,8 @@ class TestSamplingTableComesFromConfig:
         config_error = pytest.raises(aa.ConfigError)
         with config_error as caught:
             aa.load_config(path)
-        assert "M" in str(caught.value) and "worker" in str(caught.value)
+        assert "M" in str(caught.value)
+        assert "worker" in str(caught.value)
 
     def test_the_committed_values_are_what_reaches_the_wire(self, tmp_path: Path) -> None:
         """Change the file, and the body posted changes. Nothing else can set them."""
@@ -362,8 +364,9 @@ class TestSamplingTableComesFromConfig:
         def unmapped(raw: dict[str, Any]) -> None:
             raw["sampling"]["E"]["cortex"]["thinking"] = "medium"
 
+        path = _write_config(tmp_path, unmapped)
         with pytest.raises(aa.ConfigError) as caught:
-            aa.load_config(_write_config(tmp_path, unmapped))
+            aa.load_config(path)
         assert "medium" in str(caught.value)
 
     def test_an_unmapped_thinking_mode_is_refused_at_use_too(self) -> None:
@@ -799,13 +802,15 @@ class TestSensesIsIdenticalAcrossArms:
         config = aa.load_config(_write_config(tmp_path, drift))
         log = aa.CallLog()
         seams = aa.ScriptedSeams(_scripted_minds(), config=config, log=log)
+        ladder = (aa.Rung(id="X", problems=("easy",), why="fixture"),)
+        registry = _tiny_registry()
         with pytest.raises(aa.ConfigError):
             aa.run_series(
                 config=config,
                 seams=seams,
                 log=log,
-                ladder=(aa.Rung(id="X", problems=("easy",), why="fixture"),),
-                registry=_tiny_registry(),
+                ladder=ladder,
+                registry=registry,
             )
         assert log.records == []
 

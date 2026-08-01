@@ -622,7 +622,8 @@ class TestTheClassifierAppliesTheRuleInTheOrderStated:
     def test_separation_needs_the_derived_margin(self) -> None:
         one = classify_rung(_full({"E": 2, "W": 2, "M": 3, "H": 2}), heterogeneous=True)
         assert one["verdict"] == VERDICT_INCONCLUSIVE
-        assert one["margin"] == 1 and one["margin_required"] == 2
+        assert one["margin"] == 1
+        assert one["margin_required"] == 2
         two = classify_rung(_full({"E": 2, "W": 2, "M": 4, "H": 2}), heterogeneous=True)
         assert two["verdict"] == VERDICT_SEPARATED
         assert two["leader"] == aa.ARM_MANAGER
@@ -809,7 +810,8 @@ class TestTheSamplingTableIsTheCommittedInput:
 
     def test_senses_is_identical_across_arms_and_hashed(self) -> None:
         digest = aa.assert_senses_identical(_CONFIG)
-        assert digest and isinstance(digest, str)
+        assert digest
+        assert isinstance(digest, str)
 
     def test_budgets_are_sufficient_rather_than_equal(self) -> None:
         flat = {arm: _CONFIG.budget_for(arm) for arm in aa.FLAT_ARMS}
@@ -868,7 +870,7 @@ class TestCapabilityFactsComeFromProbesNotTheAdvert:
     def test_the_protocol_gate_is_reused_from_league_commander(self) -> None:
         from tests import test_league_commander_preregistration as lcp
 
-        assert PROTOCOL_GATE == lcp.LENGTH_FRACTION_MAX
+        assert lcp.LENGTH_FRACTION_MAX == PROTOCOL_GATE
 
 
 class TestTheDocumentStatesTheRecomputedConstants:
