@@ -5,7 +5,7 @@
   "schema_version": 4,
   "status": "exported",
   "created": "2026-08-01T07:31:01Z",
-  "updated": "2026-08-01T08:41:55Z",
+  "updated": "2026-08-01T09:37:38Z",
   "targets": [
     {
       "id": "c1",
@@ -549,7 +549,7 @@
         "c41",
         "h28"
       ],
-      "instruction": ""
+      "instruction": "SCOPE CHANGED BY DEVIATION d3 \u2014 streaming becomes the DEFAULT transport for cortex/worker dials, not a flag-gated pilot, and lands BEFORE t10's series. Measured ground truth from docs/live-test-results/streaming-probe.md, use it rather than re-deriving: (1) the reasoning delta field is 'reasoning', NOT vLLM's documented 'reasoning_content' \u2014 a client written against the documented name silently reports zero reasoning; (2) the gateway's read timeout is per-READ (conn.sock.settimeout + chunk-by-chunk relay), so it becomes an inter-chunk bound under streaming; (3) stream_options.include_usage delivers a terminal usage chunk carrying finish_reason and all four token counts, so metering parity is achievable \u2014 assert it; (4) measured max inter-chunk gap is 0.124 s through a 43 s think, so an idle bound of ~60 s carries ~500x margin. TWO-PHASE BOUNDS ARE DERIVED, NOT MEASURED (c38): time-to-first-chunk bound = queue depth (server admits max-num-seqs=2, so 1 waiting slot) x the derived per-request bound, plus margin; inter-chunk idle bound sized from measured chunk cadence. Both cited like every other bound and added to t2's CI walk. Keep non-streaming reachable as an explicit fallback flag, and keep the derived total bounds as the outer backstop for a dead transport. Died-stream records stay distinguishable by field (c41) and are NEVER blindly retried \u2014 lobes' no-retry-once-streaming contract. BOUNDARY: no published non-streaming result is re-run or re-graded; each affected doc names the transport that produced it, the d16 line."
     },
     {
       "id": "t6",
@@ -631,7 +631,7 @@
         "c44",
         "h30"
       ],
-      "instruction": "Findings that bind the pre-registration. From t6: (1) DO NOT re-introduce a security-shaped question into the B1 sweep \u2014 issue #44's own example 'is this safe?' names a security_decision, a FORBIDDEN responsibility in lobes' worker contract, the exact contract arm B claims to take literally; t6 ships looks_risky (an observation, 'unclear' first-class). (2) Issue #37 bites the acceptance metric: a truncated worker turn is indistinguishable from a schema refusal, so a max_tokens setting could publish arm B as refuted by its own budget \u2014 read ABSENT_TRUNCATED separately from refusal. From t8, measured: (3) The sweep MUST cite calls/second, never effective_concurrency \u2014 on tens-of-token calls the latter reads HIGHER (7.48 vs 6.14) because it is a ratio of token throughputs and per-stream tok/s is overhead rather than decode; it would report the ~9x figure as transferring BETTER than it does. The measured transfer is 3.44x lean / 1.83x realistic. (4) B1 requires enable_thinking: false \u2014 with thinking on at a 48-token cap, 0 of 6 answered and 6/6 truncated (issue #32's shape); with it off, 106 of 106 answered at ~15 tokens. Pin thinking mode per role per tier in the sampling table. (5) Prefill BINDS B1, not completion tokens: +768 prompt tokens costs +0.12 s at width 1 but +1.29 s at width 8, and the N-calls-vs-one-cortex-turn comparison carries ~1.4M prompt tokens. Size the sweep's grain against prompt tokens, and confirm the committed 256-token worker budget against t8's measured ~15-token answers."
+      "instruction": "Findings that bind the pre-registration. From t6: (1) DO NOT re-introduce a security-shaped question into the B1 sweep \u2014 issue #44's own example 'is this safe?' names a security_decision, a FORBIDDEN responsibility in lobes' worker contract. (2) Issue #37 bites the acceptance metric: a truncated worker turn is indistinguishable from a schema refusal \u2014 read ABSENT_TRUNCATED separately from refusal. From t8, measured: (3) The sweep MUST cite calls/second, never effective_concurrency \u2014 on tens-of-token calls the latter reads HIGHER (7.48 vs 6.14) and would report the ~9x figure as transferring BETTER than it does; measured transfer is 3.44x lean / 1.83x realistic. (4) B1 requires enable_thinking: false \u2014 with thinking on at a 48-token cap, 0 of 6 answered and 6/6 truncated; pin thinking mode per role per tier. (5) Prefill BINDS B1, not completion tokens. From t7: (6) PROVIDER_FAKE provisions but executes nothing, so hermetic grading needs a scripted headspace double \u2014 know this before planning the measured lane. From d3: (7) THE SERIES RUNS ON STREAMING. Record it as the instrument in the pre-registration's opening, with the two-phase bounds and their derivation, and state that prior non-streaming results are not comparable on latency (token accounting is unaffected \u2014 the terminal usage chunk carries the same counts)."
     },
     {
       "id": "t10",
