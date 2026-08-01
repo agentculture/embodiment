@@ -74,22 +74,43 @@ def _jsonl(path: Path) -> list[dict[str, Any]]:
 # --- the arithmetic ---------------------------------------------------------
 
 
-def test_retry_rungs_derive_from_the_harness_constants(reexam: Any) -> None:
+def test_retry_rungs_derive_from_the_as_run_constants(reexam: Any) -> None:
     """A clock-cut call cannot record less than one timeout plus one wait.
 
     ``gateway_seam`` starts its stopwatch before the first attempt and never resets it,
     so the rungs are cumulative. The exhausted value is the identity that matched
     ``worker_seam``'s two lost calls to 0.4 s — here it is 4 x 900 + 3 x 30, because this
     harness waits 30 s between attempts and not the 20 s the audit's example used.
+
+    **From the as-run config, not the live constants.** These records were produced at
+    900.0 s; plan task ``t2`` has since raised the harness to 1600.0 on this very
+    re-exam's Gemma finding, and rungs computed from the new value would describe a
+    signature these records could never carry. That was a live defect — the script did
+    read the live constants — and the fix is the same one `corrections.md` §10 named
+    one file over: read the field that reports the event, not the one that happens to
+    be nearby.
     """
+    settings = reexam.as_run_config()
     rungs = dict(reexam.retry_rungs())
-    step = lc.REQUEST_TIMEOUT + lc.RETRY_WAIT_SECONDS
+    step = settings["request_timeout"] + settings["retry_wait_seconds"]
     assert rungs["1 timeout(s) then success (floor)"] == pytest.approx(step)
     assert rungs["1 timeout(s) then success (floor)"] == pytest.approx(930.0)
     assert rungs["all attempts exhausted (exact)"] == pytest.approx(
-        (lc.MAX_RETRIES + 1) * lc.REQUEST_TIMEOUT + lc.MAX_RETRIES * lc.RETRY_WAIT_SECONDS
+        (settings["max_retries"] + 1) * settings["request_timeout"]
+        + settings["max_retries"] * settings["retry_wait_seconds"]
     )
     assert rungs["all attempts exhausted (exact)"] == pytest.approx(3690.0)
+
+
+def test_the_as_run_clock_is_the_committed_one_and_not_the_live_one(reexam: Any) -> None:
+    """The distinction this re-exam now turns on, asserted rather than trusted."""
+    settings = reexam.as_run_config()
+    assert settings["request_timeout"] == pytest.approx(900.0)
+    assert settings["max_tokens"] == lc.MAX_TOKENS
+    assert lc.REQUEST_TIMEOUT > settings["request_timeout"], (
+        "the harness has been raised past the value these records were taken at; if it "
+        "is ever lowered back, this re-exam's framing needs revisiting"
+    )
 
 
 def test_linear_fit_recovers_a_planted_rate(reexam: Any) -> None:
@@ -191,15 +212,21 @@ def test_the_largest_completion_is_nowhere_near_the_budget(runs: list[Any]) -> N
 # --- the advisories the clean verdict does not cover ------------------------
 
 
-def test_the_margin_is_generation_only_and_this_series_exceeds_its_slack(runs: list[Any]) -> None:
-    """The 1.21x margin has 155.8 s of slack; one Qwen call spent 179.3 s not generating.
+def test_the_margin_was_generation_only_and_the_as_run_series_exceeded_its_slack(
+    reexam: Any, runs: list[Any]
+) -> None:
+    """The 1.21x margin had 155.8 s of slack; one Qwen call spent 179.3 s not generating.
 
     This does not make the records dirty — that call produced 365 tokens, not 16000. It
-    is why the margin is recorded as thin rather than as comfortable.
+    is why the as-run margin is recorded as thin rather than as comfortable, and it is
+    the measurement plan task ``t2`` turned into ``derive_timeout``'s explicit
+    ``non_generation_s`` term. Stated against the **as-run** clock: the finding is about
+    what was shipped when these records were taken.
     """
+    as_run = float(reexam.as_run_config()["request_timeout"])
     bound = lc.MAX_TOKENS / 21.5
-    assert lc.REQUEST_TIMEOUT / bound == pytest.approx(1.21, abs=0.005)
-    slack = lc.REQUEST_TIMEOUT - bound
+    assert as_run / bound == pytest.approx(1.21, abs=0.005)
+    slack = as_run - bound
 
     qwen = [c for run in runs for c in run.calls if c["model"] == lc.QWEN]
     fastest = max(c["completion_tokens"] / c["seconds"] for c in qwen)
@@ -208,12 +235,26 @@ def test_the_margin_is_generation_only_and_this_series_exceeds_its_slack(runs: l
     assert worst_overhead > slack
 
 
-def test_the_gemma_role_is_below_bound_through_the_same_constant(runs: list[Any]) -> None:
-    """One timeout fronts two models; #42's audit derived it at the cortex rate only."""
+def test_the_gemma_role_was_below_bound_and_the_raise_has_closed_it(
+    reexam: Any, runs: list[Any]
+) -> None:
+    """One timeout fronts two models; #42's audit derived it at the cortex rate only.
+
+    Both halves are asserted: that the finding was real against the as-run clock, and
+    that the constant shipping today clears the bound it identified. The first half
+    keeps the published verdict honest; the second is what stops the finding from being
+    re-discovered.
+    """
+    as_run = float(reexam.as_run_config()["request_timeout"])
     gemma = [c for run in runs for c in run.calls if c["model"] == lc.GEMMA]
     fastest = max(c["completion_tokens"] / c["seconds"] for c in gemma)
     assert fastest < 13.0
-    assert lc.MAX_TOKENS / fastest > lc.REQUEST_TIMEOUT
+    gemma_bound = lc.MAX_TOKENS / fastest
+    assert gemma_bound > as_run, "the finding, against the clock these records ran under"
+    assert lc.REQUEST_TIMEOUT > gemma_bound, (
+        "the harness still ships below the Gemma bound this re-exam found; "
+        "tests/test_timeout_bounds.py is the gate that should have caught it"
+    )
     # ...and the reason it never mattered: Gemma's completions stayed tiny here.
     assert max(c["completion_tokens"] for c in gemma) < 250
 

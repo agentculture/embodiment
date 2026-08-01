@@ -34,9 +34,30 @@ Contract for the bound test (task t2)
 ``load_rate_config()`` returns a fully-validated :class:`RateConfig`. Every
 field is parsed eagerly at load, so a malformed or half-updated config fails at
 the first call rather than at the assertion that happens to read the missing
-key. ``config.rate("cortex").slowest_tok_s`` is the number a client-timeout
+key. ``config.rate("cortex").bound_input_tok_s`` is the number a client-timeout
 bound divides into; ``config.rate("worker").at_width(8)`` is the number a
 fan-out bound at width 8 divides into.
+
+What task ``t2`` added
+----------------------
+
+Three fields, each because the bound needed an input the original schema had no
+place for. All three are optional, so ``t1``'s two entries load unchanged.
+
+* ``bound_input`` — **which measured figure the bound divides into**, when it
+  is not ``slowest_tok_s``. The muse's per-call implied rates are measured over
+  31–236-token completions, where the slowest reading is fixed cost wearing a
+  rate's units; dividing 16000 by it claims 3092 s for a generation the
+  regression puts near 1187 s. Which figure is the honest divisor is a
+  *judgement*, so it is stated and cited in the config rather than left
+  implicit in whichever number a test happened to reach for.
+  :attr:`RateMeasurement.bound_input_tok_s` is the divisor either way.
+* ``rate_includes_non_generation`` — whether queue wait and prefill are already
+  inside the measured rate. Where they are, adding the allowance below
+  double-counts; where they are not, omitting it under-protects.
+* ``non_generation_allowance`` (top level) — the measured seconds a request
+  spends *not* generating. The rule's right-hand side bounds generation; the
+  clock in front of it does not.
 """
 
 from __future__ import annotations
@@ -122,6 +143,120 @@ class WidthRate:
 
 
 @dataclass(frozen=True)
+class BoundInput:
+    """Which measured figure a bound divides into, and why that one.
+
+    Present only where the divisor is *not* ``slowest_tok_s``. ``field_name``
+    names the measurement it must equal, and :meth:`from_dict` checks that
+    equality — so the divisor cannot drift away from the figure it claims to be
+    while still looking cited.
+    """
+
+    field_name: str
+    tok_s: float
+    cited_as: Optional[float]
+    why: tuple[str, ...]
+
+    @classmethod
+    def from_dict(cls, raw: Any, *, where: str, fields: Mapping[str, float]) -> "BoundInput":
+        if not isinstance(raw, Mapping):
+            raise RateConfigError(f"{where}: bound_input must be a JSON object")
+        field_name = str(_require(raw, "from", where))
+        if field_name not in fields:
+            known = ", ".join(sorted(fields))
+            raise RateConfigError(
+                f"{where}.from names {field_name!r}, which is not a measured "
+                f"figure on this role. Measured figures are {known}."
+            )
+        tok_s = float(_require(raw, "tok_s", where))
+        if abs(tok_s - fields[field_name]) > 1e-9:
+            raise RateConfigError(
+                f"{where}.tok_s is {tok_s} but {field_name} is {fields[field_name]}. "
+                "The divisor must BE the figure it names, not a copy of it that "
+                "has drifted — that is claim c39 inside one file."
+            )
+        why = tuple(str(line) for line in raw.get("why", ()))
+        if not any(line.strip() for line in why):
+            raise RateConfigError(
+                f"{where}: choosing a divisor other than the slowest measured "
+                "rate is a judgement, and a judgement with no stated reason is "
+                "a number nobody can audit. Give bound_input a 'why'."
+            )
+        return cls(
+            field_name=field_name,
+            tok_s=tok_s,
+            cited_as=_optional_float(raw.get("cited_as")),
+            why=why,
+        )
+
+
+@dataclass(frozen=True)
+class NonGenerationAllowance:
+    """Seconds a request spends *not* generating, measured rather than modelled.
+
+    The #42 rule bounds generation. The clock in front of a request also covers
+    queue wait and prompt processing, and `corrections.md` §9 found one
+    committed call where that gap was larger than the entire slack a passing
+    constant had left. This is that gap, as a number a bound can add.
+    """
+
+    seconds: float
+    cited_as: Optional[float]
+    measured_on: str
+    measured_role: str
+    measured_model: str
+    why: tuple[str, ...]
+    remeasure_when: tuple[str, ...]
+    sources: tuple[str, ...]
+
+    @classmethod
+    def from_dict(cls, raw: Any, *, where: str) -> "NonGenerationAllowance":
+        if not isinstance(raw, Mapping):
+            raise RateConfigError(f"{where}: non_generation_allowance must be a JSON object")
+        return cls(
+            seconds=float(_require(raw, "seconds", where)),
+            cited_as=_optional_float(raw.get("cited_as")),
+            measured_on=str(_require(raw, "measured_on", where)),
+            measured_role=str(_require(raw, "measured_role", where)),
+            measured_model=str(_require(raw, "measured_model", where)),
+            why=tuple(str(line) for line in _require(raw, "why", where)),
+            remeasure_when=tuple(str(line) for line in raw.get("remeasure_when", ())),
+            sources=tuple(str(line) for line in _require(raw, "sources", where)),
+        )
+
+
+@dataclass(frozen=True)
+class UnmeasuredRole:
+    """A role a constant fronts that nobody has timed.
+
+    Recorded rather than omitted: an omission reads as coverage. Every field is
+    required because a half-filled entry is the same silence with more words.
+    """
+
+    role: str
+    model: str
+    fronted_by: tuple[str, ...]
+    max_tokens: int
+    reached_through: str
+    why_unmeasured: tuple[str, ...]
+    would_be_produced_by: str
+
+    @classmethod
+    def from_dict(cls, role: str, raw: Any, *, where: str) -> "UnmeasuredRole":
+        if not isinstance(raw, Mapping):
+            raise RateConfigError(f"{where}: the {role!r} entry must be a JSON object")
+        return cls(
+            role=role,
+            model=str(_require(raw, "model", where)),
+            fronted_by=tuple(str(x) for x in _require(raw, "fronted_by", where)),
+            max_tokens=int(_require(raw, "max_tokens", where)),
+            reached_through=str(_require(raw, "reached_through", where)),
+            why_unmeasured=tuple(str(x) for x in _require(raw, "why_unmeasured", where)),
+            would_be_produced_by=str(_require(raw, "would_be_produced_by", where)),
+        )
+
+
+@dataclass(frozen=True)
 class RateMeasurement:
     """One role's measured generation rate, with everything that qualifies it."""
 
@@ -152,6 +287,36 @@ class RateMeasurement:
     sources: tuple[str, ...]
     pending_sources: tuple[str, ...]
     by_width: Mapping[int, WidthRate]
+    #: Which measured figure this role's bound divides into, when it is not
+    #: ``slowest_tok_s``. See :class:`BoundInput`.
+    bound_input: Optional[BoundInput]
+    #: Whether queue wait and prefill are already inside the measured rate.
+    #: Absent means ``False`` — the safe reading, since it adds the allowance.
+    rate_includes_non_generation: bool
+    rate_includes_non_generation_why: tuple[str, ...]
+
+    @property
+    def bound_input_tok_s(self) -> float:
+        """The divisor. ``slowest_tok_s`` unless the config names another figure."""
+        return self.slowest_tok_s if self.bound_input is None else self.bound_input.tok_s
+
+    @property
+    def bound_input_field(self) -> str:
+        """Which measured figure :attr:`bound_input_tok_s` is."""
+        return "slowest_tok_s" if self.bound_input is None else self.bound_input.field_name
+
+    @property
+    def retry_clean_floor_tok_s(self) -> Optional[float]:
+        """The slowest call at any width that never retried, or ``None``.
+
+        The figure that makes ``rate_includes_non_generation`` checkable rather
+        than merely asserted: a rate claiming to contain queue and prefill has
+        to be slower than the clean floor by at least the allowance, at the
+        budget in question. Only roles measured per width carry one.
+        """
+        if not self.by_width:
+            return None
+        return min(entry.slowest_retry_clean_tok_s for entry in self.by_width.values())
 
     def at_width(self, width: int) -> WidthRate:
         """The measurement at exactly this concurrency width, or a refusal.
@@ -188,6 +353,29 @@ class RateMeasurement:
             for width, entry in widths_raw.items()
         }
 
+        measured_figures = {
+            "slowest_tok_s": float(_require(raw, "slowest_tok_s", where)),
+            "mean_tok_s": float(_require(raw, "mean_tok_s", where)),
+            "fastest_tok_s": float(_require(raw, "fastest_tok_s", where)),
+        }
+        bound_input_raw = raw.get("bound_input")
+        bound_input = (
+            None
+            if bound_input_raw is None
+            else BoundInput.from_dict(
+                bound_input_raw, where=f"{where}.bound_input", fields=measured_figures
+            )
+        )
+        includes = bool(raw.get("rate_includes_non_generation", False))
+        includes_why = tuple(str(x) for x in raw.get("rate_includes_non_generation_why", ()))
+        if includes and not any(line.strip() for line in includes_why):
+            raise RateConfigError(
+                f"{where}: rate_includes_non_generation is true with no stated "
+                "reason. That flag suppresses the queue allowance on every bound "
+                "this role fronts; it is a claim about how the rate was measured "
+                "and it has to say which measurement supports it."
+            )
+
         return cls(
             role=role,
             slowest_tok_s=float(_require(raw, "slowest_tok_s", where)),
@@ -209,6 +397,9 @@ class RateMeasurement:
             sources=tuple(str(x) for x in _require(raw, "sources", where)),
             pending_sources=tuple(str(x) for x in raw.get("pending_sources", ())),
             by_width=by_width,
+            bound_input=bound_input,
+            rate_includes_non_generation=includes,
+            rate_includes_non_generation_why=includes_why,
         )
 
 
@@ -221,14 +412,28 @@ class RateConfig:
     rule_formula: str
     rule_source: str
     roles: Mapping[str, RateMeasurement]
+    non_generation_allowance: NonGenerationAllowance
+    #: Roles a constant fronts that nobody has timed. Never empty by accident:
+    #: an absent entry means the gap is unrecorded, not that it does not exist.
+    unmeasured_roles: Mapping[str, UnmeasuredRole]
 
     def rate(self, role: str) -> RateMeasurement:
         if role not in self.roles:
             known = ", ".join(sorted(self.roles))
+            declared = self.unmeasured_roles.get(role)
+            gap = (
+                ""
+                if declared is None
+                else (
+                    f" It is declared unmeasured: {declared.model} is fronted by "
+                    f"{', '.join(declared.fronted_by)} and a rate would come from "
+                    f"{declared.would_be_produced_by}."
+                )
+            )
             raise RateConfigError(
                 f"no generation-rate measurement for role {role!r}; measured roles "
                 f"are {known}. A role with no committed measurement has no derivable "
-                f"timeout bound — measure it per {PROCEDURE_DOC_NAME} first."
+                f"timeout bound — measure it per {PROCEDURE_DOC_NAME} first.{gap}"
             )
         return self.roles[role]
 
@@ -255,6 +460,8 @@ class RateConfig:
                     measurement.cited_as,
                     measurement.cited_fastest_as,
                     measurement.aggregate_tok_s,
+                    None if measurement.bound_input is None else measurement.bound_input.tok_s,
+                    None if measurement.bound_input is None else measurement.bound_input.cited_as,
                 )
                 if value is not None
             )
@@ -272,7 +479,11 @@ class RateConfig:
 
 #: The roles a complete config must carry. Absence of one is a refusal, not an
 #: empty mapping: a bound test that silently found no cortex rate would pass.
-REQUIRED_ROLES = ("cortex", "worker")
+#:
+#: ``muse`` joined in ``t2``: four of the seven audited constants front Gemma
+#: 4 31B, and #42 derived every one of their bounds at the cortex rate. A
+#: config that could load without it would let that mistake recur silently.
+REQUIRED_ROLES = ("cortex", "worker", "muse")
 
 
 def load_rate_config(path: Optional[Path] = None) -> RateConfig:
@@ -324,10 +535,32 @@ def load_rate_config(path: Optional[Path] = None) -> RateConfig:
     for name in REQUIRED_ROLES:
         if name not in roles:
             raise RateConfigError(
-                f"{resolved}: no measurement for required role {name!r}. Both "
-                f"{' and '.join(repr(r) for r in REQUIRED_ROLES)} are dialled by "
-                "harnesses in examples/, so both need a committed rate."
+                f"{resolved}: no measurement for required role {name!r}. Every one of "
+                f"{', '.join(repr(r) for r in REQUIRED_ROLES)} is dialled by "
+                "harnesses in examples/, so every one needs a committed rate."
             )
+
+    allowance = NonGenerationAllowance.from_dict(
+        _require(raw, "non_generation_allowance", where),
+        where=f"{where}.non_generation_allowance",
+    )
+
+    unmeasured_raw = raw.get("unmeasured_roles") or {}
+    if not isinstance(unmeasured_raw, Mapping):
+        raise RateConfigError(f"{where}.unmeasured_roles: must be a JSON object keyed by role")
+    unmeasured = {
+        name: UnmeasuredRole.from_dict(name, entry, where=f"{where}.unmeasured_roles.{name}")
+        for name, entry in unmeasured_raw.items()
+        if name != "why"
+    }
+    overlap = sorted(set(unmeasured) & set(roles))
+    if overlap:
+        raise RateConfigError(
+            f"{resolved}: {', '.join(overlap)} appear(s) both as a measured role and "
+            "as an unmeasured one. A role that has been measured is no longer a gap — "
+            "delete the unmeasured_roles entry and put the pairs it names under the "
+            "bound test's measured walk."
+        )
 
     return RateConfig(
         path=resolved,
@@ -335,4 +568,6 @@ def load_rate_config(path: Optional[Path] = None) -> RateConfig:
         rule_formula=str(_require(rule, "formula", f"{where}.rule")),
         rule_source=str(_require(rule, "source", f"{where}.rule")),
         roles=roles,
+        non_generation_allowance=allowance,
+        unmeasured_roles=unmeasured,
     )

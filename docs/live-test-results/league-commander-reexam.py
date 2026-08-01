@@ -2,9 +2,13 @@
 """league-commander-reexam — did the 900 s clock censor task ``t28``'s records?
 
 Plan task **t4**, seeded by [issue #42]'s timeout audit. ``examples/league_commander.py``
-ships ``REQUEST_TIMEOUT = 900.0`` against a budget-derived bound of
+**shipped** ``REQUEST_TIMEOUT = 900.0`` against a budget-derived bound of
 ``MAX_TOKENS / slowest measured cortex rate = 16000 / 21.5 = 744 s`` — a **1.21x**
-margin, the narrowest passing one in that audit. That harness produced the
+margin, the narrowest passing one in that audit. (Plan task ``t2`` has since raised it to
+1600.0 on the second of the two findings below. Section 3's clock arithmetic therefore
+reads the **as-run** constants from the committed config files rather than the harness's
+live ones: a re-exam of committed records must use the instrument that produced them.)
+That harness produced the
 **2.4-4.4x hierarchy-cost figure** this repo cites, so if any of its turns were cut by
 the clock the way ``worker_seam.py``'s cell ``C1-E`` was, its cost numbers are inflated
 and its correctness numbers understated.
@@ -67,6 +71,37 @@ RUNS = (
     ("escalation E1 (c-frontier-1)", "league-commander-frontier", "league-commander-frontier-logs"),
 )
 
+#: The committed config each series wrote at run time. **The clock arithmetic
+#: below reads these, never ``examples/league_commander.py``'s live constants.**
+#:
+#: It used to read the live ones, and that was a latent defect of exactly the
+#: kind this file exists to catch: plan task ``t2`` raised ``REQUEST_TIMEOUT``
+#: 900.0 -> 1600.0 on the finding this re-exam itself produced, and the retry
+#: rungs immediately started describing a signature these records could not
+#: possibly carry. A re-exam of *committed* records must use the constants that
+#: produced them; the current value of a constant is a fact about the next run.
+AS_RUN_CONFIGS = ("league-commander-config.json", "league-commander-frontier-config.json")
+
+
+def as_run_config() -> dict[str, Any]:
+    """The instrument settings the committed records were produced under.
+
+    Both series ran under identical settings, which is asserted rather than
+    assumed: a re-exam that averaged two different clocks would be describing
+    neither.
+    """
+    keys = ("request_timeout", "max_retries", "retry_wait_seconds", "max_tokens")
+    settings = []
+    for name in AS_RUN_CONFIGS:
+        payload = json.loads((RESULTS / name).read_text(encoding="utf-8"))
+        missing = [key for key in keys if payload.get(key) is None]
+        if missing:
+            raise SystemExit(f"error: {name} records no {missing}; it cannot date its own clock")
+        settings.append({key: payload[key] for key in keys})
+    if any(entry != settings[0] for entry in settings[1:]):
+        raise SystemExit(f"error: {AS_RUN_CONFIGS} disagree on the instrument: {settings}")
+    return settings[0]
+
 
 @dataclass
 class Run:
@@ -118,11 +153,13 @@ def retry_rungs() -> list[tuple[str, float]]:
     ``(retries + 1) * timeout + retries * wait`` — the identity that matched
     ``worker_seam``'s two lost calls to 0.4 s.
     """
-    step = lc.REQUEST_TIMEOUT + lc.RETRY_WAIT_SECONDS
-    rungs = [
-        (f"{k} timeout(s) then success (floor)", k * step) for k in range(1, lc.MAX_RETRIES + 1)
-    ]
-    exhausted = (lc.MAX_RETRIES + 1) * lc.REQUEST_TIMEOUT + lc.MAX_RETRIES * lc.RETRY_WAIT_SECONDS
+    settings = as_run_config()
+    timeout = float(settings["request_timeout"])
+    wait = float(settings["retry_wait_seconds"])
+    retries = int(settings["max_retries"])
+    step = timeout + wait
+    rungs = [(f"{k} timeout(s) then success (floor)", k * step) for k in range(1, retries + 1)]
+    exhausted = (retries + 1) * timeout + retries * wait
     rungs.append(("all attempts exhausted (exact)", exhausted))
     return rungs
 
@@ -218,16 +255,24 @@ def check_retry_arithmetic(runs: list[Run], tolerance: float = 5.0) -> list[str]
     """No committed wall clock may reach the first rung — nor the timeout itself."""
     rule("3. Wall clocks against the retry arithmetic")
     rungs = retry_rungs()
-    print(f"\nharness constants: REQUEST_TIMEOUT={lc.REQUEST_TIMEOUT}s", end="")
-    print(f"  MAX_RETRIES={lc.MAX_RETRIES}  RETRY_WAIT_SECONDS={lc.RETRY_WAIT_SECONDS}s")
+    settings = as_run_config()
+    as_run_timeout = float(settings["request_timeout"])
+    print(f"\nAS-RUN constants: REQUEST_TIMEOUT={as_run_timeout}s", end="")
+    print(f"  MAX_RETRIES={settings['max_retries']}", end="")
+    print(f"  RETRY_WAIT_SECONDS={settings['retry_wait_seconds']}s")
     print("  (note: this harness waits 30 s between attempts, not worker_seam's 20 s)")
+    if as_run_timeout != lc.REQUEST_TIMEOUT:
+        print(
+            f"  the harness now ships {lc.REQUEST_TIMEOUT}s (raised on this re-exam's own "
+            "finding); these records were produced under the value above"
+        )
     for name, value in rungs:
         print(f"    {name:<38} {value:>8.1f} s")
     findings: list[str] = []
     for run in runs:
         seconds = [c["seconds"] for c in run.calls]
         walls = [m.get("wall_seconds") or 0.0 for m in run.matches]
-        over = [c for c in run.calls if c["seconds"] >= lc.REQUEST_TIMEOUT]
+        over = [c for c in run.calls if c["seconds"] >= as_run_timeout]
         near = [
             (c, name)
             for c in run.calls
@@ -238,13 +283,13 @@ def check_retry_arithmetic(runs: list[Run], tolerance: float = 5.0) -> list[str]
         print(f"\n{run.label}")
         print(
             f"  slowest single CALL      {worst:>8.1f} s"
-            f"   ({worst / lc.REQUEST_TIMEOUT:.1%} of timeout)"
+            f"   ({worst / as_run_timeout:.1%} of the as-run timeout)"
         )
         print(f"  slowest whole MATCH      {max(walls):>8.1f} s   (many calls plus arena CLI time)")
         print(f"  calls at or over the timeout: {len(over)}")
         print(f"  calls within {tolerance:.0f}s of a retry rung: {len(near)}")
         if over:
-            findings.append(f"{run.label}: {len(over)} call(s) at or over REQUEST_TIMEOUT")
+            findings.append(f"{run.label}: {len(over)} call(s) at or over the as-run timeout")
         if near:
             findings.append(f"{run.label}: {len(near)} call(s) matching the retry arithmetic")
     return findings
@@ -335,9 +380,19 @@ def check_rates(runs: list[Run], slowest: float) -> list[str]:
                 f"REQUEST_TIMEOUT={lc.REQUEST_TIMEOUT:.0f}s is BELOW bound for this model"
             )
 
-    rule("7. What the 1.21x margin would actually survive")
+    # Sections 6 and 7 grade the constant as it stands TODAY, which is why they
+    # read the live value where section 3 reads the as-run one. Their advisories
+    # never touch the exit code: they say what the shipped clock would survive,
+    # not what these records suffered.
+    as_run_timeout = float(as_run_config()["request_timeout"])
+    rule("7. What the shipped margin would actually survive")
     bound = lc.MAX_TOKENS / slowest
     slack = lc.REQUEST_TIMEOUT - bound
+    if as_run_timeout != lc.REQUEST_TIMEOUT:
+        print(
+            f"\n  as-run timeout            {as_run_timeout:.1f} s  ->  shipped today "
+            f"{lc.REQUEST_TIMEOUT:.1f} s (raised by plan task t2 on this re-exam's finding)"
+        )
     print(f"\n  budget-derived bound      {lc.MAX_TOKENS}/{slowest} = {bound:.1f} s")
     print(f"  shipped timeout           {lc.REQUEST_TIMEOUT:.1f} s", end="")
     print(f"   -> margin {lc.REQUEST_TIMEOUT / bound:.2f}x")

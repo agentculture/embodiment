@@ -243,9 +243,29 @@ RECALL_TOP_K = 4
 #: A timeout or a connection error is CONTENTION on a shared rig, not a result.
 #: Retried, bounded, and counted in the artifact — never silently.
 MAX_TRANSPORT_RETRIES = 3
+
+#: **Exempt from the budget bound, with a reason** (plan task t2, finding 3): a
+#: backoff bounds no token budget, and nothing committed here measures how long
+#: contention lasts. Not exempt from accounting — ``MeteredSeam``'s stopwatch
+#: starts before the first attempt, so this sleep lands in the call's latency,
+#: and ``retries`` is recorded per call so it can be subtracted again.
 RETRY_SLEEP_SECONDS = 20.0
-#: Generous on purpose: a 16000-token thinking turn on a busy local GPU is slow,
-#: and a timeout here would be contention masquerading as a result.
+
+#: **Derived, never chosen** — and it already cleared its bound, which is worth
+#: recording as the one constant in #42's audit that was sized right.
+#:
+#: ``bound = max over every (model, max_tokens) pair on this wire of
+#: max_tokens / rate + queue allowance``, rates from
+#: ``docs/live-test-results/timeout-rate-measurements.json`` and recomputed by
+#: `tests/test_timeout_bounds.py`. Three arms put two models on this one clock:
+#: the Qwen **cortex** at :data:`MAX_TOKENS`, and Gemma 4 31B — whose rate this
+#: repo records under the **muse** role — as the muse in ``mixed``, and as the
+#: *acting cortex* at the full :data:`MAX_TOKENS` in ``full-gemma``. The
+#: binding pair is Gemma at 16000: 16000 / 12.1 tok/s = 1322.0 s, plus the
+#: 179.3 s measured **queue** allowance (corrections.md §9), for a bound of
+#: 1501.3 s. Shipped 1800.0 is 1.20x that — the tightest passing margin among
+#: the six client timeouts, and passing on its own terms rather than by luck:
+#: "generous on purpose" happened to land above the derivation.
 REQUEST_TIMEOUT = 1800.0
 
 # ── the ladder ───────────────────────────────────────────────────────────────

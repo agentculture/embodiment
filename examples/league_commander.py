@@ -157,9 +157,54 @@ FLAT_MAX_STEPS = 4
 
 MAX_TOKENS = 16000
 TEMPERATURE = 0.7
-REQUEST_TIMEOUT = 900.0
+
+#: **Derived, never chosen** — issue #42's rule, at the slowest model this
+#: constant fronts, which is the finding that produced the rule.
+#:
+#: ``bound = max over every (model, max_tokens) pair on this wire of
+#: max_tokens / rate + queue allowance``, rates from
+#: ``docs/live-test-results/timeout-rate-measurements.json`` and recomputed by
+#: `tests/test_timeout_bounds.py`. ``ARM_MODELS`` puts **two** models on this
+#: one clock at the same ``MAX_TOKENS``: the Qwen **cortex** and Gemma 4 31B,
+#: whose rate this repo records under the **muse** role. #42 derived the bound
+#: at the cortex alone — 16000 / 21.5 = 744 s — and read the shipped 900.0 as
+#: the audit's narrowest *passing* margin at 1.21x. At Gemma's measured 12.1
+#: tok/s the bound is 1322.0 s and 900.0 was **0.68x, below bound** (task t4,
+#: corrections.md §9). It never bit here because Gemma's largest completion in
+#: 384 calls was 236 tokens, 1.5% of budget — the records are clean and the
+#: 2.4-4.4x figures stand — but the constant was wrong on its own terms.
+#:
+#: **Queue time is inside this bound.** 900.0 over the old 744 s generation
+#: bound left 155.8 s for everything that is not generation, and one call in
+#: this very series spent **179.3 s** queued and prefilling: a full-budget
+#: completion behind that queue would have totalled ~923 s and been cut. That
+#: measured allowance is added to every term here.
+#:
+#: Raised 900.0 -> 1600.0 (bound 1501.3 s, 1.07x). Recorded as **Amendment 1**
+#: in `docs/live-test-results/league-commander-preregistration.md` — appended
+#: and dated after the runs, never edited into what was registered.
+REQUEST_TIMEOUT = 1600.0
+
+#: Retry ladder. ``RETRY_WAIT_SECONDS`` is **exempt from the budget bound with
+#: a stated reason** (t2, finding 3): a backoff bounds no token budget and
+#: nothing committed measures how long contention lasts, so a derived-looking
+#: value would be invented. It is not exempt from accounting — ``gateway_seam``
+#: starts its stopwatch before the first attempt and never resets it, so this
+#: sleep is timed into the call, and ``retries`` is recorded per call precisely
+#: so the overhead can be subtracted.
+#:
+#: The exhausted-call identity moves with the raise above:
+#: ``4 x 1600 + 3 x 30 = 6490 s``, not the ``4 x 900 + 3 x 30 = 3690 s``
+#: corrections.md §9 searched the committed records for. That is why
+#: `league-commander-reexam.py` now reads the AS-RUN constants from the
+#: committed config artifacts rather than these live ones.
 MAX_RETRIES = 3
 RETRY_WAIT_SECONDS = 30.0
+
+#: Not a clock: nothing waits on this. A completed call whose wall time crosses
+#: it is *labelled* contended in the record, so it can annotate a result and
+#: never discard one. Recorded in `tests/test_timeout_bounds.py`'s
+#: ``_NOT_A_MODEL_CLOCK`` so the exclusion is a decision, not an oversight.
 CONTENTION_SECONDS = 600.0
 
 MARGIN_EFFECT = 3.0

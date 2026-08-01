@@ -268,8 +268,56 @@ def resolve_worker_config(
 #: A timeout or connection error is CONTENTION on a shared rig, not a result —
 #: same discipline as `examples/league_h2h.py`'s ``MeteredSeam``.
 MAX_TRANSPORT_RETRIES = 3
+
+#: The retry backoff — **exempt from the budget bound, with a reason** (plan
+#: task t2, finding 3). A backoff bounds no token budget: ``max_tokens / tok/s``
+#: answers "how long may generating take", while this answers "how long should
+#: we wait for a transient condition to clear", and nothing committed in this
+#: repo measures that. A derived-looking number here would be an invented one.
+#:
+#: What is NOT exempt is the accounting, and this is the constant that taught
+#: the lesson. ``started`` below is set before the attempt loop and never reset,
+#: so every second of this sleep is timed into the call's own latency. It has
+#: corrupted three measurements: nine calls in `worker-throughput.jsonl`
+#: (corrections.md §10), the cortex rate the pre-registration first published
+#: (§5), and t8's scoped-overhead probe, where it is 20x the median healthy
+#: scoped call and would have published concurrency making calls *slower*. The
+#: contamination is recoverable only because ``Meter.retries`` is recorded
+#: beside the clock: overhead is exactly ``retries x (REQUEST_TIMEOUT +
+#: RETRY_SLEEP_SECONDS)``. `tests/test_timeout_bounds.py` pins that record
+#: field, so removing it fails rather than silently ruining every rate.
 RETRY_SLEEP_SECONDS = 20.0
-REQUEST_TIMEOUT = 300.0
+
+#: **Derived, never chosen** — issue #42's rule, at the slowest model this
+#: constant fronts.
+#:
+#: ``bound = max over every (model, max_tokens) pair on this wire of
+#: max_tokens / rate + queue allowance``, with every rate read from
+#: ``docs/live-test-results/timeout-rate-measurements.json`` and recomputed by
+#: `tests/test_timeout_bounds.py`. This seam is not the worker's alone:
+#: `examples/arch_arms.py`'s ``ArchSeam`` subclasses it, so the **cortex**
+#: rides the same clock in arms E/M/H, the **worker** in W/M/H, and
+#: `examples/arch_hive.py` and `examples/worker_throughput.py` add two more
+#: budgets. The binding pair is the worker at the 16000-token ``d16`` budget:
+#: 16000 / 12.921 tok/s = 1238.3 s. The cortex at the same budget bounds lower
+#: (745.9 s of generation plus the 179.3 s measured queue allowance).
+#:
+#: **Queue time is inside this bound.** The rule's right-hand side covers
+#: generation only, and one committed call spent 179.3 s queued and prefilling
+#: (corrections.md §9). For the cortex that allowance is added; for the worker
+#: it is *absorbed*, because the worker's cited rate is a wall-clock floor that
+#: already contains queue and prefill — and the test checks that absorption
+#: numerically rather than taking the claim on trust.
+#:
+#: **What this bound does not cover:** the **senses** role. `arch_vision.py`
+#: dials it through this same seam at a 16000-token budget and no committed
+#: record times that model, so the gap is declared in the rate config rather
+#: than papered over with a plausible stand-in.
+#:
+#: Raised 300.0 -> 1300.0. Pre-registration amendment 1 raised it to 1200.0 on
+#: branch ``owa/t12``, deriving at the *cortex* rate alone; that value is below
+#: the worker's own bound on the same wire. See corrections.md §11.
+REQUEST_TIMEOUT = 1300.0
 
 #: league's own word (reused here) for a completion that ran out of budget
 #: mid-thought — an INSTRUMENT event, never a reasoning failure.

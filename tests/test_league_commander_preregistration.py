@@ -80,7 +80,18 @@ MAX_TOKENS = 16000
 #: ``c-skirmish-1`` (verified: two seeds, byte-identical initial state), so
 #: sampling is the ONLY source of between-match variation within an arm.
 TEMPERATURE = 0.7
+#: What this document REGISTERED, and what both committed series ran under. It
+#: stays here unchanged: a pre-registration's numbers are not edited after the
+#: dial, and the re-exam's whole verdict is stated against this clock.
 REQUEST_TIMEOUT = 900.0
+#: What the harness ships TODAY, per **Amendment 1** (appended 2026-08-01,
+#: after both runs and after the write-up published). The registered value was
+#: derived at the Qwen cortex rate while the same constant also fronts Gemma 4
+#: 31B at the same budget; at Gemma's measured rate 900.0 was 0.68x its bound.
+#: No published figure changes — the re-exam proved no call was cut — but the
+#: constant was wrong on its own terms and the next run would have paid for it.
+#: `tests/test_timeout_bounds.py` is the gate that now recomputes it.
+REQUEST_TIMEOUT_AMENDED = 1600.0
 MAX_RETRIES = 3
 RETRY_WAIT_SECONDS = 30.0
 #: Above this, a call is CONTENTION, not a result.
@@ -297,7 +308,9 @@ class TestHarnessMatchesThePreRegistration:
     def test_wire(self) -> None:
         assert lc.MAX_TOKENS == MAX_TOKENS
         assert lc.TEMPERATURE == TEMPERATURE
-        assert lc.REQUEST_TIMEOUT == REQUEST_TIMEOUT
+        # The one registered value the harness deliberately no longer matches;
+        # see REQUEST_TIMEOUT_AMENDED and TestAmendmentOne below.
+        assert lc.REQUEST_TIMEOUT == REQUEST_TIMEOUT_AMENDED
         assert lc.MAX_RETRIES == MAX_RETRIES
         assert lc.RETRY_WAIT_SECONDS == RETRY_WAIT_SECONDS
         assert lc.CONTENTION_SECONDS == CONTENTION_SECONDS
@@ -317,3 +330,51 @@ class TestHarnessMatchesThePreRegistration:
     def test_verdicts(self) -> None:
         assert lc.VERDICTS == VERDICTS
         assert lc.VOID_REASONS == VOID_REASONS
+
+
+class TestAmendmentOne:
+    """The one place the harness deliberately departs from what was registered.
+
+    A pre-registration is append-only, so a constant that legitimately changes
+    after the dial produces exactly this shape: a registered value that stays
+    true of the records, an amended value that is true of the code, and a dated
+    section saying which is which. What must never happen is the third option —
+    the document quietly edited to match the code, so that no reader can tell a
+    correction from an original intention.
+    """
+
+    DOC = (
+        Path(__file__).resolve().parents[1]
+        / "docs"
+        / "live-test-results"
+        / "league-commander-preregistration.md"
+    ).read_text(encoding="utf-8")
+
+    def test_the_amendment_is_appended_and_dated_not_edited_in(self) -> None:
+        assert "## Amendment 1" in self.DOC
+        registered_at = self.DOC.index("## Fixed configuration")
+        amended_at = self.DOC.index("## Amendment 1")
+        assert amended_at > registered_at, "an amendment that precedes what it amends"
+        # The registered value survives verbatim in the section that registered it.
+        assert "**900**" in self.DOC or "900" in self.DOC[registered_at:amended_at]
+
+    def test_the_amendment_states_the_raise_and_its_derivation(self) -> None:
+        section = self.DOC[self.DOC.index("## Amendment 1") :]
+        for needle in ("900.0", "1600.0", "12.1", "179.3", "1322", "timeout-rate-measurements"):
+            assert needle in section, f"the amendment never mentions {needle!r}"
+
+    def test_it_is_only_a_raise_never_a_quiet_lowering(self) -> None:
+        assert lc.REQUEST_TIMEOUT > REQUEST_TIMEOUT
+
+    def test_nothing_else_on_the_wire_moved(self) -> None:
+        """The amendment's blast radius, asserted rather than promised."""
+        assert lc.MAX_TOKENS == MAX_TOKENS
+        assert lc.TEMPERATURE == TEMPERATURE
+        assert lc.MAX_RETRIES == MAX_RETRIES
+        assert lc.RETRY_WAIT_SECONDS == RETRY_WAIT_SECONDS
+        assert lc.CONTENTION_SECONDS == CONTENTION_SECONDS
+
+    def test_the_amendment_says_no_published_figure_changes(self) -> None:
+        section = self.DOC[self.DOC.index("## Amendment 1") :]
+        assert "384" in section, "the re-exam's call count is the basis for 'nothing changes'"
+        assert "2.4" in section and "4.4" in section

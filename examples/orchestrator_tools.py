@@ -194,7 +194,44 @@ DEFAULT_FANOUT_MAX_STEPS = 12
 #: Seconds the fan-out waits for its units before declaring the stragglers
 #: absent. Finite by construction: an unbounded wait would hand a hung worker
 #: the power to park the parent's drive forever.
-DEFAULT_FANOUT_TIMEOUT = 60.0
+#:
+#: **Derived, never chosen** — issue #42's rule applied one layer up, to a
+#: deadline that bounds a *drive* rather than a turn (claim c16). #42's audit
+#: covered six client timeouts and missed this one entirely.
+#:
+#: ``bound = per-turn bound x the turn budget actually granted``, where the
+#: per-turn bound is ``max_tokens / rate`` with rates from
+#: ``docs/live-test-results/timeout-rate-measurements.json`` and the turn
+#: budget is :data:`DEFAULT_FANOUT_MAX_STEPS`, read by
+#: `tests/test_timeout_bounds.py` from this module rather than retyped::
+#:
+#:     per-turn = 16000 / 12.921 tok/s (the **worker**'s committed floor) = 1238.3 s
+#:     deadline = 1238.3 x 12                                             = 14859.6 s
+#:
+#: **Queue time is absorbed here rather than added**, and the arithmetic says
+#: so: the worker's cited rate is a wall-clock floor that already contains
+#: queue and prefill (its own caveat in the rate config), and at this budget it
+#: is slower than the worker's retry-clean floor by more than the 179.3 s
+#: measured allowance. The test checks that inequality per budget instead of
+#: trusting the flag — at 1200 tokens the same role does *not* absorb it.
+#:
+#: Raised 60.0 -> 14860.0, matching pre-registration amendment 2 on branch
+#: ``owa/t12`` value for value and derivation for derivation. That parity is
+#: chosen deliberately over a rounder number, and it costs a margin of **0.5 s**
+#: — the thinnest of the eight. A running series is dialling this constant, and
+#: main disagreeing with the branch by a hundred seconds would be a second
+#: instrument difference to reason about for no gain. Any re-measurement of the
+#: worker's rate downward will fail the bound test, which is the correct
+#: response: re-derive, do not nudge. 60.0 was roughly **1/248th** of the work
+#: it bounded, and the censoring it would have produced was biased against
+#: exactly the arms the series exists to test: arm ``E`` never fans out, so only
+#: the orchestrated arms could be cut, and ``fanout-unit-absent`` names a
+#: straggler rather than a truncation.
+#:
+#: Layering, asserted by the same test: a unit whose endpoint is dead exhausts
+#: ``WorkerSeam``'s retry ladder well inside this deadline, so a dead transport
+#: still surfaces as a transport failure rather than as a straggler.
+DEFAULT_FANOUT_TIMEOUT = 14860.0
 
 #: Thread name prefix, so a stack dump names the lane that owns the thread.
 FANOUT_THREADS = "fanout-unit"

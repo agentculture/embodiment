@@ -191,7 +191,28 @@ DEFAULT_TEMPERATURE = 0.3
 #: finding — something in the batch took far longer than any healthy call in
 #: this series ever has — and is reported as a timeout, not silently absorbed
 #: by waiting longer. See the module docstring for the arithmetic that ruled
-#: out just inheriting `WorkerSeam`'s own 300s-per-call x 3-retries budget.
+#: out just inheriting `WorkerSeam`'s own per-call x 3-retries budget.
+#:
+#: **Derived, never chosen** — issue #42's rule applied to a *wait* deadline.
+#: ``bound = max over every dialled width of max_tokens / that width's rate +
+#: queue allowance``, rates from
+#: ``docs/live-test-results/timeout-rate-measurements.json`` and recomputed by
+#: `tests/test_timeout_bounds.py`. The only model on this wire is the
+#: **worker**, and the turn budget is **one**: a batch's wall clock is its
+#: slowest call, not the sum, because the calls run concurrently. Every width
+#: this module dials (1, 2, 8, 14) has a committed rate — rates are never
+#: interpolated, so ``at_width`` refuses an unmeasured one rather than
+#: inventing it. Width 14 binds: 1200 / 12.921 tok/s = 92.9 s of generation
+#: plus the 179.3 s measured **queue** allowance (corrections.md §9) = 272.1 s.
+#: Shipped 300.0 is 1.10x, the narrowest passing margin of the seven — recorded
+#: rather than smoothed, and comfortable in practice only because the slowest
+#: call in 51 committed measurements was 41.3 s.
+#:
+#: **It deliberately does not cover a retrying call.** One retry cycle is
+#: ``WorkerSeam.REQUEST_TIMEOUT + RETRY_SLEEP_SECONDS``, far past this
+#: deadline, and that is the circuit breaker doing its job rather than a bound
+#: violation. `tests/test_timeout_bounds.py` asserts the ordering so a later
+#: raise of the transport clock cannot quietly turn this into a censor.
 BATCH_WAIT_TIMEOUT_SECONDS = 300.0
 
 THREAD_NAME_PREFIX = "worker-throughput"

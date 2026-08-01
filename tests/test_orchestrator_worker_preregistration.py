@@ -90,6 +90,19 @@ def _probe_number(text: str, label: str) -> Optional[float]:
     return float(found.group(1)) if found else None
 
 
+def _registered_request_timeout(text: str) -> float:
+    """The ``REQUEST_TIMEOUT`` §14 registered, read out of the document itself.
+
+    A pre-registration is append-only, so what it registered stays readable in
+    it forever. Parsing that value rather than importing the live constant is
+    what lets the harness be raised — which §14 explicitly pre-committed to —
+    without the pin either breaking or, worse, being edited to match.
+    """
+    found = re.search(r"`WorkerSeam\.REQUEST_TIMEOUT`\s*\n?is\s+([0-9]+(?:\.[0-9]+)?)\s*s", text)
+    assert found, "§14 no longer states the REQUEST_TIMEOUT it registered"
+    return float(found.group(1))
+
+
 def _probe_ratio(text: str, label: str) -> Optional[tuple[int, int]]:
     """Read one ``| label | **a / b** |`` row out of a committed probe."""
     pattern = r"\|\s*" + re.escape(label) + r"\s*\|\s*\*{0,2}\s*(\d+)\s*/\s*(\d+)"
@@ -524,10 +537,27 @@ class TestCellSizingIsDerivedFromMeasuredLatency:
         assert f"{hours:.1f} h" in DOC_TEXT
 
     def test_the_request_timeout_margin_over_the_measured_tail(self) -> None:
-        margin = ws.REQUEST_TIMEOUT / CORTEX_TURN_TAIL_SECONDS
+        """§14's registered margin, checked against §14's registered timeout.
+
+        Deliberately **not** against ``ws.REQUEST_TIMEOUT``. §14 pre-committed
+        the raise in its own words — *"If timeouts appear at all, the timeout is
+        raised and the write-up says so"* — so a test demanding that the live
+        constant still reproduce the registered ratio would forbid the one
+        response this document authorised in advance. It also happened: the
+        constant is now well above 300 s, raised by amendment 1 on branch
+        ``owa/t12`` and again by plan task ``t2`` deriving at the worker rate
+        this seam also fronts. Its adequacy is `tests/test_timeout_bounds.py`'s
+        job; this document's job is to have registered what it registered.
+        """
+        registered = _registered_request_timeout(DOC_TEXT)
+        margin = registered / CORTEX_TURN_TAIL_SECONDS
         assert margin > 1.0
         assert f"{margin:.2f}" in DOC_TEXT
         assert ws.MAX_TRANSPORT_RETRIES == 3
+
+    def test_the_constant_only_ever_moved_upward_from_what_was_registered(self) -> None:
+        """A raise is authorised; a quiet lowering past the registered value is not."""
+        assert ws.REQUEST_TIMEOUT >= _registered_request_timeout(DOC_TEXT)
 
 
 class TestTheDecisionRuleIsDerivedNotAsserted:

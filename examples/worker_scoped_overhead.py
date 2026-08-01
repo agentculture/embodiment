@@ -593,6 +593,23 @@ CELLS: tuple[Cell, ...] = (
 #: fires that is itself a finding — a *tiny* call taking longer than a
 #: 1200-token one ever did — and it is reported as a timeout, never absorbed by
 #: waiting longer.
+#:
+#: **Derived, never chosen** — issue #42's rule applied to a wait deadline.
+#: ``bound = max over every dialled width of max_tokens / that width's rate +
+#: queue allowance``, rates from
+#: ``docs/live-test-results/timeout-rate-measurements.json`` and recomputed by
+#: `tests/test_timeout_bounds.py`. The only model on this wire is the
+#: **worker**; the turn budget is one, because a batch's wall clock is its
+#: slowest call rather than the sum. The binding pair is
+#: :data:`NATURAL_MAX_TOKENS` at width 8: 2000 / 38.678 tok/s = 51.7 s of
+#: generation plus the 179.3 s measured **queue** allowance (corrections.md §9)
+#: = 231.0 s. Shipped 300.0 is 1.30x. Unchanged.
+#:
+#: This constant was in neither #42's audit table nor plan task t2's list of
+#: seven: it landed with this probe, after the audit was written, by inheriting
+#: a sibling's value. The AST completeness guard in the bound test found it.
+#: An underived clock in front of a model call is precisely what that guard
+#: exists to catch, and this is the first one it caught.
 BATCH_WAIT_TIMEOUT_SECONDS = 300.0
 
 THREAD_NAME_PREFIX = "scoped-overhead"

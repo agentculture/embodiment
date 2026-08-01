@@ -118,6 +118,24 @@ DEFAULT_TEMPERATURE = 0.3
 #: indistinguishable from model failure. Measured on this rig 2026-07-30.
 CORTEX_MAX_TOKENS = 4000
 MUSE_MAX_TOKENS = 2000
+
+#: **Derived, never chosen** — issue #42's rule, at the slowest model this
+#: constant fronts.
+#:
+#: ``bound = max over every (model, max_tokens) pair on this wire of
+#: max_tokens / rate + queue allowance``, rates from
+#: ``docs/live-test-results/timeout-rate-measurements.json`` and recomputed by
+#: `tests/test_timeout_bounds.py`. One :func:`complete` serves both minds, so
+#: this single clock fronts the Qwen **cortex** at :data:`CORTEX_MAX_TOKENS`
+#: and the Gemma 4 31B **muse** at :data:`MUSE_MAX_TOKENS`. The binding pair is
+#: the cortex, because its budget is twice the muse's: 4000 / 21.452 tok/s =
+#: 186.5 s of generation, plus the 179.3 s measured **queue** allowance
+#: (corrections.md §9), for a bound of 365.7 s. The muse bounds at 344.5 s.
+#: Shipped 600.0 is 1.64x — unchanged, and now derived rather than assumed.
+#:
+#: Note how close the two terms are despite a 2x budget difference: at these
+#: small budgets the queue allowance is roughly half the bound, which is
+#: exactly the case a generation-only rule would have got wrong.
 REQUEST_TIMEOUT_S = 600.0
 
 MIND_CORTEX = "cortex"
