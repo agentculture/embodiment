@@ -86,6 +86,9 @@ generously.
 | [live-suite-and-challenges.md](live-suite-and-challenges.md) | the live-evidence gate (`d1`): every `EMBODIMENT_LIVE_RIG`-gated test plus the challenge harnesses, run rather than assumed | **13 of 13 live-gated tests PASSED.** `challenge_subset` **3/3 CORRECT**; `challenge_register` graded WRONG but **INCONCLUSIVE** — two of four turns hit `finish_reason: length` at a full **16000/16000**. The terminal drain (t4/t25) fires on a clean finish and delivers, and its counsel **provably cannot reach the cortex** there; t26's muse tool bench is **unwired in every checked-in host** (`tool_rounds: 0`). Cross-cutting: the cortex token budget is a hidden variable at **700 / 2048 / 6000** across five harnesses, and `ModelResponse` carries no `finish_reason` to make truncation visible |
 | [league-commander.md](league-commander.md) | Gemma 4 31B commanding Qwen 3.6 27B unit agents, against the mandatory mirror and two flat baselines — a different model per loop level, on two arenas | **`INCONCLUSIVE` at a ceiling twice: 12 of 12 matches at 19–0, then 6 of 6 at 10–0 on a 5.6× larger decision surface.** Every validity gate passed, so the tie is the arena's and not the instrument's. What the ceiling did not hide: hierarchy cost **2.4–4.4× a flat mind** for identical results, its bill is **~95% prompt**, and the commander **overrode 1 of 82 proposals** while consulting at 100% of decision points. The one override was substantive — a commander is a mechanism for resolving disagreement, and neither arena produced any |
 | [league-commander-preregistration.md](league-commander-preregistration.md) | the four arms, the decision rule, four validity gates, the ceiling risk and a three-rung escalation ladder | committed **before** the first measured match; the ladder was climbed rather than published around |
+| [bee-hive-width.md](bee-hive-width.md) | the Bee-Hive width rung `W1`: arm B1's scoped-call throughput at widths 1/2/4/8 across four call grains, n=3 paired repetitions per cell, 48 cells | **`SEPARATED-WIDTH` on all four grains** at width 8 — **~3.3×**, the axis four prior experiments never reached. 7,200 calls, **100% acceptance, 0 truncations**, 2,205 s. All 32 retries were at width 8 (1.78%; **zero in 5,400 calls** at widths 1/2/4), and on the **raw** reading those backoffs invert the result — width 8 reads *slower* than width 1 at three grains. The pre-registered gate is what makes the result legible. Prefill binds: **13.9:1** prompt to completion |
+| [timeouts-bee-hive-accountability.md](timeouts-bee-hive-accountability.md) | task `t14`: every promise of the timeouts + Bee-Hive cycle resolved to an artifact path or an honest ABSENT, with each verdict's decision rule quoted beside it | **8 of 8** timeout constants clear their derived bound (the signal said 7 — the category found an eighth); width rung **SEPARATED**; drone signal **split, 0 cortex calls PASS / 32% tokens FAIL**. `h1` is **partially ABSENT**: B1 was dialled, **B0/B2/P were not**, and no comparison against E/W/M/H exists |
+| [drone-economics.md](drone-economics.md) | `c30`'s third signal measured on both sides for the first time: one cortex authoring turn against two live evocations of the same drone | **half passes, half fails** — **0 cortex calls** (structural: `ask` reaches the worker and nothing else) at **1,532 tokens = 32.0%** of authoring against a ≤5% target. Cause: `WorkerSeam` has no thinking parameter, so scoped calls cost **511 tokens each** against `t8`'s ~15. Filed rather than fixed — and *not* "fixed" by disabling reasoning, because nothing here graded correctness |
 
 ## Reproducing
 
@@ -205,6 +208,41 @@ uv run python examples/league_seat.py play --arm command --live \
     --max-tokens 16000 --max-turns 3 --seed 4242 --match-id demo \
     --store /tmp/seat/memory --workdir /tmp/seat/arena \
     --trace-out /tmp/seat/trace.jsonl --json
+
+# ── the timeouts + Bee-Hive cycle (tasks t1-t15) ────────────────────────────
+
+# the derived timeout bound, and the test-of-the-test that proves it can fail.
+# Hermetic — no rig, no key. It recomputes every constant from the committed
+# rate config, so an edit there moves the gate rather than the documentation.
+uv run pytest tests/test_timeout_bounds.py tests/test_rate_config.py -q
+
+# does streaming retire the whole-request clock, and does reasoning stream.
+# The field is delta.reasoning, NOT vLLM's documented reasoning_content, and
+# stream_options.include_usage is required or the token counts vanish.
+# Configured by environment, not flags. Dial only when the cortex is idle.
+STREAM_PROBE_OUT=docs/live-test-results/stream-probe.json \
+    uv run python examples/stream_probe.py
+
+# the Bee-Hive width rung W1: 48 cells, 7,200 calls, ~37 min of worker time.
+# run-w1.sh commits each block as it lands so a killed run keeps its evidence.
+cd docs/live-test-results/bee-hive-width-raw
+EMBODIMENT_LIVE_RIG=1 bash run-w1.sh
+./decide.py --json          # the registered decision rule, applied by code
+./render.py > ../bee-hive-width.md
+cd -
+uv run pytest tests/test_bee_hive_width_preregistration.py -q   # 75 pins
+
+# the drone economics: one cortex authoring turn, then two live evocations.
+# --max-tokens 4000 is NOT optional — at 256 the scoped call spends every
+# token thinking and emits no content (embodiment#32's shape, second lane).
+COLLEAGUE_API_KEY=... OUT_DIR=. uv run python examples/author_drone.py
+EMBODIMENT_LIVE_RIG=1 EMBODIMENT_DRONES_ENABLED=1 \
+EMBODIMENT_WORKER_URL=http://thor...:8000/v1 \
+EMBODIMENT_WORKER_MODEL=unsloth/Qwen3.6-35B-A3B-NVFP4 \
+    uv run python examples/drone_host.py index-gaps --repo . --max-tokens 4000
+
+# the two harnesses that exist and were never dialled (accountability map §5)
+uv run pytest tests/test_arch_hive.py tests/test_arch_policy.py -q
 ```
 
 The hermetic suite never touches any of this: live paths are opt-in and skip

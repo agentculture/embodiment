@@ -800,3 +800,60 @@ It passes (bound 231.0 s against a shipped 300.0). The point is that nothing
 had checked, four days after an audit whose entire subject was underived
 clocks. A list somebody maintains goes stale the first time it is not
 maintained; a category that closes itself does not.
+
+---
+
+## 12. I published a defect against the width rung that the rung's own records refute
+
+**Found by `t14`, hours after writing it.** `drone-economics.md` §"The same gap,
+found twice in one hour" correctly established that `examples/arch_hive.py`
+defines `wire_extra(thinking)` and never calls it, so its declared thinking mode
+never reaches the wire. It then extended that finding one step too far:
+
+> What is **not** true is that the harness *pinned* it: the mode came from the
+> server's default, not from the committed sampling table, so the reproduction
+> instruction is unenforced.
+
+**The width rung's records say the opposite, in every cell.** The rung does not
+dial through `arch_hive`'s factory. Its driver
+[`bee-hive-width-raw/drive.py`](bee-hive-width-raw/drive.py) defines a
+`WireSeam` that merges `config.wire_extra(sampling.thinking)` inside `_post`,
+then reads `last_body` back and asserts what actually went out. All **48 of 48**
+cells carry `thinking_wire = {"chat_template_kwargs": {"enable_thinking":
+false}}` and `thinking_wire_asserted: true`. Zero cells recorded otherwise.
+
+### Why this one is worth its own entry
+
+The direction of the error is the unusual part. Nearly every other entry in this
+file is a claim that flattered the work — a grader that scored too kindly, a
+guard that certified something it did not check, a figure restated from memory
+in the favourable direction. **This one was too harsh**, and that makes it a
+different failure with the same root: a conclusion drawn from reading one
+module's source instead of from the records the run actually produced.
+
+It is also self-refuting in a useful way. The very discipline the paragraph said
+was missing — *assert what went on the wire, never assume it* — is implemented,
+executed and recorded 48 times in the artifact being criticised. The
+pre-registration required it (§6), the driver implemented it, the records prove
+it, and the prose asserted its absence anyway.
+
+### What it does not change
+
+- The `arch_hive` defect is **real and still open**. `build_worker_factory`
+  takes `dial` and `sampling` only; there is nowhere to put `wire_extra`'s
+  result, so `arch-hive-sampling.json`'s `thinking` field is inert **for that
+  harness**.
+- The drone lane's defect is **real and still open**. `examples/drone_host.py`
+  builds a plain `WorkerSeam`, which has no thinking parameter at all — that is
+  why the second evocation cost 511 completion tokens per scoped call against
+  `t8`'s ~15.
+- The width rung's numbers were never in doubt in either direction: 14.21
+  completion tokens per call across 7,200 calls is thinking-off arithmetic
+  whether or not anything pinned it. What moved is the *provenance* of that
+  setting — from "inherited from a server default" to "declared, sent, and
+  asserted".
+
+**The lesson, stated so it generalises:** a defect found by reading source must
+still be checked against the records of any run it is claimed to affect. Source
+tells you what one code path does; the run's records tell you which path ran.
+Here they disagreed, and the records were right.

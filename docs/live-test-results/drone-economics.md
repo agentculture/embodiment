@@ -103,15 +103,26 @@ validated, never sent.
 request body), which is why the gap is easy to miss — the vocabulary exists and
 one consumer uses it.
 
-**What this does and does not do to the width rung.** The
-[width results](bee-hive-width.md) spent **102,336 completion tokens over 7,200
-calls — 14.2 tokens per call**, which matches `t8`'s thinking-*off* figure of
-~15 almost exactly. So that series did run effectively thinking-off, its numbers
-stand, and every arm in it shared the same setting, which is what a within-arm
-width comparison requires. What is **not** true is that the harness *pinned* it:
-the mode came from the server's default, not from the committed sampling table,
-so the reproduction instruction is unenforced. A server-side default change
-would silently re-instrument the rung.
+**What this does and does not do to the width rung — corrected 2026-08-01.**
+This section first said the width rung's thinking-off mode "came from the
+server's default, not from the committed sampling table, so the reproduction
+instruction is unenforced." **That was wrong, and the records say so.** The rung
+does not dial through `examples/arch_hive.py`'s factory: its driver
+[`bee-hive-width-raw/drive.py`](bee-hive-width-raw/drive.py) defines its own
+`WireSeam`, merges `config.wire_extra(sampling.thinking)` inside `_post` so the
+keys ride the existing retry path, and then **asserts what actually went on the
+wire** from `last_body` rather than trusting the branch. All **48 of 48** cells
+record `thinking_wire = {"chat_template_kwargs": {"enable_thinking": false}}`
+and `thinking_wire_asserted: true`; not one cell recorded otherwise. The rung is
+pinned, the reproduction instruction is enforced, and a server-side default
+change would be caught rather than absorbed.
+
+What is true is the arithmetic either way: the rung spent **102,336 completion
+tokens over 7,200 calls — 14.21 tokens per call**, matching `t8`'s
+thinking-*off* figure of ~15. The gap is therefore confined to
+`examples/arch_hive.py`, which the series did not use as its transport — and
+the reason it is easy to state too broadly is that the *drone* lane, which does
+dial a plain `WorkerSeam`, genuinely has no way to pin the mode at all.
 
 This is the `t18` defect class — *a configuration value with no consumer* —
 found the same way `t18` was: by trying to use the seam rather than by reading
@@ -122,7 +133,10 @@ it. `t18`'s remedy was a provoked vacuity assertion, and the same is owed here.
 1. **`WorkerSeam` gains a thinking/extra-body parameter**, so a caller can send
    `chat_template_kwargs` at all.
 2. **`arch_hive` calls `wire_extra`** and passes the result, with a vacuity
-   assertion that fails if the declared mode stops reaching the payload.
+   assertion that fails if the declared mode stops reaching the payload. The
+   shape to copy already exists and is proven in a live series:
+   `bee-hive-width-raw/drive.py`'s `WireSeam` plus the `thinking_wire_asserted`
+   field it writes into every cell record.
 3. **Re-measure this signal at *both* settings** once thinking is controllable,
    on a task whose answers can be **graded** — not just accepted. The cost
    prediction, stated before the re-run: ≈45 completion tokens, ≈0.94% of
