@@ -188,12 +188,42 @@ boundary — nothing in embodiment restricts what `drone.py` may do. Read
 `drone.py` before evoking a drone you did not author. The network-less
 workspace jail stays available for a host that wants it; it is not the default.
 
-## Limits of v1
+## The four safeguards — all on
 
-- An undecidable case returns **"I cannot"**. There is no escalate-to-cortex
-  path — that is the whole point of the cost model.
-- `list`'s `status` column reads `unchecked` until a host wires an
-  assumed-surface check. No check ran is reported as no check ran.
+1. **Opt-in, and off.** `evoke` runs nothing unless
+   `EMBODIMENT_DRONES_ENABLED=1` is set (or a host passes `opt_in=` through the
+   library). The design is unvalidated — issue #44's experiment has not run —
+   and an unmeasured behaviour does not ship on by default, the same rule that
+   keeps a *measured* failure mode out of the defaults.
+2. **Staleness.** `list` re-checks each drone's declared `assumed_surface`, so
+   a stale drone is visible **without being executed** — you learn it while
+   choosing a drone, not after it has reported. `evoke` **refuses to run** a
+   stale drone (`--stale-ok` overrides). The failure mode is not a crash: a
+   drone whose assumptions expired keeps passing, authoritatively, on a check
+   that no longer means anything.
+3. **The audit trail.** Every evocation — answers, "I cannot", refusals and
+   harness failures alike — appends the drone name, the **sha256 of the bytes
+   that ran**, the declared capability set and per-call acceptance to
+   `<drones dir>/.evocations.jsonl`. There is no sandbox, so the record is the
+   containment story: it is traceability, not tamper-proofing.
+4. **No escalation.** An undecidable case returns **"I cannot"**. There is no
+   escalate-to-cortex path in v1 — that is the whole point of the cost model,
+   and it is what keeps *a drone's second evocation makes zero cortex calls*
+   exact, with no exception clause.
+
+## Statuses `list` can report
+
+| status | meaning |
+|--------|---------|
+| `ok` | every declared assumption was re-checked and holds |
+| `stale` | an assumption failed; `evoke` refuses to run it |
+| `unverifiable` | nothing found wrong and nothing confirmed right: a kind this
+  build cannot check, or a drone declaring no surface at all |
+| `unchecked` | no check ran, reported as no check ran |
+| `broken` | the manifest could not be read or did not validate |
+
+`unverifiable` is deliberately not `ok`: absence of a check never renders as a
+pass.
 
 ## Verbs
 
@@ -270,7 +300,33 @@ schema. `create` refuses when:
       "reauthor": "…"
     }
 
-`schema`, `name`, `author.date` and the smoke result are filled in by `create`.
+`schema`, `name`, `author.date`, `source_sha256` and the smoke result are
+filled in by `create`.
+
+## `assumed_surface` is what makes the drone honest later
+
+It is the *only* thing a staleness check has to re-check, so declare what the
+drone actually depends on. Three kinds are re-checkable today:
+
+| kind | holds when |
+|------|------------|
+| `path` | `<root>/<value>` still exists |
+| `glob` | at least one file still matches `<value>` |
+| `contains` | the file at `<value>` still contains `text` |
+
+`contains` is the one that catches a **convention** moving:
+
+    {"kind": "contains", "value": "embodiment/cli/__init__.py",
+     "text": "def register(", "note": "verbs register through this"}
+
+The file still existing proves nothing there — which is exactly the failure a
+`path` assumption would sail straight past. Any other `kind` is reported
+`unverifiable` rather than `ok`; a drone that declares nothing checkable cannot
+detect its own obsolescence, and `list` says so.
+
+`create` does **not** run these checks: authoring is where the surface is
+declared, and re-checking a claim against the moment it was made proves nothing
+about later.
 """
 
 _DRONE_EVOKE = """\
@@ -281,16 +337,43 @@ authoring turn, and no cortex call.
 
 ## Usage
 
-    embodiment drone evoke <name>
-    embodiment drone evoke <name> --arg path=embodiment/cli --json
-    embodiment drone evoke <name> --answers answers.json
+    EMBODIMENT_DRONES_ENABLED=1 embodiment drone evoke <name>
+    EMBODIMENT_DRONES_ENABLED=1 embodiment drone evoke <name> --arg path=embodiment/cli --json
+    EMBODIMENT_DRONES_ENABLED=1 embodiment drone evoke <name> --answers answers.json
+
+## Two refusals before anything runs
+
+- **Drones are opt-in and OFF.** Without `EMBODIMENT_DRONES_ENABLED=1` (or a
+  host passing `opt_in=` through the library) this exits `1` having executed
+  nothing. The design is unvalidated, and an unmeasured behaviour does not ship
+  on by default.
+- **A stale drone refuses rather than reports.** If the drone's declared
+  `assumed_surface` no longer holds, `evoke` exits `1` naming the assumption
+  that broke. Re-author it, or pass `--stale-ok` and read its answer knowing an
+  assumption it depends on is false.
+
+Both refusals still write an evocation record.
 
 ## Flags
 
 - `--arg KEY=VALUE` — repeatable; reaches the drone as `request.args`.
 - `--answers` — JSON map of question id to answer, for a scripted or CI run
   with no live worker.
+- `--stale-ok` — run despite a failed assumed-surface check.
 - `--drones-dir`, `--json` — as elsewhere.
+
+## The evocation record
+
+Every run appends one JSON line to `<drones dir>/.evocations.jsonl` — including
+refusals and failures. Each line carries the drone `name`, the `source_sha256`
+of the bytes that actually ran, `source_matches_manifest` (did the code change
+since it was reviewed?), the declared `capabilities`, every scoped call with
+its acceptance, the `outcome`, and `opt_in` — who authorised the run. `ran`
+says whether model-written code executed at all; both refusals report `false`.
+
+A run that leaves no record is a bug, and a test asserts it for every outcome.
+If the ledger cannot be written the run still completes and says so on stderr —
+point `EMBODIMENT_DRONE_LEDGER` at a writable path.
 
 ## The worker seam
 
@@ -330,18 +413,35 @@ gets reused that nobody can find, and the whole economics assume reuse.
 ## Output
 
     name              does                                       authored   status
-    import-graph      maps imports for a package, flags cycles    12d ago    unchecked
+    import-graph      maps imports for a package, flags cycles    12d ago    ok
+    find-callers      lists call sites for a symbol              41d ago    stale
+                      └ assumed surface no longer holds —
+                        path 'embodiment/senses.py': no longer exists
 
 - **name / does** — discovery: the one-line description is required at create.
 - **authored** — provenance: a drone is model-written code that will run on
   someone else's checkout, so its age is part of reading its output honestly.
-- **status** — `unchecked` until a host wires an assumed-surface check;
-  `broken` when a drone's manifest cannot be read or does not validate (the row
-  still renders, with the reason on stderr — a drone you cannot see is one you
-  re-author).
+- **status** — the re-checked verdict: `ok`, `stale`, `unverifiable`,
+  `unchecked` or `broken`. A stale or broken row still renders, with the reason
+  beneath it and on stderr — a drone you cannot see is one you re-author.
 
-The staleness re-check that turns `unchecked` into `ok` / `STALE` is a
-pluggable seam (`catalog(..., status_fn=...)`), not yet wired by the CLI.
+## Staleness is checked here, and this is deliberate
+
+`list` re-runs each drone's declared `assumed_surface` against the repo. That
+puts the verdict at the moment you are **choosing** a drone rather than after
+one has run and reported confidently on a surface that moved — and it means a
+stale drone is visible **without being executed**. Nothing here runs any
+drone's code; `list` only reads manifests.
+
+A drone marked `stale` is refused by `evoke` (`--stale-ok` overrides).
+`unverifiable` means nothing was found wrong and nothing was confirmed right
+either — an assumption kind this build cannot re-check, or a drone that
+declares no surface at all and therefore cannot detect its own obsolescence.
+It never renders as `ok`, and it does not block `evoke`.
+
+The check is a pluggable seam, so a host can supply its own:
+`catalog(drones_dir, status_fn=surface_status_fn(root))` is what this verb
+does; with no `status_fn` every row reads `unchecked`, because no check ran.
 """
 
 _DRONE_OVERVIEW = """\

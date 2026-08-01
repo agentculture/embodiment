@@ -55,12 +55,30 @@ DRAFT: dict[str, Any] = {
 
 DESCRIPTION = "maps imports for a package, flags cycles"
 
+#: An explicit host opt-in (task t12's c25 guard). Drones are off by default —
+#: including in this suite, where ``conftest.py`` strips the switch from the
+#: environment — so every test that actually RUNS a drone says so out loud.
+#: ``create`` needs none of this: it uses the authoring opt-in for the staged
+#: copy, which is why the authoring tests above are untouched.
+ENABLED = drone_lib.DroneOptIn(enabled=True, source="explicit", detail="test opt-in")
+
 
 @pytest.fixture()
 def drones_dir(tmp_path: Path) -> Path:
     root = tmp_path / "repo"
     root.mkdir()
+    # DRAFT's assumed surface, made true. A drone whose assumptions are already
+    # false is refused by the staleness guard, so the fixture builds a root the
+    # fixture drone was plausibly authored against; the staleness tests then
+    # break exactly this path to prove the guard fires.
+    (root / "embodiment" / "cli" / "_commands").mkdir(parents=True)
     return root / drone_lib.DRONES_DIRNAME
+
+
+def evoke(created: drone_lib.Drone, drones_dir: Path, **kwargs: Any) -> drone_lib.Evocation:
+    """Run a drone with the opt-in explicitly granted."""
+    kwargs.setdefault("opt_in", ENABLED)
+    return drone_lib.invoke(created, root=drones_dir.parent, **kwargs)
 
 
 def write_source(tmp_path: Path, text: str, name: str = "drone.py") -> Path:
@@ -353,10 +371,8 @@ class TestTheSavedArtifact:
 class TestInvoke:
     def test_a_saved_drone_runs(self, drones_dir: Path) -> None:
         created = author(drones_dir, GOOD_SOURCE)
-        record = drone_lib.invoke(
-            created,
-            root=drones_dir.parent,
-            ask=drone_lib.mapping_ask({"is_cycle_intentional": "yes"}),
+        record = evoke(
+            created, drones_dir, ask=drone_lib.mapping_ask({"is_cycle_intentional": "yes"})
         )
         assert record.ok
         assert record.answer == "cycles: yes"
@@ -367,7 +383,7 @@ class TestInvoke:
     def test_no_worker_seam_means_the_drone_says_i_cannot(self, drones_dir: Path) -> None:
         """v1 has no escalation path: an undecidable case refuses (c46)."""
         created = author(drones_dir, GOOD_SOURCE)
-        record = drone_lib.invoke(created, root=drones_dir.parent)
+        record = evoke(created, drones_dir)
         assert record.ok
         assert record.answer is None
         assert record.cannot
@@ -378,10 +394,8 @@ class TestInvoke:
     ) -> None:
         """Interface failure and task failure must never share a number (#33)."""
         created = author(drones_dir, GOOD_SOURCE)
-        record = drone_lib.invoke(
-            created,
-            root=drones_dir.parent,
-            ask=drone_lib.mapping_ask({"is_cycle_intentional": "probably"}),
+        record = evoke(
+            created, drones_dir, ask=drone_lib.mapping_ask({"is_cycle_intentional": "probably"})
         )
         assert record.calls[0].accepted is False
         assert "enum" in record.calls[0].reason
@@ -393,14 +407,14 @@ class TestInvoke:
         (created.home / "drone.py").write_text(
             "def run(request):\n    raise RuntimeError('later breakage')\n", encoding="utf-8"
         )
-        record = drone_lib.invoke(created, root=drones_dir.parent)
+        record = evoke(created, drones_dir)
         assert record.ok is False
         assert "RuntimeError" in record.failure
         assert record.answer is None
 
     def test_the_record_carries_the_audit_fields_t12_needs(self, drones_dir: Path) -> None:
         created = author(drones_dir, GOOD_SOURCE)
-        record = drone_lib.invoke(created, root=drones_dir.parent)
+        record = evoke(created, drones_dir)
         assert record.name == "import-graph"
         assert len(record.source_sha256) == 64
         assert record.capabilities == ("read_repo",)
@@ -421,7 +435,7 @@ class TestInvoke:
             draft=draft,
             description="a code-only drone",
         )
-        record = drone_lib.invoke(created, root=drones_dir.parent)
+        record = evoke(created, drones_dir)
         assert record.call_acceptance is None
 
     def test_args_reach_the_drone(self, drones_dir: Path) -> None:
@@ -439,7 +453,7 @@ class TestInvoke:
             draft=draft,
             description="echoes its package argument",
         )
-        record = drone_lib.invoke(created, root=drones_dir.parent, args={"package": "embodiment"})
+        record = evoke(created, drones_dir, args={"package": "embodiment"})
         assert record.answer == "embodiment"
 
     def test_repeated_evocation_does_not_grow_sys_modules(self, drones_dir: Path) -> None:
@@ -449,17 +463,17 @@ class TestInvoke:
         created = author(drones_dir, GOOD_SOURCE)
         before = len(sys.modules)
         for _ in range(5):
-            drone_lib.invoke(created, root=drones_dir.parent)
+            evoke(created, drones_dir)
         assert len(sys.modules) == before
 
     def test_re_authoring_is_picked_up_rather_than_cached(self, drones_dir: Path) -> None:
         """Each load compiles the file's current bytes, so a rewrite really runs."""
         created = author(drones_dir, GOOD_SOURCE)
-        assert drone_lib.invoke(created, root=drones_dir.parent).cannot
+        assert evoke(created, drones_dir).cannot
         (created.home / "drone.py").write_text(
             "def run(request):\n    return {'answer': 'rewritten'}\n", encoding="utf-8"
         )
-        assert drone_lib.invoke(created, root=drones_dir.parent).answer == "rewritten"
+        assert evoke(created, drones_dir).answer == "rewritten"
 
     def test_a_same_length_rewrite_in_the_same_second_is_not_served_from_bytecode(
         self, drones_dir: Path
@@ -489,17 +503,17 @@ class TestInvoke:
             "smoke": {"args": {}, "answers": {}},
         }
         created = author(drones_dir, first, name="rewritten", draft=draft, description="d")
-        assert drone_lib.invoke(created, root=drones_dir.parent).answer == "ok"
+        assert evoke(created, drones_dir).answer == "ok"
         # No sleep: writing inside the same second IS the condition under test.
         (created.home / "drone.py").write_text(second, encoding="utf-8")
-        assert drone_lib.invoke(created, root=drones_dir.parent).answer == "NO"
+        assert evoke(created, drones_dir).answer == "NO"
 
     def test_the_recorded_hash_describes_the_code_that_ran(self, drones_dir: Path) -> None:
         """One read: the audit trail cannot describe bytes other than the executed ones."""
         created = author(drones_dir, GOOD_SOURCE)
         replacement = "def run(request):\n    return {'answer': 'v2'}\n"
         (created.home / "drone.py").write_text(replacement, encoding="utf-8")
-        record = drone_lib.invoke(created, root=drones_dir.parent)
+        record = evoke(created, drones_dir)
         assert record.answer == "v2"
         expected = hashlib.sha256(replacement.encode("utf-8")).hexdigest()
         assert record.source_sha256 == expected
@@ -507,14 +521,14 @@ class TestInvoke:
     def test_an_unreadable_source_degrades_rather_than_raising(self, drones_dir: Path) -> None:
         created = author(drones_dir, GOOD_SOURCE)
         (created.home / "drone.py").unlink()
-        record = drone_lib.invoke(created, root=drones_dir.parent)
+        record = evoke(created, drones_dir)
         assert record.ok is False
         assert "cannot read" in record.failure
 
     def test_a_syntax_error_is_reported_not_raised(self, drones_dir: Path) -> None:
         created = author(drones_dir, GOOD_SOURCE)
         (created.home / "drone.py").write_text("def run(request:\n", encoding="utf-8")
-        record = drone_lib.invoke(created, root=drones_dir.parent)
+        record = evoke(created, drones_dir)
         assert record.ok is False
         assert "does not compile" in record.failure
 
@@ -793,7 +807,20 @@ def cli_drones(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.delenv(drone_lib.DRONES_DIR_ENV, raising=False)
     root = tmp_path / "repo"
     root.mkdir()
+    (root / "embodiment" / "cli" / "_commands").mkdir(parents=True)
     return root / drone_lib.DRONES_DIRNAME
+
+
+@pytest.fixture()
+def drones_on(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Turn drones on for one test, the way an operator would.
+
+    Deliberately NOT autouse: the suite's default is a fresh checkout with the
+    switch unset (``conftest.py`` strips it), so every CLI test that runs a
+    drone has to ask for it here — and the ones that do not are proving the
+    refusal.
+    """
+    monkeypatch.setenv(drone_lib.DRONES_ENABLED_ENV, "1")
 
 
 def _create_argv(cli_drones: Path, source: Path, manifest: Path, name: str = "import-graph"):
@@ -843,7 +870,11 @@ class TestDroneCli:
         assert payload["sections"]
 
     def test_create_then_list_then_evoke(
-        self, cli_drones: Path, staged: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+        self,
+        cli_drones: Path,
+        staged: tuple[Path, Path],
+        drones_on: None,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         source, manifest = staged
         assert main(_create_argv(cli_drones, source, manifest)) == 0
@@ -853,7 +884,8 @@ class TestDroneCli:
         listing = capsys.readouterr().out
         assert "import-graph" in listing
         assert DESCRIPTION in listing
-        assert drone_lib.STATUS_UNCHECKED in listing
+        # `list` re-checked the assumed surface; the fixture root satisfies it.
+        assert drone_lib.STATUS_OK in listing
 
         answers = cli_drones.parent / "answers.json"
         answers.write_text(json.dumps({"is_cycle_intentional": "yes"}), encoding="utf-8")
@@ -957,7 +989,11 @@ class TestDroneCli:
         assert captured.err.startswith("warning:")
 
     def test_evoke_with_no_worker_warns_on_stderr_and_reports_i_cannot(
-        self, cli_drones: Path, staged: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+        self,
+        cli_drones: Path,
+        staged: tuple[Path, Path],
+        drones_on: None,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         source, manifest = staged
         main(_create_argv(cli_drones, source, manifest))
@@ -968,7 +1004,11 @@ class TestDroneCli:
         assert "no worker seam is wired" in captured.err
 
     def test_evoke_json_reports_call_acceptance_as_its_own_axis(
-        self, cli_drones: Path, staged: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+        self,
+        cli_drones: Path,
+        staged: tuple[Path, Path],
+        drones_on: None,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         source, manifest = staged
         main(_create_argv(cli_drones, source, manifest))
@@ -1007,7 +1047,11 @@ class TestDroneCli:
         assert "hint:" in captured.err
 
     def test_evoke_of_a_later_broken_drone_never_leaks_a_traceback(
-        self, cli_drones: Path, staged: tuple[Path, Path], capsys: pytest.CaptureFixture[str]
+        self,
+        cli_drones: Path,
+        staged: tuple[Path, Path],
+        drones_on: None,
+        capsys: pytest.CaptureFixture[str],
     ) -> None:
         source, manifest = staged
         main(_create_argv(cli_drones, source, manifest))

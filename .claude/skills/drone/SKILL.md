@@ -18,7 +18,7 @@ mind in the loop**.
 
 ```bash
 embodiment drone create <name> --source <drone.py> --description '<one line>' [--manifest draft.json]
-embodiment drone evoke  <name> [--arg k=v] [--answers answers.json]
+EMBODIMENT_DRONES_ENABLED=1 embodiment drone evoke <name> [--arg k=v] [--answers answers.json] [--stale-ok]
 embodiment drone list
 embodiment drone overview
 ```
@@ -26,6 +26,15 @@ embodiment drone overview
 Every verb takes `--json`. Results go to stdout, diagnostics to stderr. See
 `embodiment explain drone` (and `drone create` / `drone evoke` / `drone list`)
 for the full reference.
+
+**`evoke` is off by default.** Drones ship opt-in: without
+`EMBODIMENT_DRONES_ENABLED=1` (or a host passing `opt_in=` through the library)
+`evoke` exits `1` having executed nothing. The design is unvalidated —
+[#44](https://github.com/agentculture/embodiment/issues/44)'s experiment has not
+run — and an unmeasured behaviour does not ship on by default, the same rule
+that keeps a *measured* failure mode out of the defaults. `create` needs no
+switch: it proves its own candidate runs against a copy staged in a temporary
+directory, from source you handed it this second.
 
 ## Read this before authoring one
 
@@ -44,7 +53,9 @@ save nothing. So before authoring:
 
 1. **Run `embodiment drone list` first.** It is one cheap command, and it is the
    difference between reusing a drone and re-authoring one at a cortex turn a
-   time. Nothing gets reused that nobody can find.
+   time. Nothing gets reused that nobody can find. It also re-checks each
+   drone's assumed surface, so you see a drone is **stale** while choosing it —
+   `stale` means re-author, not reuse.
 2. **Ask whether the surface is stable.** Code written against a codebase
    encodes assumptions that expire. A drone authored against a convention that
    changes next month will keep passing, authoritatively, on a check that no
@@ -113,7 +124,12 @@ Rules the harness enforces, so you may as well design for them:
 - **Return an answer or a refusal.** Returning neither is treated as not having
   run at all.
 - **No escalation.** An undecidable case returns "I cannot". There is no
-  escalate-to-cortex path in v1 — that is the whole point of the cost model.
+  escalate-to-cortex path in v1 — that is the whole point of the cost model,
+  and it is what keeps *a drone's second evocation makes zero cortex calls*
+  exact, with no exception clause. `request.ask`, bounded by the manifest's
+  declared questions, is a drone's only outward seam; there is nothing else to
+  reach for. Whether escalation should exist is #44's question, to be answered
+  by a measurement rather than a patch.
 
 ## The draft manifest
 
@@ -121,7 +137,8 @@ Rules the harness enforces, so you may as well design for them:
 {
   "purpose": "the longer story: what this is for",
   "assumed_surface": [
-    {"kind": "path", "value": "embodiment/cli/_commands/", "note": "verb modules live here"}
+    {"kind": "path", "value": "embodiment/cli/_commands/", "note": "verb modules live here"},
+    {"kind": "contains", "value": "embodiment/cli/__init__.py", "text": "def register("}
   ],
   "capabilities": ["read_repo"],
   "questions": [
@@ -140,7 +157,28 @@ against that question's own schema. That is what makes the smoke run hermetic �
 no worker is dialled — and it proves the schema and the drone agree before a
 worker is ever involved.
 
-`schema`, `name`, `author.*` and the smoke result are filled in by `create`.
+`schema`, `name`, `author.*`, `source_sha256` and the smoke result are filled in
+by `create`.
+
+### `assumed_surface` is the drone's own expiry check — write it properly
+
+It is the only thing the staleness check has a chance of re-checking, and
+`list` / `evoke` act on the verdict. Three kinds are checkable:
+
+| kind | holds when |
+|------|------------|
+| `path` | `<repo root>/<value>` still exists |
+| `glob` | at least one file still matches `<value>` |
+| `contains` | the file at `<value>` still contains `text` |
+
+**Reach for `contains` when what you depend on is a convention, not a file.**
+The failure this whole safeguard exists for is a review drone checking a rule
+that changed next month — and the file will still be sitting there, so a `path`
+assumption sails straight past it.
+
+Any other `kind` reports `unverifiable`, never `ok`. A drone that declares
+nothing checkable cannot detect its own obsolescence, and `list` will say so
+every time someone reads it.
 
 ## Safety — say this out loud, do not let the name imply a sandbox
 
@@ -153,6 +191,26 @@ evoking one you did not author. This is the recorded v1 decision — in-process
 under the host's existing approval policy, with every capability declared so
 review is possible. The network-less workspace jail stays available for a host
 that wants to run a drone under it; it is not the default.
+
+Because there is no sandbox, **the audit trail is the containment story**. Every
+evocation — answers, "I cannot", refusals and failures alike — appends one JSON
+line to `.drones/.evocations.jsonl`:
+
+- `name`, and `outcome` (`answered` / `cannot` / `failed` / `refused-opt-in` /
+  `refused-stale`) — refusal and failure never share a number;
+- `source_sha256`, the hash of **the bytes that actually ran**, plus
+  `source_matches_manifest` — has the code changed since it was reviewed?
+- `ran` — did model-written code execute at all (both refusals: `false`);
+- `capabilities`, and `opt_in` — who authorised this run;
+- every scoped `call` with its acceptance, and `call_acceptance` as its own
+  number. Interface failure and task failure must never share one: #33 measured
+  17 of 23 worker calls refused on a *shape* error, and a drone whose calls are
+  mostly refused runs to completion and reports confidently on nothing.
+
+This is traceability, not tamper-proofing: anyone who can edit `drone.py` can
+edit `manifest.json` beside it. Git history and review are the integrity
+boundary. Point `EMBODIMENT_DRONE_LEDGER` elsewhere to keep records outside the
+repo.
 
 ## Provenance
 

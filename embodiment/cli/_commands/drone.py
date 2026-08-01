@@ -14,12 +14,16 @@ Three verbs, plus the noun's own ``overview``:
 
 * ``create`` — stage, smoke-prove, then save. A drone that fails its smoke
   invocation is never written to ``.drones/``.
-* ``evoke`` — run a saved drone. Cheap: code plus tens of tokens.
+* ``evoke`` — run a saved drone. Cheap: code plus tens of tokens. **Off by
+  default** (``$EMBODIMENT_DRONES_ENABLED``), and it refuses a drone whose
+  declared assumptions no longer hold.
 * ``list`` — discovery, so "is there already a drone for this?" costs one
-  command instead of an authoring turn.
+  command instead of an authoring turn. It also re-checks each drone's assumed
+  surface, which is what makes a stale drone visible *without being executed*.
 
 **This runs model-written code in this process. There is no sandbox** — see
-``embodiment explain drone`` and every drone's generated README.
+``embodiment explain drone`` and every drone's generated README. Which is why
+every evocation, refusals and failures included, lands in an audit record.
 """
 
 from __future__ import annotations
@@ -129,12 +133,34 @@ def drone_sections() -> list[dict[str, object]]:
             ],
         },
         {
-            "title": "Limits of v1",
+            "title": "Safeguards (all four are on)",
             "items": [
-                "an undecidable case returns 'I cannot' — there is no escalate-to-"
-                "cortex path, which is the whole point of the cost model",
-                f"status is {drone_lib.STATUS_UNCHECKED!r} until a host wires an "
-                "assumed-surface check; no check ran is reported as no check ran",
+                f"OPT-IN AND OFF: evoke refuses unless ${drone_lib.DRONES_ENABLED_ENV}=1 "
+                "or a host passes opt_in= — the design is unvalidated, and an "
+                "unmeasured behaviour does not ship on by default",
+                "STALENESS: list re-checks each drone's assumed surface, so a stale "
+                "drone is visible WITHOUT being executed; evoke refuses to run one "
+                "(--stale-ok overrides) rather than let it report confidently on a "
+                "check that no longer means anything",
+                f"AUDIT TRAIL: every evocation — answers, refusals and failures — "
+                f"appends drone name, the sha256 of the bytes that ran, the "
+                f"capability set and per-call acceptance to "
+                f"<drones dir>/{drone_lib.EVOCATIONS_FILENAME}",
+                "NO ESCALATION: an undecidable case returns 'I cannot'; there is no "
+                "escalate-to-cortex path in v1, which is the whole point of the "
+                "cost model",
+            ],
+        },
+        {
+            "title": "Statuses list can report",
+            "items": [
+                f"{drone_lib.STATUS_OK!r} — every declared assumption re-checked and holds",
+                f"{drone_lib.STATUS_STALE!r} — an assumption failed; evoke refuses",
+                f"{drone_lib.STATUS_UNVERIFIABLE!r} — nothing found wrong and nothing "
+                "confirmed right: an assumption kind this build cannot check, or a "
+                "drone declaring no surface at all",
+                f"{drone_lib.STATUS_UNCHECKED!r} — no check ran, reported as no check ran",
+                f"{drone_lib.STATUS_BROKEN!r} — the manifest could not be read or validated",
             ],
         },
     ]
@@ -241,6 +267,23 @@ def _parse_args_pairs(pairs: list[str]) -> dict[str, str]:
     return parsed
 
 
+#: Remediations for the two safeguard refusals. Both are deliberate states, not
+#: bugs to silence, so each says what turning it off would actually mean.
+_REFUSAL_HINTS = {
+    drone_lib.OUTCOME_REFUSED_OPT_IN: (
+        f"drones ship opt-in and OFF: set {drone_lib.DRONES_ENABLED_ENV}=1 to turn them "
+        "on for this process, having read the drone's code and its threat model "
+        "('embodiment explain drone'). The design is unvalidated — issue #44's "
+        "experiment has not run — and an unmeasured behaviour does not ship on by default"
+    ),
+    drone_lib.OUTCOME_REFUSED_STALE: (
+        "re-author it against the current surface with 'embodiment drone create "
+        "<name> --force', or pass --stale-ok to run it anyway and read its answer "
+        "knowing an assumption it depends on is false"
+    ),
+}
+
+
 def cmd_drone_evoke(args: argparse.Namespace) -> int:
     json_mode = bool(getattr(args, "json", False))
     drones_dir = _drones_dir(args)
@@ -265,7 +308,28 @@ def cmd_drone_evoke(args: argparse.Namespace) -> int:
         root=drones_dir.parent,
         args=_parse_args_pairs(args.arg),
         ask=ask,
+        stale_ok=bool(getattr(args, "stale_ok", False)),
     )
+    # The record is already on disk by now, refusal or not — that ordering is
+    # the point of the audit trail, so nothing below can lose it.
+    if not evocation.recorded:
+        emit_diagnostic(
+            f"warning: this evocation was NOT recorded: {evocation.record_error} — "
+            f"the run happened; its audit record did not (set "
+            f"{drone_lib.DRONE_LEDGER_ENV} to a writable path)"
+        )
+    if evocation.source_matches_manifest is False:
+        emit_diagnostic(
+            f"warning: {drone.name}'s drone.py no longer matches the hash its manifest "
+            "recorded at authoring time — it has been edited since it was reviewed "
+            "(recorded in the evocation ledger either way)"
+        )
+    if evocation.refused:
+        raise CliError(
+            code=EXIT_USER_ERROR,
+            message=f"drone {drone.name!r} was not run: {evocation.failure}",
+            remediation=_REFUSAL_HINTS[evocation.outcome],
+        )
     if not evocation.ok:
         raise CliError(
             code=EXIT_USER_ERROR,
@@ -282,24 +346,13 @@ def cmd_drone_evoke(args: argparse.Namespace) -> int:
     if json_mode:
         emit_result(
             {
-                "name": evocation.name,
-                "ok": True,
-                "answer": evocation.answer,
-                "cannot": evocation.cannot,
-                "detail": dict(evocation.detail),
-                "source_sha256": evocation.source_sha256,
-                "capabilities": list(evocation.capabilities),
-                "calls": [
-                    {"question": c.question, "accepted": c.accepted, "reason": c.reason}
-                    for c in evocation.calls
-                ],
-                "calls_asked": len(evocation.calls),
-                "calls_accepted": evocation.calls_accepted,
-                "call_acceptance": evocation.call_acceptance,
+                **evocation.to_json(),
                 "authored": authored,
                 "age": drone_lib.humanize_age(authored),
                 "model": str(author.get("model", "")),
                 "commit": str(author.get("commit", "")),
+                "recorded": evocation.recorded,
+                "ledger": evocation.ledger_path,
             },
             json_mode=True,
         )
@@ -320,6 +373,7 @@ def cmd_drone_evoke(args: argparse.Namespace) -> int:
         "",
         f"calls: {len(evocation.calls)} asked, {evocation.calls_accepted} accepted"
         + (f" ({acceptance:.0%})" if acceptance is not None else " (none asked)"),
+        f"recorded: {evocation.ledger_path}",
     ]
     emit_result("\n".join(lines), json_mode=False)
     return 0
@@ -331,10 +385,14 @@ def cmd_drone_evoke(args: argparse.Namespace) -> int:
 def cmd_drone_list(args: argparse.Namespace) -> int:
     json_mode = bool(getattr(args, "json", False))
     drones_dir = _drones_dir(args)
-    # `status_fn` is left unwired here on purpose: the assumed-surface re-check
-    # is task t12's, and reporting "ok" because nothing looked would be exactly
-    # the confident false claim the status column exists to prevent.
-    records = drone_lib.catalog(drones_dir, now=datetime.now(timezone.utc))
+    # The assumed-surface re-check runs HERE, at the moment you are choosing a
+    # drone — a stale drone must be visible without being executed. Nothing
+    # below runs any drone's code.
+    records = drone_lib.catalog(
+        drones_dir,
+        status_fn=drone_lib.surface_status_fn(drones_dir.parent),
+        now=datetime.now(timezone.utc),
+    )
     for record in records:
         if record.problem:
             emit_diagnostic(f"warning: drone {record.name!r}: {record.problem}")
@@ -433,6 +491,12 @@ def register(sub: argparse._SubParsersAction) -> None:
     evoke.add_argument(
         "--answers",
         help="JSON map of question id -> answer, for a scripted run with no live worker.",
+    )
+    evoke.add_argument(
+        "--stale-ok",
+        action="store_true",
+        help="Run even though the drone's declared assumptions no longer hold. "
+        "Its answer is about a surface that has moved — read it that way.",
     )
     _add_shared(evoke)
     evoke.set_defaults(func=cmd_drone_evoke)

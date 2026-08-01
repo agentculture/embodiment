@@ -35,6 +35,13 @@ LIVE_RIG_ENV = (
     "EMBODIMENT_SENSES_MODEL",
     "OPENAI_API_KEY",
     "OPENAI_BASE_URL",
+    # The drone opt-in switch and its paths (task t12). Exactly the class of
+    # hole this file exists to close: `EMBODIMENT_DRONES_ENABLED` left exported
+    # in a developer's shell would make "a fresh checkout evokes nothing" pass
+    # or fail on which terminal ran it, and the failure would land on CI.
+    "EMBODIMENT_DRONES_ENABLED",
+    "EMBODIMENT_DRONES_DIR",
+    "EMBODIMENT_DRONE_LEDGER",
 )
 
 #: The gates that deliberately opt a test *into* the real rig. They are read by

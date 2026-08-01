@@ -236,3 +236,10 @@ skills.local.yaml
 
 # Experiment harness output (config preambles, run JSON) — never committed
 /results/
+
+# The drone evocation audit trail (task t12). The drones themselves ARE
+# committed — model-written code that runs on someone else's checkout gets the
+# same review a script would — but their run records are local runtime state on
+# an append-only file, which would conflict on every merge. A host that wants
+# durable central records points EMBODIMENT_DRONE_LEDGER somewhere it keeps them.
+.drones/.evocations.jsonl
