@@ -179,8 +179,10 @@ class TestOneCallNeverRaises:
         assert record.content_chars == len("hi there")
         assert record.finish_reason == "stop"
         assert record.truncated is False
-        assert record.latency_seconds is not None and record.latency_seconds >= 0
-        assert record.tokens_per_second is not None and record.tokens_per_second > 0
+        assert record.latency_seconds is not None
+        assert record.latency_seconds >= 0
+        assert record.tokens_per_second is not None
+        assert record.tokens_per_second > 0
 
     def test_a_truncated_call_is_flagged(self, monkeypatch: pytest.MonkeyPatch) -> None:
         def fake_post(self: ws.WorkerSeam, body: dict[str, Any]) -> dict[str, Any]:

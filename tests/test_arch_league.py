@@ -359,7 +359,8 @@ class TestHybridRoutingIsLogged:
         record, _ = play(aa.ARM_HYBRID, tmp_path)
         assert record.routing_mix == [al.ROUTED_CORTEX, al.ROUTED_WORKER]
         assert record.degenerate_routing is False
-        assert record.routed > 0 and record.kept > 0
+        assert record.routed > 0
+        assert record.kept > 0
 
     def test_a_routed_decision_names_the_worker_and_carries_the_models_reason(
         self, tmp_path: Path
@@ -797,8 +798,15 @@ class TestThePerceptionSeam:
         assert "MENU" in seen.text
 
     def test_registering_over_a_live_route_is_refused_without_replace(self) -> None:
+        # Resolve the live route BEFORE the raises block, and keep it there.
+        # `route_for` raises ValueError as well (on an unknown id), so calling
+        # it inside the block lets this guard pass on the wrong axis: with a
+        # cleared or clobbered ROUTE_REGISTRY, `route_for` throws, the block is
+        # satisfied, and `register_route` — the call actually under test — never
+        # runs. Hoisted, that same state fails loudly instead of passing green.
+        live = al.route_for(al.ROUTE_TEXT)
         with pytest.raises(ValueError):
-            al.register_route(al.route_for(al.ROUTE_TEXT))
+            al.register_route(live)
 
     def test_a_registered_route_rides_every_routing_record(self, tmp_path: Path) -> None:
         """The seam t10 needs: a route that carries a snapshot hash, end to end."""
@@ -919,7 +927,9 @@ class TestTheRungAndTheRoleMapping:
         assert len(rung.roles) >= 3
         routable = [role for role in rung.roles if role in al.SCRIPTED_ROUTABLE_ROLES]
         kept = [role for role in rung.roles if role not in al.SCRIPTED_ROUTABLE_ROLES]
-        assert routable and kept, "a rung the hybrid cannot vary on measures nothing"
+        why = "a rung the hybrid cannot vary on measures nothing"
+        assert routable, f"no routable role: {why}"
+        assert kept, f"no kept role: {why}"
 
     def test_the_cortex_is_the_leader_seat_in_every_arm_that_has_one(self) -> None:
         for arm_id in (aa.ARM_EXISTING, aa.ARM_MANAGER, aa.ARM_HYBRID):

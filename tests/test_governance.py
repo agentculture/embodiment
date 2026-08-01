@@ -143,14 +143,12 @@ class TestMuseSurfaceIsNeverDeleted:
 
     @pytest.mark.parametrize("module_name", sorted(_MUSE_MODULES))
     def test_muse_module_importable_with_expected_public_surface(self, module_name: str):
-        try:
-            module = importlib.import_module(module_name)
-        except Exception as exc:  # noqa: BLE001 - the failure itself is the assertion
-            pytest.fail(
-                f"{module_name} failed to import ({exc!r}). {_DELETION_CONTEXT} "
-                f"This module is part of that opt-in surface and must stay "
-                f"importable even though the reference rig does not dial it."
-            )
+        # An ImportError HERE is the failure, so it is left to surface on its own
+        # rather than being caught and re-raised as a prettier message. Read
+        # _DELETION_CONTEXT above for why a failure on this line matters: this
+        # module is part of the muse's opt-in surface and must stay importable
+        # even though the reference rig does not dial it.
+        module = importlib.import_module(module_name)
         missing = [name for name in _MUSE_MODULES[module_name] if not hasattr(module, name)]
         assert not missing, (
             f"{module_name} imports, but is missing expected public name(s) "
@@ -170,14 +168,10 @@ class TestMuseSurfaceIsNeverDeleted:
     @staticmethod
     def _assert_test_module_survives(module_name: str, *, harness: bool) -> None:
         kind = "harness/measurement" if harness else "primary"
-        try:
-            module = importlib.import_module(module_name)
-        except Exception as exc:  # noqa: BLE001 - the failure itself is the assertion
-            pytest.fail(
-                f"{module_name} ({kind} muse test) failed to import ({exc!r}). "
-                f"{_DELETION_CONTEXT} 'The cycle's changes delete no muse module, "
-                f"test or harness' names this file explicitly."
-            )
+        # As above: an ImportError here IS the assertion, so it is left to
+        # surface. _DELETION_CONTEXT explains the stake — "the cycle's changes
+        # delete no muse module, test or harness" names these files explicitly.
+        module = importlib.import_module(module_name)
         count = _collectible_test_count(module)
         assert count > 0, (
             f"{module_name} ({kind} muse test) imports but defines no collectible "
@@ -280,9 +274,12 @@ def _parse_reference_rig_identity_table(text: str) -> list[_TableRow]:
         f"or the parser below) — not silently skipped."
     )
     separator_index = header_index + 1
-    assert separator_index < len(lines) and _is_separator_row(
-        _split_table_row(lines[separator_index])
-    ), (
+    assert separator_index < len(lines), (
+        f"CLAUDE.md ends at line {len(lines)}, but the {_IDENTITY_TABLE_HEADING!r} "
+        f"table's '---' separator row was expected on line {separator_index + 1}; "
+        f"the table's shape has changed and this parser needs a deliberate update."
+    )
+    assert _is_separator_row(_split_table_row(lines[separator_index])), (
         f"CLAUDE.md line {separator_index + 1} was expected to be the "
         f"{_IDENTITY_TABLE_HEADING!r} table's '---' separator row and was not; "
         f"the table's shape has changed and this parser needs a deliberate update."
