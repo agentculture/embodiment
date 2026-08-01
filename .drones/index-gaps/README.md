@@ -9,8 +9,8 @@ The index is the entry point to docs/live-test-results/, so an unlinked document
 ## Provenance
 
 - authored by: `unsloth/Qwen3.6-27B-NVFP4`
-- authored on: 2026-08-01T12:32:05.875562+00:00
-- against commit: `b65016867f01fbc1315e0bfc0e23cfff0f2624af`
+- authored on: 2026-08-01T12:39:30.585091+00:00
+- against commit: `b3a85a2b1023914e0d277290c4e3bc8c7bb2838d`
 
 ## The surface it assumes
 
@@ -46,11 +46,19 @@ any committed script. The network-less workspace jail
 (`embodiment/workspace.py`) is available for a host that wants to run a drone
 under it; it is not the default.
 
-Because there is no sandbox, **the audit trail is the containment story**:
+Because there is no sandbox, **the audit trail is what you get instead**:
 every evocation — answers, refusals and failures alike — appends a record
 naming this drone, the sha256 of the bytes that actually ran, the declared
 capabilities above and the acceptance of every scoped call, to
 `.drones/.evocations.jsonl`.
+
+**It is traceability, not tamper-proofing, and the difference matters before
+you evoke rather than after.** The records tell you *what ran*; they do not
+stop anything from running. Anyone who can edit `drone.py` can edit
+`manifest.json` beside it, so the recorded hash catches drift and accident,
+never a determined edit. **Git history and review are the integrity
+boundary** — read this drone the way you would read any script that is about
+to execute on your machine, because that is what it is.
 
 ## Turning drones on
 
