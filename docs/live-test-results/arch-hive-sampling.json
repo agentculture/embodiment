@@ -1,0 +1,238 @@
+{
+  "kind": "arch-hive-sampling-table",
+  "version": 1,
+  "series": "error-derived-timeouts-bee-hive-architecture",
+  "task": "t6",
+  "read_by": "examples/arch_hive.py",
+  "why": [
+    "An INPUT, not a run artifact -- the same role docs/live-test-results/arch-arms-",
+    "sampling.json plays for the four-arm harness, and deliberately a SECOND file",
+    "rather than a section inside that one. arch_arms.load_config validates over its",
+    "own ARM_ORDER (E/W/M/H); adding B0/B1 cells there would be read by nothing and",
+    "would put two tasks' hands on one file. This table is the hive's, and",
+    "examples/arch_hive.py defines no fallback for any cell in it: a missing cell",
+    "raises ConfigError naming the arm and the role, asserted structurally over the",
+    "module's own AST so a default cannot be reintroduced quietly.",
+    "Model identities live here for arch_arms' reason, unchanged: the cortex 'model'",
+    "is null on purpose, resolved from the environment or recorded ABSENT -- never",
+    "substituted with a predecessor."
+  ],
+  "roles": {
+    "cortex": {
+      "model": null,
+      "model_env": "EMBODIMENT_CORTEX_MODEL",
+      "base_url": "http://localhost:8001/v1",
+      "base_url_env": "EMBODIMENT_BASE_URL",
+      "api_key_env": "COLLEAGUE_API_KEY",
+      "why": [
+        "NULL DELIBERATELY, matching arch-arms-sampling.json. The cortex is the only",
+        "mind that holds a loop in either hive tier and the only one that finishes."
+      ]
+    },
+    "worker": {
+      "model": "unsloth/Qwen3.6-35B-A3B-NVFP4",
+      "model_env": "EMBODIMENT_WORKER_MODEL",
+      "base_url": "http://thor.tail0be7e0.ts.net:8000/v1",
+      "base_url_env": "EMBODIMENT_WORKER_URL",
+      "api_key_env": "COLLEAGUE_API_KEY",
+      "why": [
+        "Dialled DIRECTLY at Thor through examples/worker_seam.py -- spec decision",
+        "c42: B1's scoped calls are plain concurrent scoped calls on the worker_seam",
+        "path the throughput probe already measured, NOT fan-out unit dispatch. Only",
+        "units that hold turns need turn budgets partitioned, and a hive worker holds",
+        "no turn at all."
+      ]
+    },
+    "senses": {
+      "model": "coolthor/gemma-4-12B-it-NVFP4A16",
+      "model_env": "EMBODIMENT_SENSES_MODEL",
+      "base_url": "http://localhost:8001/v1",
+      "base_url_env": "EMBODIMENT_BASE_URL",
+      "api_key_env": "COLLEAGUE_API_KEY",
+      "why": [
+        "Constant in both tiers and NOT dialled by them -- recorded and hashed so a",
+        "senses difference cannot confound the B0/B1 contrast invisibly."
+      ]
+    }
+  },
+  "thinking_wire": {
+    "why": [
+      "What 'thinking: on' puts on the wire, stated rather than assumed. A mode with",
+      "no entry here is a config error, never a silent no-op."
+    ],
+    "modes": {
+      "on": {
+        "chat_template_kwargs": {
+          "enable_thinking": true
+        }
+      },
+      "off": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "sampling": {
+    "why": [
+      "Per role per arm. The cortex cell matches arch-arms-sampling.json exactly so",
+      "the hive tiers are comparable with E/W/M/H rather than confounded by sampling.",
+      "The worker cell does NOT: a scoped answer is tens of tokens, thinking is off,",
+      "and max_tokens is small on purpose -- a hive call that needed a 16000-token",
+      "budget would not be a scoped question. The value is an instrument setting the",
+      "t8 overhead probe and the t9 pre-registration may amend; it is here so that",
+      "amendment is an edit to a cited file, not to code."
+    ],
+    "B0": {
+      "cortex": {
+        "temperature": 0.3,
+        "thinking": "on",
+        "max_tokens": 16000
+      },
+      "senses": {
+        "temperature": 0.3,
+        "thinking": "off",
+        "max_tokens": 16000
+      }
+    },
+    "B1": {
+      "cortex": {
+        "temperature": 0.3,
+        "thinking": "on",
+        "max_tokens": 16000
+      },
+      "worker": {
+        "temperature": 0.3,
+        "thinking": "off",
+        "max_tokens": 256
+      },
+      "senses": {
+        "temperature": 0.3,
+        "thinking": "off",
+        "max_tokens": 16000
+      }
+    }
+  },
+  "budgets": {
+    "why": [
+      "max_steps is the cortex's own drive budget. worker_max_steps is 0 in BOTH",
+      "tiers and that is the arm's whole claim: a hive worker never drives, so there",
+      "is no turn budget to grant it. spawn_allowance is 0 for the same reason -- the",
+      "hive passes no subagent seam at all, so nothing can be spawned even by",
+      "accident. max_scoped_calls bounds the number of scoped calls one drive may",
+      "dispatch, in total, across every transform invocation; it is the step-count",
+      "bound the structural termination test reads."
+    ],
+    "B0": {
+      "max_steps": 14,
+      "worker_max_steps": 0,
+      "spawn_allowance": 0,
+      "max_scoped_calls": 24
+    },
+    "B1": {
+      "max_steps": 14,
+      "worker_max_steps": 0,
+      "spawn_allowance": 0,
+      "max_scoped_calls": 24
+    }
+  },
+  "hive": {
+    "why": [
+      "The tier table. B0 and B1 differ in exactly ONE field -- answerer -- which is",
+      "what makes B0 a control for B1 rather than a different experiment: identical",
+      "cortex surface, identical questions, identical grain vocabulary, and the only",
+      "variable is whether a scoped answer comes from a declared code rule or from a",
+      "bounded worker call.",
+      "B2 has NO entry here on purpose. B2 is an open goal with the worker holding",
+      "control, which is arm M in examples/arch_arms.py -- already built, already",
+      "dialable. Declaring it here would be a second implementation of a shipped arm."
+    ],
+    "B0": {
+      "grain": "unit",
+      "questions": ["pick_option", "classify_load", "looks_risky"],
+      "max_concurrency": 1,
+      "code_policy": "first",
+      "why": [
+        "RIGID. Zero worker model calls at play time: every scoped answer comes from",
+        "the 'first' code policy, which answers the first member of the declared",
+        "space. Deliberately a WEAK baseline and named as one -- it is the floor a",
+        "scoped tier must beat, never a serious solver. max_concurrency 1 because",
+        "there is nothing to overlap: a code answer costs no round trip."
+      ]
+    },
+    "B1": {
+      "grain": "unit",
+      "questions": ["pick_option", "classify_load", "looks_risky"],
+      "max_concurrency": 8,
+      "code_policy": "first",
+      "why": [
+        "SCOPED. N small worker calls, concurrent, each a typed question with an",
+        "enumerable answer space; the harness keeps control flow throughout.",
+        "max_concurrency 8 is measured saturation (docs/live-test-results/worker-",
+        "throughput.md): 8 to 14 buys +5.5% aggregate for +75% concurrent load, and",
+        "the advertised x14 is a KV-pool ceiling lobes has relabelled. code_policy is",
+        "carried even though B1 does not use it, so a degraded run that has to fall",
+        "back names the rule it fell back to instead of inventing one."
+      ]
+    }
+  },
+  "grains": {
+    "why": [
+      "SCOPE SIZE IS THE INDEPENDENT VARIABLE (frame assumption: swept, not toggled).",
+      "It lives here as a named table so the t9 sweep varies a cited config value",
+      "rather than editing a prompt. items_per_call is the whole of it: how many",
+      "things ride in one scoped call, which sets both the number of calls and the",
+      "amount of context each one re-pays. Task t8 measures that per-call prefill",
+      "cost before t9 fixes the sweep's granularity -- no grain here is claimed to be",
+      "the right one, they are the rungs the sweep may dial."
+    ],
+    "unit": {
+      "items_per_call": 1,
+      "why": "one thing per call -- the finest grain, the most calls, the most prefill"
+    },
+    "pair": {
+      "items_per_call": 2,
+      "why": "the first coarsening step"
+    },
+    "batch4": {
+      "items_per_call": 4,
+      "why": "coarse enough that a single refusal costs four answers -- the acceptance risk"
+    },
+    "batch8": {
+      "items_per_call": 8,
+      "why": "the coarse end: one call at measured saturation width, prefill paid once"
+    }
+  },
+  "dispatch": {
+    "why": [
+      "The wait deadline for one concurrent scoped batch. Derived, not chosen: the",
+      "frame's rule is REQUEST_TIMEOUT >= max_tokens / slowest measured rate, and a",
+      "hive batch holds ONE turn per call (never a drive), so the bound is the",
+      "per-turn bound with no turn-budget multiplier -- unlike the fan-out deadline,",
+      "which bounds a whole unit drive.",
+      "256 tokens / 21.5 tok/s = 11.9s; the value below carries a wide margin for",
+      "queueing on a --max-num-seqs=2 server rather than sitting near the bound. Task",
+      "t2 owns the CI test that recomputes this class of constant; this cell exists",
+      "so the hive's deadline is a cited config value when t2 walks it, never a",
+      "literal in examples/arch_hive.py."
+    ],
+    "batch_timeout_seconds": 300.0,
+    "rate_tok_s": 21.5,
+    "rate_source": "docs/live-test-results/orchestrator-worker-preregistration.md section 18"
+  },
+  "decision": {
+    "why": [
+      "PROVISIONAL and named as such -- task t9's pre-registration is the authority on",
+      "the sweep, the outcome metric and the stop rule. It lives here as data so t9",
+      "can pin or amend it without a code change.",
+      "call_acceptance_refutes_at_rate is the number the frame names by hand: issue",
+      "#33 measured 74% of workspace-arm calls refused on a shape error, and the",
+      "delegate-to-authored-artifacts claim predicts that class disappears when the",
+      "cortex authors the schema. A B tier at that rate is published as REFUTING the",
+      "claim, by name, not smoothed over."
+    ],
+    "separation_margin": 1,
+    "call_acceptance_refutes_at_rate": 0.74,
+    "call_acceptance_is_never_folded_into_outcome": true
+  }
+}
