@@ -1708,13 +1708,57 @@ def create(
         _write_artifacts(staged, manifest, source_text, notes)
 
         drones_dir.mkdir(parents=True, exist_ok=True)
-        if target.exists():
-            shutil.rmtree(target)
-        shutil.move(str(staged), str(target))
+        _install(staged, target)
     finally:
         shutil.rmtree(staging_parent, ignore_errors=True)
 
     return Drone(name=name, home=target, manifest=manifest)
+
+
+def _install(staged: Path, target: Path) -> None:
+    """Put *staged* at *target*, never destroying an existing drone first.
+
+    The naive ``rmtree(target); move(staged, target)`` has a window with real
+    cost: *staged* lives in a system temp dir, so :func:`shutil.move` is
+    usually a cross-filesystem copytree and can fail partway — disk full,
+    permissions — **after** the old drone is already gone. Losing a working
+    drone costs a cortex turn to rebuild, which is precisely the expense this
+    whole feature exists to stop paying twice.
+
+    So the fallible copy happens **first**, into a sibling of *target*, and the
+    destructive part becomes two same-filesystem renames that either both
+    happen or leave the original standing.
+
+    Found by review after `t11` merged; re-implemented against `t12`'s rewrite.
+    """
+    incoming = target.with_name(f".{target.name}.incoming")
+    backup = target.with_name(f".{target.name}.backup")
+    for leftover in (incoming, backup):
+        shutil.rmtree(leftover, ignore_errors=True)
+    try:
+        # The fallible step, done FIRST: a cross-filesystem copytree that can
+        # fail partway. `target` is still untouched if it does.
+        shutil.move(str(staged), str(incoming))
+        had_previous = target.exists()
+        if had_previous:
+            os.rename(target, backup)
+        try:
+            os.rename(incoming, target)
+        except OSError:
+            if had_previous:  # put the working drone back before reporting
+                os.rename(backup, target)
+            raise
+    except OSError as exc:
+        raise DroneError(
+            f"drone {target.name!r} passed its smoke run but could not be "
+            f"installed at {target}: {exc.strerror or exc}",
+            "any drone already at that path was left intact; free some space "
+            "or fix permissions and run create again",
+            env=True,
+        ) from exc
+    finally:
+        shutil.rmtree(incoming, ignore_errors=True)
+        shutil.rmtree(backup, ignore_errors=True)
 
 
 def _write_artifacts(

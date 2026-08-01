@@ -318,6 +318,35 @@ class TestTheSavedArtifact:
         assert replaced.description == "a replacement"
         assert "CYCLES:" in (replaced.home / "drone.py").read_text(encoding="utf-8")
 
+    def test_a_failed_install_leaves_the_existing_drone_intact(
+        self, drones_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """--force must not destroy a working drone when the INSTALL fails.
+
+        Smoke failure is pinned below; this is the other half — the staged copy
+        passed and *putting it in place* is what broke. The staging dir lives in
+        system temp, so the move is usually a cross-filesystem copytree that can
+        fail partway; doing it before anything is destroyed is what keeps the
+        old drone. Losing it costs a cortex turn to rebuild.
+
+        Found by review after t11 merged, re-implemented against t12's rewrite.
+        """
+        author(drones_dir, GOOD_SOURCE)
+
+        def dead_move(src: Any, dst: Any) -> None:
+            raise OSError(28, "No space left on device")
+
+        monkeypatch.setattr(drone_lib.shutil, "move", dead_move)
+        with pytest.raises(drone_lib.DroneError) as exc:
+            author(drones_dir, GOOD_SOURCE, description="a replacement", force=True)
+        assert "left intact" in exc.value.remediation
+        assert exc.value.env is True
+        monkeypatch.undo()
+
+        survivor = drone_lib.load("import-graph", drones_dir)
+        assert survivor.description == DESCRIPTION
+        assert (survivor.home / "drone.py").read_text(encoding="utf-8") == GOOD_SOURCE
+
     def test_a_failed_force_recreate_leaves_the_existing_drone_intact(
         self, drones_dir: Path
     ) -> None:
