@@ -109,7 +109,7 @@ import sys
 import tempfile
 import traceback
 import types
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Optional, Sequence, Union
@@ -757,6 +757,52 @@ def _glob_stays_under(pattern: str) -> bool:
     return ".." not in PurePosixPath(pattern).parts
 
 
+def _check_glob(value: str, root: Path) -> SurfaceCheck:
+    """The ``glob`` surface kind, contained.
+
+    Its own function because it is the branch that got this wrong. The other two
+    kinds route through :func:`_resolve_under`; this one used to skip it and
+    call ``root.glob()`` directly, so ``../../*.pem`` walked out of the repo
+    exactly the way ``_resolve_under``'s docstring says a model-written manifest
+    will try to.
+
+    Containment is applied **twice** on purpose: the pattern is rejected before
+    it is walked (so an escaping pattern never costs a traversal), and every
+    match is re-checked after (so a symlink inside the root cannot launder an
+    outside path back in).
+    """
+    if not value:
+        # Its own reason rather than the containment one: an empty pattern is
+        # not an escape attempt, and saying so would be a false explanation.
+        # Phrased like the text-less `contains` case, because it is the same
+        # situation — the entry declares nothing to check. It used to arrive as
+        # a ValueError out of `root.glob`, reporting the accident, not the cause.
+        return SurfaceCheck("glob", value, None, "declares no glob pattern, so nothing was checked")
+    if not _glob_stays_under(value):
+        return SurfaceCheck(
+            "glob", value, None, "resolves outside the root, so this check was not run"
+        )
+    try:
+        match = next(
+            (found for found in root.glob(value) if _resolve_under(root, str(found)) is not None),
+            None,
+        )
+    # Broad by intent, and load-bearing rather than defensive habit. This ran
+    # `(OSError, ValueError)`, and `Path.glob` raises **NotImplementedError** on
+    # an absolute pattern — which escaped past `check_surface`'s never-raise
+    # promise, out through `invoke`, which then produced NO ledger record at
+    # all. That is `c45` ("every path produces exactly one Evocation and appends
+    # it") broken by a manifest string. The structural guard above rejects
+    # absolute patterns before they get here, so this is the second line of
+    # defence: whatever a future glob implementation raises becomes a reported
+    # unverified check, never an escaped exception.
+    except Exception as exc:  # noqa: BLE001
+        return SurfaceCheck("glob", value, None, f"glob could not be evaluated: {exc}")
+    if match is None:
+        return SurfaceCheck("glob", value, False, "no file matches this glob any more")
+    return SurfaceCheck("glob", value, True, "")
+
+
 def _check_entry(entry: Mapping[str, Any], root: Path) -> SurfaceCheck:
     kind = str(entry.get("kind", ""))
     value = str(entry.get("value", ""))
@@ -771,54 +817,7 @@ def _check_entry(entry: Mapping[str, Any], root: Path) -> SurfaceCheck:
             ),
         )
     if kind == "glob":
-        # The other two kinds route through _resolve_under; this one used to
-        # skip it and call root.glob() directly, so `../../*.pem` walked out of
-        # the repo the same way _resolve_under's own docstring says a manifest
-        # will try to. Containment is applied twice on purpose: the pattern is
-        # rejected before it is walked (so an escaping pattern never costs a
-        # traversal), and each match is re-checked after (so a symlink pointing
-        # out of the root cannot launder one back in).
-        if not value:
-            # Its own reason rather than the containment one: an empty pattern
-            # is not an escape attempt, and saying so would be a false
-            # explanation. Phrased like the text-less `contains` case below,
-            # because it is the same situation — the entry declares nothing to
-            # check. It used to arrive here as a ValueError out of `root.glob`,
-            # which reported the accident rather than the cause.
-            return SurfaceCheck(
-                kind, value, None, "declares no glob pattern, so nothing was checked"
-            )
-        if not _glob_stays_under(value):
-            return SurfaceCheck(
-                kind,
-                value,
-                None,
-                "resolves outside the root, so this check was not run",
-            )
-        try:
-            match = next(
-                (
-                    found
-                    for found in root.glob(value)
-                    if _resolve_under(root, str(found)) is not None
-                ),
-                None,
-            )
-        # Broad by intent, and load-bearing rather than defensive habit. This
-        # ran `(OSError, ValueError)`, and `Path.glob` raises
-        # **NotImplementedError** on an absolute pattern — which escaped, past
-        # `check_surface`'s never-raise promise, out through `invoke`, which
-        # then produced NO ledger record at all. That is `c45` ("every path
-        # produces exactly one Evocation and appends it") broken by a manifest
-        # string. The structural guard above now rejects absolute patterns
-        # before they get here, so this is the second line of defence: whatever
-        # a future glob implementation raises becomes a reported unverified
-        # check, never an escaped exception.
-        except Exception as exc:  # noqa: BLE001
-            return SurfaceCheck(kind, value, None, f"glob could not be evaluated: {exc}")
-        if match is None:
-            return SurfaceCheck(kind, value, False, "no file matches this glob any more")
-        return SurfaceCheck(kind, value, True, "")
+        return _check_glob(value, root)
 
     target = _resolve_under(root, value)
     if target is None:
@@ -1440,6 +1439,50 @@ def _coerce_answer(result: Any) -> DroneAnswer:
     )
 
 
+def _prepare_entrypoint(drone: Drone, state: dict[str, Any]) -> Callable[..., Any]:
+    """Read, hash, compile and load the drone's ``run``. Raises :class:`DroneError`.
+
+    Raising rather than returning a record: every caller is ``invoke``, which
+    turns a ``DroneError`` into exactly one ledger entry, so the single
+    record-per-path contract stays where it can be read in one place.
+
+    ``state`` is mutated on the way through, and the order matters. ``sha`` is
+    set from the bytes that were *actually read* — ONE read, so the bytes hashed
+    for the audit trail are the bytes executed. ``ran`` flips before
+    :func:`_load_entrypoint`, because importing the module **is** execution of
+    model-written code; a record claiming otherwise would be false.
+    """
+    try:
+        source_bytes = drone.source.read_bytes()
+    except OSError as exc:
+        raise DroneError(f"cannot read {drone.source}: {exc.strerror or exc}") from exc
+    state["sha"] = hashlib.sha256(source_bytes).hexdigest()
+    code = _compile_source(drone.source, source_bytes)
+    # From here on, model-written code has executed in this process.
+    state["ran"] = True
+    return _load_entrypoint(drone.source, drone.name, code)
+
+
+def _run_entrypoint(entrypoint: Callable[..., Any], request: "DroneRequest") -> Any:
+    """Call the drone and normalise every failure into a :class:`DroneError`.
+
+    The located message — file and line out of the traceback — is the whole
+    value here: a drone that raises should tell its author *where*, and this is
+    the only frame that still has the traceback to say so.
+    """
+    try:
+        return entrypoint(request)
+    except UndeclaredQuestion as exc:
+        raise DroneError(exc.message) from exc
+    # Broad by intent: model-written code, reported rather than raised.
+    except Exception as exc:  # noqa: BLE001
+        where = traceback.extract_tb(exc.__traceback__)[-1]
+        raise DroneError(
+            f"{DRONE_ENTRYPOINT}() raised {exc.__class__.__name__}: {exc} "
+            f"(at {Path(where.filename).name}:{where.lineno})"
+        ) from exc
+
+
 def _refusal_before_running(
     drone: Drone,
     *,
@@ -1541,7 +1584,13 @@ def invoke(
     def _record(outcome: str, **fields: Any) -> Evocation:
         sha = str(state["sha"])
         declared = drone.declared_hash
-        evocation = Evocation(
+        # One field dict, two constructions: the record written to the ledger
+        # and the record handed back differ only in whether the write landed.
+        # Built this way rather than `replace()`-ing the first into the second
+        # because `dataclasses.replace` erases to the base dataclass protocol
+        # under some type checkers, and this function's contract is specifically
+        # an Evocation — the record, not any dataclass.
+        common: dict[str, Any] = dict(
             name=drone.name,
             source_sha256=sha,
             capabilities=capabilities,
@@ -1555,12 +1604,8 @@ def invoke(
             ledger_path=str(ledger),
             **fields,
         )
-        written, error = append_evocation(evocation, ledger)
-        # Annotated because `dataclasses.replace` erases to the base dataclass
-        # protocol under some type checkers, and the caller contract here is
-        # specifically an Evocation — the record, not any dataclass.
-        recorded: Evocation = replace(evocation, recorded=written, record_error=error)
-        return recorded
+        written, error = append_evocation(Evocation(**common), ledger)
+        return Evocation(**common, recorded=written, record_error=error)
 
     def _fail(message: str) -> Evocation:
         return _record(OUTCOME_FAILED, failure=message)
@@ -1576,22 +1621,8 @@ def invoke(
     if refusal is not None:
         return refusal
 
-    # ONE read: the bytes hashed for the audit trail are the bytes executed.
     try:
-        source_bytes = drone.source.read_bytes()
-    except OSError as exc:
-        return _fail(f"cannot read {drone.source}: {exc.strerror or exc}")
-    state["sha"] = hashlib.sha256(source_bytes).hexdigest()
-
-    try:
-        code = _compile_source(drone.source, source_bytes)
-    except DroneError as exc:
-        return _fail(exc.message)
-
-    # From here on, model-written code has executed in this process.
-    state["ran"] = True
-    try:
-        entrypoint = _load_entrypoint(drone.source, drone.name, code)
+        entrypoint = _prepare_entrypoint(drone, state)
     except DroneError as exc:
         return _fail(exc.message)
 
@@ -1603,19 +1634,7 @@ def invoke(
         ask=recorder,
     )
     try:
-        raw = entrypoint(request)
-    except UndeclaredQuestion as exc:
-        return _fail(exc.message)
-    # Broad by intent: model-written code, reported rather than raised.
-    except Exception as exc:  # noqa: BLE001
-        where = traceback.extract_tb(exc.__traceback__)[-1]
-        return _fail(
-            f"{DRONE_ENTRYPOINT}() raised {exc.__class__.__name__}: {exc} "
-            f"(at {Path(where.filename).name}:{where.lineno})"
-        )
-
-    try:
-        answer = _coerce_answer(raw)
+        answer = _coerce_answer(_run_entrypoint(entrypoint, request))
     except DroneError as exc:
         return _fail(exc.message)
 
