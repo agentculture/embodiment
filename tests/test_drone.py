@@ -15,6 +15,7 @@ proven before any drone exists to be trusted.
 
 from __future__ import annotations
 
+import hashlib
 import json
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -452,13 +453,70 @@ class TestInvoke:
         assert len(sys.modules) == before
 
     def test_re_authoring_is_picked_up_rather_than_cached(self, drones_dir: Path) -> None:
-        """Each load gets a fresh module name, so a rewritten drone.py really runs."""
+        """Each load compiles the file's current bytes, so a rewrite really runs."""
         created = author(drones_dir, GOOD_SOURCE)
         assert drone_lib.invoke(created, root=drones_dir.parent).cannot
         (created.home / "drone.py").write_text(
             "def run(request):\n    return {'answer': 'rewritten'}\n", encoding="utf-8"
         )
         assert drone_lib.invoke(created, root=drones_dir.parent).answer == "rewritten"
+
+    def test_a_same_length_rewrite_in_the_same_second_is_not_served_from_bytecode(
+        self, drones_dir: Path
+    ) -> None:
+        """The bug a handoff probe found, pinned so it cannot come back.
+
+        ``importlib``'s ``SourceFileLoader`` validates a cached ``.pyc`` on
+        *(mtime, source size)*. Re-author a drone within the same second to a
+        body of the **same byte length** — entirely ordinary for a one-line fix
+        — and it happily reuses the OLD bytecode. A drone that silently runs
+        its previous version is precisely the confidently-out-of-date failure
+        this feature exists to prevent, and it is near-undebuggable in the
+        field: the file on disk is right and the behaviour is wrong.
+
+        ``invoke`` therefore compiles the bytes it read rather than importing
+        the path. Both bodies below are deliberately 46 bytes.
+        """
+        first = "def run(request):\n    return {'answer': 'ok'}\n"
+        second = "def run(request):\n    return {'answer': 'NO'}\n"
+        assert len(first) == len(second) == 46, "the test's premise: identical size"
+
+        draft = {
+            "purpose": "p",
+            "assumed_surface": [],
+            "capabilities": [],
+            "questions": [],
+            "smoke": {"args": {}, "answers": {}},
+        }
+        created = author(drones_dir, first, name="rewritten", draft=draft, description="d")
+        assert drone_lib.invoke(created, root=drones_dir.parent).answer == "ok"
+        # No sleep: writing inside the same second IS the condition under test.
+        (created.home / "drone.py").write_text(second, encoding="utf-8")
+        assert drone_lib.invoke(created, root=drones_dir.parent).answer == "NO"
+
+    def test_the_recorded_hash_describes_the_code_that_ran(self, drones_dir: Path) -> None:
+        """One read: the audit trail cannot describe bytes other than the executed ones."""
+        created = author(drones_dir, GOOD_SOURCE)
+        replacement = "def run(request):\n    return {'answer': 'v2'}\n"
+        (created.home / "drone.py").write_text(replacement, encoding="utf-8")
+        record = drone_lib.invoke(created, root=drones_dir.parent)
+        assert record.answer == "v2"
+        expected = hashlib.sha256(replacement.encode("utf-8")).hexdigest()
+        assert record.source_sha256 == expected
+
+    def test_an_unreadable_source_degrades_rather_than_raising(self, drones_dir: Path) -> None:
+        created = author(drones_dir, GOOD_SOURCE)
+        (created.home / "drone.py").unlink()
+        record = drone_lib.invoke(created, root=drones_dir.parent)
+        assert record.ok is False
+        assert "cannot read" in record.failure
+
+    def test_a_syntax_error_is_reported_not_raised(self, drones_dir: Path) -> None:
+        created = author(drones_dir, GOOD_SOURCE)
+        (created.home / "drone.py").write_text("def run(request:\n", encoding="utf-8")
+        record = drone_lib.invoke(created, root=drones_dir.parent)
+        assert record.ok is False
+        assert "does not compile" in record.failure
 
     def test_loading_an_unknown_drone_names_the_list_verb(self, drones_dir: Path) -> None:
         with pytest.raises(drone_lib.DroneError) as exc:

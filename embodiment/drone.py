@@ -74,7 +74,6 @@ Seams deliberately left open for the safeguards task (t12)
 from __future__ import annotations
 
 import hashlib
-import importlib.util
 import itertools
 import json
 import os
@@ -84,6 +83,7 @@ import subprocess  # nosec B404 - fixed argv, no shell; reads the authoring comm
 import sys
 import tempfile
 import traceback
+import types
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -612,7 +612,13 @@ def _read_manifest(home: Path) -> Mapping[str, Any]:
 
 
 def source_hash(source: Path) -> str:
-    """SHA-256 of the drone source, for the evocation audit trail t12 writes."""
+    """SHA-256 of the drone source, for the evocation audit trail t12 writes.
+
+    An independent re-read, for a caller checking a drone *without* running it.
+    :func:`invoke` deliberately does **not** call this: it hashes the same
+    bytes it compiles, so its recorded hash always describes the code that
+    actually ran.
+    """
     try:
         return hashlib.sha256(source.read_bytes()).hexdigest()
     except OSError:
@@ -682,30 +688,48 @@ class _RecordingAsk:
 # ── running ─────────────────────────────────────────────────────────────────
 
 
-def _load_entrypoint(source: Path, name: str) -> Callable[[DroneRequest], Any]:
-    """Import *source* under a fresh name and return its ``run``.
+def _load_entrypoint(source: Path, name: str, source_bytes: bytes) -> Callable[..., Any]:
+    """Compile and run *source_bytes* in a fresh namespace; return its ``run``.
 
-    A **unique** module name per load, so re-authoring a drone in a
-    long-running host never resolves to a stale cached module — but the entry
-    is then removed from ``sys.modules`` again. The registration is only needed
-    *during* ``exec_module`` (dataclasses and similar machinery look the module
-    up by name while the body executes); leaving it behind would grow
-    ``sys.modules`` by one entry per evocation, and a library that leaks in
-    proportion to how often its cheap verb is called is a poor bargain. The
-    returned function keeps its own globals alive through ``__globals__``.
+    Compiled from **the exact bytes the caller already read and hashed**, not
+    re-read from the path, and deliberately NOT through
+    ``importlib.util.spec_from_file_location``. Two reasons, both load-bearing:
+
+    1. **The bytecode cache can serve stale code.** ``SourceFileLoader``
+       validates a cached ``.pyc`` on *(mtime, source size)*. Re-author a drone
+       within the same second to a body of the same byte length — entirely
+       ordinary for a one-line fix — and the loader reuses the OLD bytecode. A
+       drone that silently runs its previous version is the exact
+       confidently-out-of-date failure this whole feature is built to avoid,
+       and it would be near-undebuggable in the field. Found by a handoff probe
+       during t11, not in review.
+    2. **The hash must describe the code that ran.** Reading once closes the
+       gap where the bytes hashed for the audit trail and the bytes executed
+       could differ.
+
+    The module is registered in ``sys.modules`` only *while* the body executes
+    (dataclasses and similar machinery look the module up by name during class
+    creation) and removed afterwards — otherwise ``sys.modules`` would grow by
+    one entry per evocation. The returned function keeps its own globals alive
+    through ``__globals__``.
     """
     module_name = f"_embodiment_drone_{re.sub(r'[^a-z0-9_]', '_', name)}_{next(_MODULE_COUNTER)}"
-    spec = importlib.util.spec_from_file_location(module_name, source)
-    if spec is None or spec.loader is None:
+    try:
+        code = compile(source_bytes, str(source), "exec")
+    except (SyntaxError, ValueError) as exc:
         raise DroneError(
-            f"cannot load {source} as a Python module",
-            "drone.py must be an importable Python source file",
-        )
-    module = importlib.util.module_from_spec(spec)
+            f"{SOURCE_FILENAME} does not compile: {exc.__class__.__name__}: {exc}",
+            "drone.py must be a valid Python source file; re-author the drone",
+        ) from exc
+    module = types.ModuleType(module_name)
+    module.__file__ = str(source)
     sys.modules[module_name] = module
     try:
         try:
-            spec.loader.exec_module(module)
+            # Executing the drone IS the feature, and it is the whole reason
+            # this module's threat model is stated rather than implied: this
+            # runs model-written code in the calling process, with no sandbox.
+            exec(code, module.__dict__)  # nosec B102 - see the module docstring's threat model
         except Exception as exc:  # noqa: BLE001 - model-written code; report, never traceback
             raise DroneError(
                 f"{SOURCE_FILENAME} failed to import: {exc.__class__.__name__}: {exc}",
@@ -760,8 +784,8 @@ def invoke(
     """
     questions = {str(q["id"]): q for q in drone.questions}
     recorder = _RecordingAsk(questions, ask)
-    sha = source_hash(drone.source)
     capabilities = drone.capabilities
+    sha = ""
 
     def _fail(message: str) -> Evocation:
         return Evocation(
@@ -773,8 +797,15 @@ def invoke(
             failure=message,
         )
 
+    # ONE read: the bytes hashed for the audit trail are the bytes executed.
     try:
-        entrypoint = _load_entrypoint(drone.source, drone.name)
+        source_bytes = drone.source.read_bytes()
+    except OSError as exc:
+        return _fail(f"cannot read {drone.source}: {exc.strerror or exc}")
+    sha = hashlib.sha256(source_bytes).hexdigest()
+
+    try:
+        entrypoint = _load_entrypoint(drone.source, drone.name, source_bytes)
     except DroneError as exc:
         return _fail(exc.message)
 
