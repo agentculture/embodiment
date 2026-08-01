@@ -541,7 +541,8 @@ class TestTheWorkerMindIsInjected:
     def test_run_delegation_takes_both_minds_as_arguments(self) -> None:
         cortex, worker = _delegating_cortex("one job"), _reporting_worker()
         delivered = _drive(cortex, worker)
-        assert cortex.calls > 0 and worker.calls > 0
+        assert cortex.calls > 0
+        assert worker.calls > 0
         assert delivered.log.runs[0].model == ""
 
     def test_the_module_reads_no_environment_and_names_no_endpoint(self) -> None:
@@ -1237,7 +1238,8 @@ class TestPartialFailureIsRecordedNotFatal:
                 timeout=0.3,
             )
             good, silent, stuck = delivered.log.runs
-            assert good.report and good.degradation_codes == []
+            assert good.report
+            assert good.degradation_codes == []
             assert not silent.report
             assert ot.DEGRADED_WORKER_NO_REPORT in silent.degradation_codes
             assert stuck.exit_reason == ot.FANOUT_EXIT_ABSENT
@@ -1402,7 +1404,8 @@ class TestFanoutTerminates:
         assert len(calls) == 1, [ast.dump(call) for call in calls]
         timeout = _kwarg(calls[0], "timeout")
         assert timeout is not None, "the one wait must carry a timeout"
-        assert isinstance(timeout, ast.Name) and timeout.id == "timeout"
+        assert isinstance(timeout, ast.Name), ast.dump(timeout)
+        assert timeout.id == "timeout"
 
     def test_the_timeout_default_is_a_finite_positive_number(self) -> None:
         assert isinstance(ot.DEFAULT_FANOUT_TIMEOUT, float)
@@ -1414,7 +1417,8 @@ class TestFanoutTerminates:
         calls = _calls_named(_tree(), "shutdown")
         assert len(calls) == 1
         waited = _kwarg(calls[0], "wait")
-        assert isinstance(waited, ast.Constant) and waited.value is False
+        assert isinstance(waited, ast.Constant), ast.dump(calls[0])
+        assert waited.value is False
 
     def test_the_shutdown_runs_in_a_finally(self) -> None:
         node = _function("_fan_out")
@@ -1429,7 +1433,8 @@ class TestFanoutTerminates:
         assert calls
         for call in calls:
             timeout = _kwarg(call, "timeout")
-            assert isinstance(timeout, ast.Constant) and timeout.value == 0, ast.dump(call)
+            assert isinstance(timeout, ast.Constant), ast.dump(call)
+            assert timeout.value == 0, ast.dump(call)
 
     def test_the_module_never_sleeps_and_never_polls(self) -> None:
         assert not _calls_named(_tree(), "sleep")
