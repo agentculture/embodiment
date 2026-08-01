@@ -66,6 +66,18 @@ throughput at width 8 for meaningfully better per-call latency.
 
 ## Sustained-load stability
 
+> **SUPERSEDED 2026-08-01 — this section is wrong, and the paragraph below is
+> kept verbatim rather than rewritten so the error stays readable.** The
+> committed records hold **nine calls with `retries: 1`**, all at width 14 —
+> **32% of that width's calls**. The retry path was not unexercised; it fired
+> nine times and rescued nine calls. `ok: true` is set *after* a retry
+> succeeds, so the flag this paragraph read cannot tell a clean call from a
+> rescued one. Consequences, including a **reversed** safety conclusion for
+> width 14 and the retry-corrected rate table (per-stream mean 29.82 →
+> **37.00**, effective concurrency 8.99 → **7.25**), are in
+> [`corrections.md` §10](corrections.md). The document's *headline* —
+> saturation near width 8 — is unchanged and strengthened by the correction.
+
 **Zero errors, zero timeouts, zero transport retries, and zero refusals across
 all 51 measured calls plus the warm-up** — every one of the 52 committed rows
 carries `"ok": true`. `finish_reasons` across the whole series: 50 `stop`, 2

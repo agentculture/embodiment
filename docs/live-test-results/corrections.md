@@ -614,3 +614,100 @@ append-only and resume-aware, and the two departures from the pre-registered n
 (primary 5 → 3; escalation 3/1/1/1) are attributed in the write-up to a rig
 shared with `t23` and to per-match cost, not to failures. Recorded anyway, so
 the verdict's reach is stated rather than assumed.
+
+## 10. `worker-throughput.md` reported zero retries against records holding nine
+
+**Found 2026-08-01** by task `t1` of the follow-up cycle
+([#46](https://github.com/agentculture/embodiment/issues/46)), while deriving
+the committed rate config, and verified against the raw records before being
+acted on. This is a correction to a **published measurement's stability
+section**, not to its headline.
+
+### The claim, and what the records say
+
+> **Zero errors, zero timeouts, zero transport retries, and zero refusals
+> across all 51 measured calls plus the warm-up** … No `WorkerTransportError`
+> fired at any width, meaning `WorkerSeam`'s bounded retry path
+> (`MAX_TRANSPORT_RETRIES = 3`, 20s backoff) **was never exercised for real** —
+> this measurement did not need it.
+
+`worker-throughput.jsonl` carries **nine measured calls with `retries: 1`**,
+every one of them at **width 14** — two in batch 0 (slots 12–13) and seven in
+batch 1 (slots 7–13). **9 of 28 width-14 calls, or 32%.**
+
+The second half of that sentence is the false part, and precisely: **no
+`WorkerTransportError` fired** is true — no call exhausted its three retries —
+but the retry path was *not* unexercised. It fired nine times and **rescued
+nine calls**. "Nothing raised" and "nothing failed" are different claims, and
+the record only supports the first.
+
+The ambiguity worth ruling out, because a cumulative counter would have made
+this a non-finding: `WorkerSeam.meter.retries` accumulates, so nine records
+reading `1` *could* have been nine threads racing on one shared counter. They
+are not. `worker_throughput.py`'s own docstring settles it — *"One fresh seam
+per call, never shared across threads … Every call in a batch gets its own
+`ThroughputSeam`, so there is nothing to race"* — and the values confirm it: a
+shared counter across batch 1's slots 7–13 would read 1, 2, 3, … 7, not `1`
+seven times.
+
+### What it changes
+
+`WorkerSeam`'s stopwatch starts **before** the first attempt and is never
+reset, so a retried call has its failed attempt **and** its 20 s backoff timed
+into `latency_seconds`. Every width-14 per-call rate below the width-8 band is
+that artifact, not a generation rate. Subtracting exactly 20.0 s — a
+*conservative* correction, since it leaves the failed attempt's own duration in
+— lifts all nine to **35.8–44.5 tok/s**, back above width 14's own retry-clean
+floor of 30.558. Four of the nine still sit below the width-8 floor of 38.68,
+which is what genuine width-14 contention looks like; the claim is only that
+none was anomalously slow once the backoff is removed:
+
+| figure | published | retry-corrected |
+|---|---:|---:|
+| width-14 per-stream mean (tok/s) | 29.82 | **37.00** |
+| width-14 slowest call (tok/s) | 12.92 | **30.56** (retry-clean floor, n=19) |
+| width-14 effective concurrency | 8.99 | **7.25** |
+| width-14 efficiency (eff. conc. / width) | 64% | **52%** |
+| per-stream drop, width 8 → 14 | −28% | **−11%** |
+
+Widths 1, 2 and 8 carry **zero** retries and are unaffected.
+
+**The headline conclusion is unchanged and in fact strengthened.** *"Saturates
+around width 8, not 14"* rests on the falling efficiency curve, and correcting
+the artifact makes that curve **steeper**: 77% efficiency at width 8 against
+52% (not 64%) at width 14. Going 8 → 14 buys even less than published.
+
+**One conclusion is reversed.** *"Width 14 is not unsafe on this rig (zero
+errors, zero timeouts …)"* does not survive: **width 14 produced transport
+failures in 32% of its calls**, and every failure in the entire series happened
+there. The plan's parked stability risk — *"the served worker build's stability
+under sustained ×14 load is unknown"* — was answered *"clean"* when the honest
+answer is *"failures begin at width 14 and the retry path absorbed all of
+them."* That is a stronger reason to size fan-outs at 8 than the throughput
+argument the document actually made.
+
+### What it does to the derived bounds
+
+`docs/live-test-results/timeout-rate-measurements.json` and pre-registration
+**amendment 2** both take **12.921 tok/s** as the worker's slowest measured
+rate. That figure is one of the nine contaminated calls.
+
+Both are left as they are, deliberately: 12.921 over-protects by **~2.4×**
+against the retry-clean floor of 30.558, which is the **safe direction** for a
+bound whose failure mode is censoring. Amendment 2's fan-out deadline of
+14860 s would be 6283 s if derived from the clean floor — the shipped value is
+larger, so nothing it guards can be cut by it. The caveat is recorded in the
+config rather than silently corrected, so the input's provenance is legible to
+whoever re-derives it next.
+
+### Why nothing caught it
+
+`ok: true` is set **after** a retry succeeds, so the flag the stability section
+read cannot distinguish a clean call from a rescued one. The document then
+reported the flag rather than the counter sitting in the same row. This is the
+`#37` shape again — *a failure the record carries but the reader is never told
+about* — and the fix is the same: read the field that reports the event, not
+the one that reports the outcome.
+
+`tests/test_worker_throughput_retries.py` now recomputes the retry count from
+the committed records, so this claim cannot drift back to zero in silence.
