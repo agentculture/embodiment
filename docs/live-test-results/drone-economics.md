@@ -55,10 +55,39 @@ content**, and the drone recorded `outcome: failed` with zero calls accepted.
 That is `#32`'s exact shape — a model handed a budget it cannot answer within —
 reproduced in a second lane.
 
-**With thinking off the signal would pass comfortably**: 3 calls × ~15 tokens ≈
-45 tokens, **0.94%** of the authoring turn against a 5% target. The economics
-claim in [#45](https://github.com/agentculture/embodiment/issues/45) is *right*;
-the tier as wired cannot reach it.
+With thinking off the *cost* target would clear comfortably: 3 calls × ~15
+tokens ≈ 45 tokens, **0.94%** of the authoring turn against a 5% target.
+
+### But "turn thinking off" is not a free fix, and this document should not imply it is
+
+The arithmetic above is a **cost** projection and nothing more. Disabling
+reasoning on a reasoning model is a **quality decision wearing a configuration
+flag**, and the consequence is unmeasured here:
+
+- `t8`'s **"106 of 106 answered"** measured *that an answer came back in the
+  declared shape*, not that it was **right**. Acceptance is schema compliance.
+  Correctness was not graded.
+- The width rung inherits the same limit. It ran effectively thinking-off at
+  14.2 tokens per call with **100% acceptance in all 48 cells** — and its
+  outcome metric is `items_per_second`, with acceptance deliberately kept out
+  of the numerator. **No cell in that series checked whether a scoped answer
+  was correct.** That is by design for a throughput rung, and it means the
+  series says nothing about what thinking-off costs in quality.
+- So a "fix" that meets a token budget by removing the model's reasoning would
+  be **optimising the metric rather than the outcome** — the failure this repo
+  has recorded under other names, most recently a ranking that measured
+  interface compliance and called it play.
+
+The honest remedy is therefore **not** "ship it thinking-off". It is: make the
+mode **controllable and pinned**, then measure **cost and quality at each
+setting** on a task with graded answers. A scoped question with a small
+enumerable answer space is exactly the shape where thinking-off *might* be
+free — and exactly the shape where that is cheap to check rather than assume.
+
+The economics claim in [#45](https://github.com/agentculture/embodiment/issues/45)
+is plausible and the tier as wired cannot reach it. Whether it can be reached
+**without paying for it somewhere else** is an open question, not a
+foregone one.
 
 ## The same gap, found twice in one hour
 
@@ -94,9 +123,13 @@ it. `t18`'s remedy was a provoked vacuity assertion, and the same is owed here.
    `chat_template_kwargs` at all.
 2. **`arch_hive` calls `wire_extra`** and passes the result, with a vacuity
    assertion that fails if the declared mode stops reaching the payload.
-3. **Re-measure this signal** once thinking is controllable. The prediction,
-   stated before the re-run: ≈45 completion tokens, ≈0.94% of authoring, a
-   comfortable pass.
+3. **Re-measure this signal at *both* settings** once thinking is controllable,
+   on a task whose answers can be **graded** — not just accepted. The cost
+   prediction, stated before the re-run: ≈45 completion tokens, ≈0.94% of
+   authoring. The **quality** prediction is deliberately not stated, because
+   nothing here supports one: if thinking-off answers turn out worse, the
+   honest outcome is that the ≤5% target is **unreachable at equal quality**
+   and the signal itself needs revising — not that the signal passed.
 
 Filed rather than fixed here, because fixing it changes the transport the width
 rung was measured on and this cycle is closing.
