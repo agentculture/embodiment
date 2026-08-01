@@ -5,7 +5,7 @@
   "schema_version": 4,
   "status": "exported",
   "created": "2026-08-01T07:31:01Z",
-  "updated": "2026-08-01T09:37:38Z",
+  "updated": "2026-08-01T11:54:02Z",
   "targets": [
     {
       "id": "c1",
@@ -795,6 +795,22 @@
       "text": "A verified fix for a destroy-then-move window in drone 'create --force' is staged but UNAPPLIED: rmtree(target) runs before shutil.move, and because the staged copy lives in system temp the move is usually a cross-filesystem copytree that can fail partway \u2014 destroying a working drone after the point of no return, which costs a cortex turn to rebuild. Found by colleague review AFTER t11 merged. The patch (fallible copy first, then two same-filesystem renames with restore-on-failure) applies cleanly and was verified green, but is held until t12 merges because t12 is actively editing the same file. Apply immediately after t12's merge.",
       "kind": "follow_up",
       "task_id": "t12",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r6",
+      "text": "c30's drone success signal is UNDEMONSTRATED and may have to be reported ABSENT: 'a drone's second evocation makes 0 cortex calls at <=5% of its authoring tokens' has no supporting measurement anywhere in the repo. t11 and t12 built and proved the machinery, but nobody authored a real drone and evoked it twice. Demonstrating it needs one real cortex authoring turn plus two evocations \u2014 and the evocation lane dials the WORKER on Thor, which t10's width rung is using, so it must not run concurrently with the series. Do it after t10 completes, or report ABSENT with this reason named.",
+      "kind": "follow_up",
+      "task_id": "t14",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r7",
+      "text": "c30's success signal says '7 of 7 constants under the CI test'; the shipped test walks EIGHT clocks (CLOCKS has 8 entries, AUDITED_BY_ISSUE_42 has 7) plus 4 backoff constants accounted for separately. t2's completeness guard found worker_scoped_overhead's batch wait, which landed with t8 after #42's audit was written. The signal is exceeded, not missed \u2014 t14 must report 8 of 8 and say why the number moved, rather than quietly reporting 7.",
+      "kind": "follow_up",
+      "task_id": "t14",
       "resolved": false,
       "resolution": ""
     }
