@@ -5,7 +5,7 @@
   "schema_version": 4,
   "status": "exported",
   "created": "2026-08-01T07:31:01Z",
-  "updated": "2026-08-01T08:14:31Z",
+  "updated": "2026-08-01T08:22:23Z",
   "targets": [
     {
       "id": "c1",
@@ -488,7 +488,7 @@
         "c36",
         "h24"
       ],
-      "instruction": "t4 handed two findings this task MUST act on. (1) A constant fronts every model dialled through it: league_commander dials Gemma 4 31B on the same REQUEST_TIMEOUT, and at Gemma's measured 12.1 tok/s the bound is 1322 s \u2014 so 900 s is 0.68x, BELOW BOUND. Derive each bound at the SLOWEST model its constant fronts, not at the cortex rate, and raise league_commander accordingly. (2) The bound is generation-only; one measured call spent 179.3 s NOT generating (queue + prefill), so a full-budget completion behind that queue totals ~923 s. Either carry an explicit non-generation allowance in derive_timeout or state in the module comment that the bound excludes queue time and why that is acceptable."
+      "instruction": "t4 handed two findings this task MUST act on. (1) A constant fronts every model dialled through it: league_commander dials Gemma 4 31B on the same REQUEST_TIMEOUT, and at Gemma's measured 12.1 tok/s the bound is 1322 s \u2014 so 900 s is 0.68x, BELOW BOUND. Derive each bound at the SLOWEST model its constant fronts, not at the cortex rate, and raise league_commander accordingly. (2) The bound is generation-only; one measured call spent 179.3 s NOT generating (queue + prefill), so a full-budget completion behind that queue totals ~923 s. Either carry an explicit non-generation allowance in derive_timeout or state in the module comment that the bound excludes queue time and why that is acceptable. THIRD, from t8: the audit covers timeouts and (via c16) wait deadlines, but a THIRD clock category is unexamined \u2014 the retry backoff. RETRY_SLEEP_SECONDS = 20.0 is 20x the median healthy scoped call, is timed INSIDE the call's own stopwatch, and has now corrupted three separate measurements this session (9 calls in worker-throughput, 1 in t8's probe, where it would have published concurrency making calls SLOWER). Bring backoff constants under the same derive-or-justify rule, or state explicitly why a fixed backoff is exempt."
     },
     {
       "id": "t3",
@@ -631,7 +631,7 @@
         "c44",
         "h30"
       ],
-      "instruction": "Two findings from t6 that bind the pre-registration. (1) DO NOT re-introduce a security-shaped question into the B1 sweep: issue #44's own example, 'is this safe?', names a security_decision \u2014 a FORBIDDEN responsibility in lobes' worker contract, the exact contract arm B claims to take literally. t6 ships looks_risky (an observation, with 'unclear' first-class) instead; a sweep that asks the worker to decide safety drops arm B's central claim. (2) Issue #37 bites the acceptance metric: a truncated worker turn is indistinguishable from a schema refusal, so a max_tokens setting could inflate the refusal rate the falsifiable prediction is measured on and publish arm B as refuted by its own budget. The pre-registration must read ABSENT_TRUNCATED separately from refusal, and must confirm the committed 256-token worker budget is sufficient for a multi-line answer (cite t8's overhead probe)."
+      "instruction": "Findings that bind the pre-registration. From t6: (1) DO NOT re-introduce a security-shaped question into the B1 sweep \u2014 issue #44's own example 'is this safe?' names a security_decision, a FORBIDDEN responsibility in lobes' worker contract, the exact contract arm B claims to take literally; t6 ships looks_risky (an observation, 'unclear' first-class). (2) Issue #37 bites the acceptance metric: a truncated worker turn is indistinguishable from a schema refusal, so a max_tokens setting could publish arm B as refuted by its own budget \u2014 read ABSENT_TRUNCATED separately from refusal. From t8, measured: (3) The sweep MUST cite calls/second, never effective_concurrency \u2014 on tens-of-token calls the latter reads HIGHER (7.48 vs 6.14) because it is a ratio of token throughputs and per-stream tok/s is overhead rather than decode; it would report the ~9x figure as transferring BETTER than it does. The measured transfer is 3.44x lean / 1.83x realistic. (4) B1 requires enable_thinking: false \u2014 with thinking on at a 48-token cap, 0 of 6 answered and 6/6 truncated (issue #32's shape); with it off, 106 of 106 answered at ~15 tokens. Pin thinking mode per role per tier in the sampling table. (5) Prefill BINDS B1, not completion tokens: +768 prompt tokens costs +0.12 s at width 1 but +1.29 s at width 8, and the N-calls-vs-one-cortex-turn comparison carries ~1.4M prompt tokens. Size the sweep's grain against prompt tokens, and confirm the committed 256-token worker budget against t8's measured ~15-token answers."
     },
     {
       "id": "t10",
