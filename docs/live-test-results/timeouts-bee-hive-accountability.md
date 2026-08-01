@@ -360,7 +360,35 @@ worked is not this contract met.
 
 ---
 
-## 7. Corrections this cycle produced
+## 7. Where the findings travelled — `t15`
+
+`c26`/`h18`: the findings reach the siblings that would hit them, by tracked
+issue with the measured evidence attached, **never by a push into their repo**.
+Negatives travel too — each post below carries its own refutations section.
+
+| where | what it carries | link |
+|---|---|---|
+| **colleague** | the timeout rule, the streaming adoption, and the arithmetic against colleague `1.52.1`'s own constants — it dials the **same gateway and the same cortex** (`config.py:38`, `config.py:43`) | [colleague#362](https://github.com/agentculture/colleague/issues/362) |
+| **lobes-cli #168** | the pilot's live findings, the two derived stream clocks and how each was derived, and why the advert is still the ask after we stopped waiting for it | [comment](https://github.com/agentculture/lobes-cli/issues/168#issuecomment-5151795953) |
+| **lobes-cli #169** | a cross-link naming both consumers, and the correction that **streaming routes around this wall rather than removing it** | [comment](https://github.com/agentculture/lobes-cli/issues/169#issuecomment-5151797532) |
+
+The sharpest thing in the colleague post is not the timeout value. It is that
+`_make_complete` builds its payload as `{model, messages, temperature}` and
+**sends no `max_tokens`** — so `timeout >= max_tokens / rate` cannot be
+*applied* there at all. The effective budget is the server's default, which is
+neither committed nor cited. A timeout that is underivable is a different and
+more awkward problem than a timeout that is too small, and it is the one worth
+their attention first.
+
+Each post also carries what we got wrong: the ~9× throughput extrapolation
+refuted at 3.21–3.46×, the drone token target missed by 6.4×, the defect
+published against our own series that its records refute, and — on the lobes
+threads — that the ~4,800× margin was measured on an idle rig at `n`=2 dials
+and says nothing about inter-chunk gaps under concurrency.
+
+---
+
+## 8. Corrections this cycle produced
 
 Full text in [`corrections.md`](corrections.md); listed here so the map is
 complete.
@@ -388,7 +416,7 @@ Two more corrections are recorded outside this file:
 
 ---
 
-## 8. Deviations
+## 9. Deviations
 
 `devague deviate --list` is the authority; reproduced for readability.
 
@@ -406,7 +434,7 @@ exempted so W1's clock stayed the clock its baselines were measured against.
 
 ---
 
-## 9. Reproduce
+## 10. Reproduce
 
 ```bash
 # signal 1 — the CI bound, and the test-of-the-test that proves it can fail
