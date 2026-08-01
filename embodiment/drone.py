@@ -683,6 +683,17 @@ class _RecordingAsk:
 
 
 def _load_entrypoint(source: Path, name: str) -> Callable[[DroneRequest], Any]:
+    """Import *source* under a fresh name and return its ``run``.
+
+    A **unique** module name per load, so re-authoring a drone in a
+    long-running host never resolves to a stale cached module — but the entry
+    is then removed from ``sys.modules`` again. The registration is only needed
+    *during* ``exec_module`` (dataclasses and similar machinery look the module
+    up by name while the body executes); leaving it behind would grow
+    ``sys.modules`` by one entry per evocation, and a library that leaks in
+    proportion to how often its cheap verb is called is a poor bargain. The
+    returned function keeps its own globals alive through ``__globals__``.
+    """
     module_name = f"_embodiment_drone_{re.sub(r'[^a-z0-9_]', '_', name)}_{next(_MODULE_COUNTER)}"
     spec = importlib.util.spec_from_file_location(module_name, source)
     if spec is None or spec.loader is None:
@@ -693,21 +704,22 @@ def _load_entrypoint(source: Path, name: str) -> Callable[[DroneRequest], Any]:
     module = importlib.util.module_from_spec(spec)
     sys.modules[module_name] = module
     try:
-        spec.loader.exec_module(module)
-    except Exception as exc:  # noqa: BLE001 - model-written code; report, never traceback
+        try:
+            spec.loader.exec_module(module)
+        except Exception as exc:  # noqa: BLE001 - model-written code; report, never traceback
+            raise DroneError(
+                f"{SOURCE_FILENAME} failed to import: {exc.__class__.__name__}: {exc}",
+                "the drone's own source raised at import time; re-author it",
+            ) from exc
+        entrypoint = getattr(module, DRONE_ENTRYPOINT, None)
+        if not callable(entrypoint):
+            raise DroneError(
+                f"{SOURCE_FILENAME} defines no callable {DRONE_ENTRYPOINT}(request)",
+                f"a drone's entry point is `def {DRONE_ENTRYPOINT}(request) -> DroneAnswer`",
+            )
+        return entrypoint
+    finally:
         sys.modules.pop(module_name, None)
-        raise DroneError(
-            f"{SOURCE_FILENAME} failed to import: {exc.__class__.__name__}: {exc}",
-            "the drone's own source raised at import time; re-author it",
-        ) from exc
-    entrypoint = getattr(module, DRONE_ENTRYPOINT, None)
-    if not callable(entrypoint):
-        sys.modules.pop(module_name, None)
-        raise DroneError(
-            f"{SOURCE_FILENAME} defines no callable {DRONE_ENTRYPOINT}(request)",
-            f"a drone's entry point is `def {DRONE_ENTRYPOINT}(request) -> DroneAnswer`",
-        )
-    return entrypoint
 
 
 def _coerce_answer(result: Any) -> DroneAnswer:

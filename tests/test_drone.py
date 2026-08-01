@@ -290,6 +290,27 @@ class TestTheSavedArtifact:
         assert replaced.description == "a replacement"
         assert "CYCLES:" in (replaced.home / "drone.py").read_text(encoding="utf-8")
 
+    def test_a_failed_force_recreate_leaves_the_existing_drone_intact(
+        self, drones_dir: Path
+    ) -> None:
+        """--force removes the old drone only AFTER the new one passes smoke.
+
+        Otherwise a botched re-author destroys a working drone and leaves
+        nothing — the worst possible outcome for a verb whose whole value is
+        not paying the authoring turn again.
+        """
+        author(drones_dir, GOOD_SOURCE)
+        with pytest.raises(drone_lib.DroneError):
+            author(
+                drones_dir,
+                "def run(request):\n    raise ValueError('botched')\n",
+                description="a broken replacement",
+                force=True,
+            )
+        survivor = drone_lib.load("import-graph", drones_dir)
+        assert survivor.description == DESCRIPTION
+        assert (survivor.home / "drone.py").read_text(encoding="utf-8") == GOOD_SOURCE
+
     def test_an_invalid_name_refuses(self, drones_dir: Path) -> None:
         with pytest.raises(drone_lib.DroneError) as exc:
             author(drones_dir, GOOD_SOURCE, name="Not A Name")
@@ -410,6 +431,25 @@ class TestInvoke:
         )
         record = drone_lib.invoke(created, root=drones_dir.parent, args={"package": "embodiment"})
         assert record.answer == "embodiment"
+
+    def test_repeated_evocation_does_not_grow_sys_modules(self, drones_dir: Path) -> None:
+        """A cheap verb must not leak in proportion to how often it is called."""
+        import sys
+
+        created = author(drones_dir, GOOD_SOURCE)
+        before = len(sys.modules)
+        for _ in range(5):
+            drone_lib.invoke(created, root=drones_dir.parent)
+        assert len(sys.modules) == before
+
+    def test_re_authoring_is_picked_up_rather_than_cached(self, drones_dir: Path) -> None:
+        """Each load gets a fresh module name, so a rewritten drone.py really runs."""
+        created = author(drones_dir, GOOD_SOURCE)
+        assert drone_lib.invoke(created, root=drones_dir.parent).cannot
+        (created.home / "drone.py").write_text(
+            "def run(request):\n    return {'answer': 'rewritten'}\n", encoding="utf-8"
+        )
+        assert drone_lib.invoke(created, root=drones_dir.parent).answer == "rewritten"
 
     def test_loading_an_unknown_drone_names_the_list_verb(self, drones_dir: Path) -> None:
         with pytest.raises(drone_lib.DroneError) as exc:
