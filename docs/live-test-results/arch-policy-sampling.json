@@ -1,0 +1,293 @@
+{
+  "kind": "arch-policy-sampling-table",
+  "version": 1,
+  "series": "error-derived-timeouts-bee-hive-architecture",
+  "task": "t7",
+  "read_by": "examples/arch_policy.py",
+  "why": [
+    "An INPUT, not a run artifact -- the third file in the family after arch-arms-",
+    "sampling.json (E/W/M/H) and arch-hive-sampling.json (B0/B1), and deliberately a",
+    "THIRD file rather than a section inside either. Each loader validates over its",
+    "own arm order, so P/PR/PH/PN cells in the hive table would be read by nothing",
+    "and would put two tasks' hands on one file. examples/arch_policy.py defines no",
+    "fallback for any cell here: a missing cell raises ConfigError naming the arm and",
+    "the role, asserted structurally over the module's own AST so a default cannot be",
+    "reintroduced quietly.",
+    "Model identities live here for arch_arms' reason, unchanged: the cortex 'model'",
+    "is null on purpose, resolved from the environment or recorded ABSENT -- never",
+    "substituted with a predecessor."
+  ],
+  "roles": {
+    "cortex": {
+      "model": null,
+      "model_env": "EMBODIMENT_CORTEX_MODEL",
+      "base_url": "http://localhost:8001/v1",
+      "base_url_env": "EMBODIMENT_BASE_URL",
+      "api_key_env": "COLLEAGUE_API_KEY",
+      "why": [
+        "NULL DELIBERATELY, matching arch-arms-sampling.json and arch-hive-sampling.json.",
+        "The cortex is dialled by arm P and by NO other arm here: it writes the policy",
+        "source, exactly once per episode, and then takes no further part. The three",
+        "control arms carry no cortex cell at all, which is what makes 'zero authoring",
+        "calls' a fact about the configuration rather than a promise about the code."
+      ]
+    },
+    "worker": {
+      "model": "unsloth/Qwen3.6-35B-A3B-NVFP4",
+      "model_env": "EMBODIMENT_WORKER_MODEL",
+      "base_url": "http://thor.tail0be7e0.ts.net:8000/v1",
+      "base_url_env": "EMBODIMENT_WORKER_URL",
+      "api_key_env": "COLLEAGUE_API_KEY",
+      "why": [
+        "Serves ESCALATIONS -- the declared checkpoint where a mind intervenes. Dialled",
+        "through examples/worker_seam.py on the same path arm B1's scoped calls take,",
+        "because an escalation IS a B1 scoped call: a typed question over an enumerated",
+        "answer space, authored by the harness, answered advisory. Spec claim c20's",
+        "caste vocabulary holds -- the delegation is to a worker-harness the cortex's",
+        "own contract shaped, never to a raw mind handed a goal."
+      ]
+    },
+    "senses": {
+      "model": "coolthor/gemma-4-12B-it-NVFP4A16",
+      "model_env": "EMBODIMENT_SENSES_MODEL",
+      "base_url": "http://localhost:8001/v1",
+      "base_url_env": "EMBODIMENT_BASE_URL",
+      "api_key_env": "COLLEAGUE_API_KEY",
+      "why": [
+        "Constant in all four arms and NOT dialled by any of them -- recorded and hashed",
+        "so a senses difference cannot confound the P-vs-controls contrast invisibly."
+      ]
+    }
+  },
+  "thinking_wire": {
+    "why": [
+      "What 'thinking: on' puts on the wire, stated rather than assumed. A mode with",
+      "no entry here is a config error, never a silent no-op."
+    ],
+    "modes": {
+      "on": {
+        "chat_template_kwargs": {
+          "enable_thinking": true
+        }
+      },
+      "off": {
+        "chat_template_kwargs": {
+          "enable_thinking": false
+        }
+      }
+    }
+  },
+  "sampling": {
+    "why": [
+      "Per role per arm, and ONLY for the roles an arm may actually dial. A control",
+      "arm has no cortex cell because it makes no authoring call; giving it one would",
+      "declare a dial that can never happen.",
+      "The cortex cell matches arch-arms-sampling.json and arch-hive-sampling.json",
+      "exactly so P is comparable with E/W/M/H/B rather than confounded by sampling.",
+      "The worker cell matches arch-hive-sampling.json's B1 worker cell for the same",
+      "reason: an escalation and a B1 scoped call are the same call, so they must be",
+      "the same dial or the two arms' acceptance figures are not comparable."
+    ],
+    "P": {
+      "cortex": {
+        "temperature": 0.3,
+        "thinking": "on",
+        "max_tokens": 16000
+      },
+      "worker": {
+        "temperature": 0.3,
+        "thinking": "off",
+        "max_tokens": 256
+      },
+      "senses": {
+        "temperature": 0.3,
+        "thinking": "off",
+        "max_tokens": 16000
+      }
+    },
+    "PR": {
+      "worker": {
+        "temperature": 0.3,
+        "thinking": "off",
+        "max_tokens": 256
+      },
+      "senses": {
+        "temperature": 0.3,
+        "thinking": "off",
+        "max_tokens": 16000
+      }
+    },
+    "PH": {
+      "worker": {
+        "temperature": 0.3,
+        "thinking": "off",
+        "max_tokens": 256
+      },
+      "senses": {
+        "temperature": 0.3,
+        "thinking": "off",
+        "max_tokens": 16000
+      }
+    },
+    "PN": {
+      "worker": {
+        "temperature": 0.3,
+        "thinking": "off",
+        "max_tokens": 256
+      },
+      "senses": {
+        "temperature": 0.3,
+        "thinking": "off",
+        "max_tokens": 16000
+      }
+    }
+  },
+  "budgets": {
+    "why": [
+      "authoring_calls is the arm's whole headline claim, held as a number the loader",
+      "CHECKS against the arm's structure rather than trusts: arm P is 1 because the",
+      "mind writes the policy once, and each control is 0 because its source is",
+      "committed in the harness and reviewed. A table that granted a compiled arm two",
+      "authoring calls -- a retry -- would be silently measuring a different arm, so",
+      "the loader refuses it.",
+      "max_escalation_calls bounds the number of escalation calls one episode may",
+      "dispatch, in total. It is the step-count bound the structural termination test",
+      "reads, and it is clamped before any call is built.",
+      "Every arm carries the same escalation budget on purpose: escalation capability",
+      "is uniform across the four arms and only the SOURCE differs, which is what",
+      "makes the three controls controls rather than different experiments."
+    ],
+    "P": {
+      "authoring_calls": 1,
+      "max_escalation_calls": 8
+    },
+    "PR": {
+      "authoring_calls": 0,
+      "max_escalation_calls": 8
+    },
+    "PH": {
+      "authoring_calls": 0,
+      "max_escalation_calls": 8
+    },
+    "PN": {
+      "authoring_calls": 0,
+      "max_escalation_calls": 8
+    }
+  },
+  "policy": {
+    "why": [
+      "The per-arm play table. All four arms are identical here, and that identity IS",
+      "the control design: same episode, same jail, same driver, same escalation grain,",
+      "same checkpoint role -- the only variable is which source the jail executes.",
+      "escalation_role names the mind that answers a declared checkpoint. It is config",
+      "rather than a constant because 'which mind intervenes' is a real question the",
+      "sweep may vary: the cortex wrote the policy and knows its intent, the worker is",
+      "cheaper and is the caste c20 names for scoped typed questions. The reference",
+      "cells say worker; task t9's pre-registration is the authority on whether the",
+      "sweep varies it."
+    ],
+    "P": {
+      "grain": "unit",
+      "escalation_role": "worker"
+    },
+    "PR": {
+      "grain": "unit",
+      "escalation_role": "worker"
+    },
+    "PH": {
+      "grain": "unit",
+      "escalation_role": "worker"
+    },
+    "PN": {
+      "grain": "unit",
+      "escalation_role": "worker"
+    }
+  },
+  "grains": {
+    "why": [
+      "How many escalated situations ride in one checkpoint call. The same table",
+      "arch-hive-sampling.json carries and for the same reason -- scope size is the",
+      "independent variable, swept rather than toggled -- narrowed here to the",
+      "escalation lane, which is the only lane in this arm that costs a model call at",
+      "play time. Task t8 measures the per-call prefill cost before t9 fixes the",
+      "sweep's granularity; no grain here is claimed to be the right one."
+    ],
+    "unit": {
+      "items_per_call": 1,
+      "why": "one escalated situation per call -- the finest grain, the most calls"
+    },
+    "pair": {
+      "items_per_call": 2,
+      "why": "the first coarsening step"
+    },
+    "batch4": {
+      "items_per_call": 4,
+      "why": "coarse enough that a single refusal costs four answers -- the acceptance risk"
+    },
+    "batch8": {
+      "items_per_call": 8,
+      "why": "the coarse end: one call at measured saturation width, prefill paid once"
+    }
+  },
+  "episode": {
+    "why": [
+      "The demo episode's shape. Deterministic and harness-authored: no randomness",
+      "generates it, so two arms see byte-identical situations and a difference in",
+      "outcome cannot be the episode.",
+      "occlusion_every declares how often a situation hides the feature its decision",
+      "turns on. Those are the situations where 'I don't know' is the CORRECT return,",
+      "and they are what makes escalation quality gradeable at all: the harness knows,",
+      "host-side, which situations a policy could not have decided.",
+      "seed is carried into the jail payload for the random control. It is here rather",
+      "than in code so a re-run is reproducible from a cited file, and it is passed to",
+      "EVERY arm's payload so the payload shape does not vary by arm."
+    ],
+    "situations": 12,
+    "seed": 20260801,
+    "occlusion_every": 4
+  },
+  "dispatch": {
+    "why": [
+      "The wait deadline for one concurrent escalation batch. Derived, not chosen, and",
+      "identical to arch-hive-sampling.json's because it bounds the identical call: a",
+      "checkpoint holds ONE turn per call, never a drive, so the bound is the per-turn",
+      "bound with no turn-budget multiplier.",
+      "256 tokens / 21.5 tok/s = 11.9s; the value below carries a wide margin for",
+      "queueing on a --max-num-seqs=2 server rather than sitting near the bound. Task",
+      "t2 owns the CI test that recomputes this class of constant; this cell exists so",
+      "the escalation deadline is a cited config value when t2 walks it, never a",
+      "literal in examples/arch_policy.py.",
+      "max_concurrency is measured saturation (docs/live-test-results/worker-",
+      "throughput.md), the same 8 arm B1 dials."
+    ],
+    "batch_timeout_seconds": 300.0,
+    "max_concurrency": 8,
+    "rate_tok_s": 21.5,
+    "rate_source": "docs/live-test-results/orchestrator-worker-preregistration.md section 18"
+  },
+  "decision": {
+    "why": [
+      "PROVISIONAL and named as such -- task t9's pre-registration is the authority on",
+      "the sweep, the outcome metric and the stop rule. It lives here as data so t9 can",
+      "pin or amend it without a code change.",
+      "call_acceptance_refutes_at_rate is the number the frame names by hand: issue #33",
+      "measured 74% of workspace-arm calls refused on a shape error. An escalation lane",
+      "at that rate is published as REFUTING the delegate-to-authored-artifacts claim,",
+      "by name, not smoothed over.",
+      "escalation_rate_collapses_at is the OTHER extreme, pre-declared so it cannot be",
+      "argued about afterwards: a policy that escalates every decision has collapsed",
+      "into the worker arm with extra latency, and is reported as such rather than as a",
+      "compiled policy that happened to do well.",
+      "policy_acceptance_floor is the compiled artifact's own protocol compliance. It",
+      "is the axis that tells a strategically-inert-but-valid policy apart from one",
+      "that never returned a legal move, and it is reported separately from both",
+      "outcome and escalation acceptance for the same reason those two are separate."
+    ],
+    "separation_margin": 1,
+    "call_acceptance_refutes_at_rate": 0.74,
+    "escalation_rate_collapses_at": 1.0,
+    "policy_acceptance_floor": 1.0,
+    "call_acceptance_is_never_folded_into_outcome": true,
+    "escalation_rate_is_never_folded_into_outcome": true
+  }
+}

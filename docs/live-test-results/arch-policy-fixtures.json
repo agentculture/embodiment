@@ -1,0 +1,185 @@
+{
+  "kind": "arch-policy-fixture-table",
+  "version": 1,
+  "series": "error-derived-timeouts-bee-hive-architecture",
+  "task": "t7",
+  "read_by": "examples/arch_policy.py",
+  "sentinel_path": "/tmp/arch-policy-escaped-the-jail",
+  "why": [
+    "Committed EVIDENCE, not an input like arch-policy-sampling.json. Every",
+    "'stdout' below is what a REAL docker workspace printed for that source, on",
+    "this rig, with the per-run nonce written back as {nonce} and the engine's own",
+    "job chrome elided -- the driver's result line is the only thing graded, and",
+    "the chatty fixture keeps its noise lines because they are the point.",
+    "This is what lets the always-on suite grade the shipped classifier without",
+    "executing anything: the execution was real and happened once, every judgement",
+    "the tests make is the shipped one. Re-capture with",
+    "    uv run python examples/arch_policy.py fixtures --provider docker",
+    "which re-runs each source for real and checks this file still describes it.",
+    "The M2 grader kit's rule (docs/plans/next-cycle-candidates.md M2): four",
+    "graders shipped defective last cycle and every one was caught by a human",
+    "reading data. 'expects' is hand-declared per fixture and is the claim the",
+    "test checks -- it is never computed from the code under test.",
+    "'correct' assumes arch_hive.scripted_worker() answers every checkpoint call,",
+    "which returns each item's FIRST allowed answer ('hold'). That is deterministic",
+    "and is why a fixture with escalations can still declare a correctness count.",
+    "THE SENTINEL FIXTURE IS THE EMPIRICAL HALF OF ACCEPTANCE CRITERION 1. Its",
+    "source writes a file on whatever machine runs it. After the whole pipeline has",
+    "graded it, that path does not exist on this host -- which is a fact about the",
+    "grading pipeline, checked by test, and not a reading of the harness's source."
+  ],
+  "fixtures": [
+    {
+      "name": "baseline",
+      "proves": "the escalate return really is returned, and read back as in-protocol",
+      "source": "\ndef decide(situation):\n    \"\"\"The rule, written out, escalating where it cannot see.\"\"\"\n    f = situation[\"features\"]\n    unobserved = situation[\"unobserved\"]\n    if f[\"supply\"] == unobserved:\n        return situation[\"escalate\"]\n    if f[\"supply\"] == 0:\n        return \"resupply\"\n    if f[\"hp\"] == unobserved:\n        return situation[\"escalate\"]\n    if f[\"hp\"] < 30:\n        return \"fall_back\"\n    if f[\"threat\"] == unobserved:\n        return situation[\"escalate\"]\n    if f[\"threat\"] >= 2:\n        return \"hold\"\n    if f[\"dist\"] == unobserved:\n        return situation[\"escalate\"]\n    return \"advance\" if f[\"dist\"] > 0 else \"hold\"\n",
+      "stdout": "{nonce} {\"decisions\": [{\"i\": 0, \"id\": \"u1\", \"seconds\": 3.855966497212648e-06, \"type\": \"str\", \"value\": \"resupply\"}, {\"i\": 1, \"id\": \"u2\", \"seconds\": 1.167994923889637e-06, \"type\": \"str\", \"value\": \"fall_back\"}, {\"i\": 2, \"id\": \"u3\", \"seconds\": 9.93022695183754e-07, \"type\": \"str\", \"value\": \"hold\"}, {\"i\": 3, \"id\": \"u4\", \"seconds\": 4.00003045797348e-07, \"type\": \"str\", \"value\": \"?\"}, {\"i\": 4, \"id\": \"u5\", \"seconds\": 1.167994923889637e-06, \"type\": \"str\", \"value\": \"advance\"}, {\"i\": 5, \"id\": \"u6\", \"seconds\": 1.919688656926155e-07, \"type\": \"str\", \"value\": \"resupply\"}, {\"i\": 6, \"id\": \"u7\", \"seconds\": 2.0803418010473251e-07, \"type\": \"str\", \"value\": \"fall_back\"}, {\"i\": 7, \"id\": \"u8\", \"seconds\": 2.720043994486332e-07, \"type\": \"str\", \"value\": \"?\"}, {\"i\": 8, \"id\": \"u9\", \"seconds\": 3.3603282645344734e-07, \"type\": \"str\", \"value\": \"advance\"}, {\"i\": 9, \"id\": \"u10\", \"seconds\": 3.039604052901268e-07, \"type\": \"str\", \"value\": \"advance\"}, {\"i\": 10, \"id\": \"u11\", \"seconds\": 1.919688656926155e-07, \"type\": \"str\", \"value\": \"resupply\"}, {\"i\": 11, \"id\": \"u12\", \"seconds\": 2.2398307919502258e-07, \"type\": \"str\", \"value\": \"?\"}], \"entry\": \"decide\"}\n",
+      "expects": {
+        "counts": {
+          "decided": 9,
+          "escalated": 3,
+          "off-protocol": 0,
+          "raised": 0,
+          "missing": 0
+        },
+        "correct": 11,
+        "verdict": "WRONG",
+        "vacuity_fired": true,
+        "nonce_matches": 1
+      }
+    },
+    {
+      "name": "random",
+      "proves": "a legal-move-every-time program scores well above the floor and below the ceiling",
+      "source": "\nimport random\n\n\ndef decide(situation):\n    \"\"\"Uniform over the declared action space. Legal, reproducible, inert.\"\"\"\n    rng = random.Random(\"{0}|{1}\".format(situation[\"id\"], situation[\"seed\"]))\n    return rng.choice(list(situation[\"actions\"]))\n",
+      "stdout": "{nonce} {\"decisions\": [{\"i\": 0, \"id\": \"u1\", \"seconds\": 0.00010736100375652313, \"type\": \"str\", \"value\": \"advance\"}, {\"i\": 1, \"id\": \"u2\", \"seconds\": 1.3248005416244268e-05, \"type\": \"str\", \"value\": \"resupply\"}, {\"i\": 2, \"id\": \"u3\", \"seconds\": 1.0752002708613873e-05, \"type\": \"str\", \"value\": \"fall_back\"}, {\"i\": 3, \"id\": \"u4\", \"seconds\": 9.984010830521584e-06, \"type\": \"str\", \"value\": \"advance\"}, {\"i\": 4, \"id\": \"u5\", \"seconds\": 9.64803621172905e-06, \"type\": \"str\", \"value\": \"hold\"}, {\"i\": 5, \"id\": \"u6\", \"seconds\": 9.519979357719421e-06, \"type\": \"str\", \"value\": \"hold\"}, {\"i\": 6, \"id\": \"u7\", \"seconds\": 9.184004738926888e-06, \"type\": \"str\", \"value\": \"fall_back\"}, {\"i\": 7, \"id\": \"u8\", \"seconds\": 9.295996278524399e-06, \"type\": \"str\", \"value\": \"hold\"}, {\"i\": 8, \"id\": \"u9\", \"seconds\": 9.77696618065238e-06, \"type\": \"str\", \"value\": \"advance\"}, {\"i\": 9, \"id\": \"u10\", \"seconds\": 9.264040272682905e-06, \"type\": \"str\", \"value\": \"advance\"}, {\"i\": 10, \"id\": \"u11\", \"seconds\": 9.295996278524399e-06, \"type\": \"str\", \"value\": \"hold\"}, {\"i\": 11, \"id\": \"u12\", \"seconds\": 9.375973604619503e-06, \"type\": \"str\", \"value\": \"resupply\"}], \"entry\": \"decide\"}\n",
+      "expects": {
+        "counts": {
+          "decided": 12,
+          "escalated": 0,
+          "off-protocol": 0,
+          "raised": 0,
+          "missing": 0
+        },
+        "correct": 4,
+        "verdict": "WRONG",
+        "vacuity_fired": true,
+        "nonce_matches": 1
+      }
+    },
+    {
+      "name": "noop",
+      "proves": "returning None is off protocol, not a decision and not an escalation",
+      "source": "\ndef decide(situation):\n    \"\"\"Nothing. The floor on every axis, including protocol compliance.\"\"\"\n    return None\n",
+      "stdout": "{nonce} {\"decisions\": [{\"i\": 0, \"id\": \"u1\", \"seconds\": 8.320203050971031e-07, \"type\": \"NoneType\", \"value\": null}, {\"i\": 1, \"id\": \"u2\", \"seconds\": 2.5599729269742966e-07, \"type\": \"NoneType\", \"value\": null}, {\"i\": 2, \"id\": \"u3\", \"seconds\": 1.4400575309991837e-07, \"type\": \"NoneType\", \"value\": null}, {\"i\": 3, \"id\": \"u4\", \"seconds\": 1.2799864634871483e-07, \"type\": \"NoneType\", \"value\": null}, {\"i\": 4, \"id\": \"u5\", \"seconds\": 1.2799864634871483e-07, \"type\": \"NoneType\", \"value\": null}, {\"i\": 5, \"id\": \"u6\", \"seconds\": 1.1199153959751129e-07, \"type\": \"NoneType\", \"value\": null}, {\"i\": 6, \"id\": \"u7\", \"seconds\": 1.1199153959751129e-07, \"type\": \"NoneType\", \"value\": null}, {\"i\": 7, \"id\": \"u8\", \"seconds\": 1.1199153959751129e-07, \"type\": \"NoneType\", \"value\": null}, {\"i\": 8, \"id\": \"u9\", \"seconds\": 1.1199153959751129e-07, \"type\": \"NoneType\", \"value\": null}, {\"i\": 9, \"id\": \"u10\", \"seconds\": 1.1199153959751129e-07, \"type\": \"NoneType\", \"value\": null}, {\"i\": 10, \"id\": \"u11\", \"seconds\": 9.604264050722122e-08, \"type\": \"NoneType\", \"value\": null}, {\"i\": 11, \"id\": \"u12\", \"seconds\": 9.604264050722122e-08, \"type\": \"NoneType\", \"value\": null}], \"entry\": \"decide\"}\n",
+      "expects": {
+        "counts": {
+          "decided": 0,
+          "escalated": 0,
+          "off-protocol": 12,
+          "raised": 0,
+          "missing": 0
+        },
+        "correct": 0,
+        "verdict": "WRONG",
+        "vacuity_fired": true,
+        "nonce_matches": 1
+      }
+    },
+    {
+      "name": "off_protocol",
+      "proves": "a legal-looking string outside the action space is refused, never nearest-matched",
+      "source": "def decide(situation):\n    return 'CHARGE'\n",
+      "stdout": "{nonce} {\"decisions\": [{\"i\": 0, \"id\": \"u1\", \"seconds\": 2.4319742806255817e-06, \"type\": \"str\", \"value\": \"CHARGE\"}, {\"i\": 1, \"id\": \"u2\", \"seconds\": 2.720043994486332e-07, \"type\": \"str\", \"value\": \"CHARGE\"}, {\"i\": 2, \"id\": \"u3\", \"seconds\": 1.919688656926155e-07, \"type\": \"str\", \"value\": \"CHARGE\"}, {\"i\": 3, \"id\": \"u4\", \"seconds\": 1.1199153959751129e-07, \"type\": \"str\", \"value\": \"CHARGE\"}, {\"i\": 4, \"id\": \"u5\", \"seconds\": 1.2799864634871483e-07, \"type\": \"str\", \"value\": \"CHARGE\"}, {\"i\": 5, \"id\": \"u6\", \"seconds\": 1.1199153959751129e-07, \"type\": \"str\", \"value\": \"CHARGE\"}, {\"i\": 6, \"id\": \"u7\", \"seconds\": 9.604264050722122e-08, \"type\": \"str\", \"value\": \"CHARGE\"}, {\"i\": 7, \"id\": \"u8\", \"seconds\": 1.1199153959751129e-07, \"type\": \"str\", \"value\": \"CHARGE\"}, {\"i\": 8, \"id\": \"u9\", \"seconds\": 1.1199153959751129e-07, \"type\": \"str\", \"value\": \"CHARGE\"}, {\"i\": 9, \"id\": \"u10\", \"seconds\": 1.1199153959751129e-07, \"type\": \"str\", \"value\": \"CHARGE\"}, {\"i\": 10, \"id\": \"u11\", \"seconds\": 9.604264050722122e-08, \"type\": \"str\", \"value\": \"CHARGE\"}, {\"i\": 11, \"id\": \"u12\", \"seconds\": 1.1199153959751129e-07, \"type\": \"str\", \"value\": \"CHARGE\"}], \"entry\": \"decide\"}\n",
+      "expects": {
+        "counts": {
+          "decided": 0,
+          "escalated": 0,
+          "off-protocol": 12,
+          "raised": 0,
+          "missing": 0
+        },
+        "correct": 0,
+        "verdict": "WRONG",
+        "vacuity_fired": true,
+        "nonce_matches": 1
+      }
+    },
+    {
+      "name": "raiser",
+      "proves": "a policy that raises is recorded by exception type and never scored",
+      "source": "def decide(situation):\n    raise ValueError('no')\n",
+      "stdout": "{nonce} {\"decisions\": [{\"error\": \"ValueError\", \"i\": 0, \"id\": \"u1\", \"seconds\": 2.0480365492403507e-06}, {\"error\": \"ValueError\", \"i\": 1, \"id\": \"u2\", \"seconds\": 7.039634510874748e-07}, {\"error\": \"ValueError\", \"i\": 2, \"id\": \"u3\", \"seconds\": 4.6403147280216217e-07}, {\"error\": \"ValueError\", \"i\": 3, \"id\": \"u4\", \"seconds\": 2.8801150619983673e-07}, {\"error\": \"ValueError\", \"i\": 4, \"id\": \"u5\", \"seconds\": 2.8801150619983673e-07}, {\"error\": \"ValueError\", \"i\": 5, \"id\": \"u6\", \"seconds\": 2.399901859462261e-07}, {\"error\": \"ValueError\", \"i\": 6, \"id\": \"u7\", \"seconds\": 2.5599729269742966e-07}, {\"error\": \"ValueError\", \"i\": 7, \"id\": \"u8\", \"seconds\": 2.5599729269742966e-07}, {\"error\": \"ValueError\", \"i\": 8, \"id\": \"u9\", \"seconds\": 2.399901859462261e-07}, {\"error\": \"ValueError\", \"i\": 9, \"id\": \"u10\", \"seconds\": 2.0797597244381905e-07}, {\"error\": \"ValueError\", \"i\": 10, \"id\": \"u11\", \"seconds\": 2.0797597244381905e-07}, {\"error\": \"ValueError\", \"i\": 11, \"id\": \"u12\", \"seconds\": 2.2398307919502258e-07}], \"entry\": \"decide\"}\n",
+      "expects": {
+        "counts": {
+          "decided": 0,
+          "escalated": 0,
+          "off-protocol": 0,
+          "raised": 12,
+          "missing": 0
+        },
+        "correct": 0,
+        "verdict": "WRONG",
+        "vacuity_fired": true,
+        "nonce_matches": 1
+      }
+    },
+    {
+      "name": "no_entry",
+      "proves": "a source defining the wrong name yields no rows, so the vacuity gate refuses a verdict",
+      "source": "def play(situation):\n    return 'hold'\n",
+      "stdout": "{nonce} {\"decisions\": null, \"entry\": \"decide\", \"error\": \"no callable named decide\"}\n",
+      "expects": {
+        "counts": {
+          "decided": 0,
+          "escalated": 0,
+          "off-protocol": 0,
+          "raised": 0,
+          "missing": 12
+        },
+        "correct": 0,
+        "verdict": "NO_RESULT",
+        "vacuity_fired": false,
+        "nonce_matches": 1
+      }
+    },
+    {
+      "name": "chatty",
+      "proves": "a policy writing to stdout cannot hide or forge the driver's result line",
+      "source": "def decide(situation):\n    print('thinking about ' + situation['id'])\n    return situation['actions'][0]\n",
+      "stdout": "thinking about u1\nthinking about u2\nthinking about u3\nthinking about u4\nthinking about u5\nthinking about u6\nthinking about u7\nthinking about u8\nthinking about u9\nthinking about u10\nthinking about u11\nthinking about u12\n{nonce} {\"decisions\": [{\"i\": 0, \"id\": \"u1\", \"seconds\": 1.249596243724227e-05, \"type\": \"str\", \"value\": \"hold\"}, {\"i\": 1, \"id\": \"u2\", \"seconds\": 8.959905244410038e-07, \"type\": \"str\", \"value\": \"hold\"}, {\"i\": 2, \"id\": \"u3\", \"seconds\": 5.119945853948593e-07, \"type\": \"str\", \"value\": \"hold\"}, {\"i\": 3, \"id\": \"u4\", \"seconds\": 3.680470399558544e-07, \"type\": \"str\", \"value\": \"hold\"}, {\"i\": 4, \"id\": \"u5\", \"seconds\": 3.520399332046509e-07, \"type\": \"str\", \"value\": \"hold\"}, {\"i\": 5, \"id\": \"u6\", \"seconds\": 3.200257197022438e-07, \"type\": \"str\", \"value\": \"hold\"}, {\"i\": 6, \"id\": \"u7\", \"seconds\": 3.359746187925339e-07, \"type\": \"str\", \"value\": \"hold\"}, {\"i\": 7, \"id\": \"u8\", \"seconds\": 3.039604052901268e-07, \"type\": \"str\", \"value\": \"hold\"}, {\"i\": 8, \"id\": \"u9\", \"seconds\": 3.519817255437374e-07, \"type\": \"str\", \"value\": \"hold\"}, {\"i\": 9, \"id\": \"u10\", \"seconds\": 3.0401861295104027e-07, \"type\": \"str\", \"value\": \"hold\"}, {\"i\": 10, \"id\": \"u11\", \"seconds\": 2.8795329853892326e-07, \"type\": \"str\", \"value\": \"hold\"}, {\"i\": 11, \"id\": \"u12\", \"seconds\": 3.359746187925339e-07, \"type\": \"str\", \"value\": \"hold\"}], \"entry\": \"decide\"}\n",
+      "expects": {
+        "counts": {
+          "decided": 12,
+          "escalated": 0,
+          "off-protocol": 0,
+          "raised": 0,
+          "missing": 0
+        },
+        "correct": 3,
+        "verdict": "WRONG",
+        "vacuity_fired": true,
+        "nonce_matches": 1
+      }
+    },
+    {
+      "name": "sentinel",
+      "proves": "THE EMPIRICAL HALF: this source writes a file on whatever machine runs it",
+      "source": "import pathlib\n\n\ndef decide(situation):\n    pathlib.Path('/tmp/arch-policy-escaped-the-jail').write_text('escaped')\n    return situation['actions'][0]\n",
+      "stdout": "{nonce} {\"decisions\": [{\"i\": 0, \"id\": \"u1\", \"seconds\": 0.005617026996333152, \"type\": \"str\", \"value\": \"hold\"}, {\"i\": 1, \"id\": \"u2\", \"seconds\": 8.414400508627295e-05, \"type\": \"str\", \"value\": \"hold\"}, {\"i\": 2, \"id\": \"u3\", \"seconds\": 0.00021115399431437254, \"type\": \"str\", \"value\": \"hold\"}, {\"i\": 3, \"id\": \"u4\", \"seconds\": 0.00016475399024784565, \"type\": \"str\", \"value\": \"hold\"}, {\"i\": 4, \"id\": \"u5\", \"seconds\": 0.0001867049722932279, \"type\": \"str\", \"value\": \"hold\"}, {\"i\": 5, \"id\": \"u6\", \"seconds\": 0.00019057700410485268, \"type\": \"str\", \"value\": \"hold\"}, {\"i\": 6, \"id\": \"u7\", \"seconds\": 0.00020379404304549098, \"type\": \"str\", \"value\": \"hold\"}, {\"i\": 7, \"id\": \"u8\", \"seconds\": 0.00019960198551416397, \"type\": \"str\", \"value\": \"hold\"}, {\"i\": 8, \"id\": \"u9\", \"seconds\": 0.00019003398483619094, \"type\": \"str\", \"value\": \"hold\"}, {\"i\": 9, \"id\": \"u10\", \"seconds\": 0.00021125003695487976, \"type\": \"str\", \"value\": \"hold\"}, {\"i\": 10, \"id\": \"u11\", \"seconds\": 0.0001941610244102776, \"type\": \"str\", \"value\": \"hold\"}, {\"i\": 11, \"id\": \"u12\", \"seconds\": 0.00020097801461815834, \"type\": \"str\", \"value\": \"hold\"}], \"entry\": \"decide\"}\n",
+      "expects": {
+        "counts": {
+          "decided": 12,
+          "escalated": 0,
+          "off-protocol": 0,
+          "raised": 0,
+          "missing": 0
+        },
+        "correct": 3,
+        "verdict": "WRONG",
+        "vacuity_fired": true,
+        "nonce_matches": 1
+      }
+    }
+  ]
+}
