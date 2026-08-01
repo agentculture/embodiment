@@ -1,0 +1,791 @@
+{
+  "slug": "error-derived-timeouts-bee-hive-architecture",
+  "title": "error-derived timeouts + bee-hive architecture",
+  "frame_slug": "error-derived-timeouts-bee-hive-architecture",
+  "schema_version": 4,
+  "status": "exported",
+  "created": "2026-08-01T07:31:01Z",
+  "updated": "2026-08-01T07:34:10Z",
+  "targets": [
+    {
+      "id": "c1",
+      "kind": "announcement",
+      "text": "The harness family's model-call and fan-out timeouts are derived from measured error evidence \u2014 never chosen per file, never retried on a clock that already censored \u2014 and the orchestrator harness gains a bee-hive architecture: a cortex queen holding final authority over a saturation-sized swarm of workers coordinating through a bounded shared surface",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h1",
+      "kind": "honesty",
+      "text": "the shipped surface matches the announcement: budget-derived timeouts CI-enforced, and the bee-hive measured \u2014 B and P dialled against E/W/M/H \u2014 not merely designed; an unmeasured design does not count as shipped",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c2",
+      "kind": "requirement",
+      "text": "main ships `REQUEST_TIMEOUT = 300.0` in examples/worker_seam.py while its own CHANGELOG 0.10.0 records the derived raise to 1200.0 (amendment 1, deviation d4) \u2014 the raise exists only on branch `owa/t12` (commit 25a65b7); the timeout work must reconcile main with the changelog claim it already carries",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h2",
+      "kind": "honesty",
+      "text": "when this frame's work ships, main's `REQUEST_TIMEOUT` satisfies the c13 bound and equals what the CHANGELOG claims \u2014 verified by the c14 CI test reading the constant, not by prose",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c3",
+      "kind": "requirement",
+      "text": "`DEFAULT_FANOUT_TIMEOUT = 60.0` (examples/orchestrator_tools.py, unchanged on main and `owa/t12`) sits against the worker's measured p95 latency of 40.78s at width 14 on 1200-token completions; at series budgets a dispatched unit outruns it and is declared `fanout-unit-absent` \u2014 the same evidence-censoring shape amendment 1 fixed at the transport layer, waiting one layer up before any manager/hybrid cell dials",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h3",
+      "kind": "honesty",
+      "text": "before any manager/hybrid cell dials, the fan-out deadline is raised to its derived bound \u2014 or every `fanout-unit-absent` in committed results is re-examined as potential censoring and the outcome published",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c4",
+      "kind": "requirement",
+      "text": "timeout lengths are derived from measured evidence, not chosen per file: the amendment-1 rule (`max_tokens` / slowest measured tok/s, so the token budget binds instead of the clock) becomes the family-wide policy for the scattered constants \u2014 60s fan-out, 300s worker seam and batch wait, 600s muse-arms and devague-legs, 900s league-commander, 1800s h2h",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h4",
+      "kind": "honesty",
+      "text": "each harness's timeout cites the `max_tokens` and the measured rate it derives from, in committed config or a constant the CI test recomputes \u2014 a value with no citable inputs fails the test",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c6",
+      "kind": "boundary",
+      "text": "the running t12 series (worktree .worktrees.embodiment/t12, ladder mid-C2 with C1 recorded CEILING) is pre-registered; no timeout value or architecture changes mid-series except through the pre-registration's own amendment protocol plus a recorded deviation \u2014 the path amendment 1 already walked",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h13",
+      "kind": "honesty",
+      "text": "no commit on owa/t12 changes a timeout constant or arm set mid-series except as a dated, appended amendment plus a recorded deviation \u2014 verifiable from branch history",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c10",
+      "kind": "boundary",
+      "text": "the hive lives in examples/ and changes nothing under embodiment/; the worker role enters no reference-rig table without a supporting verdict \u2014 tests/test_governance.py pins `_WORKER_ROLE_HAS_SUPPORTING_VERDICT = False`",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h14",
+      "kind": "honesty",
+      "text": "tests/test_governance.py stays green throughout: no hive or drone work touches embodiment/ muse modules or promotes the worker role without a supporting verdict",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c11",
+      "kind": "boundary",
+      "text": "bounded termination survives the swarm: every hive worker runs under a bounded grant, every wait is finite, and a hung worker cannot park the queen's drive \u2014 the fan-out's own stated construction, inherited rather than reinvented",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h15",
+      "kind": "honesty",
+      "text": "every hive/B/P execution path carries the same structural termination assertion the fan-out has (AST or step-count bound), not only behavioural tests",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c13",
+      "kind": "requirement",
+      "text": "the timeout rule is #42's: `REQUEST_TIMEOUT >= max_tokens / slowest_measured_generation_rate` \u2014 derived from the budget, never a latency percentile, because the timeout censors the tail a percentile would be sized from; above the bound an over-long turn self-reports as `finish_reason == \"length\"`, below it the identical turn vanishes into a transport retry. The rate is cited per rig (21.5 tok/s slowest, pre-registration section 18), never guessed",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h5",
+      "kind": "honesty",
+      "text": "the bound is computed only from committed inputs (budget and cited rate) \u2014 never from an observed latency distribution, which the current timeout may already have censored",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c14",
+      "kind": "requirement",
+      "text": "the bound is enforced in CI: `test_timeout_bounds.py` walks the harnesses, recomputes `max_tokens` / RATE per file from committed inputs, and fails on any timeout below its bound \u2014 a timeout that drifts below the bound breaks CI rather than waiting for a series to notice (#42 proposed work 1)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h6",
+      "kind": "honesty",
+      "text": "`test_timeout_bounds.py` is proven able to fail: with any one constant mutated below its bound the test goes red \u2014 a test-of-the-test, per the M2/M3 discipline",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c15",
+      "kind": "requirement",
+      "text": "league_commander's committed records are re-examined before its figures are re-cited: at 1.21x it is the narrowest passing margin in #42's audit, and it produced the 2.4-4.4x hierarchy-cost figure this repo cites; `retries > 0` per call decides whether cut turns inflated cost and understated correctness \u2014 if clean, say so and the margin stands (#42 proposed work 2)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h7",
+      "kind": "honesty",
+      "text": "the re-exam reads committed records \u2014 `retries` per call and wall-clock against tokens/rate \u2014 and publishes the outcome either way: clean stands recorded, dirty triggers the same treatment C1-E got",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c16",
+      "kind": "requirement",
+      "text": "#42's audit covers six client timeouts but not the fan-out wait deadline: `DEFAULT_FANOUT_TIMEOUT = 60.0` bounds a whole unit drive (up to `max_steps` turns, each up to the unit's `max_tokens`), so its bound is the per-turn bound times the turn budget, not one turn's \u2014 below it, units land `fanout-unit-absent` and the fan-out layer censors exactly the way the transport layer did",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h8",
+      "kind": "honesty",
+      "text": "the fan-out bound multiplies the per-turn bound by the turn budget actually granted to the unit, and the derived value is asserted by the same CI test that guards client timeouts",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c17",
+      "kind": "requirement",
+      "text": "arm B \u2014 the Bee-Hive's core claim: the worker is a tool the cortex calls, never an agent \u2014 no loop, no turn, no goal, `transform(N things) -> N results`; the only arm that takes lobes' `worker.forbidden_responsibilities = [final_decision, security_decision]` literally, and it is measured against M and H before further investment in either",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h9",
+      "kind": "honesty",
+      "text": "arm B's worker calls carry no goal-shaped prompt: every call's schema is authored by the harness and its answer space enumerable \u2014 asserted structurally by schema inspection in hermetic tests, not by intent",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c18",
+      "kind": "requirement",
+      "text": "arm P \u2014 the cortex authors a unit-control policy as code once (one model call per episode), the policy plays at ~0ms per decision; graded by the machinery that already exists (`challenge_coding.py`'s workspace jail, adapted as k1.py was); three controls are mandatory \u2014 random policy, hand-written baseline, no-op \u2014 and escalation rate and call-acceptance are reported axes that never share a number with outcome",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h10",
+      "kind": "honesty",
+      "text": "P's three controls (random policy, hand-written baseline, no-op) are pre-registered before any measured dial, and escalation rate and call-acceptance are reported as separate axes from outcome in the committed results",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c20",
+      "kind": "requirement",
+      "text": "the caste vocabulary and its structural claim: every delegation is to an artifact the cortex authored \u2014 a worker-harness (code borrowing bounded worker intelligence for scoped typed questions) or a code-drone (the mind's strategy compiled, frozen at authoring time); nothing is delegated to a raw mind. Falsifiable prediction: the #32/#33 interface-failure class disappears because the cortex authors the schema it delegates across, measured as call-acceptance",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h11",
+      "kind": "honesty",
+      "text": "call-acceptance is measured per arm and the prediction is falsifiable both ways: a B arm showing #33-class refusal rates is published as refuting the delegate-to-authored-artifacts claim, not smoothed over",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c22",
+      "kind": "boundary",
+      "text": "the environment is the league lane \u2014 the grader is not ours (corrections.md section 2: four self-authored graders wrong in the flattering direction in one cycle), it is genuinely multi-unit so width is real, and the harnesses are committed; hard exclusion: no metric may be an optional field one arm happens to populate more often \u2014 the league-h2h lesson",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h16",
+      "kind": "honesty",
+      "text": "the pre-registration names its outcome metric and proves it is not an optional field \u2014 a metric any arm can decline to populate is rejected at registration time",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c23",
+      "kind": "requirement",
+      "text": "the drone skill: /drone create / evoke / list \u2014 a drone is a named, committed, legible artifact (.drones/<name>/ with manifest, drone.py, README), its one-line description is required at create, it is smoke-proven before save (well-shaped is not runnable \u2014 the K1 lesson), and list surfaces staleness by re-checking each drone's assumed surface; a drone whose assumptions fail refuses rather than reports",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h12",
+      "kind": "honesty",
+      "text": "`create` refuses to save a drone that has not passed a smoke invocation, and `list` runs each drone's assumed-surface check \u2014 both proven by tests before any drone is authored for real use",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c25",
+      "kind": "boundary",
+      "text": "drones ship opt-in and off until #44's experiment validates the tier \u2014 the standing rule's mirror image: an unmeasured behaviour does not ship as default either; and the execution-security model for model-written code is decided before a line is written \u2014 `shell-cli` owns the tool surface, and C2 means stating the threat model rather than letting a name imply a sandbox",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h17",
+      "kind": "honesty",
+      "text": "no default-on drone path ships: a fresh checkout with no explicit opt-in evokes nothing, asserted by a test",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c26",
+      "kind": "audience",
+      "text": "the operator running the rig; the arch-series experiment itself; and harness consumers \u2014 colleague and future hosts \u2014 who inherit the timeout rule everywhere and the drone skill if the tier validates",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h18",
+      "kind": "honesty",
+      "text": "the spec names all three audiences, and colleague inherits through the t19 findings post \u2014 never by a push into their repo",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c27",
+      "kind": "before_state",
+      "text": "seven per-file timeout constants, one of which already censored a completion-length distribution while recording `truncated: false`; a flat-favouring verdict measured entirely on the counsel/sequential axis with the width rung never reached; and no reuse of authored intelligence \u2014 every recurring task re-pays a full cortex turn (5,000-14,265 tokens, 400-730s)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h19",
+      "kind": "honesty",
+      "text": "every before-state figure stays cited to its measurement doc and is corrected there if superseded, never restated from memory",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c28",
+      "kind": "why_it_matters",
+      "text": "the rig is mis-loaded: the 27B cortex thinks at ~23 tok/s strictly sequentially while ~9x of measured worker concurrency and unbounded bot-code width sit unused; maximizing the models means putting each unit of work on the cheapest tier that holds quality \u2014 and the only axis where the unused capacity must win by construction (width) has no evidence either way",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h20",
+      "kind": "honesty",
+      "text": "the mis-load claim rests on the measured numbers (23 tok/s sequential cortex, ~9x worker concurrency, saturation near 8); if remeasurement moves them the claim is restated, not defended",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c29",
+      "kind": "after_state",
+      "text": "no timeout can censor evidence again \u2014 every client timeout and wait deadline is derived from its token budget and CI breaks on drift below the bound; the tier question has a measured dose-response curve (B0/B1/B2 sweep, P with its controls) instead of priors; and authored intelligence is reusable \u2014 an evoked drone repeats a recurring task for tens of worker tokens and zero cortex turns",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h21",
+      "kind": "honesty",
+      "text": "each after-state promise maps to a plan task with acceptance criteria \u2014 no promise reaches the spec without a coverage target",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c30",
+      "kind": "success_signal",
+      "text": "three signals, one per lane: `test_timeout_bounds.py` goes red on any timeout mutated below its derived bound; the width rung produces either measured separation or an honest CEILING/INCONCLUSIVE published either way; and a drone's second evocation completes its task with zero cortex turns, reporting call-acceptance as its own axis",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h22",
+      "kind": "honesty",
+      "text": "each signal is machine-checkable when it fires: a red CI run, a published verdict document, a drone evocation record showing zero cortex calls",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c34",
+      "kind": "requirement",
+      "text": "the harness family adopts SSE streaming for model calls (the operator's direction, 2026-08-01): with a stream, the client timeout becomes an inter-chunk idle bound orthogonal to generation length \u2014 no amount of thinking can hit the clock, and reasoning is visible as it arrives; the derived total bound (c13) stays as the outer backstop for dead transports",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h23",
+      "kind": "honesty",
+      "text": "verified in lobes source that the gateway relays SSE chunk-by-chunk, and the retry-semantics change is designed for: a stream that dies mid-body is never blindly re-run whole \u2014 partial thinking is kept where the record allows, and only a dead transport triggers the outer bound",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c36",
+      "kind": "requirement",
+      "text": "main is never red on its own bound: `test_timeout_bounds.py` and the raise of main's below-bound constant land together (one PR), or the test lands only after `owa/t12` merges \u2014 main's current 300.0 is 0.40x its bound, so the test alone would fail main's CI on arrival",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h24",
+      "kind": "honesty",
+      "text": "at every commit on main the bound test is green \u2014 proven by running it at the landing commit, not assumed from intent",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c37",
+      "kind": "requirement",
+      "text": "streaming preserves the metering contract: the SSE client requests `stream_options: {\"include_usage\": true}`, accumulates deltas, and reads `finish_reason` plus all four token counts from the terminal usage chunk \u2014 worker_seam.py:318 reads `usage` from the final payload today, and losing it would un-measure the rig; verified in lobes source that the gateway rewrites only `model` and relays the body verbatim, so the option survives the proxy",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h25",
+      "kind": "honesty",
+      "text": "a streamed call's committed record is field-identical to a non-streamed one (finish_reason + four token counts) \u2014 asserted by a test comparing record shapes, not by reading the code",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c38",
+      "kind": "requirement",
+      "text": "streaming bounds are two-phase, both derived: time-to-first-chunk gets a queue-aware bound (with `--max-num-seqs=2` a queued request legitimately receives nothing for up to a full neighbouring generation \u2014 a fixed 60s idle clock would kill it, the same censoring shape on a new clock), and the inter-chunk idle bound applies only after the first chunk arrives",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h26",
+      "kind": "honesty",
+      "text": "no phase of a streamed call is bounded by an underived constant, and queue wait is never charged as idle \u2014 provable from the client's bound derivation comments and a queued-request test",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c39",
+      "kind": "requirement",
+      "text": "the bound test's rate input is a committed, dated measurement config (date, n, model, condition \u2014 the arch-arms-sampling.json pattern), never a bare literal in the test; a rig change re-derives every bound by editing one cited file, and the re-derivation procedure is documented beside it",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h27",
+      "kind": "honesty",
+      "text": "no rate literal appears in test code; deleting the config fails the test with a message naming the missing measurement, not a silent default",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c41",
+      "kind": "requirement",
+      "text": "a died stream's record is distinguishable by field, never by inference: an explicit marker (e.g. `stream_died: true`) plus whatever partial content and reasoning arrived \u2014 the #37 lesson applied forward; a died stream and a deliberate short turn must never arrive at the record as the same object",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h28",
+      "kind": "honesty",
+      "text": "a provoked mid-stream death in tests produces a record a reader can distinguish from a completed turn by field value alone",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c43",
+      "kind": "requirement",
+      "text": "a scoped-call overhead pre-measurement runs before the B0/B1/B2 sweep fixes its call granularity: the ~9x effective concurrency was measured on 1200-token completions, and per-call prefill of repeated context is the unmeasured cost that could dominate tens-of-token answers \u2014 prompt-token accounting per call at realistic context sizes, the t3 pattern applied to B1",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h29",
+      "kind": "honesty",
+      "text": "the sweep's pre-registration cites the overhead measurement's numbers for its chosen granularity; no arm design cites the 9x figure for small calls without it",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c44",
+      "kind": "boundary",
+      "text": "the new series' pre-registration states its relationship to the running series' remaining rungs and t14's verdicts \u2014 extend, supersede, or wait \u2014 before any dial; if the old ladder reaches its own fan-out rung, the width rung reconciles with it rather than duplicating with drift",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h30",
+      "kind": "honesty",
+      "text": "the new pre-registration quotes t14's results doc by section, or states that it was registered before t14 existed and why that is sound",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c45",
+      "kind": "requirement",
+      "text": "every drone evocation records what actually ran: drone name, a content hash (or commit) of drone.py, the capability set used, and call-acceptance \u2014 including refused and failed runs \u2014 so a compromised, stale, or misbehaving drone is traceable from its records alone",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h31",
+      "kind": "honesty",
+      "text": "the evocation record exists for every evoke including failures and refusals \u2014 asserted by test; a run that leaves no record is itself a test failure",
+      "deferred": false,
+      "deferred_reason": ""
+    }
+  ],
+  "tasks": [
+    {
+      "id": "t1",
+      "summary": "Rate measurement config: the dated, committed rate input every bound derives from",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "a committed config in docs/live-test-results/ carries rate, date, n, model and concurrency condition; no rate literal appears in test code",
+        "deleting the config fails the bound test with a message naming the missing measurement, never a silent default",
+        "the re-derivation procedure (how to re-measure and update) is documented beside the config"
+      ],
+      "deps": [],
+      "covers": [
+        "c39",
+        "h27"
+      ],
+      "instruction": ""
+    },
+    {
+      "id": "t2",
+      "summary": "Bound test and constant raises, atomic: test_timeout_bounds.py plus main's below-bound constants raised in the same change",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "pure helper derive_timeout(max_tokens, rate_tok_s) lives in the test module; the test walks all seven constants recomputing need-vs-timeout from committed inputs",
+        "a test-of-the-test proves red: any one constant mutated below its bound fails",
+        "the fan-out deadline is asserted against per-turn bound x granted turn budget, and main's REQUEST_TIMEOUT and DEFAULT_FANOUT_TIMEOUT are at or above bound in the same commit \u2014 main is never red at any commit",
+        "each harness constant carries a module-level comment naming budget, rate and derivation"
+      ],
+      "deps": [
+        "t1"
+      ],
+      "covers": [
+        "c2",
+        "h2",
+        "c4",
+        "h4",
+        "c13",
+        "h5",
+        "c14",
+        "h6",
+        "c16",
+        "h8",
+        "c36",
+        "h24"
+      ],
+      "instruction": ""
+    },
+    {
+      "id": "t3",
+      "summary": "Running-series interlock: the fan-out deadline reaches owa/t12 via amendment 2 plus a recorded deviation before any manager/hybrid cell dials \u2014 or the censoring re-exam publishes",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "if M/H cells remain undialled on owa/t12, the deadline raise lands there as a dated appended amendment plus a devague deviation record, never an edit to registered sections",
+        "if any M/H cell already dialled at 60s, every fanout-unit-absent in its committed results is re-examined as potential censoring and the outcome published either way",
+        "branch history shows no mid-series constant change outside the amendment protocol"
+      ],
+      "deps": [],
+      "covers": [
+        "c3",
+        "h3",
+        "c6",
+        "h13"
+      ],
+      "instruction": ""
+    },
+    {
+      "id": "t4",
+      "summary": "league_commander records re-exam: does the 1.21x margin hold, or were its published figures censored",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "committed jsonl read for retries > 0 per call and wall clocks matching the 4x timeout + 3x 20s retry arithmetic",
+        "the verdict lands in corrections.md whichever way: clean stands recorded, dirty triggers the C1-E treatment for the 2.4-4.4x figures"
+      ],
+      "deps": [],
+      "covers": [
+        "c15",
+        "h7"
+      ],
+      "instruction": ""
+    },
+    {
+      "id": "t5",
+      "summary": "Streaming pilot in worker_seam, flag-gated: SSE client with two-phase derived bounds, metering parity, and died-stream records",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "the client requests stream_options include_usage and a streamed call's committed record is field-identical to a non-streamed one (finish_reason plus all four token counts), asserted by a record-shape test",
+        "bounds are two-phase and derived: queue-aware time-to-first-chunk, inter-chunk idle only after the first chunk; a queued-request test proves queue wait is never charged as idle",
+        "a provoked mid-stream death yields a record distinguishable by explicit field from a completed turn, with partial content and reasoning retained",
+        "streaming is off by default and scoped to the cortex lane; non-streamed behaviour byte-identical with the flag off"
+      ],
+      "deps": [
+        "t2"
+      ],
+      "covers": [
+        "c34",
+        "h23",
+        "c37",
+        "h25",
+        "c38",
+        "h26",
+        "c41",
+        "h28"
+      ],
+      "instruction": ""
+    },
+    {
+      "id": "t6",
+      "summary": "Arm B \u2014 the worker as a tool: harness-authored schemas, no goal-shaped prompts, structural termination",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "a hermetic test walks every declared worker call and asserts an enumerable answer space with no free-text goal field",
+        "arm B's execution paths carry the same structural termination assertion the fan-out has (AST or step-count bound)",
+        "the worker never holds a turn: no loop, no finish authority, verified against the dispatch surface"
+      ],
+      "deps": [],
+      "covers": [
+        "c17",
+        "h9",
+        "c11",
+        "h15"
+      ],
+      "instruction": ""
+    },
+    {
+      "id": "t7",
+      "summary": "Arm P \u2014 the compiled policy: authoring lane, workspace-jail grading, and the three controls as dialable arms",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "model-written policy source executes only inside the network-less workspace jail, proven hermetically",
+        "random policy, hand-written baseline and no-op exist as dialable control arms before any measured dial",
+        "escalation rate and call-acceptance are separate reported columns from outcome in the record shape"
+      ],
+      "deps": [
+        "t6"
+      ],
+      "covers": [
+        "c18",
+        "h10"
+      ],
+      "instruction": ""
+    },
+    {
+      "id": "t8",
+      "summary": "Worker tiny-call overhead pre-measurement: what a scoped call actually costs at realistic context sizes",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "N-call probe at widths 1 and 8 on Thor with realistic league-unit prompts and tens-of-token completions, committed like worker-throughput.md",
+        "prompt-token accounting per call is reported so the B1 sweep's granularity choice can cite it",
+        "runs only post-series or in a declared idle window, never contending with a live cell"
+      ],
+      "deps": [],
+      "covers": [
+        "c43",
+        "h29"
+      ],
+      "instruction": ""
+    },
+    {
+      "id": "t9",
+      "summary": "The new series pre-registration: width rung first, the B0/B1/B2 sweep, and its stated relationship to the still-climbing ladder",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "registered before any measured dial, provable from git history; constants recomputed by a pin test from committed inputs",
+        "the outcome metric is proven mandatory-populated for every arm \u2014 an optional field any arm can decline is rejected at registration",
+        "call-acceptance is a per-arm axis and a B refusal rate at the #33 level is pre-declared as refuting the delegate-to-authored-artifacts claim",
+        "the opening section quotes the old series' t14 results doc by section, or states it registered first and why that is sound",
+        "the sweep's call granularity cites t8's overhead numbers"
+      ],
+      "deps": [
+        "t6",
+        "t7",
+        "t8"
+      ],
+      "covers": [
+        "c20",
+        "h11",
+        "c22",
+        "h16",
+        "c44",
+        "h30"
+      ],
+      "instruction": ""
+    },
+    {
+      "id": "t10",
+      "summary": "Run the width rung and the sweep under the stop rule, artifacts committed as they land",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "the width rung runs first; every cell lands per-call records with finish_reason and token counts under the raised bounds",
+        "the mis-load numbers (rate, concurrency, saturation) are restated from this run's measurements wherever they moved",
+        "the stop rule is applied by code, not judgement, matching the old ladder's discipline"
+      ],
+      "deps": [
+        "t2",
+        "t9"
+      ],
+      "covers": [
+        "c28",
+        "h20"
+      ],
+      "instruction": ""
+    },
+    {
+      "id": "t11",
+      "summary": "Drone core: create / evoke / list verbs, the committed artifact shape, and the catalog surface",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "create refuses to save a drone that has not passed a smoke invocation, proven by test before any real drone is authored",
+        "a drone is a committed, legible artifact \u2014 manifest with required one-line description, drone source, README \u2014 and list renders name, description, age and status",
+        "every verb takes --json, results to stdout, diagnostics to stderr, and explain/catalog.py covers the surface (the rubric gate passes)"
+      ],
+      "deps": [],
+      "covers": [
+        "c23",
+        "h12"
+      ],
+      "instruction": ""
+    },
+    {
+      "id": "t12",
+      "summary": "Drone safeguards: opt-in-off, staleness refusal, the content-hashed audit trail, and no escalation",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "a fresh checkout with no explicit opt-in evokes nothing, asserted by test",
+        "list re-checks each drone's assumed surface and a drone whose assumptions fail refuses rather than reports",
+        "every evocation \u2014 including refusals and failures \u2014 records drone name, drone source content hash, capability set and call-acceptance; a run leaving no record is a test failure",
+        "an undecidable case returns 'I cannot' and the record shows the refusal; no escalation path exists in v1"
+      ],
+      "deps": [
+        "t11"
+      ],
+      "covers": [
+        "c25",
+        "h17",
+        "c45",
+        "h31"
+      ],
+      "instruction": ""
+    },
+    {
+      "id": "t13",
+      "summary": "Governance continuity: the guards hold through the cycle",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "tests/test_governance.py stays green on every PR: muse modules untouched, worker role in no reference-rig table without a supporting verdict",
+        "the drones-default-off guard joins the governance suite so the standing rule is enforced, not remembered"
+      ],
+      "deps": [],
+      "covers": [
+        "c10",
+        "h14"
+      ],
+      "instruction": ""
+    },
+    {
+      "id": "t14",
+      "summary": "Results, verdicts and the accountability map: every promise resolves to an artifact or an honest ABSENT",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "decision rules quoted beside every verdict; separation, CEILING or INCONCLUSIVE published either way",
+        "the c30 targets are checked by value: clock-discarded completions in the series (target 0), constants under the CI test (target 7 of 7), drone second-evocation cortex calls (target 0) and token fraction (target at most 5 percent)",
+        "every before-state figure cites its measurement doc, and every after-state promise maps to a shipped artifact path or is marked ABSENT",
+        "wall-clock and token tables per arm per rung, corrections section, README reproduce lines"
+      ],
+      "deps": [
+        "t10"
+      ],
+      "covers": [
+        "c1",
+        "h1",
+        "c27",
+        "h19",
+        "c29",
+        "h21",
+        "c30",
+        "h22"
+      ],
+      "instruction": ""
+    },
+    {
+      "id": "t15",
+      "summary": "Sibling closure: the findings travel \u2014 colleague, lobes-cli#168, and the deferred reasoning-delta probe",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "a communicate post to colleague carries the timeout rule and streaming adoption with measured evidence \u2014 they dial the same cortex; no push into their repo",
+        "lobes-cli#168 is followed up with the pilot's live findings, and the reasoning-delta question is answered by probe only after the series releases the cortex",
+        "negatives travel too: any refuted prediction is reported alongside the wins"
+      ],
+      "deps": [
+        "t14"
+      ],
+      "covers": [
+        "c26",
+        "h18"
+      ],
+      "instruction": ""
+    }
+  ],
+  "risks": [
+    {
+      "id": "r1",
+      "text": "the running series' timing gates t3 (amendment window), t8 (Thor idle) and t10 (ladder relationship); its remaining rungs and verdicts are not this plan's to schedule",
+      "kind": "unknown_nonblocking",
+      "task_id": "t8",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r2",
+      "text": "lobes-cli#168 is a sibling decision; streaming discovery falls back to explicit env/config if the advert does not land",
+      "kind": "unknown_nonblocking",
+      "task_id": "t5",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r3",
+      "text": "whether this rig's vLLM emits the SSE terminal usage chunk and reasoning deltas is unverifiable until the pilot's first live dial (park v4 carried plan-side)",
+      "kind": "unknown_nonblocking",
+      "task_id": "t5",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r4",
+      "text": "arch_arms' ARMS table is a shared surface: t6 and t7 are serialized by dependency; any third arm task must re-check file disjointness before joining a wave",
+      "kind": "unknown_nonblocking",
+      "task_id": "t7",
+      "resolved": false,
+      "resolution": ""
+    }
+  ]
+}
