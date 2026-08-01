@@ -431,10 +431,13 @@ class TestCommitSeam:
         artifact = map_render.write_turn_map(
             briefing, tmp_path, match_id="cm-1", turn=7, seat="blue-1"
         )
-        assert artifact.png_path.exists() and artifact.meta_path.exists()
+        assert artifact.png_path.exists()
+        assert artifact.meta_path.exists()
         assert artifact.png_path.read_bytes().startswith(map_render.PNG_SIGNATURE)
         meta = json.loads(artifact.meta_path.read_text(encoding="utf-8"))
-        assert meta["match_id"] == "cm-1" and meta["turn"] == 7 and meta["seat"] == "blue-1"
+        assert meta["match_id"] == "cm-1"
+        assert meta["turn"] == 7
+        assert meta["seat"] == "blue-1"
 
     def test_the_artifact_filename_identifies_match_turn_and_seat(self, tmp_path: Path) -> None:
         """A raw results dir with a hundred maps in it has to stay readable."""
@@ -537,7 +540,8 @@ class TestPngIsValid:
         names = [name for name, _ in map_render.iter_chunks(data)]
         assert names[0] == b"IHDR"
         assert names[-1] == b"IEND"
-        assert b"PLTE" in names and b"IDAT" in names
+        assert b"PLTE" in names
+        assert b"IDAT" in names
         assert names.index(b"PLTE") < names.index(b"IDAT")
 
     def test_every_chunk_crc_validates(self) -> None:
@@ -558,7 +562,8 @@ class TestPngIsValid:
         height = int.from_bytes(header[4:8], "big")
         assert (header[8], header[9]) == (8, 3), "expected 8-bit indexed colour"
         assert (header[10], header[11], header[12]) == (0, 0, 0)
-        assert width > 0 and height > 0
+        assert width > 0
+        assert height > 0
 
     def test_decode_round_trips_an_encoded_canvas(self) -> None:
         palette = ((0, 0, 0), (255, 255, 255), (10, 200, 30))
@@ -613,7 +618,8 @@ class TestNeverRaises:
         data = map_render.render_png(briefing)
         assert data.startswith(map_render.PNG_SIGNATURE)
         raster = map_render.decode_png(data)
-        assert raster.width > 0 and raster.height > 0
+        assert raster.width > 0
+        assert raster.height > 0
 
     def test_unrenderable_text_degrades_to_blanks_not_a_crash(self) -> None:
         briefing = json.loads(json.dumps(map_render.demo_briefings()["fog_scoped"]))
