@@ -2,7 +2,7 @@
   "plan_slug": "orchestrator-worker-architectures",
   "schema_version": 1,
   "created": "2026-07-31T14:13:02Z",
-  "updated": "2026-07-31T17:13:07Z",
+  "updated": "2026-08-01T03:56:55Z",
   "deviations": [
     {
       "id": "d1",
@@ -43,6 +43,16 @@
       "origin": "user",
       "status": "approved",
       "classification": "needs-follow-up"
+    },
+    {
+      "id": "d4",
+      "what": "REQUEST_TIMEOUT is raised 300s -> 1200s and cell C1-E is re-run in full at the new value",
+      "task_ref": "t12",
+      "reason": "the pre-registration pre-committed this raise in section 14 ('if timeouts appear at all, the timeout is raised and the write-up says so') and timeouts appeared on the first cell. C1-E measured a CONSTANT generation rate of 21.5-25.4 tok/s across calls spanning 175s to 1260s, and the exhausted call's wall clock matches the retry arithmetic to 0.4s, so the lane was free and the clock was the cause. 300s at 22.9 tok/s cuts every generation past ~6900 tokens, which censors the completion-length distribution and, on repetition 1, converted a working turn into a scored NO ANSWER on the correctness axis. New value derived as max_tokens 16000 / slowest measured 21.5 tok/s = 744s, set to 1200s. C1-E is re-run because a cell measured half at 300s and half at 1200s is not one cell; its four repetitions are published as the evidence for the amendment rather than deleted",
+      "affects": [],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable"
     }
   ]
 }
