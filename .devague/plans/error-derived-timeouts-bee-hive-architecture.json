@@ -5,7 +5,7 @@
   "schema_version": 4,
   "status": "exported",
   "created": "2026-08-01T07:31:01Z",
-  "updated": "2026-08-01T07:48:53Z",
+  "updated": "2026-08-01T07:58:43Z",
   "targets": [
     {
       "id": "c1",
@@ -488,7 +488,7 @@
         "c36",
         "h24"
       ],
-      "instruction": ""
+      "instruction": "t4 handed two findings this task MUST act on. (1) A constant fronts every model dialled through it: league_commander dials Gemma 4 31B on the same REQUEST_TIMEOUT, and at Gemma's measured 12.1 tok/s the bound is 1322 s \u2014 so 900 s is 0.68x, BELOW BOUND. Derive each bound at the SLOWEST model its constant fronts, not at the cortex rate, and raise league_commander accordingly. (2) The bound is generation-only; one measured call spent 179.3 s NOT generating (queue + prefill), so a full-budget completion behind that queue totals ~923 s. Either carry an explicit non-generation allowance in derive_timeout or state in the module comment that the bound excludes queue time and why that is acceptable."
     },
     {
       "id": "t3",
