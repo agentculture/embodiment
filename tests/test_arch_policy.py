@@ -313,7 +313,8 @@ class TestNoHostExecutionPrimitiveExists:
     def test_the_committed_control_sources_are_never_run_here_either(self) -> None:
         """A control's source is data too. It rides the identical jail path."""
         for source in ap.COMMITTED_SOURCES.values():
-            assert isinstance(source.text, str) and source.text.strip()
+            assert isinstance(source.text, str)
+            assert source.text.strip()
         assert not _execution_hits(HARNESS_PATH.read_text(encoding="utf-8"))
 
 
@@ -1049,8 +1050,9 @@ class TestConfigOnlyNoCodeDefaults:
         path = _write_config(
             tmp_path, lambda raw: raw["sampling"]["PN"]["senses"].update(temperature=0.9)
         )
+        config = ap.load_policy_config(path)
         with pytest.raises(ap.ConfigError, match="senses"):
-            ap.assert_senses_identical(ap.load_policy_config(path))
+            ap.assert_senses_identical(config)
 
 
 # ══════════════════════════════════════════════════════════════════════════════

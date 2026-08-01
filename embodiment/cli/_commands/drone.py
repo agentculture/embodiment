@@ -166,19 +166,18 @@ def drone_sections() -> list[dict[str, object]]:
     ]
 
 
-def cmd_drone_overview(args: argparse.Namespace) -> int:
+def cmd_drone_overview(args: argparse.Namespace) -> None:
     emit_overview(
         "embodiment drone",
         drone_sections(),
         json_mode=bool(getattr(args, "json", False)),
     )
-    return 0
 
 
 # ── create ──────────────────────────────────────────────────────────────────
 
 
-def cmd_drone_create(args: argparse.Namespace) -> int:
+def cmd_drone_create(args: argparse.Namespace) -> None:
     json_mode = bool(getattr(args, "json", False))
     drones_dir = _drones_dir(args)
     draft: Mapping[str, Any] = {}
@@ -233,7 +232,7 @@ def cmd_drone_create(args: argparse.Namespace) -> int:
     }
     if json_mode:
         emit_result(payload, json_mode=True)
-        return 0
+        return
     lines = [
         f"created drone: {created.name}",
         f"  does:    {created.description}",
@@ -247,7 +246,6 @@ def cmd_drone_create(args: argparse.Namespace) -> int:
         "note: this drone is model-written code that runs in-process with no "
         "sandbox — commit it and review it like any script (see its README.md)"
     )
-    return 0
 
 
 # ── evoke ───────────────────────────────────────────────────────────────────
@@ -284,7 +282,7 @@ _REFUSAL_HINTS = {
 }
 
 
-def cmd_drone_evoke(args: argparse.Namespace) -> int:
+def cmd_drone_evoke(args: argparse.Namespace) -> None:
     json_mode = bool(getattr(args, "json", False))
     drones_dir = _drones_dir(args)
     try:
@@ -356,7 +354,7 @@ def cmd_drone_evoke(args: argparse.Namespace) -> int:
             },
             json_mode=True,
         )
-        return 0
+        return
 
     lines = [
         f"drone: {evocation.name}",
@@ -376,13 +374,12 @@ def cmd_drone_evoke(args: argparse.Namespace) -> int:
         f"recorded: {evocation.ledger_path}",
     ]
     emit_result("\n".join(lines), json_mode=False)
-    return 0
 
 
 # ── list ────────────────────────────────────────────────────────────────────
 
 
-def cmd_drone_list(args: argparse.Namespace) -> int:
+def cmd_drone_list(args: argparse.Namespace) -> None:
     json_mode = bool(getattr(args, "json", False))
     drones_dir = _drones_dir(args)
     # The assumed-surface re-check runs HERE, at the moment you are choosing a
@@ -416,9 +413,8 @@ def cmd_drone_list(args: argparse.Namespace) -> int:
             },
             json_mode=True,
         )
-        return 0
+        return
     emit_result(drone_lib.render_catalog(records), json_mode=False)
-    return 0
 
 
 # ── registration ────────────────────────────────────────────────────────────
@@ -429,6 +425,17 @@ def _no_verb(args: argparse.Namespace) -> int:
     return cmd_drone_overview(args)
 
 
+#: The `--json` help string, kept identical to every other command module's
+#: (`whoami`, `doctor`, `overview`, `learn`, `explain`, `cli`) so the surface
+#: reads the same everywhere. Named here only because this module is the one
+#: that declares it three times; the text is deliberately not reworded.
+_JSON_HELP = "Emit structured JSON."
+
+
+def _add_json_flag(parser: argparse.ArgumentParser) -> None:
+    parser.add_argument("--json", action="store_true", help=_JSON_HELP)
+
+
 def _add_shared(parser: argparse.ArgumentParser) -> None:
     parser.add_argument(
         "--drones-dir",
@@ -437,7 +444,7 @@ def _add_shared(parser: argparse.ArgumentParser) -> None:
             f"or ${drone_lib.DRONES_DIR_ENV})."
         ),
     )
-    parser.add_argument("--json", action="store_true", help="Emit structured JSON.")
+    _add_json_flag(parser)
 
 
 def register(sub: argparse._SubParsersAction) -> None:
@@ -445,7 +452,7 @@ def register(sub: argparse._SubParsersAction) -> None:
         "drone",
         help="Author, run and discover drones (see 'embodiment drone overview').",
     )
-    p.add_argument("--json", action="store_true", help="Emit structured JSON.")
+    _add_json_flag(p)
     p.set_defaults(func=_no_verb, json=False)
     # `p` is a _CliArgumentParser (propagated by the top-level subparsers'
     # parser_class); propagate it again so verb-level parse errors route through
@@ -453,7 +460,7 @@ def register(sub: argparse._SubParsersAction) -> None:
     noun_sub = p.add_subparsers(dest="drone_command", parser_class=type(p))
 
     ov = noun_sub.add_parser("overview", help="Describe the drone surface and threat model.")
-    ov.add_argument("--json", action="store_true", help="Emit structured JSON.")
+    _add_json_flag(ov)
     ov.set_defaults(func=cmd_drone_overview)
 
     create = noun_sub.add_parser(

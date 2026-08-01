@@ -438,8 +438,9 @@ class TestTwoPhaseBounds:
         must NOT produce a ``stream_died`` record, because nothing died: a
         request that was never scheduled has no partial turn to preserve.
         """
+        stall = TimeoutError("timed out")
         with pytest.raises(TimeoutError):
-            read([TimeoutError("timed out")])
+            read([stall])
 
     def test_a_stall_before_the_first_chunk_is_retried_by_the_seam(self) -> None:
         seam, seen = stream_seam([TimeoutError("timed out")])

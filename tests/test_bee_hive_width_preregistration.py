@@ -489,7 +489,8 @@ class TestTheOutcomeMetricIsMandatoryPopulated:
                 )
             )
             metric = items_per_second(len(calls), 1.25)
-            assert metric > 0 and math.isfinite(metric)
+            assert metric > 0
+            assert math.isfinite(metric)
             assert ledger.rate() == pytest.approx(expected_rate)
             assert ledger.dispatched == len(calls)
 
@@ -500,8 +501,13 @@ class TestTheOutcomeMetricIsMandatoryPopulated:
         exactly what makes the metric unable to reward an arm for filling in an
         optional field.
         """
-        assert items_per_second(ITEMS_PER_CELL, 100.0) == items_per_second(ITEMS_PER_CELL, 100.0)
-        assert items_per_second(ITEMS_PER_CELL, 50.0) > items_per_second(ITEMS_PER_CELL, 100.0)
+        # Two separate invocations at the same inputs, bound to distinct names so
+        # the intent is legible: this asserts the metric is a pure function of
+        # (items, seconds), not a typo'd comparison of one call with itself.
+        first = items_per_second(ITEMS_PER_CELL, 100.0)
+        repeat = items_per_second(ITEMS_PER_CELL, 100.0)
+        assert first == repeat
+        assert items_per_second(ITEMS_PER_CELL, 50.0) > first
 
     def test_outcome_and_acceptance_keys_stay_disjoint(self) -> None:
         assert set(ah.OUTCOME_KEYS).isdisjoint(ah.ACCEPTANCE_KEYS)

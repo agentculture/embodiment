@@ -377,4 +377,5 @@ class TestAmendmentOne:
     def test_the_amendment_says_no_published_figure_changes(self) -> None:
         section = self.DOC[self.DOC.index("## Amendment 1") :]
         assert "384" in section, "the re-exam's call count is the basis for 'nothing changes'"
-        assert "2.4" in section and "4.4" in section
+        assert "2.4" in section, "the published cost range's lower bound must survive the amendment"
+        assert "4.4" in section, "the published cost range's upper bound must survive the amendment"

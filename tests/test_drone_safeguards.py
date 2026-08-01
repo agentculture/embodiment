@@ -66,7 +66,7 @@ MARKER_DRAFT: dict[str, Any] = {
 }
 
 
-@pytest.fixture()
+@pytest.fixture
 def repo(tmp_path: Path) -> Path:
     """A throwaway repo root whose surface satisfies :data:`MARKER_DRAFT`."""
     root = tmp_path / "repo"
@@ -75,12 +75,12 @@ def repo(tmp_path: Path) -> Path:
     return root
 
 
-@pytest.fixture()
+@pytest.fixture
 def drones_dir(repo: Path) -> Path:
     return repo / drone_lib.DRONES_DIRNAME
 
 
-@pytest.fixture()
+@pytest.fixture
 def marker(drones_dir: Path, repo: Path) -> Path:
     """A saved marker drone, with the trace its own smoke run left cleaned up."""
     author(
@@ -366,7 +366,13 @@ class TestTheSurfaceCheckItself:
         report = drone_lib.check_surface(drone, root=repo)
 
         by_reason = [check.reason for check in report.checks]
-        assert "could not be evaluated" in by_reason[0]
+        # The empty glob used to arrive here as a ValueError out of `root.glob`
+        # and report "could not be evaluated" — the accident rather than the
+        # cause. It is now refused up front with a reason that says what is
+        # actually wrong, matching the text-less `contains` case below it. The
+        # claim this test makes is unchanged: an unrunnable check reports
+        # itself, the others still run, and `held` stays None.
+        assert "declares no glob pattern" in by_reason[0]
         assert "no non-empty 'text'" in by_reason[1]
         assert "cannot be read any more" in by_reason[2]
         # The unreadable target is a refutation, not an unknown: the drone said
@@ -377,12 +383,13 @@ class TestTheSurfaceCheckItself:
     def test_a_contains_assumption_with_no_text_is_refused_at_create(
         self, drones_dir: Path
     ) -> None:
+        draft = surface_draft({"kind": "contains", "value": "embodiment"})
         with pytest.raises(drone_lib.DroneError) as exc:
             author(
                 drones_dir,
                 MARKER_SOURCE,
                 name="marker",
-                draft=surface_draft({"kind": "contains", "value": "embodiment"}),
+                draft=draft,
                 description="d",
             )
         assert "no non-blank 'text'" in exc.value.message
@@ -514,7 +521,8 @@ def assert_left_a_record(record: drone_lib.Evocation, drones_dir: Path) -> None:
     assert written["name"] == record.name
     assert len(written["source_sha256"]) == 64, "no content hash of the drone source"
     assert isinstance(written["capabilities"], list)
-    assert "call_acceptance" in written and "calls_accepted" in written
+    assert "call_acceptance" in written
+    assert "calls_accepted" in written
     assert written["outcome"] == record.outcome
 
 

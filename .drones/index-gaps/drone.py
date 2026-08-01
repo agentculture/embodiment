@@ -2,7 +2,11 @@ import os
 import re
 
 def run(request):
-    repo = request.args.get("repo", "")
+    # request.root is the checkout the harness resolved; args["repo"] is only an
+    # override. Reading args alone defaulted to "" -> the process CWD, so the
+    # same drone answered about whichever tree you happened to be standing in
+    # while its surface check reported "ok" against the real root.
+    repo = request.args.get("repo") or str(request.root)
     target = os.path.join(repo, "docs", "live-test-results")
     readme_path = os.path.join(target, "README.md")
 

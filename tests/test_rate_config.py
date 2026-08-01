@@ -108,7 +108,8 @@ class TestCommittedConfig:
             assert rate.mean_tok_s >= rate.slowest_tok_s
             assert rate.fastest_tok_s >= rate.mean_tok_s
             # A date, not a vibe: parseable ISO, so "recently" can never stand in.
-            assert len(rate.measured_on) == 10 and rate.measured_on.count("-") == 2
+            assert len(rate.measured_on) == 10, "an ISO date is exactly 10 characters"
+            assert rate.measured_on.count("-") == 2, "an ISO date is YYYY-MM-DD"
             assert rate.n_calls > 0
             assert 0 < rate.n_rate_bearing <= rate.n_calls
             assert rate.model
@@ -318,7 +319,9 @@ class TestAbsentConfigRefuses:
             config.rate("embedder")
         message = str(caught.value)
         assert "embedder" in message
-        assert "cortex" in message and "worker" in message and "muse" in message
+        assert "cortex" in message
+        assert "worker" in message
+        assert "muse" in message
 
     def test_a_declared_but_unmeasured_role_refuses_and_says_what_would_fix_it(self) -> None:
         """A gap that is *recorded* still refuses — it just refuses informatively.
@@ -545,8 +548,11 @@ class TestNonGenerationAllowance:
         allowance = rc.load_rate_config().non_generation_allowance
         assert allowance.seconds > 0
         assert len(allowance.measured_on) == 10
-        assert allowance.measured_role and allowance.measured_model
-        assert allowance.why and allowance.remeasure_when and allowance.sources
+        assert allowance.measured_role
+        assert allowance.measured_model
+        assert allowance.why
+        assert allowance.remeasure_when
+        assert allowance.sources
 
     def test_it_reproduces_from_the_records_it_cites(self) -> None:
         """The largest wall clock minus generation over the cited series.

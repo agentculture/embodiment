@@ -318,15 +318,18 @@ class TestResidualSeconds:
 
         # ...and the same 0.35s on a 15-token scoped completion is most of it.
         _m, _r, scoped_fraction = wso.residual_seconds(15 / wso.REFERENCE_DECODE_TOK_S + 0.35, 15)
-        assert scoped_fraction is not None and scoped_fraction > 0.64
+        assert scoped_fraction is not None
+        assert scoped_fraction > 0.64
 
     def test_a_negative_residual_is_reported_not_clamped(self) -> None:
         # Faster than the reference rate. Flooring this at zero would turn "the
         # reference rate is wrong for this regime" into "there is no overhead".
         modelled, residual, fraction = wso.residual_seconds(0.1, 40)
         assert modelled == pytest.approx(40 / 76.43, rel=1e-6)
-        assert residual is not None and residual < 0
-        assert fraction is not None and fraction < 0
+        assert residual is not None
+        assert residual < 0
+        assert fraction is not None
+        assert fraction < 0
 
     @pytest.mark.parametrize("latency,completion", [(None, 40), (1.0, None), (None, None)])
     def test_a_missing_input_yields_no_residual_rather_than_a_fabricated_one(
@@ -339,7 +342,8 @@ class TestResidualSeconds:
 
     def test_zero_latency_yields_no_fraction(self) -> None:
         modelled, residual, fraction = wso.residual_seconds(0.0, 40)
-        assert modelled is not None and residual is not None
+        assert modelled is not None
+        assert residual is not None
         assert fraction is None
 
     def test_the_reference_rate_is_the_committed_width1_figure(self) -> None:
@@ -437,7 +441,8 @@ class TestOneCallNeverRaises:
         monkeypatch.setattr(ws.WorkerSeam, "_post", always_fails)
         record = wso._one_call(_config(), _spec(), sleep=lambda _s: None)
         assert record.ok is False
-        assert record.error is not None and "WorkerTransportError" in record.error
+        assert record.error is not None
+        assert "WorkerTransportError" in record.error
         assert record.retries == ws.MAX_TRANSPORT_RETRIES + 1
         assert record.residual_seconds is None, "a failed call has no residual to report"
 
@@ -456,7 +461,8 @@ class TestOneCallNeverRaises:
     def test_an_unknown_thinking_mode_is_a_recorded_failure_not_a_silent_no_op(self) -> None:
         record = wso._one_call(_config(), _spec(thinking="maybe"))
         assert record.ok is False
-        assert record.error is not None and "unknown thinking mode" in record.error
+        assert record.error is not None
+        assert "unknown thinking mode" in record.error
 
 
 # ── criterion 6/7: the batch really is concurrent, and bounded ───────────────
@@ -851,7 +857,8 @@ class TestRunProbe:
     def test_the_warmup_is_exactly_one_call_and_is_marked(self) -> None:
         call_fn, seen = self._fake()
         result = wso.run_probe(_config(), cells=wso.CELLS[:1], call_fn=call_fn)
-        assert result.warmup is not None and result.warmup.warmup is True
+        assert result.warmup is not None
+        assert result.warmup.warmup is True
         assert sum(1 for spec in seen if spec.warmup) == 1
         assert result.warmup not in result.cells[0].records
 
@@ -990,7 +997,8 @@ class TestRetryContamination:
         clean = wso.without_retry_batches(self._run(1)).summary()
         assert dirty.seconds_per_call_wallclock == pytest.approx(23.0 / 6)
         assert clean.seconds_per_call_wallclock == pytest.approx(2.0 / 4)
-        assert clean.calls_per_second is not None and dirty.calls_per_second is not None
+        assert clean.calls_per_second is not None
+        assert dirty.calls_per_second is not None
         assert clean.calls_per_second > dirty.calls_per_second
 
     def test_a_clean_run_is_returned_unchanged(self) -> None:
@@ -1101,7 +1109,8 @@ class TestRebuildFromArtifacts:
         summary_path.write_text(json.dumps(original.to_summary_dict()), encoding="utf-8")
 
         rebuilt = wso.rebuild_from_artifacts(records_path, summary_path)
-        assert rebuilt.warmup is not None and rebuilt.warmup.warmup is True
+        assert rebuilt.warmup is not None
+        assert rebuilt.warmup.warmup is True
         assert all(not r.warmup for run in rebuilt.cells for r in run.records)
 
     def test_a_record_the_summary_does_not_describe_refuses_rather_than_vanishes(

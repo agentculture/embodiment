@@ -63,7 +63,7 @@ DESCRIPTION = "maps imports for a package, flags cycles"
 ENABLED = drone_lib.DroneOptIn(enabled=True, source="explicit", detail="test opt-in")
 
 
-@pytest.fixture()
+@pytest.fixture
 def drones_dir(tmp_path: Path) -> Path:
     root = tmp_path / "repo"
     root.mkdir()
@@ -831,7 +831,7 @@ class TestGitCommit:
 # ── the CLI surface ─────────────────────────────────────────────────────────
 
 
-@pytest.fixture()
+@pytest.fixture
 def cli_drones(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.delenv(drone_lib.DRONES_DIR_ENV, raising=False)
     root = tmp_path / "repo"
@@ -840,7 +840,7 @@ def cli_drones(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return root / drone_lib.DRONES_DIRNAME
 
 
-@pytest.fixture()
+@pytest.fixture
 def drones_on(monkeypatch: pytest.MonkeyPatch) -> None:
     """Turn drones on for one test, the way an operator would.
 
@@ -872,7 +872,7 @@ def _create_argv(cli_drones: Path, source: Path, manifest: Path, name: str = "im
     ]
 
 
-@pytest.fixture()
+@pytest.fixture
 def staged(tmp_path: Path) -> tuple[Path, Path]:
     source = tmp_path / "drone.py"
     source.write_text(GOOD_SOURCE, encoding="utf-8")

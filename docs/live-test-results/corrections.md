@@ -857,3 +857,131 @@ it, and the prose asserted its absence anyway.
 still be checked against the records of any run it is claimed to affect. Source
 tells you what one code path does; the run's records tell you which path ran.
 Here they disagreed, and the records were right.
+
+---
+
+## 13. The drone tier shipped a surface check that read outside the repo — and a drone that answered about the wrong tree
+
+**Found by automated review on [PR #49](https://github.com/agentculture/embodiment/pull/49),
+then verified adversarially rather than taken at face value.** Four findings were
+filed; **two were real, one was real-but-overstated, and one was a false positive
+refuted by measurement.** All four are recorded, because a triage that only lists
+the confirmed ones teaches the wrong lesson about automated review.
+
+### 13.1 The `glob` surface kind bypassed its own containment guard — REAL
+
+`_resolve_under` exists for one stated reason, in its own docstring:
+
+> Manifests are model-written, so an ``assumed_surface`` entry of ``/etc`` or
+> ``../../secrets`` is a thing that can happen.
+
+`path` and `contains` routed through it. **`glob` did not** — it called
+`root.glob(value)` and returned before containment was ever applied. So a
+manifest declaring `{"kind": "glob", "value": "../*.pem"}` got a confident
+`held: true` **because a file outside the repository existed**.
+
+The blast radius is worth stating precisely rather than inflating: it is an
+**existence oracle, one bit per manifest entry**. `SurfaceCheck` stores the
+*pattern*, never the matched path, so no filename is echoed back and no content
+is read — content reading lives in the `contains` branch, which *was* contained.
+
+What makes it worth a security label is **where it runs**. `check_surface` is
+called by `drone list`, which is gated by nothing: not
+`$EMBODIMENT_DRONES_ENABLED`, not `--stale-ok`, and it never executes
+`drone.py`. `list`'s whole design claim is that it makes a drone's state visible
+*without running it*. So this was the one place in the tier where **a manifest
+alone, with the executor off, reached the filesystem** — a small capability the
+stated threat model does not grant, and therefore not covered by "runs
+model-written Python in-process with no sandbox".
+
+**And it broke `c45`, which nobody had noticed.** `Path.glob` raises
+**`NotImplementedError`** on an absolute pattern. The branch caught
+`(OSError, ValueError)`. So `{"kind": "glob", "value": "/etc/pass*"}` escaped
+`check_surface`'s never-raise promise, escaped `invoke`, and the run left **no
+ledger record at all** — the audit trail deleted for its own evocation by a
+manifest string. That is the property the entire tier's safety story rests on.
+
+Fixed with containment applied **twice**: the pattern is refused structurally
+before it is walked (so an escaping pattern never costs a traversal), and each
+match is re-checked with `_resolve_under` after (so an in-repo symlink cannot
+launder an escape back in). The `except` widened to `Exception`, deliberately,
+as second line of defence. Pinned by `tests/test_drone_surface_containment.py`,
+including a **test-of-the-test** that the secret really is reachable without the
+guard — otherwise every case would pass against a threat that was not there.
+
+### 13.2 The shipped drone answered about whichever tree you were standing in — REAL
+
+`.drones/index-gaps/drone.py` read `request.args.get("repo", "")` and never
+touched `request.root`, so with no `--arg repo=…` every path resolved against
+the **process CWD**. Demonstrated with the same drone, the same `root`, and only
+the CWD changed:
+
+| CWD | surface | answer |
+|---|---|---|
+| the checkout | `ok`, 2 assumptions hold | "Found 2 unlinked" |
+| a sibling worktree | `ok`, 2 assumptions hold | "Found 6 unlinked" |
+| `/tmp` | `ok`, 2 assumptions hold | `cannot: README.md not found` |
+
+The middle row is the sharp one. The harness verified the surface **under the
+main checkout** and printed `surface: ok` on the same record where the drone
+answered about a **different tree**. Outcome `answered`, exit 0.
+
+This is `check_surface`'s stated failure class reached from the other side: the
+check is right, and the drone is looking somewhere else. Fixed in the drone
+(`request.args.get("repo") or str(request.root)`); the manifest's
+`source_sha256` was re-derived, so the artifact measured in
+[`drone-economics.md`](drone-economics.md) now carries a different content hash
+than the run recorded there. The measured numbers are unaffected — that run
+passed `repo` explicitly — but the hash moved and saying so here is the point of
+having a hash.
+
+### 13.3 CLI root not validated — REAL BUT OVERSTATED
+
+The report said an unusual `--drones-dir` would make the drone *run* against an
+unintended root and *possibly write markers outside the checkout*. Checking it:
+
+- **"the drone runs"** — usually it does not. A wrong root makes `path`/`contains`
+  checks fail, so the staleness guard refuses **before a byte executes**. This
+  fails *closed*. The genuine residual is narrower: an `assumed_surface` of `[]`
+  is valid, reports `unverifiable` rather than `stale`, and therefore runs.
+- **"writing markers outside the checkout"** — **not supported.** `invoke` derives
+  the ledger from `drone.home.parent`, never from `root`. Confirmed by directory
+  listing: the only file written was `<drones-dir>/.evocations.jsonl`.
+
+Left as filed rather than fixed: the real cost is a *misleading* refusal, where
+`stale` names the drone as the problem when the root is.
+
+### 13.4 Ledger writes not serialized — FALSE POSITIVE
+
+The report said concurrent evocations could interleave into garbled lines.
+Measured instead of argued. `append_evocation` does one `json.dumps` and one
+`write`, in `"a"` mode, so `O_APPEND` is set:
+
+| processes | records | avg record | torn lines |
+|---:|---:|---:|---:|
+| 8 | 3,200 | 620 B | **0** |
+| 8 | 1,600 | 6.6 KB | **0** |
+| 12 | 1,200 | 60 KB | **0** |
+
+`strace` showed exactly **one** `write(2)` per record at every payload size from
+1 KB to 100 KB — Python's buffered writer hands an over-sized payload to the raw
+layer whole rather than chunking it. And the report's own framing pointed at the
+wrong invariant: `PIPE_BUF` bounds atomicity for **pipes**, not regular files,
+where the guarantee comes from the kernel's inode lock and is size-independent.
+Real records are 841–1,222 bytes.
+
+Adding `flock` here would be cargo-cult locking against a race the platform
+already prevents. **Two narrow residuals recorded so they are not rediscovered
+as this finding:** `O_APPEND` is not atomic over NFS (nothing here ships that
+way), and a partial write followed by `ENOSPC` leaves a truncated line that
+`read_ledger` then **discards silently** — which needs no concurrency at all,
+and is a different and better finding than the one filed.
+
+### The lesson
+
+**Verify an automated finding against the running code before acting on it, and
+report the refutations as loudly as the confirmations.** Two of these four would
+have produced changes this codebase did not need — one of them a lock. The one
+that mattered most was also the one the report *under*-stated: it named the
+traversal and missed that the same defect broke the never-raise contract and the
+audit trail with it.

@@ -44,7 +44,8 @@ STEMS = ("league-commander", "league-commander-frontier")
 def _load_reexam() -> Any:
     """Import the hyphenated analysis script by path, the way an operator runs it."""
     spec = importlib.util.spec_from_file_location("league_commander_reexam", REEXAM_PATH)
-    assert spec is not None and spec.loader is not None
+    assert spec is not None
+    assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     # Registered before exec: the module defines a dataclass, and `@dataclass` resolves
     # string annotations through `sys.modules[cls.__module__]`. Skip this and the very

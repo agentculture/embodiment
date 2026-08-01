@@ -589,8 +589,9 @@ class TestHiveTerminates:
         def zero(raw: dict[str, Any]) -> None:
             raw["dispatch"]["batch_timeout_seconds"] = 0
 
+        path = _write_config(tmp_path, zero)
         with pytest.raises(ah.ConfigError):
-            ah.load_hive_config(_write_config(tmp_path, zero))
+            ah.load_hive_config(path)
 
     def test_the_pool_is_shut_down_exactly_once_without_waiting(self) -> None:
         calls = _calls_named(_tree(), "shutdown")
@@ -1145,8 +1146,9 @@ class TestScopeSizeIsConfigurable:
         def bogus(raw: dict[str, Any]) -> None:
             raw["hive"]["B1"]["grain"] = "atomic"
 
+        path = _write_config(tmp_path, bogus)
         with pytest.raises(ah.ConfigError) as caught:
-            ah.load_hive_config(_write_config(tmp_path, bogus))
+            ah.load_hive_config(path)
         assert "atomic" in str(caught.value)
 
     def test_the_grain_reaches_the_drive_and_is_recorded(self, tmp_path: Path) -> None:
@@ -1274,8 +1276,9 @@ class TestConfigOnlyNoCodeDefaults:
         def drop(raw: dict[str, Any]) -> None:
             del raw["sampling"]["B1"]["worker"]["temperature"]
 
+        path = _write_config(tmp_path, drop)
         with pytest.raises(ah.ConfigError) as caught:
-            ah.load_hive_config(_write_config(tmp_path, drop))
+            ah.load_hive_config(path)
         assert "temperature" in str(caught.value)
         assert "B1" in str(caught.value)
         assert "worker" in str(caught.value)
@@ -1284,24 +1287,27 @@ class TestConfigOnlyNoCodeDefaults:
         def drop(raw: dict[str, Any]) -> None:
             del raw["budgets"]["B0"]["max_scoped_calls"]
 
+        path = _write_config(tmp_path, drop)
         with pytest.raises(ah.ConfigError) as caught:
-            ah.load_hive_config(_write_config(tmp_path, drop))
+            ah.load_hive_config(path)
         assert "max_scoped_calls" in str(caught.value)
 
     def test_a_missing_hive_cell_raises(self, tmp_path: Path) -> None:
         def drop(raw: dict[str, Any]) -> None:
             del raw["hive"]["B1"]["max_concurrency"]
 
+        path = _write_config(tmp_path, drop)
         with pytest.raises(ah.ConfigError) as caught:
-            ah.load_hive_config(_write_config(tmp_path, drop))
+            ah.load_hive_config(path)
         assert "max_concurrency" in str(caught.value)
 
     def test_a_question_not_in_the_catalog_is_refused_at_load(self, tmp_path: Path) -> None:
         def invent(raw: dict[str, Any]) -> None:
             raw["hive"]["B1"]["questions"] = ["do_the_thing"]
 
+        path = _write_config(tmp_path, invent)
         with pytest.raises(ah.ConfigError) as caught:
-            ah.load_hive_config(_write_config(tmp_path, invent))
+            ah.load_hive_config(path)
         assert "do_the_thing" in str(caught.value)
 
     def test_no_sampling_or_budget_default_exists_in_the_module(self) -> None:
@@ -1372,7 +1378,11 @@ class TestTheHarnessRuns:
         assert "whatever" in str(caught.value)
 
     def test_the_demo_source_is_deterministic(self) -> None:
-        assert ah.demo_items(6) == ah.demo_items(6)
+        # Two separate invocations bound to distinct names: the claim is that a
+        # second call reproduces the first, not that one call equals itself.
+        first = ah.demo_items(6)
+        second = ah.demo_items(6)
+        assert first == second
         assert "import random" not in SOURCE.read_text(encoding="utf-8")
 
     def test_the_module_changes_nothing_under_embodiment(self) -> None:
@@ -1467,7 +1477,9 @@ class TestTheScopedLaneDoesNotStream:
     deciding to change it.
     """
 
-    def test_the_scoped_seam_is_built_with_streaming_off(self) -> None:
+    def test_the_scoped_seam_is_built_with_streaming_off(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         import examples.worker_seam as ws
 
         built: list[dict] = []
@@ -1478,23 +1490,20 @@ class TestTheScopedLaneDoesNotStream:
                 built.append(kwargs)
                 super().__init__(*args, **kwargs)
 
-        ah.ws.WorkerSeam = Recording  # type: ignore[misc]
-        try:
-            factory = ah.build_worker_factory(
-                dial=aa.Dial(role="worker", model="m", base_url="http://x/v1", api_key="k"),
-                sampling=aa.Sampling(temperature=0.3, thinking="off", max_tokens=256),
+        monkeypatch.setattr(ah.ws, "WorkerSeam", Recording)
+        factory = ah.build_worker_factory(
+            dial=aa.Dial(role="worker", model="m", base_url="http://x/v1", api_key="k"),
+            sampling=aa.Sampling(temperature=0.3, thinking="off", max_tokens=256),
+        )
+        factory(
+            ah.ScopedCall(
+                id="s1",
+                question="looks_risky",
+                item_ids=("i1",),
+                prompt="p",
+                spaces=(("yes", "no", "unclear"),),
             )
-            factory(
-                ah.ScopedCall(
-                    id="s1",
-                    question="looks_risky",
-                    item_ids=("i1",),
-                    prompt="p",
-                    spaces=(("yes", "no", "unclear"),),
-                )
-            )
-        finally:
-            ah.ws.WorkerSeam = real_seam  # type: ignore[misc]
+        )
 
         assert built, "the factory did not construct a WorkerSeam"
         assert built[0].get("stream") is False, (

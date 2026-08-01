@@ -111,7 +111,7 @@ import traceback
 import types
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, Callable, Mapping, Optional, Sequence, Union
 
 __all__ = [
@@ -738,6 +738,25 @@ def _resolve_under(root: Path, value: str) -> Optional[Path]:
     return None
 
 
+def _glob_stays_under(pattern: str) -> bool:
+    """Whether *pattern* can only match inside the root it is globbed from.
+
+    A glob pattern cannot be ``resolve()``-d the way a plain path can — the
+    wildcards have no filesystem meaning until they are walked — so containment
+    is decided structurally instead: an absolute pattern, or one carrying a
+    ``..`` component, is refused before anything is walked.
+
+    Deliberately conservative. A pattern like ``docs/../docs/*.md`` stays inside
+    the root and is still refused, because the cost of that false negative is a
+    manifest entry reported ``unverified`` (which is what this module already
+    does for any assumption it cannot check), while the cost of a false positive
+    is a surface check reading outside the repo.
+    """
+    if PurePosixPath(pattern).is_absolute() or Path(pattern).is_absolute():
+        return False
+    return ".." not in PurePosixPath(pattern).parts
+
+
 def _check_entry(entry: Mapping[str, Any], root: Path) -> SurfaceCheck:
     kind = str(entry.get("kind", ""))
     value = str(entry.get("value", ""))
@@ -752,9 +771,50 @@ def _check_entry(entry: Mapping[str, Any], root: Path) -> SurfaceCheck:
             ),
         )
     if kind == "glob":
+        # The other two kinds route through _resolve_under; this one used to
+        # skip it and call root.glob() directly, so `../../*.pem` walked out of
+        # the repo the same way _resolve_under's own docstring says a manifest
+        # will try to. Containment is applied twice on purpose: the pattern is
+        # rejected before it is walked (so an escaping pattern never costs a
+        # traversal), and each match is re-checked after (so a symlink pointing
+        # out of the root cannot launder one back in).
+        if not value:
+            # Its own reason rather than the containment one: an empty pattern
+            # is not an escape attempt, and saying so would be a false
+            # explanation. Phrased like the text-less `contains` case below,
+            # because it is the same situation — the entry declares nothing to
+            # check. It used to arrive here as a ValueError out of `root.glob`,
+            # which reported the accident rather than the cause.
+            return SurfaceCheck(
+                kind, value, None, "declares no glob pattern, so nothing was checked"
+            )
+        if not _glob_stays_under(value):
+            return SurfaceCheck(
+                kind,
+                value,
+                None,
+                "resolves outside the root, so this check was not run",
+            )
         try:
-            match = next(iter(root.glob(value)), None)
-        except (OSError, ValueError) as exc:
+            match = next(
+                (
+                    found
+                    for found in root.glob(value)
+                    if _resolve_under(root, str(found)) is not None
+                ),
+                None,
+            )
+        # Broad by intent, and load-bearing rather than defensive habit. This
+        # ran `(OSError, ValueError)`, and `Path.glob` raises
+        # **NotImplementedError** on an absolute pattern — which escaped, past
+        # `check_surface`'s never-raise promise, out through `invoke`, which
+        # then produced NO ledger record at all. That is `c45` ("every path
+        # produces exactly one Evocation and appends it") broken by a manifest
+        # string. The structural guard above now rejects absolute patterns
+        # before they get here, so this is the second line of defence: whatever
+        # a future glob implementation raises becomes a reported unverified
+        # check, never an escaped exception.
+        except Exception as exc:  # noqa: BLE001
             return SurfaceCheck(kind, value, None, f"glob could not be evaluated: {exc}")
         if match is None:
             return SurfaceCheck(kind, value, False, "no file matches this glob any more")
@@ -842,37 +902,70 @@ def validate_answer(value: Any, schema: Mapping[str, Any]) -> str:
     if not isinstance(schema, Mapping):
         return "schema is not an object"
     declared = schema.get("type")
-    if declared is not None:
-        expected = _JSON_TYPES.get(declared)
-        if expected is None:
-            return f"declared type {declared!r} is not one of {sorted(_JSON_TYPES)}"
-        # bool is a subclass of int in Python; JSON does not agree.
-        if declared in ("integer", "number") and isinstance(value, bool):
-            return f"expected {declared}, got boolean"
-        if not isinstance(value, expected):
-            return f"expected {declared}, got {type(value).__name__}"
-    if "enum" in schema:
-        allowed = schema["enum"]
-        if not isinstance(allowed, list):
-            return "enum must be a list"
-        if value not in allowed:
-            return f"{value!r} is not one of the declared enum values"
-    if declared == "array" and isinstance(schema.get("items"), Mapping):
-        for index, item in enumerate(value):
-            reason = validate_answer(item, schema["items"])
+    # Four independent checks, each returning the first reason it finds. They
+    # are separate functions rather than one body because they are separate
+    # questions — and because the recursion in the last two reads much better
+    # when the frame it re-enters is small.
+    for reason in (
+        _answer_type_reason(value, declared),
+        _answer_enum_reason(value, schema),
+        _answer_items_reason(value, schema, declared),
+        _answer_properties_reason(value, schema, declared),
+    ):
+        if reason:
+            return reason
+    return ""
+
+
+def _answer_type_reason(value: Any, declared: Any) -> str:
+    if declared is None:
+        return ""
+    expected = _JSON_TYPES.get(declared)
+    if expected is None:
+        return f"declared type {declared!r} is not one of {sorted(_JSON_TYPES)}"
+    # bool is a subclass of int in Python; JSON does not agree.
+    if declared in ("integer", "number") and isinstance(value, bool):
+        return f"expected {declared}, got boolean"
+    if not isinstance(value, expected):
+        return f"expected {declared}, got {type(value).__name__}"
+    return ""
+
+
+def _answer_enum_reason(value: Any, schema: Mapping[str, Any]) -> str:
+    if "enum" not in schema:
+        return ""
+    allowed = schema["enum"]
+    if not isinstance(allowed, list):
+        return "enum must be a list"
+    if value not in allowed:
+        return f"{value!r} is not one of the declared enum values"
+    return ""
+
+
+def _answer_items_reason(value: Any, schema: Mapping[str, Any], declared: Any) -> str:
+    if declared != "array" or not isinstance(schema.get("items"), Mapping):
+        return ""
+    for index, item in enumerate(value):
+        reason = validate_answer(item, schema["items"])
+        if reason:
+            return f"item {index}: {reason}"
+    return ""
+
+
+def _answer_properties_reason(value: Any, schema: Mapping[str, Any], declared: Any) -> str:
+    if declared != "object":
+        return ""
+    for key in schema.get("required") or ():
+        if key not in value:
+            return f"missing required key {key!r}"
+    properties = schema.get("properties")
+    if not isinstance(properties, Mapping):
+        return ""
+    for key, sub in properties.items():
+        if key in value:
+            reason = validate_answer(value[key], sub)
             if reason:
-                return f"item {index}: {reason}"
-    if declared == "object":
-        for key in schema.get("required") or ():
-            if key not in value:
-                return f"missing required key {key!r}"
-        properties = schema.get("properties")
-        if isinstance(properties, Mapping):
-            for key, sub in properties.items():
-                if key in value:
-                    reason = validate_answer(value[key], sub)
-                    if reason:
-                        return f"key {key!r}: {reason}"
+                return f"key {key!r}: {reason}"
     return ""
 
 
@@ -1015,6 +1108,45 @@ def _validate_smoke_block(smoke_block: Mapping[str, Any], questions: Mapping[str
             )
 
 
+def _validate_assumed_surface(entries: list) -> None:
+    """Every declared assumption must be re-checkable, or `create` refuses it.
+
+    Extracted from :func:`validate_manifest` rather than inlined: this is the
+    staleness story's entry point, and the three refusals below are the whole
+    reason a drone can detect its own obsolescence.
+    """
+    for entry in entries:
+        if not isinstance(entry, Mapping) or not isinstance(entry.get("value"), str):
+            raise DroneError(
+                "each assumed_surface entry needs a 'kind' and a string 'value'",
+                "record the paths, conventions and versions the drone assumes — "
+                "they are what a staleness check has to re-check",
+            )
+        if not isinstance(entry.get("kind"), str) or not entry["kind"].strip():
+            raise DroneError(
+                "each assumed_surface entry needs a non-blank 'kind'",
+                "e.g. {'kind': 'path', 'value': 'embodiment/cli/_commands/'}",
+            )
+        if entry["kind"] == "contains" and not str(entry.get("text") or "").strip():
+            raise DroneError(
+                f"assumed_surface entry {entry['value']!r} is kind 'contains' "
+                "but declares no non-blank 'text' to look for",
+                "a 'contains' assumption names the convention it depends on: "
+                "{'kind': 'contains', 'value': 'embodiment/cli/__init__.py', "
+                "'text': 'def register('} — without it nothing can be re-checked",
+            )
+
+
+def _validate_capabilities(capabilities: list) -> None:
+    for capability in capabilities:
+        if not isinstance(capability, str) or not capability.strip():
+            raise DroneError(
+                "every declared capability must be a non-blank string",
+                "capabilities are a declaration for review, not an enforcement "
+                "boundary — see the threat model in the drone's README",
+            )
+
+
 def validate_manifest(data: Any) -> None:
     """Raise :class:`DroneError` unless *data* is a well-formed drone manifest."""
     if not isinstance(data, Mapping):
@@ -1040,34 +1172,8 @@ def validate_manifest(data: Any) -> None:
             "say what the drone is for at more length than the one-line description",
         )
     _validate_author(_require(data, "author", dict, ""))
-    for entry in _require(data, "assumed_surface", list, ""):
-        if not isinstance(entry, Mapping) or not isinstance(entry.get("value"), str):
-            raise DroneError(
-                "each assumed_surface entry needs a 'kind' and a string 'value'",
-                "record the paths, conventions and versions the drone assumes — "
-                "they are what a staleness check has to re-check",
-            )
-        if not isinstance(entry.get("kind"), str) or not entry["kind"].strip():
-            raise DroneError(
-                "each assumed_surface entry needs a non-blank 'kind'",
-                "e.g. {'kind': 'path', 'value': 'embodiment/cli/_commands/'}",
-            )
-        if entry["kind"] == "contains" and not str(entry.get("text") or "").strip():
-            raise DroneError(
-                f"assumed_surface entry {entry['value']!r} is kind 'contains' "
-                "but declares no non-blank 'text' to look for",
-                "a 'contains' assumption names the convention it depends on: "
-                "{'kind': 'contains', 'value': 'embodiment/cli/__init__.py', "
-                "'text': 'def register('} — without it nothing can be re-checked",
-            )
-    capabilities = _require(data, "capabilities", list, "")
-    for capability in capabilities:
-        if not isinstance(capability, str) or not capability.strip():
-            raise DroneError(
-                "every declared capability must be a non-blank string",
-                "capabilities are a declaration for review, not an enforcement "
-                "boundary — see the threat model in the drone's README",
-            )
+    _validate_assumed_surface(_require(data, "assumed_surface", list, ""))
+    _validate_capabilities(_require(data, "capabilities", list, ""))
     questions = _validate_questions(_require(data, "questions", list, ""))
     _validate_smoke_block(_require(data, "smoke", dict, ""), questions)
 
@@ -1296,7 +1402,9 @@ def _load_entrypoint(source: Path, name: str, code: types.CodeType) -> Callable[
             # this module's threat model is stated rather than implied: this
             # runs model-written code in the calling process, with no sandbox.
             exec(code, module.__dict__)  # nosec B102 - see the module docstring's threat model
-        except Exception as exc:  # noqa: BLE001 - model-written code; report, never traceback
+        # Broad by intent: this is model-written code, so the contract is to
+        # report whatever it raised, never to let a traceback escape.
+        except Exception as exc:  # noqa: BLE001
             raise DroneError(
                 f"{SOURCE_FILENAME} failed to import: {exc.__class__.__name__}: {exc}",
                 "the drone's own source raised at import time; re-author it",
@@ -1330,6 +1438,62 @@ def _coerce_answer(result: Any) -> DroneAnswer:
         "not a DroneAnswer, str or mapping",
         "return DroneAnswer(answer=...) or DroneAnswer(cannot='...')",
     )
+
+
+def _refusal_before_running(
+    drone: Drone,
+    *,
+    root: Path,
+    resolved: DroneOptIn,
+    stale_ok: bool,
+    state: dict[str, Any],
+    record: Callable[..., Evocation],
+) -> Optional[Evocation]:
+    """The two guards that run before a byte of model-written code executes.
+
+    Returns the refusal record, or ``None`` to proceed. Extracted from
+    :func:`invoke` so the caller reads as *guards, then run* — but it keeps
+    returning a record rather than raising, because ``invoke``'s contract is
+    that **every** path produces exactly one :class:`Evocation`, and a guard
+    that raised would be the one path that did not.
+
+    Both refusals hash the source first. The record names *which bytes* were
+    refused, so a refusal is as traceable as a run; ``ran`` stays ``False``,
+    because nothing about that hash claims the code executed.
+    """
+    if not resolved.enabled:
+        state["sha"] = source_hash(drone.source)
+        return record(
+            OUTCOME_REFUSED_OPT_IN,
+            failure=(
+                f"{resolved.detail}. Turn them on deliberately with "
+                f"{DRONES_ENABLED_ENV}=1, or pass opt_in= from the host. The design is "
+                "unvalidated (issue #44's experiment has not run) and an unmeasured "
+                "behaviour does not ship on by default."
+            ),
+        )
+
+    if stale_ok:
+        return None
+
+    surface = check_surface(drone, root=root)
+    state["surface"] = surface
+    # Written positively, not as an early `if not surface.stale: return None`.
+    # `tests/test_drone_safeguards.py` mutates this exact line out of the module
+    # source to prove the guard is what stops a stale drone, and asserts the
+    # string it rewrites occurs exactly once — so inverting it silently breaks a
+    # test-of-the-test rather than a test.
+    if surface.stale:
+        state["sha"] = source_hash(drone.source)
+        return record(
+            OUTCOME_REFUSED_STALE,
+            failure=(
+                f"{surface.summary}. Re-author it ('embodiment drone create "
+                f"{drone.name} --force'), or run it anyway with --stale-ok and read "
+                "its answer knowing an assumption it depends on is false."
+            ),
+        )
+    return None
 
 
 def invoke(
@@ -1392,39 +1556,25 @@ def invoke(
             **fields,
         )
         written, error = append_evocation(evocation, ledger)
-        return replace(evocation, recorded=written, record_error=error)
+        # Annotated because `dataclasses.replace` erases to the base dataclass
+        # protocol under some type checkers, and the caller contract here is
+        # specifically an Evocation — the record, not any dataclass.
+        recorded: Evocation = replace(evocation, recorded=written, record_error=error)
+        return recorded
 
     def _fail(message: str) -> Evocation:
         return _record(OUTCOME_FAILED, failure=message)
 
-    if not resolved.enabled:
-        # Read and hash first: the record names WHICH bytes were refused, so a
-        # refusal is as traceable as a run. `ran` stays False — nothing about
-        # this hash claims the code executed.
-        state["sha"] = source_hash(drone.source)
-        return _record(
-            OUTCOME_REFUSED_OPT_IN,
-            failure=(
-                f"{resolved.detail}. Turn them on deliberately with "
-                f"{DRONES_ENABLED_ENV}=1, or pass opt_in= from the host. The design is "
-                "unvalidated (issue #44's experiment has not run) and an unmeasured "
-                "behaviour does not ship on by default."
-            ),
-        )
-
-    if not stale_ok:
-        surface = check_surface(drone, root=root)
-        state["surface"] = surface
-        if surface.stale:
-            state["sha"] = source_hash(drone.source)
-            return _record(
-                OUTCOME_REFUSED_STALE,
-                failure=(
-                    f"{surface.summary}. Re-author it ('embodiment drone create "
-                    f"{drone.name} --force'), or run it anyway with --stale-ok and read "
-                    "its answer knowing an assumption it depends on is false."
-                ),
-            )
+    refusal = _refusal_before_running(
+        drone,
+        root=root,
+        resolved=resolved,
+        stale_ok=stale_ok,
+        state=state,
+        record=_record,
+    )
+    if refusal is not None:
+        return refusal
 
     # ONE read: the bytes hashed for the audit trail are the bytes executed.
     try:
@@ -1456,7 +1606,8 @@ def invoke(
         raw = entrypoint(request)
     except UndeclaredQuestion as exc:
         return _fail(exc.message)
-    except Exception as exc:  # noqa: BLE001 - model-written code; report, never traceback
+    # Broad by intent: model-written code, reported rather than raised.
+    except Exception as exc:  # noqa: BLE001
         where = traceback.extract_tb(exc.__traceback__)[-1]
         return _fail(
             f"{DRONE_ENTRYPOINT}() raised {exc.__class__.__name__}: {exc} "
@@ -1817,6 +1968,23 @@ on by default.
 """
 
 
+def _bullets(items: list[str], *, empty: str) -> list[str]:
+    """*items*, or a single line saying there are none.
+
+    The three list sections of a generated README all had this shape written
+    out longhand. "None declared" is a claim the README has to make explicitly —
+    an empty section reads as an omission, and for `assumed_surface` that is
+    exactly the difference between *assumes nothing* and *forgot to say*.
+    """
+    return items or [empty]
+
+
+def _surface_bullet(entry: Mapping[str, Any]) -> str:
+    note = entry.get("note")
+    suffix = f" — {note}" if note else ""
+    return f"- {entry.get('kind')}: `{entry.get('value')}`{suffix}"
+
+
 def render_readme(manifest: Mapping[str, Any], notes: Optional[str] = None) -> str:
     """Generate the drone's README — always carrying the C2 threat-model statement.
 
@@ -1843,40 +2011,34 @@ def render_readme(manifest: Mapping[str, Any], notes: Optional[str] = None) -> s
         "## The surface it assumes",
         "",
     ]
-    surface = manifest.get("assumed_surface") or []
-    if surface:
-        for entry in surface:
-            note = entry.get("note")
-            suffix = f" — {note}" if note else ""
-            lines.append(f"- {entry.get('kind')}: `{entry.get('value')}`{suffix}")
-    else:
-        lines.append("- none declared")
+    lines += _bullets(
+        [_surface_bullet(entry) for entry in manifest.get("assumed_surface") or []],
+        empty="- none declared",
+    )
     lines += ["", "## Capabilities it declares", ""]
-    capabilities = manifest.get("capabilities") or []
-    if capabilities:
-        lines += [f"- `{capability}`" for capability in capabilities]
-    else:
-        lines.append("- none declared")
+    lines += _bullets(
+        [f"- `{capability}`" for capability in manifest.get("capabilities") or []],
+        empty="- none declared",
+    )
     lines += ["", "## Questions it asks the worker", ""]
-    questions = manifest.get("questions") or []
-    if questions:
-        for question in questions:
-            lines.append(f"- `{question.get('id')}` — {question.get('prompt')}")
-    else:
-        lines.append("- none — this is a pure code-drone, and costs zero worker tokens")
+    lines += _bullets(
+        [
+            f"- `{question.get('id')}` — {question.get('prompt')}"
+            for question in manifest.get("questions") or []
+        ],
+        empty="- none — this is a pure code-drone, and costs zero worker tokens",
+    )
     lines += ["", "## When it is wrong", ""]
-    when_wrong = str(manifest.get("when_wrong", "")).strip()
     lines.append(
-        when_wrong
+        str(manifest.get("when_wrong", "")).strip()
         or "Code written against a codebase encodes assumptions that expire. If the "
         "surface above has moved, this drone will keep reporting confidently on a "
         "check that no longer means anything — weigh its age against how fast that "
         "surface changes."
     )
     lines += ["", "## How to re-author it", ""]
-    reauthor = str(manifest.get("reauthor", "")).strip()
     lines.append(
-        reauthor
+        str(manifest.get("reauthor", "")).strip()
         or f"Re-run the authoring turn and `embodiment drone create "
         f"{manifest.get('name', '')} --force`. Authoring costs one cortex turn; "
         f"re-authoring costs the same, so it is worth doing when the assumed "
@@ -1980,7 +2142,8 @@ def _record_for(
     if status_fn is not None:
         try:
             verdict = status_fn(drone)
-        except Exception as exc:  # noqa: BLE001 - an injected check must not break `list`
+        # Broad by intent: an injected surface check must not take down `list`.
+        except Exception as exc:  # noqa: BLE001
             status = STATUS_BROKEN
             problem = f"status check raised {exc.__class__.__name__}: {exc}"
         else:

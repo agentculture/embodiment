@@ -43,7 +43,8 @@ def _load(name: str) -> ModuleType:
     """
     path = RAW / f"{name}.py"
     spec = importlib.util.spec_from_file_location(f"bee_hive_width_{name}", path)
-    assert spec is not None and spec.loader is not None
+    assert spec is not None
+    assert spec.loader is not None
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
@@ -300,7 +301,8 @@ class TestTheGrainVerdicts:
         cells = row("batch8", {1: [0.3, 0.3, 0.3], 8: [0.1, 0.1, 0.1]})
         decision = decide.grade_grain("batch8", cells)
         assert decision.verdict == decide.CEILING_WIDTH
-        assert decision.control_headroom is not None and decision.control_headroom < 1.0
+        assert decision.control_headroom is not None
+        assert decision.control_headroom < 1.0
 
     def test_the_registered_cell_size_puts_the_ceiling_out_of_reach(self) -> None:
         """§9's own arithmetic: the shortest control cell is 47x the floor."""
