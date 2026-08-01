@@ -168,6 +168,22 @@ class BodyExploded(Exception):
     """
 
 
+def explode_inside_staging(payload: Any) -> None:
+    """Enter the staging seam and raise inside it — **one** call to watch.
+
+    Exists so the cleanup tests below put a single invocation inside their
+    ``pytest.raises`` block. Written as a helper rather than inlined because a
+    block containing both ``staged_attachments(...)`` and a ``raise`` has two
+    ways to satisfy itself, which is the defect this file just fixed.
+
+    The staged path rides out on the exception rather than through a local
+    assigned inside the block, so the caller never has to reason about whether
+    it was bound.
+    """
+    with pm.staged_attachments(payload) as attachments:
+        raise BodyExploded(attachments[0]["path"])
+
+
 @contextmanager
 def route_yielding(route_id: str, parts: Any) -> Iterator[str]:
     """Register a route that describes exactly like the text one but hands *parts*.
@@ -776,30 +792,37 @@ class TestBytesMeetMediasFileValidation:
 
     def test_the_staging_directory_is_removed_even_when_the_body_raises(self) -> None:
         png = mr.render_map(rich_briefing()).png
-        staged_path: str
-        # `BodyExploded`, not `RuntimeError` — see that class's docstring. A
-        # `RuntimeError` here is also satisfied by the seam *refusing the
-        # input*, which would skip the block this test exists to exercise.
-        with pytest.raises(BodyExploded):
-            with pm.staged_attachments([("u", (png,))]) as attachments:
-                staged_path = attachments[0]["path"]
-                raise BodyExploded("boom")
-        assert not Path(staged_path).exists()
+        # `BodyExploded`, not `RuntimeError` — see that class's docstring.
+        with pytest.raises(BodyExploded) as caught:
+            explode_inside_staging([("u", (png,))])
+        staged_path = Path(str(caught.value))
+        assert not staged_path.exists()
+        assert not staged_path.parent.exists()
 
-    def test_a_refusal_can_no_longer_masquerade_as_the_cleanup_test_passing(self) -> None:
-        """The vacuity guard for the test above — it must be able to fail.
+    def test_a_refusal_is_not_a_bodyexploded(self) -> None:
+        """Half the vacuity guard: the types cannot overlap.
 
-        If `staged_attachments` refuses instead of yielding, the cleanup block
-        never runs. Under the old bare `RuntimeError` catch that refusal
-        *satisfied* the block; under `BodyExploded` it escapes as itself.
+        ``pytest.raises`` matches on ``isinstance``, so a block naming
+        ``BodyExploded`` is incapable of swallowing a refusal — which is the
+        whole reason the sentinel derives from ``Exception`` and not from
+        ``RuntimeError``, where both refusal types live.
         """
         assert issubclass(pm.PerceptionMediaError, RuntimeError)
+        assert issubclass(al.PerceptionRefused, RuntimeError)
         assert not issubclass(pm.PerceptionMediaError, BodyExploded)
+        assert not issubclass(al.PerceptionRefused, BodyExploded)
 
+    def test_a_refusal_escapes_the_cleanup_helper_rather_than_being_swallowed(self) -> None:
+        """The other half: the refusal is real and it propagates as itself.
+
+        Bad bytes make ``staged_attachments`` refuse *before* yielding, so the
+        ``raise BodyExploded`` inside the helper is never reached. What comes
+        out is the refusal — which is exactly what the old bare
+        ``RuntimeError`` catch used to absorb, passing the test while the
+        block under it never ran.
+        """
         with pytest.raises(pm.PerceptionMediaError):
-            with pytest.raises(BodyExploded):
-                with pm.staged_attachments([("u", (b"not an image at all",))]):
-                    raise BodyExploded("never reached — the seam refuses first")
+            explode_inside_staging([("u", (b"not an image at all",))])
 
     @pytest.mark.parametrize(
         "payload,suffix",
