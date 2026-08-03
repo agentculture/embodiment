@@ -4,7 +4,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-08-03T03:50:43Z",
-  "updated": "2026-08-03T05:54:06Z",
+  "updated": "2026-08-03T06:11:06Z",
   "claims": [
     {
       "id": "c1",
@@ -591,6 +591,30 @@
       "id": "c34",
       "kind": "decision",
       "text": "containment is at drive boundaries in v1 (operator, 2026-08-03): closing scope_runner stops new directives and the active directive governs until the drive ends \u2014 no mid-drive directive-drop move ships, and the docs state this boundary explicitly",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c35",
+      "kind": "decision",
+      "text": "directive delivery is event-shaped (operator, 2026-08-03): a strategist decision raises events that are inserted into the Worker context at safe boundaries \u2014 insertion into the turn stream is the transport, the rendering is framing-composed per c30, and the system prompt is never rewritten mid-drive",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c36",
+      "kind": "decision",
+      "text": "Stage 3 live testing runs context-clear (operator, 2026-08-03): each live session is executed by a fresh-context operator agent following self-contained instructions from a follow-up issue \u2014 one filed at plan time for session 1, a second authored during t14 with session 1 findings folded in \u2014 so live evidence is never contaminated by builder context",
       "origin": "user",
       "status": "confirmed",
       "honesty_conditions": [],

@@ -131,6 +131,8 @@
 - strategist work is accepted as long and slow: latency is handled by streaming transport (the `worker_seam.py` derived first-chunk and inter-chunk bounds) plus background execution in `scope_runner` — never by shrinking the strategist thinking budget. The t24/d16 lesson applies with more force here: a truncated turn arrives indistinguishable from a deliberate one, and for an authority-bearing seam that silent loss is worse than latency
 - v1 composition is strategist-only (operator, 2026-08-03): the muse is not part of the three-tier reference architecture — senses (host), Worker actor (lobes worker role, Qwen3.6-35B-A3B), strategist (lobes cortex role, dense Qwen3.6-27B). Dual muse+strategist wiring is unsupported in v1; muse code ships unchanged per c12 and d15 continues to hold
 - containment is at drive boundaries in v1 (operator, 2026-08-03): closing `scope_runner` stops new directives and the active directive governs until the drive ends — no mid-drive directive-drop move ships, and the docs state this boundary explicitly
+- directive delivery is event-shaped (operator, 2026-08-03): a strategist decision raises events that are inserted into the Worker context at safe boundaries — insertion into the turn stream is the transport, the rendering is framing-composed per c30, and the system prompt is never rewritten mid-drive
+- Stage 3 live testing runs context-clear (operator, 2026-08-03): each live session is executed by a fresh-context operator agent following self-contained instructions from a follow-up issue — one filed at plan time for session 1, a second authored during t14 with session 1 findings folded in — so live evidence is never contaminated by builder context
 
 ## Open parks
 

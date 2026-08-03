@@ -44,6 +44,7 @@ slug: `strategic-scope-governor` · status: `exported` · from frame: `strategic
   - a directive arriving mid-step is applied only at the next boundary; a stale or superseded directive is recorded and never applied
   - a failing strategist degrades to the last valid directive (or the host default scope), records the degradation, and the drive completes
   - directives render into actor context exclusively through framing composition (`frame_cortex`, top-level acting loop only); an AST/call-graph test pins no other prompt-bearing path, and with no configured identity the scope lane leaves prompts byte-identical
+  - directive application inserts a framing-composed event into the Worker context at the safe boundary — the system prompt is never rewritten mid-drive (c35)
 
 ### t5 — scope observability: the scope.\* event kinds ride the host-wired ObserverFn; every record carries actual model, role, directive and snapshot ids, triggering boundary, and previous/resulting scope versions
 
@@ -111,15 +112,6 @@ slug: `strategic-scope-governor` · status: `exported` · from frame: `strategic
   - Stage 2 pins actor config, tools, senses projection, sampling and budgets byte-identical across arms, asserted from the run records
   - the results doc reports every condition of the verdict rule separately, and a no-benefit outcome is published with the same prominence as a win
 
-### t12 — docs close-out: README / CLAUDE.md / relationships.md present the three-authority-level design as opt-in, the salience row is rewritten only if the measured result supports it (otherwise the gap stays recorded), the League demotion is stated, and the bee-hive files are verifiably untouched
-
-- depends on: t11
-- covers: c24, h16, c26, h18
-- acceptance:
-  - git diff over the whole plan shows zero changes to `arch_hive.py`, `worker_seam.py` and `worker_scoped_overhead.py`
-  - the relationships.md salience row is updated only if t11 returns a supporting verdict; an honest negative keeps the no-owner row with the negative recorded
-  - README and explain output state the strategist is opt-in, software-presence only (C2), and that a single-model run claims no strategist
-
 ### t13 — directive persistence lanes: the durable lane surviving across drives and the session-scoped temporary lane within one process — structurally distinct, every record naming its lane, sessions as the future per-subagent scoping seam
 
 - depends on: t1, t4, t5
@@ -128,6 +120,25 @@ slug: `strategic-scope-governor` · status: `exported` · from frame: `strategic
   - a session-scoped directive never outlives its session and never writes the durable lane (tested)
   - a durable directive survives a process restart through the host-visible persistence seam (round-trip test)
   - every scope record, ledger entry and event names the lane it belongs to
+
+### t14 — Stage 3 live sessions (t14): a context-clear operator agent talks, works and brainstorms with the three-tier embodiment through a real host — directives visibly reach the Worker as inserted events mid-conversation, senses presents one coherent teammate, background review never blocks interaction, failures degrade visibly, and both persistence lanes are exercised live
+
+- depends on: t8, t11
+- covers: c28, h19
+- acceptance:
+  - session 1 follows issue #52 (the pre-filed context-clear instructions) verbatim; findings land in docs/live-test-results/scope-live-session-1.md with failures and INCONCLUSIVE first-class
+  - a second follow-up issue for session 2 is authored during this task with session 1 findings folded in, and session 2 runs context-clear as well
+  - the live record shows a strategist decision raised as an event and inserted into the Worker context at a safe boundary, and the operator experiences one coherent teammate throughout
+  - a mid-session strategist kill degrades to the last valid directive visibly, with senses and presence unaffected; the non-intervention check is recorded
+
+### t12 — docs close-out: README / CLAUDE.md / relationships.md present the three-authority-level design as opt-in, the salience row is rewritten only if the measured result supports it (otherwise the gap stays recorded), the League demotion is stated, and the bee-hive files are verifiably untouched
+
+- depends on: t11, t14
+- covers: c24, h16, c26, h18
+- acceptance:
+  - git diff over the whole plan shows zero changes to `arch_hive.py`, `worker_seam.py` and `worker_scoped_overhead.py`
+  - the relationships.md salience row is updated only if t11 returns a supporting verdict; an honest negative keeps the no-owner row with the negative recorded
+  - README and explain output state the strategist is opt-in, software-presence only (C2), and that a single-model run claims no strategist
 
 ## Risks
 

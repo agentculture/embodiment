@@ -5,7 +5,7 @@
   "schema_version": 4,
   "status": "exported",
   "created": "2026-08-03T05:23:13Z",
-  "updated": "2026-08-03T06:00:28Z",
+  "updated": "2026-08-03T06:11:44Z",
   "targets": [
     {
       "id": "c1",
@@ -371,7 +371,8 @@
         "with no strategist configured, run_scoped() output is byte-identical to run() on the same scripted seam, and the actor path imports no scope module (AST test)",
         "a directive arriving mid-step is applied only at the next boundary; a stale or superseded directive is recorded and never applied",
         "a failing strategist degrades to the last valid directive (or the host default scope), records the degradation, and the drive completes",
-        "directives render into actor context exclusively through framing composition (frame_cortex, top-level acting loop only); an AST/call-graph test pins no other prompt-bearing path, and with no configured identity the scope lane leaves prompts byte-identical"
+        "directives render into actor context exclusively through framing composition (frame_cortex, top-level acting loop only); an AST/call-graph test pins no other prompt-bearing path, and with no configured identity the scope lane leaves prompts byte-identical",
+        "directive application inserts a framing-composed event into the Worker context at the safe boundary \u2014 the system prompt is never rewritten mid-drive (c35)"
       ],
       "deps": [
         "t1",
@@ -547,7 +548,8 @@
         "README and explain output state the strategist is opt-in, software-presence only (C2), and that a single-model run claims no strategist"
       ],
       "deps": [
-        "t11"
+        "t11",
+        "t14"
       ],
       "covers": [
         "c24",
@@ -575,6 +577,27 @@
       "covers": [
         "c33",
         "h23"
+      ],
+      "instruction": ""
+    },
+    {
+      "id": "t14",
+      "summary": "Stage 3 live sessions (t14): a context-clear operator agent talks, works and brainstorms with the three-tier embodiment through a real host \u2014 directives visibly reach the Worker as inserted events mid-conversation, senses presents one coherent teammate, background review never blocks interaction, failures degrade visibly, and both persistence lanes are exercised live",
+      "origin": "user",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "session 1 follows issue #52 (the pre-filed context-clear instructions) verbatim; findings land in docs/live-test-results/scope-live-session-1.md with failures and INCONCLUSIVE first-class",
+        "a second follow-up issue for session 2 is authored during this task with session 1 findings folded in, and session 2 runs context-clear as well",
+        "the live record shows a strategist decision raised as an event and inserted into the Worker context at a safe boundary, and the operator experiences one coherent teammate throughout",
+        "a mid-session strategist kill degrades to the last valid directive visibly, with senses and presence unaffected; the non-intervention check is recorded"
+      ],
+      "deps": [
+        "t8",
+        "t11"
+      ],
+      "covers": [
+        "c28",
+        "h19"
       ],
       "instruction": ""
     }
