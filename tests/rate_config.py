@@ -58,12 +58,37 @@ place for. All three are optional, so ``t1``'s two entries load unchanged.
 * ``non_generation_allowance`` (top level) — the measured seconds a request
   spends *not* generating. The rule's right-hand side bounds generation; the
   clock in front of it does not.
+
+What task ``t10`` added
+-----------------------
+
+Task ``t10`` of ``strategic-scope-governor`` brought the scope lane under the
+same rule and found the schema had no place for the one judgement that lane
+forces. Two more optional fields, so every earlier entry loads unchanged.
+
+* ``calling_patterns`` (per role) — **which reading of a width-dependent rate a
+  named way of calling the role divides by, and which reading it rejected.**
+  ``bound_input`` already answers "what is this role's divisor"; a role measured
+  at four widths, whose rate falls from 76.4 to 29.8 tok/s across them, forces
+  the further question of *whose* divisor. The worker is that role, and plan
+  risk ``r1`` names the trap exactly: reuse the width-1 figure for a calling
+  pattern that is not width 1 and the clock is six times too generous, silently.
+  :class:`CallingPattern` therefore records both the chosen figure and the
+  rejected one, checks each *is* the measurement it names, and refuses a pattern
+  whose chosen divisor is the **faster** of the two — a record that cannot
+  flatter its own clock.
+* ``cited_mean_as`` (per role) — the rounded mean, where something quotes it.
+  ``embodiment/strategist_runner.py`` derives its staleness and cadence defaults
+  from the worker's mean at one decimal place and nothing published that figure,
+  so two shipped constants rested on a rate with no committed source. That is
+  ``c39`` one layer out from a literal: not a number a bound divides by, but a
+  number a bound's *justification* divides by, which goes stale just as quietly.
 """
 
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Mapping, Optional
 
@@ -191,6 +216,121 @@ class BoundInput:
 
 
 @dataclass(frozen=True)
+class CallingPattern:
+    """Which reading of a width-dependent rate one calling pattern divides by.
+
+    Added by task ``t10`` of ``strategic-scope-governor`` for plan risk ``r1``.
+    :class:`BoundInput` answers "which figure is this role's divisor"; this
+    answers the question a role measured *per width* forces on top of it —
+    **whose** divisor, for **which** way of calling it. The worker was measured
+    at four widths and its rate falls from 76.4 to 29.8 tok/s across them, so
+    "the worker rate" names four different numbers and a bound built on the
+    flattering one is invisible until it censors something.
+
+    Two fields are load-bearing and both are checked rather than believed:
+
+    * ``divides_by`` / ``tok_s`` — the chosen figure, which must **be** the
+      measurement it names (the same equality :class:`BoundInput` enforces);
+    * ``rejected`` / ``rejected_tok_s`` — the reading that was *not* used, which
+      must also be a real figure, and which the chosen one may not be faster
+      than. That last check is the whole point: a calling pattern cannot record
+      a choice that shortens the clock while claiming to be conservative.
+    """
+
+    name: str
+    description: str
+    divides_by: str
+    tok_s: float
+    rejected: str
+    rejected_tok_s: float
+    cited_as: Optional[float]
+    why: tuple[str, ...]
+
+    @staticmethod
+    def resolve(measurement: "RateMeasurement", figure: str) -> float:
+        """The value *figure* names on *measurement*, or a refusal.
+
+        Two spellings, both of them a path into the committed record rather
+        than a number: ``mean_tok_s`` for a role-level figure and
+        ``by_width.14.slowest_tok_s`` for one measured at a width. Nothing
+        interpolates and nothing defaults — the same discipline
+        :meth:`RateMeasurement.at_width` holds, for the same reason.
+        """
+        parts = figure.split(".")
+        if parts[0] == "by_width":
+            if len(parts) != 3:
+                raise RateConfigError(
+                    f"{figure!r} is not a width figure. Spell it "
+                    "'by_width.<width>.<field>', e.g. 'by_width.1.mean_tok_s'."
+                )
+            at_width = measurement.at_width(int(parts[1]))
+            return float(_attr(at_width, parts[2], figure))
+        return float(_attr(measurement, figure, figure))
+
+    @classmethod
+    def from_dict(
+        cls, name: str, raw: Any, *, where: str, measurement: "RateMeasurement"
+    ) -> "CallingPattern":
+        if not isinstance(raw, Mapping):
+            raise RateConfigError(f"{where}: the {name!r} calling pattern must be a JSON object")
+        divides_by = str(_require(raw, "divides_by", where))
+        rejected = str(_require(raw, "rejected", where))
+        tok_s = float(_require(raw, "tok_s", where))
+        rejected_tok_s = float(_require(raw, "rejected_tok_s", where))
+        _must_equal(tok_s, cls.resolve(measurement, divides_by), divides_by, f"{where}.tok_s")
+        _must_equal(
+            rejected_tok_s,
+            cls.resolve(measurement, rejected),
+            rejected,
+            f"{where}.rejected_tok_s",
+        )
+        if tok_s > rejected_tok_s:
+            raise RateConfigError(
+                f"{where}: divides by {divides_by} at {tok_s} tok/s while claiming to "
+                f"reject {rejected} at {rejected_tok_s} tok/s. The chosen divisor is the "
+                "FASTER of the two, so the bound it produces is shorter — that is a "
+                "calling pattern flattering its own clock, which is the failure this "
+                "record exists to make impossible."
+            )
+        why = tuple(str(line) for line in raw.get("why", ()))
+        if not any(line.strip() for line in why):
+            raise RateConfigError(
+                f"{where}: choosing which width's reading a calling pattern divides by "
+                "is a judgement, and a judgement with no stated reason is a number "
+                "nobody can audit. Give the pattern a 'why'."
+            )
+        return cls(
+            name=name,
+            description=str(_require(raw, "description", where)),
+            divides_by=divides_by,
+            tok_s=tok_s,
+            rejected=rejected,
+            rejected_tok_s=rejected_tok_s,
+            cited_as=_optional_float(raw.get("cited_as")),
+            why=why,
+        )
+
+
+def _attr(source: Any, name: str, figure: str) -> Any:
+    value = getattr(source, name, None)
+    if not isinstance(value, (int, float)):
+        raise RateConfigError(
+            f"{figure!r} names {name!r}, which is not a measured figure on this "
+            "record. A calling pattern must divide by something that was measured."
+        )
+    return value
+
+
+def _must_equal(stated: float, measured: float, figure: str, where: str) -> None:
+    if abs(stated - measured) > 1e-9:
+        raise RateConfigError(
+            f"{where} is {stated} but {figure} is {measured}. The divisor must BE the "
+            "figure it names, not a copy of it that has drifted — that is claim c39 "
+            "inside one file."
+        )
+
+
+@dataclass(frozen=True)
 class NonGenerationAllowance:
     """Seconds a request spends *not* generating, measured rather than modelled.
 
@@ -269,6 +409,12 @@ class RateMeasurement:
     #: that has drifted away from the doc that publishes it is c39 mid-flight.
     #: ``None`` where no doc quotes a rounded figure.
     cited_as: Optional[float]
+    #: The rounded **mean**, where a doc or a derivation quotes it. Added by
+    #: ``t10``: ``embodiment/strategist_runner.py`` derives its staleness and
+    #: cadence defaults from the worker's mean at one decimal place, and that
+    #: figure was published nowhere — a rate justifying two shipped constants
+    #: with no committed source is c39 exactly, one layer out from a literal.
+    cited_mean_as: Optional[float]
     cited_fastest_as: Optional[float]
     #: Total tokens over total generation seconds. Reported because it is the
     #: honest "how fast is this thing overall" number; never the bound's input,
@@ -302,6 +448,9 @@ class RateMeasurement:
     #: Absent means ``False`` — the safe reading, since it adds the allowance.
     rate_includes_non_generation: bool
     rate_includes_non_generation_why: tuple[str, ...]
+    #: Which reading a named calling pattern divides by, for a role measured at
+    #: more than one width. Empty for a role where "the rate" names one number.
+    calling_patterns: Mapping[str, CallingPattern]
 
     @property
     def bound_input_tok_s(self) -> float:
@@ -384,12 +533,13 @@ class RateMeasurement:
                 "and it has to say which measurement supports it."
             )
 
-        return cls(
+        measurement = cls(
             role=role,
             slowest_tok_s=float(_require(raw, "slowest_tok_s", where)),
             mean_tok_s=float(_require(raw, "mean_tok_s", where)),
             fastest_tok_s=float(_require(raw, "fastest_tok_s", where)),
             cited_as=_optional_float(raw.get("cited_as")),
+            cited_mean_as=_optional_float(raw.get("cited_mean_as")),
             cited_fastest_as=_optional_float(raw.get("cited_fastest_as")),
             aggregate_tok_s=_optional_float(raw.get("aggregate_tok_s")),
             n_calls=int(_require(raw, "n_calls", where)),
@@ -413,7 +563,28 @@ class RateMeasurement:
             bound_input=bound_input,
             rate_includes_non_generation=includes,
             rate_includes_non_generation_why=includes_why,
+            calling_patterns={},
         )
+
+        # Built against the finished measurement, because a calling pattern's
+        # whole job is to name one of ITS figures — role-level or per-width —
+        # and be checked against it. Two passes, so the check reads the parsed
+        # record rather than a second walk over the raw dict that could drift
+        # from it.
+        patterns_raw = raw.get("calling_patterns") or {}
+        if not isinstance(patterns_raw, Mapping):
+            raise RateConfigError(f"{where}.calling_patterns: must be a JSON object keyed by name")
+        patterns = {
+            name: CallingPattern.from_dict(
+                name,
+                entry,
+                where=f"{where}.calling_patterns.{name}",
+                measurement=measurement,
+            )
+            for name, entry in patterns_raw.items()
+            if name != "why"
+        }
+        return replace(measurement, calling_patterns=patterns)
 
 
 @dataclass(frozen=True)
@@ -471,6 +642,7 @@ class RateConfig:
                 value
                 for value in (
                     measurement.cited_as,
+                    measurement.cited_mean_as,
                     measurement.cited_fastest_as,
                     measurement.aggregate_tok_s,
                     None if measurement.bound_input is None else measurement.bound_input.tok_s,
