@@ -722,6 +722,15 @@ class ArmRun:
     dropped: list[dict[str, Any]] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
+        """The header written to line one, and the summary printed at the end.
+
+        One shape for both, deliberately. The header lands **before** the first
+        episode so a run that dies still says what it was, which means its
+        counts are written as zero; they are read back by nobody
+        (:func:`_fingerprints` takes ``fingerprint`` and stops) and the single
+        shape is what keeps the file this code emits byte-comparable with the
+        committed one.
+        """
         return {
             "kind": "scopebench-live-stage1",
             "arm": self.arm,
@@ -862,6 +871,7 @@ def arm_diagnostics(raw: Sequence[Path]) -> dict[str, Any]:
                     "finish_reasons": {},
                     "stream_deaths": 0,
                     "truncated": 0,
+                    "truncated_and_unreadable": 0,
                     "retries": 0,
                     "held_at_non_intervention": 0,
                     "trap_taken": 0,
@@ -886,6 +896,18 @@ def arm_diagnostics(raw: Sequence[Path]) -> dict[str, Any]:
             for name in ("held_at_non_intervention", "trap_taken"):
                 arm[name] += 1 if entry["outcome"].get(name) else 0
             arm["churn"] += entry["outcome"].get("churn") or 0
+            # The cross-tab that keeps an INSTRUMENT event out of a graded axis.
+            # A turn cut at `max_tokens` mid-JSON arrives at the reader as prose
+            # with no parseable object, which the register then refuses — so an
+            # unreadable rate quoted without this number would report the budget
+            # as the strategist's inability to phrase a directive. Issue #37's
+            # lesson at the axis boundary rather than at the response object.
+            arm["truncated_and_unreadable"] += sum(
+                1
+                for call in entry.get("calls") or []
+                if call.get("finish_reason") == ws.FINISH_TRUNCATED
+                and call.get("reply_kind") == REPLY_UNREADABLE
+            )
     for arm in out.values():
         offered = arm["directives_offered"]
         arm["acceptance"] = None if not offered else round(arm["directives_accepted"] / offered, 4)
@@ -994,7 +1016,13 @@ def _fingerprint_diff(fingerprints: Mapping[str, Mapping[str, Any]]) -> dict[str
         "differing": differing,
         "identical": [key for key in keys if key not in differing],
         "checked": True,
-        "expected_differing": ["arm", "seat_endpoint", "seat_model", "seat_role"],
+        # The keys a seat difference is ALLOWED to move. Reported rather than
+        # asserted here: `tests/test_scopebench_live.py` makes the assertion, and
+        # a run record that quietly asserted its own validity would be the arm
+        # marking its own homework. `seat_endpoint` is on the list because a
+        # proxied role may advertise a different endpoint; on this rig both
+        # resolve to the same gateway, so it does not in fact move.
+        "allowed_to_differ": ["arm", "seat_endpoint", "seat_model", "seat_role"],
     }
 
 
@@ -1030,6 +1058,30 @@ _TABLE_ROWS: tuple[tuple[str, str], ...] = (
 )
 
 
+def _markdown_verdict(payload: Mapping[str, Any]) -> str:
+    """The seven conditions, per arm, each with its own status and detail.
+
+    The pre-registration's publication rule (§13) requires every result to name
+    which of the seven it satisfies, fails, or could not evaluate — so this is
+    the one table the write-up cannot be written without, and it is generated
+    from the same ``verdict()`` call the harness makes rather than retyped.
+    """
+    out: list[str] = []
+    for arm, report in payload["verdicts"].items():
+        out += [
+            "",
+            f"### `{arm}` — **{report['verdict']}**",
+            "",
+            "| # | condition | status | what the record says |",
+            "|---|---|---|---|",
+        ]
+        for index, name in enumerate(sb.VERDICT_CONDITIONS, 1):
+            entry = report["conditions"][name]
+            rule = sb.CONDITION_WHY[name]
+            out.append(f"| {index} | {rule} | **{entry['status']}** | {entry['detail']} |")
+    return "\n".join(out).lstrip("\n")
+
+
 def _markdown_tables(payload: Mapping[str, Any]) -> str:
     """The write-up's tables, generated from the record rather than transcribed.
 
@@ -1039,7 +1091,13 @@ def _markdown_tables(payload: Mapping[str, Any]) -> str:
     pastes this output.
     """
     cells = payload["cells"]
-    out: list[str] = ["### Mean regret by family (lower is better; `—` = no scored cell)", ""]
+    out: list[str] = ["## The verdict, condition by condition", "", _markdown_verdict(payload), ""]
+    out += [
+        "## The numbers",
+        "",
+        "### Mean regret by family (lower is better; `—` = no scored cell)",
+        "",
+    ]
     head = "| arm | " + " | ".join(f"`{name}`" for name in ep.FIRST_CYCLE) + " |"
     out += [head, "|" + "---|" * (len(ep.FIRST_CYCLE) + 1)]
     for arm, label in _TABLE_ROWS:
@@ -1067,8 +1125,8 @@ def _markdown_tables(payload: Mapping[str, Any]) -> str:
     diagnostics = payload["diagnostics"]
     out += [
         "| arm | episodes | valid | void-protocol | offered | held | accepted | acceptance | "
-        "unreadable | authority | tokens |",
-        "|---|---|---|---|---|---|---|---|---|---|---|",
+        "unreadable | truncated | of which unreadable | authority | tokens |",
+        "|---|---|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for arm in sorted(diagnostics):
         entry = diagnostics[arm]
@@ -1076,9 +1134,18 @@ def _markdown_tables(payload: Mapping[str, Any]) -> str:
             f"| `{arm}` | {entry['episodes']} | {entry['validity'].get(sb.VALID, 0)} | "
             f"{entry['validity'].get(sb.VOID_PROTOCOL, 0)} | {entry['directives_offered']} | "
             f"{entry['holds']} | {entry['directives_accepted']} | {entry['acceptance']} | "
-            f"{entry['reply_kinds'].get(REPLY_UNREADABLE, 0)} | "
+            f"{entry['reply_kinds'].get(REPLY_UNREADABLE, 0)} | {entry['truncated']} | "
+            f"{entry['truncated_and_unreadable']} | "
             f"{entry['authority_violations']} | {entry['tokens']} |"
         )
+
+    out += ["", "### Refusal and unexecutable codes, named", ""]
+    out += ["| arm | code | count |", "|---|---|---|"]
+    for arm in sorted(diagnostics):
+        for field_name in ("refusals_by_code", "unexecutable_by_code", "violations_by_code"):
+            for code, count in sorted(diagnostics[arm][field_name].items()):
+                if count:
+                    out.append(f"| `{arm}` | `{code}` | {count} |")
     return "\n".join(out)
 
 
@@ -1256,11 +1323,11 @@ def _run_stage_one(args: argparse.Namespace) -> int:
 
 
 def _report_payload(raw: Sequence[Path]) -> dict[str, Any]:
-    scripted = [
-        record
-        for record in sb.run_stage_one()
-        if record.arm in sb.ARM_ORDER or record.arm.startswith(sb.CONTROL_PREFIX)
-    ]
+    # Every scripted Stage-1 record: the A0 stand-in and the whole control panel.
+    # They are recomputed rather than read from disk because they are
+    # deterministic — `run_stage_one` calls no model — so there is no committed
+    # artifact for them to drift away from.
+    scripted = sb.run_stage_one()
     live, dropped = load_records(raw)
     summary = summarise_live([*scripted, *live])
     arms = sorted({cell["arm"] for cell in summary["cells"].values()})

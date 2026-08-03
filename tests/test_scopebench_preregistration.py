@@ -57,14 +57,35 @@ class TestTheArtifactsAreCommitted:
         assert orc.FIXTURES_PATH.exists()
         json.loads(orc.FIXTURES_PATH.read_text(encoding="utf-8"))
 
-    def test_no_results_file_exists_yet(self) -> None:
-        """The ordering claim, checked rather than asserted: the pre-registration
-        lands before the result it governs. When ``t11`` publishes, this test is
-        the one that has to be deliberately updated."""
+    def test_the_result_exists_and_cites_the_pre_registration(self) -> None:
+        """**This is the deliberate update ``t9`` asked for.**
+
+        The original assertion was ``not results.exists()`` — the ordering claim
+        checked rather than asserted, with a docstring saying that when ``t11``
+        publishes, this test is the one that has to be changed on purpose. ``t11``
+        has published, so the pin is inverted rather than deleted: the result now
+        has to exist *and* name the document that governed it, which keeps the
+        ordering auditable instead of merely historical.
+        """
         results = DOC_PATH.parent / "scopebench.md"
-        raw = DOC_PATH.parent / "scopebench.jsonl"
-        assert not results.exists(), "a result exists — this pin must be updated deliberately"
-        assert not raw.exists()
+        assert results.exists(), "t11 published; the results doc must be committed"
+        assert DOC_PATH.name in results.read_text(encoding="utf-8")
+
+    def test_the_raw_records_live_where_the_result_says_they_do(self) -> None:
+        """Amendment 4: a directory, not the single ``scopebench.jsonl`` §1 named.
+
+        Recorded in the pre-registration's amendments rather than left as a
+        broken reference — one file per (arm, stage) is what an arm-at-a-time
+        run produces, and a run that dies partway then keeps every episode it
+        completed.
+        """
+        raw = DOC_PATH.parent / "scopebench-raw"
+        assert raw.is_dir()
+        assert sorted(path.name for path in raw.glob("*-stage1.jsonl"))
+
+    def test_the_document_still_states_it_preceded_the_first_dial(self, doc: str) -> None:
+        """The claim the inverted pin above protects. It must never be edited away."""
+        assert "committed with the harness and before the first measured" in doc
 
     def test_the_document_says_it_precedes_the_first_dial(self, doc: str) -> None:
         assert "committed with the harness and before the first measured" in doc

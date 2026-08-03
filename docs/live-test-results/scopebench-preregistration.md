@@ -411,3 +411,17 @@ stated plainly in the results: conditions 1, 5 and 6 read from Stage 2 and are
 the committed rule, not by choice. `A1` has no cell at either stage in this
 cycle, which §6 already declared for Stage 1 and this amendment extends to
 Stage 2.
+
+### Amendment 4 — the raw records are a directory, not one file
+
+§1 says the series' raw records land in `scopebench.jsonl`. They land in
+`scopebench-raw/`, one JSONL per `(arm, stage)`, because the series runs an arm
+at a time and each file is written and flushed episode by episode — so a run
+that dies partway keeps every episode it completed rather than losing the lot.
+`scopebench-raw/capabilities.json` sits beside them, recording the
+`/capabilities` advert the seats were resolved from.
+
+Cosmetic, and recorded anyway: a pre-registration that names an artifact path
+and a result that uses another is a broken reference, and this repo's habit is
+to write the departure down rather than let a reader discover it.
+`tests/test_scopebench_preregistration.py` pins the directory.
