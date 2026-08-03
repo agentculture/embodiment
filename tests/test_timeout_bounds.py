@@ -283,6 +283,31 @@ CLOCKS: tuple[Clock, ...] = (
                 budget=Budget("arch_hive scoped call", sampling=ARCH_HIVE_SAMPLING, role="worker"),
                 why="hive tier B1's scoped calls build a fresh WorkerSeam per call",
             ),
+            Fronted(
+                role="cortex",
+                budget=Budget(
+                    "scopebench_live strategist seat",
+                    module="examples.scopebench_live",
+                    attr="STRATEGIST_MAX_TOKENS",
+                ),
+                why="t11's ScopeBench series builds a fresh WorkerSeam per episode for the "
+                "STRATEGY seat; arm A3 seats the cortex role there. No width is declared "
+                "because the harness dials serially (STREAM_QUEUE_WIDTH = 1), which is the "
+                "concurrency this role's rate was measured at",
+            ),
+            Fronted(
+                role="worker",
+                budget=Budget(
+                    "scopebench_live strategist seat",
+                    module="examples.scopebench_live",
+                    attr="STRATEGIST_MAX_TOKENS",
+                ),
+                why="the same seam and the same budget in arm A2, which seats the worker "
+                "role in the strategist seat — the control that removes 'the gain is just "
+                "the extra layer'. Divides by the role-level floor, which the config's "
+                "scoped_run calling pattern already argues is the honest reading for a "
+                "scope-lane dial nothing reserves the deployment for",
+            ),
         ),
         unmeasured=("senses",),
         notes=(
