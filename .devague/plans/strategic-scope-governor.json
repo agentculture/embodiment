@@ -5,7 +5,7 @@
   "schema_version": 4,
   "status": "exported",
   "created": "2026-08-03T05:23:13Z",
-  "updated": "2026-08-03T06:11:44Z",
+  "updated": "2026-08-03T06:22:45Z",
   "targets": [
     {
       "id": "c1",
@@ -334,7 +334,9 @@
         "every displaced, dropped, stale or superseded result lands in the degradation record set \u2014 a counted test proves zero silent losses",
         "close() joins with a bound and never hangs on a parked seam call"
       ],
-      "deps": [],
+      "deps": [
+        "t1"
+      ],
       "covers": [
         "c7",
         "h6"
@@ -599,6 +601,24 @@
         "c28",
         "h19"
       ],
+      "instruction": ""
+    },
+    {
+      "id": "t15",
+      "summary": "archive the muse lane per deviation d2 and issue #53: retire muse.py / muse_runner.py from the shipped reference architecture at the disposition the operator selects on #53 (delete / deprecate-in-place / docs-only), keeping CI green and the ledger harvest honest",
+      "origin": "user",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "the disposition chosen on issue #53 is applied and cited in the commit; no disposition is guessed",
+        "the full suite stays green: the SOURCE_MUSE_RUNNER ledger lane, tests/announcement_checklist.py, tests/test_proof_reporting.py and the embodiment/__init__.py exports are each either migrated or deliberately retired with their tests updated",
+        "docs/relationships.md, README.md and CLAUDE.md no longer present the muse as part of the shipped reference architecture, and c12/c32 are annotated in the spec as superseded by d2",
+        "scope_runner.py (t2) is already merged before this task starts \u2014 the mirrored mechanics are preserved in the new lane before the old one is retired"
+      ],
+      "deps": [
+        "t2",
+        "t3"
+      ],
+      "covers": [],
       "instruction": ""
     }
   ],

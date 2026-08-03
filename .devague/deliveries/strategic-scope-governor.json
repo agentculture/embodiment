@@ -1,0 +1,34 @@
+{
+  "plan_slug": "strategic-scope-governor",
+  "schema_version": 1,
+  "created": "2026-08-03T06:20:22Z",
+  "updated": "2026-08-03T06:22:05Z",
+  "deviations": [
+    {
+      "id": "d1",
+      "what": "t2 was scheduled parallel to t1 in the confirmed plan but genuinely depends on it: scope_runner.py must import the Scope shapes from scope.py, exactly as muse_runner.py imports 12 names from embodiment.muse (muse_runner.py:203). Added the missing dependency t2 -> t1 and re-exported the plan; waves resequenced to t1 alone, then t2+t9",
+      "task_ref": "t2",
+      "reason": "the confirmed plan's wave 1 asserted logical independence that does not hold \u2014 fanning both out in parallel would have had t2 building against shapes that do not exist in its worktree; running them in sequence changes no acceptance criterion and no content, only the order",
+      "affects": [
+        "t1",
+        "t2"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable"
+    },
+    {
+      "id": "d2",
+      "what": "the muse lane is to be ARCHIVED (operator instruction, 2026-08-03), contradicting confirmed claims c12 and c32 which both pin that muse.py / muse_runner.py ship unchanged. Measured blast radius before acting: muse_runner is referenced 45x in tests/test_ledger.py, 25x in tests/test_proof_reporting.py, 20x in embodiment/ledger.py (the SOURCE_MUSE_RUNNER harvest lane), 12x in tests/announcement_checklist.py, 7x in embodiment/__init__.py, 6x in embodiment/workspace.py and 2x in presence_engine.py \u2014 so this is not a file deletion, it is a surface retirement",
+      "task_ref": "t2",
+      "reason": "archiving cannot precede t2: t2's confirmed acceptance criteria are to MIRROR ThreadedMuseRunner mechanics (c7/h6 cite muse_runner.py line ranges), so the reference implementation must survive until t2 lands. Sequenced as a new task after t2 rather than executed inline, and the precise meaning of archive (delete vs deprecate-in-place vs docs-only retirement) is filed as a question rather than guessed",
+      "affects": [
+        "t2",
+        "t3"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "needs-follow-up"
+    }
+  ]
+}

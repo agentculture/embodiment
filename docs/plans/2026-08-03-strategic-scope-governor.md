@@ -18,6 +18,7 @@ slug: `strategic-scope-governor` · status: `exported` · from frame: `strategic
 
 ### t2 — `scope_runner.py` — background mechanics mirroring ThreadedMuseRunner: non-blocking consider and drain, one in-flight review with a single replaceable pending slot, bounded buffers, lag-based staleness, bounded join, pull-only degradations — every loss recorded as an authority event
 
+- depends on: t1
 - covers: c7, h6
 - acceptance:
   - consider() and drain() never block or raise under test, including with a wedged strategist seam
@@ -130,6 +131,15 @@ slug: `strategic-scope-governor` · status: `exported` · from frame: `strategic
   - a second follow-up issue for session 2 is authored during this task with session 1 findings folded in, and session 2 runs context-clear as well
   - the live record shows a strategist decision raised as an event and inserted into the Worker context at a safe boundary, and the operator experiences one coherent teammate throughout
   - a mid-session strategist kill degrades to the last valid directive visibly, with senses and presence unaffected; the non-intervention check is recorded
+
+### t15 — archive the muse lane per deviation d2 and issue #53: retire muse.py / `muse_runner.py` from the shipped reference architecture at the disposition the operator selects on #53 (delete / deprecate-in-place / docs-only), keeping CI green and the ledger harvest honest
+
+- depends on: t2, t3
+- acceptance:
+  - the disposition chosen on issue #53 is applied and cited in the commit; no disposition is guessed
+  - the full suite stays green: the `SOURCE_MUSE_RUNNER` ledger lane, tests/`announcement_checklist.py`, tests/`test_proof_reporting.py` and the embodiment/`__init__.py` exports are each either migrated or deliberately retired with their tests updated
+  - docs/relationships.md, README.md and CLAUDE.md no longer present the muse as part of the shipped reference architecture, and c12/c32 are annotated in the spec as superseded by d2
+  - `scope_runner.py` (t2) is already merged before this task starts — the mirrored mechanics are preserved in the new lane before the old one is retired
 
 ### t12 — docs close-out: README / CLAUDE.md / relationships.md present the three-authority-level design as opt-in, the salience row is rewritten only if the measured result supports it (otherwise the gap stays recorded), the League demotion is stated, and the bee-hive files are verifiably untouched
 
