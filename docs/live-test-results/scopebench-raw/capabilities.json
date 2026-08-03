@@ -1,0 +1,188 @@
+{
+  "cortex": {
+    "role": "cortex",
+    "model": "unsloth/Qwen3.6-27B-NVFP4",
+    "runtime": "vllm",
+    "endpoint": "http://localhost:8001",
+    "path": "/v1/chat/completions",
+    "context": 262144,
+    "quant": "compressed-tensors",
+    "mtp": true,
+    "tools": true,
+    "responsibilities": [
+      "reasoning",
+      "deciding",
+      "planning",
+      "tool_use",
+      "code_repo_actions",
+      "validation",
+      "final_authority"
+    ],
+    "forbidden_responsibilities": [],
+    "feasible": true,
+    "ready": true,
+    "loaded": true
+  },
+  "senses": {
+    "role": "senses",
+    "model": "coolthor/gemma-4-12B-it-NVFP4A16",
+    "runtime": "vllm",
+    "endpoint": "http://localhost:8001",
+    "path": "/v1/chat/completions",
+    "context": 32768,
+    "quant": "compressed-tensors",
+    "mtp": true,
+    "tools": true,
+    "responsibilities": [
+      "intake",
+      "normalize_input",
+      "classify_intent",
+      "prepare_context_packet",
+      "speak_back"
+    ],
+    "forbidden_responsibilities": [
+      "final_decision",
+      "repo_action",
+      "security_decision"
+    ],
+    "feasible": false,
+    "ready": true,
+    "loaded": true,
+    "hosted_by": "http://orin.tail0be7e0.ts.net:8000",
+    "proxied": true
+  },
+  "muse": {
+    "role": "muse",
+    "model": "nvidia/Gemma-4-31B-IT-NVFP4",
+    "runtime": "vllm",
+    "endpoint": "http://localhost:8001",
+    "path": "/v1/chat/completions",
+    "context": 262144,
+    "quant": "modelopt",
+    "mtp": true,
+    "tools": true,
+    "responsibilities": [
+      "creative_generation",
+      "long_form_writing",
+      "ideation",
+      "style_variation",
+      "divergent_second_opinion",
+      "tool_use"
+    ],
+    "forbidden_responsibilities": [
+      "final_decision",
+      "repo_action",
+      "security_decision"
+    ],
+    "feasible": false,
+    "ready": false,
+    "loaded": false
+  },
+  "worker": {
+    "role": "worker",
+    "model": "unsloth/Qwen3.6-35B-A3B-NVFP4",
+    "runtime": "vllm",
+    "endpoint": "http://localhost:8001",
+    "path": "/v1/chat/completions",
+    "context": 262144,
+    "quant": "compressed-tensors",
+    "mtp": true,
+    "tools": true,
+    "responsibilities": [
+      "execution",
+      "ground_work",
+      "bulk_transform",
+      "drafting",
+      "image_understanding",
+      "video_understanding",
+      "tool_use",
+      "repo_action"
+    ],
+    "forbidden_responsibilities": [
+      "final_decision",
+      "security_decision"
+    ],
+    "feasible": false,
+    "ready": true,
+    "loaded": false,
+    "hosted_by": "http://thor.tail0be7e0.ts.net:8000",
+    "proxied": true
+  },
+  "embedder": {
+    "role": "embedder",
+    "model": "Qwen/Qwen3-Embedding-0.6B",
+    "runtime": "vllm",
+    "endpoint": "http://localhost:8001",
+    "path": "/v1/embeddings",
+    "context": 8192,
+    "quant": "",
+    "mtp": false,
+    "tools": false,
+    "responsibilities": [
+      "vectorization",
+      "memory_retrieval_input"
+    ],
+    "forbidden_responsibilities": [],
+    "feasible": true,
+    "ready": true,
+    "loaded": true
+  },
+  "reranker": {
+    "role": "reranker",
+    "model": "Qwen/Qwen3-Reranker-0.6B",
+    "runtime": "vllm",
+    "endpoint": "http://localhost:8001",
+    "path": "/v1/rerank",
+    "context": 8192,
+    "quant": "",
+    "mtp": false,
+    "tools": false,
+    "responsibilities": [
+      "retrieval_ordering",
+      "relevance_refinement"
+    ],
+    "forbidden_responsibilities": [],
+    "feasible": true,
+    "ready": true,
+    "loaded": true
+  },
+  "stt": {
+    "role": "stt",
+    "model": "nvidia/parakeet-tdt-0.6b-v2",
+    "runtime": "parakeet",
+    "endpoint": "http://localhost:8001",
+    "path": "/v1/audio/transcriptions",
+    "context": 0,
+    "quant": "",
+    "mtp": false,
+    "tools": false,
+    "responsibilities": [
+      "transcribe",
+      "audio_input_to_text",
+      "realtime_vad_session"
+    ],
+    "forbidden_responsibilities": [],
+    "feasible": true,
+    "ready": true,
+    "loaded": true
+  },
+  "tts": {
+    "role": "tts",
+    "model": "ResembleAI/chatterbox",
+    "runtime": "chatterbox",
+    "endpoint": "http://localhost:8001",
+    "path": "/v1/audio/speech",
+    "context": 0,
+    "quant": "",
+    "mtp": false,
+    "tools": false,
+    "responsibilities": [
+      "speech_output",
+      "synthesize"
+    ],
+    "forbidden_responsibilities": [],
+    "feasible": true,
+    "ready": true,
+    "loaded": true
+  }
+}
