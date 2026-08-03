@@ -181,7 +181,10 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
-from embodiment import scope_events
+# Direct submodule import, NOT ``from embodiment import scope_events``: the latter
+# names the package hub, whose lazy re-export surface pulls the whole closure in and
+# trips the scope modules' stdlib-only import ban (tests/test_scope_authority.py).
+import embodiment.scope_events as scope_events
 from embodiment.contract import Task, TaskResult
 from embodiment.framing import frame_cortex
 from embodiment.loop import CompleteFn, LoopAborted, LoopOutcome, ToolExecutor, run
