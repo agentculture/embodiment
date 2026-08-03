@@ -5,7 +5,7 @@
   "schema_version": 4,
   "status": "exported",
   "created": "2026-08-03T05:23:13Z",
-  "updated": "2026-08-03T06:22:45Z",
+  "updated": "2026-08-03T06:26:47Z",
   "targets": [
     {
       "id": "c1",
@@ -80,7 +80,7 @@
     {
       "id": "c7",
       "kind": "requirement",
-      "text": "`scope_runner` mirrors `ThreadedMuseRunner` mechanics exactly: non-blocking consider/drain, one in-flight with a single replaceable pending slot, bounded deque with recorded overflow drops, lag-based staleness, bounded join on close, pull-only degradations (muse_runner.py:800-811, 922-1004, 746-748, 415-433, 1316-1358) \u2014 with one deliberate delta: its output is authority-bearing within a typed vocabulary, so every drop or staleness record is an authority event, never silently lost counsel",
+      "text": "the strategist runner keeps the mechanics PROVEN by ThreadedMuseRunner without inheriting its shape (d3/d4, muse archived): non-blocking consider/drain, one in-flight review with a single replaceable pending slot, bounded buffers with recorded overflow drops, bounded join on close, pull-only degradations. The muse implementation stays archived-but-citable as the reference. Two deliberate deltas: its output is authority-bearing within a typed vocabulary, so every drop or staleness record is an authority event never silently lost counsel; and its cadence, staleness and buffer policy are designed for a deep thinker per c4, not copied from a fast advisor",
       "deferred": false,
       "deferred_reason": ""
     },
@@ -325,14 +325,16 @@
     },
     {
       "id": "t2",
-      "summary": "scope_runner.py \u2014 background mechanics mirroring ThreadedMuseRunner: non-blocking consider and drain, one in-flight review with a single replaceable pending slot, bounded buffers, lag-based staleness, bounded join, pull-only degradations \u2014 every loss recorded as an authority event",
+      "summary": "strategist_runner.py \u2014 the strategist background lane, CITED from muse_runner.py (copied verbatim into a clearly-named new module, then owned and freely renamed/adjusted \u2014 never imported from the archived muse). Keeps the proven invariants: non-blocking consider/drain, one in-flight review with a single replaceable pending slot, bounded buffers, bounded join, pull-only degradations where every loss is an authority event. Cadence and staleness are DESIGNED for a deep thinker, not inherited from a fast advisor",
       "origin": "llm",
       "status": "confirmed",
       "acceptance_criteria": [
         "consider() and drain() never block or raise under test, including with a wedged strategist seam",
         "at most one review is in flight; a newer snapshot replaces the waiting one and the displaced snapshot is recorded",
         "every displaced, dropped, stale or superseded result lands in the degradation record set \u2014 a counted test proves zero silent losses",
-        "close() joins with a bound and never hangs on a parked seam call"
+        "close() joins with a bound and never hangs on a parked seam call",
+        "the module is embodiment/strategist_runner.py and imports nothing from embodiment.muse or embodiment.muse_runner (AST test) \u2014 the mechanics are cited, not depended on",
+        "no staleness or cadence constant is copied from the muse: every default carries a derivation comment citing measured strategist latency, and DEFAULT_STALE_LAG=5 specifically is not inherited"
       ],
       "deps": [
         "t1"
@@ -605,7 +607,7 @@
     },
     {
       "id": "t15",
-      "summary": "archive the muse lane per deviation d2 and issue #53: retire muse.py / muse_runner.py from the shipped reference architecture at the disposition the operator selects on #53 (delete / deprecate-in-place / docs-only), keeping CI green and the ledger harvest honest",
+      "summary": "archive the muse lane per d2/d3 and issue #53 (resolved: ARCHIVED BUT CITABLE): muse.py and muse_runner.py leave the shipped reference architecture while remaining readable as the cited reference for strategist_runner.py. Keep CI green and the ledger harvest honest",
       "origin": "user",
       "status": "confirmed",
       "acceptance_criteria": [

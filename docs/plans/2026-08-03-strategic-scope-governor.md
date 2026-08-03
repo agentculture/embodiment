@@ -16,7 +16,7 @@ slug: `strategic-scope-governor` · status: `exported` · from frame: `strategic
   - directive validation refuses a version moving backward and an unknown supersedes id; a rejected directive is recorded, never silently dropped
   - the bench type is empty by default and structurally cannot hold an actor ToolExecutor (fields test)
 
-### t2 — `scope_runner.py` — background mechanics mirroring ThreadedMuseRunner: non-blocking consider and drain, one in-flight review with a single replaceable pending slot, bounded buffers, lag-based staleness, bounded join, pull-only degradations — every loss recorded as an authority event
+### t2 — `strategist_runner.py` — the strategist background lane, CITED from `muse_runner.py` (copied verbatim into a clearly-named new module, then owned and freely renamed/adjusted — never imported from the archived muse). Keeps the proven invariants: non-blocking consider/drain, one in-flight review with a single replaceable pending slot, bounded buffers, bounded join, pull-only degradations where every loss is an authority event. Cadence and staleness are DESIGNED for a deep thinker, not inherited from a fast advisor
 
 - depends on: t1
 - covers: c7, h6
@@ -25,6 +25,8 @@ slug: `strategic-scope-governor` · status: `exported` · from frame: `strategic
   - at most one review is in flight; a newer snapshot replaces the waiting one and the displaced snapshot is recorded
   - every displaced, dropped, stale or superseded result lands in the degradation record set — a counted test proves zero silent losses
   - close() joins with a bound and never hangs on a parked seam call
+  - the module is embodiment/`strategist_runner.py` and imports nothing from embodiment.muse or embodiment.`muse_runner` (AST test) — the mechanics are cited, not depended on
+  - no staleness or cadence constant is copied from the muse: every default carries a derivation comment citing measured strategist latency, and `DEFAULT_STALE_LAG`=5 specifically is not inherited
 
 ### t3 — the ledger lane: `SOURCE_SCOPE` added by exactly one `_MODULES` row plus a `from_scope` reader; `known_codes`() harvests the new `DEGRADED_`/`DROPPED_` constants from the scope module `__all__`
 
@@ -132,7 +134,7 @@ slug: `strategic-scope-governor` · status: `exported` · from frame: `strategic
   - the live record shows a strategist decision raised as an event and inserted into the Worker context at a safe boundary, and the operator experiences one coherent teammate throughout
   - a mid-session strategist kill degrades to the last valid directive visibly, with senses and presence unaffected; the non-intervention check is recorded
 
-### t15 — archive the muse lane per deviation d2 and issue #53: retire muse.py / `muse_runner.py` from the shipped reference architecture at the disposition the operator selects on #53 (delete / deprecate-in-place / docs-only), keeping CI green and the ledger harvest honest
+### t15 — archive the muse lane per d2/d3 and issue #53 (resolved: ARCHIVED BUT CITABLE): muse.py and `muse_runner.py` leave the shipped reference architecture while remaining readable as the cited reference for `strategist_runner.py`. Keep CI green and the ledger harvest honest
 
 - depends on: t2, t3
 - acceptance:

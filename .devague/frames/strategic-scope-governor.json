@@ -4,7 +4,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-08-03T03:50:43Z",
-  "updated": "2026-08-03T06:11:06Z",
+  "updated": "2026-08-03T06:25:32Z",
   "claims": [
     {
       "id": "c1",
@@ -128,7 +128,7 @@
     {
       "id": "c7",
       "kind": "requirement",
-      "text": "`scope_runner` mirrors `ThreadedMuseRunner` mechanics exactly: non-blocking consider/drain, one in-flight with a single replaceable pending slot, bounded deque with recorded overflow drops, lag-based staleness, bounded join on close, pull-only degradations (muse_runner.py:800-811, 922-1004, 746-748, 415-433, 1316-1358) \u2014 with one deliberate delta: its output is authority-bearing within a typed vocabulary, so every drop or staleness record is an authority event, never silently lost counsel",
+      "text": "the strategist runner keeps the mechanics PROVEN by ThreadedMuseRunner without inheriting its shape (d3/d4, muse archived): non-blocking consider/drain, one in-flight review with a single replaceable pending slot, bounded buffers with recorded overflow drops, bounded join on close, pull-only degradations. The muse implementation stays archived-but-citable as the reference. Two deliberate deltas: its output is authority-bearing within a typed vocabulary, so every drop or staleness record is an authority event never silently lost counsel; and its cadence, staleness and buffer policy are designed for a deep thinker per c4, not copied from a fast advisor",
       "origin": "llm",
       "status": "confirmed",
       "honesty_conditions": [
@@ -142,7 +142,13 @@
       "hard_questions": [],
       "links": [],
       "instruction": "",
-      "revisions": []
+      "revisions": [
+        {
+          "text": "`scope_runner` mirrors `ThreadedMuseRunner` mechanics exactly: non-blocking consider/drain, one in-flight with a single replaceable pending slot, bounded deque with recorded overflow drops, lag-based staleness, bounded join on close, pull-only degradations (muse_runner.py:800-811, 922-1004, 746-748, 415-433, 1316-1358) \u2014 with one deliberate delta: its output is authority-bearing within a typed vocabulary, so every drop or staleness record is an authority event, never silently lost counsel",
+          "kind": "requirement",
+          "reason": ""
+        }
+      ]
     },
     {
       "id": "c8",

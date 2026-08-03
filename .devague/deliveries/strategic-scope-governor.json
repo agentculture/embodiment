@@ -2,7 +2,7 @@
   "plan_slug": "strategic-scope-governor",
   "schema_version": 1,
   "created": "2026-08-03T06:20:22Z",
-  "updated": "2026-08-03T06:22:05Z",
+  "updated": "2026-08-03T06:25:26Z",
   "deviations": [
     {
       "id": "d1",
@@ -29,6 +29,32 @@
       "origin": "user",
       "status": "approved",
       "classification": "needs-follow-up"
+    },
+    {
+      "id": "d3",
+      "what": "the muse archival disposition is settled and t2's module is renamed (operator, 2026-08-03): muse.py and muse_runner.py are ARCHIVED but remain CITABLE \u2014 archived-not-deleted, so t2 reads the ThreadedMuseRunner mechanics as a reference rather than needing the live module. The strategist's background lane is named for its owner: t2 ships embodiment/strategist_runner.py, not scope_runner.py, diverging from confirmed claim c7 which names the module scope_runner",
+      "task_ref": "t2",
+      "reason": "operator instruction: the muse itself is archived and the strategist replaces it, built on the cortex seat as a deep thinker working beyond the current task. Naming follows confirmed c21, which fixes 'strategist' as this repo's vocabulary for the tier (issue #51's 'Cortex' label was explicitly not adopted), so strategist_runner beats cortex_runner. The protocol module stays scope.py: it carries the Scope* shapes shared BETWEEN strategist and worker, not the strategist's own mind, and t1 is mid-flight building it",
+      "affects": [
+        "t2",
+        "t15",
+        "t3"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable"
+    },
+    {
+      "id": "d4",
+      "what": "confirmed claim c7 required strategist_runner to mirror ThreadedMuseRunner mechanics EXACTLY, citing seven muse_runner.py line ranges. With the muse archived that constraint is lifted (operator, 2026-08-03): the runner keeps the proven INVARIANTS -- never block, never raise, one in-flight, bounded buffers, bounded join, zero silent loss -- but its cadence, staleness model and buffer policy are designed for a deep thinker rather than inherited from a fast advisor",
+      "task_ref": "t2",
+      "reason": "the muse's mechanics encode an assumption measured FALSE on this rig: DEFAULT_STALE_LAG=5 was set expecting a big background mind to lag the actor, but the muse measured ~3.5x FASTER than the cortex (2026-07-25) and the constant was never re-derived. The strategist is the opposite profile again -- a dense 27B thinking model spending ~1000 reasoning tokens before acting -- so copying the muse's staleness model would import a constant that is wrong in a third direction. Assumption c4 already required these constants be derived from measured strategist latency; lifting the mirror requirement makes c7 and c4 consistent instead of contradictory",
+      "affects": [
+        "t2"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable"
     }
   ]
 }
