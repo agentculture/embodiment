@@ -124,7 +124,8 @@ class TestGeneration:
         episode = ep.generate(ep.FAMILY_CRITICAL_PATH, 7)
         assert episode.family == ep.FAMILY_CRITICAL_PATH
         assert episode.seed == 7
-        assert "7" in episode.id and ep.FAMILY_CRITICAL_PATH in episode.id
+        assert "7" in episode.id
+        assert ep.FAMILY_CRITICAL_PATH in episode.id
 
     def test_to_dict_round_trips(self) -> None:
         for episode in _every_first_cycle_episode()[:6]:

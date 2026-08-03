@@ -488,14 +488,16 @@ class TestAuthorityDetection:
         payload = {"scope_id": "x", "objective": "o", "version": 9, "tools": []}
         directive, refusal = sub.directive_from_payload(payload)
         assert directive is None
-        assert refusal is not None and refusal.code == sub.DROPPED_AUTHORITY
+        assert refusal is not None
+        assert refusal.code == sub.DROPPED_AUTHORITY
 
 
 class TestRegisterMirrorsScopeRegister:
     def test_a_version_that_does_not_advance_is_refused_and_recorded(self) -> None:
         register = sub.Register(sub.Directive(scope_id="d0", objective="o", version=3))
         refusal = register.offer(sub.Directive(scope_id="d1", objective="o", version=3))
-        assert refusal is not None and refusal.code == sub.DROPPED_VERSION_BACKWARD
+        assert refusal is not None
+        assert refusal.code == sub.DROPPED_VERSION_BACKWARD
         assert register.refusals == (refusal,)
         assert register.active.scope_id == "d0"
 
@@ -504,17 +506,20 @@ class TestRegisterMirrorsScopeRegister:
         refusal = register.offer(
             sub.Directive(scope_id="d1", objective="o", supersedes="ghost", version=1)
         )
-        assert refusal is not None and refusal.code == sub.DROPPED_UNKNOWN_SUPERSEDES
+        assert refusal is not None
+        assert refusal.code == sub.DROPPED_UNKNOWN_SUPERSEDES
 
     def test_a_duplicate_id_is_refused(self) -> None:
         register = sub.Register(sub.Directive(scope_id="d0", objective="o", version=0))
         refusal = register.offer(sub.Directive(scope_id="d0", objective="o", version=1))
-        assert refusal is not None and refusal.code == sub.DROPPED_DUPLICATE
+        assert refusal is not None
+        assert refusal.code == sub.DROPPED_DUPLICATE
 
     def test_a_directive_with_no_objective_governs_nothing_and_is_refused(self) -> None:
         register = sub.Register()
         refusal = register.offer(sub.Directive(scope_id="d0", objective="", version=1))
-        assert refusal is not None and refusal.code == sub.DROPPED_INCOMPLETE
+        assert refusal is not None
+        assert refusal.code == sub.DROPPED_INCOMPLETE
 
     def test_the_same_refusals_come_back_from_the_real_scope_register(self) -> None:
         """The mirror is behavioural as well as nominal."""
