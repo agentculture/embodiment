@@ -317,3 +317,111 @@ uv run pytest tests/test_scopebench.py tests/test_scopebench_episodes.py \
 Every command above is hermetic. No module under `examples/scope/` imports a
 transport, reaches `embodiment.loop`, or introduces a timeout constant — all
 three are asserted by AST over every file in the folder.
+
+---
+
+## 15. Amendments — every departure `t11` made, and why
+
+Nothing above was edited. Everything below was added by `t11`, the task that
+executes this protocol, and each entry says whether it was made **before** any
+committed record existed. A threshold that moves after a result is not
+evidence, and none of these moves one: no verdict rule, no threshold, no seed,
+no arm definition and no oracle changed.
+
+### Amendment 1 — the review message states facts, never the rule (before any committed record)
+
+**What changed.** The live harness's user turn carries the two facts the
+projection omits: which scope is active and at what version. Its first wording
+was
+
+> Active scope: `contention-1-default` at version 0. A directive **must** carry
+> a version strictly greater than that and **must** supersede that scope_id (or
+> null if there is none).
+
+and it is now two plain lines — `Active scope_id: …` and `Active version: …` —
+with the rule left where `embodiment.scope.SCOPE_AUTHORITY` already states it.
+
+**Why, and the pilot evidence that forced it.** The first wording names the
+active id *inside* the clause that says "must carry", and the worker seat read
+it that way: on two of three reviews of `contention-1` it set its own `scope_id`
+to `contention-1-default` as well as its `supersedes`, so `ScopeRegister`
+refused both as duplicate ids and the cell scored
+`protocol_acceptance = 0.0`. Re-run with the corrected wording and nothing else
+changed, the same seat on the same episode scored **1.0**, minting
+`contention-1-v1 → contention-1-v2` correctly.
+
+That difference is a **harness** property, and publishing it as a model
+property would have been the failure this repo names four times over: an
+instrument silently becoming the measurement. The rule belongs to the shipped
+authority text; supplying data the projection lacks is the harness's job, and
+instructing on top of it is not.
+
+**What it does not fix, stated so it is not read as one.** The corrected
+wording did *not* make the worker's protocol clean. In the same pilot,
+`steady_state-1` still produced one unreadable reply and one duplicate id under
+the new wording. That is now genuine variance in the model rather than an
+artifact of the sentence, and it is what the protocol axis exists to record.
+
+**Blast radius: none.** The correction was made from a pilot whose records were
+written to a scratch path, and **both arms were restarted from scratch**
+afterwards. No committed record in `scopebench-raw/` was produced under the
+first wording. `tests/test_scopebench_live.py` pins the property going forward:
+the harness's own block carries no `must`, and it still carries the active
+scope id.
+
+### Amendment 2 — Stage 1's directive-authoring contract, stated rather than assumed
+
+Not a change; a consequence of §6 that deserves to be written down, because a
+reader will otherwise assume the opposite.
+
+At Stage 1 the live arms answer the **shipped** protocol: the system message is
+`embodiment.scope.SCOPE_AUTHORITY` verbatim, and the strategist authors its own
+`scope_id`, `supersedes` and `version`. The scripted controls — including
+`A0`'s pre-registered `greedy` stand-in — never face that: `subordinate._payload_for`
+stamps all three for them, and they choose only the allocation.
+
+So the live arms carry a burden `A0`'s Stage-1 stand-in does not. Two things
+follow and both are held:
+
+- the burden is **identical between `A2` and `A3`** — one code path, one
+  framing, one parser, one register — so nothing in the `A2`/`A3` comparison,
+  which is what condition 5 turns on, is affected by it;
+- an arm that cannot carry it lands below `PROTOCOL_FLOOR` and its cell is
+  `void-protocol` (§10) — **reported, and never scored as a strategic loss**.
+
+The alternative — stamping the bookkeeping for the live arms too — was
+considered and rejected. It would have made `protocol_acceptance` ≈ 1.0 by
+construction and the protocol axis vacuous, which is a worse trade than a
+declared asymmetry against the arm under test.
+
+### Amendment 3 — Stage 2 is not in this cycle
+
+§6 declares two stages and this cycle runs one. Stage 2 needs a live
+worker-role actor playing each episode under the standing directive — a second
+harness with its own tool surface, its own byte-identical-across-arms
+assertion and its own capacity budget — and Stage 1 was run first because the
+pre-registration makes it condition 2's entire input: an improvement that does
+not appear against a perfect subordinate did not come from the upper-level
+decision.
+
+Every Stage-2 cell is therefore **declared absent with that reason** rather
+than omitted, which is condition 7 working as designed. The consequence is
+stated plainly in the results: conditions 1, 5 and 6 read from Stage 2 and are
+`ABSENT`, so **no verdict is available** and the outcome is `INCONCLUSIVE` — by
+the committed rule, not by choice. `A1` has no cell at either stage in this
+cycle, which §6 already declared for Stage 1 and this amendment extends to
+Stage 2.
+
+### Amendment 4 — the raw records are a directory, not one file
+
+§1 says the series' raw records land in `scopebench.jsonl`. They land in
+`scopebench-raw/`, one JSONL per `(arm, stage)`, because the series runs an arm
+at a time and each file is written and flushed episode by episode — so a run
+that dies partway keeps every episode it completed rather than losing the lot.
+`scopebench-raw/capabilities.json` sits beside them, recording the
+`/capabilities` advert the seats were resolved from.
+
+Cosmetic, and recorded anyway: a pre-registration that names an artifact path
+and a result that uses another is a broken reference, and this repo's habit is
+to write the departure down rather than let a reader discover it.
+`tests/test_scopebench_preregistration.py` pins the directory.
