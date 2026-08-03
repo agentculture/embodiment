@@ -1,7 +1,7 @@
 """ONE host-visible degradation stream, folded from every lane (task t9).
 
 Constraint **C3** says every degradation records a host-visible transition and
-nothing degrades silently. Seven lanes each hold that promise on their own, in
+nothing degrades silently. Eight lanes each hold that promise on their own, in
 their own vocabulary and their own record shape::
 
     LoopOutcome.degradations       -> loop.LoopDegradation        (DEGRADED_*)
@@ -11,9 +11,10 @@ their own vocabulary and their own record shape::
     RecallOutcome.degradation      -> continuity.Degradation      (CODE_*)
     ContinuityLifecycle.events     -> lifecycle.LifecycleEvent    (kind "degraded")
     SpawnRecord.degradations       -> (child's own records)        (child's lane)
+    StrategistRunner.degradations  -> scope.ScopeDegradation      (DEGRADED_*/DROPPED_*)
 
-So a host that wants to answer *"what went wrong?"* has to know seven
-vocabularies, seven containers and six field layouts. That is C3 satisfied
+So a host that wants to answer *"what went wrong?"* has to know eight
+vocabularies, eight containers and seven field layouts. That is C3 satisfied
 per-lane and defeated in aggregate. This module is the fold: one shape, one
 stream, one question.
 
@@ -44,7 +45,7 @@ free to record whatever they must.
 
 Never fabricates an absent field
 --------------------------------
-:class:`LedgerRecord` is the union of what the six shapes carry, and every field
+:class:`LedgerRecord` is the union of what the seven shapes carry, and every field
 a source does **not** carry stays ``None`` — it is never defaulted to ``0`` or
 ``""``. :class:`embodiment.continuity.Degradation` has no step index, so a
 continuity-sourced record's ``step_index`` is ``None``, and :meth:`to_dict`
@@ -397,7 +398,7 @@ def known_codes() -> tuple[CodeEntry, ...]:
     set by construction: adding a ``DEGRADED_*`` / ``DROPPED_*`` / ``CODE_*``
     constant to a lane adds it here with no edit to this file.
 
-    Imports all six lanes (that is the whole point of the call), so a host on a
+    Imports all eight lanes (that is the whole point of the call), so a host on a
     hot path should prefer the narrower :func:`source_for_code`.
     """
     entries = [
