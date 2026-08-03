@@ -250,7 +250,8 @@ class TestTheStrategistlessDefault:
 
         with _runner(_Scripted(), thread_factory=factory) as runner:
             _one_review(runner, _snapshot())
-        assert seen and seen[0]["name"] == THREAD_NAME
+        assert seen
+        assert seen[0]["name"] == THREAD_NAME
         assert seen[0]["daemon"] is True
 
 
@@ -399,7 +400,8 @@ class TestOneReviewInFlight:
             runner.consider(_snapshot(snapshot_id="s-2"), step_index=3)
             seam.release.set()
             assert runner.wait_idle(_TIMEOUT)
-        assert seen and max(seen) == 1
+        assert seen
+        assert max(seen) == 1
         assert runner.counts["reviews_started"] == 2
 
 
