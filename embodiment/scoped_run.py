@@ -159,6 +159,35 @@ drive ends. There is no mid-drive directive-drop move, and this module does not
 drain at drive end: handing back a directive the actor can no longer act on
 would put a decision in the record that never governed anything.
 
+Two persistence lanes, and the storage owner is the HOST's (task t13, ``c33``)
+------------------------------------------------------------------------------
+A drive runs in exactly one lane, and every record it writes names it:
+
+* **durable** — the chain survives across drives and across a process restart.
+  It crosses that boundary through :class:`ScopePersistence`, an injected port
+  of two host callables. Which component stores the payload is *parked* by the
+  frame (open vagueness ``v5``: host state round-tripped through the projector,
+  or a continuity record), so nothing here chooses one — this module opens no
+  file, imports no driver and reaches no memory subsystem.
+* **session-scoped** — a :class:`ScopeSession` holds the chain inside one
+  process and nowhere else. A session-governed drive holds **no port at all**
+  (:class:`_Governed` drops it at construction), which is what makes "a session
+  never writes the durable lane" structural rather than conditional. Sessions
+  are the future seam for per-subagent scoping; per-subagent scoping is not
+  built here.
+
+A host that wires neither gets exactly today's behaviour: an anonymous
+session-lane chain that lives for one drive, started from the explicit host
+default scope, with nothing written anywhere.
+
+What is persisted is what was **applied** (embodiment#54, again). The lane's
+chain is fed from :meth:`_Governed._seat` — the same applied chain
+:attr:`ScopedOutcome.active` reports — never from a strategist's register, so a
+directive the actor never received cannot come back after a restart as the scope
+it was working under. And because that chain legitimately has gaps, restoring it
+is a replay rather than a proposal: see :meth:`embodiment.scope.
+ScopeRegister.receive`.
+
 Observability rides the host's OWN observer (task t5)
 -------------------------------------------------------
 This module imports no event fabric — :mod:`embodiment.scope_events` is a pure
@@ -189,6 +218,9 @@ from embodiment.contract import Task, TaskResult
 from embodiment.framing import frame_cortex
 from embodiment.loop import CompleteFn, LoopAborted, LoopOutcome, ToolExecutor, run
 from embodiment.scope import (
+    LANE_DURABLE,
+    LANE_SCHEMA_VERSION,
+    LANE_SESSION,
     SCOPE_EXIT_UNCHANGED,
     SCOPE_STATUS_ACTIVE,
     SCOPE_STATUS_BLOCKED,
@@ -214,6 +246,9 @@ __all__ = [
     "ScopedControls",
     "ScopeGovernor",
     "ScopedOutcome",
+    # persistence lanes (c33)
+    "ScopePersistence",
+    "ScopeSession",
     # composition
     "render_directive",
     "run_scoped",
@@ -231,7 +266,11 @@ __all__ = [
 #: The explicit host default scope was seated and delivered. Never inferred and
 #: never model-produced: absent a host default, the actor starts under no scope.
 TRANSITION_DEFAULT = "scope-default-applied"
-#: A directive that ``drain`` handed over was rendered and inserted at a boundary.
+#: A directive was rendered and inserted at a boundary: one ``drain`` handed
+#: over, or one **restored from a persistence lane** at the start of the drive
+#: (task t13). Both are model-produced scope reaching the actor, which is what
+#: separates them from :data:`TRANSITION_DEFAULT`; the record's ``lane`` and
+#: ``reason`` say which.
 TRANSITION_APPLIED = "scope-directive-applied"
 #: The strategist wrote a hold — the current scope still fits. A real answer, and
 #: a graded one: a lane that only counted directives would report a careful
@@ -241,7 +280,11 @@ TRANSITION_HELD = "scope-held"
 #: directive, a version that does not advance, an id already applied, or an
 #: outcome this layer could not read. Recorded, never dropped.
 TRANSITION_WITHHELD = "scope-withheld"
-#: The strategist lane stopped. The record names what the actor continues under.
+#: A lane this layer depends on failed: the strategist lane stopped, or the
+#: host's persistence port could not be read or written (task t13). The record
+#: names which lane and what the actor continues under. A persistence failure
+#: costs *durability*, never delivery — the directive still governs the drive —
+#: and the record says so rather than letting the two be conflated.
 TRANSITION_DEGRADED = "scope-lane-degraded"
 #: The host's projector failed, or the snapshot could not be offered. No
 #: snapshot went up; the actor is unaffected.
@@ -365,6 +408,11 @@ class ScopeTransition:
     """The exact bytes inserted into the actor's context, or ``""`` when nothing
     was inserted. On the record so "what did the actor actually read?" is
     answerable from the artifact rather than reconstructed."""
+    lane: str = ""
+    """Which persistence lane this drive ran in — :data:`~embodiment.scope.
+    LANE_DURABLE` or :data:`~embodiment.scope.LANE_SESSION` (task t13,
+    criterion 3: every scope record names its lane). Empty only on a drive with
+    no scope lane at all, where it would be a claim rather than a fact."""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -380,7 +428,151 @@ class ScopeTransition:
             "role": self.role,
             "model": self.model,
             "text": self.text,
+            "lane": self.lane,
         }
+
+
+# ── the persistence lanes ─────────────────────────────────────────────────────
+
+
+def _text(value: Any) -> str:
+    """Best-effort text. Never raises; an unrenderable value reads as empty."""
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return ""
+    try:
+        return str(value)
+    except Exception:  # noqa: BLE001  # an unstringable value renders as empty
+        return ""
+
+
+def _wired(port: Any) -> bool:
+    """Whether a persistence port carries a callable at all. Never raises."""
+    if port is None:
+        return False
+    try:
+        return port.load is not None or port.save is not None
+    except Exception:  # noqa: BLE001  # a hostile port is simply not a port
+        return False
+
+
+@dataclass(frozen=True)
+class ScopePersistence:
+    """The durable lane's **host-visible seam**: two callables, and no backend.
+
+    Which component actually stores the payload is not embodiment's to choose —
+    the frame parks it as open vagueness ``v5`` (host state round-tripped
+    through the scope projector, versus a continuity record). So this is a port
+    and nothing else: a host supplies the two ends, and this package supplies
+    the payload shape (:meth:`embodiment.scope.ScopeRegister.to_dict`) and the
+    discipline around calling them.
+
+    Frozen for :class:`~embodiment.scope.ScopeToolBench`'s reason: a host cannot
+    bolt a third capability onto a port after construction, so the surface stays
+    the two fields below forever.
+
+    Fields
+    ------
+    load:
+        ``() -> payload`` — called **once**, when the lane opens. Anything it
+        returns that :meth:`embodiment.scope.ScopeRegister.from_dict` cannot
+        read restores an empty lane; anything it *raises* is recorded and
+        **disables writing for the drive**, because overwriting a store that
+        could not be read would destroy the durable lane rather than degrade it.
+    save:
+        ``(payload) -> None`` — called after a directive is applied, and only
+        when the chain actually changed. A raise is recorded once and disables
+        further writes: durability is lost, delivery is not, and the record says
+        exactly that.
+
+    Both are optional. A port with neither is not a lane at all and the drive
+    runs session-scoped.
+    """
+
+    load: Optional[Callable[[], Any]] = None
+    save: Optional[Callable[[dict[str, Any]], None]] = None
+
+    @property
+    def wired(self) -> bool:
+        """Whether this port can do anything. ``False`` ⇒ no durable lane."""
+        return _wired(self)
+
+
+class ScopeSession:
+    """One session's scope state: in-process persistence, and nothing durable.
+
+    A session is the second half of the layered persistence claim ``c33``. It
+    holds its own :class:`~embodiment.scope.ScopeRegister` in the
+    :data:`~embodiment.scope.LANE_SESSION` lane, so directives applied under it
+    survive **across drives inside one process** and reach no store at all — a
+    governed drive that has a session holds no :class:`ScopePersistence` port,
+    so "a session never writes the durable lane" is structural rather than a
+    branch that could be got wrong.
+
+    :meth:`close` ends the session: the chain is dropped, :attr:`active` is
+    ``None``, and a later drive handed this session starts under no scope with a
+    recorded withholding naming it. A drive **already in flight** keeps the
+    reference it opened with for the rest of that drive — an actor cannot un-read
+    a message it was already shown, and pretending otherwise would put a claim in
+    the record that was never true.
+
+    Sessions are the **future seam for per-subagent scoping**: one session per
+    subagent is the shape that fits, and two sessions already hold independent
+    scope. Nothing here builds that scoping, and no subagent type is named.
+    """
+
+    def __init__(self, session_id: str = "", *, default: Optional[ScopeDirective] = None) -> None:
+        self._id = _text(session_id)
+        self._register: Optional[ScopeRegister] = ScopeRegister(default=default, lane=LANE_SESSION)
+
+    @property
+    def session_id(self) -> str:
+        """The host's identifier for this session. Rides every record it earns."""
+        return self._id
+
+    @property
+    def lane(self) -> str:
+        """Always :data:`~embodiment.scope.LANE_SESSION`. A session has no other."""
+        return LANE_SESSION
+
+    @property
+    def open(self) -> bool:
+        """Whether this session still holds scope state."""
+        return self._register is not None
+
+    @property
+    def register(self) -> Optional[ScopeRegister]:
+        """This session's chain, or ``None`` once it has been closed."""
+        return self._register
+
+    @property
+    def active(self) -> Optional[ScopeDirective]:
+        """The directive this session is holding, or ``None``."""
+        return self._register.active if self._register is not None else None
+
+    def to_dict(self) -> dict[str, Any]:
+        """This session's state, in the same payload shape the durable lane uses.
+
+        For a host that wants to *inspect* a session — a debug surface, a live
+        view. Handing it to a store would make it durable, which is precisely
+        what a session is not; nothing in this module ever does.
+        """
+        payload = (
+            self._register.to_dict()
+            if self._register is not None
+            else {
+                "schema_version": LANE_SCHEMA_VERSION,
+                "lane": LANE_SESSION,
+                "accepted": [],
+            }
+        )
+        payload["session_id"] = self._id
+        return payload
+
+    def close(self) -> None:
+        """End the session. Idempotent, and never raises."""
+        self._register = None
 
 
 # ── controls ──────────────────────────────────────────────────────────────────
@@ -440,6 +632,15 @@ class ScopeGovernor:
             host holding a :class:`~embodiment.framing.Framing` passes its
             ``identity``; there is no second resolution order here.
         controls: :class:`ScopedControls`; the defaults apply when omitted.
+        persistence: the **durable** lane's host-visible port
+            (:class:`ScopePersistence`). Absent — the default — no chain
+            outlives the drive.
+        session: the **session-scoped** lane (:class:`ScopeSession`). A session
+            is the narrower lane and **wins**: a drive that has one never opens
+            the durable port, even when a host wired both. That is the whole of
+            "a session holds its own scope state without touching the durable
+            lane", and it is a structural fact rather than a rule this module
+            has to remember to obey (:class:`_Governed` drops the port).
     """
 
     strategist: Optional[Any] = None
@@ -447,11 +648,25 @@ class ScopeGovernor:
     default_scope: Optional[ScopeDirective] = None
     identity: Optional[str] = None
     controls: Optional[ScopedControls] = None
+    persistence: Optional[ScopePersistence] = None
+    session: Optional[ScopeSession] = None
+
+    @property
+    def lane(self) -> str:
+        """Which persistence lane a drive under this governor runs in."""
+        if self.session is not None:
+            return LANE_SESSION
+        return LANE_DURABLE if _wired(self.persistence) else LANE_SESSION
 
     @property
     def armed(self) -> bool:
         """Whether the lane does anything at all. ``False`` ⇒ pure pass-through."""
-        return self.strategist is not None or self.default_scope is not None
+        return (
+            self.strategist is not None
+            or self.default_scope is not None
+            or self.session is not None
+            or _wired(self.persistence)
+        )
 
 
 # ── the outcome ───────────────────────────────────────────────────────────────
@@ -474,6 +689,10 @@ class ScopedOutcome:
     what the strategist's register holds (embodiment#54)."""
     scope_degradations: tuple[Any, ...] = ()
     """The strategist lane's own ledger, relayed rather than re-minted."""
+    lane: str = ""
+    """Which persistence lane governed this drive — :data:`~embodiment.scope.
+    LANE_DURABLE`, :data:`~embodiment.scope.LANE_SESSION`, or ``""`` for a drive
+    with no scope lane at all (task t13)."""
 
     @property
     def result(self) -> TaskResult:
@@ -500,6 +719,7 @@ class ScopedOutcome:
             "counts": dict(self.counts),
             "active": self.active.to_dict() if self.active is not None else None,
             "scope_degradations": [_as_dict(entry) for entry in self.scope_degradations],
+            "lane": self.lane,
         }
 
 
@@ -656,10 +876,30 @@ class _Governed:
         self._on = governor.armed
         self._controls = governor.controls or ScopedControls()
         self._task = task
+        # ── the persistence lane (task t13). A session is the narrower lane and
+        # wins: with one, the durable port is not merely unused, it is not held.
+        self._session = governor.session
+        self._port: Optional[ScopePersistence] = (
+            None
+            if self._session is not None or not _wired(governor.persistence)
+            else governor.persistence
+        )
+        self._lane = governor.lane if self._on else ""
+        #: The APPLIED chain as lane state — fed by :meth:`_seat`, never by a
+        #: strategist's register (embodiment#54), and what :meth:`_persist`
+        #: writes. Replaced by :meth:`_open_lane` with the lane's real chain.
+        self._register = ScopeRegister(lane=self._lane or LANE_SESSION)
+        #: Whether the durable lane may still be written. Cleared by an
+        #: unreadable store or a failed write, each recorded once.
+        self._writable = self._port is not None
+        #: What this lane believes the store already holds, so an unchanged
+        #: chain is never rewritten.
+        self._written: Optional[dict[str, Any]] = None
         self._active: Optional[ScopeDirective] = None
         self._version = _NO_VERSION
         self._applied: list[str] = []
         self._queued: Optional[ScopeDirective] = None
+        self._queued_kind = TRANSITION_DEFAULT
         self._transitions: list[ScopeTransition] = []
         self._degraded = False
         self._turn = 0
@@ -692,13 +932,22 @@ class _Governed:
             "directives_applied": 0,
             "holds_recorded": 0,
             "outcomes_withheld": 0,
+            # persistence — what the lane restored, and what it wrote
+            "scope_restored": 0,
+            "durable_writes": 0,
         }
 
     # ── lifecycle ────────────────────────────────────────────────────────────
     def arm(self) -> None:
-        """Seat the host default scope and start the lane. Never raises."""
+        """Open the persistence lane, seat the host default, start the strategist.
+
+        The order is load-bearing: whatever the lane already holds outranks the
+        host default, because a default is what governs *until* a directive
+        arrives and one already has.
+        """
         if not self._on:
             return
+        self._open_lane()
         self._seat_default()
         self._start()
 
@@ -708,7 +957,10 @@ class _Governed:
         for entry in relayed:
             self._notify(
                 scope_events.for_lane_degradation(
-                    entry, model=self._strategist_model, role=self._strategist_role
+                    entry,
+                    model=self._strategist_model,
+                    role=self._strategist_role,
+                    lane=self._lane,
                 )
             )
         return ScopedOutcome(
@@ -717,6 +969,7 @@ class _Governed:
             counts=dict(self._counts),
             active=self._active,
             scope_degradations=relayed,
+            lane=self._lane,
         )
 
     def _notify(self, event: Optional[Any]) -> None:
@@ -735,6 +988,116 @@ class _Governed:
         except Exception:  # noqa: BLE001  # an observer must never abort a drive
             self._observer_failed = True
 
+    # ── the persistence lane (task t13) ──────────────────────────────────────
+    def _open_lane(self) -> None:
+        """Open this drive's lane and queue whatever scope it already holds.
+
+        Restored scope is delivered like any other directive — at the first turn
+        boundary, through the one framing-composed path — and recorded as
+        :data:`TRANSITION_APPLIED` rather than :data:`TRANSITION_DEFAULT`,
+        because a restored directive is model-produced scope and a default is
+        not. Never raises: every host call below carries its own guard.
+        """
+        self._register = self._lane_register()
+        restored = self._register.active
+        if restored is None:
+            return
+        self._counts["scope_restored"] += 1
+        self._seat(restored)
+        self._queued, self._queued_kind = restored, TRANSITION_APPLIED
+
+    def _lane_register(self) -> ScopeRegister:
+        """The chain this drive governs from: the session's, the store's, or new."""
+        if self._session is not None:
+            return self._session_register()
+        if self._port is not None:
+            return self._durable_register()
+        return ScopeRegister(lane=LANE_SESSION)
+
+    def _session_register(self) -> ScopeRegister:
+        """The session's own chain — or a fresh one, recorded, when it has closed."""
+        try:
+            held, label = self._session.register, _text(self._session.session_id)
+        except Exception as exc:  # noqa: BLE001  # a hostile session is never a crash
+            held, label = None, f"<unreadable: {type(exc).__name__}: {exc}>"
+        if isinstance(held, ScopeRegister):
+            return held
+        self._record(
+            TRANSITION_WITHHELD,
+            reason=(
+                f"session {label!r} is closed; the scope it held did not outlive it, "
+                "so this drive starts from the host default scope"
+            ),
+        )
+        return ScopeRegister(lane=LANE_SESSION)
+
+    def _durable_register(self) -> ScopeRegister:
+        """Read the durable lane through the host's port. Never raises (C3).
+
+        A store that could not be READ disables writing for the whole drive:
+        overwriting it would replace scope nobody could see with scope from a
+        single drive, which destroys the durable lane rather than degrading it.
+
+        The port's own attribute read sits inside the guard with the call: a
+        host may hand any object with the two names, so reaching for ``load``
+        is as much host code as calling it.
+        """
+        try:
+            loader = self._port.load
+            payload = loader() if loader is not None else None
+        except Exception as exc:  # noqa: BLE001  # a dead store is never a crash
+            self._writable = False
+            self._record(
+                TRANSITION_DEGRADED,
+                reason=(
+                    f"the durable scope lane could not be read ({type(exc).__name__}: {exc}); "
+                    "nothing will be written to it on this drive"
+                ),
+            )
+            return ScopeRegister(lane=LANE_DURABLE)
+        register = ScopeRegister.from_dict(payload, lane=LANE_DURABLE)
+        self._written = register.to_dict()
+        for refusal in register.rejections:
+            self._record(
+                TRANSITION_WITHHELD,
+                scope_id=refusal.scope_id,
+                version=refusal.version,
+                reason=f"a persisted directive was refused on restore: {refusal.reason}",
+            )
+        return register
+
+    def _persist(self) -> None:
+        """Write the applied chain through the host's port. Never raises (C3).
+
+        Skipped when the chain has not changed, so a drive that applies nothing
+        writes nothing. A failed write costs **durability only** — the directive
+        already governs this drive — and the record says exactly that rather
+        than letting a host read it as a delivery failure.
+        """
+        if not self._writable:
+            return
+        payload = self._register.to_dict()
+        if payload == self._written:
+            return
+        try:
+            writer = self._port.save
+            if writer is None:
+                return
+            writer(payload)
+        except Exception as exc:  # noqa: BLE001  # a failed write never aborts a drive
+            self._writable = False
+            self._record(
+                TRANSITION_DEGRADED,
+                reason=(
+                    f"the durable scope lane could not be written "
+                    f"({type(exc).__name__}: {exc}); {self._under()}, but that scope "
+                    "will not survive this drive"
+                ),
+            )
+            return
+        self._written = payload
+        self._counts["durable_writes"] += 1
+
     def _seat_default(self) -> None:
         """Validate and seat the explicit host default, or record why not.
 
@@ -742,9 +1105,14 @@ class _Governed:
         than restated: a fresh register admits the default on exactly the terms
         every later directive is admitted on, and a refusal arrives already
         shaped as a :class:`~embodiment.scope.ScopeRejection` with its reason.
+
+        A default governs *until a directive arrives*, so a lane that already
+        carries one keeps it: the default is not offered at all rather than
+        offered and refused as a duplicate, which would put a refusal in the
+        record for a host that did nothing wrong.
         """
         directive = self._gov.default_scope
-        if directive is None:
+        if directive is None or self._register.active is not None:
             return
         register = ScopeRegister(default=directive)
         seated = register.active
@@ -760,7 +1128,7 @@ class _Governed:
             )
             return
         self._seat(seated)
-        self._queued = seated
+        self._queued, self._queued_kind = seated, TRANSITION_DEFAULT
 
     def _start(self) -> None:
         """Start the strategist lane, or record that the drive runs without one."""
@@ -829,10 +1197,15 @@ class _Governed:
         self._operator.clear()
 
     def _deliver(self, messages: list[dict[str, Any]]) -> None:
-        """Put whatever is due in front of the actor. The queued default goes first."""
+        """Put whatever is due in front of the actor. The queued scope goes first.
+
+        What is queued is either the host default or what the persistence lane
+        already held; :attr:`_queued_kind` is which, decided where the queuing
+        happened rather than guessed here.
+        """
         queued, self._queued = self._queued, None
         if queued is not None:
-            self._emit(messages, TRANSITION_DEFAULT, queued)
+            self._emit(messages, self._queued_kind, queued)
         if self._degraded:
             return
         for outcome in self._drain():
@@ -855,8 +1228,8 @@ class _Governed:
         for outcome in outcomes:
             # What the strategist produced, independent of what this layer goes
             # on to decide about it (applied / held / withheld, below).
-            self._notify(scope_events.review_completed_event(outcome))
-            self._notify(scope_events.directive_proposed_event(outcome))
+            self._notify(scope_events.review_completed_event(outcome, lane=self._lane))
+            self._notify(scope_events.directive_proposed_event(outcome, lane=self._lane))
         return outcomes
 
     def _consume(self, messages: list[dict[str, Any]], outcome: Any) -> None:
@@ -939,6 +1312,7 @@ class _Governed:
             text=event["content"],
             reason=f"scope {directive.scope_id!r} now governs this drive",
         )
+        self._persist()
 
     def _seat(self, directive: ScopeDirective) -> None:
         """Make *directive* what the actor is working under. The applied chain."""
@@ -946,6 +1320,33 @@ class _Governed:
         self._version = directive.version
         if directive.scope_id not in self._applied:
             self._applied.append(directive.scope_id)
+        self._admit(directive)
+
+    def _admit(self, directive: ScopeDirective) -> None:
+        """Record the directive on the LANE's chain — the state that persists.
+
+        :meth:`~embodiment.scope.ScopeRegister.receive` rather than ``offer``:
+        this chain is what the actor *received*, so its provenance legitimately
+        has gaps and re-checking ``supersedes`` against it would strand the
+        actor (the module docstring's own reasoning, applied to the state that
+        outlives the drive). A directive the lane already holds — the restored
+        one, or the default seated twice — is not recorded twice.
+        """
+        if directive.scope_id in self._register.known:
+            return
+        refusal = self._register.receive(directive)
+        if refusal is None:
+            return
+        self._record(
+            TRANSITION_DEGRADED,
+            scope_id=refusal.scope_id,
+            version=refusal.version,
+            reason=(
+                f"the {self._lane} scope lane refused to record scope "
+                f"{refusal.scope_id!r} ({refusal.reason}); it governs this drive "
+                "but is absent from the lane's chain"
+            ),
+        )
 
     def _note_lane(self) -> None:
         """Notice the lane having stopped, once, and say what survives it."""
@@ -981,7 +1382,9 @@ class _Governed:
         self._counts["boundaries_projected"] += 1
         self._report = report
         self._notify(
-            scope_events.report_event(report, turn_index=self._turn, step_count=self._steps)
+            scope_events.report_event(
+                report, turn_index=self._turn, step_count=self._steps, lane=self._lane
+            )
         )
         try:
             snapshot = projector(self._context(report))
@@ -1000,7 +1403,9 @@ class _Governed:
             return
         self._snapshot = snapshot
         self._notify(
-            scope_events.snapshot_event(snapshot, turn_index=self._turn, step_count=self._steps)
+            scope_events.snapshot_event(
+                snapshot, turn_index=self._turn, step_count=self._steps, lane=self._lane
+            )
         )
         try:
             strategist.consider(snapshot, step_index=self._steps)
@@ -1018,6 +1423,7 @@ class _Governed:
                 step_index=self._steps,
                 model=self._strategist_model,
                 role=self._strategist_role,
+                lane=self._lane,
             )
         )
 
@@ -1105,6 +1511,9 @@ class _Governed:
         self._record(TRANSITION_WITHHELD, reason=reason, **stamp)
 
     def _record(self, kind: str, **stamp: Any) -> None:
+        # Every scope record names its lane (task t13, criterion 3), stamped in
+        # the ONE place records are built rather than at each call site.
+        stamp.setdefault("lane", self._lane)
         transition = ScopeTransition(
             kind=kind,
             turn_index=self._turn,
