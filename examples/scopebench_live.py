@@ -599,7 +599,9 @@ class LiveStrategist:
 # ── running one episode, and one arm ──────────────────────────────────────────
 
 
-def arm_fingerprint(arm: str, dial: SeatDialConfig) -> dict[str, Any]:
+def arm_fingerprint(
+    arm: str, dial: SeatDialConfig, *, stream: bool = ws.DEFAULT_STREAM
+) -> dict[str, Any]:
     """Everything that was held identical, and the one field that was not.
 
     ``t11`` acceptance criterion 2 asks Stage 2 to pin actor config, tools,
@@ -607,6 +609,14 @@ def arm_fingerprint(arm: str, dial: SeatDialConfig) -> dict[str, Any]:
     **from the run records**. Stage 1 has no actor, but the same discipline
     applies to everything the strategist sees and is sampled at, so this rides
     on every arm's record and ``report`` diffs the two.
+
+    *stream* is a **parameter and not a read of** :data:`~examples.worker_seam.DEFAULT_STREAM`,
+    which is what it used to be. A fingerprint whose ``transport`` field reports
+    the module default rather than what the run dialled would say ``sse`` for a
+    ``--no-stream`` run — a record lying about its own instrument, in the one
+    block whose entire job is to say what the instrument was. Nothing committed
+    was produced that way (both arms ran on the default), so the fix changes no
+    recorded value; it removes the way a future one could be wrong.
     """
     return {
         "seat_role": dial.role,
@@ -614,7 +624,7 @@ def arm_fingerprint(arm: str, dial: SeatDialConfig) -> dict[str, Any]:
         "seat_endpoint": dial.base_url,
         "max_tokens": STRATEGIST_MAX_TOKENS,
         "temperature": STRATEGIST_TEMPERATURE,
-        "transport": ws.TRANSPORT_STREAM if ws.DEFAULT_STREAM else ws.TRANSPORT_BLOCKING,
+        "transport": ws.TRANSPORT_STREAM if stream else ws.TRANSPORT_BLOCKING,
         "stream_queue_width": STREAM_QUEUE_WIDTH,
         "request_timeout_s": ws.REQUEST_TIMEOUT,
         "stream_first_chunk_timeout_s": round(ws.STREAM_FIRST_CHUNK_TIMEOUT, 3),
@@ -718,6 +728,7 @@ class ArmRun:
 
     arm: str
     dial: SeatDialConfig
+    stream: bool = ws.DEFAULT_STREAM
     records: list[dict[str, Any]] = field(default_factory=list)
     dropped: list[dict[str, Any]] = field(default_factory=list)
 
@@ -736,7 +747,7 @@ class ArmRun:
             "arm": self.arm,
             "stage": sb.STAGE_ONE,
             "dial": self.dial.to_dict(),
-            "fingerprint": arm_fingerprint(self.arm, self.dial),
+            "fingerprint": arm_fingerprint(self.arm, self.dial, stream=self.stream),
             "scored": len(self.records),
             "dropped": len(self.dropped),
         }
@@ -753,7 +764,7 @@ def run_arm(
     log: Any = sys.stderr,
 ) -> ArmRun:
     """Every committed episode under one live strategist, written as it goes."""
-    run = ArmRun(arm=arm, dial=dial)
+    run = ArmRun(arm=arm, dial=dial, stream=stream)
     out.parent.mkdir(parents=True, exist_ok=True)
     episodes = [entry for entry in ep.first_cycle_episodes() if entry.family in families]
     if per_family is not None:
@@ -1274,7 +1285,7 @@ def _run_smoke(args: argparse.Namespace) -> int:
         "note": "instrument check, not data",
         "arm": args.arm,
         "dial": dial.to_dict(),
-        "fingerprint": arm_fingerprint(args.arm, dial),
+        "fingerprint": arm_fingerprint(args.arm, dial, stream=args.stream),
         "episode": episode.id,
         "reply": None if not strategist.calls else strategist.calls[0].to_dict(),
         "payload": payload,

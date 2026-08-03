@@ -496,6 +496,21 @@ class TestTheArmsDifferOnlyInTheSeat:
         right = sl.arm_fingerprint(sb.ARM_A3, self._dial(sb.ARM_A3, "cortex", "c"))
         assert left["system_prompt_sha"] == right["system_prompt_sha"]
 
+    def test_the_transport_field_reports_what_was_dialled(self) -> None:
+        """A fingerprint that read the module default would lie under --no-stream.
+
+        The one block whose entire job is to say what the instrument was must
+        not report a default in place of the instrument.
+        """
+        dial = self._dial(sb.ARM_A3, "cortex", "c")
+        assert (
+            sl.arm_fingerprint(sb.ARM_A3, dial, stream=False)["transport"] == ws.TRANSPORT_BLOCKING
+        )
+
+    def test_the_shipped_runs_dialled_streaming(self) -> None:
+        dial = self._dial(sb.ARM_A3, "cortex", "c")
+        assert sl.arm_fingerprint(sb.ARM_A3, dial)["transport"] == ws.TRANSPORT_STREAM
+
 
 # ── seat resolution degrades, never raises ───────────────────────────────────
 
