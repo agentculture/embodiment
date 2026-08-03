@@ -130,6 +130,7 @@ __all__ = [
     "SOURCE_EVENTS",
     "SOURCE_CONTINUITY",
     "SOURCE_LIFECYCLE",
+    "SOURCE_SCOPE",
     "SOURCE_LEDGER",
     "SOURCE_SUBAGENT",
     "SOURCES",
@@ -148,6 +149,7 @@ __all__ = [
     "from_events",
     "from_continuity",
     "from_lifecycle",
+    "from_scope",
     "from_subagent",
     "read",
 ]
@@ -167,6 +169,11 @@ SOURCE_EVENTS = "events"
 SOURCE_CONTINUITY = "continuity"
 #: The lived sequence's checkpoints (:mod:`embodiment.lifecycle`).
 SOURCE_LIFECYCLE = "lifecycle"
+#: Strategic scope governance: one review (:mod:`embodiment.scope`) and the
+#: thread that runs reviews beside the acting loop
+#: (:mod:`embodiment.strategist_runner`), folded as ONE lane because the
+#: runner re-exports every code the review loop mints (task t3).
+SOURCE_SCOPE = "scope"
 #: This module. A ledger that cannot read a source says so, in its own stream.
 SOURCE_LEDGER = "ledger"
 #: A child drive's degradations, carried back on :class:`~embodiment.subagent.SubagentResult`.
@@ -183,6 +190,7 @@ SOURCES = (
     SOURCE_EVENTS,
     SOURCE_CONTINUITY,
     SOURCE_LIFECYCLE,
+    SOURCE_SCOPE,
     SOURCE_LEDGER,
 )
 
@@ -215,6 +223,7 @@ _MODULES: dict[str, tuple[str, tuple[str, ...], bool]] = {
     SOURCE_EVENTS: ("embodiment.events", ("DEGRADED_",), True),
     SOURCE_CONTINUITY: ("embodiment.continuity", ("CODE_",), True),
     SOURCE_LIFECYCLE: ("embodiment.lifecycle", ("_FAULT_",), False),
+    SOURCE_SCOPE: ("embodiment.strategist_runner", ("DEGRADED_", "DROPPED_"), True),
     SOURCE_LEDGER: (__name__, ("DEGRADED_",), True),
 }
 
@@ -231,6 +240,7 @@ _RELEVANT: dict[str, tuple[str, ...]] = {
     SOURCE_CONTINUITY: (SOURCE_CONTINUITY,),
     # ``_emit_degradation`` re-emits a continuity ``CODE_*`` as a checkpoint.
     SOURCE_LIFECYCLE: (SOURCE_LIFECYCLE, SOURCE_CONTINUITY),
+    SOURCE_SCOPE: (SOURCE_SCOPE,),
     SOURCE_LEDGER: (SOURCE_LEDGER,),
     # The subagent lane relays the child's own codes: a loop degradation from a
     # child keeps ``source=loop`` while carrying ``child_task_id``. The subagent
@@ -621,6 +631,25 @@ def from_lifecycle(source: Any) -> list[LedgerRecord]:
     return folded
 
 
+def from_scope(source: Any) -> list[LedgerRecord]:
+    """Fold a scope-governance degradation ledger (task t3).
+
+    Accepts a :class:`~embodiment.scope.ScopeOutcome` (one review), a
+    :class:`~embodiment.strategist_runner.StrategistRunner` (the accumulated
+    lane), a bare :class:`~embodiment.scope.ScopeDegradation` /
+    :class:`~embodiment.scope.ScopeRejection`, or a sequence of any — every
+    shape exposes ``degradations`` or ``code`` on the same terms every other
+    reader's shapes do.
+
+    The vocabulary is read from :mod:`embodiment.strategist_runner`, which
+    re-exports every code :mod:`embodiment.scope` mints alongside its own ten,
+    so this ONE lane harvests the whole scope-governance vocabulary rather than
+    two — a review-level code and a lane-level code attribute to the same
+    source.
+    """
+    return _fold(source, lane=SOURCE_SCOPE)
+
+
 def from_subagent(source: Any, *, child_task_id: Optional[str] = None) -> list[LedgerRecord]:
     """Fold a child drive's degradations with child attribution.
 
@@ -683,6 +712,7 @@ _READERS = {
     SOURCE_EVENTS: from_events,
     SOURCE_CONTINUITY: from_continuity,
     SOURCE_LIFECYCLE: from_lifecycle,
+    SOURCE_SCOPE: from_scope,
 }
 
 
@@ -694,6 +724,7 @@ def read(
     events: Any = None,
     continuity: Any = None,
     lifecycle: Any = None,
+    scope: Any = None,
     subagent: Any = None,
 ) -> list[LedgerRecord]:
     """Fold everything a host was handed into ONE stream.
@@ -719,6 +750,7 @@ def read(
             SOURCE_EVENTS: events,
             SOURCE_CONTINUITY: continuity,
             SOURCE_LIFECYCLE: lifecycle,
+            SOURCE_SCOPE: scope,
         }.get(lane)
         if given is None:
             continue
