@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.12.0] - 2026-08-03
+
+### Added
+
+- The strategic scope layer, opt-in and off by default: `scope.py` (typed, versioned, supersedable directives with a bounded ScopeLoop and a role-scoped strategist bench), `strategist_runner.py` (the background lane), `scoped_run.py` (`run_scoped()` composing `loop.run()` with a zero-line diff), `scope_events.py` (the ten `scope.*` kinds, host-wired observer only)
+- Directive persistence lanes: durable across drives and session-scoped within one process, structurally distinct, every record naming its lane; sessions are the future per-subagent scoping seam
+- ScopeBench under `examples/scope/`: machine-gradable episodes, an exact enumerating oracle with a brute-force test-of-the-test, arms A0-A3 as data, committed seeds and a preregistration carrying the seven-condition verdict rule
+- Seat wiring resolving strictly by lobes role name — strategist on `cortex`, actor on `worker` — with a behavioural proof that swapping model fields does not move a seat
+- A non-colleague demo (`examples/scope/greenhouse_scope.py`) showing versioned directives, supersession, degradation and the received-vs-issued distinction
+- The Stage 0 authority suite: seizure sentinel, surrender tests, and the snapshot-to-directive-to-actor injection chain covered at both hops
+- `SOURCE_SCOPE` ledger lane, added by exactly one `_MODULES` row plus a `from_scope` reader
+- Per-role `calling_patterns` in the rate config, where the loader refuses any pattern whose chosen divisor is the faster of two readings
+
+### Changed
+
+- The muse is ARCHIVED (issue #53, deviations d2/d3, superseding confirmed claims c12/c32): `muse.py` and `muse_runner.py` leave the curated surface and `__all__` but stay importable by name, because `strategist_runner.py` cites them verbatim. Archival costs advertisement, not reach
+- `embodiment.scope`, `embodiment.scoped_run` and `embodiment.strategist_runner` join the curated public surface, retiring three independent workarounds in `examples/scope/`
+- The timeout guard now walks `examples/` recursively and covers `embodiment/` module-level clocks, each derived or exempt with a stated reason
+
+### Fixed
+
+- The repo-wide timeout guard walked `examples/*.py` non-recursively, so every file under a per-architecture subfolder escaped it silently
+- `38.9 tok/s` — the worker mean two shipped strategist constants divide by — was published in no committed file; it now is, with a test that fails any rate the config does not publish
+
 ## [0.11.0] - 2026-08-01
 
 ### Added
