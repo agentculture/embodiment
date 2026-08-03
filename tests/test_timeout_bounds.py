@@ -80,8 +80,10 @@ from __future__ import annotations
 import ast
 import importlib
 import json
+import re
 import sys
 from dataclasses import dataclass, field
+from math import ceil
 from pathlib import Path
 from typing import Mapping, Optional, Sequence
 
@@ -93,6 +95,13 @@ from tests import rate_config as rc  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 EXAMPLES_DIR = REPO_ROOT / "examples"
+#: The scope lane's own folder. Walked by the same guard as the rest of
+#: ``examples/`` since ``rglob`` replaced ``glob``; ``t10`` proves that reach
+#: rather than trusting it (:class:`TestTheWalkReachesEverySubfolder`).
+SCOPE_DIR = EXAMPLES_DIR / "scope"
+#: The package itself. ``t10`` brings it under the same declare-or-derive rule
+#: the harnesses are under — see :data:`_NOT_A_MODEL_CLOCK_IN_PACKAGE`.
+PACKAGE_DIR = REPO_ROOT / "embodiment"
 RESULTS_DIR = REPO_ROOT / "docs" / "live-test-results"
 
 
@@ -915,15 +924,36 @@ _NOT_A_MODEL_CLOCK: Mapping[tuple[str, str], str] = {
 }
 
 
-def _module_level_floats(
-    hints: Sequence[str],
-) -> list[tuple[str, str, float]]:
-    """``(module stem, constant, value)`` for module-level float assignments matching *hints*."""
-    found: list[tuple[str, str, float]] = []
+def _walked_files(root: Path) -> list[Path]:
+    """Every ``.py`` file the clock guard reads under *root*.
+
+    Split out of :func:`_module_level_floats` by ``t10`` for one reason: the
+    ``glob`` -> ``rglob`` widening that brought ``examples/scope/`` inside the
+    guard was itself unproven. A walk that silently stops at the top level
+    reads exactly like a walk that found nothing, and this repo has shipped a
+    guard that checked nothing before (`corrections.md` §3). Naming the
+    enumeration makes it assertable — see
+    :class:`TestTheWalkReachesEverySubfolder`.
+    """
     # rglob, not glob: per-architecture subfolders (examples/scope/) are inside the
     # guard too. A non-recursive walk let five files escape it silently, which is the
     # exact shape of the failure this whole module exists to prevent.
-    for path in sorted(EXAMPLES_DIR.rglob("*.py")):
+    return sorted(root.rglob("*.py"))
+
+
+def _module_level_floats(
+    hints: Sequence[str],
+    root: Path = EXAMPLES_DIR,
+) -> list[tuple[str, str, float]]:
+    """``(module stem, constant, value)`` for module-level float assignments matching *hints*.
+
+    *root* defaults to ``examples/`` so every existing caller is unchanged.
+    ``t10`` added the parameter so the identical AST walk can be pointed at
+    ``embodiment/`` — the package ships module-level clocks of its own and no
+    guard covered them — and at a ``tmp_path`` for the walk's own tests.
+    """
+    found: list[tuple[str, str, float]] = []
+    for path in _walked_files(root):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in tree.body:
             if not isinstance(node, ast.Assign):
@@ -1511,3 +1541,634 @@ class TestUnmeasuredRolesStayVisible:
         """
         for role in config.unmeasured_roles:
             assert role not in config.roles
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# t10 — the scope lane: the walk's reach, the package's own clocks, and the
+# strategist defaults' trace back to the committed config.
+#
+# Plan ``strategic-scope-governor`` task ``t10``, covering ``c10``/``h9``. Three
+# acceptance criteria, each proved in its own class below:
+#
+# 1. every timeout constant under ``examples/scope/`` is a walked ``Clock``, and
+#    the AST guard fails any that is not — :class:`TestTheWalkReachesEverySubfolder`
+#    and :class:`TestTheScopeLaneIntroducesNoClock`;
+# 2. the ``worker`` role carries a measured, dated rate entry, and the divisor
+#    the scoped-run calling pattern uses is the conservative reading rather than
+#    the flattering one (plan risk ``r1``) —
+#    :class:`TestTheScopedRunDivisorIsTheConservativeReading`;
+# 3. the strategist runner's staleness and cadence defaults cite the measured
+#    strategist latency, and that citation resolves to a figure this config
+#    actually publishes — :class:`TestTheStrategistDefaultsTraceToTheConfig`.
+#
+# These live in THIS module rather than a new one on purpose.
+# ``tests/test_rate_config.py``'s ``RATE_DERIVING_MODULES`` is an explicit list,
+# and a new file would have been outside it — a rate-deriving test module the
+# c39 no-literal guard does not walk is the staleness defect wearing a new file
+# name. Everything below reads its numbers from the loaded config.
+# ══════════════════════════════════════════════════════════════════════════════
+
+
+class TestTheWalkReachesEverySubfolder:
+    """The guard's reach, proved rather than assumed.
+
+    ``glob`` became ``rglob`` in commit ``9c2eee9`` so ``examples/scope/`` would
+    stop being invisible to the clock guard — five files had escaped it
+    silently. That commit shipped the widening with no test, and a walk that
+    stops at the top level is indistinguishable from a walk that found nothing.
+    Proving the reach is the difference between coverage and the appearance of
+    it, which is the whole argument of this module.
+    """
+
+    def test_the_walk_enumerates_files_inside_examples_scope(self) -> None:
+        walked = _walked_files(EXAMPLES_DIR)
+        inside = [path for path in walked if path.parent == SCOPE_DIR]
+        assert inside, (
+            f"the clock guard enumerates {len(walked)} file(s) under examples/ and none "
+            f"of them is in {SCOPE_DIR.name}/. The scope lane is outside the guard."
+        )
+
+    def test_the_walk_sees_every_python_file_the_scope_lane_ships(self) -> None:
+        shipped = sorted(SCOPE_DIR.glob("*.py"))
+        assert shipped, "examples/scope/ ships no python at all; this guard is vacuous"
+        walked = set(_walked_files(EXAMPLES_DIR))
+        missing = sorted(str(path) for path in shipped if path not in walked)
+        assert not missing, f"outside the clock guard: {missing}"
+
+    def test_a_clock_planted_in_a_subfolder_is_found(self, tmp_path: Path) -> None:
+        """The test of the test, on a throwaway tree rather than the repo's."""
+        nested = tmp_path / "arch" / "deeper"
+        nested.mkdir(parents=True)
+        (nested / "harness.py").write_text("REQUEST_TIMEOUT = 300.0\n", encoding="utf-8")
+
+        found = _module_level_floats(_TIMEOUT_NAME_HINTS, root=tmp_path)
+        assert found == [("harness", "REQUEST_TIMEOUT", 300.0)]
+
+    def test_a_non_recursive_walk_would_have_missed_it(self, tmp_path: Path) -> None:
+        """The widening was load-bearing, stated as a comparison.
+
+        Without this, "we use rglob" is a claim about a spelling. With it, the
+        spelling is tied to the property it buys.
+        """
+        nested = tmp_path / "scope"
+        nested.mkdir()
+        (nested / "harness.py").write_text("REQUEST_TIMEOUT = 300.0\n", encoding="utf-8")
+
+        assert sorted(tmp_path.glob("*.py")) == []
+        assert _walked_files(tmp_path)
+
+
+class TestTheScopeLaneIntroducesNoClock:
+    """Criterion 1, and the honest answer to it: the scope lane ships none.
+
+    That is not this task ducking the criterion — it is a **committed
+    pre-registration**. ``docs/live-test-results/scopebench-preregistration.md``
+    §14 states that no module under ``examples/scope/`` imports a transport,
+    reaches ``embodiment.loop``, or introduces a timeout constant, and
+    ``tests/test_scopebench.py::TestNoLiveDial`` asserts all three by AST. A
+    clock added here by ``t10`` would break a pre-registration that was
+    committed before any result exists, which is a far worse trade than a walk
+    that is currently empty.
+
+    So what ``t10`` owes is the *other* half of the criterion — that the guard
+    fails any constant outside the walk, and that it can actually see this
+    folder. Both are above. What is asserted here is that the emptiness is a
+    fact rather than an assumption, and that the two guards agree about it.
+    """
+
+    @staticmethod
+    def _scope_hits(hints: Sequence[str]) -> list[tuple[str, str, float]]:
+        stems = {path.stem for path in SCOPE_DIR.rglob("*.py")}
+        return [
+            entry for entry in _module_level_floats(hints, root=EXAMPLES_DIR) if entry[0] in stems
+        ]
+
+    def test_the_scope_lane_introduces_no_timeout_constant_today(self) -> None:
+        assert self._scope_hits(_TIMEOUT_NAME_HINTS) == []
+
+    def test_the_scope_lane_introduces_no_retry_backoff_either(self) -> None:
+        assert self._scope_hits(("SLEEP", "BACKOFF", "RETRY_WAIT")) == []
+
+    def test_every_scope_clock_that_exists_is_a_walked_clock(self) -> None:
+        """Vacuous today, and it stops being vacuous the moment one lands.
+
+        Stated as a subset rather than as a count so it needs no edit when the
+        seam is built: the assertion is the criterion, not the current tally.
+        """
+        walked = {(clock.module.rsplit(".", 1)[-1], clock.constant) for clock in CLOCKS}
+        walked |= {(clock.module.rsplit(".", 1)[-1], clock.constant) for clock in STREAM_CLOCKS}
+        stray = [
+            f"{module}.{name}"
+            for module, name, _ in self._scope_hits(_TIMEOUT_NAME_HINTS)
+            if (module, name) not in walked
+        ]
+        assert not stray, f"scope-lane clock(s) outside CLOCKS: {stray}"
+
+    def test_the_emptiness_is_a_committed_pre_registration_not_a_coincidence(self) -> None:
+        text = (RESULTS_DIR / "scopebench-preregistration.md").read_text(encoding="utf-8")
+        assert "introduces a timeout constant" in text, (
+            "the ScopeBench pre-registration no longer claims the folder is clock-free, "
+            "so this task's reading of criterion 1 has to be re-taken rather than assumed"
+        )
+
+
+# ── the gap the guard did not cover: the package's own module-level clocks ────
+
+
+#: Names that make a module-level float in ``embodiment/`` a candidate clock.
+#: Wider than :data:`_TIMEOUT_NAME_HINTS` because the package's clocks are
+#: thread mechanics rather than request deadlines: a poll interval bounds a
+#: wait just as surely as a timeout does, and leaving ``INTERVAL`` out would
+#: have reproduced the audit-by-memory this module replaced.
+_PACKAGE_CLOCK_HINTS = ("TIMEOUT", "DEADLINE", "INTERVAL", "WAIT")
+
+#: **The judgement, recorded rather than left to a reader.** Every module-level
+#: clock in ``embodiment/`` is here, and every one is exempt from
+#: ``max_tokens / tok_s`` for the same structural reason: *it does not sit in
+#: front of a model call*. The rule answers "how long may generating take"; a
+#: join bound answers "how long do we wait for a thread we have already told to
+#: stop", and a poll interval answers "how long may a missed wakeup cost". No
+#: token budget is on the other side of any of them, so a derived-looking
+#: number would be an invented one — the same reasoning :data:`BACKOFFS` is
+#: exempt under.
+#:
+#: The exemption is not silence. Each of these carries a derivation comment in
+#: its own source that ``tests/test_strategist_runner.py`` and
+#: ``tests/test_muse_runner.py`` already read back, and
+#: :class:`TestThePackageClockExemptionsAreSafe` pins the property that makes
+#: the exemption *safe*: a join bound that could plausibly catch a model call
+#: in flight would silently convert a completed review into a lost one, which
+#: is exactly "a clock sized against the wrong quantity becomes the
+#: measurement".
+_NOT_A_MODEL_CLOCK_IN_PACKAGE: Mapping[tuple[str, str], str] = {
+    ("strategist_runner", "DEFAULT_JOIN_TIMEOUT"): (
+        "bounds threading.Thread.join at teardown, not a request. It cannot cut a "
+        "review short: the worker is a daemon thread, so a review still in flight is "
+        "abandoned rather than waited for, and the abandonment is recorded as a "
+        "strategist-dropped-late transition rather than lost."
+    ),
+    ("strategist_runner", "DEFAULT_POLL_INTERVAL"): (
+        "bounds threading.Event.wait between reviews. Correctness never depends on it "
+        "— the wake event does the work — so it is the cost of a MISSED wakeup, not a "
+        "deadline anything is measured against."
+    ),
+    ("muse_runner", "DEFAULT_JOIN_TIMEOUT"): (
+        "the cited runner's identical join bound, on the identical daemon-thread "
+        "discipline. The muse is archived (deviation d2/d3, embodiment#53) and its "
+        "clock is declared here rather than skipped, because a walk that skips a "
+        "module by name is the audit-by-memory this file exists to replace."
+    ),
+    ("muse_runner", "DEFAULT_POLL_INTERVAL"): (
+        "the cited runner's poll-wake bound, sized against ~2.6 s muse sessions. Same "
+        "structure as the strategist's and exempt for the same reason."
+    ),
+    ("workspace", "DEFAULT_DESTROY_TIMEOUT"): (
+        "bounds a docker container teardown through headspace, not a model call. The "
+        "quantity on the other side is a container stop, and nothing in this repo "
+        "measures a token budget for it."
+    ),
+}
+
+
+class TestThePackageDeclaresItsOwnClocks:
+    """The gap ``t10`` found: the clock guard walked ``examples/`` and stopped.
+
+    ``embodiment/`` ships five module-level clocks and no guard covered any of
+    them. They are all exempt — none fronts a model call — but "exempt" and
+    "unexamined" look identical from outside, and this repo's own rule is that
+    a clock is either derived or exempt *with a stated reason*. So the walk is
+    extended and the exemptions are written down, rather than the category
+    being left open.
+    """
+
+    @staticmethod
+    def _found() -> list[tuple[str, str, float]]:
+        return _module_level_floats(_PACKAGE_CLOCK_HINTS, root=PACKAGE_DIR)
+
+    def test_no_module_level_clock_in_the_package_is_undeclared(self) -> None:
+        stray = [
+            f"{module}.{name}"
+            for module, name, _ in self._found()
+            if (module, name) not in _NOT_A_MODEL_CLOCK_IN_PACKAGE
+        ]
+        assert not stray, (
+            f"undeclared clock(s) in embodiment/: {stray}. Add a Clock to CLOCKS if it "
+            "fronts a model call, or an entry to _NOT_A_MODEL_CLOCK_IN_PACKAGE with the "
+            "reason it does not. An unexamined clock is how three of the four incidents "
+            "in CLAUDE.md's load-bearing lesson stayed invisible while they fired."
+        )
+
+    def test_the_walk_actually_finds_something_so_it_is_not_vacuous(self) -> None:
+        assert self._found(), "the package walk found no clock at all; it is checking nothing"
+
+    def test_no_declared_exemption_names_a_constant_that_no_longer_exists(self) -> None:
+        """A registry that can rot is a registry that will."""
+        present = {(module, name) for module, name, _ in self._found()}
+        gone = sorted(
+            f"{module}.{name}"
+            for module, name in _NOT_A_MODEL_CLOCK_IN_PACKAGE
+            if (module, name) not in present
+        )
+        assert not gone, f"exemption(s) for constants that are gone: {gone}"
+
+    @pytest.mark.parametrize(
+        "reason",
+        list(_NOT_A_MODEL_CLOCK_IN_PACKAGE.values()),
+        ids=[f"{module}.{name}" for module, name in _NOT_A_MODEL_CLOCK_IN_PACKAGE],
+    )
+    def test_every_exemption_states_its_reason(self, reason: str) -> None:
+        assert len(reason.strip()) > 60, reason
+
+    def test_the_stems_the_registry_keys_on_are_unambiguous(self) -> None:
+        """The walk keys by file stem; two clock-bearing files sharing one would alias."""
+        stems = [path.stem for path in _walked_files(PACKAGE_DIR)]
+        duplicated = {stem for stem in stems if stems.count(stem) > 1}
+        clashing = sorted({module for module, _, _ in self._found()} & duplicated)
+        assert not clashing, (
+            f"more than one file under embodiment/ is named {clashing} and at least one "
+            "carries a clock, so the registry's stem key is ambiguous"
+        )
+
+    def test_the_guard_would_catch_a_new_package_clock(self, tmp_path: Path) -> None:
+        """The test of the test, on a throwaway tree."""
+        (tmp_path / "newlane.py").write_text("DEFAULT_DIAL_TIMEOUT = 45.0\n", encoding="utf-8")
+        found = _module_level_floats(_PACKAGE_CLOCK_HINTS, root=tmp_path)
+        assert found == [("newlane", "DEFAULT_DIAL_TIMEOUT", 45.0)]
+
+
+class TestThePackageClockExemptionsAreSafe:
+    """*Why* the exemptions hold — the property, not the assertion.
+
+    A join bound is only harmless while it cannot plausibly land inside a model
+    call. If the shortest possible review were the same order as the join
+    bound, teardown would start silently converting completed reviews into lost
+    ones, and the record would show a clean shutdown either way. That is the
+    exact failure shape this module exists to close, so it is checked against
+    the committed rates rather than argued from the daemon-thread flag alone.
+    """
+
+    def test_a_join_bound_cannot_plausibly_catch_a_review_in_flight(
+        self, config: rc.RateConfig
+    ) -> None:
+        import embodiment.strategist_runner as sr
+
+        shortest = strategist_timings(config)["review_min"]
+        assert sr.DEFAULT_JOIN_TIMEOUT * 10 < shortest, (
+            f"the join bound is {sr.DEFAULT_JOIN_TIMEOUT} s against a shortest possible "
+            f"review of {shortest:.0f} s. Close enough to overlap, and teardown starts "
+            "discarding reviews that had already finished."
+        )
+
+    def test_the_poll_interval_is_noise_against_one_unit_of_work(
+        self, config: rc.RateConfig
+    ) -> None:
+        import embodiment.strategist_runner as sr
+
+        shortest = strategist_timings(config)["review_min"]
+        assert sr.DEFAULT_POLL_INTERVAL / shortest < 0.05
+
+    def test_the_join_bound_is_the_stated_multiple_of_the_poll_interval(self) -> None:
+        """Its derivation comment says 2x; a drift here would make the comment fiction."""
+        import embodiment.strategist_runner as sr
+
+        assert sr.DEFAULT_JOIN_TIMEOUT == 2 * sr.DEFAULT_POLL_INTERVAL
+
+
+# ── criterion 3: the strategist's defaults, traced back to committed figures ──
+
+
+STRATEGIST_SRC = PACKAGE_DIR / "strategist_runner.py"
+
+#: Every ``N tok/s`` the strategist runner's prose cites. A rate quoted in a
+#: derivation is exactly the c39 target: nothing divides by it at runtime, so it
+#: can drift away from the rig for a whole cycle and every test stays green
+#: while the constants it justifies quietly stop being justified.
+_CITED_RATE = re.compile(r"([0-9]+(?:\.[0-9]+)?)\s*tok/s")
+
+#: ``T_review_min`` — one review turn at the fastest measured strategist rate.
+_REVIEW_MIN = re.compile(
+    r"\((\d+) reasoning \+ (\d+) directive\) tokens / ([\d.]+) tok/s`` = \*\*(\d+) s\*\*"
+)
+#: ``T_review_max`` — a full review at the slowest rate, plus the queue allowance.
+_REVIEW_MAX = re.compile(
+    r"``(\d+) turns x (\d+) tokens / ([\d.]+) tok/s \+ ([\d.]+) s`` = \*\*(\d+) s\*\*"
+)
+#: ``T_actor_step`` — one acting step on the worker seat at its mean rate.
+_ACTOR_STEP = re.compile(r"``(\d+) tokens / ([\d.]+) tok/s`` = \*\*(\d+) s\*\*")
+
+
+def strategist_source() -> str:
+    return STRATEGIST_SRC.read_text(encoding="utf-8")
+
+
+def cited_rates(source: str) -> tuple[float, ...]:
+    return tuple(sorted({float(value) for value in _CITED_RATE.findall(source)}))
+
+
+def published_rate_index(config: rc.RateConfig) -> Mapping[float, tuple[str, ...]]:
+    """``rate -> the (role, field) names that publish it``, for citation checking.
+
+    Built from the loaded config rather than typed, so this module still carries
+    no rate literal — the property ``tests/test_rate_config.py`` enforces over
+    every entry in ``RATE_DERIVING_MODULES``, this file among them.
+    """
+    index: dict[float, list[str]] = {}
+    role_fields = (
+        "slowest_tok_s",
+        "mean_tok_s",
+        "fastest_tok_s",
+        "cited_as",
+        "cited_mean_as",
+        "cited_fastest_as",
+        "aggregate_tok_s",
+    )
+    for role, measurement in config.roles.items():
+        for name in role_fields:
+            value = getattr(measurement, name, None)
+            if value is not None:
+                index.setdefault(float(value), []).append(f"{role}.{name}")
+        for width, at_width in measurement.by_width.items():
+            for name in ("slowest_tok_s", "mean_tok_s", "fastest_tok_s"):
+                value = float(getattr(at_width, name))
+                index.setdefault(value, []).append(f"{role}.by_width.{width}.{name}")
+    return {value: tuple(names) for value, names in index.items()}
+
+
+def _first_match(pattern: "re.Pattern[str]", source: str, label: str) -> tuple[str, ...]:
+    found = pattern.findall(source)
+    assert found, (
+        f"{STRATEGIST_SRC.name} no longer states {label} in the form this test reads. "
+        "The derivation may still be correct, but it is no longer checkable — restate "
+        "it or move the check, rather than deleting the trace."
+    )
+    return tuple(found[0])
+
+
+def strategist_timings(config: rc.RateConfig) -> Mapping[str, float]:
+    """The three quantities the runner's defaults are ratios of, recomputed.
+
+    Token counts and turn budgets come out of the source's own derivation text;
+    every **rate** and the queue allowance come out of the committed config. So
+    what this reproduces is the arithmetic the comments claim, on the inputs the
+    config actually holds — a drift in either direction fails rather than
+    passing on a stale number nobody re-read.
+
+    *config* is taken and not read only for its side of the contract: the
+    figures are checked against it by the tests below, which is where a
+    mismatch has something useful to say.
+    """
+    assert config.roles, "an empty config would make every timing below unfalsifiable"
+    source = strategist_source()
+    reasoning, directive, fastest, _ = _first_match(_REVIEW_MIN, source, "T_review_min")
+    turns, per_turn, slowest, allowance, _ = _first_match(_REVIEW_MAX, source, "T_review_max")
+    step_tokens, mean, _ = _first_match(_ACTOR_STEP, source, "T_actor_step")
+    return {
+        "review_min": (int(reasoning) + int(directive)) / float(fastest),
+        "review_max": int(turns) * int(per_turn) / float(slowest) + float(allowance),
+        "actor_step": int(step_tokens) / float(mean),
+    }
+
+
+class TestTheStrategistDefaultsTraceToTheConfig:
+    """``t10`` criterion 3, in its strong form.
+
+    ``tests/test_strategist_runner.py`` already asserts each default carries a
+    derivation comment and that the comment contains a digit and the string
+    ``tok/s``. That proves the *shape* of a citation, not that the citation
+    resolves: a derivation reading "at 99.9 tok/s" would pass it. What is
+    checked here is that every rate the runner's prose cites is a figure this
+    repo's committed measurement actually publishes, and that the staleness and
+    cadence defaults are the arithmetic those figures produce.
+
+    This is the sibling of ``TestNoRateLiteralInCode``, one layer out: that
+    guard keeps rate literals out of code that *divides* by them; this one keeps
+    invented rates out of prose that *justifies* a constant. Both are claim
+    ``c39`` — a rate nobody can trace back to a measurement goes stale in
+    silence, and this one found a live instance (the worker mean at 38.9 tok/s,
+    published nowhere until this task added ``cited_mean_as``).
+    """
+
+    def test_the_module_cites_rates_at_all(self) -> None:
+        assert cited_rates(strategist_source())
+
+    def test_every_rate_the_derivations_cite_is_a_figure_the_config_publishes(
+        self, config: rc.RateConfig
+    ) -> None:
+        published = published_rate_index(config)
+        uncited = [value for value in cited_rates(strategist_source()) if value not in published]
+        assert not uncited, (
+            f"{STRATEGIST_SRC.name} derives its defaults from {uncited} tok/s, which "
+            f"{rc.DEFAULT_CONFIG_PATH.name} does not publish. Either the figure is a "
+            "rounding no committed doc states — publish it — or it is a number someone "
+            "remembered. DEFAULT_MAX_LAG and DEFAULT_REVIEW_GAP both divide by it."
+        )
+
+    def test_the_staleness_and_cadence_rates_name_the_two_seats(
+        self, config: rc.RateConfig
+    ) -> None:
+        """The strategist seat is the cortex role; the actor seat is the worker role.
+
+        Named, because a derivation that cited the right *number* off the wrong
+        role would be the finding-1 mistake — a bound read against whichever
+        rate was to hand — reappearing in a cadence policy.
+        """
+        published = published_rate_index(config)
+        owners = {
+            owner.split(".")[0]
+            for value in cited_rates(strategist_source())
+            for owner in published[value]
+        }
+        assert "cortex" in owners
+        assert "worker" in owners
+
+    def test_the_queue_allowance_the_review_bound_adds_is_the_committed_one(
+        self, config: rc.RateConfig
+    ) -> None:
+        _, _, _, allowance, _ = _first_match(_REVIEW_MAX, strategist_source(), "T_review_max")
+        assert float(allowance) == config.non_generation_allowance.cited_as
+
+    def test_the_turn_budget_the_review_bound_assumes_is_the_shipped_default(self) -> None:
+        from embodiment.scope import ScopeControls
+
+        turns, _, _, _, _ = _first_match(_REVIEW_MAX, strategist_source(), "T_review_max")
+        assert int(turns) == ScopeControls().max_turns
+
+    def test_the_actor_step_budget_is_the_one_the_worker_was_measured_at(
+        self, config: rc.RateConfig
+    ) -> None:
+        """The numerator too, not only the rate.
+
+        ``T_actor_step`` is tokens over tok/s, and a token count carried over
+        from a different harness would move the ratio just as surely as a stale
+        rate would. It is the worker measurement's own ``max_tokens``.
+        """
+        step_tokens, _, _ = _first_match(_ACTOR_STEP, strategist_source(), "T_actor_step")
+        assert int(step_tokens) == config.rate("worker").max_tokens
+
+    @pytest.mark.parametrize("label", ["review_min", "review_max", "actor_step"])
+    def test_each_stated_timing_is_the_arithmetic_of_its_committed_inputs(
+        self, label: str, config: rc.RateConfig
+    ) -> None:
+        source = strategist_source()
+        stated = {
+            "review_min": _first_match(_REVIEW_MIN, source, label)[-1],
+            "review_max": _first_match(_REVIEW_MAX, source, label)[-1],
+            "actor_step": _first_match(_ACTOR_STEP, source, label)[-1],
+        }[label]
+        assert round(strategist_timings(config)[label]) == int(stated)
+
+    def test_the_staleness_default_is_the_ceiling_of_the_two_timings(
+        self, config: rc.RateConfig
+    ) -> None:
+        import embodiment.strategist_runner as sr
+
+        timings = strategist_timings(config)
+        assert sr.DEFAULT_MAX_LAG == ceil(timings["review_max"] / timings["actor_step"])
+
+    def test_the_cadence_default_is_the_ceiling_of_the_two_timings(
+        self, config: rc.RateConfig
+    ) -> None:
+        import embodiment.strategist_runner as sr
+
+        timings = strategist_timings(config)
+        assert sr.DEFAULT_REVIEW_GAP == ceil(timings["review_min"] / timings["actor_step"])
+
+    def test_the_buffer_depth_covers_the_healthy_producer_consumer_ratio(
+        self, config: rc.RateConfig
+    ) -> None:
+        """``DEFAULT_MAX_PENDING``'s stated derivation: 2x a depth of 2."""
+        import embodiment.strategist_runner as sr
+
+        timings = strategist_timings(config)
+        healthy_depth = ceil(timings["review_min"] / timings["actor_step"])
+        assert sr.DEFAULT_MAX_PENDING >= healthy_depth
+
+    def test_an_uncited_rate_in_a_derivation_would_be_caught(self, config: rc.RateConfig) -> None:
+        """The test of the test, on a fabricated source rather than the real one."""
+        published = published_rate_index(config)
+        invented = cited_rates("one acting step at 99.987 tok/s")
+        assert invented == (99.987,)
+        assert 99.987 not in published
+
+
+# ── criterion 2 / plan risk r1: which worker reading the scope lane divides by ─
+
+
+SCOPED_RUN_PATTERN = "scoped_run"
+STRATEGIST_CADENCE_PATTERN = "strategist_cadence"
+
+
+class TestTheScopedRunDivisorIsTheConservativeReading:
+    """Plan risk ``r1``, closed in the config rather than in a reviewer's memory.
+
+    The worker role has a dated rate entry, so criterion 2's first branch is
+    satisfied and no ``unmeasured_roles`` gap is needed. But the entry is
+    **width-dependent** — 76.4 tok/s at width 1 falling to 29.8 under fan-out,
+    all of it measured on one easy cell through the proxy — and a bound derived
+    from the width-1 reading would be nearly six times too generous for a rig
+    nobody has promised. A rate that flatters the clock is the failure this
+    whole lane exists to prevent, so the choice is recorded as data and the
+    *direction* of the choice is checked arithmetically: a calling pattern may
+    not divide by a figure faster than the one it says it rejected.
+    """
+
+    @staticmethod
+    def _pattern(config: rc.RateConfig, name: str) -> rc.CallingPattern:
+        patterns = config.rate("worker").calling_patterns
+        assert name in patterns, (
+            f"the worker entry records no {name!r} calling pattern. Its rate is "
+            "width-dependent, so 'the worker rate' names four different numbers and a "
+            "bound built on the wrong one is invisible until it censors something."
+        )
+        return patterns[name]
+
+    def test_the_worker_rate_entry_is_measured_and_dated(self, config: rc.RateConfig) -> None:
+        measurement = config.rate("worker")
+        assert measurement.measured_on
+        assert measurement.n_rate_bearing > 0
+
+    def test_the_worker_is_not_also_declared_an_unmeasured_gap(self, config: rc.RateConfig) -> None:
+        assert "worker" not in config.unmeasured_roles
+
+    @pytest.mark.parametrize("name", [SCOPED_RUN_PATTERN, STRATEGIST_CADENCE_PATTERN])
+    def test_the_pattern_divides_by_the_figure_it_names(
+        self, name: str, config: rc.RateConfig
+    ) -> None:
+        pattern = self._pattern(config, name)
+        assert pattern.tok_s == pattern.resolve(config.rate("worker"), pattern.divides_by)
+
+    @pytest.mark.parametrize("name", [SCOPED_RUN_PATTERN, STRATEGIST_CADENCE_PATTERN])
+    def test_the_pattern_names_the_reading_it_rejected(
+        self, name: str, config: rc.RateConfig
+    ) -> None:
+        pattern = self._pattern(config, name)
+        assert pattern.rejected_tok_s == pattern.resolve(config.rate("worker"), pattern.rejected)
+
+    @pytest.mark.parametrize("name", [SCOPED_RUN_PATTERN, STRATEGIST_CADENCE_PATTERN])
+    def test_the_chosen_divisor_is_no_faster_than_the_rejected_one(
+        self, name: str, config: rc.RateConfig
+    ) -> None:
+        """The whole of ``r1``, as arithmetic. A faster divisor is a shorter clock."""
+        pattern = self._pattern(config, name)
+        assert pattern.tok_s <= pattern.rejected_tok_s
+
+    @pytest.mark.parametrize("name", [SCOPED_RUN_PATTERN, STRATEGIST_CADENCE_PATTERN])
+    def test_the_pattern_states_why(self, name: str, config: rc.RateConfig) -> None:
+        pattern = self._pattern(config, name)
+        assert any(line.strip() for line in pattern.why)
+
+    @pytest.mark.parametrize("name", [SCOPED_RUN_PATTERN, STRATEGIST_CADENCE_PATTERN])
+    def test_the_rejected_reading_is_the_width_one_one(
+        self, name: str, config: rc.RateConfig
+    ) -> None:
+        """Named explicitly, because it is the specific figure r1 warns about."""
+        assert "by_width.1." in self._pattern(config, name).rejected
+
+    def test_the_scoped_run_divides_by_the_all_width_floor(self, config: rc.RateConfig) -> None:
+        measurement = config.rate("worker")
+        assert self._pattern(config, SCOPED_RUN_PATTERN).tok_s == measurement.bound_input_tok_s
+
+    def test_the_cadence_divisor_is_the_one_the_strategist_runner_cites(
+        self, config: rc.RateConfig
+    ) -> None:
+        """The two records must be the same number, or one of them is decoration."""
+        _, mean, _ = _first_match(_ACTOR_STEP, strategist_source(), "T_actor_step")
+        cadence = self._pattern(config, STRATEGIST_CADENCE_PATTERN)
+        assert float(mean) == cadence.cited_as
+
+    def test_the_procedure_doc_publishes_the_same_decision(self) -> None:
+        text = rc.PROCEDURE_DOC_PATH.read_text(encoding="utf-8")
+        assert SCOPED_RUN_PATTERN in text
+        assert STRATEGIST_CADENCE_PATTERN in text
+
+    def test_a_pattern_that_flatters_the_clock_is_refused(self, tmp_path: Path) -> None:
+        """The test of the test: the conservatism check is load-bearing, not decoration.
+
+        Built by mutating the committed config in a ``tmp_path`` copy, so the
+        real file is never touched and the refusal is proved against the loader
+        the bound test actually uses.
+        """
+        payload = json.loads(rc.DEFAULT_CONFIG_PATH.read_text(encoding="utf-8"))
+        worker = payload["roles"]["worker"]
+        pattern = worker["calling_patterns"][SCOPED_RUN_PATTERN]
+        pattern["divides_by"] = "fastest_tok_s"
+        pattern["tok_s"] = worker["fastest_tok_s"]
+
+        broken = tmp_path / "timeout-rate-measurements.json"
+        broken.write_text(json.dumps(payload), encoding="utf-8")
+        with pytest.raises(rc.RateConfigError) as raised:
+            rc.load_rate_config(broken)
+        assert SCOPED_RUN_PATTERN in str(raised.value)
+
+    def test_a_pattern_naming_a_figure_that_is_not_measured_is_refused(
+        self, tmp_path: Path
+    ) -> None:
+        """A divisor is a path into the record, never a number typed beside one."""
+        payload = json.loads(rc.DEFAULT_CONFIG_PATH.read_text(encoding="utf-8"))
+        pattern = payload["roles"]["worker"]["calling_patterns"][SCOPED_RUN_PATTERN]
+        pattern["divides_by"] = "by_width.4.slowest_tok_s"
+
+        broken = tmp_path / "timeout-rate-measurements.json"
+        broken.write_text(json.dumps(payload), encoding="utf-8")
+        with pytest.raises(rc.RateConfigError):
+            rc.load_rate_config(broken)
