@@ -143,6 +143,7 @@ slug: `strategic-scope-governor` · status: `exported` · from frame: `strategic
   - the full suite stays green: the `SOURCE_MUSE_RUNNER` ledger lane, tests/`announcement_checklist.py`, tests/`test_proof_reporting.py` and the embodiment/`__init__.py` exports are each either migrated or deliberately retired with their tests updated
   - docs/relationships.md, README.md and CLAUDE.md no longer present the muse as part of the shipped reference architecture, and c12/c32 are annotated in the spec as superseded by d2
   - `scope_runner.py` (t2) is already merged before this task starts — the mirrored mechanics are preserved in the new lane before the old one is retired
+  - the scope modules join the curated public surface in the same `__init__.py` pass: embodiment.scope, embodiment.`scoped_run` and embodiment.`strategist_runner` are exported so examples can import them directly — t9 and t7 INDEPENDENTLY hit tests/`test_demo_greenhouse.py`::TestPublicApiOnly and each shipped a workaround (t9 duplicated `FORBIDDEN_DIRECTIVE_KEYS` and the Scope\* field lists behind 6 mirror tests; t7 returns a plain dict instead of constructing ScopeGovernor). Two independent workarounds for one missing export is the signal. Retire both workarounds in the same change
 
 ### t16 — SonarCloud sweep: triage every open issue against the post-implementation tree and clear the S9073 composite-assertion debt (44 pre-existing instances across 8+ test files, plus any the new suites added) — fix where the rule earns its keep, disposition in docs/sonar-dispositions.md where it does not
 

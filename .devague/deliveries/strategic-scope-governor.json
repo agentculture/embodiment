@@ -2,7 +2,7 @@
   "plan_slug": "strategic-scope-governor",
   "schema_version": 1,
   "created": "2026-08-03T06:20:22Z",
-  "updated": "2026-08-03T06:25:26Z",
+  "updated": "2026-08-03T14:41:13Z",
   "deviations": [
     {
       "id": "d1",
@@ -55,6 +55,19 @@
       "origin": "user",
       "status": "approved",
       "classification": "acceptable"
+    },
+    {
+      "id": "d5",
+      "what": "confirmed honesty condition h3 overclaims: it says a directive whose prose embeds an operational instruction is one 'the loop provably never executes as a tool call'. t6 measured that this holds only because the SCRIPTED test actor does not obey prose. Against a deliberately Credulous actor the governed drive DOES reach the executor with the smuggled command, while the ungoverned control never sees it \u2014 so run_scoped adds no containment of its own; the host ToolExecutor and pre_tool lane are the containment, proven still functioning under a governed drive",
+      "task_ref": "t6",
+      "reason": "a scripted-actor-only surrender test passes VACUOUSLY and would have shipped a guarantee the layer does not make. The honest statement is the C2 discipline this repo already applies to shell-cli and the drone tier: state the threat model, never let the name imply a sandbox. Filed as issue #55; t12 carries it onto README, explain output and the module docstring",
+      "affects": [
+        "t6",
+        "t12"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "needs-follow-up"
     }
   ]
 }

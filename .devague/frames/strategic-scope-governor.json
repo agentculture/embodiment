@@ -4,7 +4,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-08-03T03:50:43Z",
-  "updated": "2026-08-03T06:25:32Z",
+  "updated": "2026-08-03T14:41:41Z",
   "claims": [
     {
       "id": "c1",
@@ -67,6 +67,12 @@
           "id": "h3",
           "text": "a surrender-direction test exists: the actor is handed a directive whose prose embeds an operational instruction (for example a shell command inside an objective string) and the loop provably never executes it as a tool call \u2014 the mirror of the seizure-direction sentinel the muse already has",
           "status": "confirmed",
+          "instruction": "MEASURED LIMIT (d5, issue #55): this condition holds only for a scripted actor that does not obey prose. t6 proved a deliberately credulous actor DOES reach the executor with a smuggled command under a governed drive, where the ungoverned control never sees it. run_scoped adds no containment of its own \u2014 the host ToolExecutor and pre_tool lane are the containment, and t6 proves they still function under a governed drive. Do not read this condition as a sandbox guarantee"
+        },
+        {
+          "id": "h24",
+          "text": "the surrender boundary is stated, not implied (C2 discipline): README, embodiment explain output and the scoped_run module docstring each say that a directive is delivered TEXT, that a sufficiently credulous actor will act on it, and that containment is the host executor plus the pre_tool hook lane \u2014 the same threat-model-on-every-surface rule drone.py follows",
+          "status": "proposed",
           "instruction": ""
         }
       ],
