@@ -27,6 +27,7 @@ slug: `strategic-scope-governor` · status: `exported` · from frame: `strategic
   - close() joins with a bound and never hangs on a parked seam call
   - the module is embodiment/`strategist_runner.py` and imports nothing from embodiment.muse or embodiment.`muse_runner` (AST test) — the mechanics are cited, not depended on
   - no staleness or cadence constant is copied from the muse: every default carries a derivation comment citing measured strategist latency, and `DEFAULT_STALE_LAG`=5 specifically is not inherited
+  - the S107 debt is not inherited: the five tuning scalars (`max_pending`, `max_lag`, `max_failed_sessions`, `join_timeout`, `poll_interval`) are grouped behind a default-constructed limits object from the start, so StrategistRunner.`__init__` lands under the 13-parameter limit — docs/sonar-dispositions.md records this as the future path for ThreadedMuseRunner, blocked there only by external consumers a brand-new module does not have
 
 ### t3 — the ledger lane: `SOURCE_SCOPE` added by exactly one `_MODULES` row plus a `from_scope` reader; `known_codes`() harvests the new `DEGRADED_`/`DROPPED_` constants from the scope module `__all__`
 
@@ -142,6 +143,14 @@ slug: `strategic-scope-governor` · status: `exported` · from frame: `strategic
   - the full suite stays green: the `SOURCE_MUSE_RUNNER` ledger lane, tests/`announcement_checklist.py`, tests/`test_proof_reporting.py` and the embodiment/`__init__.py` exports are each either migrated or deliberately retired with their tests updated
   - docs/relationships.md, README.md and CLAUDE.md no longer present the muse as part of the shipped reference architecture, and c12/c32 are annotated in the spec as superseded by d2
   - `scope_runner.py` (t2) is already merged before this task starts — the mirrored mechanics are preserved in the new lane before the old one is retired
+
+### t16 — SonarCloud sweep: triage every open issue against the post-implementation tree and clear the S9073 composite-assertion debt (44 pre-existing instances across 8+ test files, plus any the new suites added) — fix where the rule earns its keep, disposition in docs/sonar-dispositions.md where it does not
+
+- depends on: t13, t15
+- acceptance:
+  - zero OPEN SonarCloud issues are left untriaged: each is either fixed or carries a recorded disposition with rationale in docs/sonar-dispositions.md and the matching SonarCloud transition
+  - the quality gate still passes and `new_coverage` stays above the 80 threshold (baseline 2026-08-03: PASSED, 97.2%)
+  - composite assertions split so a failing test names which conjunct failed — the reason the rule exists
 
 ### t12 — docs close-out: README / CLAUDE.md / relationships.md present the three-authority-level design as opt-in, the salience row is rewritten only if the measured result supports it (otherwise the gap stays recorded), the League demotion is stated, and the bee-hive files are verifiably untouched
 

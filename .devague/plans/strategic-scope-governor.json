@@ -5,7 +5,7 @@
   "schema_version": 4,
   "status": "exported",
   "created": "2026-08-03T05:23:13Z",
-  "updated": "2026-08-03T06:26:47Z",
+  "updated": "2026-08-03T06:28:21Z",
   "targets": [
     {
       "id": "c1",
@@ -334,7 +334,8 @@
         "every displaced, dropped, stale or superseded result lands in the degradation record set \u2014 a counted test proves zero silent losses",
         "close() joins with a bound and never hangs on a parked seam call",
         "the module is embodiment/strategist_runner.py and imports nothing from embodiment.muse or embodiment.muse_runner (AST test) \u2014 the mechanics are cited, not depended on",
-        "no staleness or cadence constant is copied from the muse: every default carries a derivation comment citing measured strategist latency, and DEFAULT_STALE_LAG=5 specifically is not inherited"
+        "no staleness or cadence constant is copied from the muse: every default carries a derivation comment citing measured strategist latency, and DEFAULT_STALE_LAG=5 specifically is not inherited",
+        "the S107 debt is not inherited: the five tuning scalars (max_pending, max_lag, max_failed_sessions, join_timeout, poll_interval) are grouped behind a default-constructed limits object from the start, so StrategistRunner.__init__ lands under the 13-parameter limit \u2014 docs/sonar-dispositions.md records this as the future path for ThreadedMuseRunner, blocked there only by external consumers a brand-new module does not have"
       ],
       "deps": [
         "t1"
@@ -619,6 +620,23 @@
       "deps": [
         "t2",
         "t3"
+      ],
+      "covers": [],
+      "instruction": ""
+    },
+    {
+      "id": "t16",
+      "summary": "SonarCloud sweep: triage every open issue against the post-implementation tree and clear the S9073 composite-assertion debt (44 pre-existing instances across 8+ test files, plus any the new suites added) \u2014 fix where the rule earns its keep, disposition in docs/sonar-dispositions.md where it does not",
+      "origin": "user",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "zero OPEN SonarCloud issues are left untriaged: each is either fixed or carries a recorded disposition with rationale in docs/sonar-dispositions.md and the matching SonarCloud transition",
+        "the quality gate still passes and new_coverage stays above the 80 threshold (baseline 2026-08-03: PASSED, 97.2%)",
+        "composite assertions split so a failing test names which conjunct failed \u2014 the reason the rule exists"
+      ],
+      "deps": [
+        "t13",
+        "t15"
       ],
       "covers": [],
       "instruction": ""
