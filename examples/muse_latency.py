@@ -63,17 +63,20 @@ from typing import Any, Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from embodiment import (  # noqa: E402
-    MuseControls,
     PresenceEngine,
     PresenceIO,
     Task,
-    ThreadedMuseRunner,
     frame_muse,
     run,
 )
 from embodiment.contract import ModelResponse, ToolCall  # noqa: E402
-from embodiment.muse import DEFAULT_STALE_LAG, MuseLoop  # noqa: E402
+from embodiment.muse import (  # noqa: E402
+    DEFAULT_STALE_LAG,
+    MuseControls,
+    MuseLoop,
+)
 from embodiment.muse_pad import MUSE_PAD_PROTOCOL, MusePad  # noqa: E402
+from embodiment.muse_runner import ThreadedMuseRunner  # noqa: E402
 from embodiment.presence_engine import BOUNDARY_CADENCE_TICK, BoundaryContext  # noqa: E402
 from examples.proof import (  # noqa: E402
     MUSE_MAX_TURNS,

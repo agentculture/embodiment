@@ -95,15 +95,15 @@ from embodiment import (  # noqa: E402
     LoopAborted,
     LoopControls,
     ModelResponse,
-    MuseControls,
     PresenceEngine,
     PresenceIO,
     Scratchpad,
-    ThreadedMuseRunner,
     build_continuity_fn,
     frame_muse,
     run,
 )
+from embodiment.muse import MuseControls  # noqa: E402
+from embodiment.muse_runner import ThreadedMuseRunner  # noqa: E402
 from examples.league_seat import (  # noqa: E402
     API_KEY_ENV,
     BASE_SYSTEM,

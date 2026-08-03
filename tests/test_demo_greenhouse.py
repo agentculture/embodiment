@@ -377,7 +377,20 @@ class TestPublicApiOnly:
                 assert allowed, f"{path.name} imports {module!r}: not stdlib, not embodiment"
 
     def test_every_embodiment_name_is_on_the_curated_surface(self) -> None:
+        """Curated submodules, or an ARCHIVED one named explicitly — nothing else.
+
+        :data:`embodiment.ARCHIVED_SUBMODULES` is allowed here on purpose. The
+        muse was archived (embodiment#53, deviations ``d2``/``d3``) rather than
+        deleted, and the six live-rig harnesses that drive one are the record of
+        what it measured. What the archival costs them is exactly what it costs
+        any consumer: they must NAME ``embodiment.muse`` /
+        ``embodiment.muse_runner``. The bare-name path is what actually closed —
+        no ``from embodiment import ThreadedMuseRunner`` survives anywhere,
+        which the loop below still enforces because an archived module
+        contributes no bare names to ``__all__``.
+        """
         surface = set(embodiment.__all__)
+        citable = surface | set(embodiment.ARCHIVED_SUBMODULES)
         for path in _demo_sources():
             tree = ast.parse(path.read_text(encoding="utf-8"))
             for module, names in _imports(tree):
@@ -385,7 +398,7 @@ class TestPublicApiOnly:
                     continue
                 submodule = module.partition(".")[2]
                 if submodule:
-                    assert submodule in surface, f"{module} is not a documented submodule"
+                    assert submodule in citable, f"{module} is not a documented submodule"
                 for name in names:
                     assert not name.startswith("_"), f"{path.name} imports private {name!r}"
                     if not submodule:

@@ -1,12 +1,17 @@
 """The non-colleague strategist demo, end to end (task t8, issue #2's DoD).
 
-``examples/scope/greenhouse_scope.py`` cannot import ``embodiment.scoped_run``
-(it is not yet on ``embodiment``'s curated public surface -- see that module's
-docstring), so THIS file is where the real
-:class:`~embodiment.scoped_run.ScopeGovernor` and
-:func:`~embodiment.scoped_run.run_scoped` are imported and driven end to end
-against the demo's own pieces -- the identical split
-``tests/test_scope_seats.py`` already uses for ``seats.governed_by``.
+The demo builds its own :class:`~embodiment.scoped_run.ScopeGovernor` (task
+``t15`` put the scope lane on ``embodiment``'s curated public surface, so
+``examples/`` may import it), and THIS file is where the real
+:func:`~embodiment.scoped_run.run_scoped` is driven end to end against the
+demo's own pieces.
+
+Until ``t15`` the demo could not name any of those types: they were off the
+curated surface and ``tests/test_demo_greenhouse.py::TestPublicApiOnly``
+refuses any ``examples/`` import of an undocumented submodule, so the demo
+carried duck-typed stand-ins and this file compared them. Those comparisons
+became identity assertions rather than being deleted — see
+``TestMirroredShapesMatchTheRealOnes``.
 
 Three acceptance criteria, and this file is where each is pinned:
 
@@ -26,6 +31,7 @@ Three acceptance criteria, and this file is where each is pinned:
 
 from __future__ import annotations
 
+import ast
 from dataclasses import fields
 from pathlib import Path
 from typing import Any
@@ -48,34 +54,72 @@ from examples.scope import greenhouse_scope as demo
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
 GREENHOUSE_DEMO = REPO_ROOT / "examples" / "greenhouse.py"
+SCOPE_DEMO = REPO_ROOT / "examples" / "scope" / "greenhouse_scope.py"
 
 
 # ── the mirror is pinned against the real shapes, not just asserted ──────────
 
 
 class TestMirroredShapesMatchTheRealOnes:
-    """``examples/scope/greenhouse_scope.py`` mirrors real dataclasses (see its
-    module docstring on why it cannot import them) -- pinned here so a rename
-    on either side fails a test rather than silently drifting apart."""
+    """The demo's stand-ins became IMPORTS in task ``t15``.
 
-    def test_directive_fields_match_scopedirective(self) -> None:
-        real = tuple(f.name for f in fields(ScopeDirective))
-        assert demo.DIRECTIVE_FIELDS == real
-        assert tuple(f.name for f in fields(demo.Directive)) == real
+    ``examples/scope/greenhouse_scope.py`` used to declare small duck-typed
+    stand-ins, because ``embodiment.scope`` was off the curated public surface
+    and ``tests/test_demo_greenhouse.py::TestPublicApiOnly`` refuses any
+    ``examples/`` import of an undocumented submodule. ``t15`` put the scope
+    lane on the surface — in the pass that archived the muse (embodiment#53) —
+    so every shape below is now the real dataclass.
 
-    def test_responsibility_fields_match_scoperesponsibility(self) -> None:
-        real = tuple(f.name for f in fields(ScopeResponsibility))
-        assert demo.RESPONSIBILITY_FIELDS == real
-        assert tuple(f.name for f in fields(demo.Responsibility)) == real
+    These tests were **converted, not deleted**. Comparing a class's field names
+    to its own field names proves nothing, so each one asserts **identity**
+    instead: that is what fails if a stand-in is ever reintroduced.
+    """
 
-    def test_exit_reason_literals_match_the_real_constants(self) -> None:
-        from embodiment.scope import SCOPE_EXIT_DIRECTIVE, SCOPE_EXIT_UNCHANGED
+    def test_the_directive_shape_is_the_real_one(self) -> None:
+        assert demo.Directive is ScopeDirective
+
+    def test_the_responsibility_shape_is_the_real_one(self) -> None:
+        assert demo.Responsibility is ScopeResponsibility
+
+    def test_the_outcome_shape_is_the_real_one(self) -> None:
+        from embodiment.scope import ScopeOutcome
+
+        assert demo.Outcome is ScopeOutcome
+
+    def test_the_snapshot_shape_is_the_real_one(self) -> None:
+        from embodiment.scope import ScopeSnapshot
+
+        assert demo.Snapshot is ScopeSnapshot
+
+    def test_the_lane_degradation_shape_is_the_real_one(self) -> None:
+        from embodiment.scope import ScopeDegradation
+
+        assert demo.LaneDegradation is ScopeDegradation
+
+    def test_directive_fields_are_derived_from_scopedirective(self) -> None:
+        assert demo.DIRECTIVE_FIELDS == tuple(f.name for f in fields(ScopeDirective))
+
+    def test_responsibility_fields_are_derived_from_scoperesponsibility(self) -> None:
+        assert demo.RESPONSIBILITY_FIELDS == tuple(f.name for f in fields(ScopeResponsibility))
+
+    def test_the_directive_exit_is_the_real_constant(self) -> None:
+        from embodiment.scope import SCOPE_EXIT_DIRECTIVE
 
         assert demo.EXIT_DIRECTIVE == SCOPE_EXIT_DIRECTIVE
+
+    def test_the_unchanged_exit_is_the_real_constant(self) -> None:
+        from embodiment.scope import SCOPE_EXIT_UNCHANGED
+
         assert demo.EXIT_UNCHANGED == SCOPE_EXIT_UNCHANGED
 
     def test_strategist_role_literal_matches_the_real_default(self) -> None:
-        assert demo.STRATEGIST_ROLE == REAL_STRATEGIST_ROLE
+        assert demo.STRATEGIST_ROLE is REAL_STRATEGIST_ROLE
+
+    def test_no_scope_shape_is_redeclared_locally(self) -> None:
+        """The workaround itself is gone, not merely bypassed."""
+        source = ast.parse(SCOPE_DEMO.read_text(encoding="utf-8"))
+        declared = {node.name for node in ast.walk(source) if isinstance(node, ast.ClassDef)}
+        assert not (declared & {"Directive", "Responsibility", "Outcome", "Snapshot"})
 
 
 # ── the tool surface ──────────────────────────────────────────────────────────
@@ -286,26 +330,31 @@ class TestZoneProjector:
         assert project(_Ctx1()) != project(_Ctx2())
 
 
-# ── seat wiring (task t7) feeding the governor kwargs ────────────────────────
+# ── seat wiring (task t7) building the governor ──────────────────────────────
 
 
-class TestGovernorKwargs:
+class TestBuildGovernor:
+    """``governor_kwargs`` returned a dict to splat; ``t15`` made it build one."""
+
     def test_a_strategist_is_seated_when_the_cortex_role_resolves(self) -> None:
         rounds = demo.GreenhouseRounds()
         strategist = demo.ScriptedStrategist([])
-        kwargs = demo.governor_kwargs(rounds, strategist)
-        assert kwargs["strategist"] is strategist
+        governor = demo.build_governor(rounds, strategist)
+        assert governor.strategist is strategist
 
     def test_the_default_scope_is_the_hosts_own(self) -> None:
         rounds = demo.GreenhouseRounds()
-        kwargs = demo.governor_kwargs(rounds, None)
-        assert kwargs["default_scope"].scope_id == "standing-rotation"
+        governor = demo.build_governor(rounds, None)
+        assert governor.default_scope.scope_id == "standing-rotation"
 
-    def test_the_kwargs_build_a_real_armed_governor(self) -> None:
+    def test_it_builds_a_real_armed_governor(self) -> None:
         rounds = demo.GreenhouseRounds()
-        kwargs = demo.governor_kwargs(rounds, demo.ScriptedStrategist([]))
-        governor = ScopeGovernor(**kwargs)
+        governor = demo.build_governor(rounds, demo.ScriptedStrategist([]))
         assert governor.armed is True
+
+    def test_it_returns_the_real_class(self) -> None:
+        rounds = demo.GreenhouseRounds()
+        assert type(demo.build_governor(rounds, None)) is ScopeGovernor
 
 
 # ── the full drive: the REAL run_scoped(), driven end to end ────────────────
@@ -354,7 +403,7 @@ class TestGovernedDriveChangesActorBehaviour:
             version=2,
         )
         strategist = demo.ScriptedStrategist([move1, move2])
-        governor = ScopeGovernor(**demo.governor_kwargs(rounds, strategist))
+        governor = demo.build_governor(rounds, strategist)
         events: list[Any] = []
         outcome = run_scoped(
             demo.scripted_actor,
@@ -433,7 +482,7 @@ class TestDegradedStrategistContinuesUnderTheDefault:
     def _drive(self) -> tuple[Any, demo.GreenhouseRounds, list[Any]]:
         rounds = demo.GreenhouseRounds()
         strategist = demo.ScriptedStrategist([demo.default_directive()], start_ok=False)
-        governor = ScopeGovernor(**demo.governor_kwargs(rounds, strategist))
+        governor = demo.build_governor(rounds, strategist)
         events: list[Any] = []
         outcome = run_scoped(
             demo.scripted_actor,
@@ -501,7 +550,7 @@ class TestWithheldDirectiveNeverGovernsTheActor:
             version=1,
         )
         strategist = demo.ScriptedStrategist([move1, stray])
-        governor = ScopeGovernor(**demo.governor_kwargs(rounds, strategist))
+        governor = demo.build_governor(rounds, strategist)
         outcome = run_scoped(
             demo.scripted_actor,
             demo.build_task(),

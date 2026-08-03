@@ -35,9 +35,9 @@ from typing import Any, Optional
 
 import pytest
 
+import embodiment.muse as muse_mod  # ARCHIVED lane, named explicitly (#53)
 from embodiment import framing as framing_mod
 from embodiment import loop as loop_mod
-from embodiment import muse as muse_mod
 from embodiment.contract import ContextPacket, ModelResponse, Task, ToolCall
 from embodiment.framing import (
     CORTEX_MARKER,

@@ -18,42 +18,35 @@ directive names ``orchid-bed`` the priority, the actor's very next boundary
 changes what it does — and a later directive can supersede the first and
 change it again. That is the whole demonstration.
 
-Why this file never imports ``embodiment.scoped_run``
---------------------------------------------------------
-It would be the obvious way to write this — construct a
-:class:`~embodiment.scoped_run.ScopeGovernor`, call
-:func:`~embodiment.scoped_run.run_scoped`, done. It is not done that way,
-because ``embodiment.scope``, ``embodiment.scoped_run`` and
-``embodiment.strategist_runner`` are not yet on ``embodiment.__all__``'s
-curated public surface (task t15 adds them), and
-``tests/test_demo_greenhouse.py::TestPublicApiOnly`` refuses any file under
-``examples/`` (scanned recursively) that imports an undocumented submodule.
-
-Two sibling tasks in this same plan hit the identical wall and each recorded
-its own workaround rather than guessing at one: ``examples/scope/seats.py``
-(task t7) returns a plain ``dict`` instead of constructing
-:class:`~embodiment.scoped_run.ScopeGovernor` itself, and
-``examples/scope/subordinate.py`` (task t9) mirrors
-:class:`~embodiment.scope.ScopeDirective`'s fields rather than importing the
-class. This module follows the SAME discipline for the same reason: every
-shape below (:class:`Directive`, :class:`Responsibility`, :class:`Outcome`,
-:class:`Snapshot`, :class:`LaneDegradation`) is a small, duck-typed,
+This file imports the real scope lane (task t15)
+----------------------------------------------------
+It did not always. ``embodiment.scope``, ``embodiment.scoped_run`` and
+``embodiment.strategist_runner`` were off ``embodiment.__all__``'s curated
+public surface, and ``tests/test_demo_greenhouse.py::TestPublicApiOnly``
+refuses any file under ``examples/`` (scanned recursively) that imports an
+undocumented submodule — so every shape below was a small, duck-typed,
 field-compatible stand-in, pinned against the real dataclasses by
-``tests/test_demo_scope_greenhouse.py`` so the mirror cannot silently drift.
-Task t15 retires this workaround (and t7's, and t9's) in one pass once the
-export lands.
+``tests/test_demo_scope_greenhouse.py``.
+
+Two sibling tasks in this same plan hit the identical wall and recorded their
+own workarounds: ``examples/scope/seats.py`` (task t7) returned a plain
+``dict`` instead of constructing :class:`~embodiment.scoped_run.ScopeGovernor`,
+and ``examples/scope/subordinate.py`` (task t9) mirrored
+:class:`~embodiment.scope.ScopeDirective`'s fields rather than importing the
+class. **Task t15 retired all three in one pass**, in the same change that
+archived the muse (embodiment#53) and put the scope lane on the surface in its
+place. :class:`ScopeDirective`, :class:`ScopeResponsibility`,
+:class:`ScopeOutcome`, :class:`ScopeSnapshot` and :class:`ScopeDegradation` are
+now imported; the pinning tests were converted into identity assertions rather
+than deleted, so a reintroduced stand-in fails loudly.
 
 What lives here versus what a HOST would really do
 ------------------------------------------------------
-A host application — unlike a file under ``examples/`` — is free of that
-restriction and can import ``embodiment.scoped_run`` directly. So the
-pieces below are exactly what a real host supplies to
-:class:`~embodiment.scoped_run.ScopeGovernor`, and this module's own test
-suite is where the real ``ScopeGovernor``/``run_scoped`` are imported and
-driven end to end against these pieces — the identical split
-``tests/test_scope_seats.py`` already uses for ``seats.governed_by``. Copy
-this file's shape into a host and the only change needed is
-``from embodiment.scoped_run import ScopeGovernor, run_scoped`` at the top.
+What is left below is exactly what a real host supplies: the world, the tools,
+the projector, the scripted strategist and the default scope. This module builds
+the governor (:func:`build_governor`) and this module's own test suite drives
+the real :func:`~embodiment.scoped_run.run_scoped` against it end to end. Copy
+this file's shape into a host and nothing needs changing at the top at all.
 
 The known hazard this demo is built to avoid (issue #54)
 ------------------------------------------------------------
@@ -76,10 +69,21 @@ a fixed list of moves, never a network or a clock.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import fields
 from typing import Any, Callable, Optional, Sequence
 
 from embodiment import ModelResponse, Task, ToolCall, ToolError, ToolOutcome, UnknownToolError
+from embodiment.scope import (
+    SCOPE_EXIT_DIRECTIVE,
+    SCOPE_EXIT_UNCHANGED,
+    ScopeDegradation,
+    ScopeDirective,
+    ScopeOutcome,
+    ScopeResponsibility,
+    ScopeSnapshot,
+)
+from embodiment.scoped_run import ScopeGovernor
+from embodiment.strategist_runner import STRATEGIST_ROLE
 from examples.scope import seats
 
 __all__ = [
@@ -107,7 +111,7 @@ __all__ = [
     "default_directive",
     "build_task",
     "capabilities_fixture",
-    "governor_kwargs",
+    "build_governor",
     "render_report",
 ]
 
@@ -128,126 +132,37 @@ MOISTURE = {ZONE_FERN: 42, ZONE_ORCHID: 12}
 THRESHOLD = {ZONE_FERN: 30, ZONE_ORCHID: 25}
 
 
-# ── mirrored shapes (see the module docstring: not imported, on purpose) ─────
+# ── the scope shapes, IMPORTED (see the module docstring; task t15) ──────────
+#
+# These were duck-typed stand-ins while `embodiment.scope` was off the curated
+# surface. They are now aliases for the real dataclasses — an alias, not a
+# subclass, which `tests/test_demo_scope_greenhouse.py` asserts by identity.
+# The short local names are kept because this demo reads about directives and
+# snapshots on nearly every line and the `Scope` prefix buys nothing here.
 
-#: ``embodiment.scope.ScopeDirective``'s field order. Pinned by test against
-#: the real dataclass so this mirror cannot silently drift from it.
-DIRECTIVE_FIELDS: tuple[str, ...] = (
-    "scope_id",
-    "supersedes",
-    "objective",
-    "priorities",
-    "constraints",
-    "responsibilities",
-    "success_conditions",
-    "review_when",
-    "decision_summary",
-    "version",
-)
+Responsibility = ScopeResponsibility
+Directive = ScopeDirective
+Outcome = ScopeOutcome
+Snapshot = ScopeSnapshot
+LaneDegradation = ScopeDegradation
 
-#: ``embodiment.scope.ScopeResponsibility``'s field order. Pinned by test.
-RESPONSIBILITY_FIELDS: tuple[str, ...] = ("owner", "responsibility")
+#: ``ScopeDirective``'s field order — DERIVED from the real dataclass, so the
+#: demo and the package cannot disagree about what a directive carries. Read
+#: the list as an exclusion as much as an inclusion, exactly as the real
+#: shape's own docstring says: there is no ``tool``, no ``arguments``, no
+#: ``command`` and no ``approve`` in it — a directive can only carry scope.
+DIRECTIVE_FIELDS: tuple[str, ...] = tuple(entry.name for entry in fields(ScopeDirective))
 
-#: Cited literals — mirror ``embodiment.scope.SCOPE_EXIT_DIRECTIVE`` /
-#: ``SCOPE_EXIT_UNCHANGED`` exactly (pinned by test), so a locally-built
-#: :class:`Outcome` reads to ``embodiment.scoped_run._Governed._consume`` the
-#: same way a real ``embodiment.scope.ScopeOutcome`` would.
-EXIT_DIRECTIVE = "directive"
-EXIT_UNCHANGED = "unchanged"
+#: ``ScopeResponsibility``'s field order, derived the same way.
+RESPONSIBILITY_FIELDS: tuple[str, ...] = tuple(entry.name for entry in fields(ScopeResponsibility))
 
-#: Mirrors ``embodiment.strategist_runner.STRATEGIST_ROLE`` — the provenance
-#: label a host passes as ``StrategistRunner(..., role=...)``. Pinned by test.
-STRATEGIST_ROLE = "strategist"
+#: The package's own review exits, under this demo's shorter local names.
+EXIT_DIRECTIVE = SCOPE_EXIT_DIRECTIVE
+EXIT_UNCHANGED = SCOPE_EXIT_UNCHANGED
+
+#: The provenance label a host passes as ``StrategistRunner(..., role=...)``,
+#: imported from the module that owns it.
 SCRIPTED_STRATEGIST_MODEL = "scripted-greenhouse-strategist"
-
-
-@dataclass(frozen=True)
-class Responsibility:
-    """Mirrors ``embodiment.scope.ScopeResponsibility`` field for field."""
-
-    owner: str = ""
-    responsibility: str = ""
-
-
-@dataclass(frozen=True)
-class Directive:
-    """Mirrors ``embodiment.scope.ScopeDirective`` field for field.
-
-    Read the field list as an exclusion as much as an inclusion, exactly as
-    the real shape's own docstring says: there is no ``tool``, no
-    ``arguments``, no ``command`` and no ``approve`` here — a directive can
-    only ever carry scope.
-    """
-
-    scope_id: str = ""
-    supersedes: Optional[str] = None
-    objective: str = ""
-    priorities: tuple[str, ...] = ()
-    constraints: tuple[str, ...] = ()
-    responsibilities: tuple[Responsibility, ...] = ()
-    success_conditions: tuple[str, ...] = ()
-    review_when: tuple[str, ...] = ()
-    decision_summary: str = ""
-    version: int = 0
-
-
-@dataclass(frozen=True)
-class Outcome:
-    """A locally-built stand-in for ``embodiment.scope.ScopeOutcome``.
-
-    Only the fields ``embodiment.scoped_run`` actually reads off a drained
-    review (``directive``, ``snapshot_id``, ``role``, ``model``,
-    ``exit_reason``, ``step_index``, ``tokens``, ``latency``) — read duck-typed
-    there, never by ``isinstance``, which is what makes this stand-in usable
-    against the REAL ``run_scoped()`` without ever importing its type.
-    """
-
-    directive: Optional[Directive] = None
-    exit_reason: str = EXIT_UNCHANGED
-    snapshot_id: str = ""
-    role: str = STRATEGIST_ROLE
-    model: str = SCRIPTED_STRATEGIST_MODEL
-    step_index: int = 0
-    tokens: Optional[int] = None
-    latency: Optional[float] = None
-
-
-@dataclass(frozen=True)
-class Snapshot:
-    """A minimal, host-built stand-in for ``embodiment.scope.ScopeSnapshot``.
-
-    Only ``snapshot_id`` / ``current_directive`` are read by
-    ``embodiment.scope_events`` (duck-typed); the rest is this demo's OWN
-    reading of the greenhouse world, never anything embodiment supplies —
-    exactly the split issue #2's compose-don't-reimplement rule requires.
-    """
-
-    snapshot_id: str = ""
-    current_directive: Optional[str] = None
-    active_workstreams: tuple[str, ...] = ()
-    requested_decision: Optional[str] = None
-
-
-@dataclass(frozen=True)
-class LaneDegradation:
-    """Mirrors ``embodiment.scope.ScopeDegradation`` field for field.
-
-    ``embodiment.ledger.from_scope`` reads ``code`` / ``reason`` /
-    ``step_index`` / ``model_turns`` duck-typed off exactly this shape.
-    """
-
-    code: str
-    reason: str
-    step_index: int = 0
-    model_turns: int = 0
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "code": self.code,
-            "reason": self.reason,
-            "step_index": self.step_index,
-            "model_turns": self.model_turns,
-        }
 
 
 # ── the tool surface: no shell, a pure in-memory world ────────────────────────
@@ -573,17 +488,21 @@ def capabilities_fixture() -> dict[str, Any]:
     }
 
 
-def governor_kwargs(
+def build_governor(
     rounds: GreenhouseRounds, strategist: Optional[Any], *, identity: Optional[str] = None
-) -> dict[str, Any]:
-    """Everything a host hands ``ScopeGovernor(**...)`` for this demo.
+) -> ScopeGovernor:
+    """The :class:`~embodiment.scoped_run.ScopeGovernor` this demo runs under.
 
     Routed through :func:`examples.scope.seats.resolve_seats` /
-    :func:`~examples.scope.seats.governed_by` (task t7), never constructed
-    here directly — see the module docstring for why. A missing or not-ready
-    ``cortex`` role drops *strategist* from the returned mapping even when the
-    caller passed one in, which is exactly ``governed_by``'s own "a missing
-    role degrades to actor-only" property, exercised for real here.
+    :func:`~examples.scope.seats.governed_by` (task t7) rather than constructed
+    here, so the seat resolution is exercised for real: a missing or not-ready
+    ``cortex`` role leaves the governor **unarmed** even when the caller passed
+    a strategist in, which is ``governed_by``'s own "a missing role degrades to
+    actor-only" property.
+
+    Was ``governor_kwargs``, returning a ``dict`` for the caller to splat, while
+    ``embodiment.scoped_run`` was off the curated surface (task ``t15`` retired
+    that workaround along with the other two).
     """
     resolution = seats.resolve_seats(capabilities_fixture())
     return seats.governed_by(

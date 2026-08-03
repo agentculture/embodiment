@@ -1,5 +1,27 @@
 """The muse's thinking loop — bounded, iterative, tools-off, advisory (task t10a).
 
+.. warning::
+
+   **ARCHIVED — 2026-08-03, embodiment#53, deviations** ``d2`` **/** ``d3``.
+
+   This module has left the shipped reference architecture. It is **not**
+   deleted and **not** deprecated: it stays readable, importable and green
+   because :mod:`embodiment.strategist_runner` was copied out of
+   ``muse_runner.py`` verbatim under the cite-don't-import policy, and that
+   citation has to keep resolving to a file a reader can open. What changed is
+   that neither this module nor its names appear on ``embodiment.__all__``'s
+   curated surface any more — reaching the muse now means naming
+   ``embodiment.muse`` explicitly.
+
+   The archival supersedes confirmed claims ``c12`` and ``c32``, which both
+   pinned that this file ships unchanged. It follows ``d15`` (the muse-off
+   reference rig, 2026-07-31): with Qwen the only actor there was no dialled
+   muse left for the shipped architecture to describe. A host that still wants
+   counsel is free to wire one — nothing here was weakened. See
+   ``tests/test_muse_archival.py`` for the disposition in executable form, and
+   :mod:`embodiment.scope` / :mod:`embodiment.strategist_runner` for the
+   strategist lane that replaced it.
+
 embodiment now runs **two** loops. :mod:`embodiment.loop` is the *actor* loop:
 think-and-act with tools, final authority, one summary. This module is the
 *thinking* loop: the muse reasons in short iterative turns about where the actor
@@ -158,7 +180,19 @@ from typing import Any, Callable, Optional
 from embodiment.contract import ModelResponse
 from embodiment.presence_engine import BoundaryContext, MuseComment
 
+#: This module's archival, as data a host or a test can read (embodiment#53).
+#: Declarative on purpose — see the module docstring. It is **not** a
+#: ``DeprecationWarning``: nothing here is going away, and an importer who
+#: reaches for the archived lane deliberately has done nothing wrong.
+ARCHIVED = (
+    "archived 2026-08-03 (embodiment#53, deviations d2/d3): the muse left the shipped "
+    "reference architecture and stays readable as the citation for "
+    "embodiment.strategist_runner; supersedes claims c12 and c32"
+)
+
 __all__ = [
+    # the archival marker (embodiment#53, deviations d2/d3)
+    "ARCHIVED",
     # exits
     "MUSE_EXIT_CONCLUDED",
     "MUSE_EXIT_QUIET",

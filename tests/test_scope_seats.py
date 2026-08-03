@@ -332,64 +332,61 @@ class TestMalformedInputNeverRaises:
 
 
 class TestGovernedByDegradesToActorOnly:
-    """``governed_by`` returns a plain kwargs dict rather than constructing
-    ``embodiment.scoped_run.ScopeGovernor`` itself: that module is not yet on
-    ``embodiment``'s curated public surface, and
+    """``governed_by`` builds the REAL ``ScopeGovernor`` (task ``t15``).
+
+    It used to return a plain kwargs dict, because ``embodiment.scoped_run`` was
+    not on ``embodiment``'s curated public surface and
     ``tests/test_demo_greenhouse.py::TestPublicApiOnly`` refuses any
     ``examples/`` import of an undocumented submodule -- the same constraint
-    ``examples/scope/subordinate.py`` already documents. This class proves both
-    the returned mapping's own behaviour AND that it really does build the real
-    class end to end, since only a *test* is free of that import restriction.
+    ``examples/scope/subordinate.py`` carried. ``t15`` put the scope lane on the
+    surface, so the workaround is retired and these assertions moved from "the
+    mapping has the right keys" to "the object composes the right way", which is
+    the claim that actually mattered.
     """
 
     def test_a_present_strategist_is_seated(self) -> None:
         resolution = seats.resolve_seats(full_capabilities())
         sentinel = object()
-        kwargs = seats.governed_by(resolution, strategist=sentinel)
-        assert kwargs["strategist"] is sentinel
+        governor = seats.governed_by(resolution, strategist=sentinel)
+        assert governor.strategist is sentinel
 
     def test_a_present_strategist_governor_is_armed(self) -> None:
         resolution = seats.resolve_seats(full_capabilities())
-        kwargs = seats.governed_by(resolution, strategist=object())
-        governor = ScopeGovernor(**kwargs)
+        governor = seats.governed_by(resolution, strategist=object())
         assert governor.armed is True
 
     def test_missing_cortex_ignores_a_supplied_strategist_object(self) -> None:
         caps = full_capabilities()
         del caps["cortex"]
         resolution = seats.resolve_seats(caps)
-        kwargs = seats.governed_by(resolution, strategist=object())
-        assert kwargs["strategist"] is None
+        governor = seats.governed_by(resolution, strategist=object())
+        assert governor.strategist is None
 
     def test_missing_cortex_governor_is_unarmed(self) -> None:
         caps = full_capabilities()
         del caps["cortex"]
         resolution = seats.resolve_seats(caps)
-        kwargs = seats.governed_by(resolution, strategist=object())
-        governor = ScopeGovernor(**kwargs)
+        governor = seats.governed_by(resolution, strategist=object())
         assert governor.armed is False
 
-    def test_an_entirely_empty_gateway_yields_an_unarmed_governor_with_no_strategist_passed(
-        self,
-    ) -> None:
+    def test_an_entirely_empty_gateway_yields_an_unarmed_governor(self) -> None:
         resolution = seats.resolve_seats({})
-        kwargs = seats.governed_by(resolution)
-        governor = ScopeGovernor(**kwargs)
-        assert isinstance(governor, ScopeGovernor)
+        governor = seats.governed_by(resolution)
         assert governor.armed is False
+
+    def test_an_entirely_empty_gateway_still_yields_a_real_governor(self) -> None:
+        resolution = seats.resolve_seats({})
+        assert isinstance(seats.governed_by(resolution), ScopeGovernor)
 
     def test_governed_by_never_raises_on_a_fully_degraded_resolution(self) -> None:
         resolution = seats.resolve_seats(None)
-        kwargs = seats.governed_by(resolution, strategist=object())
-        assert kwargs["strategist"] is None
+        governor = seats.governed_by(resolution, strategist=object())
+        assert governor.strategist is None
 
-    def test_the_kwargs_are_exactly_scopegovernors_constructor_keywords(self) -> None:
-        import inspect
-
+    def test_it_returns_the_real_class_and_not_a_stand_in(self) -> None:
+        """The workaround is gone, not merely renamed."""
         resolution = seats.resolve_seats(full_capabilities())
-        kwargs = seats.governed_by(resolution)
-        accepted = set(inspect.signature(ScopeGovernor).parameters)
-        assert set(kwargs) <= accepted
+        assert type(seats.governed_by(resolution)) is ScopeGovernor
 
 
 # ── 3b. placement ────────────────────────────────────────────────────────────

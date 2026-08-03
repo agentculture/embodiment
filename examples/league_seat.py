@@ -129,12 +129,10 @@ from embodiment import (  # noqa: E402
     LoopAborted,
     LoopControls,
     ModelResponse,
-    MuseControls,
     PresenceEngine,
     PresenceIO,
     Scratchpad,
     Task,
-    ThreadedMuseRunner,
     ToolCall,
     ToolError,
     ToolOutcome,
@@ -149,6 +147,8 @@ from embodiment import (  # noqa: E402
     scratchpad,
     speaker_label,
 )
+from embodiment.muse import MuseControls  # noqa: E402
+from embodiment.muse_runner import ThreadedMuseRunner  # noqa: E402
 from examples.challenge_config import write_config_preamble  # noqa: E402
 
 # ── who this host is, and where it keeps things ──────────────────────────────

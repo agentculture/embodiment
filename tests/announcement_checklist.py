@@ -755,6 +755,33 @@ def _dict_values_for(node: ast.AST, key: str) -> list[ast.expr]:
     return found
 
 
+def _muse_still_archived(root: Path) -> Optional[str]:
+    """The caveat stands while the muse is off the curated package surface.
+
+    The announcement this file verifies is a **historical** text, quoted
+    verbatim, and its muse clauses still resolve: ``tests/test_muse_runner.py``
+    was not deleted, and every guard it cites still passes. What changed on
+    2026-08-03 is the architecture the sentence describes — so the honest move
+    is a caveat rather than an edited quote or a MISSING citation.
+
+    Probed on the ``__init__`` export map rather than by importing, in keeping
+    with every other probe here. Un-archive the muse and this goes stale, which
+    is the direction that matters: a caveat that has silently become untrue is
+    worse than no caveat.
+    """
+    source = _read(root, "embodiment/__init__.py")
+    if source is None:
+        return None
+    if "ARCHIVED_SUBMODULES" not in source:
+        return "embodiment.__init__ no longer declares ARCHIVED_SUBMODULES — is the muse back?"
+    if '"ThreadedMuseRunner": "muse_runner"' in source:
+        return "ThreadedMuseRunner is hoisted onto the curated surface again — the caveat is stale"
+    for module in ("muse", "muse_runner"):
+        if _read(root, f"embodiment/{module}.py") is None:
+            return f"embodiment/{module}.py is gone — archived-but-CITABLE no longer holds"
+    return None
+
+
 #: What the console script ships. None of these drives the loop.
 #:
 #: ``drone`` joined in task t11 and is the first NON-introspection group here —
@@ -804,6 +831,26 @@ CAVEATS: tuple[Caveat, ...] = (
         ),
         state="recorded, not met (classification: needs-follow-up)",
         check=_d4_still_outstanding,
+    ),
+    Caveat(
+        id="arch1",
+        title="the announcement's muse is ARCHIVED — the clauses resolve, the architecture moved",
+        detail=(
+            "the quoted announcement describes 'an optional Gemma 4 31B muse [that] injects "
+            "guidance and critique as a subconsciousness'. Every clause below that cites the "
+            "muse still resolves and still passes — nothing was deleted. But the muse left the "
+            "shipped reference architecture on 2026-08-03 (embodiment#53, "
+            "strategic-scope-governor deviations d2/d3, "
+            "superseding claims c12 and c32, following d15's muse-off rig): embodiment.muse and "
+            "embodiment.muse_runner are no longer on embodiment.__all__, and the eighteen Muse* "
+            "names they hoisted are retired. They stay readable because "
+            "embodiment.strategist_runner was cited out of muse_runner.py verbatim. So read the "
+            "muse clauses as verified HISTORY, not as a description of what ships today; the "
+            "strategist lane (embodiment/scope.py, scoped_run.py, strategist_runner.py) is what "
+            "replaced it, and tests/test_muse_archival.py holds the disposition"
+        ),
+        state="the announcement text has drifted behind the architecture (issue #53)",
+        check=_muse_still_archived,
     ),
     Caveat(
         id="api1",

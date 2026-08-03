@@ -32,7 +32,8 @@ from typing import Any, Optional
 
 import pytest
 
-from embodiment import continuity, ledger, muse, recall_bundle
+import embodiment.muse as muse  # ARCHIVED lane, named explicitly (#53)
+from embodiment import continuity, ledger, recall_bundle
 from embodiment.recall_bundle import (
     DEGRADED_ENRICHMENT_UNAVAILABLE,
     DEGRADED_FETCH_FAILED,
