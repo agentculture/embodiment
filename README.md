@@ -15,11 +15,21 @@ once and imported, not reimplemented per host.
 
 ## Status
 
-**The extraction has landed.** The loop, the presence pump, the muse thinking
-loop, perception, continuity and its lifecycle checkpoints, Gwen framing, the
-degradation ledger, event emission and the demo are all checked in on `main`
-(PR #13). The demo has been run against a real two-model rig, not only against
-fakes.
+**The extraction has landed.** The loop, the presence pump, perception,
+continuity and its lifecycle checkpoints, Gwen framing, the degradation ledger,
+event emission and the demo are all checked in on `main` (PR #13). The demo has
+been run against a real two-model rig, not only against fakes.
+
+**The muse lane is archived.** `embodiment/muse.py` and
+`embodiment/muse_runner.py` left the shipped reference architecture on
+2026-08-03 ([#53](https://github.com/agentculture/embodiment/issues/53)), and
+the strategist tier — `scope.py`, `strategist_runner.py`, `scoped_run.py` —
+took its place above the acting loop. Archived is **not** deleted: both files
+stay readable and importable, because `strategist_runner.py` was copied out of
+`muse_runner.py` verbatim under the cite-don't-import policy. What they lost is
+advertisement — neither is on `embodiment.__all__` any more, so a host that
+wants counsel must name `embodiment.muse` explicitly. Everything below that
+describes the muse is retained as the record of what it measured.
 
 Still outstanding: `colleague`'s answer to the seam proposal, filed and open as
 [colleague#358](https://github.com/agentculture/colleague/issues/358) — the
@@ -309,19 +319,21 @@ the operator talks to.
 | Loop + presence | `embodiment` | the pump |
 | **Teammate identity** | **Gwen** | who the operator addresses |
 | Cortex | Qwen 3.6 27B (`sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP`) | bounded tool loop, repo actions, final synthesis — **final authority**. Framed by embodiment. |
-| Muse | Gemma 4 31B (`nvidia/Gemma-4-31B-IT-NVFP4`) | reflective counsel, tools opt-in: reframes the problem, challenges the cortex's assumptions and offers materially different alternatives, running its own parallel thinking loop — it proposes, never decides. A host may wire a working-memory pad and a bounded workspace onto its tool bench; neither is on by default (see below). Framed by embodiment. |
+| Strategist | the `cortex` lobes role (dense Qwen 3.6 27B) | scope above the acting loop: typed, versioned, supersedable directives owning objectives, priorities, constraints and ownership. Authority-bearing *within* scope; a directive structurally cannot carry a tool, a command or an approval. Optional — an unarmed `ScopeGovernor` is byte-identical to `run()`. |
+| ~~Muse~~ | ~~Gemma 4 31B~~ | **ARCHIVED 2026-08-03** ([#53](https://github.com/agentculture/embodiment/issues/53)) — off the curated surface, still readable and still wireable by name. The paragraph below is retained as the record of what it measured. |
 | Senses | Gemma 4 12B (`coolthor/gemma-4-12B-it-NVFP4A16`) | intake, perception, speak-back; never acts on the repo. **Lives in colleague, not here** — see the scope note below. |
 | Ears / voice | Parakeet STT + Chatterbox TTS (lobes audio overlay) | the realtime lane below |
 
-> **Scope: embodiment frames cortex and muse, not senses.** The table describes
+> **Scope: embodiment frames cortex, not senses.** The table describes
 > the whole reference rig, but only part of it is this package. embodiment ships
 > **one** actor loop; colleague's senses coordination loop stays in colleague,
 > and so does its framing. This split is recorded on
 > [colleague#352](https://github.com/agentculture/colleague/issues/352#issuecomment-5073964358).
-> A single-model run — the default tested path — starts no muse and claims no
-> second mind.
+> A single-model run — the default tested path — starts no second mind and
+> claims none.
 >
-> **Muse tools are opt-in, and a validation pass kept them that way.** A host
+> **Muse tools were opt-in, and a validation pass kept them that way.** Retained
+> as the record of that validation; the lane it describes is archived. A host
 > may hand the muse's thinking loop `embodiment.muse_pad.MusePad` (write-only
 > working memory) and `embodiment.workspace.MuseWorkspace` (a bounded,
 > network-less, disposable container) as tools on its bench; with no bench

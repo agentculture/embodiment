@@ -53,18 +53,41 @@ _SUBMODULES = frozenset(
         "lifecycle",
         "loop",
         "media",
-        "muse",
         "muse_pad",
-        "muse_runner",
         "perception",
         "presence",
         "presence_engine",
         "recall_bundle",
+        "scope",
+        "scoped_run",
         "scratchpad",
+        "strategist_runner",
         "subagent",
         "workspace",
     }
 )
+
+#: Modules that have LEFT the shipped reference architecture but stay readable.
+#:
+#: The muse was archived on 2026-08-03 (embodiment#53, deviations ``d2``/``d3``,
+#: superseding confirmed claims ``c12`` and ``c32``), following ``d15``'s
+#: muse-off reference rig. "Archived" here means *off the curated surface*, not
+#: deleted and not deprecated: :mod:`embodiment.strategist_runner` was copied out
+#: of ``muse_runner.py`` verbatim under the cite-don't-import policy, so the
+#: source has to stay openable for the citation to mean anything, and a host
+#: that wants counsel can still wire one.
+#:
+#: The practical difference is one of advertisement. These names resolve through
+#: :func:`__getattr__` exactly as a curated submodule does, so
+#: ``from embodiment import muse`` still works — but they are absent from
+#: :data:`__all__`, absent from :func:`dir`, and none of the eighteen ``Muse*``
+#: names they own is hoisted any more, so ``from embodiment import
+#: ThreadedMuseRunner`` does not resolve. Reaching the archived lane means
+#: naming it. ``tests/test_muse_archival.py`` holds the whole disposition.
+ARCHIVED_SUBMODULES: tuple[str, ...] = ("muse", "muse_runner")
+
+#: Every submodule :func:`__getattr__` will import — curated plus archived.
+_RESOLVABLE = _SUBMODULES | frozenset(ARCHIVED_SUBMODULES)
 
 #: Curated public name → owning submodule. Deliberately a *curation*, not a
 #: dump: the ~130 names these modules export between them stay reachable on the
@@ -117,6 +140,10 @@ _LAZY_NAMES = {
     "PresenceExecutor": "presence_engine",
     "PresenceTurn": "presence_engine",
     "build_presence_executor": "presence_engine",
+    # The pump's advisory SEAM, which survives the muse's archival: it is a
+    # structural protocol owned by `presence_engine`, satisfied by anything
+    # with the drain shape, and it never imported `muse` in the first place.
+    # The name is historical; the archived lane is `embodiment.muse`.
     "MuseSeam": "presence_engine",
     # t7's original synchronous callable. Still accepted and adapted onto the
     # drain shape internally, so a host written against it keeps working.
@@ -124,34 +151,66 @@ _LAZY_NAMES = {
     "MuseComment": "presence_engine",
     "BoundaryContext": "presence_engine",
     "DEFAULT_SPEAKER": "presence_engine",
-    # ── the muse: a bounded, tools-off thinking loop (deviation d1) ───────
-    # Advisory only. `MUSE_AUTHORITY` resolves from `muse`, which owns it;
-    # `framing` re-exports the same object so a host composes against one copy.
-    "MuseLoop": "muse",
-    "MuseControls": "muse",
-    "MuseInsight": "muse",
-    "MuseOutcome": "muse",
-    "MuseOrigin": "muse",
-    "MuseDegradation": "muse",
-    "MuseCompleteFn": "muse",
-    "MuseSink": "muse",
-    "MUSE_AUTHORITY": "muse",
-    # The muse's THINKING tools (task t10). Absent by default: with no bench
-    # wired the muse is tools-off and every prompt is byte-identical to the
-    # pre-seam release's. A bench reaches the wire only on the TOP-LEVEL muse.
-    "MuseToolBench": "muse",
-    "MuseToolCompleteFn": "muse",
-    "MuseToolExecuteFn": "muse",
-    "MUSE_TOOL_AUTHORITY": "muse",
-    # Staleness: a parallel loop's insight can arrive long after the step it
-    # reasoned about, so relevance is the consumer's judgement to make.
-    "insight_lag": "muse",
-    "is_stale": "muse",
-    # ── the muse's pad: the actor's scratchpad, offered to the thinking lane ─
-    # The first thing to put on that bench (task t12). Reuses scratchpad's KINDS
-    # and schemas unchanged; `finish` is the one declared omission. Not a memory:
-    # no recall surface reaches it (claim c10). `MusePadCounts` carries the
-    # protocol-adherence counters the pad validation reads.
+    # ── strategic scope: the strategist tier's protocol shapes ────────────
+    # What the strategist and the worker exchange. Read the directive's field
+    # list as an exclusion as much as an inclusion: no `tool`, no `arguments`,
+    # no `command`, no `approve` — a directive can only ever carry scope, and
+    # `FORBIDDEN_DIRECTIVE_KEYS` is the ban made checkable. The `DEGRADED_*` /
+    # `DROPPED_*` codes stay on their modules, as every other lane's do: they
+    # collide across lanes by design and `ledger.known_codes()` is the surface
+    # for reading them.
+    "ScopeDirective": "scope",
+    "ScopeResponsibility": "scope",
+    "ScopeSnapshot": "scope",
+    "ScopeReport": "scope",
+    "ScopeControls": "scope",
+    "ScopeDegradation": "scope",
+    "ScopeRejection": "scope",
+    "ScopeOutcome": "scope",
+    "ScopeCompleteFn": "scope",
+    "ScopeRegister": "scope",
+    "ScopeLoop": "scope",
+    "directive_from_payload": "scope",
+    "SCOPE_AUTHORITY": "scope",
+    "FORBIDDEN_DIRECTIVE_KEYS": "scope",
+    "MARKER_DIRECTIVE": "scope",
+    "MARKER_HOLD": "scope",
+    "REFUSAL_CODES": "scope",
+    "LANE_DURABLE": "scope",
+    "LANE_SESSION": "scope",
+    "SCOPE_LANES": "scope",
+    # The strategist's own THINKING tools, on the `MuseToolBench` precedent:
+    # absent by default, wired explicitly by a host, never a default flip.
+    "ScopeToolBench": "scope",
+    "ScopeToolCompleteFn": "scope",
+    "ScopeToolExecuteFn": "scope",
+    # ── the governor: scope applied to one acting drive ───────────────────
+    # `ScopeGovernor(strategist=None)` is byte-identical to `run()` — an
+    # unarmed governor is the same composition an actor-only host gets by
+    # never touching this lane at all.
+    "ScopeGovernor": "scoped_run",
+    "ScopedOutcome": "scoped_run",
+    "ScopedControls": "scoped_run",
+    "ScopeContext": "scoped_run",
+    "ScopeTransition": "scoped_run",
+    "ScopeProjectorFn": "scoped_run",
+    "ScopePersistence": "scoped_run",
+    "ScopeSession": "scoped_run",
+    "run_scoped": "scoped_run",
+    "render_directive": "scoped_run",
+    # ── the strategist's thread: the second place embodiment owns one ─────
+    # Cited from the archived `muse_runner`, then owned outright (`d3`/`d4`).
+    "StrategistRunner": "strategist_runner",
+    "StrategistLimits": "strategist_runner",
+    "STRATEGIST_ROLE": "strategist_runner",
+    # ── the pad: a thinking lane's write-only working memory ──────────────
+    # Built for the muse's bench (task t12) and still named for it, but the pad
+    # itself is not archived: it reuses scratchpad's KINDS and schemas
+    # unchanged, `finish` is the one declared omission, and it is a bench any
+    # thinking lane can be handed. Not a memory: no recall surface reaches it
+    # (claim c10). `MusePadCounts` carries the protocol-adherence counters the
+    # pad validation reads. The BENCH TYPE it satisfies lives on the archived
+    # `embodiment.muse`, which is why this module still imports it.
     "MusePad": "muse_pad",
     "MusePadCounts": "muse_pad",
     "MUSE_PAD_TOOLS": "muse_pad",
@@ -166,13 +225,11 @@ _LAZY_NAMES = {
     "WorkspaceDegradation": "workspace",
     "WORKSPACE_TOOLS": "workspace",
     "WORKSPACE_PROTOCOL": "workspace",
-    # ── the muse runner: the one place embodiment owns a thread ───────────
-    "ThreadedMuseRunner": "muse_runner",
-    "ThreadFactory": "muse_runner",
-    # What the terminal drain handed the actor — count and ids, zero included.
-    # A DELIVERY, not a degradation: it answers "did the last beat arrive?",
-    # which `ledger.read` deliberately does not (task t5).
-    "MuseDelivery": "muse_runner",
+    # NOTE — the muse lane used to be hoisted here (`ThreadedMuseRunner`,
+    # `ThreadFactory`, `MuseDelivery` from `muse_runner`, and fifteen names
+    # from `muse`). All eighteen were retired on 2026-08-03 with the archival:
+    # see `ARCHIVED_SUBMODULES` above. They stay importable from
+    # `embodiment.muse` / `embodiment.muse_runner` by name.
     # ── drones: authored once, then run on code plus tens of tokens ───────
     # The verbs (`create` / `evoke` / `catalog`) stay on the module — they read
     # far too generically at package level, the same reason continuity's
@@ -305,7 +362,12 @@ _LAZY_NAMES = {
     "SPAWN_REFUSALS": "subagent",
 }
 
-__all__ = ["__version__", *sorted(_SUBMODULES), *sorted(_LAZY_NAMES)]
+__all__ = [
+    "__version__",
+    "ARCHIVED_SUBMODULES",
+    *sorted(_SUBMODULES),
+    *sorted(_LAZY_NAMES),
+]
 
 
 def _resolve_version() -> str:
@@ -327,7 +389,10 @@ def __getattr__(name: str) -> Any:
     """
     if name == "__version__":
         value: Any = _resolve_version()
-    elif name in _SUBMODULES:
+    elif name in _RESOLVABLE:
+        # `_RESOLVABLE`, not `_SUBMODULES`: an ARCHIVED module resolves exactly
+        # as a curated one does. Archival costs advertisement, never reach —
+        # that is what keeps `embodiment.strategist_runner`'s citation openable.
         value = importlib.import_module(f"{__name__}.{name}")
     else:
         module = _LAZY_NAMES.get(name)
@@ -344,6 +409,11 @@ def __dir__() -> list[str]:
 
 
 if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy names
+    # `muse` and `muse_runner` are ARCHIVED (see `ARCHIVED_SUBMODULES`). They
+    # are stubbed here anyway, and honestly: `__getattr__` resolves them at
+    # runtime exactly as it resolves a curated submodule, so a consumer
+    # type-checking against the archived lane should be able to see it. What
+    # they are absent from is `__all__`, not the package.
     from embodiment import (  # noqa: F401
         context,
         continuity,
@@ -363,7 +433,10 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
         presence,
         presence_engine,
         recall_bundle,
+        scope,
+        scoped_run,
         scratchpad,
+        strategist_runner,
         subagent,
         workspace,
     )
@@ -473,33 +546,11 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
         UnknownToolError,
         run,
     )
-    from embodiment.muse import (  # noqa: F401
-        MUSE_AUTHORITY,
-        MUSE_TOOL_AUTHORITY,
-        MuseCompleteFn,
-        MuseControls,
-        MuseDegradation,
-        MuseInsight,
-        MuseLoop,
-        MuseOrigin,
-        MuseOutcome,
-        MuseSink,
-        MuseToolBench,
-        MuseToolCompleteFn,
-        MuseToolExecuteFn,
-        insight_lag,
-        is_stale,
-    )
     from embodiment.muse_pad import (  # noqa: F401
         MUSE_PAD_PROTOCOL,
         MUSE_PAD_TOOLS,
         MusePad,
         MusePadCounts,
-    )
-    from embodiment.muse_runner import (  # noqa: F401
-        MuseDelivery,
-        ThreadedMuseRunner,
-        ThreadFactory,
     )
     from embodiment.perception import PerceptionDegradation  # noqa: F401
     from embodiment.perception import perceive  # noqa: F401
@@ -540,10 +591,52 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
         flat_fetcher,
         graph_available,
     )
+    from embodiment.scope import (  # noqa: F401
+        FORBIDDEN_DIRECTIVE_KEYS,
+        LANE_DURABLE,
+        LANE_SESSION,
+        MARKER_DIRECTIVE,
+        MARKER_HOLD,
+        REFUSAL_CODES,
+        SCOPE_AUTHORITY,
+        SCOPE_LANES,
+        ScopeCompleteFn,
+        ScopeControls,
+        ScopeDegradation,
+        ScopeDirective,
+        ScopeLoop,
+        ScopeOutcome,
+        ScopeRegister,
+        ScopeRejection,
+        ScopeReport,
+        ScopeResponsibility,
+        ScopeSnapshot,
+        ScopeToolBench,
+        ScopeToolCompleteFn,
+        ScopeToolExecuteFn,
+        directive_from_payload,
+    )
+    from embodiment.scoped_run import (  # noqa: F401
+        ScopeContext,
+        ScopedControls,
+        ScopedOutcome,
+        ScopeGovernor,
+        ScopePersistence,
+        ScopeProjectorFn,
+        ScopeSession,
+        ScopeTransition,
+        render_directive,
+        run_scoped,
+    )
     from embodiment.scratchpad import (  # noqa: F401
         Entry,
         Scratchpad,
         resume_report,
+    )
+    from embodiment.strategist_runner import (  # noqa: F401
+        STRATEGIST_ROLE,
+        StrategistLimits,
+        StrategistRunner,
     )
     from embodiment.subagent import (  # noqa: F401
         NO_SPAWNS,

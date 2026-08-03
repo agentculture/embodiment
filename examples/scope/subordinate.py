@@ -30,18 +30,29 @@ an owner already assigned, an owner that has been lost. Those are recorded as
 owner idles rather than being helpfully re-tasked (``t9`` acceptance
 criterion 4).
 
-Vocabulary borrowed from ``embodiment.scope``, and pinned to it
----------------------------------------------------------------
-:class:`Directive`, :class:`Responsibility`, :func:`project` and
-:data:`REFUSAL_CODES` mirror ``embodiment.scope``'s shapes field for field, and
-``tests/test_scopebench.py`` asserts the mirrors against the real
-``dataclasses.fields()`` and the real constants. They are **mirrored rather than
-imported** for one mechanical reason: ``embodiment.scope`` is not on the
-package's curated public surface yet, and
-``tests/test_demo_greenhouse.py::TestPublicApiOnly`` refuses any ``examples``
-import of an undocumented submodule. When the scope lane joins the surface these
-mirrors become imports and the pinning tests become redundant; until then the
-tests are what stop the two drifting.
+Vocabulary IMPORTED from ``embodiment.scope`` (task ``t15``)
+-------------------------------------------------------------
+:class:`Directive`, :class:`Responsibility`, :data:`FORBIDDEN_DIRECTIVE_KEYS`,
+:data:`REFUSAL_CODES`, :data:`MARKER_HOLD` and the five ``DROPPED_*`` codes
+**are** ``embodiment.scope``'s — imported, not copied. :data:`DIRECTIVE_FIELDS`,
+:data:`RESPONSIBILITY_FIELDS` and :data:`SNAPSHOT_FIELDS` are *derived* from the
+real dataclasses with :func:`dataclasses.fields`, so they cannot be transcribed
+wrongly either.
+
+This file used to mirror all of that by hand. The reason was mechanical, not a
+design preference: ``embodiment.scope`` was not on the package's curated public
+surface, and ``tests/test_demo_greenhouse.py::TestPublicApiOnly`` refuses any
+``examples`` import of an undocumented submodule. Task ``t15`` put the scope
+lane on the surface (in the same pass that archived the muse, embodiment#53), so
+the workaround is gone. ``tests/test_scopebench.py``'s pinning tests were kept
+rather than deleted, converted into **identity** assertions — ``sub.Directive is
+pkg_scope.ScopeDirective`` — so a future reintroduction of a mirror fails
+loudly instead of drifting quietly.
+
+The local names are aliases, kept deliberately: this bench reads about
+directives and responsibilities dozens of times and the ``Scope`` prefix buys
+nothing inside a module that is entirely about scope. The alias is an alias,
+not a subclass — the object is the package's.
 
 ``ScopeResponsibility`` is why this design works at all: it is already
 ``owner -> responsibility``, which is already an allocation. The strategist
@@ -54,9 +65,22 @@ Nothing here dials a model, reads a clock, opens a socket or starts a thread.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, fields
 from typing import Any, Callable, Mapping, Optional, Sequence
 
+from embodiment.scope import (
+    DROPPED_AUTHORITY,
+    DROPPED_DUPLICATE,
+    DROPPED_INCOMPLETE,
+    DROPPED_UNKNOWN_SUPERSEDES,
+    DROPPED_VERSION_BACKWARD,
+    FORBIDDEN_DIRECTIVE_KEYS,
+    MARKER_HOLD,
+    REFUSAL_CODES,
+    ScopeDirective,
+    ScopeResponsibility,
+    ScopeSnapshot,
+)
 from examples.scope import episodes as ep
 from examples.scope import oracle as orc
 
@@ -110,152 +134,32 @@ __all__ = [
 ]
 
 
-# ── the mirrored scope vocabulary ─────────────────────────────────────────────
+# ── the scope vocabulary, imported (task t15) ─────────────────────────────────
+#
+# `MARKER_HOLD`, `FORBIDDEN_DIRECTIVE_KEYS`, `REFUSAL_CODES` and the five
+# `DROPPED_*` codes come straight off `embodiment.scope` at the top of this
+# file. Nothing below re-states them, so there is nothing left to drift.
 
-#: ``embodiment.scope.MARKER_HOLD`` — the strategist's first-class "nothing
-#: should change" answer, which ScopeBench grades rather than treats as silence.
-MARKER_HOLD = "[hold]"
+#: The package's own shapes, under this bench's shorter local names. An ALIAS,
+#: not a subclass: ``Directive is embodiment.scope.ScopeDirective`` is true, and
+#: ``tests/test_scopebench.py`` asserts exactly that.
+Responsibility = ScopeResponsibility
+Directive = ScopeDirective
 
-#: ``embodiment.scope.ScopeDirective``'s fields, in order. Pinned by test.
-DIRECTIVE_FIELDS: tuple[str, ...] = (
-    "scope_id",
-    "supersedes",
-    "objective",
-    "priorities",
-    "constraints",
-    "responsibilities",
-    "success_conditions",
-    "review_when",
-    "decision_summary",
-    "version",
-)
+#: ``ScopeDirective``'s fields, in order — DERIVED, never transcribed, so the
+#: projector and the real shape cannot disagree about what a directive carries.
+DIRECTIVE_FIELDS: tuple[str, ...] = tuple(entry.name for entry in fields(ScopeDirective))
 
-#: ``embodiment.scope.ScopeResponsibility``'s fields. Pinned by test.
-RESPONSIBILITY_FIELDS: tuple[str, ...] = ("owner", "responsibility")
+#: ``ScopeResponsibility``'s fields, derived the same way.
+RESPONSIBILITY_FIELDS: tuple[str, ...] = tuple(entry.name for entry in fields(ScopeResponsibility))
 
-#: ``embodiment.scope.ScopeSnapshot``'s fields. Pinned by test — the projector
-#: below builds exactly these and nothing else, so what a live strategist reads
-#: at Stage 2 is the same projection Stage 1 graded against.
-SNAPSHOT_FIELDS: tuple[str, ...] = (
-    "snapshot_id",
-    "current_directive",
-    "objectives",
-    "commitments",
-    "active_workstreams",
-    "dependencies",
-    "resource_state",
-    "material_outcomes",
-    "repeated_failures",
-    "conflicts",
-    "uncertainties",
-    "requested_decision",
-)
-
-DROPPED_INCOMPLETE = "scope-directive-incomplete"
-DROPPED_DUPLICATE = "scope-directive-duplicate-id"
-DROPPED_UNKNOWN_SUPERSEDES = "scope-directive-unknown-supersedes"
-DROPPED_VERSION_BACKWARD = "scope-directive-version-backward"
-DROPPED_AUTHORITY = "scope-directive-authority-violation"
-
-#: The five grounds a directive is refused on. Pinned against
-#: ``embodiment.scope.REFUSAL_CODES`` by test.
-REFUSAL_CODES: tuple[str, ...] = (
-    DROPPED_INCOMPLETE,
-    DROPPED_DUPLICATE,
-    DROPPED_UNKNOWN_SUPERSEDES,
-    DROPPED_VERSION_BACKWARD,
-    DROPPED_AUTHORITY,
-)
-
-#: ``embodiment.scope.FORBIDDEN_DIRECTIVE_KEYS`` — keys a directive may never
-#: carry at any depth. Pinned by test as a **set equality**, so neither list can
-#: gain or lose a key without the other.
-FORBIDDEN_DIRECTIVE_KEYS: tuple[str, ...] = (
-    "tool",
-    "tools",
-    "tool_call",
-    "tool_calls",
-    "toolcalls",
-    "arguments",
-    "tool_arguments",
-    "function_call",
-    "command",
-    "commands",
-    "shell",
-    "exec",
-    "run",
-    "edit",
-    "edits",
-    "file_edits",
-    "patch",
-    "diff",
-    "write",
-    "approve",
-    "approved",
-    "approval",
-    "approvals",
-    "deny",
-    "denied",
-    "allow",
-    "allowed",
-    "permit",
-    "veto",
-    "rewrite",
-    "speak",
-    "say",
-    "reply",
-    "utterance",
-    "narration",
-)
+#: ``ScopeSnapshot``'s fields. The projector below builds exactly these and
+#: nothing else, so what a live strategist reads at Stage 2 is the same
+#: projection Stage 1 graded against.
+SNAPSHOT_FIELDS: tuple[str, ...] = tuple(entry.name for entry in fields(ScopeSnapshot))
 
 
-# ── the shapes ────────────────────────────────────────────────────────────────
-
-
-@dataclass(frozen=True)
-class Responsibility:
-    """One ``owner -> responsibility`` allocation. Two strings and nothing else.
-
-    Deliberately not widened. There is no field here a dispatcher could bind to
-    and no callable a directive could carry, which is what keeps "allocates
-    responsibility" from becoming "performs the work".
-    """
-
-    owner: str = ""
-    responsibility: str = ""
-
-    def to_dict(self) -> dict[str, Any]:
-        return {"owner": self.owner, "responsibility": self.responsibility}
-
-
-@dataclass(frozen=True)
-class Directive:
-    """One strategic decision, shaped exactly like ``ScopeDirective``."""
-
-    scope_id: str = ""
-    supersedes: Optional[str] = None
-    objective: str = ""
-    priorities: tuple[str, ...] = ()
-    constraints: tuple[str, ...] = ()
-    responsibilities: tuple[Responsibility, ...] = ()
-    success_conditions: tuple[str, ...] = ()
-    review_when: tuple[str, ...] = ()
-    decision_summary: str = ""
-    version: int = 0
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "scope_id": self.scope_id,
-            "supersedes": self.supersedes,
-            "objective": self.objective,
-            "priorities": list(self.priorities),
-            "constraints": list(self.constraints),
-            "responsibilities": [entry.to_dict() for entry in self.responsibilities],
-            "success_conditions": list(self.success_conditions),
-            "review_when": list(self.review_when),
-            "decision_summary": self.decision_summary,
-            "version": self.version,
-        }
+# ── the shapes this bench adds on top ─────────────────────────────────────────
 
 
 @dataclass(frozen=True)

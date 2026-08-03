@@ -23,6 +23,13 @@ issue key, because the key changes.
 |------|----------|-------------|----------|
 | `python:S107` | `embodiment/muse_runner.py` — `ThreadedMuseRunner.__init__` | Accepted (`WONTFIX`) | PR #38 |
 
+> `muse_runner.py` was **archived** on 2026-08-03 (embodiment#53) but not
+> deleted — it stays readable as the source `embodiment/strategist_runner.py`
+> was cited from. The file is still analysed, so the disposition below still
+> applies and is left standing. `StrategistRunner.__init__`, written afterwards,
+> deliberately does **not** inherit the debt: it groups its knobs into
+> `StrategistLimits` instead.
+
 ### `python:S107` — 15 parameters against a limit of 13
 
 Declined, not a false positive: the count is real. `ThreadedMuseRunner.__init__` is this

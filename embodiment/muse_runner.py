@@ -1,5 +1,23 @@
 """The muse's THREAD — one daemon pump beside the actor loop (task t10b).
 
+.. warning::
+
+   **ARCHIVED — 2026-08-03, embodiment#53, deviations** ``d2`` **/** ``d3``.
+
+   This module has left the shipped reference architecture, and it is the one
+   the citation runs through: :mod:`embodiment.strategist_runner` is this file,
+   copied verbatim and then owned outright. So archival here means *off the
+   curated surface*, never deleted — roughly fourteen hundred lines of
+   concurrency correctness that took live probes to settle (the single
+   replaceable pending slot, the poll-wake read, the bounded join that never
+   hangs on a parked blocking read) stay readable exactly so a reader can check
+   the copy against its source.
+
+   Reaching this lane now means naming ``embodiment.muse_runner`` explicitly;
+   ``from embodiment import ThreadedMuseRunner`` no longer resolves. The
+   archival supersedes confirmed claims ``c12`` and ``c32``. See
+   ``tests/test_muse_archival.py`` for the disposition in executable form.
+
 :mod:`embodiment.muse` (task t10a) is the muse's *reasoning*: a bounded,
 tools-off thinking loop with no thread, no clock and no timer, deterministic to
 the last branch. This module is the other half, and only the other half — the
@@ -217,7 +235,18 @@ from embodiment.muse import (
 )
 from embodiment.presence_engine import BoundaryContext, MuseComment
 
+#: This module's archival, as data a host or a test can read (embodiment#53).
+#: Declarative on purpose — see the module docstring. This is the lane
+#: :mod:`embodiment.strategist_runner` cites, so "readable" is load-bearing.
+ARCHIVED = (
+    "archived 2026-08-03 (embodiment#53, deviations d2/d3): the muse runner left the "
+    "shipped reference architecture and stays readable as the verbatim source "
+    "embodiment.strategist_runner was copied from; supersedes claims c12 and c32"
+)
+
 __all__ = [
+    # the archival marker (embodiment#53, deviations d2/d3)
+    "ARCHIVED",
     # role + thread identity
     "MUSE_ROLE",
     "THREAD_NAME",

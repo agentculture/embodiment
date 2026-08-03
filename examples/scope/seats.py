@@ -69,15 +69,17 @@ affected seat ``None`` and add a :class:`SeatDegradation` naming exactly which
 of the three happened. Nothing here raises, including under a hostile payload
 (``capabilities`` that is not a mapping at all, or a role entry whose values
 refuse to stringify or booleanize) — every read is guarded. A host that then
-wires :func:`governed_by` gets a governor with ``strategist=None`` — the
-*same* unarmed, byte-identical-to-``run()`` composition an actor-only host
-gets by never touching the scope lane at all.
+calls :func:`governed_by` gets a :class:`~embodiment.scoped_run.ScopeGovernor`
+with ``strategist=None`` — the *same* unarmed, byte-identical-to-``run()``
+composition an actor-only host gets by never touching the scope lane at all.
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Any, Mapping, Optional
+
+from embodiment.scoped_run import ScopeGovernor
 
 __all__ = [
     "DEGRADED_ROLE_ABSENT",
@@ -357,38 +359,38 @@ def governed_by(
     default_scope: Optional[Any] = None,
     identity: Optional[str] = None,
     controls: Optional[Any] = None,
-) -> dict[str, Any]:
-    """The kwargs a host passes straight to ``ScopeGovernor(**...)``.
+) -> ScopeGovernor:
+    """The :class:`~embodiment.scoped_run.ScopeGovernor` a resolution composes to.
 
-    Returns a plain ``dict`` rather than constructing
-    :class:`~embodiment.scoped_run.ScopeGovernor` itself: that module (like
-    ``embodiment.scope`` and ``embodiment.strategist_runner``) is not yet on
+    This used to return a plain ``dict`` of constructor keywords for a
+    mechanical reason, not a design one: ``embodiment.scoped_run`` was not on
     ``embodiment``'s curated public surface, and
     ``tests/test_demo_greenhouse.py::TestPublicApiOnly`` refuses any
-    ``examples/`` import of an undocumented submodule -- the identical
-    constraint ``examples/scope/subordinate.py`` already documents for
-    ``embodiment.scope``'s shapes. A host application (unlike a file under
-    ``examples/``) is free to do
-    ``ScopeGovernor(**governed_by(seats, strategist=my_runner))`` directly;
-    ``tests/test_scope_seats.py`` proves the returned mapping is exactly the
-    real class's constructor keywords, and separately constructs the real
-    :class:`~embodiment.scoped_run.ScopeGovernor` from it end to end.
+    ``examples/`` import of an undocumented submodule -- so this file could not
+    name the class it was describing, and every caller had to write
+    ``ScopeGovernor(**governed_by(...))`` for itself. Task ``t15`` put the scope
+    lane on the surface (the same pass that archived the muse, embodiment#53),
+    so the workaround is gone and this returns the real object.
 
     *strategist* is host-constructed -- typically an
     :class:`~embodiment.strategist_runner.StrategistRunner` already dialled to
     :attr:`SeatResolution.strategist`'s :class:`SeatDial` -- and is seated only
     when :attr:`SeatResolution.has_strategist` is true. A missing or not-ready
     cortex role means *strategist* is never seated even when the caller passed
-    one in: the returned kwargs govern actor-only, which is what makes "a
-    missing role degrades to actor-only" a property of the *composition*, not
-    merely a fact recorded on :class:`SeatResolution` (acceptance criterion 2).
-    Never raises: this function does no I/O and builds no object with a
-    validating constructor.
+    one in, so the returned governor is **unarmed**: "a missing role degrades to
+    actor-only" is a property of the *composition*, not merely a fact recorded
+    on :class:`SeatResolution` (acceptance criterion 2). An unarmed governor is
+    the same inert composition an actor-only host gets by never touching the
+    scope lane at all.
+
+    Never raises: ``ScopeGovernor`` is a plain grouping object whose constructor
+    validates nothing and does no I/O, so a fully degraded resolution composes
+    exactly as cleanly as a complete one.
     """
-    return {
-        "strategist": strategist if seats.has_strategist else None,
-        "projector": projector,
-        "default_scope": default_scope,
-        "identity": identity,
-        "controls": controls,
-    }
+    return ScopeGovernor(
+        strategist=strategist if seats.has_strategist else None,
+        projector=projector,
+        default_scope=default_scope,
+        identity=identity,
+        controls=controls,
+    )

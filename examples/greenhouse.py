@@ -70,11 +70,9 @@ from embodiment import (
     LoopAborted,
     LoopControls,
     ModelResponse,
-    MuseControls,
     PresenceEngine,
     PresenceIO,
     Task,
-    ThreadedMuseRunner,
     ToolCall,
     ToolError,
     ToolOutcome,
@@ -88,6 +86,8 @@ from embodiment import (
     run,
     speaker_label,
 )
+from embodiment.muse import MuseControls
+from embodiment.muse_runner import ThreadedMuseRunner
 
 # ── who this app is, and where it keeps things ───────────────────────────────
 

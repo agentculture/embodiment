@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import pytest
 
-from embodiment import muse
+import embodiment.muse as muse  # ARCHIVED lane, named explicitly (#53)
 from embodiment.muse import (
     BUNDLE_HEADER,
     BUNDLE_TRUNCATED_MARKER,

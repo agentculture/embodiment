@@ -160,9 +160,11 @@ __all__ = [
 
 #: The bounded tool loop (:mod:`embodiment.loop`).
 SOURCE_LOOP = "loop"
-#: One thinking session (:mod:`embodiment.muse`).
+#: One thinking session (:mod:`embodiment.muse`). **The lane is ARCHIVED and
+#: KEPT** — see the note below :data:`SOURCE_SCOPE`.
 SOURCE_MUSE = "muse"
-#: The thinking lane's thread (:mod:`embodiment.muse_runner`).
+#: The thinking lane's thread (:mod:`embodiment.muse_runner`). **ARCHIVED and
+#: KEPT** — see the note below :data:`SOURCE_SCOPE`.
 SOURCE_MUSE_RUNNER = "muse_runner"
 #: Event emission (:mod:`embodiment.events`).
 SOURCE_EVENTS = "events"
@@ -175,6 +177,31 @@ SOURCE_LIFECYCLE = "lifecycle"
 #: (:mod:`embodiment.strategist_runner`), folded as ONE lane because the
 #: runner re-exports every code the review loop mints (task t3).
 SOURCE_SCOPE = "scope"
+
+# ── why the two muse lanes above survived the muse's archival ─────────────────
+#
+# The muse left the shipped reference architecture on 2026-08-03 (embodiment#53,
+# deviations ``d2``/``d3``, superseding claims ``c12``/``c32``). Its two lanes
+# here did NOT leave with it, and that is a decision rather than an oversight.
+#
+# The scope lane is not a migration target. :data:`SOURCE_SCOPE` (task t3) was
+# never carved out of the muse lanes — it harvests
+# :mod:`embodiment.strategist_runner`'s own vocabulary, which was renamed
+# wholesale when that module was cited out of ``muse_runner.py``. So there is no
+# code that could be moved from one to the other; retiring the muse lanes would
+# only delete coverage.
+#
+# And it would delete coverage of something a host can still run. Archival cost
+# the muse its place on ``embodiment.__all__``, not its ability to be wired: a
+# host that reaches for ``embodiment.muse_runner`` by name gets a working
+# ``ThreadedMuseRunner``. Dropping ``read(muse_runner=...)`` would leave that
+# host's degradations with nowhere to fold — a silent lane, which is precisely
+# what constraint C3 exists to forbid. An archived lane still recording is the
+# cheap, honest outcome; a live lane the ledger refuses to read is not.
+#
+# ``tests/test_ledger.py`` pins this decision so a later cleanup pass has to
+# argue with a test rather than delete two lines.
+
 #: This module. A ledger that cannot read a source says so, in its own stream.
 SOURCE_LEDGER = "ledger"
 #: A child drive's degradations, carried back on :class:`~embodiment.subagent.SubagentResult`.
@@ -581,6 +608,10 @@ def from_muse_runner(source: Any) -> list[LedgerRecord]:
     The runner absorbs a finished session's own codes verbatim, so a fold of one
     runner legitimately produces both ``muse_runner``- and ``muse``-sourced
     records. Which is which is looked up, never guessed from the container.
+
+    The muse lane is **archived** (embodiment#53) and this reader is kept
+    anyway — a host that wires an archived muse must still be able to answer
+    "what went wrong?". See the note beside :data:`SOURCE_SCOPE`.
     """
     return _fold(source, lane=SOURCE_MUSE_RUNNER)
 

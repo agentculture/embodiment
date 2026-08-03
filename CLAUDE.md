@@ -25,9 +25,9 @@ presence pump were not in the repo; that stopped being true partway through the
 | Module | What it is |
 |--------|------------|
 | `loop.py` | The bounded tool loop, extracted from colleague's 4463-line `loop.py` (~42% of its statements). Termination proved *structurally* by AST tests, not just behaviourally. |
-| `presence_engine.py` | The pump, redesigned around cortex + muse — no TTY, no thread, no clock. |
+| `presence_engine.py` | The pump — no TTY, no thread, no clock. Its advisory seam (`MuseSeam`) is structural and survived the muse's archival; it never imported `muse`. |
 | `presence.py` | The pure policy half (cadence + clarify), ported byte-faithfully. |
-| `muse.py` | The bounded, thread-free muse **thinking** loop (deviation `d1`). |
+| ~~`muse.py`~~ | The bounded, thread-free muse **thinking** loop (deviation `d1`). **ARCHIVED** 2026-08-03 — readable, off the curated surface. |
 | `perception.py` | Verbatim-invariant intake + never-raise. |
 | `continuity.py` | The eidetic/coherence seam (rewritten under `d2` — see C1). |
 | `contract.py` | The carved data contract. |
@@ -36,7 +36,8 @@ presence pump were not in the repo; that stopped being true partway through the
 
 That table is not exhaustive and it has already drifted behind once. Everything
 this section used to list as "still to land" — the threaded muse runner
-(`muse_runner.py`), Gwen prompt framing (`framing.py`), the continuity lifecycle
+(`muse_runner.py`, since archived alongside `muse.py`), Gwen prompt framing
+(`framing.py`), the continuity lifecycle
 checkpoints (`lifecycle.py`), the degradation ledger (`ledger.py`) and the demo
 app (`examples/greenhouse.py`) — is checked in, and the `events.py` emitter
 landed after it under deviation `d3`. Still outstanding: colleague's answer on
@@ -143,7 +144,8 @@ operator actually talks to.
 | Loop + presence | `embodiment` (this repo) | the pump |
 | **Teammate identity** | **Gwen** | what the operator addresses |
 | Cortex | Qwen 3.6 27B (`sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP`) | bounded tool loop, repo actions, final synthesis, **final authority** — and, per `d15`, **the only actor** |
-| Muse *(opt-in; not in the reference rig)* | Gemma 4 31B (`nvidia/Gemma-4-31B-IT-NVFP4`) | reflective counsel, tools opt-in: reframe the problem, challenge the cortex's assumptions, offer materially different alternatives; proposes, never decides. A host may wire a pad and a bounded workspace onto its tool bench; neither is on by default — see below |
+| Strategist *(opt-in)* | the `cortex` lobes role (dense Qwen 3.6 27B) | scope above the acting loop: typed, versioned, supersedable directives owning objectives, priorities, constraints and ownership. Authority-bearing *within* scope — a directive structurally cannot carry a tool, a command or an approval. `embodiment/scope.py` + `strategist_runner.py` + `scoped_run.py` |
+| ~~Muse~~ | ~~Gemma 4 31B~~ | **ARCHIVED 2026-08-03** (embodiment#53, deviations `d2`/`d3`, superseding `c12`/`c32`) — see below |
 | Senses | Gemma 4 12B (`coolthor/gemma-4-12B-it-NVFP4A16`) | intake, perception, conversational presence, speak-back; never acts on the repo |
 | Ears / voice | Parakeet STT + Chatterbox TTS behind the lobes audio overlay | the realtime lane (below) |
 
@@ -155,10 +157,33 @@ cannot co-reside with the cortex+senses duo on a 128 GB box.
 
 **The reference rig runs muse-off — operator decision, 2026-07-31, recorded
 as `d15`.** Qwen is the only actor; Gemma 4 12B stays senses (intake,
-perception, speak-back); the Gemma 4 31B muse is **not dialled**. This changes
-no code — the muse was already opt-in and off by default — and it does **not**
-retire the seam: `muse.py`, `muse_runner.py` and the tool bench ship
-unchanged, and a host that wants counsel wires one.
+perception, speak-back); the Gemma 4 31B muse is **not dialled**.
+
+**And as of 2026-08-03 the muse is ARCHIVED** — operator decision on
+embodiment#53, recorded as deviations `d2` (the archival, blast radius
+measured) and `d3` (the disposition and the replacement's name), **superseding
+confirmed claims `c12` and `c32`**, which both pinned that `muse.py` /
+`muse_runner.py` ship unchanged. `d15` made the muse undialled; `d2` takes it
+out of the architecture this repo documents and advertises.
+
+Read "archived" precisely, because it is neither of the two obvious readings.
+It is **not a deletion**: `muse.py` and `muse_runner.py` stay in the package,
+stay importable, and stay green under their own suites, because
+`strategist_runner.py` was copied out of `muse_runner.py` *verbatim* under the
+cite-don't-import policy and that citation has to keep resolving to a file you
+can open. It is **not a docs-only retirement** either: the two modules left
+`_SUBMODULES` for `embodiment.ARCHIVED_SUBMODULES`, and the eighteen `Muse*`
+names they hoisted left `_LAZY_NAMES` entirely — so `from embodiment import
+ThreadedMuseRunner` no longer resolves and neither module appears in
+`__all__`. What archival costs is **advertisement, not reach**: a host that
+wants counsel names `embodiment.muse` and wires one, exactly as before.
+`tests/test_muse_archival.py` holds the whole disposition in executable form.
+
+Two surfaces were deliberately **kept** rather than retired with it, and the
+reasons are recorded where a cleanup pass will find them: `ledger.py`'s
+`SOURCE_MUSE` / `SOURCE_MUSE_RUNNER` lanes (a wireable lane the ledger refuses
+to read is the silent degradation **C3** forbids) and
+`tests/test_proof_reporting.py` (it stands behind a *published* live result).
 
 Be precise about what supports this, because the obvious citation is the wrong
 one. The model-consolidation head-to-head
@@ -186,10 +211,14 @@ loop as the same object. At 16000: 0 of 58. The example hosts' defaults were
 raised accordingly; the value the series was measured at stays recorded in
 `docs/live-test-results/arena-budget.md`.
 
-**The muse's tools are opt-in too, and stay that way.** `embodiment.muse_pad`
-(write-only working memory) and `embodiment.workspace` (a bounded,
-network-less, disposable container) are tools a host wires onto
-`muse.MuseToolBench` explicitly; with no bench wired the muse is
+**The muse's tools were opt-in too, and stayed that way.** Retained as the
+record of that validation — the lane it describes is archived, though the two
+tool modules are not: `embodiment.muse_pad` (write-only working memory) and
+`embodiment.workspace` (a bounded, network-less, disposable container) are
+still on the curated surface, still named for the bench they were built for,
+and still typed against `muse.MuseToolBench` — which is why `workspace.py` and
+`muse_pad.py` still import the archived module. They are benches any thinking
+lane can be handed. With no bench wired the muse was
 byte-identical to the tools-off mind it always was. This was a live question,
 not an assumption: task `t18`'s pre-registered three-arm series
 (`docs/live-test-results/muse-arms.md`, n=8 per arm, real Docker, 0 transport

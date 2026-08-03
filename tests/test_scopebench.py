@@ -53,38 +53,66 @@ def _run(planner: Optional[sub.PlannerFn], episode: ep.Episode = EPISODE) -> sub
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# the mirrored scope vocabulary is pinned to the package
+# the scope vocabulary is IMPORTED from the package, and pinned by identity
 # ══════════════════════════════════════════════════════════════════════════════
 
 
 class TestVocabularyIsPinnedToEmbodimentScope:
-    """``examples`` may not import ``embodiment.scope`` until it joins the
-    curated surface (``tests/test_demo_greenhouse.py::TestPublicApiOnly``), so
-    the bench mirrors the shapes. These tests are what stop the mirror drifting;
-    they become redundant the day the import becomes legal."""
+    """The bench used to MIRROR ``embodiment.scope``; task ``t15`` made it import.
 
-    def test_the_directive_fields_match(self) -> None:
+    ``examples`` could not import ``embodiment.scope`` while that module was off
+    the curated surface (``tests/test_demo_greenhouse.py::TestPublicApiOnly``),
+    so the bench copied the shapes and these tests compared the copies. ``t15``
+    put the scope lane on the surface, so the copies became imports.
+
+    The tests were **converted rather than deleted**. A field-name comparison
+    between a class and itself proves nothing, so each one below now asserts
+    **identity** — ``sub.Directive is pkg_scope.ScopeDirective``. That is the
+    assertion that actually fails if somebody reintroduces a mirror, which a
+    trivially-true equality check would not.
+    """
+
+    def test_the_directive_shape_is_the_package_shape(self) -> None:
+        assert sub.Directive is pkg_scope.ScopeDirective
+
+    def test_the_responsibility_shape_is_the_package_shape(self) -> None:
+        assert sub.Responsibility is pkg_scope.ScopeResponsibility
+
+    def test_the_directive_fields_are_derived_from_the_real_dataclass(self) -> None:
         assert sub.DIRECTIVE_FIELDS == tuple(f.name for f in fields(pkg_scope.ScopeDirective))
-        assert sub.DIRECTIVE_FIELDS == tuple(f.name for f in fields(sub.Directive))
 
-    def test_the_responsibility_fields_match(self) -> None:
+    def test_the_responsibility_fields_are_derived_from_the_real_dataclass(self) -> None:
         expected = tuple(f.name for f in fields(pkg_scope.ScopeResponsibility))
         assert sub.RESPONSIBILITY_FIELDS == expected
-        assert sub.RESPONSIBILITY_FIELDS == tuple(f.name for f in fields(sub.Responsibility))
 
-    def test_the_snapshot_fields_match(self) -> None:
+    def test_the_snapshot_fields_are_derived_from_the_real_dataclass(self) -> None:
         assert sub.SNAPSHOT_FIELDS == tuple(f.name for f in fields(pkg_scope.ScopeSnapshot))
 
-    def test_the_refusal_codes_match(self) -> None:
-        assert set(sub.REFUSAL_CODES) == set(pkg_scope.REFUSAL_CODES)
+    def test_the_refusal_codes_are_the_package_codes(self) -> None:
+        assert sub.REFUSAL_CODES is pkg_scope.REFUSAL_CODES
+
+    def test_the_authority_code_is_the_package_code(self) -> None:
         assert sub.DROPPED_AUTHORITY == pkg_scope.DROPPED_AUTHORITY
+
+    def test_the_version_code_is_the_package_code(self) -> None:
         assert sub.DROPPED_VERSION_BACKWARD == pkg_scope.DROPPED_VERSION_BACKWARD
 
-    def test_the_forbidden_key_list_matches(self) -> None:
-        assert set(sub.FORBIDDEN_DIRECTIVE_KEYS) == set(pkg_scope.FORBIDDEN_DIRECTIVE_KEYS)
+    def test_the_forbidden_key_list_is_the_package_list(self) -> None:
+        assert sub.FORBIDDEN_DIRECTIVE_KEYS is pkg_scope.FORBIDDEN_DIRECTIVE_KEYS
 
-    def test_the_hold_marker_matches(self) -> None:
+    def test_the_hold_marker_is_the_package_marker(self) -> None:
         assert sub.MARKER_HOLD == pkg_scope.MARKER_HOLD
+
+    def test_no_scope_shape_is_redeclared_locally(self) -> None:
+        """The workaround itself is gone, not merely bypassed.
+
+        A ``@dataclass`` named after a package shape is exactly what ``t15``
+        retired; the bench's own additions (``Refusal``, ``AuthorityViolation``,
+        …) are not package shapes and stay.
+        """
+        source = ast.parse((REPO_ROOT / "examples/scope/subordinate.py").read_text("utf-8"))
+        declared = {node.name for node in ast.walk(source) if isinstance(node, ast.ClassDef)}
+        assert not (declared & {"Directive", "Responsibility", "Snapshot"})
 
     def test_the_projector_emits_exactly_the_snapshot_fields(self) -> None:
         snapshot = sub.project(EPISODE, orc.initial_state(EPISODE), 0, None)

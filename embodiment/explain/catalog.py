@@ -35,14 +35,17 @@ the robot siblings, never an implication drawn from the name.
   No TTY, no thread, no clock — all IO rides injected callbacks and cadence is
   step/phase-based.
 - **Identity and Gwen** — Configuration that frames who is speaking in prompts.
-  Gwen is the reference embodiment: a Qwen cortex (the worker that owns the loop
-  and holds final authority) plus an optional Gemma muse — reflective counsel
-  that reframes the problem, challenges the cortex's assumptions and offers
-  materially different alternatives, with no tools, no decisions and no actions
-  of its own. A run with no muse configured says so rather than implying a
-  second mind. Absent identity means byte-identical prompts to today's behavior.
-  "Cortex" and "muse" name seams — which model gets which job. They are
+  Gwen is the reference embodiment: a Qwen cortex — the worker that owns the
+  loop and holds final authority — with an optional strategist above it, which
+  issues typed, versioned, supersedable directives owning objectives and
+  priorities and structurally cannot carry a tool, a command or an approval.
+  A run with no strategist configured says so rather than implying a second
+  mind. Absent identity means byte-identical prompts to today's behavior.
+  "Cortex" and "strategist" name seams — which model gets which job. They are
   design metaphors for allocating responsibility, not claims about cognition.
+  (The Gemma **muse** held the advisory seat until 2026-08-03, when it was
+  archived off the shipped architecture — embodiment#53. Its modules stay
+  readable and a host may still wire one.)
 - **Continuity** — Memory and coherence wired as runtime subsystems through
   eidetic-cli (recall, provenance, ageing) and coherence-cli (agreement between
   memory and the present). Embodiment owns the lived sequence — when something

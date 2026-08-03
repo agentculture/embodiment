@@ -1612,6 +1612,48 @@ class TestEveryCodeIsCovered:
 # ── 1b. …and every covering path is a REAL one ────────────────────────────────
 
 
+class TestTheArchivedMuseLanesAreKeptOnPurpose:
+    """The muse was archived (embodiment#53, ``d2``/``d3``); its lanes were not.
+
+    Task ``t15`` had to decide, for each muse-shaped surface, whether to migrate
+    it onto the scope lane or retire it. For these two the answer was **keep**,
+    and this class is the record of why so a later cleanup pass has to argue
+    with a test rather than delete two constants:
+
+    1. There is nothing to migrate *to*. :data:`~embodiment.ledger.SOURCE_SCOPE`
+       (task ``t3``) harvests :mod:`embodiment.strategist_runner`'s own renamed
+       vocabulary; it was never carved out of the muse lanes.
+    2. Archival cost the muse its place on ``embodiment.__all__``, not its
+       ability to run. A host that names ``embodiment.muse_runner`` still gets a
+       working runner — and a running lane the ledger refuses to read is exactly
+       the silent degradation constraint **C3** exists to forbid.
+    """
+
+    def test_the_thinking_lane_is_still_folded(self) -> None:
+        assert ledger.SOURCE_MUSE in ledger.SOURCES
+
+    def test_the_thread_lane_is_still_folded(self) -> None:
+        assert ledger.SOURCE_MUSE_RUNNER in ledger.SOURCES
+
+    def test_the_archived_lane_still_has_a_reader(self) -> None:
+        runner_codes = {e.code for e in ledger.known_codes() if e.source == ledger.SOURCE_MUSE}
+        assert runner_codes
+
+    def test_an_archived_lane_degradation_still_reaches_a_host(self) -> None:
+        """The end-to-end claim, not just the registry entry."""
+        record = muse.MuseDegradation(code=muse.DEGRADED_THINKING, reason="the seam died")
+        folded = ledger.read(muse=record)
+        assert [r.code for r in folded] == [muse.DEGRADED_THINKING]
+
+    def test_the_scope_lane_did_not_absorb_the_muse_vocabulary(self) -> None:
+        """Reason 1, checked: the two vocabularies never overlapped."""
+        by_lane = {
+            lane: {e.code for e in ledger.known_codes() if e.source == lane}
+            for lane in (ledger.SOURCE_MUSE_RUNNER, ledger.SOURCE_SCOPE)
+        }
+        assert not (by_lane[ledger.SOURCE_MUSE_RUNNER] & by_lane[ledger.SOURCE_SCOPE])
+
+
 class TestNoProvokerTakesThePrivateDoor:
     """The exhaustiveness check above is only worth what its provokers DO.
 
