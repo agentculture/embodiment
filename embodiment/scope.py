@@ -157,18 +157,39 @@ The protocol task t2 must conform to
 4. **Keep the import direction.** This module imports nothing from the actor,
    presence or event lanes. A runner that needs both belongs in its own module.
 
-Room left for task t13, and nothing more
------------------------------------------
-Spec claim ``c33`` layers directive persistence: a durable lane surviving across
-drives, and a session-scoped lane living inside one process. **This module
-builds neither**, and it must not foreclose either. Two properties are what
-keep the door open, and both are tested:
+The two persistence lanes (task t13, spec claim ``c33``)
+--------------------------------------------------------
+Directive persistence is layered: a **durable** lane whose directives survive
+across drives and across a process restart, and a **session-scoped** lane that
+persists inside one process only. This module owns the half of that which is
+pure state: **one register is one lane**, it names the lane it belongs to
+(:attr:`ScopeRegister.lane`, one of :data:`SCOPE_LANES`), it stamps that lane
+onto every record it mints, and it round-trips through
+:meth:`ScopeRegister.to_dict` / :meth:`ScopeRegister.from_dict` as a JSON-ready
+payload.
+
+**Where that payload is stored is deliberately not decided here.** The frame
+parks the durable-lane owner — host state round-tripped through the scope
+projector, or a continuity record — as open vagueness ``v5``. So this module
+ships the payload and nothing that could write it: no file, no socket, no
+database, and no import of eidetic or coherence. The seam that hands the
+payload to a host is :class:`~embodiment.scoped_run.ScopePersistence`, an
+injected port one layer up; a host that wires none gets exactly today's
+behaviour, where every drive starts from the explicit host default scope.
+
+Two properties keep the lanes structurally distinct rather than
+flag-distinguished, and both are tested:
 
 * :class:`ScopeRegister` holds no module-level state, so two lanes are two
   registers rather than a flag on a global.
-* Every ``from_dict`` **ignores unknown keys**, so a future ``lane`` field is
-  purely additive and a payload written by a later release still reads back in
-  an older one.
+* Every ``from_dict`` **ignores unknown keys**, so a field added by a later
+  release is purely additive and a payload written by one still reads back in an
+  older build. :data:`LANE_SCHEMA_VERSION` rides the payload for a future
+  release to branch on; this one refuses nothing on its account, because
+  refusing a payload it could still read would strand a host's scope for the
+  sake of a number.
+
+A restore is a **replay, not a proposal** — see :meth:`ScopeRegister.receive`.
 
 Stdlib only apart from the contract: ``dataclasses``, ``json``, ``re``,
 ``typing``, and :class:`embodiment.contract.ModelResponse` for the seam type —
@@ -216,6 +237,11 @@ __all__ = [
     "SCOPE_STATUS_BLOCKED",
     "SCOPE_STATUS_COMPLETE",
     "SCOPE_STATUSES",
+    # persistence lanes (c33)
+    "LANE_DURABLE",
+    "LANE_SESSION",
+    "SCOPE_LANES",
+    "LANE_SCHEMA_VERSION",
     # protocol
     "SCOPE_AUTHORITY",
     "SCOPE_TOOL_AUTHORITY",
@@ -360,6 +386,35 @@ SCOPE_STATUS_BLOCKED = "blocked"
 SCOPE_STATUS_COMPLETE = "complete"
 #: The conventional closed set.
 SCOPE_STATUSES = (SCOPE_STATUS_ACTIVE, SCOPE_STATUS_BLOCKED, SCOPE_STATUS_COMPLETE)
+
+
+# ── the persistence lanes (task t13, claim c33) ───────────────────────────────
+#
+# One register is one lane. These name which, on the register and on every
+# record it mints, so a host reading an artifact never has to infer whether a
+# directive was meant to outlive the process.
+
+#: Directives that survive **across drives**, and across a process restart. The
+#: payload crosses that boundary through a host-supplied persistence port
+#: (:class:`~embodiment.scoped_run.ScopePersistence`); this module ships no
+#: storage of its own, deliberately (open vagueness ``v5``).
+LANE_DURABLE = "durable"
+#: Directives that persist **within one process** and no further. A session
+#: holds its own scope state without touching the durable lane, and sessions are
+#: the future seam for per-subagent scoping — that seam is not built here.
+LANE_SESSION = "session"
+#: The two lanes. Conventional rather than enforced, exactly as
+#: :data:`SCOPE_STATUSES` is: a host needing a third extends this tuple rather
+#: than watching :class:`ScopeRegister` silently rewrite its lane name.
+SCOPE_LANES = (LANE_DURABLE, LANE_SESSION)
+
+#: The version stamped on a serialized lane payload (``drone.py``'s
+#: ``MANIFEST_SCHEMA_VERSION`` precedent, which the frame's parked question about
+#: cross-release directive schemas points at). It is *recorded*, never enforced:
+#: :meth:`ScopeRegister.from_dict` reads every payload it can read, because
+#: every field read is defensive and unknown keys are ignored — refusing a
+#: readable payload over a version number would strand a host's durable scope.
+LANE_SCHEMA_VERSION = 1
 
 
 # ── the strategic protocol ────────────────────────────────────────────────────
@@ -958,12 +1013,17 @@ class ScopeControls:
 class ScopeDegradation:
     """One recorded, host-visible strategic degradation (constraint C3).
 
-    Deliberately field-for-field identical to
-    :class:`embodiment.loop.LoopDegradation` and
-    :class:`embodiment.muse.MuseDegradation` — including ``to_dict`` — so task
-    t3's ledger folds ONE shape rather than three. The mapping: ``step_index``
-    is the *acting* loop's step the review was about, and ``model_turns`` is how
-    many review turns had been spent when it degraded.
+    Carries :class:`embodiment.loop.LoopDegradation`'s four fields under the
+    same names and the same ``to_dict`` keys, so task t3's ledger folds ONE
+    shape rather than three (:func:`embodiment.ledger.from_scope` reads
+    attributes, never a field list). The mapping: ``step_index`` is the *acting*
+    loop's step the review was about, and ``model_turns`` is how many review
+    turns had been spent when it degraded.
+
+    ``lane`` is the fifth and is this lane's own (task t13): the persistence
+    lane of the chain the review was admitting into, so a ledger entry is never
+    anonymous about which scope it belonged to. Empty when nothing minted it
+    against a register — an honest unknown rather than a fabricated lane.
 
     It is not imported from :mod:`embodiment.loop` on purpose: this module does
     not consume the actor loop, and importing it would drag a decision
@@ -974,6 +1034,7 @@ class ScopeDegradation:
     reason: str
     step_index: int = 0
     model_turns: int = 0
+    lane: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -981,6 +1042,7 @@ class ScopeDegradation:
             "reason": self.reason,
             "step_index": self.step_index,
             "model_turns": self.model_turns,
+            "lane": self.lane,
         }
 
 
@@ -1229,10 +1291,11 @@ def directive_from_payload(
 class ScopeRegister:
     """The directive chain: what is active, what has been issued, what was refused.
 
-    One register is one **persistence lane**. It holds no module-level state, so
-    task t13's durable and session-scoped lanes are two registers rather than a
-    flag on a global — that is the whole of what this task does about c33, and
-    deliberately so.
+    One register is one **persistence lane** (task t13, claim ``c33``). It holds
+    no module-level state, so the durable and session-scoped lanes are two
+    registers rather than a flag on a global; it *names* its lane, so every
+    record it mints says which one it belongs to; and it serializes to a
+    JSON-ready payload a host can round-trip through whatever store it chooses.
 
     Args:
         default: the explicit **host-derived default scope** issue #51 requires
@@ -1241,18 +1304,34 @@ class ScopeRegister:
             a malformed default is recorded and leaves ``active`` at ``None``,
             which is honest, where seating it silently would put the actor under
             scope nobody could name.
+        lane: which persistence lane this chain is — one of :data:`SCOPE_LANES`,
+            defaulting to :data:`LANE_SESSION` because an in-process chain that
+            nothing persists is exactly what session-scoped means. A lane name
+            this module does not know is *carried*, not rewritten
+            (:data:`SCOPE_LANES`' own note on why).
 
     Not thread-safe by itself: task t2 owns the thread and drives one review at
     a time.
     """
 
-    def __init__(self, *, default: Optional[ScopeDirective] = None) -> None:
+    def __init__(
+        self,
+        *,
+        default: Optional[ScopeDirective] = None,
+        lane: str = LANE_SESSION,
+    ) -> None:
+        self._lane = _plain(lane).strip() or LANE_SESSION
         self._active: Optional[ScopeDirective] = None
         self._known: list[str] = []
         self._accepted: list[ScopeDirective] = []
         self._rejections: list[ScopeRejection] = []
         if default is not None:
             self.offer(default)
+
+    @property
+    def lane(self) -> str:
+        """Which persistence lane this chain is — one of :data:`SCOPE_LANES`."""
+        return self._lane
 
     @property
     def active(self) -> Optional[ScopeDirective]:
@@ -1297,7 +1376,74 @@ class ScopeRegister:
            active one's. A tie is refused too: two directives sharing a version
            cannot be ordered, so honouring the second could restore older scope.
         """
-        rejection = self._refuse(directive)
+        return self._admit(directive, provenance=True)
+
+    def receive(self, directive: ScopeDirective) -> Optional[ScopeRejection]:
+        """Record a directive this lane RECEIVED, already admitted elsewhere.
+
+        The same contract as :meth:`offer` — ``None`` on acceptance, a recorded
+        :class:`ScopeRejection` otherwise — minus **one** check: ``supersedes``
+        is not validated against this chain.
+
+        That omission is the point rather than a shortcut. An admission chain
+        and a *received* chain are different histories: a runner legitimately
+        withholds a directive as stale or superseded, so what a lane actually
+        received can name a predecessor it never received. Re-checking
+        provenance against the shorter chain would refuse every directive that
+        supersedes a withheld one and strand the actor under old scope forever
+        — the exact failure the check exists to prevent, which is why
+        :mod:`embodiment.scoped_run` already declines to re-check it. The three
+        coherence checks that *do* still apply (complete, unique, strictly
+        advancing) are what keeps a restored or tampered chain readable.
+        """
+        return self._admit(directive, provenance=False)
+
+    def to_dict(self) -> dict[str, Any]:
+        """This lane's whole state as a JSON-ready payload. Never raises.
+
+        The **persistence seam's currency** (task t13): a host hands this to
+        whatever store it owns and hands it back through
+        :meth:`from_dict` on the next process. Refusals are deliberately not
+        serialized — they are this run's ledger, not the lane's state, and a
+        chain that carried its own failures forward would grow without bound.
+        """
+        return {
+            "schema_version": LANE_SCHEMA_VERSION,
+            "lane": self._lane,
+            "accepted": [entry.to_dict() for entry in self._accepted],
+        }
+
+    @classmethod
+    def from_dict(cls, data: Any, *, lane: Optional[str] = None) -> "ScopeRegister":
+        """Rebuild a lane from a payload. Never raises; unknown keys are ignored.
+
+        Every entry is replayed through :meth:`receive`, so a payload that was
+        truncated, tampered with or written by a different release is
+        *validated* on the way back in and each refusal lands on
+        :attr:`rejections` rather than being seated silently or dropped
+        silently. The host owns the store; what comes back out of it is checked.
+
+        Args:
+            data: the payload :meth:`to_dict` produced, or anything at all — a
+                payload this method cannot read restores an empty lane.
+            lane: the lane the CALLER read this payload from. It outranks the
+                payload's own ``lane``, because the caller knows which store it
+                opened and a payload must not be able to relabel itself into a
+                lane it was never written to. Omitted, the payload's lane is
+                used, and :data:`LANE_SESSION` when it names none.
+        """
+        payload = data if isinstance(data, dict) else {}
+        register = cls(lane=lane if lane is not None else _plain(payload.get("lane")))
+        entries = payload.get("accepted")
+        if not isinstance(entries, (list, tuple)):
+            return register
+        for entry in entries:
+            register.receive(ScopeDirective.from_dict(entry))
+        return register
+
+    def _admit(self, directive: ScopeDirective, *, provenance: bool) -> Optional[ScopeRejection]:
+        """Run the checks, then seat or record. The one body behind both verbs."""
+        rejection = self._refuse(directive, provenance=provenance)
         if rejection is not None:
             self._rejections.append(rejection)
             return rejection
@@ -1306,13 +1452,20 @@ class ScopeRegister:
         self._accepted.append(directive)
         return None
 
-    def _refuse(self, directive: ScopeDirective) -> Optional[ScopeRejection]:
-        """The four admission checks. Returns the refusal, or ``None`` to admit."""
+    def _refuse(
+        self, directive: ScopeDirective, *, provenance: bool = True
+    ) -> Optional[ScopeRejection]:
+        """The admission checks. Returns the refusal, or ``None`` to admit."""
         scope_id = _plain(_attr(directive, "scope_id")).strip()
         objective = _plain(_attr(directive, "objective")).strip()
         supersedes = _attr(directive, "supersedes")
         version = _coerce_int(_attr(directive, "version"))
-        stamp = {"scope_id": scope_id, "supersedes": _optional_text(supersedes), "version": version}
+        stamp = {
+            "scope_id": scope_id,
+            "supersedes": _optional_text(supersedes),
+            "version": version,
+            "lane": self._lane,
+        }
         if not scope_id or not objective:
             missing = "scope_id" if not scope_id else "objective"
             return ScopeRejection(
@@ -1326,7 +1479,7 @@ class ScopeRegister:
                 reason=f"scope id {scope_id!r} is already in the chain",
                 **stamp,
             )
-        if supersedes is not None and _plain(supersedes) not in self._known:
+        if provenance and supersedes is not None and _plain(supersedes) not in self._known:
             return ScopeRejection(
                 code=DROPPED_UNKNOWN_SUPERSEDES,
                 reason=(f"the directive supersedes {_plain(supersedes)!r}, which was never issued"),
@@ -1381,24 +1534,43 @@ class _Review:
 
 
 def _degrade(ctx: _Review, code: str, reason: str) -> None:
-    """Record one host-visible degradation. Nothing here degrades silently."""
+    """Record one host-visible degradation. Nothing here degrades silently.
+
+    ``lane`` is the review register's, so a ledger entry names the persistence
+    lane of the chain this review was admitting into (task t13).
+    """
     ctx.degradations.append(
         ScopeDegradation(
             code=code,
             reason=str(reason)[:_MAX_REASON_LEN],
             step_index=ctx.step_index,
             model_turns=ctx.turns,
+            lane=_lane_of(ctx.register),
         )
     )
+
+
+def _lane_of(register: Any) -> str:
+    """The lane a register names, read defensively. Empty when unreadable."""
+    return _plain(_attr(register, "lane"))
 
 
 def _record_rejection(ctx: _Review, rejection: ScopeRejection) -> None:
     """Stamp a refusal with the turn it happened on and record it.
 
     The register minted it without turn context — it does not know about turns —
-    so the stamp is applied here rather than duplicating the refusal logic.
+    so the stamp is applied here rather than duplicating the refusal logic. A
+    refusal minted by :func:`directive_from_payload` reached no register at all,
+    so it picks its lane up here too.
     """
-    ctx.degradations.append(replace(rejection, step_index=ctx.step_index, model_turns=ctx.turns))
+    ctx.degradations.append(
+        replace(
+            rejection,
+            step_index=ctx.step_index,
+            model_turns=ctx.turns,
+            lane=rejection.lane or _lane_of(ctx.register),
+        )
+    )
 
 
 # ── the model turn ────────────────────────────────────────────────────────────

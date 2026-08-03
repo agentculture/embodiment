@@ -258,6 +258,7 @@ def strategist_identity(strategist: Any) -> tuple[str, str]:
 _ENVELOPE_DEFAULTS: dict[str, Any] = {
     "model": "",
     "role": "",
+    "lane": "",
     "scope_id": "",
     "snapshot_id": "",
     "version": None,
@@ -289,6 +290,7 @@ def _build(kind: str, *, detail: str = "", **fields: Any) -> ScopeEvent:
     data.update(fields)
     data["model"] = _text(data["model"])
     data["role"] = _text(data["role"])
+    data["lane"] = _text(data["lane"])
     data["scope_id"] = _text(data["scope_id"])
     data["snapshot_id"] = _text(data["snapshot_id"])
     data["turn_index"] = _int(data["turn_index"], 0)
@@ -301,15 +303,23 @@ def _build(kind: str, *, detail: str = "", **fields: Any) -> ScopeEvent:
 # ── builders: the actor-observation side (snapshot, report, review lifecycle) ──
 
 
-def snapshot_event(snapshot: Any, *, turn_index: int = 0, step_count: int = 0) -> ScopeEvent:
+def snapshot_event(
+    snapshot: Any, *, turn_index: int = 0, step_count: int = 0, lane: str = ""
+) -> ScopeEvent:
     """A :class:`~embodiment.scope.ScopeSnapshot` was offered for strategic review.
 
     Carries no ``model``/``role``: a snapshot is the composition layer's own
     observation of the actor, built and offered before any strategist reads it.
+
+    *lane* is the persistence lane the offering drive runs in (task t13). It is
+    the CALLER's to supply for the same reason ``model``/``role`` are on the
+    lane-facing builders: a snapshot has no lane of its own, the drive that
+    offered it does, and a drive has exactly one.
     """
     snapshot_id = _text(_read(snapshot, "snapshot_id"))
     return _build(
         SCOPE_EVENT_SNAPSHOT,
+        lane=lane,
         scope_id=_text(_read(snapshot, "current_directive")),
         snapshot_id=snapshot_id,
         turn_index=turn_index,
@@ -319,7 +329,7 @@ def snapshot_event(snapshot: Any, *, turn_index: int = 0, step_count: int = 0) -
 
 
 def review_started_event(
-    snapshot: Any, *, step_index: int = 0, model: str = "", role: str = ""
+    snapshot: Any, *, step_index: int = 0, model: str = "", role: str = "", lane: str = ""
 ) -> ScopeEvent:
     """One snapshot was successfully handed to the strategist lane for review.
 
@@ -333,6 +343,7 @@ def review_started_event(
         SCOPE_EVENT_REVIEW_STARTED,
         model=model,
         role=role,
+        lane=lane,
         scope_id=_text(_read(snapshot, "current_directive")),
         snapshot_id=snapshot_id,
         step_index=step_index,
@@ -340,7 +351,7 @@ def review_started_event(
     )
 
 
-def review_completed_event(outcome: Any) -> ScopeEvent:
+def review_completed_event(outcome: Any, *, lane: str = "") -> ScopeEvent:
     """A :class:`~embodiment.scope.ScopeOutcome` finished — drained, not yet applied.
 
     Fires for every drained outcome regardless of what
@@ -355,6 +366,7 @@ def review_completed_event(outcome: Any) -> ScopeEvent:
         SCOPE_EVENT_REVIEW_COMPLETED,
         model=_text(_read(outcome, "model")),
         role=_text(_read(outcome, "role")),
+        lane=lane,
         scope_id=_text(_read(directive, "scope_id")) if directive is not None else "",
         snapshot_id=_text(_read(outcome, "snapshot_id")),
         version=_int(_read(directive, "version")) if directive is not None else None,
@@ -366,7 +378,7 @@ def review_completed_event(outcome: Any) -> ScopeEvent:
     )
 
 
-def directive_proposed_event(outcome: Any) -> Optional[ScopeEvent]:
+def directive_proposed_event(outcome: Any, *, lane: str = "") -> Optional[ScopeEvent]:
     """The strategist proposed a directive — ``None`` when the outcome has none.
 
     A hold (``outcome.directive is None``) proposes nothing; that is what
@@ -379,6 +391,7 @@ def directive_proposed_event(outcome: Any) -> Optional[ScopeEvent]:
         SCOPE_EVENT_DIRECTIVE_PROPOSED,
         model=_text(_read(outcome, "model")),
         role=_text(_read(outcome, "role")),
+        lane=lane,
         scope_id=_text(_read(directive, "scope_id")),
         snapshot_id=_text(_read(outcome, "snapshot_id")),
         version=_int(_read(directive, "version")),
@@ -392,7 +405,9 @@ def directive_proposed_event(outcome: Any) -> Optional[ScopeEvent]:
     )
 
 
-def report_event(report: Any, *, turn_index: int = 0, step_count: int = 0) -> ScopeEvent:
+def report_event(
+    report: Any, *, turn_index: int = 0, step_count: int = 0, lane: str = ""
+) -> ScopeEvent:
     """A :class:`~embodiment.scope.ScopeReport` was built and judged material.
 
     Carries no ``model``/``role``: a report is the composition layer's own
@@ -401,6 +416,7 @@ def report_event(report: Any, *, turn_index: int = 0, step_count: int = 0) -> Sc
     status = _text(_read(report, "status")) or "active"
     return _build(
         SCOPE_EVENT_REPORT,
+        lane=lane,
         scope_id=_text(_read(report, "scope_id")),
         turn_index=turn_index,
         step_index=step_count,
@@ -430,12 +446,16 @@ def for_transition(transition: Any) -> Optional[ScopeEvent]:
     step_index = _int(_read(transition, "step_count"), 0) or 0
     reason = _text(_read(transition, "reason"))
     version = _int(_read(transition, "version"))
+    # The lane is the transition's OWN (task t13): a record already names the
+    # persistence lane it belongs to, so nothing here has to be told.
+    lane = _text(_read(transition, "lane"))
 
     if kind in (_TRANSITION_KIND_DEFAULT, _TRANSITION_KIND_APPLIED):
         return _build(
             SCOPE_EVENT_DIRECTIVE_APPLIED,
             model=model,
             role=role,
+            lane=lane,
             scope_id=scope_id,
             snapshot_id=snapshot_id,
             version=version,
@@ -453,6 +473,7 @@ def for_transition(transition: Any) -> Optional[ScopeEvent]:
             SCOPE_EVENT_DIRECTIVE_REJECTED,
             model=model,
             role=role,
+            lane=lane,
             scope_id=scope_id,
             snapshot_id=snapshot_id,
             version=version,
@@ -468,6 +489,7 @@ def for_transition(transition: Any) -> Optional[ScopeEvent]:
         SCOPE_EVENT_DEGRADATION,
         model=model,
         role=role,
+        lane=lane,
         scope_id=scope_id,
         snapshot_id=snapshot_id,
         turn_index=turn_index,
@@ -477,7 +499,9 @@ def for_transition(transition: Any) -> Optional[ScopeEvent]:
     )
 
 
-def for_lane_degradation(entry: Any, *, model: str = "", role: str = "") -> ScopeEvent:
+def for_lane_degradation(
+    entry: Any, *, model: str = "", role: str = "", lane: str = ""
+) -> ScopeEvent:
     """Translate one relayed strategist-lane ledger entry (a ``ScopeDegradation``
     or ``ScopeRejection``, read duck-typed — this module imports neither type).
 
@@ -485,6 +509,16 @@ def for_lane_degradation(entry: Any, *, model: str = "", role: str = "") -> Scop
     off the lane that produced them) because the ledger entry itself never
     carries them — see the module docstring's "the actual model and role,
     never the register" section.
+
+    *lane* is a **fallback**, and the entry's own ``lane`` wins whenever it has
+    one (task t13). A :class:`~embodiment.scope.ScopeDegradation` minted against
+    a register names its lane; one that reached this ledger through
+    :meth:`~embodiment.strategist_runner.StrategistRunner._absorb` was re-minted
+    on the way and lost it — the same pre-existing relay narrowing that already
+    blanks a rejection's ``scope_id``. In that case the lane of the drive
+    relaying the entry is what the caller supplies, which is honest because a
+    :class:`~embodiment.scoped_run.ScopedOutcome` is a per-drive artifact and a
+    drive runs in exactly one lane.
     """
     code = _text(_read(entry, "code"))
     reason = _text(_read(entry, "reason"))
@@ -506,6 +540,7 @@ def for_lane_degradation(entry: Any, *, model: str = "", role: str = "") -> Scop
         kind,
         model=model,
         role=role,
+        lane=_text(_read(entry, "lane", "")) or lane,
         scope_id=_text(scope_id) if scope_id is not None else "",
         version=_int(_read(entry, "version")),
         supersedes=_read(entry, "supersedes"),
