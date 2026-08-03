@@ -920,7 +920,10 @@ def _module_level_floats(
 ) -> list[tuple[str, str, float]]:
     """``(module stem, constant, value)`` for module-level float assignments matching *hints*."""
     found: list[tuple[str, str, float]] = []
-    for path in sorted(EXAMPLES_DIR.glob("*.py")):
+    # rglob, not glob: per-architecture subfolders (examples/scope/) are inside the
+    # guard too. A non-recursive walk let five files escape it silently, which is the
+    # exact shape of the failure this whole module exists to prevent.
+    for path in sorted(EXAMPLES_DIR.rglob("*.py")):
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
         for node in tree.body:
             if not isinstance(node, ast.Assign):
