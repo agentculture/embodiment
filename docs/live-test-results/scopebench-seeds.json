@@ -1,0 +1,80 @@
+{
+  "kind": "scopebench-seed-table",
+  "version": 1,
+  "task": "t9",
+  "read_by": "examples/scope/episodes.py",
+  "committed": "2026-08-03",
+  "note": [
+    "COMMITTED BEFORE ANY LIVE DIAL. The seeds below fix which worlds the",
+    "pre-registered series runs on, so the episode set cannot be chosen after",
+    "seeing a result. A seed is accepted only if its episode passes every one of",
+    "the eight schema properties AND leaves headroom over both declared floors --",
+    "the host default scope and the locally attractive play. Rejected seeds are not",
+    "silently skipped: selection_rule below states exactly how this table is",
+    "derived, and a test recomputes it from the generators and the solver."
+  ],
+  "episodes_per_family": 6,
+  "first_cycle": [
+    "contention",
+    "critical_path",
+    "allocation",
+    "disruption",
+    "steady_state",
+    "constraint"
+  ],
+  "deferred": {
+    "handoff": "deferred from the first cycle: grading a handoff needs a handoff-cost model the episode schema does not carry, and a guessed cost would decide the family",
+    "commitment": "deferred from the first cycle: grading a broken promise needs a breach-cost model that is a domain judgement rather than a benchmark constant"
+  },
+  "seeds": {
+    "contention": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "critical_path": [
+      1,
+      2,
+      3,
+      5,
+      7,
+      8
+    ],
+    "allocation": [
+      1,
+      2,
+      3,
+      4,
+      6,
+      8
+    ],
+    "disruption": [
+      5,
+      7,
+      8,
+      9,
+      10,
+      11
+    ],
+    "steady_state": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ],
+    "constraint": [
+      1,
+      2,
+      3,
+      4,
+      5,
+      6
+    ]
+  },
+  "selection_rule": "For each family, the first `episodes_per_family` seeds in ascending order from 1 for which examples.scope.oracle.invalidity() returns no reasons. Deterministic and re-derivable from the repo alone; tests/test_scopebench_oracle.py::TestCommittedSeeds::test_the_committed_seeds_are_exactly_what_the_stated_rule_selects recomputes it."
+}
