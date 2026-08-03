@@ -158,6 +158,22 @@ Closing the runner stops new directives; the active directive governs until the
 drive ends. There is no mid-drive directive-drop move, and this module does not
 drain at drive end: handing back a directive the actor can no longer act on
 would put a decision in the record that never governed anything.
+
+Observability rides the host's OWN observer (task t5)
+-------------------------------------------------------
+This module imports no event fabric — :mod:`embodiment.scope_events` is a pure
+translation layer, and the only thing wired here is the SAME ``observer=``
+keyword a host already hands ``run_scoped`` for the actor's own
+:class:`~embodiment.loop.LoopEvent` stream (``**actor_kwargs``, read but never
+popped, so the actor's own events are unaffected). Every
+:class:`ScopeTransition` this module records, every
+snapshot and report it offers upward, every review it drains and every
+lane-level degradation it relays is translated by
+:mod:`embodiment.scope_events` and handed to that same observer — never a
+second event stream, never a claim this package owns the fabric. A raising
+observer is recorded once (mirroring :mod:`embodiment.loop`'s own
+``_observe``) and then disabled for the rest of the drive: an observer must
+never abort one (constraint C3).
 """
 
 from __future__ import annotations
@@ -165,6 +181,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
+from embodiment import scope_events
 from embodiment.contract import Task, TaskResult
 from embodiment.framing import frame_cortex
 from embodiment.loop import CompleteFn, LoopAborted, LoopOutcome, ToolExecutor, run
@@ -330,6 +347,12 @@ class ScopeTransition:
     step_count: int = 0
     scope_id: str = ""
     version: int = 0
+    previous_version: int = 0
+    """What :attr:`version` replaced — captured just before :meth:`_Governed._seat`
+    overwrites the applied version, so an APPLIED/DEFAULT record names both the
+    scope that governed before and the one that governs now. ``0`` (the applied
+    chain's own starting value) on every other transition kind, where no seat
+    happened and the field is not meaningful."""
     supersedes: Optional[str] = None
     snapshot_id: str = ""
     reason: str = ""
@@ -347,6 +370,7 @@ class ScopeTransition:
             "step_count": self.step_count,
             "scope_id": self.scope_id,
             "version": self.version,
+            "previous_version": self.previous_version,
             "supersedes": self.supersedes,
             "snapshot_id": self.snapshot_id,
             "reason": self.reason,
@@ -581,7 +605,12 @@ def run_scoped(
             exception as ``scoped_outcome`` so a degradation is not lost on the
             path where it is most interesting.
     """
-    lane = _Governed(governor if governor is not None else ScopeGovernor(), task)
+    # Read, never popped: the actor's OWN LoopEvent stream still reaches this
+    # same observer through ``run`` below, unaffected by scope also using it.
+    host_observer = actor_kwargs.get("observer")
+    lane = _Governed(
+        governor if governor is not None else ScopeGovernor(), task, observer=host_observer
+    )
     lane.arm()
     host_progress = actor_kwargs.pop("progress", None)
     host_inbox = actor_kwargs.pop("operator_inbox", None)
@@ -613,7 +642,13 @@ class _Governed:
     because each place that can fault carries its own.
     """
 
-    def __init__(self, governor: ScopeGovernor, task: Task) -> None:
+    def __init__(
+        self,
+        governor: ScopeGovernor,
+        task: Task,
+        *,
+        observer: Optional[Callable[[Any], None]] = None,
+    ) -> None:
         self._gov = governor
         self._on = governor.armed
         self._controls = governor.controls or ScopedControls()
@@ -631,6 +666,13 @@ class _Governed:
         self._operator: list[str] = []
         self._snapshot: Optional[ScopeSnapshot] = None
         self._report: Optional[ScopeReport] = None
+        # ── observability (task t5): the SAME observer the host wired for the
+        # actor's own LoopEvent stream, translated by embodiment.scope_events.
+        self._observer = observer
+        self._observer_failed = False
+        self._strategist_role, self._strategist_model = scope_events.strategist_identity(
+            governor.strategist
+        )
         self._counts = {
             # intake — what happened at each turn boundary
             "boundaries": 0,
@@ -659,13 +701,36 @@ class _Governed:
 
     def finish(self, outcome: LoopOutcome) -> ScopedOutcome:
         """Fold the drive into a :class:`ScopedOutcome`. No terminal drain, by design."""
+        relayed = self._relayed()
+        for entry in relayed:
+            self._notify(
+                scope_events.for_lane_degradation(
+                    entry, model=self._strategist_model, role=self._strategist_role
+                )
+            )
         return ScopedOutcome(
             outcome=outcome,
             transitions=tuple(self._transitions),
             counts=dict(self._counts),
             active=self._active,
-            scope_degradations=self._relayed(),
+            scope_degradations=relayed,
         )
+
+    def _notify(self, event: Optional[Any]) -> None:
+        """Offer one translated scope event to the host's observer. Never raises (C3).
+
+        Mirrors :mod:`embodiment.loop`'s own ``_observe``: a raising observer is
+        recorded once (by simply disabling further notification — the observer
+        itself already has its own degradation surface if it wants one, e.g.
+        :class:`~embodiment.events.EventEmitter`) rather than retried at every
+        subsequent occurrence.
+        """
+        if event is None or self._observer is None or self._observer_failed:
+            return
+        try:
+            self._observer(event)
+        except Exception:  # noqa: BLE001  # an observer must never abort a drive
+            self._observer_failed = True
 
     def _seat_default(self) -> None:
         """Validate and seat the explicit host default, or record why not.
@@ -709,6 +774,8 @@ class _Governed:
         self._degraded = True
         self._record(
             TRANSITION_DEGRADED,
+            role=self._strategist_role,
+            model=self._strategist_model,
             reason=f"the strategist lane never started ({why}); {self._under()}",
         )
 
@@ -782,6 +849,11 @@ class _Governed:
             self._withhold(f"the strategist drain failed: {type(exc).__name__}: {exc}")
             return []
         self._counts["outcomes_drained"] += len(outcomes)
+        for outcome in outcomes:
+            # What the strategist produced, independent of what this layer goes
+            # on to decide about it (applied / held / withheld, below).
+            self._notify(scope_events.review_completed_event(outcome))
+            self._notify(scope_events.directive_proposed_event(outcome))
         return outcomes
 
     def _consume(self, messages: list[dict[str, Any]], outcome: Any) -> None:
@@ -848,6 +920,7 @@ class _Governed:
         """Insert one framing-composed event into the turn stream, and record it."""
         event = _scope_event(directive, identity=self._gov.identity)
         messages.append(event)
+        previous_version = self._version
         self._seat(directive)
         if kind == TRANSITION_APPLIED:
             self._counts["directives_applied"] += 1
@@ -855,6 +928,7 @@ class _Governed:
             kind,
             scope_id=directive.scope_id,
             version=directive.version,
+            previous_version=previous_version,
             supersedes=directive.supersedes,
             snapshot_id=snapshot_id,
             role=role,
@@ -884,6 +958,8 @@ class _Governed:
         self._degraded = True
         self._record(
             TRANSITION_DEGRADED,
+            role=self._strategist_role,
+            model=self._strategist_model,
             reason=f"the strategist lane stopped ({reason}); {self._under()}",
         )
 
@@ -901,6 +977,9 @@ class _Governed:
             return
         self._counts["boundaries_projected"] += 1
         self._report = report
+        self._notify(
+            scope_events.report_event(report, turn_index=self._turn, step_count=self._steps)
+        )
         try:
             snapshot = projector(self._context(report))
         except Exception as exc:  # noqa: BLE001  # a host projector never aborts a drive
@@ -917,6 +996,9 @@ class _Governed:
             self._counts["snapshots_unchanged"] += 1
             return
         self._snapshot = snapshot
+        self._notify(
+            scope_events.snapshot_event(snapshot, turn_index=self._turn, step_count=self._steps)
+        )
         try:
             strategist.consider(snapshot, step_index=self._steps)
         except Exception as exc:  # noqa: BLE001  # a hostile lane is never a crash
@@ -927,6 +1009,14 @@ class _Governed:
             )
             return
         self._counts["snapshots_offered"] += 1
+        self._notify(
+            scope_events.review_started_event(
+                snapshot,
+                step_index=self._steps,
+                model=self._strategist_model,
+                role=self._strategist_role,
+            )
+        )
 
     def _due(self, report: ScopeReport) -> bool:
         """Whether this boundary is worth a projection. Ordinary steps are not."""
@@ -1012,14 +1102,14 @@ class _Governed:
         self._record(TRANSITION_WITHHELD, reason=reason, **stamp)
 
     def _record(self, kind: str, **stamp: Any) -> None:
-        self._transitions.append(
-            ScopeTransition(
-                kind=kind,
-                turn_index=self._turn,
-                step_count=self._steps,
-                **stamp,
-            )
+        transition = ScopeTransition(
+            kind=kind,
+            turn_index=self._turn,
+            step_count=self._steps,
+            **stamp,
         )
+        self._transitions.append(transition)
+        self._notify(scope_events.for_transition(transition))
 
     def _under(self) -> str:
         """What the actor keeps working under — the phrase every degradation ends on."""
