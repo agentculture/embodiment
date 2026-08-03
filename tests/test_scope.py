@@ -759,7 +759,8 @@ class TestForbiddenPayloadKeys:
         payload = _payload(responsibilities=[{"owner": "worker", "tool_calls": ["x"]}])
         directive, rejection = directive_from_payload(payload)
         assert directive is None
-        assert rejection is not None and rejection.code == DROPPED_AUTHORITY
+        assert rejection is not None
+        assert rejection.code == DROPPED_AUTHORITY
 
     def test_prose_naming_a_command_is_not_a_banned_key(self):
         """The ban is on KEYS. Prose is the surrender path and is t6's to test."""
@@ -787,7 +788,8 @@ class TestForbiddenPayloadKeys:
     def test_the_key_ban_is_case_insensitive(self):
         directive, rejection = directive_from_payload(_payload(**{"Tool_Calls": ["x"]}))
         assert directive is None
-        assert rejection is not None and rejection.code == DROPPED_AUTHORITY
+        assert rejection is not None
+        assert rejection.code == DROPPED_AUTHORITY
 
 
 # ── 4. the AST import ban ─────────────────────────────────────────────────────
@@ -1024,7 +1026,8 @@ class TestDirectiveValidation:
         )
         assert rejection is not None
         assert rejection.code == DROPPED_VERSION_BACKWARD
-        assert register.active is not None and register.active.scope_id == "scope-002"
+        assert register.active is not None
+        assert register.active.scope_id == "scope-002"
 
     def test_a_version_standing_still_is_refused_too(self):
         """Equal versions cannot be ordered, so applying one could restore old scope."""
@@ -1035,7 +1038,8 @@ class TestDirectiveValidation:
                 scope_id="scope-004", supersedes="scope-002", objective="sideways", version=7
             )
         )
-        assert rejection is not None and rejection.code == DROPPED_VERSION_BACKWARD
+        assert rejection is not None
+        assert rejection.code == DROPPED_VERSION_BACKWARD
 
     def test_an_unknown_supersedes_id_is_refused(self):
         register = ScopeRegister()
@@ -1063,7 +1067,8 @@ class TestDirectiveValidation:
         rejection = register.offer(
             ScopeDirective(scope_id="scope-002", objective="ship it differently", version=2)
         )
-        assert rejection is not None and rejection.code == DROPPED_DUPLICATE
+        assert rejection is not None
+        assert rejection.code == DROPPED_DUPLICATE
 
     @pytest.mark.parametrize(
         "directive",
@@ -1076,7 +1081,8 @@ class TestDirectiveValidation:
     def test_an_incomplete_directive_is_refused(self, directive):
         register = ScopeRegister()
         rejection = register.offer(directive)
-        assert rejection is not None and rejection.code == DROPPED_INCOMPLETE
+        assert rejection is not None
+        assert rejection.code == DROPPED_INCOMPLETE
 
     def test_every_refusal_is_recorded_on_the_register(self):
         register = ScopeRegister()
@@ -1095,7 +1101,8 @@ class TestDirectiveValidation:
         register.offer(ScopeDirective(scope_id="scope-002", objective="ship it", version=5))
         register.offer(ScopeDirective(scope_id="scope-009", objective="back", version=1))
         assert register.known == ("scope-002",)
-        assert register.active is not None and register.active.scope_id == "scope-002"
+        assert register.active is not None
+        assert register.active.scope_id == "scope-002"
 
     def test_a_rejection_names_the_directive_it_refused(self):
         register = ScopeRegister()
@@ -1205,7 +1212,8 @@ class TestValidationInsideTheLoop:
         loop = ScopeLoop(Scripted(_resp(MARKER_HOLD)), register=register)
         assert loop.register is register
         loop.review(_snapshot())
-        assert register.active is not None and register.active.scope_id == "host-default"
+        assert register.active is not None
+        assert register.active.scope_id == "host-default"
 
 
 # ── 7. degrade, never raise (C3) ──────────────────────────────────────────────
@@ -1427,7 +1435,8 @@ class TestRoundTrips:
 
     def test_a_directive_round_trips(self):
         directive, rejection = directive_from_payload(_payload())
-        assert rejection is None and directive is not None
+        assert rejection is None
+        assert directive is not None
         assert ScopeDirective.from_dict(json.loads(json.dumps(directive.to_dict()))) == directive
 
     def test_a_report_round_trips(self):
@@ -1613,7 +1622,8 @@ class TestSnapshotRendering:
 
     def test_the_resource_state_is_rendered(self):
         rendered = self._rendered(_snapshot(resource_state={"gpu": "one 128GB box"}))
-        assert "gpu" in rendered and "one 128GB box" in rendered
+        assert "gpu" in rendered
+        assert "one 128GB box" in rendered
 
     def test_a_dropped_resource_entry_is_recorded(self):
         loop, _ = _loop(_resp(MARKER_HOLD), controls=ScopeControls(max_entries=1))
