@@ -1,0 +1,624 @@
+{
+  "slug": "strategic-scope-governor",
+  "title": "strategic scope governor",
+  "frame_slug": "strategic-scope-governor",
+  "schema_version": 4,
+  "status": "exported",
+  "created": "2026-08-03T05:23:13Z",
+  "updated": "2026-08-03T06:00:28Z",
+  "targets": [
+    {
+      "id": "c1",
+      "kind": "announcement",
+      "text": "embodiment gains an opt-in strategic scope layer above the bounded actor loop: a strategist seam with typed, versioned, supersedable directives that owns objectives, priorities and responsibility allocation \u2014 structurally without actor-tool, presence or policy authority (its only tools a host-wired, role-scoped bench per c22) \u2014 while run() stays actor-only and unchanged, and no strategic claim ships without ScopeBench measurement",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h1",
+      "kind": "honesty",
+      "text": "opt-in is real: with no strategist configured, run() and every existing test pass byte-unmodified, and the actor path imports no scope module \u2014 provable by the existing suite plus an import-graph test",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c2",
+      "kind": "requirement",
+      "text": "the strategist seam resolves by role name from the lobes /capabilities contract like every other seam; per the updated issue #51 and the q1 seat-to-role decision the tiers align with existing lobes roles \u2014 strategy rides `cortex` (dense Qwen3.6-27B, local), operation rides `worker` (Qwen3.6-35B-A3B, proxied), interaction rides `senses` \u2014 so no new lobes role and no cross-repo proposal is needed; embodiment still never infers a seat from model names",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h2",
+      "kind": "honesty",
+      "text": "no code path inspects a model name string to infer a seat: the strategist seat comes only from explicit host configuration naming a lobes role, and a grep-level test can pin the absence of model-name parsing in scope modules",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c3",
+      "kind": "requirement",
+      "text": "Stage 0 authority tests must cover surrender as well as seizure: the recorded echo-chamber gap (memory embodiment-muse-echo-chamber-gap, live probe 2026-07-25) is that structural guards stop an advisor deciding but nothing stops the actor deferring \u2014 with an authority-bearing strategist the new failure mode is the cortex treating directive prose as operational instruction, so tests must pin both what a directive cannot carry and how the cortex may consume it",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h3",
+      "kind": "honesty",
+      "text": "a surrender-direction test exists: the actor is handed a directive whose prose embeds an operational instruction (for example a shell command inside an objective string) and the loop provably never executes it as a tool call \u2014 the mirror of the seizure-direction sentinel the muse already has",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c5",
+      "kind": "requirement",
+      "text": "`run_scoped()` composes the existing `embodiment.loop.run()` through seams run() already exposes \u2014 injected observer, presence, continuity, hooks and controls (loop.py:2021-2040) \u2014 so the actor loop stays byte-unchanged and actor-only remains the default supported path",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h4",
+      "kind": "honesty",
+      "text": "run_scoped() calls loop.run() unmodified: no new run() parameter, no copied loop body \u2014 the diff to loop.py from this work is zero lines",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c6",
+      "kind": "requirement",
+      "text": "Stage 0 authority tests reuse the three structural techniques already proven in this repo: the AST return-constant walk for `ScopeLoop` termination (tests/test_loop.py:417-548), the `dataclasses.fields()` vocabulary check so no scope shape carries tool/arguments/deny/rewrite/approve names (tests/test_muse.py:645-662), and the `_imported_modules()` AST import ban so `embodiment.loop` and presence acting names are not even in scope inside scope.py (tests/test_muse.py:224-231, tests/test_presence_engine.py:972-1011)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h5",
+      "kind": "honesty",
+      "text": "all three techniques run in CI against the new modules: dataclasses.fields() decision-vocabulary ban over every Scope* shape, AST import ban over scope.py, and the AST exit-returning-function walk over ScopeLoop",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c7",
+      "kind": "requirement",
+      "text": "`scope_runner` mirrors `ThreadedMuseRunner` mechanics exactly: non-blocking consider/drain, one in-flight with a single replaceable pending slot, bounded deque with recorded overflow drops, lag-based staleness, bounded join on close, pull-only degradations (muse_runner.py:800-811, 922-1004, 746-748, 415-433, 1316-1358) \u2014 with one deliberate delta: its output is authority-bearing within a typed vocabulary, so every drop or staleness record is an authority event, never silently lost counsel",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h6",
+      "kind": "honesty",
+      "text": "consider() and drain() never block or raise (tested), at most one review is in flight with a single replaceable pending slot, and every displaced, dropped, stale or superseded result lands in the ledger \u2014 zero silent losses under an authority-bearing seam",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c8",
+      "kind": "requirement",
+      "text": "scope degradations join the existing ledger by the harvest pattern: a `SOURCE_SCOPE` lane with a `from_scope` reader \u2014 ledger.known_codes() auto-harvests `DEGRADED_*`/`DROPPED_*` constants from a module `__all__` (ledger.py:211-219, 689-735), so the new lane needs no ledger rewrite",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h7",
+      "kind": "honesty",
+      "text": "the ledger gains SOURCE_SCOPE by exactly one _MODULES row plus a from_scope reader \u2014 ledger.known_codes() harvests the new DEGRADED_/DROPPED_ constants with no other ledger.py change",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c9",
+      "kind": "requirement",
+      "text": "scope.* observability rides the existing observer seam: loop.py never imports events.py \u2014 hosts wire `EventEmitter` (mapping kind to embodiment.{kind}, events.py:306-313) as the ObserverFn \u2014 so scope events are emitted the same way and embodiment still does not own the external event fabric",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h8",
+      "kind": "honesty",
+      "text": "scope.py and scope_runner.py import no event fabric; a host wiring the existing EventEmitter as observer receives every scope.* event carrying actual model, role, directive and snapshot ids",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c10",
+      "kind": "requirement",
+      "text": "every timeout constant a strategist seam introduces needs a dated rate entry in docs/live-test-results/timeout-rate-measurements.json and a Clock in tests/test_timeout_bounds.py CLOCKS \u2014 the AST guard fails any examples timeout constant outside the walk, and the senses role shows the honest `unmeasured_roles` path when a rate is not yet measured; the committed rate config already names the live cortex id unsloth/Qwen3.6-27B-NVFP4 (measured 2026-08-01)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h9",
+      "kind": "honesty",
+      "text": "every timeout constant the strategist seam introduces appears as a Clock in CLOCKS derived from a dated rate entry in the committed rate config, and the AST guard (with its test-of-the-test) fails on any constant outside the walk",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c13",
+      "kind": "boundary",
+      "text": "host authority stays untouched by the authority-split table: permission and safety remain with the injected ToolExecutor (run() takes executor with no default, loop.py:2025-2048) and the control-bearing hook lane; operator-facing wording and timing remain with host senses/presence \u2014 a directive structurally cannot carry tool calls, tool arguments, shell commands, file edits, approval decisions, or operator speech",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h10",
+      "kind": "honesty",
+      "text": "directive shapes structurally exclude the decision vocabulary (fields() test) and an adversarial sentinel proves nothing strategist-sourced reaches the executor or the pre_tool hook registry \u2014 the same mechanism that already guards the muse",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c16",
+      "kind": "boundary",
+      "text": "eidetic and coherence remain the memory owners: the host-supplied scope projector may consume continuity and coherence outputs through the existing continuity.py seam, but must not reproduce their storage, retrieval, or scoring logic (issue #2 compose-dont-reimplement; relationships.md Remember / Relate rows)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h11",
+      "kind": "honesty",
+      "text": "embodiment ships no strategic storage, retrieval or scoring implementation: the scope projector is a host-supplied callable whose inputs may include continuity and coherence outputs, and scope modules import neither eidetic nor coherence beyond the existing continuity seam",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c17",
+      "kind": "boundary",
+      "text": "a single-model run must not claim a strategist exists, and every scope record exposes the actual contributing model and role \u2014 the Gwen rule from colleague#352 extends unchanged to the new tier; roles are configured explicitly, never inferred from model names",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h12",
+      "kind": "honesty",
+      "text": "every scope.* record carries the actual contributing model and role, and a run configured with a single model emits no record naming a strategist \u2014 the absent-identity byte-identical rule extends to the new tier",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c18",
+      "kind": "boundary",
+      "text": "the CLI stays introspection-only: no scope verb drives the loop \u2014 tests/announcement_checklist.py caveat cli1 (line 839) already checks both the verb list and that nothing under cli/_commands/ imports embodiment.loop, and the scope layer must not change that",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h13",
+      "kind": "honesty",
+      "text": "tests/announcement_checklist.py caveat cli1 still passes after the work: no CLI verb imports embodiment.loop, embodiment.scope or the scoped composition",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c24",
+      "kind": "boundary",
+      "text": "the bee-hive orchestrator-worker architecture is out of scope for this rescope: embodiment architecture story is the three-authority-level design. The bee-hive footprint is entirely examples/ (arch_hive.py, worker_seam.py, worker_scoped_overhead.py), tests/ and docs/ \u2014 no package module is hive-specific (the embodiment/ grep hits are the word \"archived\"), so this boundary costs the package nothing",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h16",
+      "kind": "honesty",
+      "text": "this work adds no code to arch_hive.py, worker_seam.py or worker_scoped_overhead.py beyond keeping CI green; the bee-hive neither grows nor shrinks under this frame",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c25",
+      "kind": "audience",
+      "text": "hosts that embed embodiment \u2014 colleague, the reachy family, greenhouse-style example apps \u2014 plus this repo own examples/ harnesses; the operator configures the strategist seat explicitly, and end operators keep experiencing one coherent teammate",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h17",
+      "kind": "honesty",
+      "text": "the definition of done from issue #2 holds here too: a non-colleague host (the greenhouse example or a sibling) demonstrates the strategist seat end-to-end, proving the audience is hosts-in-general and not colleague alone",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c26",
+      "kind": "before_state",
+      "text": "today nothing owns salience: docs/relationships.md function map records \"no owner\" for deciding what deserves attention, so the actor treats every presented task as the right problem \u2014 locally correct work can be globally wrong and no seam exists to say so",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h18",
+      "kind": "honesty",
+      "text": "the claimed gap is real in code, not just prose: no module under embodiment/ implements attention or priority allocation today, and the relationships.md salience row stays honest until a measured strategist ships \u2014 the row is only rewritten when the measurement exists",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c27",
+      "kind": "after_state",
+      "text": "a host can opt into a strategist seat issuing typed, versioned, supersedable directives that own objectives, priorities and responsibility allocation; the actor runs under the active directive and reports material changes upward; every strategic decision, degradation, staleness and superseded result is host-observable; actor-only hosts see byte-identical behaviour",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h19",
+      "kind": "honesty",
+      "text": "every after-state property maps to a shipped, tested surface: directive versioning and supersession under structural tests, observability through the ledger and observer events, and byte-identical actor-only behaviour under the existing suite plus the import test",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c28",
+      "kind": "success_signal",
+      "text": "the pre-committed ScopeBench verdict rule from issue #51 holds: strategic-utility improvement over the actor-only baseline on at least two scenario families, improvement present in the deterministic-subordinate stage, no material regression on non-intervention controls, zero authority violations, gains not explained by extra tokens alone, end-to-end operational success preserved \u2014 and negative or INCONCLUSIVE outcomes are publishable first-class results",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h20",
+      "kind": "honesty",
+      "text": "the verdict rule and benchmark seeds are committed before any live model call, and every ScopeBench result names which of the seven conditions it satisfies or fails \u2014 absent cells and invalid episodes are reported, never silently dropped",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c29",
+      "kind": "requirement",
+      "text": "the threat model documents the injection chain end-to-end: hostile text arriving through the scope projector (snapshot fields sourced from repo content or conversation) can steer the strategist toward a bad directive, and the directive is the surrender path into an actor holding tool authority \u2014 README, explain output and the bench docs state it (the drone.py precedent: the threat model is stated on every surface, never left to inference), Stage 0 includes a snapshot-embedded-instruction case, and every strategist bench call (e.g. an eidetic recall query) is a recorded event",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h21",
+      "kind": "honesty",
+      "text": "a Stage 0 test feeds a snapshot whose material_outcomes embed an operational instruction and proves it cannot reach the executor: the strategist may echo it into a directive, and the surrender tests then prove the actor never executes it \u2014 the chain is covered at both hops, and the threat-model prose appears in README and explain output",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c30",
+      "kind": "requirement",
+      "text": "the active directive enters the actor only through framing composition on the top-level acting loop: framing.py already carries the exact discipline (frame_cortex targets the top-level acting loop only, ROLE_SUBAGENT for typed subagents, and its charter line \u2014 who is speaking, never what they may do); directive rendering follows it, and the absent-identity byte-identical acceptance from colleague#352 extends to the scope lane",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h22",
+      "kind": "honesty",
+      "text": "directives are rendered into actor context exclusively via framing composition (an AST or call-graph test pins that scoped_run has no other prompt-bearing path), and with no configured identity the scope lane leaves prompts byte-identical",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c33",
+      "kind": "requirement",
+      "text": "directive persistence is layered (operator, 2026-08-03): durable directives survive across drives AND session-scoped temporary persistence exists within the same process \u2014 a session holds its own scope state without touching the durable lane, and sessions are the future seam for per-subagent scoping",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h23",
+      "kind": "honesty",
+      "text": "the two lanes are structurally distinct and observable: a session-scoped directive never outlives its session and never writes the durable lane; a durable directive survives a process restart through a host-visible persistence seam; every scope record names which lane it belongs to",
+      "deferred": false,
+      "deferred_reason": ""
+    }
+  ],
+  "tasks": [
+    {
+      "id": "t1",
+      "summary": "scope.py \u2014 the pure strategic protocol: Scope shapes (Snapshot, Directive, Report, Controls, Outcome, Degradation), bounded ScopeLoop, directive validation / versioning / supersession, and the role-scoped strategist bench type (empty by default)",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "every Scope dataclass passes a fields() decision-vocabulary ban: no tool, arguments, deny, rewrite, allow, approve names anywhere in the shapes",
+        "AST import test: scope.py imports no embodiment.loop, no presence acting names, no event fabric, no threading",
+        "the AST exit-returning-function walk proves ScopeLoop termination structurally, mirroring tests/test_loop.py",
+        "directive validation refuses a version moving backward and an unknown supersedes id; a rejected directive is recorded, never silently dropped",
+        "the bench type is empty by default and structurally cannot hold an actor ToolExecutor (fields test)"
+      ],
+      "deps": [],
+      "covers": [
+        "c6",
+        "h5",
+        "c13"
+      ],
+      "instruction": ""
+    },
+    {
+      "id": "t2",
+      "summary": "scope_runner.py \u2014 background mechanics mirroring ThreadedMuseRunner: non-blocking consider and drain, one in-flight review with a single replaceable pending slot, bounded buffers, lag-based staleness, bounded join, pull-only degradations \u2014 every loss recorded as an authority event",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "consider() and drain() never block or raise under test, including with a wedged strategist seam",
+        "at most one review is in flight; a newer snapshot replaces the waiting one and the displaced snapshot is recorded",
+        "every displaced, dropped, stale or superseded result lands in the degradation record set \u2014 a counted test proves zero silent losses",
+        "close() joins with a bound and never hangs on a parked seam call"
+      ],
+      "deps": [],
+      "covers": [
+        "c7",
+        "h6"
+      ],
+      "instruction": ""
+    },
+    {
+      "id": "t3",
+      "summary": "the ledger lane: SOURCE_SCOPE added by exactly one _MODULES row plus a from_scope reader; known_codes() harvests the new DEGRADED_/DROPPED_ constants from the scope module __all__",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "ledger.known_codes() lists every scope DEGRADED_/DROPPED_ constant with no ledger change beyond the one row and the reader",
+        "a scope_runner drop surfaces through ledger.read(scope=...) as a first-class LedgerRecord",
+        "the ledger diff outside the _MODULES row and from_scope reader is zero lines"
+      ],
+      "deps": [
+        "t1",
+        "t2"
+      ],
+      "covers": [
+        "c8",
+        "h7"
+      ],
+      "instruction": ""
+    },
+    {
+      "id": "t4",
+      "summary": "scoped_run.py \u2014 run_scoped() composing loop.run() unchanged: explicit host-derived default scope until the first directive, application only at safe actor boundaries, continue-under-last-valid on strategist failure, no silent restore of superseded scope",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "the diff to loop.py is zero lines; run_scoped() passes only arguments run() already accepts",
+        "with no strategist configured, run_scoped() output is byte-identical to run() on the same scripted seam, and the actor path imports no scope module (AST test)",
+        "a directive arriving mid-step is applied only at the next boundary; a stale or superseded directive is recorded and never applied",
+        "a failing strategist degrades to the last valid directive (or the host default scope), records the degradation, and the drive completes",
+        "directives render into actor context exclusively through framing composition (frame_cortex, top-level acting loop only); an AST/call-graph test pins no other prompt-bearing path, and with no configured identity the scope lane leaves prompts byte-identical"
+      ],
+      "deps": [
+        "t1",
+        "t2"
+      ],
+      "covers": [
+        "c1",
+        "h1",
+        "c5",
+        "h4",
+        "c30",
+        "h22"
+      ],
+      "instruction": ""
+    },
+    {
+      "id": "t5",
+      "summary": "scope observability: the scope.* event kinds ride the host-wired ObserverFn; every record carries actual model, role, directive and snapshot ids, triggering boundary, and previous/resulting scope versions",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "scope.py and scope_runner.py import no event fabric (AST test); a host wiring EventEmitter as observer receives every scope.* kind",
+        "every emitted scope record names the actual contributing model and role \u2014 asserted for accepted, rejected, stale and degraded paths",
+        "a run configured with a single model emits no record naming a strategist \u2014 the absent-identity byte-identical rule holds"
+      ],
+      "deps": [
+        "t4"
+      ],
+      "covers": [
+        "c9",
+        "h8",
+        "c17",
+        "h12"
+      ],
+      "instruction": ""
+    },
+    {
+      "id": "t6",
+      "summary": "Stage 0 authority suite \u2014 seizure AND surrender: the adversarial sentinel proves nothing strategist-sourced reaches the executor or pre_tool registry; the surrender test proves directive prose embedding an operational instruction is never executed; the memory-owner and CLI boundaries are pinned",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "sentinel test: a hostile strategist seam attempting tool injection leaves the executor and pre_tool hook registry provably untouched",
+        "surrender test: a directive whose objective prose embeds a shell command drives a scripted actor that never emits it as a tool call \u2014 the prose is consumed as scope, not instruction",
+        "AST test: scope modules import neither eidetic nor coherence beyond the existing continuity seam, and the scope projector is typed as a host-supplied callable",
+        "tests/announcement_checklist.py caveat cli1 still passes: no CLI verb imports embodiment.loop, embodiment.scope or the scoped composition",
+        "snapshot-injection case: a snapshot whose material_outcomes embed an operational instruction cannot reach the executor \u2014 covered at both hops: the strategist may echo it into a directive, and the actor provably never executes it"
+      ],
+      "deps": [
+        "t1",
+        "t4"
+      ],
+      "covers": [
+        "c3",
+        "h3",
+        "h10",
+        "c16",
+        "h11",
+        "c18",
+        "h13",
+        "c29",
+        "h21"
+      ],
+      "instruction": ""
+    },
+    {
+      "id": "t7",
+      "summary": "seat wiring under examples/scope/: explicit seat-to-role config mapping strategy to the lobes cortex role, operation to the worker role, interaction to senses \u2014 resolved by role name from /capabilities, never from model names",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "the example config names lobes roles only; an AST/grep test pins that no scope module or example parses a model name string to infer a seat",
+        "a missing role on the gateway degrades to actor-only with a recorded degradation, never a raise",
+        "the wiring lives under examples/scope/ per the per-architecture layout decision"
+      ],
+      "deps": [
+        "t4"
+      ],
+      "covers": [
+        "c2",
+        "h2"
+      ],
+      "instruction": ""
+    },
+    {
+      "id": "t8",
+      "summary": "the non-colleague demo: a greenhouse-style host under examples/scope/ opts into the strategist seat end-to-end \u2014 projector built from host state, directives applied across boundaries, ledger and events visible \u2014 while the plain greenhouse stays actor-only and untouched",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "the demo drives run_scoped() with a live or scripted strategist and shows a directive changing actor behaviour at a boundary",
+        "examples/greenhouse.py is unchanged \u2014 the actor-only path remains the demonstrated default",
+        "every after-state property is visible in the demo output: versioned directives, supersession, host-observable degradations, upward reports"
+      ],
+      "deps": [
+        "t4",
+        "t7"
+      ],
+      "covers": [
+        "c25",
+        "h17",
+        "c27",
+        "h19"
+      ],
+      "instruction": ""
+    },
+    {
+      "id": "t9",
+      "summary": "ScopeBench scaffold under examples/scope/: machine-gradable episode schema, the deterministic perfect subordinate (Stage 1), arms A0-A3 as data not code paths, committed seeds, and the preregistration doc with the seven-condition verdict rule \u2014 all before any live dial",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "episode outcomes are machine-graded against an exact oracle or declared Pareto frontier; an LLM judge is structurally secondary",
+        "the four arms differ only in data (seat config), asserted by a test that diffs their configurations",
+        "the preregistration doc and generated seeds are committed before any live result, and the verdict rule names all seven conditions including the non-intervention and token-cost guards",
+        "outcome, protocol acceptance, authority compliance and cost are separate record fields \u2014 a malformed directive is never counted as a strategic failure"
+      ],
+      "deps": [
+        "t1"
+      ],
+      "covers": [
+        "h20"
+      ],
+      "instruction": ""
+    },
+    {
+      "id": "t10",
+      "summary": "clocks and rates for the scope lane: a dated rate entry for the worker role (and strategist cadence derived from measured latency, not guessed), a Clock in CLOCKS for every timeout constant the scope examples introduce, under the existing AST guard and its test-of-the-test",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "every timeout constant under examples/scope/ appears as a Clock derived from a dated entry in timeout-rate-measurements.json; the AST guard fails any constant outside the walk",
+        "the worker role has a measured, dated rate entry (or an honest unmeasured_roles entry blocking its live dial)",
+        "scope_runner staleness and cadence defaults cite the measured strategist latency in their derivation comment"
+      ],
+      "deps": [
+        "t7",
+        "t9"
+      ],
+      "covers": [
+        "c10",
+        "h9"
+      ],
+      "instruction": ""
+    },
+    {
+      "id": "t11",
+      "summary": "the pre-registered series: Stage 1 (deterministic subordinate) then Stage 2 (fixed worker-role actor, byte-identical across arms) over the four arms; results published as first-class outcomes \u2014 including INCONCLUSIVE or negative \u2014 with every absent cell reported",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "Stage 1 runs before any Stage 2 dial and its verdict is recorded per the committed rule; no verdict is emitted with a required control absent",
+        "Stage 2 pins actor config, tools, senses projection, sampling and budgets byte-identical across arms, asserted from the run records",
+        "the results doc reports every condition of the verdict rule separately, and a no-benefit outcome is published with the same prominence as a win"
+      ],
+      "deps": [
+        "t9",
+        "t10"
+      ],
+      "covers": [
+        "c28"
+      ],
+      "instruction": ""
+    },
+    {
+      "id": "t12",
+      "summary": "docs close-out: README / CLAUDE.md / relationships.md present the three-authority-level design as opt-in, the salience row is rewritten only if the measured result supports it (otherwise the gap stays recorded), the League demotion is stated, and the bee-hive files are verifiably untouched",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "git diff over the whole plan shows zero changes to arch_hive.py, worker_seam.py and worker_scoped_overhead.py",
+        "the relationships.md salience row is updated only if t11 returns a supporting verdict; an honest negative keeps the no-owner row with the negative recorded",
+        "README and explain output state the strategist is opt-in, software-presence only (C2), and that a single-model run claims no strategist"
+      ],
+      "deps": [
+        "t11"
+      ],
+      "covers": [
+        "c24",
+        "h16",
+        "c26",
+        "h18"
+      ],
+      "instruction": ""
+    },
+    {
+      "id": "t13",
+      "summary": "directive persistence lanes: the durable lane surviving across drives and the session-scoped temporary lane within one process \u2014 structurally distinct, every record naming its lane, sessions as the future per-subagent scoping seam",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "a session-scoped directive never outlives its session and never writes the durable lane (tested)",
+        "a durable directive survives a process restart through the host-visible persistence seam (round-trip test)",
+        "every scope record, ledger entry and event names the lane it belongs to"
+      ],
+      "deps": [
+        "t1",
+        "t4",
+        "t5"
+      ],
+      "covers": [
+        "c33",
+        "h23"
+      ],
+      "instruction": ""
+    }
+  ],
+  "risks": [
+    {
+      "id": "r1",
+      "text": "the worker role HAS a dated rate entry (C1-E cell, thinking on) but its rate is width-dependent \u2014 76.4 falling to 29.8 tok/s between widths \u2014 and it was measured as a scoped seam on an easy cell, through the proxy; t10 must pick the conservative bound for the scoped-run calling pattern rather than reusing the width-1 figure",
+      "kind": "unknown_nonblocking",
+      "task_id": "t10",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r2",
+      "text": "which of the eight ScopeBench scenario families form the first-cycle subset is an operator decision at t9 preregistration time \u2014 the frame parked this (v1) and the plan inherits it",
+      "kind": "unknown_nonblocking",
+      "task_id": "t9",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r3",
+      "text": "strategist cadence and staleness constants depend on latency measured under the new seat load, not the historical muse numbers \u2014 DEFAULT_STALE_LAG=5 was a guess under an inverted assumption and must not be copied forward",
+      "kind": "unknown_nonblocking",
+      "task_id": "t10",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r4",
+      "text": "the bee-hive relocation to another repo (frame park v2) is its own future frame \u2014 nothing in this plan moves or extends the hive",
+      "kind": "follow_up",
+      "task_id": null,
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r5",
+      "text": "the durable-lane storage owner \u2014 host state round-tripped through the scope projector versus a continuity record \u2014 is a design decision inside t13; the frame parks it as v5",
+      "kind": "unknown_nonblocking",
+      "task_id": "t13",
+      "resolved": false,
+      "resolution": ""
+    }
+  ]
+}
