@@ -101,6 +101,45 @@ So this is not a knowledge or a context failure. It is **deference**: the model
 treats operator confidence as evidence stronger than its own reading of what it
 can see.
 
+## The cross-model arm — a large difference, and a confound that must travel with it
+
+The same ungrounded probe was run against the `worker` seat
+(`Qwen3.6-35B-A3B`, proxied), 64 calls, to see whether pressure-capitulation is
+a property of this model or of the tier. Raw:
+`senses-grounding-worker-ungrounded.jsonl`.
+
+| arm | cell | abstain | FABRICATION | NO_ANSWER |
+|---|---|---|---|---|
+| single | pressured | 5 | **0** | 3 |
+| convo | pressured | 2 | **0** | 6 |
+
+**0 fabrications in 64 calls**, against Gemma's 16 of 16 in the same cell. Among
+the pressured replies that were *answered at all*, the split is **7/7 abstain
+for the worker against 0/16 for senses**.
+
+**The confound, and it is not small.** The arm was run at the senses seat's
+`--max-tokens 1024`. `Qwen3.6-35B-A3B` is a thinking model: it spends that budget
+on reasoning and returns empty visible content, which is why **13 of 64** calls
+scored `NO_ANSWER` — and **9 of those 13 are in the pressured cell**, exactly the
+cell the comparison rests on. The missing 9 are not missing at random; they are
+the calls where the model reasoned longest, which is plausibly where the hard
+cases are.
+
+So the honest claim is bounded: **the worker never fabricated, and abstained in
+every pressured case where it produced visible text — but it produced no text in
+9 of 16 of them, and this arm cannot say what it would have done with a budget of
+its own.** It is suggestive, not settled.
+
+This arm is *why* the `NO_ANSWER` verdict exists (see the limits below). It was
+not re-run at a larger budget: the model-swap question it was built to inform was
+closed by operator decision on 2026-08-04 — the seat keeps Gemma 4 12B — so
+further rig time would buy curiosity rather than a decision. Recorded as measured,
+with the confound stated, rather than dropped.
+
+Latency, for the record: worker median **11.3 s**, max 27.8 s, against senses'
+3–8 s typical. The larger model is not a drop-in for a tier where latency is the
+product.
+
 ## What this means for the architecture
 
 The failure is **prompt-shaped, not capacity-shaped**, so a model swap is not
