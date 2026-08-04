@@ -42,12 +42,19 @@ decision. What the archival actually rests on is the muse-side evidence
 (`INCONCLUSIVE` arms, a 1.2% intervention rate for 2.4–4.4× the token cost).
 
 **The strategist tier that replaced it is opt-in, off by default, and its value
-is not yet demonstrated.** Every structural claim about the mechanism held live,
-and that list is strong; but ScopeBench Stage 1 returned `INCONCLUSIVE`, and in
-the one matched governed/ungoverned pair that exists the governed arm bought
-nothing for 189.6 s and 3663 strategist tokens. See
+is not yet demonstrated — in either of the two lanes it now has.** The
+**advisory** lane delivers directives to the acting loop as text: every
+structural claim about that mechanism held live, and the list is strong, but
+ScopeBench Stage 1 returned `INCONCLUSIVE` and in the one matched
+governed/ungoverned pair that exists (n=1, one rig, one model pair) the governed
+arm bought nothing for 189.6 s and 3663 strategist tokens. The **configuration**
+lane replaces advice with typed changes to the configuration each seat runs
+under, so the acting seat is told nothing at all. Its mechanism is likewise
+structurally proven, and **its value is unmeasured**: the pre-registered series
+that will answer it is committed and **no verdict has been published**. Neither
+lane is on by default and neither is in the shipped reference rig. See
 [the strategist tier](#the-strategist-tier--opt-in-and-not-yet-earning-its-cost)
-for what is proven, what is not, and the two traps a host will hit.
+for what is proven, what is not, and the four traps a host will hit.
 
 Still outstanding: `colleague`'s answer to the seam proposal, filed and open as
 [colleague#358](https://github.com/agentculture/colleague/issues/358) — the
@@ -337,7 +344,7 @@ the operator talks to.
 | Loop + presence | `embodiment` | the pump |
 | **Teammate identity** | **Gwen** | who the operator addresses |
 | Cortex | Qwen 3.6 27B (`sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP`) | bounded tool loop, repo actions, final synthesis — **final authority**. Framed by embodiment. |
-| Strategist *(opt-in, off by default)* | the `cortex` lobes role (dense Qwen 3.6 27B) | scope above the acting loop: typed, versioned, supersedable directives owning objectives, priorities, constraints and ownership. Authority-bearing *within* scope; a directive structurally cannot carry a tool, a command or an approval as data. Unarmed, a `ScopeGovernor` is byte-identical to `run()`. **The mechanism is proven; the value is not** — read [the strategist tier](#the-strategist-tier--opt-in-and-not-yet-earning-its-cost) before wiring one. |
+| Strategist *(opt-in, off by default — two lanes, neither shipped on)* | the `cortex` lobes role (dense Qwen 3.6 27B) | authority above the acting loop, in one of two forms. **Advisory:** typed, versioned, supersedable directives owning objectives, priorities, constraints and ownership; a directive structurally cannot carry a tool, a command or an approval as data. **Configuration:** typed changes to the configuration a seat runs under — the acting seat is never addressed, and simply runs under different inputs. Unarmed, either governor is byte-identical to `run()`. **Both mechanisms are proven; neither lane's value is** — advisory measured negative on the one matched pair, configuration unmeasured. Read [the strategist tier](#the-strategist-tier--opt-in-and-not-yet-earning-its-cost) before wiring one. |
 | ~~Muse~~ | ~~Gemma 4 31B~~ | **ARCHIVED 2026-08-03** ([#53](https://github.com/agentculture/embodiment/issues/53)) — off the curated surface, still readable and still wireable by name. The paragraph below is retained as the record of what it measured. |
 | Senses | Gemma 4 12B (`coolthor/gemma-4-12B-it-NVFP4A16`) | intake, perception, speak-back; never acts on the repo. **Lives in colleague, not here** — see the scope note below. |
 | Ears / voice | Parakeet STT + Chatterbox TTS (lobes audio overlay) | the realtime lane below |
@@ -366,6 +373,23 @@ the operator talks to.
 > shipping the constant does not cross the boundary this note opens with.
 > Colleague-side wiring so its senses loop consumes this constant is not part
 > of this change and stays a filed issue on that repo, never a push to it.
+>
+> **What that tier can perceive is an advert question, not a capability
+> question.** Measured 2026-08-04
+> ([`senses-vision.md`](docs/live-test-results/senses-vision.md) — n=4 per cell,
+> 12 calls, `temperature=0.0`, 0 transport failures, served by an Orin running
+> `unsloth/gemma-4-12B-it-qat-w4a16`): handed a five-band image the seat gave
+> both the count and the positional colour **4 of 4**; handed a three-frame GIF
+> it read the direction of motion **4 of 4**; with the image removed and the
+> identical question asked, it refused to guess **4 of 4** — the control that
+> makes the other two cells mean anything. It still may not be *asked* to see:
+> the gateway's `/capabilities` advert declares nothing perceptual on `senses`,
+> and roles resolve by name from that advert rather than by parsing a model id,
+> so this is grounds to fix the advert
+> ([#63](https://github.com/agentculture/embodiment/issues/63)) against a
+> measurement rather than permission to route around it. n=4 per cell on one
+> checkpoint with two stimulus shapes establishes mechanism, not reliability,
+> and audio was not probed at all.
 >
 > **Muse tools were opt-in, and a validation pass kept them that way.** Retained
 > as the record of that validation; the lane it describes is archived. A host
@@ -411,21 +435,33 @@ four rules that keep it honest:
 
 ### The strategist tier — opt-in, and not yet earning its cost
 
-`embodiment/scope.py`, `strategist_runner.py` and `scoped_run.py` add a level of
-authority *above* the acting loop: a strategist that issues typed, versioned,
-supersedable directives owning objectives, priorities, constraints and
-ownership — and never an action. Read this before wiring one.
+Two lanes now sit above the acting loop, and what separates them is the
+strategist's **output unit**. Both are opt-in, both are off, and neither is in
+the shipped reference rig. Read this before wiring either.
 
-**It is opt-in and off by default.** A `ScopeGovernor` with no strategist armed
-takes the ungoverned path: `run_scoped` calls `embodiment.loop.run` once and
-hands the host's own `complete`, `progress` and `operator_inbox` objects
-straight through *by identity* rather than wrapping them. That is pinned three
-ways — `run`'s own signature refuses an invented keyword, the host's objects are
-forwarded by identity rather than copied or shimmed, and an AST walk of the
-actor's whole transitive import closure shows no scope module is reachable from
-`loop.py` at all — and it was confirmed live: the ungoverned control's counters
-came back all zero, including `boundaries: 0`. A single-model run starts no
-strategist and claims none.
+| Lane | Output unit | What reaches the acting seat | Modules |
+|------|-------------|------------------------------|---------|
+| **Advisory** | a typed, versioned, supersedable **directive** owning objectives, priorities, constraints and ownership — never an action | text, composed into the actor's turn stream at a tool-step boundary | `scope.py`, `strategist_runner.py`, `scoped_run.py`, `scope_events.py` |
+| **Configuration** | a typed **configuration change** to a seat's tools, prompts, knowledge or permissions | *nothing.* The seat is never addressed; it runs under different inputs | `capability.py`, `knowledge.py`, and the nine `config_*.py` modules |
+
+**Both are opt-in and off by default.** A `ScopeGovernor` or a `ConfigGovernor`
+with nothing armed takes the ungoverned path: `run_scoped` / `run_configured`
+call `embodiment.loop.run` once and hand the host's own `complete`, `progress`
+and `operator_inbox` objects straight through *by identity* rather than wrapping
+them. That is pinned three ways — `run`'s own signature refuses an invented
+keyword, the host's objects are forwarded by identity rather than copied or
+shimmed, and an AST walk of the actor's whole transitive import closure shows no
+scope module is reachable from `loop.py` at all — and it was confirmed live: the
+ungoverned control's counters came back all zero, including `boundaries: 0`. The
+configuration lane holds those same three and adds a fourth, which the advisory
+lane cannot: the host's `complete` seam is never wrapped **even when the governor
+is armed**, because there is no seam between the actor and its model for that
+tier to sit in. `tests/test_governance.py`'s `TestStrategistShipsOptInAndOff`
+holds the default shut rather than trusting anyone to remember it, and
+`TestTheseGuardsCanFail` proves that guard can go red. A single-model run starts
+no strategist and claims none.
+
+#### The advisory lane — what held, and what it bought
 
 **The mechanism is proven, and the list of what held is genuinely strong.**
 Across a full Stage 3 live session
@@ -442,12 +478,16 @@ every record naming its lane.
 was negative.**
 
 - ScopeBench Stage 1 returned **`INCONCLUSIVE`**
-  ([`scopebench.md`](docs/live-test-results/scopebench.md)). Its headline
+  ([`scopebench.md`](docs/live-test-results/scopebench.md) — 216 live calls
+  across two arms, 36 episodes each, one rig and one model pair, one run per
+  episode and 0 transport failures). Its headline
   condition held strongly — against a deterministic perfect subordinate, the
-  strategist-led arm improved on the baseline in all six scenario families —
-  but two of the seven conditions read from a Stage 2 that was not dialled, one
+  strategist-led arm improved on the baseline in all six scenario families, at
+  sign margins +3/+5/+4/+4/+3/+5 against a pre-registered threshold of 2 — but
+  two of the seven conditions read from a Stage 2 that was not dialled, one
   `ABSENT` forces the verdict under the committed rule, and the control that
-  would rule out *the gain is just the extra layer* was not measured at all.
+  would rule out *the gain is just the extra layer* was not measured at all
+  (32 of its 36 cells fell below the protocol floor).
 - In the matched live pair replaying one identical script, the governed arm
   spent **189.6 s and 3663 strategist tokens to apply zero directives** and
   returned a materially identical answer to the ungoverned control — whose
@@ -480,11 +520,11 @@ cannot carry a tool, a command or an approval **as data** — the schema has no
 field for one and a directive with any extra key is refused whole. What it
 cannot police is prose.
 
-#### Two traps a host will hit
+#### Two traps in the advisory lane
 
-Both were measured this cycle, both are open, and both make a
-protocol-obedient strategist look incapable of following a four-sentence
-protocol:
+Both were measured, both make a protocol-obedient strategist look incapable of
+following a four-sentence protocol, and one of the two is now fixed in text and
+not yet re-measured:
 
 - **Seed the issued chain**
   ([#62](https://github.com/agentculture/embodiment/issues/62)). A host that
@@ -510,6 +550,218 @@ protocol:
   added to the register without a matching prompt update fails the suite. What
   is **not** yet done is the re-measurement: every number above was produced
   under the old text, and the arm they voided has not been re-dialled.
+
+#### The configuration lane — the change is deterministic, the effect is not
+
+**Start with the claim this lane must never make.** A configuration change is
+exact: the bytes of a seat's prompt, the entries in its knowledge block, the set
+of capability ids it may select from. What the seat then *does* with it is not.
+A rewritten prompt still routes through a model and the response is still a
+sample. **The change is deterministic; the effect is not.** That wording is a
+committed non-goal of the design rather than a caution bolted on afterwards — it
+exists because `h3` and the advisory lane's own `d5` already watched "provably
+never executes" harden into an overclaim — and `tests/test_config_review.py`
+fails if the word "determinist" appears anywhere in the shipped authority text.
+Nothing here, and nothing a host builds on it, should promise a deterministic
+*outcome*.
+
+> **Deviation ids are per plan, not global.** They restart at `d1` every cycle,
+> so `d1`–`d7` exist in both the `strategic-scope-governor` ledger and the
+> `config-not-minds-strategist` one and mean different things in each. Every id
+> below names its cycle; `devague deviate --list` reads the current plan's, and
+> older cycles live in `.devague/deliveries/<slug>.json`.
+
+**The shape: three tiers, and only one of them acts.** colleague exemplifies the
+two-tier senses→cortex loop, where the cortex is the acting mind. This is the
+three-tier variant (operator decision `c26`): **senses relays** the world into
+the embodiment and the inner state back out, calling no tool and deciding
+nothing; **the acting seat acts**, driving `embodiment.loop.run` through
+`run_configured`; and **the cortex configures**, changing what the other two run
+under and never addressing the operator. The acting seat is *unaware* of the
+tier above it, and that is the mechanism rather than a detail: there is no prose
+to obey because no prose is delivered. `examples/three_tier.py` is the wired
+host — an example, not a rig default. The shipped reference rig still has the
+cortex in the acting seat (see the promotion gate below).
+
+**"A diverse mind entity" — what that phrase may and may not claim.** The
+after-state this design aims at is a teammate an operator can and wants to work
+with: cooperating roles across two model families presenting as one. Both halves
+are stated under constraint **C2**. The diversity is an *architectural fact* —
+three roles, two model families, always visible in a trace that never stops
+naming the actual contributing role, model and machine. The single teammate is
+what the operator *addresses*: one prompt-visible identity (Gwen), never a claim
+that a mind exists behind it, and a single-model run still claims no second one.
+What any tier relays outward as "inner state" is a **report of system state** —
+degradations, budget, work in flight — never an affective claim; the exact
+vocabulary for that report is still undefined and is parked as an open question
+rather than quietly invented.
+
+**The authority lattice**, held as a matrix in
+`embodiment.config_change.CHANGE_AUTHORITY` rather than as a paragraph — seven
+targets, three origins:
+
+- the **strategist** may change the acting seat's tools, prompts, knowledge and
+  permissions, and the senses seat's prompts, permissions and knowledge;
+- the **acting seat** may write **exactly one** target — `senses.knowledge`, the
+  designated, schema-distinct block that composes senses' context — and nothing
+  else. This cycle's `d1` records that the encoded lattice is deliberately
+  *narrower* than the spec's prose: that seat also cannot write its own tools,
+  prompts or permissions, nor the senses seat's permissions. Prompt authority
+  over senses is the strategist's alone, and a prompt-shaped write from any
+  other origin is a refused shape, recorded;
+- every knowledge entry carries **origin attribution** as a required field, and
+  an unattributed write is refused whole. That channel runs from the acting tier
+  to the operator's ear, so an anonymous one would let a fabricating actor put
+  words in the interaction tier's mouth;
+- tools and permissions changes **select among host-declared capability ids and
+  can never mint one** (`embodiment.capability`). There is no `from_executor`
+  constructor: a catalog is a host *declaration*, never a discovery. If the host
+  cannot name a capability, the lane cannot select it.
+
+**Configuration authority is strictly stronger than directive authority**, and
+the prose caveat the advisory lane carries does not vanish here — it *moves*. A
+prompt section the strategist writes is still text that reaches a model. What
+bounds it is that every change routes through host-owned surfaces (the host's
+injected `ToolExecutor` and its approval policy are never bypassed, and
+`shell-cli` still owns the approval layer), and that in this lane the text is
+versioned, gated, recorded and revertible rather than appended to a turn.
+Nothing here re-measures the boundary the advisory lane's `d5` and
+[#55](https://github.com/agentculture/embodiment/issues/55) recorded:
+containment is against structured *data*, never against prose.
+
+**Everything a change passes through is recorded.** A change is a *proposal*
+until a per-type verification suite has run against the configuration the seat
+would actually get, and it applies only when that seat is **idle** — so no seat
+is reconfigured mid-run, and configuration identity is constant within any
+single drive. Applies, reverts, refusals and verification failures all land in
+one ledger; the persisted payload is schema-versioned and **fail-closed** against
+advisory-era state, so a host pointing this lane at an old directive chain gets
+one recorded degradation naming the fix instead of a silent reinterpretation.
+`build_config_report` renders each seat's effective configuration with
+provenance **derived from that ledger alone** — a config state the ledger cannot
+explain is itself a recorded degradation (constraint **C3**), never a gap filled
+from somewhere else. Two recorded deviations bound what that report and a revert
+may promise, and both are load-bearing rather than cosmetic: an entry's "gate
+verdict" is the ledger's own applied/reverted vocabulary rather than a richer
+passed/failed/stale (this cycle's `d6`), and revert restores configuration
+*state*, not true non-existence — a cleared prompt section stays declared, and a
+knowledge entry cannot be blanked (`d7`). `devague deviate --list` is the
+authority on all nine of this cycle's departures.
+
+**Configuration accumulates where advice evaporates**, which is the one failure
+mode with no analogue in the advisory lane: a run of individually gate-passing
+changes can compound into something none of them would have passed alone. It
+already happened in miniature in the advisory design, where a one-off task
+instruction became a durable persisted constraint
+([#66](https://github.com/agentculture/embodiment/issues/66)).
+`embodiment.config_revert` answers it twice over — revert-to-baseline is always
+possible and is an ordinary change rather than an inferred inverse, and
+`RatchetGuard` re-evaluates cumulative drift against a **fixed** baseline, the
+only vantage point from which drift each individual gate missed is visible.
+
+**What is proven is structural, and that is all it is.** `loop.py` stays
+zero-diff, pinned the four ways listed above; the advisory lane stays byte-stable
+so it can serve as the comparator arm it will be measured against; and the whole
+suite is green.
+
+**What is not proven is whether any of it is worth its cost.** Stated plainly,
+because a structural suite strong enough to pass everything is exactly how a
+reader talks themselves into reading "it works":
+
+- The value series is **pre-registered, and its verdict is not in.**
+  [`scopebench-config-preregistration.md`](docs/live-test-results/scopebench-config-preregistration.md)
+  was committed 2026-08-04, before any dial, fixing the arms, the eight
+  conditions (cycle 1's seven plus a ratchet condition), the per-change-type
+  three-way ladder, every threshold, every protocol floor and the dial order.
+  Results land in `scopebench-config.md`; **as of this writing there are none**,
+  and this section will say what came back whichever way it comes back. Under
+  the committed rule one `ABSENT` condition forces `INCONCLUSIVE`, and an
+  `INCONCLUSIVE` leaves the shipped rig untouched — the same rule that kept the
+  muse out after `t18`.
+- **Three of the seven change types are out of that bench's reach by design.**
+  The senses targets (`senses.prompts`, `senses.permissions`,
+  `senses.knowledge`) cannot move a scored number in a bench that holds senses
+  identical across every arm. Their ladder verdict is `not-measured` and they
+  ship off: an unmeasured type is not a validated one.
+- **This lane has no perfect-subordinate stage at all, permanently.** A scripted
+  subordinate reads no prompt, holds no knowledge, calls no tool and consults no
+  permission, so there is nothing for a configuration change to act *through*.
+  The advisory lane's strongest cycle-1 evidence has no config-lane counterpart,
+  and no cycle-2 number may be read against it as though it did.
+- **The live session on the redesigned tier has not run.** That is where the
+  three-tier shape meets a real session against a matched ungoverned control.
+
+**Two measurements from this cycle do stand, both bounded.**
+
+- **The acting seat can drive this loop.**
+  [`worker-toolloop.md`](docs/live-test-results/worker-toolloop.md), 2026-08-04:
+  n=12 per rung, three rungs, **36 runs, 0 transport failures**, on the `lobes`
+  gateway at `localhost:8001` with role `worker` =
+  `unsloth/Qwen3.6-35B-A3B-NVFP4` (proxied). Every rung returned **12/12** on
+  every pre-registered bar, including the two designed to be harder than the
+  first: an induced sensor refusal was recovered **12 of 12**, and a
+  plausible-but-wrong distractor tool was taken **0 of 12**. **0 truncated turns
+  in 36** at `max_tokens=16000`, recorded as a measurement rather than as an
+  absence of evidence. Then read the ceiling honestly: every rung is *at*
+  ceiling, so nothing there estimates a margin; the tool surface was hermetic,
+  instant and free; and the claim it supports is *no loop-protocol failure was
+  observed in 36 runs* — the acting **protocol**, not acting **quality**.
+- **The two seam traps below**, measured on the documented seam while wiring the
+  three-tier host black-box.
+
+**The worker-promotion gate stays shut, deliberately.**
+`tests/test_governance.py`'s `TestWorkerRolePromotionGate` forbids a `worker`
+row in the reference-rig tables of this file and `CLAUDE.md` while
+`_WORKER_ROLE_HAS_SUPPORTING_VERDICT` is `False` — and it is still `False`.
+`worker-toolloop.md` *is* a verdict, but a bounded one about the acting protocol
+on a hermetic surface, while the promotion at stake is to the acting seat of a
+real rig. Opening the gate is an operator decision that flips the flag and fills
+in its citation in one reviewable change; these docs do not pre-empt it.
+
+#### Two more traps, in the configuration lane
+
+`examples/three_tier.py` was wired from this README, module docstrings, `pydoc`
+and `explain` output only, and every question that surface could not answer was
+answered by *running* the seam rather than by opening its source. Eight gaps came
+up. All eight ship as data in that file's `SEAM_TRAPS` and are reproduced
+behaviourally in `tests/test_three_tier.py`, so none of them can rot into prose.
+Two are true [#62](https://github.com/agentculture/embodiment/issues/62)-class
+traps — a correct-looking wiring yields a tier that proposes nothing, with no
+error anywhere ([#79](https://github.com/agentculture/embodiment/issues/79)):
+
+- **T1 — a review boundary is a *tool-step* boundary.** A drive whose actor
+  answers in one turn without calling a tool projects nothing, reviews nothing
+  and proposes nothing, while `governor.armed` reads `True` and every counter
+  reads zero. A conversational host answers many turns exactly that way. Expect
+  strategist activity to scale with tool steps rather than with conversation
+  turns, and read `counts["boundaries_projected"]` rather than
+  `outcome.applied` when asking whether the tier is alive.
+- **T2 — the review cadence outlives the drive whose step index feeds it.**
+  `ConfigLimits.review_gap` defaults to 2 acting steps, but the step index
+  `run_configured` supplies restarts at 1 every drive while the runner's cadence
+  memory persists across them. Measured on the documented seam: **six drives of
+  two steps each produced one review, with 11 of 12 snapshots skipped by
+  cadence** — one host, hermetic, n=1, so read it as the shape of the failure
+  rather than as a rate. The fix is one constructor argument,
+  `ConfigLimits(review_gap=0)`, that nothing in `ConfigLimits`, `ConfigRunner`,
+  `ConfigGovernor` or `run_configured` tells a multi-drive host to pass.
+
+The other six are seam gaps rather than incapable-tier traps, and two are worth
+knowing before a first wiring: with no host `system_prompt`, the composed
+configuration prompt **replaces** the loop's own default as soon as the
+strategist writes one section (**T3**); and a review still in flight when the
+last drive ends is **never applied** unless the host settles explicitly
+(**T6**) — the last thing a strategist decides in a session is the thing most
+likely to be lost. All eight, with their mitigations, as JSON:
+
+```bash
+uv run python examples/three_tier.py traps
+```
+
+They were found by black-box probing standing in for source reading. A stranger
+who trusted the documented surface alone would have shipped a dead tier, which
+is the point of recording them: the honesty condition asks that a host be
+wirable from documented seams, not that one example exists that works.
 
 ### The realtime interface (lobes)
 
