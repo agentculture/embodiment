@@ -607,6 +607,33 @@ class TestTheSeamTraps:
     off the list instead of quietly outliving the problem it names.
     """
 
+    def test_the_module_docstring_states_the_number_of_traps_it_holds(self) -> None:
+        """The prose count and the data cannot drift apart.
+
+        They already did once: the docstring said six while ``SEAM_TRAPS`` held
+        eight, both landing in the same commit. Nothing checked the number, so
+        the only reader who would have caught it is one who counted.
+        """
+        spelled = {
+            1: "One",
+            2: "Two",
+            3: "Three",
+            4: "Four",
+            5: "Five",
+            6: "Six",
+            7: "Seven",
+            8: "Eight",
+            9: "Nine",
+            10: "Ten",
+        }
+        count = len(tt.SEAM_TRAPS)
+        # The docstring is wrapped, so the sentence spans a line break.
+        docstring = " ".join((tt.__doc__ or "").split())
+        expected = f"{spelled[count]} such questions came up."
+        assert (
+            expected in docstring
+        ), f"the module docstring must say {expected!r} — SEAM_TRAPS holds {count}"
+
     def test_every_trap_is_reproduced_by_a_test_in_this_class(self) -> None:
         """The list and the proofs cannot drift apart."""
         proved = {

@@ -98,7 +98,7 @@ session 1 found it the hard way.
 
 So this host was wired from README, module docstrings, ``pydoc`` and ``explain``
 output only, and **every question that surface could not answer was answered by
-running the seam rather than by opening its source**. Six such questions came
+running the seam rather than by opening its source**. Eight such questions came
 up. Each is recorded below as data (:data:`SEAM_TRAPS`), reproduced
 behaviourally in ``tests/test_three_tier.py`` so it cannot rot into prose, and
 mitigated at the exact line of this file where the mitigation lives.
