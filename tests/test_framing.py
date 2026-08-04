@@ -354,9 +354,11 @@ class TestPassThroughIsStructural:
         assert isinstance(assign, ast.Assign), "the identity must be normalized first"
         assert isinstance(assign.targets[0], ast.Name)
         assert isinstance(guard, ast.If), "the normalized identity must be gated next"
-        assert len(guard.body) == 1 and isinstance(guard.body[0], ast.Return)
+        assert len(guard.body) == 1
+        assert isinstance(guard.body[0], ast.Return)
         returned = guard.body[0].value
-        assert isinstance(returned, ast.Constant) and returned.value is None
+        assert isinstance(returned, ast.Constant)
+        assert returned.value is None
 
     def test_the_composer_hands_the_base_back_by_name(self) -> None:
         fn = _functions(_module_ast())["_compose"]
@@ -368,7 +370,8 @@ class TestPassThroughIsStructural:
             ret = guard.body[0]
             assert isinstance(ret, ast.Return)
             # A bare Name — not a call, not an f-string, not a concatenation.
-            assert isinstance(ret.value, ast.Name) and ret.value.id == "base"
+            assert isinstance(ret.value, ast.Name)
+            assert ret.value.id == "base"
 
     def test_every_public_framer_is_a_single_delegating_return(self) -> None:
         tree = _module_ast()
@@ -381,7 +384,8 @@ class TestPassThroughIsStructural:
             assert isinstance(stmt, ast.Return)
             assert isinstance(stmt.value, ast.Call)
             callee = stmt.value.func
-            assert isinstance(callee, ast.Name) and callee.id in known
+            assert isinstance(callee, ast.Name)
+            assert callee.id in known
 
     def test_no_function_can_build_prose(self) -> None:
         # Every word of framing text is a module-level constant, so no code path
@@ -497,7 +501,8 @@ class TestCompositionDiffLeavesAuthorityUntouched:
             f.to_dict() for f in off_out.hook_firings
         ]
         decisions = {f.decision for f in on_out.hook_firings}
-        assert DECISION_DENY in decisions and DECISION_REWRITE in decisions
+        assert DECISION_DENY in decisions
+        assert DECISION_REWRITE in decisions
 
     def test_the_result_is_identical(self) -> None:
         (_, _, _, off_out), (_, _, _, on_out) = self._both()
@@ -577,7 +582,8 @@ class TestCortexFramingStaysOnTheTopLevelLoop:
         subagent = block_for(ROLE_SUBAGENT, identity=_IDENTITY)
         assert CORTEX_MARKER in cortex
         assert CORTEX_MARKER not in subagent
-        assert cortex not in subagent and subagent not in cortex
+        assert cortex not in subagent
+        assert subagent not in cortex
 
     def test_the_muse_block_carries_no_cortex_framing(self) -> None:
         assert CORTEX_MARKER not in block_for(ROLE_MUSE, identity=_IDENTITY)
@@ -717,7 +723,8 @@ class TestAMuselessRunClaimsNoSecondMind:
 
     def test_the_museful_block_says_the_lane_cannot_act(self) -> None:
         museful = block_for(ROLE_CORTEX, identity=_IDENTITY, muse=True)
-        assert "no tools" in museful and "you decide" in museful
+        assert "no tools" in museful
+        assert "you decide" in museful
 
 
 class TestNoSensesLobeAnywhere:

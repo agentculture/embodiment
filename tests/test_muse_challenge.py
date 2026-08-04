@@ -382,7 +382,8 @@ class TestConfigPreambleComesFirst:
         monkeypatch.setattr(golden, "scripted_muse", probing)
         assert golden.main(["--results", str(results), "--json"]) == 0
         capsys.readouterr()
-        assert seen and all(seen), "the mind ran before the configuration was recorded"
+        assert seen, "the mind was never called, so the ordering was never observed"
+        assert all(seen), "the mind ran before the configuration was recorded"
 
     def test_the_preamble_records_the_run_s_settings(
         self, tmp_path: Path, capsys: pytest.CaptureFixture

@@ -215,7 +215,8 @@ class TestContinuityAcrossTwoProcesses:
             scope=greenhouse.SCOPE,
             mode=greenhouse.RECALL_MODE,
         )
-        assert outcome.ok and outcome.records
+        assert outcome.ok
+        assert outcome.records
         record = outcome.records[0]
         # The operator's own words, byte for byte — never a model's rewording.
         assert record["metadata"]["request"] == VISIT_ONE

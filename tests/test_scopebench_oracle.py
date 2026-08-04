@@ -138,7 +138,8 @@ class TestVerifiedSchema:
         than gated, because hiding it would overstate the test's strength."""
         for episode in EPISODES:
             hold = SOLUTIONS[episode.id].non_intervention
-            assert hold is not None and hold.margin > 0, episode.id
+            assert hold is not None, episode.id
+            assert hold.margin > 0, episode.id
             state = orc.state_after(episode, SOLUTIONS[episode.id].optimal_plan, hold.at_review)
             best_here = orc.best_from(episode, state, hold.at_review)
             outcomes = [
