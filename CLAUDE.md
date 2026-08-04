@@ -127,10 +127,15 @@ written up in the README: **#62** (a host that starts its actor under its own
 initial directive and then arms a strategist has an *unseeded issued chain*, so
 every protocol-obedient directive is refused `scope-directive-unknown-supersedes`
 and dropped — seed the runner's chain, as `examples/scope_live_session.py`
-does) and **#58** (`SCOPE_AUTHORITY` never states the `scope_id`-must-be-new
+does) and **#58** (`SCOPE_AUTHORITY` never stated the `scope_id`-must-be-new
 rule it is graded on; 47 of 93 proposals in one ScopeBench arm were refused as
 duplicates, and both of the live session's completed reviews were thrown away
-this way).
+this way). **#58's text is fixed** as of the `config-not-minds-strategist`
+cycle — all four admission rules are stated, and `tests/test_scope.py` maps
+each admission refusal code to the phrase stating it, so a rule added to the
+register without a prompt update fails the suite. The measurements above were
+all taken under the old text and have **not** been re-run; treat them as the
+record of what the gap cost, not as the current rate.
 
 The lesson worth carrying forward, beside 0.11.0's clock lesson: **a mechanism
 that holds on every structural check can still buy nothing.** The structural

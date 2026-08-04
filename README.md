@@ -495,15 +495,21 @@ protocol:
   refused `scope-directive-unknown-supersedes` and dropped before it reaches
   the actor. `examples/scope_live_session.py` seeds the runner's chain with the
   host's own initial directive. Nothing in the package tells you that you must.
-- **`scope_id` must be new, and the prompt never says so**
+- **`scope_id` must be new — the prompt now says so, and the cost of its
+  silence has not been re-measured**
   ([#58](https://github.com/agentculture/embodiment/issues/58)).
   `ScopeRegister` refuses a directive whose `scope_id` is already in the chain
-  (`scope-directive-duplicate-id`), but `SCOPE_AUTHORITY` — the shipped system
-  message the strategist is graded against — states the other three admission
-  rules and not this one. The cost is measured, not theoretical: 47 of 93
-  proposals from one model were refused as duplicates in the ScopeBench dial,
-  and in the live session both of the strategist's completed reviews were
-  thrown away this way.
+  (`scope-directive-duplicate-id`), and `SCOPE_AUTHORITY` used to state the
+  other three admission rules and not this one. The cost was measured, not
+  theoretical: 47 of 93 proposals from one model were refused as duplicates in
+  the ScopeBench dial, and in the live session both of the strategist's
+  completed reviews were thrown away this way. The text is **fixed** — all four
+  admission rules are now stated, pinned by
+  `tests/test_scope.py`'s `TestScopeAuthorityStatesTheAdmissionRules`, which
+  maps each admission refusal code to the phrase stating it so a future rule
+  added to the register without a matching prompt update fails the suite. What
+  is **not** yet done is the re-measurement: every number above was produced
+  under the old text, and the arm they voided has not been re-dialled.
 
 ### The realtime interface (lobes)
 
