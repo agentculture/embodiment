@@ -443,11 +443,12 @@ SCOPE_AUTHORITY = (
     "object with the keys: scope_id, supersedes, version, objective, priorities, "
     "constraints, responsibilities, success_conditions, review_when and "
     "decision_summary.\n"
-    "'version' must be a whole number strictly greater than the current "
-    "directive's. 'supersedes' must name the scope_id you are replacing, or null "
-    "when there is none. 'decision_summary' is a short legible explanation of "
-    "why the scope changed, not a transcript of your reasoning. A directive "
-    "carrying any other key is refused whole."
+    "'scope_id' must be new: an id already used earlier in this chain is "
+    "refused, not treated as an update to it. 'version' must be a whole number "
+    "strictly greater than the current directive's. 'supersedes' must name the "
+    "scope_id you are replacing, or null when there is none. 'decision_summary' "
+    "is a short legible explanation of why the scope changed, not a transcript "
+    "of your reasoning. A directive carrying any other key is refused whole."
 )
 
 #: Appended to :data:`SCOPE_AUTHORITY` — never substituted for it — on the turns
