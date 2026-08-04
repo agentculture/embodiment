@@ -35,25 +35,74 @@ the robot siblings, never an implication drawn from the name.
   No TTY, no thread, no clock — all IO rides injected callbacks and cadence is
   step/phase-based.
 - **Identity and Gwen** — Configuration that frames who is speaking in prompts.
-  Gwen is the reference embodiment: a Qwen cortex — the worker that owns the
-  loop and holds final authority — with an optional strategist above it (see
-  below). Absent identity means byte-identical prompts to today's behavior.
-  "Cortex" and "strategist" name seams — which model gets which job. They are
-  design metaphors for allocating responsibility, not claims about cognition.
-  (The Gemma **muse** held the advisory seat until 2026-08-03, when it was
-  archived off the shipped architecture — embodiment#53. Its modules stay
-  readable and a host may still wire one.)
+  Gwen is the reference embodiment: a Qwen cortex holding the acting seat and
+  final authority, with an optional strategist above it (see below). Absent
+  identity means byte-identical prompts to today's behavior. "Cortex" and
+  "strategist" name seams — which model gets which job. They are design
+  metaphors for allocating responsibility, not claims about cognition. Where a
+  rig runs several roles across model families the phrase for it is a "diverse
+  mind entity", and constraint C2 fixes what that may claim: the diversity is
+  an *architectural fact* the trace always exposes (actual role, model,
+  machine), the prompt-visible identity stays *one* teammate, a single-model
+  run never claims a second mind exists, and any inner state relayed outward is
+  a report of system state — degradations, budget, work in flight — never an
+  affective claim. (The Gemma **muse** held the advisory seat
+  until 2026-08-03, when it was archived off the shipped architecture —
+  embodiment#53. Its modules stay readable and a host may still wire one.)
 - **Strategist** — A tier of authority above the acting loop, **opt-in and off
-  by default**. It issues typed, versioned, supersedable directives owning
-  objectives, priorities, constraints and ownership, and structurally cannot
-  carry a tool, a command or an approval *as data*. A run with no strategist
+  by default**, in either of two lanes. **Advisory** (`scope.py`,
+  `scoped_run.py`): typed, versioned, supersedable directives owning
+  objectives, priorities, constraints and ownership, structurally unable to
+  carry a tool, a command or an approval *as data*. **Configuration**
+  (`config_*.py`): typed changes to the configuration a seat runs under, with
+  nothing delivered to the acting seat at all — the shape it wires is three
+  tiers, senses relaying the world in and the inner state out, an acting seat
+  driving the loop and unaware of the tier above it, and the cortex configuring
+  both and addressing nobody (`examples/three_tier.py`, an example host and not
+  a rig default). A run with no strategist
   configured says so rather than implying a second mind, and an unarmed
-  governor is byte-identical to an ungoverned run — a single-model run claims
-  no strategist. **The mechanism is proven; the value is not.** ScopeBench
-  Stage 1 returned INCONCLUSIVE, and in the only matched governed/ungoverned
-  pair yet run the governed arm spent 189.6 s and 3663 strategist tokens to
-  apply zero directives and returned a materially identical answer. See
+  governor is byte-identical to an ungoverned run. `tests/test_governance.py`
+  holds the default shut. **Both mechanisms are proven; neither lane's value
+  is.** Advisory: ScopeBench Stage 1 returned INCONCLUSIVE (216 live calls
+  across two arms, 36 episodes each, one rig, one model pair), and in the only
+  matched
+  governed/ungoverned pair yet run — n=1, one rig, one model pair, a report
+  rather than a measurement — the governed arm spent 189.6 s and 3663
+  strategist tokens to apply zero directives and returned a materially
+  identical answer. Configuration: its value series is pre-registered
+  (docs/live-test-results/scopebench-config-preregistration.md, committed
+  before any dial) and **no verdict has been published**. See
   docs/live-test-results/scopebench.md and scope-live-session-1.md.
+- **The change is deterministic; the effect is not** — the one claim the
+  configuration lane must never make. A configuration change is exact: prompt
+  bytes, knowledge entries, the set of capability ids a seat may select from.
+  What the seat does with it is not — a rewritten prompt still routes through a
+  model and the response is still a sample. This is a committed non-goal of the
+  design, guarded because "provably never executes" already hardened into an
+  overclaim once (deviation `d5`, embodiment#55); a test fails if the word
+  appears in the shipped authority text.
+- **The authority lattice** — seven targets and three origins, held as data in
+  `embodiment.config_change.CHANGE_AUTHORITY`. The strategist may change the
+  acting seat's tools, prompts, knowledge and permissions and the senses seat's
+  prompts, permissions and knowledge; the acting seat may write exactly one
+  target, `senses.knowledge`, and never a prompt — prompt authority over senses
+  is the strategist's alone, and a prompt-shaped write from another origin is a
+  refused shape, recorded. Knowledge entries carry required origin attribution;
+  an unattributed write is refused whole. Tools and permissions changes
+  **select among host-declared capability ids and can never mint one**: a
+  capability catalog is a host declaration, never a discovery from an executor.
+- **Two traps in the configuration lane** (embodiment#79, the embodiment#62
+  shape — a correct-looking wiring produces a tier that proposes nothing, with
+  no error anywhere). **T1:** a review boundary is a *tool-step* boundary, so a
+  drive whose actor answers in one turn without calling a tool reviews nothing
+  while `governor.armed` reads True; read `counts["boundaries_projected"]`, not
+  `outcome.applied`, when asking whether the tier is alive. **T2:**
+  `ConfigLimits.review_gap` defaults to 2 acting steps while the step index
+  restarts at 1 every drive and the runner's cadence memory does not — measured
+  on the documented seam at six drives producing one review, 11 of 12 snapshots
+  skipped (one host, hermetic, n=1). A multi-drive host passes
+  `ConfigLimits(review_gap=0)`. All eight recorded gaps:
+  `python examples/three_tier.py traps`.
 - **A directive is delivered text** — `run_scoped` adds no containment of its
   own. A sufficiently credulous actor will act on an operational instruction
   embedded in a directive's prose. Containment is the host's injected
