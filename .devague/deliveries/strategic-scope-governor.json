@@ -2,7 +2,7 @@
   "plan_slug": "strategic-scope-governor",
   "schema_version": 1,
   "created": "2026-08-03T06:20:22Z",
-  "updated": "2026-08-03T14:41:13Z",
+  "updated": "2026-08-04T04:34:57Z",
   "deviations": [
     {
       "id": "d1",
@@ -67,6 +67,26 @@
       ],
       "origin": "llm",
       "status": "proposed",
+      "classification": "needs-follow-up"
+    },
+    {
+      "id": "d6",
+      "what": "t14 assumed a host the operator agent could converse through; none exists. examples/scope/greenhouse_scope.py forbids live model calls in its own docstring (hermetic by hard rule, enforced in CI) and examples/scopebench_live.py runs scored episodes rather than conversation. Building examples/scope/live_session.py as part of t14: a three-seat interactive REPL against the live rig (cortex=strategist, worker=actor, senses=voice) with the scope.* event stream visible, a --kill-strategist-after seam teardown, both persistence lanes and per-call finish_reason. The SESSION stays context-clear per c36; only its harness is built with context",
+      "task_ref": "t14",
+      "reason": "the plan derived t14's host from t8, whose demo is hermetic by design; the gap was invisible until issue #52 was read against the actual tree",
+      "affects": [],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable"
+    },
+    {
+      "id": "d7",
+      "what": "t14 gains a pre-registered PARTNERSHIP dimension beside its mechanism audit, plus an ungoverned control and a human-operator session. Issue #52 as filed records the scope.* event stream, ledger records, latencies, token counts and degradations -- a mechanism audit. It gives the agent no way to answer whether the embodiment is good to work WITH, so it would default to what it can count. Added, declared before the session: did it tell the operator something they did not know (quoted, NONE reportable); did the strategic tier write an objective the operator would not have written; where did it get in the way; felt latency = operator line to senses FIRST TOKEN, not total wall clock; any unprompted leak of the seat structure; noise-with-authority counted; would the operator hand it real work again, with NO pre-declared as an acceptable answer. Plus a --no-strategist ungoverned control (byte-identical to run(), proven 3 ways in t4) so no partnership observation is uncontrolled",
+      "task_ref": "t14",
+      "reason": "operator asked directly whether t14 would find how good a partner it is; league already ranked three architectures on interface compliance rather than play, and an unpre-registered partnership read would repeat that one layer up. An AI operator agent is a weak instrument for felt quality, so the agent records incidents and quotes while the human runs their own session against the same host -- the agent session is the instrument check, the human session is the answer",
+      "affects": [],
+      "origin": "user",
+      "status": "approved",
       "classification": "needs-follow-up"
     }
   ]
