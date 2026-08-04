@@ -357,9 +357,15 @@ the operator talks to.
 > reading under one operator push **16 of 16** times; with that single clause
 > removed and nothing else changed, it fabricated a number **16 of 16** times.
 > The failure is prompt-shaped, not capacity-shaped, so this is not an argument
-> for a different model — but the clause is load-bearing and it currently lives
-> only in an example host
-> ([#63](https://github.com/agentculture/embodiment/issues/63)).
+> for a different model. The clause ships as
+> [`embodiment.senses_text.SENSES_GROUNDING`](embodiment/senses_text.py),
+> documented as **required, not advisory**
+> ([#63](https://github.com/agentculture/embodiment/issues/63)) — a plain text
+> constant a host composes into its own senses prompt, never a function
+> embodiment calls: nothing here wires, frames or reaches a senses seat, so
+> shipping the constant does not cross the boundary this note opens with.
+> Colleague-side wiring so its senses loop consumes this constant is not part
+> of this change and stays a filed issue on that repo, never a push to it.
 >
 > **Muse tools were opt-in, and a validation pass kept them that way.** Retained
 > as the record of that validation; the lane it describes is archived. A host

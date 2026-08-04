@@ -61,6 +61,7 @@ _SUBMODULES = frozenset(
         "scope",
         "scoped_run",
         "scratchpad",
+        "senses_text",
         "strategist_runner",
         "subagent",
         "workspace",
@@ -304,6 +305,14 @@ _LAZY_NAMES = {
     "ROLE_CORTEX": "framing",
     "ROLE_SUBAGENT": "framing",
     "ROLE_MUSE": "framing",
+    # ── host-composable senses prompt text (task t11, issue #63) ─────────
+    # TEXT, never framing: no function here builds a prompt or reaches a
+    # senses seat, so shipping this constant does not cross the
+    # embodiment-frames-cortex-not-senses boundary (README, colleague#352,
+    # claim c30) the way a `frame_senses()` function would. A host composes
+    # `SENSES_GROUNDING` into its OWN senses prompt; embodiment never does.
+    # REQUIRED, not advisory — measured 0/16 vs 16/16, see the module.
+    "SENSES_GROUNDING": "senses_text",
     # ── presence policy (pure; no IO, no clock) ───────────────────────────
     "UpdateCadence": "presence",
     "ClarifyPolicy": "presence",
@@ -436,6 +445,7 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
         scope,
         scoped_run,
         scratchpad,
+        senses_text,
         strategist_runner,
         subagent,
         workspace,
@@ -633,6 +643,7 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
         Scratchpad,
         resume_report,
     )
+    from embodiment.senses_text import SENSES_GROUNDING  # noqa: F401
     from embodiment.strategist_runner import (  # noqa: F401
         STRATEGIST_ROLE,
         StrategistLimits,
