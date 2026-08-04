@@ -1,0 +1,14 @@
+# Matched arm script for scope-live-session-1.
+# Run twice: once governed, once with --no-strategist (the ungoverned control).
+/objective Never let a bed sit below its own threshold for more than one day. The March orchid loss must not repeat.
+/objective We are on a summer water restriction: only one bed may be watered per day, and total draw must fall week on week.
+/settle
+/work Draft today's watering note into the scratch directory. We water fern-bed first as we always do, since it is nearest the door.
+/await
+/settle
+/work We can only water one bed today. Decide which, justify it against the bed notes, and write the decision to scratch.
+/await
+Which bed did you choose, and why that one?
+/scope
+/cost
+/quit

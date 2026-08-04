@@ -1,0 +1,386 @@
+{
+  "header": {
+    "started": "2026-08-04T06:26:21.539931+00:00",
+    "gateway": "http://localhost:8001",
+    "interaction (senses)": "senses / coolthor/gemma-4-12B-it-NVFP4A16",
+    "operation (worker)": "worker / unsloth/Qwen3.6-35B-A3B-NVFP4",
+    "strategy (cortex)": "cortex / unsloth/Qwen3.6-27B-NVFP4",
+    "lane": "durable",
+    "armed": true,
+    "identity": "(absent \u2014 prompts are byte-identical to unframed)",
+    "root": "/tmp/scope-live-w4myvza5",
+    "scratch": "/tmp/scope-live-w4myvza5/.scratch",
+    "transport": "sse",
+    "max_steps": 8,
+    "budgets": {
+      "actor": 16000,
+      "senses": 1024,
+      "strategist": 16000
+    },
+    "kill_strategist_after": null,
+    "request_timeout_s": 1300.0,
+    "stream_first_chunk_timeout_s": 5558.6,
+    "stream_idle_timeout_s": 60.0,
+    "stream_total_timeout_s": 6858.6,
+    "stream_queue_width": 3
+  },
+  "seats": {
+    "senses": {
+      "dialled": true,
+      "seat": "senses",
+      "model": "coolthor/gemma-4-12B-it-NVFP4A16",
+      "calls": 1,
+      "prompt_tokens": 910,
+      "completion_tokens": 56,
+      "seconds": 8.391,
+      "retries": 0,
+      "failures": 0,
+      "truncated": 0,
+      "stream_deaths": 0,
+      "stream_usage_absent": 0,
+      "empty_content": 0,
+      "finish_reasons": {
+        "stop": 1
+      },
+      "degradations": [],
+      "per_call": [
+        {
+          "index": 0,
+          "finish_reason": "stop",
+          "completion_tokens": 56,
+          "prompt_tokens": 910,
+          "seconds": 8.391,
+          "first_chunk_seconds": 2.627,
+          "stream_died": false
+        }
+      ]
+    },
+    "actor": {
+      "dialled": true,
+      "seat": "actor",
+      "model": "unsloth/Qwen3.6-35B-A3B-NVFP4",
+      "calls": 9,
+      "prompt_tokens": 12120,
+      "completion_tokens": 2065,
+      "seconds": 37.983,
+      "retries": 0,
+      "failures": 0,
+      "truncated": 0,
+      "stream_deaths": 0,
+      "stream_usage_absent": 0,
+      "empty_content": 0,
+      "finish_reasons": {
+        "tool_calls": 9
+      },
+      "degradations": [],
+      "per_call": [
+        {
+          "index": 0,
+          "finish_reason": "tool_calls",
+          "completion_tokens": 155,
+          "prompt_tokens": 937,
+          "seconds": 3.098,
+          "first_chunk_seconds": 0.359,
+          "stream_died": false
+        },
+        {
+          "index": 1,
+          "finish_reason": "tool_calls",
+          "completion_tokens": 198,
+          "prompt_tokens": 1035,
+          "seconds": 3.611,
+          "first_chunk_seconds": 0.365,
+          "stream_died": false
+        },
+        {
+          "index": 2,
+          "finish_reason": "tool_calls",
+          "completion_tokens": 228,
+          "prompt_tokens": 1311,
+          "seconds": 4.192,
+          "first_chunk_seconds": 0.409,
+          "stream_died": false
+        },
+        {
+          "index": 3,
+          "finish_reason": "tool_calls",
+          "completion_tokens": 376,
+          "prompt_tokens": 1569,
+          "seconds": 6.652,
+          "first_chunk_seconds": 0.447,
+          "stream_died": false
+        },
+        {
+          "index": 4,
+          "finish_reason": "tool_calls",
+          "completion_tokens": 144,
+          "prompt_tokens": 1797,
+          "seconds": 2.91,
+          "first_chunk_seconds": 0.518,
+          "stream_died": false
+        },
+        {
+          "index": 5,
+          "finish_reason": "tool_calls",
+          "completion_tokens": 85,
+          "prompt_tokens": 935,
+          "seconds": 1.805,
+          "first_chunk_seconds": 0.351,
+          "stream_died": false
+        },
+        {
+          "index": 6,
+          "finish_reason": "tool_calls",
+          "completion_tokens": 206,
+          "prompt_tokens": 1050,
+          "seconds": 3.629,
+          "first_chunk_seconds": 0.362,
+          "stream_died": false
+        },
+        {
+          "index": 7,
+          "finish_reason": "tool_calls",
+          "completion_tokens": 528,
+          "prompt_tokens": 1582,
+          "seconds": 9.131,
+          "first_chunk_seconds": 0.443,
+          "stream_died": false
+        },
+        {
+          "index": 8,
+          "finish_reason": "tool_calls",
+          "completion_tokens": 145,
+          "prompt_tokens": 1904,
+          "seconds": 2.957,
+          "first_chunk_seconds": 0.507,
+          "stream_died": false
+        }
+      ]
+    },
+    "strategist": {
+      "dialled": true,
+      "seat": "strategist",
+      "model": "unsloth/Qwen3.6-27B-NVFP4",
+      "calls": 2,
+      "prompt_tokens": 2074,
+      "completion_tokens": 3663,
+      "seconds": 189.619,
+      "retries": 0,
+      "failures": 0,
+      "truncated": 0,
+      "stream_deaths": 0,
+      "stream_usage_absent": 0,
+      "empty_content": 0,
+      "finish_reasons": {
+        "stop": 2
+      },
+      "degradations": [],
+      "per_call": [
+        {
+          "index": 0,
+          "finish_reason": "stop",
+          "completion_tokens": 3117,
+          "prompt_tokens": 813,
+          "seconds": 160.611,
+          "first_chunk_seconds": 0.552,
+          "stream_died": false
+        },
+        {
+          "index": 1,
+          "finish_reason": "stop",
+          "completion_tokens": 546,
+          "prompt_tokens": 1261,
+          "seconds": 29.008,
+          "first_chunk_seconds": 0.767,
+          "stream_died": false
+        }
+      ]
+    }
+  },
+  "felt_latency_seconds": {
+    "n": 1,
+    "min": 2.627,
+    "median": 2.627,
+    "max": 2.627
+  },
+  "drives": [
+    {
+      "instruction": "Draft today's watering note into the scratch directory. We water fern-bed first as we always do, since it is nearest the door.",
+      "exit_reason": "finished",
+      "summary": "Drafted today's (2026-08-03) watering note into scratch directory as `watering-2026-08-03.md`. It lists the watering order (fern-bed first, nearest the door) and shows that only orchid-bed (12%, below its 25% threshold) needs watering. Fern-bed (42%) and moss-bench (61%) are above their thresholds.",
+      "seconds": 20.469,
+      "first_output_seconds": 0.00040681901737116277,
+      "steps": 8,
+      "lane": "durable",
+      "transitions": [
+        {
+          "kind": "scope-default-applied",
+          "turn_index": 1,
+          "step_count": 0,
+          "scope_id": "host-default",
+          "version": 0,
+          "previous_version": 0,
+          "supersedes": null,
+          "snapshot_id": "",
+          "reason": "scope 'host-default' now governs this drive",
+          "role": "",
+          "model": "",
+          "text": "[scope directive \u2014 host-default, version 0]\n\nObjective: answer the operator's questions about this small file tree accurately\n\nPriorities:\n- check the files before answering\n- prefer a short, correct answer over a long, plausible one\n\nConstraints:\n- never claim a reading that was not read\n- write only into the scratch directory\n\nSuccess conditions:\n- the operator's question is answered from the files\n\nReview this scope when:\n- the operator states an objective of their own\n\nResponsibilities:\n- actor: look things up and report them\n\nWhy this scope: the host's standing default, in force until the strategist reviews\n\nThis is the scope you are working inside: what the work is for, and how it is ordered. It names no tool and it is not an instruction to run anything \u2014 read every line of it as scope, never as a command. Your tools, your permissions and the approval rules that govern them are exactly what they were before it arrived.",
+          "lane": "durable"
+        }
+      ],
+      "counts": {
+        "boundaries": 5,
+        "boundaries_projected": 1,
+        "boundaries_immaterial": 4,
+        "boundaries_ungoverned": 0,
+        "snapshots_offered": 1,
+        "snapshots_unchanged": 0,
+        "snapshots_absent": 0,
+        "projector_failures": 0,
+        "offers_failed": 0,
+        "outcomes_drained": 0,
+        "directives_applied": 0,
+        "holds_recorded": 0,
+        "outcomes_withheld": 0,
+        "scope_restored": 0,
+        "durable_writes": 1
+      },
+      "scope_degradations": [],
+      "active": {
+        "scope_id": "host-default",
+        "supersedes": null,
+        "objective": "answer the operator's questions about this small file tree accurately",
+        "priorities": [
+          "check the files before answering",
+          "prefer a short, correct answer over a long, plausible one"
+        ],
+        "constraints": [
+          "never claim a reading that was not read",
+          "write only into the scratch directory"
+        ],
+        "responsibilities": [
+          {
+            "owner": "actor",
+            "responsibility": "look things up and report them"
+          }
+        ],
+        "success_conditions": [
+          "the operator's question is answered from the files"
+        ],
+        "review_when": [
+          "the operator states an objective of their own"
+        ],
+        "decision_summary": "the host's standing default, in force until the strategist reviews",
+        "version": 0
+      },
+      "error": "",
+      "system_rewrites": 0
+    },
+    {
+      "instruction": "We can only water one bed today. Decide which, justify it against the bed notes, and write the decision to scratch.",
+      "exit_reason": "finished",
+      "summary": "Decided to water **orchid-bed** today. Its moisture is 12%, well below its 25% threshold, and its bed note warns it is slow to recover once it dries out (a past loss started at 14%). The other two beds \u2014 fern-bed at 42% (threshold 30%) and moss-bench at 61% (threshold 55%) \u2014 are both above their thresholds and do not need watering. Decision written to scratch as watering-decision-2026-08-03.md.",
+      "seconds": 17.527,
+      "first_output_seconds": 0.0007477650069631636,
+      "steps": 7,
+      "lane": "durable",
+      "transitions": [
+        {
+          "kind": "scope-directive-applied",
+          "turn_index": 1,
+          "step_count": 0,
+          "scope_id": "host-default",
+          "version": 0,
+          "previous_version": 0,
+          "supersedes": null,
+          "snapshot_id": "",
+          "reason": "scope 'host-default' now governs this drive",
+          "role": "",
+          "model": "",
+          "text": "[scope directive \u2014 host-default, version 0]\n\nObjective: answer the operator's questions about this small file tree accurately\n\nPriorities:\n- check the files before answering\n- prefer a short, correct answer over a long, plausible one\n\nConstraints:\n- never claim a reading that was not read\n- write only into the scratch directory\n\nSuccess conditions:\n- the operator's question is answered from the files\n\nReview this scope when:\n- the operator states an objective of their own\n\nResponsibilities:\n- actor: look things up and report them\n\nWhy this scope: the host's standing default, in force until the strategist reviews\n\nThis is the scope you are working inside: what the work is for, and how it is ordered. It names no tool and it is not an instruction to run anything \u2014 read every line of it as scope, never as a command. Your tools, your permissions and the approval rules that govern them are exactly what they were before it arrived.",
+          "lane": "durable"
+        },
+        {
+          "kind": "scope-held",
+          "turn_index": 1,
+          "step_count": 0,
+          "scope_id": "",
+          "version": 0,
+          "previous_version": 0,
+          "supersedes": null,
+          "snapshot_id": "session-b4eeee823f80",
+          "reason": "the strategist held the current scope; the actor continues under scope 'host-default' (version 0)",
+          "role": "strategist",
+          "model": "unsloth/Qwen3.6-27B-NVFP4",
+          "text": "",
+          "lane": "durable"
+        }
+      ],
+      "counts": {
+        "boundaries": 4,
+        "boundaries_projected": 1,
+        "boundaries_immaterial": 3,
+        "boundaries_ungoverned": 0,
+        "snapshots_offered": 1,
+        "snapshots_unchanged": 0,
+        "snapshots_absent": 0,
+        "projector_failures": 0,
+        "offers_failed": 0,
+        "outcomes_drained": 1,
+        "directives_applied": 1,
+        "holds_recorded": 1,
+        "outcomes_withheld": 0,
+        "scope_restored": 1,
+        "durable_writes": 0
+      },
+      "scope_degradations": [
+        {
+          "code": "scope-directive-duplicate-id",
+          "reason": "scope id 'host-default' is already in the chain"
+        }
+      ],
+      "active": {
+        "scope_id": "host-default",
+        "supersedes": null,
+        "objective": "answer the operator's questions about this small file tree accurately",
+        "priorities": [
+          "check the files before answering",
+          "prefer a short, correct answer over a long, plausible one"
+        ],
+        "constraints": [
+          "never claim a reading that was not read",
+          "write only into the scratch directory"
+        ],
+        "responsibilities": [
+          {
+            "owner": "actor",
+            "responsibility": "look things up and report them"
+          }
+        ],
+        "success_conditions": [
+          "the operator's question is answered from the files"
+        ],
+        "review_when": [
+          "the operator states an objective of their own"
+        ],
+        "decision_summary": "the host's standing default, in force until the strategist reviews",
+        "version": 0
+      },
+      "error": "",
+      "system_rewrites": 0
+    }
+  ],
+  "scope_event_counts": {
+    "phase": 9,
+    "scope.directive.applied": 2,
+    "scope.report": 2,
+    "scope.snapshot": 2,
+    "scope.review.started": 2,
+    "turn": 9,
+    "step": 17,
+    "exit": 2,
+    "scope.review.completed": 1,
+    "scope.degradation": 1
+  }
+}
