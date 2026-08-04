@@ -97,6 +97,33 @@ the shorter *received* chain would refuse every directive that supersedes one
 this lane withheld — stranding the actor under old scope forever, which is the
 exact failure the check exists to prevent.
 
+Two traps a host WILL hit, both measured live
+----------------------------------------------
+Both were found by the ``t14`` live session, both are open, and both make a
+strategist that followed the protocol exactly look incapable of following it at
+all. They are written here because an issue tracker is not documentation.
+
+* **Seed the issued chain** (embodiment#62). A host that starts its actor under
+  its own initial directive — say ``host-default`` — and then arms a strategist
+  has a chain the strategist can see and correctly names, so it writes
+  ``supersedes: "host-default"``. That is the protocol-obedient answer. But the
+  runner's register is the **issued** chain and it starts **empty**: it never
+  issued ``host-default``, the host did. The directive is refused
+  ``scope-directive-unknown-supersedes`` and dropped before the actor ever sees
+  it. ``examples/scope_live_session.py`` seeds the runner's chain with the
+  host's own initial directive and works; nothing in this package tells a host
+  it must.
+* **A ``scope_id`` must be NEW, and the shipped prompt never says so**
+  (embodiment#58). :class:`~embodiment.scope.ScopeRegister` refuses a directive
+  whose ``scope_id`` is already in the chain
+  (``scope-directive-duplicate-id``), but
+  :data:`~embodiment.scope.SCOPE_AUTHORITY` — the system message the strategist
+  is graded against — states the other three admission rules and not this one.
+  The cost is measured: 47 of 93 proposals from one model were refused as
+  duplicates in the ScopeBench dial (acceptance 0.269 against the other arm's
+  0.897), and in the live session both of the strategist's completed reviews
+  were thrown away this way — 189.6 s and 3663 tokens, discarded.
+
 Ordinary tool steps are not strategic reports (issue #51)
 ----------------------------------------------------------
 A review costs a dense thinking model minutes. Offering one per tool call would
@@ -152,12 +179,38 @@ second row. The lane's own degradations are relayed on
 *application* record, which is a different question — what governed the actor,
 and when.
 
-Containment is at drive boundaries (v1)
-----------------------------------------
+A directive's REACH is bounded at drive boundaries (v1)
+--------------------------------------------------------
 Closing the runner stops new directives; the active directive governs until the
 drive ends. There is no mid-drive directive-drop move, and this module does not
 drain at drive end: handing back a directive the actor can no longer act on
 would put a decision in the record that never governed anything.
+
+This is about *when* a directive stops applying. It is **not** containment of
+what a directive's text can talk the actor into — that is the section directly
+below, and this module provides none of it.
+
+A directive is DELIVERED TEXT — containment is the HOST's (embodiment#55)
+--------------------------------------------------------------------------
+:func:`run_scoped` **adds no containment of its own.** A directive is text
+composed into the actor's turn stream, and a sufficiently credulous actor will
+act on an operational instruction embedded in a directive's prose. Containment
+is the host's injected :class:`~embodiment.loop.ToolExecutor` and its
+``pre_tool`` hook lane, which task ``t6`` proved still fully functioning under a
+governed drive: a deliberately credulous actor handed a directive carrying a
+smuggled command reaches the executor with it, while the ungoverned control
+never sees it at all. Deviation ``d5`` records that the honesty condition
+claiming otherwise had overclaimed — it held only because the *scripted* actor
+in the hermetic suite does not obey prose.
+
+State this rather than implying it, per constraint **C2** and the
+:mod:`embodiment.drone` precedent: nothing here is a sandbox, and no name in
+this package should be read as one.
+
+What *is* guaranteed is narrower and worth having: a directive cannot carry a
+tool, a command or an approval **as data**. The schema has no field for one and
+:class:`~embodiment.scope.ScopeRegister` refuses a directive carrying any extra
+key whole. Structure is policed; prose is not.
 
 Two persistence lanes, and the storage owner is the HOST's (task t13, ``c33``)
 ------------------------------------------------------------------------------

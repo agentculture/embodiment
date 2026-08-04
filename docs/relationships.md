@@ -297,14 +297,14 @@ compresses to six words — *senses notice, cortex acts, muse reflects*.
 | **Notice** | take the operator's words in, keep them verbatim, interpret without deciding | `embodiment/perception.py` — the *seam* only (`perceive(interpret=…)`); the senses coordination loop stays colleague's (`c30`, above) |
 | **Act** | plan, choose, call tools, finish — under a step budget, with termination proved structurally | `embodiment/loop.py` |
 | **Reflect / associate** | imagine alternatives, reframe the problem, connect memories, simulate futures, construct meaning — counsel only | **no shipped owner.** `embodiment/muse.py` + `embodiment/muse_runner.py` held this row and were **archived** on 2026-08-03 (embodiment#53); they stay readable and a host may still wire one |
-| **Set scope** | decide what the system is *trying to do* — objectives, priorities, constraints, ownership — above the acting loop, in typed directives that carry no action | `embodiment/scope.py` (the review loop) + `embodiment/strategist_runner.py` (its thread) + `embodiment/scoped_run.py` (the governor) |
+| **Set scope** | decide what the system is *trying to do* — objectives, priorities, constraints, ownership — above the acting loop, in typed directives that carry no action | `embodiment/scope.py` (the review loop) + `embodiment/strategist_runner.py` (its thread) + `embodiment/scoped_run.py` (the governor). **Opt-in and off by default**: the mechanism is proven live, the value is not — see the salience note below |
 | **Hold working state across a reset** | intent written *before* the act, observation after, so a successor resumes instead of restarting | `embodiment/scratchpad.py` |
 | **Remember** | recall, provenance, consolidation, ageing, forgetting | `eidetic-cli`, reached through `embodiment/continuity.py` |
 | **Relate memory to the present** | quality, meaning, signal, investiture, frames | `coherence-cli`, through the same seam |
 | **Sequence all of it** | when something is perceived, considered, acted on, remembered, revisited — and what is worth keeping | `embodiment/lifecycle.py` |
 | **Stay present between acts** | keep the host attended-to while the acting loop is not producing output | `embodiment/presence_engine.py` + `embodiment/presence.py` |
 | **Report what went wrong** | fold six lanes' degradation vocabularies into one host-visible stream (**C3**) | `embodiment/ledger.py` |
-| **Decide what deserves attention** (salience) | — | **partly owned.** The strategist tier sets *priorities* (the **Set scope** row above), which is salience at the level of the objective. Salience *within* a step — which of the things in front of the actor right now matters — still has no owner |
+| **Decide what deserves attention** (salience) | — | **claimed structurally, not earned by measurement.** The strategist tier does set *priorities* (the **Set scope** row above) — that is salience at the level of the objective, and the code exists. What does not exist is a supporting result: `t11`'s ScopeBench Stage 1 returned **`INCONCLUSIVE`** and `t14`'s only matched governed/ungoverned pair applied **zero** directives (below). Salience *within* a step — which of the things in front of the actor right now matters — has no owner at all |
 
 Four things this table is *not*:
 
@@ -324,11 +324,42 @@ Four things this table is *not*:
   sees only a boundary snapshot capped by `MuseControls.max_context_chars` (600
   characters) with no memory in it. Wiring the bundle into the muse's boundary
   rendering, under its own budget, is **(planned)** — plan task `t5`.
-- **Salience really has no owner.** The nearest things in this package answer
-  different questions: `lifecycle.select_for_memory` asks what is worth
-  *remembering* by fixed policy, and `LifecycleConfig.consequential` asks the
-  *host* which actions matter (because embodiment refuses to guess that from a
-  tool name). Neither decides what deserves attention in the first place.
+- **Salience still has no *measured* owner, and the row above says so on
+  purpose.** This bullet used to read "salience really has no owner". That is no
+  longer literally true — `embodiment/scope.py` ships a tier whose directives
+  carry an explicit `priorities` field, so something in the package now answers
+  the question — and it would be equally dishonest to promote the row to *owned*
+  on the strength of the code existing. Honesty condition `h18` fixed the rule
+  before either result was in: *the row is only rewritten when the measurement
+  exists*. It now exists, and it does not support a promotion.
+
+  - [`live-test-results/scopebench.md`](live-test-results/scopebench.md) —
+    ScopeBench Stage 1, `INCONCLUSIVE`. The headline is genuinely good: against
+    a deterministic perfect subordinate, the strategist-led arm improved on the
+    baseline in **all six** scenario families (sign margins +3/+5/+4/+4/+3/+5
+    against a pre-registered threshold of 2), which is the condition that
+    separates a real strategic effect from a stronger actor repairing bad
+    decisions. But two of the seven conditions read from a Stage 2 that was not
+    dialled, and one `ABSENT` forces `INCONCLUSIVE` under the committed rule.
+    The `A2` control that would have removed "the gain is just the extra layer"
+    was **not measured** — 32 of its 36 cells fell below the protocol floor.
+  - [`live-test-results/scope-live-session-1.md`](live-test-results/scope-live-session-1.md)
+    §3 — the newer evidence, and worse for the claim. On a matched pair of runs
+    replaying one identical script, the governed arm spent **189.6 s and 3663
+    strategist completion tokens to apply ZERO directives** and returned a
+    materially identical answer to the ungoverned control — whose justification
+    was arguably the better of the two, being the only one to name the sensor
+    id. Across the long interactive session **69.5% of the strategist's 28,318
+    tokens bought restatement or nothing**, and non-intervention **FAILED**
+    ([#68](https://github.com/agentculture/embodiment/issues/68)). That is n=1
+    and reported as a report, not a measurement.
+
+  The two nearest things in this package still answer different questions:
+  `lifecycle.select_for_memory` asks what is worth *remembering* by fixed
+  policy, and `LifecycleConfig.consequential` asks the *host* which actions
+  matter (because embodiment refuses to guess that from a tool name). Neither
+  decides what deserves attention in the first place, and neither does the
+  strategist at the granularity of a step.
 
 ### Why this map lives here and not in README.md or CLAUDE.md
 

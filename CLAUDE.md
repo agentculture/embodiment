@@ -71,6 +71,71 @@ the record at the moment they fired. Hence the CI bound, and hence streaming:
 with chunks flowing, generation length stops being the binding quantity at every
 hop at once.
 
+**What the 0.12.0 cycle added, and the verdict on it** — written at close-out
+rather than left for the next reader to reconstruct, because this section has
+now drifted twice and the third time is the one that stops being a mistake and
+starts being a habit. The cycle built the **strategic scope governor**: a level
+of authority *above* the acting loop.
+
+| What | Where |
+|------|-------|
+| The strategist tier — typed, versioned, supersedable directives owning objectives, priorities, constraints and ownership; a bounded review loop; a background runner thread; and `run_scoped` composing `loop.run` with a **zero-line diff** to `loop.py` | `scope.py`, `strategist_runner.py`, `scoped_run.py`, `scope_events.py` |
+| Two persistence lanes — durable across drives, session-scoped within one process — structurally distinct, every record naming its lane | `scoped_run.py`, `ScopePersistence` / `ScopeSession` |
+| ScopeBench — machine-gradable episodes, an exact enumerating oracle with a brute-force test-of-the-test, arms as data, committed seeds, and a seven-condition verdict rule fixed before any dial | `examples/scope/`, `examples/scopebench_live.py` |
+| A Stage 3 live host — interactive REPL, scripted replay, and a matched ungoverned control | `examples/scope_live_session.py` |
+
+**The verdict, stated the way the results came back rather than the way the
+delivery would look best.** The *mechanism* held on every structural check it
+was possible to make: directives arrive as events inserted at a safe boundary,
+the system prompt is never rewritten mid-drive, ordinary tool steps never become
+strategic reports, interaction never blocks on background review, a killed seam
+degrades visibly and the actor continues under the last valid directive, both
+persistence lanes behave as specified, and an unarmed governor is byte-identical
+to `run()`. The *value* did not:
+
+- `t11`'s ScopeBench Stage 1 returned **`INCONCLUSIVE`**
+  (`docs/live-test-results/scopebench.md`). Condition 2 — the one that separates
+  a real strategic effect from a stronger actor repairing bad decisions — held
+  strongly, on 6 of 6 scenario families at sign margins +3/+5/+4/+4/+3/+5
+  against a pre-registered threshold of 2. But two of the seven conditions read
+  from a Stage 2 that was not dialled, one `ABSENT` forces the verdict under the
+  committed rule, and the `A2` layer control that would have removed *the gain
+  is just the extra layer* was **not measured** — 32 of its 36 cells fell below
+  the protocol floor.
+- `t14`'s live session 1 is the newer and harsher evidence
+  (`docs/live-test-results/scope-live-session-1.md`). On a matched pair of runs
+  replaying one identical script, the governed arm spent **189.6 s and 3663
+  strategist completion tokens to apply ZERO directives** and returned a
+  materially identical answer to the ungoverned control — whose justification
+  was arguably the better of the two, being the only one to name the sensor id.
+  Across the interactive session **69.5% of the strategist's 28,318 tokens
+  bought restatement or nothing**, and non-intervention **FAILED**
+  (embodiment#68). n=1, one rig, one model pair: a report, not a measurement.
+
+So the strategist ships **opt-in and off**, on exactly the rule that kept the
+muse out of the reference rig after `t18` — *an `INCONCLUSIVE` result leaves the
+shipped rig untouched* — and `tests/test_governance.py` enforces that rule
+rather than trusting anyone to remember it. Eighteen issues were filed against
+the tier this cycle (#52, #54–#74). Two of them are **host-facing traps** that
+belong in the strategist's documentation and not only in a tracker, and are now
+written up in the README: **#62** (a host that starts its actor under its own
+initial directive and then arms a strategist has an *unseeded issued chain*, so
+every protocol-obedient directive is refused `scope-directive-unknown-supersedes`
+and dropped — seed the runner's chain, as `examples/scope_live_session.py`
+does) and **#58** (`SCOPE_AUTHORITY` never states the `scope_id`-must-be-new
+rule it is graded on; 47 of 93 proposals in one ScopeBench arm were refused as
+duplicates, and both of the live session's completed reviews were thrown away
+this way).
+
+The lesson worth carrying forward, beside 0.11.0's clock lesson: **a mechanism
+that holds on every structural check can still buy nothing.** The structural
+suite here was strong enough that reading "everything passed" as "it works"
+would have been the easy move, and the only matched control in the record says
+the governed arm paid 189.6 s and 3663 tokens for a materially identical
+answer. Structural proof and measured value are different claims. This repo's
+record is worth something only because it publishes the second one when it
+comes back negative.
+
 Keep this file's claims grounded in checked-in reality. When a section drifts
 ahead of what exists, mark it `(planned)` or move it under a roadmap heading —
 and when it drifts *behind*, as this one did, fix it.
@@ -144,7 +209,7 @@ operator actually talks to.
 | Loop + presence | `embodiment` (this repo) | the pump |
 | **Teammate identity** | **Gwen** | what the operator addresses |
 | Cortex | Qwen 3.6 27B (`sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP`) | bounded tool loop, repo actions, final synthesis, **final authority** — and, per `d15`, **the only actor** |
-| Strategist *(opt-in)* | the `cortex` lobes role (dense Qwen 3.6 27B) | scope above the acting loop: typed, versioned, supersedable directives owning objectives, priorities, constraints and ownership. Authority-bearing *within* scope — a directive structurally cannot carry a tool, a command or an approval. `embodiment/scope.py` + `strategist_runner.py` + `scoped_run.py` |
+| Strategist *(opt-in, off by default — **mechanism proven, value not**)* | the `cortex` lobes role (dense Qwen 3.6 27B) | scope above the acting loop: typed, versioned, supersedable directives owning objectives, priorities, constraints and ownership. Authority-bearing *within* scope — a directive structurally cannot carry a tool, a command or an approval **as data**; it carries no containment against prose (`d5`, embodiment#55). `embodiment/scope.py` + `strategist_runner.py` + `scoped_run.py`. Read the 0.12.0 verdict below before treating this row as a capability |
 | ~~Muse~~ | ~~Gemma 4 31B~~ | **ARCHIVED 2026-08-03** (embodiment#53, deviations `d2`/`d3`, superseding `c12`/`c32`) — see below |
 | Senses | Gemma 4 12B (`coolthor/gemma-4-12B-it-NVFP4A16`) | intake, perception, conversational presence, speak-back; never acts on the repo |
 | Ears / voice | Parakeet STT + Chatterbox TTS behind the lobes audio overlay | the realtime lane (below) |
