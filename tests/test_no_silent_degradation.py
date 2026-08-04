@@ -116,6 +116,15 @@ ABSENT_BY_DESIGN: dict[tuple[str, str], str] = {
         "DEGRADED_UNREADABLE_RESULT."
     ),
     (
+        "config_review.py",
+        "_now",
+    ): (
+        "The same rule as `muse.py`'s and `perception.py`'s `_now`, on the config "
+        "lane's copy of it: a broken clock degrades the MEASUREMENT only — a "
+        "review's `latency` stays None, never a fabricated 0.0, and the review "
+        "itself runs and records exactly as it would have."
+    ),
+    (
         "continuity.py",
         "traverse._fetch_one",
     ): (
