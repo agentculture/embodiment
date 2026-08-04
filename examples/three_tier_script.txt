@@ -1,0 +1,8 @@
+# A scripted three-tier session. Replayed identically by the governed arm and
+# the matched ungoverned control, which is what makes the pair comparable.
+Does fern-bed need water today?
+What about tomato-run?
+/prompt
+Check orchid-bed for me.
+/knowledge
+/config

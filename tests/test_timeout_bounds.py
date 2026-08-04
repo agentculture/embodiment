@@ -333,6 +333,32 @@ CLOCKS: tuple[Clock, ...] = (
                 "the same seam, one review at a time on the StrategistRunner's single "
                 "worker thread",
             ),
+            Fronted(
+                role="worker",
+                budget=Budget(
+                    "three_tier actor seat",
+                    module="examples.three_tier",
+                    attr="ACTOR_MAX_TOKENS",
+                ),
+                why="t12's three-tier host promotes the WORKER to the acting seat and "
+                "dials it through an unsubclassed WorkerSeam (build_seam). One drive runs "
+                "at a time, so the worker role is dialled serially even though the host's "
+                "three seats can be in flight together — the same reading "
+                "scope_live_session's actor pair takes, and for the same reason: a "
+                "per-role width above 1 needs a rate measured at it",
+            ),
+            Fronted(
+                role="cortex",
+                budget=Budget(
+                    "three_tier strategist seat",
+                    module="examples.three_tier",
+                    attr="STRATEGIST_MAX_TOKENS",
+                ),
+                why="the same host seats the cortex role as the CONFIGURING strategist on "
+                "the same seam — one review at a time on the ConfigRunner's single daemon "
+                "thread. The three-tier shape moves the cortex off the acting path, but it "
+                "is still dialled through this clock",
+            ),
         ),
         unmeasured=("senses",),
         notes=(
