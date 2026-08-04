@@ -64,6 +64,7 @@ from embodiment.config_change import (
 )
 from embodiment.config_lifecycle import (
     CHANGE_ALREADY_APPLIED,
+    CHANGE_AMBIGUOUS_RUN,
     CHANGE_DUPLICATE_PROPOSAL,
     CHANGE_SEAT_BUSY,
     CHANGE_STALE_VERIFICATION,
@@ -191,6 +192,62 @@ def _accepted(payload: dict, *, catalog: Optional[CapabilityCatalog] = None) -> 
 
 
 # ── the seat-configuration identity ──────────────────────────────────────────
+
+
+class TestAmbiguousEndRunIsRefusedNotGuessed:
+    """A bare run id open on two seats must close neither.
+
+    Reported by qodo on PR #81. ``run_id`` is caller-supplied and only unique
+    per seat, and ``end_run`` broke on the first seat holding a match — so a
+    collision closed the WRONG seat's run. That is worse than closing nothing:
+    ``is_idle`` is ``not self._runs.get(seat)``, so the intended seat stays busy
+    for the rest of the process and verify/apply are blocked forever.
+    """
+
+    def _life(self) -> ConfigLifecycle:
+        return ConfigLifecycle(verifier=lambda r: VerificationResult(passed=True))
+
+    def test_a_colliding_id_closes_neither_run(self) -> None:
+        life = self._life()
+        life.begin_run(SEAT_WORKER, run_id="drive-1")
+        life.begin_run(SEAT_SENSES, run_id="drive-1")
+
+        life.end_run("drive-1")
+
+        # Neither seat was closed — a guess is not made.
+        assert life.is_idle(SEAT_WORKER) is False
+        assert life.is_idle(SEAT_SENSES) is False
+
+    def test_the_collision_is_recorded_naming_both_seats(self) -> None:
+        life = self._life()
+        life.begin_run(SEAT_WORKER, run_id="drive-1")
+        life.begin_run(SEAT_SENSES, run_id="drive-1")
+
+        life.end_run("drive-1")
+
+        refusal = next(r for r in life.degradations if r.code == CHANGE_AMBIGUOUS_RUN)
+        assert SEAT_WORKER in refusal.reason
+        assert SEAT_SENSES in refusal.reason
+        assert "SeatRun handle" in refusal.reason
+
+    def test_the_handle_is_never_ambiguous_even_on_a_collision(self) -> None:
+        """The documented escape from the collision actually works."""
+        life = self._life()
+        worker_run = life.begin_run(SEAT_WORKER, run_id="drive-1")
+        life.begin_run(SEAT_SENSES, run_id="drive-1")
+
+        life.end_run(worker_run)
+
+        assert life.is_idle(SEAT_WORKER) is True
+        assert life.is_idle(SEAT_SENSES) is False
+
+    def test_a_unique_bare_id_still_closes_normally(self) -> None:
+        """The fix must not break the ordinary single-seat case."""
+        life = self._life()
+        life.begin_run(SEAT_WORKER, run_id="only-one")
+        life.end_run("only-one")
+        assert life.is_idle(SEAT_WORKER) is True
+        assert [r for r in life.degradations if r.code == CHANGE_AMBIGUOUS_RUN] == []
 
 
 class TestSeatConfigIdentity:

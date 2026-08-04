@@ -150,6 +150,7 @@ __all__ = [
     "CHANGE_SEAT_BUSY",
     "CHANGE_UNKNOWN_RUN",
     "CHANGE_UNKNOWN_SEAT",
+    "CHANGE_AMBIGUOUS_RUN",
     "LIFECYCLE_REFUSAL_CODES",
     "LIFECYCLE_DEFERRAL_CODES",
     "LIFECYCLE_CODES",
@@ -247,6 +248,12 @@ CHANGE_UNKNOWN_RUN = "config-seat-unknown-run"
 #: Nothing can ever be applied to it, so a wiring mistake here would otherwise be
 #: a seat that silently never receives configuration.
 CHANGE_UNKNOWN_SEAT = "config-seat-unknown"
+#: ``end_run`` was handed a bare id that more than one seat has open. Closing
+#: either would be a guess, and guessing wrong leaves the *intended* seat busy
+#: forever — ``is_idle`` never returns true for it again, so verify and apply are
+#: blocked for the rest of the process. Nothing is closed; the host is told to
+#: pass the :class:`SeatRun` handle, which is never ambiguous.
+CHANGE_AMBIGUOUS_RUN = "config-seat-ambiguous-run"
 
 #: Everything recorded as a :class:`~embodiment.config_change.ConfigRefusal`.
 LIFECYCLE_REFUSAL_CODES = (
@@ -261,6 +268,7 @@ LIFECYCLE_REFUSAL_CODES = (
     CHANGE_STALE_VERIFICATION,
     CHANGE_UNKNOWN_RUN,
     CHANGE_UNKNOWN_SEAT,
+    CHANGE_AMBIGUOUS_RUN,
 )
 #: Everything recorded as a :class:`ConfigDeferral`.
 LIFECYCLE_DEFERRAL_CODES = (CHANGE_SEAT_BUSY,)
@@ -1081,15 +1089,33 @@ class ConfigLifecycle:
         Never raises. Closing an unknown or already-closed run is recorded — a
         run this lifecycle still believes is open would hold its seat forever,
         which is the failure this gate can produce and must therefore name.
+
+        A **bare id open on more than one seat is refused, not guessed at**
+        (:data:`CHANGE_AMBIGUOUS_RUN`): ``run_id`` is caller-supplied and only
+        unique per seat, so closing the wrong seat's run would hold the intended
+        seat busy for the rest of the process. The handle names its seat and is
+        never ambiguous — prefer it.
         """
         if isinstance(run, SeatRun):
             seat, identifier = run.seat, run.run_id
         else:
-            seat, identifier = "", _text(run).strip()
-            for candidate, runs in self._runs.items():
-                if identifier in runs:
-                    seat = candidate
-                    break
+            identifier = _text(run).strip()
+            holders = [candidate for candidate, runs in self._runs.items() if identifier in runs]
+            if len(holders) > 1:
+                # Closing one would be a guess, and the wrong guess leaves the
+                # INTENDED seat busy forever: is_idle never returns true for it
+                # again, so verify and apply are blocked for the rest of the
+                # process. Refuse and close nothing.
+                self._refuse(
+                    CHANGE_AMBIGUOUS_RUN,
+                    f"end_run was handed the bare id {identifier!r}, which is open on "
+                    f"{len(holders)} seats ({', '.join(sorted(holders))}); closing one "
+                    "would be a guess and the wrong guess holds the other seat forever "
+                    "— pass the SeatRun handle begin_run returned, which names its seat",
+                    seat="",
+                )
+                return
+            seat = holders[0] if holders else ""
         if not self._runs.get(seat, {}).pop(identifier, None):
             self._refuse(
                 CHANGE_UNKNOWN_RUN,

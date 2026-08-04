@@ -108,6 +108,7 @@ __all__ = [
     "CONFIG_LEDGER_DEGRADED_LOAD_FAILED",
     "CONFIG_LEDGER_DEGRADED_SAVE_FAILED",
     "CONFIG_LEDGER_DEGRADED_UNKNOWN_VERSION",
+    "CONFIG_LEDGER_DEGRADED_MALFORMED_ENTRIES",
     "CONFIG_LEDGER_DEGRADED_UNKNOWN_REVERT",
     "CONFIG_LEDGER_DEGRADED_ALREADY_REVERTED",
     "CONFIG_LEDGER_DEGRADATION_CODES",
@@ -155,6 +156,12 @@ CONFIG_LEDGER_DEGRADED_SAVE_FAILED = "config-ledger-save-failed"
 #: did not match exactly — including every advisory-era payload, which never
 #: carries this schema's ``kind`` marker at all.
 CONFIG_LEDGER_DEGRADED_UNKNOWN_VERSION = "config-ledger-unknown-schema-version"
+#: The markers matched but ``entries`` was present and **not** a sequence. A
+#: distinct code from an unknown version on purpose: the fix differs. An unknown
+#: version means *this is not our payload*; a malformed ``entries`` means it is
+#: ours and it is damaged, which is the case where overwriting would destroy
+#: history rather than replace a stranger's file.
+CONFIG_LEDGER_DEGRADED_MALFORMED_ENTRIES = "config-ledger-malformed-entries"
 #: A revert named a ``change_id`` this ledger has no applied record of.
 CONFIG_LEDGER_DEGRADED_UNKNOWN_REVERT = "config-ledger-revert-unknown-change"
 #: A revert named a ``change_id`` that was already reverted. A no-op, recorded
@@ -165,6 +172,7 @@ CONFIG_LEDGER_DEGRADATION_CODES = (
     CONFIG_LEDGER_DEGRADED_LOAD_FAILED,
     CONFIG_LEDGER_DEGRADED_SAVE_FAILED,
     CONFIG_LEDGER_DEGRADED_UNKNOWN_VERSION,
+    CONFIG_LEDGER_DEGRADED_MALFORMED_ENTRIES,
     CONFIG_LEDGER_DEGRADED_UNKNOWN_REVERT,
     CONFIG_LEDGER_DEGRADED_ALREADY_REVERTED,
 )
@@ -409,9 +417,25 @@ def _ledger_from_payload(
             code=CONFIG_LEDGER_DEGRADED_UNKNOWN_VERSION,
             reason=_mismatch_reason(data, kind, version)[:_MAX_REASON_LEN],
         )
-    raw_entries = data.get("entries")
-    if not isinstance(raw_entries, (list, tuple)):
+    if "entries" not in data:
+        # A fresh store that has been written to once with no entries yet. Not
+        # damage, so not a degradation.
         return (), None
+    raw_entries = data["entries"]
+    if not isinstance(raw_entries, (list, tuple)):
+        # Ours, and damaged. Refusing here is what stops the next applied change
+        # from overwriting whatever history the payload still holds — the fix
+        # differs from an unknown version, so the code does too.
+        return (), ConfigDegradation(
+            code=CONFIG_LEDGER_DEGRADED_MALFORMED_ENTRIES,
+            reason=(
+                "the persisted payload carries this ledger's kind and schema "
+                f"version but its 'entries' is {type(raw_entries).__name__}, not "
+                "a list — the ledger loaded empty and writing is disabled for "
+                "this drive so the damaged payload is not overwritten; repair or "
+                "replace the store, then re-arm"
+            )[:_MAX_REASON_LEN],
+        )
     entries = tuple(
         entry for entry in (LedgerEntry.from_dict(raw) for raw in raw_entries) if entry is not None
     )

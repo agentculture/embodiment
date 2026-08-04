@@ -28,6 +28,7 @@ from typing import Any, Optional
 
 import pytest
 
+import embodiment.config_ledger as cl
 from embodiment.config_change import ConfigDegradation, WorkerPromptChange
 from embodiment.config_events import ConfigEvent
 from embodiment.config_ledger import (
@@ -177,6 +178,73 @@ class TestFailClosedAgainstARealAdvisoryFixture:
 
 
 # ── unknown-version, the general case (not only the advisory shape) ────────────
+
+
+class TestMalformedEntriesFailClosed:
+    """A payload that is OURS and DAMAGED must not read as an empty ledger.
+
+    Reported by qodo on PR #81. The markers matched, so the payload is this
+    schema's; ``entries`` was not a list, so it is damaged. Returning
+    ``((), None)`` made that look like a valid empty ledger, left writing
+    enabled, and let the next applied change overwrite whatever history the
+    store still held — with no fail-closed signal anywhere, which is exactly
+    what this module's own docstring promises cannot happen.
+    """
+
+    def _payload(self, entries: object) -> dict:
+        return {
+            "kind": cl.CONFIG_LEDGER_KIND,
+            "config_schema_version": cl.CONFIG_LEDGER_SCHEMA_VERSION,
+            "entries": entries,
+        }
+
+    @pytest.mark.parametrize("entries", ["not-a-list", 7, {"a": 1}, True])
+    def test_a_malformed_entries_value_degrades_and_disables_writing(self, entries: object) -> None:
+        saved: list[Any] = []
+        ledger = cl.ConfigLedger(
+            persistence=cl.ConfigPersistence(load=lambda: self._payload(entries), save=saved.append)
+        )
+        assert ledger.entries == ()
+        codes = [d.code for d in ledger.degradations]
+        assert cl.CONFIG_LEDGER_DEGRADED_MALFORMED_ENTRIES in codes
+        assert ledger.write_disabled is True
+        assert saved == [], "a damaged store must not be overwritten"
+
+    def test_the_refusal_names_what_was_found_and_what_to_do(self) -> None:
+        ledger = cl.ConfigLedger(
+            persistence=cl.ConfigPersistence(load=lambda: self._payload("nope"))
+        )
+        reason = next(
+            d.reason
+            for d in ledger.degradations
+            if d.code == cl.CONFIG_LEDGER_DEGRADED_MALFORMED_ENTRIES
+        )
+        assert "str" in reason
+        assert "not a list" in reason
+        assert "disabled" in reason
+
+    def test_a_MISSING_entries_key_is_not_damage(self) -> None:
+        """A fresh store written once with nothing in it is not a defect."""
+        ledger = cl.ConfigLedger(
+            persistence=cl.ConfigPersistence(
+                load=lambda: {
+                    "kind": cl.CONFIG_LEDGER_KIND,
+                    "config_schema_version": cl.CONFIG_LEDGER_SCHEMA_VERSION,
+                }
+            )
+        )
+        assert ledger.entries == ()
+        assert ledger.write_disabled is False
+        assert [
+            d for d in ledger.degradations if d.code == cl.CONFIG_LEDGER_DEGRADED_MALFORMED_ENTRIES
+        ] == []
+
+    def test_the_malformed_code_is_distinct_from_the_unknown_version_code(self) -> None:
+        """Different fixes, so different codes — never folded together."""
+        assert (
+            cl.CONFIG_LEDGER_DEGRADED_MALFORMED_ENTRIES != cl.CONFIG_LEDGER_DEGRADED_UNKNOWN_VERSION
+        )
+        assert cl.CONFIG_LEDGER_DEGRADED_MALFORMED_ENTRIES in cl.CONFIG_LEDGER_DEGRADATION_CODES
 
 
 class TestFailClosedOnAnyUnknownVersion:
