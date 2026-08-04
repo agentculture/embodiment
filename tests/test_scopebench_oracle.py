@@ -54,8 +54,39 @@ class TestExactness:
             assert orc.score_plan(episode, plan) <= optimum
 
     def test_solving_is_deterministic(self) -> None:
+        """Two **independent** solves of one episode agree.
+
+        Rewritten against ``python:S5863`` (SonarCloud, PR #76), which flagged
+        the original for asserting an expression against itself. It was right,
+        and for a stronger reason than its message gives: :func:`oracle.solve`
+        routes through ``_solver_for``, which caches ``_Solver`` instances in a
+        module-level dict keyed by the episode's content hash. The second call
+        therefore reused one solver whose memo tables were **already full** and
+        re-derived nothing. The old assertion said that reading a populated
+        cache twice agrees with itself — true, and not determinism.
+
+        Clearing the cache between the two solves is what makes the second one
+        actually recompute; comparing named variables is what makes the failure
+        readable.
+        """
         episode = _episode(ep.FAMILY_ALLOCATION)
-        assert orc.solve(episode).to_dict() == orc.solve(episode).to_dict()
+        orc.reset_solver_cache()
+        first = orc.solve(episode).to_dict()
+        orc.reset_solver_cache()
+        second = orc.solve(episode).to_dict()
+        assert first == second
+
+    def test_clearing_the_cache_really_empties_it(self) -> None:
+        """The test-of-the-test for the determinism check above.
+
+        Without this, that test decays back into the S5863 shape the moment
+        ``reset_solver_cache`` stops doing anything — and it would keep
+        passing while it did.
+        """
+        orc.solve(_episode(ep.FAMILY_ALLOCATION))
+        assert orc._SOLVERS
+        orc.reset_solver_cache()
+        assert not orc._SOLVERS
 
     def test_the_floor_is_the_default_scope_held_for_the_whole_episode(self) -> None:
         for episode in EPISODES:

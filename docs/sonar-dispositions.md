@@ -25,6 +25,8 @@ issue key, because the key changes.
 | `python:S107` | `embodiment/loop.py` — `run` | Accepted | 2026-08-04 sweep |
 | `python:S107` | `embodiment/continuity.py` — `recall` | Accepted | 2026-08-04 sweep |
 | `python:S1172` | `embodiment/presence_engine.py` — `_PullSeam.drain` | Accepted | 2026-08-04 sweep |
+| `python:S8495` | `embodiment/scope.py` — `_as_tuple` | Accepted | PR #76 |
+| `python:S3776` | `embodiment/scope.py` — `_first_object` | Accepted | PR #76 |
 
 > `muse_runner.py` was **archived** on 2026-08-03 (embodiment#53) but not
 > deleted — it stays readable as the source `embodiment/strategist_runner.py`
@@ -119,6 +121,96 @@ SonarPython's inherited-method exemption recognises. That changes an MRO and the
 lint rule, in a sweep that is not allowed to make one. It wants its own change if it is ever
 wanted at all.
 
+### `python:S8495` — `_as_tuple` does not always return tuples of the same length
+
+Declined. The count really does vary — `()`, `(value,)`, or `n` entries — and that is the
+function's entire job, so there is nothing to fix.
+
+`_as_tuple` is a **sequence coercion**, not a record constructor. Its return type is
+annotated `tuple[str, ...]`: a homogeneous variable-length sequence, the shape the rule's
+premise does not describe. S8495 exists because a caller that writes `a, b = f()` breaks when
+`f` returns three things. No caller here unpacks — all nine call sites assign the result
+straight into a `tuple[str, ...]` dataclass field (`ScopeSnapshot`, `ScopeDirective`,
+`ScopeReport`), where an absent field *must* give `()` and a bare string *must* give one
+element rather than one element per character.
+
+The sharpest evidence that the rule is reading the container and not the intent: this
+function is a byte-faithful port of `contract._coerce_omissions`, which is analysed on every
+`main` run, has the identical branch structure, and **has never raised S8495** — because it
+returns `list[str]`. Same semantics, same varying length, different container, and only one
+of them is a finding. Changing `_as_tuple` to return a list to match would trade an immutable
+snapshot field for a mutable one, which is the property `ScopeSnapshot` exists to have.
+
+`accept`, not `falsepositive`: the analyzer's literal statement is true. We decline the
+remedy, not the fact — the same boundary the `_PullSeam.drain` entry sits on.
+
+### `python:S3776` — `_first_object`, Cognitive Complexity 16 against a limit of 15
+
+Declined, one point over, and the sibling S3776 on the same file was **fixed** rather than
+dispositioned — so this is a judgement about this function, not a blanket refusal of the rule.
+`_forbidden_key` had a genuinely separable clause; this one does not.
+
+`_first_object` is a lexer: it returns the first balanced `{...}` span in a model turn. Brace
+depth cannot be counted correctly without simultaneously tracking string literals and
+backslash escapes — a `}` inside `"…}…"` must not decrement — so the nesting the rule is
+measuring is the nesting the problem has. The one extraction available is the three-line
+in-string state machine, and it fails the test this repo applies to a split: **you cannot
+trust `_scan_in_string(character, escaped) -> (bool, bool)` from its name.** A reader
+verifying escape handling has to read both halves anyway, so the split relocates the
+complexity without reducing what has to be held in the head. Compare `_forbidden_in_mapping`,
+which was extracted precisely because its name *is* checkable without its body.
+
+The other obvious simplification is worse, and was measured rather than assumed. Handing the
+span to `json.JSONDecoder().raw_decode` collapses the function to a complexity of 2 — and
+**merges two distinct degradations into one**. On `{scope_id: not-quoted}` the current scanner
+returns the balanced span, `_payload_of` fails the parse, and the record reads *"the directive
+payload did not parse: …"*; `raw_decode` returns nothing and the record instead reads *"a turn
+announced a directive but carried no complete JSON object (a truncated completion looks
+exactly like this)"* — the truncation diagnosis, applied to a turn that was not truncated.
+Both are `DEGRADED_MALFORMED` and **no test asserts the reason text**, so the whole suite stays
+green while the host loses the ability to tell a truncated strategist from a malformed one.
+That is the distinction `d16` was raised to preserve and the observability C3 requires.
+
+## PR #76 — the first analysis of the scope lane
+
+The strategic-scope-governor cycle's ~15k lines had never been seen by SonarCloud (CI scans
+only `main` and PRs, never a branch — issue #60), so the `t16` sweep above ran a local AST
+auditor as a stand-in and **named its own blind spot**: *families that have never fired here —
+cognitive complexity, duplicated blocks, dead stores — could still raise.* When the PR opened,
+ten issues landed and two of them were exactly that family. The prediction was right; this
+section is the follow-through.
+
+| Rule | Count | Disposition |
+|------|-------|-------------|
+| `python:S5863` — assertion against itself | 1 (`BUG`) | fixed — it alone held `new_reliability_rating` at 3 |
+| `python:S5778` — multiple throwing calls in a `raises` block | 4 | all 4 fixed |
+| `python:S3776` — cognitive complexity | 2 | 1 fixed, 1 accepted (above) |
+| `python:S5958` — assertion too broad | 1 | fixed |
+| `python:S3415` — assertion arguments reversed | 1 | fixed |
+| `python:S8495` — varying tuple length | 1 | accepted (above) |
+
+**The `BUG` was a real defect in the test, not a lint nit**, and worth reading as the one
+substantive finding of the batch. `test_solving_is_deterministic` asserted
+`solve(e).to_dict() == solve(e).to_dict()`. `oracle._solver_for` caches `_Solver` instances in
+a module-level dict keyed by the episode's content hash, so the second call reused a solver
+whose memo tables were already full and re-derived nothing: the test measured a populated
+cache read twice. A public `oracle.reset_solver_cache()` now makes the cache visible instead
+of a private trap, and the test clears it between two genuinely independent solves.
+
+That the rewrite *strengthens* rather than silences was checked, not assumed. Non-determinism
+was injected into the memoised search (a per-`_Solver` offset) and both assertion shapes were
+run against it: the old shape **passed** the mutant and the new shape **failed** it. The
+`_Solver` docstring's claim *"Constructed per solve, never shared"* — false the moment the
+cache existed — was corrected in the same change.
+
+The `S3776` fix on `_forbidden_key` touched shipped package code that is under structural
+test, so behaviour preservation was proved beyond the suite: the pre-refactor implementation
+was transcribed and differentially fuzzed against the new one over 60,008 payloads (26,219 of
+them reaching a forbidden key), including multi-forbidden-key payloads where a depth-first to
+breadth-first slip would report a *different* key, and payloads past `_MAX_PAYLOAD_DEPTH`.
+Zero mismatches. That case matters because `tests/test_scope.py` asserts the refusal reason
+names the key found.
+
 ## The 2026-08-04 sweep — what was fixed rather than dispositioned
 
 Plan task `t16` of the strategic-scope-governor cycle triaged every open issue. Fifty-one
@@ -169,6 +261,12 @@ server reported, plus **one S9073 the server could not see yet**
 (`tests/test_scopebench_oracle.py`), now fixed. That agreement is the evidence the local
 audit reproduces the server's rules; it is not proof the *new* code is clean, because a local
 AST walk covers only the rule families this repo has actually seen fire.
+
+**That caveat was load-bearing and it cashed out.** When PR #76 opened, the server raised ten
+issues on the same code, and two of them — the `python:S3776` pair — were from precisely the
+family the caveat named as unreachable. See *PR #76* above. The stand-in was worth running and
+it was not a substitute; the standing fix is issue #60, so a branch gets analysed before a PR
+has to discover this.
 
 **2. `examples/` is not analysed at all.** `sonar-project.properties` sets
 `sonar.sources=embodiment` and `sonar.tests=tests`. The local audit found three `python:S107`

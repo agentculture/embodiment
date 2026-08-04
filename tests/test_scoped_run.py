@@ -342,12 +342,21 @@ class TestTheActorLoopIsUntouched:
         assert passed <= accepted, f"run_scoped invents parameters: {sorted(passed - accepted)}"
 
     def test_an_unknown_keyword_is_refused_by_runs_own_signature(self):
+        """Every argument is built first, so only ``run_scoped`` can throw.
+
+        ``python:S5778``, and it matters more here than in most places: a
+        ``TypeError`` out of ``_task()`` or ``FakeExecutor()`` would leave this
+        test green while ``run_scoped`` quietly *accepted* the bogus keyword —
+        the exact failure it exists to catch.
+        """
         seam = Scripted(_turn(_call("finish")))
+        task = _task()
+        executor = FakeExecutor()
         with pytest.raises(TypeError) as caught:
             run_scoped(
                 seam,
-                _task(),
-                executor=FakeExecutor(),
+                task,
+                executor=executor,
                 max_steps=3,
                 not_a_run_parameter=True,
             )
@@ -425,8 +434,11 @@ class TestOptInIsReal:
 
     def test_an_aborted_drive_still_raises_the_loops_own_exception(self):
         boom = RuntimeError("the seam died")
+        seam = Scripted(boom)
+        task = _task()
+        executor = FakeExecutor()  # every argument built first: python:S5778
         with pytest.raises(LoopAborted):
-            run_scoped(Scripted(boom), _task(), executor=FakeExecutor(), max_steps=3)
+            run_scoped(seam, task, executor=executor, max_steps=3)
 
 
 # ── 3. the explicit host default scope ────────────────────────────────────────

@@ -78,6 +78,7 @@ __all__ = [
     "local_score",
     "naive",
     "plan_from",
+    "reset_solver_cache",
     "schema_report",
     "score_plan",
     "solve",
@@ -360,7 +361,14 @@ def feasible(episode: ep.Episode, state: State) -> tuple[ep.Allocation, ...]:
 
 
 class _Solver:
-    """One episode's memo tables. Constructed per solve, never shared."""
+    """One episode's memo tables.
+
+    Constructed once per **distinct episode content** and then reused: see
+    :data:`_SOLVERS`. It is emphatically *not* constructed per :func:`solve`
+    call, and a test that means to measure determinism has to say so — clear
+    the cache with :func:`reset_solver_cache` between the two solves, or it is
+    measuring a populated memo table read twice.
+    """
 
     def __init__(self, episode: ep.Episode) -> None:
         self.episode = episode
@@ -444,6 +452,23 @@ def _solver_for(episode: ep.Episode) -> _Solver:
         solver = _Solver(episode)
         _SOLVERS[key] = solver
     return solver
+
+
+def reset_solver_cache() -> None:
+    """Forget every memoised solver, so the next solve recomputes from nothing.
+
+    Public because the cache is otherwise an invisible trap for anyone trying
+    to measure the solver rather than the memo table. Every entry point here —
+    :func:`solve`, :func:`best_from`, :func:`best_after`, :func:`plan_from` —
+    routes through :func:`_solver_for`, so a second call with the same episode
+    content re-reads a table the first call filled and re-derives nothing.
+
+    Calling this changes no computed result: the tables are a pure function of
+    the episode, so a cleared cache costs time and returns the same answers.
+    That is exactly the property ``tests/test_scopebench_oracle.py`` relies on
+    to make its determinism check a real one.
+    """
+    _SOLVERS.clear()
 
 
 def best_from(episode: ep.Episode, state: State, review: int) -> int:

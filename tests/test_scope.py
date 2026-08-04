@@ -1331,10 +1331,17 @@ class TestDegradeNeverRaise:
         assert broken.review(_snapshot()).degraded is True
 
     def test_a_keyboard_interrupt_still_reaches_the_host(self):
-        """Interrupting a host is not a degradation."""
+        """Interrupting a host is not a degradation.
+
+        The snapshot is built outside the ``raises`` block (``python:S5778``)
+        so only ``review`` can satisfy it: a ``_snapshot()`` that ever raised
+        would otherwise turn this into a test that passes without the seam
+        being reached at all.
+        """
         loop, _ = _loop(KeyboardInterrupt())
+        snapshot = _snapshot()
         with pytest.raises(KeyboardInterrupt):
-            loop.review(_snapshot())
+            loop.review(snapshot)
 
     def test_a_hostile_controls_object_degrades_the_review_not_the_host(self):
         class Hostile:

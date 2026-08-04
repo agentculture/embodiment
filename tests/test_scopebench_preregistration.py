@@ -201,14 +201,23 @@ class TestTheCalibrationTableStillHolds:
     deterministic and hermetic, so a drift is a real change and not noise."""
 
     def test_the_published_control_numbers_are_reproducible(self, doc: str) -> None:
+        """The committed document is the value under test; the rerun is the reference.
+
+        ``python:S3415`` wanted the sides swapped and it was reading the test
+        correctly. The local was called ``actual`` while holding the *freshly
+        recomputed* number — the thing this test trusts — and the document's
+        printed cell, the artifact that can drift, was on the right. Renamed
+        and swapped, so a failure reads "the document says X, the rerun says
+        Y" in the order pytest reports it.
+        """
         summary = sb.stage_one_summary(sb.run_stage_one())
         for planner in sub.PLANNER_ORDER:
             row = next(line for line in doc.splitlines() if line.startswith(f"| `{planner}` |"))
             printed = [cell.strip() for cell in row.strip("|").split("|")][1:]
             for index, family in enumerate(ep.FIRST_CYCLE):
                 key = f"{sb.control_arm(planner)}|{sb.STAGE_ONE}|{family}"
-                actual = summary["cells"][key]["mean_regret"]
-                assert f"{actual:.1f}" == printed[index], (planner, family)
+                recomputed = summary["cells"][key]["mean_regret"]
+                assert printed[index] == f"{recomputed:.1f}", (planner, family)
 
     def test_the_headroom_claim_in_the_document_is_true(self) -> None:
         """The document claims ``revising`` beats ``greedy`` on every family.

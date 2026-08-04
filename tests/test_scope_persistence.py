@@ -38,7 +38,7 @@ from __future__ import annotations
 import ast
 import copy
 import json
-from dataclasses import fields, is_dataclass
+from dataclasses import FrozenInstanceError, fields, is_dataclass
 from pathlib import Path
 from typing import Any, Optional
 
@@ -557,8 +557,16 @@ class TestThePortIsInjectedAndOptional:
         assert ScopePersistence().save is None
 
     def test_the_port_cannot_be_rewired_after_construction(self):
+        """Frozen, specifically — not merely unassignable for some reason.
+
+        ``pytest.raises(Exception)`` here (``python:S5958``) would have been
+        satisfied by any failure at all, including a ``TypeError`` from a port
+        that had stopped being a dataclass. The claim is that the seam a host
+        wires at construction cannot be swapped afterwards, and
+        ``FrozenInstanceError`` is the only exception that states it.
+        """
         port = ScopePersistence()
-        with pytest.raises(Exception):
+        with pytest.raises(FrozenInstanceError):
             port.load = print  # type: ignore[misc]
 
     def test_a_port_with_no_callables_is_not_wired(self):

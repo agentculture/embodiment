@@ -431,8 +431,9 @@ class TestATransportFailureAbandonsTheEpisode:
 
     def test_the_strategist_raises_rather_than_answering(self, episode: ep.Episode) -> None:
         strategist = sl.LiveStrategist(seam=_DeadSeam(), episode=episode)
+        context = _context(episode)  # built outside the block: python:S5778
         with pytest.raises(sl.StrategistUnavailable):
-            strategist(_context(episode))
+            strategist(context)
 
     def test_the_episode_record_is_a_drop(self, episode: ep.Episode, monkeypatch) -> None:
         monkeypatch.setattr(ws.WorkerSeam, "_post", _DeadSeam._post)

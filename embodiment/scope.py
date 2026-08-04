@@ -201,7 +201,7 @@ from __future__ import annotations
 import json
 import re
 from dataclasses import dataclass, field, fields, replace
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Optional, Sequence
 
 from embodiment.contract import ModelResponse
 
@@ -1235,27 +1235,53 @@ def _as_responsibilities(value: Any) -> tuple[ScopeResponsibility, ...]:
 _NO_VERSION = -1
 
 
+def _forbidden_in_mapping(payload: dict[Any, Any], depth: int) -> Optional[str]:
+    """The first forbidden key at or under *payload*, its own keys first.
+
+    The traversal order is part of the contract, not an accident: each key is
+    judged, and only then is its own value descended into, before the next key
+    is looked at. That is what makes the *reported* key the first one a reader
+    of the payload would reach — and ``tests/test_scope.py`` asserts the
+    rejection reason names it.
+    """
+    for key, value in payload.items():
+        if _plain(key).strip().lower() in FORBIDDEN_DIRECTIVE_KEYS:
+            return _plain(key)
+        found = _forbidden_key(value, depth + 1)
+        if found is not None:
+            return found
+    return None
+
+
+def _forbidden_in_sequence(entries: Sequence[Any], depth: int) -> Optional[str]:
+    """The first forbidden key under any entry of *entries*, in order.
+
+    A sequence carries no keys of its own, so this only descends.
+    """
+    for entry in entries:
+        found = _forbidden_key(entry, depth + 1)
+        if found is not None:
+            return found
+    return None
+
+
 def _forbidden_key(payload: Any, depth: int = 0) -> Optional[str]:
     """The first :data:`FORBIDDEN_DIRECTIVE_KEYS` key in *payload*, at any depth.
 
     Case-insensitive, and bounded by :data:`_MAX_PAYLOAD_DEPTH` so a
     pathologically nested payload cannot walk forever. Never raises.
+
+    The two container shapes are walked by :func:`_forbidden_in_mapping` and
+    :func:`_forbidden_in_sequence`, which share no state with each other; this
+    is the shape dispatch and nothing else. Anything that is neither is a leaf
+    and carries no keys.
     """
     if depth > _MAX_PAYLOAD_DEPTH:
         return None
     if isinstance(payload, dict):
-        for key, value in payload.items():
-            if _plain(key).strip().lower() in FORBIDDEN_DIRECTIVE_KEYS:
-                return _plain(key)
-            found = _forbidden_key(value, depth + 1)
-            if found is not None:
-                return found
-        return None
+        return _forbidden_in_mapping(payload, depth)
     if isinstance(payload, (list, tuple)):
-        for entry in payload:
-            found = _forbidden_key(entry, depth + 1)
-            if found is not None:
-                return found
+        return _forbidden_in_sequence(payload, depth)
     return None
 
 
