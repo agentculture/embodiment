@@ -242,7 +242,8 @@ class TestMatchLog:
         # The preamble examples/challenge_config.py owns — per-role temperature
         # separately, so it can never again be the hidden variable it was.
         assert config["cortex_model"] == league_seat.SCRIPTED_CORTEX
-        assert "cortex_temperature" in config and "muse_temperature" in config
+        assert "cortex_temperature" in config
+        assert "muse_temperature" in config
         # ...written to its own file too, before the match started.
         assert Path(report["config_log"]).exists()
         assert json.loads(Path(report["config_log"]).read_text(encoding="utf-8")) == config
@@ -492,7 +493,8 @@ class TestCommandArmContinuity:
         )
         argv = league_seat.turn_argv(args, record_path=tmp_path / "r.json", directive="")
         assert argv[:3] == [sys.executable, str(SEAT), "turn"]
-        assert "--pad" in argv and "--store" in argv
+        assert "--pad" in argv
+        assert "--store" in argv
         # The directive is NOT passed unless the caller says so — that absence
         # is the whole experiment.
         assert "--directive" not in argv
@@ -724,7 +726,8 @@ class TestTurnWire:
         # Exactly one JSON object, and it is the orders league would accept.
         orders = json.loads(proc.stdout)
         assert set(orders) <= {"plan", "actions", "messages"}
-        assert orders["actions"] and all("unit_id" in a for a in orders["actions"])
+        assert orders["actions"]
+        assert all("unit_id" in a for a in orders["actions"])
         # Presence went to stderr; the two streams never blend.
         assert "presence" in proc.stderr or proc.stderr == ""
         record = json.loads((home / "record.json").read_text(encoding="utf-8"))

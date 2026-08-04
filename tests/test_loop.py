@@ -378,7 +378,9 @@ class TestTheDepthBoundIsPinnedInTheLoopToo:
             and isinstance(n.func, ast.Name)
             and n.func.id == "child_call"
         ]
-        assert gates and mints and min(gates) < min(mints)
+        assert gates
+        assert mints
+        assert min(gates) < min(mints)
 
 
 # ── 2. termination ────────────────────────────────────────────────────────────
@@ -437,7 +439,8 @@ class TestTerminationMatrix:
         assert outcome.exit_reason == EXIT_FINISHED
         assert complete.turns == 2
         nudged = complete.calls[1][-1]
-        assert nudged["role"] == "user" and "finish" in nudged["content"]
+        assert nudged["role"] == "user"
+        assert "finish" in nudged["content"]
 
     def test_max_steps_budget(self):
         outcome = _drive(_turn(_call("read_file", path="a")), max_steps=3)
@@ -685,7 +688,8 @@ class TestHookLifecycle:
         )
         assert executor.seen == []  # never executed
         step = outcome.result.steps[0]
-        assert step.ok is False and step.result == "nope"
+        assert step.ok is False
+        assert step.result == "nope"
 
     def test_pre_tool_deny_still_fires_post_tool(self):
         """post_tool observes the attempt; a denial is still a lifecycle event."""
@@ -774,7 +778,8 @@ class TestHookLifecycle:
         )
         assert executor.seen == []
         firing = [f for f in outcome.hook_firings if f.event == EVENT_PRE_TOOL][0]
-        assert firing.decision == DECISION_DENY and "kaboom" in firing.reason
+        assert firing.decision == DECISION_DENY
+        assert "kaboom" in firing.reason
         assert any(d.code == DEGRADED_HOOK_ERROR for d in outcome.degradations)
 
     def test_no_hooks_means_no_firings_at_all(self):
@@ -1157,7 +1162,8 @@ class TestDegradationIsObservable:
         seen: list[tuple[Any, ...]] = []
         _drive(_turn(_call("finish")), progress=lambda *a: seen.append(a))
         phases = [s for s in seen if s[1] == ""]
-        assert phases and isinstance(phases[0][2], str)
+        assert phases
+        assert isinstance(phases[0][2], str)
 
 
 # ── 8. result shaping ─────────────────────────────────────────────────────────
@@ -1356,7 +1362,8 @@ class TestContinuitySeam:
         seen: list[Boundary] = []
         _drive(_turn(_call("read_file", path="a")), max_steps=1, continuity=seen.append)
         action = [b for b in seen if b.name == "before-action"][0]
-        assert action.tool == "read_file" and action.arguments == {"path": "a"}
+        assert action.tool == "read_file"
+        assert action.arguments == {"path": "a"}
 
     def test_the_seam_cannot_alter_control_flow(self):
         executor = _reading_executor()
@@ -1397,7 +1404,8 @@ class TestSeamRobustness:
             event=EVENT_PRE_TOOL, task=_task(), tool="read_file", arguments={"path": "a"}
         ).payload()
         assert json.loads(json.dumps(payload))["tool"] == "read_file"
-        assert payload["task_id"] == "t1" and payload["repo_path"] == "/repo"
+        assert payload["task_id"] == "t1"
+        assert payload["repo_path"] == "/repo"
 
     def test_firing_and_degradation_records_serialize(self):
         hooks = RecordingHooks(pre_tool=[HookDecision(decision=DECISION_DENY, reason="no")])

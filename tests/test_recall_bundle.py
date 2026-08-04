@@ -223,7 +223,8 @@ class TestTheDegradeFloor:
 
     def test_the_level_vocabulary_is_exactly_two(self):
         assert recall_bundle.LEVELS == (LEVEL_FLAT, LEVEL_GRAPH)
-        assert LEVEL_FLAT == "flat" and LEVEL_GRAPH == "graph"
+        assert LEVEL_FLAT == "flat"
+        assert LEVEL_GRAPH == "graph"
 
     def test_flat_is_the_default_request_level(self):
         assert BundleRequest().level == LEVEL_FLAT
@@ -254,7 +255,8 @@ class TestTheDegradeFloor:
         recorded = [d for d in bundle.degradations if d.code == DEGRADED_ENRICHMENT_UNAVAILABLE]
 
         assert len(recorded) == 1
-        assert LEVEL_GRAPH in recorded[0].reason and LEVEL_FLAT in recorded[0].reason
+        assert LEVEL_GRAPH in recorded[0].reason
+        assert LEVEL_FLAT in recorded[0].reason
 
     def test_no_graph_adapter_is_shipped_and_none_is_claimed(self):
         """Nothing here pretends to traverse; the composite fetch is not built."""
@@ -510,7 +512,7 @@ class TestTheFullPathAgainstTodaysEidetic:
     so this dials no embedding endpoint. The store is a throwaway ``tmp_path``.
     """
 
-    @pytest.fixture()
+    @pytest.fixture
     def store_dir(self, tmp_path: Path) -> Path:
         if not continuity.eidetic_available():  # pragma: no cover - eidetic is a base dep
             pytest.skip("eidetic is not importable in this environment")
@@ -738,7 +740,8 @@ class TestNeverRaises:
         assert bundle.record_ids == ("rec-0", "rec-1")
         capped = [d for d in bundle.degradations if d.code == DEGRADED_ITEM_CAP]
         assert len(capped) == 1
-        assert "6" in capped[0].reason and "2" in capped[0].reason
+        assert "6" in capped[0].reason
+        assert "2" in capped[0].reason
 
     def test_an_uncapped_bundle_keeps_everything(self):
         store = FakeStore({"a": [_record(f"rec-{n}") for n in range(6)]})
@@ -801,7 +804,8 @@ class TestTheDegradationsAreHostVisible:
             if name.startswith("DEGRADED_")
         }
 
-        assert mine and not (mine & existing)
+        assert mine
+        assert not (mine & existing)
 
 
 # ---------------------------------------------------------------------------

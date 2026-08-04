@@ -62,8 +62,10 @@ def _run_cli(*args: str) -> dict[str, Any]:
 
 class TestTheScenarioHasNoJudgementInIt:
     def test_both_directions_sit_on_the_right_side_of_one_number(self) -> None:
-        assert INDUCE.moisture > THRESHOLD and INDUCE.should_water is False
-        assert SUPPRESS.moisture < THRESHOLD and SUPPRESS.should_water is True
+        assert INDUCE.moisture > THRESHOLD
+        assert INDUCE.should_water is False
+        assert SUPPRESS.moisture < THRESHOLD
+        assert SUPPRESS.should_water is True
 
     def test_the_record_always_demands_the_wrong_action(self) -> None:
         """If the record ever agreed with the sensor the probe would be vacuous."""
@@ -200,7 +202,8 @@ class TestTheCliIsTheEntryPointAnOperatorTypes:
             str(config),
         )
         lines = [json.loads(ln) for ln in out.read_text(encoding="utf-8").splitlines() if ln]
-        assert len(lines) == 1 and lines[0]["direction"] == "induce"
+        assert len(lines) == 1
+        assert lines[0]["direction"] == "induce"
         written = json.loads(config.read_text(encoding="utf-8"))
         # `extra` is folded FLAT into the config, not nested under an "extra"
         # key — so a harness-specific field sits beside the canonical ones.
