@@ -308,6 +308,31 @@ CLOCKS: tuple[Clock, ...] = (
                 "scoped_run calling pattern already argues is the honest reading for a "
                 "scope-lane dial nothing reserves the deployment for",
             ),
+            Fronted(
+                role="worker",
+                budget=Budget(
+                    "scope_live_session actor seat",
+                    module="examples.scope_live_session",
+                    attr="ACTOR_MAX_TOKENS",
+                ),
+                why="t14's live conversational host drives the acting loop on the worker "
+                "role through a WorkerSeam subclass (TimedSeam, which overrides _open and "
+                "nothing else). No width is declared: the host runs ONE drive at a time, so "
+                "the worker role is dialled serially even though the host's three seats can "
+                "be in flight together — and a per-role width above 1 would need a rate "
+                "measured at it, which at_width refuses to interpolate",
+            ),
+            Fronted(
+                role="cortex",
+                budget=Budget(
+                    "scope_live_session strategist seat",
+                    module="examples.scope_live_session",
+                    attr="STRATEGIST_MAX_TOKENS",
+                ),
+                why="the same host seats the cortex role as the strategist and dials it on "
+                "the same seam, one review at a time on the StrategistRunner's single "
+                "worker thread",
+            ),
         ),
         unmeasured=("senses",),
         notes=(
