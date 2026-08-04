@@ -2,7 +2,7 @@
   "plan_slug": "config-not-minds-strategist",
   "schema_version": 1,
   "created": "2026-08-04T16:15:07Z",
-  "updated": "2026-08-04T18:21:07Z",
+  "updated": "2026-08-04T19:12:02Z",
   "deviations": [
     {
       "id": "d1",
@@ -103,6 +103,19 @@
       "affects": [
         "c16",
         "c9"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "needs-follow-up"
+    },
+    {
+      "id": "d9",
+      "what": "condition 8's restore clause will read FAILED on a digest rather than on drift: the shipped lane restores the seat's prompt BYTES exactly (compose_prompt filters empty sections) but not config_sha, because a cleared prompt section stays declared (deviation d7's additive-only primitive)",
+      "task_ref": "t14",
+      "reason": "DECISION: the pre-registration is NOT amended, even though section 19 permits it before any committed record exists. Moving a threshold to fit a known outcome is what makes a pre-registration worthless. The series runs under the committed rule and the report states the digest artifact beside the verdict, with compose_prompt_restored measuring functional restoration. Amending is a cycle-3 decision made with evidence in hand, not a pre-emptive one",
+      "affects": [
+        "c7",
+        "h7"
       ],
       "origin": "llm",
       "status": "proposed",
