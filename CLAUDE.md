@@ -114,9 +114,14 @@ to `run()`. The *value* did not:
 
 So the strategist ships **opt-in and off**, on exactly the rule that kept the
 muse out of the reference rig after `t18` — *an `INCONCLUSIVE` result leaves the
-shipped rig untouched* — and `tests/test_governance.py` enforces that rule
-rather than trusting anyone to remember it. Eighteen issues were filed against
-the tier this cycle (#52, #54–#74). Two of them are **host-facing traps** that
+shipped rig untouched*. `tests/test_governance.py`'s
+`TestStrategistShipsOptInAndOff` pins the structural fact that makes it true:
+`ScopeGovernor()` — what `run_scoped`'s own `governor=None` default resolves
+to — is unarmed, and no module in the `embodiment` package constructs an
+armed one; a default flip needs a fresh ScopeBench verdict behind it, not a
+quiet edit. `TestTheseGuardsCanFail` proves that guard can go red. Eighteen
+issues were filed against the tier this cycle (#52, #54–#74). Two of them are
+**host-facing traps** that
 belong in the strategist's documentation and not only in a tracker, and are now
 written up in the README: **#62** (a host that starts its actor under its own
 initial directive and then arms a strategist has an *unseeded issued chain*, so
