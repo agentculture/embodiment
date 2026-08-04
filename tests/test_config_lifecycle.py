@@ -197,7 +197,14 @@ class TestSeatConfigIdentity:
     """``config_sha`` is the per-seat analogue of the system-prompt sha."""
 
     def test_an_empty_config_has_a_stable_sha(self):
-        assert SeatConfig(seat=SEAT_WORKER).config_sha == SeatConfig(seat=SEAT_WORKER).config_sha
+        # Two INDEPENDENT instances, bound so the claim is about the value and
+        # not about one object compared with itself — and so a constant-returning
+        # config_sha could not satisfy it.
+        first = SeatConfig(seat=SEAT_WORKER)
+        second = SeatConfig(seat=SEAT_WORKER)
+        assert first is not second
+        assert first.config_sha == second.config_sha
+        assert first.config_sha != SeatConfig(seat=SEAT_SENSES).config_sha
 
     def test_two_seats_do_not_share_an_identity(self):
         assert SeatConfig(seat=SEAT_WORKER).config_sha != SeatConfig(seat=SEAT_SENSES).config_sha

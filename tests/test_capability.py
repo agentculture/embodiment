@@ -198,7 +198,13 @@ class TestTheFingerprintMakesDriftDetectable:
         assert set(digest) <= set("0123456789abcdef")
 
     def test_the_same_declaration_fingerprints_the_same(self) -> None:
-        assert _catalog().fingerprint == _catalog().fingerprint
+        # Two INDEPENDENT catalogs built from the same declaration. Bound to
+        # names so the claim is about the value rather than one object compared
+        # with itself, and so a constant fingerprint could not satisfy it.
+        first = _catalog()
+        second = _catalog()
+        assert first is not second
+        assert first.fingerprint == second.fingerprint
 
     def test_declaration_ORDER_does_not_change_the_fingerprint(self) -> None:
         forward = _catalog()
