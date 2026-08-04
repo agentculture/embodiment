@@ -877,12 +877,29 @@ class StrategistRunner:
         cannot be started degrades the lane permanently, visibly and quietly —
         the host's drive continues actor-only, which is the default supported
         path anyway.
+
+        Note the liveness check on an existing thread. Returning ``True`` for any
+        non-``None`` ``self._thread`` meant a worker that had already died was
+        reported as healthy for the rest of the process, and every later
+        :meth:`consider` queued a snapshot into a lane that would never read it —
+        the lane looked started and was inert. Found by Qodo on PR #76.
         """
         with self._lock:
             if self._closed or self._degradation is not None:
                 return False
             if self._thread is not None:
-                return True
+                if self._thread.is_alive():
+                    return True
+                # Dead but not stopped: _work exited without recording (it now
+                # always records, so this is the belt to that braces) or the
+                # record raced this call. Either way the lane cannot process
+                # work, and saying so beats reporting health.
+                self._degrade(
+                    DEGRADED_WORKER,
+                    "the strategist worker thread is no longer alive; the lane "
+                    "cannot process queued snapshots and will not be restarted",
+                )
+                return False
             try:
                 thread = self._thread_factory(target=self._work, name=THREAD_NAME, daemon=True)
                 thread.start()
@@ -1052,6 +1069,16 @@ class StrategistRunner:
         raise, so the outer guard here is for this module's own bugs: a worker
         that dies must leave a record, not an absent mind the host mistakes for
         a quiet one.
+
+        The guard catches :class:`BaseException`, not :class:`Exception`, and the
+        difference is load-bearing. A ``SystemExit``, a ``KeyboardInterrupt``, or
+        a host cancellation exception inheriting ``BaseException`` used to kill
+        this thread with **no record written** — precisely the absent mind the
+        paragraph above forbids, and constraint **C3**'s worst case: a silent
+        strategist is indistinguishable from one that correctly decided to hold.
+        The record is written and the exception is then **re-raised**, so
+        interpreter shutdown and Ctrl-C keep their meaning; catching them and
+        returning normally would be its own bug. Found by Qodo on PR #76.
         """
         try:
             while not self._stop.is_set():
@@ -1066,6 +1093,10 @@ class StrategistRunner:
         except Exception as exc:  # a dead worker is recorded, never silent
             with self._lock:
                 self._degrade(DEGRADED_WORKER, f"{type(exc).__name__}: {exc}")
+        except BaseException as exc:  # noqa: B036 - recorded, then re-raised
+            with self._lock:
+                self._degrade(DEGRADED_WORKER, f"{type(exc).__name__}: {exc}")
+            raise
         finally:
             self._idle.set()
 
@@ -1119,13 +1150,22 @@ class StrategistRunner:
             self._drop_late_review(outcome, "produced after the runner closed")
             return
         if len(self._ready) == self._ready.maxlen:
+            # Attribute the drop to the review actually lost. ``self._ready`` is a
+            # bounded deque, so ``append`` evicts the LEFTMOST entry — not the one
+            # arriving. Reading step_index/model_turns off *outcome* made the
+            # record contradict its own prose: it said "the oldest review was
+            # discarded" while naming the newest. A host counting degradations got
+            # a plausible, well-formed, wrong answer, which is worse than a
+            # missing record and is the same family as #56. Found by Qodo on PR
+            # #76.
+            evicted = self._ready[0]
             self._counts["reviews_dropped_overflow"] += 1
             self._record(
                 DROPPED_OVERFLOW,
                 f"drain buffer full ({self._ready.maxlen}); the oldest review was discarded "
                 "so the freshest strategic reading survives. The actor is not draining",
-                step_index=_coerce_int(_read(outcome, "step_index", 0)),
-                model_turns=_coerce_int(_read(outcome, "turns", 0)),
+                step_index=_coerce_int(_read(evicted, "step_index", 0)),
+                model_turns=_coerce_int(_read(evicted, "turns", 0)),
             )
         self._ready.append(outcome)
 

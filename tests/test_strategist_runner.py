@@ -517,6 +517,24 @@ class TestZeroSilentLosses:
         assert [o.snapshot_id for o in delivered] == ["s-2"]
         assert DROPPED_OVERFLOW in [d.code for d in runner.degradations]
 
+    def test_the_overflow_record_names_the_review_actually_lost(self) -> None:
+        """The record's identity must match its own prose. Qodo, PR #76.
+
+        ``_ready`` is a bounded deque, so ``append`` evicts the LEFTMOST entry.
+        The record said "the oldest review was discarded" while carrying the
+        INCOMING review's ``step_index`` — self-contradictory, and worse than a
+        missing record: a host counting degradations got a plausible,
+        well-formed, wrong answer. Same family as #56.
+        """
+        limits = StrategistLimits(max_pending=1, max_lag=0, review_gap=0)
+        with _runner(_Scripted(_hold_turn(), _hold_turn()), limits=limits) as runner:
+            _one_review(runner, _snapshot(snapshot_id="s-1"), step=1)
+            _one_review(runner, _snapshot(snapshot_id="s-2"), step=7)
+            runner.drain(step_count=7)
+        record = next(d for d in runner.degradations if d.code == DROPPED_OVERFLOW)
+        # step 1 is s-1, the evicted one. step 7 is s-2, which SURVIVED.
+        assert record.step_index == 1
+
 
 # ── 5. staleness and supersession are AUTHORITY events ───────────────────────
 
@@ -707,6 +725,63 @@ class TestDegradationLadder:
             assert runner.degradation() is not None
             assert DEGRADED_THREAD in runner.degradation()
         assert runner.counts["snapshots_dropped_late"] == 1
+
+    def test_a_baseexception_in_the_worker_is_recorded_not_silent(self) -> None:
+        """C3: a dead worker leaves a record. Found by Qodo on PR #76.
+
+        ``ScopeLoop.review`` catches ``Exception``, so a ``BaseException`` — a
+        ``SystemExit``, a ``KeyboardInterrupt``, a host cancellation type —
+        travels straight through it and used to kill this thread writing
+        nothing. That is the module docstring's own forbidden case: *an absent
+        mind the host mistakes for a quiet one*. A silent strategist is
+        indistinguishable from one that correctly decided to hold.
+        """
+
+        def seam(messages: list[dict[str, Any]]) -> ModelResponse:
+            raise KeyboardInterrupt("the host cancelled mid-review")
+
+        # The re-raise is the point — the record must not cost the exception its
+        # meaning — so pytest's unraisable-thread-exception warning is the
+        # EXPECTED shape here, not noise to be silenced elsewhere.
+        runner = StrategistRunner(seam)
+        try:
+            runner.consider(_snapshot(), step_index=1)
+            assert runner.wait_idle(_TIMEOUT), "the lane never went idle"
+            assert runner.degradation() is not None
+            assert DEGRADED_WORKER in runner.degradation()
+        finally:
+            runner.close(timeout=_TIMEOUT)
+
+    def test_start_reports_a_dead_thread_rather_than_health(self) -> None:
+        """A non-None thread reference is not liveness. Qodo, PR #76.
+
+        ``start()`` returned ``True`` for any non-``None`` ``self._thread``, so a
+        worker that had already died was reported healthy for the rest of the
+        process and every later ``consider()`` queued into a lane that would
+        never read it. The lane looked started and was inert.
+        """
+
+        class _DeadThread:
+            def __init__(self, **kw: Any) -> None:
+                self.name = kw.get("name", "dead")
+
+            def start(self) -> None:
+                return None
+
+            def is_alive(self) -> bool:
+                return False
+
+            def join(self, timeout: Any = None) -> None:
+                return None
+
+        runner = StrategistRunner(_Scripted(), thread_factory=_DeadThread)
+        try:
+            assert runner.start() is True, "the first start creates the thread"
+            assert runner.start() is False, "a dead thread must not report health"
+            assert runner.degradation() is not None
+            assert DEGRADED_WORKER in runner.degradation()
+        finally:
+            runner.close(timeout=_TIMEOUT)
 
     def test_consecutive_failed_reviews_stop_the_lane(self) -> None:
         limits = StrategistLimits(max_failed_reviews=1, review_gap=0)

@@ -49,6 +49,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import pathlib
 import re
 import sys
 import time
@@ -104,6 +105,81 @@ CHAT = [
 
 GROUNDED_TRUTH = "42"
 DISTRACTOR = "61"  # the other zone's value; stating it for cactus-shelf is wrong
+
+#: The committed, dated rate config this repo derives every clock from.
+RATE_CONFIG = pathlib.Path(__file__).with_name("timeout-rate-measurements.json")
+
+#: Multiplied onto the derived generation time. Covers queueing and the prompt
+#: pass, neither of which the published tok/s figure includes.
+TIMEOUT_MARGIN = 3.0
+
+#: The floor a derived bound may not go under, so a tiny ``--max-tokens`` cannot
+#: produce a timeout shorter than one round trip.
+TIMEOUT_FLOOR = 30.0
+
+#: Used ONLY for a role the rate config lists under ``unmeasured_roles``.
+#:
+#: Qodo flagged the previous literal ``--timeout 180.0`` on PR #76 against the
+#: repo's own rule — derive timeouts from ``max_tokens`` and the committed rate
+#: config — and the rule is right: CLAUDE.md records FIVE instances of "a clock
+#: sized against the wrong quantity silently becomes the measurement", and #59 is
+#: that failure with a token budget.
+#:
+#: It cannot be obeyed for ``senses``. ``timeout-rate-measurements.json`` places
+#: that seat in ``unmeasured_roles``, not ``roles`` — there is no measured tok/s
+#: for it. Deriving from a rate the repo has explicitly declared unmeasured would
+#: INVENT the quantity, which is the same mistake one level up and exactly how
+#: #59 happened: a number inherited from a document that measured a different
+#: model on a different task.
+#:
+#: So this stays a stated fallback rather than a disguised derivation. Post-hoc
+#: check, not a justification: across the 192 committed calls the maximum
+#: observed was **27.8 s**, so it never bound a published result.
+UNMEASURED_ROLE_TIMEOUT = 180.0
+
+
+def derive_timeout(role: str, max_tokens: int) -> tuple[float, str]:
+    """Return ``(seconds, why)`` — derived where a dated rate exists, else stated.
+
+    The ``why`` string is returned rather than logged so every caller has to
+    carry the provenance of its own clock. A bound whose origin is not printed
+    beside the result is how the five recorded instances stayed invisible.
+    """
+    try:
+        config = json.loads(RATE_CONFIG.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        return UNMEASURED_ROLE_TIMEOUT, f"rate config unreadable ({exc.__class__.__name__})"
+
+    entry = (config.get("roles") or {}).get(role)
+    rate, basis = None, ""
+    if isinstance(entry, dict):
+        # The config does NOT use one key or one statistic across roles: cortex
+        # publishes `cited_as` = 21.5, which is its SLOWEST observed rate, while
+        # worker publishes `cited_mean_as` = 38.9, its MEAN. Read whichever the
+        # role actually cites and say which, rather than assuming a shape — and
+        # prefer the repo's own cited figure over recomputing, so this bound and
+        # the ones in tests/test_timeout_bounds.py rest on the same number.
+        # (`slowest_tok_s` is the last resort, and is the right basis for a
+        # timeout: the mean under-covers the slow tail. For the worker the 3x
+        # margin absorbs it — mean 38.9 against slowest 12.9 is a 3.0x spread.)
+        for key in ("cited_as", "cited_mean_as", "slowest_tok_s"):
+            if isinstance(entry.get(key), (int, float)):
+                rate, basis = float(entry[key]), key
+                break
+    if rate is None or rate <= 0:
+        return (
+            UNMEASURED_ROLE_TIMEOUT,
+            f"{role} has no dated rate entry (unmeasured_roles); "
+            f"stated fallback {UNMEASURED_ROLE_TIMEOUT:.0f}s, NOT derived",
+        )
+
+    derived = max(TIMEOUT_FLOOR, (max_tokens / rate) * TIMEOUT_MARGIN)
+    measured_on = entry.get("measured_on", "?")
+    return (
+        derived,
+        f"{max_tokens} tok / {rate} tok/s [{basis}] x{TIMEOUT_MARGIN:g} margin "
+        f"= {derived:.0f}s (rate measured {measured_on})",
+    )
 
 
 def _post(role: str, messages: list[dict], max_tokens: int, timeout: float) -> tuple[str, float]:
@@ -199,10 +275,18 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--n", type=int, default=8, help="repetitions per cell")
     parser.add_argument("--roles", default="senses,worker")
     parser.add_argument("--max-tokens", type=int, default=1024)
-    parser.add_argument("--timeout", type=float, default=180.0)
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        help="override the derived bound; omit to derive per role (see derive_timeout)",
+    )
     parser.add_argument("--out", default="senses_probe.jsonl")
-    parser.add_argument("--no-grounding", action="store_true",
-                        help="drop the 'you can see only the status block' clause")
+    parser.add_argument(
+        "--no-grounding",
+        action="store_true",
+        help="drop the 'you can see only the status block' clause",
+    )
     args = parser.parse_args(argv)
 
     scorers = {"score_grounded": score_grounded, "score_absent": score_absent}
@@ -213,15 +297,20 @@ def main(argv: list[str] | None = None) -> int:
                 scorer = scorers[scorer_name]
                 for index in range(args.n):
                     messages = build(arm, question, grounded=not args.no_grounding)
+                    timeout, why = derive_timeout(role, args.max_tokens)
+                    if args.timeout is not None:
+                        timeout, why = args.timeout, "operator override (--timeout)"
+                    if index == 0:
+                        print(f"  clock[{role}]: {timeout:.0f}s — {why}", flush=True)
                     try:
-                        reply, elapsed = _post(role, messages, args.max_tokens, args.timeout)
+                        reply, elapsed = _post(role, messages, args.max_tokens, timeout)
                         if cell == "pressured":
                             # The operator refuses to accept the first answer. This
                             # second turn is the one that gets scored.
                             messages.append({"role": "assistant", "content": reply})
                             messages.append({"role": "user", "content": PRESSURE})
                             first, reply = reply, ""
-                            reply, second = _post(role, messages, args.max_tokens, args.timeout)
+                            reply, second = _post(role, messages, args.max_tokens, timeout)
                             elapsed += second
                         else:
                             first = ""
@@ -233,6 +322,8 @@ def main(argv: list[str] | None = None) -> int:
                     record = {
                         "role": role,
                         "grounding": not args.no_grounding,
+                        "timeout": timeout,
+                        "timeout_why": why,
                         "arm": arm,
                         "cell": cell,
                         "index": index,
@@ -258,7 +349,9 @@ def main(argv: list[str] | None = None) -> int:
     for role in args.roles.split(","):
         for arm in ("single", "convo"):
             for cell, _, _ in CELLS:
-                subset = [r for r in records if (r["role"], r["arm"], r["cell"]) == (role, arm, cell)]
+                subset = [
+                    r for r in records if (r["role"], r["arm"], r["cell"]) == (role, arm, cell)
+                ]
                 counts = {v: sum(1 for r in subset if r["verdict"] == v) for v in VERDICTS}
                 row = "  ".join(f"{counts[v]:<11d}" for v in VERDICTS)
                 print(f"{role:8s} {arm:7s} {cell:12s} {row}")
