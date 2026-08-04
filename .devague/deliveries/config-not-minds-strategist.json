@@ -2,7 +2,7 @@
   "plan_slug": "config-not-minds-strategist",
   "schema_version": 1,
   "created": "2026-08-04T16:15:07Z",
-  "updated": "2026-08-04T17:32:22Z",
+  "updated": "2026-08-04T18:21:07Z",
   "deviations": [
     {
       "id": "d1",
@@ -94,6 +94,19 @@
       "origin": "llm",
       "status": "proposed",
       "classification": "acceptable"
+    },
+    {
+      "id": "d8",
+      "what": "the cycle-2 config arms (A4/A5) are declared in the hermetic scaffold but scopebench_live.py's LIVE_ARMS is still (A2, A3), so the arm under test cannot be dialled - t13 could not fix this because the live harness deliberately lives outside examples/scope/ to keep that folder hermetic, and its brief scoped it to examples/scope/",
+      "task_ref": "t14",
+      "reason": "an unnoticed consequence of the hermetic/live split the pre-registration itself enforces; t14 cannot run without extending the live harness, so the extension is done as part of t14 rather than left as a silent blocker",
+      "affects": [
+        "c16",
+        "c9"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "needs-follow-up"
     }
   ]
 }
