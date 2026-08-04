@@ -72,8 +72,10 @@ class FakeSeam:
         role: str = "fake",
         finish: str = "stop",
         first_chunk: Optional[float] = 0.25,
+        max_tokens: int = 1024,
     ) -> None:
         self.model = model
+        self.max_tokens = max_tokens
         self.endpoint = "http://fake/v1"
         self.meter = ws.Meter(role=role, model=model)
         self.replies = list(replies)
@@ -315,35 +317,14 @@ class TestTheVoice:
     def test_the_prompt_tells_the_voice_to_omit_the_line(self) -> None:
         assert "leave the line out entirely" in host.SENSES_SYSTEM
 
+    def test_the_prompt_forbids_describing_the_hosts_own_plumbing(self) -> None:
+        """#52's "one coherent teammate", measured coming apart.
 
-class TestTheStrategistFramingIsAppendedNeverSubstituted:
-    """The authority boundary is the package's; the vocabulary is the host's."""
-
-    def test_the_framing_restates_no_part_of_the_authority_text(self) -> None:
-        """The amendment-1 lesson: state the facts, never re-state the rule.
-
-        ``scopebench_live``'s first wording repeated ``SCOPE_AUTHORITY``'s
-        version rule inside a sentence naming the active scope, and the worker
-        seat echoed the id it had just been shown into its own — every directive
-        refused as a duplicate, published as a model property. So this framing
-        must not contain the rule.
+        Asked which of two objectives came first, the voice answered "the
+        'work' block specifies the action" — narrating the host's handoff
+        protocol at the operator.
         """
-        from embodiment.scope import SCOPE_AUTHORITY
-
-        for phrase in ("strictly greater", "DIRECTIVE:", "[hold]", "must carry"):
-            assert phrase not in host.STRATEGIST_FRAMING, (phrase, SCOPE_AUTHORITY[:0])
-
-    def test_the_framing_names_the_actual_tool_surface(self) -> None:
-        for name in ("list_files", "read_file", "grep", "write_note", "finish"):
-            assert name in host.STRATEGIST_FRAMING
-
-    def test_the_framing_states_that_the_objective_order_is_undecided(self) -> None:
-        assert "not an order of importance" in host.STRATEGIST_FRAMING
-
-    def test_the_framing_names_no_good_answer(self) -> None:
-        """A framing that hinted at what to decide would be marking its own homework."""
-        for leak in ("orchid", "fern", "moss", "threshold first", "prioriti"):
-            assert leak not in host.STRATEGIST_FRAMING
+        assert "Never mention it, the status block" in host.SENSES_SYSTEM
 
     def test_the_senses_prompt_forbids_naming_a_second_mind(self) -> None:
         assert "never speak as, quote, or relay another mind" in host.SENSES_SYSTEM
@@ -387,6 +368,43 @@ class TestTheStrategistFramingIsAppendedNeverSubstituted:
         spoken, work = session._senses("hello", submitted=0.0)
         assert work is None
 
+    def test_the_interaction_tier_is_bounded_smaller_than_the_acting_one(self) -> None:
+        """The asymmetry a live run cost 22 minutes to establish.
+
+        Too small on this tier is a cut-off reply, which this host counts and
+        announces. Too large is minutes of silence on the seat whose entire job
+        is presence, which nothing counts and nothing recovers.
+        """
+        assert host.SENSES_MAX_TOKENS < host.ACTOR_MAX_TOKENS
+
+    def test_the_acting_and_strategic_tiers_keep_the_d16_budget(self) -> None:
+        assert (host.ACTOR_MAX_TOKENS, host.STRATEGIST_MAX_TOKENS) == (16000, 16000)
+
+    def test_a_truncated_reply_is_announced_to_the_operator(self, tmp_path: Path) -> None:
+        state = _state(tmp_path)
+        seam = FakeSeam([ModelResponse(content="I was saying that")], finish="length")
+        seams = host.SeatSeams(resolution=_resolution(), senses=seam)
+        session = host.LiveSession(state, seams, ScopeGovernor(), observer=_observer(state))
+        spoken, _work = session._senses("hello", submitted=0.0)
+        assert "cut off at this turn's token budget" in spoken
+
+    def test_a_truncated_reply_is_also_recorded(self, tmp_path: Path) -> None:
+        state = _state(tmp_path)
+        seam = FakeSeam([ModelResponse(content="I was saying that")], finish="length")
+        seams = host.SeatSeams(resolution=_resolution(), senses=seam)
+        session = host.LiveSession(state, seams, ScopeGovernor(), observer=_observer(state))
+        session._senses("hello", submitted=0.0)
+        notices = [e for e in state.timeline.entries if e.kind == "notice"]
+        assert len(notices) == 1
+
+    def test_an_untruncated_reply_carries_no_such_marker(self, tmp_path: Path) -> None:
+        state = _state(tmp_path)
+        seam = FakeSeam([ModelResponse(content="all done")], finish="stop")
+        seams = host.SeatSeams(resolution=_resolution(), senses=seam)
+        session = host.LiveSession(state, seams, ScopeGovernor(), observer=_observer(state))
+        spoken, _work = session._senses("hello", submitted=0.0)
+        assert spoken == "all done"
+
     def test_a_dead_senses_seat_records_a_notice(self, tmp_path: Path) -> None:
         state = _state(tmp_path)
         seams = host.SeatSeams(resolution=_resolution())
@@ -394,6 +412,36 @@ class TestTheStrategistFramingIsAppendedNeverSubstituted:
         session._senses("hello", submitted=0.0)
         notices = [e for e in state.timeline.entries if e.kind == "notice"]
         assert len(notices) == 1
+
+
+class TestTheStrategistFramingIsAppendedNeverSubstituted:
+    """The authority boundary is the package's; the vocabulary is the host's."""
+
+    def test_the_framing_restates_no_part_of_the_authority_text(self) -> None:
+        """The amendment-1 lesson: state the facts, never re-state the rule.
+
+        ``scopebench_live``'s first wording repeated ``SCOPE_AUTHORITY``'s
+        version rule inside a sentence naming the active scope, and the worker
+        seat echoed the id it had just been shown into its own — every directive
+        refused as a duplicate, published as a model property. So this framing
+        must not contain the rule.
+        """
+        from embodiment.scope import SCOPE_AUTHORITY
+
+        for phrase in ("strictly greater", "DIRECTIVE:", "[hold]", "must carry"):
+            assert phrase not in host.STRATEGIST_FRAMING, (phrase, SCOPE_AUTHORITY[:0])
+
+    def test_the_framing_names_the_actual_tool_surface(self) -> None:
+        for name in ("list_files", "read_file", "grep", "write_note", "finish"):
+            assert name in host.STRATEGIST_FRAMING
+
+    def test_the_framing_states_that_the_objective_order_is_undecided(self) -> None:
+        assert "not an order of importance" in host.STRATEGIST_FRAMING
+
+    def test_the_framing_names_no_good_answer(self) -> None:
+        """A framing that hinted at what to decide would be marking its own homework."""
+        for leak in ("orchid", "fern", "moss", "threshold first", "prioriti"):
+            assert leak not in host.STRATEGIST_FRAMING
 
 
 def _resolution() -> Any:
@@ -1033,6 +1081,18 @@ class TestTheDriveGuards:
     def test_a_finished_drive_is_reported_by_await(self, tmp_path: Path) -> None:
         session = self._session(tmp_path)
         session.start_drive("check the beds")
+        assert "done (" in session.await_drive()
+
+    def test_awaiting_a_drive_that_already_ended_still_reports_it(self, tmp_path: Path) -> None:
+        """The race a parallel test run found, and the operator would have felt.
+
+        A short drive can finish between the ask and the wait. Answering
+        "nothing is running" to somebody who just asked for that drive's result
+        reads as the host having lost their work.
+        """
+        session = self._session(tmp_path)
+        session.start_drive("check the beds")
+        session.await_drive()
         assert "done (" in session.await_drive()
 
     def test_the_drive_actually_used_the_tools(self, tmp_path: Path) -> None:

@@ -84,11 +84,18 @@ CLAUDE.md's load-bearing lesson has five recorded instances and every one of
 them started with somebody sizing a clock against the wrong quantity because the
 right one was inconvenient.
 
-:data:`SENSES_MAX_TOKENS` is a **ceiling, not a target**. Senses is brief
-because its prompt tells it to be, never because a budget cut it off: a budget
-used as a brevity control is a clock sized against the wrong quantity, and a
-truncated reply and a brief one arrive at the reader as the same object
-(issues #37, #59). Truncation is instead *counted*, per seat, per call.
+The **interaction tier's budget is deliberately small**, and it is the one place
+here where ``d16``'s raise-the-budget argument does not transfer. This host
+first shipped senses at 16000 like the other two seats; one live run then spent
+**22 minutes** generating a single conversational reply, idle bound armed and no
+stream death, while the operator watched a prompt that never returned. Minutes
+of silence on the tier whose whole job is presence is exactly the "appears
+attentive and is not" failure **C3** calls the worst available — and unlike
+truncation, nothing counts it and nothing recovers it. So senses is bounded at a
+conversational size, its truncations are counted per call *and* said out loud in
+the conversation when they happen, and the acting and strategic tiers keep
+16000 where the output is long, structured, and refused when cut. See
+:data:`SENSES_MAX_TOKENS`.
 
 Usage::
 
@@ -219,10 +226,31 @@ ACTOR_MAX_TOKENS = 16000
 #: recorded as the strategist being unable to phrase one.
 STRATEGIST_MAX_TOKENS = 16000
 
-#: A ceiling, never a target — see the module docstring. The senses role has no
-#: committed rate, so nothing here is derived FROM it; what this number buys is
-#: that a conversational reply is never shaped by an invisible cut.
-SENSES_MAX_TOKENS = 16000
+#: **The one budget in this repo that is deliberately SMALL, and the reasoning
+#: does not transfer from ``d16``.** It was 16000 like the other two, on the
+#: argument that a ceiling is not a target and brevity should come from the
+#: prompt. One live run refuted that: asked a two-sentence question, the senses
+#: seat generated for **22 minutes** — the idle bound stayed armed and no stream
+#: died, so it was genuinely producing tokens toward its ceiling the whole time,
+#: and the operator sat in front of a prompt that never came back.
+#:
+#: The two failure modes are not symmetric on this tier, which is what the
+#: original reasoning missed:
+#:
+#: * too small ⇒ a reply cut mid-sentence. Invisible in general (issues #37,
+#:   #59) — but not here: this host counts ``finish_reason`` per call, per seat,
+#:   and :meth:`LiveSession._senses` says so in the conversation when it
+#:   happens. The failure is loud.
+#: * too large ⇒ minutes of silence on the tier whose entire job is presence.
+#:   Nothing counts that, nothing recovers it, and it is exactly the "appears
+#:   attentive and is not" outcome constraint **C3** names as the worst
+#:   available.
+#:
+#: So the interaction tier is bounded at a conversational size — roughly 12×
+#: a normal reply — and the acting and strategic tiers keep 16000, where the
+#: output is long and structured and ``d16``'s argument does hold. Raise it with
+#: ``--max-tokens-senses`` if a rig's voice needs more.
+SENSES_MAX_TOKENS = 1024
 
 #: This repo's standing sampling temperature for measured lanes.
 TEMPERATURE = 0.3
@@ -767,6 +795,11 @@ SENSES_SYSTEM = (
     "says. When the person has asked something that needs the files read, hand "
     "it over by ending your reply with a final line of exactly this form:\n"
     f"{WORK_MARKER} <one sentence saying what should be done>\n"
+    "That line is plumbing, not speech. Never mention it, the status block, or "
+    "any other part of how you work — a person hears one teammate, not a "
+    "description of one. (Measured: asked which of two objectives came first, "
+    "the voice answered 'the \"work\" block specifies the action', which is the "
+    "one coherent teammate coming apart in front of the operator.)\n"
     "Write that line only when there is real work to do. When there is none, "
     "leave the line out entirely — never write it with a placeholder such as "
     "'none', 'n/a' or 'nothing'. Do not write it for conversation, for a "
@@ -1366,6 +1399,16 @@ class LiveSession:
         if felt is not None:
             self.felt.append(felt)
         spoken, work = split_work_marker(reply.content or "")
+        if _last_finish(seam) == ws.FINISH_TRUNCATED:
+            # A cut-off reply with no explanation is a silent degradation from
+            # the ONE seat the operator can see (C3). The seam already counted
+            # it and said so on stderr; this says it where the cut is visible,
+            # marked as the host speaking rather than as the voice's own words.
+            self.timeline.notice(
+                f"the voice hit its {seam.max_tokens}-token budget mid-reply; the operator "
+                "was shown a truncated turn and told so"
+            )
+            spoken = f"{spoken}\n[cut off at this turn's token budget — ask me to go on]"
         if not spoken:
             self.timeline.notice(
                 "senses returned no prose this turn "
@@ -1574,12 +1617,16 @@ class LiveSession:
         with no timeout rather than a wait with an invented one.
         """
         drive = self.state.drive
-        if drive is None or not drive.is_alive():
-            return "nothing is running."
-        drive.join()
+        if drive is not None and drive.is_alive():
+            drive.join()
+        # Deliberately NOT `if not is_alive(): return "nothing is running"`. A
+        # short drive can finish between the ask and the wait, and answering
+        # "nothing is running" to somebody who just asked for that drive's
+        # result is a race the operator experiences as the host losing their
+        # work. The record is the answer whether or not the thread outlived it.
         record = self.state.drives[-1] if self.state.drives else None
         if record is None:
-            return "the drive ended with no record."
+            return "nothing is running."
         if record.error:
             return f"that drive failed: {record.error}"
         return f"done ({record.exit_reason}, {record.seconds:.1f}s): {record.summary}"
