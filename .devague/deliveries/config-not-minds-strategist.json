@@ -2,7 +2,7 @@
   "plan_slug": "config-not-minds-strategist",
   "schema_version": 1,
   "created": "2026-08-04T16:15:07Z",
-  "updated": "2026-08-04T16:15:07Z",
+  "updated": "2026-08-04T17:02:26Z",
   "deviations": [
     {
       "id": "d1",
@@ -30,6 +30,44 @@
       "origin": "llm",
       "status": "proposed",
       "classification": "acceptable"
+    },
+    {
+      "id": "d3",
+      "what": "t5 re-declared a structurally identical ConfigPersistence port instead of importing scoped_run.ScopePersistence, which the plan's acceptance criterion named",
+      "task_ref": "t5",
+      "reason": "importing the advisory lane would create the import edge config_change.py's TestCitedNotCoupled exists to forbid - an import edge is a reason to edit the advisory lane, and it must stay byte-stable as t13's comparator; a test proves the two types share the same field set",
+      "affects": [
+        "c8",
+        "h8"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable"
+    },
+    {
+      "id": "d4",
+      "what": "ConfigDeferral deliberately does NOT subclass ConfigDegradation, breaking t3's one-degradation-stream-folds shape; it carries the same field names and to_dict keys but lands in a separate deferrals stream",
+      "task_ref": "t4",
+      "reason": "a busy seat is the gate WORKING - folding it into degradations would make a correct session report hundreds of them, and a count that rises during normal operation is a count nobody reads; nothing is dropped",
+      "affects": [
+        "c8"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable"
+    },
+    {
+      "id": "d5",
+      "what": "a verified -> proposed demotion transition exists, which is not in the spec's five-kind event vocabulary (proposed/validated/applied/rejected/reverted)",
+      "task_ref": "t4",
+      "reason": "t5's config_events has no kind for it; either a sixth kind or a documented mapping is needed - t9 (the composition task) is where this must be resolved or it becomes an unrepresentable state",
+      "affects": [
+        "c8",
+        "h8"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "needs-follow-up"
     }
   ]
 }
