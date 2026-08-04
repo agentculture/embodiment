@@ -2,7 +2,7 @@
   "plan_slug": "config-not-minds-strategist",
   "schema_version": 1,
   "created": "2026-08-04T16:15:07Z",
-  "updated": "2026-08-04T17:02:26Z",
+  "updated": "2026-08-04T17:32:22Z",
   "deviations": [
     {
       "id": "d1",
@@ -68,6 +68,32 @@
       "origin": "llm",
       "status": "proposed",
       "classification": "needs-follow-up"
+    },
+    {
+      "id": "d6",
+      "what": "t7's report derives 'gate verdict' as the ledger's applied/reverted vocabulary, not c32's richer passed/failed/stale - it deliberately refuses to read config_lifecycle.ConfigTransition.verdict because that would be the 'gap filled from elsewhere' h22 forbids",
+      "task_ref": "t7",
+      "reason": "the honest fix is for the LEDGER to record the verdict at write time so the report can derive it from one source; today it does not, so the report makes the weaker claim rather than a richer unfounded one - resolvable in t9 composition or a follow-up to t5",
+      "affects": [
+        "c32",
+        "h22"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "needs-follow-up"
+    },
+    {
+      "id": "d7",
+      "what": "t6's revert cannot restore a prompt section or knowledge entry to true non-existence: config_lifecycle's apply primitives are additive (a section clears to empty but never leaves the tuple; KnowledgeChange requires non-blank text)",
+      "task_ref": "t6",
+      "reason": "made observable rather than silent - RevertOutcome.residual_prompt_sections/residual_knowledge_entries name what is left and matches_baseline reads False, so exact restoration is never falsely claimed; composed prompt behaviour still matches baseline because compose_prompt filters empty sections",
+      "affects": [
+        "c7",
+        "h7"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable"
     }
   ]
 }
