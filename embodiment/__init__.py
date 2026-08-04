@@ -53,6 +53,7 @@ _SUBMODULES = frozenset(
         "events",
         "framing",
         "identity",
+        "knowledge",
         "ledger",
         "lifecycle",
         "loop",
@@ -317,6 +318,10 @@ _LAZY_NAMES = {
     # `SENSES_GROUNDING` into its OWN senses prompt; embodiment never does.
     # REQUIRED, not advisory — measured 0/16 vs 16/16, see the module.
     "SENSES_GROUNDING": "senses_text",
+    # UNMEASURED, and hoisted anyway because it is text a host has to be able
+    # to find beside the clause it composes with — not a capability claim. The
+    # knowledge SEAM (`embodiment.knowledge`) stays unhoisted per t3's rule.
+    "KNOWLEDGE_ATTRIBUTION": "senses_text",
     # ── presence policy (pure; no IO, no clock) ───────────────────────────
     "UpdateCadence": "presence",
     "ClarifyPolicy": "presence",
@@ -439,6 +444,7 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
         events,
         framing,
         identity,
+        knowledge,
         ledger,
         lifecycle,
         loop,
@@ -651,7 +657,10 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
         Scratchpad,
         resume_report,
     )
-    from embodiment.senses_text import SENSES_GROUNDING  # noqa: F401
+    from embodiment.senses_text import (  # noqa: F401
+        KNOWLEDGE_ATTRIBUTION,
+        SENSES_GROUNDING,
+    )
     from embodiment.strategist_runner import (  # noqa: F401
         STRATEGIST_ROLE,
         StrategistLimits,
