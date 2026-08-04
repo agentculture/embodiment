@@ -2,7 +2,7 @@
   "plan_slug": "config-not-minds-strategist",
   "schema_version": 1,
   "created": "2026-08-04T16:15:07Z",
-  "updated": "2026-08-04T19:12:02Z",
+  "updated": "2026-08-04T19:50:10Z",
   "deviations": [
     {
       "id": "d1",
@@ -116,6 +116,18 @@
       "affects": [
         "c7",
         "h7"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "needs-follow-up"
+    },
+    {
+      "id": "d10",
+      "what": "A3's admission pilot has no verdict file: it completed 2 of 3 episodes (675.2s, 646.3s, both acceptance 1.0) and was killed by MY 1500s command timeout before the third - a clock I sized before knowing the advisory arm costs ~660s per episode, so 3 episodes needs ~2000s",
+      "task_ref": "t14",
+      "reason": "not a protocol failure and not an arm defect - an operator-side instrument fault, and precisely the 0.11.0 lesson recurring: a clock sized against the wrong quantity silently becomes the measurement. Consequence: section 9 rule 1 was not enforced for A3, so the series dials it without a pre-registered admission check. Recorded rather than papered over; the two completed episodes both cleared the floor",
+      "affects": [
+        "c16"
       ],
       "origin": "llm",
       "status": "proposed",
