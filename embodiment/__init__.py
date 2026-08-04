@@ -44,6 +44,8 @@ _SUBMODULES = frozenset(
     {
         "capability",
         "config_change",
+        "config_events",
+        "config_ledger",
         "context",
         "continuity",
         "contract",
@@ -428,6 +430,8 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
     from embodiment import (  # noqa: F401
         capability,
         config_change,
+        config_events,
+        config_ledger,
         context,
         continuity,
         contract,
