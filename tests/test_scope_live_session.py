@@ -350,6 +350,19 @@ class TestTheVoice:
         state = _state(tmp_path)
         assert "readings/2026-08-03.csv" in host.senses_status(state)
 
+    def test_the_status_block_says_the_names_are_not_the_contents(self, tmp_path: Path) -> None:
+        """The second half of the refusal fix, and the cost of the first half.
+
+        Naming the files stopped the voice refusing answerable questions. It
+        then started answering them from nothing: asked which bed was driest it
+        gave '32%' and '27%' for two files it had never opened, and both
+        numbers were wrong. Names are not contents, and the block now says so.
+        """
+        assert "NAMES ONLY" in host.senses_status(state=_state(tmp_path))
+
+    def test_the_prompt_forbids_inventing_a_reading(self) -> None:
+        assert "Never state a number, a reading, a threshold or a quotation" in host.SENSES_SYSTEM
+
     def test_the_status_block_names_what_can_be_done_to_them(self, tmp_path: Path) -> None:
         state = _state(tmp_path)
         assert "list, read, search" in host.senses_status(state)

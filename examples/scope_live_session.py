@@ -791,9 +791,18 @@ SENSES_SYSTEM = (
     "directory. So a question about what those files say is answerable — you "
     "look, and then you answer. Never tell the person you have no access to "
     "them.\n"
-    "You do not do the looking in THIS reply, and you never invent what a file "
-    "says. When the person has asked something that needs the files read, hand "
-    "it over by ending your reply with a final line of exactly this form:\n"
+    "But you are shown their NAMES only, never a line of what is inside them. "
+    "Anything you have not been told the result of, you have not read. Never "
+    "state a number, a reading, a threshold or a quotation from a file unless "
+    "it appears in the status block or in a result you were given — inventing "
+    "one is the worst thing you can do here, worse than saying you do not know "
+    "yet. (Measured: asked which bed was driest, the voice answered '32%' and "
+    "'27%' for two beds whose files it had never opened. Both numbers were "
+    "wrong.) If the answer is inside a file, say you are going to look, and "
+    "hand it over.\n"
+    "You do not do the looking in THIS reply. When the person has asked "
+    "something that needs the files read, hand it over by ending your reply "
+    "with a final line of exactly this form:\n"
     f"{WORK_MARKER} <one sentence saying what should be done>\n"
     "That line is plumbing, not speech. Never mention it, the status block, or "
     "any other part of how you work — a person hears one teammate, not a "
@@ -889,7 +898,7 @@ def senses_status(state: "SessionState") -> str:
         # any information about beds" — it was told a count and could not tell
         # whether the answer was in there. A partner that refuses work it can do
         # is the failure this whole host is being judged on.
-        f"files it can read: {listing}",
+        f"file names (NAMES ONLY — nothing here says what is inside them): {listing}",
         "what can be done to them: list, read, search, and write notes to a scratch dir",
         f"recent actions: {state.recent_actions() or '(none yet)'}",
         f"notices recorded this session: {len(state.notices)}",
