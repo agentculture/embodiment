@@ -720,7 +720,13 @@ class TestDiagnosticsAreReportedNeverScored:
         import inspect
 
         names = list(inspect.signature(sb.verdict).parameters)
-        assert names == ["summary", "arm"]
+        # ``conditions`` (t13) names WHICH committed rule to apply and carries
+        # condition names only. It is not a diagnostics block, and no other
+        # parameter was added.
+        assert names == ["summary", "arm", "conditions"]
+        assert set(inspect.signature(sb.verdict).parameters["conditions"].default) <= set(
+            sb.CONDITION_WHY
+        )
 
 
 class TestSignMargins:
