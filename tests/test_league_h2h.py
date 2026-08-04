@@ -568,6 +568,49 @@ class TestPromptsAreSymmetric:
         assert league_h2h.BASE_SYSTEM in hard
 
 
+def _h2h_shaped_additions(seat_diff: str) -> list[str]:
+    """Lines a commit ADDED to ``league_seat.py`` that mention the h2h lane.
+
+    The bending d10 forbids looks like a special case for the head-to-head arm
+    living inside the file that lane is supposed to merely import. Removals are
+    ignored on purpose — deleting an h2h mention from the seat is the guarantee
+    being restored, not broken.
+    """
+    added = [
+        line[1:] for line in seat_diff.splitlines() if line.startswith("+") and line[:3] != "+++"
+    ]
+    return [line.strip() for line in added if "h2h" in line.lower()]
+
+
+class TestTheSeatBendingDetectorActuallyDetects:
+    """A test of the test above it (task ``t15`` narrowed that guard).
+
+    Narrowing a guard from "touched both files" to "wrote h2h-shaped content"
+    is only honest if the narrower thing still fires. These four cases are what
+    stop the amendment from having quietly turned it into a no-op.
+    """
+
+    def test_a_mechanical_sweep_is_not_bending(self) -> None:
+        diff = "+++ b/examples/league_seat.py\n+from embodiment.muse import MuseControls\n"
+        assert _h2h_shaped_additions(diff) == []
+
+    def test_an_h2h_special_case_added_to_the_seat_is_caught(self) -> None:
+        diff = '+++ b/examples/league_seat.py\n+    if arm == "h2h":  # special case\n'
+        assert _h2h_shaped_additions(diff) == ['if arm == "h2h":  # special case']
+
+    def test_the_case_of_the_mention_does_not_matter(self) -> None:
+        diff = "+++ b/examples/league_seat.py\n+from examples.league_H2H import Rung\n"
+        assert len(_h2h_shaped_additions(diff)) == 1
+
+    def test_a_removal_is_not_an_addition(self) -> None:
+        diff = '+++ b/examples/league_seat.py\n-    if arm == "h2h":\n'
+        assert _h2h_shaped_additions(diff) == []
+
+    def test_the_file_header_is_never_read_as_content(self) -> None:
+        """``+++ b/...league_seat.py`` starts with ``+`` and must not count."""
+        assert _h2h_shaped_additions("+++ b/examples/league_h2h.py\n") == []
+
+
 class TestBothTeamsAreModelSeats:
     """Deviation d10, asserted structurally rather than believed."""
 
@@ -607,13 +650,30 @@ class TestBothTeamsAreModelSeats:
         be run at all (embodiment#37) — and this test failed on that change while
         the h2h lane had not been touched at all.
 
-        So it now asks what it says: walk the commits that modified
-        ``examples/league_h2h.py`` and assert none of them also modified
+        So it asks about commits, not about the branch: walk the commits that
+        modified ``examples/league_h2h.py`` and check what they did to
         ``examples/league_seat.py``. Deviation d10's guarantee — the h2h lane
         reuses the seat rather than forking or bending it — is unchanged and is
-        now enforced against the lane that could actually break it. The two
+        enforced against the lane that could actually break it. The two
         structural tests above (imported-not-copied, and the scripted rival never
         reached) are the rest of that guarantee and are untouched.
+
+        **Narrowed a second time (task t15), for the same reason t24 narrowed
+        it the first time.** "Touched both files" is still not the claim in this
+        test's name, and it fires on a change that is not this lane acting at
+        all. ``t15`` archived the muse (embodiment#53): ``ThreadedMuseRunner``
+        left ``embodiment.__all__``, so *every* harness that drives one had to
+        name ``embodiment.muse_runner`` instead — six files, the same two-line
+        edit in each, and two of them happen to be the h2h harness and the seat.
+        A repo-wide mechanical sweep is not the h2h lane bending its dependency.
+
+        So the assertion is now about **content**: a commit may touch both, but
+        it may not put anything h2h-shaped *into* the seat. That is what forking
+        or bending would actually look like — a special case for the h2h arm
+        living inside the file the h2h lane is supposed to merely import — and
+        it is checkable rather than inferred from a filename pair. A sweep that
+        edits both identically passes; a commit that teaches the seat about h2h
+        fails, which is the case d10 exists for.
 
         A branch with no h2h commits vacuously passes, which is correct: a lane
         that did not act cannot have modified anything.
@@ -627,18 +687,19 @@ class TestBothTeamsAreModelSeats:
             timeout=60,
         )
         for sha in commits.stdout.split():
-            files = subprocess.run(  # nosec B603 B607
-                ["git", "show", "--name-only", "--format=", sha],
+            seat_diff = subprocess.run(  # nosec B603 B607
+                ["git", "show", "--format=", sha, "--", "examples/league_seat.py"],
                 cwd=str(REPO_ROOT),
                 capture_output=True,
                 text=True,
                 check=False,
                 timeout=60,
             )
-            touched = set(files.stdout.split())
-            assert "examples/league_seat.py" not in touched, (
-                f"commit {sha[:12]} modifies BOTH the h2h harness and the seat it "
-                "reuses — d10 says this lane imports the seat, it does not bend it"
+            bent = _h2h_shaped_additions(seat_diff.stdout)
+            assert not bent, (
+                f"commit {sha[:12]} touches the h2h harness AND writes h2h-shaped "
+                f"content into the seat it reuses: {bent[:3]} — d10 says this lane "
+                "imports the seat, it does not bend it"
             )
 
 

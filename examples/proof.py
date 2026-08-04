@@ -49,17 +49,16 @@ from typing import Any, Callable, Optional
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from embodiment import (  # noqa: E402
-    MuseControls,
     PresenceEngine,
     PresenceIO,
     Task,
-    ThreadedMuseRunner,
     ToolOutcome,
     frame_muse,
     run,
 )
 from embodiment.contract import ModelResponse, ToolCall  # noqa: E402
-from embodiment.muse import DEFAULT_STALE_LAG  # noqa: E402
+from embodiment.muse import DEFAULT_STALE_LAG, MuseControls  # noqa: E402
+from embodiment.muse_runner import ThreadedMuseRunner  # noqa: E402
 from examples.challenge_config import write_config_preamble  # noqa: E402
 
 DEFAULT_BASE_URL = os.environ.get("EMBODIMENT_BASE_URL", "http://localhost:8001/v1")

@@ -148,7 +148,7 @@ def _record(**overrides: Any) -> dict[str, Any]:
     return base
 
 
-@pytest.fixture()
+@pytest.fixture
 def clean_store_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Guarantee no ambient store pin leaks into (or out of) a test."""
     monkeypatch.delenv("EIDETIC_DATA_DIR", raising=False)
@@ -1028,7 +1028,8 @@ class TestTrapTwoPartialAvailability:
 
         outcome = continuity.assess(artifact, embed_fn=_dead_embed)
 
-        assert outcome.ok is True and outcome.degradation is not None
+        assert outcome.ok is True
+        assert outcome.degradation is not None
 
     def test_full_availability_records_no_degradation(self, tmp_path: Path) -> None:
         artifact = _artifact(tmp_path)

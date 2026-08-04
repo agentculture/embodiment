@@ -35,14 +35,33 @@ the robot siblings, never an implication drawn from the name.
   No TTY, no thread, no clock — all IO rides injected callbacks and cadence is
   step/phase-based.
 - **Identity and Gwen** — Configuration that frames who is speaking in prompts.
-  Gwen is the reference embodiment: a Qwen cortex (the worker that owns the loop
-  and holds final authority) plus an optional Gemma muse — reflective counsel
-  that reframes the problem, challenges the cortex's assumptions and offers
-  materially different alternatives, with no tools, no decisions and no actions
-  of its own. A run with no muse configured says so rather than implying a
-  second mind. Absent identity means byte-identical prompts to today's behavior.
-  "Cortex" and "muse" name seams — which model gets which job. They are
+  Gwen is the reference embodiment: a Qwen cortex — the worker that owns the
+  loop and holds final authority — with an optional strategist above it (see
+  below). Absent identity means byte-identical prompts to today's behavior.
+  "Cortex" and "strategist" name seams — which model gets which job. They are
   design metaphors for allocating responsibility, not claims about cognition.
+  (The Gemma **muse** held the advisory seat until 2026-08-03, when it was
+  archived off the shipped architecture — embodiment#53. Its modules stay
+  readable and a host may still wire one.)
+- **Strategist** — A tier of authority above the acting loop, **opt-in and off
+  by default**. It issues typed, versioned, supersedable directives owning
+  objectives, priorities, constraints and ownership, and structurally cannot
+  carry a tool, a command or an approval *as data*. A run with no strategist
+  configured says so rather than implying a second mind, and an unarmed
+  governor is byte-identical to an ungoverned run — a single-model run claims
+  no strategist. **The mechanism is proven; the value is not.** ScopeBench
+  Stage 1 returned INCONCLUSIVE, and in the only matched governed/ungoverned
+  pair yet run the governed arm spent 189.6 s and 3663 strategist tokens to
+  apply zero directives and returned a materially identical answer. See
+  docs/live-test-results/scopebench.md and scope-live-session-1.md.
+- **A directive is delivered text** — `run_scoped` adds no containment of its
+  own. A sufficiently credulous actor will act on an operational instruction
+  embedded in a directive's prose. Containment is the host's injected
+  `ToolExecutor` and its `pre_tool` hook lane, which task t6 proved still
+  fully functioning under a governed drive. This is stated rather than left to
+  inference, for the same reason the drone tier's threat model is: the package
+  does not sandbox anything, and no name here should imply that it does
+  (embodiment#55).
 - **Continuity** — Memory and coherence wired as runtime subsystems through
   eidetic-cli (recall, provenance, ageing) and coherence-cli (agreement between
   memory and the present). Embodiment owns the lived sequence — when something

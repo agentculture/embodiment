@@ -20,6 +20,19 @@ Both now have production emit sites (``muse_runner``'s background-compilation
 work class), and the pin below was inverted rather than deleted: it now asserts
 that *every* code in ``RUNNER_CODES`` has a producer, which is the check that
 would have failed the original merge.
+
+**The lane under test is ARCHIVED, and this file was kept anyway** (task
+``t15``, embodiment#53, deviations ``d2``/``d3``). Two reasons, recorded so the
+decision is not re-taken by whoever next tidies up. First, ``examples/proof.py``
+produced a *published* live result — ``docs/live-test-results/proof.md``'s
+2-of-7 delivery baseline — and these tests are what say that number was
+measured the way the document claims; deleting them would leave a cited result
+with nothing standing behind it. Second, the ``RUNNER_CODES``-has-a-producer
+guard is the one that caught embodiment#18, and
+``embodiment.muse_runner`` is still importable and still wireable by a host, so
+the class of bug it catches has not gone away with the archival. The imports
+below name ``embodiment.muse_runner`` explicitly rather than reaching it
+through the package surface, because that surface no longer advertises it.
 """
 
 from __future__ import annotations
@@ -31,7 +44,7 @@ from typing import Any, Optional
 import pytest
 
 import embodiment
-from embodiment import muse_runner
+import embodiment.muse_runner as muse_runner  # ARCHIVED lane, named explicitly (#53)
 from embodiment.contract import ContextPacket, ModelResponse, Task, ToolCall
 from embodiment.loop import ToolOutcome, run
 from embodiment.muse import MuseDegradation

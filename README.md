@@ -15,11 +15,39 @@ once and imported, not reimplemented per host.
 
 ## Status
 
-**The extraction has landed.** The loop, the presence pump, the muse thinking
-loop, perception, continuity and its lifecycle checkpoints, Gwen framing, the
-degradation ledger, event emission and the demo are all checked in on `main`
-(PR #13). The demo has been run against a real two-model rig, not only against
-fakes.
+**The extraction has landed.** The loop, the presence pump, perception,
+continuity and its lifecycle checkpoints, Gwen framing, the degradation ledger,
+event emission and the demo are all checked in on `main` (PR #13). The demo has
+been run against a real two-model rig, not only against fakes.
+
+**The muse lane is archived.** `embodiment/muse.py` and
+`embodiment/muse_runner.py` left the shipped reference architecture on
+2026-08-03 ([#53](https://github.com/agentculture/embodiment/issues/53)), and
+the strategist tier — `scope.py`, `strategist_runner.py`, `scoped_run.py` —
+took its place above the acting loop. Archived is **not** deleted: both files
+stay readable and importable, because `strategist_runner.py` was copied out of
+`muse_runner.py` verbatim under the cite-don't-import policy. What they lost is
+advertisement — neither is on `embodiment.__all__` any more, so a host that
+wants counsel must name `embodiment.muse` explicitly. Everything below that
+describes the muse is retained as the record of what it measured.
+
+**The consolidation behind that archival was an operator judgement, not a result
+the evidence produced** — and the obvious citation for it is the wrong one. The
+model-consolidation head-to-head
+([`league-h2h.md`](docs/live-test-results/league-h2h.md)) ranked
+`full-qwen > mixed > full-gemma`, but its outcome metric tied **0–0 in all six
+matches** and the entire ranking rests on one optional team-message field. It
+measured **interface compliance, not play**, and it is not support for a model
+decision. What the archival actually rests on is the muse-side evidence
+(`INCONCLUSIVE` arms, a 1.2% intervention rate for 2.4–4.4× the token cost).
+
+**The strategist tier that replaced it is opt-in, off by default, and its value
+is not yet demonstrated.** Every structural claim about the mechanism held live,
+and that list is strong; but ScopeBench Stage 1 returned `INCONCLUSIVE`, and in
+the one matched governed/ungoverned pair that exists the governed arm bought
+nothing for 189.6 s and 3663 strategist tokens. See
+[the strategist tier](#the-strategist-tier--opt-in-and-not-yet-earning-its-cost)
+for what is proven, what is not, and the two traps a host will hit.
 
 Still outstanding: `colleague`'s answer to the seam proposal, filed and open as
 [colleague#358](https://github.com/agentculture/colleague/issues/358) — the
@@ -309,19 +337,32 @@ the operator talks to.
 | Loop + presence | `embodiment` | the pump |
 | **Teammate identity** | **Gwen** | who the operator addresses |
 | Cortex | Qwen 3.6 27B (`sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP`) | bounded tool loop, repo actions, final synthesis — **final authority**. Framed by embodiment. |
-| Muse | Gemma 4 31B (`nvidia/Gemma-4-31B-IT-NVFP4`) | reflective counsel, tools opt-in: reframes the problem, challenges the cortex's assumptions and offers materially different alternatives, running its own parallel thinking loop — it proposes, never decides. A host may wire a working-memory pad and a bounded workspace onto its tool bench; neither is on by default (see below). Framed by embodiment. |
+| Strategist *(opt-in, off by default)* | the `cortex` lobes role (dense Qwen 3.6 27B) | scope above the acting loop: typed, versioned, supersedable directives owning objectives, priorities, constraints and ownership. Authority-bearing *within* scope; a directive structurally cannot carry a tool, a command or an approval as data. Unarmed, a `ScopeGovernor` is byte-identical to `run()`. **The mechanism is proven; the value is not** — read [the strategist tier](#the-strategist-tier--opt-in-and-not-yet-earning-its-cost) before wiring one. |
+| ~~Muse~~ | ~~Gemma 4 31B~~ | **ARCHIVED 2026-08-03** ([#53](https://github.com/agentculture/embodiment/issues/53)) — off the curated surface, still readable and still wireable by name. The paragraph below is retained as the record of what it measured. |
 | Senses | Gemma 4 12B (`coolthor/gemma-4-12B-it-NVFP4A16`) | intake, perception, speak-back; never acts on the repo. **Lives in colleague, not here** — see the scope note below. |
 | Ears / voice | Parakeet STT + Chatterbox TTS (lobes audio overlay) | the realtime lane below |
 
-> **Scope: embodiment frames cortex and muse, not senses.** The table describes
+> **Scope: embodiment frames cortex, not senses.** The table describes
 > the whole reference rig, but only part of it is this package. embodiment ships
 > **one** actor loop; colleague's senses coordination loop stays in colleague,
 > and so does its framing. This split is recorded on
 > [colleague#352](https://github.com/agentculture/colleague/issues/352#issuecomment-5073964358).
-> A single-model run — the default tested path — starts no muse and claims no
-> second mind.
+> A single-model run — the default tested path — starts no second mind and
+> claims none.
 >
-> **Muse tools are opt-in, and a validation pass kept them that way.** A host
+> **A senses tier has to be told what it can see.** Measured 2026-08-04
+> ([`senses-grounding.md`](docs/live-test-results/senses-grounding.md) — 128
+> calls, 0 transport failures): with the clause *"You can see only the status
+> block you are given"* in its prompt, the senses seat refused to invent a
+> reading under one operator push **16 of 16** times; with that single clause
+> removed and nothing else changed, it fabricated a number **16 of 16** times.
+> The failure is prompt-shaped, not capacity-shaped, so this is not an argument
+> for a different model — but the clause is load-bearing and it currently lives
+> only in an example host
+> ([#63](https://github.com/agentculture/embodiment/issues/63)).
+>
+> **Muse tools were opt-in, and a validation pass kept them that way.** Retained
+> as the record of that validation; the lane it describes is archived. A host
 > may hand the muse's thinking loop `embodiment.muse_pad.MusePad` (write-only
 > working memory) and `embodiment.workspace.MuseWorkspace` (a bounded,
 > network-less, disposable container) as tools on its bench; with no bench
@@ -361,6 +402,102 @@ four rules that keep it honest:
    transcription are colleague's half of the contract, not embodiment's.)
 4. **Traces stay truthful** — they always expose the actual contributing role,
    model, and machine, and a single-model run never claims another mind exists.
+
+### The strategist tier — opt-in, and not yet earning its cost
+
+`embodiment/scope.py`, `strategist_runner.py` and `scoped_run.py` add a level of
+authority *above* the acting loop: a strategist that issues typed, versioned,
+supersedable directives owning objectives, priorities, constraints and
+ownership — and never an action. Read this before wiring one.
+
+**It is opt-in and off by default.** A `ScopeGovernor` with no strategist armed
+takes the ungoverned path: `run_scoped` calls `embodiment.loop.run` once and
+hands the host's own `complete`, `progress` and `operator_inbox` objects
+straight through *by identity* rather than wrapping them. That is pinned three
+ways — `run`'s own signature refuses an invented keyword, the host's objects are
+forwarded by identity rather than copied or shimmed, and an AST walk of the
+actor's whole transitive import closure shows no scope module is reachable from
+`loop.py` at all — and it was confirmed live: the ungoverned control's counters
+came back all zero, including `boundaries: 0`. A single-model run starts no
+strategist and claims none.
+
+**The mechanism is proven, and the list of what held is genuinely strong.**
+Across a full Stage 3 live session
+([`scope-live-session-1.md`](docs/live-test-results/scope-live-session-1.md)):
+directives arrive as events inserted at a safe turn boundary and the system
+prompt is never rewritten mid-drive (constant sha across all 8 drives,
+`system_rewrites: 0`); ordinary tool steps never become strategic reports (the
+two event streams stayed disjoint); interaction never blocks on a review in
+flight; a killed strategist seam degrades visibly and the actor keeps working
+under the last valid directive; and both persistence lanes behave as specified,
+every record naming its lane.
+
+**The value is not proven, and on the only controlled comparison that exists it
+was negative.**
+
+- ScopeBench Stage 1 returned **`INCONCLUSIVE`**
+  ([`scopebench.md`](docs/live-test-results/scopebench.md)). Its headline
+  condition held strongly — against a deterministic perfect subordinate, the
+  strategist-led arm improved on the baseline in all six scenario families —
+  but two of the seven conditions read from a Stage 2 that was not dialled, one
+  `ABSENT` forces the verdict under the committed rule, and the control that
+  would rule out *the gain is just the extra layer* was not measured at all.
+- In the matched live pair replaying one identical script, the governed arm
+  spent **189.6 s and 3663 strategist tokens to apply zero directives** and
+  returned a materially identical answer to the ungoverned control — whose
+  justification was arguably the better of the two, being the only one to name
+  the sensor id. Across the interactive session **69.5% of the strategist's
+  28,318 tokens bought restatement or nothing**, and non-intervention **failed**
+  ([#68](https://github.com/agentculture/embodiment/issues/68)). That is n=1 on
+  one rig with one model pair — a report, not a measurement.
+
+Both results are committed in full, defects included. None of this says the
+tier will not work; it says it has not been shown to, and the docs will not
+say otherwise until it is.
+
+#### A directive is delivered text — containment is the host's
+
+`run_scoped` adds **no containment of its own**. A directive is text composed
+into the actor's turn stream, and a sufficiently credulous actor will act on an
+operational instruction embedded in a directive's prose. Containment is the
+host's injected `ToolExecutor` and its `pre_tool` hook lane, which task `t6`
+proved still fully functioning under a governed drive: a deliberately credulous
+actor, handed a directive carrying a smuggled command, reaches the executor
+with it — while the ungoverned control never sees it at all. Deviation `d5`
+records that the honesty condition claiming otherwise had overclaimed. This is
+stated for the same reason the drone tier's threat model is
+([#55](https://github.com/agentculture/embodiment/issues/55), constraint
+**C2**): never let a name imply a sandbox.
+
+The guarantee that *does* hold is narrower, and worth having: a directive
+cannot carry a tool, a command or an approval **as data** — the schema has no
+field for one and a directive with any extra key is refused whole. What it
+cannot police is prose.
+
+#### Two traps a host will hit
+
+Both were measured this cycle, both are open, and both make a
+protocol-obedient strategist look incapable of following a four-sentence
+protocol:
+
+- **Seed the issued chain**
+  ([#62](https://github.com/agentculture/embodiment/issues/62)). A host that
+  starts its actor under its own initial directive and then arms a strategist
+  has a chain the strategist can see and correctly names. But the runner's
+  register is the *issued* chain and it starts **empty**, so a directive
+  writing `supersedes: "host-default"` — the protocol-obedient answer — is
+  refused `scope-directive-unknown-supersedes` and dropped before it reaches
+  the actor. `examples/scope_live_session.py` seeds the runner's chain with the
+  host's own initial directive. Nothing in the package tells you that you must.
+- **`scope_id` must be new, and the prompt never says so**
+  ([#58](https://github.com/agentculture/embodiment/issues/58)).
+  `ScopeRegister` refuses a directive whose `scope_id` is already in the chain
+  (`scope-directive-duplicate-id`), but `SCOPE_AUTHORITY` — the shipped system
+  message the strategist is graded against — states the other three admission
+  rules and not this one. The cost is measured, not theoretical: 47 of 93
+  proposals from one model were refused as duplicates in the ScopeBench dial,
+  and in the live session both of the strategist's completed reviews were
+  thrown away this way.
 
 ### The realtime interface (lobes)
 

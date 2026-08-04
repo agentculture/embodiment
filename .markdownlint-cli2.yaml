@@ -29,6 +29,18 @@ ignores:
   # ignore it.
   - ".venv/**"
   - "**/site-packages/**"
+  # Generated live-session transcripts. These are EVIDENCE, not prose: the file
+  # is a verbatim record of what a model said and what the operator saw, emitted
+  # by `examples/scope_live_session.py --transcript`. Reformatting one alters
+  # the record it exists to preserve, so it cannot be linted into compliance.
+  # The 590 errors on session 1's transcript are almost entirely inside quoted
+  # model output — 312x MD038 (spaces in code spans), 38x MD009, plus
+  # MD055/MD056 from tables the model itself wrote. Narrow on purpose: authored
+  # reports under docs/live-test-results/ (scopebench.md, senses-grounding.md,
+  # every preregistration) stay linted, because those are ours to write well.
+  # The emitter's own MD040 (untagged fences) is a real defect and is tracked
+  # separately — this exclusion must not become the reason it never gets fixed.
+  - "docs/live-test-results/*-transcript.md"
   # devague's own working artifacts. `.devague/reviews/` and `.devague/questions/`
   # are gitignored, so CI never sees them — leaving them in only makes a LOCAL
   # run disagree with CI, which is how people learn to distrust a local lint.

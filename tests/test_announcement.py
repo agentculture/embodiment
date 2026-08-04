@@ -188,7 +188,8 @@ class TestRunningTheEvidence:
 
     def test_a_green_run_marks_every_clause_verified(self) -> None:
         report = checklist.check(root=REPO_ROOT, run=True, pytest_runner=_green)
-        assert report.ok and report.exit_code == 0
+        assert report.ok
+        assert report.exit_code == 0
         assert all(result.status == checklist.VERIFIED for result in report.clauses)
         assert "PASS" in report.render()
 
@@ -200,7 +201,8 @@ class TestRunningTheEvidence:
             return 1
 
         report = checklist.check(root=REPO_ROOT, run=True, pytest_runner=runner)
-        assert not report.ok and report.exit_code == 1
+        assert not report.ok
+        assert report.exit_code == 1
         assert all(result.status == checklist.FAILED for result in report.clauses)
         # A failing clause is re-run one node at a time so the report can say
         # WHICH test failed, not just which clause.
@@ -251,7 +253,8 @@ class TestRunningTheEvidence:
         monkeypatch.setattr(checklist, "CLAUSES", (broken,))
         report = checklist.check(root=REPO_ROOT, run=True, pytest_runner=_green)
 
-        assert report.run_requested and not report.ran
+        assert report.run_requested
+        assert not report.ran
         rendered = report.render()
         assert "re-run with --run" not in rendered
         assert "nothing was executed:" in rendered
@@ -473,7 +476,8 @@ class TestTheVerdictIsHonest:
         assert payload["mode"] == "resolve"
         assert payload["ok"] is True
         assert len(payload["clauses"]) == len(checklist.CLAUSES)
-        assert payload["signals"] and payload["caveats"]
+        assert payload["signals"]
+        assert payload["caveats"]
 
 
 # ── 8. the command line ───────────────────────────────────────────────────────
@@ -514,7 +518,8 @@ class TestTheCommandLine:
             checklist.main(["--help"])
         assert exit_info.value.code == 0
         out = capsys.readouterr().out
-        assert "--run" in out and "--online" in out
+        assert "--run" in out
+        assert "--online" in out
 
 
 # ── 9. hermetic, and no colleague ─────────────────────────────────────────────

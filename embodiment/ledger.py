@@ -1,7 +1,7 @@
 """ONE host-visible degradation stream, folded from every lane (task t9).
 
 Constraint **C3** says every degradation records a host-visible transition and
-nothing degrades silently. Seven lanes each hold that promise on their own, in
+nothing degrades silently. Eight lanes each hold that promise on their own, in
 their own vocabulary and their own record shape::
 
     LoopOutcome.degradations       -> loop.LoopDegradation        (DEGRADED_*)
@@ -11,9 +11,10 @@ their own vocabulary and their own record shape::
     RecallOutcome.degradation      -> continuity.Degradation      (CODE_*)
     ContinuityLifecycle.events     -> lifecycle.LifecycleEvent    (kind "degraded")
     SpawnRecord.degradations       -> (child's own records)        (child's lane)
+    StrategistRunner.degradations  -> scope.ScopeDegradation      (DEGRADED_*/DROPPED_*)
 
-So a host that wants to answer *"what went wrong?"* has to know seven
-vocabularies, seven containers and six field layouts. That is C3 satisfied
+So a host that wants to answer *"what went wrong?"* has to know eight
+vocabularies, eight containers and seven field layouts. That is C3 satisfied
 per-lane and defeated in aggregate. This module is the fold: one shape, one
 stream, one question.
 
@@ -44,7 +45,7 @@ free to record whatever they must.
 
 Never fabricates an absent field
 --------------------------------
-:class:`LedgerRecord` is the union of what the six shapes carry, and every field
+:class:`LedgerRecord` is the union of what the seven shapes carry, and every field
 a source does **not** carry stays ``None`` — it is never defaulted to ``0`` or
 ``""``. :class:`embodiment.continuity.Degradation` has no step index, so a
 continuity-sourced record's ``step_index`` is ``None``, and :meth:`to_dict`
@@ -130,6 +131,7 @@ __all__ = [
     "SOURCE_EVENTS",
     "SOURCE_CONTINUITY",
     "SOURCE_LIFECYCLE",
+    "SOURCE_SCOPE",
     "SOURCE_LEDGER",
     "SOURCE_SUBAGENT",
     "SOURCES",
@@ -148,6 +150,7 @@ __all__ = [
     "from_events",
     "from_continuity",
     "from_lifecycle",
+    "from_scope",
     "from_subagent",
     "read",
 ]
@@ -157,9 +160,11 @@ __all__ = [
 
 #: The bounded tool loop (:mod:`embodiment.loop`).
 SOURCE_LOOP = "loop"
-#: One thinking session (:mod:`embodiment.muse`).
+#: One thinking session (:mod:`embodiment.muse`). **The lane is ARCHIVED and
+#: KEPT** — see the note below :data:`SOURCE_SCOPE`.
 SOURCE_MUSE = "muse"
-#: The thinking lane's thread (:mod:`embodiment.muse_runner`).
+#: The thinking lane's thread (:mod:`embodiment.muse_runner`). **ARCHIVED and
+#: KEPT** — see the note below :data:`SOURCE_SCOPE`.
 SOURCE_MUSE_RUNNER = "muse_runner"
 #: Event emission (:mod:`embodiment.events`).
 SOURCE_EVENTS = "events"
@@ -167,6 +172,36 @@ SOURCE_EVENTS = "events"
 SOURCE_CONTINUITY = "continuity"
 #: The lived sequence's checkpoints (:mod:`embodiment.lifecycle`).
 SOURCE_LIFECYCLE = "lifecycle"
+#: Strategic scope governance: one review (:mod:`embodiment.scope`) and the
+#: thread that runs reviews beside the acting loop
+#: (:mod:`embodiment.strategist_runner`), folded as ONE lane because the
+#: runner re-exports every code the review loop mints (task t3).
+SOURCE_SCOPE = "scope"
+
+# ── why the two muse lanes above survived the muse's archival ─────────────────
+#
+# The muse left the shipped reference architecture on 2026-08-03 (embodiment#53,
+# deviations ``d2``/``d3``, superseding claims ``c12``/``c32``). Its two lanes
+# here did NOT leave with it, and that is a decision rather than an oversight.
+#
+# The scope lane is not a migration target. :data:`SOURCE_SCOPE` (task t3) was
+# never carved out of the muse lanes — it harvests
+# :mod:`embodiment.strategist_runner`'s own vocabulary, which was renamed
+# wholesale when that module was cited out of ``muse_runner.py``. So there is no
+# code that could be moved from one to the other; retiring the muse lanes would
+# only delete coverage.
+#
+# And it would delete coverage of something a host can still run. Archival cost
+# the muse its place on ``embodiment.__all__``, not its ability to be wired: a
+# host that reaches for ``embodiment.muse_runner`` by name gets a working
+# ``ThreadedMuseRunner``. Dropping ``read(muse_runner=...)`` would leave that
+# host's degradations with nowhere to fold — a silent lane, which is precisely
+# what constraint C3 exists to forbid. An archived lane still recording is the
+# cheap, honest outcome; a live lane the ledger refuses to read is not.
+#
+# ``tests/test_ledger.py`` pins this decision so a later cleanup pass has to
+# argue with a test rather than delete two lines.
+
 #: This module. A ledger that cannot read a source says so, in its own stream.
 SOURCE_LEDGER = "ledger"
 #: A child drive's degradations, carried back on :class:`~embodiment.subagent.SubagentResult`.
@@ -183,6 +218,7 @@ SOURCES = (
     SOURCE_EVENTS,
     SOURCE_CONTINUITY,
     SOURCE_LIFECYCLE,
+    SOURCE_SCOPE,
     SOURCE_LEDGER,
 )
 
@@ -215,6 +251,7 @@ _MODULES: dict[str, tuple[str, tuple[str, ...], bool]] = {
     SOURCE_EVENTS: ("embodiment.events", ("DEGRADED_",), True),
     SOURCE_CONTINUITY: ("embodiment.continuity", ("CODE_",), True),
     SOURCE_LIFECYCLE: ("embodiment.lifecycle", ("_FAULT_",), False),
+    SOURCE_SCOPE: ("embodiment.strategist_runner", ("DEGRADED_", "DROPPED_"), True),
     SOURCE_LEDGER: (__name__, ("DEGRADED_",), True),
 }
 
@@ -231,6 +268,7 @@ _RELEVANT: dict[str, tuple[str, ...]] = {
     SOURCE_CONTINUITY: (SOURCE_CONTINUITY,),
     # ``_emit_degradation`` re-emits a continuity ``CODE_*`` as a checkpoint.
     SOURCE_LIFECYCLE: (SOURCE_LIFECYCLE, SOURCE_CONTINUITY),
+    SOURCE_SCOPE: (SOURCE_SCOPE,),
     SOURCE_LEDGER: (SOURCE_LEDGER,),
     # The subagent lane relays the child's own codes: a loop degradation from a
     # child keeps ``source=loop`` while carrying ``child_task_id``. The subagent
@@ -387,7 +425,7 @@ def known_codes() -> tuple[CodeEntry, ...]:
     set by construction: adding a ``DEGRADED_*`` / ``DROPPED_*`` / ``CODE_*``
     constant to a lane adds it here with no edit to this file.
 
-    Imports all six lanes (that is the whole point of the call), so a host on a
+    Imports all eight lanes (that is the whole point of the call), so a host on a
     hot path should prefer the narrower :func:`source_for_code`.
     """
     entries = [
@@ -570,6 +608,10 @@ def from_muse_runner(source: Any) -> list[LedgerRecord]:
     The runner absorbs a finished session's own codes verbatim, so a fold of one
     runner legitimately produces both ``muse_runner``- and ``muse``-sourced
     records. Which is which is looked up, never guessed from the container.
+
+    The muse lane is **archived** (embodiment#53) and this reader is kept
+    anyway — a host that wires an archived muse must still be able to answer
+    "what went wrong?". See the note beside :data:`SOURCE_SCOPE`.
     """
     return _fold(source, lane=SOURCE_MUSE_RUNNER)
 
@@ -619,6 +661,25 @@ def from_lifecycle(source: Any) -> list[LedgerRecord]:
                 _unreadable(f"{SOURCE_LIFECYCLE} event: {type(exc).__name__}: {exc}", event)
             )
     return folded
+
+
+def from_scope(source: Any) -> list[LedgerRecord]:
+    """Fold a scope-governance degradation ledger (task t3).
+
+    Accepts a :class:`~embodiment.scope.ScopeOutcome` (one review), a
+    :class:`~embodiment.strategist_runner.StrategistRunner` (the accumulated
+    lane), a bare :class:`~embodiment.scope.ScopeDegradation` /
+    :class:`~embodiment.scope.ScopeRejection`, or a sequence of any — every
+    shape exposes ``degradations`` or ``code`` on the same terms every other
+    reader's shapes do.
+
+    The vocabulary is read from :mod:`embodiment.strategist_runner`, which
+    re-exports every code :mod:`embodiment.scope` mints alongside its own ten,
+    so this ONE lane harvests the whole scope-governance vocabulary rather than
+    two — a review-level code and a lane-level code attribute to the same
+    source.
+    """
+    return _fold(source, lane=SOURCE_SCOPE)
 
 
 def from_subagent(source: Any, *, child_task_id: Optional[str] = None) -> list[LedgerRecord]:
@@ -683,6 +744,7 @@ _READERS = {
     SOURCE_EVENTS: from_events,
     SOURCE_CONTINUITY: from_continuity,
     SOURCE_LIFECYCLE: from_lifecycle,
+    SOURCE_SCOPE: from_scope,
 }
 
 
@@ -694,6 +756,7 @@ def read(
     events: Any = None,
     continuity: Any = None,
     lifecycle: Any = None,
+    scope: Any = None,
     subagent: Any = None,
 ) -> list[LedgerRecord]:
     """Fold everything a host was handed into ONE stream.
@@ -719,6 +782,7 @@ def read(
             SOURCE_EVENTS: events,
             SOURCE_CONTINUITY: continuity,
             SOURCE_LIFECYCLE: lifecycle,
+            SOURCE_SCOPE: scope,
         }.get(lane)
         if given is None:
             continue

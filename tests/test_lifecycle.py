@@ -224,7 +224,7 @@ class _RememberRecorder:
         )
 
 
-@pytest.fixture()
+@pytest.fixture
 def clean_store_env(monkeypatch: pytest.MonkeyPatch) -> None:
     """Guarantee no ambient store pin leaks into (or out of) a test."""
     monkeypatch.delenv("EIDETIC_DATA_DIR", raising=False)
@@ -613,7 +613,8 @@ class TestBeforeAction:
         )
 
         recalled = _of_kind(lifecycle, CHECKPOINT_RECALLED)
-        assert recalled and recalled[0].data["ids"] == ["mem-1"]
+        assert recalled
+        assert recalled[0].data["ids"] == ["mem-1"]
         assert recalled[0].data["count"] == 1
 
 
@@ -728,7 +729,8 @@ class TestBeforeMemory:
 
         assert len(remember.records) == 1
         remembered = _of_kind(lifecycle, CHECKPOINT_REMEMBERED)
-        assert remembered and remembered[0].detail == "high-consequence"
+        assert remembered
+        assert remembered[0].detail == "high-consequence"
 
     def test_a_low_verdict_on_both_subdimensions_closes_it(
         self, clean_store_env: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -746,7 +748,8 @@ class TestBeforeMemory:
 
         assert remember.records == []
         skipped = _of_kind(lifecycle, CHECKPOINT_REMEMBER_SKIPPED)
-        assert skipped and skipped[0].detail == "low-consequence"
+        assert skipped
+        assert skipped[0].detail == "low-consequence"
 
     def test_coherence_is_consulted_before_the_write(
         self, clean_store_env: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1499,7 +1502,8 @@ class TestNeverRaises:
 
         lifecycle(_boundary(BOUNDARY_COMPLETION))
 
-        assert assess.paths and assess.texts
+        assert assess.paths
+        assert assess.texts
         assert list(workdir.iterdir()) == []
 
     def test_a_raising_sink_is_recorded_and_disables_itself(
@@ -1596,7 +1600,8 @@ class TestBoundedState:
 
         assert lifecycle.tracked_tasks == 2
         evicted = [e for e in _of_kind(lifecycle, CHECKPOINT_DEGRADED) if e.detail == "trace-lost"]
-        assert evicted and evicted[0].data["task_id"] == "t0"
+        assert evicted
+        assert evicted[0].data["task_id"] == "t0"
 
 
 # ---------------------------------------------------------------------------
@@ -1766,7 +1771,9 @@ class TestPermissionAndCoherenceCannotInfluenceEachOther:
 
         assert denied_executor.seen == allowed_executor.seen
         assert [name for name, _ in denied_executor.seen] == ["write_file", "finish"]
-        assert worst.texts and best.texts  # both verdicts really were consulted
+        # both verdicts really were consulted
+        assert worst.texts
+        assert best.texts
 
     def test_an_explicit_allow_is_not_second_guessed_by_coherence(
         self, clean_store_env: None, tmp_path: Path, monkeypatch: pytest.MonkeyPatch

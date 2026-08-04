@@ -96,6 +96,7 @@ them. Each one carries a probe that fails if it quietly stops being true.
 | ID | What |
 |----|------|
 | `d4` | **Live testing is a recorded acceptance bar that is NOT met.** The demo has run against the real rig, but the full bar — a museless baseline, a two-mind run with the Gemma 31B muse, and an echo-chamber probe feeding the muse confidently wrong advice — is outstanding. Today's guards stop the muse *seizing* authority, not the cortex *surrendering* it. `TestLiveRig` skips without `EMBODIMENT_LIVE_RIG=1` and `COLLEAGUE_API_KEY`. |
+| `arch1` | **The announcement's muse is ARCHIVED — the clauses resolve, the architecture moved.** Every muse clause below still resolves and still passes; nothing was deleted. But the muse left the shipped reference architecture on 2026-08-03 (embodiment#53, `strategic-scope-governor` deviations `d2`/`d3`, superseding claims `c12`/`c32`, following `d15`), so `embodiment.muse` and `embodiment.muse_runner` are off `embodiment.__all__` and the eighteen `Muse*` names they hoisted are retired. They stay readable because `embodiment.strategist_runner` was cited out of `muse_runner.py` verbatim. Read the muse clauses as verified **history**, not as today's architecture. |
 | `api1` | `lifecycle.record_id_for` is not hoisted to the package root. |
 | `api2` | `Task.repo_path` is required and colleague-flavoured for a host with no repository. |
 | `api3` | `ThreadedMuseRunner.snapshot()["degradations"]` returns dataclasses where sibling ledgers return dicts. |

@@ -1,6 +1,6 @@
 [project]
 name = "embodiment"
-version = "0.11.0"
+version = "0.12.0"
 description = "The agentic loop that gives an app an embodied AI presence. Install embodiment in an app or wrap one, supply a model seam plus IO callbacks, and it drives the perceive-decide-act loop and the presence pump - extracted from colleague so the loop is written once and imported, not reimplemented per host."
 readme = "README.md"
 license = "Apache-2.0"

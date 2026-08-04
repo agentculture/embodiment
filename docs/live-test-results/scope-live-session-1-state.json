@@ -1,0 +1,185 @@
+{
+  "schema_version": 1,
+  "lane": "durable",
+  "accepted": [
+    {
+      "scope_id": "host-default",
+      "supersedes": null,
+      "objective": "answer the operator's questions about this small file tree accurately",
+      "priorities": [
+        "check the files before answering",
+        "prefer a short, correct answer over a long, plausible one"
+      ],
+      "constraints": [
+        "never claim a reading that was not read",
+        "write only into the scratch directory"
+      ],
+      "responsibilities": [
+        {
+          "owner": "actor",
+          "responsibility": "look things up and report them"
+        }
+      ],
+      "success_conditions": [
+        "the operator's question is answered from the files"
+      ],
+      "review_when": [
+        "the operator states an objective of their own"
+      ],
+      "decision_summary": "the host's standing default, in force until the strategist reviews",
+      "version": 0
+    },
+    {
+      "scope_id": "garden-watering-priority",
+      "supersedes": null,
+      "objective": "Check today's readings and tell me which bed I should water first.",
+      "priorities": [
+        "Locate files containing today's garden bed readings",
+        "Extract moisture or watering status for each bed",
+        "Compare beds to identify the one needing water most urgently",
+        "Report the highest-priority bed to the operator"
+      ],
+      "constraints": [
+        "Use only the provided tools (list_files, read_file, grep, write_note, finish)",
+        "Do not modify original source files",
+        "Adhere to the 8-step maximum limit",
+        "Focus exclusively on data from today"
+      ],
+      "responsibilities": [
+        {
+          "owner": "",
+          "responsibility": ""
+        }
+      ],
+      "success_conditions": [
+        "The acting loop identifies the specific bed requiring immediate watering based on today's data",
+        "The result is clearly communicated using the finish tool"
+      ],
+      "review_when": [
+        "After the finish tool is executed or if the step limit is approached"
+      ],
+      "decision_summary": "Initial scope established to analyze today's garden readings and determine which bed requires watering first.",
+      "version": 1
+    },
+    {
+      "scope_id": "garden-watering-priority-v2",
+      "supersedes": "garden-watering-priority",
+      "objective": "Prevent any bed from falling below its threshold for more than one day while strictly adhering to the one-bed-per-day restriction and reducing weekly water draw.",
+      "priorities": [
+        "Identify the bed most at risk of violating the one-day threshold rule.",
+        "Water only that bed today.",
+        "Ensure total weekly draw decreases compared to the prior week."
+      ],
+      "constraints": [
+        "Only one bed may be watered per day.",
+        "Weekly water draw must fall week on week.",
+        "Convenience or proximity must not override threshold urgency."
+      ],
+      "responsibilities": [
+        {
+          "owner": "",
+          "responsibility": "Acting loop: Read bed status files, calculate threshold urgency, select the single most critical bed, and draft the watering note."
+        }
+      ],
+      "success_conditions": [
+        "Watering note targets the most critical bed.",
+        "Only one bed is scheduled.",
+        "Weekly draw reduction is tracked."
+      ],
+      "review_when": [
+        "After today's note is drafted and weekly draw metrics are updated."
+      ],
+      "decision_summary": "Prioritized preventing irreversible plant loss over convenience; mandated selecting the most critical bed rather than the nearest, while enforcing the one-bed daily limit and weekly draw reduction.",
+      "version": 2
+    },
+    {
+      "scope_id": "garden-watering-priority-v3",
+      "supersedes": "garden-watering-priority-v2",
+      "objective": "Select the single most critical bed to water today to prevent plant loss, within the daily restriction.",
+      "priorities": [
+        "Identify all beds currently below their moisture threshold.",
+        "Select the bed with the highest risk of loss (e.g., orchids, longest dry time) to water today.",
+        "Adhere to the one-bed-per-day limit."
+      ],
+      "constraints": [
+        "Only one bed may be watered today.",
+        "Total water draw must trend downward week-on-week (context for justification)."
+      ],
+      "responsibilities": [
+        {
+          "owner": "",
+          "responsibility": ""
+        }
+      ],
+      "success_conditions": [
+        "A single bed is selected and written to scratch with a justification referencing its threshold status."
+      ],
+      "review_when": [
+        "After the decision is written to scratch."
+      ],
+      "decision_summary": "Plant survival takes precedence over water conservation; the restriction limits the action to one bed, so the loop must pick the most critical candidate.",
+      "version": 3
+    },
+    {
+      "scope_id": "garden-watering-priority-v4",
+      "supersedes": "garden-watering-priority-v3",
+      "objective": "Select exactly one bed to water today that minimizes the risk of any bed falling below its threshold, while respecting the summer water restriction.",
+      "priorities": [
+        "Prevent any bed from sitting below its threshold for more than one day to avoid repeating the March orchid loss.",
+        "Comply with the summer water restriction by limiting watering to one bed per day and ensuring total draw falls week on week."
+      ],
+      "constraints": [
+        "Only one bed may be selected for watering today.",
+        "Total water draw must decrease week on week.",
+        "Acting loop is limited to 8 steps and can only use list_files, read_file, grep, write_note, and finish.",
+        "Acting loop cannot modify files outside the scratch directory."
+      ],
+      "responsibilities": [
+        {
+          "owner": "",
+          "responsibility": "Acting loop: Read relevant files to determine bed thresholds and current status, identify the most critical bed, write a decision note to the scratch directory, and finish."
+        }
+      ],
+      "success_conditions": [
+        "A note is written in the scratch directory identifying the single bed to water today.",
+        "The selection is justified by threshold data to prevent orchid loss.",
+        "The one-bed-per-day limit is strictly respected."
+      ],
+      "review_when": [
+        "After the acting loop finishes or if new threshold/moisture data becomes available."
+      ],
+      "decision_summary": "Prioritized plant survival over water restrictions to prevent a repeat of the March orchid loss, treating the restriction as a hard constraint on daily selection rather than a primary goal.",
+      "version": 4
+    },
+    {
+      "scope_id": "garden-watering-priority-v5",
+      "supersedes": "garden-watering-priority-v4",
+      "objective": "Ensure orchid bed survival while complying with summer water restrictions.",
+      "priorities": [
+        "Prevent any bed from falling below its threshold for more than one day (orchid survival)",
+        "Adhere to summer water restriction: max one bed per day, decreasing weekly draw"
+      ],
+      "constraints": [
+        "Only one bed may be watered per day",
+        "Total water draw must decrease week-on-week",
+        "Do not write new files; only read and verify"
+      ],
+      "responsibilities": [
+        {
+          "owner": "",
+          "responsibility": ""
+        }
+      ],
+      "success_conditions": [
+        "Orchid bed threshold status confirmed against latest readings",
+        "Watering plan respects one-bed-per-day limit",
+        "No new files written"
+      ],
+      "review_when": [
+        "After verification of yesterday's readings is complete"
+      ],
+      "decision_summary": "Orchid survival takes precedence as a critical failure prevention objective; water restriction is treated as a binding constraint on execution rather than a competing priority.",
+      "version": 5
+    }
+  ]
+}

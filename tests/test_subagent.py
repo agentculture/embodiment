@@ -335,7 +335,8 @@ class TestAttenuationOnly:
             parent_lineage=(),
             turns_available=1,
         )
-        assert child.depth == 1 and child.parent_task_id == ""
+        assert child.depth == 1
+        assert child.parent_task_id == ""
 
 
 # ── 3. the structural proof (AST) ─────────────────────────────────────────────
@@ -368,7 +369,8 @@ class TestTheDepthBoundIsStructural:
         ops = [n for n in ast.walk(_tree(_SEAM_SRC)) if isinstance(n, ast.BinOp)]
         assert len(ops) == 1, [ast.dump(op) for op in ops]
         assert isinstance(ops[0].op, ast.Sub), ast.dump(ops[0])
-        assert isinstance(ops[0].right, ast.Constant) and ops[0].right.value == 1
+        assert isinstance(ops[0].right, ast.Constant)
+        assert ops[0].right.value == 1
 
     def test_that_one_operation_lives_inside_attenuate(self) -> None:
         inside = [
@@ -407,7 +409,8 @@ class TestTheDepthBoundIsStructural:
         construction = _calls_named(_function(tree, "child_call"), "SubagentCall")[0]
         by_name = {kw.arg: kw.value for kw in construction.keywords}
         allowance = by_name["allowance"]
-        assert isinstance(allowance, ast.Call) and allowance.func.id == "_narrow"
+        assert isinstance(allowance, ast.Call)
+        assert allowance.func.id == "_narrow"
         assert _calls_named(allowance, "attenuate"), ast.dump(allowance)
 
     # loop.py's half of the same bound — that it computes no allowance of its
@@ -433,7 +436,8 @@ class TestTheDepthBoundIsStructural:
         """The AST reads above are only worth something if they can fail."""
         widened = ast.parse("def attenuate(a):\n    return a + 1\n")
         ops = [n for n in ast.walk(widened) if isinstance(n, ast.BinOp)]
-        assert ops and not isinstance(ops[0].op, ast.Sub)
+        assert ops
+        assert not isinstance(ops[0].op, ast.Sub)
         assert _calls_named(ast.parse("x = max(a, b)\n"), "max")
 
 
@@ -865,7 +869,8 @@ class TestTheParentsAccounting:
     def test_a_granted_spawn_records_both_bounds_it_handed_over(self) -> None:
         _seam, outcome = self._granted()
         record = outcome.spawns[0]
-        assert record.outcome == SPAWN_GRANTED and record.granted
+        assert record.outcome == SPAWN_GRANTED
+        assert record.granted
         assert record.allowance_granted == 1
         assert record.steps_granted == 8
         assert record.model_turns == 3

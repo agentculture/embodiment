@@ -46,7 +46,17 @@ from typing import Any, Callable, Optional
 
 import pytest
 
-from embodiment import continuity, ledger, lifecycle, loop, muse, muse_runner, subagent
+from embodiment import (
+    continuity,
+    ledger,
+    lifecycle,
+    loop,
+    muse,
+    muse_runner,
+    scope,
+    strategist_runner,
+    subagent,
+)
 from embodiment.contract import (
     OK,
     ContextPacket,
@@ -69,6 +79,18 @@ from embodiment.loop import (
 from embodiment.muse import MARKER_DONE, MuseControls, MuseDegradation, MuseLoop
 from embodiment.muse_runner import ThreadedMuseRunner
 from embodiment.presence_engine import BoundaryContext, PresenceEngine
+from embodiment.scope import (
+    MARKER_DIRECTIVE,
+    MARKER_HOLD,
+    ScopeControls,
+    ScopeDirective,
+    ScopeLoop,
+    ScopeRegister,
+    ScopeSnapshot,
+    ScopeToolBench,
+    directive_from_payload,
+)
+from embodiment.strategist_runner import StrategistLimits, StrategistRunner
 
 #: Every wait on the muse's thread is bounded by this: a broken implementation
 #: fails an assertion instead of hanging CI.
@@ -547,7 +569,11 @@ def _muse_tools_withheld(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.Led
 
 
 class _Gated:
-    """A muse seam that announces it started and waits to be released."""
+    """A one-argument seam that announces it started and waits to be released.
+
+    Used for both the muse's and the strategist's tools-off ``complete``
+    signature — ``(messages) -> response`` — which is identical on the two.
+    """
 
     def __init__(self, *replies: Any) -> None:
         self.replies = list(replies)
@@ -1013,6 +1039,309 @@ def _lifecycle_compiled_from_lost(
     return ledger.from_lifecycle(checkpoints)
 
 
+# -- scope / strategist_runner, the unified scope lane (task t3) --------------
+#
+# ONE ledger source, ``SOURCE_SCOPE``, folds :mod:`embodiment.scope`'s
+# review-level vocabulary (minted while a single review runs) together with
+# :mod:`embodiment.strategist_runner`'s own ten (minted by the lane that runs
+# reviews on a thread beside the acting loop). The design decision the module
+# docstring records: the runner re-exports every code the review loop mints, so
+# reading ONE module's ``__all__`` harvests both without double-counting.
+
+
+def _scope_snapshot(**kw: Any) -> ScopeSnapshot:
+    base: dict[str, Any] = {"snapshot_id": "scope-snapshot-1", "objectives": ["ship it"]}
+    base.update(kw)
+    return ScopeSnapshot(**base)
+
+
+def _scope_payload(**kw: Any) -> dict[str, Any]:
+    base: dict[str, Any] = {
+        "scope_id": "scope-001",
+        "supersedes": None,
+        "version": 1,
+        "objective": "finish the extraction",
+        "priorities": ["stay responsive"],
+        "constraints": ["no shell access"],
+        "responsibilities": [{"owner": "worker", "responsibility": "plan"}],
+        "success_conditions": ["the ask is done"],
+        "review_when": ["the objective changes"],
+        "decision_summary": "keep going",
+    }
+    base.update(kw)
+    return base
+
+
+def _directive_text(**kw: Any) -> str:
+    return f"Here is my reading.\n{MARKER_DIRECTIVE}\n{json.dumps(_scope_payload(**kw))}"
+
+
+#: The strategist bench schema this file's tool-bearing provokers put on the
+#: wire — one tool, ``recall``, matching the shape ``tests/test_scope.py`` uses.
+_SCOPE_RECALL_SCHEMA = (
+    {"type": "function", "function": {"name": "recall", "description": "search durable memory"}},
+)
+
+
+class _ScopeToolSeam:
+    """A tool-CARRYING strategist seam: messages AND a schema in, response out.
+
+    A different callable arity from :class:`Scripted` on purpose, so a bench
+    seam cannot be handed to the tools-off constructor argument by accident.
+    """
+
+    def __init__(self, *replies: Any) -> None:
+        self._replies = list(replies) or [_resp("still weighing it")]
+
+    def __call__(self, messages: list[dict[str, Any]], schema: list[dict[str, Any]]) -> Any:
+        reply = self._replies.pop(0) if len(self._replies) > 1 else self._replies[0]
+        if isinstance(reply, BaseException):
+            raise reply
+        return reply
+
+
+class _ScopeToolExecutor:
+    """A strategist bench tool double: one call, one (possibly hostile) result."""
+
+    def __init__(self, result: Any = "the operator asked for this in March") -> None:
+        self.result = result
+
+    def __call__(self, name: str, arguments: dict[str, Any]) -> Any:
+        if isinstance(self.result, BaseException):
+            raise self.result
+        return self.result
+
+
+def _scope_benched(*replies: Any, execute: Any = None, **kw: Any) -> ScopeLoop:
+    """A strategist with a bench on the wire, tools-off seam left idle."""
+    bench = ScopeToolBench(
+        schema=_SCOPE_RECALL_SCHEMA,
+        complete=_ScopeToolSeam(*replies),
+        execute=execute if execute is not None else _ScopeToolExecutor(),
+    )
+    return ScopeLoop(Scripted(_resp(MARKER_HOLD)), tools=bench, **kw)
+
+
+def _scope_review(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    strategist = ScopeLoop(Scripted(RuntimeError("dead port")))
+    return ledger.from_scope(strategist.review(_scope_snapshot()))
+
+
+def _scope_unreadable(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    class Hostile:
+        snapshot_id = "hostile-snapshot"
+
+        @property
+        def objectives(self) -> Any:
+            raise RuntimeError("boom")
+
+    strategist = ScopeLoop(Scripted(_resp(MARKER_HOLD)))
+    outcome = strategist.review(Hostile())  # type: ignore[arg-type]
+    return ledger.from_scope(outcome)
+
+
+def _scope_truncated(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    strategist = ScopeLoop(Scripted(_resp(MARKER_HOLD)), controls=ScopeControls(max_entries=2))
+    outcome = strategist.review(_scope_snapshot(objectives=[f"objective {n}" for n in range(9)]))
+    return ledger.from_scope(outcome)
+
+
+def _scope_malformed(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    strategist = ScopeLoop(Scripted(_resp(MARKER_DIRECTIVE + ' {"scope_id": "scope-x", ')))
+    return ledger.from_scope(strategist.review(_scope_snapshot()))
+
+
+def _scope_tool(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    strategist = _scope_benched(
+        _turn(_call("recall"), content="one moment"),
+        _resp(MARKER_HOLD),
+        execute=_ScopeToolExecutor(RuntimeError("store unreachable")),
+    )
+    return ledger.from_scope(strategist.review(_scope_snapshot()))
+
+
+def _scope_tool_rounds(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    strategist = _scope_benched(
+        _turn(_call("recall"), content="one moment"),
+        controls=ScopeControls(max_turns=9, max_tool_rounds=1),
+    )
+    return ledger.from_scope(strategist.review(_scope_snapshot()))
+
+
+def _scope_incomplete(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    register = ScopeRegister()
+    register.offer(ScopeDirective(scope_id="", objective="nameless"))
+    return ledger.from_scope(register.rejections)
+
+
+def _scope_duplicate(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    register = ScopeRegister()
+    register.offer(ScopeDirective(scope_id="scope-a", objective="ship it", version=1))
+    register.offer(ScopeDirective(scope_id="scope-a", objective="ship it again", version=2))
+    return ledger.from_scope(register.rejections)
+
+
+def _scope_unknown_supersedes(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    register = ScopeRegister()
+    register.offer(ScopeDirective(scope_id="scope-a", objective="ship it", version=1))
+    register.offer(
+        ScopeDirective(scope_id="scope-b", supersedes="ghost", objective="drift", version=2)
+    )
+    return ledger.from_scope(register.rejections)
+
+
+def _scope_version_backward(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    register = ScopeRegister()
+    register.offer(ScopeDirective(scope_id="scope-a", objective="ship it", version=7))
+    register.offer(
+        ScopeDirective(scope_id="scope-b", supersedes="scope-a", objective="undo", version=6)
+    )
+    return ledger.from_scope(register.rejections)
+
+
+def _scope_authority(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    _directive, rejection = directive_from_payload(_scope_payload(tool_calls=[{"name": "x"}]))
+    return ledger.from_scope(rejection)
+
+
+# -- strategist_runner's own ten (task t3) -------------------------------------
+
+
+def _strategist_thread(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    def refuse(**_kwargs: Any) -> Any:
+        raise RuntimeError("no threads today")
+
+    runner = StrategistRunner(Scripted(_resp(MARKER_HOLD)), thread_factory=refuse)
+    try:
+        runner.consider(_scope_snapshot(), step_index=1)
+        return ledger.from_scope(runner)
+    finally:
+        runner.close(timeout=_TIMEOUT)
+
+
+def _strategist_worker(_tmp: Path, mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    """The 'should be unreachable' rung: :meth:`ScopeLoop.review` is documented
+    never to raise, so the runner's outer guard exists for bugs AROUND it.
+
+    Patched at the class, through ``monkeypatch`` — invisible to any AST check
+    and a different act from reaching through the subject's own back door — so
+    the fault arrives through the real call the worker thread makes, not
+    through a hand-recorded code (embodiment#18).
+    """
+
+    def broken(self: Any, snapshot: Any, *, step_index: int = 0) -> Any:
+        raise RuntimeError("a bug in this module, not in the seam")
+
+    mp.setattr(ScopeLoop, "review", broken)
+    runner = StrategistRunner(Scripted(_resp(MARKER_HOLD)))
+    try:
+        runner.consider(_scope_snapshot(), step_index=1)
+        assert runner.wait_idle(_TIMEOUT)
+        return ledger.from_scope(runner)
+    finally:
+        runner.close(timeout=_TIMEOUT)
+
+
+def _strategist_seam(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    limits = StrategistLimits(max_failed_reviews=1, review_gap=0)
+    runner = StrategistRunner(Scripted(RuntimeError("dead"), RuntimeError("dead")), limits=limits)
+    try:
+        runner.consider(_scope_snapshot(), step_index=1)
+        assert runner.wait_idle(_TIMEOUT)
+        return ledger.from_scope(runner)
+    finally:
+        runner.close(timeout=_TIMEOUT)
+
+
+def _strategist_closer(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    def explode() -> None:
+        raise OSError("the container engine refused the teardown")
+
+    runner = StrategistRunner(Scripted(), closers=(explode,))
+    runner.close(timeout=_TIMEOUT)
+    return ledger.from_scope(runner)
+
+
+def _strategist_stale(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    limits = StrategistLimits(max_lag=2, review_gap=0)
+    runner = StrategistRunner(Scripted(_resp(_directive_text())), limits=limits)
+    try:
+        runner.consider(_scope_snapshot(), step_index=1)
+        assert runner.wait_idle(_TIMEOUT)
+        assert runner.drain(step_count=10) == []
+        return ledger.from_scope(runner)
+    finally:
+        runner.close(timeout=_TIMEOUT)
+
+
+def _strategist_late(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    runner = StrategistRunner(Scripted(_resp(MARKER_HOLD)))
+    runner.consider(_scope_snapshot(), step_index=1)
+    assert runner.wait_idle(_TIMEOUT)
+    runner.close(timeout=_TIMEOUT)  # never drained; the buffered review is late
+    return ledger.from_scope(runner)
+
+
+def _strategist_overflow(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    limits = StrategistLimits(max_pending=1, max_lag=0, review_gap=0)
+    runner = StrategistRunner(Scripted(_resp(MARKER_HOLD), _resp(MARKER_HOLD)), limits=limits)
+    try:
+        runner.consider(_scope_snapshot(snapshot_id="s-1"), step_index=1)
+        assert runner.wait_idle(_TIMEOUT)
+        runner.consider(_scope_snapshot(snapshot_id="s-2"), step_index=2)
+        assert runner.wait_idle(_TIMEOUT)
+        runner.drain(step_count=2)
+        return ledger.from_scope(runner)
+    finally:
+        runner.close(timeout=_TIMEOUT)
+
+
+def _strategist_snapshot(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    seam = _Gated(_resp(MARKER_HOLD), _resp(MARKER_HOLD))
+    runner = StrategistRunner(seam)
+    try:
+        runner.consider(_scope_snapshot(snapshot_id="s-1"), step_index=1)
+        assert seam.started.wait(_TIMEOUT)
+        runner.consider(_scope_snapshot(snapshot_id="displaced-me"), step_index=3)
+        runner.consider(_scope_snapshot(snapshot_id="s-3"), step_index=5)
+        seam.release.set()
+        assert runner.wait_idle(_TIMEOUT)
+        return ledger.from_scope(runner)
+    finally:
+        seam.release.set()
+        runner.close(timeout=_TIMEOUT)
+
+
+def _strategist_superseded(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    limits = StrategistLimits(max_lag=0, review_gap=0)
+    replies = [
+        _resp(_directive_text(scope_id="scope-a", version=1)),
+        _resp(_directive_text(scope_id="scope-b", version=2, supersedes="scope-a")),
+    ]
+    runner = StrategistRunner(Scripted(*replies), limits=limits)
+    try:
+        runner.consider(_scope_snapshot(snapshot_id="s-1"), step_index=1)
+        assert runner.wait_idle(_TIMEOUT)
+        runner.consider(_scope_snapshot(snapshot_id="s-2"), step_index=2)
+        assert runner.wait_idle(_TIMEOUT)
+        runner.drain(step_count=2)
+        return ledger.from_scope(runner)
+    finally:
+        runner.close(timeout=_TIMEOUT)
+
+
+def _strategist_cadence(_tmp: Path, _mp: pytest.MonkeyPatch) -> list[ledger.LedgerRecord]:
+    limits = StrategistLimits(review_gap=4)
+    runner = StrategistRunner(Scripted(_resp(MARKER_HOLD), _resp(MARKER_HOLD)), limits=limits)
+    try:
+        runner.consider(_scope_snapshot(snapshot_id="s-1"), step_index=1)
+        assert runner.wait_idle(_TIMEOUT)
+        runner.consider(_scope_snapshot(snapshot_id="s-2"), step_index=2)
+        return ledger.from_scope(runner)
+    finally:
+        runner.close(timeout=_TIMEOUT)
+
+
 # -- the ledger's own rung ----------------------------------------------------
 
 
@@ -1080,6 +1409,27 @@ PROVOKERS: dict[tuple[str, str], Provoker] = {
     (ledger.SOURCE_LIFECYCLE, lifecycle._FAULT_CONSEQUENTIAL): _lifecycle_consequential,
     (ledger.SOURCE_LIFECYCLE, lifecycle._FAULT_LINKS_TRUNCATED): _lifecycle_links_truncated,
     (ledger.SOURCE_LIFECYCLE, lifecycle._FAULT_COMPILED_FROM_LOST): _lifecycle_compiled_from_lost,
+    (ledger.SOURCE_SCOPE, scope.DEGRADED_REVIEW): _scope_review,
+    (ledger.SOURCE_SCOPE, scope.DEGRADED_UNREADABLE): _scope_unreadable,
+    (ledger.SOURCE_SCOPE, scope.DEGRADED_TRUNCATED): _scope_truncated,
+    (ledger.SOURCE_SCOPE, scope.DEGRADED_MALFORMED): _scope_malformed,
+    (ledger.SOURCE_SCOPE, scope.DEGRADED_TOOL): _scope_tool,
+    (ledger.SOURCE_SCOPE, scope.DEGRADED_TOOL_ROUNDS): _scope_tool_rounds,
+    (ledger.SOURCE_SCOPE, scope.DROPPED_INCOMPLETE): _scope_incomplete,
+    (ledger.SOURCE_SCOPE, scope.DROPPED_DUPLICATE): _scope_duplicate,
+    (ledger.SOURCE_SCOPE, scope.DROPPED_UNKNOWN_SUPERSEDES): _scope_unknown_supersedes,
+    (ledger.SOURCE_SCOPE, scope.DROPPED_VERSION_BACKWARD): _scope_version_backward,
+    (ledger.SOURCE_SCOPE, scope.DROPPED_AUTHORITY): _scope_authority,
+    (ledger.SOURCE_SCOPE, strategist_runner.DEGRADED_THREAD): _strategist_thread,
+    (ledger.SOURCE_SCOPE, strategist_runner.DEGRADED_WORKER): _strategist_worker,
+    (ledger.SOURCE_SCOPE, strategist_runner.DEGRADED_SEAM): _strategist_seam,
+    (ledger.SOURCE_SCOPE, strategist_runner.DEGRADED_CLOSER): _strategist_closer,
+    (ledger.SOURCE_SCOPE, strategist_runner.DROPPED_STALE): _strategist_stale,
+    (ledger.SOURCE_SCOPE, strategist_runner.DROPPED_LATE): _strategist_late,
+    (ledger.SOURCE_SCOPE, strategist_runner.DROPPED_OVERFLOW): _strategist_overflow,
+    (ledger.SOURCE_SCOPE, strategist_runner.DROPPED_SNAPSHOT): _strategist_snapshot,
+    (ledger.SOURCE_SCOPE, strategist_runner.DROPPED_SUPERSEDED): _strategist_superseded,
+    (ledger.SOURCE_SCOPE, strategist_runner.DROPPED_CADENCE): _strategist_cadence,
     (ledger.SOURCE_LEDGER, ledger.DEGRADED_UNREADABLE_SOURCE): _ledger_unreadable,
 }
 
@@ -1260,6 +1610,48 @@ class TestEveryCodeIsCovered:
 
 
 # ── 1b. …and every covering path is a REAL one ────────────────────────────────
+
+
+class TestTheArchivedMuseLanesAreKeptOnPurpose:
+    """The muse was archived (embodiment#53, ``d2``/``d3``); its lanes were not.
+
+    Task ``t15`` had to decide, for each muse-shaped surface, whether to migrate
+    it onto the scope lane or retire it. For these two the answer was **keep**,
+    and this class is the record of why so a later cleanup pass has to argue
+    with a test rather than delete two constants:
+
+    1. There is nothing to migrate *to*. :data:`~embodiment.ledger.SOURCE_SCOPE`
+       (task ``t3``) harvests :mod:`embodiment.strategist_runner`'s own renamed
+       vocabulary; it was never carved out of the muse lanes.
+    2. Archival cost the muse its place on ``embodiment.__all__``, not its
+       ability to run. A host that names ``embodiment.muse_runner`` still gets a
+       working runner — and a running lane the ledger refuses to read is exactly
+       the silent degradation constraint **C3** exists to forbid.
+    """
+
+    def test_the_thinking_lane_is_still_folded(self) -> None:
+        assert ledger.SOURCE_MUSE in ledger.SOURCES
+
+    def test_the_thread_lane_is_still_folded(self) -> None:
+        assert ledger.SOURCE_MUSE_RUNNER in ledger.SOURCES
+
+    def test_the_archived_lane_still_has_a_reader(self) -> None:
+        runner_codes = {e.code for e in ledger.known_codes() if e.source == ledger.SOURCE_MUSE}
+        assert runner_codes
+
+    def test_an_archived_lane_degradation_still_reaches_a_host(self) -> None:
+        """The end-to-end claim, not just the registry entry."""
+        record = muse.MuseDegradation(code=muse.DEGRADED_THINKING, reason="the seam died")
+        folded = ledger.read(muse=record)
+        assert [r.code for r in folded] == [muse.DEGRADED_THINKING]
+
+    def test_the_scope_lane_did_not_absorb_the_muse_vocabulary(self) -> None:
+        """Reason 1, checked: the two vocabularies never overlapped."""
+        by_lane = {
+            lane: {e.code for e in ledger.known_codes() if e.source == lane}
+            for lane in (ledger.SOURCE_MUSE_RUNNER, ledger.SOURCE_SCOPE)
+        }
+        assert not (by_lane[ledger.SOURCE_MUSE_RUNNER] & by_lane[ledger.SOURCE_SCOPE])
 
 
 class TestNoProvokerTakesThePrivateDoor:
@@ -1627,6 +2019,23 @@ class TestAttribution:
         entry = ledger.known_codes()[0]
         assert set(entry.to_dict()) == {"source", "code", "constant"}
 
+    def test_a_scope_code_and_a_strategist_owned_code_share_one_lane(self) -> None:
+        """The task t3 design point, checked directly: ONE row, no double harvest.
+
+        ``scope.DEGRADED_REVIEW`` is minted while a single review runs;
+        ``strategist_runner.DEGRADED_THREAD`` is minted by the lane that runs
+        reviews on a thread. Both resolve to the SAME source because
+        :mod:`embodiment.strategist_runner` re-exports the first alongside the
+        second, and the ledger reads only that one module's vocabulary.
+        """
+        assert ledger.source_for_code(scope.DEGRADED_REVIEW) == ledger.SOURCE_SCOPE
+        assert ledger.source_for_code(strategist_runner.DEGRADED_THREAD) == ledger.SOURCE_SCOPE
+
+    def test_the_scope_lane_has_no_sibling_row_for_scope_py(self) -> None:
+        """Criterion 1's other half: nothing double-harvests the 11 shared codes."""
+        modules = {module for module, _prefixes, _public in ledger._MODULES.values()}
+        assert "embodiment.scope" not in modules
+
 
 # ── 4. the ledger never raises into the host ──────────────────────────────────
 
@@ -1771,6 +2180,20 @@ class TestRead:
         codes = {(r.source, r.code) for r in records}
         assert (ledger.SOURCE_LOOP, loop.DEGRADED_PROGRESS) in codes
         assert (ledger.SOURCE_LIFECYCLE, lifecycle._FAULT_TRACE_LOST) in codes
+
+    def test_a_strategist_runner_drop_surfaces_through_read_scope(self) -> None:
+        """The task t3 acceptance criterion, literally: a real drop via ``scope=``."""
+        limits = StrategistLimits(max_lag=2, review_gap=0)
+        runner = StrategistRunner(Scripted(_resp(_directive_text())), limits=limits)
+        try:
+            runner.consider(_scope_snapshot(), step_index=1)
+            assert runner.wait_idle(_TIMEOUT)
+            assert runner.drain(step_count=10) == []
+            records = ledger.read(scope=runner)
+        finally:
+            runner.close(timeout=_TIMEOUT)
+        matched = next(r for r in records if r.code == strategist_runner.DROPPED_STALE)
+        assert matched.source == ledger.SOURCE_SCOPE
 
 
 # ── 6. degradation is not incompletion ────────────────────────────────────────

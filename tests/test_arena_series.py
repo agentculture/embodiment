@@ -236,7 +236,7 @@ print(json.dumps({
 '''
 
 
-@pytest.fixture()
+@pytest.fixture
 def stub_seat(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     seat = tmp_path / "stub_seat.py"
     seat.write_text(STUB_SEAT, encoding="utf-8")
@@ -422,7 +422,6 @@ class TestLiveArenaSeries:
         )
         assert rc == 0
         records = [json.loads(ln) for ln in out.read_text(encoding="utf-8").splitlines() if ln]
-        assert records and all(r["ok"] for r in records), [
-            r.get("error") for r in records if not r.get("ok")
-        ]
+        assert records
+        assert all(r["ok"] for r in records), [r.get("error") for r in records if not r.get("ok")]
         assert all(r["replay_sha256"] for r in records)

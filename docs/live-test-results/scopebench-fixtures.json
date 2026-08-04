@@ -1,0 +1,1341 @@
+{
+  "kind": "scopebench-oracle-fixtures",
+  "version": 1,
+  "task": "t9",
+  "read_by": "examples/scope/oracle.py",
+  "committed": "2026-08-03",
+  "note": [
+    "PINNED EXPECTATIONS, not results. Every published ScopeBench number is",
+    "relative to these: the exact optimum, the two declared floors, the Pareto",
+    "frontier over (net utility, spend), and the verified trap and",
+    "do-not-intervene states. tests/test_scopebench_oracle.py recomputes all of",
+    "them and fails on any drift, so a change to a generator or to the solver",
+    "has to be re-pinned in a diff a reviewer sees."
+  ],
+  "episodes": {
+    "contention-1": {
+      "optimum": 69,
+      "floor": 15,
+      "greedy_score": 42,
+      "frontier": [
+        [
+          69,
+          48
+        ],
+        [
+          60,
+          44
+        ],
+        [
+          42,
+          24
+        ],
+        [
+          36,
+          18
+        ],
+        [
+          27,
+          14
+        ],
+        [
+          15,
+          10
+        ],
+        [
+          9,
+          4
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "trap_at_review": 0,
+      "trap_forgone": 27,
+      "hold_at_review": 1,
+      "hold_margin": 42,
+      "solution_sha256": "cb8293915d033b53ff61827a501a4605d50ff99e486216d0690b632cb50acd9a"
+    },
+    "contention-2": {
+      "optimum": 69,
+      "floor": 15,
+      "greedy_score": 41,
+      "frontier": [
+        [
+          69,
+          48
+        ],
+        [
+          60,
+          44
+        ],
+        [
+          43,
+          34
+        ],
+        [
+          41,
+          24
+        ],
+        [
+          35,
+          18
+        ],
+        [
+          26,
+          14
+        ],
+        [
+          15,
+          10
+        ],
+        [
+          9,
+          4
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "trap_at_review": 0,
+      "trap_forgone": 28,
+      "hold_at_review": 1,
+      "hold_margin": 43,
+      "solution_sha256": "c403d8462bd4c0767e4ffdde5a36810b5143e0d8b5fa1b9b4f456d911d5764ef"
+    },
+    "contention-3": {
+      "optimum": 69,
+      "floor": 13,
+      "greedy_score": 40,
+      "frontier": [
+        [
+          69,
+          54
+        ],
+        [
+          61,
+          50
+        ],
+        [
+          42,
+          40
+        ],
+        [
+          40,
+          24
+        ],
+        [
+          35,
+          18
+        ],
+        [
+          27,
+          14
+        ],
+        [
+          13,
+          10
+        ],
+        [
+          8,
+          4
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "trap_at_review": 0,
+      "trap_forgone": 29,
+      "hold_at_review": 1,
+      "hold_margin": 42,
+      "solution_sha256": "2fd82f73f01986bfd40c2e9563a21ce6dd3a1633dfdac8d5478919e33bd1e403"
+    },
+    "contention-4": {
+      "optimum": 69,
+      "floor": 13,
+      "greedy_score": 41,
+      "frontier": [
+        [
+          69,
+          54
+        ],
+        [
+          61,
+          50
+        ],
+        [
+          41,
+          27
+        ],
+        [
+          36,
+          18
+        ],
+        [
+          28,
+          14
+        ],
+        [
+          13,
+          13
+        ],
+        [
+          8,
+          4
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "trap_at_review": 0,
+      "trap_forgone": 28,
+      "hold_at_review": 1,
+      "hold_margin": 41,
+      "solution_sha256": "147f402f45021380eb21f83215d64737c2e028820ea866f02ea1af6067cd6ee4"
+    },
+    "contention-5": {
+      "optimum": 66,
+      "floor": 15,
+      "greedy_score": 15,
+      "frontier": [
+        [
+          66,
+          51
+        ],
+        [
+          58,
+          47
+        ],
+        [
+          41,
+          37
+        ],
+        [
+          40,
+          24
+        ],
+        [
+          33,
+          18
+        ],
+        [
+          25,
+          14
+        ],
+        [
+          15,
+          10
+        ],
+        [
+          8,
+          4
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "trap_at_review": 0,
+      "trap_forgone": 26,
+      "hold_at_review": 1,
+      "hold_margin": 41,
+      "solution_sha256": "40a19e074d225685faeeaea8d4face7e36cd9a400fc82c5723ad9508c77f36d6"
+    },
+    "contention-6": {
+      "optimum": 68,
+      "floor": 14,
+      "greedy_score": 40,
+      "frontier": [
+        [
+          68,
+          51
+        ],
+        [
+          60,
+          47
+        ],
+        [
+          42,
+          37
+        ],
+        [
+          40,
+          27
+        ],
+        [
+          34,
+          18
+        ],
+        [
+          26,
+          14
+        ],
+        [
+          14,
+          13
+        ],
+        [
+          8,
+          4
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "trap_at_review": 0,
+      "trap_forgone": 28,
+      "hold_at_review": 1,
+      "hold_margin": 42,
+      "solution_sha256": "4ec082c780b16762a09cc7668b47555a260db8d5e15263ce91555d9ae3e978c6"
+    },
+    "critical_path-1": {
+      "optimum": 51,
+      "floor": 7,
+      "greedy_score": 15,
+      "frontier": [
+        [
+          51,
+          37
+        ],
+        [
+          44,
+          35
+        ],
+        [
+          36,
+          33
+        ],
+        [
+          15,
+          4
+        ],
+        [
+          8,
+          2
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "trap_at_review": 0,
+      "trap_forgone": 36,
+      "hold_at_review": 0,
+      "hold_margin": 36,
+      "solution_sha256": "4283acf790615a51b4a947b6732261d120901a4e7c3f23e021fa763f6f01ba83"
+    },
+    "critical_path-2": {
+      "optimum": 50,
+      "floor": 7,
+      "greedy_score": 15,
+      "frontier": [
+        [
+          50,
+          35
+        ],
+        [
+          43,
+          33
+        ],
+        [
+          42,
+          32
+        ],
+        [
+          35,
+          30
+        ],
+        [
+          15,
+          5
+        ],
+        [
+          8,
+          3
+        ],
+        [
+          7,
+          2
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "trap_at_review": 0,
+      "trap_forgone": 35,
+      "hold_at_review": 0,
+      "hold_margin": 35,
+      "solution_sha256": "32730eb353860d56408e756c400d0a8e64fb69e82eeaceff9c547f0879808e89"
+    },
+    "critical_path-3": {
+      "optimum": 52,
+      "floor": 6,
+      "greedy_score": 12,
+      "frontier": [
+        [
+          52,
+          39
+        ],
+        [
+          46,
+          36
+        ],
+        [
+          40,
+          33
+        ],
+        [
+          12,
+          6
+        ],
+        [
+          6,
+          3
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "trap_at_review": 0,
+      "trap_forgone": 40,
+      "hold_at_review": 0,
+      "hold_margin": 40,
+      "solution_sha256": "7488519529de47991e3484eca7938cf37c3a56fac5394d4a944285afaf79e5ae"
+    },
+    "critical_path-5": {
+      "optimum": 52,
+      "floor": 6,
+      "greedy_score": 15,
+      "frontier": [
+        [
+          52,
+          35
+        ],
+        [
+          46,
+          32
+        ],
+        [
+          37,
+          30
+        ],
+        [
+          15,
+          5
+        ],
+        [
+          9,
+          2
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "trap_at_review": 0,
+      "trap_forgone": 37,
+      "hold_at_review": 0,
+      "hold_margin": 37,
+      "solution_sha256": "3713dbacbdb9bd1165d7af0554ad4b33ead23bd8568e9d76c24bfe9ea63ebe75"
+    },
+    "critical_path-7": {
+      "optimum": 50,
+      "floor": 6,
+      "greedy_score": 14,
+      "frontier": [
+        [
+          50,
+          39
+        ],
+        [
+          44,
+          36
+        ],
+        [
+          36,
+          33
+        ],
+        [
+          14,
+          6
+        ],
+        [
+          8,
+          3
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "trap_at_review": 0,
+      "trap_forgone": 36,
+      "hold_at_review": 0,
+      "hold_margin": 36,
+      "solution_sha256": "783ed88311f6d917edc6c3bd70f724026068dd4b5a16e9fd45488fd851e069fa"
+    },
+    "critical_path-8": {
+      "optimum": 48,
+      "floor": 6,
+      "greedy_score": 13,
+      "frontier": [
+        [
+          48,
+          35
+        ],
+        [
+          42,
+          32
+        ],
+        [
+          35,
+          30
+        ],
+        [
+          13,
+          5
+        ],
+        [
+          7,
+          2
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "trap_at_review": 0,
+      "trap_forgone": 35,
+      "hold_at_review": 0,
+      "hold_margin": 35,
+      "solution_sha256": "923cf2b7cb2775df4855a71ce7520cec47dededcb64fa54328b01d2c5b3c2f5f"
+    },
+    "allocation-1": {
+      "optimum": 58,
+      "floor": 32,
+      "greedy_score": 46,
+      "frontier": [
+        [
+          58,
+          45
+        ],
+        [
+          51,
+          42
+        ],
+        [
+          39,
+          38
+        ],
+        [
+          32,
+          35
+        ],
+        [
+          26,
+          10
+        ],
+        [
+          19,
+          7
+        ],
+        [
+          7,
+          3
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "trap_at_review": 0,
+      "trap_forgone": 12,
+      "hold_at_review": 0,
+      "hold_margin": 19,
+      "solution_sha256": "d150a33748cf9b3e959a8c49dda1b064c67ea9d60404cc376f56766f096aeb35"
+    },
+    "allocation-2": {
+      "optimum": 58,
+      "floor": 31,
+      "greedy_score": 46,
+      "frontier": [
+        [
+          58,
+          45
+        ],
+        [
+          51,
+          42
+        ],
+        [
+          38,
+          38
+        ],
+        [
+          31,
+          35
+        ],
+        [
+          27,
+          10
+        ],
+        [
+          20,
+          7
+        ],
+        [
+          7,
+          3
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "trap_at_review": 0,
+      "trap_forgone": 12,
+      "hold_at_review": 0,
+      "hold_margin": 19,
+      "solution_sha256": "e5ea8cfbebac642d05b209831836c3e75618463efb0c6e7b4361d1953193750c"
+    },
+    "allocation-3": {
+      "optimum": 61,
+      "floor": 36,
+      "greedy_score": 49,
+      "frontier": [
+        [
+          61,
+          45
+        ],
+        [
+          55,
+          42
+        ],
+        [
+          42,
+          38
+        ],
+        [
+          36,
+          35
+        ],
+        [
+          25,
+          10
+        ],
+        [
+          19,
+          7
+        ],
+        [
+          6,
+          3
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "trap_at_review": 0,
+      "trap_forgone": 12,
+      "hold_at_review": 0,
+      "hold_margin": 18,
+      "solution_sha256": "bdfab393acd137ed4f45bbe3ebcebb61bbf74c7ce140e677419fc1bf6ba69e56"
+    },
+    "allocation-4": {
+      "optimum": 55,
+      "floor": 35,
+      "greedy_score": 49,
+      "frontier": [
+        [
+          55,
+          48
+        ],
+        [
+          41,
+          43
+        ],
+        [
+          35,
+          40
+        ],
+        [
+          26,
+          16
+        ],
+        [
+          20,
+          8
+        ],
+        [
+          6,
+          3
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "trap_at_review": 0,
+      "trap_forgone": 6,
+      "hold_at_review": 0,
+      "hold_margin": 26,
+      "solution_sha256": "153cf51afdb435d58134b678fb91c6c48a4dbc0cb85ebb2de97010108c8b3dd2"
+    },
+    "allocation-6": {
+      "optimum": 51,
+      "floor": 34,
+      "greedy_score": 46,
+      "frontier": [
+        [
+          51,
+          48
+        ],
+        [
+          41,
+          43
+        ],
+        [
+          34,
+          40
+        ],
+        [
+          24,
+          16
+        ],
+        [
+          17,
+          8
+        ],
+        [
+          7,
+          3
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "trap_at_review": 0,
+      "trap_forgone": 5,
+      "hold_at_review": 0,
+      "hold_margin": 22,
+      "solution_sha256": "c7d241b97549b0d0ad58d31e64858897d0583d23eb846a90b818f7dc717cd083"
+    },
+    "allocation-8": {
+      "optimum": 50,
+      "floor": 31,
+      "greedy_score": 45,
+      "frontier": [
+        [
+          50,
+          48
+        ],
+        [
+          38,
+          42
+        ],
+        [
+          31,
+          40
+        ],
+        [
+          26,
+          10
+        ],
+        [
+          19,
+          8
+        ],
+        [
+          7,
+          2
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "trap_at_review": 0,
+      "trap_forgone": 5,
+      "hold_at_review": 0,
+      "hold_margin": 12,
+      "solution_sha256": "36268421e960149761fceae386b5d6c200428edf94796012a20befe014de31cd"
+    },
+    "disruption-5": {
+      "optimum": 45,
+      "floor": 21,
+      "greedy_score": 35,
+      "frontier": [
+        [
+          45,
+          28
+        ],
+        [
+          38,
+          24
+        ],
+        [
+          35,
+          20
+        ],
+        [
+          24,
+          16
+        ],
+        [
+          21,
+          12
+        ],
+        [
+          14,
+          8
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "trap_at_review": 0,
+      "trap_forgone": 10,
+      "hold_at_review": 0,
+      "hold_margin": 10,
+      "solution_sha256": "d288179999de8cce9e794977d77551bafd9721d8b7e93ff3cc237b0a16b6a531"
+    },
+    "disruption-7": {
+      "optimum": 48,
+      "floor": 22,
+      "greedy_score": 37,
+      "frontier": [
+        [
+          48,
+          25
+        ],
+        [
+          41,
+          22
+        ],
+        [
+          37,
+          15
+        ],
+        [
+          22,
+          9
+        ],
+        [
+          15,
+          6
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "trap_at_review": 0,
+      "trap_forgone": 11,
+      "hold_at_review": 0,
+      "hold_margin": 11,
+      "solution_sha256": "fc031201293c5c845da8f5137af91266bd5a6a5dd31377f73b03aa86ae4ee3fe"
+    },
+    "disruption-8": {
+      "optimum": 46,
+      "floor": 19,
+      "greedy_score": 33,
+      "frontier": [
+        [
+          46,
+          25
+        ],
+        [
+          41,
+          22
+        ],
+        [
+          33,
+          15
+        ],
+        [
+          19,
+          9
+        ],
+        [
+          14,
+          6
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "trap_at_review": 0,
+      "trap_forgone": 13,
+      "hold_at_review": 0,
+      "hold_margin": 13,
+      "solution_sha256": "4afb3086c07561e5c9e063acde33407dd57d210aee6847e77581a1b080a7f1cb"
+    },
+    "disruption-9": {
+      "optimum": 46,
+      "floor": 20,
+      "greedy_score": 32,
+      "frontier": [
+        [
+          46,
+          26
+        ],
+        [
+          38,
+          20
+        ],
+        [
+          32,
+          18
+        ],
+        [
+          26,
+          14
+        ],
+        [
+          20,
+          12
+        ],
+        [
+          12,
+          6
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "trap_at_review": 0,
+      "trap_forgone": 14,
+      "hold_at_review": 0,
+      "hold_margin": 14,
+      "solution_sha256": "17bba4548695b1c97aab423f29d47c52ac549c8fc0c784f094ec1ae13534bb14"
+    },
+    "disruption-10": {
+      "optimum": 49,
+      "floor": 22,
+      "greedy_score": 37,
+      "frontier": [
+        [
+          49,
+          28
+        ],
+        [
+          42,
+          22
+        ],
+        [
+          37,
+          18
+        ],
+        [
+          27,
+          16
+        ],
+        [
+          22,
+          12
+        ],
+        [
+          15,
+          6
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "trap_at_review": 0,
+      "trap_forgone": 12,
+      "hold_at_review": 0,
+      "hold_margin": 12,
+      "solution_sha256": "659bd148c8470f1aacd34aedca20ec9b8262377d12d58688b8fdac222d015f28"
+    },
+    "disruption-11": {
+      "optimum": 46,
+      "floor": 18,
+      "greedy_score": 32,
+      "frontier": [
+        [
+          46,
+          25
+        ],
+        [
+          42,
+          19
+        ],
+        [
+          32,
+          18
+        ],
+        [
+          28,
+          13
+        ],
+        [
+          18,
+          12
+        ],
+        [
+          14,
+          6
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "trap_at_review": 0,
+      "trap_forgone": 14,
+      "hold_at_review": 0,
+      "hold_margin": 14,
+      "solution_sha256": "7aeb975f4aa232cf0b138a9b17859158c394520619ec68a8140df2ddc3b1f23d"
+    },
+    "steady_state-1": {
+      "optimum": 44,
+      "floor": 10,
+      "greedy_score": 10,
+      "frontier": [
+        [
+          44,
+          55
+        ],
+        [
+          27,
+          22
+        ],
+        [
+          -19,
+          2
+        ],
+        [
+          -22,
+          0
+        ]
+      ],
+      "trap_at_review": 0,
+      "trap_forgone": 34,
+      "hold_at_review": 1,
+      "hold_margin": 63,
+      "solution_sha256": "59c2fc0e89f5eeac4305a992df99de3f5f40c1da86bcd92b8a488bde1fe38045"
+    },
+    "steady_state-2": {
+      "optimum": 46,
+      "floor": 14,
+      "greedy_score": 14,
+      "frontier": [
+        [
+          46,
+          55
+        ],
+        [
+          28,
+          22
+        ],
+        [
+          -16,
+          4
+        ],
+        [
+          -19,
+          0
+        ]
+      ],
+      "trap_at_review": 0,
+      "trap_forgone": 32,
+      "hold_at_review": 1,
+      "hold_margin": 62,
+      "solution_sha256": "1be6768ae6fb9f1dad6e8e83ad07dd2ca03c9c303cbea80d82b9211d7ef459f8"
+    },
+    "steady_state-3": {
+      "optimum": 45,
+      "floor": 15,
+      "greedy_score": 3,
+      "frontier": [
+        [
+          45,
+          58
+        ],
+        [
+          27,
+          22
+        ],
+        [
+          -15,
+          4
+        ],
+        [
+          -20,
+          0
+        ]
+      ],
+      "trap_at_review": 0,
+      "trap_forgone": 30,
+      "hold_at_review": 1,
+      "hold_margin": 60,
+      "solution_sha256": "2b3079f8e93c5b3398a383edee827bbb3741383f0dc1b735090d109e960f645a"
+    },
+    "steady_state-4": {
+      "optimum": 42,
+      "floor": 9,
+      "greedy_score": -3,
+      "frontier": [
+        [
+          42,
+          60
+        ],
+        [
+          28,
+          24
+        ],
+        [
+          -17,
+          4
+        ],
+        [
+          -22,
+          0
+        ]
+      ],
+      "trap_at_review": 0,
+      "trap_forgone": 33,
+      "hold_at_review": 1,
+      "hold_margin": 59,
+      "solution_sha256": "726e34ddb0285cba19b0954b445ffcd42b535b3e5237af084164f2f6570f3533"
+    },
+    "steady_state-5": {
+      "optimum": 42,
+      "floor": 15,
+      "greedy_score": 3,
+      "frontier": [
+        [
+          42,
+          58
+        ],
+        [
+          24,
+          22
+        ],
+        [
+          -15,
+          4
+        ],
+        [
+          -19,
+          0
+        ]
+      ],
+      "trap_at_review": 0,
+      "trap_forgone": 27,
+      "hold_at_review": 1,
+      "hold_margin": 57,
+      "solution_sha256": "fa7976d46a4275c71760b3ad53db5ae37867a9842827cb5cfc9b5bf92e746cfe"
+    },
+    "steady_state-6": {
+      "optimum": 43,
+      "floor": 12,
+      "greedy_score": 0,
+      "frontier": [
+        [
+          43,
+          60
+        ],
+        [
+          25,
+          24
+        ],
+        [
+          -18,
+          4
+        ],
+        [
+          -21,
+          0
+        ]
+      ],
+      "trap_at_review": 0,
+      "trap_forgone": 31,
+      "hold_at_review": 1,
+      "hold_margin": 61,
+      "solution_sha256": "f6f1e4eb52f821da9f48d3d15d26e37f449389e5b7f65bdd17a17d91053ce946"
+    },
+    "constraint-1": {
+      "optimum": 47,
+      "floor": -12,
+      "greedy_score": 5,
+      "frontier": [
+        [
+          47,
+          30
+        ],
+        [
+          30,
+          21
+        ],
+        [
+          17,
+          9
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "trap_at_review": 0,
+      "trap_forgone": 12,
+      "hold_at_review": 1,
+      "hold_margin": 42,
+      "solution_sha256": "5af2b2c41462e423e63b74c07df4f4dccd6223ed86e6e8e1b87d8b35e6cc9832"
+    },
+    "constraint-2": {
+      "optimum": 48,
+      "floor": -11,
+      "greedy_score": 7,
+      "frontier": [
+        [
+          48,
+          28
+        ],
+        [
+          30,
+          19
+        ],
+        [
+          18,
+          9
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "trap_at_review": 0,
+      "trap_forgone": 11,
+      "hold_at_review": 1,
+      "hold_margin": 41,
+      "solution_sha256": "7efc2693ac2190d05bad796e9b9844b83f00619feafbd5bf94e71eb2a4a4c941"
+    },
+    "constraint-3": {
+      "optimum": 46,
+      "floor": -14,
+      "greedy_score": 0,
+      "frontier": [
+        [
+          46,
+          30
+        ],
+        [
+          32,
+          20
+        ],
+        [
+          14,
+          10
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "trap_at_review": 0,
+      "trap_forgone": 14,
+      "hold_at_review": 1,
+      "hold_margin": 46,
+      "solution_sha256": "254ce5c0b6162bd549b3f75e95c7dfc0b84fd71f9a8dd2cb5bfec77978fd3d84"
+    },
+    "constraint-4": {
+      "optimum": 51,
+      "floor": -11,
+      "greedy_score": 8,
+      "frontier": [
+        [
+          51,
+          28
+        ],
+        [
+          32,
+          18
+        ],
+        [
+          19,
+          10
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "trap_at_review": 0,
+      "trap_forgone": 11,
+      "hold_at_review": 1,
+      "hold_margin": 43,
+      "solution_sha256": "adcdd5a129c6256934e8d0fea28abf8aa7df237eb2467b0e5134bf76c85198cb"
+    },
+    "constraint-5": {
+      "optimum": 49,
+      "floor": -10,
+      "greedy_score": 7,
+      "frontier": [
+        [
+          49,
+          33
+        ],
+        [
+          32,
+          23
+        ],
+        [
+          17,
+          10
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "trap_at_review": 0,
+      "trap_forgone": 10,
+      "hold_at_review": 1,
+      "hold_margin": 42,
+      "solution_sha256": "077271efc4153882d62e406c67e50041310c0e03c48b16318c6a3f84e64e15ab"
+    },
+    "constraint-6": {
+      "optimum": 46,
+      "floor": -13,
+      "greedy_score": 1,
+      "frontier": [
+        [
+          46,
+          28
+        ],
+        [
+          32,
+          18
+        ],
+        [
+          14,
+          10
+        ],
+        [
+          0,
+          0
+        ]
+      ],
+      "trap_at_review": 0,
+      "trap_forgone": 13,
+      "hold_at_review": 1,
+      "hold_margin": 45,
+      "solution_sha256": "190fefc14f1f8fbbc5c27c61a06851bb20db7f6dfb1a8bcbbdf2a507441b37a0"
+    }
+  }
+}

@@ -135,6 +135,58 @@ The standing gap, recorded in the config's `remeasure_when`: this is a ~68×
 extrapolation from 236-token completions. The first committed record of this
 model generating at length should **replace** this entry, not confirm it.
 
+### Which width a calling pattern divides by — `calling_patterns`
+
+```json
+"roles": { "worker": { "calling_patterns": { "scoped_run": {…}, "strategist_cadence": {…} } } }
+```
+
+Added by plan task `t10` (`strategic-scope-governor`) for its risk `r1`.
+`bound_input` answers *what is this role's divisor*; a role measured at four
+widths forces the further question of **whose**. The worker is the only role
+that has one, and the trap is specific: reuse the width-1 reading for a calling
+pattern that is not width 1 and the clock is nearly six times too generous,
+silently.
+
+So each pattern records the reading it **rejected** beside the one it uses, and
+`tests/rate_config.py` refuses any pattern whose chosen divisor is the *faster*
+of the two. A record that could pick the flattering width would be the failure
+`CLAUDE.md` names four times over.
+
+| pattern | divides by | rejected | why, in one line |
+|---|---|---|---|
+| `scoped_run` | `slowest_tok_s` = **12.921** | `by_width.1.mean_tok_s` = 76.426 | a scoped run looks single-threaded from inside `scoped_run.py`, but nothing reserves the worker and the four ScopeBench arms share one deployment |
+| `strategist_cadence` | `mean_tok_s` = **38.873** | `by_width.1.mean_tok_s` = 76.426 | a cadence ratio asks how fast the actor moves *typically*; the floor's job is to stop a clock cutting a turn, and there is no turn to cut |
+
+Two things travel with these and are written out in the config's own `why`:
+
+- **`scoped_run` has no constant to bound yet.** The ScopeBench pre-registration
+  commits `examples/scope/` to introducing no timeout constant and
+  `tests/test_scopebench.py` asserts it by AST, so this entry is the divisor
+  waiting for the Stage-2 seam — there so whoever builds it derives rather than
+  chooses. It is also *not itself a clock*: this role carries
+  `rate_includes_non_generation: true`, so whether the queue allowance is added
+  or already absorbed is decided per (budget, role) by
+  `tests/test_timeout_bounds.py`, never by hand.
+- **`strategist_cadence` carries an assumption about step length.** Its
+  numerator is 1200 tokens — this measurement's own `max_tokens` — standing in
+  for a typical acting step, and nothing here measures the completion-length
+  distribution of a scoped actor. A host dialling the actor at the 16000 raised
+  by deviation `d16` makes `T_actor_step` 411 s and collapses both
+  `DEFAULT_MAX_LAG` and `DEFAULT_REVIEW_GAP` to 1. That is a re-derivation, not
+  a tuning pass.
+
+### The rounded figures a *derivation* quotes — `cited_mean_as`
+
+`cited_as` and `cited_fastest_as` exist so a prose doc's rounded number can be
+checked against the precise one. `t10` added `cited_mean_as` for the same reason
+one layer out: `embodiment/strategist_runner.py` derives `DEFAULT_MAX_LAG` and
+`DEFAULT_REVIEW_GAP` from the worker's mean at **38.9 tok/s**, and no committed
+file published that figure. Nothing divides by it at runtime — but two shipped
+constants rest on it, and a rate that justifies a constant goes stale exactly as
+quietly as one that computes it. `tests/test_timeout_bounds.py` now walks the
+runner's prose and fails any `N tok/s` this config does not publish.
+
 ## The non-generation allowance
 
 ```json
@@ -314,6 +366,11 @@ here today and carry the 21.5–25.4 tok/s band.
    `n_calls`, `n_rate_bearing`, and the `condition` block. Update `caveats` if
    the reason a number is conservative has changed.
 3. Update `sources` / `pending_sources` to the records you just committed.
+   If the role carries `calling_patterns`, re-read each one: `tok_s` and
+   `rejected_tok_s` must still **be** the figures they name, and the loader
+   refuses the file outright if a re-measurement has made a chosen divisor the
+   faster of the pair. A pattern surviving a re-measurement unchanged is a
+   claim, not a default.
 4. Run `uv run pytest tests/test_rate_config.py tests/test_timeout_bounds.py`.
    The first proves the config is complete, internally consistent and matches
    the raw records; the second (task `t2`) re-derives every harness bound from

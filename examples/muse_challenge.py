@@ -118,11 +118,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 from embodiment import (  # noqa: E402
     BoundaryContext,
     ModelResponse,
-    MuseControls,
-    MuseLoop,
     frame_muse,
 )
-from embodiment.muse import COUNSEL_KIND_DURABLE  # noqa: E402
+from embodiment.muse import (  # noqa: E402
+    COUNSEL_KIND_DURABLE,
+    MuseControls,
+    MuseLoop,
+)
 from examples.challenge_config import write_config_preamble  # noqa: E402
 
 DEFAULT_BASE_URL = os.environ.get("EMBODIMENT_BASE_URL", "http://localhost:8001/v1")

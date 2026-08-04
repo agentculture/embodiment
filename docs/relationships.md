@@ -148,7 +148,23 @@ about a different question entirely: *who is the operator talking to?*
 | Loop + presence | `embodiment` | the pump |
 | **Teammate identity** | **Gwen** | who the operator addresses |
 | **Cortex** | Qwen 3.6 27B (`sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP`) | the worker: bounded tool loop, repo actions, final synthesis — **final authority** |
-| **Muse** | Gemma 4 31B (`nvidia/Gemma-4-31B-IT-NVFP4`) | reflective counsel: reframes the problem, challenges assumptions, offers materially different alternatives. Advisory only — **proposes, never decides**; optional |
+| **Strategist** | the `cortex` lobes role (dense Qwen 3.6 27B) | scope above the acting loop: typed, versioned, supersedable directives owning objectives and priorities. Authority-bearing *within* scope; carries no tool, no command, no approval |
+| ~~**Muse**~~ | ~~Gemma 4 31B~~ | **ARCHIVED 2026-08-03** — see below |
+
+> **The muse is archived.** It left the shipped reference architecture on
+> 2026-08-03 (embodiment#53, `strategic-scope-governor` deviations `d2`/`d3`,
+> superseding confirmed claims `c12` and `c32`), following `d15`'s muse-off
+> reference rig. `embodiment/muse.py` and `embodiment/muse_runner.py` are
+> **not deleted** — they stay readable, importable and green, because
+> `embodiment/strategist_runner.py` was copied out of `muse_runner.py` verbatim
+> under the cite-don't-import policy and that citation has to keep resolving to
+> a file you can open. What changed is advertisement: neither module appears on
+> `embodiment.__all__`, and the eighteen `Muse*` names they hoisted are retired,
+> so reaching the lane now means naming `embodiment.muse` explicitly. A host
+> that still wants counsel may wire one; nothing was weakened. Everything below
+> that describes the muse is **retained as the record of what it was and what it
+> measured** — read it as history, not as what ships. The strategist row above
+> is what took its place.
 
 These role names are design metaphors for splitting responsibility across model
 seams, not claims about cognition — [§3](#3-the-function-map--what-each-part-is-for)
@@ -168,7 +184,8 @@ reads.
 
 colleague#352 also names a third role: **senses** (Gemma 4 12B) — intake,
 perception, conversational speak-back. **Senses does not ship in embodiment.**
-This repo ships exactly one actor loop (cortex, with an optional muse);
+This repo ships exactly one actor loop (cortex, with an optional strategist
+above it since the muse's archival);
 colleague's senses coordination loop, and the framing that goes with it,
 stays in colleague. This is not an omission to fill in later — it is a
 confirmed decision (`c30` in the converged frame:
@@ -186,7 +203,13 @@ table that lists senses alongside cortex and muse as something *this package*
 frames is wrong. embodiment frames cortex and an optional muse. Senses, when
 it exists, is colleague's concern.
 
-### The muse: a parallel thread, not a per-boundary consult (deviation `d1`)
+### The muse: a parallel thread, not a per-boundary consult (deviation `d1`) — ARCHIVED
+
+> **Archived 2026-08-03** (embodiment#53). This section is kept as the record of
+> the design and the invariants it proved, because `strategist_runner.py` cites
+> them. It no longer describes the shipped reference architecture; see the
+> archival note in §2 and `embodiment/strategist_runner.py` for the lane that
+> replaced it.
 
 The muse was originally scoped as a synchronous, per-boundary advisory call —
 ask the muse a question at a checkpoint, block, read the answer. That design
@@ -273,14 +296,15 @@ compresses to six words — *senses notice, cortex acts, muse reflects*.
 |---|---|---|
 | **Notice** | take the operator's words in, keep them verbatim, interpret without deciding | `embodiment/perception.py` — the *seam* only (`perceive(interpret=…)`); the senses coordination loop stays colleague's (`c30`, above) |
 | **Act** | plan, choose, call tools, finish — under a step budget, with termination proved structurally | `embodiment/loop.py` |
-| **Reflect / associate** | imagine alternatives, reframe the problem, connect memories, simulate futures, construct meaning — counsel only | `embodiment/muse.py` (the bounded thinking loop) + `embodiment/muse_runner.py` (its thread) |
+| **Reflect / associate** | imagine alternatives, reframe the problem, connect memories, simulate futures, construct meaning — counsel only | **no shipped owner.** `embodiment/muse.py` + `embodiment/muse_runner.py` held this row and were **archived** on 2026-08-03 (embodiment#53); they stay readable and a host may still wire one |
+| **Set scope** | decide what the system is *trying to do* — objectives, priorities, constraints, ownership — above the acting loop, in typed directives that carry no action | `embodiment/scope.py` (the review loop) + `embodiment/strategist_runner.py` (its thread) + `embodiment/scoped_run.py` (the governor). **Opt-in and off by default**: the mechanism is proven live, the value is not — see the salience note below |
 | **Hold working state across a reset** | intent written *before* the act, observation after, so a successor resumes instead of restarting | `embodiment/scratchpad.py` |
 | **Remember** | recall, provenance, consolidation, ageing, forgetting | `eidetic-cli`, reached through `embodiment/continuity.py` |
 | **Relate memory to the present** | quality, meaning, signal, investiture, frames | `coherence-cli`, through the same seam |
 | **Sequence all of it** | when something is perceived, considered, acted on, remembered, revisited — and what is worth keeping | `embodiment/lifecycle.py` |
 | **Stay present between acts** | keep the host attended-to while the acting loop is not producing output | `embodiment/presence_engine.py` + `embodiment/presence.py` |
 | **Report what went wrong** | fold six lanes' degradation vocabularies into one host-visible stream (**C3**) | `embodiment/ledger.py` |
-| **Decide what deserves attention** (salience) | — | **no owner.** Nothing in this repo implements it |
+| **Decide what deserves attention** (salience) | — | **claimed structurally, not earned by measurement.** The strategist tier does set *priorities* (the **Set scope** row above) — that is salience at the level of the objective, and the code exists. What does not exist is a supporting result: `t11`'s ScopeBench Stage 1 returned **`INCONCLUSIVE`** and `t14`'s only matched governed/ungoverned pair applied **zero** directives (below). Salience *within* a step — which of the things in front of the actor right now matters — has no owner at all |
 
 Four things this table is *not*:
 
@@ -300,11 +324,42 @@ Four things this table is *not*:
   sees only a boundary snapshot capped by `MuseControls.max_context_chars` (600
   characters) with no memory in it. Wiring the bundle into the muse's boundary
   rendering, under its own budget, is **(planned)** — plan task `t5`.
-- **Salience really has no owner.** The nearest things in this package answer
-  different questions: `lifecycle.select_for_memory` asks what is worth
-  *remembering* by fixed policy, and `LifecycleConfig.consequential` asks the
-  *host* which actions matter (because embodiment refuses to guess that from a
-  tool name). Neither decides what deserves attention in the first place.
+- **Salience still has no *measured* owner, and the row above says so on
+  purpose.** This bullet used to read "salience really has no owner". That is no
+  longer literally true — `embodiment/scope.py` ships a tier whose directives
+  carry an explicit `priorities` field, so something in the package now answers
+  the question — and it would be equally dishonest to promote the row to *owned*
+  on the strength of the code existing. Honesty condition `h18` fixed the rule
+  before either result was in: *the row is only rewritten when the measurement
+  exists*. It now exists, and it does not support a promotion.
+
+  - [`live-test-results/scopebench.md`](live-test-results/scopebench.md) —
+    ScopeBench Stage 1, `INCONCLUSIVE`. The headline is genuinely good: against
+    a deterministic perfect subordinate, the strategist-led arm improved on the
+    baseline in **all six** scenario families (sign margins +3/+5/+4/+4/+3/+5
+    against a pre-registered threshold of 2), which is the condition that
+    separates a real strategic effect from a stronger actor repairing bad
+    decisions. But two of the seven conditions read from a Stage 2 that was not
+    dialled, and one `ABSENT` forces `INCONCLUSIVE` under the committed rule.
+    The `A2` control that would have removed "the gain is just the extra layer"
+    was **not measured** — 32 of its 36 cells fell below the protocol floor.
+  - [`live-test-results/scope-live-session-1.md`](live-test-results/scope-live-session-1.md)
+    §3 — the newer evidence, and worse for the claim. On a matched pair of runs
+    replaying one identical script, the governed arm spent **189.6 s and 3663
+    strategist completion tokens to apply ZERO directives** and returned a
+    materially identical answer to the ungoverned control — whose justification
+    was arguably the better of the two, being the only one to name the sensor
+    id. Across the long interactive session **69.5% of the strategist's 28,318
+    tokens bought restatement or nothing**, and non-intervention **FAILED**
+    ([#68](https://github.com/agentculture/embodiment/issues/68)). That is n=1
+    and reported as a report, not a measurement.
+
+  The two nearest things in this package still answer different questions:
+  `lifecycle.select_for_memory` asks what is worth *remembering* by fixed
+  policy, and `LifecycleConfig.consequential` asks the *host* which actions
+  matter (because embodiment refuses to guess that from a tool name). Neither
+  decides what deserves attention in the first place, and neither does the
+  strategist at the granularity of a step.
 
 ### Why this map lives here and not in README.md or CLAUDE.md
 
@@ -457,11 +512,13 @@ than take this document's word for it, the scope entry IDs (`s7`, `s9`,
 - **You get:** `embodiment.loop.run(...)` — the bounded perceive-decide-act
   loop with guaranteed termination; the presence pump between acts
   (`PresenceEngine`); continuity across sessions through
-  `build_continuity_fn`, if you inject it; an optional parallel muse via
-  `ThreadedMuseRunner`, if you configure one; and an observable event feed via
-  `EventEmitter`, if you wire one in. Every one of those is optional except
-  the loop itself — an unconfigured host gets today's behavior, byte for
-  byte.
+  `build_continuity_fn`, if you inject it; an optional strategist above the
+  acting loop via `ScopeGovernor` / `StrategistRunner`, if you configure one;
+  and an observable event feed via `EventEmitter`, if you wire one in. Every
+  one of those is optional except the loop itself — an unconfigured host gets
+  today's behavior, byte for byte. (The archived `ThreadedMuseRunner` is still
+  wireable by name, but is no longer part of what this package advertises —
+  embodiment#53.)
 - **It costs:** four base dependencies (`eidetic-cli`, `coherence-cli`,
   `events-cli`, transitively neo4j + pymongo + numpy + httpx + paho-mqtt),
   approved and pinned under deviation `d2`/`d3`, human-gated on every future

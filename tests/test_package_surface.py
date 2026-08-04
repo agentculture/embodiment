@@ -186,7 +186,24 @@ class TestTypeCheckingBlockCannotDrift:
         missing = set(embodiment._SUBMODULES) - self._stub_names()
         assert not missing, f"missing from the TYPE_CHECKING stub: {sorted(missing)}"
 
+    def test_stub_covers_every_archived_submodule(self) -> None:
+        """An archived module is stubbed too — it resolves, so the stub is honest.
+
+        ``embodiment.muse`` / ``embodiment.muse_runner`` left ``__all__`` on
+        2026-08-03 (embodiment#53, deviations ``d2``/``d3``) but not the
+        package: :func:`embodiment.__getattr__` still imports them, because
+        :mod:`embodiment.strategist_runner` cites ``muse_runner.py`` and that
+        citation has to stay openable. A consumer type-checking against the
+        archived lane should see it for the same reason.
+        """
+        missing = set(embodiment.ARCHIVED_SUBMODULES) - self._stub_names()
+        assert not missing, f"missing from the TYPE_CHECKING stub: {sorted(missing)}"
+
     def test_stub_advertises_nothing_extra(self) -> None:
-        known = set(embodiment._LAZY_NAMES) | set(embodiment._SUBMODULES)
+        known = (
+            set(embodiment._LAZY_NAMES)
+            | set(embodiment._SUBMODULES)
+            | set(embodiment.ARCHIVED_SUBMODULES)
+        )
         extra = self._stub_names() - known
         assert not extra, f"stub declares names the runtime cannot resolve: {sorted(extra)}"
