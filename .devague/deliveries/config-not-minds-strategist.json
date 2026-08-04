@@ -1,0 +1,35 @@
+{
+  "plan_slug": "config-not-minds-strategist",
+  "schema_version": 1,
+  "created": "2026-08-04T16:15:07Z",
+  "updated": "2026-08-04T16:15:07Z",
+  "deviations": [
+    {
+      "id": "d1",
+      "what": "the authority lattice encoded is STRICTER than the spec states: c15/c29 say the worker may write senses knowledge but never senses prompts; t3 encoded the full (origin, target) matrix so the worker owns exactly senses.knowledge and nothing else - it also cannot write worker.tools, worker.permissions, worker.prompts or senses.permissions",
+      "task_ref": "t3",
+      "reason": "a seat that can widen its own tool surface is the escalation h11 exists to prevent, and a lattice granting more than the operator stated would be minting authority; stricter than the letter of an operator decision is still a divergence from it, so it is recorded rather than absorbed",
+      "affects": [
+        "c15",
+        "c29",
+        "h11"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable"
+    },
+    {
+      "id": "d2",
+      "what": "a third origin 'host' was added, not present in the spec's two-origin (strategist, worker) model",
+      "task_ref": "t3",
+      "reason": "without it t6's revert-to-baseline must be a privileged back door around the lattice; with it, revert is an ordinary change unit the ledger records like any other - which is what c8's every-transition-recorded requirement wants",
+      "affects": [
+        "c15",
+        "c8"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable"
+    }
+  ]
+}
