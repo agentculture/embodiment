@@ -127,6 +127,18 @@ nothing in the package says so. See the issue linked below.
   mechanism.
 - The scorer is a regex over `\d{1,3}\s*(%|percent)`. It cannot see a fabricated
   value expressed in prose without a unit.
+- **A scorer defect was found and fixed after this run, and it does not affect
+  these numbers.** An empty reply originally scored `abstain` — a correct
+  refusal. It is not one: on a thinking model an empty reply usually means the
+  token budget went to reasoning and nothing visible survived, so crediting it as
+  judgement would score a truncation as good behaviour. `NO_ANSWER` is now a
+  separate verdict. **Senses returned 0 empty replies in all 128 calls**, and
+  re-scoring both committed JSONL files under the corrected scorer moves **0
+  verdicts**, so this baseline stands unchanged. The defect was found by a
+  cross-model arm at the senses seat's 1024-token budget — which is issue #59's
+  failure (a budget sized against the wrong quantity) recurring *inside* the
+  instrument built to study something else. Any thinking-model arm needs its own
+  budget or its refusals cannot be told from its truncations.
 
 ## Reproducing
 
