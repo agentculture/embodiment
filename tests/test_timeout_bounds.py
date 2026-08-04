@@ -1762,6 +1762,18 @@ _NOT_A_MODEL_CLOCK_IN_PACKAGE: Mapping[tuple[str, str], str] = {
         "— the wake event does the work — so it is the cost of a MISSED wakeup, not a "
         "deadline anything is measured against."
     ),
+    ("config_runner", "DEFAULT_JOIN_TIMEOUT"): (
+        "the config lane's copy of the strategist's join bound, on the identical "
+        "daemon-thread discipline: it bounds threading.Thread.join at teardown and "
+        "cannot cut a review short, because a review still in flight is abandoned "
+        "rather than waited for and the abandonment is recorded as a "
+        "config-runner-review-late transition."
+    ),
+    ("config_runner", "DEFAULT_POLL_INTERVAL"): (
+        "the config lane's copy of the poll-wake bound. Correctness never depends on "
+        "it — the wake event does the work — so it is the cost of a MISSED wakeup, "
+        "not a deadline anything is measured against."
+    ),
     ("muse_runner", "DEFAULT_JOIN_TIMEOUT"): (
         "the cited runner's identical join bound, on the identical daemon-thread "
         "discipline. The muse is archived (deviation d2/d3, embodiment#53) and its "
