@@ -1160,6 +1160,59 @@ class TestDirectiveValidation:
         assert second.known == ()
 
 
+class TestScopeAuthorityStatesTheAdmissionRules:
+    """embodiment#58: a rule ``_refuse`` enforces must be a rule stated, not inferred.
+
+    ``ScopeRegister._refuse`` runs four admission checks, in this order:
+    incomplete (no ``scope_id`` or no ``objective``), duplicate ``scope_id``,
+    unknown ``supersedes``, and version not strictly advancing (a tie is
+    refused too). ``SCOPE_AUTHORITY`` is the shipped system message a
+    strategist is graded against — ``examples/scopebench_live.py`` uses it
+    **verbatim** as the system prompt and pins its digest to the run
+    fingerprint — so a rule missing from this text is a rule the strategist
+    was never told, not a strategist mistake. Measured cost of the gap this
+    class closes: 47 of 93 proposals from one model were refused as
+    duplicates in the ScopeBench dial, and both of a live session's completed
+    reviews were thrown away the same way.
+    """
+
+    def test_the_incomplete_rule_is_stated(self):
+        """``scope_id`` and ``objective`` are named as required payload keys."""
+        assert "scope_id" in SCOPE_AUTHORITY
+        assert "objective" in SCOPE_AUTHORITY
+
+    def test_the_duplicate_id_rule_is_stated(self):
+        """The gap this issue names: ``scope_id`` must be NEW, not reused."""
+        assert "must be new" in SCOPE_AUTHORITY
+
+    def test_the_unknown_supersedes_rule_is_stated(self):
+        assert "must name the scope_id you are replacing" in SCOPE_AUTHORITY
+
+    def test_the_version_not_advancing_rule_is_stated(self):
+        assert "strictly greater than the current directive" in SCOPE_AUTHORITY
+
+    def test_all_four_admission_rules_are_stated_together(self):
+        """Ties each admission code to the phrase stating it.
+
+        A future admission rule added to ``_refuse`` without a matching prompt
+        update fails here rather than shipping as another silent gap.
+        """
+        rule_is_stated = {
+            DROPPED_INCOMPLETE: "objective" in SCOPE_AUTHORITY and "scope_id" in SCOPE_AUTHORITY,
+            DROPPED_DUPLICATE: "must be new" in SCOPE_AUTHORITY,
+            DROPPED_UNKNOWN_SUPERSEDES: (
+                "must name the scope_id you are replacing" in SCOPE_AUTHORITY
+            ),
+            DROPPED_VERSION_BACKWARD: (
+                "strictly greater than the current directive" in SCOPE_AUTHORITY
+            ),
+        }
+        admission_codes = set(REFUSAL_CODES) - {DROPPED_AUTHORITY}
+        assert set(rule_is_stated) == admission_codes
+        for code, stated in rule_is_stated.items():
+            assert stated, f"{code} is enforced but no rule for it is stated in SCOPE_AUTHORITY"
+
+
 class TestValidationInsideTheLoop:
     """The same refusals, observed through a review rather than a register."""
 
