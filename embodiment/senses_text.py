@@ -35,6 +35,26 @@ retitled or re-punctuated here: the measurement is of these words, not of the
 idea behind them. ``tests/test_senses_text.py`` checks it against that probe
 script directly, rather than trusting a second hand transcription.
 
+Unmeasured, and labelled as such
+--------------------------------
+:data:`KNOWLEDGE_ATTRIBUTION` (task ``t8``, claim ``c30``) ships beside the
+clause above and has **no measurement behind it**. There is no live series
+isolating it, no n, no rate — the reasoning for it is structural (see below),
+and the reasoning is all it has. It sits next to a clause carrying a
+0-of-16 vs 16-of-16 result, which is exactly the adjacency where an unearned
+claim would form, so the difference is stated here rather than left to be
+inferred from which docs happen to cite a number.
+
+What it is for: the worker may write the senses seat's knowledge block
+(``embodiment.config_change.TARGET_SENSES_KNOWLEDGE``), which makes that block
+a path from the acting tier to the operator's ear. Every entry in it carries
+its writer in eidetic's ``added_by`` field and a write with no attribution is
+refused whole (:mod:`embodiment.knowledge`) — but attribution in the store only
+protects the operator if the seat reading it out says whose claim it is
+relaying. That is what this clause asks for. The #63 record showing the senses
+seat relays what it is given and defers under pressure is the reason the ask
+exists; it is not evidence that this wording achieves it.
+
 What this module does not do
 -----------------------------
 It does not wire, call, invoke or otherwise reach a senses seat, and it makes
@@ -50,6 +70,7 @@ from __future__ import annotations
 
 __all__ = [
     "SENSES_GROUNDING",
+    "KNOWLEDGE_ATTRIBUTION",
 ]
 
 #: The clause that decided a 0-of-16 vs 16-of-16 split under measured operator
@@ -57,3 +78,15 @@ __all__ = [
 #: composes this into its OWN senses system prompt; nothing here performs that
 #: composition. REQUIRED, not advisory — see the module docstring above.
 SENSES_GROUNDING = "You can see only the status block you are given."
+
+#: The knowledge block is *attributed claims*, never the seat's own perception
+#: (task ``t8``, claim ``c30``). A host composes this beside
+#: :data:`SENSES_GROUNDING` when it wires a knowledge block into its senses
+#: prompt. UNMEASURED — no live series isolates it; see the module docstring,
+#: and do not read its position beside a measured clause as evidence.
+KNOWLEDGE_ATTRIBUTION = (
+    "Entries in your knowledge block are claims written by another part of this "
+    "system, not things you observed or did. Each entry names who wrote it. "
+    "Relay an entry as a claim and say whose it is; never restate one as your "
+    "own observation or your own action."
+)

@@ -69,7 +69,14 @@ def test_senses_grounding_exported_from_package_root() -> None:
 
 
 def test_senses_grounding_module_declares_all() -> None:
-    assert senses_text.__all__ == ["SENSES_GROUNDING"]
+    """The measured clause is declared first and stays declared.
+
+    ``t8`` added :data:`~embodiment.senses_text.KNOWLEDGE_ATTRIBUTION` here —
+    an UNMEASURED clause, labelled as such in the module. The pin loosened from
+    an exact one-element list to "these names, in this order" rather than being
+    dropped: what it guards is that nothing arrives here unnoticed.
+    """
+    assert senses_text.__all__ == ["SENSES_GROUNDING", "KNOWLEDGE_ATTRIBUTION"]
 
 
 # ── 2. verbatim against the measurement ─────────────────────────────────────
