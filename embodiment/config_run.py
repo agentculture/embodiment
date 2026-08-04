@@ -829,8 +829,14 @@ class _Configured:
         composed = compose_prompt(self._config)
         if not composed:
             return inner
-        host = _text(inner).strip()
-        return f"{host}\n\n{composed}" if host else composed
+        host = _text(inner)
+        # The host's text is forwarded BYTE-FOR-BYTE, not stripped. This module
+        # documents that nothing the host wrote is dropped, and trailing
+        # whitespace in a prompt is content a host may have chosen — a prompt
+        # layer is not entitled to edit it. Only the emptiness *test* ignores
+        # whitespace, so a prompt that is nothing but blanks still composes to
+        # the configuration alone rather than to a leading void.
+        return f"{host}\n\n{composed}" if host.strip() else composed
 
     def progress(self, inner: Any) -> Any:
         """Watch what the actor actually did. Observe-only, and never raises."""

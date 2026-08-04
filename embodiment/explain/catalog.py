@@ -96,12 +96,9 @@ the robot siblings, never an implication drawn from the name.
   no error anywhere). **T1:** a review boundary is a *tool-step* boundary, so a
   drive whose actor answers in one turn without calling a tool reviews nothing
   while `governor.armed` reads True; read `counts["boundaries_projected"]`, not
-  `outcome.applied`, when asking whether the tier is alive. **T2:**
-  `ConfigLimits.review_gap` defaults to 2 acting steps while the step index
-  restarts at 1 every drive and the runner's cadence memory does not — measured
-  on the documented seam at six drives producing one review, 11 of 12 snapshots
-  skipped (one host, hermetic, n=1). A multi-drive host passes
-  `ConfigLimits(review_gap=0)`. All eight recorded gaps:
+  `outcome.applied`, when asking whether the tier is alive. (T2, a cadence
+  memory that outlived the per-drive step index, was the second — it is FIXED
+  and off the list.) All seven remaining gaps:
   `python examples/three_tier.py traps`.
 - **A directive is delivered text** — `run_scoped` adds no containment of its
   own. A sufficiently credulous actor will act on an operational instruction

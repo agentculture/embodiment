@@ -736,15 +736,15 @@ error anywhere ([#79](https://github.com/agentculture/embodiment/issues/79)):
   strategist activity to scale with tool steps rather than with conversation
   turns, and read `counts["boundaries_projected"]` rather than
   `outcome.applied` when asking whether the tier is alive.
-- **T2 — the review cadence outlives the drive whose step index feeds it.**
-  `ConfigLimits.review_gap` defaults to 2 acting steps, but the step index
-  `run_configured` supplies restarts at 1 every drive while the runner's cadence
-  memory persists across them. Measured on the documented seam: **six drives of
-  two steps each produced one review, with 11 of 12 snapshots skipped by
-  cadence** — one host, hermetic, n=1, so read it as the shape of the failure
-  rather than as a rate. The fix is one constructor argument,
-  `ConfigLimits(review_gap=0)`, that nothing in `ConfigLimits`, `ConfigRunner`,
-  `ConfigGovernor` or `run_configured` tells a multi-drive host to pass.
+- **T2 — FIXED, and it is off the list.** The review cadence used to outlive the
+  drive whose step index fed it: `review_gap` defaults to 2 acting steps while
+  the index `run_configured` supplies restarts every drive, so the difference
+  went negative and blocked every review after the first — measured at **six
+  drives producing one review, 11 of 12 snapshots skipped**. The runner now
+  reads a counter going *backwards* as a restarted sequence, and the same six
+  drives produce six reviews under the default. Found twice independently
+  (`t12`'s wiring pass, then review on PR #81); retired here rather than left
+  standing, which is what the behavioural trap tests exist to force.
 
 The other six are seam gaps rather than incapable-tier traps, and two are worth
 knowing before a first wiring: with no host `system_prompt`, the composed

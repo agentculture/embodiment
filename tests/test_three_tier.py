@@ -679,8 +679,20 @@ class TestTheSeamTraps:
         reviewer2.close()
         assert life2 is not None
 
-    def test_t2_the_default_cadence_starves_a_multi_drive_host(self) -> None:
-        """Six short drives, one review — and one constructor argument fixes it."""
+    def test_the_default_cadence_no_longer_starves_a_multi_drive_host(self) -> None:
+        """T2, FIXED — and this is the regression test that replaced the trap.
+
+        The trap was: ``review_gap`` defaults to 2, ``run_configured`` supplies a
+        per-drive step index that restarts, and the runner's cadence memory did
+        not — so ``step_index - _last_review_step`` went negative and blocked
+        every review after the first. Measured at six drives producing ONE
+        review, 11 of 12 snapshots skipped (embodiment#79, found independently
+        by review on PR #81).
+
+        The runner now reads a counter going BACKWARDS as a restarted sequence
+        rather than as "no steps have passed". A host that wires everything
+        correctly and passes no limits gets a review per drive.
+        """
 
         def drive_six(limits: Optional[ConfigLimits]) -> dict[str, int]:
             reviewer = ConfigRunner(prompt_writer(), role="cortex", limits=limits)
@@ -698,16 +710,31 @@ class TestTheSeamTraps:
             reviewer.close()
             return counts
 
-        starved = drive_six(None)
-        assert starved["reviews_started"] == 1, "the trap: one review for the whole session"
-        assert starved["snapshots_skipped_cadence"] >= 10
+        # The DEFAULT limits — the wiring a stranger writes.
+        default = drive_six(None)
 
-        healthy = drive_six(ConfigLimits(review_gap=0))
-        assert healthy["snapshots_skipped_cadence"] == 0
-        assert healthy["reviews_started"] > starved["reviews_started"]
+        # The cadence DECISION is synchronous (it happens in consider(), on the
+        # actor's thread), so this count is deterministic and is the assertion
+        # that carries the claim. Under the trap it was 11 of 12; now it is 6 —
+        # one skip per drive, which is gap=2 over two steps working as intended.
+        # The trap was skipping ACROSS drives, and that is what is gone.
+        assert default["snapshots_skipped_cadence"] == 6, (
+            "11 of 12 would be the T2 starvation back; 6 is one within-drive "
+            "skip per drive, which is the cadence working"
+        )
+        # reviews_started is incremented on the REVIEW thread, so it is timing
+        # sensitive under a loaded parallel run — asserted as a floor rather
+        # than an equality, because the claim is "every drive gets reviewed",
+        # not "the last one had finished starting when we looked".
+        assert (
+            default["reviews_started"] >= 5
+        ), "one review for six drives would be the T2 starvation back"
 
-        # and the host passes the fix.
-        assert tt.build_parser().parse_args(["talk"]).review_gap == 0
+        # The old mitigation still works and is now merely redundant: gap=0
+        # reviews every snapshot, so nothing is skipped at all.
+        explicit = drive_six(ConfigLimits(review_gap=0))
+        assert explicit["reviews_started"] >= 6
+        assert explicit["snapshots_skipped_cadence"] == 0
 
     def test_t3_a_prompt_change_replaces_the_loops_own_default_prompt(self) -> None:
         """The acting seat silently loses its base framing."""
@@ -882,7 +909,10 @@ class TestTheSeamTraps:
         for trap in tt.SEAM_TRAPS:
             assert trap.id and trap.seam.strip() and trap.symptom.strip() and trap.fix.strip()
         incapable = [trap.id for trap in tt.SEAM_TRAPS if trap.incapable_tier]
-        assert incapable == ["T1", "T2"], "the two true #62-class traps, named as such"
+        assert incapable == ["T1"], (
+            "T1 is the one remaining true #62-class trap; T2 was FIXED on PR #81 "
+            "and came off the list, which is what this class is built to force"
+        )
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────

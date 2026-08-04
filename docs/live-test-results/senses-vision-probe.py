@@ -51,6 +51,9 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+REPO_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(REPO_ROOT / "tests"))
+
 ORIN_URL = "http://orin.tail0be7e0.ts.net:8000/v1"
 SENSES_MODEL = "unsloth/gemma-4-12B-it-qat-w4a16"
 API_KEY_ENV = "COLLEAGUE_API_KEY"
@@ -126,6 +129,40 @@ MOTION_QUESTION = (
 )
 MOTION_TRUTH = "right"
 
+#: The completion budget. Small on purpose — every answer here is a word or two,
+#: and a large budget on the interaction tier is the failure #63 recorded (22
+#: minutes of generation on one turn, which is why hosts bound this seat at
+#: 1024).
+MAX_TOKENS = 128
+
+
+def derive_request_timeout(max_tokens: int = MAX_TOKENS) -> tuple[float, str]:
+    """The clock, derived from the committed rate config — never chosen.
+
+    ``REQUEST_TIMEOUT >= max_tokens / slowest_measured_generation_rate``, plus
+    the committed non-generation allowance, because a client bound also covers
+    queue wait and prefill and this budget is far too small for the rate to have
+    absorbed them.
+
+    **There is no committed rate for the ``senses`` role**, so the divisor is the
+    slowest rate measured for *any* role. That over-protects, which is the safe
+    direction for a bound whose failure mode is censoring the evidence — and it
+    is stated here rather than hidden in a number. The trigger to re-derive is a
+    committed senses rate existing at all.
+    """
+    from rate_config import load_rate_config
+
+    config = load_rate_config()
+    rates = {role: config.rate(role).slowest_tok_s for role in ("cortex", "worker")}
+    role, divisor = min(rates.items(), key=lambda kv: kv[1])
+    allowance = config.non_generation_allowance.seconds
+    bound = max_tokens / divisor + allowance
+    return bound, (
+        f"{max_tokens} tokens / {divisor} tok/s + {allowance:.1f}s non-generation "
+        f"allowance = {bound:.1f}s (slowest committed rate, role {role!r}; there is "
+        "no committed rate for 'senses', so the all-role floor stands in)"
+    )
+
 
 def data_uri(payload: bytes, media_type: str) -> str:
     return f"data:{media_type};base64," + base64.b64encode(payload).decode("ascii")
@@ -142,7 +179,7 @@ def ask(
     payload = {
         "model": model,
         "messages": [{"role": "user", "content": parts}],
-        "max_tokens": 128,
+        "max_tokens": MAX_TOKENS,
         "temperature": 0.0,
     }
     request = urllib.request.Request(
@@ -190,7 +227,12 @@ def main() -> int:
     parser.add_argument("--base-url", default=ORIN_URL)
     parser.add_argument("--model", default=SENSES_MODEL)
     parser.add_argument("--runs", type=int, default=4)
-    parser.add_argument("--timeout", type=float, default=180.0)
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=None,
+        help="override the derived request bound (seconds); omit to derive it",
+    )
     parser.add_argument("--out", default=str(Path(__file__).with_name("senses-vision-probe.jsonl")))
     args = parser.parse_args()
 
@@ -199,6 +241,13 @@ def main() -> int:
         print(f"error: no {API_KEY_ENV} in the environment", file=sys.stderr)
         print(f"hint: export {API_KEY_ENV}=<the gateway's configured key>", file=sys.stderr)
         return 2
+
+    timeout_s = args.timeout
+    if timeout_s is None:
+        timeout_s, provenance = derive_request_timeout()
+    else:
+        provenance = f"operator override: {timeout_s}s"
+    print(f"clock: {provenance}", file=sys.stderr)
 
     png = build_stimulus()
     gif = build_motion_stimulus()
@@ -222,12 +271,14 @@ def main() -> int:
     with out_path.open("w", encoding="utf-8") as handle:
         for cell, parts in cells:
             for run in range(1, args.runs + 1):
-                result = ask(args.base_url, args.model, api_key, parts, args.timeout)
+                result = ask(args.base_url, args.model, api_key, parts, timeout_s)
                 record = {
                     "cell": cell,
                     "run": run,
                     "model": args.model,
                     "base_url": args.base_url,
+                    "timeout_s": round(timeout_s, 1),
+                    "timeout_provenance": provenance,
                     "truth_count": TRUTH_COUNT,
                     "truth_colour": TRUTH_COLOUR,
                     **result,

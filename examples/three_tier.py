@@ -98,12 +98,12 @@ session 1 found it the hard way.
 
 So this host was wired from README, module docstrings, ``pydoc`` and ``explain``
 output only, and **every question that surface could not answer was answered by
-running the seam rather than by opening its source**. Eight such questions came
+running the seam rather than by opening its source**. Seven such questions came
 up. Each is recorded below as data (:data:`SEAM_TRAPS`), reproduced
 behaviourally in ``tests/test_three_tier.py`` so it cannot rot into prose, and
 mitigated at the exact line of this file where the mitigation lives.
 
-Two of them are true #62-class traps — a correct-looking wiring yields a
+One of them is a true #62-class trap — a correct-looking wiring yields a
 strategist that proposes nothing, with no error anywhere:
 
 * **T1 — the review boundary is a TOOL-STEP boundary.** A drive whose actor
@@ -306,22 +306,6 @@ SEAM_TRAPS: tuple[SeamTrap, ...] = (
             "expect strategist activity to scale with tool steps, not with conversation "
             "turns, and read counts['boundaries_projected'] rather than outcome.applied "
             "when asking whether the tier is alive."
-        ),
-        incapable_tier=True,
-    ),
-    SeamTrap(
-        id="T2",
-        seam="embodiment.config_runner.ConfigLimits.review_gap",
-        symptom=(
-            "review_gap defaults to 2 acting steps and the step index run_configured "
-            "supplies restarts at 1 every drive, while the runner's cadence memory persists "
-            "across drives. Measured on the documented seam: six drives of two steps each "
-            "produced ONE review, with 11 of 12 snapshots skipped by cadence. A "
-            "conversational host looks like it has a dead strategist."
-        ),
-        fix=(
-            "a multi-drive host passes ConfigLimits(review_gap=0). Nothing in ConfigLimits, "
-            "ConfigRunner, ConfigGovernor or run_configured says the step index restarts."
         ),
         incapable_tier=True,
     ),

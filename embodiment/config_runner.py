@@ -403,7 +403,10 @@ def _coerce_float(value: Any, default: float) -> float:
         number = float(value)
     except Exception:  # noqa: BLE001  # a junk interval is a default, never a crash
         return default
-    if math.isnan(number) or number <= 0:
+    # isfinite rejects NaN *and* both infinities. An infinite join_timeout would
+    # defeat the bounded-join guarantee this module exists to hold — a shutdown
+    # that waits forever is the failure a bounded join is named for.
+    if not math.isfinite(number) or number <= 0:
         return default
     return number
 
@@ -644,6 +647,15 @@ class ConfigRunner:
             return False
         if _read(work.snapshot, "requested_decision"):
             return False
+        if work.step_index <= self._last_review_step:
+            # The caller's counter went BACKWARDS, so it is a per-drive index
+            # that restarted rather than a monotonic one — `run_configured`
+            # supplies exactly that. Measuring a gap against a reference point
+            # from a previous drive makes the difference negative and blocks
+            # every review for the rest of the process: seam trap T2, measured
+            # at six drives producing one review (embodiment#79). A restart is
+            # a new sequence, so the reference point restarts with it.
+            self._last_review_step = 0
         if (work.step_index - self._last_review_step) >= gap:
             return False
         self._counts["snapshots_skipped_cadence"] += 1

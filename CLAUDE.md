@@ -211,11 +211,12 @@ picture: an unseeded issued chain (#62), an admission rule the prompt never
 stated (#58), a review boundary that is a *tool-step* boundary so a
 conversational turn reviews nothing (T1), and a cadence memory that outlives the
 per-drive step index it reads — six drives, one review, 11 of 12 snapshots
-skipped (T2). None of the four raises. `armed == True` is therefore not evidence
+skipped (T2 — since FIXED, and retired from the trap list). None of the four
+raises. `armed == True` is therefore not evidence
 that a tier is alive; a counter that increments is. That is why this cycle's
 example host records its seam gaps **as data** with behavioural tests, and why
-the two that yield an incapable tier are called out separately from the six that
-are merely under-documented.
+the one that still yields an incapable tier is called out separately from the
+six that are merely under-documented.
 
 Keep this file's claims grounded in checked-in reality. When a section drifts
 ahead of what exists, mark it `(planned)` or move it under a roadmap heading —
