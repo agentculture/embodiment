@@ -5,6 +5,27 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.13.0] - 2026-08-04
+
+### Added
+
+- The configuration lane, opt-in and off by default: the strategist changes configuration rather than minds. `config_change.py` (seven typed change targets, three origins, the authority lattice as data, refuse-whole on any unknown or extra key), `capability.py` (a host-declared catalog — capability changes SELECT among ids the host named and can never MINT one; there is deliberately no `from_executor` constructor), `config_lifecycle.py` (propose → verify → apply with per-seat quiescence, so configuration identity is constant within any single drive), `config_ledger.py` + `config_events.py` (the applied-change ledger, five event kinds, and a schema-versioned payload that fails closed against advisory-era persisted state), `config_revert.py` (revert-to-baseline as an ordinary change plus `RatchetGuard` re-checking cumulative drift against a FIXED baseline), `config_report.py` (effective-config introspection derived from the ledger alone; a state the ledger cannot explain is itself a recorded degradation), `knowledge.py` (the knowledge block riding eidetic — no second store, attribution on eidetic's own `added_by`), and `config_review.py` / `config_runner.py` / `config_run.py` (reasoning, thread and composition, cited out of the advisory lane rather than imported from it)
+- `senses_text.py` — `SENSES_GROUNDING` (the measured clause, verbatim: 16/16 abstention with it, 16/16 fabrication without) and `KNOWLEDGE_ATTRIBUTION`, as composable host text rather than a `frame_senses()` that would cross the colleague boundary
+- `examples/three_tier.py` — the three-tier example host (senses relays, the acting seat acts, the cortex configures) with a matched ungoverned control, and its EIGHT seam traps recorded as data and reproduced behaviourally (#79)
+- ScopeBench cycle 2 — a second pre-registration committed before any dial, with eight conditions, the ratchet arithmetic, a per-change-type three-way verdict ladder, declared protocol floors, an admission pilot, and the config arms as data
+- `tests/test_governance.py::TestStrategistShipsOptInAndOff` — the strategist's opt-in-and-off rule is now held by a guard rather than by memory, with a `TestTheseGuardsCanFail` case proving it can go red
+- Two measurements: the acting seat drives `embodiment.loop.run` (36 runs across 3 pre-registered rungs, 12/12 on every bar, 0 malformed arguments, 0 truncated turns — and all three rungs AT CEILING, so the claim is bounded to acting protocol, not acting quality), and the senses seat sees (image 4/4, motion 4/4, text-only control refuses 0/4, n=4 per cell)
+
+### Changed
+
+- `SCOPE_AUTHORITY` now states all four admission rules — the `scope_id`-must-be-new rule it is graded on was never stated (#58), which refused 47 of 93 proposals in one ScopeBench arm. A test maps each admission refusal code to the phrase stating it, so a rule added to the register without a prompt update fails the suite
+- README, CLAUDE.md and `explain` carry the configuration lane with its value stated as unmeasured, the no-determinism wording (the change is deterministic, the effect is not), the C2 discipline on 'a diverse mind entity', and both #62-class traps documented at the seam
+
+### Fixed
+
+- Documentation drift: CLAUDE.md claimed `tests/test_governance.py` enforced the strategist's opt-in rule when the word 'strategist' appeared nowhere in that file; README and CLAUDE.md described #58 as an open trap after it was fixed; `examples/three_tier.py`'s docstring said six seam traps while its data held eight, with no test checking the number (one now exists, proved red first)
+- `embodiment/knowledge.py` never-raise defect found while writing its tests: a non-Mapping record from a hostile store reached `dict(record)` and raised `ValueError` out of the seam into a host's read path; it is now dropped with a recorded degradation
+
 ## [0.12.0] - 2026-08-03
 
 ### Added
