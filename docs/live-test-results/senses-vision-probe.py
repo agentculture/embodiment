@@ -49,7 +49,7 @@ import time
 import urllib.error
 import urllib.request
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any
 
 ORIN_URL = "http://orin.tail0be7e0.ts.net:8000/v1"
 SENSES_MODEL = "unsloth/gemma-4-12B-it-qat-w4a16"
