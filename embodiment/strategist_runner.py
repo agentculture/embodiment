@@ -1093,7 +1093,9 @@ class StrategistRunner:
         except Exception as exc:  # a dead worker is recorded, never silent
             with self._lock:
                 self._degrade(DEGRADED_WORKER, f"{type(exc).__name__}: {exc}")
-        except BaseException as exc:  # noqa: B036 - recorded, then re-raised
+        # Recorded, then re-raised on the line below — the record must not cost
+        # the exception its meaning.
+        except BaseException as exc:
             with self._lock:
                 self._degrade(DEGRADED_WORKER, f"{type(exc).__name__}: {exc}")
             raise
