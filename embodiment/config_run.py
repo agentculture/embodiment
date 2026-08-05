@@ -413,7 +413,14 @@ class ConfigGovernor:
             means no reviewer: the seat still runs under its configured prompt,
             and nothing proposes a change.
         projector: the host's :data:`ConfigProjectorFn`. Without one no snapshot
-            is ever built — this module never infers what the rig means.
+            is ever built — this module never infers what the rig means. It is
+            called at every **boundary**, and a boundary is *one completed tool
+            step, or the end of the drive* — never a model turn. A drive that
+            answers in one turn without calling a tool therefore has exactly one
+            boundary, its last. Say this out loud rather than leaving it to
+            inference: when it was unstated and the drive-end boundary did not
+            exist, a correct-looking wiring produced a tier that proposed nothing
+            with every counter at zero (seam trap T1).
         ledger: the applied-change ledger
             (:class:`~embodiment.config_ledger.ConfigLedger`). Absent, applies
             are still recorded as transitions and events; what is lost is
@@ -535,6 +542,14 @@ def run_configured(
             ``controls``, ``model``, …), forwarded verbatim. An unknown keyword
             is refused by ``run``'s own signature, which is what makes "no new
             ``run`` parameter" a structural fact rather than a promise.
+
+    The unit of a **boundary**, because the whole tier's liveness depends on it
+    and leaving it to inference cost a live session: the strategist is offered a
+    projection at *each completed tool step, and once at the end of the drive*.
+    It is **not** offered one per model turn. So strategist activity scales with
+    tool use plus drives — never with conversation turns — and the honest health
+    check on an armed lane is ``counts["boundaries_projected"]``, which is at
+    least 1 for any drive that ran at all.
 
     Returns:
         A :class:`ConfiguredOutcome` carrying ``run``'s own outcome object plus
@@ -676,8 +691,23 @@ class _Configured:
         seat marked busy: a seat this lifecycle still believes is working would
         hold its own configuration hostage forever, which is the one failure this
         gate can produce and must therefore never produce silently.
+
+        The drive's END is a boundary, and this is where it is taken. It used to
+        be that the ONLY boundaries were tool steps, because ``_offer`` was
+        reached exclusively from ``_note_step`` — so a drive whose actor answered
+        in one turn without calling a tool projected nothing, reviewed nothing
+        and proposed nothing while ``armed`` read ``True`` and no degradation was
+        recorded anywhere. That was seam trap T1, and a conversational host
+        answers many turns exactly that way.
+
+        Taken here, before ``end_run``, so the snapshot describes the drive that
+        just ran. It cannot change THIS drive: the review is asynchronous and the
+        gate below runs immediately, which is the point — configuration identity
+        stays constant within a single drive, and turn N's projection configures
+        turn N+1.
         """
         if self._on:
+            self._offer()
             self._end()
             self._advance("after the drive closed and the seat went idle")
             self._drain()

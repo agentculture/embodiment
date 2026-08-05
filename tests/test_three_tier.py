@@ -648,11 +648,22 @@ class TestTheSeamTraps:
         recorded = {trap.id for trap in tt.SEAM_TRAPS}
         assert recorded <= proved, f"traps with no reproduction: {sorted(recorded - proved)}"
 
-    def test_t1_a_drive_with_no_tool_call_reviews_nothing(self) -> None:
-        """The review boundary is a TOOL-STEP boundary, and nothing says so."""
+    def test_t1_a_drive_with_no_tool_call_still_reviews_at_the_drive_end(self) -> None:
+        """T1, FIXED — and this is the regression test that replaced the trap.
+
+        The trap was: ``_offer`` was reached only from ``_note_step``, the
+        per-TOOL-step observer, so a drive whose actor answered in one turn
+        without calling a tool projected nothing, reviewed nothing and proposed
+        nothing — every counter zero while ``governor.armed`` read ``True`` and
+        no degradation was recorded anywhere. A conversational host answers many
+        turns exactly that way, so the tier was dead for a whole class of host.
+
+        ``finish`` now takes the drive's end as a boundary. One tool-less drive
+        is one boundary, not zero.
+        """
         reviewer = ConfigRunner(prompt_writer(), role="cortex", limits=ConfigLimits(review_gap=0))
         life, governor = lane(reviewer=reviewer, projector=varying_projector)
-        assert governor.armed is True, "the wiring looks entirely correct"
+        assert governor.armed is True
 
         outcome = run_configured(
             OneTurnActor(),
@@ -661,27 +672,48 @@ class TestTheSeamTraps:
             max_steps=6,
             governor=governor,
         )
-        assert outcome.counts["steps_observed"] == 0
-        assert outcome.counts["boundaries_projected"] == 0
-        assert outcome.applied == ()
-        assert life.proposals() == ()
-        assert outcome.degradations == (), "and nothing anywhere reports a problem"
+        reviewer.wait_idle(10.0)
+        assert outcome.counts["steps_observed"] == 0, "still no tool step — that is the point"
+        assert outcome.counts["boundaries_projected"] == 1, "the drive's end IS a boundary"
+        assert outcome.counts["snapshots_offered"] == 1
+        assert reviewer.counts["reviews_started"] == 1, "and the reviewer actually looked"
+        assert outcome.degradations == ()
         reviewer.close()
+        assert life is not None
 
-        # the same wiring, with an actor that calls one tool: the tier is alive.
-        reviewer2 = ConfigRunner(prompt_writer(), role="cortex", limits=ConfigLimits(review_gap=0))
-        life2, governor2 = lane(reviewer=reviewer2, projector=varying_projector)
-        run_configured(
-            StepActor(steps=2),
-            Task(id="t", repo_path=".", instruction="q"),
-            executor=NullExecutor(),
-            max_steps=6,
-            governor=governor2,
+    def test_t1_a_purely_conversational_host_actually_gets_configured(self) -> None:
+        """The claim T1 is really about: a projection nobody applies is still dead.
+
+        A counter that increments is not proof a tier is alive — that is this
+        cycle's own lesson. So this drives a tool-less actor five turns, as a
+        chat host would, and asks whether configuration LANDS. It does, one turn
+        later than it is proposed: the review is asynchronous and the gate runs
+        before it finishes, so turn N's projection configures turn N+1. Turn 0
+        therefore applies nothing, and that lag is asserted rather than hidden.
+        """
+        reviewer = ConfigRunner(prompt_writer(), role="cortex", limits=ConfigLimits(review_gap=0))
+        life, governor = lane(reviewer=reviewer, projector=varying_projector)
+        actor = OneTurnActor()
+
+        applied_per_turn = []
+        for index in range(5):
+            outcome = run_configured(
+                actor,
+                Task(id=f"turn{index}", repo_path=".", instruction="q"),
+                executor=NullExecutor(),
+                max_steps=6,
+                governor=governor,
+            )
+            reviewer.wait_idle(10.0)
+            applied_per_turn.append(len(outcome.applied))
+
+        assert applied_per_turn[0] == 0, "turn 0's review cannot have finished before its own gate"
+        assert sum(applied_per_turn) >= 3, (
+            f"a conversational host must actually get configured; applied per turn "
+            f"was {applied_per_turn}"
         )
-        reviewer2.wait_idle(10.0)
-        assert reviewer2.counts["snapshots_offered"] > 0
-        reviewer2.close()
-        assert life2 is not None
+        assert len(life.effective("worker").prompt) >= 1, "and the configuration is EFFECTIVE"
+        reviewer.close()
 
     def test_the_default_cadence_no_longer_starves_a_multi_drive_host(self) -> None:
         """T2, FIXED — and this is the regression test that replaced the trap.
@@ -719,9 +751,8 @@ class TestTheSeamTraps:
 
         # The cadence DECISION is synchronous (it happens in consider(), on the
         # actor's thread), so this count is deterministic and is the assertion
-        # that carries the claim. Under the trap it was 11 of 12; now it is 6 —
-        # one skip per drive, which is gap=2 over two steps working as intended.
-        # The trap was skipping ACROSS drives, and that is what is gone.
+        # that carries the claim. The trap was skipping ACROSS drives, and that
+        # is what is gone.
         #
         # That "deterministic" was FALSE when first written and this assertion
         # was ~27% flaky (11 of 40 unloaded trials returned 5, and it went red
@@ -729,11 +760,26 @@ class TestTheSeamTraps:
         # written by the REVIEW thread in `_take`, so drive 0's second snapshot
         # was only skipped when the worker happened to have dequeued already.
         # `_cadence_blocks` now reads actor-thread state only, which is what
-        # makes the sentence above true rather than aspirational. The guard
-        # below pins it structurally so it cannot silently stop being true.
-        assert default["snapshots_skipped_cadence"] == 6, (
-            "11 of 12 would be the T2 starvation back; 6 is one within-drive "
-            "skip per drive, which is the cadence working"
+        # makes the sentence above true rather than aspirational. The guard in
+        # tests/test_config_runner.py pins that structurally.
+        #
+        # The expected value is DERIVED, not observed-and-pasted. Six drives now
+        # produce three boundaries each — step 1, step 2, and the drive's end
+        # (T1's fix) — so 18 offers, of which 7 are skipped:
+        #
+        #   drive 0: step 1 is the first offer ever, so it is ungated and sets
+        #            the reference to 1; step 2 (2-1=1 < gap 2) and the drive-end
+        #            offer (also index 2) are both skipped         -> 2 skips
+        #   drives 1-5: the previous drive's reference sits at index 2, so this
+        #            drive's step-1 offer restarts it to 0 and is skipped
+        #            (1-0=1 < 2); step 2 and the drive-end offer then both clear
+        #            the gap                                       -> 1 skip each
+        #
+        # 2 + 5x1 = 7, measured at 40 of 40 trials. Under the trap it was 11 of
+        # 12 — starvation across drives, which is what these numbers refute.
+        assert default["snapshots_skipped_cadence"] == 7, (
+            "11 of 12 would be the T2 starvation back; 7 of 18 is one skipped "
+            "snapshot per drive plus drive 0's extra, which is the cadence working"
         )
         # reviews_started is incremented on the REVIEW thread, so it is timing
         # sensitive under a loaded parallel run — asserted as a floor rather
@@ -884,8 +930,11 @@ class TestTheSeamTraps:
             max_steps=8,
             governor=governor,
         )
-        assert outcome.counts["boundaries_projected"] == 3
-        assert outcome.counts["snapshots_unchanged"] >= 2
+        # Four boundaries for three tool steps: the drive's end is the fourth
+        # (T1's fix). A stable projector still costs exactly one review — which
+        # is the whole claim of T7, and the drive-end boundary does not weaken it.
+        assert outcome.counts["boundaries_projected"] == 4
+        assert outcome.counts["snapshots_unchanged"] >= 3
         assert outcome.counts["snapshots_offered"] == 1
         reviewer.close()
 
@@ -925,9 +974,12 @@ class TestTheSeamTraps:
             assert trap.symptom.strip()
             assert trap.fix.strip()
         incapable = [trap.id for trap in tt.SEAM_TRAPS if trap.incapable_tier]
-        assert incapable == ["T1"], (
-            "T1 is the one remaining true #62-class trap; T2 was FIXED on PR #81 "
-            "and came off the list, which is what this class is built to force"
+        assert incapable == [], (
+            "no recorded trap yields an incapable tier any more — T2 was FIXED on "
+            "PR #81 and T1 after it, and both came off the list. What is left are "
+            f"seam GAPS, which are under-documented rather than dead: {incapable}. "
+            "A new trap that makes the tier propose nothing belongs here with "
+            "incapable_tier=True, and this assertion is what forces that choice."
         )
 
 
