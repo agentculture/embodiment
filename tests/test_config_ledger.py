@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import ast
 import json
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 from typing import Any, Optional
 
@@ -474,7 +475,7 @@ class TestConfigPersistence:
 
     def test_frozen(self) -> None:
         port = ConfigPersistence()
-        with pytest.raises(Exception):
+        with pytest.raises(FrozenInstanceError):
             port.load = lambda: {}  # type: ignore[misc]
 
     def test_structurally_identical_to_scope_persistence(self) -> None:

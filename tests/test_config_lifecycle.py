@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import ast
 import hashlib
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -974,9 +975,10 @@ class TestPerSeatConstancy:
         """Layer one of the invariant: the handed-out config is frozen."""
         life = _lifecycle()
         run = life.begin_run(SEAT_WORKER)
-        with pytest.raises(Exception):
-            run.config = SeatConfig(seat=SEAT_WORKER, prompt=(PromptSection("x", "X"),))
-        with pytest.raises(Exception):
+        replacement = SeatConfig(seat=SEAT_WORKER, prompt=(PromptSection("x", "X"),))
+        with pytest.raises(FrozenInstanceError):
+            run.config = replacement
+        with pytest.raises(FrozenInstanceError):
             run.config.prompt = ()
 
 

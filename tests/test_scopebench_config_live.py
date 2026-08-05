@@ -989,8 +989,9 @@ class TestTheHermeticScaffoldIsUnchanged:
 
 class TestTheCli:
     def test_stage_two_requires_an_arm(self) -> None:
+        parser = sl.build_parser()
         with pytest.raises(SystemExit):
-            sl.build_parser().parse_args(["stage2"])
+            parser.parse_args(["stage2"])
 
     def test_stage_two_takes_every_cycle_two_arm(self) -> None:
         for arm in sb.CYCLE_TWO_ARMS:
@@ -998,8 +999,9 @@ class TestTheCli:
             assert args.arm == arm
 
     def test_the_pilot_only_takes_a_seated_arm(self) -> None:
+        parser = sl.build_parser()
         with pytest.raises(SystemExit):
-            sl.build_parser().parse_args(["pilot", "--arm", sb.ARM_A0])
+            parser.parse_args(["pilot", "--arm", sb.ARM_A0])
 
     def test_the_report_can_apply_the_cycle_two_rule(self) -> None:
         args = sl.build_parser().parse_args(["report", "--rule", "config"])

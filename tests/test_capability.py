@@ -25,7 +25,7 @@ that place, and these tests hold its four load-bearing properties:
 from __future__ import annotations
 
 import ast
-from dataclasses import fields, is_dataclass
+from dataclasses import FrozenInstanceError, fields, is_dataclass
 from pathlib import Path
 
 import pytest
@@ -61,7 +61,7 @@ class TestACapabilityIsANameNotADefinition:
     def test_capability_is_a_frozen_dataclass(self) -> None:
         assert is_dataclass(Capability)
         cap = Capability(capability_id="fs.read", kind=CAPABILITY_KIND_TOOL)
-        with pytest.raises(Exception):  # noqa: B017  # FrozenInstanceError is an Exception
+        with pytest.raises(FrozenInstanceError):
             cap.capability_id = "other"  # type: ignore[misc]
 
     def test_no_field_can_carry_an_implementation(self) -> None:
@@ -299,5 +299,5 @@ class TestTheCatalogRoundTrips:
         assert CapabilityCatalog.from_dict(42) == EMPTY_CATALOG
 
     def test_the_catalog_is_frozen(self) -> None:
-        with pytest.raises(Exception):  # noqa: B017  # FrozenInstanceError is an Exception
+        with pytest.raises(FrozenInstanceError):
             _catalog().catalog_id = "other"  # type: ignore[misc]

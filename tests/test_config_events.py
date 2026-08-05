@@ -12,6 +12,7 @@ tier: no import of the advisory lane's modules.
 from __future__ import annotations
 
 import ast
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 from typing import Any
 
@@ -262,7 +263,7 @@ class TestEventShape:
 
     def test_frozen(self) -> None:
         event = proposed_event(_change())
-        with pytest.raises(Exception):
+        with pytest.raises(FrozenInstanceError):
             event.kind = "tampered"  # type: ignore[misc]
 
 

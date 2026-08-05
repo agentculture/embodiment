@@ -26,7 +26,7 @@ redesign rests on them (spec claims ``c2``/``h6``, ``c15``/``h3``,
 from __future__ import annotations
 
 import ast
-from dataclasses import fields, is_dataclass
+from dataclasses import FrozenInstanceError, fields, is_dataclass
 from pathlib import Path
 from typing import Any
 
@@ -166,7 +166,7 @@ class TestTheVocabularyIsClosed:
         for target, unit in CHANGE_UNITS.items():
             assert is_dataclass(unit), target
             assert unit.TARGET == target
-            with pytest.raises(Exception):  # noqa: B017  # FrozenInstanceError
+            with pytest.raises(FrozenInstanceError):
                 unit().change_id = "x"  # type: ignore[misc]
 
     def test_the_three_shape_families_partition_the_targets(self) -> None:
@@ -631,15 +631,17 @@ class TestNothingIsSilentlyDropped:
 
     def test_an_empty_offer_is_an_empty_result(self) -> None:
         result = admit_changes([], catalog=_catalog())
-        assert result.accepted == () and result.refusals == ()
+        assert result.accepted == ()
+        assert result.refusals == ()
 
     def test_a_non_iterable_offer_degrades_rather_than_raising(self) -> None:
         result = admit_changes(None, catalog=_catalog())
-        assert result.accepted == () and result.refusals == ()
+        assert result.accepted == ()
+        assert result.refusals == ()
 
     def test_the_result_is_frozen(self) -> None:
         result = admit_changes([], catalog=_catalog())
-        with pytest.raises(Exception):  # noqa: B017  # FrozenInstanceError
+        with pytest.raises(FrozenInstanceError):
             result.accepted = ()  # type: ignore[misc]
 
 
