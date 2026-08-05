@@ -722,6 +722,15 @@ class TestTheSeamTraps:
         # that carries the claim. Under the trap it was 11 of 12; now it is 6 —
         # one skip per drive, which is gap=2 over two steps working as intended.
         # The trap was skipping ACROSS drives, and that is what is gone.
+        #
+        # That "deterministic" was FALSE when first written and this assertion
+        # was ~27% flaky (11 of 40 unloaded trials returned 5, and it went red
+        # on CI): the gate read `reviews_started` and `_last_review_step`, both
+        # written by the REVIEW thread in `_take`, so drive 0's second snapshot
+        # was only skipped when the worker happened to have dequeued already.
+        # `_cadence_blocks` now reads actor-thread state only, which is what
+        # makes the sentence above true rather than aspirational. The guard
+        # below pins it structurally so it cannot silently stop being true.
         assert default["snapshots_skipped_cadence"] == 6, (
             "11 of 12 would be the T2 starvation back; 6 is one within-drive "
             "skip per drive, which is the cadence working"

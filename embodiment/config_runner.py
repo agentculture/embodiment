@@ -547,10 +547,21 @@ class ConfigRunner:
         self._ledger: deque[ConfigDegradation] = deque(maxlen=MAX_LEDGER)
         self._failures = 0
         self._observed_step = 0
-        #: The acting step the most recently STARTED review was about. Written by
-        #: ``_take`` on the worker thread, read by ``_cadence_blocks`` on the
-        #: actor's — both under the lock.
-        self._last_review_step = 0
+        #: Cadence state, and it is deliberately ACTOR-THREAD-ONLY: written and
+        #: read in ``_offer``/``_cadence_blocks``, both on the caller's thread and
+        #: both under the lock. It used to be the step and count of the most
+        #: recently STARTED review, which the WORKER thread wrote in ``_take`` —
+        #: so whether a snapshot was gated depended on whether the reviewer had
+        #: got round to dequeuing yet. Measured at 11 of 40 unloaded trials
+        #: returning 5 skips instead of 6, and red on CI.
+        #:
+        #: Accept-time is also the more faithful reference point. Cadence rate
+        #: limits what the lane is ASKED to review; a snapshot that is accepted
+        #: and then displaced by a newer projection still consumed that
+        #: opportunity, and displacement is separately counted
+        #: (``snapshots_displaced``) rather than lost.
+        self._accepted_step = 0
+        self._accepted_reviews = 0
         self._counts = {
             # intake — what happened to snapshots offered to the lane
             "snapshots_offered": 0,
@@ -615,6 +626,11 @@ class ConfigRunner:
                     step_index=self._pending.step_index,
                 )
             self._pending = work
+            # Accepted: this snapshot has consumed a cadence opportunity, whether
+            # or not the worker ever gets to dequeue it. Set here, on the actor's
+            # thread and under the same lock the gate reads it under.
+            self._accepted_reviews += 1
+            self._accepted_step = work.step_index
             self._observed_step = max(self._observed_step, work.step_index)
             self._idle.clear()
         if not self.start():
@@ -636,18 +652,24 @@ class ConfigRunner:
         Four ways through, and each is a decision rather than a special case:
 
         * ``review_gap <= 0`` — a host that turned cadence off;
-        * no review has started yet — the first one is never gated;
+        * nothing has been accepted for review yet — the first one is never
+          gated;
         * the snapshot carries a ``requested_decision`` — an explicit escalation
           from the host is a question, not a cadence tick;
         * ``step_index <= 0`` — cadence is a step DISTANCE, and a host that
           supplies no steps has none to measure.
+
+        Every value this reads is written on the caller's own thread (see
+        :attr:`_accepted_step`), so the decision is a function of the actor's
+        step sequence alone. It is not merely deterministic-in-practice: there is
+        no worker-thread state left in it to race against.
         """
         gap = self._limits.review_gap
-        if gap <= 0 or self._counts["reviews_started"] == 0 or work.step_index <= 0:
+        if gap <= 0 or self._accepted_reviews == 0 or work.step_index <= 0:
             return False
         if _read(work.snapshot, "requested_decision"):
             return False
-        if work.step_index <= self._last_review_step:
+        if work.step_index <= self._accepted_step:
             # The caller's counter went BACKWARDS, so it is a per-drive index
             # that restarted rather than a monotonic one — `run_configured`
             # supplies exactly that. Measuring a gap against a reference point
@@ -655,14 +677,14 @@ class ConfigRunner:
             # every review for the rest of the process: seam trap T2, measured
             # at six drives producing one review (embodiment#79). A restart is
             # a new sequence, so the reference point restarts with it.
-            self._last_review_step = 0
-        if (work.step_index - self._last_review_step) >= gap:
+            self._accepted_step = 0
+        if (work.step_index - self._accepted_step) >= gap:
             return False
         self._counts["snapshots_skipped_cadence"] += 1
         self._record(
             RUNNER_DROPPED_CADENCE,
-            f"snapshot {_label(work.snapshot)!r} arrived {work.step_index - self._last_review_step}"
-            f" step(s) after the last review started; the cadence gap is {gap}",
+            f"snapshot {_label(work.snapshot)!r} arrived {work.step_index - self._accepted_step}"
+            f" step(s) after the last accepted review; the cadence gap is {gap}",
             step_index=work.step_index,
         )
         return True
@@ -905,7 +927,6 @@ class ConfigRunner:
                 self._idle.set()
                 return None
             self._counts["reviews_started"] += 1
-            self._last_review_step = work.step_index
             return work
 
     def _absorb(self, outcome: ConfigOutcome) -> None:

@@ -681,3 +681,100 @@ class TestCitedNotCoupled:
         source = _SOURCE.read_text(encoding="utf-8")
         assert "ToolExecutor" not in source
         assert "tool_calls" not in source
+
+
+# ── 11. the cadence decision is actor-local ───────────────────────────────────
+
+
+def _method(name: str) -> ast.FunctionDef:
+    """The named method of :class:`ConfigRunner`, as AST."""
+    for node in ast.walk(_tree()):
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return node
+    raise AssertionError(f"{name} is not defined in config_runner.py")
+
+
+def _self_attrs(node: ast.AST, ctx: type) -> set[str]:
+    """``self.X`` attribute names used in *node* under load or store context."""
+    found: set[str] = set()
+    for child in ast.walk(node):
+        if (
+            isinstance(child, ast.Attribute)
+            and isinstance(child.value, ast.Name)
+            and child.value.id == "self"
+            and isinstance(child.ctx, ctx)
+        ):
+            found.add(child.attr)
+    return found
+
+
+def _counts_keys(node: ast.AST) -> set[str]:
+    """The ``self._counts["k"]`` keys touched anywhere in *node*."""
+    found: set[str] = set()
+    for child in ast.walk(node):
+        if (
+            isinstance(child, ast.Subscript)
+            and isinstance(child.value, ast.Attribute)
+            and child.value.attr == "_counts"
+            and isinstance(child.slice, ast.Constant)
+            and isinstance(child.slice.value, str)
+        ):
+            found.add(child.slice.value)
+    return found
+
+
+class TestTheCadenceDecisionIsActorLocal:
+    """The gate must not read state the review thread writes.
+
+    It used to. ``_cadence_blocks`` gated on ``reviews_started`` and
+    ``_last_review_step``, both written by ``_take`` on the WORKER thread, so
+    whether a snapshot was skipped depended on whether the reviewer had got
+    round to dequeuing. Measured at 11 of 40 unloaded trials returning 5 skips
+    where the T2 regression test asserts 6, and red on CI.
+
+    This is pinned structurally rather than by repeating the timing test,
+    because a race that reproduces 27% of the time is not something a test run
+    can be trusted to catch.
+    """
+
+    def test_the_gate_reads_no_attribute_the_worker_writes(self) -> None:
+        worker_writes = _self_attrs(_method("_take"), ast.Store)
+        gate_reads = _self_attrs(_method("_cadence_blocks"), ast.Load)
+        shared = worker_writes & gate_reads
+        assert not shared, (
+            f"_cadence_blocks runs on the actor's thread but reads {sorted(shared)}, "
+            "which _take writes on the worker's — that is the race back"
+        )
+
+    def test_the_gate_shares_no_counter_with_the_worker(self) -> None:
+        assert not (_counts_keys(_method("_take")) & _counts_keys(_method("_cadence_blocks")))
+
+    def test_the_accepted_reference_is_set_where_the_snapshot_is_accepted(self) -> None:
+        """Actor-local is only true if `_offer`, not `_take`, sets the reference."""
+        offer_writes = _self_attrs(_method("_offer"), ast.Store)
+        assert "_accepted_step" in offer_writes
+        assert "_accepted_reviews" in offer_writes
+        assert "_accepted_step" not in _self_attrs(_method("_take"), ast.Store)
+
+    def test_these_guards_can_fail(self) -> None:
+        """A test-of-the-test: the helpers detect a shared name when there is one."""
+        shared_source = ast.parse(
+            "class R:\n"
+            "    def _take(self):\n"
+            "        self._marker = 1\n"
+            "        self._counts['reviews_started'] += 1\n"
+            "    def _cadence_blocks(self):\n"
+            "        return self._marker and self._counts['reviews_started']\n"
+        )
+        take = next(
+            n
+            for n in ast.walk(shared_source)
+            if isinstance(n, ast.FunctionDef) and n.name == "_take"
+        )
+        gate = next(
+            n
+            for n in ast.walk(shared_source)
+            if isinstance(n, ast.FunctionDef) and n.name == "_cadence_blocks"
+        )
+        assert _self_attrs(take, ast.Store) & _self_attrs(gate, ast.Load) == {"_marker"}
+        assert _counts_keys(take) & _counts_keys(gate) == {"reviews_started"}
