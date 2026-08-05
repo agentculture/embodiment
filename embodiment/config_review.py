@@ -632,13 +632,31 @@ def _model_turn(ctx: _Review) -> Optional[str]:
 # ── reading one turn ──────────────────────────────────────────────────────────
 
 
+def _in_string_step(character: str, escaped: bool) -> tuple[bool, bool]:
+    """Advance the string-literal scanner one character: ``(in_string, escaped)``.
+
+    Split out of :func:`_first_object` so the brace walk reads as a brace walk.
+    An escape armed by the previous character consumes exactly this one, whatever
+    it is — which is what stops an escaped quote from closing the literal, and in
+    turn what keeps a brace *inside* a string from unbalancing the depth count.
+    """
+    if escaped:
+        return True, False
+    if character == "\\":
+        return True, True
+    if character == '"':
+        return False, False
+    return True, False
+
+
 def _first_object(text: str) -> Optional[str]:
     """The first balanced ``{...}`` span in *text*, or ``None``.
 
     ``scope.py``'s scanner, cited: a reviewer's turn is prose *around* a JSON
     object, so the object is found by walking braces rather than by parsing the
-    whole span. String literals are tracked so a brace inside one cannot
-    unbalance the count. Never raises; bounded by ``len(text)``.
+    whole span. String literals are tracked (in :func:`_in_string_step`) so a
+    brace inside one cannot unbalance the count. Never raises; bounded by
+    ``len(text)``.
     """
     start = text.find("{")
     if start < 0:
@@ -649,12 +667,7 @@ def _first_object(text: str) -> Optional[str]:
     for index in range(start, len(text)):
         character = text[index]
         if in_string:
-            if escaped:
-                escaped = False
-            elif character == "\\":
-                escaped = True
-            elif character == '"':
-                in_string = False
+            in_string, escaped = _in_string_step(character, escaped)
             continue
         if character == '"':
             in_string = True
@@ -868,6 +881,34 @@ def _render_seat(seat: SeatConfig, cap: int, entries: int, truncated: list[str])
     return lines
 
 
+def _render_resources(
+    state: Any,
+    cap: int,
+    entries: int,
+    unreadable: list[str],
+    truncated: list[str],
+) -> list[str]:
+    """Render the host's ``resource_state`` mapping. Anything else renders nothing.
+
+    A non-mapping (or an empty one) is not a fault and is not named: the field is
+    optional and a host that projects no resources is simply showing none. Both
+    budgets that can bite here — the per-value char cap and the entry count — are
+    recorded in *truncated*, never applied silently.
+    """
+    if not isinstance(state, dict) or not state:
+        return []
+    items = list(state.items())
+    kept = items[:entries] if entries > 0 else items
+    lines = ["resources:"]
+    for key, value in kept:
+        rendered = _text(value, unreadable, "resource_state").strip()
+        lines.append(f"  - {_text(key)}: {_capped(rendered, cap, 'resources', truncated)}")
+    if len(items) > len(kept):
+        truncated.append(f"resources ({len(items) - len(kept)} of {len(items)} omitted)")
+        lines.append(_ENTRIES_TRUNCATED)
+    return lines
+
+
 def _render_snapshot(
     snapshot: Any,
     controls: ConfigControls,
@@ -904,16 +945,7 @@ def _render_snapshot(
     )
 
     state = _attr(snapshot, "resource_state", unreadable)
-    if isinstance(state, dict) and state:
-        items = list(state.items())
-        kept = items[:entries] if entries > 0 else items
-        lines.append("resources:")
-        for key, value in kept:
-            rendered = _text(value, unreadable, "resource_state").strip()
-            lines.append(f"  - {_text(key)}: {_capped(rendered, cap, 'resources', truncated)}")
-        if len(items) > len(kept):
-            truncated.append(f"resources ({len(items) - len(kept)} of {len(items)} omitted)")
-            lines.append(_ENTRIES_TRUNCATED)
+    lines.extend(_render_resources(state, cap, entries, unreadable, truncated))
 
     lines.append(_SNAPSHOT_FOOTER)
     return "\n".join(lines)

@@ -537,6 +537,89 @@ class _SeatWork:
         self.seen_applied: set[str] = set()
 
 
+def _fold_revert(work: _SeatWork, parsed: _Parsed, index: int) -> None:
+    """Record one ``reverted`` marker against *work*. It never undoes the fold.
+
+    Split out of :func:`build_config_report` so the replay reads as a two-way
+    dispatch; the rule it carries is the module docstring's: "reverting does not
+    erase that the change once governed, only that it no longer does". The
+    marker is already in ``work.history`` by the time this runs, which is the
+    whole of what a revert does to a seat's CURRENT values — nothing. All this
+    adds is the one case the ledger cannot explain: a revert of something this
+    ledger never recorded applied for this seat.
+    """
+    if parsed.change_id in work.seen_applied:
+        return
+    work.unexplained.append(
+        _refuse(
+            CONFIG_REPORT_ORPHAN_REVERT,
+            f"ledger position {index} marks {parsed.change_id!r} reverted, but "
+            f"this ledger never recorded it applied for {parsed.seat!r}; the "
+            "current configuration cannot be explained as an undo of anything "
+            "the ledger shows happening",
+            seat=parsed.seat,
+            target=parsed.target,
+            change_id=parsed.change_id,
+            origin=parsed.origin,
+            step_index=parsed.step_index,
+        )
+    )
+
+
+def _fold_applied(
+    work: _SeatWork, parsed: _Parsed, index: int, provenance: ChangeProvenance
+) -> None:
+    """Fold one ``applied`` row into *work* — the only state that moves the fold.
+
+    Split out of :func:`build_config_report` for legibility only; every rule
+    here is unchanged. Two of the module's five C3 codes are raised from this
+    frame (an unknown target, an unreadable unit), and in both cases nothing is
+    folded — a half-applied configuration would be exactly the state the ledger
+    cannot explain. The actual fold is
+    :func:`~embodiment.config_lifecycle.apply_change`, reused rather than
+    re-derived (see the module docstring on why that is computation, not a
+    second source of what happened).
+    """
+    work.seen_applied.add(parsed.change_id)
+    if parsed.target not in CHANGE_TARGETS:
+        work.unexplained.append(
+            _refuse(
+                CONFIG_REPORT_UNKNOWN_TARGET,
+                f"ledger position {index} applies {parsed.change_id!r} against the "
+                f"target {parsed.target!r}, which is not one of "
+                f"{', '.join(CHANGE_TARGETS)}; nothing was folded for it",
+                seat=parsed.seat,
+                target=parsed.target,
+                change_id=parsed.change_id,
+                origin=parsed.origin,
+                step_index=parsed.step_index,
+            )
+        )
+        return
+    change, problem = _rebuild_change(
+        parsed.target, parsed.change_id, parsed.origin, parsed.reason, parsed.unit
+    )
+    if change is None:
+        work.unexplained.append(
+            _refuse(
+                CONFIG_REPORT_MALFORMED_UNIT,
+                f"ledger position {index} applies {parsed.change_id!r} but its "
+                f"recorded unit could not be read as a {parsed.target} change: "
+                f"{problem}; nothing was folded for it",
+                seat=parsed.seat,
+                target=parsed.target,
+                change_id=parsed.change_id,
+                origin=parsed.origin,
+                step_index=parsed.step_index,
+            )
+        )
+        return
+    if isinstance(change, KnowledgeChange) and change.supersedes:
+        work.provenance.pop(f"knowledge:{change.supersedes}", None)
+    work.config = apply_change(work.config, change)
+    work.provenance[_slot_key(change)] = provenance
+
+
 def _finish(work: _SeatWork) -> SeatEffectiveConfig:
     config = work.config
     prompt = tuple(
@@ -650,62 +733,10 @@ def build_config_report(ledger: Any, *, seats: Sequence[str] = CHANGE_SEATS) -> 
         work.history.append(provenance)
 
         if parsed.state == LEDGER_STATE_REVERTED:
-            if parsed.change_id not in work.seen_applied:
-                work.unexplained.append(
-                    _refuse(
-                        CONFIG_REPORT_ORPHAN_REVERT,
-                        f"ledger position {index} marks {parsed.change_id!r} reverted, but "
-                        f"this ledger never recorded it applied for {parsed.seat!r}; the "
-                        "current configuration cannot be explained as an undo of anything "
-                        "the ledger shows happening",
-                        seat=parsed.seat,
-                        target=parsed.target,
-                        change_id=parsed.change_id,
-                        origin=parsed.origin,
-                        step_index=parsed.step_index,
-                    )
-                )
-            continue  # a revert marker narrates history; it never undoes the fold
-
-        # LEDGER_STATE_APPLIED — the only state that ever moves the fold.
-        work.seen_applied.add(parsed.change_id)
-        if parsed.target not in CHANGE_TARGETS:
-            work.unexplained.append(
-                _refuse(
-                    CONFIG_REPORT_UNKNOWN_TARGET,
-                    f"ledger position {index} applies {parsed.change_id!r} against the "
-                    f"target {parsed.target!r}, which is not one of "
-                    f"{', '.join(CHANGE_TARGETS)}; nothing was folded for it",
-                    seat=parsed.seat,
-                    target=parsed.target,
-                    change_id=parsed.change_id,
-                    origin=parsed.origin,
-                    step_index=parsed.step_index,
-                )
-            )
+            # A revert marker narrates history; it never undoes the fold.
+            _fold_revert(work, parsed, index)
             continue
-        change, problem = _rebuild_change(
-            parsed.target, parsed.change_id, parsed.origin, parsed.reason, parsed.unit
-        )
-        if change is None:
-            work.unexplained.append(
-                _refuse(
-                    CONFIG_REPORT_MALFORMED_UNIT,
-                    f"ledger position {index} applies {parsed.change_id!r} but its "
-                    f"recorded unit could not be read as a {parsed.target} change: "
-                    f"{problem}; nothing was folded for it",
-                    seat=parsed.seat,
-                    target=parsed.target,
-                    change_id=parsed.change_id,
-                    origin=parsed.origin,
-                    step_index=parsed.step_index,
-                )
-            )
-            continue
-        if isinstance(change, KnowledgeChange) and change.supersedes:
-            work.provenance.pop(f"knowledge:{change.supersedes}", None)
-        work.config = apply_change(work.config, change)
-        work.provenance[_slot_key(change)] = provenance
+        _fold_applied(work, parsed, index, provenance)
 
     seat_reports = tuple(_finish(works[name]) for name in wanted)
     return ConfigReport(seats=seat_reports, unexplained=tuple(top_unexplained))
@@ -722,43 +753,82 @@ def effective_config(ledger: Any, seat: Any) -> SeatEffectiveConfig:
 # ── a legible rendering (operator-visible, never raises) ────────────────────
 
 
+def _render_surface(label: str, surface: CapabilitySurfaceReport) -> str:
+    """One capability surface's line, provenance or the honest absence of it.
+
+    ``provenance is None`` is stated in words rather than left as a blank field:
+    it means exactly one thing — the ledger never recorded any change to this
+    surface — and never that something is wrong (see
+    :class:`CapabilitySurfaceReport`).
+    """
+    if surface.provenance is None:
+        return f"  {label}={list(surface.capability_ids)} (never touched by the ledger)"
+    return (
+        f"  {label}={list(surface.capability_ids)} <- "
+        f"{surface.provenance.change_id} @ ledger#{surface.provenance.ledger_index} "
+        f"state={surface.provenance.state}"
+    )
+
+
+def _render_unexplained(
+    header: str, degradations: Sequence[ConfigRefusal], indent: str
+) -> list[str]:
+    """One C3 stream under its own header. Nothing unexplained renders nothing.
+
+    Shared by the per-seat stream and the ledger-wide one, which differ only in
+    their header and indent — an empty section header would claim a stream
+    exists where none does.
+    """
+    if not degradations:
+        return []
+    lines = [header]
+    for degradation in degradations:
+        lines.append(f"{indent}[{degradation.code}] {degradation.reason}")
+    return lines
+
+
+def _render_seat_lines(seat: SeatEffectiveConfig) -> list[str]:
+    """One seat's block of :func:`render_text` — every element with its producer.
+
+    ``(unexplained)`` / ``?`` stand in wherever the provenance map names no
+    producer for an element — :func:`_finish`'s blank :class:`ChangeProvenance`
+    default. Written out rather than left as an empty field, on the same rule as
+    :func:`_render_surface`: an absent producer is said, not implied.
+    """
+    lines = [f"== {seat.seat or '(unnamed seat)'} config_sha={seat.config_sha[:12]} =="]
+    if not seat.prompt and not seat.knowledge:
+        lines.append("  prompt: (none recorded)")
+    for entry in seat.prompt:
+        lines.append(
+            f"  prompt[{entry.section}] <- {entry.provenance.change_id or '(unexplained)'} "
+            f"@ ledger#{entry.provenance.ledger_index} state={entry.provenance.state or '?'}"
+        )
+    for entry in seat.knowledge:
+        lines.append(
+            f"  knowledge[{entry.entry_id}] origin={entry.origin} <- "
+            f"{entry.provenance.change_id or '(unexplained)'} "
+            f"@ ledger#{entry.provenance.ledger_index} state={entry.provenance.state or '?'}"
+        )
+    for label, surface in (("tools", seat.tools), ("permissions", seat.permissions)):
+        lines.append(_render_surface(label, surface))
+    lines.extend(
+        _render_unexplained(f"  UNEXPLAINED ({len(seat.unexplained)}):", seat.unexplained, "    ")
+    )
+    return lines
+
+
 def render_text(report: ConfigReport) -> str:
     """A legible, greppable dump of *report* — provenance included. Never raises."""
     if not isinstance(report, ConfigReport):
         return ""
     lines: list[str] = []
     for seat in report.seats:
-        lines.append(f"== {seat.seat or '(unnamed seat)'} config_sha={seat.config_sha[:12]} ==")
-        if not seat.prompt and not seat.knowledge:
-            lines.append("  prompt: (none recorded)")
-        for entry in seat.prompt:
-            lines.append(
-                f"  prompt[{entry.section}] <- {entry.provenance.change_id or '(unexplained)'} "
-                f"@ ledger#{entry.provenance.ledger_index} state={entry.provenance.state or '?'}"
-            )
-        for entry in seat.knowledge:
-            lines.append(
-                f"  knowledge[{entry.entry_id}] origin={entry.origin} <- "
-                f"{entry.provenance.change_id or '(unexplained)'} "
-                f"@ ledger#{entry.provenance.ledger_index} state={entry.provenance.state or '?'}"
-            )
-        for label, surface in (("tools", seat.tools), ("permissions", seat.permissions)):
-            if surface.provenance is not None:
-                lines.append(
-                    f"  {label}={list(surface.capability_ids)} <- "
-                    f"{surface.provenance.change_id} @ ledger#{surface.provenance.ledger_index} "
-                    f"state={surface.provenance.state}"
-                )
-            else:
-                lines.append(
-                    f"  {label}={list(surface.capability_ids)} (never touched by the ledger)"
-                )
-        if seat.unexplained:
-            lines.append(f"  UNEXPLAINED ({len(seat.unexplained)}):")
-            for degradation in seat.unexplained:
-                lines.append(f"    [{degradation.code}] {degradation.reason}")
-    if report.unexplained:
-        lines.append(f"== ledger-wide UNEXPLAINED ({len(report.unexplained)}) ==")
-        for degradation in report.unexplained:
-            lines.append(f"  [{degradation.code}] {degradation.reason}")
+        lines.extend(_render_seat_lines(seat))
+    lines.extend(
+        _render_unexplained(
+            f"== ledger-wide UNEXPLAINED ({len(report.unexplained)}) ==",
+            report.unexplained,
+            "  ",
+        )
+    )
     return "\n".join(lines)

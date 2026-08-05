@@ -279,6 +279,140 @@ def _default_id_factory() -> Callable[[str, str], str]:
     return factory
 
 
+def _capability_payloads(
+    current: SeatConfig,
+    baseline: SeatConfig,
+    targets: Mapping[str, str],
+    *,
+    origin: str,
+    reason: str,
+    factory: Callable[[str, str], str],
+) -> list[dict[str, Any]]:
+    """Capabilities: whole-surface assignment, so this family is always exact.
+
+    ``t3`` made capability selection a **set, not a delta** specifically so that
+    "go back to baseline" never has to invert a history of edits — the whole
+    surface after a selection change *is* the change, so asserting the
+    baseline's own set undoes any number of prior selections in one step, from
+    any starting point.
+    """
+    payloads: list[dict[str, Any]] = []
+    for field_name in ("tools", "permissions"):
+        target = targets.get(field_name)
+        if not target:
+            continue
+        want = getattr(baseline, field_name)
+        have = getattr(current, field_name)
+        if want != have:
+            payloads.append(
+                {
+                    "target": target,
+                    "change_id": factory(target, ""),
+                    "origin": origin,
+                    "reason": reason,
+                    "capability_ids": list(want),
+                }
+            )
+    return payloads
+
+
+def _prompt_payloads(
+    current: SeatConfig,
+    baseline: SeatConfig,
+    targets: Mapping[str, str],
+    *,
+    origin: str,
+    reason: str,
+    factory: Callable[[str, str], str],
+) -> list[dict[str, Any]]:
+    """Prompts: every section named in EITHER config, with the baseline text winning.
+
+    A section that only *current* has is asserted back to empty text rather
+    than removed — ``config_lifecycle``'s ``_apply_prompt`` is additive by
+    design and has no delete verb. See the module docstring: the seat's
+    rendered prompt matches baseline exactly because
+    :func:`~embodiment.config_lifecycle.compose_prompt` filters empty-text
+    sections, but the row can remain in ``canonical_text``, which is what
+    :attr:`RevertOutcome.residual_prompt_sections` names rather than hides.
+    """
+    target = targets.get("prompts")
+    if not target:
+        return []
+    payloads: list[dict[str, Any]] = []
+    names = list(
+        dict.fromkeys(
+            [section.section for section in baseline.prompt]
+            + [section.section for section in current.prompt]
+        )
+    )
+    for name in names:
+        base_entry = baseline.section(name)
+        current_entry = current.section(name)
+        want_text = base_entry.text if base_entry is not None else ""
+        have_text = current_entry.text if current_entry is not None else None
+        if have_text != want_text:
+            payloads.append(
+                {
+                    "target": target,
+                    "change_id": factory(target, name),
+                    "origin": origin,
+                    "reason": reason,
+                    "section": name,
+                    "text": want_text,
+                }
+            )
+    return payloads
+
+
+def _knowledge_payloads(
+    current: SeatConfig,
+    baseline: SeatConfig,
+    targets: Mapping[str, str],
+    *,
+    origin: str,
+    reason: str,
+    factory: Callable[[str, str], str],
+) -> list[dict[str, Any]]:
+    """Knowledge: restore every baseline entry, under the entry's OWN attribution.
+
+    An entry's ``origin`` is both *who may write this target* and *the entry's
+    stored attribution* (see the module docstring — the schema conflates the
+    two), so a revert that always authored knowledge writes as
+    :data:`~embodiment.config_change.ORIGIN_HOST` would restore the right text
+    under the WRONG attribution. The baseline entry's own recorded origin is
+    restored whenever that origin still has authority over the target (checked
+    against ``CHANGE_AUTHORITY`` itself, not assumed), falling back to *origin*
+    only when it does not.
+
+    Entries introduced after *baseline* cannot be removed by any payload built
+    here — there is no delete verb, by construction;
+    :attr:`RevertOutcome.residual_knowledge_entries` names them instead.
+    """
+    target = targets.get("knowledge")
+    if not target:
+        return []
+    payloads: list[dict[str, Any]] = []
+    for entry in baseline.knowledge:
+        current_entry = current.entry(entry.entry_id)
+        if (
+            current_entry is None
+            or current_entry.text != entry.text
+            or current_entry.origin != entry.origin
+        ):
+            entry_origin = entry.origin if _authorized(entry.origin, target) else origin
+            payloads.append(
+                {
+                    "target": target,
+                    "change_id": factory(target, entry.entry_id),
+                    "origin": entry_origin,
+                    "reason": reason,
+                    "entry_id": entry.entry_id,
+                    "text": entry.text,
+                }
+            )
+    return payloads
+
+
 def compute_revert_changes(
     current: Any,
     baseline: Any,
@@ -315,77 +449,15 @@ def compute_revert_changes(
 
     factory = id_factory or _default_id_factory()
     reason = reason[:_MAX_REASON_LEN]
+
+    # One builder per target family, in the order their payloads are emitted.
+    # Each is a no-op for a seat whose target map does not carry that family
+    # (senses has no tools target), so the composition below is the whole diff.
+    per_family = {"origin": origin, "reason": reason, "factory": factory}
     payloads: list[dict[str, Any]] = []
-
-    # ── capabilities: whole-surface assignment, so this is always exact ─────
-    for field_name in ("tools", "permissions"):
-        target = targets.get(field_name)
-        if not target:
-            continue
-        want = getattr(baseline, field_name)
-        have = getattr(current, field_name)
-        if want != have:
-            payloads.append(
-                {
-                    "target": target,
-                    "change_id": factory(target, ""),
-                    "origin": origin,
-                    "reason": reason,
-                    "capability_ids": list(want),
-                }
-            )
-
-    # ── prompts: every section named in either config, baseline text wins ──
-    prompt_target = targets.get("prompts")
-    if prompt_target:
-        names = list(
-            dict.fromkeys(
-                [section.section for section in baseline.prompt]
-                + [section.section for section in current.prompt]
-            )
-        )
-        for name in names:
-            base_entry = baseline.section(name)
-            current_entry = current.section(name)
-            want_text = base_entry.text if base_entry is not None else ""
-            have_text = current_entry.text if current_entry is not None else None
-            if have_text != want_text:
-                payloads.append(
-                    {
-                        "target": prompt_target,
-                        "change_id": factory(prompt_target, name),
-                        "origin": origin,
-                        "reason": reason,
-                        "section": name,
-                        "text": want_text,
-                    }
-                )
-
-    # ── knowledge: restore every baseline entry; see the module docstring on
-    #    why entries added after baseline cannot be removed this way ────────
-    knowledge_target = targets.get("knowledge")
-    if knowledge_target:
-        for entry in baseline.knowledge:
-            current_entry = current.entry(entry.entry_id)
-            if (
-                current_entry is None
-                or current_entry.text != entry.text
-                or current_entry.origin != entry.origin
-            ):
-                entry_origin = (
-                    entry.origin if _authorized(entry.origin, knowledge_target) else origin
-                )
-                payloads.append(
-                    {
-                        "target": knowledge_target,
-                        "change_id": factory(knowledge_target, entry.entry_id),
-                        "origin": entry_origin,
-                        "reason": reason,
-                        "entry_id": entry.entry_id,
-                        "text": entry.text,
-                    }
-                )
-
+    payloads.extend(_capability_payloads(current, baseline, targets, **per_family))
+    payloads.extend(_prompt_payloads(current, baseline, targets, **per_family))
+    payloads.extend(_knowledge_payloads(current, baseline, targets, **per_family))
     return tuple(payloads)
 
 
@@ -404,6 +476,44 @@ def _residual_knowledge_entries(current: SeatConfig, baseline: SeatConfig) -> tu
 
 
 # ── driving the diff through the real gate ───────────────────────────────────
+
+#: The four buckets :class:`RevertOutcome` partitions ``proposed`` into. A
+#: change_id lands in exactly one of them, matching the accounting
+#: :class:`~embodiment.config_lifecycle.AdvanceReport` already holds itself to.
+_DRIVE_BUCKETS = ("applied", "deferred", "rejected", "refused")
+
+
+def _drive_one(
+    lifecycle: ConfigLifecycle,
+    change_id: str,
+    *,
+    catalog: Optional[CapabilityCatalog],
+    seat_busy_before: bool,
+) -> str:
+    """Verify then apply ONE proposed change; name the bucket it landed in.
+
+    Returns one of :data:`_DRIVE_BUCKETS`. Nothing here bypasses the gate — it
+    is ``lifecycle``'s own :meth:`~embodiment.config_lifecycle.ConfigLifecycle.
+    verify` and :meth:`~embodiment.config_lifecycle.ConfigLifecycle.apply`
+    doing the work, exactly as they would for any other change.
+    """
+    lifecycle.verify(change_id)
+    proposal = lifecycle.proposal(change_id)
+    state = proposal.state if proposal is not None else ""
+    if state == STATE_REJECTED:
+        return "rejected"
+    if state == STATE_VERIFIED:
+        outcome = lifecycle.apply(change_id, catalog=catalog)
+        if outcome.applied:
+            return "applied"
+        if outcome.deferred:
+            return "deferred"
+        return "refused"
+    # Stayed PROPOSED: either the seat was busy (verify self-deferred) or
+    # no evidence was available (no verifier, or one that raised/answered
+    # unreadably). Both are already recorded by config_lifecycle itself;
+    # this just files the change_id under the right bucket for the caller.
+    return "deferred" if seat_busy_before else "refused"
 
 
 @dataclass(frozen=True)
@@ -513,34 +623,12 @@ def revert_to_baseline(
     refused_at_propose = len(payloads) - len(proposed)
 
     seat_busy_before = not lifecycle.is_idle(seat_name)
-    applied: list[str] = []
-    deferred: list[str] = []
-    rejected: list[str] = []
-    refused: list[str] = []
+    buckets: dict[str, list[str]] = {name: [] for name in _DRIVE_BUCKETS}
     for change_id in proposed:
-        lifecycle.verify(change_id)
-        proposal = lifecycle.proposal(change_id)
-        state = proposal.state if proposal is not None else ""
-        if state == STATE_REJECTED:
-            rejected.append(change_id)
-            continue
-        if state == STATE_VERIFIED:
-            outcome = lifecycle.apply(change_id, catalog=catalog)
-            if outcome.applied:
-                applied.append(change_id)
-            elif outcome.deferred:
-                deferred.append(change_id)
-            else:
-                refused.append(change_id)
-            continue
-        # Stayed PROPOSED: either the seat was busy (verify self-deferred) or
-        # no evidence was available (no verifier, or one that raised/answered
-        # unreadably). Both are already recorded by config_lifecycle itself;
-        # this just files the change_id under the right bucket for the caller.
-        if seat_busy_before:
-            deferred.append(change_id)
-        else:
-            refused.append(change_id)
+        bucket = _drive_one(
+            lifecycle, change_id, catalog=catalog, seat_busy_before=seat_busy_before
+        )
+        buckets[bucket].append(change_id)
 
     effective = lifecycle.effective(seat_name)
     residual_prompt = _residual_prompt_sections(effective, baseline)
@@ -549,10 +637,10 @@ def revert_to_baseline(
         seat=seat_name,
         baseline_sha=baseline.config_sha,
         proposed=tuple(proposed),
-        applied=tuple(applied),
-        deferred=tuple(deferred),
-        rejected=tuple(rejected),
-        refused=tuple(refused),
+        applied=tuple(buckets["applied"]),
+        deferred=tuple(buckets["deferred"]),
+        rejected=tuple(buckets["rejected"]),
+        refused=tuple(buckets["refused"]),
         refused_at_propose=refused_at_propose,
         residual_prompt_sections=residual_prompt,
         residual_knowledge_entries=residual_knowledge,
@@ -715,13 +803,13 @@ class RatchetGuard:
         candidate = lifecycle.effective(name)
         drifted = candidate.config_sha != anchor.config_sha
         suite_fn = verifier if verifier is not None else lifecycle.verifier
-        base_kwargs = dict(
-            seat=name,
-            sequence=self._next(),
-            baseline_sha=anchor.config_sha,
-            candidate_sha=candidate.config_sha,
-            drifted=drifted,
-        )
+        base_kwargs = {
+            "seat": name,
+            "sequence": self._next(),
+            "baseline_sha": anchor.config_sha,
+            "candidate_sha": candidate.config_sha,
+            "drifted": drifted,
+        }
 
         if suite_fn is None:
             self._degrade(

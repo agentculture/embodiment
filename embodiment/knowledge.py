@@ -868,6 +868,42 @@ def write(
 # ── the senses read ───────────────────────────────────────────────────────────
 
 
+def _union_records(
+    records: Any,
+    query: str,
+    found: dict[str, dict[str, Any]],
+    *,
+    seat: str,
+    target: str,
+) -> list[ConfigDegradation]:
+    """Fold one query's *records* into *found*, keyed by id; report what was dropped.
+
+    First writer wins, which is what makes repeated queries a union rather than
+    a last-one-through overwrite. Returns the degradations for the records that
+    could not be carried; the ones that could are already in *found*.
+    """
+    degradations: list[ConfigDegradation] = []
+    for record in records:
+        # A non-mapping never gets past here. Coercing one would raise out
+        # of a seam whose whole contract is that it does not, and carrying
+        # one forward would put it in front of the lifecycle engine.
+        if not isinstance(record, Mapping):
+            degradations.append(
+                _degradation(
+                    KNOWLEDGE_UNREADABLE_RECORD,
+                    f"the store returned a {type(record).__name__} where a record was "
+                    f"expected for query {query!r}; it was dropped",
+                    seat=seat,
+                    target=target,
+                )
+            )
+            continue
+        record_id = record.get("id")
+        key = record_id if isinstance(record_id, str) and record_id else repr(record)
+        found.setdefault(key, dict(record))
+    return degradations
+
+
 def _gather(
     port: KnowledgeStore,
     queries: tuple[str, ...],
@@ -934,24 +970,7 @@ def _gather(
                 _relayed(outcome, fallback=KNOWLEDGE_STORE_ERROR, seat=seat, target=target)
             )
 
-        for record in records:
-            # A non-mapping never gets past here. Coercing one would raise out
-            # of a seam whose whole contract is that it does not, and carrying
-            # one forward would put it in front of the lifecycle engine.
-            if not isinstance(record, Mapping):
-                degradations.append(
-                    _degradation(
-                        KNOWLEDGE_UNREADABLE_RECORD,
-                        f"the store returned a {type(record).__name__} where a record was "
-                        f"expected for query {query!r}; it was dropped",
-                        seat=seat,
-                        target=target,
-                    )
-                )
-                continue
-            record_id = record.get("id")
-            key = record_id if isinstance(record_id, str) and record_id else repr(record)
-            found.setdefault(key, dict(record))
+        degradations.extend(_union_records(records, query, found, seat=seat, target=target))
 
     return list(found.values()), degradations
 
