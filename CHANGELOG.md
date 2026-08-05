@@ -9,7 +9,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- `counts["boundaries_projected"]` is now at least 1 for any drive that ran, and one higher per drive than before for tool-using drives. It remains the honest liveness check for an armed lane.
+- `counts["boundaries_projected"]` is now at least 1 for any drive that ran with both a reviewer and a projector wired, and one higher per drive than before for tool-using drives. It remains the honest liveness check. Note the precondition: `ConfigGovernor.armed` is `lifecycle is not None or reviewer is not None` and never requires a projector, so an armed lane without one legitimately projects nothing.
 - T1 and T2 are both retired from `examples/three_tier.py`'s `SEAM_TRAPS`, which now holds six entries, none of which carries `incapable_tier=True`. `tests/test_three_tier.py` asserts that emptiness so a new propose-nothing trap must be recorded as one.
 
 ### Fixed

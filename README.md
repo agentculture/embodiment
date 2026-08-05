@@ -739,9 +739,13 @@ as data in that file's `SEAM_TRAPS` and are reproduced behaviourally in
   drive's **end** as a boundary as well, so a tool-less drive is one boundary
   rather than none, and five tool-less turns configure the seat. Strategist
   activity scales with tool steps *plus drives*; `counts["boundaries_projected"]`
-  is at least 1 for any drive that ran and is still the honest liveness check,
-  rather than `outcome.applied` — a review is asynchronous, so turn N's
-  projection configures turn N+1.
+  is at least 1 for any drive that ran **with both a reviewer and a projector
+  wired**, and is still the honest liveness check rather than
+  `outcome.applied` — a review is asynchronous, so turn N's projection
+  configures turn N+1. Mind that precondition: `armed` is `lifecycle or
+  reviewer` and never requires a projector, so an armed lane without one
+  projects nothing and is *configured without being reviewed* — a legitimate
+  shape, not a fault.
 - **T2 — FIXED, and it is off the list.** The review cadence used to outlive the
   drive whose step index fed it: `review_gap` defaults to 2 acting steps while
   the index `run_configured` supplies restarts every drive, so the difference

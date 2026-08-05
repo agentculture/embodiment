@@ -548,8 +548,17 @@ def run_configured(
     projection at *each completed tool step, and once at the end of the drive*.
     It is **not** offered one per model turn. So strategist activity scales with
     tool use plus drives — never with conversation turns — and the honest health
-    check on an armed lane is ``counts["boundaries_projected"]``, which is at
-    least 1 for any drive that ran at all.
+    check is ``counts["boundaries_projected"]``, which is at least 1 for any
+    drive that ran **with both a reviewer and a projector wired**.
+
+    That precondition is not pedantry, and stating it loosely was caught in
+    review: :attr:`ConfigGovernor.armed` is ``lifecycle is not None or reviewer
+    is not None`` and never mentions the projector, so a lane can read ``armed``
+    and still project nothing — with a lifecycle but no projector, or with a
+    reviewer but no projector. Those are legitimate shapes rather than faults: a
+    seat can be *configured* without being *reviewed*. A counter promising
+    ``>= 1`` for them would be exactly the kind of overclaim T1 was.
+    ``tests/test_three_tier.py`` pins both halves.
 
     Returns:
         A :class:`ConfiguredOutcome` carrying ``run``'s own outcome object plus

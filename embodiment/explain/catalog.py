@@ -98,8 +98,10 @@ the robot siblings, never an implication drawn from the name.
   calling a tool reviewed nothing while `governor.armed` read True; the drive's
   end is now a boundary too, so a conversational host is configured. **T2:** a
   cadence memory outlived the per-drive step index. Both are off the list, and
-  `counts["boundaries_projected"]` — at least 1 for any drive that ran — is
-  still the honest liveness check. All six remaining gaps:
+  `counts["boundaries_projected"]` — at least 1 for any drive that ran with both
+  a reviewer and a projector wired — is still the honest liveness check. Note
+  the precondition: `armed` never requires a projector, so an armed lane without
+  one legitimately projects nothing. All six remaining gaps:
   `python examples/three_tier.py traps`.
 - **A directive is delivered text** — `run_scoped` adds no containment of its
   own. A sufficiently credulous actor will act on an operational instruction

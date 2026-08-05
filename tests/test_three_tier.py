@@ -672,7 +672,7 @@ class TestTheSeamTraps:
             max_steps=6,
             governor=governor,
         )
-        reviewer.wait_idle(10.0)
+        assert reviewer.wait_idle(10.0), "the review never finished"
         assert outcome.counts["steps_observed"] == 0, "still no tool step — that is the point"
         assert outcome.counts["boundaries_projected"] == 1, "the drive's end IS a boundary"
         assert outcome.counts["snapshots_offered"] == 1
@@ -704,7 +704,7 @@ class TestTheSeamTraps:
                 max_steps=6,
                 governor=governor,
             )
-            reviewer.wait_idle(10.0)
+            assert reviewer.wait_idle(10.0), f"turn {index}'s review never finished"
             applied_per_turn.append(len(outcome.applied))
 
         assert applied_per_turn[0] == 0, "turn 0's review cannot have finished before its own gate"
@@ -714,6 +714,39 @@ class TestTheSeamTraps:
         )
         assert len(life.effective("worker").prompt) >= 1, "and the configuration is EFFECTIVE"
         reviewer.close()
+
+    def test_an_armed_lane_with_no_projector_still_projects_nothing(self) -> None:
+        """The precondition on T1's liveness check, pinned so the docs cannot overclaim.
+
+        ``armed`` is ``lifecycle is not None or reviewer is not None`` and never
+        mentions the projector, so a lane can read ``armed`` and legitimately
+        project nothing. Saying ``boundaries_projected >= 1`` for *any* drive
+        that ran was therefore wrong, and qodo caught it on PR #82. This is not a
+        fault to fix in the lane — a seat can be **configured without being
+        reviewed** — so what is pinned is the boundary of the claim.
+        """
+        for label, reviewer in (
+            ("no projector, no reviewer", None),
+            ("no projector, with reviewer", ConfigRunner(prompt_writer(), role="cortex")),
+        ):
+            life, governor = lane(reviewer=reviewer, projector=None)
+            assert governor.armed is True, f"{label}: the lifecycle alone arms the lane"
+
+            outcome = run_configured(
+                StepActor(steps=2),
+                Task(id="t", repo_path=".", instruction="q"),
+                executor=NullExecutor(),
+                max_steps=6,
+                governor=governor,
+            )
+            assert outcome.counts["boundaries_projected"] == 0, (
+                f"{label}: no projector means nothing to project, and the counter "
+                "must not claim otherwise"
+            )
+            assert outcome.degradations == (), f"{label}: and it is not a fault"
+            assert life.effective("worker") is not None, f"{label}: the seat is still configured"
+            if reviewer is not None:
+                reviewer.close()
 
     def test_the_default_cadence_no_longer_starves_a_multi_drive_host(self) -> None:
         """T2, FIXED — and this is the regression test that replaced the trap.
@@ -741,7 +774,7 @@ class TestTheSeamTraps:
                     max_steps=6,
                     governor=governor,
                 )
-                reviewer.wait_idle(10.0)
+                assert reviewer.wait_idle(10.0), f"drive {index}'s review never finished"
             counts = dict(reviewer.counts)
             reviewer.close()
             return counts
