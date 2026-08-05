@@ -165,7 +165,7 @@ under, so *unawareness* replaces persuasion as the mechanism.
 | The knowledge block riding **eidetic** — no second store, attribution on eidetic's own `added_by` | `knowledge.py` |
 | Reasoning / thread / composition, cited out of the advisory lane rather than imported from it, with `loop.py` still **zero-diff** and the actor's `complete` never wrapped *even when armed* | `config_review.py`, `config_runner.py`, `config_run.py` |
 | `SENSES_GROUNDING` + `KNOWLEDGE_ATTRIBUTION` as composable host text — constants a host splices in, never a `frame_senses()` that would cross the colleague boundary | `senses_text.py` |
-| The three-tier example host (senses relays → acting seat acts → cortex configures) and its **eight seam traps as data**, reproduced behaviourally | `examples/three_tier.py`, `tests/test_three_tier.py` |
+| The three-tier example host (senses relays → acting seat acts → cortex configures) and its **seam traps as data**, reproduced behaviourally — eight found, the two propose-nothing ones (T1, T2) since fixed, six still recorded | `examples/three_tier.py`, `tests/test_three_tier.py` |
 | ScopeBench cycle 2 — a second pre-registration with eight conditions, the ratchet arithmetic, the per-change-type three-way ladder, declared protocol floors and the config arms as data | `docs/live-test-results/scopebench-config-preregistration.md`, `examples/scope/` |
 | Two measurements: the acting seat drives `embodiment.loop.run` (n=12/rung, 3 rungs, **36 runs**, 12/12 on every bar, 0 truncations at 16000) and the senses seat sees (image 4/4, motion 4/4, text-only control refuses 0/4, **n=4/cell**) | `docs/live-test-results/worker-toolloop.md`, `senses-vision.md` |
 
@@ -208,15 +208,23 @@ structural-proof-is-not-value: **a strategist can be correctly wired, fully
 armed and structurally proven, and still propose nothing — with every counter at
 zero and no error anywhere.** Four separate mechanisms produced exactly that
 picture: an unseeded issued chain (#62), an admission rule the prompt never
-stated (#58), a review boundary that is a *tool-step* boundary so a
-conversational turn reviews nothing (T1), and a cadence memory that outlives the
+stated (#58), a review boundary that was a *tool-step* boundary so a
+conversational turn reviewed nothing (T1), and a cadence memory that outlived the
 per-drive step index it reads — six drives, one review, 11 of 12 snapshots
-skipped (T2 — since FIXED, and retired from the trap list). None of the four
-raises. `armed == True` is therefore not evidence
+skipped (T2). None of the four raises. `armed == True` is therefore not evidence
 that a tier is alive; a counter that increments is. That is why this cycle's
-example host records its seam gaps **as data** with behavioural tests, and why
-the one that still yields an incapable tier is called out separately from the
-six that are merely under-documented.
+example host records its seam gaps **as data** with behavioural tests.
+
+**T1 and T2 are both FIXED and retired from the trap list**, so `SEAM_TRAPS`
+now holds six entries and **none** of them carries `incapable_tier=True` —
+`tests/test_three_tier.py` asserts that emptiness, which is what forces a new
+propose-nothing trap to be recorded as one rather than filed as a gap. T2's fix
+made the runner read a backwards-going counter as a restarted sequence; T1's
+made `config_run.finish` take the drive's **end** as a boundary, so a
+conversational host that never calls a tool is configured (measured: five
+tool-less turns, four changes applied, one-turn lag because the review is
+asynchronous). What is left in the list are seam *gaps* — under-documented,
+not dead.
 
 Keep this file's claims grounded in checked-in reality. When a section drifts
 ahead of what exists, mark it `(planned)` or move it under a roadmap heading —

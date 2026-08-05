@@ -91,14 +91,17 @@ the robot siblings, never an implication drawn from the name.
   an unattributed write is refused whole. Tools and permissions changes
   **select among host-declared capability ids and can never mint one**: a
   capability catalog is a host declaration, never a discovery from an executor.
-- **Two traps in the configuration lane** (embodiment#79, the embodiment#62
-  shape — a correct-looking wiring produces a tier that proposes nothing, with
-  no error anywhere). **T1:** a review boundary is a *tool-step* boundary, so a
-  drive whose actor answers in one turn without calling a tool reviews nothing
-  while `governor.armed` reads True; read `counts["boundaries_projected"]`, not
-  `outcome.applied`, when asking whether the tier is alive. (T2, a cadence
-  memory that outlived the per-drive step index, was the second — it is FIXED
-  and off the list.) All seven remaining gaps:
+- **Two traps in the configuration lane, both now FIXED** (embodiment#79, the
+  embodiment#62 shape — a correct-looking wiring produces a tier that proposes
+  nothing, with no error anywhere). **T1:** a review boundary used to be a
+  *tool-step* boundary only, so a drive whose actor answered in one turn without
+  calling a tool reviewed nothing while `governor.armed` read True; the drive's
+  end is now a boundary too, so a conversational host is configured. **T2:** a
+  cadence memory outlived the per-drive step index. Both are off the list, and
+  `counts["boundaries_projected"]` — at least 1 for any drive that ran with both
+  a reviewer and a projector wired — is still the honest liveness check. Note
+  the precondition: `armed` never requires a projector, so an armed lane without
+  one legitimately projects nothing. All six remaining gaps:
   `python examples/three_tier.py traps`.
 - **A directive is delivered text** — `run_scoped` adds no containment of its
   own. A sufficiently credulous actor will act on an operational instruction

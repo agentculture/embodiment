@@ -707,7 +707,7 @@ reader talks themselves into reading "it works":
   instant and free; and the claim it supports is *no loop-protocol failure was
   observed in 36 runs* — the acting **protocol**, not acting **quality**.
 - **The two seam traps below**, measured on the documented seam while wiring the
-  three-tier host black-box.
+  three-tier host black-box — both since fixed in the package.
 
 **The worker-promotion gate stays shut, deliberately.**
 `tests/test_governance.py`'s `TestWorkerRolePromotionGate` forbids a `worker`
@@ -718,24 +718,34 @@ on a hermetic surface, while the promotion at stake is to the acting seat of a
 real rig. Opening the gate is an operator decision that flips the flag and fills
 in its citation in one reviewable change; these docs do not pre-empt it.
 
-#### Two more traps, in the configuration lane
+#### Two more traps, in the configuration lane — both now fixed
 
 `examples/three_tier.py` was wired from this README, module docstrings, `pydoc`
 and `explain` output only, and every question that surface could not answer was
 answered by *running* the seam rather than by opening its source. Eight gaps came
-up. All eight ship as data in that file's `SEAM_TRAPS` and are reproduced
-behaviourally in `tests/test_three_tier.py`, so none of them can rot into prose.
-Two are true [#62](https://github.com/agentculture/embodiment/issues/62)-class
-traps — a correct-looking wiring yields a tier that proposes nothing, with no
-error anywhere ([#79](https://github.com/agentculture/embodiment/issues/79)):
+up. Two of them were true
+[#62](https://github.com/agentculture/embodiment/issues/62)-class traps — a
+correct-looking wiring yielding a tier that proposes nothing, with no error
+anywhere ([#79](https://github.com/agentculture/embodiment/issues/79)) — and
+**both are now fixed in the package and off the list**. The remaining six ship
+as data in that file's `SEAM_TRAPS` and are reproduced behaviourally in
+`tests/test_three_tier.py`, so none of them can rot into prose.
 
-- **T1 — a review boundary is a *tool-step* boundary.** A drive whose actor
-  answers in one turn without calling a tool projects nothing, reviews nothing
-  and proposes nothing, while `governor.armed` reads `True` and every counter
-  reads zero. A conversational host answers many turns exactly that way. Expect
-  strategist activity to scale with tool steps rather than with conversation
-  turns, and read `counts["boundaries_projected"]` rather than
-  `outcome.applied` when asking whether the tier is alive.
+- **T1 — FIXED, and it is off the list.** A review boundary used to be a
+  *tool-step* boundary only, so a drive whose actor answered in one turn without
+  calling a tool projected nothing, reviewed nothing and proposed nothing, while
+  `governor.armed` read `True` and every counter read zero — and a conversational
+  host answers many turns exactly that way. `run_configured` now takes the
+  drive's **end** as a boundary as well, so a tool-less drive is one boundary
+  rather than none, and five tool-less turns configure the seat. Strategist
+  activity scales with tool steps *plus drives*; `counts["boundaries_projected"]`
+  is at least 1 for any drive that ran **with both a reviewer and a projector
+  wired**, and is still the honest liveness check rather than
+  `outcome.applied` — a review is asynchronous, so turn N's projection
+  configures turn N+1. Mind that precondition: `armed` is `lifecycle or
+  reviewer` and never requires a projector, so an armed lane without one
+  projects nothing and is *configured without being reviewed* — a legitimate
+  shape, not a fault.
 - **T2 — FIXED, and it is off the list.** The review cadence used to outlive the
   drive whose step index fed it: `review_gap` defaults to 2 acting steps while
   the index `run_configured` supplies restarts every drive, so the difference

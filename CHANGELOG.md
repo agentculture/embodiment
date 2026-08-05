@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.0] - 2026-08-05
+
+### Changed
+
+- `counts["boundaries_projected"]` is now at least 1 for any drive that ran with both a reviewer and a projector wired, and one higher per drive than before for tool-using drives. It remains the honest liveness check. Note the precondition: `ConfigGovernor.armed` is `lifecycle is not None or reviewer is not None` and never requires a projector, so an armed lane without one legitimately projects nothing.
+- T1 and T2 are both retired from `examples/three_tier.py`'s `SEAM_TRAPS`, which now holds six entries, none of which carries `incapable_tier=True`. `tests/test_three_tier.py` asserts that emptiness so a new propose-nothing trap must be recorded as one.
+
+### Fixed
+
+- Seam trap T1: the config lane's review boundary was a TOOL-STEP boundary only, so a drive whose actor answered in one turn without calling a tool projected nothing, reviewed nothing and proposed nothing — with `governor.armed` reading True, every counter at zero and no degradation recorded. `config_run.finish` now takes the drive's END as a boundary, so a purely conversational host is configured (measured: five tool-less turns, four changes applied).
+- T1's documentation half: `run_configured` and `ConfigGovernor.projector` now name the unit of a boundary — one completed tool step, or the end of the drive — instead of leaving it to inference.
+
 ## [0.13.0] - 2026-08-04
 
 ### Added
