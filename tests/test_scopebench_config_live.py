@@ -153,7 +153,8 @@ class TestTheCycleTwoArmsAreDialable:
     def test_every_cycle_two_arm_is_a_stage_two_verb_choice(self) -> None:
         parser = sl.build_parser()
         text = parser.format_help()
-        assert "stage2" in text and "pilot" in text
+        assert "stage2" in text
+        assert "pilot" in text
 
 
 # ── clocks: requirement 6 ────────────────────────────────────────────────────
@@ -215,19 +216,24 @@ class TestReadAllocation:
         pairs, kind, _ = sl.read_allocation(
             'Here is my plan.\n{"responsibilities": [{"owner": "a", "responsibility": "-"}]}'
         )
-        assert kind == sl.REPLY_ALLOCATION and pairs == (("a", "-"),)
+        assert kind == sl.REPLY_ALLOCATION
+        assert pairs == (("a", "-"),)
 
     def test_an_unreadable_reply_yields_no_pairs(self) -> None:
         pairs, kind, detail = sl.read_allocation("I would rather not say.")
-        assert kind == sl.REPLY_UNREADABLE and pairs == () and detail
+        assert kind == sl.REPLY_UNREADABLE
+        assert pairs == ()
+        assert detail
 
     def test_an_empty_reply_is_unreadable_and_says_so(self) -> None:
         _pairs, kind, detail = sl.read_allocation("")
-        assert kind == sl.REPLY_UNREADABLE and "no content" in detail
+        assert kind == sl.REPLY_UNREADABLE
+        assert "no content" in detail
 
     def test_a_well_formed_object_with_no_responsibilities_is_still_read(self) -> None:
         pairs, kind, _ = sl.read_allocation('{"responsibilities": []}')
-        assert kind == sl.REPLY_ALLOCATION and pairs == ()
+        assert kind == sl.REPLY_ALLOCATION
+        assert pairs == ()
 
 
 class TestTheActorsAnswerNeverTouchesTheProtocolAxis:
@@ -240,7 +246,9 @@ class TestTheActorsAnswerNeverTouchesTheProtocolAxis:
             system_prompt="s",
         )
         rollout, _calls = sl.play_episode(episode, actor)
-        assert rollout.offered == 0 and rollout.accepted == 0 and rollout.holds == 0
+        assert rollout.offered == 0
+        assert rollout.accepted == 0
+        assert rollout.holds == 0
 
     def test_the_plan_is_the_actors_own(self, episode: ep.Episode) -> None:
         actor = sl.LiveActor(
@@ -267,7 +275,8 @@ class TestTheActorsAnswerNeverTouchesTheProtocolAxis:
         )
         actor = sl.LiveActor(seam=_CannedActor([reply]), episode=episode, system_prompt="s")
         rollout, _calls = sl.play_episode(episode, actor)
-        assert rollout.unexecutable and rollout.offered == 0
+        assert rollout.unexecutable
+        assert rollout.offered == 0
 
     def test_a_dead_actor_seam_abandons_the_episode(self, episode: ep.Episode) -> None:
         class _Dead(_CannedActor):
@@ -313,7 +322,8 @@ class TestTheAdvisoryLaneStillOffersDirectives:
             system_prompt="s",
         )
         rollout, _calls = sl.play_episode(episode, actor, advisory=lambda _c: None)
-        assert rollout.holds == len(episode.review_ticks) and rollout.offered == 0
+        assert rollout.holds == len(episode.review_ticks)
+        assert rollout.offered == 0
 
     def test_the_actor_is_shown_the_standing_scope(self, episode: ep.Episode) -> None:
         seam = _CannedActor([_allocation_reply(episode)])
@@ -400,7 +410,8 @@ class TestABoundaryReviewProposesVerifiesAppliesAndRatchets:
 
     def test_a_change_unit_is_offered_and_accepted(self) -> None:
         lane, tally = self._reviewed([_prompt_change(1)])
-        assert tally.units_offered == 1 and tally.units_accepted == 1
+        assert tally.units_offered == 1
+        assert tally.units_accepted == 1
         lane.close()
 
     def test_it_is_applied(self) -> None:
@@ -410,7 +421,8 @@ class TestABoundaryReviewProposesVerifiesAppliesAndRatchets:
 
     def test_the_ratchet_is_checked_once_per_apply(self) -> None:
         lane, tally = self._reviewed([_prompt_change(1)])
-        assert tally.ratchet_checks == 1 and tally.ratchet_failures == 0
+        assert tally.ratchet_checks == 1
+        assert tally.ratchet_failures == 0
         lane.close()
 
     def test_the_ratchet_compares_against_the_fixed_baseline(self) -> None:
@@ -423,7 +435,9 @@ class TestABoundaryReviewProposesVerifiesAppliesAndRatchets:
 
     def test_a_hold_is_a_real_answer_and_applies_nothing(self) -> None:
         lane, tally = self._reviewed([MARKER_HOLD])
-        assert tally.holds == 1 and tally.applied == () and tally.units_offered == 0
+        assert tally.holds == 1
+        assert tally.applied == ()
+        assert tally.units_offered == 0
         lane.close()
 
     def test_a_review_that_never_ran_is_visible_as_such(self) -> None:
@@ -443,7 +457,8 @@ class TestABoundaryReviewProposesVerifiesAppliesAndRatchets:
         run = lane.begin(0)
         lane.end(run)
         tally = lane.review(sl.blank_snapshot("s1"), step_index=1)
-        assert tally.units_accepted == 1 and tally.units_refused == 0
+        assert tally.units_accepted == 1
+        assert tally.units_refused == 0
         assert tally.failed_verification == ("cfg-1",)
         assert tally.applied == ()
         lane.close()
@@ -451,7 +466,8 @@ class TestABoundaryReviewProposesVerifiesAppliesAndRatchets:
     def test_revert_is_exercised_even_when_nothing_was_applied(self) -> None:
         lane, _tally = self._reviewed([MARKER_HOLD])
         outcome = lane.revert()
-        assert outcome is not None and outcome.matches_baseline is True
+        assert outcome is not None
+        assert outcome.matches_baseline is True
         assert lane.lifecycle.effective(sl.ACTOR_SEAT).config_sha == lane.baseline_sha()
         lane.close()
 
@@ -543,7 +559,8 @@ class TestTheReportNamesWhichArmsItSeeksAVerdictFor:
     def test_a_comparator_arms_rivals_are_not(self) -> None:
         """Which is why ``A0``/``A1``/``A3`` are INCONCLUSIVE by construction."""
         rivals = set(sb.CONDITION_COST_RIVALS[sb.LANE_ADVISORY])
-        assert sb.ARM_A2 in rivals and sb.ARM_A2 not in sb.CYCLE_TWO_ARMS
+        assert sb.ARM_A2 in rivals
+        assert sb.ARM_A2 not in sb.CYCLE_TWO_ARMS
 
 
 class TestTheSnapshotIsHostFactAndNeverTheOracle:
@@ -562,7 +579,8 @@ class TestTheSnapshotIsHostFactAndNeverTheOracle:
 
     def test_it_never_names_the_optimum(self, episode: ep.Episode) -> None:
         text = json.dumps(self._snapshot(episode).to_dict())
-        assert "optimum" not in text and "regret" not in text
+        assert "optimum" not in text
+        assert "regret" not in text
 
     def test_it_carries_what_the_seat_actually_did(self, episode: ep.Episode) -> None:
         assert self._snapshot(episode).observations
@@ -589,11 +607,13 @@ class TestTheRatchetAxisIsPopulated:
 
     def test_the_two_digests_are_recorded_as_two_facts(self) -> None:
         block = sl.ratchet_block(sl.ReviewTally(), actor_sha="a", ledger_sha="b")
-        assert block["actor_config_sha"] == "a" and block["ledger_config_sha"] == "b"
+        assert block["actor_config_sha"] == "a"
+        assert block["ledger_config_sha"] == "b"
 
     def test_an_arm_outside_the_config_lane_records_an_empty_ratchet(self) -> None:
         block = sl.ratchet_block(None, actor_sha="a", ledger_sha="a")
-        assert block["ratchet_checks"] == 0 and block["changes_applied"] == 0
+        assert block["ratchet_checks"] == 0
+        assert block["changes_applied"] == 0
 
 
 class TestConditionEightReadsTheAxis:
@@ -803,7 +823,8 @@ class TestTheConfigAuthorityIsTheShippedOne:
 
     def test_the_framing_names_no_strategy(self) -> None:
         lowered = sl.STRATEGIST_FRAMING.lower()
-        assert "greedy" not in lowered and "optimum" not in lowered
+        assert "greedy" not in lowered
+        assert "optimum" not in lowered
 
 
 # ── the record shape the series writes ───────────────────────────────────────

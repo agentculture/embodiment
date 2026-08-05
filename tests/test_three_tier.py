@@ -271,7 +271,8 @@ class TestTheThreeTiers:
         state = session._inner_state(record)
         for banned in ("feel", "happy", "worried", "excited", "sad"):
             assert banned not in state.lower()
-        assert "drive:" in state and "result:" in state
+        assert "drive:" in state
+        assert "result:" in state
 
 
 class TestTheArmsAreMatched:
@@ -325,7 +326,8 @@ class TestDegradationIsVisibleAndNeverFatal:
             }
         )
         assert not resolution.senses_ready
-        assert resolution.actor_ready and resolution.strategist_ready
+        assert resolution.actor_ready
+        assert resolution.strategist_ready
         codes = [code for code, _ in resolution.degradations]
         assert "seat-senses-not-ready" in codes
 
@@ -424,7 +426,8 @@ class TestTheGateIsRealPerChangeType:
         )
         life.advance()
         proposal = life.proposal("no-finish")
-        assert proposal is not None and proposal.state == "rejected"
+        assert proposal is not None
+        assert proposal.state == "rejected"
         assert life.effective("worker").tools != ("read_sensor",)
 
     def test_a_runaway_prompt_is_refused_by_the_growth_bound(self) -> None:
@@ -566,7 +569,8 @@ class TestTheCli:
     def test_the_shipped_script_is_replayable(self) -> None:
         assert SCRIPT.exists()
         lines = list(tt._script_lines(SCRIPT))
-        assert lines and all(not line.startswith("#") for line in lines)
+        assert lines
+        assert all(not line.startswith("#") for line in lines)
 
 
 class TestTheHostShipsNoSecondTransportAndNoShell:
@@ -907,7 +911,10 @@ class TestTheSeamTraps:
 
     def test_every_trap_names_a_seam_a_symptom_and_a_fix(self) -> None:
         for trap in tt.SEAM_TRAPS:
-            assert trap.id and trap.seam.strip() and trap.symptom.strip() and trap.fix.strip()
+            assert trap.id
+            assert trap.seam.strip()
+            assert trap.symptom.strip()
+            assert trap.fix.strip()
         incapable = [trap.id for trap in tt.SEAM_TRAPS if trap.incapable_tier]
         assert incapable == ["T1"], (
             "T1 is the one remaining true #62-class trap; T2 was FIXED on PR #81 "

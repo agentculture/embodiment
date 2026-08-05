@@ -289,7 +289,8 @@ class TestUnknownSeat:
         report = build_config_report([_entry(seat="mystery-seat", change_id="ghost")])
         assert {seat.seat for seat in report.seats} == set(CHANGE_SEATS)
         for seat in report.seats:
-            assert seat.prompt == () and seat.unexplained == ()
+            assert seat.prompt == ()
+            assert seat.unexplained == ()
         assert len(report.unexplained) == 1
         assert report.unexplained[0].code == CONFIG_REPORT_UNKNOWN_SEAT
         assert report.unexplained[0].change_id == "ghost"
@@ -300,7 +301,8 @@ class TestUnknownTarget:
         report = build_config_report([_entry(target="worker.mystery", change_id="chg-x")])
         seat = report.seat(SEAT_WORKER)
         assert seat is not None
-        assert seat.prompt == () and seat.knowledge == ()
+        assert seat.prompt == ()
+        assert seat.knowledge == ()
         assert len(seat.unexplained) == 1
         assert seat.unexplained[0].code == CONFIG_REPORT_UNKNOWN_TARGET
         assert seat.unexplained[0].change_id == "chg-x"
@@ -325,7 +327,8 @@ class TestMalformedUnit:
         row = _entry(target=TARGET_WORKER_TOOLS, unit={"catalog_id": "x"})
         seat = build_config_report([row]).seat(SEAT_WORKER)
         assert seat is not None
-        assert seat.tools.capability_ids == () and seat.tools.provenance is None
+        assert seat.tools.capability_ids == ()
+        assert seat.tools.provenance is None
         assert seat.unexplained[0].code == CONFIG_REPORT_MALFORMED_UNIT
 
     def test_an_explicitly_empty_capability_selection_is_NOT_malformed(self) -> None:
@@ -508,7 +511,8 @@ class TestParityWithALiveLifecycle:
             proposal = lifecycle.propose(change)
             assert proposal is not None, lifecycle.degradations
             verified = lifecycle.verify(change.change_id)
-            assert verified is not None and verified.state == STATE_VERIFIED, lifecycle.degradations
+            assert verified is not None, lifecycle.degradations
+            assert verified.state == STATE_VERIFIED, lifecycle.degradations
             outcome = lifecycle.apply(change.change_id)
             assert outcome.applied, (outcome.refusal, outcome.deferral)
             applied_change = lifecycle.proposal(change.change_id).change
@@ -546,7 +550,8 @@ class TestRenderText:
     def test_never_raises_on_a_report_full_of_degradations(self) -> None:
         report = build_config_report([_entry(seat="mystery"), _entry(target="worker.mystery")])
         text = render_text(report)
-        assert isinstance(text, str) and text
+        assert isinstance(text, str)
+        assert text
 
     def test_never_raises_on_garbage(self) -> None:
         for hostile in (None, 12345, "nope", object()):

@@ -210,7 +210,8 @@ class TestTerminationIsStructural:
         """``max(1, …)``: a zero budget is a configuration nobody means."""
         loop, seam = _loop(ModelResponse(content="thinking"), controls=ConfigControls(max_turns=0))
         outcome = loop.review(_snapshot())
-        assert outcome.turns == 1 and len(seam.calls) == 1
+        assert outcome.turns == 1
+        assert len(seam.calls) == 1
 
 
 # ── 2. the four exits ─────────────────────────────────────────────────────────

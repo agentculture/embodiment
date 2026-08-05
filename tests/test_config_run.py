@@ -476,7 +476,8 @@ class TestTheSeatRunsUnderItsConfiguration:
             system_prompt="host baseline",
         )
         system = seam.calls[0][0]["content"]
-        assert "host baseline" in system and "be careful" in system
+        assert "host baseline" in system
+        assert "be careful" in system
 
     def test_an_empty_seat_config_leaves_the_hosts_prompt_by_identity(self, monkeypatch) -> None:
         seen: dict[str, Any] = {}
@@ -707,7 +708,8 @@ class TestChangesLandBetweenRuns:
             max_steps=3,
             governor=governor,
         )
-        assert first.transitions and second.transitions == ()
+        assert first.transitions
+        assert second.transitions == ()
 
 
 # ── the ledger discipline ─────────────────────────────────────────────────────
@@ -882,7 +884,8 @@ class TestTheDemotionIsRepresentable:
         life = _lifecycle()
         first = life.propose(_prompt_change("c1", text="first", section="care"))
         second = life.propose(_prompt_change("c2", text="second", section="speed"))
-        assert first is not None and second is not None
+        assert first is not None
+        assert second is not None
         life.verify("c1")
         life.verify("c2")
         life.apply("c1")

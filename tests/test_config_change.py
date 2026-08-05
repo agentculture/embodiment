@@ -228,12 +228,14 @@ class TestRefuseWhole:
     def test_a_non_mapping_payload_is_refused(self) -> None:
         change, refusal = change_from_payload(["target", "worker.prompts"])
         assert change is None
-        assert refusal is not None and refusal.code == CHANGE_MALFORMED
+        assert refusal is not None
+        assert refusal.code == CHANGE_MALFORMED
 
     def test_an_extra_key_refuses_the_WHOLE_unit(self) -> None:
         change, refusal = change_from_payload(_prompt_payload(urgency="high"))
         assert change is None, "the unit survived with the extra key stripped"
-        assert refusal is not None and refusal.code == CHANGE_UNKNOWN_KEY
+        assert refusal is not None
+        assert refusal.code == CHANGE_UNKNOWN_KEY
         assert "urgency" in refusal.reason
 
     def test_an_unknown_target_refuses(self) -> None:
@@ -241,19 +243,22 @@ class TestRefuseWhole:
             {"target": "worker.souls", "origin": ORIGIN_STRATEGIST}
         )
         assert change is None
-        assert refusal is not None and refusal.code == CHANGE_UNKNOWN_TARGET
+        assert refusal is not None
+        assert refusal.code == CHANGE_UNKNOWN_TARGET
         assert "worker.souls" in refusal.reason
 
     def test_a_missing_target_refuses(self) -> None:
         change, refusal = change_from_payload({"origin": ORIGIN_STRATEGIST, "change_id": "c"})
         assert change is None
-        assert refusal is not None and refusal.code == CHANGE_UNKNOWN_TARGET
+        assert refusal is not None
+        assert refusal.code == CHANGE_UNKNOWN_TARGET
 
     @pytest.mark.parametrize("key", ["command", "shell", "code", "approve", "patch", "argv"])
     def test_an_action_authority_key_refuses_the_whole_unit(self, key: str) -> None:
         change, refusal = change_from_payload(_prompt_payload(**{key: "anything"}))
         assert change is None
-        assert refusal is not None and refusal.code == CHANGE_AUTHORITY_VIOLATION
+        assert refusal is not None
+        assert refusal.code == CHANGE_AUTHORITY_VIOLATION
         assert key in refusal.reason
 
     def test_a_forbidden_key_is_caught_at_DEPTH(self) -> None:
@@ -262,7 +267,8 @@ class TestRefuseWhole:
             _prompt_payload(text={"prose": {"nested": {"command": "rm -rf /"}}})
         )
         assert change is None
-        assert refusal is not None and refusal.code == CHANGE_AUTHORITY_VIOLATION
+        assert refusal is not None
+        assert refusal.code == CHANGE_AUTHORITY_VIOLATION
         assert "command" in refusal.reason
 
     def test_a_forbidden_key_is_caught_inside_a_LIST(self) -> None:
@@ -270,13 +276,15 @@ class TestRefuseWhole:
             _tools_payload(capability_ids=[{"exec": "shell"}]),
         )
         assert change is None
-        assert refusal is not None and refusal.code == CHANGE_AUTHORITY_VIOLATION
+        assert refusal is not None
+        assert refusal.code == CHANGE_AUTHORITY_VIOLATION
 
     def test_the_forbidden_key_check_runs_BEFORE_the_unknown_key_check(self) -> None:
         """A smuggled command reads as an authority violation, never as a typo."""
         change, refusal = change_from_payload(_prompt_payload(command="rm -rf /"))
         assert change is None
-        assert refusal is not None and refusal.code == CHANGE_AUTHORITY_VIOLATION
+        assert refusal is not None
+        assert refusal.code == CHANGE_AUTHORITY_VIOLATION
 
     def test_the_ban_is_on_KEYS_not_on_prose(self) -> None:
         """A prompt that *reads* like an instruction is a legitimate prompt change."""
@@ -299,12 +307,15 @@ class TestRefuseWhole:
             _tools_payload(catalog_fingerprint="0" * 64), catalog=_catalog()
         )
         assert change is None
-        assert refusal is not None and refusal.code == CHANGE_UNKNOWN_KEY
+        assert refusal is not None
+        assert refusal.code == CHANGE_UNKNOWN_KEY
 
     def test_declared_keys_excludes_the_stamped_ones(self) -> None:
         keys = declared_keys(TARGET_WORKER_TOOLS)
-        assert "capability_ids" in keys and "target" in keys
-        assert "catalog_id" not in keys and "catalog_fingerprint" not in keys
+        assert "capability_ids" in keys
+        assert "target" in keys
+        assert "catalog_id" not in keys
+        assert "catalog_fingerprint" not in keys
 
     def test_declared_keys_of_an_unknown_target_is_empty(self) -> None:
         assert declared_keys("worker.souls") == ()
@@ -319,33 +330,39 @@ class TestCompleteness:
     def test_a_change_with_no_id_cannot_be_reverted_so_it_is_refused(self) -> None:
         change, refusal = change_from_payload(_prompt_payload(change_id=""))
         assert change is None
-        assert refusal is not None and refusal.code == CHANGE_INCOMPLETE
+        assert refusal is not None
+        assert refusal.code == CHANGE_INCOMPLETE
 
     def test_a_prompt_change_naming_no_section_is_refused(self) -> None:
         change, refusal = change_from_payload(_prompt_payload(section=""))
         assert change is None
-        assert refusal is not None and refusal.code == CHANGE_INCOMPLETE
+        assert refusal is not None
+        assert refusal.code == CHANGE_INCOMPLETE
 
     def test_a_prompt_change_may_clear_a_section(self) -> None:
         """An empty ``text`` is a real change — revert has to be expressible."""
         change, refusal = change_from_payload(_prompt_payload(text=""))
-        assert refusal is None and change is not None
+        assert refusal is None
+        assert change is not None
 
     def test_a_knowledge_entry_with_no_text_says_nothing_so_it_is_refused(self) -> None:
         change, refusal = change_from_payload(_knowledge_payload(text=""))
         assert change is None
-        assert refusal is not None and refusal.code == CHANGE_INCOMPLETE
+        assert refusal is not None
+        assert refusal.code == CHANGE_INCOMPLETE
 
     def test_a_knowledge_entry_with_no_entry_id_is_refused(self) -> None:
         change, refusal = change_from_payload(_knowledge_payload(entry_id=""))
         assert change is None
-        assert refusal is not None and refusal.code == CHANGE_INCOMPLETE
+        assert refusal is not None
+        assert refusal.code == CHANGE_INCOMPLETE
 
     def test_an_empty_capability_selection_is_accepted(self) -> None:
         """Revoking everything must be expressible — it is the SAFE selection."""
         change, refusal = change_from_payload(_tools_payload(capability_ids=[]), catalog=_catalog())
         assert refusal is None
-        assert change is not None and change.capability_ids == ()
+        assert change is not None
+        assert change.capability_ids == ()
 
 
 # ── 3. origin is required and the lattice is structural ──────────────────────
@@ -357,17 +374,20 @@ class TestOriginIsRequired:
         del payload["origin"]
         change, refusal = change_from_payload(payload)
         assert change is None
-        assert refusal is not None and refusal.code == CHANGE_NO_ORIGIN
+        assert refusal is not None
+        assert refusal.code == CHANGE_NO_ORIGIN
 
     def test_an_empty_origin_is_refused(self) -> None:
         change, refusal = change_from_payload(_prompt_payload(origin="  "))
         assert change is None
-        assert refusal is not None and refusal.code == CHANGE_NO_ORIGIN
+        assert refusal is not None
+        assert refusal.code == CHANGE_NO_ORIGIN
 
     def test_an_unknown_origin_is_refused(self) -> None:
         change, refusal = change_from_payload(_prompt_payload(origin="root"))
         assert change is None
-        assert refusal is not None and refusal.code == CHANGE_NO_ORIGIN
+        assert refusal is not None
+        assert refusal.code == CHANGE_NO_ORIGIN
         assert "root" in refusal.reason
 
     def test_an_unattributed_knowledge_write_is_refused_whole(self) -> None:
@@ -376,7 +396,8 @@ class TestOriginIsRequired:
         del payload["origin"]
         change, refusal = change_from_payload(payload)
         assert change is None
-        assert refusal is not None and refusal.code == CHANGE_NO_ORIGIN
+        assert refusal is not None
+        assert refusal.code == CHANGE_NO_ORIGIN
 
     def test_origin_is_a_field_of_every_unit(self) -> None:
         for unit in CHANGE_UNITS.values():
@@ -407,8 +428,10 @@ class TestTheAuthorityLattice:
     def test_a_worker_originated_prompt_write_is_refused_whole(self, target: str) -> None:
         change, refusal = change_from_payload(_prompt_payload(target=target, origin=ORIGIN_WORKER))
         assert change is None, "the worker reached a prompt-shaped target"
-        assert refusal is not None and refusal.code == CHANGE_ORIGIN_FORBIDDEN
-        assert ORIGIN_WORKER in refusal.reason and target in refusal.reason
+        assert refusal is not None
+        assert refusal.code == CHANGE_ORIGIN_FORBIDDEN
+        assert ORIGIN_WORKER in refusal.reason
+        assert target in refusal.reason
         assert refusal.target == target
         assert refusal.origin == ORIGIN_WORKER
 
@@ -426,7 +449,8 @@ class TestTheAuthorityLattice:
             _tools_payload(target=target, origin=ORIGIN_WORKER), catalog=_catalog()
         )
         assert change is None
-        assert refusal is not None and refusal.code == CHANGE_ORIGIN_FORBIDDEN
+        assert refusal is not None
+        assert refusal.code == CHANGE_ORIGIN_FORBIDDEN
 
     def test_senses_prompt_text_is_unreachable_from_a_worker_writable_unit(self) -> None:
         """Structural, not conventional: no worker-writable unit has a prompt field."""
@@ -471,14 +495,16 @@ class TestSelectionNeverMinting:
             catalog=_catalog(),
         )
         assert change is None
-        assert refusal is not None and refusal.code == CHANGE_AUTHORITY_VIOLATION
+        assert refusal is not None
+        assert refusal.code == CHANGE_AUTHORITY_VIOLATION
 
     def test_an_undeclared_capability_id_is_refused_whole(self) -> None:
         change, refusal = change_from_payload(
             _tools_payload(capability_ids=["fs.read", "shell.exec"]), catalog=_catalog()
         )
         assert change is None, "an undeclared id survived alongside a declared one"
-        assert refusal is not None and refusal.code == CHANGE_UNKNOWN_CAPABILITY
+        assert refusal is not None
+        assert refusal.code == CHANGE_UNKNOWN_CAPABILITY
         assert "shell.exec" in refusal.reason
 
     def test_a_capability_of_the_WRONG_KIND_is_refused(self) -> None:
@@ -487,7 +513,8 @@ class TestSelectionNeverMinting:
             _tools_payload(capability_ids=["net.egress"]), catalog=_catalog()
         )
         assert change is None
-        assert refusal is not None and refusal.code == CHANGE_UNKNOWN_CAPABILITY
+        assert refusal is not None
+        assert refusal.code == CHANGE_UNKNOWN_CAPABILITY
 
     def test_a_permissions_unit_selects_permission_kinds(self) -> None:
         change, refusal = change_from_payload(
@@ -506,17 +533,20 @@ class TestSelectionNeverMinting:
     def test_with_NO_catalog_a_capability_unit_is_refused_fail_closed(self) -> None:
         change, refusal = change_from_payload(_tools_payload())
         assert change is None
-        assert refusal is not None and refusal.code == CHANGE_NO_CATALOG
+        assert refusal is not None
+        assert refusal.code == CHANGE_NO_CATALOG
 
     def test_with_an_EMPTY_catalog_every_id_is_undeclared(self) -> None:
         change, refusal = change_from_payload(_tools_payload(), catalog=CapabilityCatalog())
         assert change is None
-        assert refusal is not None and refusal.code == CHANGE_UNKNOWN_CAPABILITY
+        assert refusal is not None
+        assert refusal.code == CHANGE_UNKNOWN_CAPABILITY
 
     def test_a_prompt_or_knowledge_unit_needs_no_catalog(self) -> None:
         for payload in (_prompt_payload(), _knowledge_payload()):
             change, refusal = change_from_payload(payload)
-            assert refusal is None and change is not None
+            assert refusal is None
+            assert change is not None
 
     def test_an_accepted_capability_unit_is_STAMPED_with_its_catalog(self) -> None:
         catalog = _catalog()
@@ -540,7 +570,8 @@ class TestRevalidationCatchesCatalogDrift:
         change, _ = change_from_payload(_tools_payload(), catalog=catalog)
         shrunk = CapabilityCatalog(catalog_id="greenhouse-1", entries=catalog.entries[:1])
         refusal = revalidate(change, shrunk)
-        assert refusal is not None and refusal.code == CHANGE_STALE_CATALOG
+        assert refusal is not None
+        assert refusal.code == CHANGE_STALE_CATALOG
 
     def test_a_vanished_capability_is_named(self) -> None:
         catalog = _catalog()
@@ -561,7 +592,8 @@ class TestRevalidationCatchesCatalogDrift:
         change, _ = change_from_payload(_tools_payload(), catalog=catalog)
         other_host = CapabilityCatalog(catalog_id="reachy-1", entries=catalog.entries)
         refusal = revalidate(change, other_host)
-        assert refusal is not None and refusal.code == CHANGE_STALE_CATALOG
+        assert refusal is not None
+        assert refusal.code == CHANGE_STALE_CATALOG
 
     def test_revalidating_a_non_capability_unit_is_a_no_op(self) -> None:
         change, _ = change_from_payload(_prompt_payload())
@@ -620,19 +652,22 @@ class TestCoercionNeverRaises:
             _tools_payload(capability_ids="fs.read"), catalog=_catalog()
         )
         assert refusal is None
-        assert change is not None and change.capability_ids == ("fs.read",)
+        assert change is not None
+        assert change.capability_ids == ("fs.read",)
 
     def test_a_null_capability_id_list_is_an_empty_selection(self) -> None:
         change, refusal = change_from_payload(
             _tools_payload(capability_ids=None), catalog=_catalog()
         )
         assert refusal is None
-        assert change is not None and change.capability_ids == ()
+        assert change is not None
+        assert change.capability_ids == ()
 
     def test_a_scalar_capability_id_payload_is_coerced_and_then_refused(self) -> None:
         change, refusal = change_from_payload(_tools_payload(capability_ids=7), catalog=_catalog())
         assert change is None
-        assert refusal is not None and refusal.code == CHANGE_UNKNOWN_CAPABILITY
+        assert refusal is not None
+        assert refusal.code == CHANGE_UNKNOWN_CAPABILITY
         assert "'7'" in refusal.reason
 
     def test_a_blank_capability_id_is_refused_rather_than_dropped(self) -> None:
@@ -640,14 +675,16 @@ class TestCoercionNeverRaises:
             _tools_payload(capability_ids=["fs.read", "  "]), catalog=_catalog()
         )
         assert change is None
-        assert refusal is not None and refusal.code == CHANGE_UNKNOWN_CAPABILITY
+        assert refusal is not None
+        assert refusal.code == CHANGE_UNKNOWN_CAPABILITY
 
     def test_more_than_one_undeclared_id_is_counted_in_the_reason(self) -> None:
         change, refusal = change_from_payload(
             _tools_payload(capability_ids=["a", "b", "c"]), catalog=_catalog()
         )
         assert change is None
-        assert refusal is not None and "and 2 more" in refusal.reason
+        assert refusal is not None
+        assert "and 2 more" in refusal.reason
 
     def test_a_knowledge_entry_may_supersede_another(self) -> None:
         change, refusal = change_from_payload(_knowledge_payload(supersedes="sensor-7-old"))
@@ -662,7 +699,8 @@ class TestCoercionNeverRaises:
 
         change, refusal = change_from_payload(_prompt_payload(text=Hostile()))
         assert refusal is None
-        assert change is not None and change.text == ""
+        assert change is not None
+        assert change.text == ""
 
     def test_a_hostile_KEY_is_read_as_a_blank_and_refused(self) -> None:
         class Hostile:
@@ -674,7 +712,8 @@ class TestCoercionNeverRaises:
 
         change, refusal = change_from_payload(_prompt_payload(**{"x": 1}) | {Hostile(): 1})
         assert change is None
-        assert refusal is not None and refusal.code == CHANGE_UNKNOWN_KEY
+        assert refusal is not None
+        assert refusal.code == CHANGE_UNKNOWN_KEY
 
 
 # ── 6. cited, not coupled ────────────────────────────────────────────────────
@@ -745,7 +784,8 @@ class TestSerialization:
             "knowledge": _knowledge_payload(),
         }[payload]
         change, refusal = change_from_payload(raw, catalog=catalog)
-        assert refusal is None and change is not None
+        assert refusal is None
+        assert change is not None
         restored, again = change_from_payload(
             {k: v for k, v in change.to_dict().items() if k in declared_keys(change.target)},
             catalog=catalog,

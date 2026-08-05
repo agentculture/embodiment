@@ -171,7 +171,8 @@ class TestTheCatalogIsDeclaredNotDiscovered:
     def test_get_returns_the_declaration_itself(self) -> None:
         cap = _catalog().get("fs.read")
         assert cap is not None
-        assert cap.kind == CAPABILITY_KIND_TOOL and cap.label == "read a file"
+        assert cap.kind == CAPABILITY_KIND_TOOL
+        assert cap.label == "read a file"
 
     def test_a_field_whose_str_raises_becomes_a_blank_not_a_crash(self) -> None:
         class Hostile:

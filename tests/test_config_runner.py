@@ -366,7 +366,8 @@ class TestCadenceAndDisplacement:
             _one_review(runner, _snapshot("s2"), step=2)
             assert runner.counts["reviews_dropped_overflow"] == 1
             overflow = [e for e in runner.degradations if e.code == RUNNER_DROPPED_OVERFLOW]
-            assert overflow and overflow[0].step_index == 1
+            assert overflow
+            assert overflow[0].step_index == 1
 
     def test_a_zero_length_buffer_floors_at_one(self) -> None:
         with _runner(_Scripted(), limits=ConfigLimits(max_pending=0)) as runner:
@@ -393,7 +394,8 @@ class TestDegradeNeverRaise:
             assert RUNNER_DEGRADED_SEAM in (runner.degradation() or "")
             ready = runner.drain(step_count=1)
         # The degraded review is still delivered — it is the record saying so.
-        assert ready and ready[0].exit_reason == CONFIG_EXIT_DEGRADED
+        assert ready
+        assert ready[0].exit_reason == CONFIG_EXIT_DEGRADED
 
     def test_a_baseexception_in_the_worker_is_recorded_not_silent(self) -> None:
         """C3: a dead worker leaves a record.

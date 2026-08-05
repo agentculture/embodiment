@@ -104,7 +104,8 @@ class TestTheFixtureIsReal:
         data = json.loads(ADVISORY_FIXTURE.read_text(encoding="utf-8"))
         assert data["schema_version"] == 1
         assert data["lane"] == "durable"
-        assert isinstance(data["accepted"], list) and len(data["accepted"]) >= 1
+        assert isinstance(data["accepted"], list)
+        assert len(data["accepted"]) >= 1
         # An advisory ScopeDirective entry, never a config-change unit.
         first = data["accepted"][0]
         assert "objective" in first
