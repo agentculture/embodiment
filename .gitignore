@@ -243,3 +243,8 @@ skills.local.yaml
 # an append-only file, which would conflict on every merge. A host that wants
 # durable central records points EMBODIMENT_DRONE_LEDGER somewhere it keeps them.
 .drones/.evocations.jsonl
+
+# The cycle-2 series writes here per episode while it dials; the completed
+# records are committed deliberately by the task that publishes the verdict,
+# never picked up mid-run as if they were a finished measurement.
+docs/live-test-results/scopebench-config-raw/

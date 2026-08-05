@@ -160,8 +160,17 @@ class TestTheDocumentMatchesTheHarness:
         row = next(line for line in doc.splitlines() if line.startswith(f"| `{family}`"))
         assert "DEFERRED" in row
 
-    @pytest.mark.parametrize("arm", sb.ARM_ORDER)
+    @pytest.mark.parametrize("arm", sb.CYCLE_ONE_ARMS)
     def test_every_arm_and_its_seats_are_in_the_document(self, arm: str, doc: str) -> None:
+        """Parametrized over ``CYCLE_ONE_ARMS``, not ``ARM_ORDER``, on purpose.
+
+        ``t13`` added ``A4``/``A5`` for cycle 2. This document is **closed**:
+        back-dating a later cycle's arms into a pre-registration that never
+        declared them would be the exact defect the ordering discipline exists
+        to prevent, so the pin narrows to the arms this document actually
+        governed. Cycle 2's arms are pinned against cycle 2's document by
+        ``tests/test_scopebench_config_preregistration.py``.
+        """
         row = next(line for line in doc.splitlines() if line.startswith(f"| `{arm}` |"))
         for seat in sb.SEATS:
             value = sb.ARMS[arm].seats[seat]
@@ -171,9 +180,19 @@ class TestTheDocumentMatchesTheHarness:
     def test_both_stages_are_described(self, stage: str, doc: str) -> None:
         assert stage.replace("-", " ").title().replace(" ", " ") in doc or stage in doc
 
-    @pytest.mark.parametrize("axis", sorted(sb.AXES))
+    #: The four axes this document declared. ``t13`` added a fifth (``ratchet``)
+    #: for cycle 2's condition 8; it is described in cycle 2's document, not
+    #: retro-fitted into this one.
+    CYCLE_ONE_AXES = ("outcome", "protocol", "authority", "cost")
+
+    @pytest.mark.parametrize("axis", CYCLE_ONE_AXES)
     def test_every_axis_is_described(self, axis: str, doc: str) -> None:
         assert f"**{axis}**" in doc
+
+    def test_the_fifth_axis_belongs_to_the_later_cycle(self) -> None:
+        """A guard on the narrowing above: the four are still four, plus one."""
+        assert set(self.CYCLE_ONE_AXES) < set(sb.AXES)
+        assert set(sb.AXES) - set(self.CYCLE_ONE_AXES) == {"ratchet"}
 
     def test_the_stage_one_stand_in_is_declared_in_the_document(self, doc: str) -> None:
         assert f"`{sub.BASELINE_PLANNER}` planner" in doc

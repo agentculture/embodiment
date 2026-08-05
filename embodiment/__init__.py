@@ -42,6 +42,16 @@ from typing import TYPE_CHECKING, Any
 #: Submodules reachable as ``from embodiment import <name>``.
 _SUBMODULES = frozenset(
     {
+        "capability",
+        "config_change",
+        "config_events",
+        "config_ledger",
+        "config_lifecycle",
+        "config_report",
+        "config_revert",
+        "config_review",
+        "config_run",
+        "config_runner",
         "context",
         "continuity",
         "contract",
@@ -49,6 +59,7 @@ _SUBMODULES = frozenset(
         "events",
         "framing",
         "identity",
+        "knowledge",
         "ledger",
         "lifecycle",
         "loop",
@@ -61,6 +72,7 @@ _SUBMODULES = frozenset(
         "scope",
         "scoped_run",
         "scratchpad",
+        "senses_text",
         "strategist_runner",
         "subagent",
         "workspace",
@@ -304,6 +316,18 @@ _LAZY_NAMES = {
     "ROLE_CORTEX": "framing",
     "ROLE_SUBAGENT": "framing",
     "ROLE_MUSE": "framing",
+    # ── host-composable senses prompt text (task t11, issue #63) ─────────
+    # TEXT, never framing: no function here builds a prompt or reaches a
+    # senses seat, so shipping this constant does not cross the
+    # embodiment-frames-cortex-not-senses boundary (README, colleague#352,
+    # claim c30) the way a `frame_senses()` function would. A host composes
+    # `SENSES_GROUNDING` into its OWN senses prompt; embodiment never does.
+    # REQUIRED, not advisory — measured 0/16 vs 16/16, see the module.
+    "SENSES_GROUNDING": "senses_text",
+    # UNMEASURED, and hoisted anyway because it is text a host has to be able
+    # to find beside the clause it composes with — not a capability claim. The
+    # knowledge SEAM (`embodiment.knowledge`) stays unhoisted per t3's rule.
+    "KNOWLEDGE_ATTRIBUTION": "senses_text",
     # ── presence policy (pure; no IO, no clock) ───────────────────────────
     "UpdateCadence": "presence",
     "ClarifyPolicy": "presence",
@@ -415,6 +439,16 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
     # type-checking against the archived lane should be able to see it. What
     # they are absent from is `__all__`, not the package.
     from embodiment import (  # noqa: F401
+        capability,
+        config_change,
+        config_events,
+        config_ledger,
+        config_lifecycle,
+        config_report,
+        config_revert,
+        config_review,
+        config_run,
+        config_runner,
         context,
         continuity,
         contract,
@@ -422,6 +456,7 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
         events,
         framing,
         identity,
+        knowledge,
         ledger,
         lifecycle,
         loop,
@@ -436,6 +471,7 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
         scope,
         scoped_run,
         scratchpad,
+        senses_text,
         strategist_runner,
         subagent,
         workspace,
@@ -632,6 +668,10 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
         Entry,
         Scratchpad,
         resume_report,
+    )
+    from embodiment.senses_text import (  # noqa: F401
+        KNOWLEDGE_ATTRIBUTION,
+        SENSES_GROUNDING,
     )
     from embodiment.strategist_runner import (  # noqa: F401
         STRATEGIST_ROLE,

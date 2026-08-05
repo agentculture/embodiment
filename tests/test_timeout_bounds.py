@@ -311,6 +311,31 @@ CLOCKS: tuple[Clock, ...] = (
             Fronted(
                 role="worker",
                 budget=Budget(
+                    "scopebench_live Stage-2 actor seat",
+                    module="examples.scopebench_live",
+                    attr="ACTOR_MAX_TOKENS",
+                ),
+                why="t14's cycle-2 series builds a fresh WorkerSeam per episode for the "
+                "OPERATION seat; arms A0/A3/A4/A5 seat the worker role there. No width is "
+                "declared because the harness dials serially (STREAM_QUEUE_WIDTH = 1) — the "
+                "acting turn, the advisory review and the config review all happen one after "
+                "another within a family's ordered run",
+            ),
+            Fronted(
+                role="cortex",
+                budget=Budget(
+                    "scopebench_live Stage-2 actor seat",
+                    module="examples.scopebench_live",
+                    attr="ACTOR_MAX_TOKENS",
+                ),
+                why="the same seam and the same budget in arm A1, which seats the CORTEX in "
+                "the acting seat — condition 5's 'the gain is just a stronger model' rival. "
+                "A budget fronts every role a harness puts behind it, and this one is behind "
+                "two",
+            ),
+            Fronted(
+                role="worker",
+                budget=Budget(
                     "scope_live_session actor seat",
                     module="examples.scope_live_session",
                     attr="ACTOR_MAX_TOKENS",
@@ -332,6 +357,32 @@ CLOCKS: tuple[Clock, ...] = (
                 why="the same host seats the cortex role as the strategist and dials it on "
                 "the same seam, one review at a time on the StrategistRunner's single "
                 "worker thread",
+            ),
+            Fronted(
+                role="worker",
+                budget=Budget(
+                    "three_tier actor seat",
+                    module="examples.three_tier",
+                    attr="ACTOR_MAX_TOKENS",
+                ),
+                why="t12's three-tier host promotes the WORKER to the acting seat and "
+                "dials it through an unsubclassed WorkerSeam (build_seam). One drive runs "
+                "at a time, so the worker role is dialled serially even though the host's "
+                "three seats can be in flight together — the same reading "
+                "scope_live_session's actor pair takes, and for the same reason: a "
+                "per-role width above 1 needs a rate measured at it",
+            ),
+            Fronted(
+                role="cortex",
+                budget=Budget(
+                    "three_tier strategist seat",
+                    module="examples.three_tier",
+                    attr="STRATEGIST_MAX_TOKENS",
+                ),
+                why="the same host seats the cortex role as the CONFIGURING strategist on "
+                "the same seam — one review at a time on the ConfigRunner's single daemon "
+                "thread. The three-tier shape moves the cortex off the acting path, but it "
+                "is still dialled through this clock",
             ),
         ),
         unmeasured=("senses",),
@@ -474,6 +525,44 @@ CLOCKS: tuple[Clock, ...] = (
             "entirely. 60.0 s was roughly 1/248th of the work it bounded, and the "
             "censoring it would have produced was biased against exactly the arms the "
             "series exists to test — arm E never fans out.",
+        ),
+    ),
+    Clock(
+        module="examples.scopebench_live",
+        constant="REVIEW_WAIT_TIMEOUT",
+        kind=WAIT_DEADLINE,
+        fronts=(
+            Fronted(
+                role="cortex",
+                budget=Budget(
+                    "scopebench_live config review",
+                    module="examples.scopebench_live",
+                    attr="STRATEGIST_MAX_TOKENS",
+                ),
+                why="t14's config lane waits at each between-episode boundary for the "
+                "ConfigRunner's review to finish before draining it. Arm A4 seats the cortex "
+                "in that strategy seat",
+            ),
+            Fronted(
+                role="worker",
+                budget=Budget(
+                    "scopebench_live config review",
+                    module="examples.scopebench_live",
+                    attr="STRATEGIST_MAX_TOKENS",
+                ),
+                why="arm A5 seats the worker in the same strategy seat — the A2-analogue for "
+                "the config lane — and waits on the same bound",
+            ),
+        ),
+        turn_budget=("examples.scopebench_live", "CONFIG_REVIEW_TURNS"),
+        notes=(
+            "A NINTH constant, and a wait deadline rather than a client timeout: what it "
+            "bounds is a whole bounded review (at most CONFIG_REVIEW_TURNS model calls), not "
+            "one call. It is shipped as `CONFIG_REVIEW_TURNS * ws.STREAM_TOTAL_TIMEOUT` — a "
+            "product of a declared clock and the turn budget rather than a literal, which is "
+            "also why the module-level float walk cannot see it. Declared here anyway: "
+            "DEFAULT_FANOUT_TIMEOUT was exactly this category and was 1/248th of the work it "
+            "bounded, and the reason it was invisible is that nobody had written it down.",
         ),
     ),
     Clock(
@@ -912,15 +1001,26 @@ class TestTheWalkCoversTheAuditedSurface:
         assert not missing, f"audited constants missing from the walk: {missing}"
 
     def test_the_walk_is_allowed_to_be_larger_than_the_audit(self) -> None:
-        """And here it is: the audit's list was seven and the surface is eight.
+        """And here it is: the audit's list was seven and the surface is nine.
 
         `worker_scoped_overhead.BATCH_WAIT_TIMEOUT_SECONDS` was not in #42's
         table and not in the plan's task text. It was found by the AST
         completeness guard below — which is the difference between a list
         somebody maintains and a category that closes itself.
+
+        `scopebench_live.REVIEW_WAIT_TIMEOUT` is ``t14``'s, and it is the case
+        the AST guard could **not** have found: it is shipped as a product of a
+        declared clock and a turn budget rather than as a module-level float, so
+        the walk's `ast.Constant` filter is blind to it. It is declared anyway,
+        by hand, for the reason `DEFAULT_FANOUT_TIMEOUT` exists in this table —
+        an undeclared wait deadline is how a clock comes to bound 1/248th of the
+        work it stands in front of without anyone noticing.
         """
         extra = sorted(set(CLOCK_IDS) - set(AUDITED_BY_ISSUE_42))
-        assert extra == ["worker_scoped_overhead.BATCH_WAIT_TIMEOUT_SECONDS"]
+        assert extra == [
+            "scopebench_live.REVIEW_WAIT_TIMEOUT",
+            "worker_scoped_overhead.BATCH_WAIT_TIMEOUT_SECONDS",
+        ]
 
     def test_every_walked_constant_actually_exists_and_is_a_number(self) -> None:
         for clock in CLOCKS:
@@ -1761,6 +1861,18 @@ _NOT_A_MODEL_CLOCK_IN_PACKAGE: Mapping[tuple[str, str], str] = {
         "bounds threading.Event.wait between reviews. Correctness never depends on it "
         "— the wake event does the work — so it is the cost of a MISSED wakeup, not a "
         "deadline anything is measured against."
+    ),
+    ("config_runner", "DEFAULT_JOIN_TIMEOUT"): (
+        "the config lane's copy of the strategist's join bound, on the identical "
+        "daemon-thread discipline: it bounds threading.Thread.join at teardown and "
+        "cannot cut a review short, because a review still in flight is abandoned "
+        "rather than waited for and the abandonment is recorded as a "
+        "config-runner-review-late transition."
+    ),
+    ("config_runner", "DEFAULT_POLL_INTERVAL"): (
+        "the config lane's copy of the poll-wake bound. Correctness never depends on "
+        "it — the wake event does the work — so it is the cost of a MISSED wakeup, "
+        "not a deadline anything is measured against."
     ),
     ("muse_runner", "DEFAULT_JOIN_TIMEOUT"): (
         "the cited runner's identical join bound, on the identical daemon-thread "

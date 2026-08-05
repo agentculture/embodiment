@@ -1,8 +1,8 @@
 """Hermetic governance guards: the standing rulings, enforced instead of remembered.
 
-Three operator rulings are stated as prose in ``CLAUDE.md`` and none of them is
+Four operator rulings are stated as prose in ``CLAUDE.md`` and none of them is
 self-enforcing — prose can drift silently the moment nobody is reading it
-closely. This file makes all three CI-checkable:
+closely. This file makes all four CI-checkable:
 
 1. **The muse ships as opt-in code, off by default, NEVER deleted**
    (deviation ``d15`` — see ``CLAUDE.md``, "Identity — embodiment, and the
@@ -33,11 +33,31 @@ closely. This file makes all three CI-checkable:
    shipped constant, resolves an empty environment, and inspects
    ``embodiment/drone.py`` structurally.
 
+4. **The strategist ships opt-in and OFF** (the 0.12.0 verdict — see
+   ``CLAUDE.md``, "What the 0.12.0 cycle added, and the verdict on it").
+   ``t11``'s ScopeBench Stage 1 returned ``INCONCLUSIVE`` and ``t14``'s live
+   session 1 measured the governed arm spending 189.6s / 3663 completion
+   tokens to apply ZERO directives (issue #68) — the same "an INCONCLUSIVE
+   result leaves the shipped rig untouched" rule guard 2 already enforces for
+   the ``worker`` role, applied here to the strategist tier itself. There is
+   no environment switch to resolve (none exists, unlike the drone tier), so
+   :class:`TestStrategistShipsOptInAndOff` anchors on the structural fact
+   instead: ``ScopeGovernor.armed`` (``embodiment/scoped_run.py``) is
+   ``False`` on a bare construction, ``run_scoped``'s own ``governor``
+   parameter defaults to ``None`` (which resolves to that same bare,
+   unarmed construction), and no module in the ``embodiment`` package
+   constructs an armed one. It touches no live rig, dials no ScopeBench arm,
+   and starts no strategist thread.
+
 Guards 1 and 2 landed with the orchestrator-worker-architectures plan (task
 t15); guard 3 joined them under the error-derived-timeouts plan (task t13),
-once t11 and t12 had built the switch there was previously nothing to assert.
+once t11 and t12 had built the switch there was previously nothing to assert;
+guard 4 joined them under the config-not-minds-strategist plan (task t10),
+once t11 and t14 had returned the verdict that made "the strategist ships
+opt-in and off" something worth pinning as code instead of only asserting in
+``CLAUDE.md`` prose.
 
-All three are meant to be *guards*, not landmines: each failure message below
+All four are meant to be *guards*, not landmines: each failure message below
 says exactly what changed and exactly what a deliberate promotion looks like,
 mirroring the existing convention in ``tests/test_zero_deps.py`` ("updating a
 pinned set IS the approval" — a considered, reviewable edit, never a reflex to
@@ -45,9 +65,12 @@ get CI green).
 
 **And every guard here is proven able to fail.** :class:`TestTheseGuardsCanFail`
 feeds each detector the mutation it exists to catch and asserts the detector
-fires; ``tests/prove_governance_guards.py`` goes further and mutates the real
-committed files, re-running this module against each one to watch it go red. A
-guard nobody proved can fail is a guard nobody has.
+fires, for all four guards including guard 4. ``tests/prove_governance_guards.py``
+goes further for guards 1–3 and mutates the real committed files, re-running
+this module against each one to watch it go red; it does not yet carry a
+mutation for guard 4 — that companion coverage is not part of this task and is
+recorded here rather than silently assumed. A guard nobody proved can fail is
+a guard nobody has.
 """
 
 from __future__ import annotations
@@ -57,11 +80,12 @@ import importlib
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import pytest
 
 from embodiment import drone as drone_lib
+from embodiment import scoped_run as scoped_run_lib
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 _CLAUDE_MD = _REPO_ROOT / "CLAUDE.md"
@@ -749,10 +773,214 @@ class TestDronesShipOptInAndOff:
         )
 
 
+# ── guard 4: the strategist ships opt-in and off (the 0.12.0 verdict) ──────
+#
+# The 0.12.0 verdict (CLAUDE.md, "What the 0.12.0 cycle added, and the verdict
+# on it") landed the strategist tier as *mechanism proven, value not*: t11's
+# ScopeBench Stage 1 returned INCONCLUSIVE, and t14's live session 1 measured
+# the governed arm spending 189.6s and 3663 completion tokens to apply ZERO
+# directives (issue #68). The rule this file already enforces for the muse and
+# for `worker` — an INCONCLUSIVE result leaves the shipped rig untouched —
+# applies here identically: the strategist ships opt-in and OFF until a fresh
+# ScopeBench verdict supports flipping the default.
+#
+# Unlike the drone tier there is no `$EMBODIMENT_*_ENABLED` environment switch
+# to resolve here — none exists, and inventing one just to fit the drone
+# template would itself be the drift this file exists to prevent. The
+# structural fact to pin instead is `ScopeGovernor.armed`
+# (embodiment/scoped_run.py): a bare `ScopeGovernor()` — what `run_scoped`'s
+# own `governor=None` default resolves to — is unarmed, and the package
+# documents this itself (embodiment/__init__.py: "`ScopeGovernor(strategist=
+# None)` is byte-identical to `run()` — an unarmed governor is the same
+# composition an actor-only host gets by never touching this lane at all").
+#
+# `examples/scope_live_session.py` and `examples/scope/seats.py` construct
+# ARMED governors — that is the demo host's own deliberate choice, gated
+# behind `--no-strategist`, and is not this guard's concern; what must never
+# happen is the *package* constructing one for a host that never asked.
+
+_STRATEGIST_CONTEXT = (
+    "The strategist ships opt-in and OFF (CLAUDE.md, the 0.12.0 verdict). "
+    "t11's ScopeBench Stage 1 returned INCONCLUSIVE and t14's live session 1 "
+    "measured the governed arm spending 189.6s / 3663 completion tokens to "
+    "apply ZERO directives (issue #68) — the same 'an INCONCLUSIVE result "
+    "leaves the shipped rig untouched' rule that kept the muse out after "
+    "t18's muse-arms series and now gates the `worker` role above. A default "
+    "flip needs a fresh ScopeBench verdict behind it, exactly like "
+    "tests/test_zero_deps.py's pinned dependency set."
+)
+
+#: A representative sample of constructions a well-meaning host, or a future
+#: refactor, might reach for without meaning to arm the lane — this guard's
+#: analogue of guard 3's `_MUST_NOT_ENABLE`. None of these carry a real
+#: strategist, default scope, session, or wired persistence port, so every one
+#: must still read `armed is False`.
+_NEAR_MISS_GOVERNOR_KWARGS: tuple[tuple[str, dict[str, Any]], ...] = (
+    ("bare", {}),
+    ("identity_only", {"identity": "Gwen"}),
+    ("controls_only", {"controls": scoped_run_lib.ScopedControls()}),
+    ("empty_persistence_port", {"persistence": scoped_run_lib.ScopePersistence()}),
+    (
+        "persistence_port_with_explicit_none_callables",
+        {"persistence": scoped_run_lib.ScopePersistence(load=None, save=None)},
+    ),
+    (
+        "every_field_explicitly_none",
+        {"strategist": None, "default_scope": None, "session": None, "persistence": None},
+    ),
+)
+
+_SCOPED_RUN_SOURCE_PATH = Path(scoped_run_lib.__file__)
+
+
+def _find_function(tree: ast.Module, name: str) -> Optional[ast.FunctionDef]:
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == name:
+            return node
+    return None
+
+
+def _run_scoped_governor_default(source: str) -> ast.expr:
+    """The AST default expression for ``run_scoped``'s keyword-only ``governor`` param.
+
+    Fails loudly if ``run_scoped`` or its ``governor`` parameter cannot be
+    found, on the same "a silently empty result would pass vacuously"
+    principle as guard 2's ``_parse_rig_table``.
+    """
+    tree = ast.parse(source)
+    func = _find_function(tree, "run_scoped")
+    assert func is not None, (
+        "could not locate `def run_scoped(...)` to inspect its `governor` "
+        "parameter's default — this parser needs a deliberate update if "
+        "run_scoped was renamed or restructured."
+    )
+    for name, default in zip(func.args.kwonlyargs, func.args.kw_defaults):
+        if name.arg == "governor" and default is not None:
+            return default
+    raise AssertionError(
+        "run_scoped has no keyword-only `governor` parameter with a default — "
+        "this parser needs a deliberate update if the signature changed."
+    )
+
+
+def _is_none_constant(node: ast.expr) -> bool:
+    return isinstance(node, ast.Constant) and node.value is None
+
+
+def _armed_governor_constructions(source: str) -> list[int]:
+    """Line numbers where *source* constructs a ``ScopeGovernor`` with any argument.
+
+    Errs toward flagging: any positional or keyword argument at all counts,
+    even an explicit ``strategist=None`` — mirroring guard 3's
+    ``_call_enables``. The one legitimate construction inside this package
+    (``scoped_run.py``'s own pass-through default, for a host that passed
+    ``governor=None``) takes zero arguments, so an argument appearing at all
+    is exactly the thing this detector exists to catch.
+    """
+    found: list[int] = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, ast.Call):
+            continue
+        func = node.func
+        name = func.id if isinstance(func, ast.Name) else getattr(func, "attr", "")
+        if name == "ScopeGovernor" and (node.args or node.keywords):
+            found.append(node.lineno)
+    return sorted(found)
+
+
+def _shipped_embodiment_python_files() -> list[Path]:
+    """``embodiment/`` only — not ``examples/``.
+
+    Unlike guard 3's drone switch, an armed governor in an *example* host is
+    not the failure mode this guard exists to catch: `examples/
+    scope_live_session.py`'s Stage 3 live host and `examples/scope/seats.py`
+    construct armed governors deliberately, as the demonstrated, documented
+    way an operator dials the tier on. What must never happen is the
+    *library* arming one for a host that only imported `embodiment` and never
+    asked.
+    """
+    return sorted((_REPO_ROOT / "embodiment").rglob("*.py"))
+
+
+class TestStrategistShipsOptInAndOff:
+    """The 0.12.0 verdict, enforced — without dialling ScopeBench or the live host."""
+
+    def test_a_bare_governor_is_unarmed(self):
+        assert scoped_run_lib.ScopeGovernor().armed is False, _STRATEGIST_CONTEXT
+
+    def test_the_package_surface_resolves_to_the_same_governor(self):
+        """A host reads ``ScopeGovernor`` off ``embodiment``; the guard must too.
+
+        ``ScopeGovernor`` is hoisted onto the package surface via
+        ``embodiment.__init__``'s lazy-name table specifically so this ruling
+        is assertable without a host reaching into ``embodiment.scoped_run``
+        directly. If the two ever disagreed, a host checking the documented
+        surface would be reading a different answer from the one
+        ``run_scoped`` acts on.
+        """
+        import embodiment
+
+        assert embodiment.ScopeGovernor is scoped_run_lib.ScopeGovernor
+        assert embodiment.ScopeGovernor().armed is False, _STRATEGIST_CONTEXT
+
+    @pytest.mark.parametrize(
+        "kwargs",
+        [kwargs for _, kwargs in _NEAR_MISS_GOVERNOR_KWARGS],
+        ids=[label for label, _ in _NEAR_MISS_GOVERNOR_KWARGS],
+    )
+    def test_a_near_miss_configuration_stays_unarmed(self, kwargs: dict[str, Any]):
+        """Ambiguity resolves toward *not* running the strategist lane.
+
+        Mirrors guard 3's ``test_an_unrecognised_value_fails_closed``: a host
+        that sets a cosmetic field (``identity``, ``controls``) or hands in an
+        empty or all-``None`` port must not accidentally arm a lane it never
+        wired.
+        """
+        assert (
+            scoped_run_lib.ScopeGovernor(**kwargs).armed is False
+        ), f"{kwargs!r} armed the governor. {_STRATEGIST_CONTEXT}"
+
+    def test_run_scopeds_own_default_resolves_to_unarmed(self):
+        """``run_scoped(governor=None)`` — the parameter's own default — is a fresh checkout.
+
+        Mirrors guard 3's ``test_a_fresh_checkout_resolves_to_disabled``: no
+        configuration passed is the ordinary path, and it must resolve to the
+        unarmed lane.
+        """
+        source = _SCOPED_RUN_SOURCE_PATH.read_text(encoding="utf-8")
+        default = _run_scoped_governor_default(source)
+        assert _is_none_constant(default), (
+            f"run_scoped's `governor` parameter no longer defaults to a bare "
+            f"`None` (found {ast.dump(default)!r}). `governor=None` is what a "
+            f"host gets by never touching this lane, and it must resolve to "
+            f"ScopeGovernor() — unarmed. {_STRATEGIST_CONTEXT}"
+        )
+
+    def test_no_shipped_package_module_constructs_an_armed_governor(self):
+        """The switch is the host's to throw — never ours to throw for them.
+
+        Mirrors guard 3's ``test_no_shipped_module_turns_the_switch_on``.
+        """
+        offenders = {
+            str(path.relative_to(_REPO_ROOT)): lines
+            for path in _shipped_embodiment_python_files()
+            if (lines := _armed_governor_constructions(path.read_text(encoding="utf-8")))
+        }
+        assert not offenders, (
+            f"embodiment/ code constructs an armed ScopeGovernor at "
+            f"{offenders!r}. {_STRATEGIST_CONTEXT} The only construction this "
+            f"package makes is scoped_run.py's own pass-through default "
+            f"(`ScopeGovernor()`, zero arguments); arming one is the host's "
+            f"decision, made in the host's own code — examples/"
+            f"scope_live_session.py and examples/scope/seats.py do exactly "
+            f"that — never this package's to do for them."
+        )
+
+
 # ── the proof that each guard can fail ──────────────────────────────────────
 #
 # Every guard above rests on a detector: a collectible-test count, a markdown
-# table parse, or an AST scan. A green suite is equally consistent with three
+# table parse, or an AST scan. A green suite is equally consistent with four
 # detectors that never fire, so each one is fed the mutation it exists to
 # catch. These are hermetic and operate on synthetic inputs — the companion
 # script tests/prove_governance_guards.py mutates the REAL committed files and
@@ -862,3 +1090,46 @@ class TestTheseGuardsCanFail:
     def test_reading_the_switch_and_writing_other_variables_are_not_flagged(self, line: str):
         """The guard must not go red on the code that legitimately reads it."""
         assert _switch_writes(line) == []
+
+    def test_the_armed_property_distinguishes_wired_from_unwired(self):
+        """Without this, ``.armed is False`` on a bare governor could be a tautology.
+
+        Proves ``ScopeGovernor.armed`` actually responds to real wiring — one
+        check per field it reads — so guard 4's near-miss test above is
+        trusted for the right reason and not just because ``armed`` always
+        says no.
+        """
+        ScopeGovernor = scoped_run_lib.ScopeGovernor
+        assert ScopeGovernor().armed is False
+        assert ScopeGovernor(strategist=object()).armed is True
+        assert ScopeGovernor(default_scope=object()).armed is True
+        assert ScopeGovernor(session=object()).armed is True
+        assert (
+            ScopeGovernor(persistence=scoped_run_lib.ScopePersistence(load=lambda: None)).armed
+            is True
+        )
+
+    def test_run_scopeds_default_flip_is_detected(self):
+        """The obvious way to revert guard 4: give ``governor`` a non-``None`` default."""
+        source = (
+            "def run_scoped(complete, task, *, executor, max_steps, "
+            "governor: Optional[ScopeGovernor] = None, **actor_kwargs):\n"
+            "    pass\n"
+        )
+        assert _is_none_constant(_run_scoped_governor_default(source))
+        flipped = source.replace("= None", "= ScopeGovernor(default_scope=DEFAULT)", 1)
+        assert not _is_none_constant(_run_scoped_governor_default(flipped)), (
+            "a non-None default for run_scoped's `governor` parameter slipped " "past the detector"
+        )
+
+    def test_run_scoped_not_found_fails_loudly_rather_than_passing_vacuously(self):
+        """A renamed or deleted ``run_scoped`` must not read as 'default is fine'."""
+        with pytest.raises(AssertionError, match="could not locate"):
+            _run_scoped_governor_default("def something_else():\n    pass\n")
+
+    def test_a_module_scope_armed_governor_construction_is_detected(self):
+        """The quiet way to revert guard 4: arm a governor somewhere in the package."""
+        assert _armed_governor_constructions("x = ScopeGovernor()\n") == []
+        assert _armed_governor_constructions("x = ScopeGovernor(default_scope=D)\n") == [1]
+        assert _armed_governor_constructions("x = ScopeGovernor(None)\n") == [1]
+        assert _armed_governor_constructions("x = ScopeGovernor(strategist=None)\n") == [1]

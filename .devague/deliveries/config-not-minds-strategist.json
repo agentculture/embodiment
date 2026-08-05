@@ -1,0 +1,137 @@
+{
+  "plan_slug": "config-not-minds-strategist",
+  "schema_version": 1,
+  "created": "2026-08-04T16:15:07Z",
+  "updated": "2026-08-04T19:50:10Z",
+  "deviations": [
+    {
+      "id": "d1",
+      "what": "the authority lattice encoded is STRICTER than the spec states: c15/c29 say the worker may write senses knowledge but never senses prompts; t3 encoded the full (origin, target) matrix so the worker owns exactly senses.knowledge and nothing else - it also cannot write worker.tools, worker.permissions, worker.prompts or senses.permissions",
+      "task_ref": "t3",
+      "reason": "a seat that can widen its own tool surface is the escalation h11 exists to prevent, and a lattice granting more than the operator stated would be minting authority; stricter than the letter of an operator decision is still a divergence from it, so it is recorded rather than absorbed",
+      "affects": [
+        "c15",
+        "c29",
+        "h11"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable"
+    },
+    {
+      "id": "d2",
+      "what": "a third origin 'host' was added, not present in the spec's two-origin (strategist, worker) model",
+      "task_ref": "t3",
+      "reason": "without it t6's revert-to-baseline must be a privileged back door around the lattice; with it, revert is an ordinary change unit the ledger records like any other - which is what c8's every-transition-recorded requirement wants",
+      "affects": [
+        "c15",
+        "c8"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable"
+    },
+    {
+      "id": "d3",
+      "what": "t5 re-declared a structurally identical ConfigPersistence port instead of importing scoped_run.ScopePersistence, which the plan's acceptance criterion named",
+      "task_ref": "t5",
+      "reason": "importing the advisory lane would create the import edge config_change.py's TestCitedNotCoupled exists to forbid - an import edge is a reason to edit the advisory lane, and it must stay byte-stable as t13's comparator; a test proves the two types share the same field set",
+      "affects": [
+        "c8",
+        "h8"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable"
+    },
+    {
+      "id": "d4",
+      "what": "ConfigDeferral deliberately does NOT subclass ConfigDegradation, breaking t3's one-degradation-stream-folds shape; it carries the same field names and to_dict keys but lands in a separate deferrals stream",
+      "task_ref": "t4",
+      "reason": "a busy seat is the gate WORKING - folding it into degradations would make a correct session report hundreds of them, and a count that rises during normal operation is a count nobody reads; nothing is dropped",
+      "affects": [
+        "c8"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable"
+    },
+    {
+      "id": "d5",
+      "what": "a verified -> proposed demotion transition exists, which is not in the spec's five-kind event vocabulary (proposed/validated/applied/rejected/reverted)",
+      "task_ref": "t4",
+      "reason": "t5's config_events has no kind for it; either a sixth kind or a documented mapping is needed - t9 (the composition task) is where this must be resolved or it becomes an unrepresentable state",
+      "affects": [
+        "c8",
+        "h8"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "needs-follow-up"
+    },
+    {
+      "id": "d6",
+      "what": "t7's report derives 'gate verdict' as the ledger's applied/reverted vocabulary, not c32's richer passed/failed/stale - it deliberately refuses to read config_lifecycle.ConfigTransition.verdict because that would be the 'gap filled from elsewhere' h22 forbids",
+      "task_ref": "t7",
+      "reason": "the honest fix is for the LEDGER to record the verdict at write time so the report can derive it from one source; today it does not, so the report makes the weaker claim rather than a richer unfounded one - resolvable in t9 composition or a follow-up to t5",
+      "affects": [
+        "c32",
+        "h22"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "needs-follow-up"
+    },
+    {
+      "id": "d7",
+      "what": "t6's revert cannot restore a prompt section or knowledge entry to true non-existence: config_lifecycle's apply primitives are additive (a section clears to empty but never leaves the tuple; KnowledgeChange requires non-blank text)",
+      "task_ref": "t6",
+      "reason": "made observable rather than silent - RevertOutcome.residual_prompt_sections/residual_knowledge_entries name what is left and matches_baseline reads False, so exact restoration is never falsely claimed; composed prompt behaviour still matches baseline because compose_prompt filters empty sections",
+      "affects": [
+        "c7",
+        "h7"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable"
+    },
+    {
+      "id": "d8",
+      "what": "the cycle-2 config arms (A4/A5) are declared in the hermetic scaffold but scopebench_live.py's LIVE_ARMS is still (A2, A3), so the arm under test cannot be dialled - t13 could not fix this because the live harness deliberately lives outside examples/scope/ to keep that folder hermetic, and its brief scoped it to examples/scope/",
+      "task_ref": "t14",
+      "reason": "an unnoticed consequence of the hermetic/live split the pre-registration itself enforces; t14 cannot run without extending the live harness, so the extension is done as part of t14 rather than left as a silent blocker",
+      "affects": [
+        "c16",
+        "c9"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "needs-follow-up"
+    },
+    {
+      "id": "d9",
+      "what": "condition 8's restore clause will read FAILED on a digest rather than on drift: the shipped lane restores the seat's prompt BYTES exactly (compose_prompt filters empty sections) but not config_sha, because a cleared prompt section stays declared (deviation d7's additive-only primitive)",
+      "task_ref": "t14",
+      "reason": "DECISION: the pre-registration is NOT amended, even though section 19 permits it before any committed record exists. Moving a threshold to fit a known outcome is what makes a pre-registration worthless. The series runs under the committed rule and the report states the digest artifact beside the verdict, with compose_prompt_restored measuring functional restoration. Amending is a cycle-3 decision made with evidence in hand, not a pre-emptive one",
+      "affects": [
+        "c7",
+        "h7"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "needs-follow-up"
+    },
+    {
+      "id": "d10",
+      "what": "A3's admission pilot has no verdict file: it completed 2 of 3 episodes (675.2s, 646.3s, both acceptance 1.0) and was killed by MY 1500s command timeout before the third - a clock I sized before knowing the advisory arm costs ~660s per episode, so 3 episodes needs ~2000s",
+      "task_ref": "t14",
+      "reason": "not a protocol failure and not an arm defect - an operator-side instrument fault, and precisely the 0.11.0 lesson recurring: a clock sized against the wrong quantity silently becomes the measurement. Consequence: section 9 rule 1 was not enforced for A3, so the series dials it without a pre-registered admission check. Recorded rather than papered over; the two completed episodes both cleared the floor",
+      "affects": [
+        "c16"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "needs-follow-up"
+    }
+  ]
+}

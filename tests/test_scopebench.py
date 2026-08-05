@@ -295,7 +295,11 @@ class TestScriptedPlanners:
 
 
 class TestArmsAreData:
-    def test_the_four_arms_differ_only_in_seat_configuration(self) -> None:
+    def test_the_arms_differ_only_in_the_two_declared_fields(self) -> None:
+        """Cycle 1's arms varied in one dimension — the seats. ``t13`` added a
+        second, the **lane**: what the strategy seat's output unit is. Both are
+        declared data, nothing else may vary, and every declared control pair
+        still differs in exactly one of them (the two tests below)."""
         cosmetic = {"id", "label", "why", "has_strategist", "configured_roles"}
         differing: set[str] = set()
         for left in sb.ARM_ORDER:
@@ -304,7 +308,20 @@ class TestArmsAreData:
                     continue
                 one, two = sb.ARMS[left].to_dict(), sb.ARMS[right].to_dict()
                 differing |= {key for key in one if one[key] != two[key] and key not in cosmetic}
-        assert differing == {"seats"}
+        assert differing == {"seats", "lane"}
+
+    def test_the_lane_is_not_an_independent_field_for_an_unseated_arm(self) -> None:
+        """An arm has an output unit exactly when it has a strategist to emit one."""
+        for name in sb.ARM_ORDER:
+            arm = sb.ARMS[name]
+            assert arm.has_strategist == (arm.lane != sb.LANE_NONE), name
+
+    def test_the_lane_pair_differs_in_the_lane_alone(self) -> None:
+        """``A3``/``A4`` is the pair cycle 2 exists for: advice versus
+        configuration, with both seats and everything else held."""
+        one, two = sb.ARMS[sb.ARM_A3].to_dict(), sb.ARMS[sb.ARM_A4].to_dict()
+        assert one["seats"] == two["seats"]
+        assert one["lane"] != two["lane"]
 
     def test_every_differing_seat_is_a_declared_seat(self) -> None:
         for left in sb.ARM_ORDER:
@@ -610,7 +627,11 @@ class TestJudgeIsStructurallySecondary:
         )
         names = {arg.arg for arg in node.args.args} | {arg.arg for arg in node.args.kwonlyargs}
         assert not any("judge" in name for name in names)
-        assert names == {"summary", "arm"}
+        # ``conditions`` (t13) selects WHICH committed rule to apply; it carries
+        # condition names and nothing else, so it is still true that there is no
+        # parameter through which a judge score could reach the verdict.
+        assert names == {"summary", "arm", "conditions"}
+        assert set(sb.CONFIG_VERDICT_CONDITIONS) <= set(sb.CONDITION_WHY)
 
     def test_no_function_the_verdict_can_reach_mentions_a_judge(self) -> None:
         tree = _tree(BENCH_PATH)
@@ -668,8 +689,11 @@ class TestJudgeIsStructurallySecondary:
 class TestVerdictRule:
     def test_all_seven_conditions_are_declared_with_the_ticket_s_wording(self) -> None:
         assert len(sb.VERDICT_CONDITIONS) == 7
-        assert set(sb.VERDICT_CONDITIONS) == set(sb.CONDITION_WHY)
-        for name in sb.VERDICT_CONDITIONS:
+        # Every condition carries its wording, and cycle 2's eighth is the ONLY
+        # addition — so the default rule cannot acquire one silently.
+        assert set(sb.CONFIG_VERDICT_CONDITIONS) == set(sb.CONDITION_WHY)
+        assert set(sb.CONDITION_WHY) - set(sb.VERDICT_CONDITIONS) == {sb.CONDITION_RATCHET}
+        for name in sb.CONFIG_VERDICT_CONDITIONS:
             assert sb.CONDITION_WHY[name].strip()
 
     def test_the_non_intervention_and_token_guards_are_both_present(self) -> None:
@@ -784,7 +808,19 @@ def _synthetic(
                         )
                     )
     summary = sb.summarise(records)
-    summary["absent"] = {}
+    # Arms this fixture does not build are DECLARED absent rather than left
+    # unexplained: condition 7's obligation covers every arm in ARM_ORDER, and
+    # a fixture that quietly failed it would make every other condition's test
+    # read REJECT for a reason that has nothing to do with the branch under
+    # test. ``t13``'s A4/A5 are the arms this catches.
+    built = {arm for arm, _regret, _tokens in plan}
+    summary["absent"] = {
+        f"{arm}|{stage}|{family}": "not built by this synthetic fixture"
+        for arm in sb.ARM_ORDER
+        for stage in sb.STAGES
+        for family in ep.FIRST_CYCLE
+        if arm not in built
+    }
     return summary
 
 
@@ -803,9 +839,15 @@ class TestStageOne:
 
     def test_the_baseline_arm_has_a_declared_stand_in_and_the_others_do_not(self) -> None:
         assert set(sb.STAGE_ONE_STANDIN) == {sb.ARM_A0}
-        assert set(sb.STAGE_ONE_ABSENT) == {sb.ARM_A1, sb.ARM_A2, sb.ARM_A3}
+        assert set(sb.STAGE_ONE_ABSENT) == set(sb.ARM_ORDER) - {sb.ARM_A0}
         for reason in sb.STAGE_ONE_ABSENT.values():
             assert reason.strip()
+
+    def test_the_config_lane_has_no_stage_one_cell_by_construction(self) -> None:
+        """``t13``: a configuration change acts through the actor, and Stage 1
+        has none — so the absence is structural, not a gap to be filled later."""
+        for arm in (sb.ARM_A4, sb.ARM_A5):
+            assert sb.STAGE_ONE_ABSENT[arm] == sb.ABSENT_CONFIG_NO_STAGE_ONE
 
     def test_the_baseline_arm_scores_exactly_its_stand_in(self) -> None:
         records = sb.run_stage_one()

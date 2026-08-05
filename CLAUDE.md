@@ -114,18 +114,28 @@ to `run()`. The *value* did not:
 
 So the strategist ships **opt-in and off**, on exactly the rule that kept the
 muse out of the reference rig after `t18` — *an `INCONCLUSIVE` result leaves the
-shipped rig untouched* — and `tests/test_governance.py` enforces that rule
-rather than trusting anyone to remember it. Eighteen issues were filed against
-the tier this cycle (#52, #54–#74). Two of them are **host-facing traps** that
+shipped rig untouched*. `tests/test_governance.py`'s
+`TestStrategistShipsOptInAndOff` pins the structural fact that makes it true:
+`ScopeGovernor()` — what `run_scoped`'s own `governor=None` default resolves
+to — is unarmed, and no module in the `embodiment` package constructs an
+armed one; a default flip needs a fresh ScopeBench verdict behind it, not a
+quiet edit. `TestTheseGuardsCanFail` proves that guard can go red. Eighteen
+issues were filed against the tier this cycle (#52, #54–#74). Two of them are
+**host-facing traps** that
 belong in the strategist's documentation and not only in a tracker, and are now
 written up in the README: **#62** (a host that starts its actor under its own
 initial directive and then arms a strategist has an *unseeded issued chain*, so
 every protocol-obedient directive is refused `scope-directive-unknown-supersedes`
 and dropped — seed the runner's chain, as `examples/scope_live_session.py`
-does) and **#58** (`SCOPE_AUTHORITY` never states the `scope_id`-must-be-new
+does) and **#58** (`SCOPE_AUTHORITY` never stated the `scope_id`-must-be-new
 rule it is graded on; 47 of 93 proposals in one ScopeBench arm were refused as
 duplicates, and both of the live session's completed reviews were thrown away
-this way).
+this way). **#58's text is fixed** as of the `config-not-minds-strategist`
+cycle — all four admission rules are stated, and `tests/test_scope.py` maps
+each admission refusal code to the phrase stating it, so a rule added to the
+register without a prompt update fails the suite. The measurements above were
+all taken under the old text and have **not** been re-run; treat them as the
+record of what the gap cost, not as the current rate.
 
 The lesson worth carrying forward, beside 0.11.0's clock lesson: **a mechanism
 that holds on every structural check can still buy nothing.** The structural
@@ -135,6 +145,78 @@ the governed arm paid 189.6 s and 3663 tokens for a materially identical
 answer. Structural proof and measured value are different claims. This repo's
 record is worth something only because it publishes the second one when it
 comes back negative.
+
+**What the 0.13.0 cycle added, and where the evidence stood when this was
+written** — recorded *during* the cycle rather than at close-out, deliberately,
+because the value series was still dialling when the docs task landed and a
+section that waits for a verdict is a section that drifts. The cycle rebuilt the
+tier on a different premise: **the strategist changes configuration, not
+minds.** Advice can be ignored; configuration is simply what the seat runs
+under, so *unawareness* replaces persuasion as the mechanism.
+
+| What | Where |
+|------|-------|
+| The typed change unit and the authority lattice **as data** — seven targets, three origins, refuse-whole on any unknown or extra key | `config_change.py` |
+| The host-declared capability catalog: tools/permissions changes **select** among ids the host named and can never **mint** one. There is deliberately no `from_executor` constructor | `capability.py` |
+| Propose → verify → apply with per-seat quiescence — a change applies only when its seat is idle *and* its per-type suite passed, so configuration identity is constant within any single drive | `config_lifecycle.py` |
+| The config ledger, its five event kinds, and a schema-versioned payload that **fails closed** against advisory-era persisted state | `config_ledger.py`, `config_events.py` |
+| Revert-to-baseline as an *ordinary change* rather than an inferred inverse, plus `RatchetGuard` re-checking cumulative drift against a **fixed** baseline | `config_revert.py` |
+| Effective-config introspection derived from the ledger **alone**; a state the ledger cannot explain is itself a recorded degradation (C3) | `config_report.py` |
+| The knowledge block riding **eidetic** — no second store, attribution on eidetic's own `added_by` | `knowledge.py` |
+| Reasoning / thread / composition, cited out of the advisory lane rather than imported from it, with `loop.py` still **zero-diff** and the actor's `complete` never wrapped *even when armed* | `config_review.py`, `config_runner.py`, `config_run.py` |
+| `SENSES_GROUNDING` + `KNOWLEDGE_ATTRIBUTION` as composable host text — constants a host splices in, never a `frame_senses()` that would cross the colleague boundary | `senses_text.py` |
+| The three-tier example host (senses relays → acting seat acts → cortex configures) and its **eight seam traps as data**, reproduced behaviourally | `examples/three_tier.py`, `tests/test_three_tier.py` |
+| ScopeBench cycle 2 — a second pre-registration with eight conditions, the ratchet arithmetic, the per-change-type three-way ladder, declared protocol floors and the config arms as data | `docs/live-test-results/scopebench-config-preregistration.md`, `examples/scope/` |
+| Two measurements: the acting seat drives `embodiment.loop.run` (n=12/rung, 3 rungs, **36 runs**, 12/12 on every bar, 0 truncations at 16000) and the senses seat sees (image 4/4, motion 4/4, text-only control refuses 0/4, **n=4/cell**) | `docs/live-test-results/worker-toolloop.md`, `senses-vision.md` |
+
+**The verdict, and it is deliberately not one.** The mechanism is proven on
+every structural check available: `loop.py` zero-diff pinned four ways, the
+advisory lane byte-stable so it can serve as the comparator arm it will be
+measured against, the acting seat's model seam never wrapped, 7793 tests
+passing. **The value is unmeasured.** The pre-registered series that answers it
+was committed before any dial and had published no verdict when this section
+was written — so nothing here claims one, in either direction. Three of the
+seven change types are out of that bench's reach by design and ship off with a
+`not-measured` ladder verdict; the config lane has **no perfect-subordinate
+stage at all**, permanently, so its evidence will always be weaker on the one
+axis the advisory lane scored strongest; and the live session on the redesigned
+tier has not run. Nine deviations (`d1`–`d9`) are recorded and all are still
+`proposed` — `d1` (the encoded lattice is *stricter* than the spec's prose),
+`d6` (the report's "gate verdict" is the ledger's applied/reverted vocabulary,
+not a richer passed/failed/stale) and `d7` (revert cannot restore true
+non-existence) change what the docs may claim, and do.
+
+> **Deviation ids restart at `d1` every plan and are not global.** `d1`–`d7`
+> therefore exist in both this cycle's ledger and `strategic-scope-governor`'s
+> and mean different things in each — the `d5` cited in the rig table below is
+> the advisory lane's containment overclaim, while this cycle's `d5` is a
+> demotion mapping. Cite the cycle with the id. `devague deviate --list` reads
+> the *current* plan's ledger; older cycles live in
+> `.devague/deliveries/<slug>.json`.
+
+So the redesigned tier ships **opt-in and off**, exactly as the advisory lane
+does, held by `tests/test_governance.py` rather than by memory. The
+worker-promotion gate also stays shut: `worker-toolloop.md` *is* a real verdict,
+but a bounded one — 36 runs on a hermetic, instant, free tool surface with every
+rung at ceiling, measuring the acting **protocol** and not acting **quality** —
+while the promotion at stake is to the acting seat of a real rig.
+`_WORKER_ROLE_HAS_SUPPORTING_VERDICT` stays `False` until an operator decides
+otherwise and cites what they decided on, in one reviewable change.
+
+The load-bearing lesson of this cycle, beside 0.11.0's clock and 0.12.0's
+structural-proof-is-not-value: **a strategist can be correctly wired, fully
+armed and structurally proven, and still propose nothing — with every counter at
+zero and no error anywhere.** Four separate mechanisms produced exactly that
+picture: an unseeded issued chain (#62), an admission rule the prompt never
+stated (#58), a review boundary that is a *tool-step* boundary so a
+conversational turn reviews nothing (T1), and a cadence memory that outlives the
+per-drive step index it reads — six drives, one review, 11 of 12 snapshots
+skipped (T2 — since FIXED, and retired from the trap list). None of the four
+raises. `armed == True` is therefore not evidence
+that a tier is alive; a counter that increments is. That is why this cycle's
+example host records its seam gaps **as data** with behavioural tests, and why
+the one that still yields an incapable tier is called out separately from the
+six that are merely under-documented.
 
 Keep this file's claims grounded in checked-in reality. When a section drifts
 ahead of what exists, mark it `(planned)` or move it under a roadmap heading —
@@ -208,15 +290,19 @@ operator actually talks to.
 | Runtime | `colleague` | the harness |
 | Loop + presence | `embodiment` (this repo) | the pump |
 | **Teammate identity** | **Gwen** | what the operator addresses |
-| Cortex | Qwen 3.6 27B (`sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP`) | bounded tool loop, repo actions, final synthesis, **final authority** — and, per `d15`, **the only actor** |
-| Strategist *(opt-in, off by default — **mechanism proven, value not**)* | the `cortex` lobes role (dense Qwen 3.6 27B) | scope above the acting loop: typed, versioned, supersedable directives owning objectives, priorities, constraints and ownership. Authority-bearing *within* scope — a directive structurally cannot carry a tool, a command or an approval **as data**; it carries no containment against prose (`d5`, embodiment#55). `embodiment/scope.py` + `strategist_runner.py` + `scoped_run.py`. Read the 0.12.0 verdict below before treating this row as a capability |
+| Cortex | Qwen 3.6 27B (`sakamakismile/Qwen3.6-27B-Text-NVFP4-MTP`) | bounded tool loop, repo actions, final synthesis, **final authority** — and, per `d15`, **the only actor** in the shipped rig. The 0.13.0 three-tier *example* host puts a different seat in the acting chair and the cortex above it; that promotion is gated and has not happened here |
+| Strategist *(opt-in, off by default — two lanes, **both mechanisms proven, neither value**)* | the `cortex` lobes role (dense Qwen 3.6 27B) | authority above the acting loop. **Advisory** (`scope.py` + `strategist_runner.py` + `scoped_run.py`): typed, versioned, supersedable directives owning objectives, priorities, constraints and ownership — authority-bearing *within* scope, structurally unable to carry a tool, a command or an approval **as data**, and carrying no containment against prose (`strategic-scope-governor` `d5`, embodiment#55). **Configuration** (`config_*.py` + `capability.py` + `knowledge.py`): typed changes to what a seat runs under, delivering nothing to the acting seat at all. Read the 0.12.0 and 0.13.0 verdicts below before treating this row as a capability |
 | ~~Muse~~ | ~~Gemma 4 31B~~ | **ARCHIVED 2026-08-03** (embodiment#53, deviations `d2`/`d3`, superseding `c12`/`c32`) — see below |
 | Senses | Gemma 4 12B (`coolthor/gemma-4-12B-it-NVFP4A16`) | intake, perception, conversational presence, speak-back; never acts on the repo |
 | Ears / voice | Parakeet STT + Chatterbox TTS behind the lobes audio overlay | the realtime lane (below) |
 
 Roles resolve **by name** from a `lobes` gateway's `/capabilities` contract
-(`lobes/roles.py` — `cortex`, `senses`, `muse`, `embedder`, `reranker`, `stt`,
-`tts`), never by parsing model names. The 31B muse is opt-in: it needs a
+(`lobes/roles.py` — `cortex`, `senses`, `muse`, `worker`, `embedder`,
+`reranker`, `stt`, `tts`), never by parsing model names. `worker` was missing
+from that list here and is not a new role: `lobes/roles.py` has declared it all
+along, and this repo's own measured series dial it. What the table above records
+is that no `worker` row is in the *Gwen rig*, which is the promotion gate's
+question and a different one. The 31B muse is opt-in: it needs a
 muse-hosting deployment shape (`lobes init --shape thor-muse`), because a 31B
 cannot co-reside with the cortex+senses duo on a 128 GB box.
 
