@@ -1,0 +1,1255 @@
+{
+  "slug": "realtime-embodiment-app",
+  "title": "realtime embodiment app",
+  "frame_slug": "realtime-embodiment-app",
+  "schema_version": 5,
+  "status": "exported",
+  "created": "2026-09-21T19:49:10Z",
+  "updated": "2026-09-21T19:55:35Z",
+  "targets": [
+    {
+      "id": "c1",
+      "kind": "announcement",
+      "text": "embodiment is a background realtime app: a voice-first embodied presence built on the lobes /v1/realtime API, switched on and off from the CLI or a web dashboard, with context and memory on eidetic-cli; the prior loop/strategist/muse experiments are archived in git history",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h1",
+      "kind": "honesty",
+      "text": "the archive PR and the first daemon PR are separate, so the repo is never in a state where the old package is gone and nothing runs",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c2",
+      "kind": "requirement",
+      "text": "embodiment needs its own realtime client for the lobes gateway: discover via keyless GET /capabilities (the stt role advertising `realtime_vad_session`), then dial `/v1/realtime` with a server-side Bearer key and speak the documented JSON/base64 pcm16 24 kHz wire; lobes ships no importable client, only stdlib-socket scripts under `scripts/realtime-*.py`",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h8",
+      "kind": "honesty",
+      "text": "the client is built against lobes' documented wire and proved against the live gateway, and an absent `realtime_vad_session` advert degrades to a recorded no-ears state instead of raising",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c3",
+      "kind": "boundary",
+      "text": "the realtime session is audio-only and never crosses machines: no image/video event exists on `/v1/realtime`, and the gateway refuses to tunnel a WebSocket to a proxied peer; vision therefore arrives later as separate `/v1/chat/completions` calls to the senses role, not inside the voice session",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h9",
+      "kind": "honesty",
+      "text": "nothing in the base sends an image or opens a realtime session to a proxied peer; a gateway whose stt lane is remote is reported as such, not retried forever",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c4",
+      "kind": "requirement",
+      "text": "the web dashboard is embodiment's own front end, citing lobes' browser patterns (`site/src/scripts/pcm-wire.ts`, `mic-capture.ts`, `audio-graph.ts`, the event log and conversation view) rather than depending on them; the daemon must serve it and hold the gateway key server-side, because a browser WS handshake cannot carry an Authorization header",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h10",
+      "kind": "honesty",
+      "text": "the gateway key never reaches any browser: it is absent from every served asset, every event payload and every HTTP response",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c5",
+      "kind": "requirement",
+      "text": "a daemon lifecycle is net-new: `start` / `stop` / `status` CLI verbs registered through the existing `register(sub)` scaffold with `explain` catalog entries, passing `teken cli doctor . --strict`, plus an HTTP control surface the dashboard uses for the same on/off switch",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h11",
+      "kind": "honesty",
+      "text": "`start` is idempotent, `stop` terminates within a bounded time even with a parked blocking read, `status` tells the truth when the process died uncleanly, and all three pass `teken cli doctor . --strict`",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c6",
+      "kind": "requirement",
+      "text": "eidetic stays an in-process import for durable memory, with the daemon pinning its store location (`EIDETIC_DATA_DIR` or a fixed cwd) and keeping embedder-backed recall off the voice fast path (keyword mode, or an executor with a tight timeout); the conversational context window (recent turns, decay to summary) is embodiment's to build, because eidetic has no session or working-memory primitive",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h12",
+      "kind": "honesty",
+      "text": "recall can never stall a spoken turn: the fast path is bounded by a deadline the daemon enforces, a missed deadline proceeds without memory and records it, and the store path is pinned at start and shown in `status`",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c10",
+      "kind": "requirement",
+      "text": "archiving is a reviewed act, not a deletion spree: mark the archive point (the repo has zero git tags, so this sets the convention), remove the experiment modules, `examples/`, live-test results and their structural tests in one PR, re-pin `tests/test_zero_deps.py` to the new approved dependency set, and close the roughly 45 moot issues with a pointer to the archive point",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h13",
+      "kind": "honesty",
+      "text": "the archive is one reviewed PR with a tag on its parent commit, every deleted structural test is named in the PR body with why it no longer applies, and `tests/test_zero_deps.py` is re-pinned by an explicit human-approved set rather than loosened",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c11",
+      "kind": "boundary",
+      "text": "new runtime dependencies (a WebSocket client, an HTTP server for the dashboard and control surface, audio capture if the daemon owns a local mic) stay human-gated under d2's surviving discipline, and lobes-cli is reached over the network only, never imported",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h14",
+      "kind": "honesty",
+      "text": "every new runtime dependency is named, with its transitive cost, in the PR that adds it, and `lobes-cli` never appears in the dependency list",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c12",
+      "kind": "requirement",
+      "text": "the app works with no browser open: the daemon is the app, and the dashboard is one client of it, never the thing that keeps it alive",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h15",
+      "kind": "honesty",
+      "text": "with zero clients attached the daemon still completes a spoken turn, and closing the last browser tab changes nothing about its state",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c13",
+      "kind": "requirement",
+      "text": "the app is also reachable from a browser anywhere, including a phone, at agent.culture.dev: the Cloudflare tunnel serves the same dashboard and the same server-sent event stream the local page uses; `events-cli` remains the mesh-facing emitter and is not part of the phone path",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h16",
+      "kind": "honesty",
+      "text": "the remote page works with events only, shows state no staler than a stated bound, and a lost event link is visible on the page and in the daemon's degradations rather than looking like a quiet room",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c18",
+      "kind": "requirement",
+      "text": "host audio capture and playback is a new human-gated dependency behind an optional extra, and a missing device or extra degrades to a recorded no-voice state rather than failing `start`",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h17",
+      "kind": "honesty",
+      "text": "with no audio device, or without the audio extra installed, `start` succeeds, `status` says no-voice and why, and the dashboard shows it",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c21",
+      "kind": "requirement",
+      "text": "the dashboard follows culture-nodes' shape: a reactive React + Vite + TypeScript single-page app under `web/`, tested with Vitest, live state over server-sent events, with a `culture-design/` folder (tokens and palette) pinned to the `org` repo; `web/dist` is built at package time and shipped inside the wheel so the daemon serves it with no node toolchain at install or run time; realtime mic and playback pieces are cited from lobes' `site/src/scripts/`",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h18",
+      "kind": "honesty",
+      "text": "the wheel contains the dashboard assets and they load with no network access to a CDN, and the pinned design tokens are verified byte-for-byte against the recorded org commit",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h22",
+      "kind": "honesty",
+      "text": "CI builds `web/` and fails the PR on a broken build, the published wheel is checked to contain `web/dist`, and a wheel built without it makes `start` degrade to a recorded no-dashboard state instead of serving a blank page",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c22",
+      "kind": "boundary",
+      "text": "behind Cloudflare Access the daemon still binds to loopback only and trusts no request merely for arriving: climate-cli's web service has no authentication at all and says so, and `remote-login` fronts a local `--service` URL, so a daemon bound to a routable address would be open to the LAN with SSO protecting only the public hostname",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h19",
+      "kind": "honesty",
+      "text": "the daemon refuses to bind a non-loopback address unless the operator passes an explicit flag, and the README states that Cloudflare Access protects only the public hostname",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c23",
+      "kind": "audience",
+      "text": "the operator of one rig (this box: a local lobes gateway with the stt, tts and speaker roles, a host mic with hardware echo cancellation, a speaker) who wants Gwen present in the room and reachable from a phone; secondarily, agents that drive the same daemon through the CLI's `--json` verbs",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h2",
+      "kind": "honesty",
+      "text": "the base is accepted on this one rig only, and the README says so rather than implying portability",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c24",
+      "kind": "after_state",
+      "text": "`embodiment start` brings Gwen up as a background process that listens on the host mic, answers aloud with recalled memory in the prompt, remembers selectively into eidetic, and keeps running with no browser open; `embodiment stop` or the dashboard switch turns her off; the dashboard shows live state, transcript and degradations locally and, through agent.culture.dev behind Cloudflare Access, from a phone",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h3",
+      "kind": "honesty",
+      "text": "every clause is demonstrated live on the rig, not only under fakes: mic in, reply audio out, a recalled memory visible in the prompt trace, and the process surviving with zero browser clients attached",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c25",
+      "kind": "before_state",
+      "text": "embodiment is a 37.7k-line library of loop, strategist, config-lane and muse experiments whose own record says mechanism proven, value not; nothing in it runs as an app, nothing listens or speaks, there is no dashboard and no on/off switch, and no sibling repo imports it",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h4",
+      "kind": "honesty",
+      "text": "the description of the old package is taken from its own published verdicts, not written to justify the archive",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c26",
+      "kind": "why_it_matters",
+      "text": "presence is a felt claim and the library never let anyone feel it: a running, speaking, remembering Gwen is the first form of embodiment whose value can be judged by using it, and it gives memory, vision, actions and a face a live base to land on instead of another harness",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h5",
+      "kind": "honesty",
+      "text": "the redesign does not claim value either: the first release states that the daemon's usefulness is unmeasured, in the same terms the old tiers used",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c27",
+      "kind": "success_signal",
+      "text": "on this rig, 10 consecutive spoken turns complete with 0 silent failures (every failed turn leaves a degradation record), median end-of-speech to first reply audio is measured and published with its n, a fact stated in one session is recalled aloud after a daemon restart, and `stop` then `start` from both the CLI and the dashboard each take effect in < 5 s",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h6",
+      "kind": "honesty",
+      "text": "latency is published as measured even if it is bad, and a turn that fails without a degradation record counts as a failed acceptance run, not a flake",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c28",
+      "kind": "boundary",
+      "text": "software presence, not a body: the base promises voice, memory, a switch and a dashboard on one rig with one speaker model; it does not promise low latency before it is measured, multi-user or multi-rig operation, phone voice, vision, actions, a face, or any claim that Gwen's value is proven",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h7",
+      "kind": "honesty",
+      "text": "the README and `explain` output state the software-presence boundary and the not-yet list explicitly, per C2",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c29",
+      "kind": "requirement",
+      "text": "the v1 dashboard's centrepiece is a live assistant waveform (an oscilloscope-style trace of Gwen's voice, with the listener's input shown too), drawn on a canvas at animation-frame rate; richer readouts such as pitch, resonance and noise floor are welcome",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h21",
+      "kind": "honesty",
+      "text": "the waveform shows real audio: a test feeds a known tone through the feature extractor and asserts the published slice matches it, so the trace can never be a decorative animation",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c31",
+      "kind": "requirement",
+      "text": "because voice can live on the host with no browser audio at all, the daemon computes a compact audio feature stream (level, waveform slice, and optionally pitch and spectral readouts) from the audio it captures and plays, and publishes it as events; the page draws from that stream, and uses the browser's own AnalyserNode only when the browser is itself the audio endpoint. The same stream is what a later face consumes, and it is small enough to reach the phone where raw audio is not sent",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h20",
+      "kind": "honesty",
+      "text": "with the browser holding no microphone permission and no audio element, the waveform still moves while Gwen speaks on the host, and it goes flat, not frozen, when the event link drops",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c32",
+      "kind": "requirement",
+      "text": "Gwen must be able to grow tool use, the ability to trigger agents, and further extensions and control in future; the base is built so those arrive as additions, not as a rewrite of the turn",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h25",
+      "kind": "honesty",
+      "text": "the turn is tool-capable in structure from the first release (a bounded loop and a registry that happens to be empty), and the README says plainly that Gwen has no tools yet, so extensibility is a property of the code and not a promise in prose",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c33",
+      "kind": "requirement",
+      "text": "memory written by the daemon defaults to the private store (`visibility=private`, under the pinned data dir), never the repo's committed public store: nothing said in the room reaches git unless the operator promotes a record deliberately",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h23",
+      "kind": "honesty",
+      "text": "the private default holds for every write path the daemon has, including any end-of-session consolidation, and `status` shows which store is in use",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c34",
+      "kind": "requirement",
+      "text": "every state-changing request to the daemon's HTTP surface carries a per-install secret and passes a Host and Origin allow-list, because tunnel traffic arrives from cloudflared on loopback: binding to 127.0.0.1 does not separate a remote caller from a local one, and any web page open in a local browser can otherwise POST to the switch (CSRF, DNS rebinding); requests bearing the public hostname must also carry a valid Cloudflare Access assertion",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h24",
+      "kind": "honesty",
+      "text": "the guard covers the event stream as well as the switch, since the stream carries the room's transcript",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c35",
+      "kind": "boundary",
+      "text": "recalled memory is untrusted data: it enters the prompt quoted and attributed, never as instructions, and once tools exist no recalled text can name a tool call; the public pool is writable by every mesh agent on this host",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h26",
+      "kind": "honesty",
+      "text": "the attribution framing is applied at the single point where recall enters the prompt, so no later code path can inject recalled text unframed",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c36",
+      "kind": "requirement",
+      "text": "listening is always visible and always stoppable: mic-hot state is in `status`, in the event stream and on the dashboard; a mute control stops capture before encode; and the dashboard shows when a remote viewer is connected",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h27",
+      "kind": "honesty",
+      "text": "mute is enforced in the capture path, not the UI: a muted daemon sends zero audio frames to the gateway, verified by counting frames",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c38",
+      "kind": "requirement",
+      "text": "`status` and the dashboard report the recall mode actually in effect (semantic, or lexical fallback) as a degradation, because eidetic falls back silently when the embedder is down and that is the rig's state today",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h28",
+      "kind": "honesty",
+      "text": "the reported recall mode is derived from what the last recall actually did, not from configuration",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c39",
+      "kind": "requirement",
+      "text": "the daemon owns barge-in: on `input_audio_buffer.speech_started` during playback it stops the speaker within a stated bound and drops undelivered audio, because an ears-only session never receives `response.interrupted` and lobes accepts `aec_mode` without acting on it",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h29",
+      "kind": "honesty",
+      "text": "barge-in is demonstrated live, and the echo-cancellation claim is tested by checking that Gwen's own speech produces no transcript during playback",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c40",
+      "kind": "boundary",
+      "text": "one active ear at a time: the host microphone and a browser microphone never hold realtime sessions simultaneously; attaching one releases the other, visibly",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h30",
+      "kind": "honesty",
+      "text": "the handover between ears is explicit and recorded, and a second attach attempt is refused or pre-empts visibly, never silently doubles the session",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c41",
+      "kind": "requirement",
+      "text": "the archive PR also updates what points at the old package: colleague#358 (open, proposing an import of the extracted loop) gets a comment through the `communicate` skill, `AGENTS.colleague.md`, the README, CLAUDE.md and the `explain` catalog are rewritten in the same PR, the first-party `drone` skill leaves with `drone.py`, and CI's `bandit -r embodiment examples` and the 60% coverage gate are re-pointed at what remains",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h31",
+      "kind": "honesty",
+      "text": "the PR body lists each external pointer and what was done about it, and nothing is posted to a sibling repo without the operator's go-ahead",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c42",
+      "kind": "requirement",
+      "text": "the daemon keeps a bounded log and its degradation ledger in a state directory, so `status` can say why it died after an unclean exit, and the log never contains transcript text unless retention allows it",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h32",
+      "kind": "honesty",
+      "text": "the log is size-bounded, lives outside the repo, and a test proves transcript text is absent from it under the default retention",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c50",
+      "kind": "requirement",
+      "text": "audio endpoints are an interface, not two special cases: the host devices and the browser are v1's implementations, and the inbound side speaks the lobes `/v1/realtime` wire so a later endpoint (a Reachy Mini pointing `REACHY_REALTIME_URL` at Gwen) needs a URL and a secret rather than a new protocol; non-browser endpoints authenticate with a Cloudflare Access service token or a per-endpoint secret, since they cannot complete browser SSO",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h33",
+      "kind": "honesty",
+      "text": "v1 ships no robot support and says so; what ships is the seam, proved by two endpoints sharing it, and the one-active-ear rule (c40) already covers a third",
+      "deferred": false,
+      "deferred_reason": ""
+    }
+  ],
+  "tasks": [
+    {
+      "id": "t1",
+      "summary": "Archive the experiments: tag, remove, re-pin CI",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "`git tag` lists the archive tag on the parent of the archive commit and the full suite, lint stack and `teken cli doctor . --strict` are green on the archive commit",
+        "`tests/test_zero_deps.py` pins the reduced approved set exactly and still fails on any delta in either direction",
+        "the PR body names every deleted structural test (`test_governance.py`, `test_package_surface.py`, announcement and muse/scope AST tests) with one line on why it no longer applies"
+      ],
+      "deps": [],
+      "covers": [
+        "c10",
+        "h13",
+        "h1"
+      ],
+      "instruction": "Tag the parent commit `archive/pre-realtime-0.14.0` first. Keep: `embodiment/cli/`, `explain/`, `identity.py`, `framing.py`, `perception.py`, `presence.py`, `events.py`, `continuity.py` (eidetic half), `loop.py`, `contract.py` and whatever `loop.py` imports, plus their tests and the AST termination tests. Remove the strategist, config lane, muse, drone, `examples/`, `docs/live-test-results/` and their tests. Drop `headspace-cli`. Re-point bandit and keep the coverage gate honest. This is its own PR with a version bump; no daemon code rides in it."
+    },
+    {
+      "id": "t2",
+      "summary": "Rewrite the docs for the archive and handle external pointers",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "README and `CLAUDE.md` describe only modules that exist after t1, quote the old tiers' published verdicts for the before-state, and carry the corrected live rig table (senses = Gemma 4 26B A4B)",
+        "the PR body lists each external pointer (colleague#358, the ~45 moot issues, the `drone` skill, CI paths) and what was done about it, with drafts committed under `docs/archive/` and nothing posted to a sibling repo",
+        "`markdownlint-cli2` and `tests/test_cli_introspection.py` pass"
+      ],
+      "deps": [
+        "t1"
+      ],
+      "covers": [
+        "c41",
+        "h31",
+        "c25",
+        "h4"
+      ],
+      "instruction": "Same PR as t1. Rewrite README, `CLAUDE.md`, `AGENTS.colleague.md` and the `explain` catalog to describe the small core and the redesign direction; take the before-state from the repo's own 0.12.0/0.13.0 verdicts. Remove the first-party `drone` skill and its `docs/skill-sources.md` row. Draft, do NOT post, a comment for colleague#358 and a closing note for the moot issues; posting needs the operator's go-ahead."
+    },
+    {
+      "id": "t3",
+      "summary": "Approve the new dependency set",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "`tests/test_zero_deps.py` lists each new dependency with a cost comment, pins the `audio` extra separately, and asserts `lobes` is absent from dependencies and from the required runtime imports",
+        "the PR description names every new dependency and its transitive footprint"
+      ],
+      "deps": [
+        "t1"
+      ],
+      "covers": [
+        "c11",
+        "h14"
+      ],
+      "instruction": "Human gate, deliberately its own task. Propose: `websockets` (realtime client AND the inbound endpoint server) as a base dependency; `sounddevice` behind an `audio` extra; stdlib `http.server` for HTTP and SSE, so no web framework. State each one's transitive cost in the pin's comments. `lobes-cli` must never appear."
+    },
+    {
+      "id": "t4",
+      "summary": "State directory, bounded log, persisted degradation ledger",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "a crash leaves a ledger `status` can read, and the log never exceeds its configured size",
+        "a test writes a transcript through the session API and asserts the text is absent from the operational log",
+        "the state dir resolves outside the repo regardless of cwd"
+      ],
+      "deps": [
+        "t1"
+      ],
+      "covers": [
+        "c42",
+        "h32"
+      ],
+      "instruction": "New `embodiment/daemon/state.py`. XDG state dir outside any repo. Size-bounded rotating log; the degradation ledger appends JSONL and survives a crash. The operational log takes no transcript text."
+    },
+    {
+      "id": "t5",
+      "summary": "Lifecycle verbs: start, stop, status",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "double `start` is idempotent, `stop` returns within a bounded time with a reader thread parked in a blocking call, and `status` reports `dead (unclean)` with the last ledger entry against a stale pidfile",
+        "`stop` then `start` each complete in under 5 s in a test with fake components",
+        "`teken cli doctor . --strict` and `tests/test_cli_introspection.py` pass with the three verbs registered"
+      ],
+      "deps": [
+        "t4"
+      ],
+      "covers": [
+        "c5",
+        "h11"
+      ],
+      "instruction": "New `embodiment/daemon/lifecycle.py` and `cli/_commands/{start,stop,status}.py` via `register(sub)`, with `explain` catalog entries. Pidfile + liveness check in the state dir. Every failure is a `CliError`; every verb takes `--json`."
+    },
+    {
+      "id": "t6",
+      "summary": "Realtime ears: the lobes client",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "fixture-driven tests cover session.created, speech_started/stopped, transcription.completed and each named error code",
+        "an absent advert, a 404 `role_infeasible` (peer origin named) and a mid-session drop each yield exactly one degradation record and a still-running caller; an AST test proves `response.create` is never constructed",
+        "a live dial test, skipped when the gateway is down, reaches `session.created`"
+      ],
+      "deps": [
+        "t3"
+      ],
+      "covers": [
+        "c2",
+        "h8",
+        "c3",
+        "h9"
+      ],
+      "instruction": "New `embodiment/realtime/{wire,client}.py`. Discover through keyless `GET /capabilities` (stt carrying `realtime_vad_session`), dial `/v1/realtime` with the Bearer key, pcm16 24 kHz base64. EARS ONLY: never send `response.create`. Declare `aec_mode=aec` and `language=he`. Build against event fixtures taken from lobes `docs/realtime-pipeline.md`. Never raises into the daemon."
+    },
+    {
+      "id": "t7",
+      "summary": "Audio endpoint interface and the host endpoint",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "with the audio import forced to fail, and with device enumeration empty, construction returns a recorded no-voice state and never raises",
+        "a muted endpoint delivers zero frames downstream, proved by counting frames at the encoder boundary, and the mute change is one event",
+        "the turn and daemon modules import the protocol only; an import-graph test forbids importing `audio.host` from them"
+      ],
+      "deps": [
+        "t3"
+      ],
+      "covers": [
+        "c18",
+        "h17",
+        "c36",
+        "h27"
+      ],
+      "instruction": "New `embodiment/audio/{endpoint,host}.py`. One `AudioEndpoint` protocol (frames in, frames out, mute, attach/detach). Host implementation on `sounddevice`, imported lazily from the `audio` extra, resampling device rate to 24 kHz. Mute drops frames BEFORE encode."
+    },
+    {
+      "id": "t8",
+      "summary": "Audio feature extractor",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "a 440 Hz test tone yields a slice whose zero-crossing rate matches 440 Hz within 2% and a level within 1 dB of expected",
+        "silence yields a flat slice and a level at the noise floor, never a synthetic wiggle",
+        "one second of audio produces under 8 kB of feature payload"
+      ],
+      "deps": [
+        "t1"
+      ],
+      "covers": [
+        "h21"
+      ],
+      "instruction": "New `embodiment/audio/features.py`, pure and stdlib-or-numpy only (numpy already arrives with coherence-cli). Per ~33 ms block: RMS level, a decimated waveform slice, noise floor; pitch and spectral centroid optional. No IO."
+    },
+    {
+      "id": "t9",
+      "summary": "Turn engine on the bounded tool loop",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "a turn with an empty registry terminates in one model call; registering a fake tool makes the same code path execute it, with no edit to `turn.py`",
+        "`loop.py` is byte-identical to the archived-core version and its AST termination tests pass",
+        "a truncated or empty completion yields a degradation record and a spoken fallback, never silence"
+      ],
+      "deps": [
+        "t1"
+      ],
+      "covers": [
+        "c32",
+        "h25"
+      ],
+      "instruction": "New `embodiment/turn.py` and `embodiment/tools.py`. Drive ONE spoken turn through `loop.run` with an empty tool registry, the `senses` role as the model seam, Gwen framing from `framing.py`, Hebrew system prompt, generous `max_tokens`. The user's words enter verbatim via `perception.py`. `loop.py` stays zero-diff."
+    },
+    {
+      "id": "t10",
+      "summary": "Memory: private, pinned, deadline-bounded, attributed",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "a remember with no explicit visibility writes under the pinned private dir and leaves the repo's `.eidetic/memory/` byte-identical, from any cwd",
+        "a backend that sleeps past the deadline lets the turn complete without memory and leaves one degradation record",
+        "a recalled record containing an imperative is rendered inside the attributed data block, and the reported recall mode flips to lexical when the embedder call fails"
+      ],
+      "deps": [
+        "t1"
+      ],
+      "covers": [
+        "c6",
+        "h12",
+        "c33",
+        "h23",
+        "c35",
+        "h26",
+        "c38",
+        "h28"
+      ],
+      "instruction": "New `embodiment/memory.py` over `continuity.py`. Default `visibility=private`; pin `EIDETIC_DATA_DIR` at start. Recall runs in an executor under a deadline (keyword mode on the fast path). Report the recall mode the last call actually used. Recalled text enters the prompt at ONE point, wrapped with `KNOWLEDGE_ATTRIBUTION`."
+    },
+    {
+      "id": "t11",
+      "summary": "Session: context window, transcript log, remembering",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "the window never exceeds its budget and drops oldest turns first, keeping the user's words verbatim",
+        "no code path writes audio bytes to disk, asserted by a test that scans the state dir after a fake session",
+        "an explicit ask writes one private record; ending a session writes one attributed summary; no other write occurs"
+      ],
+      "deps": [
+        "t4",
+        "t10"
+      ],
+      "covers": [],
+      "instruction": "New `embodiment/session.py`. Rolling turn window with a token budget; private size-bounded per-session transcript log in the state dir; raw audio is never written. Remembering is an explicit spoken ask plus one attributed end-of-session summary, both through `memory.py`."
+    },
+    {
+      "id": "t12",
+      "summary": "Voice out and barge-in",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "with a fake player, speech_started mid-playback stops output in under 200 ms and the dropped remainder is recorded",
+        "a TTS failure yields one degradation record and the reply text is still published as an event",
+        "played audio is fed to the feature extractor so the assistant trace reflects what was actually spoken"
+      ],
+      "deps": [
+        "t6",
+        "t7",
+        "t8"
+      ],
+      "covers": [
+        "c39"
+      ],
+      "instruction": "New `embodiment/voice.py`. Sentence-split the reply, synthesize through `POST /v1/audio/speech`, play through the active endpoint. On speech_started during playback stop output and drop the undelivered remainder, recording it."
+    },
+    {
+      "id": "t13",
+      "summary": "Event bus and the SSE projection",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "every event validates against the committed schema fixtures and carries a schema version",
+        "a heartbeat is emitted at a fixed interval asserted in a test, and a missing broker degrades visibly to in-process",
+        "no event payload ever contains the gateway key or the install secret"
+      ],
+      "deps": [
+        "t3"
+      ],
+      "covers": [
+        "h16"
+      ],
+      "instruction": "New `embodiment/bus.py`. MQTT through `events-cli` is the internal substrate, with an in-process fallback recorded as a degradation when no broker answers. One versioned event schema (state, mic, turn, transcript, reply, degradation, features, clients, heartbeat), committed as JSON fixtures the web app tests against. SSE is a projection of the bus."
+    },
+    {
+      "id": "t14",
+      "summary": "Inbound realtime endpoint: the browser ear, robot-shaped",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "a recorded lobes-wire fixture drives the endpoint end to end and the frames reach the same interface the host uses",
+        "a connection without a valid secret is refused before any audio is accepted",
+        "README states that v1 ships no robot support and that the seam is what ships"
+      ],
+      "deps": [
+        "t7",
+        "t6"
+      ],
+      "covers": [
+        "c50",
+        "h33"
+      ],
+      "instruction": "New `embodiment/audio/remote.py`. A `websockets` server speaking the lobes `/v1/realtime` wire inbound, implementing `AudioEndpoint`. Authenticated by the install secret or a per-endpoint secret. v1 consumer is the browser; no robot support ships."
+    },
+    {
+      "id": "t15",
+      "summary": "The daemon: wiring, one ear, zero clients",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "with zero clients attached a full fake turn completes, and attaching then detaching a client changes no daemon state",
+        "a second ear attaching pre-empts or is refused visibly, with one handover event, and never yields two sessions",
+        "each injected failure (dead gateway, STT error, TTS error, no device, recall timeout) leaves a degradation record and a running daemon"
+      ],
+      "deps": [
+        "t5",
+        "t6",
+        "t9",
+        "t11",
+        "t12",
+        "t13",
+        "t14"
+      ],
+      "covers": [
+        "c12",
+        "h15",
+        "c40",
+        "h30",
+        "c31",
+        "h20"
+      ],
+      "instruction": "New `embodiment/daemon/app.py`. Ears -> perception -> memory -> turn -> voice, publishing to the bus. One active ear with explicit, recorded handover. Client count is never an input to the turn loop. Features from captured AND played audio go to the bus."
+    },
+    {
+      "id": "t16",
+      "summary": "HTTP surface: static, SSE, control API, the guard",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "POST with a foreign Origin, with a rebinding Host, and with the public Host but no Access assertion are each refused; the same three are refused on the SSE route",
+        "a routable bind address without the explicit flag is a `CliError` with a hint",
+        "a test greps every served asset and a captured stream for the gateway key and the install secret and finds neither; a missing `web/dist` yields a recorded no-dashboard state"
+      ],
+      "deps": [
+        "t13",
+        "t5"
+      ],
+      "covers": [
+        "c34",
+        "h24",
+        "c22",
+        "h19",
+        "h10"
+      ],
+      "instruction": "New `embodiment/http/{server,guard}.py` on stdlib `http.server`. Serve `web/dist`, the SSE stream and the control API (start/stop voice, mute, status). Loopback bind unless `--bind-public`. Guard every state-changing request AND the stream: install secret, Host + Origin allow-list, and a valid `Cf-Access-Jwt-Assertion` when the Host is the public hostname. The gateway key stays server-side."
+    },
+    {
+      "id": "t17",
+      "summary": "Web app scaffold",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "Vitest component tests render every state from the committed event fixtures, including a disconnected state when the heartbeat stops",
+        "the design-token check script passes against the pinned `org` commit and fails on a one-byte edit",
+        "the built `web/dist` references no external origin"
+      ],
+      "deps": [
+        "t13"
+      ],
+      "covers": [
+        "c21",
+        "c4",
+        "c13"
+      ],
+      "instruction": "New `web/` like culture-nodes: Vite + React + TypeScript + Vitest. `web/src/culture-design/` copied from `org` at a pinned commit with `scripts/check-culture-design.py`. An `EventSource` hook against t13's schema fixtures; the switch, status, mic/mute, transcript, degradations, recall mode and remote-viewer indicator. Fonts bundled, no CDN."
+    },
+    {
+      "id": "t18",
+      "summary": "Waveform centrepiece and browser audio",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "with no microphone permission and no audio element, the assistant trace moves from fixture feature events and goes flat, not frozen, when the stream stops",
+        "pcm16 encode/decode round-trips a known buffer exactly",
+        "pitch, resonance and noise-floor readouts render when present and are absent, not zero, when not"
+      ],
+      "deps": [
+        "t17",
+        "t8",
+        "t14"
+      ],
+      "covers": [
+        "c29"
+      ],
+      "instruction": "In `web/`: a canvas oscilloscope drawing the assistant trace and the listener trace from the feature events at animation-frame rate; browser mic capture and playback cited from lobes `site/src/scripts/` (`mic-capture.ts`, `pcm-wire.ts`, `audio-playback.ts`), talking to t14. `AnalyserNode` only when the browser is the ear."
+    },
+    {
+      "id": "t19",
+      "summary": "Packaging and CI for the web build",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "CI fails a PR whose `web/` build or Vitest run fails",
+        "a test builds the wheel and asserts `web/dist/index.html` and the hashed assets are inside it",
+        "the node build adds under 3 minutes to CI, measured and written in the PR"
+      ],
+      "deps": [
+        "t16",
+        "t17"
+      ],
+      "covers": [
+        "h22",
+        "h18"
+      ],
+      "instruction": "`pyproject.toml` hatch config to ship `web/dist` inside the package as a build artifact; `tests.yml` builds and tests `web/`; `publish.yml` builds it before the wheel on both TestPyPI and PyPI paths."
+    },
+    {
+      "id": "t20",
+      "summary": "Remote access through cultureflare",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "`embodiment tunnel` prints the exact commands and mutates nothing, with `--json` and an `explain` entry",
+        "README documents that Cloudflare Access protects only the public hostname and how the daemon validates the assertion",
+        "a test confirms the verb never invokes `cultureflare` with `--apply`"
+      ],
+      "deps": [
+        "t16"
+      ],
+      "covers": [],
+      "instruction": "New `embodiment tunnel` verb, dry-run by default like `lobes tunnel`, printing the `cultureflare remote-login setup --hostname agent.culture.dev --service ...` and `cloudflared` commands, and docs for Access `--allow` and a service token for non-browser endpoints. NEVER runs `--apply` itself: provisioning is the operator's act."
+    },
+    {
+      "id": "t21",
+      "summary": "Live acceptance on the rig",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "10 consecutive Hebrew spoken turns with 0 silent failures; median and p90 end-of-speech to first reply audio published with raw data",
+        "a fact stated before a daemon restart is recalled aloud after it, with the recalled record id in the prompt trace; all with zero browser clients attached",
+        "one live barge-in stops playback, Gwen's own speech produces no transcript during playback, and `stop`/`start` from the CLI and from the dashboard each take effect in under 5 s"
+      ],
+      "deps": [
+        "t15",
+        "t18",
+        "t19",
+        "t20"
+      ],
+      "covers": [
+        "c27",
+        "h6",
+        "c24",
+        "h3",
+        "h29",
+        "c1"
+      ],
+      "instruction": "A scripted live session on this box, committed under `docs/live-test-results/` with raw per-turn numbers, n, rig and model pair. Publish latency as measured. A turn that fails with no degradation record fails the run."
+    },
+    {
+      "id": "t22",
+      "summary": "Release docs: status, boundary, the not-yet list",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "a test asserts the `explain` root text and the README contain the software-presence boundary and the not-yet list",
+        "README's status section says the daemon's usefulness is unmeasured and that acceptance was on one rig, citing t21's result file",
+        "`markdownlint-cli2`, the rubric gate and `version-check` pass"
+      ],
+      "deps": [
+        "t21"
+      ],
+      "covers": [
+        "c23",
+        "h2",
+        "c26",
+        "h5",
+        "c28",
+        "h7"
+      ],
+      "instruction": "README, `CLAUDE.md`, `explain` root text, CHANGELOG and the version bump for the first daemon release. State: one rig only; software presence, not a body; value unmeasured; no tools, vision, face, phone voice or robot yet; the `reachy-mini-cli` `agent embody` name collision."
+    }
+  ],
+  "risks": [
+    {
+      "id": "r1",
+      "text": "Cloudflare may buffer a long-lived SSE response through the tunnel; unprobed. Mitigation if so: padding comments and a short heartbeat, or long-poll fallback.",
+      "kind": "unknown_nonblocking",
+      "task_id": null,
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r2",
+      "text": "host audio device selection and resampling on this box are unexamined; the mic's hardware echo cancellation is accepted on the operator's word until t21 measures it.",
+      "kind": "unknown_nonblocking",
+      "task_id": "t7",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r3",
+      "text": "BlueTTS per-sentence latency is unmeasured and may dominate the turn; t21 publishes it either way.",
+      "kind": "unknown_nonblocking",
+      "task_id": "t12",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r4",
+      "text": "whether an MQTT broker already runs on this box for events-cli is unchecked; the in-process fallback keeps the base working without one.",
+      "kind": "unknown_nonblocking",
+      "task_id": "t13",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r5",
+      "text": "hatch must be told to include git-ignored `web/dist` as an artifact, for the sdist as well as the wheel; culture-nodes solved the same problem in Go, not Python.",
+      "kind": "unknown_nonblocking",
+      "task_id": "t19",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r6",
+      "text": "semantic recall is down on this rig today (embedder not ready), so t21's memory check exercises the lexical path only.",
+      "kind": "unknown_nonblocking",
+      "task_id": "t10",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r7",
+      "text": "supervision: nothing restarts the daemon after a crash or reboot, and nothing runs cloudflared; a systemd user unit is the likely next step.",
+      "kind": "follow_up",
+      "task_id": null,
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r8",
+      "text": "cross-repo posts (colleague#358, reachy-mini-cli relay ask, closing ~45 moot issues) and `cultureflare remote-login --apply` each need the operator's explicit go-ahead; the plan drafts, it does not post or provision.",
+      "kind": "follow_up",
+      "task_id": null,
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r9",
+      "text": "vision, actions and agent triggers, the face, phone voice and the Reachy relay are later stages; the base ships their seams only.",
+      "kind": "out_of_scope",
+      "task_id": null,
+      "resolved": false,
+      "resolution": ""
+    }
+  ],
+  "obligations": [
+    {
+      "id": "o1",
+      "task_id": "t1",
+      "criterion_index": 1,
+      "criterion_snapshot": "`git tag` lists the archive tag on the parent of the archive commit and the full suite, lint stack and `teken cli doctor . --strict` are green on the archive commit",
+      "seam": "git history / CI",
+      "behavior": "the repo is green at the archive commit with no daemon code present, so old-gone-and-nothing-runs never exists",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o2",
+      "task_id": "t1",
+      "criterion_index": 2,
+      "criterion_snapshot": "`tests/test_zero_deps.py` pins the reduced approved set exactly and still fails on any delta in either direction",
+      "seam": "tests/test_zero_deps.py",
+      "behavior": "removing or adding a dependency without editing the approved set fails the suite",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o3",
+      "task_id": "t3",
+      "criterion_index": 1,
+      "criterion_snapshot": "`tests/test_zero_deps.py` lists each new dependency with a cost comment, pins the `audio` extra separately, and asserts `lobes` is absent from dependencies and from the required runtime imports",
+      "seam": "pyproject.toml dependencies",
+      "behavior": "no dependency enters or leaves without the pinned approved set changing in the same diff",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o4",
+      "task_id": "t4",
+      "criterion_index": 2,
+      "criterion_snapshot": "a test writes a transcript through the session API and asserts the text is absent from the operational log",
+      "seam": "operational log",
+      "behavior": "transcript text never appears in the operational log under default retention",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o5",
+      "task_id": "t5",
+      "criterion_index": 1,
+      "criterion_snapshot": "double `start` is idempotent, `stop` returns within a bounded time with a reader thread parked in a blocking call, and `status` reports `dead (unclean)` with the last ledger entry against a stale pidfile",
+      "seam": "embodiment stop",
+      "behavior": "stop terminates within its bound even when a thread is parked on a blocking read",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o6",
+      "task_id": "t5",
+      "criterion_index": 1,
+      "criterion_snapshot": "double `start` is idempotent, `stop` returns within a bounded time with a reader thread parked in a blocking call, and `status` reports `dead (unclean)` with the last ledger entry against a stale pidfile",
+      "seam": "embodiment status",
+      "behavior": "status tells the truth after an unclean death instead of reporting stopped",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o7",
+      "task_id": "t6",
+      "criterion_index": 2,
+      "criterion_snapshot": "an absent advert, a 404 `role_infeasible` (peer origin named) and a mid-session drop each yield exactly one degradation record and a still-running caller; an AST test proves `response.create` is never constructed",
+      "seam": "lobes /v1/realtime",
+      "behavior": "the client never arms the server-run turn and never raises into its caller",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o8",
+      "task_id": "t7",
+      "criterion_index": 2,
+      "criterion_snapshot": "a muted endpoint delivers zero frames downstream, proved by counting frames at the encoder boundary, and the mute change is one event",
+      "seam": "capture path",
+      "behavior": "mute is enforced before encode, so a muted daemon sends no audio to the gateway",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o9",
+      "task_id": "t8",
+      "criterion_index": 1,
+      "criterion_snapshot": "a 440 Hz test tone yields a slice whose zero-crossing rate matches 440 Hz within 2% and a level within 1 dB of expected",
+      "seam": "feature stream",
+      "behavior": "the published waveform is derived from real samples and can never be a decorative animation",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o10",
+      "task_id": "t9",
+      "criterion_index": 1,
+      "criterion_snapshot": "a turn with an empty registry terminates in one model call; registering a fake tool makes the same code path execute it, with no edit to `turn.py`",
+      "seam": "embodiment.tools registry",
+      "behavior": "adding a tool is an addition to the registry, never a rewrite of the turn",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o11",
+      "task_id": "t9",
+      "criterion_index": 3,
+      "criterion_snapshot": "a truncated or empty completion yields a degradation record and a spoken fallback, never silence",
+      "seam": "model seam",
+      "behavior": "a lost turn is always recorded",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o12",
+      "task_id": "t10",
+      "criterion_index": 1,
+      "criterion_snapshot": "a remember with no explicit visibility writes under the pinned private dir and leaves the repo's `.eidetic/memory/` byte-identical, from any cwd",
+      "seam": "eidetic store",
+      "behavior": "nothing said in the room reaches the committed public store by default",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o13",
+      "task_id": "t10",
+      "criterion_index": 2,
+      "criterion_snapshot": "a backend that sleeps past the deadline lets the turn complete without memory and leaves one degradation record",
+      "seam": "recall fast path",
+      "behavior": "recall can never stall a spoken turn",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o14",
+      "task_id": "t10",
+      "criterion_index": 3,
+      "criterion_snapshot": "a recalled record containing an imperative is rendered inside the attributed data block, and the reported recall mode flips to lexical when the embedder call fails",
+      "seam": "prompt assembly",
+      "behavior": "recalled memory is data, never instructions",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o15",
+      "task_id": "t12",
+      "criterion_index": 1,
+      "criterion_snapshot": "with a fake player, speech_started mid-playback stops output in under 200 ms and the dropped remainder is recorded",
+      "seam": "playback",
+      "behavior": "Gwen stops speaking when the listener starts, within the stated bound",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o16",
+      "task_id": "t13",
+      "criterion_index": 3,
+      "criterion_snapshot": "no event payload ever contains the gateway key or the install secret",
+      "seam": "event stream",
+      "behavior": "secrets never enter an event payload",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o17",
+      "task_id": "t14",
+      "criterion_index": 1,
+      "criterion_snapshot": "a recorded lobes-wire fixture drives the endpoint end to end and the frames reach the same interface the host uses",
+      "seam": "inbound audio wire",
+      "behavior": "a later endpoint needs a URL and a secret, not a new protocol",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o18",
+      "task_id": "t15",
+      "criterion_index": 1,
+      "criterion_snapshot": "with zero clients attached a full fake turn completes, and attaching then detaching a client changes no daemon state",
+      "seam": "turn loop",
+      "behavior": "the daemon is the app: no browser is needed for a spoken turn",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o19",
+      "task_id": "t15",
+      "criterion_index": 2,
+      "criterion_snapshot": "a second ear attaching pre-empts or is refused visibly, with one handover event, and never yields two sessions",
+      "seam": "ear handover",
+      "behavior": "two realtime sessions never exist at once",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o20",
+      "task_id": "t15",
+      "criterion_index": 3,
+      "criterion_snapshot": "each injected failure (dead gateway, STT error, TTS error, no device, recall timeout) leaves a degradation record and a running daemon",
+      "seam": "degradation ledger",
+      "behavior": "no turn fails silently",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o21",
+      "task_id": "t16",
+      "criterion_index": 1,
+      "criterion_snapshot": "POST with a foreign Origin, with a rebinding Host, and with the public Host but no Access assertion are each refused; the same three are refused on the SSE route",
+      "seam": "control API + SSE",
+      "behavior": "arriving on loopback is never proof of being local",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o22",
+      "task_id": "t16",
+      "criterion_index": 3,
+      "criterion_snapshot": "a test greps every served asset and a captured stream for the gateway key and the install secret and finds neither; a missing `web/dist` yields a recorded no-dashboard state",
+      "seam": "served assets",
+      "behavior": "the gateway key never reaches any browser",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o23",
+      "task_id": "t17",
+      "criterion_index": 1,
+      "criterion_snapshot": "Vitest component tests render every state from the committed event fixtures, including a disconnected state when the heartbeat stops",
+      "seam": "dashboard",
+      "behavior": "a lost event link shows as disconnected, never as a quiet room",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o24",
+      "task_id": "t19",
+      "criterion_index": 2,
+      "criterion_snapshot": "a test builds the wheel and asserts `web/dist/index.html` and the hashed assets are inside it",
+      "seam": "published wheel",
+      "behavior": "pip install yields a working dashboard with no node toolchain",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o25",
+      "task_id": "t21",
+      "criterion_index": 1,
+      "criterion_snapshot": "10 consecutive Hebrew spoken turns with 0 silent failures; median and p90 end-of-speech to first reply audio published with raw data",
+      "seam": "the running rig",
+      "behavior": "presence is demonstrated live, and bad latency is published rather than hidden",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o26",
+      "task_id": "t21",
+      "criterion_index": 3,
+      "criterion_snapshot": "one live barge-in stops playback, Gwen's own speech produces no transcript during playback, and `stop`/`start` from the CLI and from the dashboard each take effect in under 5 s",
+      "seam": "host audio",
+      "behavior": "the operator's echo-cancellation claim is measured, not assumed",
+      "origin": "llm",
+      "status": "approved"
+    }
+  ]
+}

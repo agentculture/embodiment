@@ -1,0 +1,205 @@
+# realtime embodiment app
+
+> embodiment is a background realtime app: a voice-first embodied presence built on the lobes /v1/realtime API, switched on and off from the CLI or a web dashboard, with context and memory on eidetic-cli; the prior loop/strategist/muse experiments are archived in git history
+> instruction: check git history: the archive tag exists and CI is green on the commit after the archive, before any daemon code lands
+
+## Audience
+
+- the operator of one rig (this box: a local lobes gateway with the stt, tts and speaker roles, a host mic with hardware echo cancellation, a speaker) who wants Gwen present in the room and reachable from a phone; secondarily, agents that drive the same daemon through the CLI's `--json` verbs
+  - instruction: grep the README for the rig statement; run the acceptance turns on this box and record n, rig and model pair
+
+## Before → After
+
+- Before: embodiment is a 37.7k-line library of loop, strategist, config-lane and muse experiments whose own record says mechanism proven, value not; nothing in it runs as an app, nothing listens or speaks, there is no dashboard and no on/off switch, and no sibling repo imports it
+  - instruction: cite CLAUDE.md's 0.12.0 and 0.13.0 verdict sections and the inventory numbers from scope entry s9
+- After: `embodiment start` brings Gwen up as a background process that listens on the host mic, answers aloud with recalled memory in the prompt, remembers selectively into eidetic, and keeps running with no browser open; `embodiment stop` or the dashboard switch turns her off; the dashboard shows live state, transcript and degradations locally and, through agent.culture.dev behind Cloudflare Access, from a phone
+  - instruction: scripted live session committed under docs/live-test-results/ with the transcript, the prompt trace showing the recalled record id, and the client count at zero
+
+## Why it matters
+
+- presence is a felt claim and the library never let anyone feel it: a running, speaking, remembering Gwen is the first form of embodiment whose value can be judged by using it, and it gives memory, vision, actions and a face a live base to land on instead of another harness
+  - instruction: README and CLAUDE.md status sections carry an explicit unmeasured statement until a result exists
+
+## Requirements
+
+- embodiment needs its own realtime client for the lobes gateway: discover via keyless GET /capabilities (the stt role advertising `realtime_vad_session`), then dial `/v1/realtime` with a server-side Bearer key and speak the documented JSON/base64 pcm16 24 kHz wire; lobes ships no importable client, only stdlib-socket scripts under `scripts/realtime-*.py`
+  - instruction: unit tests against recorded event fixtures from lobes docs/realtime-pipeline.md; one live dial test gated on the gateway being up; a test with the advert absent asserts a degradation record and a running daemon
+  - honesty: the client is built against lobes' documented wire and proved against the live gateway, and an absent `realtime_vad_session` advert degrades to a recorded no-ears state instead of raising
+- the web dashboard is embodiment's own front end, citing lobes' browser patterns (`site/src/scripts/pcm-wire.ts`, `mic-capture.ts`, `audio-graph.ts`, the event log and conversation view) rather than depending on them; the daemon must serve it and hold the gateway key server-side, because a browser WS handshake cannot carry an Authorization header
+  - instruction: test that greps all static assets and a captured event stream for the configured key value
+  - honesty: the gateway key never reaches any browser: it is absent from every served asset, every event payload and every HTTP response
+- a daemon lifecycle is net-new: `start` / `stop` / `status` CLI verbs registered through the existing `register(sub)` scaffold with `explain` catalog entries, passing `teken cli doctor . --strict`, plus an HTTP control surface the dashboard uses for the same on/off switch
+  - instruction: tests: double start, stop with a hung reader thread (bounded join), status against a stale pidfile; CI rubric gate
+  - honesty: `start` is idempotent, `stop` terminates within a bounded time even with a parked blocking read, `status` tells the truth when the process died uncleanly, and all three pass `teken cli doctor . --strict`
+- eidetic stays an in-process import for durable memory, with the daemon pinning its store location (`EIDETIC_DATA_DIR` or a fixed cwd) and keeping embedder-backed recall off the voice fast path (keyword mode, or an executor with a tight timeout); the conversational context window (recent turns, decay to summary) is embodiment's to build, because eidetic has no session or working-memory primitive
+  - instruction: test with a fake backend that sleeps past the deadline asserts the turn completes and a degradation record exists; test that the resolved store path is independent of cwd
+  - honesty: recall can never stall a spoken turn: the fast path is bounded by a deadline the daemon enforces, a missed deadline proceeds without memory and records it, and the store path is pinned at start and shown in `status`
+- archiving is a reviewed act, not a deletion spree: mark the archive point (the repo has zero git tags, so this sets the convention), remove the experiment modules, `examples/`, live-test results and their structural tests in one PR, re-pin `tests/test_zero_deps.py` to the new approved dependency set, and close the roughly 45 moot issues with a pointer to the archive point
+  - instruction: PR body checklist; `git tag` shows the archive tag; the dependency pin test still fails on any delta
+  - honesty: the archive is one reviewed PR with a tag on its parent commit, every deleted structural test is named in the PR body with why it no longer applies, and `tests/test_zero_deps.py` is re-pinned by an explicit human-approved set rather than loosened
+- the app works with no browser open: the daemon is the app, and the dashboard is one client of it, never the thing that keeps it alive
+  - instruction: live test: open dashboard, close it, speak, assert a reply; unit test that client count is not an input to the turn loop
+  - honesty: with zero clients attached the daemon still completes a spoken turn, and closing the last browser tab changes nothing about its state
+- the app is also reachable from a browser anywhere, including a phone, at agent.culture.dev: the Cloudflare tunnel serves the same dashboard and the same server-sent event stream the local page uses; `events-cli` remains the mesh-facing emitter and is not part of the phone path
+  - instruction: test that the page renders a disconnected state when the event stream stops; heartbeat interval asserted in a test
+  - honesty: the remote page works with events only, shows state no staler than a stated bound, and a lost event link is visible on the page and in the daemon's degradations rather than looking like a quiet room
+- host audio capture and playback is a new human-gated dependency behind an optional extra, and a missing device or extra degrades to a recorded no-voice state rather than failing `start`
+  - instruction: test start with the audio import forced to fail and with device enumeration empty
+  - honesty: with no audio device, or without the audio extra installed, `start` succeeds, `status` says no-voice and why, and the dashboard shows it
+- the dashboard follows culture-nodes' shape: a reactive React + Vite + TypeScript single-page app under `web/`, tested with Vitest, live state over server-sent events, with a `culture-design/` folder (tokens and palette) pinned to the `org` repo; `web/dist` is built at package time and shipped inside the wheel so the daemon serves it with no node toolchain at install or run time; realtime mic and playback pieces are cited from lobes' `site/src/scripts/`
+  - instruction: test that lists wheel contents; a check script modelled on climate-cli's scripts/check-culture-design.py run in CI
+  - honesty: the wheel contains the dashboard assets and they load with no network access to a CDN, and the pinned design tokens are verified byte-for-byte against the recorded org commit
+  - honesty: CI builds `web/` and fails the PR on a broken build, the published wheel is checked to contain `web/dist`, and a wheel built without it makes `start` degrade to a recorded no-dashboard state instead of serving a blank page
+- the v1 dashboard's centrepiece is a live assistant waveform (an oscilloscope-style trace of Gwen's voice, with the listener's input shown too), drawn on a canvas at animation-frame rate; richer readouts such as pitch, resonance and noise floor are welcome
+  - honesty: the waveform shows real audio: a test feeds a known tone through the feature extractor and asserts the published slice matches it, so the trace can never be a decorative animation
+- because voice can live on the host with no browser audio at all, the daemon computes a compact audio feature stream (level, waveform slice, and optionally pitch and spectral readouts) from the audio it captures and plays, and publishes it as events; the page draws from that stream, and uses the browser's own AnalyserNode only when the browser is itself the audio endpoint. The same stream is what a later face consumes, and it is small enough to reach the phone where raw audio is not sent
+  - honesty: with the browser holding no microphone permission and no audio element, the waveform still moves while Gwen speaks on the host, and it goes flat, not frozen, when the event link drops
+- Gwen must be able to grow tool use, the ability to trigger agents, and further extensions and control in future; the base is built so those arrive as additions, not as a rewrite of the turn
+  - honesty: the turn is tool-capable in structure from the first release (a bounded loop and a registry that happens to be empty), and the README says plainly that Gwen has no tools yet, so extensibility is a property of the code and not a promise in prose
+- memory written by the daemon defaults to the private store (`visibility=private`, under the pinned data dir), never the repo's committed public store: nothing said in the room reaches git unless the operator promotes a record deliberately
+  - instruction: test that a remember call made by the turn loop with no explicit visibility writes under the pinned private dir and leaves `.eidetic/memory/` in the repo byte-identical
+  - honesty: the private default holds for every write path the daemon has, including any end-of-session consolidation, and `status` shows which store is in use
+- every state-changing request to the daemon's HTTP surface carries a per-install secret and passes a Host and Origin allow-list, because tunnel traffic arrives from cloudflared on loopback: binding to 127.0.0.1 does not separate a remote caller from a local one, and any web page open in a local browser can otherwise POST to the switch (CSRF, DNS rebinding); requests bearing the public hostname must also carry a valid Cloudflare Access assertion
+  - instruction: tests: POST /stop with a foreign Origin is refused; with a rebinding Host is refused; with the public Host and no `Cf-Access-Jwt-Assertion` is refused; the secret never appears in a served asset
+  - honesty: the guard covers the event stream as well as the switch, since the stream carries the room's transcript
+- listening is always visible and always stoppable: mic-hot state is in `status`, in the event stream and on the dashboard; a mute control stops capture before encode; and the dashboard shows when a remote viewer is connected
+  - instruction: test that mute drops frames before the encoder is called and that the state change is one event
+  - honesty: mute is enforced in the capture path, not the UI: a muted daemon sends zero audio frames to the gateway, verified by counting frames
+- `status` and the dashboard report the recall mode actually in effect (semantic, or lexical fallback) as a degradation, because eidetic falls back silently when the embedder is down and that is the rig's state today
+  - honesty: the reported recall mode is derived from what the last recall actually did, not from configuration
+- the daemon owns barge-in: on `input_audio_buffer.speech_started` during playback it stops the speaker within a stated bound and drops undelivered audio, because an ears-only session never receives `response.interrupted` and lobes accepts `aec_mode` without acting on it
+  - instruction: test with a fake player: `speech_started` mid-playback stops output in under 200 ms and the dropped remainder is recorded; live acceptance includes one interruption and one check that Gwen does not transcribe her own voice
+  - honesty: barge-in is demonstrated live, and the echo-cancellation claim is tested by checking that Gwen's own speech produces no transcript during playback
+- the archive PR also updates what points at the old package: colleague#358 (open, proposing an import of the extracted loop) gets a comment through the `communicate` skill, `AGENTS.colleague.md`, the README, CLAUDE.md and the `explain` catalog are rewritten in the same PR, the first-party `drone` skill leaves with `drone.py`, and CI's `bandit -r embodiment examples` and the 60% coverage gate are re-pointed at what remains
+  - honesty: the PR body lists each external pointer and what was done about it, and nothing is posted to a sibling repo without the operator's go-ahead
+- the daemon keeps a bounded log and its degradation ledger in a state directory, so `status` can say why it died after an unclean exit, and the log never contains transcript text unless retention allows it
+  - honesty: the log is size-bounded, lives outside the repo, and a test proves transcript text is absent from it under the default retention
+- audio endpoints are an interface, not two special cases: the host devices and the browser are v1's implementations, and the inbound side speaks the lobes `/v1/realtime` wire so a later endpoint (a Reachy Mini pointing `REACHY_REALTIME_URL` at Gwen) needs a URL and a secret rather than a new protocol; non-browser endpoints authenticate with a Cloudflare Access service token or a per-endpoint secret, since they cannot complete browser SSO
+  - instruction: v1 test: the browser endpoint and the host endpoint satisfy one endpoint protocol and the turn loop imports neither concretely; a recorded lobes-wire fixture drives the inbound side
+  - honesty: v1 ships no robot support and says so; what ships is the seam, proved by two endpoints sharing it, and the one-active-ear rule (c40) already covers a third
+
+## Honesty conditions
+
+- the archive PR and the first daemon PR are separate, so the repo is never in a state where the old package is gone and nothing runs
+- nothing in the base sends an image or opens a realtime session to a proxied peer; a gateway whose stt lane is remote is reported as such, not retried forever
+- every new runtime dependency is named, with its transitive cost, in the PR that adds it, and `lobes-cli` never appears in the dependency list
+- the daemon refuses to bind a non-loopback address unless the operator passes an explicit flag, and the README states that Cloudflare Access protects only the public hostname
+- the base is accepted on this one rig only, and the README says so rather than implying portability
+- every clause is demonstrated live on the rig, not only under fakes: mic in, reply audio out, a recalled memory visible in the prompt trace, and the process surviving with zero browser clients attached
+- the description of the old package is taken from its own published verdicts, not written to justify the archive
+- the redesign does not claim value either: the first release states that the daemon's usefulness is unmeasured, in the same terms the old tiers used
+- latency is published as measured even if it is bad, and a turn that fails without a degradation record counts as a failed acceptance run, not a flake
+- the README and `explain` output state the software-presence boundary and the not-yet list explicitly, per C2
+- the attribution framing is applied at the single point where recall enters the prompt, so no later code path can inject recalled text unframed
+- the handover between ears is explicit and recorded, and a second attach attempt is refused or pre-empts visibly, never silently doubles the session
+
+## Success signals
+
+- on this rig, 10 consecutive spoken turns complete with 0 silent failures (every failed turn leaves a degradation record), median end-of-speech to first reply audio is measured and published with its n, a fact stated in one session is recalled aloud after a daemon restart, and `stop` then `start` from both the CLI and the dashboard each take effect in < 5 s
+  - instruction: tests assert a degradation record on each injected failure (dead gateway, STT error, TTS error, no device); the live latency table is committed with raw per-turn numbers
+
+## Scope / boundaries
+
+- the realtime session is audio-only and never crosses machines: no image/video event exists on `/v1/realtime`, and the gateway refuses to tunnel a WebSocket to a proxied peer; vision therefore arrives later as separate `/v1/chat/completions` calls to the senses role, not inside the voice session
+  - instruction: test the 404 `role_infeasible` refusal path yields one degradation record naming the peer origin
+- new runtime dependencies (a WebSocket client, an HTTP server for the dashboard and control surface, audio capture if the daemon owns a local mic) stay human-gated under d2's surviving discipline, and lobes-cli is reached over the network only, never imported
+  - instruction: the re-pinned zero-deps test carries a cost comment per entry and asserts `lobes` is not importable-required
+- behind Cloudflare Access the daemon still binds to loopback only and trusts no request merely for arriving: climate-cli's web service has no authentication at all and says so, and `remote-login` fronts a local `--service` URL, so a daemon bound to a routable address would be open to the LAN with SSO protecting only the public hostname
+  - instruction: test that a routable bind address without the flag is a CliError with a hint
+- software presence, not a body: the base promises voice, memory, a switch and a dashboard on one rig with one speaker model; it does not promise low latency before it is measured, multi-user or multi-rig operation, phone voice, vision, actions, a face, or any claim that Gwen's value is proven
+  - instruction: test that `embodiment explain` root text and the README contain the boundary statement
+- recalled memory is untrusted data: it enters the prompt quoted and attributed, never as instructions, and once tools exist no recalled text can name a tool call; the public pool is writable by every mesh agent on this host
+  - instruction: reuse `KNOWLEDGE_ATTRIBUTION` from `embodiment/senses_text.py`; test that a recalled record containing an imperative is rendered inside the attributed data block
+- one active ear at a time: the host microphone and a browser microphone never hold realtime sessions simultaneously; attaching one releases the other, visibly
+
+## Non-goals
+
+- the face is not part of the base: face-cli 0.7.1 is a scaffold with introspection verbs only (no renderer, no serve verb, no control channel, and expression explicitly undecided), so embodiment can only emit a presence-state stream a face could later consume, and the face work is a proposal to agentculture/face-cli, never a push
+- vision, control and actions are later stages and out of the base; the base is voice in, voice out, memory, the on/off switch and the dashboard
+
+## Assumptions
+
+- a clean slate breaks no consumer: no sibling repo declares or imports `embodiment`, though 0.14.0 is published on PyPI, so the rebuild should ship as a deliberate breaking version with the archive point named in the changelog
+- on this rig the speaker resolves through the `senses` role (Gemma 4 26B A4B, ready), `stt` and `tts` are local and ready with the realtime advert present, the `embedder` is not ready so recall is lexical-only today, and `cortex` is infeasible; CLAUDE.md's rig table predates all of this
+
+## Scope exploration
+
+- `s1` — `lobes-cli lobes/realtime/ + lobes/gateway/_realtime.py + scripts/realtime-*.py`: stable OpenAI-Realtime-shaped wire contract in `_wire.py`/`_session.py`; no packaged Python client exists, three unpackaged scripts hand-roll the WS framing; lobes.roles and lobes.gateway are not importable as a library
+  - seeds: `c2`
+- `s2` — `lobes-cli lobes/realtime/_wire.py, lobes/gateway/_realtime.py:18-26, lobes/roles.py`: WS surface carries audio and tool events only; `image_understanding` lives on senses and worker over chat completions; mesh forwarding is POST-only so the daemon must run against a gateway whose stt lane is local
+  - seeds: `c3`
+- `s3` — `lobes-cli site/ (Astro 7) + site/proxy/gateway-proxy.mjs + site/README.md`: the lobes page is a never-deployed local dev harness served by astro dev, not by the gateway; a Vite proxy injects the Bearer key; getUserMedia needs a secure context, so localhost or an ssh tunnel today
+  - seeds: `c4`
+- `s4` — `embodiment/cli/ + .github/workflows/tests.yml + docs/ (grep daemon, dashboard)`: CLI scaffold invites new noun groups and the rubric gate covers every verb; no daemon, pidfile, service or dashboard design exists anywhere in docs or issues, so the background-app half has no prior art in this repo
+  - seeds: `c5`
+- `s5` — `eidetic-cli eidetic/memory/{backend,traverse,lifecycle,embed}.py + docs/contract.md + embodiment/continuity.py`: files backend needs zero services; recall is synchronous and hybrid mode blocks up to `EIDETIC_EMBED_TIMEOUT`=10s on a slow embedder then degrades silently to lexical; store resolution is cwd/git dependent; lifecycle is shadow/archive of durable records only
+  - seeds: `c6`
+- `s6` — `face-cli README.md, CLAUDE.md:12-16 and 192-224, face_cli/cli/_commands/`: no gaze, expression, viseme or state surface exists; the open design questions include the control channel and whether expression is in scope at all
+  - seeds: `c7`
+- `s7` — `user brief + lobes-cli docs/contracts/realtime-tool-calling.md`: the realtime wire already carries tools/`tool_choice` and `function_call` events, so actions have a landing place later without changing the base transport
+  - seeds: `c8`
+- `s8` — `/home/spark/git/*/pyproject.toml + import grep, embodiment pyproject.toml, CHANGELOG.md`: zero dependants or importers on this machine; colleague cannot import embodiment until C1b; version 0.14.0 is the published head
+  - seeds: `c9`
+- `s9` — `git tag, tests/test_zero_deps.py, tests/test_governance.py, tests/test_package_surface.py, gh issue list`: 37.7k package + 54.6k examples + 90k tests LOC; zero tags; zero-deps, governance, package-surface, announcement and AST tests fail loudly on removal by design; 60 open issues, about 45 in strategist, muse, league, devague-legs and timeout clusters
+  - seeds: `c10`
+- `s10` — `embodiment CLAUDE.md C1 (superseded by d2) + lobes-cli pyproject.toml`: lobes base deps are empty and its realtime extra pulls torch, fastapi and silero for the container only; embodiment's dependency pin fails on any delta in either direction
+  - seeds: `c11`
+- `s11` — `workspace-wide grep for agent.culture.dev + embodiment/events.py`: no file in any sibling repo names agent.culture.dev; embodiment's only event sink today is events-cli over MQTT (paho-mqtt, lazy import), which a browser cannot reach without a WebSocket bridge and authentication in front of it
+  - seeds: `c13`
+- `s12` — `climate-cli climate/weather/web/ + docs/adr/0001-culture-design-source.md, org site-astro/src/styles/global.css`: climate serves a static index.html + tokens.css + ES-module dashboard (3469 lines of CSS and JS, no node build) from a thin stdlib http.server layer; tokens.css is a byte-for-byte copy of org's global.css at pinned commit b4d939b, verified by scripts/check-culture-design.py; org itself is an Astro site whose components are not reusable outside Astro
+  - seeds: `c21`
+- `s13` — `cultureflare remote-login setup --help + lobes-cli README.md:151-165 + climate-cli README.md:260-275`: remote-login setup creates tunnel, ingress, DNS and an Access app with --allow / --allow-domain and a 24h session, dry-run unless --apply, secrets sealable into shushu; lobes uses it with --no-access because its gateway has bearer auth; climate's README warns its web service has no authentication of any kind
+  - seeds: `c22`
+- `s14` — `culture-nodes web/package.json, web/src/, webassets_embed.go, web/src/styles/app.css`: React 18 + Vite + TypeScript SPA with Vitest and Playwright; 25 EventSource uses and no WebSocket for live updates; web/src/culture-design/ holds tokens.css and palette.ts pinned to org; web/dist is not committed and is embedded into the binary at build time behind a build tag
+  - seeds: `c21`
+- `s15` — `challenge pass / security + data-loss lens: embodiment/continuity.py:268, .eidetic/memory/ in git`: `DEFAULT_VISIBILITY` is public and .eidetic/memory/`embodiment__public.json`l is tracked and not ignored; a daemon reusing continuity.remember from a repo cwd would commit room conversation to a shared git store; recall also rewrites that file (eidetic#24/#32)
+  - seeds: `c33`
+- `s16` — `challenge pass / security lens: cultureflare remote-login --service, climate-cli web/api.py, culture-nodes internal/`: remote-login routes the public hostname to a local --service URL, so the daemon sees every remote request as loopback; neither climate-cli nor culture-nodes has an Origin, CSRF or rebinding guard to copy, so this guard is new work rather than a cited pattern
+  - seeds: `c34`
+- `s17` — `challenge pass / security lens: eidetic scope contract (public pool shared per OS user), embodiment/senses_text.py`: a private-scope recall still returns every public record, which any agent on the box can write; harmless while Gwen only talks, an injection path the day she holds a tool
+  - seeds: `c35`
+- `s18` — `challenge pass / overlooked-actors lens: other people in the room, CLAUDE.md realtime discipline (opt-in mic)`: the repo's standing rule was that the mic is never hot by default; a background daemon inverts that, and the people it hears are not the operator who started it
+  - seeds: `c36`
+- `s19` — `challenge pass / adjacent-systems lens: live GET localhost:8001/capabilities, 2026-09-21`: senses=nvidia/Gemma-4-26B-A4B-NVFP4 feasible+ready (vision not advertised); stt=ivrit-ai/whisper-large-v3-turbo feasible+ready with `realtime_vad_session`; tts=notmax123/BlueTTS2.5-onnx ready; embedder infeasible and not ready; cortex=unsloth/Qwen3.8-27B-NVFP4 infeasible; worker ready but infeasible with vision advertised
+  - seeds: `c37`
+- `s20` — `challenge pass / observability lens: eidetic embed.py fallback + the embedder row of the live probe`: `embed_detect` swallows any exception and returns lexical vectors; with the embedder down a daemon would report healthy memory while recalling by keyword only
+  - seeds: `c38`
+- `s21` — `challenge pass / failure-modes lens: lobes realtime/_session.py:846, _conversation.py, _floor.py`: `aec_mode` is validated, stored and logged but read by no floor, segmenter or conversation code; barge-in exists only inside the server-run turn the spec declined; hardware echo cancellation is accepted on the operator's word and is unmeasured in this record
+  - seeds: `c39`
+- `s22` — `challenge pass / concurrency lens: lobes realtime/_settings.py:233 (TTS_VOICE_CONCURRENCY)`: lobes states concurrent /v1/realtime sessions are not yet validated and defaults its voice lane to 1; segmenter and floor hold no shared state, so the hazard is capacity and unvalidated behaviour rather than corruption
+  - seeds: `c40`
+- `s23` — `challenge pass / adjacent-systems + migration lens: gh colleague#358, .github/workflows/tests.yml:67, .claude/skills/drone, docs/skill-sources.md`: colleague#358 is OPEN and asks colleague to import the loop this work archives; bandit scans a directory the archive deletes; the drone skill wraps verbs that leave; none of these is inside the package tree, so a tree-only archive would strand them
+  - seeds: `c41`
+- `s24` — `challenge pass / reversibility lens: PyPI + git`: clean on git (a tag restores anything); not clean on PyPI, where 0.14.0 stays installable forever and a release cannot be withdrawn, so the breaking version and its changelog are the only notice a stray consumer gets
+- `s25` — `challenge pass / observability + recovery lens: spec claims c5, c24`: the spec gives a background process no place to leave evidence; a crashed daemon would be indistinguishable from a stopped one, which is the silent degradation C3 forbids
+  - seeds: `c42`
+- `s26` — `challenge pass / operations lens: pyproject.toml [tool.hatch.build.targets.wheel], .github/workflows/publish.yml`: hatch packages only embodiment/, and culture-nodes keeps web/dist out of git; the built assets must land inside the package directory and be declared as build artifacts or the wheel ships without a dashboard. Plan-side risk, to be filed with devague plan risk
+- `s27` — `challenge pass / cheap-probe lens: surfaces NOT examined`: not examined: Cloudflare buffering of long-lived SSE through the tunnel, host audio device selection and sample-rate conversion on this box, the CI cost of a React build, BlueTTS latency per sentence, and whether an MQTT broker is already running here for events-cli; each is a residual surprise risk for the plan
+- `s28` — `challenge pass / adjacent-systems lens: reachy-mini-cli README.md:55,180-191,242-250, tests/test_realtime_client.py, cultureflare remote-login --with-service-token`: reachy-mini-cli already streams the robot mic to a lobes-shaped /v1/realtime session addressed by `REACHY_REALTIME_URL`, with a tested client; its 'agent embody' verb names itself the embodiment layer, a C2 name collision to state in both READMEs; cultureflare can mint an Access service token, which is how a headless robot passes c34's public-hostname guard
+  - seeds: `c50`
+
+## Decisions
+
+- the daemon runs the turn: the lobes realtime socket is ears-only, and memory injection, generation and speech are the daemon's own calls
+- browser-off voice uses a microphone and speaker on the daemon's host; the mic has proven hardware echo cancellation, so the session declares `aec_mode=aec`
+- remote access through agent.culture.dev carries control and conversation text as events in the base version, not voice
+- the archive keeps a small core (CLI scaffold, CI, skills, identity/framing, perception, presence policy, `events.py`, the eidetic half of `continuity.py`, and `loop.py` with its termination tests) and sends the rest to git history
+- remote access is the daemon's own dashboard published at agent.culture.dev through `cultureflare remote-login`, with Cloudflare Access SSO in the browser as the only authentication; the daemon implements no login
+- the teammate is Gwen: the speaker is Gemma 4 26B A4B, and a later stage gives her a tool that operates Qwen Code through the worker role (Qwen 3.6 35B MoE); `coherence-cli` (for measurements) and `events-cli` stay as dependencies
+- the visual direction is a reactive face that moves according to the spoken words; it does not have to be in v1, and the waveform is what v1 ships in its place
+- `embodiment start` brings Gwen up with the microphone hot; mic state is always visible and mute works from the CLI, the dashboard and the phone
+- retention: raw audio is never written to disk; each session keeps a private, size-bounded transcript log; remembered records persist in the private eidetic store
+- Gwen listens and speaks Hebrew in v1, matching the rig's deployed audio lane
+- v1 remembering is an explicit spoken ask plus one attributed end-of-session summary written from the kept transcript; no per-turn salience judgement
+- `loop.py` stays in the small core: the voice turn is built on the bounded tool loop with an empty tool registry and its AST termination tests, superseding the clause of c17 that archived it
+- MQTT (through `events-cli`) is the internal events substrate: the daemon's parts publish to it and the dashboard's server-sent event stream is a projection of it for browsers, which never touch MQTT themselves
+- the browser is one way to talk with Gwen, not the only one: a later stage lets a wireless Reachy Mini connect with a secret and become a relay to her, its microphone and speaker serving as her ears and voice in another room
+
+## Open parks
+
+- [unknown_nonblocking] Voice latency: the cortex measured about 9.3 s per answer on this rig (memory embodiment-muse-faster-than-cortex), against 2.6 s for Gemma; which role generates in a realtime turn is unmeasured for the new design
+- [unknown_nonblocking] the rig table in CLAUDE.md names Gemma 4 12B as senses and lists no 26B A4B; whether the speaker resolves through the existing senses role or a new lobes role name is a lobes-side fact to check before the first dial
+- [unknown_nonblocking] supervision is unspecified: nothing restarts the daemon after a crash or a reboot, and nothing runs cloudflared for the tunnel (lobes has a `lobes tunnel` verb for the same job); a systemd user unit is the likely answer but is not needed to prove the base
+- [follow_up] Remote dashboard access needs a secure context for getUserMedia (TLS or an ssh tunnel); lobes solved it with localhost plus ssh -L only
+- [follow_up] vision later cannot use the speaker as deployed: the live senses role does not advertise `image_understanding`, while worker does
+- [follow_up] propose to agentculture/reachy-mini-cli, through the communicate skill and only with the operator's go-ahead, that its realtime client accept a Gwen URL plus secret; and settle with them how 'agent embody' and this package share the word embodiment

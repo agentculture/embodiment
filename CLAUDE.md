@@ -633,7 +633,7 @@ embodiment/
   drone.py              the drone artifact: manifest schema, smoke-before-save,
                         invoke (returns a record, never raises), the catalog
 tests/                  CLI smoke + introspection tests
-.claude/skills/         19 skills — 18 vendored (cite-don't-import) + `drone`,
+.claude/skills/         20 skills — 19 vendored (cite-don't-import) + `drone`,
                         first-party to this repo and never re-synced
 docs/skill-sources.md   provenance ledger + re-sync procedure
 ```
@@ -706,9 +706,10 @@ a generic folder accumulates orphaned trees from several repos with nothing
 indicating ownership — a stale-tree sweep can't tell a live lane from junk.
 Scope the branch prefix to the work (`extract/t2`, not `agent/t2`); plain
 `agent/*` collides with leftovers from earlier fan-outs and `git worktree add
--b` fails on an existing branch. The vendored `assign-to-workforce` skill's
-fan-out example uses *both* the shared path and `agent/<task-id>` — it is cited
-verbatim and must not be edited, so override both when following it. Tear down
+-b` fails on an existing branch. The vendored `assign-to-workforce` skill now
+mandates this same `.worktrees.<repo-name>` root (re-synced 2026-09-21), but its
+fan-out example still uses `agent/<task-id>` — it is cited verbatim and must not
+be edited, so override the branch prefix when following it. Tear down
 with `git worktree remove <path>` (`prune` only clears metadata for directories
 that are already gone). Tool-managed throwaways are out of scope:
 `ask-colleague`'s read-only verbs create a detached worktree under
