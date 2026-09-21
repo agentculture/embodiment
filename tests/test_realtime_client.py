@@ -881,3 +881,170 @@ class TestTheDropCountIsExact:
             sent = 4 * per_thread
             queued = ears.queued_bytes // 1600
             assert ears.dropped_frames + queued == sent
+
+
+# ── the liveness clock ───────────────────────────────────────────────────────
+
+
+def _server_text_frame(text: str) -> bytes:
+    """One unmasked server→client text frame (RFC 6455 §5.2)."""
+    payload = text.encode("utf-8")
+    header = bytearray([0x81])  # FIN + opcode 0x1 (text)
+    size = len(payload)
+    if size < 126:
+        header.append(size)
+    elif size < 65536:
+        header.append(126)
+        header += size.to_bytes(2, "big")
+    else:
+        header.append(127)
+        header += size.to_bytes(8, "big")
+    return bytes(header) + payload
+
+
+class DeafServer:
+    """A hand-rolled WebSocket peer that completes the handshake and then dies.
+
+    It answers the HTTP upgrade itself, sends one real event, and from then on
+    reads nothing and answers nothing — **including pings**. That is the failure
+    a `websockets` server cannot reproduce (its protocol layer always pongs) and
+    the one a voice app actually meets: a pulled cable, an expired NAT entry, a
+    gateway SIGKILLed on another host. No FIN is ever sent, so only a keep-alive
+    clock can notice.
+    """
+
+    GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+
+    def __init__(self, first_event: str) -> None:
+        self.first_event = first_event
+        self._server: Any = None
+        self._handlers: set[Any] = set()
+
+    async def __aenter__(self) -> "DeafServer":
+        self._server = await asyncio.start_server(self._handle, "127.0.0.1", 0)
+        self.port = self._server.sockets[0].getsockname()[1]
+        return self
+
+    async def __aexit__(self, *exc: object) -> None:
+        # The handlers park forever on purpose, so they are CANCELLED rather
+        # than awaited: `wait_closed()` alone waits for every connection
+        # handler to finish and would hang the test for as long as the server
+        # is deaf, which is the whole point of it.
+        self._server.close()
+        for task in list(self._handlers):
+            task.cancel()
+        for task in list(self._handlers):
+            with contextlib.suppress(asyncio.CancelledError, Exception):
+                await task
+        with contextlib.suppress(Exception):
+            await asyncio.wait_for(self._server.wait_closed(), timeout=5)
+
+    def origin(self) -> str:
+        return f"http://127.0.0.1:{self.port}"
+
+    async def _handle(self, reader: Any, writer: Any) -> None:
+        import base64 as _b64
+        import hashlib
+
+        self._handlers.add(asyncio.current_task())
+        head = await reader.readuntil(b"\r\n\r\n")
+        key = ""
+        for line in head.decode("latin-1").split("\r\n"):
+            if line.lower().startswith("sec-websocket-key:"):
+                key = line.split(":", 1)[1].strip()
+        accept = _b64.b64encode(
+            hashlib.sha1((key + self.GUID).encode()).digest()
+        ).decode()  # nosec B324 - RFC 6455 requires SHA-1 here; not a security hash
+        writer.write(
+            b"HTTP/1.1 101 Switching Protocols\r\n"
+            b"Upgrade: websocket\r\nConnection: Upgrade\r\n"
+            + f"Sec-WebSocket-Accept: {accept}\r\n\r\n".encode()
+        )
+        writer.write(_server_text_frame(self.first_event))
+        await writer.drain()
+        # And now: nothing. No reads, no pongs, no close. Forever.
+        await asyncio.sleep(60)
+
+
+class TestTheLivenessClockIsOwned:
+    def test_a_vanished_peer_is_noticed_inside_the_configured_bound(self) -> None:
+        with Rig(caps_body=capabilities()) as rig:
+
+            async def go() -> tuple[float, rtc.RealtimeEars]:
+                async with DeafServer(FIXTURE("session_created.json")) as deaf:
+                    ears = rtc.RealtimeEars(
+                        rig.config(
+                            realtime_url=deaf.origin(),
+                            ping_interval=0.2,
+                            ping_timeout=0.2,
+                            close_handshake_timeout=0.2,
+                        )
+                    )
+                    assert await ears.connect() is True
+                    started = asyncio.get_running_loop().time()
+                    seen = [event async for event in ears.events()]
+                    elapsed = asyncio.get_running_loop().time() - started
+                    assert isinstance(seen[0], wire.SessionCreated)
+                    await ears.close(deadline=1.0)
+                    return elapsed, ears
+
+            elapsed, ears = run(go())
+
+        # The stream ENDED rather than raising, and said why, exactly once.
+        assert codes(ears) == [rtc.SESSION_DROPPED]
+        assert ears.connected is False
+        # It was THIS session's configured bound that fired, not the module
+        # default, and certainly not the transport's inherited 20+20+10.
+        assert elapsed < rtc.RealtimeConfig().liveness_bound
+        assert elapsed < 3.0
+        # And it fired no EARLIER than the bound allows: a detection that beat
+        # its own clock would mean something else closed the socket.
+        assert elapsed >= 0.2
+
+    def test_the_default_bound_is_a_spoken_turn_not_the_transport_default(self) -> None:
+        cfg = rtc.RealtimeConfig()
+        assert (cfg.ping_interval, cfg.ping_timeout, cfg.close_handshake_timeout) == (
+            2.0,
+            4.0,
+            2.0,
+        )
+        assert cfg.liveness_bound == 8.0
+        # The transport's own defaults sum to 20 + 20 + 10; anything near that
+        # would mean this client inherited a clock instead of choosing one.
+        assert cfg.liveness_bound <= 10.0
+
+    def test_the_bound_sums_all_three_terms(self) -> None:
+        cfg = rtc.RealtimeConfig(ping_interval=1.5, ping_timeout=2.5, close_handshake_timeout=0.5)
+        assert cfg.liveness_bound == 4.5
+
+    def test_the_close_handshake_term_is_not_forgotten(self) -> None:
+        """The term that is easy to miss, pinned so it cannot be dropped."""
+        two_terms = rtc.RealtimeConfig(ping_interval=1.0, ping_timeout=1.0)
+        assert two_terms.liveness_bound > 2.0
+
+    def test_status_publishes_the_bound_and_the_ages(self) -> None:
+        with Rig(caps_body=capabilities()) as rig:
+
+            async def go() -> dict[str, Any]:
+                async with rig.websocket():
+                    ears = rtc.RealtimeEars(rig.config(realtime_url=rig.ws_origin()))
+                    await ears.connect()
+                    await anext(aiter(ears.events()))
+                    snapshot = ears.status()
+                    await ears.close()
+                    return snapshot
+
+            snapshot = run(go())
+        assert snapshot["liveness_bound_s"] == 8.0
+        assert snapshot["ping_interval_s"] == 2.0
+        assert snapshot["ping_timeout_s"] == 4.0
+        assert snapshot["close_handshake_timeout_s"] == 2.0
+        assert 0.0 <= snapshot["last_event_age_s"] < 5.0
+        assert json.dumps(snapshot)  # still JSON-safe
+
+    def test_the_ages_are_absent_not_zero_before_a_session(self) -> None:
+        ears = rtc.RealtimeEars()
+        assert ears.last_event_age is None
+        assert ears.latency is None
+        assert ears.status()["last_event_age_s"] is None
+        assert ears.status()["latency_s"] is None

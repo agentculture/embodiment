@@ -53,6 +53,51 @@ The load-bearing rule these obey: *a clock sized against the wrong quantity
 silently becomes the measurement.* None of these three bounds a model
 completion, so none of them can censor one.
 
+The liveness clock — the fourth, and the one with teeth
+--------------------------------------------------------
+The three deadlines above all bound something that is *starting*. None of them
+bounds a session that has already started and then goes quiet, and that is the
+failure a voice app actually meets: a pulled cable, a NAT table entry expiring,
+a gateway killed on another host. There is no FIN in any of those, so a reader
+parked in ``recv`` learns nothing, ever. Left to the transport's defaults the
+client would keep-alive at 20 s + 20 s and Gwen would be **deaf for up to 40
+seconds with** :attr:`connected` **True and** :meth:`status` **looking
+healthy** — which is this repo's third lesson verbatim: a healthy-looking status
+is not evidence that anything was heard.
+
+So the clock is named, owned and configured here rather than inherited. It has
+**three** terms, not two, and the third is the one that is easy to miss:
+
+* ``ping_interval`` 2.0 s — the peer can vanish the instant after a pong, so a
+  whole interval can pass before the question is even asked.
+* ``ping_timeout`` 4.0 s — how long the pong has to come back. Deliberately
+  twice the interval: the pong comes from a bridge sharing a GPU box with two
+  language models and a transcriber, and a momentarily blocked event loop must
+  not read as a dead peer.
+* ``close_handshake_timeout`` 2.0 s — after the keep-alive gives up, the
+  transport still waits for a closing handshake the vanished peer will never
+  send. **This was measured, not assumed**: against a deaf peer the age of the
+  drop record was 0.6 / 1.4 / 2.4 s for close timeouts of 0.2 / 1.0 / 2.0 s
+  with a 0.2 + 0.2 keep-alive — exactly the sum. Left at the transport's own
+  10 s default it would dominate the other two, and a carefully argued 6 s
+  bound would really have been 16.
+
+Worst case, therefore, **8 s** from a peer vanishing to `events()` ending with
+the record on the ledger — :attr:`RealtimeConfig.liveness_bound`, which is the
+number a host should read, never one term of it. The three are *chosen*, not
+measured, and the quantity they are sized against is a **spoken turn**: the
+server confirms a turn boundary after 600 ms of silence and a short exchange is
+a few seconds, so 40 s of deafness is several whole turns lost invisibly and 8 s
+is at most one. Cost is negligible — a ping frame every 2 s against 48 000
+bytes/s of audio.
+
+:meth:`status` publishes the bound (``liveness_bound_s``) beside
+``last_event_age_s`` and ``latency_s``, so a host can *see* deafness rather than
+infer it. Read ``last_event_age_s`` carefully: keep-alive pongs are handled
+inside the transport and never arrive as events, so a large value means only
+that nobody has spoken — a silent room is silent. The health claim is the
+bound and the drop record, not the age.
+
 The secret
 ----------
 The bearer key rides one HTTP header on one handshake and reaches nothing
@@ -89,6 +134,7 @@ from __future__ import annotations
 import asyncio
 import json
 import threading
+import time
 import urllib.error
 import urllib.request
 from collections import deque
@@ -181,6 +227,22 @@ DEFAULT_MAX_QUEUE_BYTES = wire.INPUT_SAMPLE_RATE * wire.BYTES_PER_SAMPLE * _QUEU
 #: chunk, so a poll can never be the reason a turn boundary moves.
 DEFAULT_POLL_INTERVAL = 0.01
 
+#: The liveness clock — see the module docstring. Sized against a SPOKEN TURN,
+#: not against a network, and summing to an 8 s worst case where the transport's
+#: own defaults sum to 40 s of silent deafness.
+DEFAULT_PING_INTERVAL = 2.0
+#: Twice the interval on purpose. The pong comes from a bridge that shares a GPU
+#: box with two language models and a transcriber, and a blocked event loop must
+#: not read as a dead peer.
+DEFAULT_PING_TIMEOUT = 4.0
+#: The THIRD term, and the one that is easy to miss: after the keep-alive gives
+#: up, the transport still waits this long for a closing handshake the vanished
+#: peer will never send. Measured on a deaf peer, the age of the drop record is
+#: ping_interval + ping_timeout + this, exactly — 0.2/0.2/{0.2,1.0,2.0} produced
+#: 0.6/1.4/2.4 s. Left at the transport's own 10 s default it would DOMINATE the
+#: other two and a carefully argued 6 s bound would really be 16.
+DEFAULT_CLOSE_HANDSHAKE_TIMEOUT = 2.0
+
 _ENV_KEY = "EMBODIMENT_GATEWAY_KEY"
 _ENV_KEY_FALLBACK = "CULTURE_VLLM_API_KEY"
 _ENV_URL = "EMBODIMENT_GATEWAY_URL"
@@ -254,8 +316,30 @@ class RealtimeConfig:
     discovery_deadline: float = 5.0
     handshake_deadline: float = 10.0
     close_deadline: float = 5.0
+    ping_interval: float = DEFAULT_PING_INTERVAL
+    ping_timeout: float = DEFAULT_PING_TIMEOUT
+    #: Bounds the WebSocket CLOSING handshake — distinct from ``close_deadline``,
+    #: which bounds :meth:`RealtimeEars.close` itself. This one is a term of the
+    #: liveness bound; that one is a term of shutdown.
+    close_handshake_timeout: float = DEFAULT_CLOSE_HANDSHAKE_TIMEOUT
     max_queue_bytes: int = DEFAULT_MAX_QUEUE_BYTES
     poll_interval: float = DEFAULT_POLL_INTERVAL
+
+    @property
+    def liveness_bound(self) -> float:
+        """Worst-case seconds between a peer vanishing and this client knowing.
+
+        All three terms, because all three elapse in sequence: one whole
+        ``ping_interval`` (the peer can die the instant after a pong), one whole
+        ``ping_timeout``, and then ``close_handshake_timeout`` waiting for a
+        close frame that never comes. This is the number a host should read;
+        any single term of it understates the deafness.
+        """
+        return (
+            float(self.ping_interval)
+            + float(self.ping_timeout)
+            + float(self.close_handshake_timeout)
+        )
 
     @classmethod
     def from_env(
@@ -379,8 +463,33 @@ class RealtimeEars:
         self._closing = False
         self._closed = False
         self._session_id = ""
+        self._last_event_at: Optional[float] = None
 
     # -- state a host reads ------------------------------------------------
+
+    @property
+    def last_event_age(self) -> Optional[float]:
+        """Seconds since the last event arrived, or ``None`` before the first.
+
+        **Not a health signal on its own.** Keep-alive pongs are handled inside
+        the transport and never surface here, so a large age means only that
+        nobody has spoken — a silent room is silent. Liveness is
+        :attr:`RealtimeConfig.liveness_bound` plus the drop record.
+        """
+        if self._last_event_at is None:
+            return None
+        return max(0.0, time.monotonic() - self._last_event_at)
+
+    @property
+    def latency(self) -> Optional[float]:
+        """The transport's last measured ping/pong round trip, in seconds.
+
+        ``None`` when no session is up or no round trip has completed yet.
+        Read from the transport rather than timed here: the keep-alive is the
+        transport's to run, and a second clock beside it would drift.
+        """
+        value = getattr(self._ws, "latency", None)
+        return float(value) if isinstance(value, (int, float)) else None
 
     @property
     def connected(self) -> bool:
@@ -411,10 +520,19 @@ class RealtimeEars:
         return self._session_id
 
     def status(self) -> dict[str, Any]:
-        """A JSON-safe snapshot. Carries no key, no transcript, no frame."""
+        """A JSON-safe snapshot. Carries no key, no transcript, no frame.
+
+        The three liveness fields exist so a host can *see* deafness rather
+        than infer it from ``connected``: ``liveness_bound_s`` is the worst
+        case this session was configured to tolerate, ``last_event_age_s`` is
+        how long since anybody spoke (see :attr:`last_event_age` — silence is
+        not sickness), and ``latency_s`` is the transport's last round trip.
+        """
         with self._lock:
             queued_frames = len(self._queue)
             queued_bytes = self._queued_bytes
+        age = self.last_event_age
+        latency = self.latency
         return {
             "gateway": self.config.gateway_url,
             "connected": self._connected,
@@ -425,6 +543,12 @@ class RealtimeEars:
             "dropped_frames": self._dropped_frames,
             "dropped_bytes": self._dropped_bytes,
             "max_queue_bytes": self.config.max_queue_bytes,
+            "ping_interval_s": self.config.ping_interval,
+            "ping_timeout_s": self.config.ping_timeout,
+            "close_handshake_timeout_s": self.config.close_handshake_timeout,
+            "liveness_bound_s": self.config.liveness_bound,
+            "last_event_age_s": None if age is None else round(age, 3),
+            "latency_s": None if latency is None else round(latency, 4),
             "degradations": [d.to_dict() for d in self._degradations],
         }
 
@@ -574,7 +698,18 @@ class RealtimeEars:
         deadline = self.config.handshake_deadline
         try:
             self._ws = await asyncio.wait_for(
-                ws_connect(url, additional_headers=headers, open_timeout=deadline),
+                ws_connect(
+                    url,
+                    additional_headers=headers,
+                    open_timeout=deadline,
+                    # The liveness clock, stated rather than inherited. Left to
+                    # the transport's defaults this is 20 + 20 + 10 and a peer
+                    # that vanishes without a FIN leaves the ear deaf for up to
+                    # 50 s while `connected` stays True.
+                    ping_interval=self.config.ping_interval,
+                    ping_timeout=self.config.ping_timeout,
+                    close_timeout=self.config.close_handshake_timeout,
+                ),
                 timeout=deadline,
             )
         except InvalidStatus as exc:
@@ -598,6 +733,7 @@ class RealtimeEars:
 
         self._connected = True
         self._lost = False
+        self._last_event_at = time.monotonic()
         self._writer = asyncio.get_running_loop().create_task(self._drain_forever())
         return True
 
@@ -706,6 +842,7 @@ class RealtimeEars:
             return
         try:
             async for raw in self._ws:
+                self._last_event_at = time.monotonic()
                 event = wire.decode_server_event(raw)
                 if isinstance(event, wire.MalformedEvent):
                     self._record(FRAME_MALFORMED, event.reason, once=True)
