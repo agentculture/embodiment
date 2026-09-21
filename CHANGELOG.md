@@ -5,6 +5,62 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.15.0] - 2026-09-21
+
+**Breaking.** The experiments are archived in git history and the package
+shrinks to a small core. The tag `archive/pre-realtime-0.14.0` is the last tree
+that contains what this release removes. No daemon code is in this release —
+the archive and the first daemon PR are deliberately separate, so the repo is
+never in a state where the old package is gone and nothing runs.
+
+### Removed
+
+- The strategist tier (`scope.py`, `scoped_run.py`, `strategist_runner.py`,
+  `scope_events.py`), the configuration lane (`config_*.py`, `capability.py`,
+  `knowledge.py`), the muse (`muse.py`, `muse_runner.py`, `muse_pad.py`,
+  `workspace.py`, `recall_bundle.py`), drones (`drone.py`, the `drone` CLI noun
+  group and the first-party `drone` skill), and `ledger.py`, `lifecycle.py`,
+  `scratchpad.py`. With them: all of `examples/`, `docs/live-test-results/`
+  (except the senses-grounding evidence, below) and the tests that exercised
+  them — `test_governance.py`, the announcement checklist, and the muse and
+  scope AST guards among them, none of which has anything left to guard.
+- `framing.muse_system_message`, `Framing.muse_system` and the `MUSE_AUTHORITY`
+  re-export — `framing.py`'s one dependency on the archived muse module.
+  `frame_muse` and `ROLE_MUSE` are pure text and stay.
+- The `headspace-cli` dependency, and with it the docker SDK, removed together
+  with its only consumer. `pyproject.toml` and the approved set in
+  `tests/test_zero_deps.py` change in the same diff.
+- `docs/announcement-checklist.md`, `docs/challenge-problems.md`,
+  `docs/relationships.md`, `docs/session-contract-2026-08-01.md`,
+  `docs/sonar-dispositions.md` — each described only archived work.
+
+### Kept
+
+- The import closure of the core: `loop.py` (byte-identical, with its AST
+  termination tests) and what it needs — `context.py`, `contract.py`,
+  `media.py`, `subagent.py`; `perception.py`; `presence_engine.py` and
+  `presence.py`; `identity.py`, `framing.py`, `senses_text.py`;
+  `continuity.py`; `events.py`; the CLI scaffold. 1271 tests, 97% coverage.
+- `docs/live-test-results/senses-grounding.md` and its probe: the measured
+  evidence `tests/test_senses_text.py` pins `SENSES_GROUNDING` against.
+- The earlier specs, plans, delivery records and `.devague/` state, as history.
+
+### Changed
+
+- `README.md`, `CLAUDE.md` and the `explain` root entry rewritten to describe
+  only what exists, to state plainly that the realtime app is planned and not
+  built, and to quote the archived tiers' own published verdicts as the reason
+  for the archive. `CLAUDE.md`'s rig table now records what the gateway
+  reported on 2026-09-21 (`senses` is Gemma 4 26B A4B; the audio lane is
+  Hebrew; the embedder is not ready).
+- CI no longer names `examples/` in black, isort, flake8 or bandit.
+
+### Added
+
+- `docs/archive/2026-09-21-external-pointers.md` — **drafts, none posted**: a
+  comment for colleague#358 and a proposed disposition for the 65 open issues
+  (keep 11, look at 4, close 50 as moot).
+
 ## [0.14.1] - 2026-09-21
 
 No package code changes. This release records a change of direction and
