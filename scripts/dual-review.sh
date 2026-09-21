@@ -31,7 +31,7 @@ main() {
   timeout_s=${DUAL_REVIEW_TIMEOUT:-1200}
   max_patch_lines=${DUAL_REVIEW_MAX_PATCH_LINES:-4000}
 
-  for bin in qwen pi; do
+  for bin in ${DUAL_REVIEW_REVIEWERS:-qwen}; do
     command -v "$bin" >/dev/null || { echo "error: reviewer '$bin' is not on PATH" >&2; echo "hint: install it, or fix PATH, before reviewing" >&2; exit 2; }
   done
 
@@ -130,7 +130,11 @@ PROMPT
 
   # DUAL_REVIEW_REVIEWERS="pi" re-runs one reviewer alone (e.g. after it came back
   # empty) without repeating the other's half; the default is both, in parallel.
-  local reviewers=${DUAL_REVIEW_REVIEWERS:-"qwen pi"}
+  # Default is Qwen Code alone: the operator paused pi reviews on 2026-09-22 after the
+  # associate model repeatedly spent its whole output budget reasoning about large
+  # diffs and never wrote an answer. Pass DUAL_REVIEW_REVIEWERS="qwen pi" to bring it
+  # back; the JSON extraction, retry and brevity steer all still apply to it.
+  local reviewers=${DUAL_REVIEW_REVIEWERS:-"qwen"}
   start=$(date +%s)
   for r in $reviewers; do "run_$r" & done
   wait
