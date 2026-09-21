@@ -42,19 +42,24 @@ from typing import TYPE_CHECKING, Any
 #: Submodules reachable as ``from embodiment import <name>``.
 _SUBMODULES = frozenset(
     {
+        "audio",
         "context",
         "continuity",
         "contract",
+        "daemon",
         "events",
         "framing",
         "identity",
         "loop",
         "media",
+        "memory",
         "perception",
         "presence",
         "presence_engine",
         "senses_text",
         "subagent",
+        "tools",
+        "turn",
     }
 )
 
@@ -317,19 +322,24 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
     # type-checking against the archived lane should be able to see it. What
     # they are absent from is `__all__`, not the package.
     from embodiment import (  # noqa: F401
+        audio,
         context,
         continuity,
         contract,
+        daemon,
         events,
         framing,
         identity,
         loop,
         media,
+        memory,
         perception,
         presence,
         presence_engine,
         senses_text,
         subagent,
+        tools,
+        turn,
     )
     from embodiment.contract import (  # noqa: F401
         ERROR,

@@ -256,6 +256,13 @@ embodiment/
   senses_text.py        SENSES_GROUNDING + KNOWLEDGE_ATTRIBUTION (measured text)
   continuity.py         the eidetic/coherence seam, in-process
   events.py             optional observer onto events-cli (MQTT)
+  turn.py               ONE spoken turn, driven through loop.run; never silent, never raises
+  tools.py              ToolRegistry (empty by default) + bind_tools; the additive tool seam
+  memory.py             RoomMemory over continuity: private, pinned, deadline-bounded;
+                        render_recalled is the ONE place recall enters a prompt
+  audio/features.py     FeatureExtractor: streaming min/max envelope + level, no IO
+  daemon/state.py       state dir (0700), bounded log, crash-durable degradation ledger,
+                        per-session transcript logs (0600)
   cli/__init__.py       parser + dispatch; _CliArgumentParser routes argparse
                         errors through the structured format; _json_hint is
                         pre-set from raw argv so parse-time errors honour --json
@@ -263,16 +270,20 @@ embodiment/
   cli/_output.py        emit_result / emit_error / emit_diagnostic
   cli/_commands/        whoami, learn, explain, overview, doctor, cli
   explain/              catalog.py: markdown keyed by command-path tuples
-tests/                  1271 tests, 97% coverage
+tests/                  1660 tests
 .claude/skills/         19 skills, all vendored (cite-don't-import)
 docs/skill-sources.md   provenance ledger + re-sync procedure
 docs/live-test-results/ only senses-grounding{.md,-probe.py}: the measured
                         evidence tests/test_senses_text.py pins against
 ```
 
-Planned by the redesign and **not present yet**: `daemon/`, `realtime/`,
-`audio/`, `http/`, `turn.py`, `tools.py`, `memory.py`, `session.py`, `voice.py`,
-`bus.py`, and `web/`. Mark any of them here only when it is checked in.
+Planned by the redesign and **not present yet**: `daemon/lifecycle.py` and
+`daemon/app.py`, `realtime/`, `audio/endpoint.py`, `audio/host.py`,
+`audio/remote.py`, `http/`, `session.py`, `voice.py`, `bus.py`, and `web/`. Mark
+any of them here only when it is checked in. **Nothing above is wired together
+yet**: there is still no daemon, no verb that starts anything, and no live model
+has been dialled - `turn.py`'s truncation proxy and `is_speakable` are untested
+against the real rig and a real synthesiser until plan task `t21`.
 
 No verb drives the loop or starts anything: nothing under `cli/_commands/`
 reaches `embodiment.loop`. `framing.py` keeps `frame_muse` and `ROLE_MUSE` (pure

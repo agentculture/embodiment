@@ -1,0 +1,44 @@
+{
+  "plan_slug": "realtime-embodiment-app",
+  "schema_version": 2,
+  "created": "2026-09-21T20:45:09Z",
+  "updated": "2026-09-21T22:09:26Z",
+  "deviations": [
+    {
+      "id": "d1",
+      "what": "every task, every wave and the final PR are additionally reviewed, in parallel, by Qwen Code on the worker role and pi on the associate role, via scripts/dual-review.sh (read-only, throwaway worktree). The plan's merge gate was tests-before-and-after only. Review output is a second opinion: the main agent verifies each finding and records a disposition; a finding it confirms is fixed before merge.",
+      "task_ref": "t3",
+      "reason": "Operator instruction, 2026-09-21, after merging the archive PR: call Qwen code worker and pi associate (in parallel) to review each task, wave and final PR. Filed against t3 as the first Phase B task; it applies to t3 through t22.",
+      "affects": [],
+      "origin": "user",
+      "status": "approved",
+      "classification": null,
+      "seq": 1
+    },
+    {
+      "id": "d2",
+      "what": "dependency approval record for the realtime redesign: websockets>=15 (base; zero transitive dependencies), sounddevice>=0.5 behind the optional audio extra (cffi, pycparser, system PortAudio), and stdlib http.server for HTTP and SSE. lobes-cli is forbidden as a dependency in any form.",
+      "task_ref": "t3",
+      "reason": "Operator, 2026-09-21: 'dependencies approved'. Filed because pyproject.toml states every dependency has an approval record in the deviation ledger; this is the planned t3 gate being exercised, not a departure from the plan.",
+      "affects": [],
+      "origin": "user",
+      "status": "approved",
+      "classification": null,
+      "seq": 2
+    },
+    {
+      "id": "d3",
+      "what": "pi (associate) reviews are paused; Qwen Code on the worker role is the sole external reviewer of each task, each wave and the final PR until the operator says otherwise. This amends d1, which named both.",
+      "task_ref": "t3",
+      "reason": "Operator, 2026-09-22: 'skip pi reviews for now'. Context: across the wave-1 reviews pi returned no usable answer on five large diffs (empty output, 57-60 kB reasoning traces cut off before any answer, one sentence of filler) and no valid finding of its own; causes were diagnosed (pi -p prints only the final text part; the associate model exhausts its output budget reasoning; --thinking levels do not bind for it).",
+      "affects": [],
+      "origin": "user",
+      "status": "approved",
+      "classification": null,
+      "seq": 3
+    }
+  ],
+  "evidence": [],
+  "deltas": [],
+  "supersessions": []
+}
