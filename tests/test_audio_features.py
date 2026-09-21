@@ -522,8 +522,12 @@ def test_buffer_shorter_than_one_block_does_not_raise():
 
 
 def test_garbage_bytes_do_not_raise():
+    """Arbitrary bytes are still valid PCM: 2560 bytes is one full block and a tail."""
     frames = extract_features(bytes(range(256)) * 10)
-    assert isinstance(frames, list)
+    assert len(frames) == 1
+    mins, maxes = decode_envelope(frames[0])
+    assert len(mins) == len(maxes) == 16
+    assert all(lo <= hi for lo, hi in zip(mins, maxes))
 
 
 @pytest.mark.parametrize("bad", [None, 12345, "not bytes", [1, 2, 3]])
