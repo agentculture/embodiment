@@ -39,7 +39,9 @@ contained inside the test rather than landing in the operator's checkout.
 from __future__ import annotations
 
 import ast
+import os
 import random
+import stat
 import subprocess  # nosec B404 - fixed argv, no shell, builds a throwaway git repo
 import sys
 import threading
@@ -1627,8 +1629,10 @@ class TestTheContract:
             "dataclasses",
             "embodiment",
             "hashlib",
+            "os",
             "pathlib",
             "re",
+            "stat",
             "threading",
             "typing",
             "datetime",
@@ -1777,5 +1781,175 @@ class TestNoSpeechReachesAMemoryRecord:
         try:
             written = room.remember(MARKER, deadline=_PROMPT_SECONDS)
             assert_speech_present(MARKER, written)
+        finally:
+            room.close()
+
+
+class TestTheStoreIsPrivateOnDisk:
+    """Preamble lesson 7: 0600 files in 0700 directories, REGARDLESS of umask.
+
+    Measured before this was fixed, with the real files backend and umask 0002::
+
+        775  <data_dir>
+        664  <data_dir>/<scope>__private.jsonl
+
+    That file is what the user asked Gwen to remember, readable by every account
+    on the box. ``memory.py`` contained no ``chmod`` at all; it inherited
+    whatever the umask left, and a daemon does not get to choose its operator's
+    umask.
+
+    Every test here stats REAL files written by the REAL eidetic files backend.
+    A fake store would prove the test's own mkdir is 0700 and nothing else.
+    """
+
+    @staticmethod
+    def _modes(root: Path) -> dict[str, int]:
+        return {
+            str(path.relative_to(root)): stat.S_IMODE(path.stat().st_mode)
+            for path in sorted(root.rglob("*"))
+        }
+
+    @pytest.fixture(params=[0o000, 0o022, 0o002], ids=["umask000", "umask022", "umask002"])
+    def umask(self, request: pytest.FixtureRequest) -> Any:
+        previous = os.umask(request.param)
+        try:
+            yield request.param
+        finally:
+            os.umask(previous)
+
+    def test_the_data_dir_is_0700_whatever_the_umask(self, tmp_path: Path, umask: int) -> None:
+        room = mem.RoomMemory(tmp_path / "store", scope="probe")
+        try:
+            assert stat.S_IMODE((tmp_path / "store").stat().st_mode) == mem.PRIVATE_DIR_MODE
+        finally:
+            room.close()
+
+    def test_every_written_file_is_0600_whatever_the_umask(
+        self, tmp_path: Path, umask: int
+    ) -> None:
+        room = mem.RoomMemory(tmp_path / "store", scope="probe")
+        try:
+            assert room.remember("what the user asked Gwen to remember").ok
+            modes = self._modes(tmp_path / "store")
+            assert modes, "the real backend wrote nothing to stat"
+            assert all(mode == mem.PRIVATE_FILE_MODE for mode in modes.values()), modes
+        finally:
+            room.close()
+
+    def test_a_second_write_is_still_0600(self, tmp_path: Path, umask: int) -> None:
+        """The store REPLACES the file on every write; one chmod is not enough.
+
+        Measured: the inode changes on each ``remember``, because
+        data-refinery's files backend writes a temp sibling and ``os.replace``s
+        it. So a file pre-created 0600 does not stay 0600, and the tightening
+        has to run after every confirmed write rather than once at construction.
+        """
+        room = mem.RoomMemory(tmp_path / "store", scope="probe")
+        try:
+            assert room.remember("first").ok
+            assert room.remember("second").ok
+            modes = self._modes(tmp_path / "store")
+            assert all(mode == mem.PRIVATE_FILE_MODE for mode in modes.values()), modes
+        finally:
+            room.close()
+
+    def test_a_recall_leaves_the_store_private(self, tmp_path: Path, umask: int) -> None:
+        """Recall reinforces matched records, so recall writes too."""
+        room = mem.RoomMemory(tmp_path / "store", scope="probe")
+        try:
+            assert room.remember("the kettle is boiling").ok
+            assert room.recall("kettle", deadline=10.0).ok
+            modes = self._modes(tmp_path / "store")
+            assert all(mode == mem.PRIVATE_FILE_MODE for mode in modes.values()), modes
+        finally:
+            room.close()
+
+    def test_a_pre_existing_loose_dir_is_tightened(self, tmp_path: Path) -> None:
+        loose = tmp_path / "store"
+        loose.mkdir(mode=0o777)
+        os.chmod(loose, 0o777)
+
+        room = mem.RoomMemory(loose, scope="probe")
+        try:
+            assert stat.S_IMODE(loose.stat().st_mode) == mem.PRIVATE_DIR_MODE
+        finally:
+            room.close()
+
+    def test_pre_existing_loose_files_are_tightened_at_construction(self, tmp_path: Path) -> None:
+        loose = tmp_path / "store"
+        loose.mkdir()
+        planted = loose / "probe__private.jsonl"
+        planted.write_text("{}\n", encoding="utf-8")
+        os.chmod(planted, 0o666)
+
+        room = mem.RoomMemory(loose, scope="probe")
+        try:
+            assert stat.S_IMODE(planted.stat().st_mode) == mem.PRIVATE_FILE_MODE
+        finally:
+            room.close()
+
+    def test_a_tightening_failure_is_recorded_not_raised(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def refuse(*args: Any, **kwargs: Any) -> None:
+            raise PermissionError("not allowed")
+
+        monkeypatch.setattr(mem.os, "chmod", refuse)
+        room = mem.RoomMemory(tmp_path / "store", scope="probe")
+        try:
+            codes = {d.code for d in room.abandoned}
+            assert mem.CODE_PERMISSIONS in codes
+        finally:
+            room.close()
+
+    def test_a_repeating_failure_records_a_transition_not_a_flood(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """C3 says record the TRANSITION; a record per write would evict the ledger."""
+        room = mem.RoomMemory(tmp_path / "store", scope="probe")
+        try:
+            room.drain_abandoned()
+
+            def refuse(*args: Any, **kwargs: Any) -> None:
+                raise PermissionError("not allowed")
+
+            monkeypatch.setattr(mem.os, "chmod", refuse)
+            for _ in range(5):
+                room.remember(f"line {_}")
+
+            drained = room.drain_abandoned()
+            permission_records = [d for d in drained.records if d.code == mem.CODE_PERMISSIONS]
+            assert len(permission_records) == 1
+            assert room.store_permission_failures >= 5
+        finally:
+            room.close()
+
+    def test_an_unwritable_parent_degrades_rather_than_raising(self, tmp_path: Path) -> None:
+        blocked = tmp_path / "blocked"
+        blocked.mkdir(mode=0o500)
+        try:
+            room = mem.RoomMemory(blocked / "store", scope="probe")
+            try:
+                assert mem.CODE_PERMISSIONS in {d.code for d in room.abandoned}
+            finally:
+                room.close()
+        finally:
+            os.chmod(blocked, 0o700)
+
+    def test_the_modes_are_the_same_constants_the_daemon_state_uses(self) -> None:
+        """One code path in spirit: t4 and this module agree on what private means."""
+        from embodiment.daemon import state
+
+        assert mem.PRIVATE_DIR_MODE == state._PRIVATE_DIR_MODE == 0o700
+        assert mem.PRIVATE_FILE_MODE == state._PRIVATE_FILE_MODE == 0o600
+
+    def test_no_group_or_other_bit_survives_on_any_path(self, tmp_path: Path, umask: int) -> None:
+        """Stated as bits rather than as a number, which is the actual promise."""
+        room = mem.RoomMemory(tmp_path / "store", scope="probe")
+        try:
+            assert room.remember("a heard line").ok
+            for path in [tmp_path / "store", *(tmp_path / "store").rglob("*")]:
+                mode = stat.S_IMODE(path.stat().st_mode)
+                assert not mode & 0o077, f"{path}: {oct(mode)}"
         finally:
             room.close()

@@ -207,7 +207,9 @@ constraint C3, inherited from the seam below rather than reinvented.
 from __future__ import annotations
 
 import hashlib
+import os
 import re
+import stat
 import threading
 import unicodedata
 from collections import deque
@@ -235,6 +237,8 @@ from embodiment.senses_text import KNOWLEDGE_ATTRIBUTION
 __all__ = [
     "PRIVATE",
     "PUBLIC",
+    "PRIVATE_DIR_MODE",
+    "PRIVATE_FILE_MODE",
     "DEFAULT_DEADLINE",
     "DEFAULT_WRITE_DEADLINE",
     "DEFAULT_MAX_WORKERS",
@@ -266,6 +270,7 @@ __all__ = [
     "CODE_ABANDONED_REMEMBER",
     "CODE_REMEMBER_UNCONFIRMED_AT_CLOSE",
     "CODE_SATURATED",
+    "CODE_PERMISSIONS",
     "CODE_CLOSED",
     "AbandonedDrain",
     "CloseReport",
@@ -304,6 +309,15 @@ DEFAULT_MAX_WORKERS = 4
 #: are refused outright. See :meth:`RoomMemory._submit` for why refusing beats
 #: queueing.
 MAX_INFLIGHT = 8
+
+#: Filesystem modes enforced regardless of the process umask, and identical to
+#: the ones :mod:`embodiment.daemon.state` enforces — one definition of what
+#: "private" means on this daemon's disk. They are applied with an explicit
+#: ``chmod`` rather than trusted to a ``mode=`` argument, because that argument
+#: is itself masked by the umask, and a daemon does not choose its operator's
+#: umask.
+PRIVATE_DIR_MODE = 0o700
+PRIVATE_FILE_MODE = 0o600
 
 #: Seconds :meth:`RoomMemory.close` will wait for in-flight *writes*. Bounded
 #: well below eidetic's 10 s embedder timeout on purpose: a shutdown that can
@@ -426,6 +440,9 @@ CODE_ABANDONED_REMEMBER = "abandoned-remember"
 CODE_REMEMBER_UNCONFIRMED_AT_CLOSE = "remember-unconfirmed-at-close"
 #: Every in-flight slot is occupied; the call was refused rather than queued.
 CODE_SATURATED = "memory-saturated"
+#: The store's directory or files could not be made private. Recorded as a
+#: TRANSITION, not once per write — see :meth:`RoomMemory._tighten`.
+CODE_PERMISSIONS = "memory-permissions"
 #: The memory layer was closed; no further work is submitted.
 CODE_CLOSED = "memory-closed"
 
@@ -729,8 +746,105 @@ class RoomMemory:
         self._last_mode: Optional[str] = None
         self._abandoned: deque[Degradation] = deque(maxlen=max(1, int(max_abandoned)))
         self._abandoned_dropped = 0
+        # Permission tightening state. ``_permissions_ok`` makes a failure a
+        # recorded TRANSITION (C3) rather than one record per write, which
+        # would evict every other degradation from the bounded ledger during
+        # exactly the outage that made it fail.
+        self._permissions_ok = True
+        self._permission_failures = 0
+
+        # Last, because it records degradations and therefore needs the ledger.
+        self._ensure_private_store()
+
+    # -- privacy on disk ----------------------------------------------------
+
+    def _ensure_private_store(self) -> None:
+        r"""Create the store 0700, tighten a looser one, and tighten its files.
+
+        Preamble lesson 7. Measured before this existed, with the real files
+        backend and umask ``0002``: the data dir was ``775`` and the record
+        file ``664`` — what the user asked Gwen to remember, readable by every
+        account on the box.
+
+        The **directory** mode is the load-bearing control, and that is worth
+        stating rather than leaving to inference. data-refinery's files backend
+        writes a temp *sibling* and ``os.replace``\ s it into place, so every
+        byte of a record — temp and final alike — lives inside this directory
+        and never transits anywhere else. At 0700 no other account can traverse
+        in, whatever a file inside happens to be chmodded to at that instant.
+        """
+        self._tighten_dir()
+        self._tighten()
+
+    def _tighten_dir(self) -> None:
+        """Create/repair the store directory. Never raises."""
+        try:
+            self._data_dir.mkdir(parents=True, exist_ok=True)
+            if stat.S_IMODE(self._data_dir.stat().st_mode) != PRIVATE_DIR_MODE:
+                os.chmod(self._data_dir, PRIVATE_DIR_MODE)
+        except OSError as exc:
+            self._record_permission_failure("could not make the store directory private", exc)
+
+    def _tighten(self) -> None:
+        r"""Force every file under the store to :data:`PRIVATE_FILE_MODE`.
+
+        Called at construction and **after every confirmed store operation**,
+        not once, because the backend REPLACES the file rather than appending
+        to it: measured, the inode changes on each write, so a file pre-created
+        0600 comes back at the umask's mode. Pre-creating it therefore does not
+        close the window and this is not an optimisation that can be skipped.
+
+        **The window, stated plainly.** Between data-refinery's ``os.replace``
+        landing the new file and this ``chmod``, that file carries whatever the
+        umask allowed. It is inside a 0700 directory for the whole of that
+        window, so no other account can reach it; the residual exposure is to a
+        process running as this same user — which can read the store anyway —
+        and to anything that loosens the directory behind our back. Closing it
+        completely would need the *backend* to create its temp with
+        ``mode=0o600``, which is eidetic-cli's or data-refinery's to do.
+
+        Never raises. Sweeps ``*.tmp`` siblings too: an interrupted rewrite
+        leaves one behind, and it holds the same records.
+        """
+        try:
+            paths = [path for path in self._data_dir.rglob("*") if path.is_file()]
+        except OSError as exc:
+            self._record_permission_failure("could not enumerate the store", exc)
+            return
+        for path in paths:
+            try:
+                if stat.S_IMODE(path.stat().st_mode) != PRIVATE_FILE_MODE:
+                    os.chmod(path, PRIVATE_FILE_MODE)
+            except OSError as exc:
+                self._record_permission_failure("could not make a store file private", exc)
+                return
+        self._permissions_ok = True
+
+    def _record_permission_failure(self, what: str, exc: BaseException) -> None:
+        """Record the first failure of a run; count the rest. Never raises.
+
+        C3 asks for a recorded *transition*. One record per failed write would
+        be a flood that evicts the bounded ledger during precisely the outage
+        the ledger exists to describe, so the count is what carries the
+        repetition and :attr:`store_permission_failures` exposes it.
+        """
+        self._permission_failures += 1
+        if not self._permissions_ok:
+            return
+        self._permissions_ok = False
+        self._record_abandoned(_degradation("permissions", CODE_PERMISSIONS, what, exc))
 
     # -- introspection ------------------------------------------------------
+
+    @property
+    def store_permission_failures(self) -> int:
+        """How many times tightening the store's permissions has failed.
+
+        Non-zero means the store may be readable by other accounts on this
+        host. The first failure is on the abandoned ledger; this is what says
+        it is still happening.
+        """
+        return self._permission_failures
 
     @property
     def data_dir(self) -> Path:
@@ -911,7 +1025,7 @@ class RoomMemory:
         writer = added_by if added_by is not None else self._added_by
 
         def write() -> Any:
-            return self._remember_fn(
+            outcome = self._remember_fn(
                 record,
                 data_dir=self._data_dir,
                 scope=self._scope,
@@ -919,6 +1033,10 @@ class RoomMemory:
                 added_by=writer,
                 backend=self._backend,
             )
+            # Inside the worker, so the chmod is inside the caller's deadline
+            # and a slow filesystem cannot stall the turn on this either.
+            self._tighten()
+            return outcome
 
         future, refusal = self._submit(write, record_id=identifier)
         if future is None:
@@ -1219,6 +1337,10 @@ class RoomMemory:
             reinforce=reinforce,
             backend=self._backend,
         )
+        if reinforce:
+            # Recall is not read-only: eidetic reinforces every hit, which
+            # rewrites the file and resets its mode exactly as a write does.
+            self._tighten()
         return resolved, outcome, degradations
 
     def _probe(self) -> tuple[bool, Degradation]:
