@@ -22,6 +22,8 @@ from embodiment.daemon.state import (
     DegradationRecord,
     OperationalLog,
     TranscriptLog,
+    candidate_state_dirs,
+    resolve_fallback_state_dir,
     resolve_state_dir,
 )
 
@@ -30,6 +32,8 @@ __all__ = [
     "DEFAULT_OPERATIONAL_LOG_MAX_BYTES",
     "DEFAULT_TRANSCRIPT_LOG_MAX_BYTES",
     "resolve_state_dir",
+    "resolve_fallback_state_dir",
+    "candidate_state_dirs",
     "DaemonState",
     "DegradationRecord",
     "DegradationLedger",

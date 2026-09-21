@@ -50,6 +50,45 @@ trade: bounded by rewriting the file with oldest lines dropped, which is not
 individually crash-atomic mid-rewrite, but is bounded exactly as their
 acceptance criterion requires ("the log never exceeds its configured size").
 
+Session ids are untrusted input
+-----------------------------------
+:meth:`DaemonState.open_transcript` will eventually be reached from network
+clients (a browser tab, a robot relay) supplying their own session id, so a
+session id is treated as adversarial: :func:`_safe_session_name` accepts only
+a conservative filename charset, rejects anything else, and derives a
+deterministic replacement name from a hash of the rejected id — never the id
+itself — so a rejection can be recorded without ever writing untrusted text
+to disk. The resolved path is additionally checked to stay inside the
+sessions directory before use (belt-and-suspenders: the charset already makes
+escape structurally impossible, but the check is there rather than trusted).
+
+Privacy, on disk, regardless of umask
+-----------------------------------------
+Every directory this module creates for its own exclusive use (the state
+directory, ``sessions/``) is forced to mode ``0700``; every file it writes
+(operational log, ledger, transcript, and the temp file the bounded logs'
+atomic rewrite uses before ``os.replace``) is forced to mode ``0600``. Both
+are enforced with an explicit ``chmod``/``fchmod`` rather than trusted to the
+``mode=`` argument of ``mkdir``/``open`` alone, because that argument is
+itself masked by the process umask and a permissive umask (``0022`` is a
+common default) would otherwise leave transcripts of a private conversation
+group- or world-readable.
+
+The state-directory fallback is deterministic and guarded
+---------------------------------------------------------------
+If the preferred state directory cannot be created at all, the daemon falls
+back to :func:`resolve_fallback_state_dir` — ``<tempdir>/embodiment-state-<uid>``
+— rather than a randomly-named temp directory. A random name would be
+unfindable by a second process (a separate ``embodiment status`` invocation
+resolving the normal path would see nothing and wrongly report "stopped" —
+exactly the confusion this module exists to prevent); a deterministic,
+per-owner name lets :func:`candidate_state_dirs` hand a reader the same
+directory a writer would have fallen back to. A predictable name in a shared
+temp directory is also an attack surface, so it is never used blindly: a
+pre-existing symlink at that name, or a pre-existing directory owned by
+another uid, is refused (never raised, only recorded) and a last-resort
+randomly-named directory is used instead.
+
 Never raise, record instead (C3)
 -----------------------------------
 No public method here raises for an environment problem (a missing
@@ -57,17 +96,22 @@ directory, a permission error, a full disk). Every disk operation is guarded
 by a narrow ``except OSError`` (never a bare or ``Exception``-wide catch —
 see ``tests/test_no_silent_degradation.py``'s AST scan, which this module
 must never need an allow-list entry from) and every failure is *recorded*,
-never swallowed: on the bounded logs it lands in ``write_errors`` and is
-offered to an optional ``on_degrade`` callback; on :class:`DaemonState`
-itself, a state-directory bootstrap failure falls back to a fresh temporary
-directory and writes exactly one ledger entry naming the fallback, so a host
-reading ``status()`` can see it happened.
+never swallowed: on the bounded logs and the ledger it lands in
+``write_errors`` and :meth:`DaemonState.status` reports each log's error
+count and most recent error (type and message — filesystem detail, never
+transcript text); on :class:`DaemonState` itself, a state-directory bootstrap
+failure or an unsafe fallback falls back further and writes exactly one
+ledger entry per transition, so a host reading ``status()`` can see it
+happened.
 """
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
+import re
+import stat
 import tempfile
 import time
 import uuid
@@ -81,8 +125,13 @@ __all__ = [
     "DEFAULT_TRANSCRIPT_LOG_MAX_BYTES",
     "OPERATIONAL_LOG_FILENAME",
     "LEDGER_FILENAME",
+    "SESSIONS_DIRNAME",
     "STATE_DIR_FALLBACK_CODE",
+    "STATE_DIR_TIGHTENED_CODE",
+    "SESSION_ID_REJECTED_CODE",
     "resolve_state_dir",
+    "resolve_fallback_state_dir",
+    "candidate_state_dirs",
     "DegradationRecord",
     "DegradationLedger",
     "OperationalLog",
@@ -103,10 +152,30 @@ DEFAULT_TRANSCRIPT_LOG_MAX_BYTES = 1_000_000
 
 OPERATIONAL_LOG_FILENAME = "embodiment.log"
 LEDGER_FILENAME = "degradations.jsonl"
+SESSIONS_DIRNAME = "sessions"
 
 #: The degradation code :class:`DaemonState` records when it could not create
 #: or use its preferred state directory and fell back to a temporary one.
 STATE_DIR_FALLBACK_CODE = "state-dir-fallback"
+
+#: Recorded when a directory this module owns existed but was more open than
+#: 0700 and had to be (or could not be) tightened.
+STATE_DIR_TIGHTENED_CODE = "state-dir-permissions-tightened"
+
+#: Recorded when a caller-supplied session id was rejected by
+#: :func:`_safe_session_name` and a derived name was used instead.
+SESSION_ID_REJECTED_CODE = "session-id-rejected"
+
+#: Filesystem modes enforced regardless of the process umask.
+_PRIVATE_DIR_MODE = 0o700
+_PRIVATE_FILE_MODE = 0o600
+
+#: Session ids are accepted only in this conservative filename charset —
+#: letters, digits, dot, underscore, hyphen — which structurally cannot
+#: contain a path separator or a ``..`` traversal segment once a leading dot
+#: is also rejected (see :func:`_safe_session_name`).
+_SESSION_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+_SESSION_ID_MAX_LEN = 200
 
 
 def resolve_state_dir(override: Optional[str | Path] = None) -> Path:
@@ -141,19 +210,158 @@ def resolve_state_dir(override: Optional[str | Path] = None) -> Path:
     return base.expanduser().resolve()
 
 
+def _owner_tag() -> str:
+    """A stable per-OS-user token for the fallback directory's name."""
+    uid_fn = getattr(os, "getuid", None)
+    return str(uid_fn()) if uid_fn is not None else "shared"
+
+
+def resolve_fallback_state_dir() -> Path:
+    """The deterministic fallback used when the preferred dir is unusable.
+
+    Same directory every time for the same OS user (``<tempdir>/embodiment-
+    state-<uid>``), so a separate process — a later ``embodiment status`` —
+    can find a daemon that fell back to it during bootstrap, which a
+    randomly-named temp directory never could.
+    """
+    return (Path(tempfile.gettempdir()) / f"embodiment-state-{_owner_tag()}").resolve()
+
+
+def candidate_state_dirs(override: Optional[str | Path] = None) -> list[Path]:
+    """Every directory a reader should check, in the order a writer would use them.
+
+    ``embodiment status`` (plan task t5, not this one) resolves the normal
+    state dir first; if that shows nothing, this is where it looks next.
+    """
+    return [resolve_state_dir(override), resolve_fallback_state_dir()]
+
+
+# ── directory privacy ────────────────────────────────────────────────────────
+
+
+def _ensure_private_dir(path: Path) -> Optional[str]:
+    """Ensure *path* exists and is mode 0700 (owner rwx only). Never raises.
+
+    Returns a human-readable detail when something departed from the silent
+    happy path: could not create it at all; a pre-existing directory had to
+    be tightened; or tightening itself failed. Returns ``None`` on the fully
+    silent happy path — created fresh (whatever the umask left it at is
+    corrected without comment) or already existed at exactly 0700.
+    """
+    pre_existing = path.is_dir()
+    try:
+        path.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        return f"could not create {path}: {type(exc).__name__}: {exc}"
+    try:
+        mode = stat.S_IMODE(path.stat().st_mode)
+    except OSError as exc:
+        return f"could not stat {path} after creating it: {type(exc).__name__}: {exc}"
+    if mode == _PRIVATE_DIR_MODE:
+        return None
+    try:
+        os.chmod(path, _PRIVATE_DIR_MODE)
+    except OSError as exc:
+        return (
+            f"could not tighten permissions on {path} (was {oct(mode)}): "
+            f"{type(exc).__name__}: {exc}"
+        )
+    if pre_existing:
+        return f"tightened pre-existing {path} from {oct(mode)} to {oct(_PRIVATE_DIR_MODE)}"
+    return None
+
+
+def _secure_fallback_dir(path: Path) -> tuple[bool, Optional[str]]:
+    """Validate and secure a candidate fallback directory. Never raises.
+
+    A predictable name in a shared temp directory is an attack surface: a
+    symlink planted at that name, or a pre-existing directory owned by
+    someone else, is refused rather than written through. Returns
+    ``(usable, detail)`` — *detail* is ``None`` only on the fully silent path
+    (freshly created, nothing to note).
+    """
+    if path.is_symlink():
+        return False, f"refusing fallback dir {path}: it is a symlink"
+    if path.exists():
+        if not path.is_dir():
+            return False, f"refusing fallback dir {path}: exists and is not a directory"
+        try:
+            owner = path.stat().st_uid
+        except OSError as exc:
+            return False, f"refusing fallback dir {path}: could not stat it: {exc}"
+        uid_fn = getattr(os, "getuid", None)
+        if uid_fn is not None and owner != uid_fn():
+            return False, f"refusing fallback dir {path}: owned by uid {owner}, not us"
+    detail = _ensure_private_dir(path)
+    if detail is not None and detail.startswith("could not create"):
+        return False, detail
+    return True, detail
+
+
+def _bootstrap_fallback_dir() -> tuple[Path, str]:
+    """The deterministic fallback, or — refused/unusable — a fresh random one.
+
+    Never raises. Returns ``(dir_in_use, detail)``; *detail* is always
+    non-empty, because falling back at all is itself worth one degradation
+    record even when the fallback directory itself needed no repair.
+    """
+    candidate = resolve_fallback_state_dir()
+    usable, detail = _secure_fallback_dir(candidate)
+    if usable:
+        return candidate, detail or f"using deterministic fallback {candidate}"
+    random_dir = Path(tempfile.mkdtemp(prefix="embodiment-state-fallback-"))
+    try:
+        os.chmod(random_dir, _PRIVATE_DIR_MODE)
+    except OSError:
+        pass  # mkdtemp already creates at 0700; this is only a defensive re-assert
+    combined = f"{detail}; using a random, unfindable fallback instead: {random_dir}"
+    return random_dir, combined
+
+
+# ── session ids are untrusted input ─────────────────────────────────────────
+
+
+def _safe_session_name(session_id: str) -> tuple[str, Optional[str]]:
+    """A filesystem-safe stem for *session_id*, plus a rejection detail if any.
+
+    Only a conservative charset is accepted (``[A-Za-z0-9._-]``, length
+    capped, never a bare ``.``/``..``, never a leading dot) so the resulting
+    filename can never contain a path separator or a traversal segment.
+    Anything else is replaced by a deterministic name derived from a hash of
+    the rejected id — never the id itself, which may be adversarial or
+    sensitive — so the caller can record ONE degradation without ever
+    writing untrusted text to disk.
+    """
+    digest = hashlib.sha256(session_id.encode("utf-8", errors="surrogateescape")).hexdigest()[:16]
+    fallback = f"invalid-{digest}"
+    if not session_id:
+        return fallback, f"empty session id (hash {digest})"
+    if len(session_id) > _SESSION_ID_MAX_LEN:
+        return fallback, f"session id too long: {len(session_id)} chars (hash {digest})"
+    if session_id in (".", ".."):
+        return fallback, f"session id is a path segment (hash {digest})"
+    if session_id.startswith("."):
+        return fallback, f"session id has a leading dot (hash {digest})"
+    if not _SESSION_ID_RE.match(session_id):
+        return fallback, f"session id has disallowed characters (hash {digest})"
+    return session_id, None
+
+
 # ── shared disk helpers ─────────────────────────────────────────────────────
 
 
 def _atomic_write_bytes(path: Path, data: bytes) -> None:
     """Write *data* to *path* via a same-directory temp file + ``os.replace``.
 
-    Raises ``OSError`` on failure — callers of this helper are the ones that
-    decide how to degrade, per this module's "never raise, record instead"
-    discipline; the helper itself stays a plain, honest primitive.
+    The temp file (and, once renamed, *path* itself) is forced to mode 0600
+    regardless of umask. Raises ``OSError`` on failure — callers decide how
+    to degrade, per this module's "never raise, record instead" discipline;
+    this helper stays a plain, honest primitive.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp_name = tempfile.mkstemp(dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp")
     try:
+        os.fchmod(fd, _PRIVATE_FILE_MODE)
         with os.fdopen(fd, "wb") as handle:
             handle.write(data)
             handle.flush()
@@ -163,7 +371,7 @@ def _atomic_write_bytes(path: Path, data: bytes) -> None:
         try:
             os.remove(tmp_name)
         except OSError:
-            pass  # nosec B110 # noqa: BLE001  # best-effort cleanup of our own temp file
+            pass  # narrow except; best-effort cleanup of our own temp file
         raise
 
 
@@ -191,14 +399,19 @@ def _bounded_rewrite_append(path: Path, line: str, max_bytes: int) -> None:
 
 
 def _append_only(path: Path, line: str) -> None:
-    """Append *line* to *path*, ``fsync``\\ ed, so a crash after this call loses
-    nothing already written. Raises ``OSError`` on failure; see module docstring.
+    """Append *line* to *path*, ``fsync``\\ ed, mode 0600 regardless of umask.
+
+    A crash after this call loses nothing already written. Raises
+    ``OSError`` on failure; see module docstring.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "a", encoding="utf-8") as handle:  # noqa: PTH123 - append mode needs open()
-        handle.write(line + "\n")
-        handle.flush()
-        os.fsync(handle.fileno())
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, _PRIVATE_FILE_MODE)
+    try:
+        os.fchmod(fd, _PRIVATE_FILE_MODE)
+        os.write(fd, (line + "\n").encode("utf-8"))
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 # ── the degradation ledger ──────────────────────────────────────────────────
@@ -240,7 +453,7 @@ class DegradationLedger:
         self._path = Path(path)
         #: Records this instance could not persist at all (the ledger file's
         #: own directory is unwritable). Best-effort visibility of last resort;
-        #: normally empty.
+        #: normally empty. Surfaced by :meth:`DaemonState.status`.
         self.write_errors: list[str] = []
 
     @property
@@ -316,6 +529,8 @@ class _BoundedJsonlLog:
         self._path = Path(path)
         self._max_bytes = max_bytes
         self._on_degrade = on_degrade
+        #: Failures to persist a record. Best-effort visibility of last
+        #: resort; surfaced by :meth:`DaemonState.status`.
         self.write_errors: list[str] = []
 
     @property
@@ -337,7 +552,7 @@ class _BoundedJsonlLog:
                 try:
                     self._on_degrade("log-write-failed", reason)
                 except OSError:
-                    pass  # nosec B110 # noqa: BLE001  # the degrade hook must never itself raise
+                    pass  # narrow except; the degrade hook must never itself raise
 
     def read_all(self) -> list[dict[str, Any]]:
         """Every readable record, oldest first. Skips a torn last line, if any."""
@@ -390,6 +605,14 @@ class TranscriptLog(_BoundedJsonlLog):
         self._write(record)
 
 
+def _write_error_status(errors: list[str]) -> dict[str, Any]:
+    """The piece of ``status()`` shared by every log/ledger surface."""
+    return {
+        "write_error_count": len(errors),
+        "last_write_error": errors[-1] if errors else None,
+    }
+
+
 # ── the daemon's whole state surface ────────────────────────────────────────
 
 
@@ -397,10 +620,12 @@ class DaemonState:
     """The daemon's state directory plus its operational log and ledger.
 
     Construction never raises. If the preferred state directory cannot be
-    created or used (an ``OSError`` — permissions, a path component that is a
-    plain file, a read-only filesystem), it falls back to a fresh temporary
-    directory and records exactly one degradation once the fallback directory
-    is up, so ``status()`` shows the transition rather than hiding it.
+    created at all (an ``OSError`` — permissions, a path component that is a
+    plain file, a read-only filesystem), it falls back to
+    :func:`resolve_fallback_state_dir` (or, if that is itself unsafe, a
+    random temp directory) and records exactly one degradation once the
+    fallback directory is up, so ``status()`` shows the transition rather
+    than hiding it.
     """
 
     def __init__(
@@ -412,44 +637,74 @@ class DaemonState:
     ) -> None:
         self._transcript_log_max_bytes = transcript_log_max_bytes
         preferred = resolve_state_dir(state_dir)
-        self.dir, fallback_detail = self._ensure_dir(preferred)
+        self.dir, used_fallback, detail = self._ensure_dir(preferred)
         self.operational_log = OperationalLog(
             self.dir / OPERATIONAL_LOG_FILENAME, max_bytes=operational_log_max_bytes
         )
         self.ledger = DegradationLedger(self.dir / LEDGER_FILENAME)
-        if fallback_detail is not None:
-            self.ledger.append(STATE_DIR_FALLBACK_CODE, fallback_detail)
+        if detail is not None:
+            code = STATE_DIR_FALLBACK_CODE if used_fallback else STATE_DIR_TIGHTENED_CODE
+            self.ledger.append(code, detail)
 
     @staticmethod
-    def _ensure_dir(preferred: Path) -> tuple[Path, Optional[str]]:
-        """Create *preferred*, or a temporary fallback. Never raises.
+    def _ensure_dir(preferred: Path) -> tuple[Path, bool, Optional[str]]:
+        """Create+secure *preferred*, or fall back. Never raises.
 
-        Returns the directory actually in use and, when a fallback was
-        needed, a detail string describing why — ``None`` on the happy path.
+        Returns ``(dir_in_use, used_fallback, detail)``; *detail* is ``None``
+        only on the fully silent happy path.
         """
-        try:
-            preferred.mkdir(parents=True, exist_ok=True)
-        except OSError as exc:
-            fallback = Path(tempfile.mkdtemp(prefix="embodiment-state-fallback-"))
-            detail = f"could not use {preferred}: {type(exc).__name__}: {exc}; using {fallback}"
-            return fallback, detail
-        return preferred, None
+        detail = _ensure_private_dir(preferred)
+        if detail is None:
+            return preferred, False, None
+        if not detail.startswith("could not create"):
+            # It exists and is usable; only its permissions needed a note.
+            return preferred, False, detail
+        fallback, fallback_detail = _bootstrap_fallback_dir()
+        combined = f"could not use {preferred} ({detail}); {fallback_detail}"
+        return fallback, True, combined
 
     def open_transcript(self, session_id: str, *, max_bytes: Optional[int] = None) -> TranscriptLog:
-        """The session API: a bounded transcript log dedicated to *session_id*.
+        """The session API: a bounded, private transcript log for *session_id*.
 
-        Lives under ``<state dir>/sessions/<session_id>.jsonl`` — always a
-        different file from :attr:`operational_log`, so nothing written
-        through this method can ever reach the operational log.
+        Lives under ``<state dir>/sessions/<safe name>.jsonl`` — always a
+        different file from :attr:`operational_log`. *session_id* is treated
+        as untrusted input (see :func:`_safe_session_name`): anything outside
+        a conservative charset is replaced by a deterministic, hash-derived
+        name and recorded as one degradation naming only the hash, never the
+        rejected id. The resolved path is asserted to stay inside the
+        sessions directory before use.
         """
-        sessions_dir = self.dir / "sessions"
-        safe_id = session_id.strip() or "unknown"
-        path = sessions_dir / f"{safe_id}.jsonl"
+        sessions_dir = self.dir / SESSIONS_DIRNAME
+        dir_detail = _ensure_private_dir(sessions_dir)
+        if dir_detail is not None:
+            self.ledger.append(STATE_DIR_TIGHTENED_CODE, f"{SESSIONS_DIRNAME} dir: {dir_detail}")
+
+        safe_name, rejection = _safe_session_name(session_id)
+        if rejection is not None:
+            self.ledger.append(SESSION_ID_REJECTED_CODE, rejection)
+
+        resolved_sessions_dir = sessions_dir.resolve()
+        path = (sessions_dir / f"{safe_name}.jsonl").resolve()
+        if not path.is_relative_to(resolved_sessions_dir):
+            # Structurally unreachable given _safe_session_name's charset,
+            # but checked rather than trusted — see the module docstring.
+            digest = hashlib.sha256(safe_name.encode("utf-8")).hexdigest()[:16]
+            path = (resolved_sessions_dir / f"contained-{digest}.jsonl").resolve()
+            self.ledger.append(
+                SESSION_ID_REJECTED_CODE, f"resolved outside sessions dir (hash {digest})"
+            )
+
         bound = self._transcript_log_max_bytes if max_bytes is None else max_bytes
         return TranscriptLog(path, max_bytes=bound)
 
     def status(self) -> dict[str, Any]:
-        """A snapshot ``status`` can render: dir, log size, ledger summary."""
+        """A snapshot ``status`` can render: dir, log size, ledger summary.
+
+        Every log's write-failure count and most recent write error (a
+        filesystem exception's type and message, never transcript text) ride
+        along, so a log that has silently stopped persisting is visible here
+        rather than looking healthy.
+        """
         try:
             log_size = self.operational_log.path.stat().st_size
         except OSError:
@@ -460,6 +715,10 @@ class DaemonState:
                 "path": str(self.operational_log.path),
                 "size_bytes": log_size,
                 "max_bytes": self.operational_log.max_bytes,
+                **_write_error_status(self.operational_log.write_errors),
             },
-            "ledger": self.ledger.status(),
+            "ledger": {
+                **self.ledger.status(),
+                **_write_error_status(self.ledger.write_errors),
+            },
         }
