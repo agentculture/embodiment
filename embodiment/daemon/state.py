@@ -36,19 +36,94 @@ Three surfaces, and why they are three and not one
 
 Crash durability, stated precisely
 ------------------------------------
-Only :class:`DegradationLedger` promises to survive a crash mid-write. Each
-:meth:`DegradationLedger.append` call opens the file, writes one JSON line,
-flushes, ``fsync``\\ s, and closes — so a process killed at any point leaves
-every *prior* append intact on disk, and :meth:`DegradationLedger.status`
-tolerates a torn last line (an interrupted write caught mid-flight) by
-skipping it rather than failing to read the rest. The ledger is deliberately
-NOT size-bounded — a background daemon's few recorded degradations are the
-one thing this module must never lose to a rotation, and their record shape
-is small enough that unbounded growth is not the risk bounded logs exist to
-prevent. :class:`OperationalLog` and :class:`TranscriptLog` take the opposite
-trade: bounded by rewriting the file with oldest lines dropped, which is not
-individually crash-atomic mid-rewrite, but is bounded exactly as their
-acceptance criterion requires ("the log never exceeds its configured size").
+The ledger is deliberately NOT size-bounded — a background daemon's few
+recorded degradations are the one thing this module must never lose to a
+rotation, and their record shape is small enough that unbounded growth is not
+the risk bounded logs exist to prevent. :class:`OperationalLog` and
+:class:`TranscriptLog` ARE bounded, exactly as their acceptance criterion
+requires ("the log never exceeds its configured size") — see the next two
+sections for how that bound is now kept cheap.
+
+Append below the bound, rewrite only when crossing it
+------------------------------------------------------
+Every write used to pay for a full read-rewrite-``fsync``-rename of the whole
+file, even when the file was nowhere near its bound — measured at 3.38 ms and
+3.43 ms per write for a 62 kB file against a 1 MB bound and a 20 kB file at
+its 20 kB bound respectively: identical, because the cost scaled with file
+size and disk latency, not with how close the file was to its limit. Below
+the bound, :func:`_append_line` now does a true ``O_APPEND`` write of exactly
+one line — no read, no rewrite, cost independent of file size. A write is
+routed to the expensive rewrite path (:func:`_bounded_rewrite_append`) ONLY
+when appending the new line would push the file over *max_bytes*; when that
+happens, the file is trimmed not to *max_bytes* itself but down to
+:data:`_LOW_WATER_RATIO` of it (75%), so the freed 25% of headroom buys
+roughly that many bytes' worth of subsequent writes — hundreds of small
+records, for the sizes this module deals in — as plain appends again before
+another rewrite is needed. Trimming to exactly *max_bytes* would instead
+rewrite on almost every single write once a log is full, which is the same
+defect restated at the boundary rather than fixed. The size-never-exceeds-
+the-bound invariant holds after EVERY write either way: an append is only
+taken when it is already known to stay at or under the bound, and a rewrite
+always trims to *low_water_bytes* ≤ *max_bytes*, so the boundary case (a
+write landing exactly on a full log) still keeps the guarantee.
+
+A crash mid-append cannot glue the next write to its fragment
+-------------------------------------------------------------------
+``O_APPEND`` appends raw bytes at the file's current end-of-file, with no
+concept of "lines" — so if a previous write was interrupted after writing
+some but not all of its bytes, the file ends mid-line with no trailing
+newline, and a naive next append would land immediately after that fragment,
+merging two records into one line that can never parse (this is a defect,
+not merely the well-known "torn last line": the READER already tolerated a
+torn last line before this fix, but the record written right after it would
+be silently lost forever, not just delayed by one skip). :func:`_append_line`
+and :func:`_bounded_rewrite_append` both check whether the file's current
+content already ends with a newline and prepend one when it does not, so a
+torn fragment always stays on its own (permanently unparseable, correctly
+skipped) line and every write after it starts clean. Every reader
+(:meth:`DegradationLedger.read_all`, :meth:`_BoundedJsonlLog.read_all` — the
+one implementation behind both :class:`OperationalLog` and
+:class:`TranscriptLog`) already skips a line that fails to parse rather than
+failing the whole read, so this is the write-side half of a guarantee the
+read side already held.
+
+fsync policy, stated per log type rather than left to accident
+---------------------------------------------------------------------
+:data:`LEDGER_FSYNC_PER_APPEND` is ``True``: the ledger IS the crash record,
+so every append is flushed and ``fsync``\\ ed before returning — a process
+killed at any point leaves every prior append durably on disk. The cost is
+one ``fsync`` syscall per degradation, which is rare (a background daemon
+that is behaving records at most a handful over its whole run), so paying a
+few milliseconds per occurrence is immaterial in aggregate.
+:data:`OPERATIONAL_LOG_FSYNC_PER_APPEND` and
+:data:`TRANSCRIPT_LOG_FSYNC_PER_APPEND` are both ``False``: an ``fsync``-free
+append still reaches the kernel's page cache before ``write()`` returns, so
+it survives this PROCESS crashing (the exact scenario the orphaned-temp-file
+sweep and the torn-line tolerance above both already assume can happen) —
+the only loss window is the kernel or the machine itself going down before
+the page cache is flushed, i.e. an OS crash or power loss, which loses at
+most the unwritten tail of operational history or conversation transcript.
+That is an acceptable trade for logs that are operational record-keeping, not
+the crash ledger itself, and it is what removes the per-write ``fsync`` from
+the hot spoken-turn path.
+
+Concurrency: append atomicity is a stated assumption, not just relied on
+-----------------------------------------------------------------------------
+Two threads appending to the same log must never interleave bytes within a
+line. A single ``os.write()`` to a local, regular file opened with
+``O_APPEND`` is atomic on Linux — the kernel serializes the seek-to-end and
+the write under the inode lock for the duration of one ``write()`` syscall,
+for any size that one syscall actually transfers (unlike ``PIPE_BUF``, which
+bounds atomicity for pipes/FIFOs specifically, not regular files) — but this
+module does not rely on that alone: every :meth:`_BoundedJsonlLog._write` and
+:meth:`DegradationLedger.append` is additionally serialized behind a
+per-instance ``threading.Lock``, so correctness holds even on a filesystem
+where single-``write()`` atomicity does not (network filesystems such as NFS
+are the known exception; this module has not been measured against one). The
+lock also closes a race the kernel's write atomicity alone would not: two
+threads independently deciding "we're under the bound, append" from a stale
+size read could together push the file over it; holding the lock across the
+whole decide-then-write makes that decision atomic too.
 
 Session ids are untrusted input
 -----------------------------------
@@ -140,6 +215,7 @@ import os
 import re
 import stat
 import tempfile
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -158,6 +234,9 @@ __all__ = [
     "SESSION_ID_REJECTED_CODE",
     "STALE_TEMP_FILES_SWEPT_CODE",
     "PERSISTENCE_STATUS_UNAVAILABLE",
+    "LEDGER_FSYNC_PER_APPEND",
+    "OPERATIONAL_LOG_FSYNC_PER_APPEND",
+    "TRANSCRIPT_LOG_FSYNC_PER_APPEND",
     "resolve_state_dir",
     "resolve_fallback_state_dir",
     "candidate_state_dirs",
@@ -206,6 +285,30 @@ PERSISTENCE_STATUS_UNAVAILABLE = "unavailable"
 #: Filesystem modes enforced regardless of the process umask.
 _PRIVATE_DIR_MODE = 0o700
 _PRIVATE_FILE_MODE = 0o600
+
+#: The degradation ledger IS the crash record — every append is durably
+#: fsync'd before returning. See the module docstring's fsync policy section.
+LEDGER_FSYNC_PER_APPEND = True
+
+#: The operational log and the transcript log are not the crash record; an
+#: append without fsync still survives a process crash (already in the
+#: kernel's page cache) and only loses its unflushed tail to an OS crash or
+#: power loss. Not fsyncing removes a syscall from every write on these two
+#: logs, one of which (the transcript) sits on the spoken-turn hot path.
+OPERATIONAL_LOG_FSYNC_PER_APPEND = False
+TRANSCRIPT_LOG_FSYNC_PER_APPEND = False
+
+#: When an append would cross *max_bytes*, the rewrite trims down to this
+#: FRACTION of the bound rather than to the bound itself. Trimming to exactly
+#: *max_bytes* would make the very next write cross it again immediately —
+#: a full rewrite on nearly every write once a log is full, the same cost
+#: this fix exists to remove, just relocated to the boundary. 0.75 is chosen
+#: (not measured) as a middle ground: it frees 25% of the bound's byte
+#: budget as headroom, which for this module's small (tens-to-low-hundreds
+#: of bytes) JSONL records buys hundreds of subsequent plain appends before
+#: the next rewrite, while still keeping at least 75% of the configured
+#: window of history immediately after a trim.
+_LOW_WATER_RATIO = 0.75
 
 #: The exact shape of a temp file :func:`_atomic_write_bytes` creates:
 #: ``.<original filename>.<random token>.tmp``. Deliberately specific — a
@@ -457,27 +560,91 @@ def _atomic_write_bytes(path: Path, data: bytes) -> None:
         raise
 
 
-def _bounded_rewrite_append(path: Path, line: str, max_bytes: int) -> None:
-    """Append *line* to *path* as JSONL, keeping the file at or under *max_bytes*.
-
-    Reads the current content, appends the new line, and — if the combined
-    size would exceed *max_bytes* — drops whole lines from the OLDEST end
-    until it fits, then rewrites the file atomically. A single line larger
-    than *max_bytes* is still written alone (nothing smaller is available to
-    keep the file valid JSONL), so the bound is a target the log otherwise
-    never exceeds, not a hard truncation of one record.
+def _trim_to_low_water(combined: bytes, max_bytes: int, low_water_bytes: int) -> bytes:
+    """Drop whole lines from the OLDEST end of *combined* until it fits at or
+    under *low_water_bytes*. Only called when *combined* already exceeds
+    *max_bytes*; a single line larger than *max_bytes* on its own is kept
+    alone regardless — nothing smaller is available and the file must stay
+    valid JSONL. See :data:`_LOW_WATER_RATIO` for why the target is the low
+    water mark and not *max_bytes* itself.
     """
-    encoded = line.encode("utf-8") + b"\n"
+    lines = combined.split(b"\n")
+    while len(lines) > 2 and sum(len(item) + 1 for item in lines) > low_water_bytes:
+        lines.pop(0)
+    return b"\n".join(lines)
+
+
+def _bounded_rewrite_append(path: Path, line: str, max_bytes: int, low_water_bytes: int) -> None:
+    """Append *line* to *path* by rewriting it, trimming to *low_water_bytes*
+    if the combined size would exceed *max_bytes*.
+
+    The EXPENSIVE path: reads the whole file, so callers route a write here
+    only when a plain append (:func:`_append_line`) would cross *max_bytes* —
+    see the module docstring's "append below the bound, rewrite only when
+    crossing it" section. If the existing content's last line is torn (an
+    interrupted previous write, no trailing newline), a newline is inserted
+    before concatenating the new line, for the same reason
+    :func:`_append_line` does: gluing onto a fragment would make the new
+    record unparseable forever, not just skip the fragment once.
+    """
     existing = b""
     if path.exists():
         existing = path.read_bytes()
+    if existing and not existing.endswith(b"\n"):
+        existing += b"\n"
+    encoded = line.encode("utf-8") + b"\n"
     combined = existing + encoded
     if len(combined) > max_bytes:
-        lines = combined.split(b"\n")
-        while len(lines) > 2 and sum(len(item) + 1 for item in lines) > max_bytes:
-            lines.pop(0)
-        combined = b"\n".join(lines)
+        combined = _trim_to_low_water(combined, max_bytes, low_water_bytes)
     _atomic_write_bytes(path, combined)
+
+
+def _last_byte_is_newline_or_empty(path: Path) -> bool:
+    """``True`` if *path* does not exist, is empty, or already ends in ``\\n``.
+
+    One small read (never the whole file) used by :func:`_append_line` to
+    decide whether a leading newline is needed before the new line, so a torn
+    last line from an interrupted previous write is never glued to.
+    """
+    try:
+        with open(path, "rb") as handle:  # noqa: PTH123 - a raw byte peek, not text
+            handle.seek(0, os.SEEK_END)
+            if handle.tell() == 0:
+                return True
+            handle.seek(-1, os.SEEK_END)
+            return handle.read(1) == b"\n"
+    except OSError:
+        return True  # no file yet — the first write has no fragment to avoid
+
+
+def _append_line(path: Path, line: str, *, fsync: bool) -> None:
+    """A true ``O_APPEND`` write of exactly one JSONL line. Never reads or
+    rewrites existing content — the CHEAP path, used for every write that
+    stays under a log's bound (and always, for the unbounded ledger). Mode
+    0600 regardless of umask.
+
+    Prefixes the write with a newline when the file's current last byte is
+    not already one, so a torn last line from an interrupted previous append
+    is never glued to — see :func:`_last_byte_is_newline_or_empty` and the
+    module docstring's "a crash mid-append cannot glue" section.
+
+    *fsync* decides whether this call durably syncs to disk before
+    returning — see the module docstring's fsync policy section and
+    :data:`LEDGER_FSYNC_PER_APPEND` / :data:`OPERATIONAL_LOG_FSYNC_PER_APPEND`
+    / :data:`TRANSCRIPT_LOG_FSYNC_PER_APPEND`. Raises ``OSError`` on failure —
+    callers decide how to degrade.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    prefix = b"" if _last_byte_is_newline_or_empty(path) else b"\n"
+    encoded = prefix + (line + "\n").encode("utf-8")
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, _PRIVATE_FILE_MODE)
+    try:
+        os.fchmod(fd, _PRIVATE_FILE_MODE)
+        os.write(fd, encoded)
+        if fsync:
+            os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def _sweep_stale_temp_files(directory: Path) -> int:
@@ -509,22 +676,6 @@ def _sweep_stale_temp_files(directory: Path) -> int:
     return removed
 
 
-def _append_only(path: Path, line: str) -> None:
-    """Append *line* to *path*, ``fsync``\\ ed, mode 0600 regardless of umask.
-
-    A crash after this call loses nothing already written. Raises
-    ``OSError`` on failure; see module docstring.
-    """
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, _PRIVATE_FILE_MODE)
-    try:
-        os.fchmod(fd, _PRIVATE_FILE_MODE)
-        os.write(fd, (line + "\n").encode("utf-8"))
-        os.fsync(fd)
-    finally:
-        os.close(fd)
-
-
 # ── the degradation ledger ──────────────────────────────────────────────────
 
 
@@ -553,11 +704,16 @@ class DegradationRecord:
 class DegradationLedger:
     """An append-only, crash-durable JSONL ledger of degradation records.
 
-    Every :meth:`append` is its own open/write/``fsync``/close — there is no
-    in-memory buffer that a crash could lose. :meth:`status` (and
-    :meth:`read_all`, which it is built on) tolerates a torn final line, which
-    is what an interrupted append looks like on disk: everything before it
-    stays readable.
+    Every :meth:`append` is a true ``O_APPEND`` write (:func:`_append_line`),
+    ``fsync``\\ ed before returning (:data:`LEDGER_FSYNC_PER_APPEND`) — there
+    is no in-memory buffer that a crash could lose, and no read of the
+    existing file (the ledger is never rewritten; it only ever grows).
+    :meth:`status` (and :meth:`read_all`, which it is built on) tolerates a
+    torn final line, which is what an interrupted append looks like on disk:
+    everything before it stays readable, and :func:`_append_line`'s own
+    torn-line guard means the NEXT append after one starts on a fresh line
+    rather than gluing onto the fragment. Every append is serialized behind a
+    per-instance lock (see the module docstring's concurrency section).
 
     *path* may be ``None`` — the no-persistence floor described in the module
     docstring, used when :class:`DaemonState` could not create a state
@@ -569,6 +725,7 @@ class DegradationLedger:
 
     def __init__(self, path: Optional[str | Path]) -> None:
         self._path = Path(path) if path is not None else None
+        self._lock = threading.Lock()
         #: Records this instance could not persist at all (the ledger file's
         #: own directory is unwritable, or there is no directory at all).
         #: Best-effort visibility of last resort; normally empty. Surfaced by
@@ -595,8 +752,10 @@ class DegradationLedger:
         if self._path is None:
             self.write_errors.append(f"no persistence available: {code}: {detail}")
             return None
+        line = json.dumps(record.to_dict(), sort_keys=True)
         try:
-            _append_only(self._path, json.dumps(record.to_dict(), sort_keys=True))
+            with self._lock:
+                _append_line(self._path, line, fsync=LEDGER_FSYNC_PER_APPEND)
         except OSError as exc:
             self.write_errors.append(f"{type(exc).__name__}: {exc}")
             return None
@@ -645,6 +804,17 @@ class _BoundedJsonlLog:
     types on purpose (see the module docstring's "different file" discipline)
     even though their mechanics are identical.
 
+    Every write goes through :meth:`_append_or_rewrite`, which appends
+    (:func:`_append_line`, cheap, no file read) when that stays under
+    *max_bytes*, and only reaches the expensive rewrite
+    (:func:`_bounded_rewrite_append`) when appending would cross it — see the
+    module docstring's "append below the bound, rewrite only when crossing
+    it" section. *fsync* is a required, explicit, per-subclass choice (see
+    the module docstring's fsync policy section) — there is deliberately no
+    default, so a new subclass cannot inherit a policy by accident. Every
+    write is serialized behind a per-instance lock (module docstring's
+    concurrency section).
+
     *path* may be ``None`` — the no-persistence floor (module docstring):
     every :meth:`_write` is dropped and counted on :attr:`write_errors`
     rather than the object being unusable.
@@ -655,11 +825,14 @@ class _BoundedJsonlLog:
         path: Optional[str | Path],
         *,
         max_bytes: int,
+        fsync: bool,
         on_degrade: Optional[Callable[[str, str], None]] = None,
     ) -> None:
         self._path = Path(path) if path is not None else None
         self._max_bytes = max_bytes
+        self._fsync = fsync
         self._on_degrade = on_degrade
+        self._lock = threading.Lock()
         #: Failures to persist a record. Best-effort visibility of last
         #: resort; surfaced by :meth:`DaemonState.status`.
         self.write_errors: list[str] = []
@@ -677,13 +850,19 @@ class _BoundedJsonlLog:
     def max_bytes(self) -> int:
         return self._max_bytes
 
+    @property
+    def fsync(self) -> bool:
+        """This instance's fsync-per-write policy — see the module docstring."""
+        return self._fsync
+
     def _write(self, record: dict[str, Any]) -> None:
         if self._path is None:
             self.write_errors.append("no persistence available: dropped one record")
             return
         line = json.dumps(record, sort_keys=True)
         try:
-            _bounded_rewrite_append(self._path, line, self._max_bytes)
+            with self._lock:
+                self._append_or_rewrite(line)
         except OSError as exc:
             reason = f"{type(exc).__name__}: {exc}"
             self.write_errors.append(reason)
@@ -692,6 +871,20 @@ class _BoundedJsonlLog:
                     self._on_degrade("log-write-failed", reason)
                 except OSError:
                     pass  # narrow except; the degrade hook must never itself raise
+
+    def _append_or_rewrite(self, line: str) -> None:
+        """Called with :attr:`_lock` held. Picks the cheap or expensive path."""
+        assert self._path is not None  # guarded by the caller
+        try:
+            current_size = self._path.stat().st_size
+        except OSError:
+            current_size = 0
+        encoded_len = len(line.encode("utf-8")) + 1  # + the trailing newline
+        if current_size + encoded_len <= self._max_bytes:
+            _append_line(self._path, line, fsync=self._fsync)
+            return
+        low_water_bytes = int(self._max_bytes * _LOW_WATER_RATIO)
+        _bounded_rewrite_append(self._path, line, self._max_bytes, low_water_bytes)
 
     def read_all(self) -> list[dict[str, Any]]:
         """Every readable record, oldest first. Skips a torn last line, if any."""
@@ -720,7 +913,24 @@ class OperationalLog(_BoundedJsonlLog):
     stopped, connected, degraded — never a transcript. Enforced structurally:
     a caller that wants to record a transcript line reaches for
     :class:`TranscriptLog` instead, a different file entirely.
+
+    fsync policy: :data:`OPERATIONAL_LOG_FSYNC_PER_APPEND` (``False``) — see
+    the module docstring's fsync policy section.
     """
+
+    def __init__(
+        self,
+        path: Optional[str | Path],
+        *,
+        max_bytes: int,
+        on_degrade: Optional[Callable[[str, str], None]] = None,
+    ) -> None:
+        super().__init__(
+            path,
+            max_bytes=max_bytes,
+            fsync=OPERATIONAL_LOG_FSYNC_PER_APPEND,
+            on_degrade=on_degrade,
+        )
 
     def write(self, event: str, **fields: Any) -> None:
         """Append one operational event. Never raises; see module docstring."""
@@ -736,7 +946,25 @@ class TranscriptLog(_BoundedJsonlLog):
     through — see :meth:`DaemonState.open_transcript`. Bounded exactly like
     :class:`OperationalLog`, but always a distinct file, so a transcript can
     never end up inside the operational log no matter how either is used.
+
+    fsync policy: :data:`TRANSCRIPT_LOG_FSYNC_PER_APPEND` (``False``) — see
+    the module docstring's fsync policy section. This is the spoken-turn hot
+    path the original defect (a full rewrite on every write) sat on.
     """
+
+    def __init__(
+        self,
+        path: Optional[str | Path],
+        *,
+        max_bytes: int,
+        on_degrade: Optional[Callable[[str, str], None]] = None,
+    ) -> None:
+        super().__init__(
+            path,
+            max_bytes=max_bytes,
+            fsync=TRANSCRIPT_LOG_FSYNC_PER_APPEND,
+            on_degrade=on_degrade,
+        )
 
     def write(self, role: str, text: str) -> None:
         """Append one turn of spoken text. Never raises; see module docstring."""

@@ -27,6 +27,23 @@ Round 3 (never-raise gap, TOCTOU re-check, orphaned temp files):
 10. construction sweeps and removes its own orphaned atomic-rewrite temp
     files, recording one degradation naming the count
 
+Round 4 (every bounded-log write was a full read+rewrite+fsync regardless of
+how far the file was from its bound):
+
+11. below the bound, a write is a true ``O_APPEND`` of one line; the
+    expensive rewrite only runs when an append would cross the bound, and it
+    trims to a low-water mark so appends resume afterward — the file never
+    exceeds its configured size after ANY of a few thousand writes
+12. the fsync policy is a named, per-log-type choice: the ledger fsyncs
+    every append, the operational and transcript logs do not
+13. a torn last line (a crash mid-append) is tolerated by every reader, and
+    the NEXT append after one starts on a fresh line rather than gluing onto
+    the fragment
+14. several threads appending to one log concurrently never interleave bytes
+    within a line and never lose or duplicate a record
+15. a performance regression test asserts on the REWRITE HELPER's call
+    count, not wall-clock, so it cannot flake
+
 Every test passes an explicit ``tmp_path``-derived override or monkeypatches
 the env/tempdir seams (``EMBODIMENT_STATE_DIR`` / ``XDG_STATE_HOME`` / ``HOME``
 / ``tempfile.gettempdir``) — none ever writes to the real home directory or a
@@ -40,6 +57,8 @@ from __future__ import annotations
 import os
 import stat
 import tempfile
+import threading
+from pathlib import Path
 
 import pytest
 
@@ -47,16 +66,21 @@ import embodiment.daemon.state as state_mod
 from embodiment.daemon.state import (
     DEFAULT_OPERATIONAL_LOG_MAX_BYTES,
     LEDGER_FILENAME,
+    LEDGER_FSYNC_PER_APPEND,
+    OPERATIONAL_LOG_FSYNC_PER_APPEND,
     PERSISTENCE_STATUS_UNAVAILABLE,
     SESSION_ID_REJECTED_CODE,
     STALE_TEMP_FILES_SWEPT_CODE,
     STATE_DIR_ENV_VAR,
     STATE_DIR_FALLBACK_CODE,
     STATE_DIR_TIGHTENED_CODE,
+    TRANSCRIPT_LOG_FSYNC_PER_APPEND,
     DaemonState,
     DegradationLedger,
     OperationalLog,
+    TranscriptLog,
     _bootstrap_fallback_dir,
+    _last_byte_is_newline_or_empty,
     _secure_fallback_dir,
     _sweep_stale_temp_files,
     candidate_state_dirs,
@@ -409,7 +433,14 @@ class TestFilesAndDirectoriesArePrivateRegardlessOfUmask:
     ) -> None:
         """Spies on ``os.replace`` to catch the temp file's mode the instant
         before it becomes the final path — the file named explicitly in the
-        review's fix request."""
+        review's fix request.
+
+        Updated for the append-below-the-bound fix (this round): a single
+        small write no longer takes the rewrite path at all (that is the
+        fix), so ``os.replace`` is exercised directly through
+        ``_bounded_rewrite_append`` — the only remaining caller of
+        ``os.replace`` in this module — rather than through ``OperationalLog``.
+        """
         old_umask = os.umask(0o022)
         seen_modes: list[int] = []
         real_replace = os.replace
@@ -420,8 +451,9 @@ class TestFilesAndDirectoriesArePrivateRegardlessOfUmask:
 
         monkeypatch.setattr(os, "replace", spy_replace)
         try:
-            log = OperationalLog(tmp_path / "op.log", max_bytes=10_000)
-            log.write("hello")
+            state_mod._bounded_rewrite_append(
+                tmp_path / "op.log", "hello", max_bytes=10_000, low_water_bytes=7_500
+            )
         finally:
             os.umask(old_umask)
 
@@ -539,19 +571,44 @@ class TestStatusReportsWriteFailures:
         assert status["ledger"]["last_write_error"] is None
 
     def test_status_reports_operational_log_write_failures(self, tmp_path) -> None:
+        """Updated for the append-below-the-bound fix (this round): an append
+        below the bound only needs write permission on the FILE, not the
+        directory (that is the point of the fix — it no longer creates a new
+        temp file on every write), so the file itself is blocked here rather
+        than its directory.
+        """
         state = DaemonState(tmp_path / "state")
         state.operational_log.write("a baseline write that succeeds")
 
-        os.chmod(state.dir, 0o500)  # remove write access, even for the owner
+        os.chmod(state.operational_log.path, 0o400)  # no write, even for the owner
         try:
             state.operational_log.write("this one cannot be persisted")
+            status = state.status()
+        finally:
+            os.chmod(state.operational_log.path, 0o600)
+
+        assert status["operational_log"]["write_error_count"] >= 1
+        assert status["operational_log"]["last_write_error"] is not None
+        assert "Error" in status["operational_log"]["last_write_error"]
+
+    def test_status_reports_operational_log_write_failures_when_directory_blocked(
+        self, tmp_path
+    ) -> None:
+        """The crossing-the-bound (rewrite) path still needs directory write
+        access, since it creates a fresh temp file — covered separately from
+        the append-path case above."""
+        state = DaemonState(tmp_path / "state", operational_log_max_bytes=80)
+        state.operational_log.write("a baseline write that fits under 80 bytes")
+
+        os.chmod(state.dir, 0o500)  # remove write access, even for the owner
+        try:
+            # Long enough to cross the tiny 80-byte bound and force a rewrite.
+            state.operational_log.write("this write is long enough to cross the tiny bound")
             status = state.status()
         finally:
             os.chmod(state.dir, 0o700)
 
         assert status["operational_log"]["write_error_count"] >= 1
-        assert status["operational_log"]["last_write_error"] is not None
-        assert "Error" in status["operational_log"]["last_write_error"]
 
     def test_status_reports_ledger_write_failures(self, tmp_path) -> None:
         state = DaemonState(tmp_path / "state")  # ledger file not yet created
@@ -805,3 +862,327 @@ class TestOpenTranscriptCaseSensitivityIsDocumented:
         doc = DaemonState.open_transcript.__doc__ or ""
         assert "case-insensitive" in doc
         assert "daemon" in doc.lower()
+
+
+# ── round 4, fix 1: append below the bound, rewrite (+ low-water trim) only ─
+#    when crossing it
+
+
+class TestAppendBelowBoundRewriteOnlyWhenCrossing:
+    def test_low_water_ratio_is_named_and_between_zero_and_one(self) -> None:
+        assert state_mod._LOW_WATER_RATIO == 0.75
+        assert 0 < state_mod._LOW_WATER_RATIO < 1
+
+    def test_operational_log_size_never_exceeds_bound_across_a_few_thousand_writes(
+        self, tmp_path
+    ) -> None:
+        log = OperationalLog(tmp_path / "embodiment.log", max_bytes=20_000)
+        for i in range(3_000):
+            log.write("heartbeat", step=i, note="roughly a ninety byte event payload, more or less")
+            assert log.path.stat().st_size <= 20_000
+
+    def test_transcript_log_size_never_exceeds_bound_across_a_few_thousand_writes(
+        self, tmp_path
+    ) -> None:
+        transcript = TranscriptLog(tmp_path / "sess.jsonl", max_bytes=20_000)
+        for i in range(3_000):
+            transcript.write("user", f"turn {i} of a long rambling spoken conversation transcript")
+            assert transcript.path.stat().st_size <= 20_000
+
+    def test_a_crossing_rewrite_trims_to_the_low_water_mark_not_to_the_bound(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The file's FINAL size after N writes can legitimately sit anywhere
+        between the low-water mark and the bound (appends resume and grow it
+        again after a trim) — what must hold is that EACH rewrite, at the
+        moment it happens, trims down to the low-water mark rather than to
+        just-under-the-bound. Captured via a spy on the rewrite helper."""
+        sizes_after_rewrite: list[int] = []
+        real_rewrite = state_mod._bounded_rewrite_append
+
+        def spy(path, *args, **kwargs):
+            result = real_rewrite(path, *args, **kwargs)
+            sizes_after_rewrite.append(Path(path).stat().st_size)
+            return result
+
+        monkeypatch.setattr(state_mod, "_bounded_rewrite_append", spy)
+
+        log = OperationalLog(tmp_path / "embodiment.log", max_bytes=2_000)
+        for i in range(200):
+            log.write("heartbeat", step=i)
+
+        assert sizes_after_rewrite, "expected at least one rewrite over 200 writes at this bound"
+        low_water_bytes = int(2_000 * state_mod._LOW_WATER_RATIO)
+        assert all(size <= low_water_bytes for size in sizes_after_rewrite)
+
+    def test_records_stay_readable_and_in_order_after_many_crossings(self, tmp_path) -> None:
+        log = OperationalLog(tmp_path / "embodiment.log", max_bytes=5_000)
+        for i in range(1_000):
+            log.write("heartbeat", step=i)
+        records = log.read_all()
+        assert records
+        assert records[-1]["step"] == 999
+        assert log.path.stat().st_size <= 5_000
+
+
+# ── round 4, fix 2: fsync policy is a named, per-log-type choice ───────────
+
+
+class TestFsyncPolicyIsNamedPerLogType:
+    def test_ledger_fsync_policy_is_true(self) -> None:
+        assert LEDGER_FSYNC_PER_APPEND is True
+
+    def test_operational_log_fsync_policy_is_false(self) -> None:
+        assert OPERATIONAL_LOG_FSYNC_PER_APPEND is False
+
+    def test_transcript_log_fsync_policy_is_false(self) -> None:
+        assert TRANSCRIPT_LOG_FSYNC_PER_APPEND is False
+
+    def test_operational_log_and_transcript_log_instances_expose_the_policy(self, tmp_path) -> None:
+        log = OperationalLog(tmp_path / "embodiment.log", max_bytes=10_000)
+        transcript = TranscriptLog(tmp_path / "sess.jsonl", max_bytes=10_000)
+        assert log.fsync is False
+        assert transcript.fsync is False
+
+    def test_ledger_append_calls_fsync_every_time(self, tmp_path, monkeypatch) -> None:
+        calls = {"n": 0}
+        real_fsync = os.fsync
+
+        def counting_fsync(fd):
+            calls["n"] += 1
+            return real_fsync(fd)
+
+        monkeypatch.setattr(os, "fsync", counting_fsync)
+        ledger = DegradationLedger(tmp_path / "degradations.jsonl")
+        for i in range(10):
+            ledger.append("some-code", f"detail {i}")
+        assert calls["n"] == 10
+
+    def test_operational_log_append_never_calls_fsync_below_the_bound(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        calls = {"n": 0}
+        real_fsync = os.fsync
+
+        def counting_fsync(fd):
+            calls["n"] += 1
+            return real_fsync(fd)
+
+        monkeypatch.setattr(os, "fsync", counting_fsync)
+        # A bound large enough that every write below is a plain append
+        # (never a rewrite, whose own atomic-rename primitive fsyncs the
+        # temp file for a different, orthogonal reason).
+        log = OperationalLog(tmp_path / "embodiment.log", max_bytes=1_000_000)
+        for i in range(10):
+            log.write("heartbeat", step=i)
+        assert calls["n"] == 0
+
+    def test_transcript_log_append_never_calls_fsync_below_the_bound(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        calls = {"n": 0}
+        real_fsync = os.fsync
+
+        def counting_fsync(fd):
+            calls["n"] += 1
+            return real_fsync(fd)
+
+        monkeypatch.setattr(os, "fsync", counting_fsync)
+        transcript = TranscriptLog(tmp_path / "sess.jsonl", max_bytes=1_000_000)
+        for i in range(10):
+            transcript.write("user", f"turn {i}")
+        assert calls["n"] == 0
+
+
+# ── round 4, fix 3: a torn last line is tolerated, and never glued to ──────
+
+
+class TestTornLastLineIsToleratedAndNeverGluedTo:
+    @staticmethod
+    def _corrupt_with_torn_line(path, fragment: str) -> None:
+        """Simulates a crash mid-write: a fragment with no trailing newline."""
+        with open(path, "a", encoding="utf-8") as handle:  # noqa: PTH123
+            handle.write(fragment)
+
+    def test_ledger_next_append_after_a_torn_line_starts_fresh(self, tmp_path) -> None:
+        ledger = DegradationLedger(tmp_path / "degradations.jsonl")
+        ledger.append("first", "one")
+        ledger.append("second", "two")
+        self._corrupt_with_torn_line(ledger.path, '{"ts": 1.0, "code": "torn-by-a-cra')
+
+        ledger.append("third", "three")
+
+        codes = [r.code for r in ledger.read_all()]
+        assert codes == ["first", "second", "third"]
+
+    def test_operational_log_next_append_after_a_torn_line_starts_fresh(self, tmp_path) -> None:
+        log = OperationalLog(tmp_path / "embodiment.log", max_bytes=1_000_000)
+        log.write("first")
+        log.write("second")
+        self._corrupt_with_torn_line(log.path, '{"ts": 1.0, "event": "torn-by-a-cra')
+
+        log.write("third")
+
+        events = [r["event"] for r in log.read_all()]
+        assert events == ["first", "second", "third"]
+
+    def test_transcript_log_next_append_after_a_torn_line_starts_fresh(self, tmp_path) -> None:
+        transcript = TranscriptLog(tmp_path / "sess.jsonl", max_bytes=1_000_000)
+        transcript.write("user", "first")
+        transcript.write("assistant", "second")
+        self._corrupt_with_torn_line(transcript.path, '{"ts": 1.0, "role": "torn-by-a-cra')
+
+        transcript.write("user", "third")
+
+        texts = [r["text"] for r in transcript.read_all()]
+        assert texts == ["first", "second", "third"]
+
+    def test_a_torn_line_is_also_not_glued_to_across_a_crossing_rewrite(self, tmp_path) -> None:
+        """The crossing-the-bound rewrite reads existing content directly
+        (not through _append_line) so it needs the same guard independently."""
+        log = OperationalLog(tmp_path / "embodiment.log", max_bytes=80)
+        log.write("first")
+        self._corrupt_with_torn_line(log.path, '{"ts": 1.0, "event": "torn-by-a-cra')
+
+        log.write("this write is long enough to force a crossing rewrite")
+
+        events = [r["event"] for r in log.read_all()]
+        assert events[-1] == "this write is long enough to force a crossing rewrite"
+        assert "torn-by-a-cra" not in " ".join(events)
+
+    def test_last_byte_probe(self, tmp_path) -> None:
+        path = tmp_path / "probe.jsonl"
+        assert _last_byte_is_newline_or_empty(path) is True  # does not exist yet
+        path.write_text("")
+        assert _last_byte_is_newline_or_empty(path) is True  # empty
+        path.write_text("no trailing newline")
+        assert _last_byte_is_newline_or_empty(path) is False
+        path.write_text("has a trailing newline\n")
+        assert _last_byte_is_newline_or_empty(path) is True
+
+
+# ── round 4, fix 4: concurrent appends never interleave or lose a record ───
+
+
+class TestConcurrentAppendsNeverInterleaveOrLoseARecord:
+    def test_many_threads_appending_below_the_bound_produce_an_exact_count(self, tmp_path) -> None:
+        log = OperationalLog(tmp_path / "embodiment.log", max_bytes=10_000_000)
+        n_threads, n_per_thread = 8, 200
+
+        def worker(thread_id: int) -> None:
+            for i in range(n_per_thread):
+                log.write("heartbeat", thread=thread_id, i=i)
+
+        threads = [threading.Thread(target=worker, args=(t,)) for t in range(n_threads)]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join(timeout=30)
+        assert all(not th.is_alive() for th in threads)
+
+        records = log.read_all()
+        assert len(records) == n_threads * n_per_thread
+        seen = {(r["thread"], r["i"]) for r in records}
+        assert len(seen) == n_threads * n_per_thread  # no duplicate, none corrupted-and-dropped
+
+    def test_many_threads_appending_to_the_ledger_produce_an_exact_count(self, tmp_path) -> None:
+        ledger = DegradationLedger(tmp_path / "degradations.jsonl")
+        n_threads, n_per_thread = 8, 100
+
+        def worker(thread_id: int) -> None:
+            for i in range(n_per_thread):
+                ledger.append(f"code-{thread_id}", str(i))
+
+        threads = [threading.Thread(target=worker, args=(t,)) for t in range(n_threads)]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join(timeout=30)
+        assert all(not th.is_alive() for th in threads)
+
+        assert len(ledger.read_all()) == n_threads * n_per_thread
+
+    def test_many_threads_appending_across_a_tight_bound_never_corrupt_a_line(
+        self, tmp_path
+    ) -> None:
+        """A tight bound forces frequent rewrites under concurrent load.
+        Trimming legitimately drops old records under load, so an exact
+        count is not asserted here — only that every surviving line still
+        parses (nothing interleaved) and the bound still holds.
+        """
+        import json as jsonlib
+
+        log = OperationalLog(tmp_path / "embodiment.log", max_bytes=3_000)
+        n_threads, n_per_thread = 6, 150
+
+        def worker(thread_id: int) -> None:
+            for i in range(n_per_thread):
+                log.write("heartbeat", thread=thread_id, i=i)
+
+        threads = [threading.Thread(target=worker, args=(t,)) for t in range(n_threads)]
+        for th in threads:
+            th.start()
+        for th in threads:
+            th.join(timeout=30)
+        assert all(not th.is_alive() for th in threads)
+
+        raw = log.path.read_text(encoding="utf-8")
+        lines = [ln for ln in raw.splitlines() if ln.strip()]
+        for ln in lines:
+            jsonlib.loads(ln)  # must not raise — proves no interleaved/corrupted line
+        assert log.path.stat().st_size <= 3_000
+
+
+# ── round 4, fix 5: a performance regression test that asserts operation ───
+#    counts, not wall-clock, so it cannot flake
+
+
+class TestRewriteHelperCallCountRegressionGuard:
+    @staticmethod
+    def _spy_on_rewrite(monkeypatch) -> dict:
+        calls = {"n": 0}
+        real_rewrite = state_mod._bounded_rewrite_append
+
+        def counting_rewrite(*args, **kwargs):
+            calls["n"] += 1
+            return real_rewrite(*args, **kwargs)
+
+        monkeypatch.setattr(state_mod, "_bounded_rewrite_append", counting_rewrite)
+        return calls
+
+    def test_zero_rewrites_for_writes_that_stay_under_the_bound(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        calls = self._spy_on_rewrite(monkeypatch)
+
+        log = OperationalLog(tmp_path / "embodiment.log", max_bytes=1_000_000)
+        for i in range(300):
+            log.write("heartbeat", step=i, note="roughly a ninety byte event payload, more or less")
+
+        assert calls["n"] == 0
+
+    def test_a_small_number_of_rewrites_for_writes_that_repeatedly_cross_the_bound(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        calls = self._spy_on_rewrite(monkeypatch)
+
+        n_writes = 2_000
+        log = OperationalLog(tmp_path / "embodiment.log", max_bytes=20_000)
+        for i in range(n_writes):
+            log.write("heartbeat", step=i, note="roughly a ninety byte event payload, more or less")
+
+        # Measured empirically at 45 for this exact scenario; asserted with
+        # generous margin (10x) so the test is robust to minor record-size
+        # or JSON-formatting drift while still failing hard on a regression
+        # back to "one rewrite per write" (which would be 2000, not < 200).
+        assert 0 < calls["n"] < n_writes // 10
+
+    def test_a_single_write_that_starts_over_the_bound_rewrites_exactly_once(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        calls = self._spy_on_rewrite(monkeypatch)
+
+        log = OperationalLog(tmp_path / "embodiment.log", max_bytes=10)
+        log.write("this single write immediately exceeds the tiny ten byte bound")
+
+        assert calls["n"] == 1
