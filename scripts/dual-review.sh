@@ -107,7 +107,10 @@ elapsed=$(( $(date +%s) - start ))
 status=0
 for r in qwen pi; do
   rc=$(cat "$out_dir/$r.rc")
-  verdict=$(grep -m1 -i '^VERDICT:' "$out_dir/$r.md" || true)
+  # Reviewers drift on the last line ("## Verdict: approve", "**VERDICT**: ..."), so
+  # match loosely; a review with criteria but no verdict line is still a review.
+  verdict=$(grep -m1 -i -E '^[#*[:space:]]*verdict[*[:space:]]*:' "$out_dir/$r.md" | sed -E 's/^[#*[:space:]]*//' || true)
+  if [[ -z "$verdict" ]] && grep -q -i '^## Criteria' "$out_dir/$r.md"; then verdict="VERDICT: (none stated)"; fi
   counts=$(grep -o -E '^\- \[(BLOCKER|MAJOR|MINOR)\]' "$out_dir/$r.md" | sort | uniq -c | tr '\n' ' ' || true)
   if [[ "$rc" != 0 || -z "$verdict" ]]; then
     status=3
