@@ -32,9 +32,10 @@ from __future__ import annotations
 
 import ast
 import subprocess  # nosec B404 - fixed argv, no shell, builds a throwaway git repo
+import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 
@@ -485,6 +486,393 @@ class TestSaturation:
 
     def test_the_default_inflight_bound_exceeds_the_worker_count(self, tmp_path: Path) -> None:
         assert mem.MAX_INFLIGHT > mem.DEFAULT_MAX_WORKERS >= 2
+
+
+# ── 2c. shutdown ──────────────────────────────────────────────────────────────
+
+
+class TestCloseAccountsForWhatIsUnfinished:
+    """``close()`` must say what it is leaving behind, and bound how long it waits.
+
+    The failure this replaces: ``close()`` returned in 0.00 s with ``pending=1``
+    and told nobody which write was unfinished, while the *process* was then
+    held for as long as the store lock was held (measured 1.11 s and 4.10 s;
+    eidetic's embedder timeout makes 10 s reachable). A host with a bounded
+    ``stop`` has only one move left — hard-exit — and at that point the heard
+    line is gone with nothing anywhere saying so. The module's own promise
+    ("either it is eventually written, or a degradation says it was not") was
+    false on exactly that path.
+
+    So ``close`` now returns an account. The host decides whether to wait longer
+    or hard-exit; either way it holds the ids first.
+    """
+
+    @staticmethod
+    def _held(release: threading.Event, entered: threading.Event) -> Any:
+        """A write backend that takes the real store lock and hangs."""
+
+        def backend(record: Any, **kwargs: Any) -> Any:
+            with mem.continuity._pinned_store(kwargs["data_dir"]):
+                entered.set()
+                release.wait(timeout=30)
+            return mem.continuity.RememberOutcome(
+                ok=True, record_id=record["id"], degradation=None, raw=dict(record)
+            )
+
+        return backend
+
+    def test_close_names_the_writes_it_could_not_confirm(self, tmp_path: Path) -> None:
+        """The headline requirement: unfinished work is named, not merely counted."""
+        release, entered = threading.Event(), threading.Event()
+        room = mem.RoomMemory(tmp_path / "store", remember_fn=self._held(release, entered))
+        try:
+            deferred = room.remember("a heard line", deadline=0.05)
+            assert deferred.degradation is not None
+            assert deferred.degradation.code == mem.CODE_REMEMBER_DEFERRED
+            assert entered.wait(timeout=_PROMPT_SECONDS)
+
+            started = time.monotonic()
+            report = room.close(deadline=0.05)
+            elapsed = time.monotonic() - started
+
+            assert elapsed < _PROMPT_SECONDS
+            assert report.unconfirmed == (deferred.record_id,)
+            assert report.landed == ()
+            assert [d.code for d in report.degradations] == [mem.CODE_REMEMBER_UNCONFIRMED_AT_CLOSE]
+            assert deferred.record_id in report.degradations[0].reason
+            assert report.ok is False
+        finally:
+            release.set()
+            _settle(room)
+
+    def test_close_waits_for_a_write_that_can_finish(self, tmp_path: Path) -> None:
+        release, entered = threading.Event(), threading.Event()
+        room = mem.RoomMemory(tmp_path / "store", remember_fn=self._held(release, entered))
+        try:
+            deferred = room.remember("a heard line", deadline=0.05)
+            assert entered.wait(timeout=_PROMPT_SECONDS)
+            release.set()
+
+            report = room.close(deadline=_PROMPT_SECONDS)
+
+            assert report.landed == (deferred.record_id,)
+            assert report.unconfirmed == ()
+            assert report.degradations == ()
+            assert report.ok is True
+        finally:
+            release.set()
+
+    def test_close_reports_a_write_that_failed_during_the_wait(self, tmp_path: Path) -> None:
+        """A failed write is neither landed nor unconfirmed — it is resolved, badly."""
+        release = threading.Event()
+
+        def failing(record: Any, **kwargs: Any) -> Any:
+            release.wait(timeout=30)
+            raise OSError("the store is gone")
+
+        room = mem.RoomMemory(tmp_path / "store", remember_fn=failing)
+        try:
+            deferred = room.remember("a heard line", deadline=0.05)
+            release.set()
+            report = room.close(deadline=_PROMPT_SECONDS)
+
+            assert report.failed == (deferred.record_id,)
+            assert report.landed == () and report.unconfirmed == ()
+            assert report.ok is False
+        finally:
+            release.set()
+
+    def test_close_abandons_reads_without_waiting(self, tmp_path: Path) -> None:
+        """Reads lose nothing, so close never spends its deadline on one."""
+        release, entered = threading.Event(), threading.Event()
+
+        def hang(*args: Any, **kwargs: Any) -> Any:
+            entered.set()
+            release.wait(timeout=30)
+            return _outcome()
+
+        room = mem.RoomMemory(tmp_path / "store", recall_fn=hang)
+        try:
+            assert room.recall("anything", deadline=0.05).ok is False
+            assert entered.wait(timeout=_PROMPT_SECONDS)
+
+            started = time.monotonic()
+            report = room.close(deadline=_PROMPT_SECONDS)
+            elapsed = time.monotonic() - started
+
+            assert elapsed < 1.0, f"close waited {elapsed:.2f}s on a read"
+            assert report.reads_abandoned == 1
+            assert report.unconfirmed == ()
+            assert report.ok is True
+        finally:
+            release.set()
+
+    def test_close_stops_accepting_new_work_immediately(self, tmp_path: Path) -> None:
+        room = mem.RoomMemory(tmp_path / "store", recall_fn=lambda *a, **k: _outcome())
+        room.close()
+
+        assert [d.code for d in room.recall("anything").degradations] == [mem.CODE_CLOSED]
+        written = room.remember("too late")
+        assert written.degradation is not None
+        assert written.degradation.code == mem.CODE_CLOSED
+        assert "NOT written" in written.degradation.reason
+
+    def test_close_is_idempotent_and_takes_no_arguments(self, tmp_path: Path) -> None:
+        room = mem.RoomMemory(tmp_path / "store")
+        first = room.close()
+        second = room.close()
+
+        assert first.ok is True and second.ok is True
+        assert second.unconfirmed == ()
+
+    def test_close_never_raises_on_a_broken_executor(self, tmp_path: Path) -> None:
+        room = mem.RoomMemory(tmp_path / "store")
+        room._executor.shutdown(wait=True)
+        report = room.close()
+        assert isinstance(report, mem.CloseReport)
+
+    def test_the_report_carries_no_record_text(self, tmp_path: Path) -> None:
+        """Room conversation never leaves the store through a report or a log."""
+        release, entered = threading.Event(), threading.Event()
+        secret = "the private thing that was said aloud"
+        room = mem.RoomMemory(tmp_path / "store", remember_fn=self._held(release, entered))
+        try:
+            room.remember(secret, deadline=0.05)
+            assert entered.wait(timeout=_PROMPT_SECONDS)
+            report = room.close(deadline=0.05)
+
+            rendered = repr(report) + str(report.to_dict())
+            assert secret not in rendered
+            for word in secret.split():
+                if len(word) > 4:
+                    assert word not in rendered
+        finally:
+            release.set()
+            _settle(room)
+
+    def test_a_deferred_write_is_also_recorded_on_the_ledger_at_close(self, tmp_path: Path) -> None:
+        """A host that only drains the ledger still learns about it."""
+        release, entered = threading.Event(), threading.Event()
+        room = mem.RoomMemory(tmp_path / "store", remember_fn=self._held(release, entered))
+        try:
+            room.remember("a heard line", deadline=0.05)
+            assert entered.wait(timeout=_PROMPT_SECONDS)
+            room.close(deadline=0.05)
+
+            assert mem.CODE_REMEMBER_UNCONFIRMED_AT_CLOSE in {
+                d.code for d in room.drain_abandoned()
+            }
+        finally:
+            release.set()
+            _settle(room)
+
+    def test_the_default_close_deadline_is_bounded_and_named(self) -> None:
+        import inspect
+
+        default = inspect.signature(mem.RoomMemory.close).parameters["deadline"].default
+        assert default == mem.DEFAULT_CLOSE_DEADLINE
+        assert 0 < mem.DEFAULT_CLOSE_DEADLINE <= 5.0
+
+
+class TestTheProcessExitHazard:
+    """Measured in a child process, because it is a property of interpreter exit.
+
+    Nothing about this can be asserted from inside the test process: the claim
+    is about what happens *after* the last line of a host's ``main``.
+    """
+
+    CHILD = (
+        "import os, sys, threading, time\n"
+        "import embodiment.continuity as c\n"
+        "from embodiment import memory as m\n"
+        "data_dir, hold, hard = sys.argv[1], float(sys.argv[2]), sys.argv[3] == 'hard'\n"
+        "entered = threading.Event()\n"
+        "def holder():\n"
+        "    with c._pinned_store(data_dir):\n"
+        "        entered.set(); time.sleep(hold)\n"
+        "threading.Thread(target=holder, daemon=True).start()\n"
+        "entered.wait(5)\n"
+        "rm = m.RoomMemory(data_dir=data_dir, scope='probe')\n"
+        "rm.remember('the heard line that must not vanish', deadline=0.1)\n"
+        "report = rm.close(deadline=0.1)\n"
+        "print('UNCONFIRMED:' + ','.join(report.unconfirmed), flush=True)\n"
+        "if hard:\n"
+        "    sys.stdout.flush(); os._exit(0)\n"
+    )
+
+    def _run(self, tmp_path: Path, hold: float, hard: bool) -> tuple[float, str, bool]:
+        data_dir = tmp_path / ("hard" if hard else "normal")
+        data_dir.mkdir()
+        started = time.monotonic()
+        proc = subprocess.run(  # nosec B603 - fixed argv, no shell, tmp_path only
+            [
+                sys.executable,
+                "-c",
+                self.CHILD,
+                str(data_dir),
+                str(hold),
+                "hard" if hard else "soft",
+            ],
+            text=True,
+            capture_output=True,
+            timeout=60,
+            check=True,
+        )
+        elapsed = time.monotonic() - started
+        landed = any(
+            "heard line" in line
+            for path in data_dir.rglob("*.jsonl")
+            for line in path.read_text(encoding="utf-8").splitlines()
+        )
+        return elapsed, proc.stdout, landed
+
+    def test_a_normal_exit_still_lands_the_deferred_write(self, tmp_path: Path) -> None:
+        """The guarantee that keeps the workers non-daemon.
+
+        ``ThreadPoolExecutor``'s workers are non-daemon and the interpreter
+        joins them at exit, so a write deferred past ``close`` still reaches
+        disk. That is why this module does NOT make them daemon threads: losing
+        a heard line is worse than a slow exit.
+        """
+        elapsed, stdout, landed = self._run(tmp_path, hold=0.5, hard=False)
+
+        assert "UNCONFIRMED:probe-" in stdout, stdout
+        assert landed is True
+        # ...and the cost of that guarantee, measured rather than asserted:
+        # exit waited for the lock holder.
+        assert elapsed > 0.5
+
+    def test_a_hard_exit_after_close_is_bounded_and_the_id_was_reported(
+        self, tmp_path: Path
+    ) -> None:
+        """The escape hatch: a host with a bounded ``stop`` has the ids first.
+
+        This is the path where the heard line really can be lost — and the
+        point of the report is that the host knew its id before choosing to
+        lose it.
+        """
+        elapsed, stdout, _landed = self._run(tmp_path, hold=3.0, hard=True)
+
+        assert "UNCONFIRMED:probe-" in stdout, stdout
+        assert elapsed < 3.0, f"a hard exit after close took {elapsed:.2f}s"
+
+
+class TestTheReapingGap:
+    """Between ``future.result()`` timing out and the reaper being attached.
+
+    ``add_done_callback`` on an *already finished* future runs the callback
+    immediately, so nothing can slip through that window — but "should be safe"
+    is not a test, and this is the window where a heard line would vanish with
+    no record anywhere. Both outcomes are pinned.
+    """
+
+    def test_a_write_that_failed_in_the_gap_is_still_recorded(self, tmp_path: Path) -> None:
+        room = mem.RoomMemory(tmp_path / "store")
+        try:
+            finished: "Future[Any]" = Future()
+            finished.set_running_or_notify_cancel()
+            finished.set_exception(OSError("failed before the reaper was attached"))
+
+            room._reap_write(finished, "rec-gap", 0.05)
+
+            assert [d.code for d in room.abandoned] == [mem.CODE_ABANDONED_REMEMBER]
+            assert "rec-gap" in room.abandoned[0].reason
+        finally:
+            room.close()
+
+    def test_a_write_that_succeeded_in_the_gap_records_nothing(self, tmp_path: Path) -> None:
+        room = mem.RoomMemory(tmp_path / "store")
+        try:
+            finished: "Future[Any]" = Future()
+            finished.set_running_or_notify_cancel()
+            finished.set_result(
+                mem.continuity.RememberOutcome(ok=True, record_id="rec-gap", degradation=None)
+            )
+
+            room._reap_write(finished, "rec-gap", 0.05)
+
+            assert room.abandoned == ()
+        finally:
+            room.close()
+
+    def test_a_race_at_the_deadline_is_never_neither(self, tmp_path: Path) -> None:
+        """End to end, repeatedly: confirmed or recorded, never silently gone."""
+        for attempt in range(20):
+            release = threading.Event()
+
+            def failing(record: Any, **kwargs: Any) -> Any:
+                release.wait(timeout=30)
+                raise OSError("late failure")
+
+            room = mem.RoomMemory(tmp_path / f"store-{attempt}", remember_fn=failing)
+            try:
+                # Release at the same moment the deadline expires, so the future
+                # may resolve on either side of the reaper being attached.
+                threading.Timer(0.01, release.set).start()
+                result = room.remember("a heard line", deadline=0.01)
+
+                assert result.degradation is not None, f"attempt {attempt}: silently ok"
+                if result.degradation.code != mem.CODE_REMEMBER_DEFERRED:
+                    # The future resolved inside the deadline: the caller was
+                    # told outright, so there is nothing left to reap.
+                    assert result.degradation.code == mem.continuity.CODE_SUBSYSTEM_ERROR
+                    continue
+
+                # Deferred — so the reaper owes us a record, whichever side of
+                # the callback attachment the future actually finished on.
+                limit = time.monotonic() + _PROMPT_SECONDS
+                while not room.abandoned and time.monotonic() < limit:
+                    time.sleep(0.002)
+                assert [d.code for d in room.abandoned] == [
+                    mem.CODE_ABANDONED_REMEMBER
+                ], f"attempt {attempt}: deferred and then neither confirmed nor recorded"
+            finally:
+                release.set()
+                room.close()
+
+
+class TestAClosedLayerIsDistinguishableFromABrokenOne:
+    """``memory-closed`` means "I closed it"; a subsystem error means "it broke"."""
+
+    def test_a_write_to_a_shut_down_executor_reads_as_closed(self, tmp_path: Path) -> None:
+        executor = ThreadPoolExecutor(max_workers=1)
+        room = mem.RoomMemory(tmp_path / "store", executor=executor)
+        executor.shutdown(wait=True)
+        try:
+            result = room.remember("a heard line", deadline=0.05)
+            assert result.degradation is not None
+            assert result.degradation.code == mem.CODE_CLOSED
+        finally:
+            room.close()
+
+    def test_a_broken_executor_surfacing_at_result_reads_as_closed(self, tmp_path: Path) -> None:
+        from concurrent.futures import BrokenExecutor
+
+        def broken(*args: Any, **kwargs: Any) -> Any:
+            raise BrokenExecutor("the pool died")
+
+        room = mem.RoomMemory(tmp_path / "store", remember_fn=broken, recall_fn=broken)
+        try:
+            written = room.remember("a heard line", deadline=_PROMPT_SECONDS)
+            read = room.recall("anything", deadline=_PROMPT_SECONDS)
+
+            assert written.degradation is not None
+            assert written.degradation.code == mem.CODE_CLOSED
+            assert [d.code for d in read.degradations] == [mem.CODE_CLOSED]
+        finally:
+            room.close()
+
+    def test_an_ordinary_store_failure_is_still_a_subsystem_error(self, tmp_path: Path) -> None:
+        def boom(*args: Any, **kwargs: Any) -> Any:
+            raise ValueError("disk is full")
+
+        room = mem.RoomMemory(tmp_path / "store", remember_fn=boom)
+        try:
+            result = room.remember("a heard line", deadline=_PROMPT_SECONDS)
+            assert result.degradation is not None
+            assert result.degradation.code == mem.continuity.CODE_SUBSYSTEM_ERROR
+        finally:
+            room.close()
 
 
 # ── 2b. the deadline ──────────────────────────────────────────────────────────

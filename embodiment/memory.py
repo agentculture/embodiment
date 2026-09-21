@@ -82,6 +82,23 @@ process-global and held for a whole call, so while one eidetic call is hung,
 per-call success — a hung store makes this layer return promptly and honestly,
 not keep working.
 
+**Shutdown is the third place that promise can break**, and it did. A
+``close()`` that returned instantly with a write still in flight, naming
+nothing, left the host with no third option: wait forever, or hard-exit and
+lose a heard line with no record of which one. So :meth:`RoomMemory.close`
+takes its own deadline and returns a :class:`CloseReport` naming the record ids
+that landed, the ones still unconfirmed, and the ones that failed — ids only,
+never text, because these are lines spoken in a room. Each unconfirmed id also
+gets a :data:`CODE_REMEMBER_UNCONFIRMED_AT_CLOSE` degradation. The host owns
+the decision; this layer's job is to make sure it is an informed one.
+
+Worker threads are deliberately **non-daemon**, so an unconfirmed write still
+lands on a normal interpreter exit — at the cost of an exit that can be held
+for as long as the store call takes. A host needing a bounded ``stop`` must
+hard-exit after ``close(deadline)`` returns, having recorded the unconfirmed
+ids first. Both halves of that are measured in a child process; see
+:meth:`RoomMemory.close`.
+
 **Saturation.** Bounding the wait, not the work, means hung workers accumulate.
 Left alone, a pool would either grow threads without limit or build a queue of
 jobs whose callers have all long since given up. Neither is acceptable in a
@@ -150,8 +167,9 @@ import hashlib
 import threading
 from collections import deque
 from collections.abc import Iterable, Mapping, Sequence
-from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import BrokenExecutor, Future, ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FutureTimeoutError
+from concurrent.futures import wait
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -176,6 +194,7 @@ __all__ = [
     "RECALL_MODE_SEMANTIC",
     "MAX_ABANDONED",
     "MAX_INFLIGHT",
+    "DEFAULT_CLOSE_DEADLINE",
     "BEGIN_MARK",
     "END_MARK",
     "QUOTE",
@@ -184,8 +203,10 @@ __all__ = [
     "CODE_ABANDONED_RECALL",
     "CODE_REMEMBER_DEFERRED",
     "CODE_ABANDONED_REMEMBER",
+    "CODE_REMEMBER_UNCONFIRMED_AT_CLOSE",
     "CODE_SATURATED",
     "CODE_CLOSED",
+    "CloseReport",
     "RememberResult",
     "RecallResult",
     "RoomMemory",
@@ -218,9 +239,15 @@ DEFAULT_WRITE_DEADLINE = 0.5
 DEFAULT_MAX_WORKERS = 4
 
 #: How many calls may be in flight (running *or* queued) before further calls
-#: are refused outright. See :meth:`RoomMemory._reserve` for why refusing beats
+#: are refused outright. See :meth:`RoomMemory._submit` for why refusing beats
 #: queueing.
 MAX_INFLIGHT = 8
+
+#: Seconds :meth:`RoomMemory.close` will wait for in-flight *writes*. Bounded
+#: well below eidetic's 10 s embedder timeout on purpose: a shutdown that can
+#: take as long as the slowest possible store call is not a bounded shutdown.
+#: Long enough that a write held behind a brief lock still confirms.
+DEFAULT_CLOSE_DEADLINE = 2.0
 
 #: eidetic's fully-offline lexical mode — no embedder, no socket, no 10 s client
 #: timeout. The fast path a spoken turn runs on.
@@ -278,6 +305,10 @@ CODE_REMEMBER_DEFERRED = "remember-deferred"
 #: :attr:`RoomMemory.abandoned` — this is the record that stops a deferred write
 #: from being a silently dropped one.
 CODE_ABANDONED_REMEMBER = "abandoned-remember"
+#: A write was still in flight when :meth:`RoomMemory.close` ran out of
+#: deadline. It may or may not land — the host has the record id and owns the
+#: choice between waiting longer and hard-exiting.
+CODE_REMEMBER_UNCONFIRMED_AT_CLOSE = "remember-unconfirmed-at-close"
 #: Every in-flight slot is occupied; the call was refused rather than queued.
 CODE_SATURATED = "memory-saturated"
 #: The memory layer was closed; no further work is submitted.
@@ -351,6 +382,65 @@ class RecallResult:
         }
 
 
+@dataclass(frozen=True)
+class CloseReport:
+    """What :meth:`RoomMemory.close` left behind, named rather than counted.
+
+    A shutdown that returns "there was 1 thing pending" gives a host nothing to
+    act on. This names the record ids, because the host's next move — wait
+    longer, or hard-exit and write the ids into its own crash ledger — is only
+    available to someone holding them.
+
+    **Ids only, never text.** Every id here is a content hash of a line spoken
+    in a room; the line itself never leaves the store through this object, its
+    ``repr``, or a degradation reason.
+
+    Fields
+    ------
+    landed:
+        Writes that completed successfully during the wait.
+    unconfirmed:
+        Writes still in flight when the deadline passed. These **may or may not**
+        land: the worker was not killed, so on a normal interpreter exit it
+        still will (see :meth:`RoomMemory.close`), and on a hard exit it will
+        not. Each one has a :data:`CODE_REMEMBER_UNCONFIRMED_AT_CLOSE`
+        degradation in :attr:`degradations`.
+    failed:
+        Writes that resolved *badly* during the wait. Kept separate from
+        ``unconfirmed`` because the two say different things: this one is
+        settled and definitely did not land, and collapsing it into either of
+        the other buckets would misreport it. Already on the abandoned ledger.
+    reads_abandoned:
+        How many recalls were still running. They are dropped without waiting —
+        a read loses nothing.
+    """
+
+    landed: tuple[str, ...] = ()
+    unconfirmed: tuple[str, ...] = ()
+    failed: tuple[str, ...] = ()
+    reads_abandoned: int = 0
+    degradations: tuple[Degradation, ...] = ()
+
+    @property
+    def ok(self) -> bool:
+        """``True`` when nothing was left in doubt and nothing failed.
+
+        Abandoned *reads* do not make a close unclean: dropping a read costs
+        the host nothing it had not already given up on.
+        """
+        return not self.unconfirmed and not self.failed
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ok": self.ok,
+            "landed": list(self.landed),
+            "unconfirmed": list(self.unconfirmed),
+            "failed": list(self.failed),
+            "reads_abandoned": self.reads_abandoned,
+            "degradations": [d.to_dict() for d in self.degradations],
+        }
+
+
 def _degradation(
     stage: str, code: str, reason: str, exc: Optional[BaseException] = None
 ) -> Degradation:
@@ -361,6 +451,39 @@ def _degradation(
         reason=reason[:_MAX_REASON_LEN],
         exception=None if exc is None else type(exc).__name__,
     )
+
+
+def _settled(future: "Future[Any]") -> Optional[bool]:
+    """``True`` landed, ``False`` resolved badly, ``None`` still in flight.
+
+    Three states, not two, because "did not land" and "has not landed yet" are
+    different facts about a heard line and a host acts differently on each.
+    """
+    if not future.done():
+        return None
+    try:
+        if future.exception() is not None:
+            return False
+        return bool(getattr(future.result(), "ok", False))
+    except Exception:  # noqa: BLE001  # a future we cannot read is not one that landed
+        return False
+
+
+def _failure_code(exc: BaseException) -> str:
+    """Which degradation code a worker's exception deserves.
+
+    A host has to be able to tell **"I shut this down"** from **"it broke"** —
+    the first is its own doing and needs no investigation, the second is a fault.
+    A dead or shutting-down pool raises :class:`BrokenExecutor` (or a plain
+    ``RuntimeError`` naming shutdown, which is what ``Executor.submit`` uses),
+    and reporting either as a generic subsystem error would send someone looking
+    for a store fault that never happened.
+    """
+    if isinstance(exc, BrokenExecutor):
+        return CODE_CLOSED
+    if isinstance(exc, RuntimeError) and "shutdown" in str(exc).lower():
+        return CODE_CLOSED
+    return continuity.CODE_SUBSYSTEM_ERROR
 
 
 # ---------------------------------------------------------------------------
@@ -435,6 +558,11 @@ class RoomMemory:
         self._owns_executor = executor is None
         self._max_inflight = max(1, int(max_inflight))
         self._inflight = 0
+        # In-flight work, split by kind because close treats them differently: a
+        # write is waited for and named, a read is dropped. Writes map to their
+        # record ID — never their text.
+        self._writes: dict["Future[Any]", str] = {}
+        self._reads: set["Future[Any]"] = set()
         self._closed = False
         self._lock = threading.Lock()
         self._last_mode: Optional[str] = None
@@ -489,13 +617,18 @@ class RoomMemory:
 
     # -- submission ---------------------------------------------------------
 
-    def _submit(self, work: Callable[[], Any]) -> tuple[Optional["Future[Any]"], Optional[str]]:
+    def _submit(
+        self, work: Callable[[], Any], *, record_id: Optional[str] = None
+    ) -> tuple[Optional["Future[Any]"], Optional[str]]:
         """``(future, refusal_code)`` — reserve an in-flight slot and start *work*.
 
         Refuses rather than queues once :attr:`pending` reaches the cap. The
         alternative — an unbounded queue — degrades in the one way a presence
         layer must not: invisibly, and worse the longer it goes on, with every
         queued job belonging to a turn that ended minutes ago.
+
+        *record_id* marks the job as a **write** and is what lets
+        :meth:`close` name what it could not finish. It is an id, never text.
         """
         with self._lock:
             if self._closed:
@@ -504,9 +637,11 @@ class RoomMemory:
                 return None, CODE_SATURATED
             self._inflight += 1
 
-        def release(_done: "Future[Any]") -> None:
+        def release(done: "Future[Any]") -> None:
             with self._lock:
                 self._inflight = max(0, self._inflight - 1)
+                self._writes.pop(done, None)
+                self._reads.discard(done)
 
         try:
             future = self._executor.submit(work)
@@ -518,6 +653,11 @@ class RoomMemory:
                 )
             return None, CODE_CLOSED
 
+        with self._lock:
+            if record_id is None:
+                self._reads.add(future)
+            else:
+                self._writes[future] = record_id
         future.add_done_callback(release)
         return future, None
 
@@ -587,7 +727,7 @@ class RoomMemory:
                 backend=self._backend,
             )
 
-        future, refusal = self._submit(write)
+        future, refusal = self._submit(write, record_id=identifier)
         if future is None:
             return RememberResult(
                 ok=False,
@@ -628,7 +768,7 @@ class RoomMemory:
                 visibility=visibility,
                 degradation=_degradation(
                     "remember",
-                    continuity.CODE_SUBSYSTEM_ERROR,
+                    _failure_code(exc),
                     str(exc) or type(exc).__name__,
                     exc,
                 ),
@@ -769,12 +909,7 @@ class RoomMemory:
                 records=[],
                 mode=None,
                 degradations=(
-                    _degradation(
-                        "recall",
-                        continuity.CODE_SUBSYSTEM_ERROR,
-                        str(exc) or type(exc).__name__,
-                        exc,
-                    ),
+                    _degradation("recall", _failure_code(exc), str(exc) or type(exc).__name__, exc),
                 ),
             )
 
@@ -875,24 +1010,106 @@ class RoomMemory:
 
     # -- teardown -----------------------------------------------------------
 
-    def close(self) -> None:
-        """Stop accepting work. Idempotent, and never raises.
+    def close(self, deadline: float = DEFAULT_CLOSE_DEADLINE) -> CloseReport:
+        """Stop accepting work, wait at most *deadline* for writes, and report.
 
-        An injected executor is the host's, so it is left running; only one this
-        object created is shut down. ``wait=False``: a blocked worker is exactly
-        what the deadline exists to survive, and blocking teardown on it would
-        reintroduce the stall at shutdown.
+        Idempotent, callable with no arguments, and never raises.
+
+        New work is refused **immediately**; then in-flight *writes* get up to
+        *deadline* to confirm. In-flight *reads* are abandoned without waiting —
+        a dropped read costs nothing, and spending a shutdown budget on one
+        would be spending it on the wrong thing.
+
+        The return value is the point. An earlier version returned ``None``
+        instantly with work still pending and no account of it, which left a
+        host with a promise it could not keep: *either it is eventually written,
+        or a degradation says it was not*. On a bounded shutdown neither was
+        true. Now every write still in flight at the deadline is named in
+        :attr:`CloseReport.unconfirmed` **and** carries a
+        :data:`CODE_REMEMBER_UNCONFIRMED_AT_CLOSE` degradation, on the report
+        and on :attr:`abandoned`, so a host reading either surface sees it.
+
+        The process-exit hazard, and how to escape it
+        ----------------------------------------------
+        ``ThreadPoolExecutor``'s worker threads are **non-daemon**, and CPython
+        joins them at interpreter exit. Two consequences, both measured in a
+        child process by ``tests/test_memory.py``:
+
+        * A write left ``unconfirmed`` here still **lands** on a normal exit.
+          That is why this module does not make the workers daemon threads. It
+          cannot have both: daemon threads would not be joined, but
+          ``concurrent.futures`` also registers its own ``_python_exit`` hook
+          that joins every worker regardless, and unregistering it is a
+          process-global act that would reach into a host's other pools. Given
+          the choice, **a slow exit beats a lost heard line**.
+        * So the *process* can be held for as long as a store call takes — up to
+          eidetic's 10 s embedder timeout — no matter how small *deadline* is.
+          A host that needs a bounded ``stop`` must therefore **hard-exit**
+          (``os._exit``) once this returns, after recording
+          :attr:`CloseReport.unconfirmed` in its own crash ledger. That is a
+          real loss of those records, and it is a decision only the host can
+          make; what this method guarantees is that the host makes it knowing
+          exactly which ids are at stake.
+
+        An injected executor belongs to the host and is left running; only one
+        this object created is shut down, with ``wait=False`` so teardown cannot
+        reintroduce the very stall the deadlines exist to bound.
         """
-        self._closed = True
-        if not self._owns_executor:
-            return
-        try:
-            self._executor.shutdown(wait=False)
-        except Exception as exc:  # noqa: BLE001  # teardown failure is not the host's problem
+        with self._lock:
+            self._closed = True
+            writes = dict(self._writes)
+            reads = list(self._reads)
+
+        landed: list[str] = []
+        unconfirmed: list[str] = []
+        failed: list[str] = []
+        if writes:
+            try:
+                wait(list(writes), timeout=max(0.0, float(deadline)))
+            except Exception as exc:  # noqa: BLE001  # a failed wait is still a close
+                with self._lock:
+                    self._abandoned.append(
+                        _degradation("close", CODE_CLOSED, f"waiting on writes failed: {exc}", exc)
+                    )
+            for future, identifier in writes.items():
+                bucket = _settled(future)
+                if bucket is None:
+                    unconfirmed.append(identifier)
+                elif bucket:
+                    landed.append(identifier)
+                else:
+                    failed.append(identifier)
+
+        degradations = tuple(
+            _degradation(
+                "close",
+                CODE_REMEMBER_UNCONFIRMED_AT_CLOSE,
+                f"record {identifier} was still being written when close ran out of "
+                f"{deadline}s; it MAY OR MAY NOT land — it lands on a normal process "
+                "exit and is lost on a hard exit. Record this id before hard-exiting.",
+            )
+            for identifier in sorted(unconfirmed)
+        )
+        if degradations:
             with self._lock:
-                self._abandoned.append(
-                    _degradation("close", CODE_CLOSED, f"executor shutdown failed: {exc}", exc)
-                )
+                self._abandoned.extend(degradations)
+
+        if self._owns_executor:
+            try:
+                self._executor.shutdown(wait=False)
+            except Exception as exc:  # noqa: BLE001  # teardown failure is not the host's problem
+                with self._lock:
+                    self._abandoned.append(
+                        _degradation("close", CODE_CLOSED, f"executor shutdown failed: {exc}", exc)
+                    )
+
+        return CloseReport(
+            landed=tuple(sorted(landed)),
+            unconfirmed=tuple(sorted(unconfirmed)),
+            failed=tuple(sorted(failed)),
+            reads_abandoned=sum(1 for future in reads if not future.done()),
+            degradations=degradations,
+        )
 
     def __enter__(self) -> "RoomMemory":
         return self
