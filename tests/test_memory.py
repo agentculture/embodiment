@@ -135,6 +135,18 @@ def _outcome(records: list[dict[str, Any]] | None = None) -> Any:
     return mem.continuity.RecallOutcome(ok=True, records=list(records or []), degradation=None)
 
 
+def _settle(room: Any, timeout: float = _PROMPT_SECONDS) -> None:
+    """Wait for background work to finish, so a test never outruns its own writes.
+
+    Deferred writes really do complete — that is the point of deferring rather
+    than dropping — so a test that asserts on the store has to wait for them.
+    Polls the in-flight counter rather than sleeping a guessed interval.
+    """
+    limit = time.monotonic() + timeout
+    while room.pending and time.monotonic() < limit:
+        time.sleep(0.005)
+
+
 # ── 1. privacy ────────────────────────────────────────────────────────────────
 
 
@@ -253,7 +265,229 @@ class TestPrivateByDefault:
         assert result.degradation is not None
 
 
-# ── 2. the deadline ───────────────────────────────────────────────────────────
+# ── 2a. the store lock ────────────────────────────────────────────────────────
+
+
+class TestTheStoreLockCannotStallATurn:
+    """The regression class: a hung call must not stall the *other* verb.
+
+    ``continuity._pinned_store`` holds a process-global ``RLock`` for the whole
+    duration of an eidetic call — that is how it stops two threads interleaving
+    their ``EIDETIC_DATA_DIR`` pins. The consequence for this layer is easy to
+    miss and was missed: a recall that misses its deadline is *abandoned*, not
+    killed, so its worker is still inside that lock. Any later call into
+    continuity — including a write — blocks behind it, for as long as the hung
+    call takes. With eidetic's 10 s embedder timeout that is up to ten seconds
+    of silence on the turn path, reached through the verb nobody bounded.
+
+    So these tests hold the **real** ``continuity._pinned_store``, not a stand-in
+    for it: a mock lock would prove a property of the mock. The private name is
+    used deliberately — it is the thing under test.
+    """
+
+    @staticmethod
+    def _hung(release: threading.Event, entered: threading.Event) -> Any:
+        """A backend that takes the real store lock and then hangs on *release*."""
+
+        def backend(*args: Any, **kwargs: Any) -> Any:
+            with mem.continuity._pinned_store(kwargs["data_dir"]):
+                entered.set()
+                release.wait(timeout=30)
+            return _outcome()
+
+        return backend
+
+    def test_a_remember_is_not_blocked_by_an_abandoned_recall(self, tmp_path: Path) -> None:
+        """The measured defect: 0.10 s recall, then a 5.90 s ``remember``."""
+        release, entered = threading.Event(), threading.Event()
+        room = mem.RoomMemory(tmp_path / "store", recall_fn=self._hung(release, entered))
+        try:
+            assert room.recall("anything", deadline=0.05).ok is False
+            assert entered.wait(timeout=_PROMPT_SECONDS), "the hung recall never took the lock"
+
+            started = time.monotonic()
+            result = room.remember("a fact said in the room", deadline=0.05)
+            elapsed = time.monotonic() - started
+
+            assert elapsed < _PROMPT_SECONDS, f"remember blocked for {elapsed:.2f}s"
+            assert result.ok is False
+            assert result.degradation is not None
+            assert result.degradation.code == mem.CODE_REMEMBER_DEFERRED
+        finally:
+            release.set()
+            _settle(room)
+            room.close()
+
+    def test_a_second_recall_is_not_blocked_by_an_abandoned_one(self, tmp_path: Path) -> None:
+        release, entered = threading.Event(), threading.Event()
+        room = mem.RoomMemory(tmp_path / "store", recall_fn=self._hung(release, entered))
+        try:
+            assert room.recall("first", deadline=0.05).ok is False
+            assert entered.wait(timeout=_PROMPT_SECONDS)
+
+            started = time.monotonic()
+            second = room.recall("second", deadline=0.05)
+            elapsed = time.monotonic() - started
+
+            assert elapsed < _PROMPT_SECONDS, f"the second recall blocked for {elapsed:.2f}s"
+            assert second.ok is False
+            assert second.degradations[0].code in {
+                mem.CODE_DEADLINE_EXCEEDED,
+                mem.CODE_SATURATED,
+            }
+        finally:
+            release.set()
+            _settle(room)
+            room.close()
+
+    def test_a_deferred_write_still_lands_once_the_lock_clears(
+        self, contained: dict[str, Path]
+    ) -> None:
+        """Criterion: the text is never silently dropped.
+
+        The deferred write is not abandoned work — it is the same work, still
+        running. Released, it completes, and the record is readable.
+        """
+        release, entered = threading.Event(), threading.Event()
+        room = mem.RoomMemory(
+            contained["store"], scope="room", recall_fn=self._hung(release, entered)
+        )
+        try:
+            assert room.recall("anything", deadline=0.05).ok is False
+            assert entered.wait(timeout=_PROMPT_SECONDS)
+
+            deferred = room.remember("the kettle is boiling", deadline=0.05)
+            assert deferred.ok is False
+            assert deferred.degradation is not None
+            assert deferred.degradation.code == mem.CODE_REMEMBER_DEFERRED
+
+            release.set()
+            _settle(room)
+
+            body = _snapshot(contained["store"]).get("room__private.jsonl", b"").decode()
+            assert "the kettle is boiling" in body
+        finally:
+            release.set()
+            _settle(room)
+            room.close()
+
+    def test_a_deferred_write_that_fails_lands_in_the_abandoned_ledger(
+        self, tmp_path: Path
+    ) -> None:
+        """...and one that never lands says so, rather than vanishing."""
+        release = threading.Event()
+
+        def failing_write(*args: Any, **kwargs: Any) -> Any:
+            release.wait(timeout=30)
+            raise OSError("the store is gone")
+
+        room = mem.RoomMemory(tmp_path / "store", remember_fn=failing_write)
+        try:
+            result = room.remember("a fact", deadline=0.05)
+            assert result.degradation is not None
+            assert result.degradation.code == mem.CODE_REMEMBER_DEFERRED
+
+            release.set()
+            # Poll the LEDGER, not `pending`. The slot-release callback is
+            # attached before the reaper, so `pending` reaches zero a hair
+            # before the failure is recorded; waiting on the wrong one of the
+            # two is how this test would flake once a month on a loaded box.
+            limit = time.monotonic() + _PROMPT_SECONDS
+            while not room.abandoned and time.monotonic() < limit:
+                time.sleep(0.005)
+
+            codes = [d.code for d in room.drain_abandoned()]
+            assert codes == [mem.CODE_ABANDONED_REMEMBER]
+        finally:
+            release.set()
+            room.close()
+
+    def test_a_write_under_a_free_lock_is_confirmed_synchronously(
+        self, contained: dict[str, Path]
+    ) -> None:
+        """The ordinary path is unchanged: nothing is deferred when nothing is stuck."""
+        room = mem.RoomMemory(contained["store"], scope="room")
+        try:
+            result = room.remember("nothing is holding the lock")
+        finally:
+            room.close()
+
+        assert result.ok is True
+        assert result.degradation is None
+        assert result.record_id
+
+
+class TestSaturation:
+    """A saturated pool degrades inside the deadline; it never queues unboundedly."""
+
+    def test_a_saturated_pool_refuses_rather_than_queueing(self, tmp_path: Path) -> None:
+        release = threading.Event()
+        started = threading.Semaphore(0)
+
+        def hang(*args: Any, **kwargs: Any) -> Any:
+            started.release()
+            release.wait(timeout=30)
+            return _outcome()
+
+        room = mem.RoomMemory(tmp_path / "store", recall_fn=hang, max_workers=1, max_inflight=2)
+        try:
+            # Fill every in-flight slot.
+            for _ in range(2):
+                assert room.recall("fill", deadline=0.05).ok is False
+            assert room.pending == 2
+
+            began = time.monotonic()
+            refused = room.recall("one too many", deadline=10.0)
+            elapsed = time.monotonic() - began
+
+            assert elapsed < _PROMPT_SECONDS
+            assert refused.ok is False
+            assert [d.code for d in refused.degradations] == [mem.CODE_SATURATED]
+            # The refusal is a refusal: nothing was queued behind the hung work.
+            assert room.pending == 2
+        finally:
+            release.set()
+            _settle(room)
+            room.close()
+
+    def test_a_saturated_pool_refuses_a_write_visibly(self, tmp_path: Path) -> None:
+        release = threading.Event()
+
+        def hang(*args: Any, **kwargs: Any) -> Any:
+            release.wait(timeout=30)
+            return _outcome()
+
+        room = mem.RoomMemory(tmp_path / "store", recall_fn=hang, max_workers=1, max_inflight=1)
+        try:
+            assert room.recall("fill", deadline=0.05).ok is False
+            result = room.remember("a fact nobody will store", deadline=0.05)
+
+            assert result.ok is False
+            assert result.degradation is not None
+            assert result.degradation.code == mem.CODE_SATURATED
+            # The contract: not written, and it SAYS it was not written.
+            assert "NOT written" in result.degradation.reason
+        finally:
+            release.set()
+            _settle(room)
+            room.close()
+
+    def test_slots_are_returned_when_work_completes(self, tmp_path: Path) -> None:
+        room = mem.RoomMemory(
+            tmp_path / "store", recall_fn=lambda *a, **k: _outcome(), max_inflight=1
+        )
+        try:
+            assert room.recall("one", deadline=10.0).ok is True
+            assert room.pending == 0
+            assert room.recall("two", deadline=10.0).ok is True
+        finally:
+            room.close()
+
+    def test_the_default_inflight_bound_exceeds_the_worker_count(self, tmp_path: Path) -> None:
+        assert mem.MAX_INFLIGHT > mem.DEFAULT_MAX_WORKERS >= 2
+
+
+# ── 2b. the deadline ──────────────────────────────────────────────────────────
 
 
 class TestTheDeadline:

@@ -56,6 +56,41 @@ exception so the interpreter never reports it as unraisable, and records it on
 :meth:`RoomMemory.drain_abandoned`). A late failure is *recorded and inert*,
 never raised into a turn that had nothing to do with it.
 
+**Writing is bounded too, and the reason is the store lock.** An earlier version
+of this module made :meth:`RoomMemory.remember` synchronous, reasoning that a
+local append is fast and that the write is the thing which must not be lost.
+That reasoning was wrong about *what a write waits on*. ``continuity``'s
+``_pinned_store`` holds a process-global ``RLock`` for the entire duration of an
+eidetic call — it has to, because it is mutating ``EIDETIC_DATA_DIR`` in a
+shared ``os.environ``. An abandoned recall is still inside that lock, so a
+synchronous write queues behind it: **measured at 5.90 s** behind one hung read
+whose own deadline had been honoured 0.10 s earlier. The recall was bounded and
+the turn stalled anyway, through the verb nobody had bounded.
+
+So both verbs now follow one rule: **the work goes to the executor; only the
+wait is bounded.** A write that does not confirm within *deadline* returns
+``ok=False`` carrying one :data:`CODE_REMEMBER_DEFERRED` degradation — *deferred,
+not dropped*: the same job is still running and will land when the lock clears.
+Should it then fail, the failure is recorded as
+:data:`CODE_ABANDONED_REMEMBER` on the same bounded ledger. That is the whole
+contract on a heard line: **either it is eventually written, or a degradation
+says it was not.** Silence is not one of the outcomes.
+
+What this layer cannot fix from outside ``continuity``: the store lock is
+process-global and held for a whole call, so while one eidetic call is hung,
+*every* memory operation degrades. The guarantee is per-call latency, not
+per-call success — a hung store makes this layer return promptly and honestly,
+not keep working.
+
+**Saturation.** Bounding the wait, not the work, means hung workers accumulate.
+Left alone, a pool would either grow threads without limit or build a queue of
+jobs whose callers have all long since given up. Neither is acceptable in a
+daemon, so in-flight work is capped at *max_inflight*: past it a call is
+**refused immediately** with :data:`CODE_SATURATED` rather than queued. A
+refusal is honest and instant; a queue is a promise that gets slower and slower
+to break. The refusal is a real loss for a write, so it says so in as many
+words — the reason text states the record was not written.
+
 3. Recalled text is untrusted data, and enters a prompt at one point
 ---------------------------------------------------------------------
 The public eidetic pool is writable by every agent on this host, so a recalled
@@ -130,6 +165,8 @@ __all__ = [
     "PRIVATE",
     "PUBLIC",
     "DEFAULT_DEADLINE",
+    "DEFAULT_WRITE_DEADLINE",
+    "DEFAULT_MAX_WORKERS",
     "DEFAULT_MODE",
     "DEFAULT_TOP_K",
     "DEFAULT_TYPE",
@@ -138,12 +175,16 @@ __all__ = [
     "RECALL_MODE_LEXICAL",
     "RECALL_MODE_SEMANTIC",
     "MAX_ABANDONED",
+    "MAX_INFLIGHT",
     "BEGIN_MARK",
     "END_MARK",
     "QUOTE",
     "CODE_DEADLINE_EXCEEDED",
     "CODE_EMBEDDER_OFFLINE",
     "CODE_ABANDONED_RECALL",
+    "CODE_REMEMBER_DEFERRED",
+    "CODE_ABANDONED_REMEMBER",
+    "CODE_SATURATED",
     "CODE_CLOSED",
     "RememberResult",
     "RecallResult",
@@ -165,6 +206,21 @@ PUBLIC = "public"
 #: Seconds. Well under a second by design: this is a bound on how long a spoken
 #: turn may wait for memory, not a bound on how long memory may take.
 DEFAULT_DEADLINE = 0.25
+
+#: Seconds a write may wait for confirmation before it is reported as deferred.
+#: Larger than :data:`DEFAULT_DEADLINE` because the work itself is a local
+#: append (sub-millisecond) — the only thing this bound ever really waits on is
+#: another call holding ``continuity._STORE_LOCK``, and a write is worth a
+#: slightly longer look for a confirmation than a read is.
+DEFAULT_WRITE_DEADLINE = 0.5
+
+#: Worker threads in the pool this object creates when a host supplies none.
+DEFAULT_MAX_WORKERS = 4
+
+#: How many calls may be in flight (running *or* queued) before further calls
+#: are refused outright. See :meth:`RoomMemory._reserve` for why refusing beats
+#: queueing.
+MAX_INFLIGHT = 8
 
 #: eidetic's fully-offline lexical mode — no embedder, no socket, no 10 s client
 #: timeout. The fast path a spoken turn runs on.
@@ -215,6 +271,15 @@ CODE_EMBEDDER_OFFLINE = "embedder-offline"
 #: An abandoned worker failed after its deadline had already passed. Recorded on
 #: :attr:`RoomMemory.abandoned`; never raised into a later turn.
 CODE_ABANDONED_RECALL = "abandoned-recall"
+#: A write did not confirm within its deadline. It is still running and will
+#: land; the caller simply does not get to wait for it.
+CODE_REMEMBER_DEFERRED = "remember-deferred"
+#: A deferred write *failed* after its deadline had passed. Recorded on
+#: :attr:`RoomMemory.abandoned` — this is the record that stops a deferred write
+#: from being a silently dropped one.
+CODE_ABANDONED_REMEMBER = "abandoned-remember"
+#: Every in-flight slot is occupied; the call was refused rather than queued.
+CODE_SATURATED = "memory-saturated"
 #: The memory layer was closed; no further work is submitted.
 CODE_CLOSED = "memory-closed"
 
@@ -347,6 +412,8 @@ class RoomMemory:
         recall_fn: Optional[Callable[..., Any]] = None,
         embed_probe: Optional[EmbedProbe] = None,
         max_abandoned: int = MAX_ABANDONED,
+        max_workers: int = DEFAULT_MAX_WORKERS,
+        max_inflight: int = MAX_INFLIGHT,
     ) -> None:
         #: Pinned ONCE, here. Resolved to an absolute path so nothing about it
         #: can depend on the host's cwd at the moment of a later call.
@@ -358,14 +425,16 @@ class RoomMemory:
         self._recall_fn = recall_fn or continuity.recall
         self._embed_probe = embed_probe or default_embed_probe
 
-        # Two workers, deliberately: one for the live turn, one slot that can
-        # absorb a single abandoned call without the next turn queueing behind
-        # it. Beyond that, recalls miss their deadline rather than the pool
-        # growing threads — bounded degradation over unbounded resource use.
+        # Threads absorb hung calls; they do not prevent them. A hung eidetic
+        # call holds a process-global lock, so extra workers buy the *next* call
+        # the chance to start and fail fast on its own deadline rather than
+        # queueing invisibly. The real bound is `max_inflight` below.
         self._executor = executor or ThreadPoolExecutor(
-            max_workers=2, thread_name_prefix="embodiment-memory"
+            max_workers=max(1, int(max_workers)), thread_name_prefix="embodiment-memory"
         )
         self._owns_executor = executor is None
+        self._max_inflight = max(1, int(max_inflight))
+        self._inflight = 0
         self._closed = False
         self._lock = threading.Lock()
         self._last_mode: Optional[str] = None
@@ -396,12 +465,61 @@ class RoomMemory:
         """Recorded failures of workers that outlived their deadline."""
         return tuple(self._abandoned)
 
+    @property
+    def pending(self) -> int:
+        """Calls in flight — running or queued — right now.
+
+        A host can read this to tell "memory is degraded because the store is
+        stuck" from "memory answered and there was nothing to find", which
+        otherwise look identical from a single empty result.
+
+        It counts *work*, not bookkeeping: the slot is released a moment before
+        a failed job's degradation reaches :attr:`abandoned`, so code waiting
+        for a specific failure to be recorded should watch the ledger rather
+        than wait for this to reach zero.
+        """
+        return self._inflight
+
     def drain_abandoned(self) -> list[Degradation]:
         """Take and clear the abandoned-worker ledger."""
         with self._lock:
             drained = list(self._abandoned)
             self._abandoned.clear()
         return drained
+
+    # -- submission ---------------------------------------------------------
+
+    def _submit(self, work: Callable[[], Any]) -> tuple[Optional["Future[Any]"], Optional[str]]:
+        """``(future, refusal_code)`` — reserve an in-flight slot and start *work*.
+
+        Refuses rather than queues once :attr:`pending` reaches the cap. The
+        alternative — an unbounded queue — degrades in the one way a presence
+        layer must not: invisibly, and worse the longer it goes on, with every
+        queued job belonging to a turn that ended minutes ago.
+        """
+        with self._lock:
+            if self._closed:
+                return None, CODE_CLOSED
+            if self._inflight >= self._max_inflight:
+                return None, CODE_SATURATED
+            self._inflight += 1
+
+        def release(_done: "Future[Any]") -> None:
+            with self._lock:
+                self._inflight = max(0, self._inflight - 1)
+
+        try:
+            future = self._executor.submit(work)
+        except Exception as exc:  # noqa: BLE001  # a dead executor never reaches the host
+            with self._lock:
+                self._inflight = max(0, self._inflight - 1)
+                self._abandoned.append(
+                    _degradation("submit", CODE_CLOSED, f"could not submit: {exc}", exc)
+                )
+            return None, CODE_CLOSED
+
+        future.add_done_callback(release)
+        return future, None
 
     # -- writing ------------------------------------------------------------
 
@@ -415,12 +533,28 @@ class RoomMemory:
         metadata: Optional[Mapping[str, Any]] = None,
         added_by: Optional[str] = None,
         now: Optional[datetime] = None,
+        deadline: float = DEFAULT_WRITE_DEADLINE,
     ) -> RememberResult:
-        """Write one heard line into the pinned store.
+        """Write one heard line into the pinned store, bounded by *deadline*.
 
-        Private unless *visibility* says otherwise. Synchronous on purpose: a
-        write is bounded by local disk, it is the thing that must not be lost,
-        and deferring it would mean a queue whose failures nobody reads.
+        Private unless *visibility* says otherwise.
+
+        **The write runs in the executor and only the wait is bounded**, for the
+        reason set out in the module docstring: the work itself is a local
+        append, but it queues behind ``continuity._STORE_LOCK``, which a hung
+        recall can hold for as long as eidetic's embedder timeout. A synchronous
+        write was measured stalling a turn for 5.90 s behind a read whose own
+        deadline had been honoured.
+
+        Three outcomes, and no fourth:
+
+        * confirmed — ``ok=True``, the store wrote it;
+        * **deferred** — ``ok=False`` with :data:`CODE_REMEMBER_DEFERRED`. The
+          same job is still running and will land; a later failure is recorded
+          as :data:`CODE_ABANDONED_REMEMBER` on :attr:`abandoned`;
+        * **refused** — ``ok=False`` with :data:`CODE_SATURATED` or
+          :data:`CODE_CLOSED`, which say in words that the text was *not*
+          written.
 
         Never raises.
         """
@@ -440,32 +574,103 @@ class RoomMemory:
                 ),
             )
 
-        try:
-            outcome = self._remember_fn(
+        identifier = str(record["id"])
+        writer = added_by if added_by is not None else self._added_by
+
+        def write() -> Any:
+            return self._remember_fn(
                 record,
                 data_dir=self._data_dir,
                 scope=self._scope,
                 visibility=visibility,
-                added_by=added_by if added_by is not None else self._added_by,
+                added_by=writer,
                 backend=self._backend,
+            )
+
+        future, refusal = self._submit(write)
+        if future is None:
+            return RememberResult(
+                ok=False,
+                record_id=identifier,
+                visibility=visibility,
+                degradation=_degradation(
+                    "remember",
+                    refusal or CODE_CLOSED,
+                    f"record {identifier} was NOT written: "
+                    + (
+                        "every in-flight memory slot is occupied"
+                        if refusal == CODE_SATURATED
+                        else "this memory layer is closed"
+                    ),
+                ),
+            )
+
+        try:
+            outcome = future.result(timeout=max(0.0, float(deadline)))
+        except FutureTimeoutError:
+            self._reap_write(future, identifier, deadline)
+            return RememberResult(
+                ok=False,
+                record_id=identifier,
+                visibility=visibility,
+                degradation=_degradation(
+                    "remember",
+                    CODE_REMEMBER_DEFERRED,
+                    f"record {identifier} did not confirm within {deadline}s and is "
+                    "still being written in the background; a failure will be "
+                    "recorded on the abandoned ledger",
+                ),
             )
         except Exception as exc:  # noqa: BLE001  # a store failure never reaches the host
             return RememberResult(
                 ok=False,
-                record_id=None,
+                record_id=identifier,
                 visibility=visibility,
                 degradation=_degradation(
-                    "remember", continuity.CODE_SUBSYSTEM_ERROR, str(exc) or type(exc).__name__, exc
+                    "remember",
+                    continuity.CODE_SUBSYSTEM_ERROR,
+                    str(exc) or type(exc).__name__,
+                    exc,
                 ),
             )
 
         return RememberResult(
             ok=bool(getattr(outcome, "ok", False)),
-            record_id=getattr(outcome, "record_id", None),
+            record_id=getattr(outcome, "record_id", None) or identifier,
             visibility=visibility,
             degradation=getattr(outcome, "degradation", None),
             raw=getattr(outcome, "raw", None),
         )
+
+    def _reap_write(self, future: "Future[Any]", identifier: str, deadline: float) -> None:
+        """Record a deferred write that turns out to fail.
+
+        This is what makes "deferred" different from "dropped". The caller has
+        already been told the write was not confirmed; if it then fails outright
+        — or the seam returns a degraded outcome — that fact lands on the
+        bounded ledger naming the record id, so a host draining the ledger can
+        tell exactly which heard line never made it.
+        """
+
+        def reap(done: "Future[Any]") -> None:
+            reason: Optional[str] = None
+            error: Optional[BaseException] = None
+            try:
+                error = done.exception()
+                if error is not None:
+                    reason = f"deferred write of {identifier} failed after {deadline}s: {error}"
+                elif not getattr(done.result(), "ok", False):
+                    reason = f"deferred write of {identifier} was not stored by the seam"
+            except Exception as exc:  # noqa: BLE001  # a cancelled future has no result
+                error, reason = exc, f"deferred write of {identifier} could not be read back: {exc}"
+            if reason is None:
+                return
+            with self._lock:
+                self._abandoned.append(
+                    _degradation("remember", CODE_ABANDONED_REMEMBER, reason, error)
+                )
+
+        future.add_done_callback(reap)
 
     def _build(
         self,
@@ -514,19 +719,13 @@ class RoomMemory:
         Returns :class:`RecallResult` on every path. A missed deadline yields no
         records, ``mode=None`` and one :data:`CODE_DEADLINE_EXCEEDED`
         degradation; the worker behind it is abandoned and reaped (see the
-        module docstring).
+        module docstring). A saturated layer refuses with :data:`CODE_SATURATED`
+        instead of queueing behind work nobody is waiting for any more.
         """
-        if self._closed:
-            return RecallResult(
-                ok=False,
-                records=[],
-                mode=None,
-                degradations=(_degradation("recall", CODE_CLOSED, "this memory layer is closed"),),
-            )
-
-        try:
-            future = self._executor.submit(self._work, query, mode, top_k, visibility, reinforce)
-        except Exception as exc:  # noqa: BLE001  # a dead executor never reaches the host
+        future, refusal = self._submit(
+            lambda: self._work(query, mode, top_k, visibility, reinforce)
+        )
+        if future is None:
             return RecallResult(
                 ok=False,
                 records=[],
@@ -534,9 +733,13 @@ class RoomMemory:
                 degradations=(
                     _degradation(
                         "recall",
-                        CODE_CLOSED,
-                        f"could not submit recall: {exc}",
-                        exc,
+                        refusal or CODE_CLOSED,
+                        (
+                            "every in-flight memory slot is occupied; this recall was "
+                            "refused rather than queued"
+                            if refusal == CODE_SATURATED
+                            else "this memory layer is closed"
+                        ),
                     ),
                 ),
             )
