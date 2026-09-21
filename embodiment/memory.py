@@ -32,6 +32,16 @@ consequence worth stating plainly: with the pin in place **both** visibilities
 land under the pinned directory — ``public`` changes the record's scope, and
 therefore who may recall it, never where it is written.
 
+The pin bounds **reads** the same way, and this is a security property rather
+than a detail: ``EIDETIC_DATA_DIR`` short-circuits eidetic's
+``_candidate_read_dirs`` to that one directory, so a public record another
+agent on this host planted in the shared store is never returned — a pinned
+:class:`RoomMemory` recalls what it heard and nothing else, which is the right
+default for a voice agent that will later hold tools. It holds as a consequence
+of how the pin works rather than as a rule eidetic enforces for us, so
+``tests/test_memory.py`` pins it explicitly; nothing else here would notice if
+it stopped holding.
+
 2. A spoken turn never waits for recall
 ----------------------------------------
 eidetic's recall is synchronous, and ``continuity``'s module docstring says so
@@ -249,6 +259,7 @@ __all__ = [
     "CODE_REMEMBER_UNCONFIRMED_AT_CLOSE",
     "CODE_SATURATED",
     "CODE_CLOSED",
+    "AbandonedDrain",
     "CloseReport",
     "RememberResult",
     "RecallResult",
@@ -482,6 +493,26 @@ class RecallResult:
 
 
 @dataclass(frozen=True)
+class AbandonedDrain:
+    """The abandoned-worker ledger, plus what the bound cost to enforce.
+
+    ``dropped`` counts entries evicted since the previous drain. It is here,
+    rather than on a separate property a host has to remember to read, because
+    the whole point is that one read tells a host both what it got and what it
+    missed.
+    """
+
+    records: tuple[Degradation, ...] = ()
+    dropped: int = 0
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "records": [degradation.to_dict() for degradation in self.records],
+            "dropped": self.dropped,
+        }
+
+
+@dataclass(frozen=True)
 class CloseReport:
     """What :meth:`RoomMemory.close` left behind, named rather than counted.
 
@@ -512,12 +543,17 @@ class CloseReport:
     reads_abandoned:
         How many recalls were still running. They are dropped without waiting —
         a read loses nothing.
+    abandoned_dropped:
+        Ledger entries evicted by the bound since the last drain. Carried here
+        so a host that only looks at the shutdown report still learns that some
+        failure detail was lost.
     """
 
     landed: tuple[str, ...] = ()
     unconfirmed: tuple[str, ...] = ()
     failed: tuple[str, ...] = ()
     reads_abandoned: int = 0
+    abandoned_dropped: int = 0
     degradations: tuple[Degradation, ...] = ()
 
     @property
@@ -536,6 +572,7 @@ class CloseReport:
             "unconfirmed": list(self.unconfirmed),
             "failed": list(self.failed),
             "reads_abandoned": self.reads_abandoned,
+            "abandoned_dropped": self.abandoned_dropped,
             "degradations": [d.to_dict() for d in self.degradations],
         }
 
@@ -663,9 +700,12 @@ class RoomMemory:
         self._writes: dict["Future[Any]", str] = {}
         self._reads: set["Future[Any]"] = set()
         self._closed = False
-        self._lock = threading.Lock()
+        # Reentrant: several append sites already hold this lock when they
+        # record a degradation, and _record_abandoned takes it too.
+        self._lock = threading.RLock()
         self._last_mode: Optional[str] = None
         self._abandoned: deque[Degradation] = deque(maxlen=max(1, int(max_abandoned)))
+        self._abandoned_dropped = 0
 
     # -- introspection ------------------------------------------------------
 
@@ -707,11 +747,42 @@ class RoomMemory:
         """
         return self._inflight
 
-    def drain_abandoned(self) -> list[Degradation]:
-        """Take and clear the abandoned-worker ledger."""
+    @property
+    def abandoned_dropped(self) -> int:
+        """How many ledger entries have been evicted since the last drain.
+
+        The ledger is bounded, and a bounded ledger that evicts silently is
+        itself the silent degradation constraint C3 forbids. Counting the
+        eviction is what keeps the bound honest: the host loses the *detail* of
+        the oldest failures, never the *fact* that they happened.
+        """
+        return self._abandoned_dropped
+
+    def _record_abandoned(self, degradation: Degradation) -> None:
+        """Append to the bounded ledger, counting anything it displaces.
+
+        The check and the append are one critical section, which is what makes
+        ``len(records) + dropped == appended`` hold when several worker threads
+        record failures at once.
+        """
         with self._lock:
-            drained = list(self._abandoned)
+            if len(self._abandoned) == self._abandoned.maxlen:
+                self._abandoned_dropped += 1
+            self._abandoned.append(degradation)
+
+    def drain_abandoned(self) -> "AbandonedDrain":
+        """Take the ledger and the count of what it had to drop, in one read.
+
+        Returned together, in a frozen :class:`AbandonedDrain`, deliberately:
+        a host that has to make a second call to learn it missed records is a
+        host that will not make it. Both the entries and the count are reset.
+        """
+        with self._lock:
+            drained = AbandonedDrain(
+                records=tuple(self._abandoned), dropped=self._abandoned_dropped
+            )
             self._abandoned.clear()
+            self._abandoned_dropped = 0
         return drained
 
     # -- submission ---------------------------------------------------------
@@ -747,7 +818,7 @@ class RoomMemory:
         except Exception as exc:  # noqa: BLE001  # a dead executor never reaches the host
             with self._lock:
                 self._inflight = max(0, self._inflight - 1)
-                self._abandoned.append(
+                self._record_abandoned(
                     _degradation("submit", CODE_CLOSED, f"could not submit: {exc}", exc)
                 )
             return None, CODE_CLOSED
@@ -905,7 +976,7 @@ class RoomMemory:
             if reason is None:
                 return
             with self._lock:
-                self._abandoned.append(
+                self._record_abandoned(
                     _degradation("remember", CODE_ABANDONED_REMEMBER, reason, error)
                 )
 
@@ -1096,7 +1167,7 @@ class RoomMemory:
             if error is None:
                 return
             with self._lock:
-                self._abandoned.append(
+                self._record_abandoned(
                     _degradation(
                         "recall",
                         CODE_ABANDONED_RECALL,
@@ -1167,7 +1238,7 @@ class RoomMemory:
                 wait(list(writes), timeout=max(0.0, float(deadline)))
             except Exception as exc:  # noqa: BLE001  # a failed wait is still a close
                 with self._lock:
-                    self._abandoned.append(
+                    self._record_abandoned(
                         _degradation("close", CODE_CLOSED, f"waiting on writes failed: {exc}", exc)
                     )
             for future, identifier in writes.items():
@@ -1191,14 +1262,15 @@ class RoomMemory:
         )
         if degradations:
             with self._lock:
-                self._abandoned.extend(degradations)
+                for degradation in degradations:
+                    self._record_abandoned(degradation)
 
         if self._owns_executor:
             try:
                 self._executor.shutdown(wait=False)
             except Exception as exc:  # noqa: BLE001  # teardown failure is not the host's problem
                 with self._lock:
-                    self._abandoned.append(
+                    self._record_abandoned(
                         _degradation("close", CODE_CLOSED, f"executor shutdown failed: {exc}", exc)
                     )
 
@@ -1207,6 +1279,7 @@ class RoomMemory:
             unconfirmed=tuple(sorted(unconfirmed)),
             failed=tuple(sorted(failed)),
             reads_abandoned=sum(1 for future in reads if not future.done()),
+            abandoned_dropped=self._abandoned_dropped,
             degradations=degradations,
         )
 

@@ -265,6 +265,40 @@ class TestPrivateByDefault:
         assert result.ok, result.to_dict()
         assert [r["text"] for r in result.records] == ["the kettle is boiling"]
 
+    def test_a_pinned_recall_cannot_reach_another_agents_public_record(
+        self, tmp_path: Path, contained: dict[str, Path]
+    ) -> None:
+        """The pin bounds READS as well as writes — pinned here, not by accident.
+
+        ``EIDETIC_DATA_DIR`` short-circuits eidetic's ``_candidate_read_dirs``
+        to the single pinned directory, so a public record another agent on
+        this host planted in the shared store is never returned. That is the
+        right default for a voice agent that will later hold tools — it recalls
+        what it heard, not what anyone else wrote — but it holds as a
+        *consequence* of how the pin works rather than as a stated rule, and
+        nothing else in this suite would notice if it stopped holding.
+        """
+        foreign = tmp_path / "foreign-store"
+        planted = mem.continuity.remember(
+            {"id": "other-agents-note", "text": "a planted public claim", "type": "note"},
+            data_dir=foreign,
+            scope="room",
+            visibility="public",
+        )
+        assert planted.ok, planted.to_dict()
+
+        room = mem.RoomMemory(contained["store"], scope="room")
+        try:
+            assert room.remember("what this agent actually heard").ok
+            own = room.recall("claim heard", deadline=10.0, mode="keyword")
+            wide = room.recall("planted public claim", deadline=10.0, visibility=mem.PUBLIC)
+        finally:
+            room.close()
+
+        texts = [record["text"] for record in own.records + wide.records]
+        assert "a planted public claim" not in texts
+        assert "other-agents-note" not in [record["id"] for record in own.records + wide.records]
+
     def test_remember_never_raises_on_a_hostile_input(self, contained: dict[str, Path]) -> None:
         room = mem.RoomMemory(contained["store"], scope="room")
         try:
@@ -407,7 +441,7 @@ class TestTheStoreLockCannotStallATurn:
             while not room.abandoned and time.monotonic() < limit:
                 time.sleep(0.005)
 
-            codes = [d.code for d in room.drain_abandoned()]
+            codes = [d.code for d in room.drain_abandoned().records]
             assert codes == [mem.CODE_ABANDONED_REMEMBER]
         finally:
             release.set()
@@ -670,7 +704,7 @@ class TestCloseAccountsForWhatIsUnfinished:
             room.close(deadline=0.05)
 
             assert mem.CODE_REMEMBER_UNCONFIRMED_AT_CLOSE in {
-                d.code for d in room.drain_abandoned()
+                d.code for d in room.drain_abandoned().records
             }
         finally:
             release.set()
@@ -934,10 +968,10 @@ class TestTheDeadline:
             while not room.abandoned and time.monotonic() < deadline:
                 time.sleep(0.005)
 
-            abandoned = room.drain_abandoned()
+            abandoned = room.drain_abandoned().records
             assert [d.code for d in abandoned] == [mem.CODE_ABANDONED_RECALL]
             assert abandoned[0].exception == "RuntimeError"
-            assert room.drain_abandoned() == []
+            assert room.drain_abandoned().records == ()
         finally:
             blocking.release.set()
             room.close()
@@ -1010,6 +1044,124 @@ class TestTheDeadline:
 
     def test_the_abandoned_ledger_is_bounded(self, tmp_path: Path) -> None:
         assert mem.MAX_ABANDONED > 0
+
+
+class TestTheLedgerCountsWhatItDrops:
+    """A bounded ledger that evicts without a trace is a silent degradation.
+
+    ``deque(maxlen=…)`` drops its oldest entry and says nothing. The bound
+    itself is right — unbounded growth in a daemon that runs for weeks is
+    worse — but the justification that used to sit on it, *"a drain on any
+    sane cadence loses nothing"*, is an assumption about the good case. It
+    fails exactly during the long outage when the ledger matters most, and
+    fails invisibly. So the eviction is counted.
+    """
+
+    @staticmethod
+    def _fill(room: Any, count: int) -> None:
+        for index in range(count):
+            room._record_abandoned(
+                mem.continuity.Degradation(
+                    subsystem="eidetic",
+                    stage="recall",
+                    code=mem.CODE_ABANDONED_RECALL,
+                    reason=f"entry {index}",
+                )
+            )
+
+    def test_a_ledger_that_never_overflowed_reports_zero(self, tmp_path: Path) -> None:
+        room = mem.RoomMemory(tmp_path / "store", max_abandoned=8)
+        try:
+            self._fill(room, 8)
+            assert room.abandoned_dropped == 0
+            assert len(room.abandoned) == 8
+        finally:
+            room.close()
+
+    def test_the_dropped_count_equals_the_overflow_exactly(self, tmp_path: Path) -> None:
+        room = mem.RoomMemory(tmp_path / "store", max_abandoned=8)
+        try:
+            self._fill(room, 30)
+            assert room.abandoned_dropped == 22
+            assert len(room.abandoned) == 8
+            # The bound still holds, and it is the OLDEST that went.
+            assert room.abandoned[-1].reason == "entry 29"
+        finally:
+            room.close()
+
+    def test_one_drain_reports_both_the_entries_and_what_was_missed(self, tmp_path: Path) -> None:
+        """The host learns "I missed N" in the SAME read that takes the entries."""
+        room = mem.RoomMemory(tmp_path / "store", max_abandoned=4)
+        try:
+            self._fill(room, 10)
+            drained = room.drain_abandoned()
+
+            assert isinstance(drained, mem.AbandonedDrain)
+            assert len(drained.records) == 4
+            assert drained.dropped == 6
+            assert drained.to_dict()["dropped"] == 6
+        finally:
+            room.close()
+
+    def test_draining_resets_the_dropped_count(self, tmp_path: Path) -> None:
+        room = mem.RoomMemory(tmp_path / "store", max_abandoned=2)
+        try:
+            self._fill(room, 5)
+            assert room.drain_abandoned().dropped == 3
+
+            assert room.abandoned_dropped == 0
+            after = room.drain_abandoned()
+            assert after.records == () and after.dropped == 0
+        finally:
+            room.close()
+
+    def test_the_count_is_exact_under_concurrent_appends(self, tmp_path: Path) -> None:
+        """Workers append from their own threads; the arithmetic must still close.
+
+        ``entries + dropped == appended`` is the invariant that makes the count
+        trustworthy. A racy increment would show up here as a shortfall.
+        """
+        room = mem.RoomMemory(tmp_path / "store", max_abandoned=16)
+        threads_count, per_thread = 8, 200
+        try:
+            workers = [
+                threading.Thread(target=self._fill, args=(room, per_thread))
+                for _ in range(threads_count)
+            ]
+            for worker in workers:
+                worker.start()
+            for worker in workers:
+                worker.join(timeout=_PROMPT_SECONDS)
+
+            drained = room.drain_abandoned()
+            assert len(drained.records) + drained.dropped == threads_count * per_thread
+            assert len(drained.records) == 16
+        finally:
+            room.close()
+
+    def test_close_reports_the_dropped_count(self, tmp_path: Path) -> None:
+        room = mem.RoomMemory(tmp_path / "store", max_abandoned=2)
+        self._fill(room, 7)
+        report = room.close()
+        assert report.abandoned_dropped == 5
+        assert report.to_dict()["abandoned_dropped"] == 5
+
+    def test_a_real_abandoned_recall_increments_the_count(self, tmp_path: Path) -> None:
+        """Not just the helper: the production append path counts too."""
+        blocking = _Blocking(raises=RuntimeError("late"))
+        room = mem.RoomMemory(tmp_path / "store", recall_fn=blocking, max_abandoned=1)
+        try:
+            assert room.recall("anything", deadline=0.01).ok is False
+            self._fill(room, 1)
+            blocking.release.set()
+
+            limit = time.monotonic() + _PROMPT_SECONDS
+            while room.abandoned_dropped == 0 and time.monotonic() < limit:
+                time.sleep(0.005)
+            assert room.abandoned_dropped >= 1
+        finally:
+            blocking.release.set()
+            room.close()
 
 
 # ── 3a. the fence, as a property ──────────────────────────────────────────────
