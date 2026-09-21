@@ -1,10 +1,12 @@
 """embodiment.bus — the internal event substrate: MQTT-through-events-cli,
 projected in-process to bounded subscriber queues.
 
-Plan task ``t13`` (spec target ``h16``). The operator's decision this module
-implements: **MQTT (through events-cli) is the internal events substrate; the
-dashboard's server-sent event stream (task ``t16``) is a PROJECTION of it;
-browsers never touch MQTT.** :class:`Bus` therefore does two things on every
+Plan task ``t13`` (spec target ``h16``), round 2 — five defects an independent
+probe found in round 1 are fixed here (see the section headed "Round 2" below
+for what changed and why). The operator's decision this module implements:
+**MQTT (through events-cli) is the internal events substrate; the dashboard's
+server-sent event stream (task ``t16``) is a PROJECTION of it; browsers never
+touch MQTT.** :class:`Bus` therefore does two things on every
 :meth:`Bus.publish` call, unconditionally: it offers the event to a broker
 *when one answers*, and it hands the SAME event to every in-process
 :class:`Subscription` *always*. A host with no broker reachable at all still
@@ -17,16 +19,18 @@ Every event this module accepts and delivers has exactly the shape
 ``{v, kind, ts, seq, source, data}`` (:class:`Event`), plus an optional
 ``gap`` field a slow subscriber's own delivery adds (see below — never sent by
 a publisher). ``v`` is :data:`SCHEMA_VERSION`; ``seq`` is monotonic per
-:class:`Bus` instance, so a consumer can detect a missed event by a gap in the
-sequence even without reading ``gap``. ``kind`` is one of :data:`EVENT_KINDS`.
-Every event is validated against the required-field contract for its kind
-(:data:`_REQUIRED_DATA_FIELDS`, mirrored — same field names, same kinds — in
-the committed JSON fixtures under ``tests/fixtures/events/``, which are this
-module's CONTRACT with the dashboard web app's own tests (task ``t17``): both
-sides validate against the identical files, so the two cannot drift apart
-silently. An event that fails validation is never sent to the broker or to any
-subscriber; it is refused and recorded as a :class:`BusDegradation` naming the
-kind and the failing field (never raised — C3).
+:class:`Bus` instance and assigned in the SAME critical section as in-process
+delivery (round 2, defect 3 — see below), so two publishing threads can never
+disagree with a subscriber about delivery order. ``kind`` is one of
+:data:`EVENT_KINDS`. Every event is validated against the required-field
+contract for its kind (:data:`_REQUIRED_DATA_FIELDS`, mirrored — same field
+names, same kinds — in the committed JSON fixtures under
+``tests/fixtures/events/``, which are this module's CONTRACT with the
+dashboard web app's own tests (task ``t17``): both sides validate against the
+identical files, so the two cannot drift apart silently. An event that fails
+validation is never sent to the broker or to any subscriber; it is refused and
+recorded as a :class:`BusDegradation` naming the kind and the failing field
+(never raised — C3).
 
 Privacy boundary (read this before wiring a new event source)
 ---------------------------------------------------------------
@@ -34,27 +38,41 @@ Privacy boundary (read this before wiring a new event source)
 user's words and the reply text. Every other kind (``state``, ``mic``,
 ``turn``, ``degradation``, ``features``, ``clients``, ``heartbeat``) carries
 only status, counts, and degradation CODES, never text a person said or a
-model produced. This module's job is to make that boundary explicit and
-machine-checkable, not to enforce WHO may read a ``transcript``/``reply``
-event — that enforcement (authenticated subscribers only) belongs to the SSE
-projection layer, task ``t16``. What this module DOES provide toward it is
-:meth:`Bus.subscribe`'s ``kinds=`` filter: a subscription that never asked for
-``transcript`` never receives one, so t16 can hand an unauthenticated
-projection a kind-filtered subscription and have the guarantee hold
-structurally rather than by remembering to check ``kind`` on every event.
+model produced.
+
+**Round 2, defect 6b: speech is opt-in on a subscription, not opt-out.**
+:meth:`Bus.subscribe`'s DEFAULT (``kinds=None``, ``include_speech=False``)
+excludes ``transcript``/``reply`` — lesson 7 (private by default) applies to a
+subscription's own reach, not just to what is written to disk. A caller that
+genuinely wants everything passes ``include_speech=True``; a caller that names
+``kinds=`` explicitly (including naming ``transcript``/``reply`` in it) has
+already made the deliberate ask, so an explicit ``kinds=`` is honoured as-is
+without needing ``include_speech`` too. This module's job is still only to
+make the boundary explicit and machine-checkable, not to authenticate WHO may
+open a speech-carrying subscription — that enforcement belongs to the SSE
+projection layer, task ``t16``.
 
 Degradation vocabulary (C3 — never raise, always record)
 ------------------------------------------------------------
 - :data:`DEGRADED_BROKER_UNAVAILABLE` — events-cli/paho-mqtt not importable,
-  the broker refused a connection, or a publish failed. Recorded exactly ONCE
-  per :class:`Bus` instance (see :meth:`Bus._degrade_broker`'s docstring) —
-  never once per event — and in-process delivery is never affected by it.
+  the broker refused a connection, or a publish failed.
+- :data:`DEGRADED_BROKER_RECOVERED` — round 2, defect 6a: a bounded retry
+  (:meth:`Bus.tick`-driven) reached the broker again after it had degraded.
 - :data:`DEGRADED_SCHEMA_INVALID` — an event failed its kind's required-field
   contract, or named an unknown ``kind``.
 - :data:`DEGRADED_SECRET_REDACTED` — an event's serialised form contained one
   of the literal values passed to ``Bus(redact=...)``.
 - :data:`DEGRADED_OVERSIZE` — an event's serialised form exceeded
   :data:`DEFAULT_MAX_EVENT_BYTES` (or the constructor override).
+- :data:`DEGRADED_PROTECTED_DROP` — round 2, defect 5: a subscriber's bounded
+  queue had to evict a NON-``features`` event (a ``transcript``/``degradation``/
+  etc.) as a last resort because no ``features`` event was queued to sacrifice
+  instead. The brief said "never" for this; the honest version implemented
+  here is "never SILENTLY" — see :data:`_DROP_FIRST_KINDS` and
+  :class:`Subscription`.
+
+Every degradation CODE is recorded and counted in bounded memory regardless of
+how many times it fires — see "Round 2, defect 4" below.
 
 Reused shapes, not reinvented (lesson 8 — one code path)
 ------------------------------------------------------------
@@ -69,40 +87,104 @@ passed through this module — a folded degradation's, or one built directly for
 a ``kind="degradation"`` publish — goes through the SAME sanitiser
 (:func:`_sanitize_reason`), which strips Unicode format/bidi characters
 (category ``Cf``: RTL/LTR override and embedding marks, zero-width joiners,
-etc.) so a planted control character cannot make a degradation record render
-as something other than what it says.
+etc.).
 
 Connection approach, reused rather than reinvented
 --------------------------------------------------------
 This module talks to the broker the same way :mod:`embodiment.events` does —
 a lazy import of ``events_cli.core`` (pure-stdlib envelope/topic contract) and
-``events_cli.client.EventClient`` (the paho-mqtt transport), degrade-once on
-any failure, never a raise. It keeps its OWN pair of lazy loaders
+``events_cli.client.EventClient`` (the paho-mqtt transport), degrade on
+failure, never a raise. It keeps its OWN pair of lazy loaders
 (:func:`_load_envelope_core`, :func:`_load_event_client_class`) rather than
-importing :mod:`embodiment.events`'s private ones: the two modules mint
-different degradation vocabularies and have different disable semantics (an
-:class:`~embodiment.events.EventEmitter` disables ALL further activity on any
-failure; a :class:`Bus` disables only its MQTT fan-out and keeps delivering
-in-process), so sharing the private functions would couple two independently
-evolving degrade paths through an implementation detail neither module's
-public contract advertises. The *approach* — lazy import, ``EventClient``,
-degrade-once, never raise — is what is reused; the code is not, deliberately.
+importing :mod:`embodiment.events`'s private ones — see the round-1 rationale,
+unchanged.
 
-No thread started here
------------------------
-Per the task brief, this module does not start a background thread. The
-heartbeat is driven by :meth:`Bus.tick`, which a host's own daemon loop (or a
-test) calls with a wall-clock ``now`` it read itself — the same
-"no clock inside the pure parts" discipline
-:mod:`embodiment.audio.features` and :mod:`embodiment.presence` already use.
-:meth:`Bus.close` is still provided (lesson 6 — shutdown is a feature) because
-this module DOES own one resource across calls: the lazily-built MQTT
-transport client. ``close`` is idempotent, never raises, and returns a
-:class:`BusCloseReport` naming what it did.
+Round 2 — what an independent probe found, and the fix
+------------------------------------------------------------
+1. **Speech leaked into a degradation reason.** A broker client (or paho
+   itself) can raise an exception, or return a ``PublishResult`` whose
+   ``.reason``, whose TEXT is attacker/caller-controlled — a broker error
+   message can legally echo back the payload it choked on. The round-1 code
+   interpolated ``{exc}`` at four sites and copied ``result.reason`` verbatim
+   into a degradation ``reason``, which is delivered to every subscriber of
+   ``kind="degradation"``, authenticated or not. Fixed: :func:`_describe_exception`
+   returns ONLY the exception's class name (plus the ``OSError`` errno NAME,
+   itself a fixed, safe vocabulary — never ``strerror``); ``result.reason`` goes
+   through :func:`_reason_or_generic`, which surfaces it ONLY when restricting
+   it to a safe charset changes nothing at all — any alteration means the text
+   was untrusted, and the whole thing is replaced by a fixed generic string
+   rather than partially kept (a naive strip-and-keep, tried first, still let
+   an attacker's own marker text survive verbatim whenever it happened to be
+   made of "safe" characters — see :data:`_SAFE_TOKEN_CHARS`). Neither path
+   ever includes ``str(exc)``, ``repr(exc)`` or ``exc.args``.
+2. **A slow broker blocked the publisher.** ``publish()`` used to call the
+   broker client synchronously, so a hot ``features`` publish (~30-60/s from
+   the audio path) blocked on however long the broker took. Fixed: broker
+   fan-out now goes through a bounded queue (:data:`DEFAULT_BROKER_QUEUE_SIZE`)
+   drained by ONE lazily-started daemon worker thread
+   (:meth:`Bus._broker_worker`), using the SAME drop-oldest-``features``-first
+   policy as a subscriber (:func:`_drop_policy`, factored out so both queues
+   share one implementation — lesson 8). In-process delivery stays fully
+   synchronous inside :meth:`publish` — only the network hop moved off the
+   caller's thread.
+3. **Delivery could arrive out of ``seq`` order under concurrency.** ``seq``
+   used to be assigned under the lock, then the lock released before
+   in-process delivery — two threads could then deliver in the opposite order
+   from the one their ``seq`` values imply. Fixed: seq assignment and
+   in-process delivery are now ONE critical section (see :meth:`publish`); the
+   lock is never held across the broker enqueue or an ``on_degrade`` call.
+4. **``degradations`` was unbounded.** 50,000 invalid publishes used to hold
+   50,000 :class:`BusDegradation` records — a hostile or buggy publisher could
+   exhaust the daemon's memory. Fixed: :attr:`Bus.degradations` now keeps only
+   the FIRST occurrence per distinct CODE (capped at
+   :data:`_MAX_DEGRADATION_CODES` distinct codes, itself far above this
+   module's fixed vocabulary), :attr:`Bus.degradation_counts` tracks the total
+   occurrences per code, and :attr:`Bus.degradations_dropped` counts anything
+   that hit the distinct-code cap. A failing ``on_degrade`` hook is likewise
+   counted (:attr:`Bus.hook_errors`) rather than silently swallowed — which
+   also means that swallow is no longer "silent" in
+   ``tests/test_no_silent_degradation.py``'s own terms, and its allow-list
+   entry for ``Bus._degrade`` was removed accordingly.
+5. **Transcripts could be dropped with ``drops`` still reading zero.**
+   :class:`Subscription`'s single ``_drops`` counter conflated two different
+   things: the PENDING count that rides onto the next delivered event's
+   ``gap`` field (and resets once reported) and a lifetime total a host would
+   read via ``.drops``. Reading ``.drops`` after fully draining a subscription
+   always saw the just-reset pending count — 0 — even though real drops had
+   happened. Fixed: a separate lifetime :attr:`Subscription.drops` (never
+   resets) and :attr:`Subscription.drops_by_kind`. Separately: the fallback
+   policy (evict the oldest event of ANY kind when no ``features`` event is
+   queued to sacrifice) can still evict a ``transcript``/``degradation`` — an
+   unbounded queue would be worse — but it is no longer silent:
+   :attr:`Subscription.protected_drops` counts it, and :class:`Bus` records ONE
+   bounded, counted :data:`DEGRADED_PROTECTED_DROP` (via the same bounded
+   ledger from defect 4) naming that a protected kind was sacrificed.
+6. Two questions answered by measurement/code, not just fixed:
+   a. **The broker degraded once and was never retried.** Fixed: bounded
+      retry driven by :meth:`Bus.tick` (no clock of its own — see "no thread
+      started here" below), at most once every
+      :data:`DEFAULT_BROKER_RETRY_INTERVAL_S` seconds, recording
+      :data:`DEGRADED_BROKER_RECOVERED` on success.
+   b. **``subscribe()`` defaulted to everything, including speech.** Fixed —
+      see the privacy-boundary section above.
+
+No thread started for the pure parts
+-------------------------------------
+Per the round-1 brief, the HEARTBEAT and RETRY decisions read no clock of
+their own — both are driven by :meth:`Bus.tick`, which a host's own daemon
+loop (or a test) calls with a wall-clock ``now`` it read itself, the same
+"no clock inside the pure parts" discipline :mod:`embodiment.audio.features`
+and :mod:`embodiment.presence` already use. Round 2 DOES add one background
+thread — the broker worker — because defect 2 requires it: a network hop
+cannot be made non-blocking without either a thread or an async runtime, and
+this package has no async runtime. The worker is lazily started, owned
+entirely by :class:`Bus`, and :meth:`Bus.close` stops it with a bounded join
+that reports what it left unsent (lesson 6 — shutdown is a feature).
 """
 
 from __future__ import annotations
 
+import errno
 import json
 import threading
 import time
@@ -119,11 +201,15 @@ __all__ = [
     "HEARTBEAT_INTERVAL_S",
     "DEFAULT_MAX_EVENT_BYTES",
     "DEFAULT_SUBSCRIBER_QUEUE_SIZE",
+    "DEFAULT_BROKER_QUEUE_SIZE",
+    "DEFAULT_BROKER_RETRY_INTERVAL_S",
     "DEFAULT_SOURCE",
     "DEGRADED_BROKER_UNAVAILABLE",
+    "DEGRADED_BROKER_RECOVERED",
     "DEGRADED_SCHEMA_INVALID",
     "DEGRADED_SECRET_REDACTED",
     "DEGRADED_OVERSIZE",
+    "DEGRADED_PROTECTED_DROP",
     "BusDegradation",
     "BusCloseReport",
     "Event",
@@ -155,7 +241,9 @@ EVENT_KINDS: frozenset[str] = frozenset(
 )
 
 #: The ONLY kinds allowed to carry speech (the user's words, or Gwen's reply).
-#: See the module docstring's privacy-boundary section.
+#: See the module docstring's privacy-boundary section. Excluded from a
+#: subscription by default (round 2, defect 6b) — pass
+#: ``Bus.subscribe(include_speech=True)`` or an explicit ``kinds=`` to get them.
 SPEECH_KINDS: frozenset[str] = frozenset({"transcript", "reply"})
 
 #: Fixed heartbeat interval, in seconds. A **judgement call**, not a measured
@@ -166,10 +254,9 @@ SPEECH_KINDS: frozenset[str] = frozenset({"transcript", "reply"})
 #: real dashboard's staleness tolerance ever needs to be tighter.
 HEARTBEAT_INTERVAL_S: float = 15.0
 
-#: Maximum serialised size (UTF-8 bytes) of one event's JSON form. A
-#: **judgement call**: every kind's payload measured in this module's own
-#: tests is well under 1 KB (a ``features`` frame's 44-character base64 ``env``
-#: is the largest single field), so 8 KiB leaves generous headroom for a
+#: Maximum serialised size (UTF-8 bytes) of one event's full envelope JSON
+#: form. A **judgement call**: every kind's payload measured in this module's
+#: own tests is well under 1 KB, so 8 KiB leaves generous headroom for a
 #: longer-than-typical ``transcript``/``reply`` utterance while still bounding
 #: what one event can cost a slow consumer or a real-time broker to carry.
 DEFAULT_MAX_EVENT_BYTES = 8192
@@ -179,9 +266,25 @@ DEFAULT_MAX_EVENT_BYTES = 8192
 #: pipeline actually produces (~30/s per direction, so up to ~60/s combined),
 #: 256 slots is a few seconds of buffering before the drop policy engages —
 #: enough to absorb a GC pause or a slow SSE flush without losing a
-#: ``transcript``/``degradation`` event, not so large that a genuinely stuck
-#: subscriber can accumulate an unbounded amount of memory.
+#: ``transcript``/``degradation`` event under normal load, not so large that a
+#: genuinely stuck subscriber can accumulate an unbounded amount of memory.
 DEFAULT_SUBSCRIBER_QUEUE_SIZE = 256
+
+#: Default bound on the ONE broker fan-out queue (round 2, defect 2), shared by
+#: every publish regardless of how many in-process subscribers exist. A
+#: **judgement call**: sized the same order of magnitude as one subscriber's
+#: queue — a few seconds of ``features``-rate buffering — because it feeds a
+#: single external consumer (the broker) rather than N dashboards, so it does
+#: not need N times the headroom.
+DEFAULT_BROKER_QUEUE_SIZE = 512
+
+#: How often (seconds) a disabled broker connection is retried, driven by
+#: :meth:`Bus.tick`. A **judgement call**: long enough that a broker that is
+#: genuinely down for a while is not hammered by reconnect attempts (each of
+#: which costs one degradation-ledger increment), short enough that an
+#: operator who restarts the broker mid-session sees the daemon recover within
+#: a few dashboard refresh cycles.
+DEFAULT_BROKER_RETRY_INTERVAL_S: float = 5.0
 
 #: The CloudEvents ``source`` this bus mints when the constructor is not given
 #: one explicitly. Mirrors :data:`embodiment.events.DEFAULT_SOURCE`'s shape
@@ -192,14 +295,20 @@ DEFAULT_SOURCE = "app://embodiment"
 # ── the degradation vocabulary (C3) ─────────────────────────────────────────
 
 #: events-cli/paho-mqtt unavailable, connect failed, or a publish failed.
-#: Recorded exactly once per :class:`Bus` instance; see :meth:`Bus._degrade_broker`.
 DEGRADED_BROKER_UNAVAILABLE = "bus-broker-unavailable"
+#: A bounded retry (:meth:`Bus.tick`) reached the broker again after it had
+#: degraded. Round 2, defect 6a.
+DEGRADED_BROKER_RECOVERED = "bus-broker-recovered"
 #: An unknown ``kind``, or a known kind missing/mistyping a required field.
 DEGRADED_SCHEMA_INVALID = "bus-schema-invalid"
 #: The event's serialised form contained a literal value from ``redact=``.
 DEGRADED_SECRET_REDACTED = "bus-secret-redacted"  # nosec B105
 #: The event's serialised form exceeded the configured maximum size.
 DEGRADED_OVERSIZE = "bus-event-oversize"
+#: A subscriber's bounded queue evicted a non-``features`` event as a last
+#: resort (round 2, defect 5). Never the payload of the evicted event, only
+#: its kind — see :meth:`Bus._deliver_and_record_locked`.
+DEGRADED_PROTECTED_DROP = "bus-protected-drop"
 
 #: Characters in Unicode category ``Cf`` ("format") — includes every bidi
 #: override/embedding/isolate control (U+200E/F, U+202A-E, U+2066-69) and
@@ -208,12 +317,20 @@ DEGRADED_OVERSIZE = "bus-event-oversize"
 #: module goes through (lesson 8).
 _STRIP_CATEGORY = "Cf"
 
-#: Restricts a token field (``source``/``code`` on a folded degradation) to a
-#: safe, loggable charset — the same discipline this package applies to ids
-#: elsewhere (lesson 5: ids are hashed or restricted to this exact charset).
+#: Restricts a token field (``source``/``code`` on a folded degradation, and —
+#: round 2 — a broker's own ``PublishResult.reason``) to a safe, loggable
+#: charset — the same discipline this package applies to ids elsewhere
+#: (lesson 5: ids are hashed or restricted to this exact charset).
 _SAFE_TOKEN_CHARS = frozenset("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._-")
 _MAX_TOKEN_LEN = 80
 _MAX_REASON_LEN = 500
+
+#: How many DISTINCT degradation codes :class:`Bus` keeps a first-occurrence
+#: record for (round 2, defect 4). A **judgement call**: this module's own
+#: fixed vocabulary is 6 codes today; 64 is generous headroom for a future
+#: addition while still bounding memory against a hostile/buggy caller that
+#: somehow produces many distinct codes.
+_MAX_DEGRADATION_CODES = 64
 
 #: Which ``data`` fields each kind REQUIRES to be present (any JSON value,
 #: including ``None`` — ``zero_crossing_hz`` is legitimately absent-as-None for
@@ -234,10 +351,11 @@ _REQUIRED_DATA_FIELDS: dict[str, tuple[str, ...]] = {
     "heartbeat": (),
 }
 
-#: Kinds dropped FIRST under subscriber back-pressure (never ``transcript`` or
-#: ``degradation``, see the module docstring). Currently just ``features`` —
-#: the high-rate kind named in the brief — kept as a set rather than a single
-#: constant so a future high-rate kind can join it in one place.
+#: Kinds dropped FIRST under queue back-pressure — a subscriber's own queue
+#: (:class:`Subscription`) AND the shared broker fan-out queue both use this
+#: same policy (:func:`_drop_policy`, lesson 8: one code path). Currently just
+#: ``features`` — the high-rate kind named in the brief — kept as a set rather
+#: than a single constant so a future high-rate kind can join it in one place.
 _DROP_FIRST_KINDS: frozenset[str] = frozenset({"features"})
 
 
@@ -255,11 +373,61 @@ def _sanitize_reason(text: object) -> str:
 
 
 def _safe_token(value: object) -> str:
-    """Restrict a token (a degradation ``source``/``code``) to a safe charset."""
+    """Restrict a token to a safe charset. Used for ids and codes this module
+    itself constructs (where losing a stray character is harmless)."""
     if not isinstance(value, str):
         value = "" if value is None else str(value)
     cleaned = "".join(ch for ch in value if ch in _SAFE_TOKEN_CHARS)
     return cleaned[:_MAX_TOKEN_LEN] or "unknown"
+
+
+#: The generic fallback :func:`_reason_or_generic` uses when a transport's own
+#: text is not already clean. Contains no character outside the safe token
+#: charset by construction (checked by ``tests/test_bus.py``), so it can never
+#: itself be mistaken for a partially-filtered leak.
+_GENERIC_TRANSPORT_REASON = "ok-false"
+
+
+def _reason_or_generic(value: object) -> str:
+    """Surface a transport-controlled reason ONLY when it is already a clean
+    safe token; otherwise a fixed generic string. Round 2, defect 1.
+
+    Unlike :func:`_safe_token`, this does NOT strip-then-keep-the-rest — that
+    still lets an attacker's own text characters (letters/digits/hyphens/
+    underscores/dots) survive verbatim, defeating the point for a marker made
+    entirely of "safe" characters. A real broker's ``PublishResult.reason`` is
+    always a short slug (e.g. ``"no_conn"``), which passes through unchanged;
+    anything that required ANY alteration to become safe is untrusted and is
+    replaced wholesale, never partially kept.
+    """
+    text = value if isinstance(value, str) else ("" if value is None else str(value))
+    if not text:
+        return _GENERIC_TRANSPORT_REASON
+    token = _safe_token(text)
+    if token != text or token == "unknown":  # nosec B105
+        return _GENERIC_TRANSPORT_REASON
+    return token
+
+
+def _describe_exception(exc: BaseException) -> str:
+    """Describe *exc* SAFELY: the exception's class name, never its message.
+
+    Round 2, defect 1: ``str(exc)``/``repr(exc)``/``exc.args`` can legally
+    contain whatever the raising code chose to embed — including, for a
+    broker client, the very payload it choked on (which can be a spoken
+    ``transcript``). This function returns ONLY the class name
+    (``"RuntimeError"``, ``"ConnectionError"``, …), plus — for ``OSError`` —
+    the errno NAME (e.g. ``"ECONNREFUSED"``), itself a fixed, small, safe
+    vocabulary defined by the ``errno`` module, never the OS's free-text
+    ``strerror``. This is the ONE place in this module that turns an
+    exception into a reason string; every degrade-on-exception site calls it.
+    """
+    name = type(exc).__name__
+    if isinstance(exc, OSError) and exc.errno is not None:
+        code_name = errno.errorcode.get(exc.errno)
+        if code_name:
+            return f"{name}:{code_name}"
+    return name
 
 
 def fold_degradation(record: Any, *, source: str) -> dict[str, str]:
@@ -311,6 +479,8 @@ class BusCloseReport:
     closed_broker_client: bool
     subscribers_closed: int
     elapsed_s: float
+    broker_worker_stopped: bool
+    broker_events_unsent: int
 
 
 @dataclass(frozen=True)
@@ -349,6 +519,42 @@ class Event:
 
     def to_json(self) -> str:
         return json.dumps(self.to_dict(), ensure_ascii=False, separators=(",", ":"))
+
+
+def _iter_strings(obj: Any) -> Iterable[str]:
+    """Yield every string reachable inside *obj* (dict keys AND values, list/tuple
+    items, recursively). Used for secret scanning — see :func:`_contains_secret`.
+    """
+    if isinstance(obj, str):
+        yield obj
+    elif isinstance(obj, dict):
+        for key, value in obj.items():
+            yield from _iter_strings(key)
+            yield from _iter_strings(value)
+    elif isinstance(obj, (list, tuple)):
+        for item in obj:
+            yield from _iter_strings(item)
+
+
+def _contains_secret(payload: Any, secrets: Iterable[str]) -> bool:
+    """True if any of *secrets* is a substring of any raw string inside *payload*.
+
+    Round 2: scans the raw Python values, NOT a JSON-serialised string. A
+    round-1 defect checked ``secret in event.to_json()`` instead — JSON
+    escapes ``"`` and ``\\`` inside string values, so a secret containing
+    either character (independently verified: ``ab"cd-KEY`` was NOT redacted)
+    could never match the escaped text even though the unredacted secret sat
+    right there in the event's own ``data`` dict. Comparing raw strings to raw
+    strings has no escaping to defeat it.
+    """
+    secrets = [s for s in secrets if s]
+    if not secrets:
+        return False
+    for text in _iter_strings(payload):
+        for secret in secrets:
+            if secret in text:
+                return True
+    return False
 
 
 def _validate_data(kind: str, data: Any) -> Optional[str]:
@@ -392,27 +598,84 @@ def _validate_data(kind: str, data: Any) -> Optional[str]:
     return None
 
 
+def _drop_policy(
+    queue: "deque[Event]", maxsize: int, incoming_kind: str
+) -> tuple[bool, Optional[str], bool]:
+    """The ONE bounded-queue eviction policy shared by :class:`Subscription` and
+    :class:`Bus`'s broker fan-out queue (round 2, defect 2 — lesson 8: one code
+    path instead of two queues quietly drifting apart).
+
+    Returns ``(accept, dropped_kind, protected)``:
+
+    - ``accept`` — ``True`` if *incoming* should be appended to *queue* (the
+      caller still does the actual ``append``; this function only decides and,
+      when eviction is needed, mutates *queue* to make room).
+    - ``dropped_kind`` — the ``kind`` of the event actually dropped by THIS
+      call, or ``None`` if nothing was (queue had room).
+    - ``protected`` — ``True`` when the dropped event was NOT a
+      :data:`_DROP_FIRST_KINDS` member — i.e. a ``transcript``/``degradation``/
+      etc. had to be sacrificed as a LAST RESORT because no ``features`` event
+      was queued to evict instead.
+
+    Policy: an incoming drop-first-kind event arriving at capacity is dropped
+    OUTRIGHT (never evicts anything — ``accept=False``). Anything else
+    arriving at capacity first evicts the OLDEST queued drop-first-kind event
+    (freeing room without ever touching a protected kind); only when no
+    drop-first event is queued at all does it fall back to evicting the oldest
+    event of ANY kind, so the queue still cannot grow unbounded — this is the
+    "last resort, never SILENTLY" path (round 2, defect 5).
+    """
+    if len(queue) < maxsize:
+        return True, None, False
+    if incoming_kind in _DROP_FIRST_KINDS:
+        return False, incoming_kind, False
+    for index, queued in enumerate(queue):
+        if queued.kind in _DROP_FIRST_KINDS:
+            evicted = queue[index]
+            del queue[index]
+            return True, evicted.kind, False
+    evicted = queue[0]
+    queue.popleft()
+    return True, evicted.kind, True
+
+
 class Subscription:
     """A bounded, thread-safe per-consumer queue an SSE handler (task t16) drains.
 
     Never grows unbounded: once ``maxsize`` events are queued, further
     delivery drops the OLDEST event still eligible to be dropped rather than
-    blocking the publisher or growing memory. ``features`` events are dropped
-    FIRST — see the module docstring — so a slow dashboard loses live
-    waveform frames long before it loses a spoken turn or a degradation
-    record. Every drop is counted, and the count rides onto the ``gap`` field
-    of the NEXT event this subscription actually delivers, so a consumer sees
-    "missed N events" rather than a silent gap in ``seq``.
+    blocking the publisher or growing memory, via :func:`_drop_policy`.
+    ``features`` events are dropped FIRST — see the module docstring — so a
+    slow dashboard loses live waveform frames long before it loses a spoken
+    turn or a degradation record. Every drop is counted PENDING (rides onto
+    the ``gap`` field of the next event this subscription actually delivers,
+    then resets) AND cumulatively (:attr:`drops`, :attr:`drops_by_kind`,
+    :attr:`protected_drops` — round 2, defect 5: these never reset, so
+    draining a subscription and then reading ``.drops`` still reports the
+    true lifetime total rather than the just-reset pending count).
     """
 
-    __slots__ = ("_kinds", "_maxsize", "_cv", "_queue", "_drops", "_closed")
+    __slots__ = (
+        "_kinds",
+        "_maxsize",
+        "_cv",
+        "_queue",
+        "_pending_drops",
+        "_lifetime_drops",
+        "_drops_by_kind",
+        "_protected_drops",
+        "_closed",
+    )
 
     def __init__(self, *, kinds: Optional[Iterable[str]] = None, maxsize: int) -> None:
         self._kinds = frozenset(kinds) if kinds is not None else None
         self._maxsize = max(1, int(maxsize))
         self._cv = threading.Condition()
         self._queue: deque[Event] = deque()
-        self._drops = 0
+        self._pending_drops = 0
+        self._lifetime_drops = 0
+        self._drops_by_kind: dict[str, int] = {}
+        self._protected_drops = 0
         self._closed = False
 
     @property
@@ -425,44 +688,48 @@ class Subscription:
 
     @property
     def drops(self) -> int:
+        """Lifetime total events dropped from this subscription. Never resets."""
         with self._cv:
-            return self._drops
+            return self._lifetime_drops
 
-    def _offer(self, event: Event) -> None:
-        """Called by :class:`Bus` for every published event. Never raises."""
+    @property
+    def drops_by_kind(self) -> dict[str, int]:
+        """Lifetime drops broken down by the KIND of event that was dropped."""
+        with self._cv:
+            return dict(self._drops_by_kind)
+
+    @property
+    def protected_drops(self) -> int:
+        """Lifetime count of drops that sacrificed a NON-``features`` event
+        (round 2, defect 5's "never silently" case)."""
+        with self._cv:
+            return self._protected_drops
+
+    def _record_drop_locked(self, dropped_kind: str, *, protected: bool) -> None:
+        """Call with ``self._cv``'s lock already held."""
+        self._pending_drops += 1
+        self._lifetime_drops += 1
+        self._drops_by_kind[dropped_kind] = self._drops_by_kind.get(dropped_kind, 0) + 1
+        if protected:
+            self._protected_drops += 1
+
+    def _offer(self, event: Event) -> Optional[str]:
+        """Called by :class:`Bus`, with ``Bus._lock`` already held, for every
+        published event. Never raises. Returns the KIND of a protected event
+        this call had to evict (round 2, defect 5), or ``None``.
+        """
         if self._kinds is not None and event.kind not in self._kinds:
-            return
+            return None
         with self._cv:
             if self._closed:
-                return
-            if len(self._queue) >= self._maxsize:
-                if not self._make_room_locked(event.kind):
-                    return
-            self._queue.append(event)
-            self._cv.notify()
-
-    def _make_room_locked(self, incoming_kind: str) -> bool:
-        """Evict one queued event to make room; return False to drop *incoming* instead.
-
-        Policy (see the module docstring): a ``features`` event arriving while
-        full is dropped OUTRIGHT (never displaces anything). Anything else
-        arriving while full first tries to evict the OLDEST queued
-        ``features`` event (freeing room without ever touching a
-        ``transcript``/``degradation``/etc.); only when no ``features`` event
-        is queued at all does it fall back to evicting the oldest event of any
-        kind, so the queue still cannot grow unbounded.
-        """
-        if incoming_kind in _DROP_FIRST_KINDS:
-            self._drops += 1
-            return False
-        for index, queued in enumerate(self._queue):
-            if queued.kind in _DROP_FIRST_KINDS:
-                del self._queue[index]
-                self._drops += 1
-                return True
-        self._queue.popleft()
-        self._drops += 1
-        return True
+                return None
+            accept, dropped_kind, protected = _drop_policy(self._queue, self._maxsize, event.kind)
+            if dropped_kind is not None:
+                self._record_drop_locked(dropped_kind, protected=protected)
+            if accept:
+                self._queue.append(event)
+                self._cv.notify()
+        return dropped_kind if protected else None
 
     def get(self, timeout: Optional[float] = None) -> Optional[Event]:
         """Block up to *timeout* seconds (``None`` = forever) for the next event.
@@ -482,13 +749,14 @@ class Subscription:
             if not self._queue:
                 return None
             event = self._queue.popleft()
-            gap, self._drops = self._drops, 0
+            gap, self._pending_drops = self._pending_drops, 0
             if gap:
                 event = replace(event, gap=gap)
             return event
 
     def drain(self) -> list[Event]:
-        """Return every currently-queued event without blocking, resetting ``gap``."""
+        """Return every currently-queued event without blocking, resetting the
+        PENDING (not lifetime) drop counter."""
         out: list[Event] = []
         while True:
             event = self.get(timeout=0.0)
@@ -532,14 +800,17 @@ class Bus:
         max_event_bytes: see :data:`DEFAULT_MAX_EVENT_BYTES`.
         subscriber_queue_size: the default ``maxsize`` a new
             :meth:`subscribe` call uses when it does not override one.
+        broker_queue_size: see :data:`DEFAULT_BROKER_QUEUE_SIZE`.
+        broker_retry_interval_s: see :data:`DEFAULT_BROKER_RETRY_INTERVAL_S`.
         host, port: forwarded to a lazily-constructed real
             ``events_cli.client.EventClient``. Ignored when ``client`` or
             ``client_factory`` is supplied.
         client, client_factory: as :class:`embodiment.events.EventEmitter` —
             an injection seam for tests and advanced hosts.
-        on_degrade: optional callback invoked whenever a
-            :class:`BusDegradation` is recorded. Best-effort: an exception
-            from it is swallowed, never propagated.
+        on_degrade: optional callback invoked whenever a NEW distinct
+            :class:`BusDegradation` code is first recorded. Best-effort: an
+            exception from it is counted (:attr:`hook_errors`), never
+            propagated.
     """
 
     def __init__(
@@ -549,6 +820,8 @@ class Bus:
         redact: Iterable[str] = (),
         max_event_bytes: int = DEFAULT_MAX_EVENT_BYTES,
         subscriber_queue_size: int = DEFAULT_SUBSCRIBER_QUEUE_SIZE,
+        broker_queue_size: int = DEFAULT_BROKER_QUEUE_SIZE,
+        broker_retry_interval_s: float = DEFAULT_BROKER_RETRY_INTERVAL_S,
         host: Optional[str] = None,
         port: Optional[int] = None,
         client: Optional[Any] = None,
@@ -568,12 +841,30 @@ class Bus:
         self._lock = threading.Lock()
         self._seq = 0
         self._subscribers: list[Subscription] = []
-        self.degradations: list[BusDegradation] = []
 
+        # ── bounded degradation ledger (round 2, defect 4) ──────────────────
+        self.degradations: list[BusDegradation] = []
+        self.degradation_counts: dict[str, int] = {}
+        self.degradations_dropped = 0
+        self.hook_errors = 0
+        self._degradation_seen: set[str] = set()
+
+        # ── broker fan-out: connection state, guarded by self._broker_lock ──
+        self._broker_lock = threading.Lock()
         self._broker_disabled = False
         self._broker_client: Optional[Any] = None
         self._envelope_cls: Optional[Any] = None
         self._type_to_topic: Optional[Any] = None
+        self._broker_retry_interval_s = max(0.0, float(broker_retry_interval_s))
+        self._broker_next_retry_at: Optional[float] = None
+
+        # ── broker fan-out: the queue + worker thread, guarded by _broker_cv ─
+        self._broker_queue_maxsize = max(1, int(broker_queue_size))
+        self._broker_cv = threading.Condition()
+        self._broker_queue: deque[Event] = deque()
+        self._broker_thread: Optional[threading.Thread] = None
+        self._broker_stop = threading.Event()
+        self.broker_events_dropped = 0
 
         self._last_heartbeat: Optional[float] = None
 
@@ -599,52 +890,85 @@ class Bus:
             self._degrade(DEGRADED_SCHEMA_INVALID, f"{kind}: invalid or missing '{bad_field}'")
             return None
 
+        # Round 2, defect 3: seq assignment and in-process delivery are ONE
+        # critical section, so two publishing threads can never deliver out of
+        # the order their seq values imply. A validation failure discovered
+        # here just costs a harmless gap in the seq sequence (no event was
+        # ever going to be delivered for it). The lock is never held across
+        # _degrade/on_degrade or the broker enqueue — both happen below, after
+        # release.
+        reject_code: Optional[str] = None
+        reject_reason = ""
+        protected_kinds: list[str] = []
+        event: Optional[Event] = None
         with self._lock:
             self._seq += 1
-            seq = self._seq
-        event = Event(
-            v=SCHEMA_VERSION,
-            kind=kind,
-            ts=_now_rfc3339(),
-            seq=seq,
-            source=self._source,
-            data=payload,
-        )
-
-        try:
-            serialised = event.to_json()
-        except (TypeError, ValueError) as exc:
-            self._degrade(DEGRADED_SCHEMA_INVALID, f"{kind}: not JSON-serialisable: {exc}")
-            return None
-
-        for secret in self._redact:
-            if secret in serialised:
-                self._degrade(DEGRADED_SECRET_REDACTED, f"{kind}: payload matched a redacted value")
-                return None
-
-        if len(serialised.encode("utf-8")) > self._max_event_bytes:
-            self._degrade(
-                DEGRADED_OVERSIZE,
-                f"{kind}: {len(serialised.encode('utf-8'))} bytes exceeds "
-                f"{self._max_event_bytes}",
+            candidate = Event(
+                v=SCHEMA_VERSION,
+                kind=kind,
+                ts=_now_rfc3339(),
+                seq=self._seq,
+                source=self._source,
+                data=payload,
             )
+            try:
+                serialised = candidate.to_json()
+            except (TypeError, ValueError) as exc:
+                reject_code = DEGRADED_SCHEMA_INVALID
+                reject_reason = f"{kind}: not JSON-serialisable: {_describe_exception(exc)}"
+            else:
+                size = len(serialised.encode("utf-8"))
+                if _contains_secret(payload, self._redact):
+                    reject_code = DEGRADED_SECRET_REDACTED
+                    reject_reason = f"{kind}: payload matched a redacted value"
+                elif size > self._max_event_bytes:
+                    reject_code = DEGRADED_OVERSIZE
+                    reject_reason = f"{kind}: {size} bytes exceeds {self._max_event_bytes}"
+                else:
+                    event = candidate
+                    for sub in self._subscribers:
+                        protected = sub._offer(event)  # noqa: SLF001 - one unit
+                        if protected is not None:
+                            protected_kinds.append(protected)
+
+        if reject_code is not None:
+            self._degrade(reject_code, reject_reason)
             return None
 
-        self._publish_broker(event)
-        self._deliver_in_process(event)
+        for protected_kind in protected_kinds:
+            self._degrade(
+                DEGRADED_PROTECTED_DROP,
+                f"dropped a {_safe_token(protected_kind)} event under subscriber back-pressure",
+            )
+
+        assert event is not None  # nosec B101
+        self._enqueue_broker(event)
         return event
 
     def subscribe(
-        self, kinds: Optional[Iterable[str]] = None, *, maxsize: Optional[int] = None
+        self,
+        kinds: Optional[Iterable[str]] = None,
+        *,
+        include_speech: bool = False,
+        maxsize: Optional[int] = None,
     ) -> Subscription:
         """Register and return a new :class:`Subscription`.
 
-        ``kinds=None`` (the default) receives every kind, including
-        ``transcript``/``reply`` — a caller that must NOT see speech passes an
-        explicit ``kinds=`` set that omits them (see the module docstring's
-        privacy boundary).
+        Private by default (round 2, defect 6b, lesson 7): with ``kinds=None``
+        (the default) the subscription receives every kind EXCEPT
+        :data:`SPEECH_KINDS` (``transcript``/``reply``). Pass
+        ``include_speech=True`` to receive everything, or name ``kinds=``
+        explicitly — naming ``transcript``/``reply`` there is itself the
+        deliberate ask, so an explicit ``kinds=`` is always honoured exactly
+        (``include_speech`` is only consulted when ``kinds`` is omitted).
         """
-        sub = Subscription(kinds=kinds, maxsize=maxsize or self._subscriber_queue_size)
+        if kinds is None:
+            resolved: Optional[Iterable[str]] = (
+                None if include_speech else (EVENT_KINDS - SPEECH_KINDS)
+            )
+        else:
+            resolved = kinds
+        sub = Subscription(kinds=resolved, maxsize=maxsize or self._subscriber_queue_size)
         with self._lock:
             self._subscribers.append(sub)
         return sub
@@ -658,14 +982,21 @@ class Bus:
                 pass
         subscription.close()
 
-    # ── public: heartbeat + shutdown ────────────────────────────────────────
+    # ── public: heartbeat + broker retry + shutdown ─────────────────────────
 
     def tick(self, now: float) -> Optional[Event]:
-        """Externally-driven heartbeat. Emits at most once per
-        :data:`HEARTBEAT_INTERVAL_S`, driven entirely by the *now* the caller
-        supplies — this method reads no clock of its own (see the module
-        docstring's "no thread started here" section).
+        """Externally-driven heartbeat AND broker-retry check. Reads no clock
+        of its own — both decisions are driven entirely by the *now* the
+        caller supplies (see the module docstring's "no thread started for
+        the pure parts" section).
+
+        Emits a ``heartbeat`` event at most once per :data:`HEARTBEAT_INTERVAL_S`.
+        Independently, when the broker is currently disabled, attempts a
+        bounded reconnect at most once per :data:`DEFAULT_BROKER_RETRY_INTERVAL_S`
+        (round 2, defect 6a) and records :data:`DEGRADED_BROKER_RECOVERED` on
+        success.
         """
+        self._maybe_retry_broker(now)
         with self._lock:
             due = (
                 self._last_heartbeat is None or (now - self._last_heartbeat) >= HEARTBEAT_INTERVAL_S
@@ -676,7 +1007,11 @@ class Bus:
         return self.publish("heartbeat", {})
 
     def close(self, deadline: float = 2.0) -> BusCloseReport:
-        """Idempotent, never raises, returns within *deadline* seconds (lesson 6)."""
+        """Idempotent, never raises, returns within *deadline* seconds (lesson 6).
+
+        Stops the broker worker thread with a bounded join and reports how
+        many queued events it left unsent (round 2, defect 2).
+        """
         start = time.monotonic()
         with self._lock:
             subs = list(self._subscribers)
@@ -684,9 +1019,21 @@ class Bus:
         for sub in subs:
             sub.close()
 
+        with self._broker_cv:
+            self._broker_stop.set()
+            self._broker_cv.notify_all()
+        thread = self._broker_thread
+        if thread is not None:
+            remaining = max(0.0, deadline - (time.monotonic() - start))
+            thread.join(timeout=remaining)
+        worker_stopped = thread is None or not thread.is_alive()
+        with self._broker_cv:
+            unsent = len(self._broker_queue)
+
         closed_client = False
-        client = self._broker_client
-        self._broker_client = None
+        with self._broker_lock:
+            client = self._broker_client
+            self._broker_client = None
         if client is not None:
             try:
                 client.close()
@@ -698,89 +1045,185 @@ class Bus:
             closed_broker_client=closed_client,
             subscribers_closed=len(subs),
             elapsed_s=elapsed,
+            broker_worker_stopped=worker_stopped,
+            broker_events_unsent=unsent,
         )
 
-    # ── internals: MQTT fan-out ─────────────────────────────────────────────
+    # ── internals: the bounded degradation ledger (round 2, defect 4) ──────
 
-    def _publish_broker(self, event: Event) -> None:
-        if self._broker_disabled:
+    def _degrade(self, code: str, reason: str) -> None:
+        record = BusDegradation(code=code, reason=_sanitize_reason(reason))
+        with self._lock:
+            self.degradation_counts[code] = self.degradation_counts.get(code, 0) + 1
+            if code not in self._degradation_seen:
+                if len(self._degradation_seen) >= _MAX_DEGRADATION_CODES:
+                    self.degradations_dropped += 1
+                else:
+                    self._degradation_seen.add(code)
+                    self.degradations.append(record)
+        if self._on_degrade is not None:
+            try:
+                self._on_degrade(record)
+            except Exception:  # noqa: BLE001 - a hook must never raise; count, don't swallow
+                with self._lock:
+                    self.hook_errors += 1
+
+    # ── internals: MQTT fan-out (round 2: async, off the caller's thread) ──
+
+    def _enqueue_broker(self, event: Event) -> None:
+        with self._broker_lock:
+            disabled = self._broker_disabled
+        if disabled:
             return
+        accept = False
+        with self._broker_cv:
+            accept, dropped_kind, _protected = _drop_policy(
+                self._broker_queue, self._broker_queue_maxsize, event.kind
+            )
+            if dropped_kind is not None:
+                self.broker_events_dropped += 1
+            if accept:
+                self._broker_queue.append(event)
+                self._broker_cv.notify()
+        if accept:
+            self._ensure_broker_thread()
+
+    def _ensure_broker_thread(self) -> None:
+        with self._broker_cv:
+            if self._broker_thread is not None and self._broker_thread.is_alive():
+                return
+            if self._broker_stop.is_set():
+                return
+            self._broker_thread = threading.Thread(
+                target=self._broker_worker, name="embodiment-bus-broker", daemon=True
+            )
+            self._broker_thread.start()
+
+    def _broker_worker(self) -> None:
+        """Drains :attr:`_broker_queue`, one event at a time, off the caller's
+        thread (round 2, defect 2). Exits once stopped AND drained."""
+        while True:
+            with self._broker_cv:
+                while not self._broker_queue and not self._broker_stop.is_set():
+                    self._broker_cv.wait(timeout=1.0)
+                if not self._broker_queue:
+                    if self._broker_stop.is_set():
+                        return
+                    continue
+                event = self._broker_queue.popleft()
+            self._publish_broker_sync(event)
+
+    def _publish_broker_sync(self, event: Event) -> None:
+        """The actual network call. Runs ONLY on the broker worker thread."""
+        with self._broker_lock:
+            if self._broker_disabled:
+                return
         if not self._ensure_broker_core():
             return
         client = self._ensure_broker_client()
         if client is None:
             return
+        with self._broker_lock:
+            envelope_cls = self._envelope_cls
+            type_to_topic = self._type_to_topic
+        if envelope_cls is None or type_to_topic is None:
+            return
         try:
-            envelope = self._envelope_cls.new(
+            envelope = envelope_cls.new(
                 type=f"embodiment.bus.{event.kind}",
                 source=self._source,
                 data=event.to_dict(),
                 time=event.ts,
                 id=f"evt-bus-{self._source}-{event.seq}",
             )
-            topic = self._type_to_topic(envelope.type)
+            topic = type_to_topic(envelope.type)
             result = client.publish_event(envelope, topic)
             if not bool(getattr(result, "ok", False)):
-                reason = getattr(result, "reason", "publish returned ok=False")
+                # Round 2, defect 1: a broker's PublishResult.reason is
+                # transport-controlled text we did not construct, and MUST NOT
+                # be trusted verbatim — a hostile/buggy client can put whatever
+                # it wants there, including an echo of the payload it choked
+                # on. _reason_or_generic only surfaces it when restricting it
+                # to a safe charset changes NOTHING (a real client's reason is
+                # always a short slug like "no_conn"); anything that had to be
+                # altered is dropped to a fixed, generic message instead of
+                # partially leaked.
+                reason = _reason_or_generic(getattr(result, "reason", None))
                 self._degrade_broker(f"publish failed: {reason}")
-        except Exception as exc:  # noqa: BLE001 - MQTT fan-out must never abort a publish
-            self._degrade_broker(f"{type(exc).__name__}: {exc}")
+        except Exception as exc:  # noqa: BLE001 - the worker thread must never crash
+            self._degrade_broker(_describe_exception(exc))
 
     def _ensure_broker_core(self) -> bool:
-        if self._envelope_cls is not None:
+        with self._broker_lock:
+            if self._envelope_cls is not None:
+                return True
+            if self._broker_disabled:
+                return False
+            try:
+                envelope_cls, type_to_topic, _now = _load_envelope_core()
+            except Exception as exc:  # noqa: BLE001 - degrade, never raise
+                self._degrade_broker_locked(_describe_exception(exc))
+                return False
+            self._envelope_cls = envelope_cls
+            self._type_to_topic = type_to_topic
             return True
-        try:
-            envelope_cls, type_to_topic, _now = _load_envelope_core()
-        except Exception as exc:  # noqa: BLE001 - degrade, never raise
-            self._degrade_broker(f"{type(exc).__name__}: {exc}")
-            return False
-        self._envelope_cls = envelope_cls
-        self._type_to_topic = type_to_topic
-        return True
 
     def _ensure_broker_client(self) -> Optional[Any]:
-        if self._broker_client is not None:
+        with self._broker_lock:
+            if self._broker_client is not None:
+                return self._broker_client
+            if self._broker_disabled:
+                return None
+            try:
+                if self._client is not None:
+                    self._broker_client = self._client
+                elif self._client_factory is not None:
+                    self._broker_client = self._client_factory()
+                else:
+                    event_client_cls = _load_event_client_class()
+                    self._broker_client = event_client_cls(host=self._host, port=self._port)
+            except Exception as exc:  # noqa: BLE001 - degrade, never raise
+                self._degrade_broker_locked(_describe_exception(exc))
+                return None
             return self._broker_client
-        try:
-            if self._client is not None:
-                self._broker_client = self._client
-            elif self._client_factory is not None:
-                self._broker_client = self._client_factory()
-            else:
-                event_client_cls = _load_event_client_class()
-                self._broker_client = event_client_cls(host=self._host, port=self._port)
-        except Exception as exc:  # noqa: BLE001 - degrade, never raise
-            self._degrade_broker(f"{type(exc).__name__}: {exc}")
-            return None
-        return self._broker_client
 
-    def _degrade_broker(self, reason: str) -> None:
-        """Record :data:`DEGRADED_BROKER_UNAVAILABLE` exactly ONCE per instance.
-
-        After the first call every subsequent publish skips the MQTT attempt
-        entirely (``self._broker_disabled``) — the whole point being that a
-        broker down for a whole run costs this bus ONE recorded transition,
-        never one per published event. In-process delivery is untouched by
-        this: :meth:`publish` always calls :meth:`_deliver_in_process`
-        regardless of what happened here.
+    def _degrade_broker_locked(self, reason: str) -> None:
+        """Record :data:`DEGRADED_BROKER_UNAVAILABLE`. Call with
+        ``self._broker_lock`` already held. Disabling is idempotent within one
+        down-period: repeated calls while already disabled are no-ops, so a
+        broker down for a whole run still costs a BOUNDED number of ledger
+        entries (one distinct code, a growing count — see defect 4), never one
+        unbounded record per event.
         """
         if self._broker_disabled:
             return
         self._broker_disabled = True
         self._degrade(DEGRADED_BROKER_UNAVAILABLE, reason)
 
-    def _degrade(self, code: str, reason: str) -> None:
-        record = BusDegradation(code=code, reason=_sanitize_reason(reason))
-        with self._lock:
-            self.degradations.append(record)
-        if self._on_degrade is not None:
-            try:
-                self._on_degrade(record)
-            except Exception:  # nosec B110 # noqa: BLE001 - a hook must never raise either
-                pass
+    def _degrade_broker(self, reason: str) -> None:
+        with self._broker_lock:
+            self._degrade_broker_locked(reason)
 
-    def _deliver_in_process(self, event: Event) -> None:
-        with self._lock:
-            subs = list(self._subscribers)
-        for sub in subs:
-            sub._offer(event)  # noqa: SLF001 - Bus and Subscription are one unit
+    def _maybe_retry_broker(self, now: float) -> None:
+        """Round 2, defect 6a: bounded retry, driven by the caller's *now*.
+
+        At most one retry attempt per :data:`DEFAULT_BROKER_RETRY_INTERVAL_S`
+        (or the constructor override) while the broker is disabled. A
+        successful reconnect records :data:`DEGRADED_BROKER_RECOVERED` and
+        re-enables fan-out; a failed one re-disables via the same
+        :meth:`_degrade_broker_locked` path a normal publish failure uses, so
+        it costs one more bounded ledger count, never a fresh unbounded record.
+        """
+        with self._broker_lock:
+            if not self._broker_disabled:
+                return
+            if self._broker_next_retry_at is not None and now < self._broker_next_retry_at:
+                return
+            self._broker_next_retry_at = now + self._broker_retry_interval_s
+            self._broker_disabled = False
+            self._broker_client = None
+            self._envelope_cls = None
+            self._type_to_topic = None
+        recovered = self._ensure_broker_core() and self._ensure_broker_client() is not None
+        if recovered:
+            self._degrade(DEGRADED_BROKER_RECOVERED, "broker reachable again")
