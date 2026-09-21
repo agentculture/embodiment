@@ -97,8 +97,23 @@ Answer in exactly this shape and nothing else:
 VERDICT: approve | changes-requested
 PROMPT
 
-run_qwen() { ( cd "$wt" && timeout "$timeout_s" qwen --approval-mode plan "$prompt" </dev/null ) >"$out_dir/qwen.md" 2>"$out_dir/qwen.err"; echo $? >"$out_dir/qwen.rc"; }
-run_pi()   { ( cd "$wt" && timeout "$timeout_s" pi -p --no-session --tools read,grep,find,ls "$prompt" </dev/null ) >"$out_dir/pi.md" 2>"$out_dir/pi.err"; echo $? >"$out_dir/pi.rc"; }
+call_qwen() { ( cd "$wt" && timeout "$timeout_s" qwen --approval-mode plan "$prompt" </dev/null ); }
+call_pi()   { ( cd "$wt" && timeout "$timeout_s" pi -p --no-session --tools read,grep,find,ls "$prompt" </dev/null ); }
+
+# One retry when a reviewer exits 0 with nothing to say (seen from pi on t4). The
+# attempt count is recorded, so a flaky reviewer shows up in the summary line.
+run_reviewer() {
+  local name=$1 attempt rc=0
+  for attempt in 1 2; do
+    rc=0
+    "call_$name" >"$out_dir/$name.md" 2>"$out_dir/$name.err" || rc=$?
+    echo "$attempt" >"$out_dir/$name.attempts"
+    [[ $rc -eq 0 && ! -s "$out_dir/$name.md" ]] || break
+  done
+  echo "$rc" >"$out_dir/$name.rc"
+}
+run_qwen() { run_reviewer qwen; }
+run_pi()   { run_reviewer pi; }
 
 start=$(date +%s)
 run_qwen & run_pi & wait
@@ -116,7 +131,8 @@ for r in qwen pi; do
     status=3
     echo "$r: NO USABLE REVIEW (rc=$rc) - see $out_dir/$r.err"
   else
-    echo "$r: $verdict   ${counts:-no findings}"
+    tries=$(cat "$out_dir/$r.attempts" 2>/dev/null || echo 1)
+    echo "$r: $verdict   ${counts:-no findings}$([[ $tries -gt 1 ]] && echo "   (answered on attempt $tries)")"
   fi
 done
 echo "reviews: $out_dir  (${elapsed}s)"
