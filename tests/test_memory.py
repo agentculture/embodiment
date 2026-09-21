@@ -52,7 +52,14 @@ from typing import Any
 import pytest
 
 from embodiment import memory as mem
+from embodiment.safe_reason import UNSAFE_ENV
 from embodiment.senses_text import KNOWLEDGE_ATTRIBUTION
+from tests.test_safe_reason import (
+    MARKER,
+    assert_no_speech,
+    assert_speech_present,
+    hostile_exception,
+)
 
 MODULE_PATH = Path(mem.__file__)
 
@@ -1628,3 +1635,147 @@ class TestTheContract:
             "eidetic",
             "unicodedata",
         }, sorted(roots)
+
+
+class TestNoSpeechReachesAMemoryRecord:
+    """A remembered line IS the user's words, and a failing store quotes them.
+
+    The store seam raising ``OSError(f"... {args} {kwargs}")`` put the record's
+    text — the heard line itself — into ``subsystem-error``'s reason, onto the
+    abandoned ledger and into the close report.
+    """
+
+    @staticmethod
+    def _exploding_store():
+        def store(*args: Any, **kwargs: Any) -> Any:
+            raise OSError(f"store failed on {args} {kwargs}")
+
+        return store
+
+    def _surfaces(self, room: Any, *results: Any) -> tuple[Any, ...]:
+        return (*results, room.abandoned, room.drain_abandoned(), room.close().to_dict())
+
+    def test_a_store_that_echoes_the_record_leaks_nothing(self, tmp_path: Path) -> None:
+        store = self._exploding_store()
+        room = mem.RoomMemory(tmp_path / "store", remember_fn=store, recall_fn=store)
+        written = room.remember(MARKER, deadline=_PROMPT_SECONDS)
+        read = room.recall(MARKER, deadline=_PROMPT_SECONDS)
+
+        assert_no_speech(MARKER, *self._surfaces(room, written, read))
+
+    def test_the_store_failure_is_still_named(self, tmp_path: Path) -> None:
+        store = self._exploding_store()
+        room = mem.RoomMemory(tmp_path / "store", remember_fn=store)
+        try:
+            written = room.remember(MARKER, deadline=_PROMPT_SECONDS)
+            assert written.degradation is not None
+            assert written.degradation.code == mem.continuity.CODE_SUBSYSTEM_ERROR
+            assert "OSError" in written.degradation.reason
+        finally:
+            room.close()
+
+    def test_a_hostile_exception_leaks_through_no_corner(self, tmp_path: Path) -> None:
+        def store(*args: Any, **kwargs: Any) -> Any:
+            raise hostile_exception(MARKER)
+
+        room = mem.RoomMemory(tmp_path / "store", remember_fn=store, recall_fn=store)
+        written = room.remember(MARKER, deadline=_PROMPT_SECONDS)
+        read = room.recall(MARKER, deadline=_PROMPT_SECONDS)
+        assert_no_speech(MARKER, *self._surfaces(room, written, read))
+
+    def test_a_deferred_write_that_fails_leaks_nothing(self, tmp_path: Path) -> None:
+        """The abandoned ledger is written from a worker thread; scan it too."""
+        release = threading.Event()
+
+        def store(*args: Any, **kwargs: Any) -> Any:
+            release.wait(timeout=30)
+            raise OSError(f"late failure on {args} {kwargs}")
+
+        room = mem.RoomMemory(tmp_path / "store", remember_fn=store)
+        try:
+            written = room.remember(MARKER, deadline=0.01)
+            release.set()
+            limit = time.monotonic() + _PROMPT_SECONDS
+            while not room.abandoned and time.monotonic() < limit:
+                time.sleep(0.005)
+
+            assert room.abandoned
+            assert_no_speech(MARKER, written, room.abandoned, room.drain_abandoned())
+        finally:
+            release.set()
+            room.close()
+
+    def test_a_continuity_degradation_is_rewrapped_before_it_is_returned(
+        self, tmp_path: Path
+    ) -> None:
+        """continuity builds reasons with ``str(exc)`` and cannot be edited here.
+
+        So a degradation arriving from that seam is re-wrapped rather than
+        passed through: a code this module knows is exception-derived has its
+        reason withheld and replaced with a safe description.
+        """
+        leaking = mem.continuity.Degradation(
+            subsystem="eidetic",
+            stage="remember",
+            code=mem.continuity.CODE_SUBSYSTEM_ERROR,
+            reason=f"OSError: could not store {MARKER}",
+            exception="OSError",
+        )
+
+        def store(*args: Any, **kwargs: Any) -> Any:
+            return mem.continuity.RememberOutcome(
+                ok=False, record_id="r", degradation=leaking, raw=None
+            )
+
+        room = mem.RoomMemory(tmp_path / "store", remember_fn=store)
+        try:
+            written = room.remember(MARKER, deadline=_PROMPT_SECONDS)
+            assert written.degradation is not None
+            assert written.degradation.code == mem.continuity.CODE_SUBSYSTEM_ERROR
+            assert "OSError" in written.degradation.reason
+            assert_no_speech(MARKER, written)
+        finally:
+            room.close()
+
+    def test_an_unknown_continuity_code_fails_closed(self, tmp_path: Path) -> None:
+        """A code this module does not recognise has its reason withheld too."""
+        leaking = mem.continuity.Degradation(
+            subsystem="eidetic",
+            stage="recall",
+            code="some-future-code",
+            reason=f"raw text with {MARKER}",
+        )
+
+        def store(*args: Any, **kwargs: Any) -> Any:
+            return mem.continuity.RecallOutcome(ok=True, records=[], degradation=leaking)
+
+        room = mem.RoomMemory(tmp_path / "store", recall_fn=store)
+        try:
+            read = room.recall("q", deadline=_PROMPT_SECONDS)
+            assert [d.code for d in read.degradations] == ["some-future-code"]
+            assert_no_speech(MARKER, read)
+        finally:
+            room.close()
+
+    def test_a_fixed_literal_continuity_reason_is_kept(self, tmp_path: Path) -> None:
+        """Withholding everything would be safe and useless; the literals survive."""
+        room = mem.RoomMemory(tmp_path / "store")
+        try:
+            outcome = mem.continuity.remember({"id": "x"}, data_dir=None)
+            assert outcome.degradation is not None
+            kept = room._safe_degradation(outcome.degradation)
+            assert "no data_dir" in kept.reason
+        finally:
+            room.close()
+
+    def test_the_marker_appears_when_the_unsafe_hatch_is_on(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(UNSAFE_ENV, "1")
+        store = self._exploding_store()
+        room = mem.RoomMemory(tmp_path / "store", remember_fn=store)
+        try:
+            written = room.remember(MARKER, deadline=_PROMPT_SECONDS)
+            assert_speech_present(MARKER, written)
+        finally:
+            room.close()

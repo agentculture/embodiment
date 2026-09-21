@@ -17,6 +17,7 @@ from typing import Any
 import pytest
 
 from embodiment.loop import ToolError, ToolExecutor, ToolOutcome, UnknownToolError
+from embodiment.safe_reason import UNSAFE_ENV
 from embodiment.tools import (
     BOUND_REGISTRY_ATTR,
     DEGRADED_TOOL_FAILED,
@@ -24,6 +25,12 @@ from embodiment.tools import (
     ToolRegistry,
     ToolSpec,
     bind_tools,
+)
+from tests.test_safe_reason import (
+    MARKER,
+    assert_no_speech,
+    assert_speech_present,
+    hostile_exception,
 )
 
 _SCHEMA: dict[str, Any] = {
@@ -121,10 +128,15 @@ class TestFailuresAreRecordedAndContained:
         registry.register("boom", {}, boom)
         with pytest.raises(ToolError) as caught:
             registry.execute("boom", {})
-        assert "kaboom" in str(caught.value)
+        # The tool's MESSAGE used to be interpolated into both of these. A
+        # tool's message routinely quotes its arguments, which are the user's
+        # words, so the class name is asserted instead and the message absent.
+        assert "RuntimeError" in str(caught.value)
+        assert "kaboom" not in str(caught.value)
         assert isinstance(caught.value.__cause__, RuntimeError)
         assert [d.code for d in registry.degradations] == [DEGRADED_TOOL_FAILED]
         assert "boom" in registry.degradations[0].reason
+        assert "kaboom" not in registry.degradations[0].reason
 
     def test_bad_arguments_surface_as_a_recorded_failure(self) -> None:
         registry = ToolRegistry()
@@ -180,3 +192,91 @@ class TestBindTools:
 
         bind_tools(lambda messages, *, tools: seen.append(tools), registry)([])
         assert seen == [registry.schemas()]
+
+
+class TestNoSpeechReachesAToolRecord:
+    """A tool's arguments ARE the user's words, and a failing tool quotes them.
+
+    ``ValueError(f"cannot handle {kwargs}")`` is ordinary defensive code in a
+    host's tool. Interpolating it put the arguments into ``tool-failed``'s
+    reason and into the ``ToolError`` message.
+    """
+
+    @staticmethod
+    def _registry_with_an_echoing_tool():
+        registry = ToolRegistry()
+
+        def boom(**kwargs):
+            raise ValueError(f"cannot handle {kwargs}")
+
+        registry.register("echo", {"type": "object", "properties": {}}, boom)
+        return registry
+
+    def test_a_failing_tool_leaks_neither_to_the_record_nor_the_error(self) -> None:
+        registry = self._registry_with_an_echoing_tool()
+        raised: list[BaseException] = []
+        try:
+            registry.execute("echo", {"said": MARKER})
+        except Exception as exc:  # noqa: BLE001  # the assertion IS about this object
+            raised.append(exc)
+
+        assert raised
+        assert_no_speech(MARKER, registry.degradations, str(raised[0]), raised[0])
+
+    def test_the_tool_failure_is_still_named(self) -> None:
+        registry = self._registry_with_an_echoing_tool()
+        with pytest.raises(Exception):
+            registry.execute("echo", {"said": MARKER})
+
+        assert [d.code for d in registry.degradations] == [DEGRADED_TOOL_FAILED]
+        reason = registry.degradations[0].reason
+        assert "echo" in reason and "ValueError" in reason
+
+    def test_a_hostile_exception_leaks_through_no_corner(self) -> None:
+        registry = ToolRegistry()
+
+        def boom(**kwargs):
+            raise hostile_exception(MARKER)
+
+        registry.register("h", {"type": "object", "properties": {}}, boom)
+        with pytest.raises(Exception):
+            registry.execute("h", {"said": MARKER})
+        assert_no_speech(MARKER, registry.degradations)
+
+    def test_an_unknown_tool_name_is_restricted_not_interpolated(self) -> None:
+        """The model chose this name, so it is attacker-controlled too."""
+        registry = ToolRegistry()
+        with pytest.raises(Exception):
+            registry.execute(f"<<<{MARKER} evil", {})
+
+        assert [d.code for d in registry.degradations] == [DEGRADED_TOOL_UNKNOWN]
+        assert_no_speech(MARKER, registry.degradations)
+        assert "<<<" not in registry.degradations[0].reason
+
+    def test_a_declared_safe_detail_still_reaches_the_model(self) -> None:
+        """Self-correction is the cost of this change; ``safe_detail`` is the remedy."""
+        registry = ToolRegistry()
+
+        def boom(**kwargs):
+            exc = ValueError(f"raw {MARKER}")
+            exc.safe_detail = "missing-required-argument"
+            raise exc
+
+        registry.register("s", {"type": "object", "properties": {}}, boom)
+        raised: list[BaseException] = []
+        try:
+            registry.execute("s", {"said": MARKER})
+        except Exception as exc:  # noqa: BLE001  # the assertion IS about this object
+            raised.append(exc)
+
+        assert "missing-required-argument" in str(raised[0])
+        assert_no_speech(MARKER, str(raised[0]), registry.degradations)
+
+    def test_the_marker_appears_when_the_unsafe_hatch_is_on(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(UNSAFE_ENV, "1")
+        registry = self._registry_with_an_echoing_tool()
+        with pytest.raises(Exception):
+            registry.execute("echo", {"said": MARKER})
+        assert_speech_present(MARKER, registry.degradations)

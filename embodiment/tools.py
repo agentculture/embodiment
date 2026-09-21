@@ -46,6 +46,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 from embodiment.loop import ToolError, ToolOutcome, UnknownToolError
+from embodiment.safe_reason import describe_exception, name_fingerprint, safe_label
 
 __all__ = [
     "BOUND_REGISTRY_ATTR",
@@ -222,7 +223,20 @@ class ToolRegistry:
         """
         spec = self.specs.get(name)
         if spec is None:
-            self._degrade(DEGRADED_TOOL_UNKNOWN, f"{name}: not registered")
+            # An UNREGISTERED name has no host provenance: the model invented
+            # it, so it is attacker-controlled data, and `safe_label` would
+            # make it structurally safe without making it contentless (a
+            # charset-clean string passes through whole). So the RECORD gets a
+            # fingerprint — enough to correlate a model that keeps calling the
+            # same imaginary tool, carrying none of its text. The model still
+            # receives the name it used, in the error it self-corrects from;
+            # withholding it there would break self-correction to protect the
+            # model from a string it wrote itself.
+            self._degrade(
+                DEGRADED_TOOL_UNKNOWN,
+                f"not registered (name fp:{name_fingerprint(name)}, "
+                f"{len(self.specs)} tools registered)",
+            )
             raise UnknownToolError(f"unknown tool: {name}")
         try:
             value = spec.fn(**dict(arguments or {}))
@@ -231,8 +245,20 @@ class ToolRegistry:
             # nothing about. It is neither swallowed nor allowed to abort the
             # turn — the degradation is recorded first (C3), then the failure is
             # re-shaped into the executor contract the loop contains.
-            self._degrade(DEGRADED_TOOL_FAILED, f"{name}: {type(exc).__name__}: {exc}")
-            raise ToolError(f"{name} failed: {type(exc).__name__}: {exc}") from exc
+            # A tool's ARGUMENTS are the user's words, and ordinary defensive
+            # code quotes them: ``ValueError(f"cannot handle {kwargs}")``.
+            # Interpolating the message here put the user's turn into a
+            # degradation record and into the ToolError the loop shows the
+            # model. Both now carry structured facts only. ``name`` is a
+            # REGISTERED name — host-chosen, so it is trusted content — and is
+            # still restricted, because a registry is host code too.
+            # ``allow_detail=True`` here and nowhere else: a registered tool
+            # is host code the host chose to install, so a ``safe_detail`` it
+            # sets is a declaration this registry can vouch for. A model seam
+            # or a store driver gets no such benefit of the doubt.
+            described = describe_exception(exc, allow_detail=True)
+            self._degrade(DEGRADED_TOOL_FAILED, f"{safe_label(name)}: {described}")
+            raise ToolError(f"{safe_label(name)} failed: {described}") from exc
         result = "" if value is None else str(value)
         return ToolOutcome(
             result=result,

@@ -222,6 +222,14 @@ from typing import Any, Callable, Optional, Union
 
 from embodiment import continuity
 from embodiment.continuity import Degradation
+from embodiment.safe_reason import STRIPPED_CATEGORIES as _STRIPPED_CATEGORIES
+from embodiment.safe_reason import (
+    describe_exception,
+    mentions_shutdown,
+    name_fingerprint,
+    safe_label,
+    scrub,
+)
 from embodiment.senses_text import KNOWLEDGE_ATTRIBUTION
 
 __all__ = [
@@ -389,7 +397,10 @@ HEADER_PATTERN = re.compile(
 #: ``Cc`` are line breaks by another name — ``str.splitlines`` honours
 #: U+2028, U+2029 and U+0085, and U+0085 is *above* U+0020, which is exactly
 #: how the previous ordinal-based filter let a header line be split in two.
-STRIPPED_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
+#:
+#: Defined in :mod:`embodiment.safe_reason` and re-exported here. One
+#: definition, not two that drift: wave-1 lesson 8.
+STRIPPED_CATEGORIES = _STRIPPED_CATEGORIES
 
 # --- degradation codes this layer adds to continuity's vocabulary ----------
 
@@ -580,12 +591,24 @@ class CloseReport:
 def _degradation(
     stage: str, code: str, reason: str, exc: Optional[BaseException] = None
 ) -> Degradation:
+    """Build one degradation. *reason* is THIS module's own text, never a message.
+
+    The distinction is the whole point of wave-1 lesson 5. A literal this
+    module wrote is safe by inspection; an exception's message is the
+    *dependency's* text and quotes its input — a store raising
+    ``f"could not write {record}"`` puts the heard line itself into the record
+    that is supposed to be speech-free. So *reason* is a fixed literal and
+    anything the exception contributes goes through
+    :func:`~embodiment.safe_reason.describe_exception`, which never reads the
+    message.
+    """
+    described = "" if exc is None else f" [{describe_exception(exc)}]"
     return Degradation(
         subsystem="eidetic",
         stage=stage,
         code=code,
-        reason=reason[:_MAX_REASON_LEN],
-        exception=None if exc is None else type(exc).__name__,
+        reason=f"{reason}{described}"[:_MAX_REASON_LEN],
+        exception=None if exc is None else safe_label(type(exc).__name__),
     )
 
 
@@ -617,7 +640,7 @@ def _failure_code(exc: BaseException) -> str:
     """
     if isinstance(exc, BrokenExecutor):
         return CODE_CLOSED
-    if isinstance(exc, RuntimeError) and "shutdown" in str(exc).lower():
+    if isinstance(exc, RuntimeError) and mentions_shutdown(exc):
         return CODE_CLOSED
     return continuity.CODE_SUBSYSTEM_ERROR
 
@@ -819,7 +842,7 @@ class RoomMemory:
             with self._lock:
                 self._inflight = max(0, self._inflight - 1)
                 self._record_abandoned(
-                    _degradation("submit", CODE_CLOSED, f"could not submit: {exc}", exc)
+                    _degradation("submit", CODE_CLOSED, "could not submit work", exc)
                 )
             return None, CODE_CLOSED
 
@@ -879,7 +902,7 @@ class RoomMemory:
                 degradation=_degradation(
                     "remember",
                     continuity.CODE_INVALID_RECORD,
-                    f"unusable text for a memory record: {exc}",
+                    "unusable text for a memory record",
                     exc,
                 ),
             )
@@ -939,7 +962,7 @@ class RoomMemory:
                 degradation=_degradation(
                     "remember",
                     _failure_code(exc),
-                    str(exc) or type(exc).__name__,
+                    "the store seam failed",
                     exc,
                 ),
             )
@@ -948,7 +971,7 @@ class RoomMemory:
             ok=bool(getattr(outcome, "ok", False)),
             record_id=getattr(outcome, "record_id", None) or identifier,
             visibility=visibility,
-            degradation=getattr(outcome, "degradation", None),
+            degradation=self._safe_degradation(getattr(outcome, "degradation", None)),
             raw=getattr(outcome, "raw", None),
         )
 
@@ -968,11 +991,15 @@ class RoomMemory:
             try:
                 error = done.exception()
                 if error is not None:
-                    reason = f"deferred write of {identifier} failed after {deadline}s: {error}"
+                    reason = (
+                        f"deferred write of {identifier} failed after {deadline}s "
+                        f"[{describe_exception(error)}]"
+                    )
                 elif not getattr(done.result(), "ok", False):
                     reason = f"deferred write of {identifier} was not stored by the seam"
             except Exception as exc:  # noqa: BLE001  # a cancelled future has no result
-                error, reason = exc, f"deferred write of {identifier} could not be read back: {exc}"
+                error = exc
+                reason = f"deferred write of {identifier} could not be read back"
             if reason is None:
                 return
             with self._lock:
@@ -981,6 +1008,73 @@ class RoomMemory:
                 )
 
         future.add_done_callback(reap)
+
+    #: continuity codes whose ``reason`` this module KNOWS is a fixed literal
+    #: that ``continuity.py`` wrote itself. Everything else is treated as
+    #: exception-derived and withheld.
+    _LITERAL_REASON_CODES = frozenset(
+        {
+            continuity.CODE_NO_STORAGE_ANCHOR,
+            continuity.CODE_IMPORT_FAILED,
+            continuity.CODE_DOMAIN_UNAVAILABLE,
+        }
+    )
+
+    def _safe_degradation(self, degradation: Optional[Degradation]) -> Optional[Degradation]:
+        """Re-wrap a degradation that arrived from ``continuity``.
+
+        ``continuity._error_degradation`` builds its ``reason`` as ``str(exc)``,
+        and ``continuity.py`` is outside this task's edit surface — so a
+        degradation crossing that seam can carry the heard line in its reason
+        and this module cannot fix it at the source. Passing it through
+        unchanged would make every promise above false for the one path that
+        matters most: the real store failing on real speech.
+
+        So it is re-wrapped, and the rule **fails closed**. Only codes this
+        module knows are built from a fixed literal keep their text; every
+        other code — including any continuity adds in future — has its reason
+        withheld and replaced with the code, the exception class name, the
+        withheld length and a fingerprint. That is deliberately the
+        conservative direction: a new continuity code arriving here costs a
+        reason nobody can read, not a leak nobody notices.
+
+        **What this cannot guarantee.** Text ``continuity`` itself logs, emits
+        or raises never passes through here — this bounds only what crosses
+        back into ``RoomMemory``. A reason continuity builds from a literal is
+        still trusted on this module's say-so, so if continuity ever
+        interpolates into one of the three codes below, that text would survive.
+        ``tests/test_memory.py`` pins the list; closing it properly needs the
+        fix in ``continuity.py``, which this task may not touch.
+        """
+        if degradation is None:
+            return None
+        try:
+            code = str(getattr(degradation, "code", "") or "")
+            exception = getattr(degradation, "exception", None)
+            reason = str(getattr(degradation, "reason", "") or "")
+        except Exception:  # noqa: BLE001  # an unreadable degradation still degrades
+            return _degradation("continuity", continuity.CODE_MALFORMED_RESULT, "unreadable")
+
+        if code in self._LITERAL_REASON_CODES:
+            return Degradation(
+                subsystem=getattr(degradation, "subsystem", "eidetic"),
+                stage=getattr(degradation, "stage", "unknown"),
+                code=code,
+                reason=scrub(reason)[:_MAX_REASON_LEN],
+                exception=None if exception is None else safe_label(exception),
+            )
+
+        return Degradation(
+            subsystem=getattr(degradation, "subsystem", "eidetic"),
+            stage=getattr(degradation, "stage", "unknown"),
+            code=code,
+            reason=(
+                f"{safe_label(code)} from the continuity seam "
+                f"({safe_label(exception) if exception else 'no exception'}); "
+                f"reason withheld ({len(reason)} chars, fp:{name_fingerprint(reason)})"
+            )[:_MAX_REASON_LEN],
+            exception=None if exception is None else safe_label(exception),
+        )
 
     def _build(
         self,
@@ -1079,12 +1173,12 @@ class RoomMemory:
                 records=[],
                 mode=None,
                 degradations=(
-                    _degradation("recall", _failure_code(exc), str(exc) or type(exc).__name__, exc),
+                    _degradation("recall", _failure_code(exc), "the recall worker failed", exc),
                 ),
             )
 
         self._last_mode = resolved
-        seam_degradation = getattr(outcome, "degradation", None)
+        seam_degradation = self._safe_degradation(getattr(outcome, "degradation", None))
         if seam_degradation is not None:
             degradations = degradations + [seam_degradation]
         return RecallResult(
@@ -1142,7 +1236,7 @@ class RoomMemory:
         try:
             online = bool(self._embed_probe())
         except Exception as exc:  # noqa: BLE001  # an unreachable embedder is not an error
-            return False, _degradation("recall", CODE_EMBEDDER_OFFLINE, f"{reason}: {exc}", exc)
+            return False, _degradation("recall", CODE_EMBEDDER_OFFLINE, reason, exc)
         return online, _degradation("recall", CODE_EMBEDDER_OFFLINE, reason)
 
     # -- the abandoned worker ----------------------------------------------
@@ -1171,7 +1265,7 @@ class RoomMemory:
                     _degradation(
                         "recall",
                         CODE_ABANDONED_RECALL,
-                        f"a recall abandoned after {deadline}s failed later: {error}",
+                        f"a recall abandoned after {deadline}s failed later",
                         error,
                     )
                 )
@@ -1239,7 +1333,9 @@ class RoomMemory:
             except Exception as exc:  # noqa: BLE001  # a failed wait is still a close
                 with self._lock:
                     self._record_abandoned(
-                        _degradation("close", CODE_CLOSED, f"waiting on writes failed: {exc}", exc)
+                        _degradation(
+                            "close", CODE_CLOSED, "waiting on in-flight writes failed", exc
+                        )
                     )
             for future, identifier in writes.items():
                 bucket = _settled(future)
@@ -1271,7 +1367,7 @@ class RoomMemory:
             except Exception as exc:  # noqa: BLE001  # teardown failure is not the host's problem
                 with self._lock:
                     self._record_abandoned(
-                        _degradation("close", CODE_CLOSED, f"executor shutdown failed: {exc}", exc)
+                        _degradation("close", CODE_CLOSED, "executor shutdown failed", exc)
                     )
 
         return CloseReport(
