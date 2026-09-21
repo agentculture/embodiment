@@ -1,0 +1,8 @@
+{
+  "session_id": "sess_aaaaaaaaaaaaaaaaaaaaaaaa",
+  "event_id": "event_000000000000000000000007",
+  "timestamp_ms": 3200,
+  "item_id": "item_bbbbbbbbbbbbbbbbbbbbbbbb",
+  "text": "שלום גוון",
+  "type": "conversation.item.input_audio_transcription.completed"
+}

@@ -1,0 +1,9 @@
+{
+  "session_id": "sess_aaaaaaaaaaaaaaaaaaaaaaaa",
+  "event_id": "event_000000000000000000000010",
+  "timestamp_ms": 4010,
+  "code": "invalid_wire_event",
+  "message": "unsupported_frame_type: binary WebSocket frames are no longer accepted",
+  "item_id": null,
+  "type": "error"
+}

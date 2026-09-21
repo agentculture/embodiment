@@ -1,0 +1,9 @@
+{
+  "session_id": "sess_aaaaaaaaaaaaaaaaaaaaaaaa",
+  "event_id": "event_000000000000000000000002",
+  "timestamp_ms": 1100,
+  "session": {
+    "language": "he"
+  },
+  "type": "session.updated"
+}

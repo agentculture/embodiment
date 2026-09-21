@@ -1,0 +1,9 @@
+{
+  "session_id": "sess_aaaaaaaaaaaaaaaaaaaaaaaa",
+  "event_id": "event_000000000000000000000011",
+  "timestamp_ms": 4011,
+  "code": "stt_forward_failed",
+  "message": "the committed turn's transcription forward failed",
+  "item_id": null,
+  "type": "error"
+}

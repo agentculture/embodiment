@@ -1,0 +1,15 @@
+{
+  "session_id": "sess_aaaaaaaaaaaaaaaaaaaaaaaa",
+  "event_id": "event_000000000000000000000001",
+  "timestamp_ms": 1000,
+  "config": {
+    "input_audio_format": "pcm16",
+    "input_sample_rate": 24000,
+    "channels": 1,
+    "turn_detection": "server_vad",
+    "aec_mode": "aec",
+    "system_prompt": null,
+    "language": "he"
+  },
+  "type": "session.created"
+}
