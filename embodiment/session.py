@@ -17,7 +17,13 @@ Built on two merged primitives, and this module owns neither of them
   private-by-default write/recall seam to eidetic. This module never
   constructs one and never closes one: :meth:`Session.close` explicitly does
   NOT call ``RoomMemory.close`` — the daemon owns that object's lifecycle
-  across every session it hosts, not any one session.
+  across every session it hosts, not any one session. ``memory`` is
+  duck-typed (a real ``RoomMemory`` or a test double) and is treated as
+  UNTRUSTED: every call to ``memory.remember`` is guarded, because
+  ``RoomMemory`` itself promises never to raise but this module's own
+  contract — "never raises" — must hold even when handed something that
+  breaks that promise (round 2 finding: an unguarded call let a raising
+  ``remember`` propagate out of both ``add_user`` and ``close``).
 
 Session ids are daemon-generated, never client-supplied
 ---------------------------------------------------------
@@ -42,7 +48,7 @@ a kept turn's text. That is the verbatim invariant applied to the window
 (criterion 1): a turn that survives the drop is byte-identical to what the
 caller passed in. A single turn whose own size already exceeds the whole
 budget is a case this module decides rather than crashes on: it is kept
-(there is nothing smaller to keep instead) and recorded once as
+(there is nothing smaller to keep instead) and recorded as
 :data:`CODE_TURN_EXCEEDS_BUDGET` — a degradation, not an error, per
 constraint C3.
 
@@ -64,59 +70,115 @@ that needs an exact bound passes its own *count_tokens* (the engine's
 Remembering: two write paths, and only two
 ----------------------------------------------
 1. **Explicit ask** — :func:`default_ask_detector` is a small, stated
-   heuristic (NOT a model call) for Hebrew and English imperatives. It has
-   real false negatives (documented in its own docstring) and the daemon may
-   later swap in a model-backed one through the injectable ``ask_detector``
-   seam. When it fires on :meth:`Session.add_user`, :meth:`RoomMemory.remember`
-   is called exactly ONCE with the extracted text, and all three of its
-   outcomes are handled and returned to the caller as an
-   :class:`AskOutcome`: confirmed, deferred (NOT an error — the write is
-   still running and will land), and refused (a degradation, since the text
-   was definitively not stored).
+   heuristic (NOT a model call) for Hebrew and English IMPERATIVES only. Round
+   2 measured it firing on plain speech about remembering — "I don't remember
+   that he ever called me back", "do you remember that film we saw" — because
+   the earlier version matched the trigger phrase anywhere in the text. It now
+   requires the trigger to open the utterance or a clause (after an optional
+   address like "גוון," / "Gwen,"), refuses a clause opening with a negation
+   or question word ("don't", "do you", "did you", "I", "לא", "האם", "את"),
+   and refuses outright when the whole utterance ends in "?" — a question is
+   never an ask, however it is phrased. This trades toward MORE false
+   negatives on purpose: a missed ask costs the user a repeat; a false
+   positive silently stores speech nobody asked to keep. Documented false
+   negatives (see the detector's own docstring) grew accordingly. When it
+   fires on :meth:`Session.add_user`, ``memory.remember`` is called exactly
+   ONCE with the extracted text, and all three of its outcomes are handled
+   and returned to the caller as an :class:`AskOutcome`: confirmed, deferred
+   (NOT an error — the write is still running and will land), and refused (a
+   degradation, since the text was definitively not stored — including when
+   ``memory.remember`` itself raised).
 2. **End-of-session summary** — :meth:`Session.close` takes an injected
    ``summarise(messages) -> str`` callable, runs it under a caller-set
    deadline, and writes exactly ONE attributed record through
-   ``RoomMemory.remember`` when — and only when — it returns non-blank
-   speakable text within that deadline. If ``summarise`` raises, returns
-   blank, or overruns the deadline, this module writes NOTHING: a bad or
-   absent summary is a worse record than no record.
+   ``memory.remember`` when — and only when — it returns non-blank speakable
+   text within that deadline. If ``summarise`` raises, returns blank,
+   overruns the deadline, or ``memory.remember`` itself raises, this module
+   writes NOTHING: a bad or absent summary is a worse record than no record.
+   **The summary only ever covers the current WINDOW**, never the whole
+   session — the window is whatever fits the token budget at close time, and
+   old turns may already have been dropped. The written record's own
+   ``metadata`` therefore carries both ``turns_seen`` (the session's whole
+   life) and ``turns_summarised`` (what the window held when ``summarise``
+   was actually called), and :class:`SessionCloseReport` carries both too, so
+   neither a downstream reader nor the record itself can be misread as "a
+   summary of the whole session" when it is not.
 
 No third path exists. ``tests/test_session.py``'s
 ``TestRememberDiscipline`` proves the call count directly with a counting
 fake ``RoomMemory``, across a session with many turns and no ask, with an
 ask, with a summary, and with both.
 
+Degradations are bounded, deduped, and counted
+-----------------------------------------------
+Round 2 measured 20,000 essentially-identical
+:data:`CODE_TURN_EXCEEDS_BUDGET` records from 20,000 oversized turns — an
+unbounded list in a daemon session that can run for days. Every degradation
+now goes through :meth:`Session._record_degradation`, which keeps at most ONE
+representative :class:`SessionDegradation` per distinct code (the first
+occurrence — later ones are noise, not new information) while still counting
+every occurrence on :attr:`Session.degradation_counts`. The representative
+list itself is additionally capped at :data:`_MAX_DEGRADATIONS` entries as a
+defensive bound against a runaway *new* code (this module's own vocabulary is
+small and fixed, so that cap should never bind in practice); anything that
+would exceed it is counted on :attr:`Session.degradations_dropped` rather than
+silently discarded — constraint C3 applies to this module's own bookkeeping,
+not only to the seams below it.
+
+``close()`` never raises, and never gets stuck without a report
+------------------------------------------------------------------
+Round 2 found two related defects: a raising ``memory.remember`` propagated
+out of :meth:`Session.close`, and — because ``_closed`` was set ``True``
+before the work ran and ``_close_report`` was only assigned at the very end —
+a SECOND call after that first failure hit an assertion instead of returning
+gracefully. Both are fixed the same way: the body of ``close()`` that can
+fail runs inside a ``try`` whose ``except`` always produces a minimal, valid
+report, so ``_close_report`` is unconditionally assigned before ``close()``
+returns on every path, and a stored report is what a repeat call returns —
+never re-derived, never re-attempted, and never assumed present without being
+checked first.
+
 Privacy of records, reports and ``repr``
 ------------------------------------------
 Every degradation this module records, and every field of
 :class:`SessionCloseReport` and :class:`AskOutcome`, carries a CODE and a
 COUNT — never a turn's text, never the extracted "thing to remember", never a
-summariser's exception message beyond its type name. ``repr(session)`` is
-likewise text-free. ``tests/test_session.py``'s ``TestAttack`` plants a
-marker string in a turn (and in a raising summariser's message) and scans
-every surface this module exposes for it.
+summariser's or a memory seam's exception message beyond its type name.
+``repr(session)`` is likewise text-free. ``tests/test_session.py``'s
+``TestAttack`` plants a marker string in a turn (and in a raising
+summariser's and a raising memory's exception message) and scans every
+surface this module exposes for it.
 
 Threading
 ---------
 A :class:`Session` is **not** thread-safe. It is intended to be driven from
 exactly one thread — the daemon's own turn loop, per the brief — and adds no
 locking, because locking a single-writer object nobody asked for would only
-hide a real bug (a second caller) behind an illusion of safety. The one
-exception, noted where it happens: :meth:`Session.close` spawns a single
-bounded worker thread to run the injected ``summarise`` callable under a
-deadline (mirroring :mod:`embodiment.memory`'s own reasoning for why a
-blocking call must run off the calling thread to be boundable at all), and
-that worker never touches ``self`` — only the calling thread reads its
-result and mutates session state.
+hide a real bug (a second caller) behind an illusion of safety.
+
+The one exception, noted where it happens: :meth:`Session.close` runs the
+injected ``summarise`` callable on a **daemon** ``threading.Thread``, not a
+``ThreadPoolExecutor``. Round 2 measured why the distinction matters in a
+child process (``tests/test_session.py``'s
+``test_hung_summariser_does_not_block_process_exit``): a
+``ThreadPoolExecutor``'s worker threads are plain, non-daemon threads, and
+``concurrent.futures`` registers an ``atexit`` hook that joins EVERY worker
+thread it has ever created — regardless of ``shutdown(wait=False)`` — so a
+summariser abandoned past its deadline left the whole process unable to exit
+on its own; the probe script hit a 6s external timeout waiting for a process
+whose own ``main()`` had already returned and printed its last line. A daemon
+thread carries no such promise: the interpreter does not wait for it. The
+worker thread never touches ``self`` — only the calling thread reads the
+shared result box, once, after the wait — so no lock is needed even though a
+timed-out worker keeps running in the background.
 """
 
 from __future__ import annotations
 
 import re
 import secrets
+import threading
 from collections import deque
-from concurrent.futures import ThreadPoolExecutor
-from concurrent.futures import TimeoutError as FutureTimeoutError
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
@@ -138,11 +200,15 @@ __all__ = [
     "CODE_TURN_EXCEEDS_BUDGET",
     "CODE_ASK_DETECTOR_FAILED",
     "CODE_ASK_REFUSED",
+    "CODE_ASK_MEMORY_ERROR",
     "CODE_SUMMARY_ERROR",
     "CODE_SUMMARY_BLANK",
     "CODE_SUMMARY_TIMEOUT",
     "CODE_SUMMARY_NOT_PROVIDED",
     "CODE_SUMMARY_WRITE_REFUSED",
+    "CODE_SUMMARY_MEMORY_ERROR",
+    "CODE_SUMMARY_INVALID_DEADLINE",
+    "CODE_CLOSE_ERROR",
     "Turn",
     "SessionDegradation",
     "AskOutcome",
@@ -164,7 +230,9 @@ DEFAULT_WINDOW_BUDGET_TOKENS = 4000
 #: Seconds :meth:`Session.close` waits for an injected ``summarise`` to
 #: return. Chosen, not measured: roughly the same order as eidetic's own
 #: embedder timeout (:mod:`embodiment.memory`'s module docstring), on the
-#: reasoning that a model-backed summariser is the same class of call.
+#: reasoning that a model-backed summariser is the same class of call. Also
+#: the value substituted when a caller passes an unusable *deadline* (see
+#: :func:`_sanitize_deadline`).
 DEFAULT_SUMMARY_DEADLINE = 10.0
 
 #: Reused from :mod:`embodiment.memory` unless a host overrides it per call.
@@ -176,6 +244,13 @@ SUMMARY_RECORD_TYPE = "session-summary"
 
 #: ``added_by`` when no resolved identity and no explicit override is given.
 DEFAULT_ADDED_BY = "gwen"
+
+#: How many DISTINCT degradation codes keep a representative record. This
+#: module's own vocabulary is small and fixed (roughly a dozen codes), so
+#: this cap is a defensive bound against a future runaway code, not a limit
+#: expected to bind in normal operation. See "Degradations are bounded,
+#: deduped, and counted" in the module docstring.
+_MAX_DEGRADATIONS = 64
 
 # ── the degradation vocabulary (C3) ───────────────────────────────────────────
 
@@ -193,6 +268,10 @@ CODE_TURN_EXCEEDS_BUDGET = "session-turn-exceeds-budget"
 CODE_ASK_DETECTOR_FAILED = "session-ask-detector-failed"
 #: An explicit ask's write was definitively refused (not deferred).
 CODE_ASK_REFUSED = "session-ask-refused"
+#: ``memory.remember`` itself raised while writing an explicit ask.
+#: ``RoomMemory`` promises never to raise, but ``memory`` is duck-typed and
+#: this module's own "never raises" contract must hold regardless.
+CODE_ASK_MEMORY_ERROR = "session-ask-memory-error"
 #: The injected ``summarise`` raised.
 CODE_SUMMARY_ERROR = "session-summary-error"
 #: ``summarise`` returned nothing speakable (blank, whitespace-only, or only
@@ -204,6 +283,14 @@ CODE_SUMMARY_TIMEOUT = "session-summary-timeout"
 CODE_SUMMARY_NOT_PROVIDED = "session-summary-not-provided"
 #: The summary's write was definitively refused (not deferred).
 CODE_SUMMARY_WRITE_REFUSED = "session-summary-write-refused"
+#: ``memory.remember`` itself raised while writing the end-of-session summary.
+CODE_SUMMARY_MEMORY_ERROR = "session-summary-memory-error"
+#: ``close(deadline=...)`` was not a usable non-negative finite number; a
+#: safe default was substituted rather than raising or waiting forever.
+CODE_SUMMARY_INVALID_DEADLINE = "session-summary-invalid-deadline"
+#: Something inside ``close()`` raised that none of the guards above already
+#: caught. Should be unreachable; recorded rather than trusted to be.
+CODE_CLOSE_ERROR = "session-close-error"
 
 _MAX_REASON_LEN = 200
 
@@ -231,38 +318,117 @@ def _safe_id_for_report(session_id: str) -> str:
     )
 
 
+def _sanitize_deadline(deadline: Any) -> tuple[float, bool]:
+    """``(usable_deadline, was_invalid)``. Never raises, never waits forever.
+
+    A caller-supplied deadline is untrusted input: it may be the wrong type,
+    ``NaN``, negative, or infinite. Any of those is replaced with
+    :data:`DEFAULT_SUMMARY_DEADLINE` (a finite, sane wait) rather than
+    propagating a ``ValueError``/``TypeError`` or handing a background wait a
+    value that never returns.
+    """
+    try:
+        value = float(deadline)
+    except (TypeError, ValueError):
+        return DEFAULT_SUMMARY_DEADLINE, True
+    if value != value or value < 0 or value == float("inf"):  # value != value is the NaN check
+        return DEFAULT_SUMMARY_DEADLINE, True
+    return value, False
+
+
 # ── the default ask detector ──────────────────────────────────────────────────
 
-#: A small, stated heuristic — NOT a model call. Known false negatives:
+#: A small, stated heuristic — NOT a model call. Documented false negatives:
 #: "please remember", "can you remember", "don't forget", any verb
 #: conjugation beyond the four covered below (e.g. Hebrew plural imperatives),
-#: and any ask that never uses one of these literal trigger phrases. The
-#: daemon may swap in a model-backed detector of the same signature later.
+#: an ask embedded mid-clause with no recognizable clause boundary before it
+#: ("well anyway remember that milk" — one clause, trigger not at its start),
+#: and — by design, per round 2 — ANY utterance that ends in "?", even one
+#: that also contains a genuine imperative earlier ("Remember that? Are you
+#: sure?" reads as a question and is never treated as an ask). The daemon may
+#: swap in a model-backed detector of the same signature later.
 _ASK_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"(?:^|[\s,.!?])תזכר[יו]\s*ש(.+)", re.DOTALL),
-    re.compile(r"(?:^|[\s,.!?])זכר[יו]\s*ש(.+)", re.DOTALL),
-    re.compile(r"(?i)\bremember that\b(.+)", re.DOTALL),
+    re.compile(r"^תזכר[יו]\s*ש(.+)", re.DOTALL),
+    re.compile(r"^זכר[יו]\s*ש(.+)", re.DOTALL),
+    re.compile(r"(?i)^remember that\b(.*)", re.DOTALL),
 )
+
+#: A clause opening with any of these is a negation or a question frame, never
+#: an imperative — checked in addition to (not instead of) requiring the
+#: trigger itself to open the clause, which already rules out most of these
+#: mechanically. Belt-and-suspenders, per this package's own "checked rather
+#: than trusted" discipline (see e.g. ``daemon/state.py``'s session-id path
+#: containment check).
+_NEGATION_OR_QUESTION_PREFIXES: tuple[str, ...] = (
+    "don't",
+    "do not",
+    "doesn't",
+    "does not",
+    "do you",
+    "did you",
+    "can you",
+    "could you",
+    "would you",
+    "will you",
+    "i ",
+    "i'm",
+    "i've",
+    "i'd",
+    "לא",
+    "האם",
+    "את ",
+    "אתה ",
+)
+
+#: An optional address token before the imperative — "גוון," / "Gwen," — is
+#: stripped before the clause is checked, so "Gwen, remember that milk" and
+#: "Gwen remember that milk" are both recognized.
+_ADDRESS_PREFIX_RE = re.compile(r"^\s*(?:גוון|gwen)[\s,:]*", re.IGNORECASE)
+
+#: Clause boundaries: a comma, sentence-ending punctuation, or a newline. The
+#: trigger must open one of the resulting clauses — never merely appear
+#: somewhere inside one — which is what keeps "I don't remember that he ever
+#: called me back" and "do you remember that film we saw" from matching: the
+#: clause each sits in starts with "I don't"/"do you", not with the trigger.
+_CLAUSE_SPLIT_RE = re.compile(r"[,.!?;\n]+")
 
 
 def default_ask_detector(text: str) -> Optional[str]:
     """The thing to remember, or ``None``. A heuristic, not a model call.
 
-    Matches a small set of Hebrew and English imperative phrasings (see the
-    module-level pattern list for exactly which ones, and its docstring for
-    the documented false negatives) and returns the text that follows the
-    trigger, stripped of surrounding whitespace. Never raises on ordinary
-    text; :meth:`Session.add_user` guards against a detector — including this
-    one — raising on adversarial input.
+    An utterance ending in "?" is never an ask (a question, however phrased,
+    is not a command). Otherwise, EVERY clause (split on the punctuation in
+    :data:`_CLAUSE_SPLIT_RE`, with a leading "Gwen,"/"גוון," address stripped)
+    is checked in turn, and a clause counts only when — after that stripping —
+    it OPENS with one of :data:`_ASK_PATTERNS` and does not open with a
+    negation or question prefix. This is deliberately biased toward false
+    negatives over false positives: round 2 measured the earlier
+    contains-anywhere version firing on plain speech ABOUT remembering. See
+    the pattern tables above for exactly what is (and is not) covered, and
+    ``tests/test_session.py``'s ``TestDefaultAskDetector`` for the full
+    positive/negative table, including the three round-2 regressions.
+
+    Never raises on ordinary text; :meth:`Session.add_user` additionally
+    guards against a detector — including this one — raising on adversarial
+    input.
     """
     if not text:
         return None
-    for pattern in _ASK_PATTERNS:
-        match = pattern.search(text)
-        if match:
-            extracted = match.group(1).strip()
-            if extracted:
-                return extracted
+    if text.rstrip().endswith("?"):
+        return None
+    for raw_clause in _CLAUSE_SPLIT_RE.split(text):
+        clause = _ADDRESS_PREFIX_RE.sub("", raw_clause).lstrip()
+        if not clause:
+            continue
+        lowered = clause.lower()
+        if any(lowered.startswith(prefix) for prefix in _NEGATION_OR_QUESTION_PREFIXES):
+            continue
+        for pattern in _ASK_PATTERNS:
+            match = pattern.match(clause)
+            if match:
+                extracted = match.group(1).strip()
+                if extracted:
+                    return extracted
     return None
 
 
@@ -315,7 +481,14 @@ class AskOutcome:
 
 @dataclass(frozen=True)
 class SessionCloseReport:
-    """What :meth:`Session.close` left behind. Counts and codes, never text."""
+    """What :meth:`Session.close` left behind. Counts and codes, never text.
+
+    ``turns_summarised`` is the size of the WINDOW ``summarise`` was actually
+    shown (whenever it was invoked at all) — never the whole session's
+    ``turns_seen``. The two can differ a great deal once the window has
+    dropped old turns; see the module docstring's "End-of-session summary"
+    section.
+    """
 
     turns_seen: int = 0
     records_written: int = 0
@@ -323,7 +496,10 @@ class SessionCloseReport:
     summary_deferred: bool = False
     summary_skipped: bool = False
     summary_skip_reason: Optional[str] = None
+    turns_summarised: int = 0
     degradations: tuple[SessionDegradation, ...] = field(default_factory=tuple)
+    degradation_counts: dict[str, int] = field(default_factory=dict)
+    degradations_dropped: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -333,13 +509,32 @@ class SessionCloseReport:
             "summary_deferred": self.summary_deferred,
             "summary_skipped": self.summary_skipped,
             "summary_skip_reason": self.summary_skip_reason,
+            "turns_summarised": self.turns_summarised,
             "degradations": [d.to_dict() for d in self.degradations],
+            "degradation_counts": dict(self.degradation_counts),
+            "degradations_dropped": self.degradations_dropped,
         }
 
 
 TokenCounter = Callable[[list[dict[str, Any]]], int]
 AskDetector = Callable[[str], Optional[str]]
 Summariser = Callable[[list[dict[str, Any]]], str]
+
+
+class _SummaryResultBox:
+    """Where a daemon summariser thread leaves its result.
+
+    Written once by the worker thread, read once by the calling thread after
+    :attr:`done` is set (or the deadline passes) — never touched by both at
+    once, so no lock is needed.
+    """
+
+    __slots__ = ("value", "error", "done")
+
+    def __init__(self) -> None:
+        self.value: Optional[str] = None
+        self.error: Optional[BaseException] = None
+        self.done = threading.Event()
 
 
 # ── the session itself ────────────────────────────────────────────────────────
@@ -354,7 +549,8 @@ class Session:
             called exactly once, at construction, with *session_id*.
         memory: a :class:`~embodiment.memory.RoomMemory` (or, in tests,
             anything duck-typed to its ``remember`` signature). This object
-            is NOT owned by the session: :meth:`close` never closes it.
+            is NOT owned by the session: :meth:`close` never closes it. Every
+            call into it is guarded — see the module docstring.
         session_id: normally omitted — a fresh id is generated with
             :func:`generate_session_id`. Accepting one explicitly exists for
             tests and daemon-side resumption, never for a value taken
@@ -404,6 +600,9 @@ class Session:
         self._turns_seen = 0
         self._records_written = 0
         self._degradations: list[SessionDegradation] = []
+        self._degradation_seen_codes: set[str] = set()
+        self._degradation_counts: dict[str, int] = {}
+        self._degradations_dropped = 0
         self._closed = False
         self._close_report: Optional[SessionCloseReport] = None
 
@@ -411,7 +610,23 @@ class Session:
 
     @property
     def degradations(self) -> tuple[SessionDegradation, ...]:
+        """At most one representative entry per distinct code. See
+        :attr:`degradation_counts` for how many times each actually fired.
+        """
         return tuple(self._degradations)
+
+    @property
+    def degradation_counts(self) -> dict[str, int]:
+        """How many times each degradation code has fired, ever."""
+        return dict(self._degradation_counts)
+
+    @property
+    def degradations_dropped(self) -> int:
+        """Distinct NEW codes beyond :data:`_MAX_DEGRADATIONS` that could not
+        get a representative slot. Expected to stay ``0`` given this module's
+        small, fixed vocabulary; see the module docstring.
+        """
+        return self._degradations_dropped
 
     @property
     def turns_seen(self) -> int:
@@ -443,6 +658,25 @@ class Session:
             f"closed={self._closed})"
         )
 
+    # -- degradations: bounded, deduped, counted -----------------------------
+
+    def _record_degradation(self, code: str, reason: str) -> None:
+        """Record one occurrence of *code*. Keeps at most one entry per code.
+
+        See "Degradations are bounded, deduped, and counted" in the module
+        docstring. ``reason`` must never carry turn text or a seam's raw
+        exception message — every call site in this module already honours
+        that; this method does not itself sanitize *reason*.
+        """
+        self._degradation_counts[code] = self._degradation_counts.get(code, 0) + 1
+        if code in self._degradation_seen_codes:
+            return
+        if len(self._degradations) >= _MAX_DEGRADATIONS:
+            self._degradations_dropped += 1
+            return
+        self._degradation_seen_codes.add(code)
+        self._degradations.append(SessionDegradation(code, reason[:_MAX_REASON_LEN]))
+
     # -- the window -----------------------------------------------------------
 
     def add_user(self, text: str) -> Optional[AskOutcome]:
@@ -451,7 +685,9 @@ class Session:
         Writes through the transcript log unconditionally, enforces the
         window budget (oldest turns dropped first), and — as the one and
         only side effect beyond the window and the transcript — checks
-        *text* for an explicit spoken "remember" ask.
+        *text* for an explicit spoken "remember" ask. Never raises for a
+        failure in the ask detector or in ``memory.remember``; both are
+        guarded (see the module docstring).
 
         Raises ``TypeError`` if *text* is not a ``str``. This is a caller
         contract violation, not an environment failure, and is exactly what
@@ -488,13 +724,11 @@ class Session:
         while len(self._turns) > 1 and self.window_tokens() > self._budget_tokens:
             self._turns.popleft()
         if len(self._turns) == 1 and self.window_tokens() > self._budget_tokens:
-            self._degradations.append(
-                SessionDegradation(
-                    CODE_TURN_EXCEEDS_BUDGET,
-                    "a single turn's estimated size already exceeds the configured "
-                    f"budget of {self._budget_tokens}; kept verbatim rather than "
-                    "truncated",
-                )
+            self._record_degradation(
+                CODE_TURN_EXCEEDS_BUDGET,
+                "a single turn's estimated size already exceeds the configured "
+                f"budget of {self._budget_tokens}; kept verbatim rather than "
+                "truncated",
             )
 
     # -- the explicit ask -----------------------------------------------------
@@ -503,23 +737,28 @@ class Session:
         try:
             extracted = self._ask_detector(text)
         except Exception as exc:  # noqa: BLE001 - a hostile/buggy detector must not crash a turn
-            self._degradations.append(
-                SessionDegradation(
-                    CODE_ASK_DETECTOR_FAILED,
-                    f"ask detector raised {type(exc).__name__}; treated as no ask " "detected",
-                )
+            self._record_degradation(
+                CODE_ASK_DETECTOR_FAILED,
+                f"ask detector raised {type(exc).__name__}; treated as no ask detected",
             )
             return None
         if not extracted:
             return None
 
-        result = self._memory.remember(
-            extracted,
-            visibility=PRIVATE,
-            record_type=ASK_RECORD_TYPE,
-            added_by=self._added_by if self._added_by is not None else DEFAULT_ADDED_BY,
-            deadline=self._remember_deadline,
-        )
+        try:
+            result = self._memory.remember(
+                extracted,
+                visibility=PRIVATE,
+                record_type=ASK_RECORD_TYPE,
+                added_by=self._added_by if self._added_by is not None else DEFAULT_ADDED_BY,
+                deadline=self._remember_deadline,
+            )
+        except Exception as exc:  # noqa: BLE001 - memory is duck-typed and untrusted; see docstring
+            self._record_degradation(
+                CODE_ASK_MEMORY_ERROR, f"memory.remember raised {type(exc).__name__}"
+            )
+            return AskOutcome(detected=True, refused=True, record_id=None)
+
         ok = bool(getattr(result, "ok", False))
         record_id = getattr(result, "record_id", None)
         degradation = getattr(result, "degradation", None)
@@ -531,11 +770,9 @@ class Session:
         if code == CODE_REMEMBER_DEFERRED:
             return AskOutcome(detected=True, deferred=True, record_id=record_id)
 
-        self._degradations.append(
-            SessionDegradation(
-                CODE_ASK_REFUSED,
-                f"an explicit ask's write was refused ({code or 'unknown'})",
-            )
+        self._record_degradation(
+            CODE_ASK_REFUSED,
+            f"an explicit ask's write was refused ({code or 'unknown'})",
         )
         return AskOutcome(detected=True, refused=True, record_id=record_id)
 
@@ -553,102 +790,167 @@ class Session:
         *deadline*), writes NOTHING and reports why. Otherwise writes exactly
         ONE attributed :data:`SUMMARY_RECORD_TYPE` record through
         ``memory.remember`` and reports whether it landed, was deferred, or
-        was refused.
+        was refused — including when ``memory.remember`` itself raised.
 
         A second call returns the SAME report object without doing any work
         again — a different *summarise* passed to a later call is ignored,
-        by design: this method commits to its first answer.
+        by design: this method commits to its first answer. This holds even
+        if the FIRST call's own bookkeeping somehow failed: ``_closed`` and
+        ``_close_report`` are set together, inside one ``try``/``except``, so
+        there is no window where the session is marked closed with no report
+        to show for it.
         """
         if self._closed:
-            assert self._close_report is not None  # nosec B101 - invariant, not a control
-            return self._close_report
+            if self._close_report is not None:
+                return self._close_report
+            # Structurally unreachable given the assignment below always
+            # running before `_closed` is read again — checked rather than
+            # trusted, per this module's own discipline elsewhere.
+            return self._build_report()
 
         self._closed = True
-        landed = False
-        deferred = False
-        skip_reason: Optional[str] = None
-
-        if summarise is None:
-            skip_reason = CODE_SUMMARY_NOT_PROVIDED
-        else:
-            summary_text, skip_reason = self._run_summariser(summarise, deadline)
-            if summary_text is not None:
-                landed, deferred, skip_reason = self._write_summary(summary_text)
-
-        report = SessionCloseReport(
-            turns_seen=self._turns_seen,
-            records_written=self._records_written,
-            summary_landed=landed,
-            summary_deferred=deferred,
-            summary_skipped=skip_reason is not None,
-            summary_skip_reason=skip_reason,
-            degradations=tuple(self._degradations),
-        )
+        try:
+            self._run_close(summarise, deadline)
+        except Exception as exc:  # noqa: BLE001 - close() must never raise, per its own contract
+            self._record_degradation(
+                CODE_CLOSE_ERROR,
+                f"close() raised {type(exc).__name__}; a minimal report was recorded instead",
+            )
+        report = self._build_report()
         self._close_report = report
         return report
 
-    def _run_summariser(
-        self, summarise: Summariser, deadline: float
-    ) -> tuple[Optional[str], Optional[str]]:
-        """Run *summarise* under *deadline*. ``(text_or_None, skip_reason_or_None)``.
+    def _run_close(self, summarise: Optional[Summariser], deadline: float) -> None:
+        """The work :meth:`close` does. Sets ``self._close_*`` fields it owns.
 
-        The worker thread never touches ``self`` — only this method, on the
-        calling thread, reads its result and (via the caller) mutates
-        session state. A worker that outlives the deadline is abandoned: its
-        eventual result, success or failure, is never acted on, matching the
-        brief's "write NOTHING rather than a bad summary" rule exactly —
-        including the case where it would have succeeded one second late.
+        Split out from :meth:`close` so the try/except there covers
+        everything below, including a defect in this method itself.
         """
-        executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="embodiment-session-close")
-        try:
-            future = executor.submit(summarise, self.messages())
-        except Exception as exc:  # noqa: BLE001 - a dead executor is a degradation, not a crash
-            self._degradations.append(
-                SessionDegradation(
-                    CODE_SUMMARY_ERROR, f"could not submit summarise: {type(exc).__name__}"
-                )
+        self._close_landed = False
+        self._close_deferred = False
+        self._close_skip_reason: Optional[str] = None
+        self._close_turns_summarised = 0
+
+        if summarise is None:
+            self._close_skip_reason = CODE_SUMMARY_NOT_PROVIDED
+            return
+
+        window_snapshot = self.messages()
+        self._close_turns_summarised = len(window_snapshot)
+        summary_text, skip_reason = self._run_summariser(summarise, deadline, window_snapshot)
+        self._close_skip_reason = skip_reason
+        if summary_text is not None:
+            landed, deferred, skip_reason = self._write_summary(
+                summary_text, self._close_turns_summarised
             )
-            executor.shutdown(wait=False)
+            self._close_landed = landed
+            self._close_deferred = deferred
+            self._close_skip_reason = skip_reason
+
+    def _build_report(self) -> SessionCloseReport:
+        """Assemble the report from whatever ``_run_close`` managed to set.
+
+        Every field defaults safely (``getattr`` with a fallback) so a
+        ``_run_close`` that failed before setting its own attributes still
+        produces a valid, honest report rather than an ``AttributeError``.
+        """
+        return SessionCloseReport(
+            turns_seen=self._turns_seen,
+            records_written=self._records_written,
+            summary_landed=getattr(self, "_close_landed", False),
+            summary_deferred=getattr(self, "_close_deferred", False),
+            summary_skipped=getattr(self, "_close_skip_reason", None) is not None,
+            summary_skip_reason=getattr(self, "_close_skip_reason", None),
+            turns_summarised=getattr(self, "_close_turns_summarised", 0),
+            degradations=tuple(self._degradations),
+            degradation_counts=dict(self._degradation_counts),
+            degradations_dropped=self._degradations_dropped,
+        )
+
+    def _run_summariser(
+        self, summarise: Summariser, deadline: float, messages: list[dict[str, Any]]
+    ) -> tuple[Optional[str], Optional[str]]:
+        """Run *summarise* on a daemon thread, bounded by *deadline*.
+
+        ``(text_or_None, skip_reason_or_None)``. See the module docstring's
+        "Threading" section for why this is a daemon ``threading.Thread``
+        rather than a ``ThreadPoolExecutor``: the latter's non-daemon workers
+        measurably block process exit even after ``shutdown(wait=False)``,
+        which a background daemon session can never afford. A worker that
+        outlives the deadline is abandoned: its eventual result, success or
+        failure, is never acted on — matching the "write NOTHING rather than
+        a bad summary" rule exactly, including the case where it would have
+        succeeded moments late.
+        """
+        resolved_deadline, invalid = _sanitize_deadline(deadline)
+        if invalid:
+            self._record_degradation(
+                CODE_SUMMARY_INVALID_DEADLINE,
+                "close(deadline=...) was not a usable non-negative finite number; "
+                f"substituted {resolved_deadline}s",
+            )
+
+        box = _SummaryResultBox()
+
+        def worker() -> None:
+            try:
+                box.value = summarise(messages)
+            except Exception as exc:  # noqa: BLE001 - the injected summariser is untrusted
+                box.error = exc
+            finally:
+                box.done.set()
+
+        try:
+            thread = threading.Thread(target=worker, name="embodiment-session-close", daemon=True)
+            thread.start()
+        except Exception as exc:  # noqa: BLE001 - starting the worker must not crash close()
+            self._record_degradation(
+                CODE_SUMMARY_ERROR, f"could not start summariser thread: {type(exc).__name__}"
+            )
             return None, CODE_SUMMARY_ERROR
 
-        try:
-            result = future.result(timeout=max(0.0, float(deadline)))
-        except FutureTimeoutError:
-            self._degradations.append(
-                SessionDegradation(
-                    CODE_SUMMARY_TIMEOUT,
-                    f"summarise did not return within {deadline}s; abandoned and " "not written",
-                )
+        finished = box.done.wait(timeout=resolved_deadline)
+        if not finished:
+            self._record_degradation(
+                CODE_SUMMARY_TIMEOUT,
+                f"summarise did not return within {resolved_deadline}s; abandoned "
+                "and not written",
             )
             return None, CODE_SUMMARY_TIMEOUT
-        except Exception as exc:  # noqa: BLE001 - the injected summariser is untrusted
-            self._degradations.append(
-                SessionDegradation(CODE_SUMMARY_ERROR, f"summarise raised {type(exc).__name__}")
+        if box.error is not None:
+            self._record_degradation(
+                CODE_SUMMARY_ERROR, f"summarise raised {type(box.error).__name__}"
             )
             return None, CODE_SUMMARY_ERROR
-        finally:
-            executor.shutdown(wait=False)
 
+        result = box.value
         if not isinstance(result, str) or not is_speakable(result):
-            self._degradations.append(
-                SessionDegradation(
-                    CODE_SUMMARY_BLANK,
-                    "summarise returned nothing with a letter or number; not written",
-                )
+            self._record_degradation(
+                CODE_SUMMARY_BLANK,
+                "summarise returned nothing with a letter or number; not written",
             )
             return None, CODE_SUMMARY_BLANK
         return result, None
 
-    def _write_summary(self, summary_text: str) -> tuple[bool, bool, Optional[str]]:
+    def _write_summary(
+        self, summary_text: str, turns_summarised: int
+    ) -> tuple[bool, bool, Optional[str]]:
         """``(landed, deferred, skip_reason)`` — the ONE end-of-session write."""
-        result = self._memory.remember(
-            summary_text,
-            visibility=PRIVATE,
-            record_type=SUMMARY_RECORD_TYPE,
-            added_by=self._added_by if self._added_by is not None else DEFAULT_ADDED_BY,
-            deadline=self._remember_deadline,
-            metadata={"turns_seen": self._turns_seen},
-        )
+        try:
+            result = self._memory.remember(
+                summary_text,
+                visibility=PRIVATE,
+                record_type=SUMMARY_RECORD_TYPE,
+                added_by=self._added_by if self._added_by is not None else DEFAULT_ADDED_BY,
+                deadline=self._remember_deadline,
+                metadata={"turns_seen": self._turns_seen, "turns_summarised": turns_summarised},
+            )
+        except Exception as exc:  # noqa: BLE001 - memory is duck-typed and untrusted; see docstring
+            self._record_degradation(
+                CODE_SUMMARY_MEMORY_ERROR, f"memory.remember raised {type(exc).__name__}"
+            )
+            return False, False, CODE_SUMMARY_MEMORY_ERROR
+
         ok = bool(getattr(result, "ok", False))
         degradation = getattr(result, "degradation", None)
         code = getattr(degradation, "code", None)
@@ -659,10 +961,8 @@ class Session:
         if code == CODE_REMEMBER_DEFERRED:
             return False, True, None
 
-        self._degradations.append(
-            SessionDegradation(
-                CODE_SUMMARY_WRITE_REFUSED,
-                f"the end-of-session summary was refused ({code or 'unknown'})",
-            )
+        self._record_degradation(
+            CODE_SUMMARY_WRITE_REFUSED,
+            f"the end-of-session summary was refused ({code or 'unknown'})",
         )
         return False, False, CODE_SUMMARY_WRITE_REFUSED

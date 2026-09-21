@@ -17,11 +17,30 @@ A fourth group, ``TestAttack``, is the "attack your own module" pass the
 task-agent preamble requires: adversarial session ids, degenerate
 ask-detector input, a summariser that raises/blanks/hangs, and a privacy
 sweep for planted marker text across every record and the close report.
+
+Round 2 (this file's newer classes) is an independent operator probe run
+against the REAL ``RoomMemory`` and hostile input, which found five defects
+in the round-1 implementation:
+
+1. ``TestDefaultAskDetector`` (rewritten, table-driven) — the ask detector
+   fired on plain speech ABOUT remembering, not just imperatives.
+2. ``TestMemoryRaises`` — a raising ``memory.remember`` propagated out of
+   ``add_user``/``close``, and a second ``close()`` after that then raised
+   ``AssertionError``.
+3. ``TestBoundedDegradations`` — the degradation list grew without bound
+   (20,000 near-identical entries from 20,000 oversized turns).
+4. ``TestSummaryHonesty`` — the summary record's own metadata implied it
+   covered the whole session when it only ever saw the current window.
+5. ``TestThreadExit`` — a hung summariser's worker thread (a
+   ``ThreadPoolExecutor``, non-daemon) measurably kept the whole PROCESS
+   alive past its own ``main()`` returning, proven with a subprocess.
 """
 
 from __future__ import annotations
 
 import json
+import subprocess  # nosec B404 - fixed argv, no shell, a throwaway child interpreter
+import sys
 import threading
 from pathlib import Path
 from typing import Any, Optional
@@ -30,6 +49,8 @@ import pytest
 
 from embodiment import session as sess
 from embodiment.daemon.state import DaemonState
+
+MARK = "MARKER-SECRET-9f8a7"
 
 # ── a counting, outcome-scriptable fake RoomMemory ─────────────────────────
 
@@ -86,6 +107,21 @@ class FakeMemory:
     @property
     def call_count(self) -> int:
         return len(self.calls)
+
+
+class RaisingMemory:
+    """A ``memory`` whose ``remember`` always raises. ``RoomMemory`` itself
+    promises never to; this simulates a duck-typed host object that breaks
+    that promise, which round 2 found ``Session`` did not defend against.
+    """
+
+    def __init__(self, message: str = "store exploded") -> None:
+        self.message = message
+        self.calls = 0
+
+    def remember(self, text: str, **kwargs: Any) -> Any:
+        self.calls += 1
+        raise RuntimeError(self.message)
 
 
 def _state(tmp_path: Path) -> DaemonState:
@@ -410,26 +446,211 @@ class TestAttack:
         assert "SUPER SECRET" not in repr(session)
 
 
-# ── ask detector, standalone ────────────────────────────────────────────────
+# ── ask detector, standalone (round 2: table-driven, positives AND negatives) ─
+
+# (text, expected_substring_or_None). A substring, not an exact match, for
+# the Hebrew positives — the interesting fact is WHAT survived the clause/
+# address stripping, not the exact whitespace.
+_ASK_POSITIVES: tuple[tuple[str, str], ...] = (
+    ("remember that milk is in the fridge", "milk is in the fridge"),
+    ("Gwen, remember that milk is in the fridge", "milk is in the fridge"),
+    ("Gwen remember that milk is in the fridge", "milk is in the fridge"),
+    ("hey, remember that the deploy key rotates monthly", "the deploy key rotates monthly"),
+    ("תזכרי שהפגישה נדחתה ליום שלישי", "הפגישה"),
+    ("גוון, תזכרי שהפגישה עם דני ביום שלישי בשמונה", "הפגישה"),
+    ("תזכרי שאני אוהב קפה שחור בבוקר", "קפה"),
+)
+
+_ASK_NEGATIVES: tuple[str, ...] = (
+    "",
+    "what's the weather like today",
+    "don't forget the milk",  # documented false negative
+    # the three round-2 measured false positives, verbatim:
+    "I don't remember that he ever called me back",
+    "do you remember that film we saw",
+    "אני לא בטוח, תזכרי שאמרתי משהו?",
+    # additional negation/question frames the same rule must reject:
+    "did you remember that we need milk",
+    "can you remember that",
+    "could you remember that the door is unlocked",
+    # a trigger present, but the WHOLE utterance is a question:
+    "remember that milk is in the fridge?",
+    "תזכרי שהפגישה ביום שלישי?",
+)
 
 
 class TestDefaultAskDetector:
-    def test_english_remember_that(self) -> None:
-        assert sess.default_ask_detector("remember that milk is in the fridge") == (
-            "milk is in the fridge"
-        )
+    @pytest.mark.parametrize("text,expected_substring", _ASK_POSITIVES)
+    def test_positive(self, text: str, expected_substring: str) -> None:
+        result = sess.default_ask_detector(text)
+        assert result is not None, text
+        assert expected_substring in result, (text, result)
 
-    def test_hebrew_tizkeri(self) -> None:
-        result = sess.default_ask_detector("תזכרי שהפגישה נדחתה ליום שלישי")
-        assert result is not None
-        assert "הפגישה" in result
-
-    def test_no_match_returns_none(self) -> None:
-        assert sess.default_ask_detector("what's the weather like today") is None
+    @pytest.mark.parametrize("text", _ASK_NEGATIVES)
+    def test_negative(self, text: str) -> None:
+        assert sess.default_ask_detector(text) is None, text
 
     def test_empty_string_returns_none(self) -> None:
         assert sess.default_ask_detector("") is None
 
-    def test_false_negative_documented_case(self) -> None:
-        # "don't forget" is a known false negative of the heuristic default.
-        assert sess.default_ask_detector("don't forget the milk") is None
+
+# ── round 2, point 2: memory.remember raising must never propagate ─────────
+
+
+class TestMemoryRaises:
+    def test_add_user_returns_refused_outcome_not_an_exception(self, tmp_path: Path) -> None:
+        state = _state(tmp_path)
+        mem = RaisingMemory(f"store exploded while writing {MARK}")
+        session = sess.Session(state, mem)
+        outcome = session.add_user(f"remember that {MARK} is secret")  # must not raise
+        assert outcome is not None
+        assert outcome.detected is True
+        assert outcome.refused is True
+        assert outcome.remembered is False
+        assert mem.calls == 1
+        assert any(d.code == sess.CODE_ASK_MEMORY_ERROR for d in session.degradations)
+
+    def test_close_returns_a_report_not_an_exception(self, tmp_path: Path) -> None:
+        state = _state(tmp_path)
+        mem = RaisingMemory()
+        session = sess.Session(state, mem)
+        session.add_user("hello")
+        report = session.close(summarise=lambda msgs: "a fine summary")  # must not raise
+        assert report.summary_landed is False
+        assert report.summary_skip_reason == sess.CODE_SUMMARY_MEMORY_ERROR
+
+    def test_second_close_after_memory_raised_returns_same_report(self, tmp_path: Path) -> None:
+        state = _state(tmp_path)
+        mem = RaisingMemory()
+        session = sess.Session(state, mem)
+        session.add_user("hello")
+        first = session.close(summarise=lambda msgs: "a fine summary")
+        second = session.close()  # must not raise (AssertionError, round 2's bug)
+        assert second is first
+
+    def test_no_exception_text_leaks_anywhere(self, tmp_path: Path) -> None:
+        state = _state(tmp_path)
+        mem = RaisingMemory(f"boom: {MARK}")
+        session = sess.Session(state, mem)
+        session.add_user(f"remember that {MARK} matters")
+        report = session.close(summarise=lambda msgs: f"summary mentioning {MARK}")
+        haystacks = [repr(session), json.dumps(report.to_dict())]
+        haystacks.extend(d.code + d.reason for d in session.degradations)
+        for haystack in haystacks:
+            assert MARK not in haystack, haystack
+
+
+# ── round 2, point 3: degradations are bounded, deduped, and counted ───────
+
+
+class TestBoundedDegradations:
+    def test_deduped_to_one_representative_with_an_accurate_count(self, tmp_path: Path) -> None:
+        session, _mem, _state = _session(tmp_path, budget_tokens=1)
+        for _ in range(500):
+            session.add_assistant("x" * 50)  # each is, alone, over budget=1
+        assert len(session.degradations) == 1
+        assert session.degradation_counts[sess.CODE_TURN_EXCEEDS_BUDGET] == 500
+        assert session.degradations_dropped == 0
+
+    def test_close_report_carries_the_same_counts(self, tmp_path: Path) -> None:
+        session, _mem, _state = _session(tmp_path, budget_tokens=1)
+        for _ in range(37):
+            session.add_assistant("x" * 50)
+        report = session.close()
+        assert len(report.degradations) == 1
+        assert report.degradation_counts[sess.CODE_TURN_EXCEEDS_BUDGET] == 37
+        assert report.degradations_dropped == 0
+
+    def test_distinct_codes_each_get_a_representative(self, tmp_path: Path) -> None:
+        mem = RaisingMemory()
+        session, mem, _state = _session(tmp_path, memory=mem, budget_tokens=1)
+        session.add_assistant("x" * 50)  # CODE_TURN_EXCEEDS_BUDGET
+        session.add_user(f"remember that {MARK}")  # CODE_ASK_MEMORY_ERROR
+        codes = {d.code for d in session.degradations}
+        assert sess.CODE_TURN_EXCEEDS_BUDGET in codes
+        assert sess.CODE_ASK_MEMORY_ERROR in codes
+
+
+# ── round 2, point 4: the summary is honest about what it saw ──────────────
+
+
+class TestSummaryHonesty:
+    def test_report_distinguishes_seen_from_summarised(self, tmp_path: Path) -> None:
+        session, _mem, _state = _session(tmp_path, budget_tokens=30)
+        for i in range(50):
+            session.add_user(f"turn number {i} with some words in it")
+        report = session.close(summarise=lambda msgs: "a summary")
+        assert report.turns_seen == 50
+        assert 0 < report.turns_summarised < 50
+
+    def test_written_record_metadata_carries_both_counts(self, tmp_path: Path) -> None:
+        session, mem, _state = _session(tmp_path, budget_tokens=30)
+        for i in range(50):
+            session.add_user(f"turn number {i} with some words in it")
+        report = session.close(summarise=lambda msgs: "a summary")
+        _text, kwargs = mem.calls[-1]
+        assert kwargs["metadata"]["turns_seen"] == 50
+        assert kwargs["metadata"]["turns_summarised"] == report.turns_summarised
+        assert kwargs["metadata"]["turns_summarised"] < kwargs["metadata"]["turns_seen"]
+
+    def test_no_summarise_reports_zero_turns_summarised(self, tmp_path: Path) -> None:
+        session, _mem, _state = _session(tmp_path)
+        session.add_user("hello")
+        report = session.close()  # no summarise
+        assert report.turns_summarised == 0
+
+
+# ── round 2, point 6: a hung summariser must not hold the process hostage ──
+
+
+class TestThreadExit:
+    def test_hung_summariser_does_not_block_process_exit(self, tmp_path: Path) -> None:
+        """Proof, not argument: run a real close() with a never-returning
+        summariser in a CHILD interpreter and assert the process exits on
+        its own well inside a generous external timeout.
+
+        A prior implementation used a ``ThreadPoolExecutor`` for this:
+        measured separately (see the round-2 report), its non-daemon worker
+        thread survives ``shutdown(wait=False)`` and is joined by
+        ``concurrent.futures``'s own ``atexit`` hook, which blocked the
+        WHOLE PROCESS from exiting even after ``close()`` itself had
+        returned and even after the script's ``print`` had already run.
+        This test would hang (and fail via ``TimeoutExpired``) against that
+        implementation; it passes against the current daemon-thread one.
+        """
+        repo_root = Path(sess.__file__).resolve().parent.parent
+        state_dir = tmp_path / "state"
+        script = f"""
+import sys
+sys.path.insert(0, {str(repo_root)!r})
+import threading
+from embodiment import session as sess
+from embodiment.daemon.state import DaemonState
+
+
+class _Result:
+    ok = True
+    record_id = "x"
+    degradation = None
+
+
+class FakeMemory:
+    def remember(self, text, **kw):
+        return _Result()
+
+
+state = DaemonState({str(state_dir)!r})
+s = sess.Session(state, FakeMemory())
+s.add_user("hello")
+never = threading.Event()
+report = s.close(lambda m: never.wait() or "late", deadline=0.2)
+print("CLOSE_RETURNED", report.summary_skip_reason)
+"""
+        result = subprocess.run(  # nosec B603 - fixed argv, no shell, sys.executable
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+            timeout=15,
+        )
+        assert "CLOSE_RETURNED" in result.stdout, result.stdout + result.stderr
+        assert result.returncode == 0, result.stdout + result.stderr
