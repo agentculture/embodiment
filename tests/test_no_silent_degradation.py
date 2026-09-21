@@ -93,37 +93,9 @@ SILENT_SWALLOWS: dict[tuple[str, str], str] = {
 #: ``(module, qualified function) -> why None is the honest answer here.``
 ABSENT_BY_DESIGN: dict[tuple[str, str], str] = {
     (
-        "muse.py",
-        "_attr",
-    ): "A hostile property reads as absent; callers name the field they lost.",
-    (
-        "muse.py",
-        "_now",
-    ): "A broken clock degrades the MEASUREMENT only — latency stays None, never 0.0.",
-    (
         "perception.py",
         "_now",
     ): "Same rule for intake: a clock failure is not one of the four fault classes.",
-    (
-        "workspace.py",
-        "_attr",
-    ): (
-        "The same rule as muse.py's `_attr`, applied to a foreign type: a "
-        "headspace result package is read duck-typed because "
-        "`headspace.core.result` is private, so a section that cannot be read "
-        "is ABSENT and the caller renders the sections that could. A result "
-        "with no readable section at all is NOT silent — it records "
-        "DEGRADED_UNREADABLE_RESULT."
-    ),
-    (
-        "config_review.py",
-        "_now",
-    ): (
-        "The same rule as `muse.py`'s and `perception.py`'s `_now`, on the config "
-        "lane's copy of it: a broken clock degrades the MEASUREMENT only — a "
-        "review's `latency` stays None, never a fabricated 0.0, and the review "
-        "itself runs and records exactly as it would have."
-    ),
     (
         "continuity.py",
         "traverse._fetch_one",

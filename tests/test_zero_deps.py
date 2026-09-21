@@ -76,27 +76,18 @@ _APPROVED_DEPENDENCIES: dict[str, str] = {
     #    imports `events_cli` LAZILY (inside the emit path), so paho-mqtt stays
     #    out of the measured top-level import set below.
     "events-cli>=0.10": "pulls paho-mqtt",
-    # -> docker>=7.1 -> requests, urllib3, certifi, charset-normalizer, idna.
-    #    `embodiment/workspace.py` is the consumer and imports `headspace.api`
-    #    at MODULE scope — but that import is measured as stdlib-only, so only
-    #    `headspace` joins the runtime set below and `docker`/`requests` stay
-    #    install-only, exactly as neo4j/pymongo/paho already do.
-    #    `headspace.api` is the ONLY supported import surface (headspace-cli#18,
-    #    answered by 0.11.0): it declares create/run/put/export/destroy under
-    #    headspace's own semver, and `headspace.core` is private — a floor
-    #    below 0.11 would have no declared surface to depend on at all.
-    "headspace-cli>=0.11": "pulls docker>=7.1 -> requests, urllib3, certifi, charset-normalizer",
 }
 
 #: Third-party top-level modules that importing **every** embodiment module
 #: introduces. Measured, not guessed — see :func:`_measure_runtime_imports`.
 #:
-#: Note what is deliberately ABSENT: ``neo4j``, ``pymongo``, ``paho``,
-#: ``docker`` and ``requests`` are *installed* by the approved dependencies but
-#: never *imported* at module scope (data-refinery resolves its store backends
-#: lazily, nothing here touches events at import time, and ``headspace.api``
-#: builds a backend — and therefore imports the docker SDK — only inside the
-#: branch that needs one). Install footprint and import footprint are different
+#: Note what is deliberately ABSENT: ``neo4j``, ``pymongo`` and ``paho`` are
+#: *installed* by the approved dependencies but never *imported* at module scope
+#: (data-refinery resolves its store backends lazily, and nothing here touches
+#: events at import time). ``docker`` and ``requests`` left the install set
+#: entirely when ``headspace-cli`` was removed with its only consumer, the
+#: archived ``workspace.py`` (the realtime redesign's archive, plan task t1).
+#: Install footprint and import footprint are different
 #: costs and this file measures both separately — do not "fix" one to match
 #: the other.
 _REQUIRED_RUNTIME_IMPORTS: frozenset[str] = frozenset(
@@ -104,7 +95,6 @@ _REQUIRED_RUNTIME_IMPORTS: frozenset[str] = frozenset(
         "coherence",  # the assess engine
         "data_refinery",  # eidetic's storage substrate
         "eidetic",  # the memory store
-        "headspace",  # the muse's workspace, via headspace.api (stdlib-only import)
         "httpx",  # coherence's embedding client
         "idna",  # hard dependency of httpx._urls
         "numpy",  # coherence's scoring
@@ -112,7 +102,7 @@ _REQUIRED_RUNTIME_IMPORTS: frozenset[str] = frozenset(
 )
 
 #: Which embodiment module each required runtime import is attributable to.
-#: Two costs, two addresses: d2's continuity seam, and t13's workspace tool. A
+#: One cost, one address today: d2's continuity seam. A
 #: required import owned by nothing would mean the package pays for something no
 #: identified module asked for, so the two tests below check this map against
 #: the pinned set *and* against a real measurement.
@@ -120,7 +110,6 @@ _IMPORT_OWNERS: dict[str, frozenset[str]] = {
     "embodiment.continuity": frozenset(
         {"coherence", "data_refinery", "eidetic", "httpx", "idna", "numpy"}
     ),
-    "embodiment.workspace": frozenset({"headspace"}),
 }
 
 #: Modules that arrive only because httpx opportunistically imports its own
@@ -355,18 +344,15 @@ def test_runtime_imports_match_the_approved_set():
 def test_install_footprint_is_wider_than_import_footprint():
     """Guard the distinction the two pinned sets encode.
 
-    These five are installed by the approved dependencies but imported by
-    nothing: data-refinery resolves its store backends lazily, ``events.py``
-    imports ``events_cli`` inside the emit path, and ``headspace.api``
-    constructs a backend — the only thing that reaches the docker SDK, and
-    through it ``requests`` — inside the branch that needs one. If any of them
-    ever shows up in the runtime set, the gate above fails and *this* test
-    explains why that is a real change rather than noise.
+    ``neo4j``, ``pymongo`` and ``paho`` are installed by the approved
+    dependencies but imported by nothing: data-refinery resolves its store
+    backends lazily and ``events.py`` imports ``events_cli`` inside the emit
+    path. If any of them ever shows up in the runtime set, the gate above fails
+    and *this* test explains why that is a real change rather than noise.
 
-    ``docker`` is the one worth stating loudest: it is the single largest thing
-    ``headspace-cli`` drags into every host's install, and keeping it out of the
-    *import* footprint is what makes t13's module-scope import cheap enough to
-    justify at all.
+    ``docker`` and ``requests`` stay on the list although nothing installs them
+    any more (``headspace-cli`` left with the archived ``workspace.py``): a
+    dependency that quietly brought them back should still trip this test.
     """
     for name in ("neo4j", "pymongo", "paho", "docker", "requests"):
         assert name not in _REQUIRED_RUNTIME_IMPORTS

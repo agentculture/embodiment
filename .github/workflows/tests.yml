@@ -55,16 +55,16 @@ jobs:
       - run: uv sync
 
       - name: black --check
-        run: uv run black --check embodiment tests examples
+        run: uv run black --check embodiment tests
 
       - name: isort --check
-        run: uv run isort --check-only embodiment tests examples
+        run: uv run isort --check-only embodiment tests
 
       - name: flake8
-        run: uv run flake8 embodiment tests examples
+        run: uv run flake8 embodiment tests
 
       - name: bandit
-        run: uv run bandit -c pyproject.toml -r embodiment examples
+        run: uv run bandit -c pyproject.toml -r embodiment
 
       - name: markdownlint-cli2
         run: |

@@ -35,14 +35,12 @@ from typing import Any, Optional
 
 import pytest
 
-import embodiment.muse as muse_mod  # ARCHIVED lane, named explicitly (#53)
 from embodiment import framing as framing_mod
 from embodiment import loop as loop_mod
 from embodiment.contract import ContextPacket, ModelResponse, Task, ToolCall
 from embodiment.framing import (
     CORTEX_MARKER,
     DEFAULT_SPEAKER,
-    MUSE_AUTHORITY,
     ROLE_CORTEX,
     ROLE_MUSE,
     ROLE_SUBAGENT,
@@ -53,7 +51,6 @@ from embodiment.framing import (
     frame_muse,
     frame_subagent,
     is_configured,
-    muse_system_message,
     speaker_label,
     unframe,
 )
@@ -65,7 +62,6 @@ from embodiment.loop import (
     ToolOutcome,
     run,
 )
-from embodiment.muse import MARKER_DONE, MuseControls, MuseLoop
 from embodiment.presence_engine import (
     SOURCE_CORTEX,
     SOURCE_MUSE,
@@ -213,18 +209,6 @@ def _timeless(result: dict[str, Any]) -> dict[str, Any]:
         assert key in stats, f"{key} is no longer where this normalization expects it"
         stats.pop(key)
     return {**result, "stats": stats}
-
-
-def _muse_system_on_the_wire(system: Optional[str]) -> str:
-    """The system message a REAL :class:`MuseLoop` puts on the wire for *system*."""
-    seen: list[list[dict[str, Any]]] = []
-
-    def complete(messages: list[dict[str, Any]]) -> ModelResponse:
-        seen.append([dict(m) for m in messages])
-        return ModelResponse(content=MARKER_DONE)
-
-    MuseLoop(complete, controls=MuseControls(max_turns=1), system=system).think(None)
-    return str(seen[0][0]["content"])
 
 
 def _presence_lines(**kw: Any) -> list[str]:
@@ -422,23 +406,8 @@ class TestGoldenAgainstTheRealSeams:
         assert framed.first_system == _BASE
         assert framed.transcripts == plain.transcripts
 
-    def test_the_muse_system_message_is_byte_identical(self) -> None:
-        assert _muse_system_on_the_wire(frame_muse(None, identity=None)) == (
-            _muse_system_on_the_wire(None)
-        )
-        assert _muse_system_on_the_wire(frame_muse(None, identity=None)) == MUSE_AUTHORITY
-
     def test_the_presence_lines_are_byte_identical(self) -> None:
         assert _presence_lines(speaker=speaker_label(None)) == _presence_lines()
-
-    def test_an_unconfigured_framing_object_changes_nothing_anywhere(self) -> None:
-        unconfigured = Framing()
-        assert unconfigured.configured is False
-        assert unconfigured.cortex(_BASE) is _BASE
-        assert unconfigured.subagent(_SUB_BASE) is _SUB_BASE
-        assert unconfigured.muse_framing(_BASE) is _BASE
-        assert unconfigured.speaker is DEFAULT_SPEAKER
-        assert unconfigured.muse_system(None) == MUSE_AUTHORITY
 
 
 class TestResolutionIsTheSharedIdentitySeam:
@@ -620,9 +589,6 @@ class TestCortexFramingStaysOnTheTopLevelLoop:
 class TestTheMuseKeepsItsAuthorityBoundary:
     """The boundary is reused from :mod:`embodiment.muse`, never restated."""
 
-    def test_the_boundary_constant_is_the_muse_modules_own_object(self) -> None:
-        assert MUSE_AUTHORITY is muse_mod.MUSE_AUTHORITY
-
     def test_the_module_does_not_restate_the_boundary(self) -> None:
         tree = _module_ast()
         skip = _docstring_nodes(tree)
@@ -632,22 +598,6 @@ class TestTheMuseKeepsItsAuthorityBoundary:
                     continue
                 assert "You propose" not in node.value
                 assert "no tools, no shell" not in node.value
-
-    @pytest.mark.parametrize("identity", [None, _IDENTITY])
-    def test_every_advisory_path_opens_with_the_boundary(self, identity: Optional[str]) -> None:
-        composed = muse_system_message(_BASE, identity=identity)
-        assert composed.startswith(MUSE_AUTHORITY)
-
-    @pytest.mark.parametrize("identity", [None, _IDENTITY])
-    @pytest.mark.parametrize("base", [None, "", _BASE])
-    def test_the_composed_message_matches_what_the_real_loop_sends(
-        self, identity: Optional[str], base: Optional[str]
-    ) -> None:
-        # The two paths — a MuseLoop given the framing, and the standalone
-        # composer — must agree byte for byte, so no second copy can drift.
-        assert muse_system_message(base, identity=identity) == _muse_system_on_the_wire(
-            frame_muse(base, identity=identity)
-        )
 
     def test_the_muse_is_told_it_advises_and_does_not_decide(self) -> None:
         block = block_for(ROLE_MUSE, identity=_IDENTITY)
@@ -740,12 +690,6 @@ class TestNoSensesLobeAnywhere:
         assert ROLES == (ROLE_CORTEX, ROLE_SUBAGENT, ROLE_MUSE)
         assert "senses" not in ROLES
 
-    def test_the_composed_muse_system_message_claims_no_senses_lobe(self) -> None:
-        composed = muse_system_message(None, identity=_IDENTITY)
-        # MUSE_AUTHORITY is the muse module's; scan only what framing added.
-        added = composed[len(MUSE_AUTHORITY) :]
-        assert not _mentions(added, _SENSES)
-
 
 # ── the three composition cases ───────────────────────────────────────────────
 
@@ -772,17 +716,6 @@ class TestTheThreeCompositionCases:
         subagent = framing.subagent(_SUB_BASE)
         assert CORTEX_MARKER not in subagent
         assert subagent.endswith(_SUB_BASE)
-
-    def test_named_dual_model(self) -> None:
-        framing = Framing(identity=_IDENTITY, muse=True)
-        cortex = framing.cortex(_BASE)
-        assert cortex.startswith(f"You are {_IDENTITY}.")
-        assert cortex.endswith(_BASE)
-        assert _mentions(cortex, _SECOND_MIND)
-        muse = framing.muse_framing(_BASE)
-        assert _IDENTITY in muse
-        assert muse.endswith(_BASE)
-        assert framing.muse_system(_BASE).startswith(MUSE_AUTHORITY)
 
     def test_the_same_resolved_identity_reaches_every_role(self) -> None:
         framing = Framing(identity=_IDENTITY, muse=True)
@@ -820,15 +753,6 @@ class TestFramingObjectIsThinDelegation:
                 assert callee.id in known | {"cls"}
             else:  # cls(...) / a dotted delegate
                 assert isinstance(callee, ast.Attribute)
-
-    def test_the_object_and_the_functions_agree(self) -> None:
-        framing = Framing(identity=_IDENTITY, muse=True)
-        assert framing.cortex(_BASE) == frame_cortex(_BASE, identity=_IDENTITY, muse=True)
-        assert framing.subagent(_SUB_BASE) == frame_subagent(_SUB_BASE, identity=_IDENTITY)
-        assert framing.muse_framing(_BASE) == frame_muse(_BASE, identity=_IDENTITY)
-        assert framing.muse_system(_BASE) == muse_system_message(_BASE, identity=_IDENTITY)
-        assert framing.speaker == speaker_label(_IDENTITY)
-        assert framing.block(ROLE_CORTEX) == block_for(ROLE_CORTEX, identity=_IDENTITY, muse=True)
 
     def test_it_is_frozen(self) -> None:
         with pytest.raises(dataclasses.FrozenInstanceError):
