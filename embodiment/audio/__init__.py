@@ -10,9 +10,9 @@ from __future__ import annotations
 
 from embodiment.audio.features import (
     BLOCK_SAMPLES,
+    ENVELOPE_POINTS,
     SAMPLE_RATE_HZ,
-    WAVE_POINTS,
     extract_features,
 )
 
-__all__ = ["extract_features", "SAMPLE_RATE_HZ", "BLOCK_SAMPLES", "WAVE_POINTS"]
+__all__ = ["extract_features", "SAMPLE_RATE_HZ", "BLOCK_SAMPLES", "ENVELOPE_POINTS"]
