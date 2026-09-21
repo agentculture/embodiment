@@ -101,11 +101,21 @@ completion and a suspected truncation all resolve the same way — a recorded
 silently) and a non-empty string to speak. :attr:`TurnResult.spoken` is never
 empty, which is the one promise a voice presence cannot afford to break — and
 it is enforced at ONE final point, :func:`_ensure_spoken`, rather than at each
-rung. Anything that resolves blank after ``.strip()`` — a whitespace-only
-completion, a truncated turn whose partial prose was whitespace, or a
-:attr:`TurnConfig.fallback_text` a host configured as ``"   "`` (truthy in
-Python, which is how this got in) — speaks :data:`FALLBACK_TEXT` and records
-:data:`DEGRADED_FALLBACK_BLANK`.
+rung.
+
+"Not empty" is :func:`is_speakable` — at least one character whose Unicode
+category starts with ``L`` or ``N``, so Hebrew, Latin and digits all count and
+punctuation, whitespace and format characters do not. It is deliberately *not*
+``.strip()``: strip removes whitespace and nothing else, so ``"​"``,
+``"﻿"`` and ``"..."`` all passed it and reached a TTS engine that said
+nothing. A host's :attr:`TurnConfig.fallback_text` of ``"   "`` (truthy in
+Python, which is how the first version of this got in) and one of ``"..."`` are
+equally silent and are treated the same.
+
+Unspeakable model output records :data:`DEGRADED_EMPTY_COMPLETION`; an
+unspeakable configured fallback records :data:`DEGRADED_FALLBACK_BLANK`; either
+way :data:`FALLBACK_TEXT` is spoken. The predicate never *filters*: speakable
+text goes out exactly as the model produced it, zero-width characters and all.
 
 Having nothing to say has two distinct causes and they get two distinct codes,
 because a host debugging them looks in different places:
@@ -117,6 +127,7 @@ prompt question). Both speak the fallback.
 
 from __future__ import annotations
 
+import unicodedata
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
@@ -140,6 +151,7 @@ __all__ = [
     "DEGRADED_TRUNCATION_SUSPECTED",
     "DEGRADED_SEAM_ABORTED",
     "DEGRADED_PERCEPTION",
+    "is_speakable",
     "TurnConfig",
     "TurnDegradation",
     "TurnResult",
@@ -192,6 +204,35 @@ DEGRADED_PERCEPTION = "turn-perception-degraded"
 
 #: Cap on one degradation's reason text, as every sibling lane caps its own.
 _MAX_REASON_LEN = 500
+
+#: Unicode general-category initials that carry speech: letters and numbers.
+_SPEAKABLE_CATEGORIES = frozenset({"L", "N"})
+
+
+def is_speakable(text: str) -> bool:
+    """True iff *text* holds at least one letter or number — something to say.
+
+    The gate's single definition of "not silence", and the one the never-silent
+    sweep test asserts with, so the check and its guard cannot drift apart.
+
+    ``str.strip()`` is not that check, which is how the defect this replaces got
+    in: strip removes whitespace and nothing else, so a zero-width space, a
+    no-break space, a BOM or a run of dots survived it and reached a TTS engine
+    that then said nothing at all. A character counts here when its Unicode
+    general category starts with ``L`` (any letter — Hebrew, Latin, anything)
+    or ``N`` (any number). Punctuation, symbols, marks, separators and format
+    characters do not: none of them is a word.
+
+    It is a *predicate*, never a filter. Speakable text is spoken exactly as the
+    model produced it — a zero-width space among real words is the model's
+    output, not damage to repair.
+
+    A non-string is unspeakable rather than an error: this runs on the last
+    path before a voice, where raising would be the silence it exists to stop.
+    """
+    if not isinstance(text, str):
+        return False
+    return any(unicodedata.category(char)[0] in _SPEAKABLE_CATEGORIES for char in text)
 
 
 @dataclass(frozen=True)
@@ -576,23 +617,32 @@ def _ensure_spoken(
     cfg: TurnConfig,
     degradations: list[TurnDegradation],
 ) -> str:
-    """The ONE point where the words are final. Blank in, built-in fallback out.
+    """The ONE point where the words are final. Unspeakable in, fallback out.
 
     Every rung above is a *candidate*. This is the gate, and it is deliberately
     the only one: a check applied at the fallback lookup alone would still let
     silence through from a whitespace-only completion, a truncation whose
     partial prose is whitespace, or a blank
     :attr:`TurnConfig.truncation_suffix`. ``"   "`` is truthy in Python, which
-    is precisely how the bug this exists to stop got in.
+    is precisely how the first version of this bug got in.
 
-    A blank result is always a host misconfiguration by the time it reaches
-    here, so it is recorded (constraint C3) rather than quietly repaired.
+    The test is :func:`is_speakable`, not ``.strip()`` — strip removes
+    whitespace and nothing else, so an invisible-only or punctuation-only
+    string passed it and reached a voice that said nothing. A configured
+    fallback of ``"..."`` is exactly as silent as a blank one and is treated
+    the same.
+
+    An unspeakable result is always a host misconfiguration by the time it
+    reaches here, so it is recorded (constraint C3) rather than quietly
+    repaired. Speakable text is returned untouched.
     """
-    if text.strip():
+    if is_speakable(text):
         return text
-    blank_config = not (cfg.fallback_text or "").strip()
+    unspeakable_config = not is_speakable(cfg.fallback_text)
     cause = (
-        "the configured fallback_text is blank" if blank_config else "the resolved text was blank"
+        "the configured fallback_text carries no letter or number"
+        if unspeakable_config
+        else "the resolved text carried no letter or number"
     )
     degradations.append(
         TurnDegradation(
@@ -630,7 +680,15 @@ def _prose(
     *,
     aborted: Optional[BaseException],
 ) -> str:
-    """The model's own words, or ``""`` when the drive produced none.
+    """The model's own words, or ``""`` when the drive produced none to say.
+
+    "None to say" is :func:`is_speakable`, so an invisible-only or
+    punctuation-only completion is treated as no prose *here* rather than
+    reaching the gate — which is what keeps the code honest: a model that said
+    nothing usable gets :data:`DEGRADED_EMPTY_COMPLETION` (or
+    :data:`DEGRADED_BUDGET_EXHAUSTED` on a budget exit), and
+    :data:`DEGRADED_FALLBACK_BLANK` stays what it says it is, a fact about the
+    host's configuration.
 
     On an aborted drive the loop stamps a diagnostic summary ("aborted after N
     step(s): …") onto the partial result. That string is for an operator's
@@ -638,12 +696,14 @@ def _prose(
     instead and falls through to the fallback when there is none.
     """
     if aborted is not None:
-        spoken = [(r.content or "").strip() for r in recorder.responses]
-        return next((text for text in reversed(spoken) if text), "")
+        said = [(r.content or "").strip() for r in recorder.responses]
+        return next((text for text in reversed(said) if is_speakable(text)), "")
     if outcome is None:
         return ""
     summary = (outcome.result.summary or "").strip()
-    return "" if summary == NO_RESULT_PRODUCED else summary
+    if summary == NO_RESULT_PRODUCED or not is_speakable(summary):
+        return ""
+    return summary
 
 
 def _tool_calls(outcome: Optional[LoopOutcome]) -> tuple[str, ...]:

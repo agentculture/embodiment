@@ -38,6 +38,7 @@ from embodiment.turn import (
     SYSTEM_PROMPT,
     TurnConfig,
     TurnResult,
+    is_speakable,
     turn,
 )
 
@@ -496,7 +497,7 @@ class TestABlankFallbackNeverBecomesSilence:
         result = turn("שלום", Scripted(_says("")), config=TurnConfig(fallback_text="  "))
         reason = next(d.reason for d in result.degradations if d.code == DEGRADED_FALLBACK_BLANK)
         assert "fallback_text" in reason
-        assert "blank" in reason
+        assert "no letter or number" in reason
 
     def test_a_usable_configured_fallback_records_nothing_about_being_blank(self) -> None:
         cfg = TurnConfig(fallback_text="אין לי מה לומר.")
@@ -521,6 +522,96 @@ class TestABlankFallbackNeverBecomesSilence:
         )
         assert result.spoken == FALLBACK_TEXT
         assert DEGRADED_TRUNCATION_SUSPECTED in {d.code for d in result.degradations}
+
+
+# ── fix 5: invisible is not speakable ─────────────────────────────────────────
+
+
+class TestIsSpeakable:
+    """The one predicate the gate and its guard test both use.
+
+    ``.strip()`` removes whitespace and nothing else, so a zero-width space, a
+    BOM or a string of dots survived it and reached a TTS engine that then said
+    nothing. Speakable means *at least one letter or number*.
+    """
+
+    @pytest.mark.parametrize(
+        "text",
+        ["שלום", "hello", "42", "  כן  ", "a…", "1.", "gwen​ה", "ok!"],
+    )
+    def test_text_with_a_letter_or_number_is_speakable(self, text: str) -> None:
+        assert is_speakable(text)
+
+    @pytest.mark.parametrize(
+        "text",
+        ["", "   ", "\n\t", " ", "​", " ​", "﻿", "...", "?!", "—", "··"],
+    )
+    def test_text_with_nothing_to_say_is_not_speakable(self, text: str) -> None:
+        assert not is_speakable(text)
+
+    def test_a_non_string_is_not_speakable_rather_than_raising(self) -> None:
+        assert not is_speakable(None)  # type: ignore[arg-type]
+
+
+class TestInvisibleOutputIsNotSpokenSilently:
+    """The measured defect: an invisible-only completion, recorded and replaced."""
+
+    def test_an_invisible_only_completion_speaks_the_fallback(self) -> None:
+        cfg = TurnConfig(fallback_text="בסדר.")
+        result = turn("שלום", Scripted(_says(" ​")), config=cfg)
+        assert result.spoken == "בסדר."
+        assert DEGRADED_EMPTY_COMPLETION in {d.code for d in result.degradations}
+
+    def test_a_punctuation_only_completion_is_not_speech(self) -> None:
+        result = turn("שלום", Scripted(_says("...")))
+        assert result.spoken == FALLBACK_TEXT
+        assert DEGRADED_EMPTY_COMPLETION in {d.code for d in result.degradations}
+
+    def test_a_bom_only_completion_is_not_speech(self) -> None:
+        result = turn("שלום", Scripted(_says("﻿")))
+        assert result.spoken == FALLBACK_TEXT
+        assert DEGRADED_EMPTY_COMPLETION in {d.code for d in result.degradations}
+
+    def test_a_punctuation_only_fallback_is_as_silent_as_a_blank_one(self) -> None:
+        result = turn("שלום", Scripted(_says("")), config=TurnConfig(fallback_text="..."))
+        assert result.spoken == FALLBACK_TEXT
+        assert DEGRADED_FALLBACK_BLANK in {d.code for d in result.degradations}
+
+    def test_an_invisible_only_completion_with_an_unspeakable_fallback_still_speaks(self) -> None:
+        result = turn("שלום", Scripted(_says("​")), config=TurnConfig(fallback_text="!!"))
+        assert result.spoken == FALLBACK_TEXT
+        codes = {d.code for d in result.degradations}
+        assert {DEGRADED_EMPTY_COMPLETION, DEGRADED_FALLBACK_BLANK} <= codes
+
+    def test_speakable_text_carrying_an_invisible_is_spoken_unchanged(self) -> None:
+        """A ZWSP among real words is the model's output, not a defect to repair."""
+        said = "שלום​ לך."
+        result = turn("שלום", Scripted(_says(said)))
+        assert result.spoken == said
+        assert result.degradations == ()
+
+    def test_a_budget_exit_with_invisible_output_keeps_the_budget_code(self) -> None:
+        registry = ToolRegistry()
+        registry.register("clock", {}, lambda: "12:00")
+        calls = {"n": 0}
+
+        def seam(messages: list[dict[str, Any]], *, tools: Any) -> ModelResponse:
+            calls["n"] += 1
+            return ModelResponse(
+                content="​",
+                tool_calls=[ToolCall(id=f"c{calls['n']}", name="clock", arguments={})],
+                completion_tokens=3,
+            )
+
+        result = turn(
+            "שלום",
+            bind_tools(seam, registry),
+            tools=registry,
+            config=TurnConfig(max_steps=3),
+        )
+        codes = {d.code for d in result.degradations}
+        assert DEGRADED_BUDGET_EXHAUSTED in codes
+        assert DEGRADED_EMPTY_COMPLETION not in codes
 
 
 # ── the structural never-silent guard ─────────────────────────────────────────
@@ -612,6 +703,23 @@ def _exit_blank_configured_fallback() -> TurnResult:
     return turn("שלום", Scripted(_says("")), config=TurnConfig(fallback_text="   "))
 
 
+def _exit_invisible_only_completion() -> TurnResult:
+    """NBSP + ZWSP: ``.strip()`` leaves the ZWSP, and a TTS says nothing."""
+    return turn("שלום", Scripted(_says(" ​")), config=TurnConfig(fallback_text="ok"))
+
+
+def _exit_punctuation_only_completion() -> TurnResult:
+    return turn("שלום", Scripted(_says("...")))
+
+
+def _exit_bom_only_completion() -> TurnResult:
+    return turn("שלום", Scripted(_says("﻿")))
+
+
+def _exit_punctuation_only_fallback() -> TurnResult:
+    return turn("שלום", Scripted(_says("")), config=TurnConfig(fallback_text="..."))
+
+
 def _exit_blank_everything() -> TurnResult:
     cfg = TurnConfig(fallback_text="\n", truncation_suffix=" ", max_tokens=16)
     return turn("שלום", Scripted(_says("  ", completion_tokens=16)), config=cfg)
@@ -630,6 +738,10 @@ EVERY_REACHABLE_EXIT = {
     "tool-raises": _exit_tool_raises,
     "blank-configured-fallback": _exit_blank_configured_fallback,
     "blank-everything": _exit_blank_everything,
+    "invisible-only-completion": _exit_invisible_only_completion,
+    "punctuation-only-completion": _exit_punctuation_only_completion,
+    "bom-only-completion": _exit_bom_only_completion,
+    "punctuation-only-fallback": _exit_punctuation_only_fallback,
 }
 
 
@@ -643,8 +755,9 @@ class TestSpokenIsNeverBlankOnAnyReachableExit:
 
     @pytest.mark.parametrize("name", sorted(EVERY_REACHABLE_EXIT))
     def test_this_exit_still_speaks(self, name: str) -> None:
+        """Asserted with the gate's OWN predicate, so the two cannot drift."""
         result = EVERY_REACHABLE_EXIT[name]()
-        assert result.spoken.strip(), f"{name} produced silence: {result.spoken!r}"
+        assert is_speakable(result.spoken), f"{name} produced silence: {result.spoken!r}"
 
     @pytest.mark.parametrize("name", sorted(EVERY_REACHABLE_EXIT))
     def test_this_exit_never_raised(self, name: str) -> None:
