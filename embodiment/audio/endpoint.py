@@ -49,9 +49,19 @@ The contract every implementation must meet
   ``None``.
 - **Shutdown is a feature.** :meth:`AudioEndpoint.close` takes a deadline,
   never raises, is idempotent, and returns having released everything it can
-  within that deadline — reporting what it left unfinished through
-  :meth:`~AudioEndpoint.status` rather than silently leaving a thread or
-  device parked open.
+  within that deadline — returning an :class:`EndpointCloseReport` (also
+  mirrored in :meth:`~AudioEndpoint.status`) that says exactly what it left
+  unfinished, rather than silently leaving a thread or device parked open
+  (round 2 finding 3: a deadline that is accepted but not honoured, and a
+  join whose outcome nobody checks, is not a bound at all).
+- **Barge-in needs a way to cut playback, not just stop queueing more of
+  it.** :meth:`AudioEndpoint.stop_playback` discards everything queued *and*
+  cuts what is currently sounding, returning how many 24 kHz samples were
+  discarded. This is a separate verb from :meth:`~AudioEndpoint.close`
+  because barge-in happens mid-conversation, arbitrarily often, while the
+  endpoint stays attached and ready for the next reply — closing and
+  reopening the whole endpoint on every interruption would be the wrong
+  granularity (round 2 finding 2).
 
 What this module deliberately does not do
 -------------------------------------------
@@ -73,6 +83,7 @@ __all__ = [
     "SAMPLE_WIDTH_BYTES",
     "CHANNELS",
     "EndpointDegradation",
+    "EndpointCloseReport",
     "FrameCallback",
     "AudioEndpoint",
     "NullEndpoint",
@@ -111,6 +122,34 @@ class EndpointDegradation:
 
     def to_dict(self) -> dict[str, str]:
         return {"code": self.code, "reason": self.reason}
+
+
+@dataclass(frozen=True)
+class EndpointCloseReport:
+    """What :meth:`AudioEndpoint.close` actually managed within its deadline (C3/lesson 6).
+
+    ``capture_thread_stopped``/``writer_thread_stopped`` are ``True`` only
+    when that thread was confirmed stopped (or was never running) before the
+    deadline elapsed — never assumed. ``samples_discarded`` is what
+    :meth:`~AudioEndpoint.stop_playback` reported when ``close`` invoked it as
+    its first step. ``elapsed_s`` is the real time ``close`` actually took, so
+    a caller can tell "honoured the deadline" from "ran over it and gave up
+    anyway" — both are honest outcomes; only the second is the same object
+    silently pretending it did not happen.
+    """
+
+    capture_thread_stopped: bool
+    writer_thread_stopped: bool
+    samples_discarded: int
+    elapsed_s: float
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "capture_thread_stopped": self.capture_thread_stopped,
+            "writer_thread_stopped": self.writer_thread_stopped,
+            "samples_discarded": self.samples_discarded,
+            "elapsed_s": self.elapsed_s,
+        }
 
 
 #: A capture callback: called with one chunk of pcm16/mono/24 kHz bytes per
@@ -154,7 +193,31 @@ class AudioEndpoint(Protocol):
         ...
 
     def play(self, frames: bytes) -> None:
-        """Play one chunk of pcm16/mono/24 kHz bytes. Never blocks, never raises."""
+        """Play one chunk of pcm16/mono/24 kHz bytes. Never blocks, never raises.
+
+        The whole reply is buffered (bounded in seconds, not in chunk count):
+        every chunk handed to ``play`` is part of one sentence, so an
+        implementation must never silently drop a chunk from the middle of a
+        reply the way a drop-oldest queue would. A bound that is actually hit
+        refuses the NEW chunk and records a counted degradation instead —
+        see :mod:`embodiment.audio.host` for the concrete policy.
+        """
+        ...
+
+    def stop_playback(self) -> int:
+        """Barge-in: discard everything queued and cut what is sounding right now.
+
+        Returns the number of 24 kHz samples discarded (0 if nothing was
+        playing). Never raises. Idempotent: calling it with nothing queued or
+        sounding is a harmless no-op that returns 0. After this returns, a
+        subsequent :meth:`play` starts a fresh reply — an implementation may
+        need to reopen its output device to guarantee that.
+        """
+        ...
+
+    @property
+    def playing(self) -> bool:
+        """``True`` while anything is queued or actively sounding."""
         ...
 
     def mute(self, muted: bool) -> None:
@@ -170,11 +233,13 @@ class AudioEndpoint(Protocol):
         """The current mute state."""
         ...
 
-    def close(self, deadline: float) -> None:
+    def close(self, deadline: float) -> EndpointCloseReport:
         """Release everything this endpoint holds within ``deadline`` seconds.
 
-        Idempotent, never raises. What could not be released within the
-        deadline is reported through :meth:`status`, never silently dropped.
+        Idempotent, never raises. Returns an :class:`EndpointCloseReport`
+        naming exactly what was released within the deadline — what could not
+        be is reported there and through :meth:`status`, never silently
+        dropped.
         """
         ...
 
@@ -220,6 +285,13 @@ class NullEndpoint:
     def play(self, frames: bytes) -> None:
         return None
 
+    def stop_playback(self) -> int:
+        return 0
+
+    @property
+    def playing(self) -> bool:
+        return False
+
     def mute(self, muted: bool) -> None:
         self._muted = bool(muted)
 
@@ -227,14 +299,21 @@ class NullEndpoint:
     def muted(self) -> bool:
         return self._muted
 
-    def close(self, deadline: float) -> None:
+    def close(self, deadline: float) -> EndpointCloseReport:
         self._attached = False
         self._capturing = False
+        return EndpointCloseReport(
+            capture_thread_stopped=True,
+            writer_thread_stopped=True,
+            samples_discarded=0,
+            elapsed_s=0.0,
+        )
 
     def status(self) -> dict[str, object]:
         return {
             "attached": self._attached,
             "capturing": self._capturing,
+            "playing": False,
             "muted": self._muted,
             "degradation": EndpointDegradation(
                 DEGRADED_NO_ENDPOINT, "no audio endpoint configured"

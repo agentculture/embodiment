@@ -16,6 +16,7 @@ from embodiment.audio.endpoint import (
     SAMPLE_RATE_HZ,
     SAMPLE_WIDTH_BYTES,
     AudioEndpoint,
+    EndpointCloseReport,
     EndpointDegradation,
     NullEndpoint,
 )
@@ -50,12 +51,15 @@ def test_null_endpoint_never_raises_across_full_lifecycle():
     endpoint.play(b"\x00\x00" * 100)
     endpoint.play(b"")
     endpoint.play(object())  # type: ignore[arg-type]  # attack: wrong type
+    assert endpoint.stop_playback() == 0
+    assert endpoint.playing is False
     endpoint.mute(True)
     endpoint.mute(True)
     endpoint.mute(False)
     endpoint.stop_capture()
     endpoint.detach()
-    endpoint.close(0.0)  # zero deadline
+    report = endpoint.close(0.0)  # zero deadline
+    assert isinstance(report, EndpointCloseReport)
     endpoint.close(-5.0)  # negative deadline: attack
 
     assert received == []  # NullEndpoint never delivers a frame — no source exists
@@ -134,9 +138,41 @@ def test_protocol_members_match_the_documented_contract():
         "start_capture",
         "stop_capture",
         "play",
+        "stop_playback",
+        "playing",
         "mute",
         "muted",
         "close",
         "status",
     }
     assert expected <= set(dir(AudioEndpoint))
+
+
+def test_endpoint_close_report_is_frozen_and_carries_the_four_fields():
+    report = EndpointCloseReport(
+        capture_thread_stopped=True,
+        writer_thread_stopped=False,
+        samples_discarded=42,
+        elapsed_s=0.05,
+    )
+    assert report.to_dict() == {
+        "capture_thread_stopped": True,
+        "writer_thread_stopped": False,
+        "samples_discarded": 42,
+        "elapsed_s": 0.05,
+    }
+    try:
+        report.samples_discarded = 0  # type: ignore[misc]
+        raised = False
+    except Exception:
+        raised = True
+    assert raised, "EndpointCloseReport must be immutable"
+
+
+def test_null_endpoint_close_returns_a_close_report():
+    endpoint = NullEndpoint()
+    report = endpoint.close(1.0)
+    assert isinstance(report, EndpointCloseReport)
+    assert report.capture_thread_stopped is True
+    assert report.writer_thread_stopped is True
+    assert report.samples_discarded == 0
