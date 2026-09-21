@@ -124,12 +124,16 @@ PROMPT
   run_qwen() { run_reviewer qwen; }
   run_pi()   { run_reviewer pi; }
 
+  # DUAL_REVIEW_REVIEWERS="pi" re-runs one reviewer alone (e.g. after it came back
+  # empty) without repeating the other's half; the default is both, in parallel.
+  local reviewers=${DUAL_REVIEW_REVIEWERS:-"qwen pi"}
   start=$(date +%s)
-  run_qwen & run_pi & wait
+  for r in $reviewers; do "run_$r" & done
+  wait
   elapsed=$(( $(date +%s) - start ))
 
   status=0
-  for r in qwen pi; do
+  for r in $reviewers; do
     rc=$(cat "$out_dir/$r.rc")
     # Reviewers drift on the last line ("## Verdict: approve", "**VERDICT**: ..."), so
     # match loosely; a review with criteria but no verdict line is still a review.
