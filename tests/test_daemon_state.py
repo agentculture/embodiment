@@ -44,6 +44,14 @@ how far the file was from its bound):
 15. a performance regression test asserts on the REWRITE HELPER's call
     count, not wall-clock, so it cannot flake
 
+Round 5 (a bounded log did not count what it evicted — pre-existing in the
+merged code, folded into this same round of fixes):
+
+16. eviction, rewrite and oversize-record counts are exact across a known
+    sequence of crossings, visible in ``status()``, and thread-safe under
+    concurrent writers; an oversize record is never written, is counted
+    every time, and degrades exactly once per log instance
+
 Every test passes an explicit ``tmp_path``-derived override or monkeypatches
 the env/tempdir seams (``EMBODIMENT_STATE_DIR`` / ``XDG_STATE_HOME`` / ``HOME``
 / ``tempfile.gettempdir``) — none ever writes to the real home directory or a
@@ -68,6 +76,7 @@ from embodiment.daemon.state import (
     LEDGER_FILENAME,
     LEDGER_FSYNC_PER_APPEND,
     OPERATIONAL_LOG_FSYNC_PER_APPEND,
+    OVERSIZE_RECORD_CODE,
     PERSISTENCE_STATUS_UNAVAILABLE,
     SESSION_ID_REJECTED_CODE,
     STALE_TEMP_FILES_SWEPT_CODE,
@@ -596,13 +605,21 @@ class TestStatusReportsWriteFailures:
     ) -> None:
         """The crossing-the-bound (rewrite) path still needs directory write
         access, since it creates a fresh temp file — covered separately from
-        the append-path case above."""
-        state = DaemonState(tmp_path / "state", operational_log_max_bytes=80)
-        state.operational_log.write("a baseline write that fits under 80 bytes")
+        the append-path case above. Bound of 150 (not 80, as an earlier
+        version of this test used): round 5's oversize handling now rejects
+        any single record whose OWN encoded size exceeds max_bytes before it
+        ever reaches the rewrite path, and the crossing write's own encoded
+        size (measured ~89 bytes) exceeded an 80-byte bound on its own — this
+        test needs a genuine CROSSING (each write individually under the
+        bound, combined over it), not an oversize rejection.
+        """
+        state = DaemonState(tmp_path / "state", operational_log_max_bytes=150)
+        state.operational_log.write("a baseline write that fits comfortably under the bound")
 
         os.chmod(state.dir, 0o500)  # remove write access, even for the owner
         try:
-            # Long enough to cross the tiny 80-byte bound and force a rewrite.
+            # Individually under 150 bytes; combined with the baseline above,
+            # over it — a genuine crossing, not an oversize rejection.
             state.operational_log.write("this write is long enough to cross the tiny bound")
             status = state.status()
         finally:
@@ -1039,8 +1056,15 @@ class TestTornLastLineIsToleratedAndNeverGluedTo:
 
     def test_a_torn_line_is_also_not_glued_to_across_a_crossing_rewrite(self, tmp_path) -> None:
         """The crossing-the-bound rewrite reads existing content directly
-        (not through _append_line) so it needs the same guard independently."""
-        log = OperationalLog(tmp_path / "embodiment.log", max_bytes=80)
+        (not through _append_line) so it needs the same guard independently.
+
+        Bound of 150 (not 80): round 5's oversize handling now rejects a
+        single record whose own encoded size exceeds max_bytes before it
+        ever reaches the rewrite path, and the crossing write below
+        (~93 bytes) exceeded an 80-byte bound on its own — this test needs a
+        genuine crossing, not an oversize rejection.
+        """
+        log = OperationalLog(tmp_path / "embodiment.log", max_bytes=150)
         log.write("first")
         self._corrupt_with_torn_line(log.path, '{"ts": 1.0, "event": "torn-by-a-cra')
 
@@ -1107,8 +1131,14 @@ class TestConcurrentAppendsNeverInterleaveOrLoseARecord:
     ) -> None:
         """A tight bound forces frequent rewrites under concurrent load.
         Trimming legitimately drops old records under load, so an exact
-        count is not asserted here — only that every surviving line still
-        parses (nothing interleaved) and the bound still holds.
+        SURVIVING count is not asserted here — only that every surviving
+        line still parses (nothing interleaved), the bound still holds, and
+        (round 5) the eviction counter is EXACTLY consistent with what
+        actually survived, proving the counters are not racy under
+        concurrent writers even though they are plain ``int`` attributes
+        (correctness comes from the per-instance lock already held for the
+        whole decide-then-write, the same lock these counters are mutated
+        under).
         """
         import json as jsonlib
 
@@ -1131,6 +1161,12 @@ class TestConcurrentAppendsNeverInterleaveOrLoseARecord:
         for ln in lines:
             jsonlib.loads(ln)  # must not raise — proves no interleaved/corrupted line
         assert log.path.stat().st_size <= 3_000
+
+        # round 5: the eviction/rewrite counters, exact even under 6 threads.
+        total_written = n_threads * n_per_thread
+        assert log.rewrites > 0
+        assert log.oversize_records == 0  # every record here comfortably fits alone
+        assert log.evicted_records == total_written - len(lines)
 
 
 # ── round 4, fix 5: a performance regression test that asserts operation ───
@@ -1177,12 +1213,242 @@ class TestRewriteHelperCallCountRegressionGuard:
         # back to "one rewrite per write" (which would be 2000, not < 200).
         assert 0 < calls["n"] < n_writes // 10
 
-    def test_a_single_write_that_starts_over_the_bound_rewrites_exactly_once(
+    def test_a_write_that_crosses_the_bound_rewrites_exactly_once(
         self, tmp_path, monkeypatch
     ) -> None:
+        """Updated for round 5's oversize handling: a record whose own
+        encoded size ALONE exceeds max_bytes is now never written and never
+        reaches the rewrite helper at all (see
+        TestOversizeRecordsAreNeverWrittenCountedAndDegradeOnce) — so this
+        test crosses the bound with two writes, each individually under
+        max_bytes, whose combined size is what forces exactly one rewrite.
+        """
         calls = self._spy_on_rewrite(monkeypatch)
 
-        log = OperationalLog(tmp_path / "embodiment.log", max_bytes=10)
-        log.write("this single write immediately exceeds the tiny ten byte bound")
+        log = OperationalLog(tmp_path / "embodiment.log", max_bytes=100)
+        log.write("first")  # 45 bytes on disk — comfortably under 100 alone
+        log.write("this second write is long enough to cross the tiny bound")  # 96 alone
 
         assert calls["n"] == 1
+
+
+# ── round 5, fix: a bounded buffer counts what it drops ────────────────────
+
+
+class TestEvictionRewriteCountersAreExactAndVisible:
+    """`` evicted_records`` / ``rewrites`` — pre-existing gap, not new to round
+    4: a trim silently dropped records and nothing anywhere recorded it.
+    """
+
+    def test_zero_evictions_and_zero_rewrites_when_nothing_is_ever_trimmed(self, tmp_path) -> None:
+        log = OperationalLog(tmp_path / "embodiment.log", max_bytes=1_000_000)
+        for i in range(200):
+            log.write("heartbeat", step=i)
+        assert log.evicted_records == 0
+        assert log.rewrites == 0
+
+    def test_evicted_records_equals_written_minus_currently_present(self, tmp_path) -> None:
+        """The exact, algorithm-independent invariant: nothing but eviction
+        ever removes a record once it is written (this scenario keeps every
+        record comfortably under max_bytes individually, so none is ever
+        oversize-rejected either) — so after N writes, the running eviction
+        count must equal N minus however many records currently survive on
+        disk, regardless of exactly when or how many each individual rewrite
+        dropped. Proven across "a known sequence of crossings": max_bytes is
+        small enough that this triggers many rewrites over 400 writes.
+        """
+        log = OperationalLog(tmp_path / "embodiment.log", max_bytes=2_000)
+        n_writes = 400
+        for i in range(n_writes):
+            log.write("heartbeat", step=i, note="a fixed-shape note to force several crossings")
+
+        assert log.rewrites > 0
+        assert log.oversize_records == 0
+        surviving = len(log.read_all())
+        assert log.evicted_records == n_writes - surviving
+
+    def test_rewrites_counts_exactly_how_many_times_the_rewrite_helper_ran(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        real_rewrite = state_mod._bounded_rewrite_append
+        spy_calls = {"n": 0}
+
+        def counting(*args, **kwargs):
+            spy_calls["n"] += 1
+            return real_rewrite(*args, **kwargs)
+
+        monkeypatch.setattr(state_mod, "_bounded_rewrite_append", counting)
+
+        log = OperationalLog(tmp_path / "embodiment.log", max_bytes=2_000)
+        for i in range(400):
+            log.write("heartbeat", step=i, note="a fixed-shape note to force several crossings")
+
+        assert log.rewrites == spy_calls["n"]
+        assert log.rewrites > 0
+
+    def test_transcript_log_gets_the_same_counters_one_shared_implementation(
+        self, tmp_path
+    ) -> None:
+        transcript = TranscriptLog(tmp_path / "sess.jsonl", max_bytes=2_000)
+        n_writes = 400
+        for i in range(n_writes):
+            transcript.write("user", f"turn {i} of a rambling conversation about nothing much")
+
+        assert transcript.rewrites > 0
+        surviving = len(transcript.read_all())
+        assert transcript.evicted_records == n_writes - surviving
+
+    def test_counters_appear_in_the_bounded_logs_own_status(self, tmp_path) -> None:
+        log = OperationalLog(tmp_path / "embodiment.log", max_bytes=2_000)
+        for i in range(400):
+            log.write("heartbeat", step=i, note="a fixed-shape note to force several crossings")
+
+        status = log.status()
+        assert status["rewrites"] == log.rewrites
+        assert status["evicted_records"] == log.evicted_records
+        assert status["oversize_records"] == log.oversize_records
+
+    def test_counters_appear_in_daemon_state_status(self, tmp_path) -> None:
+        state = DaemonState(tmp_path / "state", operational_log_max_bytes=2_000)
+        for i in range(400):
+            state.operational_log.write(
+                "heartbeat", step=i, note="a fixed-shape note to force several crossings"
+            )
+
+        status = state.status()
+        ol = status["operational_log"]
+        assert ol["rewrites"] > 0
+        assert ol["evicted_records"] > 0
+        assert ol["oversize_records"] == 0
+
+    def test_counters_appear_in_daemon_state_status_even_in_no_persistence_mode(
+        self, tmp_path, _unwritable_tempdir
+    ) -> None:
+        blocked = tmp_path / "blocked"
+        blocked.write_text("i am a file")
+        state = DaemonState(blocked / "sub" / "state")
+
+        status = state.status()
+
+        ol = status["operational_log"]
+        assert ol["evicted_records"] == 0
+        assert ol["rewrites"] == 0
+        assert ol["oversize_records"] == 0
+
+    def test_counters_are_never_persisted_to_disk(self, tmp_path) -> None:
+        """In-memory only, as instructed — a fresh instance over the SAME
+        file starts back at zero even though the file itself still carries
+        the trimming history the old instance produced."""
+        log = OperationalLog(tmp_path / "embodiment.log", max_bytes=2_000)
+        for i in range(400):
+            log.write("heartbeat", step=i, note="a fixed-shape note to force several crossings")
+        assert log.evicted_records > 0
+
+        reopened = OperationalLog(tmp_path / "embodiment.log", max_bytes=2_000)
+        assert reopened.evicted_records == 0
+        assert reopened.rewrites == 0
+        assert reopened.oversize_records == 0
+
+
+class TestOversizeRecordsAreNeverWrittenCountedAndDegradeOnce:
+    def test_an_oversize_record_is_never_written(self, tmp_path) -> None:
+        log = OperationalLog(tmp_path / "embodiment.log", max_bytes=200)
+        log.write("heartbeat", note="x" * 5_000)  # far larger than the 200-byte bound
+
+        assert log.read_all() == []
+        assert not log.path.exists() or log.path.stat().st_size == 0
+
+    def test_an_oversize_record_never_grows_an_existing_file(self, tmp_path) -> None:
+        log = OperationalLog(tmp_path / "embodiment.log", max_bytes=200)
+        log.write("heartbeat", step=1)
+        size_before = log.path.stat().st_size
+
+        log.write("heartbeat", note="x" * 5_000)
+
+        assert log.path.stat().st_size == size_before
+        assert [r["step"] for r in log.read_all() if "step" in r] == [1]
+
+    def test_an_oversize_record_is_counted_every_time_it_happens(self, tmp_path) -> None:
+        log = OperationalLog(tmp_path / "embodiment.log", max_bytes=200)
+        for _ in range(5):
+            log.write("heartbeat", note="x" * 5_000)
+        assert log.oversize_records == 5
+
+    def test_an_oversize_record_degrades_exactly_once_per_log_instance(self, tmp_path) -> None:
+        degradations: list[tuple[str, str]] = []
+        log = OperationalLog(
+            tmp_path / "embodiment.log",
+            max_bytes=200,
+            on_degrade=lambda code, detail: degradations.append((code, detail)),
+        )
+        for _ in range(7):
+            log.write("heartbeat", note="x" * 5_000)
+
+        oversize = [d for d in degradations if d[0] == OVERSIZE_RECORD_CODE]
+        assert len(oversize) == 1
+        assert log.oversize_records == 7
+
+    def test_a_second_oversize_size_still_only_degrades_once_even_if_different(
+        self, tmp_path
+    ) -> None:
+        degradations: list[tuple[str, str]] = []
+        log = OperationalLog(
+            tmp_path / "embodiment.log",
+            max_bytes=200,
+            on_degrade=lambda code, detail: degradations.append((code, detail)),
+        )
+        log.write("heartbeat", note="x" * 5_000)
+        log.write("heartbeat", note="y" * 9_000)  # a different, also-oversize record
+
+        oversize = [d for d in degradations if d[0] == OVERSIZE_RECORD_CODE]
+        assert len(oversize) == 1
+        assert log.oversize_records == 2
+
+    def test_degradation_detail_carries_only_the_byte_count_and_bound(self, tmp_path) -> None:
+        degradations: list[tuple[str, str]] = []
+        marker = "the-secret-transcript-text-must-never-appear-anywhere"
+        transcript = TranscriptLog(
+            tmp_path / "sess.jsonl",
+            max_bytes=100,
+            on_degrade=lambda code, detail: degradations.append((code, detail)),
+        )
+        transcript.write("user", marker * 20)  # far over the 100-byte bound
+
+        assert degradations
+        code, detail = degradations[0]
+        assert code == OVERSIZE_RECORD_CODE
+        assert marker not in detail
+        assert "100" in detail  # the configured bound
+        assert any(ch.isdigit() for ch in detail.replace("100", ""))  # the byte count too
+
+    def test_marker_text_never_reaches_status_write_errors_or_the_file(self, tmp_path) -> None:
+        marker = "the-secret-transcript-text-must-never-appear-anywhere"
+        transcript = TranscriptLog(tmp_path / "sess.jsonl", max_bytes=100)
+        transcript.write("user", marker * 20)
+
+        assert marker not in str(transcript.status())
+        assert marker not in " ".join(transcript.write_errors)
+        assert not transcript.path.exists() or marker not in transcript.path.read_text(
+            encoding="utf-8"
+        )
+
+    def test_a_record_exactly_at_the_bound_is_not_oversize(self, tmp_path) -> None:
+        """The oversize gate is ``>``, not ``>=`` — a record that exactly
+        fills the bound is legitimate, not rejected. Captures one record's
+        EXACT serialized bytes and replays them through the internal helper
+        directly (bypassing ``write()``, which would mint a fresh timestamp
+        of possibly different length and make the byte count non-
+        deterministic) so the boundary check itself is exact, not timing-
+        dependent.
+        """
+        probe = OperationalLog(tmp_path / "probe.log", max_bytes=1_000_000)
+        probe.write("first")
+        exact_line = probe.path.read_text(encoding="utf-8").rstrip("\n")
+        exact_size = len(exact_line.encode("utf-8")) + 1
+
+        log = OperationalLog(tmp_path / "embodiment.log", max_bytes=exact_size)
+        with log._lock:
+            log._append_or_rewrite(exact_line)
+
+        assert log.oversize_records == 0
+        assert len(log.read_all()) == 1

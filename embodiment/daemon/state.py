@@ -125,6 +125,41 @@ threads independently deciding "we're under the bound, append" from a stale
 size read could together push the file over it; holding the lock across the
 whole decide-then-write makes that decision atomic too.
 
+A bounded buffer counts what it drops
+-----------------------------------------
+Trimming a full file is invisible unless something counts it: before this
+addition, a rewrite that dropped 50 old records, or a single record too big
+to ever fit (silently kept alone forever, exceeding the bound), left no
+trace anywhere — ``write_errors`` stayed empty, ``status()`` showed nothing,
+the ledger recorded nothing. Every :class:`_BoundedJsonlLog` (both
+:class:`OperationalLog` and :class:`TranscriptLog` — one shared
+implementation, one code path) now counts three things, in memory only,
+never persisted, and surfaced through :meth:`_BoundedJsonlLog.status` and
+therefore :meth:`DaemonState.status`:
+
+* :attr:`~_BoundedJsonlLog.evicted_records` — the running total of prior
+  records a trim has dropped, across every rewrite this instance has ever
+  done.
+* :attr:`~_BoundedJsonlLog.rewrites` — how many times the expensive rewrite
+  path ran at all.
+* :attr:`~_BoundedJsonlLog.oversize_records` — records whose own encoded size
+  already exceeds *max_bytes*, so no trim could ever make room. These are now
+  NEVER WRITTEN (previously kept alone, silently exceeding the configured
+  bound — the opposite of what "the log never exceeds its configured size"
+  promises) — each one is counted, and the first one on a given instance
+  fires exactly ONE deduped :data:`OVERSIZE_RECORD_CODE` degradation through
+  the existing ``on_degrade`` seam, carrying the byte count and the bound,
+  never the record's own text (repeats after the first only bump the
+  counter, mirroring the "degrade once" discipline :mod:`embodiment.events`
+  already uses).
+
+Counting costs nothing on the hot append path: the oversize check and the
+size comparison that routes a write to append vs. rewrite are both already
+in hand before any I/O (an encoded-length comparison and one ``stat()``, both
+present before this addition), and the eviction count is a byproduct of a
+rewrite that was already reading and rewriting the whole file — no extra file
+read was added anywhere.
+
 Session ids are untrusted input
 -----------------------------------
 :meth:`DaemonState.open_transcript` will eventually be reached from network
@@ -233,6 +268,7 @@ __all__ = [
     "STATE_DIR_TIGHTENED_CODE",
     "SESSION_ID_REJECTED_CODE",
     "STALE_TEMP_FILES_SWEPT_CODE",
+    "OVERSIZE_RECORD_CODE",
     "PERSISTENCE_STATUS_UNAVAILABLE",
     "LEDGER_FSYNC_PER_APPEND",
     "OPERATIONAL_LOG_FSYNC_PER_APPEND",
@@ -277,6 +313,14 @@ SESSION_ID_REJECTED_CODE = "session-id-rejected"
 #: Recorded once, with a count, when construction finds and removes orphaned
 #: atomic-rewrite temp files left by a previous unclean death.
 STALE_TEMP_FILES_SWEPT_CODE = "stale-temp-files-swept"
+
+#: Recorded via ``on_degrade``, ONCE per :class:`_BoundedJsonlLog` instance no
+#: matter how many times it recurs (deduped — see :attr:`_BoundedJsonlLog.
+#: oversize_records` for the running count), when a single record's own
+#: encoded size already exceeds the log's *max_bytes* on its own. The record
+#: is never written. Detail carries the record's byte count and the bound —
+#: never the record's own text.
+OVERSIZE_RECORD_CODE = "state-record-exceeds-bound"
 
 #: The value :meth:`DaemonState.status` reports for ``persistence`` when no
 #: directory — preferred or any fallback — could be created at all.
@@ -560,21 +604,31 @@ def _atomic_write_bytes(path: Path, data: bytes) -> None:
         raise
 
 
-def _trim_to_low_water(combined: bytes, max_bytes: int, low_water_bytes: int) -> bytes:
+def _trim_to_low_water(combined: bytes, max_bytes: int, low_water_bytes: int) -> tuple[bytes, int]:
     """Drop whole lines from the OLDEST end of *combined* until it fits at or
     under *low_water_bytes*. Only called when *combined* already exceeds
     *max_bytes*; a single line larger than *max_bytes* on its own is kept
     alone regardless — nothing smaller is available and the file must stay
     valid JSONL. See :data:`_LOW_WATER_RATIO` for why the target is the low
     water mark and not *max_bytes* itself.
+
+    Returns ``(trimmed, dropped_count)`` — *dropped_count* is the number of
+    whole lines popped, which the caller adds to :attr:`_BoundedJsonlLog.
+    evicted_records` (a bounded buffer counts what it drops; see the module
+    docstring's "eviction is counted, never silent" section). Only ever pops
+    from index 0, which is always a real prior line — the sentinel empty
+    element ``combined.split(b"\\n")`` leaves at the end (from the trailing
+    newline) is never counted as a dropped record.
     """
     lines = combined.split(b"\n")
+    dropped = 0
     while len(lines) > 2 and sum(len(item) + 1 for item in lines) > low_water_bytes:
         lines.pop(0)
-    return b"\n".join(lines)
+        dropped += 1
+    return b"\n".join(lines), dropped
 
 
-def _bounded_rewrite_append(path: Path, line: str, max_bytes: int, low_water_bytes: int) -> None:
+def _bounded_rewrite_append(path: Path, line: str, max_bytes: int, low_water_bytes: int) -> int:
     """Append *line* to *path* by rewriting it, trimming to *low_water_bytes*
     if the combined size would exceed *max_bytes*.
 
@@ -586,6 +640,9 @@ def _bounded_rewrite_append(path: Path, line: str, max_bytes: int, low_water_byt
     before concatenating the new line, for the same reason
     :func:`_append_line` does: gluing onto a fragment would make the new
     record unparseable forever, not just skip the fragment once.
+
+    Returns the number of existing records evicted by this call (``0`` when
+    the new line fit without trimming) — see :func:`_trim_to_low_water`.
     """
     existing = b""
     if path.exists():
@@ -594,9 +651,11 @@ def _bounded_rewrite_append(path: Path, line: str, max_bytes: int, low_water_byt
         existing += b"\n"
     encoded = line.encode("utf-8") + b"\n"
     combined = existing + encoded
+    dropped = 0
     if len(combined) > max_bytes:
-        combined = _trim_to_low_water(combined, max_bytes, low_water_bytes)
+        combined, dropped = _trim_to_low_water(combined, max_bytes, low_water_bytes)
     _atomic_write_bytes(path, combined)
+    return dropped
 
 
 def _last_byte_is_newline_or_empty(path: Path) -> bool:
@@ -818,6 +877,13 @@ class _BoundedJsonlLog:
     *path* may be ``None`` — the no-persistence floor (module docstring):
     every :meth:`_write` is dropped and counted on :attr:`write_errors`
     rather than the object being unusable.
+
+    Three more counters — :attr:`evicted_records`, :attr:`rewrites`,
+    :attr:`oversize_records` — track what trimming and oversize rejection
+    have done, in memory only; see the module docstring's "a bounded buffer
+    counts what it drops" section. Mutated only from :meth:`_append_or_rewrite`
+    while :attr:`_lock` is held, so they are exact under concurrent writers,
+    same as everything else this lock protects.
     """
 
     def __init__(
@@ -833,9 +899,18 @@ class _BoundedJsonlLog:
         self._fsync = fsync
         self._on_degrade = on_degrade
         self._lock = threading.Lock()
+        self._oversize_degraded = False
         #: Failures to persist a record. Best-effort visibility of last
         #: resort; surfaced by :meth:`DaemonState.status`.
         self.write_errors: list[str] = []
+        #: Total prior records dropped by every rewrite this instance has
+        #: ever done. In-memory only; never persisted.
+        self.evicted_records: int = 0
+        #: How many times the expensive rewrite path has run.
+        self.rewrites: int = 0
+        #: Records whose own encoded size alone exceeds *max_bytes* — never
+        #: written, always counted, see :data:`OVERSIZE_RECORD_CODE`.
+        self.oversize_records: int = 0
 
     @property
     def path(self) -> Optional[Path]:
@@ -873,18 +948,56 @@ class _BoundedJsonlLog:
                     pass  # narrow except; the degrade hook must never itself raise
 
     def _append_or_rewrite(self, line: str) -> None:
-        """Called with :attr:`_lock` held. Picks the cheap or expensive path."""
+        """Called with :attr:`_lock` held. Picks the cheap or expensive path.
+
+        An oversize record (encoded size alone over *max_bytes*) is never
+        written; a plain append is taken when it stays under the bound
+        (O(1): an encoded-length comparison plus one ``stat()``, no file
+        read); only a genuine crossing reaches the rewrite path, which is
+        where the eviction count comes from.
+        """
         assert self._path is not None  # guarded by the caller
+        encoded_len = len(line.encode("utf-8")) + 1  # + the trailing newline
+        if encoded_len > self._max_bytes:
+            self._record_oversize(encoded_len)
+            return
         try:
             current_size = self._path.stat().st_size
         except OSError:
             current_size = 0
-        encoded_len = len(line.encode("utf-8")) + 1  # + the trailing newline
         if current_size + encoded_len <= self._max_bytes:
             _append_line(self._path, line, fsync=self._fsync)
             return
         low_water_bytes = int(self._max_bytes * _LOW_WATER_RATIO)
-        _bounded_rewrite_append(self._path, line, self._max_bytes, low_water_bytes)
+        dropped = _bounded_rewrite_append(self._path, line, self._max_bytes, low_water_bytes)
+        self.rewrites += 1
+        self.evicted_records += dropped
+
+    def _record_oversize(self, encoded_len: int) -> None:
+        """Count an oversize record and, the first time only, degrade once."""
+        self.oversize_records += 1
+        if self._oversize_degraded:
+            return
+        self._oversize_degraded = True
+        if self._on_degrade is not None:
+            detail = f"record of {encoded_len} bytes exceeds the {self._max_bytes}-byte bound"
+            try:
+                self._on_degrade(OVERSIZE_RECORD_CODE, detail)
+            except OSError:
+                pass  # narrow except; the degrade hook must never itself raise
+
+    def status(self) -> dict[str, Any]:
+        """This instance's own eviction/rewrite/oversize counters plus its
+        write-error status — what :meth:`DaemonState.status` surfaces for the
+        operational log, and what a caller holding a :class:`TranscriptLog`
+        directly can read the same way.
+        """
+        return {
+            "evicted_records": self.evicted_records,
+            "rewrites": self.rewrites,
+            "oversize_records": self.oversize_records,
+            **_write_error_status(self.write_errors),
+        }
 
     def read_all(self) -> list[dict[str, Any]]:
         """Every readable record, oldest first. Skips a torn last line, if any."""
@@ -1122,6 +1235,13 @@ class DaemonState:
         rather than looking healthy. In no-persistence mode ``state_dir`` is
         ``None`` and ``persistence``/``persistence_detail`` explain why,
         rather than a state dir that looks merely empty.
+
+        ``operational_log`` also carries ``evicted_records``, ``rewrites``
+        and ``oversize_records`` — see :meth:`_BoundedJsonlLog.status` and
+        the module docstring's "a bounded buffer counts what it drops"
+        section; a trim that silently dropped old operational history, or an
+        oversized record silently kept forever, would otherwise be invisible
+        here.
         """
         if self.dir is None:
             return {
@@ -1132,7 +1252,7 @@ class DaemonState:
                     "path": None,
                     "size_bytes": None,
                     "max_bytes": self.operational_log.max_bytes,
-                    **_write_error_status(self.operational_log.write_errors),
+                    **self.operational_log.status(),
                 },
                 "ledger": {
                     "path": None,
@@ -1151,7 +1271,7 @@ class DaemonState:
                 "path": str(self.operational_log.path),
                 "size_bytes": log_size,
                 "max_bytes": self.operational_log.max_bytes,
-                **_write_error_status(self.operational_log.write_errors),
+                **self.operational_log.status(),
             },
             "ledger": {
                 **self.ledger.status(),
