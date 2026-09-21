@@ -18,6 +18,7 @@ import pytest
 
 from embodiment.loop import ToolError, ToolExecutor, ToolOutcome, UnknownToolError
 from embodiment.tools import (
+    BOUND_REGISTRY_ATTR,
     DEGRADED_TOOL_FAILED,
     DEGRADED_TOOL_UNKNOWN,
     ToolRegistry,
@@ -156,6 +157,21 @@ class TestBindTools:
 
         bind_tools(lambda messages, *, tools: seen.append(tools), None)([])
         assert seen == [None]
+
+    def test_the_bound_callable_names_the_registry_it_was_bound_to(self) -> None:
+        """The marker ``turn()`` reads to catch a registry the model never saw."""
+        registry = ToolRegistry()
+        complete = bind_tools(lambda messages, *, tools: "ok", registry)
+        assert getattr(complete, BOUND_REGISTRY_ATTR) is registry
+
+    def test_binding_without_a_registry_marks_the_one_it_made(self) -> None:
+        complete = bind_tools(lambda messages, *, tools: "ok")
+        bound = getattr(complete, BOUND_REGISTRY_ATTR)
+        assert isinstance(bound, ToolRegistry)
+        assert bound.empty
+
+    def test_an_unbound_callable_carries_no_marker(self) -> None:
+        assert getattr(lambda messages: "ok", BOUND_REGISTRY_ATTR, None) is None
 
     def test_binding_a_populated_registry_sends_its_schemas(self) -> None:
         seen: list[Any] = []

@@ -60,17 +60,38 @@ cause, which is why it is the one worth proxying.
 
 *Not detected* — truncation by a server-side ceiling lower than
 :attr:`TurnConfig.max_tokens` (the config is advisory: this module never puts
-``max_tokens`` on a wire, the host's seam does); truncation when the seam
-reports ``completion_tokens`` as ``0`` or does not report usage at all; a cut by
-a stop sequence, a content filter or a dropped connection that still returned
-prose. And the proxy over-reports: a completion that *deliberately* ends on the
-exact token it was capped at is indistinguishable from one that was cut, and is
-reported as suspected truncation. Hence the degradation code
+``max_tokens`` on a wire, the host's seam does); a cut by a stop sequence, a
+content filter or a dropped connection that still returned prose. And the proxy
+over-reports: a completion that *deliberately* ends on the exact token it was
+capped at is indistinguishable from one that was cut, and is reported as
+suspected truncation. Hence the degradation code
 :data:`DEGRADED_TRUNCATION_SUSPECTED` — suspected, not measured.
+
+*Not detectable, and SAID SO* — a seam that reports ``completion_tokens`` as
+``0`` (or not at all) makes the proxy inert. A docstring saying "not detected"
+is not a record: a host reading a clean :class:`TurnResult` would conclude the
+words were complete, and if the rig's seam never reports usage the detector
+would be dead with nobody the wiser. So a turn that generated something and
+reported no usage records :data:`DEGRADED_TRUNCATION_UNDETECTABLE` — **once**,
+whatever the turn's completion count, because the fact reported is a property of
+the turn. It changes nothing about what is spoken.
 
 The default :attr:`TurnConfig.max_tokens` is deliberately generous (16000) for
 the reason ``0.13.0`` measured: a truncated turn is silence, and silence is the
-worst failure mode a presence has.
+worst failure mode a presence has. Setting it to ``0`` or less is an explicit
+host opt-out that disables the ceiling check *and* its uncheckable record —
+there is nothing to be uncheckable against.
+
+Tools the model was never shown
+--------------------------------
+``complete`` is the one-argument seam the loop expects, so tool schemas can only
+reach the wire if the host wrapped its seam with
+:func:`embodiment.tools.bind_tools`. Forgetting that is the first mistake a tool
+author makes and it produces a presence that *has* tools and silently never uses
+them, so a non-empty registry whose seam is not bound to it (or is bound to a
+different one) records :data:`DEGRADED_TOOLS_UNBOUND`. It is a record, not a
+refusal: the turn still runs, because not speaking is worse than speaking
+without tools. An empty registry records nothing either way.
 
 Never silence, never a raise
 -----------------------------
@@ -79,6 +100,13 @@ completion and a suspected truncation all resolve the same way — a recorded
 :class:`TurnDegradation` on the returned result (constraint C3: nothing degrades
 silently) and a non-empty string to speak. :attr:`TurnResult.spoken` is never
 empty, which is the one promise a voice presence cannot afford to break.
+
+Having nothing to say has two distinct causes and they get two distinct codes,
+because a host debugging them looks in different places:
+:data:`DEGRADED_BUDGET_EXHAUSTED` when the model kept calling tools until
+``max_steps`` ran out (a tool-surface and budget question) and
+:data:`DEGRADED_EMPTY_COMPLETION` when a completion really was empty (a model or
+prompt question). Both speak the fallback.
 """
 
 from __future__ import annotations
@@ -88,17 +116,20 @@ from typing import Any, Callable, Optional
 
 from embodiment.contract import NO_RESULT_PRODUCED, ContextPacket, ModelResponse, Task
 from embodiment.framing import frame_cortex
-from embodiment.loop import LoopAborted, LoopControls, LoopOutcome
+from embodiment.loop import EXIT_BUDGET, LoopAborted, LoopControls, LoopOutcome
 from embodiment.loop import run as loop_run
 from embodiment.perception import perceive
-from embodiment.tools import ToolRegistry
+from embodiment.tools import BOUND_REGISTRY_ATTR, ToolRegistry
 
 __all__ = [
     "SYSTEM_PROMPT",
     "FALLBACK_TEXT",
     "TRUNCATION_SUFFIX",
     "ROLE_SENSES",
+    "DEGRADED_BUDGET_EXHAUSTED",
     "DEGRADED_EMPTY_COMPLETION",
+    "DEGRADED_TOOLS_UNBOUND",
+    "DEGRADED_TRUNCATION_UNDETECTABLE",
     "DEGRADED_TRUNCATION_SUSPECTED",
     "DEGRADED_SEAM_ABORTED",
     "DEGRADED_PERCEPTION",
@@ -139,6 +170,12 @@ DEGRADED_EMPTY_COMPLETION = "turn-empty-completion"
 #: A completion reached the configured token ceiling — see the module docstring
 #: on exactly what this proxy can and cannot tell.
 DEGRADED_TRUNCATION_SUSPECTED = "turn-truncation-suspected"
+#: The step budget ran out with no prose to speak.
+DEGRADED_BUDGET_EXHAUSTED = "turn-budget-exhausted"
+#: The seam reported no token usage, so the ceiling proxy could not run.
+DEGRADED_TRUNCATION_UNDETECTABLE = "turn-truncation-undetectable"
+#: Tools were registered but the seam was never bound to them.
+DEGRADED_TOOLS_UNBOUND = "turn-tools-unbound"
 #: The injected seam (or the loop driving it) failed mid-turn.
 DEGRADED_SEAM_ABORTED = "turn-seam-aborted"
 #: Intake degraded; the operator's verbatim words still survived.
@@ -177,7 +214,8 @@ class TurnConfig:
         max_tokens: the completion ceiling the host's seam is expected to
             request. This module puts nothing on a wire — it uses the number as
             the truncation proxy described in the module docstring. Generous by
-            default: a truncated turn is silence.
+            default: a truncated turn is silence. ``0`` or less is an explicit
+            opt-out that disables the proxy and its uncheckable record together.
         max_steps: the loop's model-turn budget. Above one so a registered tool
             has room to run and be spoken about, while an empty registry still
             terminates in exactly one completion.
@@ -258,15 +296,32 @@ class _Recorder:
 
         ``completion_tokens`` of ``0`` means "not reported", never "spent
         nothing measurable" — a seam that reports no usage is unmeasurable here,
-        and this returns ``None`` rather than guessing.
+        and this returns ``None`` rather than guessing. That unmeasurability is
+        itself recorded; see :meth:`usage_unreported`.
         """
         if max_tokens <= 0:
             return None
         for response in self.responses:
-            spent = getattr(response, "completion_tokens", 0) or 0
-            if spent >= max_tokens:
+            if _spent(response) >= max_tokens:
                 return response
         return None
+
+    def usage_unreported(self) -> bool:
+        """True iff any response that GENERATED something reported no usage.
+
+        The ceiling proxy is the only truncation signal available, and a seam
+        that reports no ``completion_tokens`` makes it inert. An inert detector
+        that says nothing is a silent degradation — a host would read a clean
+        :class:`TurnResult` and conclude the words were complete — so this is
+        what :func:`turn` records instead.
+
+        A completion that generated nothing at all is excluded: there was
+        nothing to truncate, and the empty completion is already its own record.
+        """
+        return any(
+            _spent(response) <= 0 and (response.content or response.tool_calls)
+            for response in self.responses
+        )
 
 
 # ── the public entry point ────────────────────────────────────────────────────
@@ -288,7 +343,9 @@ def turn(
             a schema-aware seam with :func:`embodiment.tools.bind_tools`.
         tools: the tool surface. ``None`` — the default — is an empty
             :class:`~embodiment.tools.ToolRegistry`: no tool schema reaches the
-            wire and the turn ends in one completion.
+            wire and the turn ends in one completion. A non-empty registry whose
+            tools never reached *complete* is recorded, not refused; see
+            :data:`DEGRADED_TOOLS_UNBOUND`.
         config: what the turn runs under; defaults to :class:`TurnConfig`.
 
     Returns:
@@ -299,6 +356,7 @@ def turn(
     registry = tools if tools is not None else ToolRegistry()
     degradations: list[TurnDegradation] = []
 
+    _check_binding(complete, registry, degradations)
     packet = _perceive(text, degradations)
     task = Task.new(
         cfg.repo_path,
@@ -333,6 +391,42 @@ def turn(
 
 
 # ── internals ─────────────────────────────────────────────────────────────────
+
+
+def _check_binding(
+    complete: Callable[[list[dict[str, Any]]], ModelResponse],
+    registry: ToolRegistry,
+    degradations: list[TurnDegradation],
+) -> None:
+    """Record a registry whose tools the model will never be shown.
+
+    :func:`turn` takes the one-argument seam :func:`embodiment.loop.run`
+    expects, so the schemas can only reach the wire if the host wrapped its
+    seam with :func:`embodiment.tools.bind_tools`. Forgetting that produces a
+    presence that *has* tools and never uses them, with nothing anywhere saying
+    why — the exact silent degradation C3 forbids. So the wiring is checked,
+    recorded, and otherwise left alone: the turn still runs, because refusing to
+    speak is a worse failure than speaking without tools.
+
+    An empty registry records nothing, bound or not: there is nothing the model
+    was not shown.
+    """
+    if registry.empty:
+        return
+    bound = getattr(complete, BOUND_REGISTRY_ATTR, None)
+    if bound is registry:
+        return
+    where = "bound to another registry" if isinstance(bound, ToolRegistry) else "not bound"
+    degradations.append(
+        TurnDegradation(
+            DEGRADED_TOOLS_UNBOUND,
+            _short(
+                f"the registry holds {len(registry)} tool(s) the model was never "
+                f"shown: the seam is {where}. Wrap it with tools.bind_tools("
+                "seam, registry)."
+            ),
+        )
+    )
 
 
 def _perceive(text: str, degradations: list[TurnDegradation]) -> ContextPacket:
@@ -407,6 +501,11 @@ def _speak(
     ceiling was hit), the prose alone, or the configured fallback. The last two
     rungs each append a degradation, so a spoken fallback is never silent about
     being one.
+
+    The truncation ladder has three states, not two: *suspected* (the ceiling
+    was reached), *checked and clear* (usage was reported and stayed under it),
+    and *uncheckable* (the seam reported no usage at all). Only the third is new
+    to a reader, and it is the one that used to say nothing.
     """
     prose = _prose(outcome, recorder, aborted=aborted)
     ceiling = recorder.hit_ceiling(cfg.max_tokens)
@@ -421,14 +520,48 @@ def _speak(
                 ),
             )
         )
-        if prose:
-            return f"{prose} {cfg.truncation_suffix}".strip()
+    elif cfg.max_tokens > 0 and recorder.usage_unreported():
+        # ONE record per turn however many completions it made: the fact being
+        # reported is "this turn's truncation could not be checked", which is a
+        # property of the turn, not of each call.
+        degradations.append(
+            TurnDegradation(
+                DEGRADED_TRUNCATION_UNDETECTABLE,
+                _short(
+                    "the seam reported no completion_tokens, so truncation "
+                    f"against max_tokens={cfg.max_tokens} could not be checked; "
+                    "ModelResponse carries no finish_reason (embodiment#37), so "
+                    "there is no other signal available"
+                ),
+            )
+        )
+    if ceiling is not None and prose:
+        return f"{prose} {cfg.truncation_suffix}".strip()
     if prose:
         return prose
-    degradations.append(
-        TurnDegradation(DEGRADED_EMPTY_COMPLETION, "the turn produced no prose to speak")
-    )
+    degradations.append(_no_prose(outcome))
     return cfg.fallback_text or FALLBACK_TEXT
+
+
+def _no_prose(outcome: Optional[LoopOutcome]) -> TurnDegradation:
+    """Why this turn had nothing to say — the budget, or a genuinely empty turn.
+
+    The two are different faults and a host debugging them looks in different
+    places: a budget exit means the model kept calling tools and never answered,
+    which is about the tool surface and the step budget, while an empty
+    completion is about the model or the prompt. Reporting the first as the
+    second sends the reader to the wrong file.
+    """
+    if outcome is not None and outcome.exit_reason == EXIT_BUDGET:
+        return TurnDegradation(
+            DEGRADED_BUDGET_EXHAUSTED,
+            _short(
+                f"the step budget ran out after {outcome.result.stats.model_turns} "
+                f"model turn(s) and {len(outcome.result.steps)} tool call(s) with no "
+                "prose to speak"
+            ),
+        )
+    return TurnDegradation(DEGRADED_EMPTY_COMPLETION, "the turn produced no prose to speak")
 
 
 def _prose(
@@ -467,6 +600,14 @@ def _model_turns(outcome: Optional[LoopOutcome]) -> int:
 
 def _degradation(code: str, exc: BaseException) -> TurnDegradation:
     return TurnDegradation(code=code, reason=_short(f"{type(exc).__name__}: {exc}"))
+
+
+def _spent(response: ModelResponse) -> int:
+    """Reported completion tokens; ``0`` means UNREPORTED, never measured-zero."""
+    try:
+        return int(getattr(response, "completion_tokens", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
 
 
 def _short(reason: str) -> str:

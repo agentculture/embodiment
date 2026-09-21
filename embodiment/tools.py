@@ -48,6 +48,7 @@ from typing import Any, Callable, Optional
 from embodiment.loop import ToolError, ToolOutcome, UnknownToolError
 
 __all__ = [
+    "BOUND_REGISTRY_ATTR",
     "DEGRADED_TOOL_FAILED",
     "DEGRADED_TOOL_UNKNOWN",
     "ToolFn",
@@ -59,6 +60,9 @@ __all__ = [
 
 #: A registered tool's callable: arguments in, anything ``str()``-able out.
 ToolFn = Callable[..., Any]
+
+#: Attribute name :func:`bind_tools` stamps on the callable it returns.
+BOUND_REGISTRY_ATTR = "__embodiment_bound_registry__"
 
 #: A registered tool raised.
 DEGRADED_TOOL_FAILED = "tool-failed"
@@ -255,10 +259,17 @@ def bind_tools(
     *seam* is called as ``seam(messages, tools=<wire tools>)``, where the wire
     tools are ``None`` for an empty or absent registry — so a turn with nothing
     registered advertises no tool at all.
+
+    The returned callable is **marked** with the registry it closed over, under
+    :data:`BOUND_REGISTRY_ATTR`. Forgetting this call is the first mistake a
+    tool author makes — registered tools that never reach the wire produce a
+    presence that silently has no tools — and the marker is what lets
+    :func:`embodiment.turn.turn` notice and record it.
     """
     reg = registry if registry is not None else ToolRegistry()
 
     def complete(messages: list[dict[str, Any]]) -> Any:
         return seam(messages, tools=reg.wire_tools())
 
+    setattr(complete, BOUND_REGISTRY_ATTR, reg)
     return complete
