@@ -104,10 +104,14 @@ VERDICT: approve | changes-requested
 PROMPT
 
   call_qwen() { ( cd "$wt" && timeout "$timeout_s" qwen --approval-mode plan "$prompt" </dev/null ); }
+  # The associate model can spend its ENTIRE output budget reasoning about a large
+  # diff and be cut off before it writes an answer (57 kB of trace, no text, on t8).
+  # pi's --thinking levels do not bind for this model, so it is steered in words.
+  local pi_brevity="Reason briefly: a few short notes, never a restatement of the diff or the brief. As soon as you have read REVIEW_BRIEF.md, REVIEW_STAT.txt and REVIEW_DIFF.patch, start WRITING the answer, beginning with the '## Criteria' heading. An unfinished answer is worth more than finished reasoning."
   # pi runs in --mode json and its answer is extracted by pi-final-text.py: plain
   # `pi -p` prints nothing (rc 0) when the reasoning model leaves its final text part
   # empty, which cost three reviews before it was diagnosed.
-  call_pi()   { ( cd "$wt" && timeout "$timeout_s" pi -p --no-session --mode json --tools read,grep,find,ls "$prompt" </dev/null ) | python3 "$repo_root/scripts/pi-final-text.py"; }
+  call_pi()   { ( cd "$wt" && timeout "$timeout_s" pi -p --no-session --mode json --thinking low --append-system-prompt "$pi_brevity" --tools read,grep,find,ls "$prompt" </dev/null ) | python3 "$repo_root/scripts/pi-final-text.py"; }
 
   # One retry when a reviewer exits 0 with nothing to say (seen from pi on t4). The
   # attempt count is recorded, so a flaky reviewer shows up in the summary line.
