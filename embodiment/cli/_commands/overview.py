@@ -30,6 +30,9 @@ _VERBS = [
     "explain <path> — markdown docs for a topic",
     "overview — this descriptive snapshot",
     "doctor — check the agent-identity invariants",
+    "start — start the daemon as a detached background process (idempotent)",
+    "stop — stop the running daemon within a bounded time",
+    "status — report the daemon's state: running, stopped, dead (unclean)",
 ]
 
 
