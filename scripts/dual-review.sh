@@ -25,6 +25,10 @@ label=${1:?label}; base=${2:?base-ref}; head=${3:?head-ref}; brief_file=${4:-}
 timeout_s=${DUAL_REVIEW_TIMEOUT:-1200}
 max_patch_lines=${DUAL_REVIEW_MAX_PATCH_LINES:-4000}
 
+for bin in qwen pi; do
+  command -v "$bin" >/dev/null || { echo "error: reviewer '$bin' is not on PATH" >&2; echo "hint: install it, or fix PATH, before reviewing" >&2; exit 2; }
+done
+
 repo_root=$(git rev-parse --show-toplevel)
 wt_root="$(dirname "$repo_root")/.worktrees.$(basename "$repo_root")"
 out_dir="$wt_root/reviews/$label"
