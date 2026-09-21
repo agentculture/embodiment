@@ -78,7 +78,6 @@ dependencies = [
     "eidetic-cli>=0.12",
     "coherence-cli>=0.6",
     "events-cli>=0.10",
-    "headspace-cli>=0.11",
 ]
 
 [project.urls]

@@ -81,7 +81,6 @@ from pathlib import Path
 from typing import Optional
 
 from embodiment.identity import resolve_identity
-from embodiment.muse import MUSE_AUTHORITY
 from embodiment.presence_engine import DEFAULT_SPEAKER
 
 __all__ = [
@@ -92,13 +91,11 @@ __all__ = [
     "ROLES",
     "CORTEX_MARKER",
     # re-exported so a host composes against ONE object, never a second copy
-    "MUSE_AUTHORITY",
     "DEFAULT_SPEAKER",
     # composition
     "frame_cortex",
     "frame_subagent",
     "frame_muse",
-    "muse_system_message",
     "speaker_label",
     "block_for",
     "unframe",
@@ -247,17 +244,6 @@ def frame_muse(base: Optional[str], *, identity: Optional[str]) -> Optional[str]
     return _compose(base, _block_for(ROLE_MUSE, identity, False))
 
 
-def muse_system_message(base: Optional[str], *, identity: Optional[str]) -> str:
-    """The COMPLETE system message for an advisory turn: boundary, then framing.
-
-    Byte-identical to what :class:`embodiment.muse.MuseLoop` puts on the wire
-    when handed ``frame_muse(base, identity=identity)`` — the boundary is the
-    imported :data:`~embodiment.muse.MUSE_AUTHORITY` object, never a restatement
-    — so a host that drives its own advisory path keeps the same guarantee.
-    """
-    return _prepend_boundary(_compose(base, _block_for(ROLE_MUSE, identity, False)))
-
-
 def speaker_label(identity: Optional[str]) -> str:
     """The label the presence pump prefixes onto operator-facing lines.
 
@@ -358,10 +344,6 @@ class Framing:
         """Frame *base* for the advisory lane (see :func:`frame_muse`)."""
         return frame_muse(base, identity=self.identity)
 
-    def muse_system(self, base: Optional[str] = None) -> str:
-        """The complete advisory system message (see :func:`muse_system_message`)."""
-        return muse_system_message(base, identity=self.identity)
-
     def block(self, role: str) -> Optional[str]:
         """The raw framing block for *role* (see :func:`block_for`)."""
         return block_for(role, identity=self.identity, muse=self.muse)
@@ -414,13 +396,6 @@ def _unframe(text: Optional[str], block: Optional[str]) -> Optional[str]:
     if not text.startswith(prefix):
         return text
     return text[len(prefix) :]
-
-
-def _prepend_boundary(extra: Optional[str]) -> str:
-    """:data:`MUSE_AUTHORITY` first, always; anything composed here only follows."""
-    if not extra:
-        return MUSE_AUTHORITY
-    return MUSE_AUTHORITY + _SEP + extra
 
 
 def _clean(identity: Optional[str]) -> Optional[str]:
