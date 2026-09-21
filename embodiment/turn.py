@@ -112,22 +112,34 @@ nothing. A host's :attr:`TurnConfig.fallback_text` of ``"   "`` (truthy in
 Python, which is how the first version of this got in) and one of ``"..."`` are
 equally silent and are treated the same.
 
-Unspeakable model output records :data:`DEGRADED_EMPTY_COMPLETION`; an
-unspeakable configured fallback records :data:`DEGRADED_FALLBACK_BLANK`; either
-way :data:`FALLBACK_TEXT` is spoken. The predicate never *filters*: speakable
-text goes out exactly as the model produced it, zero-width characters and all.
+An unspeakable configured fallback records :data:`DEGRADED_FALLBACK_BLANK`.
+The predicate never *filters*: speakable text goes out exactly as the model
+produced it, zero-width characters and all.
 
-Having nothing to say has two distinct causes and they get two distinct codes,
-because a host debugging them looks in different places:
-:data:`DEGRADED_BUDGET_EXHAUSTED` when the model kept calling tools until
-``max_steps`` ran out (a tool-surface and budget question) and
-:data:`DEGRADED_EMPTY_COMPLETION` when a completion really was empty (a model or
-prompt question). Both speak the fallback.
+Having nothing to say has THREE distinct causes and they get three distinct
+codes, because a host debugging them looks in three different places. All three
+speak the fallback:
+
+* :data:`DEGRADED_BUDGET_EXHAUSTED` — the model kept calling tools until
+  ``max_steps`` ran out. A tool-surface and budget question, and it wins over
+  the other two: an unvoiceable last turn is a symptom of the loop ending, not
+  its cause.
+* :data:`DEGRADED_UNSPEAKABLE_COMPLETION` — the model **did** answer, with
+  ``"?"`` or ``"..."`` or an emoji or a stray ``U+FEFF``. A prompt question.
+  The record carries the character count and a Unicode **category summary**
+  (``"categories: Po x3"``, ``"So x1"``, ``"Cf x1"``) so a host can tell
+  punctuation from an emoji from a format character — and deliberately **not**
+  the text, because a degradation ledger is not a transcript. Calling this
+  "empty" would send a host hunting an empty-output bug that does not exist.
+* :data:`DEGRADED_EMPTY_COMPLETION` — the completion was empty or
+  whitespace-only (NBSP included: it strips to nothing). A model or seam
+  question.
 """
 
 from __future__ import annotations
 
 import unicodedata
+from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
@@ -147,6 +159,7 @@ __all__ = [
     "DEGRADED_EMPTY_COMPLETION",
     "DEGRADED_FALLBACK_BLANK",
     "DEGRADED_TOOLS_UNBOUND",
+    "DEGRADED_UNSPEAKABLE_COMPLETION",
     "DEGRADED_TRUNCATION_UNDETECTABLE",
     "DEGRADED_TRUNCATION_SUSPECTED",
     "DEGRADED_SEAM_ABORTED",
@@ -191,6 +204,8 @@ DEGRADED_EMPTY_COMPLETION = "turn-empty-completion"
 DEGRADED_TRUNCATION_SUSPECTED = "turn-truncation-suspected"
 #: The configured fallback was blank, so the built-in one was spoken.
 DEGRADED_FALLBACK_BLANK = "turn-fallback-blank"
+#: The model replied, but with nothing a synthesiser can voice.
+DEGRADED_UNSPEAKABLE_COMPLETION = "turn-unspeakable-completion"
 #: The step budget ran out with no prose to speak.
 DEGRADED_BUDGET_EXHAUSTED = "turn-budget-exhausted"
 #: The seam reported no token usage, so the ceiling proxy could not run.
@@ -576,7 +591,8 @@ def _resolve(
     aborted: Optional[BaseException],
 ) -> str:
     """The rung ladder. Its answer is a candidate, not the final word."""
-    prose = _prose(outcome, recorder, aborted=aborted)
+    raw = _raw_prose(outcome, recorder, aborted=aborted)
+    prose = raw if is_speakable(raw) else ""
     ceiling = recorder.hit_ceiling(cfg.max_tokens)
     if ceiling is not None:
         degradations.append(
@@ -608,7 +624,7 @@ def _resolve(
         return f"{prose} {cfg.truncation_suffix}".strip()
     if prose:
         return prose
-    degradations.append(_no_prose(outcome))
+    degradations.append(_no_prose(outcome, raw))
     return cfg.fallback_text
 
 
@@ -653,14 +669,21 @@ def _ensure_spoken(
     return FALLBACK_TEXT
 
 
-def _no_prose(outcome: Optional[LoopOutcome]) -> TurnDegradation:
-    """Why this turn had nothing to say — the budget, or a genuinely empty turn.
+def _no_prose(outcome: Optional[LoopOutcome], raw: str) -> TurnDegradation:
+    """Why this turn had nothing to say. Three causes, three codes.
 
-    The two are different faults and a host debugging them looks in different
-    places: a budget exit means the model kept calling tools and never answered,
-    which is about the tool surface and the step budget, while an empty
-    completion is about the model or the prompt. Reporting the first as the
-    second sends the reader to the wrong file.
+    A host debugging them looks in three different places, so conflating any
+    two sends the reader to the wrong file:
+
+    * the **budget** ran out — the model kept calling tools and never answered;
+      about the tool surface and ``max_steps``. It wins over the others, because
+      an unvoiceable last turn is a symptom of the loop ending, not its cause.
+    * the reply was **unvoiceable** — the model DID answer, with ``"?"`` or
+      ``"..."`` or an emoji, and a synthesiser handed that says nothing. About
+      the prompt. Calling this "empty" sends a host hunting an empty-output bug
+      that does not exist.
+    * the completion really was **empty** (or whitespace-only). About the model
+      or the seam.
     """
     if outcome is not None and outcome.exit_reason == EXIT_BUDGET:
         return TurnDegradation(
@@ -669,6 +692,15 @@ def _no_prose(outcome: Optional[LoopOutcome]) -> TurnDegradation:
                 f"the step budget ran out after {outcome.result.stats.model_turns} "
                 f"model turn(s) and {len(outcome.result.steps)} tool call(s) with no "
                 "prose to speak"
+            ),
+        )
+    if raw:
+        return TurnDegradation(
+            DEGRADED_UNSPEAKABLE_COMPLETION,
+            _short(
+                f"the model replied with {len(raw)} character(s), none a letter or "
+                f"number, so there was nothing to voice (categories: "
+                f"{_category_summary(raw)})"
             ),
         )
     return TurnDegradation(DEGRADED_EMPTY_COMPLETION, "the turn produced no prose to speak")
@@ -684,26 +716,53 @@ def _prose(
 
     "None to say" is :func:`is_speakable`, so an invisible-only or
     punctuation-only completion is treated as no prose *here* rather than
-    reaching the gate — which is what keeps the code honest: a model that said
-    nothing usable gets :data:`DEGRADED_EMPTY_COMPLETION` (or
-    :data:`DEGRADED_BUDGET_EXHAUSTED` on a budget exit), and
-    :data:`DEGRADED_FALLBACK_BLANK` stays what it says it is, a fact about the
-    host's configuration.
+    reaching the gate — which is what keeps :data:`DEGRADED_FALLBACK_BLANK` a
+    fact about the host's configuration rather than about the model.
+
+    What the model *did* send is not discarded: :func:`_raw_prose` keeps it so
+    :func:`_no_prose` can tell an absent reply from an unvoiceable one.
+    """
+    raw = _raw_prose(outcome, recorder, aborted=aborted)
+    return raw if is_speakable(raw) else ""
+
+
+def _raw_prose(
+    outcome: Optional[LoopOutcome],
+    recorder: _Recorder,
+    *,
+    aborted: Optional[BaseException],
+) -> str:
+    """What the model last said, speakable or not, with surrounding space trimmed.
 
     On an aborted drive the loop stamps a diagnostic summary ("aborted after N
     step(s): …") onto the partial result. That string is for an operator's
-    ledger, not for a speaker, so an abort reads the model's own recorded prose
-    instead and falls through to the fallback when there is none.
+    ledger, not for a speaker, so an abort reads the model's own recorded
+    content instead — preferring the last *speakable* one, and falling back to
+    the last non-empty one so an unvoiceable reply can still be classified.
     """
     if aborted is not None:
         said = [(r.content or "").strip() for r in recorder.responses]
-        return next((text for text in reversed(said) if is_speakable(text)), "")
+        speakable = [text for text in said if is_speakable(text)]
+        if speakable:
+            return speakable[-1]
+        return next((text for text in reversed(said) if text), "")
     if outcome is None:
         return ""
     summary = (outcome.result.summary or "").strip()
-    if summary == NO_RESULT_PRODUCED or not is_speakable(summary):
-        return ""
-    return summary
+    return "" if summary == NO_RESULT_PRODUCED else summary
+
+
+def _category_summary(text: str) -> str:
+    """``"Po x3, So x1"`` — WHAT the model sent, never the text itself.
+
+    A degradation ledger is not a transcript. The Unicode general categories
+    and their counts are enough for a host to tell punctuation from an emoji
+    from a stray format character, which is the whole diagnostic question, and
+    they carry none of the model's output into the record.
+    """
+    counts = Counter(unicodedata.category(char) for char in text)
+    ordered = sorted(counts.items(), key=lambda item: (-item[1], item[0]))
+    return ", ".join(f"{category} x{count}" for category, count in ordered)
 
 
 def _tool_calls(outcome: Optional[LoopOutcome]) -> tuple[str, ...]:

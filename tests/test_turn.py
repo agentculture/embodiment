@@ -34,6 +34,7 @@ from embodiment.turn import (
     DEGRADED_TOOLS_UNBOUND,
     DEGRADED_TRUNCATION_SUSPECTED,
     DEGRADED_TRUNCATION_UNDETECTABLE,
+    DEGRADED_UNSPEAKABLE_COMPLETION,
     FALLBACK_TEXT,
     SYSTEM_PROMPT,
     TurnConfig,
@@ -560,17 +561,17 @@ class TestInvisibleOutputIsNotSpokenSilently:
         cfg = TurnConfig(fallback_text="בסדר.")
         result = turn("שלום", Scripted(_says(" ​")), config=cfg)
         assert result.spoken == "בסדר."
-        assert DEGRADED_EMPTY_COMPLETION in {d.code for d in result.degradations}
+        assert DEGRADED_UNSPEAKABLE_COMPLETION in {d.code for d in result.degradations}
 
     def test_a_punctuation_only_completion_is_not_speech(self) -> None:
         result = turn("שלום", Scripted(_says("...")))
         assert result.spoken == FALLBACK_TEXT
-        assert DEGRADED_EMPTY_COMPLETION in {d.code for d in result.degradations}
+        assert DEGRADED_UNSPEAKABLE_COMPLETION in {d.code for d in result.degradations}
 
     def test_a_bom_only_completion_is_not_speech(self) -> None:
         result = turn("שלום", Scripted(_says("﻿")))
         assert result.spoken == FALLBACK_TEXT
-        assert DEGRADED_EMPTY_COMPLETION in {d.code for d in result.degradations}
+        assert DEGRADED_UNSPEAKABLE_COMPLETION in {d.code for d in result.degradations}
 
     def test_a_punctuation_only_fallback_is_as_silent_as_a_blank_one(self) -> None:
         result = turn("שלום", Scripted(_says("")), config=TurnConfig(fallback_text="..."))
@@ -581,7 +582,92 @@ class TestInvisibleOutputIsNotSpokenSilently:
         result = turn("שלום", Scripted(_says("​")), config=TurnConfig(fallback_text="!!"))
         assert result.spoken == FALLBACK_TEXT
         codes = {d.code for d in result.degradations}
-        assert {DEGRADED_EMPTY_COMPLETION, DEGRADED_FALLBACK_BLANK} <= codes
+        assert {DEGRADED_UNSPEAKABLE_COMPLETION, DEGRADED_FALLBACK_BLANK} <= codes
+
+
+# ── fix 6: a reply that cannot be voiced is not an absent reply ───────────────
+
+
+class TestAnUnspeakableReplyIsNotAnEmptyOne:
+    """The model DID answer. Replacing it is right; calling it empty is not.
+
+    A host debugging "why does Gwen keep apologising" reads the ledger. Told
+    ``turn-empty-completion`` it goes hunting an empty-output bug that does not
+    exist; told ``turn-unspeakable-completion`` with a category summary it can
+    see at a glance whether the model is emitting punctuation, an emoji or a
+    stray format character, and go and fix the prompt.
+    """
+
+    @pytest.mark.parametrize("content", ["?", "...", "!!", "🙂", "​", "﻿", "—"])
+    def test_a_present_but_unvoiceable_reply_gets_its_own_code(self, content: str) -> None:
+        result = turn("שלום", Scripted(_says(content)))
+        codes = {d.code for d in result.degradations}
+        assert DEGRADED_UNSPEAKABLE_COMPLETION in codes
+        assert DEGRADED_EMPTY_COMPLETION not in codes
+        assert result.spoken == FALLBACK_TEXT
+
+    @pytest.mark.parametrize("content", ["", "   ", "\n\t", " "])
+    def test_a_genuinely_absent_reply_keeps_the_empty_code(self, content: str) -> None:
+        """Whitespace, NBSP included, strips to nothing: there was no reply."""
+        result = turn("שלום", Scripted(_says(content)))
+        codes = {d.code for d in result.degradations}
+        assert DEGRADED_EMPTY_COMPLETION in codes
+        assert DEGRADED_UNSPEAKABLE_COMPLETION not in codes
+
+    def test_the_reason_counts_the_characters_and_names_no_letter_or_number(self) -> None:
+        reason = self._reason("...")
+        assert "3 character(s)" in reason
+        assert "none" in reason and "letter or number" in reason
+
+    def test_the_reason_summarizes_punctuation_by_category(self) -> None:
+        assert "Po x3" in self._reason("...")
+
+    def test_the_reason_summarizes_an_emoji_by_category(self) -> None:
+        assert "So x1" in self._reason("🙂")
+
+    def test_the_reason_summarizes_a_format_character_by_category(self) -> None:
+        assert "Cf x1" in self._reason("﻿")
+
+    def test_the_reason_summarizes_a_mixed_reply(self) -> None:
+        reason = self._reason("?!🙂")
+        assert "Po x2" in reason
+        assert "So x1" in reason
+
+    def test_the_reason_never_carries_the_model_output_itself(self) -> None:
+        """A degradation ledger is not a transcript."""
+        assert "🙂" not in self._reason("🙂")
+        assert "..." not in self._reason("...")
+
+    def test_a_budget_exit_still_wins_over_the_unspeakable_code(self) -> None:
+        registry = ToolRegistry()
+        registry.register("clock", {}, lambda: "12:00")
+        calls = {"n": 0}
+
+        def seam(messages: list[dict[str, Any]], *, tools: Any) -> ModelResponse:
+            calls["n"] += 1
+            return ModelResponse(
+                content="...",
+                tool_calls=[ToolCall(id=f"c{calls['n']}", name="clock", arguments={})],
+                completion_tokens=3,
+            )
+
+        result = turn(
+            "שלום",
+            bind_tools(seam, registry),
+            tools=registry,
+            config=TurnConfig(max_steps=3),
+        )
+        codes = {d.code for d in result.degradations}
+        assert DEGRADED_BUDGET_EXHAUSTED in codes
+        assert DEGRADED_UNSPEAKABLE_COMPLETION not in codes
+        assert DEGRADED_EMPTY_COMPLETION not in codes
+
+    @staticmethod
+    def _reason(content: str) -> str:
+        result = turn("שלום", Scripted(_says(content)))
+        return next(
+            d.reason for d in result.degradations if d.code == DEGRADED_UNSPEAKABLE_COMPLETION
+        )
 
     def test_speakable_text_carrying_an_invisible_is_spoken_unchanged(self) -> None:
         """A ZWSP among real words is the model's output, not a defect to repair."""
@@ -716,6 +802,10 @@ def _exit_bom_only_completion() -> TurnResult:
     return turn("שלום", Scripted(_says("﻿")))
 
 
+def _exit_emoji_only_completion() -> TurnResult:
+    return turn("שלום", Scripted(_says("🙂")))
+
+
 def _exit_punctuation_only_fallback() -> TurnResult:
     return turn("שלום", Scripted(_says("")), config=TurnConfig(fallback_text="..."))
 
@@ -741,8 +831,23 @@ EVERY_REACHABLE_EXIT = {
     "invisible-only-completion": _exit_invisible_only_completion,
     "punctuation-only-completion": _exit_punctuation_only_completion,
     "bom-only-completion": _exit_bom_only_completion,
+    "emoji-only-completion": _exit_emoji_only_completion,
     "punctuation-only-fallback": _exit_punctuation_only_fallback,
 }
+
+#: Exits whose seam returned content that is NON-BLANK after ``.strip()``. The
+#: model answered on every one of them, so none may be reported as empty.
+EXITS_WITH_NONBLANK_CONTENT = frozenset(
+    {
+        "clean",
+        "truncated-with-prose",
+        "seam-raises-after-speaking",
+        "punctuation-only-completion",
+        "emoji-only-completion",
+        "invisible-only-completion",
+        "bom-only-completion",
+    }
+)
 
 
 class TestSpokenIsNeverBlankOnAnyReachableExit:
@@ -769,6 +874,15 @@ class TestSpokenIsNeverBlankOnAnyReachableExit:
             if name == "clean":
                 continue
             assert build().degradations, f"{name} degraded without a record"
+
+    @pytest.mark.parametrize("name", sorted(EXITS_WITH_NONBLANK_CONTENT))
+    def test_an_exit_whose_model_answered_is_never_called_empty(self, name: str) -> None:
+        """A reply that cannot be voiced is still a reply. Never `empty`."""
+        codes = {d.code for d in EVERY_REACHABLE_EXIT[name]().degradations}
+        assert DEGRADED_EMPTY_COMPLETION not in codes, name
+
+    def test_the_nonblank_list_names_only_real_exits(self) -> None:
+        assert EXITS_WITH_NONBLANK_CONTENT <= set(EVERY_REACHABLE_EXIT)
 
 
 # ── never-raise ───────────────────────────────────────────────────────────────
