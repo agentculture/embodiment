@@ -206,6 +206,7 @@ constraint C3, inherited from the seam below rather than reinvented.
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import os
 import re
@@ -271,6 +272,9 @@ __all__ = [
     "CODE_REMEMBER_UNCONFIRMED_AT_CLOSE",
     "CODE_SATURATED",
     "CODE_PERMISSIONS",
+    "CODE_STORE_SYMLINK",
+    "CODE_STORE_SCAN_CAPPED",
+    "MAX_TIGHTEN_ENTRIES",
     "CODE_CLOSED",
     "AbandonedDrain",
     "CloseReport",
@@ -318,6 +322,18 @@ MAX_INFLIGHT = 8
 #: umask.
 PRIVATE_DIR_MODE = 0o700
 PRIVATE_FILE_MODE = 0o600
+
+#: How many directory entries the CONSTRUCTION sweep will tighten before it
+#: stops and records :data:`CODE_STORE_SCAN_CAPPED`. A store is a handful of
+#: files; a directory with thousands in it is somebody else's directory, and
+#: walking all of it at startup is a stall nobody asked for.
+MAX_TIGHTEN_ENTRIES = 4096
+
+#: The visibilities data-refinery's files backend writes a scope file for.
+_SCOPE_VISIBILITIES = ("private", "public")
+
+#: Its atomic-write temp sibling suffix (``<scope>__<vis>.jsonl.tmp``).
+_SCOPE_TMP_SUFFIX = ".tmp"
 
 #: Seconds :meth:`RoomMemory.close` will wait for in-flight *writes*. Bounded
 #: well below eidetic's 10 s embedder timeout on purpose: a shutdown that can
@@ -441,8 +457,15 @@ CODE_REMEMBER_UNCONFIRMED_AT_CLOSE = "remember-unconfirmed-at-close"
 #: Every in-flight slot is occupied; the call was refused rather than queued.
 CODE_SATURATED = "memory-saturated"
 #: The store's directory or files could not be made private. Recorded as a
-#: TRANSITION, not once per write — see :meth:`RoomMemory._tighten`.
+#: TRANSITION, not once per write — see :meth:`RoomMemory._tighten_scope`.
 CODE_PERMISSIONS = "memory-permissions"
+#: A symlink was found inside the store and skipped. The tightener never
+#: follows one out of its own directory; a symlink in a private store is also
+#: worth a record in its own right.
+CODE_STORE_SYMLINK = "memory-store-symlink-skipped"
+#: The construction sweep stopped at :data:`MAX_TIGHTEN_ENTRIES`. Files beyond
+#: the cap were not tightened, and saying so is the whole point of the code.
+CODE_STORE_SCAN_CAPPED = "memory-store-scan-capped"
 #: The memory layer was closed; no further work is submitted.
 CODE_CLOSED = "memory-closed"
 
@@ -752,6 +775,8 @@ class RoomMemory:
         # exactly the outage that made it fail.
         self._permissions_ok = True
         self._permission_failures = 0
+        self._symlinks_skipped = 0
+        self._recorded_once: set[str] = set()
 
         # Last, because it records degradations and therefore needs the ledger.
         self._ensure_private_store()
@@ -759,7 +784,7 @@ class RoomMemory:
     # -- privacy on disk ----------------------------------------------------
 
     def _ensure_private_store(self) -> None:
-        r"""Create the store 0700, tighten a looser one, and tighten its files.
+        r"""Create the store 0700, tighten a looser one, and sweep its files once.
 
         Preamble lesson 7. Measured before this existed, with the real files
         backend and umask ``0002``: the data dir was ``775`` and the record
@@ -772,9 +797,12 @@ class RoomMemory:
         byte of a record — temp and final alike — lives inside this directory
         and never transits anywhere else. At 0700 no other account can traverse
         in, whatever a file inside happens to be chmodded to at that instant.
+
+        The full sweep runs **here and nowhere else**: it is the one moment
+        that is not on a spoken turn's path.
         """
         self._tighten_dir()
-        self._tighten()
+        self._sweep_store()
 
     def _tighten_dir(self) -> None:
         """Create/repair the store directory. Never raises."""
@@ -785,40 +813,176 @@ class RoomMemory:
         except OSError as exc:
             self._record_permission_failure("could not make the store directory private", exc)
 
-    def _tighten(self) -> None:
-        r"""Force every file under the store to :data:`PRIVATE_FILE_MODE`.
+    def _scope_paths(self) -> tuple[Path, ...]:
+        r"""The files an operation in THIS scope could have created.
 
-        Called at construction and **after every confirmed store operation**,
-        not once, because the backend REPLACES the file rather than appending
-        to it: measured, the inode changes on each write, so a file pre-created
-        0600 comes back at the umask's mode. Pre-creating it therefore does not
-        close the window and this is not an optimisation that can be skipped.
+        Derived the way ``data_refinery.store.backends.files`` derives them —
+        ``_scope_file`` is ``<name with / and \ replaced by _>__<visibility>``
+        plus ``.jsonl``, and ``_atomic_write`` adds a ``.tmp`` sibling — rather
+        than guessed with a glob. A glob would be a second, drifting copy of
+        the backend's naming rule, and it would have to enumerate the directory
+        to evaluate, which is the cost this exists to avoid.
 
-        **The window, stated plainly.** Between data-refinery's ``os.replace``
-        landing the new file and this ``chmod``, that file carries whatever the
-        umask allowed. It is inside a 0700 directory for the whole of that
-        window, so no other account can reach it; the residual exposure is to a
-        process running as this same user — which can read the store anyway —
-        and to anything that loosens the directory behind our back. Closing it
-        completely would need the *backend* to create its temp with
-        ``mode=0o600``, which is eidetic-cli's or data-refinery's to do.
-
-        Never raises. Sweeps ``*.tmp`` siblings too: an interrupted rewrite
-        leaves one behind, and it holds the same records.
+        Four paths, whatever the store holds: this is the O(1) that keeps
+        tightening off the spoken-turn path's growth curve.
         """
+        safe = self._scope.replace("/", "_").replace("\\", "_")
+        names: list[str] = []
+        for visibility in _SCOPE_VISIBILITIES:
+            base = f"{safe}__{visibility}.jsonl"
+            names.append(base)
+            names.append(base + _SCOPE_TMP_SUFFIX)
+        return tuple(self._data_dir / name for name in names)
+
+    def _tighten_scope(self) -> None:
+        """Tighten exactly what this operation could have created. Never raises.
+
+        Called after every confirmed store operation, and **constant cost**.
+        It used to be a full ``rglob`` of the store: measured at 0.59 ms with
+        30 records and 14.52 ms once 3000 unrelated files sat in the directory
+        — a linear walk on the spoken-turn path, scaling with whatever happens
+        to accumulate there rather than with anything this module owns.
+
+        Another scope's file is deliberately left alone. It is that scope's
+        ``RoomMemory`` that will tighten it, and the construction sweep catches
+        it for a store this object opened.
+        """
+        dir_fd = self._open_store()
+        if dir_fd is None:
+            return
         try:
-            paths = [path for path in self._data_dir.rglob("*") if path.is_file()]
+            for path in self._scope_paths():
+                self._tighten_entry(dir_fd, path.name)
+        finally:
+            self._close_store(dir_fd)
+
+    def _sweep_store(self) -> None:
+        """Tighten every regular file in the store, once, bounded. Never raises.
+
+        Construction only. Bounded at :data:`MAX_TIGHTEN_ENTRIES` because a
+        directory with more entries than that is not a store this module made,
+        and a startup that walks it is a stall nobody asked for. Stopping early
+        is recorded rather than silent: the files past the cap are exactly the
+        ones still readable.
+        """
+        dir_fd = self._open_store()
+        if dir_fd is None:
+            return
+        try:
+            names = os.listdir(self._data_dir)
         except OSError as exc:
+            self._close_store(dir_fd)
             self._record_permission_failure("could not enumerate the store", exc)
             return
-        for path in paths:
-            try:
-                if stat.S_IMODE(path.stat().st_mode) != PRIVATE_FILE_MODE:
-                    os.chmod(path, PRIVATE_FILE_MODE)
-            except OSError as exc:
-                self._record_permission_failure("could not make a store file private", exc)
+        try:
+            for index, name in enumerate(names):
+                if index >= MAX_TIGHTEN_ENTRIES:
+                    self._record_once(
+                        CODE_STORE_SCAN_CAPPED,
+                        f"stopped tightening the store after {MAX_TIGHTEN_ENTRIES} entries; "
+                        f"{len(names) - MAX_TIGHTEN_ENTRIES} were left as they were",
+                    )
+                    break
+                self._tighten_entry(dir_fd, name)
+        finally:
+            self._close_store(dir_fd)
+
+    # -- the no-follow primitives ------------------------------------------
+
+    def _open_store(self) -> Optional[int]:
+        """A directory fd for the store, opened ``O_NOFOLLOW``. ``None`` on failure.
+
+        Every tightening operation is performed **relative to this fd**, so the
+        directory cannot be swapped for a symlink between the check and the
+        chmod. Never raises.
+        """
+        try:
+            return os.open(self._data_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        except OSError as exc:
+            self._record_permission_failure("could not open the store directory", exc)
+            return None
+
+    @staticmethod
+    def _close_store(dir_fd: int) -> None:
+        try:
+            os.close(dir_fd)
+        except OSError:
+            # A descriptor that will not close is already gone; there is no
+            # degradation left to record and nothing a host could do with one.
+            return
+
+    def _tighten_entry(self, dir_fd: int, name: str) -> None:
+        r"""chmod one entry to 0600 **without ever following a symlink**.
+
+        Measured before this existed: a planted ``store/evil.jsonl ->
+        ../victim.txt`` at 0644 came back **0600** after one remember+recall.
+        It only tightens and planting needs the same uid, so it is not a
+        privilege escalation — but chmod-ing arbitrary files the user owns is a
+        way to break a system (a file another service has to read), and
+        "tighten my store" has to mean *my store*.
+
+        ``os.open(..., O_NOFOLLOW, dir_fd=…)`` is what closes it properly: a
+        symlink fails the open with ``ELOOP`` rather than being checked and
+        then raced. ``os.chmod(follow_symlinks=False)`` is not usable as the
+        primary defence — Linux does not support it, and
+        ``os.chmod in os.supports_follow_symlinks`` is ``False`` there — so it
+        is not relied on at all; the fd is the mechanism on every platform.
+
+        Only a **regular file** is chmodded. A directory, a fifo, a socket or a
+        device inside a memory store is not something this module created and
+        not something it will modify.
+        """
+        try:
+            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)
+        except OSError as exc:
+            if exc.errno in (errno.ELOOP, errno.EMLINK):
+                self._note_symlink()
+            elif exc.errno == errno.ENOENT:
+                # The scope file for a visibility never written. Expected.
                 return
-        self._permissions_ok = True
+            elif exc.errno == errno.EISDIR:
+                return
+            else:
+                self._record_permission_failure("could not open a store entry", exc)
+            return
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
+                return
+            if stat.S_IMODE(info.st_mode) != PRIVATE_FILE_MODE:
+                os.fchmod(fd, PRIVATE_FILE_MODE)
+            self._permissions_ok = True
+        except OSError as exc:
+            self._record_permission_failure("could not make a store file private", exc)
+        finally:
+            # Through the shared helper, not an inline try/except: a ``return``
+            # inside a ``finally`` swallows whatever was in flight, including a
+            # KeyboardInterrupt.
+            self._close_store(fd)
+
+    # -- recording, deduplicated ------------------------------------------
+
+    def _note_symlink(self) -> None:
+        """Count a skipped symlink; record the first one only.
+
+        The count is the useful number — one record per entry per operation
+        would flood the bounded ledger and evict everything else — and the
+        record carries **no path**, because a store path can embed a record id
+        and an id is content.
+        """
+        self._symlinks_skipped += 1
+        self._record_once(
+            CODE_STORE_SYMLINK,
+            "a symlink inside the memory store was skipped rather than followed; "
+            "see store_symlinks_skipped for the running count",
+        )
+
+    def _record_once(self, code: str, reason: str) -> None:
+        """Record *code* the first time it happens, then never again."""
+        if code in self._recorded_once:
+            return
+        self._recorded_once.add(code)
+        self._record_abandoned(_degradation("permissions", code, reason))
 
     def _record_permission_failure(self, what: str, exc: BaseException) -> None:
         """Record the first failure of a run; count the rest. Never raises.
@@ -835,6 +999,15 @@ class RoomMemory:
         self._record_abandoned(_degradation("permissions", CODE_PERMISSIONS, what, exc))
 
     # -- introspection ------------------------------------------------------
+
+    @property
+    def store_symlinks_skipped(self) -> int:
+        """How many symlinks inside the store have been skipped, not followed.
+
+        Non-zero means something put a symlink in the memory store. Nothing
+        this module does creates one.
+        """
+        return self._symlinks_skipped
 
     @property
     def store_permission_failures(self) -> int:
@@ -1035,7 +1208,7 @@ class RoomMemory:
             )
             # Inside the worker, so the chmod is inside the caller's deadline
             # and a slow filesystem cannot stall the turn on this either.
-            self._tighten()
+            self._tighten_scope()
             return outcome
 
         future, refusal = self._submit(write, record_id=identifier)
@@ -1340,7 +1513,7 @@ class RoomMemory:
         if reinforce:
             # Recall is not read-only: eidetic reinforces every hit, which
             # rewrites the file and resets its mode exactly as a write does.
-            self._tighten()
+            self._tighten_scope()
         return resolved, outcome, degradations
 
     def _probe(self) -> tuple[bool, Degradation]:

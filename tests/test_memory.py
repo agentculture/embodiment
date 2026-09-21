@@ -1628,6 +1628,7 @@ class TestTheContract:
             "concurrent",
             "dataclasses",
             "embodiment",
+            "errno",
             "hashlib",
             "os",
             "pathlib",
@@ -1914,6 +1915,7 @@ class TestTheStoreIsPrivateOnDisk:
                 raise PermissionError("not allowed")
 
             monkeypatch.setattr(mem.os, "chmod", refuse)
+            monkeypatch.setattr(mem.os, "fchmod", refuse)
             for _ in range(5):
                 room.remember(f"line {_}")
 
@@ -1951,5 +1953,293 @@ class TestTheStoreIsPrivateOnDisk:
             for path in [tmp_path / "store", *(tmp_path / "store").rglob("*")]:
                 mode = stat.S_IMODE(path.stat().st_mode)
                 assert not mode & 0o077, f"{path}: {oct(mode)}"
+        finally:
+            room.close()
+
+
+class TestTheTightenerStaysInsideItsStore:
+    """A privacy routine must not act outside its own directory.
+
+    Measured before the fix: a planted ``store/evil.jsonl -> ../victim.txt``
+    (0644) came back **0600** after one ``remember`` + ``recall``. It only ever
+    tightens and planting needs the same uid, so this is not a privilege
+    escalation — but chmod-ing arbitrary files the user owns is a way to break
+    a system (a file another service must read), and "tighten my store" must
+    mean *my store*.
+
+    ``Path.rglob`` does not descend symlinked directories on 3.12, so the file
+    symlink was the whole exposure; both are tested anyway, because that is a
+    property of the walker and walkers get replaced.
+    """
+
+    @staticmethod
+    def _plant(root: Path) -> tuple[Path, Path, Path]:
+        victim = root / "victim.txt"
+        victim.write_text("not ours", encoding="utf-8")
+        os.chmod(victim, 0o644)
+        victim_dir = root / "victimdir"
+        victim_dir.mkdir()
+        inner = victim_dir / "secret.txt"
+        inner.write_text("also not ours", encoding="utf-8")
+        os.chmod(victim_dir, 0o755)
+        os.chmod(inner, 0o644)
+
+        store = root / "store"
+        store.mkdir()
+        os.symlink(victim, store / "evil.jsonl")
+        os.symlink(victim_dir, store / "evildir")
+        return victim, victim_dir, inner
+
+    def test_a_symlinked_file_inside_the_store_is_never_chmodded(self, tmp_path: Path) -> None:
+        victim, _, _ = self._plant(tmp_path)
+        room = mem.RoomMemory(tmp_path / "store", scope="p")
+        try:
+            assert room.remember("a heard line").ok
+            # The recall's OUTCOME is not asserted: the planted symlink is
+            # named ``evil.jsonl``, and the backend's own ``*.jsonl`` glob then
+            # tries to parse the victim as a record and degrades. That is
+            # data-refinery's behaviour on a store someone has tampered with,
+            # not this module's, and the question here is only whether the
+            # victim's mode moved.
+            room.recall("heard", deadline=10.0)
+            assert stat.S_IMODE(victim.stat().st_mode) == 0o644
+        finally:
+            room.close()
+
+    def test_a_symlinked_directory_inside_the_store_is_never_entered(self, tmp_path: Path) -> None:
+        _, victim_dir, inner = self._plant(tmp_path)
+        room = mem.RoomMemory(tmp_path / "store", scope="p")
+        try:
+            assert room.remember("a heard line").ok
+            assert stat.S_IMODE(victim_dir.stat().st_mode) == 0o755
+            assert stat.S_IMODE(inner.stat().st_mode) == 0o644
+        finally:
+            room.close()
+
+    def test_a_skipped_symlink_is_counted_and_recorded_once(self, tmp_path: Path) -> None:
+        """A symlink inside a private store is itself worth a record."""
+        self._plant(tmp_path)
+        room = mem.RoomMemory(tmp_path / "store", scope="p")
+        try:
+            assert room.store_symlinks_skipped >= 1
+            codes = [d.code for d in room.abandoned if d.code == mem.CODE_STORE_SYMLINK]
+            assert len(codes) == 1, "a symlink record per entry would flood the ledger"
+
+            room.drain_abandoned()
+            room.remember("another line")
+            assert not [d for d in room.abandoned if d.code == mem.CODE_STORE_SYMLINK]
+        finally:
+            room.close()
+
+    def test_the_symlink_record_carries_no_path_text(self, tmp_path: Path) -> None:
+        """A store path can embed a record id; a count is what is needed."""
+        self._plant(tmp_path)
+        os.symlink(tmp_path / "victim.txt", tmp_path / "store" / f"{MARKER}.jsonl")
+        room = mem.RoomMemory(tmp_path / "store", scope="p")
+        try:
+            assert_no_speech(MARKER, room.abandoned)
+        finally:
+            room.close()
+
+    def test_the_real_store_file_is_still_tightened_alongside_a_symlink(
+        self, tmp_path: Path
+    ) -> None:
+        """Skipping must not become "give up on the whole directory"."""
+        self._plant(tmp_path)
+        room = mem.RoomMemory(tmp_path / "store", scope="p")
+        try:
+            assert room.remember("a heard line").ok
+            real = tmp_path / "store" / "p__private.jsonl"
+            assert real.is_file()
+            assert stat.S_IMODE(real.stat().st_mode) == mem.PRIVATE_FILE_MODE
+        finally:
+            room.close()
+
+
+class TestTighteningIsConstantCostPerOperation:
+    """The spoken-turn path may not walk a directory that grows without bound.
+
+    Measured before the fix: recall cost 0.59 ms with 30 records and 14.52 ms
+    once 3000 unrelated files sat in the store — a linear walk on the turn
+    path, scaling with whatever accumulates there.
+
+    Asserted on **operation counts**, not wall-clock: a timing assertion on a
+    shared CI box measures the box.
+    """
+
+    @staticmethod
+    def _spy(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
+        counts = {"chmod": 0, "fchmod": 0, "open": 0, "scandir": 0, "listdir": 0}
+        real_chmod, real_scandir, real_listdir = os.chmod, os.scandir, os.listdir
+        real_fchmod, real_open = os.fchmod, os.open
+
+        def chmod(*args: Any, **kwargs: Any) -> Any:
+            counts["chmod"] += 1
+            return real_chmod(*args, **kwargs)
+
+        def fchmod(*args: Any, **kwargs: Any) -> Any:
+            counts["fchmod"] += 1
+            return real_fchmod(*args, **kwargs)
+
+        def opener(*args: Any, **kwargs: Any) -> Any:
+            counts["open"] += 1
+            return real_open(*args, **kwargs)
+
+        def scandir(*args: Any, **kwargs: Any) -> Any:
+            counts["scandir"] += 1
+            return real_scandir(*args, **kwargs)
+
+        def listdir(*args: Any, **kwargs: Any) -> Any:
+            counts["listdir"] += 1
+            return real_listdir(*args, **kwargs)
+
+        monkeypatch.setattr(mem.os, "chmod", chmod)
+        monkeypatch.setattr(mem.os, "fchmod", fchmod)
+        monkeypatch.setattr(mem.os, "open", opener)
+        monkeypatch.setattr(mem.os, "scandir", scandir)
+        monkeypatch.setattr(mem.os, "listdir", listdir)
+        return counts
+
+    def _cost(self, room: Any, monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
+        with monkeypatch.context() as patch:
+            counts = self._spy(patch)
+            assert room.recall("record", deadline=10.0).ok
+        return counts
+
+    def test_recall_costs_the_same_with_3000_extra_files(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = tmp_path / "store"
+        room = mem.RoomMemory(store, scope="p")
+        try:
+            for index in range(30):
+                assert room.remember(f"record number {index}").ok
+
+            before = self._cost(room, monkeypatch)
+            for index in range(3000):
+                (store / f"junk{index}.dat").write_text("x", encoding="utf-8")
+            after = self._cost(room, monkeypatch)
+
+            assert after == before, f"{before} -> {after}"
+            assert after["listdir"] == 0, "the construction sweep ran on a recall"
+            # One ``scandir`` remains and it is NOT this module's: the files
+            # backend globs ``*.jsonl`` to find candidate scope files. Its
+            # COUNT is constant, which is what this test can assert; the cost
+            # inside that one call still grows with the directory, and removing
+            # it is data-refinery's to do, not ours.
+            assert after["scandir"] <= 1, after
+        finally:
+            room.close()
+
+    def test_remember_costs_the_same_with_3000_extra_files(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = tmp_path / "store"
+        room = mem.RoomMemory(store, scope="p")
+        try:
+            assert room.remember("first").ok
+            with monkeypatch.context() as patch:
+                before = self._spy(patch)
+                assert room.remember("second").ok
+            for index in range(3000):
+                (store / f"junk{index}.dat").write_text("x", encoding="utf-8")
+            with monkeypatch.context() as patch:
+                after = self._spy(patch)
+                assert room.remember("third").ok
+
+            assert after == before, f"{before} -> {after}"
+        finally:
+            room.close()
+
+    def test_only_this_scopes_files_are_touched_per_operation(self, tmp_path: Path) -> None:
+        """Another scope's file in the same dir is left for that scope to tighten."""
+        store = tmp_path / "store"
+        store.mkdir()
+        foreign = store / "other__private.jsonl"
+        foreign.write_text("{}\n", encoding="utf-8")
+
+        room = mem.RoomMemory(store, scope="p")
+        try:
+            room.drain_abandoned()
+            os.chmod(foreign, 0o666)
+            assert room.remember("a heard line").ok
+            assert stat.S_IMODE(foreign.stat().st_mode) == 0o666
+            assert (
+                stat.S_IMODE((store / "p__private.jsonl").stat().st_mode) == mem.PRIVATE_FILE_MODE
+            )
+        finally:
+            room.close()
+
+    def test_the_scope_file_names_are_derived_like_the_backend_derives_them(
+        self, tmp_path: Path
+    ) -> None:
+        """Not a guessed glob: the backend's own ``_scope_file`` rule."""
+        room = mem.RoomMemory(tmp_path / "store", scope="a/b\\c")
+        try:
+            names = {path.name for path in room._scope_paths()}
+            assert "a_b_c__private.jsonl" in names
+            assert "a_b_c__public.jsonl" in names
+            assert "a_b_c__private.jsonl.tmp" in names
+        finally:
+            room.close()
+
+    def test_construction_still_walks_the_directory(self, tmp_path: Path) -> None:
+        """The full sweep is kept — once, where it is not on the turn path."""
+        store = tmp_path / "store"
+        store.mkdir()
+        stale = store / "other__private.jsonl"
+        stale.write_text("{}\n", encoding="utf-8")
+        os.chmod(stale, 0o666)
+
+        room = mem.RoomMemory(store, scope="p")
+        try:
+            assert stat.S_IMODE(stale.stat().st_mode) == mem.PRIVATE_FILE_MODE
+        finally:
+            room.close()
+
+    def test_the_construction_sweep_is_capped_and_says_so(self, tmp_path: Path) -> None:
+        store = tmp_path / "store"
+        store.mkdir()
+        for index in range(mem.MAX_TIGHTEN_ENTRIES + 20):
+            (store / f"f{index}.dat").write_text("x", encoding="utf-8")
+
+        room = mem.RoomMemory(store, scope="p")
+        try:
+            assert mem.CODE_STORE_SCAN_CAPPED in {d.code for d in room.abandoned}
+        finally:
+            room.close()
+
+    def test_an_uncapped_sweep_records_nothing(self, tmp_path: Path) -> None:
+        room = mem.RoomMemory(tmp_path / "store", scope="p")
+        try:
+            assert mem.CODE_STORE_SCAN_CAPPED not in {d.code for d in room.abandoned}
+        finally:
+            room.close()
+
+    def test_the_tighten_runs_inside_the_worker_not_on_the_callers_thread(
+        self, tmp_path: Path
+    ) -> None:
+        """So the caller's deadline covers it; a slow filesystem cannot overrun it.
+
+        Asserted structurally — the thread the chmod happens on is the pool's,
+        never the one that called ``recall``.
+        """
+        threads: list[str] = []
+        real_fchmod = os.fchmod
+
+        def fchmod(*args: Any, **kwargs: Any) -> Any:
+            threads.append(threading.current_thread().name)
+            return real_fchmod(*args, **kwargs)
+
+        room = mem.RoomMemory(tmp_path / "store", scope="p")
+        try:
+            assert room.remember("a heard line").ok
+            threads.clear()
+            with pytest.MonkeyPatch.context() as patch:
+                patch.setattr(mem.os, "fchmod", fchmod)
+                assert room.recall("heard", deadline=10.0).ok
+            assert threads, "recall did not tighten at all"
+            assert all("embodiment-memory" in name for name in threads), threads
+            assert threading.current_thread().name not in threads
         finally:
             room.close()
