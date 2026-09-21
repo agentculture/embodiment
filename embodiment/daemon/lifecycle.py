@@ -52,6 +52,21 @@ with the record still saying ``running`` reads as **dead (unclean)** and
 cannot write that marker, which is correct: an escalated stop *is* an unclean
 death, and it is recorded as one at both ends.
 
+Which candidate directory speaks
+--------------------------------
+:func:`status` and :func:`stop` look in every entry of
+``candidate_state_dirs()`` so a daemon that fell back during bootstrap is still
+found. That search **promotes a live daemon and nothing else**: a live lock in
+any candidate is the answer (and the report names the directory it was found
+in), but with nothing live the answer is the *primary* directory's own state.
+Another candidate's record rides along as a secondary note
+(:attr:`StatusReport.other_candidates`), and :func:`start` reclaims a stale one
+exactly as it reclaims the primary's. The machine-wide fallback directory is
+shared by every invocation on the box and nothing but a ``start`` ever clears
+it, so letting a corpse there win the headline made ``embodiment status``
+report ``dead (unclean)`` on a healthy machine until someone deleted a file in
+``/tmp`` by hand.
+
 Daemonisation: ``Popen(start_new_session=True)``, not a double fork
 -------------------------------------------------------------------
 Chosen deliberately. A double fork inherits the CLI process's imported
@@ -685,6 +700,48 @@ def _probe_candidate(directory: Path) -> _Candidate:
     )
 
 
+def _classify(candidate: _Candidate) -> tuple[str, str]:
+    """``(state, detail)`` for ONE candidate, judged on its own.
+
+    Judging each candidate separately is what keeps a dead record in the
+    machine-wide fallback directory from speaking for the directory the
+    operator actually named — see :func:`status`.
+    """
+    if (candidate.detail or "").startswith(_UNUSABLE_PREFIX):
+        return STATE_UNAVAILABLE, candidate.detail or ""
+    if not candidate.exists:
+        return STATE_UNAVAILABLE, (
+            "no state directory exists yet, so a daemon running without "
+            "persistence could not be seen from here"
+        )
+    if not candidate.readable:
+        return STATE_UNAVAILABLE, candidate.detail or f"{candidate.dir} is not readable"
+    if not candidate.pidfile_exists:
+        return STATE_STOPPED, "no daemon has left a pidfile in this state directory"
+    if candidate.locked is True:
+        return STATE_RUNNING, ""
+    if candidate.record is None:
+        return STATE_DEAD_UNCLEAN, candidate.detail or "a pidfile is present but unreadable"
+    if candidate.record.get("state") == "exited":
+        return STATE_STOPPED, "the daemon exited and said so"
+    return STATE_DEAD_UNCLEAN, "a pidfile says 'running' but nothing holds its lock"
+
+
+def _candidate_note(candidate: _Candidate) -> Optional[dict[str, Any]]:
+    """A secondary-note entry for *candidate*, or ``None`` if it has nothing to say."""
+    if not candidate.pidfile_exists:
+        return None
+    state, _ = _classify(candidate)
+    record = candidate.record or {}
+    since = record.get("started_at")
+    return {
+        "state_dir": str(candidate.dir),
+        "state": state,
+        "pid": _record_pid(record),
+        "since": since if isinstance(since, float) else None,
+    }
+
+
 def _live(candidates: list[_Candidate]) -> Optional[_Candidate]:
     return next((c for c in candidates if c.pidfile_exists and c.locked is True), None)
 
@@ -703,6 +760,10 @@ class StartResult:
     target: str = DEFAULT_TARGET
     stderr_path: Optional[str] = None
     reclaimed_stale_pid: Optional[int] = None
+    #: Other candidate state directories whose stale pidfile this start
+    #: reclaimed, so a corpse in the machine-wide fallback cannot outlive
+    #: every future start.
+    reclaimed_elsewhere: tuple[str, ...] = ()
     code: Optional[str] = None
     detail: str = ""
 
@@ -715,6 +776,7 @@ class StartResult:
             "target": self.target,
             "stderr_path": self.stderr_path,
             "reclaimed_stale_pid": self.reclaimed_stale_pid,
+            "reclaimed_elsewhere": list(self.reclaimed_elsewhere),
             "code": self.code,
             "detail": self.detail,
         }
@@ -771,6 +833,11 @@ class StatusReport:
     ledger: dict[str, Any] = field(default_factory=dict)
     daemon_state: Optional[dict[str, Any]] = None
     candidates: list[str] = field(default_factory=list)
+    #: What the OTHER candidate state directories hold, as
+    #: ``{state_dir, state, pid, since}`` notes. Never the headline: a dead
+    #: record in the machine-wide fallback directory is a note about another
+    #: directory, not this machine's state.
+    other_candidates: list[dict[str, Any]] = field(default_factory=list)
     detail: str = ""
 
     def to_dict(self) -> dict[str, Any]:
@@ -787,6 +854,7 @@ class StatusReport:
             "ledger": self.ledger,
             "daemon_state": self.daemon_state,
             "candidates": list(self.candidates),
+            "other_candidates": list(self.other_candidates),
             "detail": self.detail,
         }
 
@@ -818,52 +886,53 @@ def status(*, state_dir: Optional[str | Path] = None) -> StatusReport:
     process boundary instead — the daemon writes a reduced snapshot of them
     into its own pidfile record, so ``daemon_state`` is *the daemon's* view,
     taken when it started, while ``ledger`` is read fresh on every call.
+
+    Which candidate directory speaks
+    ---------------------------------
+    Searching every candidate exists to **find a live daemon** that fell back
+    during bootstrap — not to let a *dead* one in another directory answer for
+    the one the operator named. So:
+
+    1. a **live lock in any candidate** is the headline, and the report names
+       the directory it was found in;
+    2. otherwise the **primary** (named, or resolved) directory's own state is
+       the headline — stopped, dead, or never started;
+    3. any other candidate holding a pidfile is a secondary note in
+       :attr:`StatusReport.other_candidates`, never the headline.
+
+    Rule 2 is not cosmetic. The machine-wide fallback directory
+    (``<tempdir>/embodiment-state-<uid>``) is shared by every invocation on the
+    box, nothing but a later ``start`` ever clears it, and letting a corpse
+    there win made ``embodiment status`` report ``dead (unclean)`` on a
+    perfectly healthy machine until someone deleted a file in ``/tmp`` by hand.
     """
     candidates, scan_error = _scan(state_dir)
     names = [str(c.dir) for c in candidates]
-
-    live = _live(candidates)
-    if live is not None:
-        return _report(STATE_RUNNING, live, names, "")
-
-    leftover = next((c for c in candidates if c.pidfile_exists), None)
-    if leftover is not None:
-        if leftover.record is None:
-            return _report(
-                STATE_DEAD_UNCLEAN,
-                leftover,
-                names,
-                leftover.detail or "a pidfile is present but unreadable",
-            )
-        if leftover.record.get("state") == "exited":
-            return _report(STATE_STOPPED, leftover, names, "the daemon exited and said so")
-        return _report(
-            STATE_DEAD_UNCLEAN,
-            leftover,
-            names,
-            "a pidfile says 'running' but nothing holds its lock",
+    if not candidates:
+        return StatusReport(
+            state=STATE_UNAVAILABLE,
+            candidates=names,
+            ledger=_ledger_view(None),
+            detail=scan_error or "no candidate state directory could be resolved",
         )
 
-    readable = next((c for c in candidates if c.readable), None)
-    if readable is not None:
-        return _report(
-            STATE_STOPPED, readable, names, "no daemon has left a pidfile in this state directory"
-        )
-
-    detail = scan_error or next((c.detail for c in candidates if c.detail), None)
-    return StatusReport(
-        state=STATE_UNAVAILABLE,
-        candidates=names,
-        ledger=_ledger_view(None),
-        detail=detail
-        or (
-            "no state directory exists yet, so a daemon running without "
-            "persistence could not be seen from here"
-        ),
-    )
+    headline = _live(candidates) or candidates[0]
+    state, detail = _classify(headline)
+    notes = [
+        note
+        for candidate in candidates
+        if candidate is not headline and (note := _candidate_note(candidate)) is not None
+    ]
+    return _report(state, headline, names, scan_error or detail, notes)
 
 
-def _report(state: str, candidate: _Candidate, names: list[str], detail: str) -> StatusReport:
+def _report(
+    state: str,
+    candidate: _Candidate,
+    names: list[str],
+    detail: str,
+    other_candidates: Optional[list[dict[str, Any]]] = None,
+) -> StatusReport:
     """Build one :class:`StatusReport` from a scanned candidate. One code path."""
     record = candidate.record or {}
     target = record.get("target")
@@ -886,6 +955,7 @@ def _report(state: str, candidate: _Candidate, names: list[str], detail: str) ->
             record.get("daemon_state") if isinstance(record.get("daemon_state"), dict) else None
         ),
         candidates=names,
+        other_candidates=list(other_candidates or []),
         detail=detail or (candidate.detail or ""),
     )
 
@@ -1038,6 +1108,8 @@ def start(
             detail=detail,
         )
 
+    elsewhere = _reclaim_other_candidates(candidates, directory, ledger)
+
     try:
         return _spawn(
             pidfile=pidfile,
@@ -1047,11 +1119,67 @@ def start(
             python=python,
             shutdown_deadline=shutdown_deadline,
             confirm_timeout=confirm_timeout,
+            reclaimed_elsewhere=elsewhere,
         )
     finally:
         # The child inherited the same open file description, so closing our
         # copy leaves the lock held by the daemon and only by the daemon.
         pidfile.close()
+
+
+def _reclaim_other_candidates(
+    candidates: list[_Candidate], primary: Path, ledger: DegradationLedger
+) -> tuple[str, ...]:
+    """Mark stale pidfiles in the OTHER candidate directories as exited.
+
+    Without this, a daemon that died uncleanly in the machine-wide fallback
+    directory leaves a record nothing ever clears: a later ``start`` succeeds in
+    the primary directory and the corpse stays for good. Reclaiming it is the
+    same act ``start`` already performs on the primary directory's own stale
+    pidfile, and it is recorded the same way — in *that* directory's ledger, so
+    the evidence of the unclean death survives the record being overwritten.
+
+    Only a pidfile whose lock is **free** is touched; a live one was already
+    handled (``start`` returns ``already_running`` before reaching here). Never
+    raises: a directory that cannot be written to is simply left alone.
+    """
+    reclaimed: list[str] = []
+    for candidate in candidates:
+        if candidate.dir == primary or not candidate.pidfile_exists:
+            continue
+        if candidate.locked is not False or candidate.record is None:
+            continue
+        if candidate.record.get("state") == "exited":
+            continue
+        dead = _record_pid(candidate.record)
+        foreign = PidFile(candidate.pidfile)
+        if not foreign.acquire():
+            continue
+        try:
+            record = dict(candidate.record)
+            record.update(
+                {
+                    "schema": PIDFILE_SCHEMA,
+                    "state": "exited",
+                    "reclaimed": True,
+                    "hard_exit": True,
+                    "stopped_at": time.time(),
+                }
+            )
+            if foreign.write(record) is not None:
+                continue
+            detail = (
+                f"reclaimed a pidfile left by pid {dead} in a non-primary state "
+                f"directory that no longer holds its lock"
+            )
+            DegradationLedger(candidate.dir / LEDGER_FILENAME).append(
+                STALE_PIDFILE_RECLAIMED_CODE, detail
+            )
+            ledger.append(STALE_PIDFILE_RECLAIMED_CODE, f"{detail} ({candidate.dir})")
+            reclaimed.append(str(candidate.dir))
+        finally:
+            foreign.close()
+    return tuple(reclaimed)
 
 
 def _spawn(
@@ -1063,6 +1191,7 @@ def _spawn(
     python: Optional[str],
     shutdown_deadline: float,
     confirm_timeout: float,
+    reclaimed_elsewhere: tuple[str, ...] = (),
 ) -> StartResult:
     """The spawn half of :func:`start`, with the lock already held."""
     directory = state.dir
@@ -1088,6 +1217,7 @@ def _spawn(
             False,
             state_dir=str(directory),
             target=target,
+            reclaimed_elsewhere=reclaimed_elsewhere,
             code=NO_STATE_DIR_CODE,
             detail=detail,
         )
@@ -1118,6 +1248,7 @@ def _spawn(
             False,
             state_dir=str(directory),
             target=target,
+            reclaimed_elsewhere=reclaimed_elsewhere,
             code=CHILD_EXITED_EARLY_CODE,
             detail=detail,
         )
@@ -1145,6 +1276,7 @@ def _spawn(
         target=target,
         log_path=log_path,
         reclaimed=reclaimed,
+        reclaimed_elsewhere=reclaimed_elsewhere,
         confirm_timeout=confirm_timeout,
     )
 
@@ -1158,6 +1290,7 @@ def _confirm(
     target: str,
     log_path: Path,
     reclaimed: Optional[int],
+    reclaimed_elsewhere: tuple[str, ...],
     confirm_timeout: float,
 ) -> StartResult:
     """Wait for the child to say it is running, or to die trying."""
@@ -1173,6 +1306,7 @@ def _confirm(
                 target=target,
                 stderr_path=str(log_path),
                 reclaimed_stale_pid=reclaimed,
+                reclaimed_elsewhere=reclaimed_elsewhere,
                 detail=f"daemon running as pid {proc.pid}",
             )
         rc = proc.poll()
@@ -1189,6 +1323,7 @@ def _confirm(
                 target=target,
                 stderr_path=str(log_path),
                 reclaimed_stale_pid=reclaimed,
+                reclaimed_elsewhere=reclaimed_elsewhere,
                 code=CHILD_EXITED_EARLY_CODE,
                 detail=detail,
             )
@@ -1206,6 +1341,7 @@ def _confirm(
                 target=target,
                 stderr_path=str(log_path),
                 reclaimed_stale_pid=reclaimed,
+                reclaimed_elsewhere=reclaimed_elsewhere,
                 code=START_UNCONFIRMED_CODE,
                 detail=detail,
             )
@@ -1248,8 +1384,17 @@ def stop(
         return StopResult(False, False, code=NO_STATE_DIR_CODE, detail=scan_error)
     live = _live(candidates)
     if live is None:
+        # The same precedence rule ``status`` follows: a live lock in ANY
+        # candidate is the thing to stop, but with nothing live the answer is
+        # reported against the PRIMARY directory. A dead record in the
+        # machine-wide fallback is not something to stop, and naming it here
+        # would point the operator at the wrong directory.
+        primary = candidates[0] if candidates else None
         return StopResult(
-            False, False, detail="no running daemon found in any candidate state directory"
+            False,
+            False,
+            state_dir=str(primary.dir) if primary is not None else None,
+            detail="no running daemon found in any candidate state directory",
         )
 
     ledger = DegradationLedger(live.dir / LEDGER_FILENAME)

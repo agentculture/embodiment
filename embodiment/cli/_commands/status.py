@@ -12,6 +12,12 @@ Reporting "stopped" for either would be the silent degradation C3 forbids.
 that Gwen heard anything: that is what the ledger and the operational-log
 counters reported alongside it are for.
 
+The headline is always about **one** directory: a live daemon wherever it was
+found, otherwise the one you named. What another candidate directory holds is
+printed underneath as ``other state dir: …`` — a note, never the verdict, so a
+corpse left in the machine-wide fallback cannot make a healthy machine read as
+``dead (unclean)``.
+
 This verb never writes and never starts anything — not even the state
 directory, which is why it builds its own read-only view instead of
 constructing a :class:`~embodiment.daemon.state.DaemonState` (whose
@@ -57,6 +63,12 @@ def _render(report: lifecycle.StatusReport) -> str:
         lines.append(f"    - {record.get('code')}: {record.get('detail')}")
     if report.detail:
         lines.append(f"  note: {report.detail}")
+    for other in report.other_candidates:
+        pid = other.get("pid")
+        lines.append(
+            f"  other state dir: {other.get('state_dir')} — {other.get('state')}"
+            + (f" (pid {pid})" if pid else "")
+        )
     if not report.state_dir:
         lines.append(f"  looked in: {', '.join(report.candidates)}")
     return "\n".join(lines)

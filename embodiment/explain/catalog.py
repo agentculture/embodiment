@@ -247,7 +247,12 @@ Four states:
   could not be seen from here. Reporting `stopped` instead would be a lie.
 
 It looks in every candidate state directory, in the order a daemon would have
-used them, so a daemon that fell back during bootstrap is still found.
+used them, so a daemon that fell back during bootstrap is still found. But that
+search only ever *promotes* a live daemon: with nothing running, the headline is
+the state of the directory you named, and whatever another candidate holds is
+printed under it as `other state dir: …`. A pidfile left behind in the
+machine-wide fallback directory is a note about that directory — it never makes
+a healthy machine report `dead (unclean)`, and the next `start` reclaims it.
 
 Always exits `0`: a stopped or dead daemon is a fact to report, not a failure
 of the command.

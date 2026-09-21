@@ -23,9 +23,14 @@ the fixture even when an assertion fails.
 Isolation
 ---------
 Every test points ``EMBODIMENT_STATE_DIR`` at a ``tmp_path`` directory and
-redirects ``tempfile.gettempdir`` so the deterministic per-uid fallback
-directory (``embodiment-state-<uid>``, t4) can never collide between parallel
-workers or reach the real home. No test writes outside ``tmp_path``.
+redirects ``tempfile`` — ``gettempdir``, the ``tempdir`` attribute **and**
+``TMPDIR`` in the environment — so t4's deterministic per-uid fallback
+directory (``<tempdir>/embodiment-state-<uid>``) resolves inside ``tmp_path``
+in this process *and* in every spawned child. That directory is machine-global
+and is where a real daemon lives; a test that writes into it is writing into
+the operator's running system, and one that did left a stale 'running' pidfile
+that every later ``embodiment status`` on the box read.
+:class:`TestNoTestTouchesTheRealFallbackDir` holds that line.
 """
 
 from __future__ import annotations
@@ -144,13 +149,40 @@ raise RuntimeError("this target explodes at import")
 """
 
 
+#: The REAL machine-wide fallback directory, captured at import time — before
+#: any fixture repoints ``tempfile`` — so a test can prove it was never touched.
+#: It is machine-global (``<tempdir>/embodiment-state-<uid>``, t4) and is where
+#: a real daemon would live, so a test that writes into it is writing into the
+#: operator's running system. Never delete it from a test either: a stale one is
+#: evidence of which suite is still misbehaving.
+REAL_FALLBACK_DIR = Path(tempfile.gettempdir()) / f"embodiment-state-{os.getuid()}"
+
+
+def _snapshot(path: Path) -> object:
+    """Everything about *path* that a write would change. Never raises."""
+    try:
+        entries = sorted((p.name, p.stat().st_mtime_ns, p.stat().st_size) for p in path.iterdir())
+        return (True, path.stat().st_mtime_ns, entries)
+    except OSError:
+        return (False, None, [])
+
+
 @pytest.fixture(autouse=True)
 def _isolated_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
-    """A per-test state dir, and a per-test tempdir for t4's fallback path."""
+    """A per-test state dir, and a per-test tempdir for t4's fallback path.
+
+    ``tempfile`` is repointed three ways on purpose. ``gettempdir`` covers this
+    process; ``tempfile.tempdir`` covers anything that reads the module
+    attribute directly; and ``TMPDIR`` covers **spawned children**, which
+    compute their own fallback in their own interpreter and would otherwise
+    land in the machine-wide :data:`REAL_FALLBACK_DIR`.
+    """
     monkeypatch.delenv("XDG_STATE_HOME", raising=False)
     fake_tmp = tmp_path / "tmp"
     fake_tmp.mkdir()
     monkeypatch.setattr(tempfile, "gettempdir", lambda: str(fake_tmp))
+    monkeypatch.setattr(tempfile, "tempdir", str(fake_tmp), raising=False)
+    monkeypatch.setenv("TMPDIR", str(fake_tmp))
     state = tmp_path / "state"
     monkeypatch.setenv(STATE_DIR_ENV_VAR, str(state))
     return state
@@ -663,6 +695,157 @@ class TestRunDaemonInProcess:
             run_daemon(App(), state=state, exit_process=exiter, install_signal_handlers=False)
         assert called and called[0] > 0
         assert any(c.startswith("lifecycle-") for c in _ledger_codes(state_dir))
+
+
+class TestCandidatePrecedence:
+    """A corpse in one candidate dir must never speak for the dir the user named.
+
+    Searching ``candidate_state_dirs()`` exists to **find a live daemon** that
+    fell back during bootstrap. Letting a dead record in the machine-wide
+    fallback win the headline made ``embodiment status --state-dir <brand new
+    empty dir>`` report ``dead (unclean)`` on a healthy machine — and nothing
+    ever cleared it, because a later ``start`` succeeds in the primary dir and
+    leaves the corpse where it is. The rule: a **live lock anywhere** wins; with
+    nothing live, the **primary** dir's own state is the headline; another
+    candidate's record is a secondary note.
+    """
+
+    @staticmethod
+    def _plant_corpse(directory: Path, pid: int) -> None:
+        DaemonState(directory)
+        (directory / PIDFILE_NAME).write_text(
+            json.dumps(
+                {"schema": 1, "pid": pid, "state": "running", "target": "ghost:main"},
+            ),
+            encoding="utf-8",
+        )
+
+    def test_a_corpse_in_the_fallback_does_not_speak_for_a_clean_primary(
+        self, state_dir: Path
+    ) -> None:
+        self._plant_corpse(resolve_fallback_state_dir(), _dead_pid())
+        DaemonState(state_dir)
+        report = status(state_dir=state_dir)
+        assert report.state == STATE_STOPPED
+        assert report.state_dir == str(state_dir.resolve())
+        assert report.pid is None
+
+    def test_a_corpse_in_the_fallback_is_reported_as_a_secondary_note(
+        self, state_dir: Path
+    ) -> None:
+        dead = _dead_pid()
+        fallback = resolve_fallback_state_dir()
+        self._plant_corpse(fallback, dead)
+        DaemonState(state_dir)
+        notes = status(state_dir=state_dir).other_candidates
+        assert [n["state_dir"] for n in notes] == [str(fallback)]
+        assert notes[0]["state"] == STATE_DEAD_UNCLEAN
+        assert notes[0]["pid"] == dead
+
+    def test_a_never_started_primary_is_not_made_dead_by_a_corpse_elsewhere(
+        self, state_dir: Path
+    ) -> None:
+        self._plant_corpse(resolve_fallback_state_dir(), _dead_pid())
+        assert not state_dir.exists()
+        report = status(state_dir=state_dir)
+        assert report.state == STATE_UNAVAILABLE
+        assert report.other_candidates
+
+    def test_a_live_daemon_in_the_fallback_still_wins_the_headline(
+        self, state_dir: Path, make_target, reaper: list[int]
+    ) -> None:
+        """(a) of the rule: liveness anywhere beats the primary's own state."""
+        fallback = resolve_fallback_state_dir()
+        target, env = make_target("idle_prec", IDLE_TARGET)
+        started = start(target, state_dir=fallback, env=env)
+        reaper.append(started.pid or 0)
+        DaemonState(state_dir)
+        report = status(state_dir=state_dir)
+        assert report.state == STATE_RUNNING
+        assert report.state_dir == str(fallback.resolve())
+        assert report.pid == started.pid
+        stop(state_dir=state_dir)
+
+    def test_start_reclaims_a_corpse_in_another_candidate_dir(
+        self, state_dir: Path, make_target, reaper: list[int]
+    ) -> None:
+        dead = _dead_pid()
+        fallback = resolve_fallback_state_dir()
+        self._plant_corpse(fallback, dead)
+        target, env = make_target("idle_reclaim", IDLE_TARGET)
+        result = start(target, state_dir=state_dir, env=env)
+        reaper.append(result.pid or 0)
+        assert result.started is True
+        assert str(fallback) in result.reclaimed_elsewhere
+        assert STALE_PIDFILE_RECLAIMED_CODE in _ledger_codes(fallback)
+        # And the corpse no longer reads as a death anywhere.
+        report = status(state_dir=state_dir)
+        assert report.state == STATE_RUNNING
+        assert all(n["state"] != STATE_DEAD_UNCLEAN for n in report.other_candidates)
+        stop(state_dir=state_dir)
+
+    def test_stop_names_the_primary_dir_when_nothing_is_running(self, state_dir: Path) -> None:
+        self._plant_corpse(resolve_fallback_state_dir(), _dead_pid())
+        DaemonState(state_dir)
+        result = stop(state_dir=state_dir)
+        assert result.was_running is False
+        assert result.state_dir == str(state_dir.resolve())
+
+
+class TestNoTestTouchesTheRealFallbackDir:
+    """The machine-wide fallback dir is where a REAL daemon lives. Stay out of it.
+
+    A test that forces ``DaemonState`` to fall back writes into
+    ``<tempdir>/embodiment-state-<uid>`` unless ``tempfile`` is repointed for
+    this process *and* for spawned children. That happened: an attack run left
+    a stale 'running' pidfile there, and every later ``embodiment status`` on
+    this machine read it.
+    """
+
+    def test_forcing_a_fallback_never_touches_the_machine_wide_dir(
+        self, tmp_path: Path, make_target, reaper: list[int]
+    ) -> None:
+        before = _snapshot(REAL_FALLBACK_DIR)
+        blocker = tmp_path / "blocker"
+        blocker.write_text("not a directory", encoding="utf-8")
+        target, env = make_target("idle_fallback", IDLE_TARGET)
+        result = start(target, state_dir=blocker / "state", env=env)
+        reaper.append(result.pid or 0)
+        try:
+            # It really did fall back — otherwise this test proves nothing.
+            assert result.state_dir is not None
+            assert str(blocker) not in result.state_dir
+            assert str(tmp_path) in result.state_dir
+        finally:
+            stop(state_dir=blocker / "state")
+        assert _snapshot(REAL_FALLBACK_DIR) == before
+
+    def test_the_daemon_child_inherits_this_processs_environment(
+        self, tmp_path: Path, state_dir: Path, make_target, reaper: list[int]
+    ) -> None:
+        """A child that loses TMPDIR computes the wrong fallback dir."""
+        reporter = (
+            "import os\n"
+            "class App:\n"
+            "    def run(self, stop_event):\n"
+            "        import pathlib\n"
+            "        pathlib.Path(os.environ['EMBODIMENT_STATE_DIR'], 'seen-tmpdir').write_text(\n"
+            "            os.environ.get('TMPDIR', '<unset>'))\n"
+            "        stop_event.wait()\n"
+            "        return 0\n"
+            "\n"
+            "def main():\n"
+            "    return App()\n"
+        )
+        target, env = make_target("tmpdir_reporter", reporter)
+        started = start(target, state_dir=state_dir, env=env)
+        reaper.append(started.pid or 0)
+        deadline = time.monotonic() + 5.0
+        seen = state_dir / "seen-tmpdir"
+        while not seen.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+        assert seen.read_text(encoding="utf-8") == str(tmp_path / "tmp")
+        stop(state_dir=state_dir)
 
 
 class TestDefectsFoundByAttackingTheModule:

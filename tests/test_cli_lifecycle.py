@@ -51,10 +51,18 @@ def main():
 
 @pytest.fixture(autouse=True)
 def _isolated_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Per-test state dir and tempdir — including ``TMPDIR`` for spawned children.
+
+    See ``tests/test_daemon_lifecycle.py``: a child computes t4's deterministic
+    fallback in its own interpreter, so patching this process's ``tempfile``
+    alone would leave a fallback landing in the machine-wide directory.
+    """
     monkeypatch.delenv("XDG_STATE_HOME", raising=False)
     fake_tmp = tmp_path / "tmp"
     fake_tmp.mkdir()
     monkeypatch.setattr(tempfile, "gettempdir", lambda: str(fake_tmp))
+    monkeypatch.setattr(tempfile, "tempdir", str(fake_tmp), raising=False)
+    monkeypatch.setenv("TMPDIR", str(fake_tmp))
     monkeypatch.setenv(STATE_DIR_ENV_VAR, str(tmp_path / "state"))
 
 
