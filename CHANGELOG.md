@@ -5,6 +5,37 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.14.1] - 2026-09-21
+
+No package code changes. This release records a change of direction and
+brings the planning toolchain up to date; the archive and the daemon land in
+later releases.
+
+### Added
+
+- **The spec and plan for the realtime redesign**
+  (`docs/specs/2026-09-21-realtime-embodiment-app.md`,
+  `docs/plans/2026-09-21-realtime-embodiment-app.md`, and the approved
+  implementation split beside it). embodiment becomes a background realtime
+  app: Gwen on the lobes `/v1/realtime` API with the daemon running the turn,
+  host audio with the browser (and later a robot) as interchangeable ears,
+  eidetic memory that is private by default, a dashboard with a live waveform,
+  and remote access behind Cloudflare Access. The loop, strategist, config-lane
+  and muse experiments are to be archived in git history. 50 claims, 33 honesty
+  conditions, a rigorous challenge pass, 22 tasks, 26 obligations.
+- The `validate-delivery` skill — the execution→evidence leg of the devague
+  method, which `devague learn` names and this repo did not carry.
+
+### Changed
+
+- All eight devague operator skills re-synced verbatim from
+  `agentculture/devague` `main` at `ec15362`; the seven already here had
+  drifted 28–693 lines behind. `think`, `spec-to-plan` and
+  `assign-to-workforce` are now cited from devague directly rather than from
+  guildmaster's re-broadcast. Provenance in `docs/skill-sources.md`.
+- `CLAUDE.md`: skill count, and the worktree note now that upstream
+  `assign-to-workforce` mandates the `.worktrees.<repo-name>` root itself.
+
 ## [0.14.0] - 2026-08-05
 
 ### Changed
