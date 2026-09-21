@@ -103,6 +103,33 @@ transcript text); on :class:`DaemonState` itself, a state-directory bootstrap
 failure or an unsafe fallback falls back further and writes exactly one
 ledger entry per transition, so a host reading ``status()`` can see it
 happened.
+
+The floor: no persistence at all
+------------------------------------
+Even the last-resort fallback (:func:`resolve_fallback_state_dir`, or —
+refused — a fresh ``tempfile.mkdtemp()``) can fail: a missing or unwritable
+system temp directory is possible, however rare. That case must still never
+raise out of :class:`DaemonState`'s constructor, so it is not an error path,
+it is a MODE: when no directory could be created anywhere, ``self.dir`` is
+``None``, :attr:`DaemonState.operational_log` and :attr:`DaemonState.ledger`
+are still real, working objects — every write to either is simply dropped
+and counted on ``write_errors`` — and :meth:`DaemonState.open_transcript`
+still returns a working (dropping) :class:`TranscriptLog`. Nothing a caller
+holds ever needs a ``None`` check to stay in the "never raise" contract.
+:meth:`DaemonState.status` reports ``state_dir: None`` and a
+``persistence_detail`` naming why, rather than a state dir that silently
+looks empty and healthy.
+
+Orphaned temp files from an unclean death
+---------------------------------------------
+A process killed between :func:`_atomic_write_bytes` writing its temp file
+and the ``os.replace`` that lands it leaves that temp file behind forever —
+nothing else ever removes it. :class:`DaemonState` sweeps for exactly this
+module's own temp-file naming pattern (see :func:`_sweep_stale_temp_files`)
+in the state directory and ``sessions/`` on every construction and records
+ONE degradation naming the count when it finds any, because a nonzero count
+is itself evidence of the previous process's unclean death — information
+``status()`` should carry forward, not silently clean away.
 """
 
 from __future__ import annotations
@@ -129,6 +156,8 @@ __all__ = [
     "STATE_DIR_FALLBACK_CODE",
     "STATE_DIR_TIGHTENED_CODE",
     "SESSION_ID_REJECTED_CODE",
+    "STALE_TEMP_FILES_SWEPT_CODE",
+    "PERSISTENCE_STATUS_UNAVAILABLE",
     "resolve_state_dir",
     "resolve_fallback_state_dir",
     "candidate_state_dirs",
@@ -166,9 +195,25 @@ STATE_DIR_TIGHTENED_CODE = "state-dir-permissions-tightened"
 #: :func:`_safe_session_name` and a derived name was used instead.
 SESSION_ID_REJECTED_CODE = "session-id-rejected"
 
+#: Recorded once, with a count, when construction finds and removes orphaned
+#: atomic-rewrite temp files left by a previous unclean death.
+STALE_TEMP_FILES_SWEPT_CODE = "stale-temp-files-swept"
+
+#: The value :meth:`DaemonState.status` reports for ``persistence`` when no
+#: directory — preferred or any fallback — could be created at all.
+PERSISTENCE_STATUS_UNAVAILABLE = "unavailable"
+
 #: Filesystem modes enforced regardless of the process umask.
 _PRIVATE_DIR_MODE = 0o700
 _PRIVATE_FILE_MODE = 0o600
+
+#: The exact shape of a temp file :func:`_atomic_write_bytes` creates:
+#: ``.<original filename>.<random token>.tmp``. Deliberately specific — a
+#: leading dot, a literal ``.tmp`` suffix, and an alphanumeric middle token
+#: with no dots of its own — so :func:`_sweep_stale_temp_files` can never
+#: mistake an unrelated dotfile (``.gitignore``, a editor swap file, ...) for
+#: one of ours.
+_TMP_FILE_RE = re.compile(r"^\..+\.[A-Za-z0-9_]+\.tmp$")
 
 #: Session ids are accepted only in this conservative filename charset —
 #: letters, digits, dot, underscore, hyphen — which structurally cannot
@@ -276,9 +321,15 @@ def _secure_fallback_dir(path: Path) -> tuple[bool, Optional[str]]:
 
     A predictable name in a shared temp directory is an attack surface: a
     symlink planted at that name, or a pre-existing directory owned by
-    someone else, is refused rather than written through. Returns
-    ``(usable, detail)`` — *detail* is ``None`` only on the fully silent path
-    (freshly created, nothing to note).
+    someone else, is refused rather than written through — checked BEFORE
+    :func:`_ensure_private_dir` creates/chmods it, and again AFTER, closing
+    the window between the two: another actor in a shared temp directory
+    could in principle swap the path for a symlink in between (the reviewer's
+    analysis is that today's ``chmod``-based creation happens to fail safely
+    across that window too, but this makes it safe BY CONSTRUCTION rather
+    than by accident of ``chmod`` semantics). Returns ``(usable, detail)`` —
+    *detail* is ``None`` only on the fully silent path (freshly created,
+    nothing to note, re-check confirms it).
     """
     if path.is_symlink():
         return False, f"refusing fallback dir {path}: it is a symlink"
@@ -295,21 +346,52 @@ def _secure_fallback_dir(path: Path) -> tuple[bool, Optional[str]]:
     detail = _ensure_private_dir(path)
     if detail is not None and detail.startswith("could not create"):
         return False, detail
+    return _recheck_after_create(path, detail)
+
+
+def _recheck_after_create(path: Path, detail: Optional[str]) -> tuple[bool, Optional[str]]:
+    """The re-check half of :func:`_secure_fallback_dir`: trust nothing handed
+    back by ``_ensure_private_dir`` — look at the path again with ``lstat``.
+    """
+    try:
+        st = os.lstat(path)
+    except OSError as exc:
+        return False, f"refusing fallback dir {path}: could not lstat it after creating: {exc}"
+    if stat.S_ISLNK(st.st_mode):
+        return False, f"refusing fallback dir {path}: became a symlink after creation"
+    if not stat.S_ISDIR(st.st_mode):
+        return False, f"refusing fallback dir {path}: is not a directory after creation"
+    uid_fn = getattr(os, "getuid", None)
+    if uid_fn is not None and st.st_uid != uid_fn():
+        return False, f"refusing fallback dir {path}: owned by uid {st.st_uid} after creation"
+    mode = stat.S_IMODE(st.st_mode)
+    if mode != _PRIVATE_DIR_MODE:
+        return False, f"refusing fallback dir {path}: mode {oct(mode)} after creation, not 0700"
     return True, detail
 
 
-def _bootstrap_fallback_dir() -> tuple[Path, str]:
+def _bootstrap_fallback_dir() -> tuple[Optional[Path], str]:
     """The deterministic fallback, or — refused/unusable — a fresh random one.
 
     Never raises. Returns ``(dir_in_use, detail)``; *detail* is always
     non-empty, because falling back at all is itself worth one degradation
     record even when the fallback directory itself needed no repair.
+    ``dir_in_use`` is ``None`` only when even a freshly, randomly named
+    directory could not be created — the system temp directory itself is
+    missing or unwritable — the floor described in the module docstring's
+    "no persistence at all" section.
     """
     candidate = resolve_fallback_state_dir()
     usable, detail = _secure_fallback_dir(candidate)
     if usable:
         return candidate, detail or f"using deterministic fallback {candidate}"
-    random_dir = Path(tempfile.mkdtemp(prefix="embodiment-state-fallback-"))
+    try:
+        random_dir = Path(tempfile.mkdtemp(prefix="embodiment-state-fallback-"))
+    except OSError as exc:
+        combined = (
+            f"{detail}; could not create a random fallback either: " f"{type(exc).__name__}: {exc}"
+        )
+        return None, combined
     try:
         os.chmod(random_dir, _PRIVATE_DIR_MODE)
     except OSError:
@@ -398,6 +480,35 @@ def _bounded_rewrite_append(path: Path, line: str, max_bytes: int) -> None:
     _atomic_write_bytes(path, combined)
 
 
+def _sweep_stale_temp_files(directory: Path) -> int:
+    """Delete this module's own orphaned atomic-rewrite temp files. Never raises.
+
+    Matches ONLY :data:`_TMP_FILE_RE` — this module's exact temp-file naming
+    pattern — and only regular files, never directories or symlinks, never
+    anything else found in *directory*. Returns the count removed, which is
+    ``0`` when *directory* does not exist or nothing matched.
+    """
+    if not directory.is_dir():
+        return 0
+    try:
+        entries = list(directory.iterdir())
+    except OSError:
+        return 0
+    removed = 0
+    for entry in entries:
+        if not _TMP_FILE_RE.match(entry.name):
+            continue
+        try:
+            if entry.is_symlink() or not entry.is_file():
+                continue
+            entry.unlink()
+        except OSError:
+            continue
+        else:
+            removed += 1
+    return removed
+
+
 def _append_only(path: Path, line: str) -> None:
     """Append *line* to *path*, ``fsync``\\ ed, mode 0600 regardless of umask.
 
@@ -447,18 +558,31 @@ class DegradationLedger:
     :meth:`read_all`, which it is built on) tolerates a torn final line, which
     is what an interrupted append looks like on disk: everything before it
     stays readable.
+
+    *path* may be ``None`` — the no-persistence floor described in the module
+    docstring, used when :class:`DaemonState` could not create a state
+    directory anywhere. A ``None``-path ledger is still a working object:
+    every :meth:`append` is simply dropped and counted on
+    :attr:`write_errors`, and reads report an always-empty ledger, rather than
+    a caller needing a special case for "there is no ledger".
     """
 
-    def __init__(self, path: str | Path) -> None:
-        self._path = Path(path)
+    def __init__(self, path: Optional[str | Path]) -> None:
+        self._path = Path(path) if path is not None else None
         #: Records this instance could not persist at all (the ledger file's
-        #: own directory is unwritable). Best-effort visibility of last resort;
-        #: normally empty. Surfaced by :meth:`DaemonState.status`.
+        #: own directory is unwritable, or there is no directory at all).
+        #: Best-effort visibility of last resort; normally empty. Surfaced by
+        #: :meth:`DaemonState.status`.
         self.write_errors: list[str] = []
 
     @property
-    def path(self) -> Path:
+    def path(self) -> Optional[Path]:
         return self._path
+
+    @property
+    def persistent(self) -> bool:
+        """``False`` in no-persistence mode — see the class docstring."""
+        return self._path is not None
 
     def append(self, code: str, detail: str = "") -> Optional[DegradationRecord]:
         """Append one record. Returns it on success, ``None`` on failure.
@@ -468,6 +592,9 @@ class DegradationLedger:
         whose whole job is recording degradations.
         """
         record = DegradationRecord(ts=time.time(), code=code, detail=detail, id=uuid.uuid4().hex)
+        if self._path is None:
+            self.write_errors.append(f"no persistence available: {code}: {detail}")
+            return None
         try:
             _append_only(self._path, json.dumps(record.to_dict(), sort_keys=True))
         except OSError as exc:
@@ -477,7 +604,7 @@ class DegradationLedger:
 
     def read_all(self) -> list[DegradationRecord]:
         """Every readable record, oldest first. A torn last line is skipped."""
-        if not self._path.exists():
+        if self._path is None or not self._path.exists():
             return []
         try:
             raw = self._path.read_text(encoding="utf-8")
@@ -502,7 +629,7 @@ class DegradationLedger:
         """A summary ``status`` can read after a crash: count and the last entry."""
         records = self.read_all()
         return {
-            "path": str(self._path),
+            "path": str(self._path) if self._path is not None else None,
             "count": len(records),
             "last": records[-1].to_dict() if records else None,
         }
@@ -517,16 +644,20 @@ class _BoundedJsonlLog:
     Not part of the public surface — both public classes exist as distinct
     types on purpose (see the module docstring's "different file" discipline)
     even though their mechanics are identical.
+
+    *path* may be ``None`` — the no-persistence floor (module docstring):
+    every :meth:`_write` is dropped and counted on :attr:`write_errors`
+    rather than the object being unusable.
     """
 
     def __init__(
         self,
-        path: str | Path,
+        path: Optional[str | Path],
         *,
         max_bytes: int,
         on_degrade: Optional[Callable[[str, str], None]] = None,
     ) -> None:
-        self._path = Path(path)
+        self._path = Path(path) if path is not None else None
         self._max_bytes = max_bytes
         self._on_degrade = on_degrade
         #: Failures to persist a record. Best-effort visibility of last
@@ -534,14 +665,22 @@ class _BoundedJsonlLog:
         self.write_errors: list[str] = []
 
     @property
-    def path(self) -> Path:
+    def path(self) -> Optional[Path]:
         return self._path
+
+    @property
+    def persistent(self) -> bool:
+        """``False`` in no-persistence mode — see the class docstring."""
+        return self._path is not None
 
     @property
     def max_bytes(self) -> int:
         return self._max_bytes
 
     def _write(self, record: dict[str, Any]) -> None:
+        if self._path is None:
+            self.write_errors.append("no persistence available: dropped one record")
+            return
         line = json.dumps(record, sort_keys=True)
         try:
             _bounded_rewrite_append(self._path, line, self._max_bytes)
@@ -556,7 +695,7 @@ class _BoundedJsonlLog:
 
     def read_all(self) -> list[dict[str, Any]]:
         """Every readable record, oldest first. Skips a torn last line, if any."""
-        if not self._path.exists():
+        if self._path is None or not self._path.exists():
             return []
         try:
             raw = self._path.read_text(encoding="utf-8")
@@ -625,7 +764,16 @@ class DaemonState:
     :func:`resolve_fallback_state_dir` (or, if that is itself unsafe, a
     random temp directory) and records exactly one degradation once the
     fallback directory is up, so ``status()`` shows the transition rather
-    than hiding it.
+    than hiding it. If even that fails — the system temp directory is itself
+    missing or unwritable — construction still never raises: it enters
+    no-persistence mode (:attr:`persistent` is ``False``; see the module
+    docstring's "no persistence at all" section), a fully working object
+    whose logs and ledger simply drop every write and count it.
+
+    Construction also sweeps the state directory for this module's own
+    orphaned atomic-rewrite temp files (a previous process killed mid-write)
+    and records one degradation naming the count when it finds any — see
+    :func:`_sweep_stale_temp_files`.
     """
 
     def __init__(
@@ -638,20 +786,45 @@ class DaemonState:
         self._transcript_log_max_bytes = transcript_log_max_bytes
         preferred = resolve_state_dir(state_dir)
         self.dir, used_fallback, detail = self._ensure_dir(preferred)
+
+        #: Only non-``None`` in no-persistence mode; explains why. Surfaced
+        #: by :meth:`status` as ``persistence_detail``.
+        self._persistence_detail: Optional[str] = detail if self.dir is None else None
+
+        operational_log_path = self.dir / OPERATIONAL_LOG_FILENAME if self.dir is not None else None
+        ledger_path = self.dir / LEDGER_FILENAME if self.dir is not None else None
         self.operational_log = OperationalLog(
-            self.dir / OPERATIONAL_LOG_FILENAME, max_bytes=operational_log_max_bytes
+            operational_log_path, max_bytes=operational_log_max_bytes
         )
-        self.ledger = DegradationLedger(self.dir / LEDGER_FILENAME)
+        self.ledger = DegradationLedger(ledger_path)
+
         if detail is not None:
             code = STATE_DIR_FALLBACK_CODE if used_fallback else STATE_DIR_TIGHTENED_CODE
             self.ledger.append(code, detail)
 
+        if self.dir is not None:
+            swept = _sweep_stale_temp_files(self.dir) + _sweep_stale_temp_files(
+                self.dir / SESSIONS_DIRNAME
+            )
+            if swept:
+                self.ledger.append(
+                    STALE_TEMP_FILES_SWEPT_CODE,
+                    f"removed {swept} orphaned temp file(s) left by a previous unclean death",
+                )
+
+    @property
+    def persistent(self) -> bool:
+        """``False`` in no-persistence mode — see the module docstring."""
+        return self.dir is not None
+
     @staticmethod
-    def _ensure_dir(preferred: Path) -> tuple[Path, bool, Optional[str]]:
+    def _ensure_dir(preferred: Path) -> tuple[Optional[Path], bool, Optional[str]]:
         """Create+secure *preferred*, or fall back. Never raises.
 
         Returns ``(dir_in_use, used_fallback, detail)``; *detail* is ``None``
-        only on the fully silent happy path.
+        only on the fully silent happy path. ``dir_in_use`` is ``None`` only
+        when no directory — preferred or fallback — could be created at all
+        (the module docstring's "no persistence at all" floor).
         """
         detail = _ensure_private_dir(preferred)
         if detail is None:
@@ -673,7 +846,23 @@ class DaemonState:
         name and recorded as one degradation naming only the hash, never the
         rejected id. The resolved path is asserted to stay inside the
         sessions directory before use.
+
+        In no-persistence mode (:attr:`persistent` is ``False``) this returns
+        a working :class:`TranscriptLog` that drops every write and counts it
+        on ``write_errors``, exactly like every other write path in that mode
+        — no caller needs a ``None`` check.
+
+        A valid session id is used **verbatim** as a filename stem, with no
+        case normalisation: on a case-insensitive filesystem (the default on
+        macOS and Windows, not Linux), ``"abc"`` and ``"ABC"`` resolve to the
+        same transcript file. Session ids are expected to be generated by the
+        daemon itself (not chosen by whoever is talking to it), so this is
+        noted rather than guarded against.
         """
+        bound = self._transcript_log_max_bytes if max_bytes is None else max_bytes
+        if self.dir is None:
+            return TranscriptLog(None, max_bytes=bound)
+
         sessions_dir = self.dir / SESSIONS_DIRNAME
         dir_detail = _ensure_private_dir(sessions_dir)
         if dir_detail is not None:
@@ -694,7 +883,6 @@ class DaemonState:
                 SESSION_ID_REJECTED_CODE, f"resolved outside sessions dir (hash {digest})"
             )
 
-        bound = self._transcript_log_max_bytes if max_bytes is None else max_bytes
         return TranscriptLog(path, max_bytes=bound)
 
     def status(self) -> dict[str, Any]:
@@ -703,8 +891,28 @@ class DaemonState:
         Every log's write-failure count and most recent write error (a
         filesystem exception's type and message, never transcript text) ride
         along, so a log that has silently stopped persisting is visible here
-        rather than looking healthy.
+        rather than looking healthy. In no-persistence mode ``state_dir`` is
+        ``None`` and ``persistence``/``persistence_detail`` explain why,
+        rather than a state dir that looks merely empty.
         """
+        if self.dir is None:
+            return {
+                "state_dir": None,
+                "persistence": PERSISTENCE_STATUS_UNAVAILABLE,
+                "persistence_detail": self._persistence_detail,
+                "operational_log": {
+                    "path": None,
+                    "size_bytes": None,
+                    "max_bytes": self.operational_log.max_bytes,
+                    **_write_error_status(self.operational_log.write_errors),
+                },
+                "ledger": {
+                    "path": None,
+                    "count": 0,
+                    "last": None,
+                    **_write_error_status(self.ledger.write_errors),
+                },
+            }
         try:
             log_size = self.operational_log.path.stat().st_size
         except OSError:

@@ -1,8 +1,10 @@
 """Tests for :mod:`embodiment.daemon.state` (plan task t4).
 
-Organised around the task's three verbatim acceptance criteria, plus four
-post-review fixes (path traversal, world-readable transcripts, an unfindable
-fallback directory, and unreported write errors):
+Organised around the task's three verbatim acceptance criteria, plus seven
+post-review fixes across two rounds:
+
+Round 2 (path traversal, world-readable transcripts, an unfindable fallback
+directory, unreported write errors):
 
 1. a crash leaves a ledger ``status`` can read, and the log never exceeds its
    configured size
@@ -15,6 +17,15 @@ fallback directory, and unreported write errors):
 6. the bootstrap fallback directory is deterministic, findable by a second
    process, and refuses an unsafe pre-existing path at that name
 7. ``status()`` reports write failures rather than looking healthy
+
+Round 3 (never-raise gap, TOCTOU re-check, orphaned temp files):
+
+8. construction never raises even when NO directory anywhere can be
+   created — it enters a recorded no-persistence mode instead
+9. the fallback directory is re-checked (``lstat``) immediately after
+   creation, not trusted from before it, closing a TOCTOU window
+10. construction sweeps and removes its own orphaned atomic-rewrite temp
+    files, recording one degradation naming the count
 
 Every test passes an explicit ``tmp_path``-derived override or monkeypatches
 the env/tempdir seams (``EMBODIMENT_STATE_DIR`` / ``XDG_STATE_HOME`` / ``HOME``
@@ -32,17 +43,22 @@ import tempfile
 
 import pytest
 
+import embodiment.daemon.state as state_mod
 from embodiment.daemon.state import (
     DEFAULT_OPERATIONAL_LOG_MAX_BYTES,
     LEDGER_FILENAME,
+    PERSISTENCE_STATUS_UNAVAILABLE,
     SESSION_ID_REJECTED_CODE,
+    STALE_TEMP_FILES_SWEPT_CODE,
     STATE_DIR_ENV_VAR,
     STATE_DIR_FALLBACK_CODE,
     STATE_DIR_TIGHTENED_CODE,
     DaemonState,
     DegradationLedger,
     OperationalLog,
+    _bootstrap_fallback_dir,
     _secure_fallback_dir,
+    _sweep_stale_temp_files,
     candidate_state_dirs,
     resolve_fallback_state_dir,
     resolve_state_dir,
@@ -563,3 +579,229 @@ class TestStatusReportsWriteFailures:
 
         assert transcript.write_errors  # the write did fail, as the test intends
         assert secret not in " ".join(transcript.write_errors)
+
+
+# ── round 3, fix 1 (the important one): no-persistence-anywhere never raises ─
+
+
+@pytest.fixture
+def _unwritable_tempdir(tmp_path, monkeypatch):
+    """Point ``tempfile.gettempdir()`` at a path that cannot be created.
+
+    A merely-nonexistent path is not enough on its own: ``Path.mkdir(parents=
+    True)`` (what ``_ensure_private_dir`` uses for the deterministic fallback)
+    would silently create it. This points at a nonexistent CHILD of a
+    directory with no write permission, so neither the deterministic fallback
+    (``_ensure_private_dir``) nor the last-resort ``tempfile.mkdtemp()`` (which
+    does not create missing parents at all) can create anything there — the
+    "system temp directory is missing or unwritable" case from the module
+    docstring.
+    """
+    base = tmp_path / "unwritable-base"
+    base.mkdir()
+    os.chmod(base, 0o500)
+    fake = base / "does-not-exist"
+    monkeypatch.setattr(tempfile, "gettempdir", lambda: str(fake))
+    try:
+        yield fake
+    finally:
+        os.chmod(base, 0o700)  # let pytest's tmp_path cleanup remove it
+
+
+class TestNoPersistenceMode:
+    """The floor: nothing anywhere can be created, and nothing may raise."""
+
+    def test_bootstrap_fallback_dir_returns_none_when_nothing_can_be_created(
+        self, _unwritable_tempdir
+    ) -> None:
+        result_dir, detail = _bootstrap_fallback_dir()  # must not raise
+
+        assert result_dir is None
+        assert detail
+
+    def test_construction_never_raises_when_everything_is_unwritable(
+        self, tmp_path, _unwritable_tempdir
+    ) -> None:
+        blocked = tmp_path / "blocked"
+        blocked.write_text("i am a file, not a directory")
+        preferred = blocked / "sub" / "state"
+
+        state = DaemonState(preferred)  # must not raise
+
+        assert state.dir is None
+        assert state.persistent is False
+
+    def test_status_reports_no_persistence_and_why(self, tmp_path, _unwritable_tempdir) -> None:
+        blocked = tmp_path / "blocked"
+        blocked.write_text("i am a file")
+        state = DaemonState(blocked / "sub" / "state")
+
+        status = state.status()
+
+        assert status["state_dir"] is None
+        assert status["persistence"] == PERSISTENCE_STATUS_UNAVAILABLE
+        assert status["persistence_detail"]
+
+    def test_operational_log_writes_are_dropped_and_counted(
+        self, tmp_path, _unwritable_tempdir
+    ) -> None:
+        blocked = tmp_path / "blocked"
+        blocked.write_text("i am a file")
+        state = DaemonState(blocked / "sub" / "state")
+
+        state.operational_log.write("heartbeat")  # must not raise
+
+        assert state.operational_log.write_errors
+        status = state.status()
+        assert status["operational_log"]["write_error_count"] >= 1
+        assert status["operational_log"]["path"] is None
+
+    def test_ledger_writes_are_dropped_and_counted(self, tmp_path, _unwritable_tempdir) -> None:
+        blocked = tmp_path / "blocked"
+        blocked.write_text("i am a file")
+        state = DaemonState(blocked / "sub" / "state")
+
+        result = state.ledger.append("some-code", "some detail")  # must not raise
+
+        assert result is None
+        assert state.ledger.write_errors
+
+    def test_open_transcript_returns_a_working_dropping_log(
+        self, tmp_path, _unwritable_tempdir
+    ) -> None:
+        blocked = tmp_path / "blocked"
+        blocked.write_text("i am a file")
+        state = DaemonState(blocked / "sub" / "state")
+
+        transcript = state.open_transcript("s1")
+        transcript.write("user", "hello")  # must not raise
+
+        assert transcript.path is None
+        assert transcript.write_errors
+
+    def test_happy_path_is_still_persistent(self, tmp_path) -> None:
+        """Sanity check: no-persistence mode is not the new default."""
+        state = DaemonState(tmp_path / "state")
+        assert state.persistent is True
+        assert state.dir is not None
+
+
+# ── round 3, fix 2: the fallback dir is re-checked after creation (TOCTOU) ──
+
+
+class TestSecureFallbackDirReChecksAfterCreate:
+    def test_a_symlink_swapped_in_right_after_creation_is_caught(
+        self, tmp_path, monkeypatch
+    ) -> None:
+        """The reviewer's scenario: ``_ensure_private_dir`` reports success,
+        but by the time control returns, the path is no longer the directory
+        it just created — simulated by monkeypatching ``_ensure_private_dir``
+        itself to swap in a symlink right after doing its real work."""
+        real_ensure = state_mod._ensure_private_dir
+
+        def racy_ensure(path):
+            result = real_ensure(path)
+            if result is None and path.is_dir() and not path.is_symlink():
+                path.rmdir()
+                target = path.parent / "elsewhere"
+                target.mkdir(exist_ok=True)
+                path.symlink_to(target)
+            return result
+
+        monkeypatch.setattr(state_mod, "_ensure_private_dir", racy_ensure)
+
+        candidate = tmp_path / "fallback"
+        usable, detail = state_mod._secure_fallback_dir(candidate)
+
+        assert usable is False
+        assert "symlink" in detail
+
+    def test_a_genuinely_clean_directory_is_still_accepted(self, tmp_path) -> None:
+        candidate = tmp_path / "fallback"
+        usable, detail = _secure_fallback_dir(candidate)
+        assert usable is True
+        assert candidate.is_dir()
+        assert stat.S_IMODE(candidate.stat().st_mode) == 0o700
+
+
+# ── round 3, fix 3: orphaned atomic-rewrite temp files are swept on start ───
+
+
+class TestStaleTempFileSweep:
+    def test_construction_removes_its_own_stale_temp_files_and_records_one_degradation(
+        self, tmp_path
+    ) -> None:
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        (state_dir / ".embodiment.log.ab12cd34.tmp").write_text("leftover 1")
+        (state_dir / ".degradations.jsonl.zz99yy88.tmp").write_text("leftover 2")
+        (state_dir / ".gitignore").write_text("an unrelated dotfile, must survive")
+
+        state = DaemonState(state_dir)
+
+        assert not (state_dir / ".embodiment.log.ab12cd34.tmp").exists()
+        assert not (state_dir / ".degradations.jsonl.zz99yy88.tmp").exists()
+        assert (state_dir / ".gitignore").exists()
+
+        records = state.ledger.read_all()
+        matching = [r for r in records if r.code == STALE_TEMP_FILES_SWEPT_CODE]
+        assert len(matching) == 1
+        assert "2" in matching[0].detail
+
+    def test_sweep_also_covers_the_sessions_directory(self, tmp_path) -> None:
+        state_dir = tmp_path / "state"
+        sessions_dir = state_dir / "sessions"
+        sessions_dir.mkdir(parents=True)
+        (sessions_dir / ".sess-1.jsonl.abcdefgh.tmp").write_text("leftover")
+
+        state = DaemonState(state_dir)
+
+        assert not (sessions_dir / ".sess-1.jsonl.abcdefgh.tmp").exists()
+        codes = [r.code for r in state.ledger.read_all()]
+        assert STALE_TEMP_FILES_SWEPT_CODE in codes
+
+    def test_no_sweep_degradation_when_nothing_is_stale(self, tmp_path) -> None:
+        state = DaemonState(tmp_path / "state")
+        codes = [r.code for r in state.ledger.read_all()]
+        assert STALE_TEMP_FILES_SWEPT_CODE not in codes
+
+    def test_sweep_never_removes_a_directory_or_a_symlink_matching_the_pattern(
+        self, tmp_path
+    ) -> None:
+        state_dir = tmp_path / "state"
+        state_dir.mkdir()
+        (state_dir / ".weird.dirlike.tmp").mkdir()
+        target = tmp_path / "outside-target.txt"
+        target.write_text("do not touch")
+        (state_dir / ".linked.name.tmp").symlink_to(target)
+
+        DaemonState(state_dir)
+
+        assert (state_dir / ".weird.dirlike.tmp").is_dir()
+        assert (state_dir / ".linked.name.tmp").is_symlink()
+        assert target.exists()
+
+    def test_sweep_helper_matches_only_its_own_naming_pattern(self, tmp_path) -> None:
+        (tmp_path / ".a.b.tmp").write_text("x")
+        (tmp_path / "not-a-tmp-file.txt").write_text("x")
+        (tmp_path / ".tmp").write_text("x")  # too short to match the pattern
+
+        removed = _sweep_stale_temp_files(tmp_path)
+
+        assert removed == 1
+        assert not (tmp_path / ".a.b.tmp").exists()
+        assert (tmp_path / "not-a-tmp-file.txt").exists()
+        assert (tmp_path / ".tmp").exists()
+
+    def test_sweep_of_a_nonexistent_directory_is_a_silent_no_op(self, tmp_path) -> None:
+        assert _sweep_stale_temp_files(tmp_path / "does-not-exist") == 0
+
+
+# ── documentation-only note: verified in the docstring, not enforced here ──
+
+
+class TestOpenTranscriptCaseSensitivityIsDocumented:
+    def test_the_docstring_names_the_case_insensitive_filesystem_caveat(self) -> None:
+        doc = DaemonState.open_transcript.__doc__ or ""
+        assert "case-insensitive" in doc
+        assert "daemon" in doc.lower()
