@@ -67,17 +67,34 @@ classifiers = [
 # list and tests/test_zero_deps.py together; do not let it happen silently.
 #
 # Every entry below has an approval record in the deviation ledger
-# (`devague deviate --list`), naming its version floor and why the floor is
-# where it is. headspace-cli>=0.11 is d17: the floor is 0.11 precisely because
-# 0.11.0 is the release that resolved d2's open condition, declaring
-# create/run/put/export/destroy on `headspace.api` under headspace's own semver
-# with `headspace.core` private (headspace-cli#18). 0.10.0 advertised only
-# `__version__` in `__all__`, which is why the condition existed at all. A
-# dependency whose floor is not explained here is a floor nobody chose.
+# (`devague deviate --list`, and `.devague/deliveries/` for earlier cycles).
+# A dependency whose floor is not explained here is a floor nobody chose.
+#
+# websockets>=15 (realtime redesign, plan task t3, approved 2026-09-21): the
+# lobes `/v1/realtime` client AND the daemon's inbound audio endpoint server.
+# Zero Requires-Dist entries of its own (checked against 17.1's PyPI metadata),
+# so it adds exactly one package to every host. The floor is 15 because that is
+# the first release whose `websockets.asyncio` client and server are the
+# default, non-legacy implementations. lobes ships no importable client, and
+# `lobes-cli` must NEVER appear here: the gateway is reached over the network.
+#
+# headspace-cli left in 0.15.0 with its only consumer (the archived
+# workspace.py), taking the docker SDK with it.
 dependencies = [
     "eidetic-cli>=0.12",
     "coherence-cli>=0.6",
     "events-cli>=0.10",
+    "websockets>=15",
+]
+
+[project.optional-dependencies]
+# Host microphone and speaker (plan task t7). Optional because a daemon with no
+# audio device, or a host that only ever uses the browser as its ear, must still
+# install and start: a missing extra degrades to a recorded no-voice state.
+# sounddevice -> cffi -> pycparser, and needs the system PortAudio library
+# (libportaudio2), which pip cannot install.
+audio = [
+    "sounddevice>=0.5",
 ]
 
 [project.urls]
