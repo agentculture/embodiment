@@ -1,0 +1,11 @@
+{
+  "v": 1,
+  "kind": "transcript",
+  "ts": "2026-09-22T12:00:03.000Z",
+  "seq": 4,
+  "source": "app://embodiment",
+  "data": {
+    "role": "user",
+    "text": "what's the weather like"
+  }
+}

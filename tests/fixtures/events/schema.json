@@ -1,0 +1,55 @@
+{
+  "_comment": "The bus event contract (embodiment/bus.py, plan task t13, spec target h16). This is a CONTRACT between embodiment/bus.py and the dashboard web app's own tests (plan task t17): both sides validate against these files, so the two cannot drift apart silently. This is a hand-rolled, minimal schema representation (not full JSON-Schema draft syntax) -- 'required' lists field names that MUST be present in an event's 'data' object; a JSON value of null still counts as present. Fields not listed under 'required' MAY be present -- extra fields are always allowed. See the per-kind *.json files in this directory for one full, valid example envelope per kind.",
+  "schemaVersion": 1,
+  "envelope": {
+    "required": ["v", "kind", "ts", "seq", "source", "data"],
+    "optional": ["gap"],
+    "types": {
+      "v": "integer",
+      "kind": "string (one of 'kinds' below)",
+      "ts": "string (RFC3339 UTC timestamp)",
+      "seq": "integer (monotonic per bus instance)",
+      "source": "string",
+      "data": "object",
+      "gap": "integer (present only when > 0; count of events this subscriber dropped since its last delivery)"
+    }
+  },
+  "kinds": {
+    "state": {
+      "required": ["component", "status"],
+      "note": "daemon up/down/voice-on. status is a short token, never free text."
+    },
+    "mic": {
+      "required": ["hot", "ear"],
+      "note": "hot: boolean. ear: which input ('local'/'remote'/etc, host-defined token)."
+    },
+    "turn": {
+      "required": ["phase", "step_count"],
+      "note": "phase: 'started'/'finished'. step_count: integer. degradation CODES only -- never text."
+    },
+    "transcript": {
+      "required": ["role", "text"],
+      "note": "SPEECH-CARRYING. role: 'user' or 'assistant'. text: the actual words. Only delivered to a Subscription that asked for this kind."
+    },
+    "reply": {
+      "required": ["text"],
+      "note": "SPEECH-CARRYING. text: Gwen's reply."
+    },
+    "degradation": {
+      "required": ["source", "code", "reason"],
+      "note": "the ONE folded shape (see embodiment.bus.fold_degradation). code and reason never carry speech, secrets, or raw attacker-controlled ids."
+    },
+    "features": {
+      "required": ["direction", "env", "level_db", "noise_floor_db", "zero_crossing_hz"],
+      "note": "the t8 audio feature frame, per direction. direction: 'in' or 'out'. env: base64 min/max envelope. zero_crossing_hz may be null. HIGH RATE (~30/s per direction) -- first kind dropped under subscriber back-pressure."
+    },
+    "clients": {
+      "required": ["count", "remote"],
+      "note": "how many dashboards are attached. count: integer. remote: integer (subset of count that are non-local)."
+    },
+    "heartbeat": {
+      "required": [],
+      "note": "emitted at a fixed interval (embodiment.bus.HEARTBEAT_INTERVAL_S). data is typically empty."
+    }
+  }
+}

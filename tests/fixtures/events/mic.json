@@ -1,0 +1,11 @@
+{
+  "v": 1,
+  "kind": "mic",
+  "ts": "2026-09-22T12:00:01.000Z",
+  "seq": 2,
+  "source": "app://embodiment",
+  "data": {
+    "hot": true,
+    "ear": "local"
+  }
+}

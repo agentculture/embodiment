@@ -88,6 +88,26 @@ SILENT_SWALLOWS: dict[tuple[str, str], str] = {
         "to None before the call). Mirrors events-cli's own 'safe to call from "
         "a finally' contract; there is no run left to degrade."
     ),
+    (
+        "bus.py",
+        "Bus.close",
+    ): (
+        "Teardown of an already-detached broker client (self._broker_client is "
+        "set to None before the call), same precedent as EventEmitter.close: "
+        "events-cli's own 'safe to call from a finally' contract, and there is "
+        "no run left to degrade. What close() actually did is reported on the "
+        "returned BusCloseReport regardless of which branch ran."
+    ),
+    (
+        "bus.py",
+        "Bus._degrade",
+    ): (
+        "The degradation is ALREADY appended to self.degradations before this "
+        "runs. Only the optional on_degrade notification hook's own failure is "
+        "swallowed here, same precedent as EventEmitter._degrade: notifying a "
+        "host about a broken notifier through the broken notifier is not "
+        "available."
+    ),
 }
 
 #: ``(module, qualified function) -> why None is the honest answer here.``
@@ -231,7 +251,7 @@ class TestNoSilentSwallow:
 
     def test_the_sanctioned_set_is_exactly_three(self) -> None:
         """Stated as a number so growth is visible in a diff, not just in a set."""
-        assert len(SILENT_SWALLOWS) == 3
+        assert len(SILENT_SWALLOWS) == 5
         assert {h.key for h in SILENT} == set(SILENT_SWALLOWS)
 
     def test_the_narrate_swallow_is_the_only_one_on_the_presence_pump(self) -> None:
