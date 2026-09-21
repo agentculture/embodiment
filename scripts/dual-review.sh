@@ -104,7 +104,10 @@ VERDICT: approve | changes-requested
 PROMPT
 
   call_qwen() { ( cd "$wt" && timeout "$timeout_s" qwen --approval-mode plan "$prompt" </dev/null ); }
-  call_pi()   { ( cd "$wt" && timeout "$timeout_s" pi -p --no-session --tools read,grep,find,ls "$prompt" </dev/null ); }
+  # pi runs in --mode json and its answer is extracted by pi-final-text.py: plain
+  # `pi -p` prints nothing (rc 0) when the reasoning model leaves its final text part
+  # empty, which cost three reviews before it was diagnosed.
+  call_pi()   { ( cd "$wt" && timeout "$timeout_s" pi -p --no-session --mode json --tools read,grep,find,ls "$prompt" </dev/null ) | python3 "$repo_root/scripts/pi-final-text.py"; }
 
   # One retry when a reviewer exits 0 with nothing to say (seen from pi on t4). The
   # attempt count is recorded, so a flaky reviewer shows up in the summary line.
