@@ -265,6 +265,14 @@ def bind_tools(
     tool author makes — registered tools that never reach the wire produce a
     presence that silently has no tools — and the marker is what lets
     :func:`embodiment.turn.turn` notice and record it.
+
+    **Bind last.** The marker lives on the callable this returns, so a host that
+    wraps the bound callable again afterwards (a lambda, a retry decorator, a
+    timing shim) hands ``turn`` something unmarked and gets a *false*
+    ``turn-tools-unbound`` record — the schemas do still reach the wire, but the
+    check cannot see it. Apply every other wrapper first and call this one last,
+    or copy the marker onto the outermost callable yourself with
+    ``setattr(outer, BOUND_REGISTRY_ATTR, registry)``.
     """
     reg = registry if registry is not None else ToolRegistry()
 

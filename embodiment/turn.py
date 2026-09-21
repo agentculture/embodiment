@@ -99,7 +99,13 @@ Never silence, never a raise
 completion and a suspected truncation all resolve the same way — a recorded
 :class:`TurnDegradation` on the returned result (constraint C3: nothing degrades
 silently) and a non-empty string to speak. :attr:`TurnResult.spoken` is never
-empty, which is the one promise a voice presence cannot afford to break.
+empty, which is the one promise a voice presence cannot afford to break — and
+it is enforced at ONE final point, :func:`_ensure_spoken`, rather than at each
+rung. Anything that resolves blank after ``.strip()`` — a whitespace-only
+completion, a truncated turn whose partial prose was whitespace, or a
+:attr:`TurnConfig.fallback_text` a host configured as ``"   "`` (truthy in
+Python, which is how this got in) — speaks :data:`FALLBACK_TEXT` and records
+:data:`DEGRADED_FALLBACK_BLANK`.
 
 Having nothing to say has two distinct causes and they get two distinct codes,
 because a host debugging them looks in different places:
@@ -128,6 +134,7 @@ __all__ = [
     "ROLE_SENSES",
     "DEGRADED_BUDGET_EXHAUSTED",
     "DEGRADED_EMPTY_COMPLETION",
+    "DEGRADED_FALLBACK_BLANK",
     "DEGRADED_TOOLS_UNBOUND",
     "DEGRADED_TRUNCATION_UNDETECTABLE",
     "DEGRADED_TRUNCATION_SUSPECTED",
@@ -170,6 +177,8 @@ DEGRADED_EMPTY_COMPLETION = "turn-empty-completion"
 #: A completion reached the configured token ceiling — see the module docstring
 #: on exactly what this proxy can and cannot tell.
 DEGRADED_TRUNCATION_SUSPECTED = "turn-truncation-suspected"
+#: The configured fallback was blank, so the built-in one was spoken.
+DEGRADED_FALLBACK_BLANK = "turn-fallback-blank"
 #: The step budget ran out with no prose to speak.
 DEGRADED_BUDGET_EXHAUSTED = "turn-budget-exhausted"
 #: The seam reported no token usage, so the ceiling proxy could not run.
@@ -219,7 +228,9 @@ class TurnConfig:
         max_steps: the loop's model-turn budget. Above one so a registered tool
             has room to run and be spoken about, while an empty registry still
             terminates in exactly one completion.
-        fallback_text: spoken when the turn produced nothing.
+        fallback_text: spoken when the turn produced nothing. A blank or
+            whitespace-only value is a misconfiguration: :data:`FALLBACK_TEXT`
+            is spoken instead and :data:`DEGRADED_FALLBACK_BLANK` is recorded.
         truncation_suffix: appended to partial prose on a suspected truncation.
         identity: the resolved identity, or ``None``. ``None`` leaves the system
             prompt byte-identical to *system_prompt*.
@@ -506,7 +517,24 @@ def _speak(
     was reached), *checked and clear* (usage was reported and stayed under it),
     and *uncheckable* (the seam reported no usage at all). Only the third is new
     to a reader, and it is the one that used to say nothing.
+
+    Whatever the rungs resolve to passes through :func:`_ensure_spoken`, the ONE
+    point at which the words are final.
     """
+    return _ensure_spoken(
+        _resolve(outcome, recorder, cfg, degradations, aborted=aborted), cfg, degradations
+    )
+
+
+def _resolve(
+    outcome: Optional[LoopOutcome],
+    recorder: _Recorder,
+    cfg: TurnConfig,
+    degradations: list[TurnDegradation],
+    *,
+    aborted: Optional[BaseException],
+) -> str:
+    """The rung ladder. Its answer is a candidate, not the final word."""
     prose = _prose(outcome, recorder, aborted=aborted)
     ceiling = recorder.hit_ceiling(cfg.max_tokens)
     if ceiling is not None:
@@ -540,7 +568,39 @@ def _speak(
     if prose:
         return prose
     degradations.append(_no_prose(outcome))
-    return cfg.fallback_text or FALLBACK_TEXT
+    return cfg.fallback_text
+
+
+def _ensure_spoken(
+    text: str,
+    cfg: TurnConfig,
+    degradations: list[TurnDegradation],
+) -> str:
+    """The ONE point where the words are final. Blank in, built-in fallback out.
+
+    Every rung above is a *candidate*. This is the gate, and it is deliberately
+    the only one: a check applied at the fallback lookup alone would still let
+    silence through from a whitespace-only completion, a truncation whose
+    partial prose is whitespace, or a blank
+    :attr:`TurnConfig.truncation_suffix`. ``"   "`` is truthy in Python, which
+    is precisely how the bug this exists to stop got in.
+
+    A blank result is always a host misconfiguration by the time it reaches
+    here, so it is recorded (constraint C3) rather than quietly repaired.
+    """
+    if text.strip():
+        return text
+    blank_config = not (cfg.fallback_text or "").strip()
+    cause = (
+        "the configured fallback_text is blank" if blank_config else "the resolved text was blank"
+    )
+    degradations.append(
+        TurnDegradation(
+            DEGRADED_FALLBACK_BLANK,
+            _short(f"{cause}, so the built-in fallback was spoken instead of silence"),
+        )
+    )
+    return FALLBACK_TEXT
 
 
 def _no_prose(outcome: Optional[LoopOutcome]) -> TurnDegradation:

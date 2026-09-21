@@ -29,6 +29,7 @@ from embodiment.tools import DEGRADED_TOOL_FAILED, ToolRegistry, bind_tools
 from embodiment.turn import (
     DEGRADED_BUDGET_EXHAUSTED,
     DEGRADED_EMPTY_COMPLETION,
+    DEGRADED_FALLBACK_BLANK,
     DEGRADED_SEAM_ABORTED,
     DEGRADED_TOOLS_UNBOUND,
     DEGRADED_TRUNCATION_SUSPECTED,
@@ -465,6 +466,196 @@ class TestBudgetExhaustionHasItsOwnCode:
     def test_a_genuinely_empty_completion_keeps_the_empty_code(self) -> None:
         result = turn("שלום", Scripted(_says("")))
         assert [d.code for d in result.degradations] == [DEGRADED_EMPTY_COMPLETION]
+
+
+# ── fix 4: a blank configured fallback must not become silence ────────────────
+
+
+class TestABlankFallbackNeverBecomesSilence:
+    """``cfg.fallback_text or FALLBACK_TEXT`` let a whitespace string through.
+
+    A whitespace string is truthy, so a host that configured ``"   "`` got a
+    turn that spoke three spaces — silence, which is the one thing this module
+    promises never to produce.
+    """
+
+    @pytest.mark.parametrize("blank", ["   ", "\n", "\t\t", "", " \n "])
+    def test_a_blank_configured_fallback_speaks_the_builtin_one(self, blank: str) -> None:
+        result = turn("שלום", Scripted(_says("")), config=TurnConfig(fallback_text=blank))
+        assert result.spoken == FALLBACK_TEXT
+        assert result.spoken.strip()
+
+    @pytest.mark.parametrize("blank", ["   ", "\n", ""])
+    def test_a_blank_configured_fallback_is_recorded_once(self, blank: str) -> None:
+        result = turn("שלום", Scripted(_says("")), config=TurnConfig(fallback_text=blank))
+        codes = [d.code for d in result.degradations]
+        assert codes.count(DEGRADED_FALLBACK_BLANK) == 1
+        assert DEGRADED_EMPTY_COMPLETION in codes
+
+    def test_the_reason_says_the_configured_fallback_was_blank(self) -> None:
+        result = turn("שלום", Scripted(_says("")), config=TurnConfig(fallback_text="  "))
+        reason = next(d.reason for d in result.degradations if d.code == DEGRADED_FALLBACK_BLANK)
+        assert "fallback_text" in reason
+        assert "blank" in reason
+
+    def test_a_usable_configured_fallback_records_nothing_about_being_blank(self) -> None:
+        cfg = TurnConfig(fallback_text="אין לי מה לומר.")
+        result = turn("שלום", Scripted(_says("")), config=cfg)
+        assert DEGRADED_FALLBACK_BLANK not in {d.code for d in result.degradations}
+        assert result.spoken == "אין לי מה לומר."
+
+    def test_a_whitespace_only_completion_is_not_spoken_as_words(self) -> None:
+        result = turn("שלום", Scripted(_says("   \n  ")))
+        assert result.spoken == FALLBACK_TEXT
+        assert DEGRADED_EMPTY_COMPLETION in {d.code for d in result.degradations}
+
+    def test_a_whitespace_only_completion_with_a_blank_fallback_still_speaks(self) -> None:
+        result = turn("שלום", Scripted(_says("  ")), config=TurnConfig(fallback_text="\t"))
+        assert result.spoken == FALLBACK_TEXT
+
+    def test_a_truncated_whitespace_only_completion_still_speaks(self) -> None:
+        result = turn(
+            "שלום",
+            Scripted(_says("   ", completion_tokens=32)),
+            config=TurnConfig(max_tokens=32, fallback_text=" "),
+        )
+        assert result.spoken == FALLBACK_TEXT
+        assert DEGRADED_TRUNCATION_SUSPECTED in {d.code for d in result.degradations}
+
+
+# ── the structural never-silent guard ─────────────────────────────────────────
+
+
+def _exit_clean() -> TurnResult:
+    return turn("שלום", Scripted(_says("שלום לך.")))
+
+
+def _exit_empty_completion() -> TurnResult:
+    return turn("שלום", Scripted(_says("")))
+
+
+def _exit_whitespace_only_completion() -> TurnResult:
+    return turn("שלום", Scripted(_says("  \n\t ")))
+
+
+def _exit_truncated_with_prose() -> TurnResult:
+    return turn(
+        "שלום", Scripted(_says("חצי", completion_tokens=16)), config=TurnConfig(max_tokens=16)
+    )
+
+
+def _exit_truncated_without_prose() -> TurnResult:
+    return turn("שלום", Scripted(_says("", completion_tokens=16)), config=TurnConfig(max_tokens=16))
+
+
+def _exit_truncated_whitespace_prose() -> TurnResult:
+    return turn(
+        "שלום", Scripted(_says(" ", completion_tokens=16)), config=TurnConfig(max_tokens=16)
+    )
+
+
+def _exit_seam_raises() -> TurnResult:
+    def dead(messages: list[dict[str, Any]]) -> ModelResponse:
+        raise ConnectionError("gateway is down")
+
+    return turn("שלום", dead)
+
+
+def _exit_seam_raises_after_speaking() -> TurnResult:
+    state = {"n": 0}
+
+    def flaky(messages: list[dict[str, Any]]) -> ModelResponse:
+        state["n"] += 1
+        if state["n"] == 1:
+            said = _calls("ping")
+            said.content = "רגע."
+            return said
+        raise ConnectionError("died mid-turn")
+
+    registry = ToolRegistry()
+    registry.register("ping", {}, lambda: "pong")
+    return turn("שלום", bind_tools(lambda m, *, tools: flaky(m), registry), tools=registry)
+
+
+def _exit_budget_exhausted() -> TurnResult:
+    registry = ToolRegistry()
+    registry.register("clock", {}, lambda: "12:00")
+    calls = {"n": 0}
+
+    def seam(messages: list[dict[str, Any]], *, tools: Any) -> ModelResponse:
+        calls["n"] += 1
+        return ModelResponse(
+            content="",
+            tool_calls=[ToolCall(id=f"c{calls['n']}", name="clock", arguments={})],
+            completion_tokens=3,
+        )
+
+    return turn(
+        "שלום",
+        bind_tools(seam, registry),
+        tools=registry,
+        config=TurnConfig(max_steps=3),
+    )
+
+
+def _exit_tool_raises() -> TurnResult:
+    def boom() -> str:
+        raise RuntimeError("kaboom")
+
+    registry = ToolRegistry()
+    registry.register("boom", {}, boom)
+    seam = Scripted(_calls("boom"), _says(""))
+    return turn("שלום", bind_tools(lambda m, *, tools: seam(m), registry), tools=registry)
+
+
+def _exit_blank_configured_fallback() -> TurnResult:
+    return turn("שלום", Scripted(_says("")), config=TurnConfig(fallback_text="   "))
+
+
+def _exit_blank_everything() -> TurnResult:
+    cfg = TurnConfig(fallback_text="\n", truncation_suffix=" ", max_tokens=16)
+    return turn("שלום", Scripted(_says("  ", completion_tokens=16)), config=cfg)
+
+
+EVERY_REACHABLE_EXIT = {
+    "clean": _exit_clean,
+    "empty-completion": _exit_empty_completion,
+    "whitespace-only-completion": _exit_whitespace_only_completion,
+    "truncated-with-prose": _exit_truncated_with_prose,
+    "truncated-without-prose": _exit_truncated_without_prose,
+    "truncated-whitespace-prose": _exit_truncated_whitespace_prose,
+    "seam-raises": _exit_seam_raises,
+    "seam-raises-after-speaking": _exit_seam_raises_after_speaking,
+    "budget-exhausted": _exit_budget_exhausted,
+    "tool-raises": _exit_tool_raises,
+    "blank-configured-fallback": _exit_blank_configured_fallback,
+    "blank-everything": _exit_blank_everything,
+}
+
+
+class TestSpokenIsNeverBlankOnAnyReachableExit:
+    """The module's one headline promise, swept across every exit it has.
+
+    Named for what it guards rather than for a mechanism, because the mechanism
+    is allowed to change and the promise is not: whatever happened, there are
+    words to say. A new exit belongs in :data:`EVERY_REACHABLE_EXIT`.
+    """
+
+    @pytest.mark.parametrize("name", sorted(EVERY_REACHABLE_EXIT))
+    def test_this_exit_still_speaks(self, name: str) -> None:
+        result = EVERY_REACHABLE_EXIT[name]()
+        assert result.spoken.strip(), f"{name} produced silence: {result.spoken!r}"
+
+    @pytest.mark.parametrize("name", sorted(EVERY_REACHABLE_EXIT))
+    def test_this_exit_never_raised(self, name: str) -> None:
+        assert isinstance(EVERY_REACHABLE_EXIT[name](), TurnResult)
+
+    def test_every_degrading_exit_recorded_something(self) -> None:
+        """Never-silence is worth nothing if the silence goes unexplained."""
+        for name, build in sorted(EVERY_REACHABLE_EXIT.items()):
+            if name == "clean":
+                continue
+            assert build().degradations, f"{name} degraded without a record"
 
 
 # ── never-raise ───────────────────────────────────────────────────────────────
