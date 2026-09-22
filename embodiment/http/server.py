@@ -240,8 +240,35 @@ _CONTROL_ROUTES = ("/api/voice/start", "/api/voice/stop", "/api/mic/mute")
 
 
 def default_dist_dir() -> Path:
-    """``<repo>/web/dist`` — where task ``t17`` builds the dashboard."""
-    return Path(__file__).resolve().parents[2] / "web" / "dist"
+    """Where the built dashboard is, in whichever layout this package is in.
+
+    The dashboard ships **inside** the package (task ``t19``, a hatch
+    force-include), so the build sits at two different depths depending on how
+    embodiment arrived:
+
+    * an installed wheel — ``<site-packages>/embodiment/web/dist``, one level
+      up from this module's own directory;
+    * a dev checkout — ``<repo>/web/dist``, two levels up, beside the package
+      rather than inside it.
+
+    Both are probed, installed first, and a candidate counts only when its
+    ``index.html`` exists: an empty ``web/dist`` left behind by a failed build
+    is not a dashboard. When neither is built the **dev-tree** path is
+    returned, so the recorded :data:`NO_DASHBOARD_CODE` state and
+    ``status()['dist_dir']`` still name somewhere a human would look rather
+    than a path that could never have existed.
+
+    Found by installing the real wheel, not by a test: resolving only the dev
+    depth meant every install reported no dashboard while the dashboard was
+    sitting inside the package.
+    """
+    here = Path(__file__).resolve()
+    installed = here.parents[1] / "web" / "dist"
+    dev_tree = here.parents[2] / "web" / "dist"
+    for candidate in (installed, dev_tree):
+        if (candidate / "index.html").is_file():
+            return candidate
+    return dev_tree
 
 
 def is_loopback_address(address: str) -> bool:

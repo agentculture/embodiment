@@ -996,3 +996,105 @@ class TestTheRealEventSourceRequest:
             assert "403 Forbidden" in answer.split("\r\n", 1)[0]
         finally:
             built.server.shutdown(2.0)
+
+
+class TestTheDefaultDistDirInBothLayouts:
+    """Round 3, found by installing the real wheel rather than by a test.
+
+    The dashboard ships INSIDE the package (t19, hatch force-include), so the
+    built tree sits at two different depths depending on how embodiment got
+    onto the machine:
+
+    * installed — ``<site-packages>/embodiment/web/dist``, one level up from
+      ``embodiment/http/``;
+    * dev checkout — ``<repo>/web/dist``, two levels up, beside the package
+      rather than inside it.
+
+    The first version only knew the dev depth, so an installed wheel resolved
+    ``<site-packages>/web/dist``, which does not exist, and every install
+    reported a no-dashboard state while the dashboard was sitting right
+    there. Both are probed now, installed first, and the dev path is the
+    answer when neither exists so the recorded state still names somewhere a
+    human would look.
+    """
+
+    @staticmethod
+    def _layout(root: Path, *, package_relative: bool, build: bool) -> Path:
+        """A fake tree, and the ``__file__`` this module would have in it."""
+        module = root / "embodiment" / "http" / "server.py"
+        module.parent.mkdir(parents=True, exist_ok=True)
+        module.write_text("# a stand-in for this module\n", encoding="utf-8")
+        dist = (root / "embodiment" if package_relative else root) / "web" / "dist"
+        if build:
+            dist.mkdir(parents=True, exist_ok=True)
+            (dist / "index.html").write_text("<!doctype html>built", encoding="utf-8")
+        return module
+
+    def test_an_installed_wheel_finds_the_dashboard_inside_the_package(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        module = self._layout(tmp_path / "site-packages", package_relative=True, build=True)
+        monkeypatch.setattr(s, "__file__", str(module))
+        found = s.default_dist_dir()
+        assert (found / "index.html").is_file()
+        assert found == tmp_path / "site-packages" / "embodiment" / "web" / "dist"
+
+    def test_a_dev_checkout_still_finds_the_dashboard_beside_the_package(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        module = self._layout(tmp_path / "repo", package_relative=False, build=True)
+        monkeypatch.setattr(s, "__file__", str(module))
+        found = s.default_dist_dir()
+        assert (found / "index.html").is_file()
+        assert found == tmp_path / "repo" / "web" / "dist"
+
+    def test_with_no_build_anywhere_it_names_the_dev_tree(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        module = self._layout(tmp_path / "repo", package_relative=False, build=False)
+        monkeypatch.setattr(s, "__file__", str(module))
+        assert s.default_dist_dir() == tmp_path / "repo" / "web" / "dist"
+
+    def test_a_directory_without_an_index_is_not_a_build(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """An empty ``web/dist`` left by a failed build is not a dashboard."""
+        module = self._layout(tmp_path / "site-packages", package_relative=True, build=False)
+        (tmp_path / "site-packages" / "embodiment" / "web" / "dist").mkdir(parents=True)
+        monkeypatch.setattr(s, "__file__", str(module))
+        assert s.default_dist_dir() == tmp_path / "site-packages" / "web" / "dist"
+
+    def test_the_installed_layout_wins_when_both_are_built(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        module = self._layout(tmp_path / "root", package_relative=True, build=True)
+        self._layout(tmp_path / "root", package_relative=False, build=True)
+        monkeypatch.setattr(s, "__file__", str(module))
+        assert s.default_dist_dir() == tmp_path / "root" / "embodiment" / "web" / "dist"
+
+    def test_the_real_module_resolves_without_monkeypatching(self) -> None:
+        found = s.default_dist_dir()
+        assert found.name == "dist"
+        assert found.parent.name == "web"
+        assert found.is_absolute()
+
+    def test_a_server_with_no_dist_dir_uses_the_resolved_default(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The resolution is what an unconfigured DashboardServer actually serves."""
+        module = self._layout(tmp_path / "site-packages", package_relative=True, build=True)
+        monkeypatch.setattr(s, "__file__", str(module))
+        port = free_port()
+        server = s.DashboardServer(
+            config=s.ServerConfig(bind="127.0.0.1", port=port, dist_dir=None),
+            guard=g.Guard(g.GuardConfig(install_secret=MARKER_SECRET)),
+        )
+        server.start()
+        built = Harness(server, port)
+        try:
+            status, body = built.request("GET", "/", hdrs=built.headers())
+            assert status == 200
+            assert b"built" in body
+            assert server.status()["dashboard"] == "present"
+        finally:
+            server.shutdown(2.0)
