@@ -1233,6 +1233,35 @@ class TestDeclaredSampleRate:
 
         assert app_module.ENDPOINT_PLAYBACK_QUIET == DEGRADED_PLAYBACK_QUIET
 
+    def test_status_carries_the_ambiguous_counts(self, harness: Any) -> None:
+        """t7 round 10: a name match refused because the dump had not settled."""
+
+        class Ambiguous(FakeEndpoint):
+            def status(self) -> dict[str, object]:
+                return {
+                    **super().status(),
+                    "playback_target_verified": True,
+                    "capture_target_verified": True,
+                    "playback_target_ambiguous_count": 2,
+                    "capture_target_ambiguous_count": 0,
+                }
+
+        h = harness()
+        h.app.attach_ear("host", Ambiguous())
+        ear = h.app.status()["ear"]
+        assert ear["playback_target_ambiguous_count"] == 2
+        assert ear["capture_target_ambiguous_count"] == 0
+        # A count beside a True verdict still matters: the answer took more
+        # than one look, and that is worth seeing rather than smoothing over.
+        assert ear["playback_target_verified"] is True
+
+    def test_an_endpoint_that_cannot_count_ambiguity_reads_none(self, harness: Any) -> None:
+        h = harness()
+        h.app.attach_ear("browser", FakeEndpoint())
+        ear = h.app.status()["ear"]
+        assert ear["playback_target_ambiguous_count"] is None
+        assert ear["capture_target_ambiguous_count"] is None
+
     def test_an_endpoint_that_does_not_verify_reads_none_not_false(self, harness: Any) -> None:
         """``None`` is "not applicable", which is not the same claim as "wrong"."""
         h = harness()

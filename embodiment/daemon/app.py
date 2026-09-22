@@ -2384,7 +2384,7 @@ def _endpoint_rate_or_none(endpoint: Any) -> Optional[int]:
     return rate if rate > 0 else None
 
 
-def _target_verification(endpoint: Any) -> dict[str, Optional[bool]]:
+def _target_verification(endpoint: Any) -> dict[str, Any]:
     """The endpoint's verdict on whether its streams reached the right node.
 
     Four fields, two questions, and the difference between them matters:
@@ -2400,18 +2400,28 @@ def _target_verification(endpoint: Any) -> dict[str, Optional[bool]]:
       asked at all (a browser ear, a :class:`NullEndpoint`, or a player that
       has not started). ``None`` is "not applicable", which is a different
       claim from ``False`` — "asked, and it is linked somewhere else".
+    * ``capture_target_ambiguous_count`` / ``playback_target_ambiguous_count``
+      — **how often the question could not be answered** (t7 round 10): a
+      name match refused because the pipewire dump had not settled, which is
+      what the acoustic self-test produces when the monitor's own stream runs
+      beside Gwen's player. ``None`` from an endpoint that does not count
+      them. A non-zero count beside a ``True`` verdict is still worth seeing:
+      it says the answer took more than one look.
 
     The node NAME is never copied into any of them: a target is reported as a
-    boolean, and the name stays inside the endpoint that resolved it.
-    Never raises.
+    boolean or a count, and the name stays inside the endpoint that resolved
+    it. Never raises.
     """
     probed = _probe(endpoint) or {}
-    out: dict[str, Optional[bool]] = {}
+    out: dict[str, Any] = {}
     for key in ("playback_target_verified", "capture_target_verified"):
         value = probed.get(key)
         verdict = value if isinstance(value, bool) else None
         out[key] = verdict
         out[key.replace("_verified", "")] = verdict is not None
+    for key in ("playback_target_ambiguous_count", "capture_target_ambiguous_count"):
+        count = probed.get(key)
+        out[key] = count if isinstance(count, int) and not isinstance(count, bool) else None
     return out
 
 
