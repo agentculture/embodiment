@@ -688,6 +688,51 @@ class TestDefaultAskDetector:
 # ── round 2, point 2: memory.remember raising must never propagate ─────────
 
 
+class TestTriggerPunctuation:
+    """A transcriber's comma between the trigger and its ש (t15 round 6).
+
+    Measured on the rig: the operator opened with «תזכרי ש…» several times and
+    whisper wrote one of them with a comma. Both are the same breath and the
+    same ask, and without this the comma made the trigger a clause of its own
+    — leaving «תזכרי» alone as the only eligible clause, matching nothing.
+
+    Added from ``realtime/t15`` with the coordinator's go-ahead; the module is
+    t11's and everything else about the detector is unchanged.
+    """
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "תזכרי שהחלב נגמר",
+            "תזכרי, שהחלב נגמר",
+            "תזכרי , שהחלב נגמר",
+            "תזכרי. שהחלב נגמר",
+            "גוון, תזכרי, שהחלב נגמר",
+            "זכרי, שהחלב נגמר",
+        ],
+    )
+    def test_the_same_ask_however_it_is_punctuated(self, text: str) -> None:
+        assert sess.default_ask_detector(text) == "החלב נגמר"
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "לא תזכרי, שהחלב נגמר",
+            "אל תזכרי, שהחלב נגמר",
+            "תזכרי, מה קרה",
+            "תזכרי, ש",
+            "האם תזכרי, שהחלב נגמר?",
+        ],
+    )
+    def test_what_it_must_not_make_eligible(self, text: str) -> None:
+        assert sess.default_ask_detector(text) is None
+
+    def test_it_cannot_join_two_unrelated_clauses(self) -> None:
+        """The narrowness is the point: only trigger-then-ש is rewritten."""
+        assert sess.default_ask_detector("בוקר טוב, שמח לראות אותך") is None
+        assert sess.default_ask_detector("תודה, שבאת") is None
+
+
 class TestMemoryRaises:
     def test_add_user_returns_refused_outcome_not_an_exception(self, tmp_path: Path) -> None:
         state = _state(tmp_path)
