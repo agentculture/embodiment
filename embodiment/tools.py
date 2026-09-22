@@ -42,10 +42,12 @@ it.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
 from embodiment.loop import ToolError, ToolOutcome, UnknownToolError
+from embodiment.safe_reason import describe_exception, name_fingerprint, safe_label
 
 __all__ = [
     "BOUND_REGISTRY_ATTR",
@@ -104,6 +106,13 @@ class ToolSpec:
         description: the one-line description shown to the model.
         finishes: whether a successful call ends the turn. ``False`` (the
             default) feeds the result back and lets the model speak after it.
+        codes: the fault names this tool may use when it raises — its whole
+            vocabulary, fixed HERE, before anything runs. A tool that wants to
+            tell the model *why* it failed sets ``exc.code`` to one of these;
+            anything outside the set is recorded as ``undeclared-code``. The
+            set is declared at registration rather than supplied at raise time
+            because that is the only point at which no user has spoken yet: a
+            runtime string cannot widen a vocabulary that was already closed.
     """
 
     name: str
@@ -111,6 +120,7 @@ class ToolSpec:
     fn: ToolFn
     description: str = ""
     finishes: bool = False
+    codes: frozenset[str] = frozenset()
 
     def schema(self) -> dict[str, Any]:
         """This tool as one OpenAI-compatible ``tools`` entry."""
@@ -146,8 +156,14 @@ class ToolRegistry:
         *,
         description: str = "",
         finishes: bool = False,
+        codes: Iterable[str] = (),
     ) -> ToolSpec:
         """Register one tool and return its :class:`ToolSpec`.
+
+        *codes* declares the fault names this tool may use. See
+        :class:`ToolSpec`. They are restricted to
+        :data:`~embodiment.safe_reason.LABEL_CHARSET` here, so a declared name
+        is renderable into a record by construction.
 
         Raises:
             ValueError: on a blank name or a name already registered. A silently
@@ -165,6 +181,7 @@ class ToolRegistry:
             fn=fn,
             description=description,
             finishes=finishes,
+            codes=frozenset(safe_label(code) for code in codes),
         )
         self.specs[clean] = spec
         return spec
@@ -177,6 +194,7 @@ class ToolRegistry:
             spec.fn,
             description=spec.description,
             finishes=spec.finishes,
+            codes=spec.codes,
         )
 
     # ── introspection ─────────────────────────────────────────────────────
@@ -222,7 +240,20 @@ class ToolRegistry:
         """
         spec = self.specs.get(name)
         if spec is None:
-            self._degrade(DEGRADED_TOOL_UNKNOWN, f"{name}: not registered")
+            # An UNREGISTERED name has no host provenance: the model invented
+            # it, so it is attacker-controlled data, and `safe_label` would
+            # make it structurally safe without making it contentless (a
+            # charset-clean string passes through whole). So the RECORD gets a
+            # fingerprint — enough to correlate a model that keeps calling the
+            # same imaginary tool, carrying none of its text. The model still
+            # receives the name it used, in the error it self-corrects from;
+            # withholding it there would break self-correction to protect the
+            # model from a string it wrote itself.
+            self._degrade(
+                DEGRADED_TOOL_UNKNOWN,
+                f"not registered (name fp:{name_fingerprint(name)}, "
+                f"{len(self.specs)} tools registered)",
+            )
             raise UnknownToolError(f"unknown tool: {name}")
         try:
             value = spec.fn(**dict(arguments or {}))
@@ -231,8 +262,21 @@ class ToolRegistry:
             # nothing about. It is neither swallowed nor allowed to abort the
             # turn — the degradation is recorded first (C3), then the failure is
             # re-shaped into the executor contract the loop contains.
-            self._degrade(DEGRADED_TOOL_FAILED, f"{name}: {type(exc).__name__}: {exc}")
-            raise ToolError(f"{name} failed: {type(exc).__name__}: {exc}") from exc
+            # A tool's ARGUMENTS are the user's words, and ordinary defensive
+            # code quotes them: ``ValueError(f"cannot handle {kwargs}")``.
+            # Interpolating the message here put the user's turn into a
+            # degradation record and into the ToolError the loop shows the
+            # model. Both now carry structured facts only. ``name`` is a
+            # REGISTERED name — host-chosen, so it is trusted content — and is
+            # still restricted, because a registry is host code too.
+            # The tool's DECLARED vocabulary, and nothing else, is what may
+            # name the fault. A free-text channel was tried and removed: a
+            # restricted string is structurally safe but not contentless, so
+            # `f"bad-{city}"` went through whole. A set fixed at registration
+            # cannot be widened by anything the user says.
+            described = describe_exception(exc, declared_codes=spec.codes)
+            self._degrade(DEGRADED_TOOL_FAILED, f"{safe_label(name)}: {described}")
+            raise ToolError(f"{safe_label(name)} failed: {described}") from exc
         result = "" if value is None else str(value)
         return ToolOutcome(
             result=result,
