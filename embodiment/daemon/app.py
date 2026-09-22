@@ -132,7 +132,7 @@ from embodiment.session import Session
 from embodiment.tools import ToolRegistry, bind_tools
 from embodiment.turn import SYSTEM_PROMPT, TurnConfig, TurnResult
 from embodiment.turn import turn as run_one_turn
-from embodiment.voice import Voice, VoiceConfig, http_synthesize
+from embodiment.voice import BARGE_IN_BOUND_S, Voice, VoiceConfig, http_synthesize
 
 __all__ = [
     "APP_SOURCE",
@@ -144,6 +144,10 @@ __all__ = [
     "APP_BOOTSTRAP_DEGRADED",
     "APP_CAPTURE_FAILED",
     "APP_FRAMES_NO_SESSION",
+    "APP_EAR_TEARDOWN_TIMEOUT",
+    "APP_BARGE_IN_STOP_TIMEOUT",
+    "TEARDOWN_DEADLINE_S",
+    "BARGE_IN_STOP_BOUND_S",
     "APP_RECALL_FAILED",
     "APP_RECALL_LEXICAL_BLIND",
     "ENDPOINT_PLAYBACK_QUIET",
@@ -256,6 +260,26 @@ SUMMARY_MAX_TOKENS = 300
 #: narrow enough not to fire on ordinary speech.
 _ASK_STEMS: tuple[str, ...] = ("תזכר", "זכר", "remember", "don't forget", "dont forget")
 
+#: The whole ear teardown's bound, in seconds — stopping capture, re-pointing
+#: the voice, detaching and closing one endpoint. **Derived from what it
+#: bounds**: those are device calls measured in tens of milliseconds, and the
+#: host endpoint's own close report on this rig runs 0.09–0.16 s, so 1.0 s is
+#: roughly six times the measured worst case. It is not a performance target;
+#: it is the point past which a handover stops waiting for a device that is
+#: not answering, because the operator asked for a different ear and holding
+#: the ear lock for a dead one serves nobody.
+TEARDOWN_DEADLINE_S = 1.0
+
+#: How long :meth:`DaemonApp._barge_in` waits for the speaker to actually
+#: stop, in seconds. **Derived from the bound the voice itself states**
+#: (:data:`embodiment.voice.BARGE_IN_BOUND_S`) plus a small margin for the
+#: hand-off to the helper thread — a waiter must not expire before the thing
+#: it waits on was allowed to finish, which is the mistake the ears-close
+#: clock already made once. The measured reality is far under it: t7 round 5
+#: puts the endpoint's own stop at 1 ms.
+BARGE_IN_STOP_MARGIN_S = 0.05
+BARGE_IN_STOP_BOUND_S = BARGE_IN_BOUND_S + BARGE_IN_STOP_MARGIN_S
+
 #: How long a silence the warm-up plays at attach, in seconds. A **judgement
 #: call**: long enough that the endpoint really starts its player (and so
 #: really runs its link check), short enough to be inaudible and to cost
@@ -318,6 +342,12 @@ APP_EAR_DETACH_FAILED = "app-ear-detach-failed"
 APP_CAPTURE_FAILED = "app-capture-failed"
 #: A captured frame arrived with no realtime session to send it to.
 APP_FRAMES_NO_SESSION = "app-frames-no-session"
+#: An ear's teardown did not finish inside :data:`TEARDOWN_DEADLINE_S`. The
+#: handover went ahead anyway; the endpoint is kept for a later close to retry.
+APP_EAR_TEARDOWN_TIMEOUT = "app-ear-teardown-timeout"
+#: The speaker did not stop inside :data:`BARGE_IN_STOP_BOUND_S`. The turn is
+#: already marked superseded, so the reply will not be spoken either way.
+APP_BARGE_IN_STOP_TIMEOUT = "app-barge-in-stop-timeout"
 
 #: A recall, or the render of one, failed outright.
 APP_RECALL_FAILED = "app-recall-failed"
@@ -638,6 +668,9 @@ class DaemonApp:
         self._handovers = 0
         self._refusals = 0
         self._frames_dropped_no_session = 0
+        self._teardown_timeouts = 0
+        self._unreaped_endpoints: list[Any] = []
+        self._barge_in_stop_timeouts = 0
         self._mute_intent = False
         self._warmups = 0
         self._warmup_failures = 0
@@ -836,7 +869,11 @@ class DaemonApp:
             share = self._share(started, budget, fraction)
             return self._bounded(lambda: call(share), share)
 
-        endpoint_closed = step(0.20, lambda d: self.detach_ear(publish=False).attached is False)
+        endpoint_closed = step(
+            0.20,
+            lambda d: self.detach_ear(publish=False, deadline=d).attached is False
+            and self._reap_endpoints(d),
+        )
         ears_stopped = step(_EARS_STEP_FRACTION, self._stop_ears)
         turn_stopped = step(0.50, self._stop_turn_thread)
         abandoned = self._turn_queue.qsize()
@@ -959,13 +996,15 @@ class DaemonApp:
                 ear=ear, attached=True, preempted=previous is not None, previous=previous
             )
 
-    def detach_ear(self, name: object = None, *, publish: bool = True) -> EarHandover:
+    def detach_ear(
+        self, name: object = None, *, publish: bool = True, deadline: Optional[float] = None
+    ) -> EarHandover:
         """Drop the active ear. Idempotent; never raises."""
         with self._ear_lock:
             previous = self._ear_name
             if previous is None:
                 return EarHandover(ear="", attached=False, previous=None, reason="no ear")
-            self._teardown_ear()
+            self._teardown_ear(deadline)
             if publish:
                 self._publish(
                     "state",
@@ -1124,29 +1163,86 @@ class DaemonApp:
                 source="endpoint",
             )
 
-    def _teardown_ear(self) -> None:
-        """Stop the current ear completely. Every failure is recorded, none raised."""
+    def _teardown_ear(self, deadline: Optional[float] = None) -> None:
+        """Stop the current ear, within a bound. Every failure recorded, none raised.
+
+        Bounded because it is not only reached from :meth:`close`: a handover
+        runs it on the attaching thread, holding the ear lock, and an endpoint
+        whose ``stop_capture`` blocks would hold that lock for as long as the
+        device felt like it. The operator asked for a different ear; waiting
+        for a dead one serves nobody.
+
+        What the bookkeeping does FIRST is what makes giving up safe: the
+        generation is bumped and ``_ear_name``/``_ear_endpoint`` cleared
+        before any endpoint call, so a hung endpoint's late frames are already
+        stale, ``status()`` never touches it, and nothing routes to it again.
+        An endpoint that overruns is recorded
+        (:data:`APP_EAR_TEARDOWN_TIMEOUT`) and kept on the unreaped list for a
+        later :meth:`close` to retry — the same shape t7's endpoint uses for a
+        child it could not reap.
+        """
         endpoint, ear = self._ear_endpoint, self._ear_name or ""
         self._ear_name = None
         self._ear_endpoint = None
         self._generation += 1
         voice = self._voice
         if voice is not None:
-            # The voice outlives the ear: it is pointed at a NullEndpoint
-            # rather than closed, so a reply with no ear attached is still
-            # PUBLISHED through the one code path that publishes replies, and
-            # the next attach costs a re-point instead of a rebuild.
             self._fold_voice(voice)
-            self._safely(
-                lambda: voice.set_endpoint(NullEndpoint()),
-                APP_EAR_DETACH_FAILED,
-                f"{ear} voice",
-            )
-        if endpoint is None:
+
+        def work() -> bool:
+            if voice is not None:
+                # The voice outlives the ear: it is pointed at a NullEndpoint
+                # rather than closed, so a reply with no ear attached is still
+                # PUBLISHED through the one code path that publishes replies,
+                # and the next attach costs a re-point instead of a rebuild.
+                # Inside the bound because re-pointing stops the OLD endpoint,
+                # which is exactly the call that can hang.
+                self._safely(
+                    lambda: voice.set_endpoint(NullEndpoint()),
+                    APP_EAR_DETACH_FAILED,
+                    f"{ear} voice",
+                )
+            if endpoint is None:
+                return True
+            self._safely(endpoint.stop_capture, APP_EAR_DETACH_FAILED, ear)
+            self._safely(endpoint.detach, APP_EAR_DETACH_FAILED, ear)
+            self._safely(lambda: endpoint.close(TEARDOWN_DEADLINE_S), APP_EAR_DETACH_FAILED, ear)
+            return True
+
+        bound = TEARDOWN_DEADLINE_S if deadline is None else max(0.05, float(deadline))
+        if self._bounded(work, bound):
             return
-        self._safely(endpoint.stop_capture, APP_EAR_DETACH_FAILED, ear)
-        self._safely(endpoint.detach, APP_EAR_DETACH_FAILED, ear)
-        self._safely(lambda: endpoint.close(1.0), APP_EAR_DETACH_FAILED, ear)
+        with self._lock:
+            self._teardown_timeouts += 1
+            if endpoint is not None:
+                self._unreaped_endpoints.append(endpoint)
+        self._record(
+            APP_EAR_TEARDOWN_TIMEOUT,
+            f"{_safe_name(ear)} did not stop inside {bound}s; kept for a later close",
+        )
+
+    def _reap_endpoints(self, deadline: float) -> bool:
+        """Retry the endpoints a handover had to give up on. Never raises."""
+        with self._lock:
+            pending, self._unreaped_endpoints = self._unreaped_endpoints, []
+        if not pending:
+            return True
+        share = max(0.05, float(deadline) / len(pending))
+        reaped = True
+        for endpoint in pending:
+
+            def close_one(ep: Any = endpoint) -> bool:
+                # Always True: whether the close RAISED is recorded by
+                # _safely, and is a different fact from whether it RETURNED.
+                # Only the second one is what this bound is asking about.
+                self._safely(lambda: ep.close(share), APP_EAR_DETACH_FAILED, "unreaped")
+                return True
+
+            if not self._bounded(close_one, share):
+                reaped = False
+                with self._lock:
+                    self._unreaped_endpoints.append(endpoint)
+        return reaped
 
     def _safely(self, call: Callable[[], Any], code: str, what: str) -> bool:
         """Run *call*, recording any failure under *code*. Never raises."""
@@ -1949,7 +2045,29 @@ class DaemonApp:
                 self._record(APP_CAPTURE_FAILED, f"playing: {_describe(exc)}")
         if voice is None or not (speaking or playing):
             return
-        self._safely(voice.on_speech_started, APP_TURN_FAILED, "barge-in")
+
+        def stop_speaking() -> bool:
+            # Always True for the same reason as _reap_endpoints: a stop that
+            # RAISED is recorded by _safely; this bound asks only whether it
+            # RETURNED, and conflating the two would report a timeout for a
+            # speaker that answered immediately with an error.
+            self._safely(voice.on_speech_started, APP_TURN_FAILED, "barge-in")
+            return True
+
+        if not self._bounded(stop_speaking, BARGE_IN_STOP_BOUND_S):
+            # The speaker did not stop in the time the VOICE says it needs.
+            # Recorded and counted, and then we carry on: this runs on the
+            # ears thread, and a thread parked on a device that will not
+            # answer is a daemon that has stopped listening — a far worse
+            # outcome than a reply that keeps playing for a moment. The turn
+            # is already marked superseded, so the reply will not be spoken.
+            with self._lock:
+                self._barge_in_stop_timeouts += 1
+            self._record(
+                APP_BARGE_IN_STOP_TIMEOUT,
+                f"the speaker did not stop inside {BARGE_IN_STOP_BOUND_S}s",
+                once=True,
+            )
         self._fold_voice(voice)
 
     def _supersede_turn_in_flight(self) -> None:
@@ -2234,6 +2352,7 @@ class DaemonApp:
                 "completed": self._turns_completed,
                 "in_flight": self._turns_in_flight,
                 "superseded": self._turns_superseded,
+                "barge_in_stop_timeouts": self._barge_in_stop_timeouts,
                 "dropped": self._turns_dropped,
                 "failed": self._turns_failed,
                 "queued": self._turn_queue.qsize(),
@@ -2287,6 +2406,8 @@ class DaemonApp:
                 # listening to it.
                 **_target_verification(self._ear_endpoint),
                 **_playback_conditions(self._ear_endpoint),
+                "teardown_timeouts": self._teardown_timeouts,
+                "unreaped_endpoints": len(self._unreaped_endpoints),
                 "warmups": self._warmups,
                 "warmup_failures": self._warmup_failures,
                 "declared_sample_rate": self._ears_rate,

@@ -1947,6 +1947,129 @@ class TestReviewQuestions:
         assert handover.attached is True, "a raising teardown blocked the handover"
         assert app_module.APP_EAR_DETACH_FAILED in h.ledger_codes()
 
+    # Round 10 — the two unbounded waits Q2 and Q3 named.
+
+    def test_a_hanging_teardown_does_not_hold_up_a_handover(self, harness: Any) -> None:
+        """Q2's remainder, closed: the operator asked for a different ear."""
+
+        class Hanging(FakeEndpoint):
+            def stop_capture(self) -> None:
+                time.sleep(30)
+
+        h = harness(config=AppConfig(preempt_ear=True, poll_interval_s=0.01))
+        hung = Hanging(name="host")
+        h.app.attach_ear("host", hung)
+        second = FakeEndpoint(name="browser")
+
+        started = time.monotonic()
+        handover = h.app.attach_ear("browser", second)
+        elapsed = time.monotonic() - started
+
+        assert handover.attached is True
+        assert elapsed < app_module.TEARDOWN_DEADLINE_S + 2.0, elapsed
+        assert app_module.APP_EAR_TEARDOWN_TIMEOUT in h.ledger_codes()
+        ear = h.app.status()["ear"]
+        assert ear["active"] == "browser"
+        assert ear["teardown_timeouts"] == 1
+        assert ear["unreaped_endpoints"] == 1
+        assert second.capturing is True, "the new ear never started"
+
+    def test_an_unreaped_endpoint_is_retried_at_close(self, harness: Any) -> None:
+        """Kept, not forgotten — the shape t7 uses for a child it could not reap."""
+
+        class SlowOnce(FakeEndpoint):
+            def __init__(self, **kwargs: Any) -> None:
+                super().__init__(**kwargs)
+                self.closes = 0
+
+            def stop_capture(self) -> None:
+                time.sleep(30)
+
+            def close(self, deadline: float) -> Any:
+                self.closes += 1
+                return super().close(deadline)
+
+        h = harness(config=AppConfig(preempt_ear=True, poll_interval_s=0.01))
+        hung = SlowOnce(name="host")
+        h.app.attach_ear("host", hung)
+        h.app.attach_ear("browser", FakeEndpoint(name="browser"))
+        assert h.app.status()["ear"]["unreaped_endpoints"] == 1
+
+        h.app.close(deadline=4.0)
+
+        assert hung.closes >= 1, "the unreaped endpoint was never retried"
+        assert h.app.status()["ear"]["unreaped_endpoints"] == 0
+
+    def test_a_teardown_that_answers_is_not_recorded_as_a_timeout(self, harness: Any) -> None:
+        h = harness(config=AppConfig(preempt_ear=True, poll_interval_s=0.01))
+        h.app.attach_ear("host", FakeEndpoint(name="host"))
+        h.app.attach_ear("browser", FakeEndpoint(name="browser"))
+        ear = h.app.status()["ear"]
+        assert ear["teardown_timeouts"] == 0
+        assert ear["unreaped_endpoints"] == 0
+        assert app_module.APP_EAR_TEARDOWN_TIMEOUT not in h.ledger_codes()
+
+    def test_a_hanging_speaker_does_not_park_the_ears_thread(self, harness: Any) -> None:
+        """Q3 closed: the bound is the voice's own, and the ear keeps listening."""
+
+        class HangingVoice:
+            feature_frames: list[dict[str, object]] = []
+            degradations: list[Any] = []
+            speaking = True
+
+            def on_speech_started(self, event: object = None) -> int:
+                time.sleep(30)
+                return 0
+
+            def speak(self, text: str) -> Any:
+                return SimpleNamespace(to_dict=lambda: {})
+
+            def set_endpoint(self, endpoint: Any) -> None:
+                return None
+
+            def drain_features(self, max_n: int = 256) -> list[dict[str, object]]:
+                return []
+
+            def close(self, deadline: float = 2.0) -> Any:
+                return SimpleNamespace(to_dict=lambda: {})
+
+            def status(self) -> dict[str, object]:
+                return {}
+
+        h = harness()
+        h.app._voice_factory = lambda endpoint: HangingVoice()
+        h.app.attach_ear("host", FakeEndpoint())
+
+        started = time.monotonic()
+        h.app._on_event(wire.SpeechStarted(item_id="i1"))
+        elapsed = time.monotonic() - started
+
+        assert elapsed < app_module.BARGE_IN_STOP_BOUND_S + 1.0, elapsed
+        assert app_module.APP_BARGE_IN_STOP_TIMEOUT in h.ledger_codes()
+        assert h.app.status()["turns"]["barge_in_stop_timeouts"] == 1
+
+        # and the ears thread carries on: the next event is still classified
+        h.app._on_event(wire.TranscriptionCompleted(text=SPEECH, item_id="i2"))
+        assert h.app.status()["transcripts"]["received"] == 1
+
+    def test_the_barge_in_bound_comes_from_the_voices_own(self) -> None:
+        """Derived, not invented — and a waiter must outlast what it waits on."""
+        from embodiment.voice import BARGE_IN_BOUND_S
+
+        assert app_module.BARGE_IN_STOP_BOUND_S > BARGE_IN_BOUND_S
+        assert app_module.BARGE_IN_STOP_BOUND_S == (
+            BARGE_IN_BOUND_S + app_module.BARGE_IN_STOP_MARGIN_S
+        )
+
+    def test_a_speaker_that_stops_promptly_records_nothing(self, harness: Any) -> None:
+        endpoint = FakeEndpoint()
+        h = harness(endpoints=lambda: endpoint)
+        h.app.start()
+        endpoint._playing = True
+        h.app._on_event(wire.SpeechStarted(item_id="i1"))
+        assert app_module.APP_BARGE_IN_STOP_TIMEOUT not in h.ledger_codes()
+        assert h.app.status()["turns"]["barge_in_stop_timeouts"] == 0
+
     # Q8 — the recall mode is memory's answer, not a guess.
 
     def test_q8_the_reported_mode_is_the_one_memory_returned(self, harness: Any) -> None:
