@@ -134,7 +134,7 @@ from embodiment.realtime import wire
 from embodiment.realtime.client import RealtimeConfig, RealtimeEars
 from embodiment.session import ASK_RECORD_TYPE, Session
 from embodiment.tools import ToolRegistry, bind_tools
-from embodiment.turn import SYSTEM_PROMPT, TurnConfig, TurnResult
+from embodiment.turn import FALLBACK_TEXT, SYSTEM_PROMPT, TurnConfig, TurnResult
 from embodiment.turn import turn as run_one_turn
 from embodiment.voice import BARGE_IN_BOUND_S, Voice, VoiceConfig, http_synthesize
 
@@ -349,7 +349,9 @@ REMEMBER_TOOL_PROMPT = (
     "כשהמשתמש מבקש ממך לשכוח משהו, קראי לכלי forget עם מזהה הרשומה — הוא מופיע "
     "כ־id= ברשומה שנזכרה למעלה, או חוזר מהכלי remember. "
     "לעולם אל תגידי שזכרת או ששכחת משהו אלא אם הכלי החזיר ok. "
-    "אם אין רשומה מתאימה לשכוח, אמרי שלא מצאת אותה."
+    "אם אין רשומה מתאימה לשכוח, אמרי שלא מצאת אותה. "
+    "אחרי שהכלי החזיר ok, עני משפט אחד קצר בעברית שמאשר מה נשמר או נשכח — "
+    "תמיד בעברית מדוברת, אף פעם לא באנגלית ולא במילה כמו ok."
 )
 
 #: The tool the model calls to forget something (decision 18, deviation
@@ -376,6 +378,28 @@ FORGET_TOOL_DESCRIPTION = (
     "record, or the id remember returned."
 )
 FORGET_ID_DESCRIPTION = "The record id to forget, exactly as shown (id=...)."
+
+#: What the daemon says itself when the reply that followed a *successful*
+#: tool round has nothing this voice can speak. Found live during ``t21``
+#: step 2: five of five asks were stored and the room heard silence, because
+#: the model answered the tool result with two Latin letters — speakable by
+#: :func:`embodiment.turn.is_speakable`'s definition (they are letters),
+#: silence by this rig's (the synthesiser is Hebrew and returned no bytes).
+#: One sentence per tool, fixed text rather than a second model call: the
+#: turn has already spent its budget, and a confirmation that itself needs
+#: the gateway to work is no floor at all.
+TOOL_CONFIRMATION = {REMEMBER_TOOL_NAME: "שמרתי.", FORGET_TOOL_NAME: "שכחתי."}
+
+#: The Unicode block whose presence makes a reply speakable *here*. The check
+#: is deliberately this blunt: it asks whether the voice has anything to say,
+#: not whether the sentence is good Hebrew.
+_HEBREW_BLOCK = (0x0590, 0x05FF)
+
+
+def _has_hebrew(text: str) -> bool:
+    """True when *text* holds at least one Hebrew character."""
+    return any(_HEBREW_BLOCK[0] <= ord(char) <= _HEBREW_BLOCK[1] for char in text)
+
 
 #: Memory's own codes for a forget that was refused as a FACT about the
 #: store rather than a fault in it, mapped to the fixed tokens the tool
@@ -544,6 +568,10 @@ APP_REMEMBER_REFUSED = "app-remember-refused"
 #: id, unknown, already archived, or the store failed. Counted with a fixed
 #: reason token; the id the model supplied is never in the record.
 APP_FORGET_REFUSED = "app-forget-refused"
+#: The reply that followed a tool round had nothing this voice can say, and
+#: the daemon spoke the fixed sentence the tool result licenses instead. The
+#: record names the tool and a character count — never the reply.
+APP_TOOL_REPLY_UNSPOKEN = "app-tool-reply-unspoken"
 #: The wall clock the prompt line reads from raised; the turn ran without
 #: the line. A prompt with no time in it is a recorded absence, not a crash.
 APP_CLOCK_FAILED = "app-clock-failed"
@@ -1131,6 +1159,7 @@ class DaemonApp:
         self._forget_tool_calls = 0
         self._forget_tool_written = 0
         self._forget_tool_refused = 0
+        self._tool_replies_answered = 0
         self._asks_detected = 0
         self._asks_remembered = 0
         self._asks_failed = 0
@@ -2116,9 +2145,10 @@ class DaemonApp:
             ),
         )
         self._publish("turn", {"phase": "thinking", "step_count": 0})
+        tools_before = self._tool_counts()
         result = run_one_turn(spoken_in, self._complete, tools=self._tools, config=config)
         # Before the session, the transcript, the bus or the voice see it.
-        spoken_out = self._scrub_reply(result.spoken)
+        spoken_out = self._answer_tool_step(self._scrub_reply(result.spoken), tools_before)
         if spoken_out != result.spoken:
             result = replace(result, spoken=spoken_out)
         timing = replace(timing, reply_text_at=self._clock())
@@ -2150,6 +2180,55 @@ class DaemonApp:
         )
         self._note_timing(timing)
         return result
+
+    def _tool_counts(self) -> tuple[int, int, int, int]:
+        """The four memory-tool counters, as one snapshot to difference against."""
+        with self._lock:
+            return (
+                self._remember_tool_calls + self._forget_tool_calls,
+                self._remember_tool_written,
+                self._forget_tool_written,
+                self._remember_tool_refused + self._forget_tool_refused,
+            )
+
+    def _answer_tool_step(self, spoken: str, before: tuple[int, int, int, int]) -> str:
+        """Keep d7's promise that a tool round is never silent.
+
+        The turn just called a tool. If the model's answer to the tool result
+        holds nothing this voice can say — no Hebrew at all, which is what an
+        "ok" is — the room hears nothing and no counter moves, which is
+        exactly the failure mode ``C3`` names: attentive-looking and not
+        there. So the daemon says it itself.
+
+        What it says is bounded by what actually happened, because a
+        confirmation is a claim: the fixed sentence for the tool that
+        **wrote**, and otherwise the generic apology. A refused store must
+        never be answered with "I saved it".
+        """
+        after = self._tool_counts()
+        if after[0] == before[0] or _has_hebrew(spoken):
+            return spoken
+        if after[1] > before[1]:
+            tool, replacement = REMEMBER_TOOL_NAME, TOOL_CONFIRMATION[REMEMBER_TOOL_NAME]
+        elif after[2] > before[2]:
+            tool, replacement = FORGET_TOOL_NAME, TOOL_CONFIRMATION[FORGET_TOOL_NAME]
+        else:
+            tool, replacement = "none", FALLBACK_TEXT
+        with self._lock:
+            self._tool_replies_answered += 1
+            answered = self._tool_replies_answered
+        # The reason carries the tool and a COUNT. The reply itself is speech
+        # and never enters a record.
+        self._record(
+            APP_TOOL_REPLY_UNSPOKEN,
+            f"{tool}: the reply after the tool round had no Hebrew "
+            f"({len(spoken)} chars); spoke the fixed confirmation (#{answered})",
+        )
+        self._publish(
+            "state",
+            {"component": "voice", "status": "confirmed", "reason": f"tool-reply-unspoken:{tool}"},
+        )
+        return replacement
 
     def _note_timing(self, timing: TurnTiming) -> None:
         """Keep one turn's measurement where a reader can find it. Never raises."""
@@ -3250,6 +3329,7 @@ class DaemonApp:
                 "forget_tool_calls": self._forget_tool_calls,
                 "forget_tool_written": self._forget_tool_written,
                 "forget_tool_refused": self._forget_tool_refused,
+                "tool_replies_answered": self._tool_replies_answered,
                 "asks_detected": self._asks_detected,
                 "remembered": self._asks_remembered,
                 "remember_failed": self._asks_failed,
