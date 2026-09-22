@@ -33,6 +33,7 @@ from typing import Any, Optional
 
 import pytest
 
+from embodiment import turn as turn_module
 from embodiment.audio.endpoint import EndpointCloseReport, NullEndpoint
 from embodiment.audio.features import FeatureExtractor
 from embodiment.bus import Bus
@@ -2319,6 +2320,182 @@ class TestTheForgetTool:
         # an unknown-id refusal names the fixed reason, not the model's id
         assert marker_id not in blob
         assert marker_id not in json.dumps(non_speech, ensure_ascii=False)
+
+
+class TestAToolStepIsAlwaysAnswered:
+    """The turn that follows a tool call is never silent — d7's own promise.
+
+    Found live during ``t21`` step 2: every ask was stored
+    (``remember_tool_calls`` 5 of 5) and the operator heard **nothing**. The
+    session record says why — after a tool step the model answered with two
+    Latin letters ("ok"), which :func:`embodiment.turn.is_speakable` passes
+    (they are letters) and the Hebrew synthesiser renders as zero bytes. No
+    degradation anywhere: the daemon believed it had spoken, and
+    ``spoken_done_at`` sat 0.1 ms after ``first_audio_at``.
+
+    So the guard is not "is the text empty" — it is "is this text speakable
+    **by this voice**". The rig speaks Hebrew; a reply after a successful
+    tool step with no Hebrew letter in it is a reply the room will never
+    hear, and the daemon says the one sentence the tool result licenses
+    instead, counted and recorded.
+    """
+
+    FACT = "המפתח נמצא במגירה הכחולה"
+
+    @staticmethod
+    def _remember_call(fact: object) -> ModelResponse:
+        return ModelResponse(
+            content="",
+            tool_calls=[ToolCall(id="call-1", name="remember", arguments={"fact": fact})],
+        )
+
+    @staticmethod
+    def _forget_call(record_id: object) -> ModelResponse:
+        return ModelResponse(
+            content="",
+            tool_calls=[ToolCall(id="call-1", name="forget", arguments={"record_id": record_id})],
+        )
+
+    def _senses(self, first: ModelResponse, reply: str) -> Any:
+        rounds: list[int] = []
+
+        def senses(messages: list[dict[str, Any]], tools: Any = None) -> ModelResponse:
+            rounds.append(1)
+            if len(rounds) == 1:
+                return first
+            return ModelResponse(content=reply)
+
+        return senses
+
+    def _store(self, tmp_path: Path) -> RoomMemory:
+        return RoomMemory(
+            tmp_path / "store", scope="gwen", added_by="gwen", embed_probe=lambda: False
+        )
+
+    @staticmethod
+    def _spoken_sentences(sentences: list[str]) -> str:
+        return " ".join(sentences)
+
+    def test_a_latin_reply_after_a_remember_speaks_the_hebrew_confirmation(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        sentences: list[str] = []
+        h = harness(
+            memory=self._store(tmp_path),
+            complete=self._senses(self._remember_call(self.FACT), "ok"),
+            synthesize=lambda sentence, config: sentences.append(sentence) or b"\x00\x00",
+        )
+        h.app.attach_ear("host", FakeEndpoint())
+        h.clear()
+
+        result = h.app.run_turn("תזכרי את כל זה")
+
+        assert result.spoken == app_module.TOOL_CONFIRMATION[app_module.REMEMBER_TOOL_NAME]
+        assert self._spoken_sentences(sentences).strip() == result.spoken
+        assert h.app.status()["memory"]["remember_tool_written"] == 1
+        assert h.app.status()["memory"]["tool_replies_answered"] == 1
+        assert app_module.APP_TOOL_REPLY_UNSPOKEN in h.ledger_codes()
+
+    def test_a_latin_reply_after_a_forget_speaks_the_hebrew_confirmation(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        memory = self._store(tmp_path)
+        written = memory.remember(
+            self.FACT, visibility="private", record_type="explicit-ask", deadline=5.0
+        )
+        assert written.ok and written.record_id
+        h = harness(
+            memory=memory,
+            complete=self._senses(self._forget_call(written.record_id), "done"),
+        )
+        h.app.attach_ear("host", FakeEndpoint())
+        h.clear()
+
+        result = h.app.run_turn("תשכחי את זה")
+
+        assert result.spoken == app_module.TOOL_CONFIRMATION[app_module.FORGET_TOOL_NAME]
+        assert h.app.status()["memory"]["tool_replies_answered"] == 1
+
+    def test_a_hebrew_reply_after_a_tool_step_is_left_exactly_as_the_model_wrote_it(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        h = harness(
+            memory=self._store(tmp_path),
+            complete=self._senses(self._remember_call(self.FACT), REPLY),
+        )
+        h.app.attach_ear("host", FakeEndpoint())
+        h.clear()
+
+        result = h.app.run_turn("תזכרי את כל זה")
+
+        assert result.spoken == REPLY
+        assert h.app.status()["memory"]["tool_replies_answered"] == 0
+        assert app_module.APP_TOOL_REPLY_UNSPOKEN not in h.ledger_codes()
+
+    def test_a_turn_with_no_tool_step_is_never_rewritten(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        """The guard is scoped to the tool round. An ordinary turn is the
+        model's to answer, in whatever language it answered — rewriting that
+        would put words in Gwen's mouth for a defect that is not this one."""
+        h = harness(
+            memory=self._store(tmp_path),
+            complete=lambda messages, tools=None: ModelResponse(content="ok"),
+        )
+        h.app.attach_ear("host", FakeEndpoint())
+        h.clear()
+
+        assert h.app.run_turn(SPEECH).spoken == "ok"
+        assert h.app.status()["memory"]["tool_replies_answered"] == 0
+
+    def test_a_refused_tool_never_confirms_something_that_did_not_happen(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        """A refused store with an unspeakable reply is still not silent —
+        but what it says is the generic apology, never "I saved it"."""
+        h = harness(
+            memory=self._store(tmp_path),
+            complete=self._senses(self._remember_call(""), "ok"),
+        )
+        h.app.attach_ear("host", FakeEndpoint())
+        h.clear()
+
+        result = h.app.run_turn("תזכרי את כל זה")
+
+        assert h.app.status()["memory"]["remember_tool_refused"] == 1
+        assert h.app.status()["memory"]["remember_tool_written"] == 0
+        assert result.spoken == turn_module.FALLBACK_TEXT
+        assert result.spoken not in app_module.TOOL_CONFIRMATION.values()
+        assert h.app.status()["memory"]["tool_replies_answered"] == 1
+
+    def test_the_record_names_the_tool_and_a_count_never_the_reply(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        marker = "QQZZmarker"
+        h = harness(
+            memory=self._store(tmp_path),
+            complete=self._senses(self._remember_call(self.FACT), marker),
+        )
+        h.app.attach_ear("host", FakeEndpoint())
+        h.clear()
+
+        h.app.run_turn("תזכרי את כל זה")
+
+        records = [
+            r for r in h.state.ledger.read_all() if r.code == app_module.APP_TOOL_REPLY_UNSPOKEN
+        ]
+        assert records
+        assert app_module.REMEMBER_TOOL_NAME in records[-1].detail
+        assert marker not in json.dumps([r.to_dict() for r in h.state.ledger.read_all()])
+        non_speech = [e.to_dict() for e in h.events() if e.kind not in ("transcript", "reply")]
+        assert marker not in json.dumps(non_speech, ensure_ascii=False)
+
+    def test_the_prompt_asks_for_one_spoken_hebrew_sentence_after_the_tool(self) -> None:
+        """The guard is the floor, not the plan: the prompt is what normally
+        makes the model answer in Hebrew at all (d7 measured that a bland
+        sentence buys nothing — the obligation has to name the case)."""
+        assert "עברית" in app_module.REMEMBER_TOOL_PROMPT
+        assert app_module.REMEMBER_TOOL_PROMPT.count("ok") >= 1
 
 
 class TestTheClockLine:
