@@ -209,6 +209,7 @@ __all__ = [
     "close_budget_for",
     "guard_host_of",
     "allowed_origins_for",
+    "loopback_origin_hosts",
     "SUMMARY_PROMPT",
     "SUMMARY_MAX_TOKENS",
     "main",
@@ -3466,6 +3467,30 @@ def allowed_origins_for(hosts: Iterable[str]) -> tuple[str, ...]:
     return tuple(out)
 
 
+def loopback_origin_hosts(port: int) -> tuple[str, ...]:
+    """The ``host[:port]`` forms a browser puts in ``Origin`` for a loopback dashboard.
+
+    The guard accepts every :data:`~embodiment.http.guard.DEFAULT_ALLOWED_HOSTS`
+    entry as a ``Host`` with the port stripped, but an ``Origin`` keeps its
+    port and a browser sends one on EVERY ``POST`` — so an Origin list built
+    only from the operator's extra hosts refused Start/Stop/Mute on every
+    default install (``http-refused-origin`` at ``http://127.0.0.1:8823``).
+    Both the bound port and the bare host are listed (a reverse proxy on 80
+    or 443 presents the bare form), and an IPv6 literal is bracketed the way
+    a browser writes it; the unbracketed spellings the guard keeps for the
+    ``Host`` comparison would never match an Origin and are not repeated.
+    """
+    out: list[str] = []
+    for host in sorted(guard_module.DEFAULT_ALLOWED_HOSTS):
+        cleaned = host.strip().lower()
+        if ":" in cleaned and not cleaned.startswith("["):
+            cleaned = f"[{cleaned}]"
+        for form in (f"{cleaned}:{int(port)}", cleaned):
+            if form not in out:
+                out.append(form)
+    return tuple(out)
+
+
 def _lexical_can_index(text: str) -> bool:
     """Whether a lexical (BM25) search has anything to work with here.
 
@@ -3701,7 +3726,13 @@ def main() -> DaemonApp:
                     install_secret=secret.secret,
                     allowed_hosts=guard_module.DEFAULT_ALLOWED_HOSTS
                     | frozenset(guard_host_of(host) for host in config.allowed_hosts),
-                    allowed_origins=frozenset(allowed_origins_for(config.allowed_hosts)),
+                    # Loopback FIRST: a default install's own dashboard sends
+                    # an Origin on every POST (finding 2), then the operator's.
+                    allowed_origins=frozenset(
+                        allowed_origins_for(
+                            (*loopback_origin_hosts(config.port), *config.allowed_hosts)
+                        )
+                    ),
                 ),
             ),
             bus=bus,

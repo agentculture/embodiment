@@ -4453,3 +4453,107 @@ class TestOneShutdownClock:
         assert report is not None
         assert report.elapsed_s < runner_deadline
         assert "memory" in report.unfinished, "the seam that ignored its deadline must be named"
+
+
+# ── loopback Origins (review finding 2) ───────────────────────────────────────
+
+
+class _RecordingServer:
+    """A DashboardServer stand-in that keeps what main() built it with."""
+
+    captured: dict[str, Any] = {}
+
+    def __init__(self, *, config: Any, guard: Any, **kwargs: Any) -> None:
+        type(self).captured = {"config": config, "guard": guard, **kwargs}
+
+    def start(self) -> None:
+        return None
+
+    def shutdown(self, deadline: float) -> None:
+        return None
+
+    def status(self) -> dict[str, Any]:
+        return {}
+
+
+class TestLoopbackOrigins:
+    """A default install's dashboard at http://127.0.0.1:8823 must pass its own POSTs.
+
+    Browsers send ``Origin`` on every POST, and the guard refuses any Origin
+    that is not allow-listed — so an Origin list built only from
+    ``EMBODIMENT_ALLOWED_HOSTS`` refused Start/Stop/Mute on every default
+    install with ``http-refused-origin``.
+    """
+
+    @pytest.mark.parametrize(
+        "origin",
+        [
+            "http://127.0.0.1:8823",
+            "http://localhost:8823",
+            "http://[::1]:8823",
+            "http://127.0.0.1",
+            "https://127.0.0.1:8823",
+        ],
+    )
+    def test_a_default_install_passes_its_own_control_posts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, origin: str
+    ) -> None:
+        from embodiment.http import guard as guard_module
+
+        monkeypatch.setenv("EMBODIMENT_STATE_DIR", str(tmp_path / "state"))
+        monkeypatch.delenv(app_module.ENV_ALLOWED_HOSTS, raising=False)
+        monkeypatch.setattr(app_module.server_module, "DashboardServer", _RecordingServer)
+
+        application = app_module.main()
+        try:
+            guard = _RecordingServer.captured["guard"]
+            secret = guard.config.install_secret
+            assert secret
+            host = origin.split("://", 1)[1]
+            decision = guard.check(
+                "POST",
+                "/api/control/mute",
+                {"host": host, "origin": origin, "authorization": f"Bearer {secret}"},
+            )
+            assert decision.allowed is True, decision.to_dict()
+            assert decision.code != guard_module.REFUSED_ORIGIN_CODE
+        finally:
+            application.close(deadline=2.0)
+
+    def test_an_unlisted_origin_is_still_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from embodiment.http import guard as guard_module
+
+        monkeypatch.setenv("EMBODIMENT_STATE_DIR", str(tmp_path / "state"))
+        monkeypatch.delenv(app_module.ENV_ALLOWED_HOSTS, raising=False)
+        monkeypatch.setattr(app_module.server_module, "DashboardServer", _RecordingServer)
+
+        application = app_module.main()
+        try:
+            guard = _RecordingServer.captured["guard"]
+            secret = guard.config.install_secret
+            decision = guard.check(
+                "POST",
+                "/api/control/mute",
+                {
+                    "host": "127.0.0.1:8823",
+                    "origin": "http://evil.example",
+                    "authorization": f"Bearer {secret}",
+                },
+            )
+            assert decision.allowed is False
+            assert decision.code == guard_module.REFUSED_ORIGIN_CODE
+        finally:
+            application.close(deadline=2.0)
+
+    def test_loopback_origin_hosts_carry_the_bound_port_and_bracket_ipv6(self) -> None:
+        hosts = app_module.loopback_origin_hosts(8823)
+        assert "127.0.0.1:8823" in hosts
+        assert "127.0.0.1" in hosts
+        assert "localhost:8823" in hosts
+        assert "[::1]:8823" in hosts
+        assert "[::1]" in hosts
+        assert not any(h.startswith("::") for h in hosts), hosts
+        # Distinct entries; a browser would never send the unbracketed form.
+        assert len(hosts) == len(set(hosts))
