@@ -33,6 +33,7 @@ _VERBS = [
     "start — start the daemon as a detached background process (idempotent)",
     "stop — stop the running daemon within a bounded time",
     "status — report the daemon's state: running, stopped, dead (unclean)",
+    "tunnel — print the cultureflare/cloudflared commands for remote access (dry-run only)",
 ]
 
 
