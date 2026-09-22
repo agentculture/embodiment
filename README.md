@@ -89,6 +89,22 @@ Not in the first release: tools, vision, a face, voice from the phone, robot
 support, or any claim that this is useful. The base is accepted on **one rig
 only**.
 
+## Inbound realtime endpoint — a browser today, robot-shaped seam
+
+`embodiment/audio/remote.py` is a `websockets` server that speaks the lobes
+`/v1/realtime` wire **inbound**, implementing the same `AudioEndpoint`
+protocol `embodiment/audio/host.py` implements for the machine's own
+microphone and speaker. A browser tab dials in, is checked against an
+install secret (or a per-endpoint secret) before the WebSocket handshake
+even completes, and then is Gwen's ears and mouth over that socket.
+
+**v1 ships no robot support.** Only a browser is an exercised, supported
+consumer of this endpoint today. What ships is the *seam* — one
+`AudioEndpoint` implementation among several the daemon can compose — not a
+robot integration: a robot relay speaking the same wire is a future,
+separate implementation of that seam, arrived at without touching the daemon
+that composes endpoints.
+
 ## Dependencies — what installing this costs you
 
 Dependencies are human-gated: `tests/test_zero_deps.py` pins the exact approved

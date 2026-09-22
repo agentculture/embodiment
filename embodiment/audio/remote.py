@@ -1,0 +1,791 @@
+"""The browser ear: a ``websockets`` server implementing ``AudioEndpoint`` (plan task ``t14``).
+
+:class:`RemoteEndpoint` is the inbound half of the lobes ``/v1/realtime`` wire:
+where :mod:`embodiment.realtime.client` DIALS a lobes gateway as a client, this
+module LISTENS as a server, so a browser tab (or, later, a robot relay
+speaking the same wire) can be Gwen's ears and mouth. It satisfies the same
+:class:`~embodiment.audio.endpoint.AudioEndpoint` protocol
+:mod:`embodiment.audio.host` does, so the daemon composing endpoints can swap
+one for the other without touching anything above this seam.
+
+v1 ships no robot support
+--------------------------
+Only a browser is an exercised, supported consumer today — see the new
+section this task adds to ``README.md``. What ships is the *seam*
+(``AudioEndpoint``, spoken over the lobes wire, inbound): a robot relay is a
+future implementation of that same seam, arrived at by writing a new small
+adapter, never a reason to touch the daemon that composes endpoints.
+
+Why this module cannot literally reuse ``wire.py``'s codec
+------------------------------------------------------------
+:mod:`embodiment.realtime.wire` is a CLIENT-role module: it *encodes* the two
+client→server events (``input_audio_buffer.append``, ``session.update``) and
+*decodes* server→client events. This module needs the mirror image — decode
+the client events a browser sends, encode the server events a browser
+expects back (``session.created``, ``session.updated``,
+``response.audio.delta``) — and ``wire.py`` has no decoder or encoder for
+either, because nothing on the client side of this package ever needed one.
+Rather than invent a second, independent vocabulary, every constant this
+module's wire shapes are built from — the event type strings
+(:data:`~embodiment.realtime.wire.APPEND_EVENT_TYPE`,
+:data:`~embodiment.realtime.wire.SESSION_UPDATE_EVENT_TYPE`), the declared
+format (:data:`~embodiment.realtime.wire.AUDIO_FORMAT`,
+:data:`~embodiment.realtime.wire.INPUT_SAMPLE_RATE`,
+:data:`~embodiment.realtime.wire.CHANNELS`,
+:data:`~embodiment.realtime.wire.TURN_DETECTION`,
+:data:`~embodiment.realtime.wire.AEC_MODE`,
+:data:`~embodiment.realtime.wire.LANGUAGE`) — is imported FROM ``wire.py``,
+never restated. Only the JSON envelope plumbing around those constants is new,
+and it is new because the shape it needs did not exist anywhere in this
+package before this task. (Flagged in this task's delivery report as a
+brief/reality gap: "reuse wire.py; do not write a second codec" could not be
+followed to the letter, because the codec this task needs is not the codec
+``wire.py`` owns.)
+
+Authentication: a query parameter, checked before the handshake completes
+---------------------------------------------------------------------------
+A browser's native ``WebSocket`` constructor cannot set a custom header, so a
+bearer-header scheme (as :mod:`embodiment.realtime.client` uses when DIALING
+OUT) is not available to a page dialing IN. The connect URL therefore carries
+``?secret=...``, and it is checked in ``process_request`` — the
+``websockets`` hook that runs *before* the opening handshake completes and
+before any WebSocket frame, let alone an audio frame, can exist on this
+connection. A missing or wrong secret gets an HTTP-level refusal
+(``401``); an empty configured secret refuses every connection
+(``503``) rather than defaulting to open, because a construction argument
+nobody supplied is not consent to skip authentication (C3: private by
+default). The refusal's recorded reason never carries the query string or
+its contents — only a static phrase — since a wrong secret guessed by an
+attacker is exactly the value this reason string must never echo back into a
+log (wave 1 lesson 5).
+
+One connection at a time
+-------------------------
+A second browser dialing in while one is already attached is refused
+(``503``) rather than silently multiplexed: ``play()`` has exactly one peer
+to address, and multiplexing playback to N tabs is a feature nobody asked
+this task to build. This is a v1 engineering scope choice, not the "one
+active ear at a time" daemon policy :mod:`embodiment.audio.endpoint`
+describes (that policy is about which *endpoint* is attached; this is about
+how many sockets one endpoint instance accepts).
+
+One OS thread runs both directions
+-------------------------------------
+Unlike :class:`~embodiment.audio.host.HostEndpoint` (a real capture thread and
+a real writer thread, because PortAudio's own API demands two blocking
+streams), this module needs only ONE thread: an ``asyncio`` event loop, since
+both directions here are already non-blocking I/O over the same socket. That
+loop runs the ``websockets`` server, a per-connection reader, and one
+playback sender task. :meth:`RemoteEndpoint.close`'s
+:class:`~embodiment.audio.endpoint.EndpointCloseReport` therefore reports the
+SAME observed thread-join outcome in both
+``capture_thread_stopped``/``writer_thread_stopped`` — an honest
+simplification stated here rather than left to look like two independently
+verified threads.
+
+Never raises, never blocks, always records (C3 / wave 1 lessons 2, 3, 6)
+----------------------------------------------------------------------------
+Every public method is synchronous, non-blocking and never raises — the same
+footing :mod:`embodiment.audio.endpoint` documents for every implementation.
+:meth:`play` enqueues into a byte-bounded FIFO (:data:`_PLAYBACK_BUFFER_SECONDS`,
+the same judgement call and rationale as ``host.py``'s) and refuses only the
+NEW chunk on overflow, counted under :data:`DEGRADED_PLAYBACK_OVERFLOW`.
+:meth:`stop_playback` cuts by clearing the queue and tracking the one chunk
+genuinely in flight separately (mirroring ``host.py``'s
+``_playback_active_remaining_bytes`` split), so at most one
+:data:`_WRITE_SLICE_MS`-sized slice can still be crossing the wire after a
+barge-in request. Mute is enforced in the one place a decoded frame can reach
+a caller's callback — before it is ever handed to ``on_frame`` — never as a
+filter applied afterwards.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import hmac
+import json
+import secrets
+import threading
+import time
+from collections import deque
+from dataclasses import dataclass
+from typing import Any
+from urllib.parse import parse_qs, urlsplit
+
+from embodiment.audio.endpoint import (
+    CHANNELS,
+    SAMPLE_RATE_HZ,
+    SAMPLE_WIDTH_BYTES,
+    EndpointCloseReport,
+    EndpointDegradation,
+    FrameCallback,
+)
+from embodiment.realtime import wire
+
+__all__ = [
+    "DEGRADED_TRANSPORT_MISSING",
+    "DEGRADED_BIND_FAILED",
+    "DEGRADED_START_TIMEOUT",
+    "DEGRADED_NO_SECRET",
+    "DEGRADED_UNAUTHORIZED",
+    "DEGRADED_PLAYBACK_OVERFLOW",
+    "RemoteEndpointConfig",
+    "RemoteEndpoint",
+]
+
+#: ``websockets`` could not be imported (an approved but optional-at-runtime
+#: transport — see the lazy import inside :meth:`RemoteEndpoint.attach`).
+DEGRADED_TRANSPORT_MISSING = "audio-remote-transport-missing"
+#: The listening socket itself could not be opened (port in use, no
+#: permission, an unreachable host).
+DEGRADED_BIND_FAILED = "audio-remote-bind-failed"
+#: The server thread did not confirm it was listening inside its start
+#: deadline.
+DEGRADED_START_TIMEOUT = "audio-remote-start-timeout"
+#: Constructed with an empty secret. Every connection is refused (fail
+#: closed), never accepted unauthenticated.
+DEGRADED_NO_SECRET = "audio-remote-no-secret-configured"  # nosec B105 - a code, not a password
+#: A connection was refused for lacking, or not matching, the secret.
+DEGRADED_UNAUTHORIZED = "audio-remote-unauthorized"
+#: A ``play()`` chunk was refused because the playback buffer is full.
+DEGRADED_PLAYBACK_OVERFLOW = "audio-remote-playback-overflow"
+
+#: The query parameter a connecting browser carries the secret in. Documented
+#: choice (see module docstring): a browser's native ``WebSocket`` cannot set
+#: a custom header, so the bearer-header scheme
+#: :mod:`embodiment.realtime.client` uses when dialing OUT is not available
+#: to a page dialing IN.
+SECRET_QUERY_PARAM = "secret"  # nosec B105 - a parameter name, not a password
+
+#: How long :meth:`RemoteEndpoint.attach` waits for the server thread to
+#: confirm it is listening (or has failed) before giving up and recording
+#: :data:`DEGRADED_START_TIMEOUT`. A judgement call: generous for a bind that
+#: should be near-instant on a healthy host, small enough that a genuinely
+#: wedged start is noticed inside one human breath.
+_DEFAULT_START_DEADLINE_S = 5.0
+
+#: The default :meth:`RemoteEndpoint.detach` deadline — ``detach`` has no
+#: caller-supplied deadline in the Protocol, unlike ``close``. A judgement
+#: call, generous enough that a live send in flight finishes.
+_DEFAULT_DETACH_DEADLINE_S = 5.0
+
+#: Seconds of 24 kHz pcm16 audio the playback FIFO holds before a NEW
+#: ``play()`` chunk is refused. The same judgement call and rationale as
+#: :data:`embodiment.audio.host._PLAYBACK_BUFFER_SECONDS`: generous enough
+#: that no realistic reply should ever hit it (~5.76 MB), small enough that a
+#: stuck peer cannot grow this module's memory without bound.
+_PLAYBACK_BUFFER_SECONDS = 120.0
+
+#: The sender never hands the socket more than this much audio in one
+#: outbound frame — what makes :meth:`RemoteEndpoint.stop_playback` actually
+#: cut rather than merely stop queueing more (mirrors
+#: :data:`embodiment.audio.host._WRITE_SLICE_MS`). 20 ms, the low end of the
+#: brief's stated 20-40 ms range.
+_WRITE_SLICE_MS = 20
+_SLICE_SAMPLES = max(1, int(SAMPLE_RATE_HZ * _WRITE_SLICE_MS / 1000.0))
+_SLICE_BYTES = _SLICE_SAMPLES * SAMPLE_WIDTH_BYTES
+
+#: How long the sender loop's wait for new playback data is bounded to before
+#: re-checking state, even with nothing to wake it — the same discipline as
+#: ``host.py``'s ``_POLL_INTERVAL_S``, so a lost wakeup cannot park the
+#: sender forever.
+_SENDER_POLL_S = 0.2
+
+#: How long a peer-less sender pauses between attempts to find a connection
+#: before retrying, once audio is already queued and waiting for a browser to
+#: attach.
+_NO_PEER_RETRY_S = 0.05
+
+
+def _new_id(prefix: str) -> str:
+    """A short, non-secret identifier. Never derived from anything client-supplied."""
+
+    return f"{prefix}_{secrets.token_hex(12)}"
+
+
+def _timestamp_ms() -> int:
+    return int(time.time() * 1000)
+
+
+def _slices(data: bytes, size: int) -> list[bytes]:
+    """*data* cut into ``size``-byte pieces, the last one possibly shorter."""
+    if size <= 0:
+        return [data]
+    return [data[i : i + size] for i in range(0, len(data), size)]
+
+
+@dataclass(frozen=True)
+class RemoteEndpointConfig:
+    """What one :class:`RemoteEndpoint` listens as.
+
+    ``secret`` is required to actually accept a connection — an empty value
+    is a valid, honest construction (a caller building the object before a
+    secret is provisioned) but leaves the endpoint permanently refusing
+    (:data:`DEGRADED_NO_SECRET`), never accepting unauthenticated.
+    """
+
+    secret: str = ""
+    host: str = "127.0.0.1"
+    port: int = 8765
+    start_deadline: float = _DEFAULT_START_DEADLINE_S
+    ping_interval: float = 20.0
+    ping_timeout: float = 20.0
+    close_handshake_timeout: float = 5.0
+
+
+class RemoteEndpoint:
+    """The lobes ``/v1/realtime`` wire, served inbound, satisfying ``AudioEndpoint``.
+
+    Args:
+        secret: the install secret (or a per-endpoint secret) a connecting
+            browser must present as ``?secret=...`` on the connect URL.
+        host: interface to bind. Defaults to loopback — this endpoint is
+            reached through whatever tunnel/reverse-proxy terminates TLS and
+            enforces the operator's allow-list; loopback is not itself
+            authentication (see ``CLAUDE.md``), which is exactly why
+            ``secret`` is mandatory rather than optional.
+        port: listening port. 8765 is an arbitrary default (a judgement call,
+            unmeasured against any real deployment) meant to be overridden by
+            whatever composes this endpoint.
+    """
+
+    def __init__(
+        self,
+        *,
+        secret: str = "",
+        host: str = "127.0.0.1",
+        port: int = 8765,
+        start_deadline: float = _DEFAULT_START_DEADLINE_S,
+        ping_interval: float = 20.0,
+        ping_timeout: float = 20.0,
+        close_handshake_timeout: float = 5.0,
+    ) -> None:
+        self.config = RemoteEndpointConfig(
+            secret=secret or "",
+            host=host,
+            port=port,
+            start_deadline=start_deadline,
+            ping_interval=ping_interval,
+            ping_timeout=ping_timeout,
+            close_handshake_timeout=close_handshake_timeout,
+        )
+
+        self._lock = threading.Lock()
+        self._attached = False
+        self._closed = False
+        self._capturing = False
+        self._muted = False
+        self._on_frame: FrameCallback | None = None
+
+        self._thread: threading.Thread | None = None
+        self._loop: Any = None
+        self._stop_event: Any = None
+        self._playback_wake: Any = None
+        self._server: Any = None
+        self._bound_port: int = port
+        self._connection: Any = None
+        self._connected = False
+
+        self._session_id = ""
+        self._response_id = _new_id("resp")
+
+        self._degradation: EndpointDegradation | None = None
+        self._last_close_report: EndpointCloseReport | None = None
+
+        self._playback_chunks: "deque[bytes]" = deque()
+        self._playback_queued_bytes = 0
+        self._playback_active_bytes = 0
+        self._playback_sent_bytes = 0
+        self._playback_stop_discarded_total = 0
+        self._playback_overflow_count = 0
+        self._playing = False
+
+        self._frames_received = 0
+        self._frames_muted_dropped = 0
+        self._frames_malformed = 0
+        self._unknown_frames = 0
+        self._session_updates_received = 0
+        self._callback_errors = 0
+        self._send_errors = 0
+        self._connection_drop_count = 0
+        self._unauthorized_count = 0
+        self._rejected_busy_count = 0
+        self._bind_error: EndpointDegradation | None = None
+
+    # -- lifecycle -----------------------------------------------------
+
+    def attach(self) -> None:
+        if self._attached:
+            return
+        self._closed = False
+        self._bind_error = None
+        ready = threading.Event()
+        self._thread = threading.Thread(
+            target=self._run,
+            args=(ready,),
+            name="embodiment-audio-remote",
+            daemon=True,
+        )
+        self._thread.start()
+        confirmed = ready.wait(timeout=max(0.0, self.config.start_deadline))
+        if not confirmed:
+            self._degradation = EndpointDegradation(
+                DEGRADED_START_TIMEOUT, "server did not confirm listening in time"
+            )
+            return
+        if self._bind_error is not None:
+            self._degradation = self._bind_error
+            return
+        if not self.config.secret:
+            self._degradation = EndpointDegradation(
+                DEGRADED_NO_SECRET, "no secret configured; every connection is refused"
+            )
+        self._attached = True
+
+    def detach(self) -> None:
+        self._shutdown(_DEFAULT_DETACH_DEADLINE_S)
+
+    def close(self, deadline: float) -> EndpointCloseReport:
+        return self._shutdown(deadline)
+
+    def _shutdown(self, deadline: float) -> EndpointCloseReport:
+        deadline = max(0.0, float(deadline))
+        start = time.monotonic()
+        if self._closed:
+            return self._last_close_report or EndpointCloseReport(True, True, 0, 0.0)
+
+        samples_discarded = self.stop_playback()
+
+        loop = self._loop
+        stop_event = self._stop_event
+        if loop is not None and stop_event is not None:
+            try:
+                loop.call_soon_threadsafe(stop_event.set)
+            except RuntimeError:
+                pass  # loop already stopped/closing
+
+        thread = self._thread
+        stopped = True
+        if thread is not None:
+            remaining = max(0.0, deadline - (time.monotonic() - start))
+            thread.join(timeout=remaining)
+            stopped = not thread.is_alive()
+
+        self._attached = False
+        self._closed = True
+        self._connected = False
+        elapsed = time.monotonic() - start
+        report = EndpointCloseReport(
+            capture_thread_stopped=stopped,
+            writer_thread_stopped=stopped,
+            samples_discarded=samples_discarded,
+            elapsed_s=elapsed,
+        )
+        self._last_close_report = report
+        return report
+
+    # -- the server thread -----------------------------------------------
+
+    def _run(self, ready: threading.Event) -> None:
+        try:
+            asyncio.run(self._serve(ready))
+        except Exception as exc:  # noqa: BLE001 - the thread's top: record, never raise out
+            if self._bind_error is None:
+                self._bind_error = EndpointDegradation(
+                    DEGRADED_BIND_FAILED, f"{type(exc).__name__}: server thread raised"
+                )
+            ready.set()
+
+    async def _serve(self, ready: threading.Event) -> None:
+
+        try:
+            from websockets.asyncio.server import serve
+        except ImportError as exc:
+            self._bind_error = EndpointDegradation(
+                DEGRADED_TRANSPORT_MISSING, f"{type(exc).__name__}: websockets not installed"
+            )
+            ready.set()
+            return
+
+        self._loop = asyncio.get_running_loop()
+        self._stop_event = asyncio.Event()
+        self._playback_wake = asyncio.Event()
+
+        try:
+            server = await serve(
+                self._handle_connection,
+                self.config.host,
+                self.config.port,
+                process_request=self._process_request,
+                ping_interval=self.config.ping_interval,
+                ping_timeout=self.config.ping_timeout,
+                close_timeout=self.config.close_handshake_timeout,
+            )
+        except OSError as exc:
+            self._bind_error = EndpointDegradation(
+                DEGRADED_BIND_FAILED, f"{type(exc).__name__}: could not bind listening socket"
+            )
+            ready.set()
+            return
+
+        self._server = server
+        try:
+            self._bound_port = server.sockets[0].getsockname()[1]  # type: ignore[union-attr]
+        except (AttributeError, IndexError, OSError):
+            self._bound_port = self.config.port
+        sender = asyncio.get_running_loop().create_task(self._sender_loop())
+        ready.set()
+        try:
+            await self._stop_event.wait()
+        finally:
+            sender.cancel()
+            try:
+                await sender
+            except asyncio.CancelledError:
+                pass  # the expected outcome of cancelling it above
+            except Exception:  # noqa: BLE001 - an unexpected teardown fault, still recorded
+                with self._lock:
+                    self._send_errors += 1
+            server.close()
+            try:
+                await asyncio.wait_for(server.wait_closed(), timeout=5.0)
+            except asyncio.TimeoutError:
+                with self._lock:
+                    self._send_errors += 1
+            except Exception:  # noqa: BLE001 - best effort, still recorded
+                with self._lock:
+                    self._send_errors += 1
+
+    # -- the HTTP-level gate (before any WebSocket frame exists) -------
+
+    def _process_request(self, connection: Any, request: Any) -> Any:
+        if not self.config.secret:
+            return connection.respond(503, "no secret configured\n")
+
+        try:
+            query = urlsplit(request.path).query
+            supplied = parse_qs(query).get(SECRET_QUERY_PARAM, [""])[0]
+        except Exception:  # noqa: BLE001 - a malformed path is a refusal, not a raise
+            supplied = ""
+
+        if not supplied or not hmac.compare_digest(supplied, self.config.secret):
+            with self._lock:
+                self._unauthorized_count += 1
+            self._degradation = EndpointDegradation(
+                DEGRADED_UNAUTHORIZED, "connection refused: missing or invalid secret"
+            )
+            return connection.respond(401, "unauthorized\n")
+
+        with self._lock:
+            if self._connection is not None:
+                self._rejected_busy_count += 1
+                return connection.respond(503, "endpoint already has an active peer\n")
+
+        return None  # allow the handshake to proceed
+
+    # -- one connection's lifetime ---------------------------------------
+
+    async def _handle_connection(self, connection: Any) -> None:
+
+        self._session_id = _new_id("sess")
+        self._response_id = _new_id("resp")
+        with self._lock:
+            self._connection = connection
+            self._connected = True
+        try:
+            await connection.send(self._session_created_json())
+        except Exception:  # noqa: BLE001 - the peer vanished before it heard anything
+            with self._lock:
+                self._send_errors += 1
+        try:
+            async for raw in connection:
+                self._on_client_message(raw)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - any transport fault just ends this connection
+            with self._lock:
+                self._connection_drop_count += 1
+        finally:
+            with self._lock:
+                if self._connection is connection:
+                    self._connection = None
+                    self._connected = False
+
+    def _on_client_message(self, raw: Any) -> None:
+        """Decode one browser-sent frame. Never raises; every fault is counted."""
+        try:
+            text = raw if isinstance(raw, str) else bytes(raw).decode("utf-8")
+            payload = json.loads(text)
+        except Exception:  # noqa: BLE001 - a frame this client did not write
+            with self._lock:
+                self._frames_malformed += 1
+            return
+        if not isinstance(payload, dict):
+            with self._lock:
+                self._frames_malformed += 1
+            return
+
+        kind = payload.get("type")
+        if kind == wire.APPEND_EVENT_TYPE:
+            self._on_append(payload)
+        elif kind == wire.SESSION_UPDATE_EVENT_TYPE:
+            with self._lock:
+                self._session_updates_received += 1
+            self._enqueue_control(self._session_updated_json(payload))
+        else:
+            with self._lock:
+                self._unknown_frames += 1
+
+    def _on_append(self, payload: dict[str, Any]) -> None:
+        audio_b64 = payload.get("audio")
+        if not isinstance(audio_b64, str):
+            with self._lock:
+                self._frames_malformed += 1
+            return
+        try:
+            frame = base64.b64decode(audio_b64, validate=False)
+        except Exception:  # noqa: BLE001 - malformed base64 from the peer
+            with self._lock:
+                self._frames_malformed += 1
+            return
+
+        with self._lock:
+            self._frames_received += 1
+            muted = self._muted
+            callback = self._on_frame if self._capturing else None
+        if muted:
+            with self._lock:
+                self._frames_muted_dropped += 1
+            return
+        if callback is None:
+            return
+        try:
+            callback(frame)
+        except Exception:  # noqa: BLE001 - a caller's callback must never kill this reader
+            with self._lock:
+                self._callback_errors += 1
+
+    def _enqueue_control(self, frame_json: str) -> None:
+        """Fire-and-forget: send one small control-plane reply, best effort."""
+        loop = self._loop
+        connection = self._connection
+        if loop is None or connection is None:
+            return
+        try:
+            loop.call_soon_threadsafe(self._schedule_send, connection, frame_json)
+        except RuntimeError:
+            pass
+
+    def _schedule_send(self, connection: Any, frame_json: str) -> None:
+
+        async def _send() -> None:
+            try:
+                await connection.send(frame_json)
+            except Exception:  # noqa: BLE001 - a control reply the peer never gets
+                with self._lock:
+                    self._send_errors += 1
+
+        asyncio.get_running_loop().create_task(_send())
+
+    # -- capture ---------------------------------------------------------
+
+    def start_capture(self, on_frame: FrameCallback) -> None:
+        self._on_frame = on_frame
+        self._capturing = True
+
+    def stop_capture(self) -> None:
+        self._capturing = False
+
+    # -- playback ----------------------------------------------------------
+
+    def play(self, frames: bytes) -> None:
+        if not isinstance(frames, (bytes, bytearray)):
+            return
+        frames = bytes(frames)
+        if not frames or self._closed:
+            return
+
+        limit = int(_PLAYBACK_BUFFER_SECONDS * SAMPLE_RATE_HZ) * SAMPLE_WIDTH_BYTES
+        with self._lock:
+            in_flight = self._playback_queued_bytes + self._playback_active_bytes
+            if in_flight + len(frames) > limit:
+                self._playback_overflow_count += 1
+                return
+            for piece in _slices(frames, _SLICE_BYTES):
+                self._playback_chunks.append(piece)
+                self._playback_queued_bytes += len(piece)
+            self._playing = True
+
+        loop = self._loop
+        wake = self._playback_wake
+        if loop is not None and wake is not None:
+            try:
+                loop.call_soon_threadsafe(wake.set)
+            except RuntimeError:
+                pass
+
+    def stop_playback(self) -> int:
+        with self._lock:
+            discarded_bytes = self._playback_queued_bytes + self._playback_active_bytes
+            discarded_samples = discarded_bytes // SAMPLE_WIDTH_BYTES
+            self._playback_chunks.clear()
+            self._playback_queued_bytes = 0
+            self._playback_active_bytes = 0
+            # SAMPLES, not bytes — matches embodiment.audio.host.HostEndpoint's
+            # own ``_playback_stop_discarded_total`` convention, so a host
+            # reading ``status()`` from either endpoint reads the same unit.
+            self._playback_stop_discarded_total += discarded_samples
+            self._playing = False
+        return discarded_samples
+
+    @property
+    def playing(self) -> bool:
+        return self._playing
+
+    async def _sender_loop(self) -> None:
+
+        while True:
+            chunk = None
+            with self._lock:
+                if self._playback_chunks:
+                    chunk = self._playback_chunks.popleft()
+                    self._playback_queued_bytes -= len(chunk)
+                    self._playback_active_bytes = len(chunk)
+
+            if chunk is None:
+                try:
+                    await asyncio.wait_for(self._playback_wake.wait(), timeout=_SENDER_POLL_S)
+                except asyncio.TimeoutError:
+                    pass
+                self._playback_wake.clear()
+                continue
+
+            connection = self._connection
+            if connection is None:
+                # Nothing to send to yet — keep the chunk queued (front) and
+                # wait for a peer; playback is never silently dropped just
+                # because nobody has connected.
+                with self._lock:
+                    self._playback_chunks.appendleft(chunk)
+                    self._playback_queued_bytes += len(chunk)
+                    self._playback_active_bytes = 0
+                await asyncio.sleep(_NO_PEER_RETRY_S)
+                continue
+
+            try:
+                await connection.send(self._audio_delta_json(chunk))
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - the peer vanished mid-send
+                with self._lock:
+                    self._send_errors += 1
+                    self._playback_active_bytes = 0
+                continue
+
+            with self._lock:
+                self._playback_sent_bytes += len(chunk)
+                self._playback_active_bytes = 0
+                if not self._playback_chunks:
+                    self._playing = False
+
+    # -- mute ----------------------------------------------------------------
+
+    def mute(self, muted: bool) -> None:
+        self._muted = bool(muted)
+
+    @property
+    def muted(self) -> bool:
+        return self._muted
+
+    # -- wire encoding (server role; see module docstring) ------------------
+
+    def _session_created_json(self) -> str:
+        return json.dumps(
+            {
+                "type": "session.created",
+                "session_id": self._session_id,
+                "event_id": _new_id("event"),
+                "timestamp_ms": _timestamp_ms(),
+                "config": {
+                    "input_audio_format": wire.AUDIO_FORMAT,
+                    "input_sample_rate": wire.INPUT_SAMPLE_RATE,
+                    "channels": CHANNELS,
+                    "turn_detection": wire.TURN_DETECTION,
+                    "aec_mode": wire.AEC_MODE,
+                    "language": wire.LANGUAGE,
+                },
+            }
+        )
+
+    def _session_updated_json(self, payload: dict[str, Any]) -> str:
+        session = payload.get("session")
+        applied: dict[str, Any] = {}
+        if isinstance(session, dict) and isinstance(session.get("language"), str):
+            applied["language"] = session["language"]
+        return json.dumps(
+            {
+                "type": "session.updated",
+                "session_id": self._session_id,
+                "event_id": _new_id("event"),
+                "timestamp_ms": _timestamp_ms(),
+                "session": applied,
+            }
+        )
+
+    def _audio_delta_json(self, chunk: bytes) -> str:
+        return json.dumps(
+            {
+                "type": "response.audio.delta",
+                "session_id": self._session_id,
+                "event_id": _new_id("event"),
+                "timestamp_ms": _timestamp_ms(),
+                "response_id": self._response_id,
+                "delta": base64.b64encode(chunk).decode("ascii"),
+            }
+        )
+
+    # -- introspection -----------------------------------------------------
+
+    def status(self) -> dict[str, object]:
+        with self._lock:
+            counters = {
+                "frames_received": self._frames_received,
+                "frames_muted_dropped": self._frames_muted_dropped,
+                "frames_malformed": self._frames_malformed,
+                "unknown_frames": self._unknown_frames,
+                "session_updates_received": self._session_updates_received,
+                "callback_errors": self._callback_errors,
+                "send_errors": self._send_errors,
+                "connection_drop_count": self._connection_drop_count,
+                "unauthorized_connections": self._unauthorized_count,
+                "connections_rejected_busy": self._rejected_busy_count,
+                "playback_overflow_count": self._playback_overflow_count,
+                "playback_sent_bytes": self._playback_sent_bytes,
+                "playback_stop_discarded_total": self._playback_stop_discarded_total,
+                "playback_queued_bytes": self._playback_queued_bytes,
+            }
+        return {
+            "attached": self._attached,
+            "capturing": self._capturing,
+            "connected": self._connected,
+            "playing": self._playing,
+            "muted": self._muted,
+            "closed": self._closed,
+            "host": self.config.host,
+            "port": self._bound_port,
+            "degradation": self._degradation.to_dict() if self._degradation else None,
+            "close_report": self._last_close_report.to_dict() if self._last_close_report else None,
+            **counters,
+        }
+
+    @property
+    def bound_port(self) -> int:
+        """The port actually listening — resolves a ``port=0`` request to its real value."""
+        return self._bound_port
+
+    def __repr__(self) -> str:
+        return (
+            f"RemoteEndpoint(host={self.config.host!r}, port={self.config.port!r}, "
+            f"attached={self._attached}, connected={self._connected})"
+        )
