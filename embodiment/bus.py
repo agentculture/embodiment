@@ -470,7 +470,10 @@ def _reason_or_generic(value: object) -> str:
     anything that required ANY alteration to become safe is untrusted and is
     replaced wholesale, never partially kept.
     """
-    text = value if isinstance(value, str) else ("" if value is None else str(value))
+    if isinstance(value, str):
+        text = value
+    else:
+        text = "" if value is None else str(value)
     if not text:
         return _GENERIC_TRANSPORT_REASON
     token = _safe_token(text)

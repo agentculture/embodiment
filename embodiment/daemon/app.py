@@ -1588,6 +1588,10 @@ class DaemonApp:
             self._fold_voice(voice)
 
         def work() -> bool:
+            # Always True on its own: every sub-call below is folded through
+            # _safely, which records the failure and moves on, so this step
+            # has no verdict of its own. The only way it reads as False is
+            # _bounded's timeout, which the caller counts and records below.
             if voice is not None:
                 # The voice outlives the ear: it is pointed at a NullEndpoint
                 # rather than closed, so a reply with no ear attached is still

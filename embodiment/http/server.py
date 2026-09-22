@@ -240,13 +240,15 @@ NO_DASHBOARD_PAGE = (
 #: Content types served for the extensions a built dashboard actually has.
 #: An unknown extension is served as an opaque download rather than guessed
 #: at, and every response carries ``X-Content-Type-Options: nosniff``.
+_JSON_CONTENT_TYPE = "application/json; charset=utf-8"
+
 _CONTENT_TYPES: dict[str, str] = {
     ".html": "text/html; charset=utf-8",
     ".js": "text/javascript; charset=utf-8",
     ".mjs": "text/javascript; charset=utf-8",
     ".css": "text/css; charset=utf-8",
-    ".json": "application/json; charset=utf-8",
-    ".map": "application/json; charset=utf-8",
+    ".json": _JSON_CONTENT_TYPE,
+    ".map": _JSON_CONTENT_TYPE,
     ".svg": "image/svg+xml",
     ".png": "image/png",
     ".jpg": "image/jpeg",
@@ -580,7 +582,7 @@ class _Handler(BaseHTTPRequestHandler):
             )
             body = b'{"error": {"code": "http-response-unserialisable"}}'
             status = 500
-        self._send(status, body, "application/json; charset=utf-8", head=head)
+        self._send(status, body, _JSON_CONTENT_TYPE, head=head)
 
     def _send_error(self, status: int, code: str, message: str) -> None:
         self._send_json(status, {"error": {"code": code, "message": message}})
@@ -859,7 +861,7 @@ def _parse_muted(body: bytes) -> Optional[bool]:
     """``{"muted": bool}`` and nothing else. ``None`` means "refuse this"."""
     try:
         payload = json.loads(body.decode("utf-8"))
-    except (ValueError, UnicodeDecodeError):
+    except ValueError:  # UnicodeDecodeError and JSONDecodeError both derive from it
         return None
     if not isinstance(payload, dict):
         return None

@@ -669,7 +669,7 @@ class RealtimeEars:
         except asyncio.TimeoutError:
             self._record(DISCOVERY_FAILED, "capabilities did not answer inside its deadline")
             return False
-        except (urllib.error.URLError, OSError, ValueError) as exc:
+        except (OSError, ValueError) as exc:  # urllib.error.URLError is an OSError
             self._record(DISCOVERY_FAILED, describe_exception(exc))
             return False
 

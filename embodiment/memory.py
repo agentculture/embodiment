@@ -485,6 +485,8 @@ CODE_STORE_NOT_REGULAR = "memory-store-not-a-file"
 CODE_STORE_SCAN_CAPPED = "memory-store-scan-capped"
 #: The memory layer was closed; no further work is submitted.
 CODE_CLOSED = "memory-closed"
+#: The human-readable half of :data:`CODE_CLOSED`, in every refusal that names it.
+_CLOSED_REASON = "this memory layer is closed"
 
 _MAX_REASON_LEN = 500
 
@@ -1383,7 +1385,7 @@ class RoomMemory:
                     + (
                         "every in-flight memory slot is occupied"
                         if refusal == CODE_SATURATED
-                        else "this memory layer is closed"
+                        else _CLOSED_REASON
                     ),
                 ),
             )
@@ -1643,7 +1645,7 @@ class RoomMemory:
                     + (
                         "every in-flight memory slot is occupied"
                         if refusal == CODE_SATURATED
-                        else "this memory layer is closed"
+                        else _CLOSED_REASON
                     ),
                 ),
             )
@@ -1729,7 +1731,7 @@ class RoomMemory:
                             "every in-flight memory slot is occupied; this recall was "
                             "refused rather than queued"
                             if refusal == CODE_SATURATED
-                            else "this memory layer is closed"
+                            else _CLOSED_REASON
                         ),
                     ),
                 ),

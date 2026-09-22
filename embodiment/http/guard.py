@@ -537,9 +537,8 @@ class Guard:
             return self._refuse(REFUSED_HOST_CODE, 403)
 
         origin = one("origin").strip()
-        if origin:
-            if origin.rstrip("/").lower() not in self._allowed_origins:
-                return self._refuse(REFUSED_ORIGIN_CODE, 403)
+        if origin and origin.rstrip("/").lower() not in self._allowed_origins:
+            return self._refuse(REFUSED_ORIGIN_CODE, 403)
 
         secret_decision = self._check_secret(
             one("authorization"),
@@ -761,9 +760,7 @@ def _ensure_dir(directory: Path) -> Optional[str]:
     return None
 
 
-def load_or_create_install_secret(
-    state_dir: Optional[Union[str, Path]],
-) -> InstallSecret:
+def load_or_create_install_secret(state_dir: str | Path | None) -> InstallSecret:
     """The daemon's install secret: read it, or mint one on first start.
 
     Never raises. Every departure from silence is a code the caller records:

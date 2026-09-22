@@ -718,12 +718,10 @@ def _atomic_write_bytes(path: Path, data: bytes) -> None:
         raise
 
 
-def _trim_to_low_water(
-    combined: bytes, max_bytes: int, low_water_bytes: int
-) -> tuple[bytes, int, int]:
+def _trim_to_low_water(combined: bytes, low_water_bytes: int) -> tuple[bytes, int, int]:
     """Drop whole lines from the OLDEST end of *combined* until it fits at or
     under *low_water_bytes*. Only called when *combined* already exceeds
-    *max_bytes*; a single line larger than *max_bytes* on its own is kept
+    the caller's ``max_bytes``; a single line larger than that on its own is kept
     alone regardless — nothing smaller is available and the file must stay
     valid JSONL. See :data:`_LOW_WATER_RATIO` for why the target is the low
     water mark and not *max_bytes* itself.
@@ -781,9 +779,7 @@ def _bounded_rewrite_append(
     dropped_records = 0
     dropped_fragments = 0
     if len(combined) > max_bytes:
-        combined, dropped_records, dropped_fragments = _trim_to_low_water(
-            combined, max_bytes, low_water_bytes
-        )
+        combined, dropped_records, dropped_fragments = _trim_to_low_water(combined, low_water_bytes)
     _atomic_write_bytes(path, combined)
     return dropped_records, dropped_fragments
 
