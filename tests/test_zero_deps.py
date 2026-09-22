@@ -89,13 +89,13 @@ _APPROVED_DEPENDENCIES: dict[str, str] = {
 #: Extras are NEVER imported at module scope by anything in the package, so they
 #: cannot appear in the runtime-import set; the consumer imports lazily and
 #: degrades to a recorded state when the extra is missing.
-_APPROVED_EXTRAS: dict[str, dict[str, str]] = {
-    "audio": {
-        # -> cffi -> pycparser, plus the SYSTEM library PortAudio (libportaudio2),
-        #    which pip cannot install. Host microphone and speaker (plan task t7).
-        "sounddevice>=0.5": "pulls cffi -> pycparser; needs system PortAudio",
-    },
-}
+#:
+#: Empty: deviation d4 (round 4 of plan task t7) withdrew the `audio` extra
+#: (`sounddevice>=0.5`) — embodiment/audio/host.py drives the microphone and
+#: speaker as subprocesses (`pw-record`/`pw-play`/`arecord`/`aplay`, found via
+#: `shutil.which` at runtime) instead of an in-process PortAudio binding, so
+#: there is no Python package left to pin here.
+_APPROVED_EXTRAS: dict[str, dict[str, str]] = {}
 
 #: Packages that must never be a dependency, in any form. `lobes-cli` is the
 #: gateway embodiment talks to; it is reached over the network and its modules
@@ -353,8 +353,14 @@ def test_forbidden_distributions_are_absent_everywhere():
 
 
 def test_no_module_imports_an_optional_extra_at_module_scope():
-    """An extra that is imported at import time is not optional."""
-    extra_modules = {"sounddevice"}
+    """An extra that is imported at import time is not optional.
+
+    No extras are approved right now (d4 withdrew `audio`'s `sounddevice`),
+    so this set is empty — kept as a real check, not deleted, so the NEXT
+    extra this repo approves is covered automatically rather than by
+    someone remembering to re-add this test.
+    """
+    extra_modules: set[str] = set()
     observed = _measure_runtime_imports(_discover_embodiment_modules())
     assert not (observed & extra_modules), (
         f"{sorted(observed & extra_modules)} imported at module scope; import it lazily "
