@@ -2300,3 +2300,136 @@ def test_criterion3_scanner_actually_detects_a_planted_violation(tmp_path):
     clean.write_text("from embodiment.audio.endpoint import AudioEndpoint\n")
     tree3 = ast.parse(clean.read_text(), filename=str(clean))
     assert not _imports_audio_host(tree3)
+
+
+# ---------------------------------------------------------------------------
+# voice-pace-stalled diagnosis (2026-09-22): the writer's pacing clock must
+# measure audio, not wall time since the player was spawned
+# ---------------------------------------------------------------------------
+
+
+class _RecordingStdin:
+    """A player stdin that never blocks and never fails: it only records how
+    many bytes reached it and when. Stands in for a pipe whose reader (the
+    real player) keeps up — the 64 KiB kernel pipe absorbs a whole short
+    sentence without a single blocking write."""
+
+    def __init__(self) -> None:
+        self.total = 0
+        self.arrivals: list[tuple[float, int]] = []
+        self.closed = False
+        self._lock = threading.Lock()
+
+    def write(self, data: bytes) -> int:
+        with self._lock:
+            self.total += len(data)
+            self.arrivals.append((time.monotonic(), len(data)))
+        return len(data)
+
+    def flush(self) -> None:
+        return None
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def _recording_player_endpoint() -> tuple[HostEndpoint, _RecordingStdin]:
+    stub = _StubPlayer()
+    stub.stdin = _RecordingStdin()  # type: ignore[assignment]
+    real_popen = _make_popen()
+
+    def popen(argv, **kwargs):
+        if argv[0] in PLAYBACK_BINARIES:
+            return stub
+        return real_popen(argv, **kwargs)
+
+    endpoint = HostEndpoint(which=_fake_which({"arecord", "aplay"}), popen=popen)
+    return endpoint, stub.stdin  # type: ignore[return-value]
+
+
+_BYTES_PER_S = 24_000 * 2  # PLAYBACK_RATE_HZ * SAMPLE_WIDTH_BYTES
+
+
+def test_writer_paces_a_reply_that_follows_an_idle_gap():
+    """Diagnosed from the live daemon's own ledger (2026-09-22): every
+    ``voice-pace-stalled`` record that held a whole sentence (59-279 kB)
+    followed a reply that arrived after the player had sat idle. The writer
+    anchored its pacing clock when the player was SPAWNED and never moved
+    it, so after an idle gap of G seconds it believed it was G seconds
+    BEHIND real time and wrote up to G seconds of the new reply into the
+    pipe at once — ``playing`` flipped False within milliseconds of
+    ``play()`` while the player still held over a second of unsounded audio.
+    The voice's pacing loop (which polls ``playing``) then saw a reply that
+    "never reported playing" and, after its stall bound, dropped the whole
+    trace; the daemon's barge-in (which also reads ``playing``) had nothing
+    to stop. The clock must measure audio written since the stream last had
+    audio — never wall time since spawn."""
+    endpoint, stdin = _recording_player_endpoint()
+    try:
+        # A short first reply, fully written, then the player sits idle.
+        endpoint.play(_silence_frame(1_200))  # 50 ms
+        assert _wait_until(lambda: stdin.total >= 2_400)
+        assert _wait_until(lambda: not endpoint.playing)
+        time.sleep(1.0)  # the idle gap, longer than the reply that follows
+
+        # A one-second reply after the gap.
+        reply = _silence_frame(24_000)
+        endpoint.play(reply)
+        time.sleep(0.15)
+        written = stdin.total - 2_400
+        # Paced: after 150 ms at most ~150 ms + the 60 ms lead may be written.
+        assert written < len(reply) // 2, f"{written} of {len(reply)} bytes written in 150 ms"
+        assert endpoint.playing is True, "playing went False with most of the reply unsounded"
+    finally:
+        endpoint.close(2.0)
+
+
+def test_writer_does_not_owe_the_pipe_the_idle_time_between_sentences():
+    """The same clock, one reply: a second sentence whose synthesis took
+    longer than the first sentence's playback must be paced from ITS
+    arrival, not dumped to repay the gap."""
+    endpoint, stdin = _recording_player_endpoint()
+    try:
+        endpoint.play(_silence_frame(2_400))  # 100 ms, sentence one
+        assert _wait_until(lambda: stdin.total >= 4_800)
+        time.sleep(0.6)  # sentence two's synthesis outlasts sentence one's sound
+        endpoint.play(_silence_frame(12_000))  # 500 ms, sentence two
+        time.sleep(0.1)
+        written = stdin.total - 4_800
+        assert written < 12_000, f"{written} of 24000 bytes written in 100 ms"
+        assert endpoint.playing is True
+    finally:
+        endpoint.close(2.0)
+
+
+def test_voice_trace_survives_a_reply_after_an_idle_gap():
+    """End to end through :class:`embodiment.voice.Voice`: a reply spoken
+    after the player idled is traced to the end and never recorded as
+    ``voice-pace-stalled`` — the record the live ledger filled with today.
+    ``speech_deadline`` is shrunk so the stall bound is its 2 s floor and the
+    base's failure surfaces within the test's own wait."""
+    from embodiment.voice import VOICE_PACE_STALLED, Voice, VoiceConfig
+
+    endpoint, stdin = _recording_player_endpoint()
+    pcm_by_sentence = {"one.": _silence_frame(1_200), "two.": _silence_frame(12_000)}
+    voice = Voice(
+        endpoint=endpoint,
+        synthesize=lambda sentence, config: pcm_by_sentence[sentence],
+        config=VoiceConfig(speech_deadline=0.1),
+    )
+    try:
+        assert voice.speak("one.").sentences_queued == 1
+        assert _wait_until(lambda: stdin.total >= 2_400)
+        assert _wait_until(lambda: not endpoint.playing)
+        time.sleep(0.8)  # idle longer than sentence two's 500 ms
+
+        assert voice.speak("two.").sentences_queued == 1
+        # Past the 2 s stall floor (100 ticks of 20 ms) plus the 500 ms of audio.
+        time.sleep(3.0)
+        stalls = voice.degradation_counts.get(VOICE_PACE_STALLED, 0)
+        reasons = [d.reason for d in voice.degradations if d.code == VOICE_PACE_STALLED]
+        assert stalls == 0, f"stalled {stalls}x: {reasons}"
+        assert voice.queued_not_traced == 0
+    finally:
+        voice.close(2.0)
+        endpoint.close(2.0)
