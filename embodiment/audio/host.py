@@ -822,27 +822,14 @@ def _pw_find_stream_node(
     for node in candidates:
         props = node["props"]
         assert isinstance(props, dict)
-
-        resolved_pid: int | None = None
-        raw_pid = props.get("application.process.id")
-        if raw_pid is not None:
-            try:
-                resolved_pid = int(raw_pid)
-            except (TypeError, ValueError):
-                resolved_pid = None
-        if resolved_pid is None:
-            client_pid = client_pids.get(props.get("client.id"))
-            if client_pid is not None:
-                resolved_pid = client_pid
-
+        resolved_pid = _pw_stream_node_pid(props, client_pids)
+        if resolved_pid == pid:
+            return node, False
         if resolved_pid is not None:
-            if resolved_pid == pid:
-                return node, False
             # Resolved to a DIFFERENT pid by either path: a KNOWN stream
             # that is definitively not ours — never eligible for a
             # name-match guess (round 10 finding).
             continue
-
         name_eligible.append(node)
 
     if client_pids:
@@ -851,7 +838,28 @@ def _pw_find_stream_node(
         # (ours simply hasn't appeared yet) must read as "not yet found",
         # never as "the only remaining candidate must be ours."
         return None, False
+    return _pw_lone_name_match(name_eligible)
 
+
+def _pw_stream_node_pid(props: dict[str, object], client_pids: dict[object, int]) -> "int | None":
+    """Resolution steps (1) and (2) of :func:`_pw_find_stream_node`: the node's
+    own ``application.process.id`` when parseable, else its ``client.id``
+    resolved through *client_pids*; ``None`` when neither path yields a pid."""
+    raw_pid = props.get("application.process.id")
+    if raw_pid is not None:
+        try:
+            return int(raw_pid)
+        except (TypeError, ValueError):
+            pass
+    return client_pids.get(props.get("client.id"))
+
+
+def _pw_lone_name_match(
+    name_eligible: list[dict[str, object]],
+) -> "tuple[dict[str, object] | None, bool]":
+    """Resolution step (3) of :func:`_pw_find_stream_node`: EXACTLY ONE
+    pw-play/pw-record among *name_eligible* is it; more than one is
+    ``(None, ambiguous=True)``, never a guess; none is ``(None, False)``."""
     name_matches = [
         node
         for node in name_eligible
