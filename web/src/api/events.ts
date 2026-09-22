@@ -70,7 +70,13 @@ export interface StateData extends EventEnvelopeData {
 
 export interface MicData extends EventEnvelopeData {
   hot: boolean;
-  ear: string;
+  // Round 5 correction: embodiment/daemon/app.py's `_publish_mic` sends
+  // `ear: self._ear_name`, which is `None` (JSON `null`) when no ear is
+  // attached -- read directly from the daemon source, not assumed. The
+  // committed schema.json fixture's example (a non-null ear name) doesn't
+  // exercise this case, which is why it went unnoticed until a real
+  // connect-after-detach was observed.
+  ear: string | null;
 }
 
 export interface TurnData extends EventEnvelopeData {

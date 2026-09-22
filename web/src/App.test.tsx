@@ -3,6 +3,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 import { FakeSSEConnection, fakeConnect } from "./hooks/fakeSSEConnection";
 import { DISCONNECTED_AFTER_MS } from "./api/events";
+import * as control from "./api/control";
+import micEventAttachedFixture from "./fixtures/daemon/mic-event-attached.json";
 
 import stateFixture from "../../tests/fixtures/events/state.json";
 import micFixture from "../../tests/fixtures/events/mic.json";
@@ -23,9 +25,16 @@ function envelope(kind: string, data: Record<string, unknown>, seq = 1) {
   return { v: 1, kind, ts: "2026-09-22T12:00:00.000Z", seq, source: "app://embodiment", data };
 }
 
+/** A no-op GET /api/status stub for every test that isn't specifically
+ *  about round 5's status seeding -- keeps `source.open()` from issuing
+ *  (or waiting on) a real network call. */
+const NOOP_STATUS_FN = async () => ({ daemon: null }) as unknown as Awaited<
+  ReturnType<typeof import("./api/control").fetchStatus>
+>;
+
 function renderApp() {
   FakeSSEConnection.reset();
-  render(<App eventStreamOptions={{ connect: fakeConnect }} />);
+  render(<App eventStreamOptions={{ connect: fakeConnect, fetchStatusFn: NOOP_STATUS_FN }} />);
   return FakeSSEConnection.latest();
 }
 
@@ -59,24 +68,49 @@ describe("App — every state from the committed event fixtures", () => {
   // nothing real: a probe server serving these exact fixture files verbatim
   // over SSE showed every pane empty against that version.
 
-  it("renders the state.json fixture as the voice-on/off control", () => {
+  it("renders the state.json fixture without affecting the voice-on/off control (round 5: state events never gate it)", () => {
     const source = renderApp();
     act(() => {
       source.open();
       source.emit("state", stateFixture);
     });
-    // stateFixture.data.status is "up", not "voice-on" -> Start voice shown
+    // Round 5 correction: the daemon never publishes a "voice-on" status
+    // token (verified against embodiment/daemon/app.py's real _publish
+    // calls) -- voiceOn comes from the `mic` event's `ear` field, not
+    // `state`. No mic event has arrived here, so it's still "Start voice".
     expect(screen.getByRole("button", { name: "Start voice" })).toBeInTheDocument();
   });
 
-  it("renders the mic.json fixture as the mute control", () => {
+  it("renders the mic.json fixture as the mute control AND the voice-on control (ear attached)", () => {
     const source = renderApp();
     act(() => {
       source.open();
       source.emit("mic", micFixture);
     });
-    // mic.json: hot: true -> "Mute mic"
+    // mic.json: hot: true, ear: "local" -> "Mute mic" AND "Stop voice"
+    // (round 5: an attached ear means voice is on, regardless of `state`).
     expect(screen.getByRole("button", { name: "Mute mic" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Stop voice" })).toBeInTheDocument();
+  });
+
+  it("renders the reconstructed real mic-event-attached.json fixture the same way", () => {
+    const source = renderApp();
+    act(() => {
+      source.open();
+      source.emit("mic", micEventAttachedFixture);
+    });
+    expect(screen.getByRole("button", { name: "Mute mic" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Stop voice" })).toBeInTheDocument();
+  });
+
+  it("treats a mic event with ear=null as voice-off, mic hot=false (round 5: the real daemon shape)", () => {
+    const source = renderApp();
+    act(() => {
+      source.open();
+      source.emit("mic", envelope("mic", { hot: false, ear: null }));
+    });
+    expect(screen.getByRole("button", { name: "Start voice" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Unmute mic" })).toBeInTheDocument();
   });
 
   it("renders the turn.json fixture's degradation codes without crashing", () => {
@@ -113,17 +147,21 @@ describe("App — every state from the committed event fixtures", () => {
     expect(screen.getByText(new RegExp(degradationFixture.data.code))).toBeInTheDocument();
   });
 
-  it("shows the recall-mode indicator as unknown until a signal arrives, then lexical-fallback on a continuity degradation", () => {
+  it("shows the recall-mode indicator as unknown until a signal arrives, then lexical-fallback on a memory-sourced degradation", () => {
     const source = renderApp();
-    // No positive "semantic" signal exists in v1 (see RecallModeIndicator's
-    // own comment) -- the honest default is "unknown", never a claim of the
+    // No positive "semantic" signal exists until GET /api/status seeds one
+    // (round 5) -- the honest default is "unknown", never a claim of the
     // better state with no evidence for it (this rig's embedder is not
     // ready; CLAUDE.md's C3).
     expect(screen.getByText(/recall: unknown/)).toBeInTheDocument();
     expect(screen.queryByText(/recall: semantic/)).toBeNull();
     act(() => {
       source.open();
-      source.emit("degradation", degradationFixture); // source: "continuity"
+      // Round 5: the real daemon folds recall/memory degradations with
+      // source="memory" (embodiment/daemon/app.py: `self._fold("memory",
+      // degradation)`), read directly -- NOT "continuity", which is
+      // degradationFixture's own (unrelated) example value.
+      source.emit("degradation", envelope("degradation", { source: "memory", code: "x", reason: "y" }));
     });
     expect(screen.getByText(/recall: lexical fallback/)).toBeInTheDocument();
   });
@@ -282,6 +320,135 @@ describe("App — every state from the committed event fixtures", () => {
     renderApp();
     expect(FakeSSEConnection.instances).toHaveLength(1);
     expect(FakeSSEConnection.latest().headers.Authorization).toBe("Bearer restored-secret");
+  });
+
+  // Round 5 [(c), the silent-click investigation]: the typed `secret` field
+  // is NOT the credential -- only `appliedSecret` (set by "Apply") is ever
+  // sent on a control POST. Verified with a real, unapplied divergence
+  // between the two: type something into the field WITHOUT clicking
+  // Apply, then click Start -- the POST must use whatever was last
+  // actually applied (here: nothing, i.e. the empty string), never the
+  // freshly-typed-but-unapplied text.
+  describe("control POSTs use appliedSecret, never the typed field directly", () => {
+    it("Start voice sends the APPLIED secret, not a typed-but-unapplied one", async () => {
+      const startSpy = vi.spyOn(control, "startVoice").mockResolvedValue(
+        new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 }),
+      );
+      const source = renderApp();
+      act(() => source.open());
+
+      fireEvent.change(screen.getByLabelText("install secret"), {
+        target: { value: "s3cr3t-applied" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+      // type something ELSE afterwards, but never click Apply again
+      fireEvent.change(screen.getByLabelText("install secret"), {
+        target: { value: "something-else-never-applied" },
+      });
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Start voice" }));
+      });
+
+      expect(startSpy).toHaveBeenCalledWith("s3cr3t-applied");
+      startSpy.mockRestore();
+    });
+
+    it("Mute sends the applied secret", async () => {
+      const muteSpy = vi.spyOn(control, "setMicMute").mockResolvedValue(
+        new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 }),
+      );
+      const source = renderApp();
+      act(() => {
+        source.open();
+        source.emit("mic", micFixture); // hot: true -> Mute mic
+      });
+      fireEvent.change(screen.getByLabelText("install secret"), { target: { value: "s3cr3t-x" } });
+      fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Mute mic" }));
+      });
+      expect(muteSpy).toHaveBeenCalledWith("s3cr3t-x", false);
+      muteSpy.mockRestore();
+    });
+  });
+
+  // Round 5's explicit rendering requirement: 200 -> refresh via
+  // GET /api/status; 4xx -> a visible "refused: <code>" line, no secret.
+  describe("control POST outcomes are rendered, never silent", () => {
+    it("refreshes from GET /api/status on a 200 outcome", async () => {
+      const startSpy = vi.spyOn(control, "startVoice").mockResolvedValue(
+        new Response(JSON.stringify({ ok: true, result: { ear: "host" } }), { status: 200 }),
+      );
+      const fetchStatusFn = vi.fn(async () =>
+        ({
+          daemon: { ear: { active: "host", muted: false }, clients: null, recall: null },
+          http: {},
+        }) as unknown as Awaited<ReturnType<typeof control.fetchStatus>>,
+      );
+      FakeSSEConnection.reset();
+      render(
+        <App eventStreamOptions={{ connect: fakeConnect, fetchStatusFn }} />,
+      );
+      const source = FakeSSEConnection.latest();
+      act(() => source.open());
+      fetchStatusFn.mockClear(); // ignore the connect-time seed call
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Start voice" }));
+      });
+
+      expect(fetchStatusFn).toHaveBeenCalledTimes(1);
+      expect(screen.getByRole("button", { name: "Stop voice" })).toBeInTheDocument();
+      startSpy.mockRestore();
+    });
+
+    it("shows a visible 'refused: <code>' line on a 4xx outcome, with no secret in it", async () => {
+      const startSpy = vi.spyOn(control, "startVoice").mockResolvedValue(
+        new Response(
+          JSON.stringify({ error: { code: "http-refused-secret", message: "no valid install secret was presented" } }),
+          { status: 401 },
+        ),
+      );
+      renderApp();
+      fireEvent.change(screen.getByLabelText("install secret"), { target: { value: "s3cr3t-value" } });
+      fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Start voice" }));
+      });
+
+      const alert = screen.getByRole("alert");
+      expect(alert).toHaveTextContent("http-refused-secret");
+      expect(alert.textContent).not.toContain("s3cr3t-value");
+      expect(alert.textContent).not.toContain("no valid install secret was presented");
+      startSpy.mockRestore();
+    });
+
+    it("clears a previous refusal once a later control POST succeeds", async () => {
+      const startSpy = vi
+        .spyOn(control, "startVoice")
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify({ error: { code: "http-refused-secret", message: "x" } }), {
+            status: 401,
+          }),
+        )
+        .mockResolvedValueOnce(new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 }));
+      renderApp();
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Start voice" }));
+      });
+      expect(screen.getByRole("alert")).toHaveTextContent("http-refused-secret");
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Start voice" }));
+      });
+      expect(screen.queryByRole("alert")).toBeNull();
+      startSpy.mockRestore();
+    });
   });
 
   it("shows 'not authorised' rather than 'disconnected' when the stream errors before ever opening", () => {

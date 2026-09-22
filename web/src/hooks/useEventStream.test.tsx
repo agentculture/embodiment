@@ -16,6 +16,13 @@ import featuresFixture from "../../../tests/fixtures/events/features.json";
 import clientsFixture from "../../../tests/fixtures/events/clients.json";
 import heartbeatFixture from "../../../tests/fixtures/events/heartbeat.json";
 
+// Round 5: reconstructed from reading embodiment/daemon/app.py directly
+// (see src/fixtures/daemon/README.md for full provenance -- not a literal
+// curl capture, since that would require opening the live daemon's
+// install-secret file, forbidden by the task-agent preamble).
+import statusEarAttachedFixture from "../fixtures/daemon/status-ear-attached.json";
+import statusEarDetachedFixture from "../fixtures/daemon/status-ear-detached.json";
+
 const FIXTURES_DIR = join(__dirname, "../../../tests/fixtures/events");
 const TEST_SECRET = "s3cr3t-test";
 
@@ -25,10 +32,21 @@ function envelope(kind: string, data: Record<string, unknown>, seq = 1) {
   return { v: 1, kind, ts: "2026-09-22T12:00:00.000Z", seq, source: "app://embodiment", data };
 }
 
+/** A no-op GET /api/status stub -- every existing test that doesn't care
+ *  about round 5's status-seeding gets one by default, so `source.open()`
+ *  never issues (or waits on) a real network call. `daemon: null` makes
+ *  `seedFromStatus` skip every dispatch (falsy `response.daemon` short-
+ *  circuits before touching `.ear`/`.clients`/`.recall`), so it is a true
+ *  no-op, not merely "resolves to something".
+ */
+const NOOP_STATUS_FN = async () => ({ daemon: null }) as unknown as Awaited<
+  ReturnType<typeof import("../api/control").fetchStatus>
+>;
+
 function setUp() {
   FakeSSEConnection.reset();
   const { result, unmount } = renderHook(() =>
-    useEventStream("/api/events", TEST_SECRET, { connect: fakeConnect }),
+    useEventStream("/api/events", TEST_SECRET, { connect: fakeConnect, fetchStatusFn: NOOP_STATUS_FN }),
   );
   const source = FakeSSEConnection.latest();
   return { result, unmount, source };
@@ -38,7 +56,11 @@ function setUpWithReconnectKey(initialKey: number) {
   FakeSSEConnection.reset();
   const { result, rerender, unmount } = renderHook(
     ({ reconnectKey }: { reconnectKey: number }) =>
-      useEventStream("/api/events", TEST_SECRET, { connect: fakeConnect, reconnectKey }),
+      useEventStream("/api/events", TEST_SECRET, {
+        connect: fakeConnect,
+        reconnectKey,
+        fetchStatusFn: NOOP_STATUS_FN,
+      }),
     { initialProps: { reconnectKey: initialKey } },
   );
   const source = FakeSSEConnection.latest();
@@ -404,6 +426,229 @@ describe("useEventStream", () => {
       const secondSource = FakeSSEConnection.latest();
       act(() => secondSource.open());
       expect(result.current.status).toBe("connected");
+    });
+  });
+
+  // Round 5 [LIVE, MAJOR]: a viewer connecting after the ear was already
+  // attached/muted/etc received NO snapshot over SSE, only future changes
+  // -- mic/clients/recall stayed "unknown" forever. GET /api/status is
+  // fetched on every successful open and reseeds them from the daemon's
+  // REAL status()['ear']/['clients']/['recall'] shape (read directly from
+  // /home/spark/git/.worktrees.embodiment/realtime-t15/embodiment/daemon/
+  // app.py, cross-checked against that file's own test assertions).
+  describe("GET /api/status seeding on connect (round 5)", () => {
+    function daemonStatus(overrides: {
+      ear?: { active: string | null; muted: boolean };
+      clients?: { count: number; remote: number };
+      recall?: { mode: string | null; semantic?: boolean };
+    }) {
+      // Cast: a real status() body always has ear/clients/recall present
+      // (embodiment/daemon/app.py's `_status`), but these tests also want
+      // to exercise "the field is missing/null" defensively -- hence the
+      // loosened test-only shape rather than widening the production type.
+      return {
+        daemon: {
+          ear: overrides.ear ?? null,
+          clients: overrides.clients ?? null,
+          recall: overrides.recall ? { semantic: false, ...overrides.recall } : null,
+        },
+        http: {},
+      } as unknown as Awaited<ReturnType<typeof import("../api/control").fetchStatus>>;
+    }
+
+    function setUpWithStatus(status: ReturnType<typeof daemonStatus>) {
+      FakeSSEConnection.reset();
+      const fetchStatusFn = vi.fn(async () => status);
+      const { result, unmount } = renderHook(() =>
+        useEventStream("/api/events", TEST_SECRET, { connect: fakeConnect, fetchStatusFn }),
+      );
+      const source = FakeSSEConnection.latest();
+      return { result, unmount, source, fetchStatusFn };
+    }
+
+    it("calls fetchStatusFn with the current secret exactly once per successful open", async () => {
+      const { source, fetchStatusFn } = setUpWithStatus(daemonStatus({}));
+      await act(async () => {
+        source.open();
+      });
+      expect(fetchStatusFn).toHaveBeenCalledTimes(1);
+      expect(fetchStatusFn).toHaveBeenCalledWith(TEST_SECRET);
+    });
+
+    // Against the reconstructed real fixture files (src/fixtures/daemon/),
+    // not a synthetic shape built by this test file's own daemonStatus()
+    // helper -- proves the hook reads the actual GET /api/status envelope
+    // shape (`{"daemon": {...}, "http": {...}}`), not merely a JS object
+    // this test file was free to invent to match its own code.
+    it("seeds correctly from the real status-ear-attached.json fixture", async () => {
+      FakeSSEConnection.reset();
+      const fetchStatusFn = vi.fn(async () => statusEarAttachedFixture as unknown as Awaited<ReturnType<typeof import("../api/control").fetchStatus>>);
+      const { result } = renderHook(() =>
+        useEventStream("/api/events", TEST_SECRET, { connect: fakeConnect, fetchStatusFn }),
+      );
+      await act(async () => {
+        FakeSSEConnection.latest().open();
+      });
+      expect(result.current.mic?.data).toEqual({ hot: true, ear: "host" });
+      expect(result.current.clients?.data).toEqual({ count: 1, remote: 1 });
+      expect(result.current.recallStatusMode).toBe("lexical");
+    });
+
+    it("seeds correctly from the real status-ear-detached.json fixture", async () => {
+      FakeSSEConnection.reset();
+      const fetchStatusFn = vi.fn(async () => statusEarDetachedFixture as unknown as Awaited<ReturnType<typeof import("../api/control").fetchStatus>>);
+      const { result } = renderHook(() =>
+        useEventStream("/api/events", TEST_SECRET, { connect: fakeConnect, fetchStatusFn }),
+      );
+      await act(async () => {
+        FakeSSEConnection.latest().open();
+      });
+      expect(result.current.mic?.data).toEqual({ hot: false, ear: null });
+      expect(result.current.clients?.data).toEqual({ count: 0, remote: 0 });
+      expect(result.current.recallStatusMode).toBeNull();
+    });
+
+    it("seeds mic as hot=true, ear=<name> when an ear is attached and unmuted", async () => {
+      const { result, source } = setUpWithStatus(daemonStatus({ ear: { active: "host", muted: false } }));
+      await act(async () => {
+        source.open();
+      });
+      expect(result.current.mic?.data).toEqual({ hot: true, ear: "host" });
+    });
+
+    it("seeds mic as hot=false, ear=null when no ear is attached", async () => {
+      const { result, source } = setUpWithStatus(daemonStatus({ ear: { active: null, muted: false } }));
+      await act(async () => {
+        source.open();
+      });
+      expect(result.current.mic?.data).toEqual({ hot: false, ear: null });
+    });
+
+    it("seeds mic as hot=false when an ear is attached but muted", async () => {
+      const { result, source } = setUpWithStatus(daemonStatus({ ear: { active: "host", muted: true } }));
+      await act(async () => {
+        source.open();
+      });
+      expect(result.current.mic?.data).toEqual({ hot: false, ear: "host" });
+    });
+
+    it("treats the STRING ear name \"null\" as attached, not as JS null (the daemon's own null-endpoint name)", async () => {
+      const { result, source } = setUpWithStatus(daemonStatus({ ear: { active: "null", muted: false } }));
+      await act(async () => {
+        source.open();
+      });
+      expect(result.current.mic?.data).toEqual({ hot: true, ear: "null" });
+    });
+
+    it("seeds clients from status()['clients']", async () => {
+      const { result, source } = setUpWithStatus(daemonStatus({ clients: { count: 3, remote: 1 } }));
+      await act(async () => {
+        source.open();
+      });
+      expect(result.current.clients?.data).toEqual({ count: 3, remote: 1 });
+    });
+
+    it("seeds recallStatusMode from status()['recall']['mode']", async () => {
+      const { result, source } = setUpWithStatus(daemonStatus({ recall: { mode: "lexical" } }));
+      await act(async () => {
+        source.open();
+      });
+      expect(result.current.recallStatusMode).toBe("lexical");
+    });
+
+    it("leaves recallStatusMode null when the daemon has never completed a recall call", async () => {
+      const { result, source } = setUpWithStatus(daemonStatus({ recall: { mode: null } }));
+      await act(async () => {
+        source.open();
+      });
+      expect(result.current.recallStatusMode).toBeNull();
+    });
+
+    it("does not throw and leaves state unchanged when GET /api/status rejects", async () => {
+      FakeSSEConnection.reset();
+      const fetchStatusFn = vi.fn(async () => {
+        throw new Error("network error");
+      });
+      const { result, unmount } = renderHook(() =>
+        useEventStream("/api/events", TEST_SECRET, { connect: fakeConnect, fetchStatusFn }),
+      );
+      const source = FakeSSEConnection.latest();
+      await expect(
+        act(async () => {
+          source.open();
+        }),
+      ).resolves.not.toThrow();
+      expect(result.current.mic).toBeNull();
+      expect(result.current.status).toBe("connected"); // the STREAM itself is fine
+      unmount();
+    });
+
+    it("re-seeds on every reconnect, not just the first connect", async () => {
+      FakeSSEConnection.reset();
+      const fetchStatusFn = vi
+        .fn()
+        .mockResolvedValueOnce(daemonStatus({ ear: { active: "host", muted: false } }))
+        .mockResolvedValueOnce(daemonStatus({ ear: { active: null, muted: false } }));
+      const { result, rerender } = renderHook(
+        ({ reconnectKey }: { reconnectKey: number }) =>
+          useEventStream("/api/events", TEST_SECRET, {
+            connect: fakeConnect,
+            fetchStatusFn,
+            reconnectKey,
+          }),
+        { initialProps: { reconnectKey: 0 } },
+      );
+      await act(async () => {
+        FakeSSEConnection.latest().open();
+      });
+      expect(result.current.mic?.data.ear).toBe("host");
+
+      rerender({ reconnectKey: 1 });
+      await act(async () => {
+        FakeSSEConnection.latest().open();
+      });
+      expect(result.current.mic?.data.ear).toBeNull();
+      expect(fetchStatusFn).toHaveBeenCalledTimes(2);
+    });
+
+    // Brief's explicit ask: refreshStatus() re-fetches and reseeds on
+    // demand -- App.tsx calls this after a control POST resolves 200.
+    it("refreshStatus() re-fetches and reseeds without requiring a reconnect", async () => {
+      FakeSSEConnection.reset();
+      const fetchStatusFn = vi
+        .fn()
+        .mockResolvedValueOnce(daemonStatus({ ear: { active: null, muted: false } }))
+        .mockResolvedValueOnce(daemonStatus({ ear: { active: "browser", muted: false } }));
+      const { result } = renderHook(() =>
+        useEventStream("/api/events", TEST_SECRET, { connect: fakeConnect, fetchStatusFn }),
+      );
+      await act(async () => {
+        FakeSSEConnection.latest().open();
+      });
+      expect(result.current.mic?.data.ear).toBeNull();
+
+      await act(async () => {
+        await result.current.refreshStatus();
+      });
+      expect(result.current.mic?.data.ear).toBe("browser");
+      expect(fetchStatusFn).toHaveBeenCalledTimes(2);
+      // still the SAME underlying connection -- refreshStatus never
+      // reconnects, it only re-fetches the status snapshot.
+      expect(FakeSSEConnection.instances).toHaveLength(1);
+    });
+
+    it("refreshStatus() never throws even when GET /api/status rejects", async () => {
+      FakeSSEConnection.reset();
+      const fetchStatusFn = vi.fn(async () => {
+        throw new Error("network error");
+      });
+      const { result } = renderHook(() =>
+        useEventStream("/api/events", TEST_SECRET, { connect: fakeConnect, fetchStatusFn }),
+      );
+      await act(async () => {
+        FakeSSEConnection.latest().open();
+      });
+      await expect(result.current.refreshStatus()).resolves.toBeUndefined();
     });
   });
 });

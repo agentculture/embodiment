@@ -1,0 +1,93 @@
+{
+  "daemon": {
+    "running": true,
+    "closed": false,
+    "ear": {
+      "active": null,
+      "kind": null,
+      "degraded": null,
+      "generation": 0,
+      "handovers": 0,
+      "refusals": 0,
+      "preempt_policy": true,
+      "sample_rate": null,
+      "warmups": 0,
+      "warmup_failures": 0,
+      "declared_sample_rate": null,
+      "sessions": 0,
+      "redials": 0,
+      "muted": true,
+      "endpoint": null
+    },
+    "clients": { "count": 0, "remote": 0 },
+    "transcripts": { "received": 0, "empty_commits": 0, "not_text": 0 },
+    "turns": {
+      "completed": 0,
+      "in_flight": 0,
+      "superseded": 0,
+      "dropped": 0,
+      "failed": 0,
+      "queued": 0
+    },
+    "audio": {
+      "frames_captured": 0,
+      "frames_forwarded": 0,
+      "frames_from_stale_ear": 0,
+      "frames_dropped_no_session": 0,
+      "stale_frame_tolerance": 2
+    },
+    "recall": {
+      "mode": null,
+      "calls": 0,
+      "hits_total": 0,
+      "last_hits": 0,
+      "rendered_total": 0,
+      "empty_total": 0,
+      "deadline_exceeded": 0,
+      "errors": 0,
+      "lexical_fallback_hits": 0,
+      "deadline_s": 2.0,
+      "configured_mode": "auto",
+      "semantic": false
+    },
+    "memory": {
+      "asks_detected": 0,
+      "remembered": 0,
+      "remember_failed": 0,
+      "remember_deferred": 0,
+      "ask_not_detected": 0,
+      "summary_attempted": 0,
+      "summary_written": 0,
+      "summary_skip_reason": null
+    },
+    "session": {},
+    "ears": {},
+    "voice": {},
+    "http": { "streams_open": 0 },
+    "bus": { "degradation_counts": {}, "hook_errors": 0 },
+    "state": {},
+    "degradations": {},
+    "publish_errors": 0,
+    "ledger_errors": 0
+  },
+  "http": {
+    "bind": "100.127.105.72",
+    "port": 8823,
+    "public_bind": true,
+    "dashboard": "present",
+    "include_speech": true,
+    "max_streams": 8,
+    "streams_open": 0,
+    "controls_inflight": 0,
+    "control_timeout_s": 5.0,
+    "closed": false,
+    "stopping": false,
+    "degradations": [],
+    "degradation_counts": {},
+    "degradations_dropped": 0,
+    "hook_errors": 0,
+    "configured_bind": "100.127.105.72",
+    "allowed_hosts": 1,
+    "secure_context_required": true
+  }
+}

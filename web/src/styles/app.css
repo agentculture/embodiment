@@ -121,6 +121,13 @@ body {
   color: var(--on-accent);
 }
 
+.control-refusal {
+  margin: 0.5rem 0 0;
+  color: #b3261e;
+  font-family: var(--font-mono);
+  font-size: var(--ac-type-meta, 0.75rem);
+}
+
 .transcript {
   display: flex;
   flex-direction: column;
