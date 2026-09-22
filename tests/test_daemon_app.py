@@ -2687,6 +2687,105 @@ class TestTheTailnetBind:
         assert refused.allowed is False
         assert refused.code == guard_module.REFUSED_HOST_CODE
 
+    def test_both_schemes_are_allowed_origins(self) -> None:
+        """A TLS terminator presents https while the Host stays the same.
+
+        Found on the tailnet: over plain http a same-origin EventSource sends
+        no Origin and no Sec-Fetch-* (browsers send those only to secure
+        contexts), so the cookie can never be vouched for and the stream is
+        refused. The way out is TLS in front — and then the control POSTs
+        arrive with an https Origin against the same Host.
+        """
+        origins = app_module.allowed_origins_for(("100.64.0.7:8823",))
+        assert "http://100.64.0.7:8823" in origins
+        assert "https://100.64.0.7:8823" in origins
+
+    def test_both_schemes_reach_the_guard_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: dict[str, Any] = {}
+
+        class Recording:
+            def __init__(self, *, config: Any, guard: Any, **kwargs: Any) -> None:
+                captured["guard"] = guard
+
+            def start(self) -> None:
+                return None
+
+            def shutdown(self, deadline: float) -> None:
+                return None
+
+            def status(self) -> dict[str, Any]:
+                return {}
+
+        monkeypatch.setenv("EMBODIMENT_STATE_DIR", str(tmp_path / "state"))
+        monkeypatch.setenv(app_module.ENV_HTTP_BIND, "100.64.0.7")
+        monkeypatch.setenv(app_module.ENV_BIND_PUBLIC, "1")
+        monkeypatch.setenv(app_module.ENV_ALLOWED_HOSTS, "spark.tail0be7e0.ts.net")
+        monkeypatch.setattr(app_module.server_module, "DashboardServer", Recording)
+
+        application = app_module.main()
+        try:
+            origins = captured["guard"].config.allowed_origins
+            assert "http://spark.tail0be7e0.ts.net" in origins
+            assert "https://spark.tail0be7e0.ts.net" in origins
+        finally:
+            application.close(deadline=2.0)
+
+    def test_an_https_origin_passes_the_guard_on_a_control_post(self) -> None:
+        """The end of the wire: the terminator's Origin against the same Host."""
+        from embodiment.http import guard as guard_module
+
+        hosts = ("spark.tail0be7e0.ts.net",)
+        guard = guard_module.Guard(
+            guard_module.GuardConfig(
+                install_secret="s" * 32,
+                allowed_hosts=guard_module.DEFAULT_ALLOWED_HOSTS
+                | frozenset(app_module.guard_host_of(h) for h in hosts),
+                allowed_origins=frozenset(app_module.allowed_origins_for(hosts)),
+            )
+        )
+        for scheme in ("http", "https"):
+            decision = guard.check(
+                "POST",
+                "/api/voice/start",
+                {
+                    "host": "spark.tail0be7e0.ts.net",
+                    "origin": f"{scheme}://spark.tail0be7e0.ts.net",
+                    "authorization": "Bearer " + "s" * 32,
+                },
+            )
+            assert decision.allowed is True, (scheme, decision.to_dict())
+
+        foreign = guard.check(
+            "POST",
+            "/api/voice/start",
+            {
+                "host": "spark.tail0be7e0.ts.net",
+                "origin": "https://evil.example",
+                "authorization": "Bearer " + "s" * 32,
+            },
+        )
+        assert foreign.allowed is False
+        assert foreign.code == guard_module.REFUSED_ORIGIN_CODE
+
+    @pytest.mark.parametrize(
+        "bind,expected",
+        [
+            ("127.0.0.1", False),
+            ("localhost", False),
+            ("::1", False),
+            ("100.64.0.7", True),
+            ("0.0.0.0", True),
+        ],
+    )
+    def test_status_says_when_a_secure_context_is_required(
+        self, harness: Any, bind: str, expected: bool
+    ) -> None:
+        """So a host sees it here, not as ten refused stream requests."""
+        h = harness(config=AppConfig(poll_interval_s=0.01, bind=bind, bind_public=expected))
+        assert h.app.status()["http"]["secure_context_required"] is expected
+
     @pytest.mark.parametrize(
         "entry,expected",
         [

@@ -50,6 +50,24 @@ saying so. :meth:`DaemonApp.set_mute` calls the endpoint's own ``mute``, which
 each endpoint enforces *before encode* in its capture path — never in a UI —
 and publishes the new state.
 
+Reaching the dashboard from another device
+-------------------------------------------
+:data:`ENV_HTTP_BIND`, :data:`ENV_BIND_PUBLIC` and :data:`ENV_ALLOWED_HOSTS`
+(and the ``--http-bind`` / ``--bind-public`` / ``--allowed-host`` flags that
+set them) move the dashboard off loopback. One thing to know before doing it,
+measured on the tailnet: **plain http on a non-localhost address cannot vouch
+for the dashboard's cookie.** The event stream authenticates by cookie; the
+guard vouches for a cookie only with an allow-listed ``Origin`` or
+``Sec-Fetch-Site: same-origin``; a same-origin ``EventSource`` GET sends no
+``Origin`` at all, and browsers send ``Sec-Fetch-*`` only to *secure contexts*
+(https, or localhost). So over plain http to a tailnet address every stream
+request is refused ``http-refused-cookie-without-origin`` — ten of them, in
+the run that found this — and the dashboard works only on localhost or behind
+TLS. Put TLS in front (``tailscale serve`` pointing at ``127.0.0.1:8823`` is
+the cheapest way, and makes the page a secure context);
+:meth:`DaemonApp.status` reports ``http.secure_context_required`` so a host
+can see when this applies rather than discovering it as ten refusals.
+
 Clients are information, never input
 ------------------------------------
 :meth:`DaemonApp.attach_client` / :meth:`DaemonApp.detach_client` maintain a
@@ -94,7 +112,7 @@ import time
 import urllib.request
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 from embodiment import memory as memory_module
 from embodiment import safe_reason
@@ -163,6 +181,7 @@ __all__ = [
     "ENV_BIND_PUBLIC",
     "ENV_ALLOWED_HOSTS",
     "guard_host_of",
+    "allowed_origins_for",
     "SUMMARY_PROMPT",
     "SUMMARY_MAX_TOKENS",
     "main",
@@ -2486,6 +2505,28 @@ def guard_host_of(value: str) -> str:
     return host.split(":", 1)[0]
 
 
+def allowed_origins_for(hosts: Iterable[str]) -> tuple[str, ...]:
+    """Both schemes for every allowed host: ``http://`` and ``https://``.
+
+    Both, because the Host and the Origin do not have to agree about the
+    scheme. A TLS terminator in front — ``tailscale serve``, a tunnel, a
+    reverse proxy — presents ``https://<host>`` as the Origin on the
+    dashboard's control POSTs while the ``Host`` header it forwards stays the
+    same. Listing only the scheme the daemon itself speaks would refuse
+    exactly the deployment that makes the dashboard usable off this box.
+    """
+    out: list[str] = []
+    for host in hosts:
+        cleaned = host.strip().lower().rstrip("/")
+        if not cleaned:
+            continue
+        for scheme in ("http", "https"):
+            origin = f"{scheme}://{cleaned}"
+            if origin not in out:
+                out.append(origin)
+    return tuple(out)
+
+
 def _lexical_can_index(text: str) -> bool:
     """Whether a lexical (BM25) search has anything to work with here.
 
@@ -2544,6 +2585,11 @@ def _http_status(server: Any, config: AppConfig) -> Optional[dict[str, Any]]:
         "configured_bind": config.bind,
         "bind_public": bool(config.bind_public),
         "allowed_hosts": len(config.allowed_hosts),
+        # True when the browser will withhold what the cookie rule needs —
+        # see the module docstring's "Reaching the dashboard from another
+        # device". Not a fault, and not something this daemon can fix from
+        # its side: it says "put TLS in front of me".
+        "secure_context_required": not server_module.is_loopback_address(config.bind),
     }
     if probed is None:
         return {**configured, "running": False}
@@ -2708,9 +2754,7 @@ def main() -> DaemonApp:
                     install_secret=secret.secret,
                     allowed_hosts=guard_module.DEFAULT_ALLOWED_HOSTS
                     | frozenset(guard_host_of(host) for host in config.allowed_hosts),
-                    allowed_origins=frozenset(
-                        f"http://{host.strip().lower()}" for host in config.allowed_hosts
-                    ),
+                    allowed_origins=frozenset(allowed_origins_for(config.allowed_hosts)),
                 ),
             ),
             bus=bus,
