@@ -90,15 +90,14 @@ the array. This module now:
    :meth:`HostEndpoint._verify_pipewire_link` re-reads ``pw-dump`` (bounded
    retries, :data:`_PW_VERIFY_TOTAL_S`, since pipewire's own routing takes a
    moment), finds the Stream node OUR child created
-   (:func:`_pw_find_stream_node` — by ``application.process.id`` first,
-   falling back to ``application.name`` when a real pipewire build does not
-   set it, which is the path actually exercised on the operator's own box,
-   measured), and follows the Link (:func:`_pw_link_target_id`) to confirm
-   it landed on the resolved node — never assumed from the ``--target``
-   argument alone. A mismatch is :data:`DEGRADED_DEVICE_MISMATCH` (a NAMED,
-   COUNTED degradation — the node name itself is never put in a reason
-   string), exposed as ``status()['playback_target_verified']``/
-   ``['capture_target_verified']``. A playback mismatch is NOT left running:
+   (:func:`_pw_find_stream_node` — see the round 9 section below for how
+   this actually identifies OUR child, not just any pw-play/pw-record), and
+   follows the Link (:func:`_pw_link_target_id`) to confirm it landed on the
+   resolved node — never assumed from the ``--target`` argument alone. A
+   mismatch is :data:`DEGRADED_DEVICE_MISMATCH` (a NAMED, COUNTED degradation
+   — the node name itself is never put in a reason string), exposed as
+   ``status()['playback_target_verified']``/``['capture_target_verified']``.
+   A playback mismatch is NOT left running:
    :meth:`HostEndpoint._handle_playback_mismatch` SIGKILLs the wrongly-routed
    stream at once, the same discipline as a barge-in — audio must never keep
    flowing to a device this module could not confirm.
@@ -108,6 +107,33 @@ the array. This module now:
    (:data:`DEGRADED_PIPEWIRE_UNAVAILABLE`); with no alsa fallback either,
    that becomes a construction-time fault. This module never guesses at an
    unverifiable pipewire target.
+
+Round 9 — identifying OUR child's stream node, not just A pw-play's
+--------------------------------------------------------------------------
+Round 7's own fallback for "which Stream node is OUR subprocess" matched by
+``application.name in {"pw-play", "pw-record"}`` whenever ``pw-dump`` set no
+``application.process.id`` on the node itself — which the third review
+measured as the PRODUCTION path on this box, not a rare fallback: a bare
+``pw-play`` here sets neither pid field on its own Stream node. That name
+match returns the FIRST such node, so with two ``pw-play`` processes running
+at once (this project's OWN acoustic self-test plays a clip through a second
+``pw-play`` on the HDMI sink while a reply is live on the array) it could
+silently confirm the WRONG stream and report ``verified=True`` either way —
+the hazard round 7 exists to catch, reintroduced by round 7's own fallback.
+
+The pid is one hop further, not absent: measured live, the Stream node's
+``client.id`` names a ``PipeWire:Interface:Client`` object, and THAT object
+carries ``pipewire.sec.pid``/``application.process.id`` — pipewire's own
+connection-layer pid, not client-declared metadata. :func:`_pw_client_pids`
+reads it; :func:`_pw_find_stream_node` now resolves, in order: (1) the
+node's own ``application.process.id`` when a pipewire build does set it, (2)
+the node's ``client.id`` through :func:`_pw_client_pids` — the path actually
+exercised on this box — and only then (3) a name match, and ONLY when it
+yields EXACTLY ONE un-pid-resolved candidate. More than one is
+``ambiguous=True``: :meth:`HostEndpoint._verify_pipewire_link` counts it
+(``playback_target_ambiguous_count``/``capture_target_ambiguous_count``,
+direction-tagged) and treats it exactly like "not yet found" — it can expire
+into an honest ``verified=False``, never a ``True`` built on a guess.
 
 Round 8 — a stream can be correctly routed and still be too quiet to hear
 --------------------------------------------------------------------------
@@ -684,16 +710,60 @@ def _pw_find_device_node(
     return None
 
 
+def _pw_client_pids(dump: list[object]) -> dict[object, int]:
+    """``PipeWire:Interface:Client`` object id -> its OS pid (round 9 finding 1).
+
+    Prefers ``pipewire.sec.pid`` — the value pipewire's OWN security layer
+    attached to the connection, not client-declared metadata — falling back
+    to ``application.process.id`` on the Client object when the former is
+    absent. This is the pid a Stream Node's ``client.id`` resolves through:
+    measured live on this box, a bare ``pw-play`` sets NEITHER pid field on
+    its own Stream node, only on the Client object that owns it.
+    """
+    pids: dict[object, int] = {}
+    for obj in dump:
+        if not isinstance(obj, dict) or obj.get("type") != "PipeWire:Interface:Client":
+            continue
+        info = obj.get("info")
+        props = info.get("props") if isinstance(info, dict) else None
+        if not isinstance(props, dict):
+            continue
+        raw = props.get("pipewire.sec.pid")
+        if raw is None:
+            raw = props.get("application.process.id")
+        try:
+            if raw is not None:
+                pids[obj.get("id")] = int(raw)
+        except (TypeError, ValueError):
+            continue
+    return pids
+
+
 def _pw_find_stream_node(
     dump: list[object], media_class: str, pid: int
-) -> dict[str, object] | None:
-    """The Stream node OUR subprocess created — matched by its OS pid first.
+) -> "tuple[dict[str, object] | None, bool]":
+    """The Stream node OUR subprocess created — ``(node, ambiguous)``.
 
-    ``application.process.id`` is the reliable match (pipewire always sets
-    it for a client-created stream); a name match
-    (``application.name in {"pw-play", "pw-record"}``) is the fallback for a
-    pipewire build/config that omits it, best-effort since it could match a
-    DIFFERENT pw-play/pw-record process on a shared box.
+    Round 9 finding 1 (BLOCKER, superseding round 7's own fallback): a bare
+    ``pw-play`` on this box sets NEITHER ``application.process.id`` NOR any
+    other pid field on its own Stream node — round 7's fallback matched by
+    ``application.name`` alone, and with two ``pw-play`` processes running at
+    once (this project's own acoustic self-test plays a clip through a
+    second ``pw-play`` on the HDMI sink while a reply is live on the array)
+    that fallback could silently confirm the WRONG stream and report
+    ``verified=True``. The pid IS discoverable, just one hop further: the
+    Stream node's ``client.id`` names a ``PipeWire:Interface:Client`` object,
+    and THAT object carries ``pipewire.sec.pid``/``application.process.id``
+    (see :func:`_pw_client_pids`) — measured live and now the primary path.
+
+    Resolution order: (1) the node's own ``application.process.id``, when a
+    pipewire build/config DOES set it; (2) the node's ``client.id`` resolved
+    through :func:`_pw_client_pids`; (3) a name match
+    (``application.name in {"pw-play", "pw-record"}``), but ONLY when it
+    yields EXACTLY ONE candidate among nodes neither pid path resolved —
+    more than one is reported ``ambiguous=True`` with ``node=None``, never a
+    guess. The caller must treat ``ambiguous`` the same as "not yet found":
+    it is never allowed to become ``verified=True``.
     """
     candidates = _pw_nodes_by_class(dump, media_class)
     for node in candidates:
@@ -702,15 +772,26 @@ def _pw_find_stream_node(
         raw_pid = props.get("application.process.id")
         try:
             if raw_pid is not None and int(raw_pid) == pid:
-                return node
+                return node, False
         except (TypeError, ValueError):
             continue
+    client_pids = _pw_client_pids(dump)
     for node in candidates:
         props = node["props"]
         assert isinstance(props, dict)
-        if str(props.get("application.name") or "") in ("pw-play", "pw-record"):
-            return node
-    return None
+        client_pid = client_pids.get(props.get("client.id"))
+        if client_pid is not None and client_pid == pid:
+            return node, False
+    name_matches = [
+        node
+        for node in candidates
+        if str(node["props"].get("application.name") or "") in ("pw-play", "pw-record")
+    ]
+    if len(name_matches) == 1:
+        return name_matches[0], False
+    if len(name_matches) > 1:
+        return None, True
+    return None, False
 
 
 def _pw_link_target_id(dump: list[object], stream_node_id: object, *, as_output: bool) -> object:
@@ -891,6 +972,11 @@ class HostEndpoint:
         self._capture_target_verified: bool | None = None
         self._playback_target_mismatch_count = 0
         self._capture_target_mismatch_count = 0
+        # Round 9 finding 1: the stream-node pid match landed on more than
+        # one un-pid-resolved pw-play/pw-record candidate — never a guess,
+        # counted and treated as unverified.
+        self._playback_target_ambiguous_count = 0
+        self._capture_target_ambiguous_count = 0
 
         # Round 8: the resolved sink's own volume, read (never set) via
         # `wpctl`. None until a pipewire sink is resolved and successfully
@@ -1407,12 +1493,21 @@ class HostEndpoint:
             DEGRADED_DEVICE_MISMATCH, "playback stream linked to an unexpected device"
         )
 
-    def _run_pw_dump(self) -> "list[object] | None":
+    def _run_pw_dump(self, timeout: float = _PW_DUMP_TIMEOUT_S) -> "list[object] | None":
         """One ``pw-dump`` invocation, parsed as JSON. ``None`` on ANY failure.
 
         Missing binary, a non-zero exit, a timeout, or output that is not a
         JSON array all degrade to ``None`` uniformly — every caller treats
         "cannot verify" the same way regardless of which of those it was.
+
+        Round 9 finding 3: *timeout* defaults to the full
+        :data:`_PW_DUMP_TIMEOUT_S` (5 s) for a standalone caller (e.g.
+        target resolution, which has no smaller budget of its own), but
+        :meth:`_verify_pipewire_link` passes the REMAINING verify budget so a
+        wedged ``pw-dump`` cannot stall an attach for up to ~10 s inside a
+        300 ms verification window — a clock sized against the wrong
+        quantity was exactly the failure mode a wedged read timeout produced
+        elsewhere in this project's own history.
         """
         try:
             proc = self._popen(
@@ -1424,11 +1519,11 @@ class HostEndpoint:
         except OSError:
             return None
         try:
-            out, _err = proc.communicate(timeout=_PW_DUMP_TIMEOUT_S)
+            out, _err = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired:
             proc.kill()
             try:
-                proc.communicate(timeout=_PW_DUMP_TIMEOUT_S)
+                proc.communicate(timeout=timeout)
             except Exception:
                 # Cleanup-after-kill: SIGKILL cannot be ignored, so this is a
                 # wait for the OS to reap an already-doomed process, not a
@@ -1541,9 +1636,14 @@ class HostEndpoint:
             except Exception:
                 # Cleanup-after-kill: SIGKILL cannot be ignored, so this is a
                 # wait for the OS to reap an already-doomed process, not a
-                # second fault. Still recorded (C3), not a bare `pass`.
+                # second fault of ITS own — round 9 finding 2: it shares the
+                # generic callback_errors signal (same precedent as
+                # `_run_pw_dump`'s own cleanup-after-kill branch) so the ONE
+                # fault here — the wpctl timeout — increments
+                # playback_volume_unparsable_count exactly once, below,
+                # regardless of whether this cleanup also raised.
                 with self._counter_lock:
-                    self._playback_volume_unparsable_count += 1
+                    self._callback_errors += 1
             with self._counter_lock:
                 self._playback_volume_unparsable_count += 1
             return None, None
@@ -1601,6 +1701,19 @@ class HostEndpoint:
         completed — e.g. the alsa fallback). Polls up to
         :data:`_PW_VERIFY_TOTAL_S` since pipewire's own routing takes a
         moment after a stream is created. Never raises.
+
+        Round 9 finding 1: when :func:`_pw_find_stream_node` reports
+        ``ambiguous=True`` (more than one un-pid-matched pw-play/pw-record
+        candidate — see its own docstring), that is counted
+        (``playback_target_ambiguous_count``/``capture_target_ambiguous_count``,
+        direction-tagged) and treated exactly like "not yet found": it can
+        expire into an honest ``False`` at the deadline, never a ``True``.
+
+        Round 9 finding 3: each ``pw-dump`` call is bounded by whatever is
+        LEFT of the verify budget, not the full :data:`_PW_DUMP_TIMEOUT_S`
+        (5 s) — a wedged ``pw-dump`` must not stall this well past the
+        300 ms budget it is meant to police. The deadline is also checked
+        BEFORE spending time on a dump, not only after one returns.
         """
         if self._backend != "pipewire":
             return None
@@ -1609,17 +1722,29 @@ class HostEndpoint:
             return None
         media_class = _PW_STREAM_OUTPUT_CLASS if playback else _PW_STREAM_INPUT_CLASS
         deadline = time.monotonic() + _PW_VERIFY_TOTAL_S
+        was_ambiguous = False
         while True:
-            dump = self._run_pw_dump()
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
+            dump = self._run_pw_dump(timeout=min(remaining, _PW_DUMP_TIMEOUT_S))
             if dump is not None:
-                stream = _pw_find_stream_node(dump, media_class, proc.pid)
+                stream, ambiguous = _pw_find_stream_node(dump, media_class, proc.pid)
+                was_ambiguous = was_ambiguous or ambiguous
                 if stream is not None:
                     linked_id = _pw_link_target_id(dump, stream["id"], as_output=playback)
                     if linked_id is not None:
                         return linked_id == expected_id
             if time.monotonic() >= deadline:
-                return False
+                break
             time.sleep(_PW_VERIFY_POLL_S)
+        if was_ambiguous:
+            with self._counter_lock:
+                if playback:
+                    self._playback_target_ambiguous_count += 1
+                else:
+                    self._capture_target_ambiguous_count += 1
+        return False
 
     def _start_writer(self) -> None:
         if self._writer_thread is not None:
@@ -1769,6 +1894,8 @@ class HostEndpoint:
                 "output_degrade_attempts": self._output_degrade_attempts,
                 "playback_target_mismatch_count": self._playback_target_mismatch_count,
                 "capture_target_mismatch_count": self._capture_target_mismatch_count,
+                "playback_target_ambiguous_count": self._playback_target_ambiguous_count,
+                "capture_target_ambiguous_count": self._capture_target_ambiguous_count,
                 "playback_volume_unparsable_count": self._playback_volume_unparsable_count,
                 "playback_quiet_count": self._playback_quiet_count,
             }

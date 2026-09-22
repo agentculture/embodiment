@@ -588,6 +588,258 @@ def test_round7_split_device_sink_and_source_different_devices_is_unresolved():
 
 
 # ---------------------------------------------------------------------------
+# round 9 finding 1: identifying OUR child's stream node via client.id ->
+# Client pipewire.sec.pid, not just an application.name match — measured
+# live, a bare pw-play sets NEITHER pid field on its own Stream node, only
+# on the Client object that owns it.
+# ---------------------------------------------------------------------------
+
+
+class ClientPidState(FakePwDumpState):
+    """Streams carry NO ``application.process.id`` of their own (the
+    production shape on the real box) — only a ``client.id`` pointing at a
+    ``PipeWire:Interface:Client`` object that carries the real pid via
+    ``pipewire.sec.pid``. *foreign* optionally adds a SECOND, unrelated
+    pw-play Stream node ahead of ours in the dump (to prove ordering alone
+    cannot pick the wrong one): ``"resolvable"`` gives it its own genuine
+    (wrong) client pid, ``"no_pid"`` gives it no pid anywhere at all — and in
+    that same mode, OUR own stream is ALSO given no resolvable pid anywhere,
+    so neither candidate can be picked by anything but a (now-ambiguous)
+    name match.
+    """
+
+    def __init__(self, *, foreign: str | None = None, **kwargs):
+        super().__init__(**kwargs)
+        self.foreign = foreign
+
+    def dump_json(self) -> bytes | None:
+        if not self.resolvable:
+            return None
+        objs = list(_pw_device_nodes())
+        next_id = self._next_id
+
+        if self.foreign is not None:
+            foreign_stream_id = next_id
+            next_id += 1
+            foreign_client_id = None
+            if self.foreign == "resolvable":
+                foreign_client_id = next_id
+                next_id += 1
+                objs.append(
+                    {
+                        "id": foreign_client_id,
+                        "type": "PipeWire:Interface:Client",
+                        "info": {
+                            "props": {
+                                "pipewire.sec.pid": 999999,  # unrelated to any real pid
+                                "application.name": "pw-play",
+                            }
+                        },
+                    }
+                )
+            objs.append(
+                {
+                    "id": foreign_stream_id,
+                    "type": "PipeWire:Interface:Node",
+                    "info": {
+                        "props": {
+                            "media.class": "Stream/Output/Audio",
+                            "application.name": "pw-play",
+                            "node.name": f"foreign-{foreign_stream_id}",
+                            **({"client.id": foreign_client_id} if foreign_client_id else {}),
+                        }
+                    },
+                }
+            )
+
+        for stream in self._streams:
+            stream_id = next_id
+            next_id += 1
+            client_id = None
+            if self.foreign != "no_pid":
+                client_id = next_id
+                next_id += 1
+                objs.append(
+                    {
+                        "id": client_id,
+                        "type": "PipeWire:Interface:Client",
+                        "info": {
+                            "props": {
+                                "pipewire.sec.pid": stream["pid"],
+                                "application.name": (
+                                    "pw-play"
+                                    if stream["media_class"] == "Stream/Output/Audio"
+                                    else "pw-record"
+                                ),
+                            }
+                        },
+                    }
+                )
+            objs.append(
+                {
+                    "id": stream_id,
+                    "type": "PipeWire:Interface:Node",
+                    "info": {
+                        "props": {
+                            "media.class": stream["media_class"],
+                            "application.name": (
+                                "pw-play"
+                                if stream["media_class"] == "Stream/Output/Audio"
+                                else "pw-record"
+                            ),
+                            "node.name": f"stream-{stream_id}",
+                            **({"client.id": client_id} if client_id is not None else {}),
+                            # deliberately NO application.process.id here —
+                            # the production shape measured live.
+                        }
+                    },
+                }
+            )
+            if stream["linked_to"] is not None:
+                link_id = next_id
+                next_id += 1
+                if stream["media_class"] == "Stream/Output/Audio":
+                    out_id, in_id = stream_id, stream["linked_to"]
+                else:
+                    out_id, in_id = stream["linked_to"], stream_id
+                objs.append(
+                    {
+                        "id": link_id,
+                        "type": "PipeWire:Interface:Link",
+                        "info": {"output-node-id": out_id, "input-node-id": in_id},
+                    }
+                )
+        self._next_id = next_id
+        return json.dumps(objs).encode("utf-8")
+
+
+def test_round9_client_id_resolves_the_pid_when_the_node_omits_it():
+    """A node with NO application.process.id of its own is still identified
+    correctly via its client.id -> the Client object's pipewire.sec.pid."""
+    endpoint = HostEndpoint(
+        which=_fake_which({"pw-record", "pw-play", "arecord", "aplay"}),
+        popen=_make_popen(pw_state=ClientPidState()),
+    )
+    endpoint.play(_silence_frame(480))
+    _wait_until(lambda: endpoint.status()["playback_target_verified"] is not None)
+    status = endpoint.status()
+    assert status["playback_target_verified"] is True
+    assert status["playback_target_ambiguous_count"] == 0
+    endpoint.close(2.0)
+
+
+def test_round9_two_pwplay_streams_only_the_client_pid_path_picks_ours():
+    """A SECOND, unrelated pw-play stream (its own resolvable-but-wrong
+    client pid) sits ahead of ours in the dump. If the old name-match
+    fallback were still in play it would return the FIRST pw-play node
+    (the foreign one) and could confirm the wrong stream; the client-pid
+    path must pick OURS regardless of order."""
+    state = ClientPidState(foreign="resolvable")
+    endpoint = HostEndpoint(
+        which=_fake_which({"pw-record", "pw-play", "arecord", "aplay"}),
+        popen=_make_popen(pw_state=state),
+    )
+    endpoint.play(_silence_frame(480))
+    _wait_until(lambda: endpoint.status()["playback_target_verified"] is not None)
+    status = endpoint.status()
+    assert status["playback_target_verified"] is True
+    assert status["playback_target_ambiguous_count"] == 0
+    endpoint.close(2.0)
+
+
+def test_round9_two_pwplay_streams_with_no_pid_anywhere_is_ambiguous_never_verified():
+    """Two pw-play streams, NEITHER carrying a resolvable pid anywhere (not
+    on the node, not on a Client object) -> the name match yields two
+    candidates, which must be reported ambiguous and NEVER verified=True.
+    Only OUR tracked subprocess is killed as a mismatch; the unrelated
+    foreign stream (which this module never even names) is never touched."""
+    state = ClientPidState(foreign="no_pid")
+    endpoint = HostEndpoint(
+        which=_fake_which({"pw-record", "pw-play", "arecord", "aplay"}),
+        popen=_make_popen(pw_state=state),
+    )
+    endpoint.play(_silence_frame(480))
+    _wait_until(lambda: endpoint.status()["playback_target_verified"] is not None)
+    status = endpoint.status()
+    assert status["playback_target_verified"] is False
+    assert status["playback_target_ambiguous_count"] == 1
+    assert status["degradation_out"]["code"] == DEGRADED_DEVICE_MISMATCH
+    assert status["playing"] is False  # our own stream killed, never left sounding
+    endpoint.close(2.0)
+
+
+# ---------------------------------------------------------------------------
+# round 9 finding 3: a wedged pw-dump must not stall verification past its
+# own budget — each pw-dump call inside _verify_pipewire_link is bounded by
+# whatever remains of the 300 ms verify window, not the full 5 s default.
+# ---------------------------------------------------------------------------
+
+
+def test_round9_verify_pw_dump_calls_are_bounded_by_the_remaining_verify_budget():
+    """A `pw-dump` that would itself take longer than what remains of the
+    verify budget must not be allowed to run that long — each call inside
+    `_verify_pipewire_link` is capped at the REMAINING budget, not the full
+    5 s `_PW_DUMP_TIMEOUT_S` default."""
+    from embodiment.audio.host import _PW_DUMP_TIMEOUT_S
+
+    endpoint = HostEndpoint(
+        which=_fake_which({"pw-record", "pw-play", "arecord", "aplay"}), popen=_make_popen()
+    )
+    seen_timeouts: list[float] = []
+    real_run_pw_dump = endpoint._run_pw_dump  # noqa: SLF001 - test-only introspection
+
+    def spy(timeout=_PW_DUMP_TIMEOUT_S):
+        seen_timeouts.append(timeout)
+        return real_run_pw_dump(timeout=timeout)
+
+    endpoint._run_pw_dump = spy  # noqa: SLF001 - test-only monkeypatch
+    endpoint.play(_silence_frame(480))
+    _wait_until(lambda: endpoint.status()["playback_target_verified"] is not None)
+    assert seen_timeouts, "expected _verify_pipewire_link to call _run_pw_dump at least once"
+    assert all(t <= 0.3 + 1e-9 for t in seen_timeouts), seen_timeouts
+    endpoint.close(2.0)
+
+
+# ---------------------------------------------------------------------------
+# round 9 finding 2: a wpctl timeout whose post-kill cleanup ALSO raises must
+# still count as exactly ONE fault on playback_volume_unparsable_count.
+# ---------------------------------------------------------------------------
+
+
+class _TimeoutTwiceProc:
+    """A fake Popen whose `communicate()` raises TimeoutExpired every call —
+    the FIRST time (the real wpctl call) and again on the post-kill cleanup
+    `communicate()` — the exact double-failure shape round 9 finding 2 is
+    about: ONE genuine fault (the timeout), whose cleanup ALSO raises."""
+
+    def __init__(self, argv):
+        self._argv = argv
+        self.returncode: int | None = None
+
+    def communicate(self, timeout=None):
+        raise subprocess.TimeoutExpired(cmd=self._argv, timeout=timeout or 0)
+
+    def kill(self):
+        pass
+
+
+def test_round9_wpctl_timeout_increments_unparsable_count_exactly_once():
+    def popen(argv, **kwargs):
+        if argv[0] == "wpctl":
+            return _TimeoutTwiceProc(argv)
+        return _make_popen()(argv, **kwargs)
+
+    endpoint = HostEndpoint(
+        which=_fake_which({"pw-record", "pw-play", "arecord", "aplay"}), popen=popen
+    )
+    status = endpoint.status()
+    assert status["playback_volume"] is None
+    assert status["playback_volume_unparsable_count"] == 1
+    assert status["callback_errors"] == 1  # the cleanup-after-kill's own raise, recorded once
+    endpoint.close(2.0)
+
+
+# ---------------------------------------------------------------------------
 # round 8: pipewire sink volume, read (never set) via wpctl
 # ---------------------------------------------------------------------------
 
