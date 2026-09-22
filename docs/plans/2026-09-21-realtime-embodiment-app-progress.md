@@ -7,7 +7,8 @@ The running record of executing
 (the spec). Written so that a fresh session — or this one after its context is
 compacted — can resume without re-deriving anything. **Update it at every merge.**
 
-Last updated: 2026-09-22 03:30, wave 2 built and verified, reviews in progress, `t4b` merged.
+Last updated: 2026-09-22 08:00, `t5` and `t6` merged, `t7` rebuilt on subprocess audio (d4) and
+under review, every wave-3/4 branch built and verified, the daemon's first live turn done.
 
 ## State
 
@@ -16,9 +17,9 @@ Last updated: 2026-09-22 03:30, wave 2 built and verified, reviews in progress, 
 | Planning | — | merged to `main` in #83 (0.14.1) |
 | A — archive | `t1` `t2` | merged to `main` in #84 (0.15.0). Tag `archive/pre-realtime-0.14.0` = the archive commit's parent |
 | B wave 1 | `t3` `t4` `t8` `t9` `t10` | **merged on `realtime/phase-b`**, integrated. Two follow-ups from the wave review: `t4b` (bounded-log performance + accounting) **merged** `c81d40b`, 1734 tests; `w1-privacy` (no exception text in a record; a private store) built, verified, awaiting its review |
-| B wave 2 | `t5` `t6` `t7` `t11` `t13` | **all built and verified by the integrator**, each after a round 2 of defects found by running it; awaiting reviews, then adoption of `safe_reason`, then merge (see *Wave 2* below) |
-| B wave 3 | `t12` `t14` `t16` `t17` | not started |
-| B wave 4 | `t15` `t18` `t19` `t20` | not started |
+| B wave 2 | `t5` `t6` `t7` `t11` `t13` | `t11` `9d25555`, `w1-privacy` `eac823f`, `t13` `59467ea`, `t5` `95e7f92`, `t6` `722056e` **merged**; `t7` rebuilt on subprocess audio (deviation `d4`), device-verified, under its second review |
+| B wave 3 | `t12` `t14` `t16` `t17` | **built and verified** on the throwaway base; reviews queued behind `t7` |
+| B wave 4 | `t15` `t18` `t19` `t20` | **built and verified**; the daemon (`t15`) ran its first full live turn on the rig under `grant run` |
 | B wave 5 | `t21` live acceptance | not started — **needs the operator, at the microphone, in Hebrew** |
 | B wave 6 | `t22` release docs + the final PR | not started |
 
@@ -90,9 +91,9 @@ into each merge message.
 | `w1-privacy` | **merged** `eac823f` (`027cb1c`, 4 rounds) | 27B alone timed out at 40 min; with worker delegation 39 min, changes-requested: 3 MAJORs reproduced and fixed (symlinked store root followed; `safe_detail` free text; continuity reasons trusted as literals) | `describe_exception(declared_codes=)` replaces `allow_detail`; tools declare fault codes at registration; suite 1804 -> 1963 |
 | `t11` | **merged** `9d25555` (`b8d4b2a`, 3 rounds) | 27B, 34 min, changes-requested: 3 findings reproduced and fixed, 1 rejected | already class-name-only, so it needed no `describe_exception` adoption and merged ahead of `w1-privacy`; suite 1734 -> 1804 |
 | `t13` | **merged** `59467ea` (`a5bb8e5`, 4 rounds) | 27B + worker, 49 min, changes-requested: 3 behavioural findings reproduced and fixed, 2 test gaps | suite 1963 -> 2091 |
-| `t7` | `e2647a4` | 27B + workers running | the `AudioEndpoint` Protocol grew `stop_playback()`, `playing`, and `close()` returns `EndpointCloseReport` - `t14`/`t15` briefs must say so; `audio/__init__` re-exports collide on `SAMPLE_RATE_HZ` |
-| `t5` | `060afe2` (adopted `describe_exception`, 25 sites) | queued | `start`/`stop`/`status` verbs live; `DEFAULT_TARGET` is `embodiment.daemon.app:main` (t15) |
-| `t6` | `e1a2509` (adopted, 9 sites; reason bound derived from `MAX_DESCRIPTION_CHARS`) | 27B queued | `websockets` imported lazily in `connect()`, so `tests/test_zero_deps.py` needed no edit; the plan's "declare aec_mode=aec and language=he" is met via the connect URL (lobes reads only `tools`, `tool_choice`, `language` from `session.update`; the operator confirmed no deviation record) |
+| `t7` | `840b751` (6 rounds) | first review (50 min, old prompt): 3 MAJORs, 2 reproduced; then the real reSpeaker showed the sounddevice build never played (`OutputStream.write(bytes)` is the numpy API), defaulted output to HDMI (no AEC far-end reference) and needed a 2:3 resampler for a 16 kHz-only device. **Deviation `d4`** (operator): rebuilt on `pw-record`/`pw-play` (`arecord`/`aplay` fallback) as lobes' accept script and shabbos-goy run this rig; `sounddevice` extra withdrawn. Second review running | device-verified by the integrator's probe: capture native 16 kHz channel 1, tone written 24000 samples, barge-in stop 1 ms with 52320 discarded (was 1.3 s: the writer had pushed everything into the pipe; now paced 20 ms slices, 100 ms lead, SIGKILL on stop), mute -> 0 frames, close 0.10 s, no leftover process. Protocol grew `stop_playback()`, `playing`, `sample_rate`, `EndpointCloseReport` |
+| `t5` | **merged** `95e7f92` (`c62b32b`, 4 rounds) | 27B delegate prompt, 55 min on a 150 KB diff, approve + 1 MAJOR fixed: a pid-reuse window in `stop()`; identity is now (pid, `/proc` start time) re-checked before each signal, since `pidfd` is unavailable on this interpreter | three tests had begun spawning the real daemon once `t15` existed; an autouse guard now fails any test that would. Suite 2091 -> 2208 |
+| `t6` | **merged** `722056e` (`f3318d4`, 3 rounds) | 27B, 26 min (first delegate run under the baseline), approve + 1 MINOR fixed (`graceful` derived from `deadline_exceeded` and `close_error`) plus a worker finding the lead had dropped unread: the liveness test could not fail; now bounded from below by the configured terms and the third term proved by moving it | live dial passes under the grant-injected key and skips, named, without one; measured on the rig: `session.created` 30 ms, end-of-speech -> transcript median 161 ms / p90 209 ms, 0 dropped frames. Suite 2208 -> 2362 |
 
 Also on `realtime/phase-b` since wave 1: `tests/conftest.py` repoints `TMPDIR` per test
 (tests from three tasks had been writing into the machine's real fallback state dir);
@@ -134,12 +135,22 @@ bases are never merged and are deleted at the end.
 | `t20` tunnel verb | `1849b7e` (2 rounds) | ran the verb: dry-run only, `--apply` refused, `--tunnel-name` in both commands | queued |
 | `t19` packaging/CI | `075a31a` | `uv build` rebuilt `web/dist` through the hook, 8 files in the wheel, sdist clean, installed in a scratch venv; web build 3.4 s with a warm npm cache (cold registry unmeasured) | queued |
 | `t18` oscilloscope | `e934a16` (2 rounds) | Chrome: min/max envelope band, readouts by presence, hi-DPI, token colours; lobes site scripts cited verbatim at pin `d2690a5`; no browser-ear UI in v1 (operator: phone is control + text) | queued |
-| `t15` daemon | building | — | — |
+| `t15` daemon | `19fe95a` (5 rounds + the `t7`/`t14`/`phase-b` merges) | **live on the rig under `grant run`**: ears session in < 5 s declared at the host ear's 16 kHz, household speech ran full turns (transcript -> recall -> `senses` -> spoken reply through the array), empty VAD commits counted not faulted, stop 0.25 s with a live session, ledger and `daemon.err` clean, `identity_verified: true`. Two real races fixed on the way (a stop during the handshake was never delivered; a close scheduled onto a stopped loop burned its slice) | queued, last |
+
+`t12` later grew `drain_features(max_n)` and `set_endpoint()` for the daemon (`bf35d8b`);
+`t14` grew `RemoteEndpoint.sample_rate = 24000` (`23d0d63`); `t16` `cc82e43`, `t17`
+`3b9e621`, `t18` `e934a16`, `t19` `075a31a`, `t20` `1849b7e` are unchanged.
 
 Reviewer harness since `9477de6`: the worker drafts the whole review and the 27B verifies
-only the cited lines (at most 12 tool calls). Before that, the 27B's wall time was its own
-re-reading at 80-120K tokens of context: t4b 40 min, t11 34 (unaided), t13 49 (one
-worker), w1-privacy-r2 39 (two workers); unaided it did not finish a 113 kB diff in 40.
+only the cited lines. Before that, the 27B's wall time was its own re-reading at 80-120K
+tokens of context: t4b 40 min, t11 34 (unaided), t13 49 (one worker), w1-privacy-r2 39
+(two workers); unaided it did not finish a 113 kB diff in 40. With delegation: t5 55 min
+(150 kB; the lead's 40K thinking tokens at ~20 tok/s became the cost) and **t6r2 26 min**.
+Measured effect on findings (t6r2): the worker drafted 7, the lead kept 1; five drops were
+right, one was a real finding dropped because the worker cited the wrong file. `f67c570`
+makes the worker cite working-tree lines; `ec5914c` makes the lead relocate a mis-cited
+finding by symbol before judging and report what it could not read as *unverified*.
+`scripts/dual-review.sh` is a kept deliverable (operator).
 
 ## Carried forward — obligations later tasks inherit
 
@@ -168,6 +179,35 @@ live assistant waveform as the v1 centrepiece, a speech-driven face later. Reten
 raw audio on disk, private bounded transcript logs. Remembering: an explicit spoken ask
 plus one session-end summary. A Reachy Mini relay with a secret, later. Dependencies
 approved (`d2`). pi reviews paused (`d3`).
+
+Added 2026-09-22 (numbered as on #85):
+
+- **`d4` — host audio through subprocesses.** `pw-record`/`pw-play`, `arecord`/`aplay` on
+  `plughw` as fallback, the shape `lobes-cli/scripts/realtime-he-accept.py` and
+  `shabbos-goy` run this array; `sounddevice` withdrawn from `d2`. What an in-process
+  backend would add is embodiment#86, reopenable only on a measured gap after `t21`.
+- **The rig's audio, measured:** Seeed reSpeaker XVF3800 (`hw:CARD=Array`, stable id
+  `usb-Seeed_Studio_reSpeaker_XVF3800_4-Mic_Array_114993702263100642`), 2 ch, 16 kHz
+  only, the speaker on the same USB device; PortAudio's default output was the HDMI. One
+  device for both directions (the array's AEC needs its own output as far-end reference).
+  `../microphone-cli` reads the firmware: `microphone array aec get <id> --json` ->
+  converged, echo on, bypass off. `t21` checks that as a precondition.
+- **13 — the gateway key comes from `grant`**, never a shell export or a file:
+  `grant run --inject EMBODIMENT_GATEWAY_KEY=LOBES_GATEWAY_API_KEY -- embodiment start`.
+  No third env fallback. `grant` finds its store via `HOME`, so scratch environments go on
+  the child, not on the `grant` call.
+- **14 — empty VAD commits are background noise, not faults.** The threshold is lobes'
+  (`_segmenter.py`; `session.update` acts only on `tools`/`tool_choice`/`language`). The
+  daemon counts them (`status()["transcripts"].empty_commits`); `t21` publishes the
+  ambient RMS and the empty-commit rate. A high rate becomes an ask to lobes.
+- **15 — the ears send 16 kHz natively** (`input_sample_rate=16000`, no client
+  resampling), from shabbos-goy's validated shape; channel 1 kept from lobes' duplex
+  evidence until a mono-vs-channel-1 A/B with playback on. The endpoint protocol carries
+  `sample_rate`; the daemon dials the session at the active ear's rate and re-dials on a
+  handover to another rate.
+- The operator validated the lobes realtime dashboard and speech-to-speech on the Hebrew
+  endpoint on this rig: the gateway lane is the known-good baseline, `t21` measures only
+  this package's side. `scripts/dual-review.sh` stays in the repo.
 
 **Never without an explicit go-ahead:** `cultureflare … --apply`; posting to a sibling
 repo (the colleague#358 comment and the ~50 moot-issue closures are drafted in
