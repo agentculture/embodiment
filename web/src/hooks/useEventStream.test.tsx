@@ -440,7 +440,7 @@ describe("useEventStream", () => {
     function daemonStatus(overrides: {
       ear?: { active: string | null; muted: boolean };
       clients?: { count: number; remote: number };
-      recall?: { mode: string | null; semantic?: boolean };
+      recall?: { mode: string | null; semantic?: boolean; configured_mode?: string };
     }) {
       // Cast: a real status() body always has ear/clients/recall present
       // (embodiment/daemon/app.py's `_status`), but these tests also want
@@ -492,6 +492,7 @@ describe("useEventStream", () => {
       expect(result.current.mic?.data).toEqual({ hot: true, ear: "host" });
       expect(result.current.clients?.data).toEqual({ count: 1, remote: 1 });
       expect(result.current.recallStatusMode).toBe("lexical");
+      expect(result.current.recallConfiguredMode).toBe("keyword");
     });
 
     it("seeds correctly from the real status-ear-detached.json fixture", async () => {
@@ -506,6 +507,9 @@ describe("useEventStream", () => {
       expect(result.current.mic?.data).toEqual({ hot: false, ear: null });
       expect(result.current.clients?.data).toEqual({ count: 0, remote: 0 });
       expect(result.current.recallStatusMode).toBeNull();
+      // the exact gap round 6 addresses: mode null, but a configured mode
+      // is still available to show.
+      expect(result.current.recallConfiguredMode).toBe("keyword");
     });
 
     it("seeds mic as hot=true, ear=<name> when an ear is attached and unmuted", async () => {
@@ -554,6 +558,20 @@ describe("useEventStream", () => {
         source.open();
       });
       expect(result.current.recallStatusMode).toBe("lexical");
+    });
+
+    // Round 6: status()["recall"]["configured_mode"] (AppConfig.recall_mode,
+    // default "keyword") is seeded alongside mode, so the indicator can show
+    // what recall WILL do before the daemon has completed a call.
+    it("seeds recallConfiguredMode from status()['recall']['configured_mode']", async () => {
+      const { result, source } = setUpWithStatus(
+        daemonStatus({ recall: { mode: null, configured_mode: "keyword" } }),
+      );
+      await act(async () => {
+        source.open();
+      });
+      expect(result.current.recallStatusMode).toBeNull();
+      expect(result.current.recallConfiguredMode).toBe("keyword");
     });
 
     it("leaves recallStatusMode null when the daemon has never completed a recall call", async () => {

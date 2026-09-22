@@ -117,9 +117,16 @@ export default function App({ eventsUrl = DEFAULT_EVENTS_URL, eventStreamOptions
           micHot={micHot}
           onStart={() => void runControl("start", () => startVoice(appliedSecret))}
           onStop={() => void runControl("stop", () => stopVoice(appliedSecret))}
-          onToggleMute={() =>
-            void runControl("mute", () => setMicMute(appliedSecret, !(micHot ?? false)))
-          }
+          // Round 6 fix: `hot` means "capturing, NOT muted" (daemon's
+          // `_publish_mic`: `hot = ear is not None and not self._muted()`).
+          // To TOGGLE, the new `muted` value must equal the CURRENT `hot`
+          // value -- hot=true (unmuted) -> mute it (muted=true); hot=false
+          // (muted) -> unmute it (muted=false). `!(micHot ?? false)` was
+          // exactly backwards, proven live twice (clicking "Mute mic" left
+          // the daemon unmuted, and vice versa). The button is disabled
+          // when `micHot` is null (see VoiceControls.tsx), so that case
+          // never reaches here -- `Boolean(micHot)` is safe without an `??`.
+          onToggleMute={() => void runControl("mute", () => setMicMute(appliedSecret, Boolean(micHot)))}
         />
         {controlRefusal && (
           <p className="control-refusal" role="alert">
@@ -147,7 +154,11 @@ export default function App({ eventsUrl = DEFAULT_EVENTS_URL, eventStreamOptions
         </form>
         <div className="indicator-row">
           <RemoteViewers clients={stream.clients} />
-          <RecallModeIndicator degradations={stream.degradations} seededMode={stream.recallStatusMode} />
+          <RecallModeIndicator
+            degradations={stream.degradations}
+            seededMode={stream.recallStatusMode}
+            configuredMode={stream.recallConfiguredMode}
+          />
         </div>
       </section>
 

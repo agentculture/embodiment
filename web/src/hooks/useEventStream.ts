@@ -79,6 +79,12 @@ export interface EventStreamSnapshot {
    *  has never completed a recall call. A REAL daemon-reported value, not
    *  inferred — see RecallModeIndicator.tsx. */
   recallStatusMode: string | null;
+  /** `status()["recall"]["configured_mode"]` (round 6) -- what recall is
+   *  CONFIGURED to do (`AppConfig.recall_mode`, default `"keyword"`),
+   *  always present once seeded, unlike `recallStatusMode` which stays
+   *  null until the first completed recall call. Lets the indicator show
+   *  what WILL happen rather than a bare "unknown" in that gap. */
+  recallConfiguredMode: string | null;
   /**
    * Re-fetch `GET /api/status` and reseed `mic`/`clients`/`recallStatusMode`
    * from it. Called automatically on every successful (re)connect; the
@@ -101,6 +107,7 @@ interface DataState {
   degradations: EventEnvelope<"degradation">[];
   droppedFrames: number;
   recallStatusMode: string | null;
+  recallConfiguredMode: string | null;
 }
 
 const INITIAL_DATA: DataState = {
@@ -113,6 +120,7 @@ const INITIAL_DATA: DataState = {
   degradations: [],
   droppedFrames: 0,
   recallStatusMode: null,
+  recallConfiguredMode: null,
 };
 
 type Action =
@@ -124,7 +132,7 @@ type Action =
   | { type: "speech"; envelope: EventEnvelope<"transcript" | "reply">; data: TranscriptData | ReplyData }
   | { type: "degradation"; envelope: EventEnvelope<"degradation">; data: DegradationData }
   | { type: "dropped" }
-  | { type: "recallStatusMode"; mode: string | null };
+  | { type: "recallStatusMode"; mode: string | null; configuredMode: string | null };
 
 function reducer(prev: DataState, action: Action): DataState {
   switch (action.type) {
@@ -151,7 +159,7 @@ function reducer(prev: DataState, action: Action): DataState {
     case "dropped":
       return { ...prev, droppedFrames: prev.droppedFrames + 1 };
     case "recallStatusMode":
-      return { ...prev, recallStatusMode: action.mode };
+      return { ...prev, recallStatusMode: action.mode, recallConfiguredMode: action.configuredMode };
     default:
       return prev;
   }
@@ -283,7 +291,11 @@ export function useEventStream(
             data: clientsData,
           });
         }
-        dispatch({ type: "recallStatusMode", mode: daemon.recall?.mode ?? null });
+        dispatch({
+          type: "recallStatusMode",
+          mode: daemon.recall?.mode ?? null,
+          configuredMode: daemon.recall?.configured_mode ?? null,
+        });
       } catch {
         // GET /api/status failing is not fatal to an already-open stream —
         // the seed simply doesn't happen this time; existing state (and
@@ -411,6 +423,7 @@ export function useEventStream(
     lastHeartbeatAtMs,
     droppedFrames: data.droppedFrames,
     recallStatusMode: data.recallStatusMode,
+    recallConfiguredMode: data.recallConfiguredMode,
     refreshStatus,
   };
 }

@@ -47,7 +47,7 @@
       "errors": 0,
       "lexical_fallback_hits": 0,
       "deadline_s": 2.0,
-      "configured_mode": "auto",
+      "configured_mode": "keyword",
       "semantic": false
     },
     "memory": {

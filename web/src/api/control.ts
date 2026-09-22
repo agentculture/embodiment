@@ -79,6 +79,13 @@ export interface DaemonClientsStatus {
 export interface DaemonRecallStatus {
   mode: string | null;
   semantic: boolean;
+  /** `AppConfig.recall_mode`'s value (default `"keyword"`) -- what recall
+   *  is CONFIGURED to do, independent of `mode` (what the last completed
+   *  call actually did). Always present, unlike `mode`, which stays `null`
+   *  until the first recall call this process makes -- round 6: renders
+   *  "recall: <configured_mode> (configured)" in that gap, so the operator
+   *  sees what WILL happen rather than a bare "unknown". */
+  configured_mode: string;
   [key: string]: unknown;
 }
 

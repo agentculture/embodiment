@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { inferRecallMode } from "./RecallModeIndicator";
+import { inferRecallMode, recallModeLabel } from "./RecallModeIndicator";
 import type { EventEnvelope } from "../api/events";
 import degradationMemoryFixture from "../fixtures/daemon/degradation-memory.json";
 
@@ -67,5 +67,31 @@ describe("inferRecallMode", () => {
 
   it("a live memory degradation overrides an already-seeded mode -- fresher evidence wins", () => {
     expect(inferRecallMode([degradation("memory")], "semantic")).toBe("lexical-fallback");
+  });
+});
+
+// Round 6: "recall: unknown" is honest but unhelpful before the first
+// recall call completes -- status()["recall"]["configured_mode"] is
+// always present (AppConfig.recall_mode, default "keyword"), so the label
+// shows what recall WILL do in that gap, marked "(configured)" so it's
+// never mistaken for a completed call's result.
+describe("recallModeLabel", () => {
+  it("shows the configured mode when unknown and a configured mode is available", () => {
+    expect(recallModeLabel("unknown", "keyword")).toBe("recall: keyword (configured)");
+  });
+
+  it("stays plain 'unknown' when no configured mode is available either", () => {
+    expect(recallModeLabel("unknown", null)).toBe("recall: unknown");
+    expect(recallModeLabel("unknown")).toBe("recall: unknown");
+  });
+
+  it("never lets a configured mode override a REAL seeded or live mode", () => {
+    expect(recallModeLabel("semantic", "keyword")).toBe("recall: semantic");
+    expect(recallModeLabel("lexical", "keyword")).toBe("recall: lexical");
+    expect(recallModeLabel("lexical-fallback", "keyword")).toBe("recall: lexical fallback");
+  });
+
+  it("treats an empty-string configured mode the same as none (no bare '(configured)' suffix)", () => {
+    expect(recallModeLabel("unknown", "")).toBe("recall: unknown");
   });
 });

@@ -7,6 +7,12 @@ export interface RecallModeIndicatorProps {
    *  recall call this process, `"lexical"` or `"semantic"` after. This is
    *  a REAL daemon-reported value, not inferred. */
   seededMode?: string | null;
+  /** `status()["recall"]["configured_mode"]` (round 6) -- what recall is
+   *  CONFIGURED to do (`AppConfig.recall_mode`, default `"keyword"`),
+   *  always present once seeded. Shown only as a fallback while
+   *  `seededMode` is still null, so the operator sees what WILL happen
+   *  rather than a bare "unknown". */
+  configuredMode?: string | null;
 }
 
 export type RecallMode = "unknown" | "semantic" | "lexical" | "lexical-fallback";
@@ -55,14 +61,36 @@ const LABEL: Record<RecallMode, string> = {
   "lexical-fallback": "recall: lexical fallback",
 };
 
-export function RecallModeIndicator({ degradations, seededMode = null }: RecallModeIndicatorProps) {
+/**
+ * The rendered label. Round 6: "unknown" (no recall call has completed
+ * yet, and nothing is degraded) is honest but unhelpful on a daemon the
+ * operator just started — `status()["recall"]["configured_mode"]` is
+ * ALWAYS present (`AppConfig.recall_mode`, default `"keyword"`), so in
+ * exactly that gap this shows what recall WILL do once it runs, labelled
+ * "(configured)" so it is never confused with a real completed-call
+ * result. Any other mode (a real seeded value, or the live
+ * "lexical-fallback" degradation signal) is shown as-is — configuredMode
+ * never overrides a real signal, only fills the true unknown gap.
+ */
+export function recallModeLabel(mode: RecallMode, configuredMode: string | null = null): string {
+  if (mode === "unknown" && configuredMode) {
+    return `recall: ${configuredMode} (configured)`;
+  }
+  return LABEL[mode];
+}
+
+export function RecallModeIndicator({
+  degradations,
+  seededMode = null,
+  configuredMode = null,
+}: RecallModeIndicatorProps) {
   const mode = inferRecallMode(degradations, seededMode);
   return (
     <span
       data-recall-mode={mode}
       title="seeded from GET /api/status on connect; refined live by memory-sourced degradations"
     >
-      {LABEL[mode]}
+      {recallModeLabel(mode, configuredMode)}
     </span>
   );
 }

@@ -5,6 +5,7 @@ import { FakeSSEConnection, fakeConnect } from "./hooks/fakeSSEConnection";
 import { DISCONNECTED_AFTER_MS } from "./api/events";
 import * as control from "./api/control";
 import micEventAttachedFixture from "./fixtures/daemon/mic-event-attached.json";
+import statusEarDetachedFixture from "./fixtures/daemon/status-ear-detached.json";
 
 import stateFixture from "../../tests/fixtures/events/state.json";
 import micFixture from "../../tests/fixtures/events/mic.json";
@@ -164,6 +165,37 @@ describe("App — every state from the committed event fixtures", () => {
       source.emit("degradation", envelope("degradation", { source: "memory", code: "x", reason: "y" }));
     });
     expect(screen.getByText(/recall: lexical fallback/)).toBeInTheDocument();
+  });
+
+  // Round 6: "recall: unknown" is honest but unhelpful before the daemon's
+  // first recall call -- status()["recall"]["configured_mode"] is always
+  // present, so the indicator shows what recall WILL do in that gap.
+  it("shows 'recall: keyword (configured)' when mode is null but a configured mode is seeded", async () => {
+    const fetchStatusFn = vi.fn(async () => statusEarDetachedFixture as unknown as Awaited<
+      ReturnType<typeof control.fetchStatus>
+    >);
+    FakeSSEConnection.reset();
+    render(<App eventStreamOptions={{ connect: fakeConnect, fetchStatusFn }} />);
+    const source = FakeSSEConnection.latest();
+    await act(async () => {
+      source.open();
+    });
+    expect(screen.getByText("recall: keyword (configured)")).toBeInTheDocument();
+  });
+
+  it("a live memory degradation still wins over the configured-mode fallback", async () => {
+    const fetchStatusFn = vi.fn(async () => statusEarDetachedFixture as unknown as Awaited<
+      ReturnType<typeof control.fetchStatus>
+    >);
+    FakeSSEConnection.reset();
+    render(<App eventStreamOptions={{ connect: fakeConnect, fetchStatusFn }} />);
+    const source = FakeSSEConnection.latest();
+    await act(async () => {
+      source.open();
+      source.emit("degradation", envelope("degradation", { source: "memory", code: "x", reason: "y" }));
+    });
+    expect(screen.getByText(/recall: lexical fallback/)).toBeInTheDocument();
+    expect(screen.queryByText(/configured/)).toBeNull();
   });
 
   it("renders the features.json fixture as a live waveform", () => {
@@ -370,8 +402,85 @@ describe("App — every state from the committed event fixtures", () => {
       await act(async () => {
         fireEvent.click(screen.getByRole("button", { name: "Mute mic" }));
       });
-      expect(muteSpy).toHaveBeenCalledWith("s3cr3t-x", false);
+      // Round 6: hot=true -> clicking "Mute mic" must request muted=true
+      // (round 5 shipped this inverted -- `!(micHot ?? false)` sent
+      // `false` here, proven live: the daemon stayed unmuted).
+      expect(muteSpy).toHaveBeenCalledWith("s3cr3t-x", true);
       muteSpy.mockRestore();
+    });
+  });
+
+  // Round 6 [proven live, twice]: clicking "Mute mic" while hot left the
+  // daemon UNmuted; clicking "Unmute mic" while muted left it muted.
+  // App.tsx sent `muted = !hot`, backwards -- a toggle's new `muted` value
+  // must equal the CURRENT `hot` value. These assert the exact POST body
+  // in both directions; the round-5 code fails both.
+  describe("mic mute direction (round 6)", () => {
+    it("sends {muted: true} when the mic is currently hot (click 'Mute mic')", async () => {
+      const muteSpy = vi.spyOn(control, "setMicMute").mockResolvedValue(
+        new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 }),
+      );
+      const source = renderApp();
+      act(() => {
+        source.open();
+        source.emit("mic", envelope("mic", { hot: true, ear: "host" }));
+      });
+      expect(screen.getByRole("button", { name: "Mute mic" })).toBeInTheDocument();
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Mute mic" }));
+      });
+
+      expect(muteSpy).toHaveBeenCalledTimes(1);
+      const [, muted] = muteSpy.mock.calls[0];
+      expect(muted).toBe(true);
+      muteSpy.mockRestore();
+    });
+
+    it("sends {muted: false} when the mic is currently muted (click 'Unmute mic')", async () => {
+      const muteSpy = vi.spyOn(control, "setMicMute").mockResolvedValue(
+        new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 }),
+      );
+      const source = renderApp();
+      act(() => {
+        source.open();
+        source.emit("mic", envelope("mic", { hot: false, ear: "host" }));
+      });
+      expect(screen.getByRole("button", { name: "Unmute mic" })).toBeInTheDocument();
+
+      await act(async () => {
+        fireEvent.click(screen.getByRole("button", { name: "Unmute mic" }));
+      });
+
+      expect(muteSpy).toHaveBeenCalledTimes(1);
+      const [, muted] = muteSpy.mock.calls[0];
+      expect(muted).toBe(false);
+      muteSpy.mockRestore();
+    });
+
+    it("the actual POST body carries the correct JSON in both directions", async () => {
+      // Exercise the real setMicMute (not spied) through a fetchFn spy on
+      // the underlying request, so this test also proves control.ts's own
+      // request-body construction, not just App.tsx's argument passing.
+      const fetchFn = vi.fn(async (_url: RequestInfo | URL, _init?: RequestInit) =>
+        new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 }),
+      );
+      const originalFetch = globalThis.fetch;
+      globalThis.fetch = fetchFn as unknown as typeof fetch;
+      try {
+        const source = renderApp();
+        act(() => {
+          source.open();
+          source.emit("mic", envelope("mic", { hot: true, ear: "host" }));
+        });
+        await act(async () => {
+          fireEvent.click(screen.getByRole("button", { name: "Mute mic" }));
+        });
+        const [, init] = fetchFn.mock.calls[0];
+        expect(JSON.parse((init as RequestInit).body as string)).toEqual({ muted: true });
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
     });
   });
 
