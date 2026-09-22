@@ -2233,13 +2233,373 @@ class TestTighteningIsConstantCostPerOperation:
 
         room = mem.RoomMemory(tmp_path / "store", scope="p")
         try:
-            assert room.remember("a heard line").ok
-            threads.clear()
-            with pytest.MonkeyPatch.context() as patch:
-                patch.setattr(mem.os, "fchmod", fchmod)
-                assert room.recall("heard", deadline=10.0).ok
-            assert threads, "recall did not tighten at all"
-            assert all("embodiment-memory" in name for name in threads), threads
-            assert threading.current_thread().name not in threads
+            assert room.remember("seed").ok
+            for operation in ("remember", "recall"):
+                threads.clear()
+                with pytest.MonkeyPatch.context() as patch:
+                    patch.setattr(mem.os, "fchmod", fchmod)
+                    if operation == "remember":
+                        assert room.remember("a heard line").ok
+                    else:
+                        assert room.recall("heard", deadline=10.0).ok
+                assert threads, f"{operation} did not tighten at all"
+                assert all("embodiment-memory" in name for name in threads), (
+                    operation,
+                    threads,
+                )
+                assert threading.current_thread().name not in threads
         finally:
+            room.close()
+
+
+class TestTheStoreRootIsNeverASymlink:
+    """MAJOR: the entry guard covered entries, not the root it opened them in.
+
+    Reproduced: ``ln -s <attacker dir> <state>/store`` before construction, and
+    ``RoomMemory(state / "store")`` resolved it, chmodded the attacker's
+    directory to 0700, swept it, and wrote the heard line into it — with
+    ``degradations == []``. The per-entry ``O_NOFOLLOW`` work was real and did
+    nothing here, because the walk was already standing inside somebody else's
+    directory.
+
+    Two causes, both fixed: the root was never opened ``O_NOFOLLOW``, and
+    ``Path.resolve()`` at construction baked the symlink's *target* in as the
+    store — so even the recorded ``data_dir`` named the attacker's path.
+    """
+
+    @staticmethod
+    def _planted(tmp_path: Path) -> tuple[Path, Path]:
+        attacker = tmp_path / "attacker"
+        attacker.mkdir()
+        os.chmod(attacker, 0o755)
+        state = tmp_path / "state"
+        state.mkdir()
+        os.symlink(attacker, state / "store")
+        return attacker, state / "store"
+
+    def test_nothing_is_written_through_a_symlinked_store_root(self, tmp_path: Path) -> None:
+        attacker, store = self._planted(tmp_path)
+        room = mem.RoomMemory(store, scope="p")
+        try:
+            room.remember(f"the user said {MARKER}", deadline=_PROMPT_SECONDS)
+            written = [path for path in attacker.rglob("*") if path.is_file()]
+            assert written == [], written
+        finally:
+            room.close()
+
+    def test_a_symlinked_store_root_is_recorded(self, tmp_path: Path) -> None:
+        _, store = self._planted(tmp_path)
+        room = mem.RoomMemory(store, scope="p")
+        try:
+            assert mem.CODE_STORE_ROOT_SYMLINK in {d.code for d in room.abandoned}
+        finally:
+            room.close()
+
+    def test_a_symlinked_store_root_refuses_writes_rather_than_following(
+        self, tmp_path: Path
+    ) -> None:
+        _, store = self._planted(tmp_path)
+        room = mem.RoomMemory(store, scope="p")
+        try:
+            result = room.remember("a heard line", deadline=_PROMPT_SECONDS)
+            assert result.ok is False
+            assert result.degradation is not None
+            assert result.degradation.code == mem.CODE_STORE_ROOT_SYMLINK
+        finally:
+            room.close()
+
+    def test_the_attacker_directory_is_not_chmodded(self, tmp_path: Path) -> None:
+        attacker, store = self._planted(tmp_path)
+        room = mem.RoomMemory(store, scope="p")
+        try:
+            room.remember("a heard line", deadline=_PROMPT_SECONDS)
+            assert stat.S_IMODE(attacker.stat().st_mode) == 0o755
+        finally:
+            room.close()
+
+    def test_the_pinned_path_is_the_literal_one_not_its_target(self, tmp_path: Path) -> None:
+        """``resolve()`` is gone: a pin that follows a link is not a pin."""
+        _, store = self._planted(tmp_path)
+        room = mem.RoomMemory(store, scope="p")
+        try:
+            assert room.data_dir == store
+            assert "attacker" not in str(room.data_dir)
+        finally:
+            room.close()
+
+    def test_a_relative_path_is_still_made_absolute(self, tmp_path: Path) -> None:
+        """Dropping resolve() must not reintroduce a cwd-dependent store."""
+        room = mem.RoomMemory("relative-store", scope="p")
+        try:
+            assert room.data_dir.is_absolute()
+        finally:
+            room.close()
+
+    def test_an_ordinary_store_is_unaffected(self, tmp_path: Path) -> None:
+        room = mem.RoomMemory(tmp_path / "store", scope="p")
+        try:
+            assert room.remember("a heard line").ok
+            assert mem.CODE_STORE_ROOT_SYMLINK not in {d.code for d in room.abandoned}
+        finally:
+            room.close()
+
+    def test_the_refusal_is_named_not_a_generic_permission_failure(self, tmp_path: Path) -> None:
+        """Lesson 4: name the fault the host would look for.
+
+        ``O_NOFOLLOW | O_DIRECTORY`` on a symlink-to-a-directory fails with
+        **ENOTDIR** on Linux, not ELOOP — measured, not assumed. An
+        ELOOP-only check produced the right refusal under the wrong name, so
+        an operator reading the ledger saw a permissions problem rather than a
+        tampered store.
+        """
+        _, store = self._planted(tmp_path)
+        room = mem.RoomMemory(store, scope="p")
+        try:
+            codes = [d.code for d in room.abandoned]
+            assert codes == [mem.CODE_STORE_ROOT_SYMLINK], codes
+        finally:
+            room.close()
+
+    def test_a_regular_file_at_the_store_path_is_not_called_a_symlink(self, tmp_path: Path) -> None:
+        """ENOTDIR is ambiguous; only an lstat can tell the two apart."""
+        blocker = tmp_path / "store"
+        blocker.write_text("not a directory", encoding="utf-8")
+
+        room = mem.RoomMemory(blocker, scope="p")
+        try:
+            codes = {d.code for d in room.abandoned}
+            assert mem.CODE_STORE_ROOT_SYMLINK not in codes
+            assert mem.CODE_PERMISSIONS in codes
+        finally:
+            room.close()
+
+    def test_a_symlink_appearing_after_construction_is_caught(self, tmp_path: Path) -> None:
+        """The root is re-opened O_NOFOLLOW on every operation, not just once."""
+        store = tmp_path / "store"
+        room = mem.RoomMemory(store, scope="p")
+        try:
+            assert room.remember("first").ok
+            attacker = tmp_path / "attacker"
+            attacker.mkdir()
+            for path in store.iterdir():
+                path.unlink()
+            store.rmdir()
+            os.symlink(attacker, store)
+
+            room.remember("second", deadline=_PROMPT_SECONDS)
+            assert [p for p in attacker.rglob("*") if p.is_file()] == []
+        finally:
+            room.close()
+
+
+class TestANonRegularEntryIsCountedNotIgnored:
+    """MINOR 7: a directory planted at a scope-file name returned silently."""
+
+    def test_a_directory_at_a_scope_file_name_is_recorded_once(self, tmp_path: Path) -> None:
+        store = tmp_path / "store"
+        store.mkdir()
+        (store / "p__private.jsonl").mkdir()
+
+        room = mem.RoomMemory(store, scope="p")
+        try:
+            assert room.store_non_files_skipped >= 1
+            codes = [d.code for d in room.abandoned if d.code == mem.CODE_STORE_NOT_REGULAR]
+            assert len(codes) == 1
+        finally:
+            room.close()
+
+    def test_an_ordinary_store_records_nothing(self, tmp_path: Path) -> None:
+        room = mem.RoomMemory(tmp_path / "store", scope="p")
+        try:
+            assert room.remember("a heard line").ok
+            assert room.store_non_files_skipped == 0
+            assert mem.CODE_STORE_NOT_REGULAR not in {d.code for d in room.abandoned}
+        finally:
+            room.close()
+
+
+class TestContinuityReasonsAreNotTrustedByCode:
+    """MAJOR: two of the three whitelisted codes interpolate, today.
+
+    ``continuity._import_degradation`` builds
+    ``f"{subsystem} could not be imported: {error}"`` where ``error`` is
+    ``f"{type(exc).__name__}: {exc}"`` — an ImportError's message, straight
+    into the ledger. ``domain-unavailable`` interpolates domain names from the
+    report payload. Trusting a reason because of its *code* was the mistake;
+    the whitelist is now pinned against continuity's actual source.
+    """
+
+    def test_an_import_failed_reason_is_withheld(self, tmp_path: Path) -> None:
+        room = mem.RoomMemory(tmp_path / "store", scope="p")
+        try:
+            leaking = mem.continuity.Degradation(
+                subsystem="eidetic",
+                stage="probe",
+                code=mem.continuity.CODE_IMPORT_FAILED,
+                reason=f"eidetic could not be imported: ImportError: {MARKER}",
+            )
+            assert_no_speech(MARKER, room._safe_degradation(leaking))
+        finally:
+            room.close()
+
+    def test_a_domain_unavailable_reason_is_withheld(self, tmp_path: Path) -> None:
+        room = mem.RoomMemory(tmp_path / "store", scope="p")
+        try:
+            leaking = mem.continuity.Degradation(
+                subsystem="coherence",
+                stage="assess",
+                code=mem.continuity.CODE_DOMAIN_UNAVAILABLE,
+                reason=f"domain(s) unavailable: {MARKER}",
+            )
+            assert_no_speech(MARKER, room._safe_degradation(leaking))
+        finally:
+            room.close()
+
+    def test_the_storage_anchor_literal_still_survives(self, tmp_path: Path) -> None:
+        """The whitelist is not empty; the one real literal is still readable."""
+        room = mem.RoomMemory(tmp_path / "store", scope="p")
+        try:
+            outcome = mem.continuity.remember({"id": "x"}, data_dir=None)
+            assert outcome.degradation is not None
+            assert "no data_dir" in room._safe_degradation(outcome.degradation).reason
+        finally:
+            room.close()
+
+    def test_every_whitelisted_code_really_is_a_literal_in_continuity(self) -> None:
+        """The pin: an AST check over continuity.py, not a belief about it.
+
+        For each code this module trusts, every ``Degradation(...)`` built in
+        ``continuity.py`` with that code must have a *constant* ``reason``. An
+        f-string, a name or a call there fails this test — which is exactly how
+        ``import-failed`` and ``domain-unavailable`` should have been caught.
+        """
+        source = Path(mem.continuity.__file__).read_text(encoding="utf-8")
+        trusted = {
+            name
+            for name in dir(mem.continuity)
+            if name.startswith("CODE_")
+            and getattr(mem.continuity, name) in mem.RoomMemory._LITERAL_REASON_CODES
+        }
+        assert trusted, "no trusted code resolved; the whitelist names nothing"
+
+        offenders: list[str] = []
+        for node in ast.walk(ast.parse(source)):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
+                continue
+            if node.func.id != "Degradation":
+                continue
+            keywords = {kw.arg: kw.value for kw in node.keywords}
+            code, reason = keywords.get("code"), keywords.get("reason")
+            if not (isinstance(code, ast.Name) and code.id in trusted):
+                continue
+            if reason is None:
+                continue
+            for child in ast.walk(reason):
+                if isinstance(child, (ast.JoinedStr, ast.Call, ast.Name)):
+                    offenders.append(f"{code.id} at continuity.py:{node.lineno}")
+                    break
+        assert not offenders, (
+            "a code in _LITERAL_REASON_CODES has an interpolated reason in "
+            "continuity.py; stop trusting it: " + ", ".join(sorted(set(offenders)))
+        )
+
+    def test_the_ast_pin_catches_an_interpolated_reason(self) -> None:
+        """A test of the test, on a planted source."""
+        planted = (
+            "CODE_X = 'x'\n"
+            "def f(exc):\n"
+            "    return Degradation(subsystem='s', stage='t', code=CODE_X,\n"
+            "                       reason=f'boom: {exc}')\n"
+        )
+        found = []
+        for node in ast.walk(ast.parse(planted)):
+            if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "Degradation":
+                keywords = {kw.arg: kw.value for kw in node.keywords}
+                if any(isinstance(child, ast.JoinedStr) for child in ast.walk(keywords["reason"])):
+                    found.append(node.lineno)
+        assert found
+
+
+class TestARecordIdNeverReachesAReasonRaw:
+    """MINOR 6: the prompt side restricts ids; the ledger side interpolated them."""
+
+    def test_a_deferred_write_reason_restricts_the_id(self, tmp_path: Path) -> None:
+        release = threading.Event()
+
+        def slow(*args: Any, **kwargs: Any) -> Any:
+            release.wait(timeout=30)
+            return mem.continuity.RememberOutcome(ok=True, record_id="r", degradation=None)
+
+        room = mem.RoomMemory(tmp_path / "store", remember_fn=slow)
+        try:
+            result = room.remember("a heard line", record_id=f"<<< {MARKER} >>>", deadline=0.01)
+            assert result.degradation is not None
+            assert result.degradation.code == mem.CODE_REMEMBER_DEFERRED
+            assert "<<<" not in result.degradation.reason
+            assert " " not in result.degradation.reason.split("record ")[1].split(" ")[0]
+        finally:
+            release.set()
+            _settle(room)
+            room.close()
+
+    def test_a_close_report_reason_restricts_the_id(self, tmp_path: Path) -> None:
+        release, entered = threading.Event(), threading.Event()
+
+        def held(record: Any, **kwargs: Any) -> Any:
+            entered.set()
+            release.wait(timeout=30)
+            return mem.continuity.RememberOutcome(ok=True, record_id="r", degradation=None)
+
+        room = mem.RoomMemory(tmp_path / "store", remember_fn=held)
+        try:
+            room.remember("a heard line", record_id=f"<<<{MARKER}", deadline=0.02)
+            assert entered.wait(timeout=_PROMPT_SECONDS)
+            report = room.close(deadline=0.02)
+            assert report.degradations
+            assert "<<<" not in report.degradations[0].reason
+        finally:
+            release.set()
+
+    def test_the_abandoned_reason_restricts_the_id(self, tmp_path: Path) -> None:
+        release = threading.Event()
+
+        def failing(*args: Any, **kwargs: Any) -> Any:
+            release.wait(timeout=30)
+            raise OSError("late")
+
+        room = mem.RoomMemory(tmp_path / "store", remember_fn=failing)
+        try:
+            room.remember("a heard line", record_id="<<<bad id", deadline=0.01)
+            release.set()
+            limit = time.monotonic() + _PROMPT_SECONDS
+            while not room.abandoned and time.monotonic() < limit:
+                time.sleep(0.005)
+            assert room.abandoned
+            assert "<<<" not in room.abandoned[0].reason
+        finally:
+            release.set()
+            room.close()
+
+    def test_a_reap_reason_describes_the_exception_once(self, tmp_path: Path) -> None:
+        """MINOR 5: two descriptions competed for one 500-char field."""
+        release = threading.Event()
+
+        def failing(*args: Any, **kwargs: Any) -> Any:
+            release.wait(timeout=30)
+            raise OSError("late failure")
+
+        room = mem.RoomMemory(tmp_path / "store", remember_fn=failing)
+        try:
+            room.remember("a heard line", deadline=0.01)
+            release.set()
+            limit = time.monotonic() + _PROMPT_SECONDS
+            while not room.abandoned and time.monotonic() < limit:
+                time.sleep(0.005)
+            assert room.abandoned
+            reason = room.abandoned[0].reason
+            assert reason.count("fp:") == 1, reason
+            assert reason.count("OSError") == 1, reason
+            assert len(reason) < 300
+        finally:
+            release.set()
             room.close()

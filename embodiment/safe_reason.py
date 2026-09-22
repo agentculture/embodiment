@@ -28,9 +28,10 @@ output at all**, and builds a description from facts whose shape is known:
 * ``len(str(exc))`` as a character count — the *size* of what was withheld;
 * an 8-hex-character fingerprint of the message, so two occurrences of the same
   fault can be correlated in a log without the text being in it;
-* ``safe_detail``, if and only if the raiser set that attribute to declare a
-  string safe — restricted to :data:`LABEL_CHARSET` and capped, so declaring it
-  wrongly costs a mangled label rather than a leak.
+* a fault ``code``, and **only** when the caller supplies the vocabulary the
+  raiser was allowed to choose from. A free-text "the raiser says this is safe"
+  attribute was tried first and removed: restriction makes a string
+  structurally safe, never contentless, so ``bad-{city}`` passed through whole.
 
 Nothing else. Never ``str(exc)``, ``repr(exc)``, ``exc.args``, ``__notes__`` or
 a traceback into the result.
@@ -67,6 +68,7 @@ import errno as _errno
 import hashlib
 import os
 import unicodedata
+from typing import Optional
 
 __all__ = [
     "UNSAFE_ENV",
@@ -75,7 +77,6 @@ __all__ = [
     "MAX_CHAIN_DEPTH",
     "MAX_DESCRIPTION_CHARS",
     "MAX_LABEL_CHARS",
-    "MAX_DETAIL_CHARS",
     "MAX_CLASS_NAME_CHARS",
     "LABEL_CHARSET",
     "LABEL_FALLBACK",
@@ -111,7 +112,7 @@ MAX_DESCRIPTION_CHARS = 300
 #: Hard cap on one restricted label.
 MAX_LABEL_CHARS = 64
 
-#: What a label — a tool name, a declared ``safe_detail`` — may contain. The
+#: What a label — a tool name, a declared fault code — may contain. The
 #: same conservative set :mod:`embodiment.memory` uses for record ids, and for
 #: the same reason: an identifier needs no spaces, brackets or punctuation to
 #: identify, and every one of those is a character that makes a record read as
@@ -123,10 +124,6 @@ LABEL_PLACEHOLDER = "?"
 
 #: What an empty label renders as.
 LABEL_FALLBACK = "unnamed"
-
-#: Hard cap on a declared ``safe_detail``. Tighter than a general label: a
-#: declared detail is a short code ("missing-required-argument"), not prose.
-MAX_DETAIL_CHARS = 48
 
 #: Hard cap on a rendered exception class name. Bounds the exposure when a
 #: library synthesises exception classes from remote data — see
@@ -300,25 +297,31 @@ def _errno_fact(exc: BaseException) -> str:
     return safe_label(name) if name else f"errno={number}"
 
 
-def _detail(exc: BaseException) -> str:
-    """A string the RAISER declared safe — only when the CALLER trusts the source.
+def _fault_code(exc: BaseException, declared: frozenset[str]) -> str:
+    """A fault name the raiser DECLARED in advance, or ``undeclared-code``.
 
-    Found by attacking this module: ``safe_detail`` is an attribute on an
-    object this module did not create, so "the raiser declared it safe" is only
-    meaningful when the raiser is someone the caller vouches for. A dependency
-    — an HTTP client, a store driver — is not, and a hostile or merely careless
-    one could put the request body there. So the trust decision belongs to the
-    seam, not to the exception: see ``allow_detail`` on
-    :func:`describe_exception`. Capped at :data:`MAX_DETAIL_CHARS`, tighter than
-    a general label, because a declared detail is a short code by definition.
+    This replaced a ``safe_detail`` free-text attribute, and the reason it had
+    to is worth keeping: ``safe_label`` makes a string *structurally* safe, it
+    does not make it contentless. A tool setting ``safe_detail = f"bad-{city}"``
+    produced ``detail=bad-ZZMARKERZZ`` — every character already in the label
+    charset, nothing to restrict, the user's word in the record. Restriction
+    was the wrong instrument for the job.
+
+    A **declared vocabulary** is the right one: the set of names a tool may use
+    is fixed when it is registered, before anybody speaks, so no runtime string
+    can widen it. A code outside the set renders as ``undeclared-code`` — the
+    fact that the tool tried is worth recording; the string it tried is not.
+
+    An integer ``code`` is left alone: that attribute is overloaded and an int
+    there is an HTTP status, which :func:`_status` already reports.
     """
     try:
-        declared = getattr(exc, "safe_detail", None)
+        raw = getattr(exc, "code", None)
     except Exception:  # noqa: BLE001  # a property that raises declares nothing
         return ""
-    if declared is None:
+    if raw is None or isinstance(raw, bool) or isinstance(raw, int):
         return ""
-    return f"detail={safe_label(declared)[:MAX_DETAIL_CHARS]}"
+    return f"code={safe_label(raw)}" if raw in declared else "code=undeclared-code"
 
 
 def _chain(exc: BaseException) -> list[str]:
@@ -339,12 +342,14 @@ def _chain(exc: BaseException) -> list[str]:
     return names
 
 
-def describe_exception(exc: BaseException, *, allow_detail: bool = False) -> str:
+def describe_exception(
+    exc: BaseException, *, declared_codes: Optional[frozenset[str]] = None
+) -> str:
     """Describe *exc* using only facts that are safe BY CONSTRUCTION.
 
     The message is **never** read into the result. What comes back is the class
     name, the bounded cause chain, an ``errno`` name or integer status when
-    present, a declared ``safe_detail``, the message's *length*, and an 8-hex
+    present, a declared fault code, the message's *length*, and an 8-hex
     fingerprint of it for correlation::
 
         OSError(ENOSPC, message: 42 chars, fp:9c1d4a77)
@@ -357,11 +362,12 @@ def describe_exception(exc: BaseException, *, allow_detail: bool = False) -> str
     exists for an operator debugging their own rig, and it is named UNSAFE so
     that enabling it cannot be mistaken for raising a log level.
 
-    *allow_detail* opts into reading a ``safe_detail`` attribute the raiser set
-    to declare one short string safe. It defaults to **False**: the attribute
-    lives on an object this module did not create, so only a caller that
-    vouches for the raiser — a registry invoking a tool the host registered —
-    should turn it on. A dependency's exception is never vouched for.
+    *declared_codes* is the vocabulary of fault names the raiser was allowed to
+    choose from, fixed before it ran. Given one, a string ``code`` attribute is
+    rendered when it is **in** that set and as ``undeclared-code`` when it is
+    not. Given ``None`` — the default, and what every dependency gets — no code
+    is read at all. This replaced a free-text ``safe_detail`` attribute, which
+    could not work: see :func:`_fault_code`.
 
     Never raises: an exception whose ``__str__``, properties or ``__class__``
     misbehave still yields a string, because this runs on the failure path and
@@ -372,8 +378,8 @@ def describe_exception(exc: BaseException, *, allow_detail: bool = False) -> str
 
     message = _message(exc)
     head = " <- ".join([_class_name(exc), *_chain(exc)])
-    detail = _detail(exc) if allow_detail else ""
-    facts = [fact for fact in (_errno_fact(exc), _status(exc), detail) if fact]
+    fault = "" if declared_codes is None else _fault_code(exc, declared_codes)
+    facts = [fact for fact in (_errno_fact(exc), _status(exc), fault) if fact]
     facts.append(f"message: {len(message)} chars")
     facts.append(f"fp:{_fingerprint(message)}")
 

@@ -42,6 +42,7 @@ it.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
@@ -105,6 +106,13 @@ class ToolSpec:
         description: the one-line description shown to the model.
         finishes: whether a successful call ends the turn. ``False`` (the
             default) feeds the result back and lets the model speak after it.
+        codes: the fault names this tool may use when it raises — its whole
+            vocabulary, fixed HERE, before anything runs. A tool that wants to
+            tell the model *why* it failed sets ``exc.code`` to one of these;
+            anything outside the set is recorded as ``undeclared-code``. The
+            set is declared at registration rather than supplied at raise time
+            because that is the only point at which no user has spoken yet: a
+            runtime string cannot widen a vocabulary that was already closed.
     """
 
     name: str
@@ -112,6 +120,7 @@ class ToolSpec:
     fn: ToolFn
     description: str = ""
     finishes: bool = False
+    codes: frozenset[str] = frozenset()
 
     def schema(self) -> dict[str, Any]:
         """This tool as one OpenAI-compatible ``tools`` entry."""
@@ -147,8 +156,14 @@ class ToolRegistry:
         *,
         description: str = "",
         finishes: bool = False,
+        codes: Iterable[str] = (),
     ) -> ToolSpec:
         """Register one tool and return its :class:`ToolSpec`.
+
+        *codes* declares the fault names this tool may use. See
+        :class:`ToolSpec`. They are restricted to
+        :data:`~embodiment.safe_reason.LABEL_CHARSET` here, so a declared name
+        is renderable into a record by construction.
 
         Raises:
             ValueError: on a blank name or a name already registered. A silently
@@ -166,6 +181,7 @@ class ToolRegistry:
             fn=fn,
             description=description,
             finishes=finishes,
+            codes=frozenset(safe_label(code) for code in codes),
         )
         self.specs[clean] = spec
         return spec
@@ -178,6 +194,7 @@ class ToolRegistry:
             spec.fn,
             description=spec.description,
             finishes=spec.finishes,
+            codes=spec.codes,
         )
 
     # ── introspection ─────────────────────────────────────────────────────
@@ -252,11 +269,12 @@ class ToolRegistry:
             # model. Both now carry structured facts only. ``name`` is a
             # REGISTERED name — host-chosen, so it is trusted content — and is
             # still restricted, because a registry is host code too.
-            # ``allow_detail=True`` here and nowhere else: a registered tool
-            # is host code the host chose to install, so a ``safe_detail`` it
-            # sets is a declaration this registry can vouch for. A model seam
-            # or a store driver gets no such benefit of the doubt.
-            described = describe_exception(exc, allow_detail=True)
+            # The tool's DECLARED vocabulary, and nothing else, is what may
+            # name the fault. A free-text channel was tried and removed: a
+            # restricted string is structurally safe but not contentless, so
+            # `f"bad-{city}"` went through whole. A set fixed at registration
+            # cannot be widened by anything the user says.
+            described = describe_exception(exc, declared_codes=spec.codes)
             self._degrade(DEGRADED_TOOL_FAILED, f"{safe_label(name)}: {described}")
             raise ToolError(f"{safe_label(name)} failed: {described}") from exc
         result = "" if value is None else str(value)

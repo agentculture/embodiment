@@ -279,39 +279,6 @@ class TestDescribeExceptionSaysNothingItWasToldIn:
         assert isinstance(describe_exception(Awkward()), str)
         assert isinstance(describe_exception(None), str)  # type: ignore[arg-type]
 
-    def test_a_safe_detail_the_author_declared_is_kept(self) -> None:
-        """The one channel for a message-shaped fact, and it is opt-in.
-
-        A raiser that *knows* a string is safe can say so by setting
-        ``safe_detail``. It is restricted and capped like any other label, so
-        declaring it wrong costs a mangled string rather than a leak.
-        """
-        exc = ValueError(f"raw {MARKER}")
-        exc.safe_detail = "missing-required-argument"
-        described = describe_exception(exc, allow_detail=True)
-        assert "missing-required-argument" in described
-        assert MARKER not in described
-
-    def test_a_safe_detail_is_ignored_unless_the_caller_vouches(self) -> None:
-        """Found by attacking this module, not by the brief.
-
-        ``safe_detail`` is an attribute on an object this module did not
-        create. "The raiser declared it safe" only means something when the
-        caller vouches for the raiser, so the default is off and a dependency's
-        exception never gets the benefit of the doubt.
-        """
-        exc = ValueError("clean")
-        exc.safe_detail = MARKER
-        assert MARKER not in describe_exception(exc)
-        assert MARKER in describe_exception(exc, allow_detail=True)
-
-    def test_a_declared_detail_is_capped_tighter_than_a_label(self) -> None:
-        exc = ValueError("x")
-        exc.safe_detail = "a" * 500
-        described = describe_exception(exc, allow_detail=True)
-        detail = described.split("detail=")[1].split(",")[0]
-        assert len(detail) == safe_reason.MAX_DETAIL_CHARS
-
     def test_a_synthesised_class_name_is_bounded(self) -> None:
         """The documented residual: a class name built from remote data.
 
@@ -324,15 +291,6 @@ class TestDescribeExceptionSaysNothingItWasToldIn:
         hostile = type("E" + "x" * 300, (Exception,), {})
         described = describe_exception(hostile("m"))
         assert len(described.split(" (")[0]) <= safe_reason.MAX_CLASS_NAME_CHARS
-
-    def test_a_safe_detail_is_restricted_to_the_label_charset(self) -> None:
-        exc = ValueError("x")
-        exc.safe_detail = f"has spaces and {MARKER[:8]}<<<brackets"
-        described = describe_exception(exc, allow_detail=True)
-        assert "<<<" not in described
-        detail = described.split("detail=")[1].split(",")[0]
-        assert " " not in detail
-        assert set(detail) <= safe_reason.LABEL_CHARSET | {safe_reason.LABEL_PLACEHOLDER}
 
 
 class TestTheUnsafeEscapeHatch:
@@ -437,11 +395,14 @@ class TestTheSharedCategorySetLivesHere:
 #: Exactly what the guard rejects inside an ``except`` handler, outside
 #: ``safe_reason.py``. Each is a way an exception's *message* becomes text.
 REJECTED_PATTERNS = (
-    "str(<caught exception>)",
-    "repr(<caught exception>)",
+    "str(<caught exception>) / repr(…) / format(…)",
     "f-string interpolation of <caught exception>",
     "<caught exception>.args",
     "'{}'.format(<caught exception>) / '%s' % <caught exception>",
+    "map(str, …<caught exception>…)",
+    "traceback.format_exc / print_exc / format_exception / print_exception / format_tb",
+    "logging.exception / logger.exception (attaches the active traceback)",
+    "<caught exception> handed to an un-annotated log*/print*/warn*/emit* helper",
 )
 
 
@@ -495,12 +456,62 @@ def _is_name(node: ast.AST, name: str) -> bool:
     return isinstance(node, ast.Name) and node.id == name
 
 
+#: Calls that render an exception however they are handed one.
+_RENDERERS = frozenset({"str", "repr", "format"})
+
+#: Module-level calls that print a traceback whether or not the exception is
+#: passed to them. ``traceback.format_exc()`` reads the *current* exception
+#: from the interpreter, so it takes no argument and is still a full render.
+_TRACEBACK_CALLS = frozenset(
+    {"format_exc", "print_exc", "format_exception", "print_exception", "format_tb"}
+)
+
+#: ``logging.exception`` / ``logger.exception`` attach the active traceback to
+#: the log record. No exception variable appears in the call at all.
+_LOGGING_CALLS = frozenset({"exception"})
+
+
 def _uses(node: ast.AST, name: str, module: str, lineno: int) -> list[str]:
-    """Which rejected pattern *node* is, if any."""
+    """Which rejected pattern *node* is, if any.
+
+    Widened after review found five renderings the first version missed. Four
+    of them do not mention the exception variable anywhere in the call —
+    ``traceback.format_exc()`` and ``logger.exception(...)`` read the active
+    exception from the interpreter — which is why "does this expression
+    contain ``exc``?" was the wrong question to ask.
+    """
     where = f"{module}:{getattr(node, 'lineno', lineno)}"
+
     if isinstance(node, ast.Call) and isinstance(node.func, ast.Name):
-        if node.func.id in {"str", "repr"} and any(_is_name(a, name) for a in node.args):
+        if node.func.id in _RENDERERS and any(_is_name(a, name) for a in node.args):
             return [f"{where}: {node.func.id}({name})"]
+        # map(str, …) / map(repr, …) over anything mentioning the exception.
+        if node.func.id == "map" and node.args:
+            renderer = node.args[0]
+            if isinstance(renderer, ast.Name) and renderer.id in _RENDERERS:
+                if any(
+                    _is_name(child, name)
+                    for argument in node.args[1:]
+                    for child in ast.walk(argument)
+                ):
+                    return [f"{where}: map({renderer.id}, …{name}…)"]
+        # A helper with no exception annotation, handed the exception.
+        if (
+            node.func.id not in _RENDERERS
+            and node.func.id not in {"describe_exception", "safe_label", "name_fingerprint"}
+            and any(_is_name(a, name) for a in node.args)
+            and node.func.id.startswith(("log", "print", "warn", "emit", "helper"))
+        ):
+            return [f"{where}: {name} handed to {node.func.id}()"]
+
+    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+        if node.func.attr in _TRACEBACK_CALLS:
+            return [f"{where}: {node.func.attr}() renders a traceback"]
+        if node.func.attr in _LOGGING_CALLS:
+            return [f"{where}: .exception() attaches the active traceback"]
+        if node.func.attr == "format" and any(_is_name(a, name) for a in node.args):
+            return [f"{where}: .format({name})"]
+
     if isinstance(node, ast.FormattedValue) and _is_name(node.value, name):
         return [f"{where}: f-string interpolation of {name}"]
     if isinstance(node, ast.Attribute) and node.attr == "args" and _is_name(node.value, name):
@@ -511,9 +522,6 @@ def _uses(node: ast.AST, name: str, module: str, lineno: int) -> list[str]:
             and any(_is_name(item, name) for item in node.right.elts)
         ):
             return [f"{where}: %-formatting of {name}"]
-    if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-        if node.func.attr == "format" and any(_is_name(a, name) for a in node.args):
-            return [f"{where}: .format({name})"]
     return []
 
 
@@ -605,4 +613,112 @@ class TestNoExceptionMessageBecomesText:
         assert _handler_violations(snippet, "fine.py") == []
 
     def test_the_rejected_patterns_are_documented(self) -> None:
-        assert len(REJECTED_PATTERNS) == 5
+        assert len(REJECTED_PATTERNS) == 8
+
+
+class TestDeclaredCodesReplacedTheFreeTextHatch:
+    """MAJOR: ``safe_detail`` carried charset-clean text straight through.
+
+    ``exc.safe_detail = f"bad-{city}"`` rendered ``detail=bad-ZZMARKERZZ``.
+    ``safe_label`` cannot remove text that is already ``[A-Za-z0-9._-]`` — it
+    makes a string structurally safe, never contentless — so the old
+    docstring's "costs a mangled label rather than a leak" was simply false for
+    that case. Restriction was the wrong tool: the fix is that a tool may only
+    name its fault with a code it DECLARED at registration, so the vocabulary
+    is fixed before any user speaks.
+    """
+
+    def test_a_declared_code_is_rendered(self) -> None:
+        exc = ValueError("raw")
+        exc.code = "missing-city"
+        described = describe_exception(exc, declared_codes=frozenset({"missing-city"}))
+        assert "code=missing-city" in described
+
+    def test_an_undeclared_code_is_not_rendered(self) -> None:
+        """The negative control: a code the tool never declared."""
+        exc = ValueError("raw")
+        exc.code = f"bad-{MARKER}"
+        described = describe_exception(exc, declared_codes=frozenset({"missing-city"}))
+        assert MARKER not in described
+        assert "undeclared-code" in described
+
+    def test_free_text_cannot_ride_the_code_field(self) -> None:
+        exc = ValueError("raw")
+        exc.code = f"the user asked about {MARKER}"
+        for declared in (frozenset(), frozenset({"missing-city"}), None):
+            assert MARKER not in describe_exception(exc, declared_codes=declared)
+
+    def test_no_code_is_rendered_without_a_declared_set(self) -> None:
+        exc = ValueError("raw")
+        exc.code = "missing-city"
+        assert "code=" not in describe_exception(exc)
+
+    def test_the_free_text_hatch_is_gone(self) -> None:
+        """``safe_detail`` must not be readable by any path any more."""
+        exc = ValueError("raw")
+        exc.safe_detail = MARKER
+        assert MARKER not in describe_exception(exc)
+        assert MARKER not in describe_exception(exc, declared_codes=frozenset({MARKER}))
+        # Checked over the AST, not as a substring: the docstrings explain
+        # WHY the attribute was removed, and a scan that punishes writing that
+        # down is a scan someone deletes. Same trap
+        # ``tests/test_no_silent_degradation.py`` avoids for ``except: pass``.
+        tree = ast.parse(Path(safe_reason.__file__).read_text(encoding="utf-8"))
+        reads = [
+            node
+            for node in ast.walk(tree)
+            if isinstance(node, ast.Constant) and node.value == "safe_detail"
+        ]
+        assert not reads, "safe_detail is still read somewhere in the module"
+
+    def test_an_integer_code_is_still_an_http_status(self) -> None:
+        """``code`` is overloaded; an int there is a status, not a fault name."""
+        exc = ValueError("raw")
+        exc.code = 404
+        described = describe_exception(exc, declared_codes=frozenset({"x"}))
+        assert "status=404" in described
+        assert "undeclared-code" not in described
+
+    def test_a_declared_code_is_still_charset_restricted(self) -> None:
+        declared = "has spaces"
+        exc = ValueError("raw")
+        exc.code = declared
+        described = describe_exception(exc, declared_codes=frozenset({declared}))
+        assert " " not in described.split("code=")[1].split(",")[0]
+
+
+class TestTheGuardCoversMoreRenderings:
+    """MINOR: five ways to render an exception the first guard did not see."""
+
+    @pytest.mark.parametrize(
+        "snippet",
+        [
+            "try:\n    f()\nexcept Exception as exc:\n    log(format(exc))\n",
+            "import traceback\ntry:\n    f()\nexcept Exception as exc:\n"
+            "    log(traceback.format_exc())\n",
+            "try:\n    f()\nexcept Exception as exc:\n    logging.exception('boom')\n",
+            "try:\n    f()\nexcept Exception as exc:\n    logger.exception('boom')\n",
+            "try:\n    f()\nexcept Exception as exc:\n    log(list(map(str, [exc])))\n",
+            "def helper(e):\n    return str(e)\n"
+            "try:\n    f()\nexcept Exception as exc:\n    log(helper(exc))\n",
+            "try:\n    f()\nexcept Exception as exc:\n    log(traceback.format_exception(exc))\n",
+        ],
+    )
+    def test_the_guard_catches_the_newly_covered_patterns(self, snippet: str) -> None:
+        assert _handler_violations(snippet, "planted.py")
+
+    @pytest.mark.parametrize(
+        "snippet",
+        [
+            "try:\n    f()\nexcept Exception as exc:\n    log(describe_exception(exc))\n",
+            "try:\n    f()\nexcept Exception as exc:\n    self._record(code, exc)\n",
+            "try:\n    f()\nexcept Exception as exc:\n    log(format(count))\n",
+            "try:\n    f()\nexcept Exception:\n    logging.warning('boom')\n",
+        ],
+    )
+    def test_the_guard_still_allows_the_safe_shapes(self, snippet: str) -> None:
+        assert _handler_violations(snippet, "fine.py") == []
+
+    def test_the_package_still_passes_the_widened_guard(self) -> None:
+        for path in _modules_bound_by_the_guard():
+            assert _handler_violations(path.read_text(encoding="utf-8"), path.name) == []

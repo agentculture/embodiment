@@ -273,6 +273,8 @@ __all__ = [
     "CODE_SATURATED",
     "CODE_PERMISSIONS",
     "CODE_STORE_SYMLINK",
+    "CODE_STORE_ROOT_SYMLINK",
+    "CODE_STORE_NOT_REGULAR",
     "CODE_STORE_SCAN_CAPPED",
     "MAX_TIGHTEN_ENTRIES",
     "CODE_CLOSED",
@@ -463,6 +465,12 @@ CODE_PERMISSIONS = "memory-permissions"
 #: follows one out of its own directory; a symlink in a private store is also
 #: worth a record in its own right.
 CODE_STORE_SYMLINK = "memory-store-symlink-skipped"
+#: The store path is itself a symlink. Nothing is read or written through it:
+#: following one means operating in a directory somebody else chose.
+CODE_STORE_ROOT_SYMLINK = "memory-store-root-symlink"
+#: An entry at a scope-file name is not a regular file (a directory, a fifo, a
+#: device). Skipped and counted, like a symlink.
+CODE_STORE_NOT_REGULAR = "memory-store-not-a-file"
 #: The construction sweep stopped at :data:`MAX_TIGHTEN_ENTRIES`. Files beyond
 #: the cap were not tightened, and saying so is the whole point of the code.
 CODE_STORE_SCAN_CAPPED = "memory-store-scan-capped"
@@ -737,9 +745,15 @@ class RoomMemory:
         max_workers: int = DEFAULT_MAX_WORKERS,
         max_inflight: int = MAX_INFLIGHT,
     ) -> None:
-        #: Pinned ONCE, here. Resolved to an absolute path so nothing about it
-        #: can depend on the host's cwd at the moment of a later call.
-        self._data_dir = Path(str(data_dir)).expanduser().resolve()
+        #: Pinned ONCE, here. Made ABSOLUTE so nothing about it depends on the
+        #: host's cwd at the moment of a later call — but deliberately NOT
+        #: ``resolve()``\ d. ``resolve()`` follows symlinks, so a store path
+        #: that was a link to somebody else's directory used to be replaced by
+        #: its target: the pin then named the attacker's path and every
+        #: subsequent check was performed there. A pin that follows a link is
+        #: not a pin. The literal path is kept and the link is refused at open
+        #: time instead (:meth:`_open_store`).
+        self._data_dir = Path(os.path.abspath(Path(str(data_dir)).expanduser()))
         self._scope = scope
         self._added_by = added_by
         self._backend = backend
@@ -776,6 +790,8 @@ class RoomMemory:
         self._permissions_ok = True
         self._permission_failures = 0
         self._symlinks_skipped = 0
+        self._non_files_skipped = 0
+        self._root_is_symlink = False
         self._recorded_once: set[str] = set()
 
         # Last, because it records degradations and therefore needs the ledger.
@@ -805,11 +821,31 @@ class RoomMemory:
         self._sweep_store()
 
     def _tighten_dir(self) -> None:
-        """Create/repair the store directory. Never raises."""
+        """Create the store if absent and make it 0700. Never raises.
+
+        ``lstat`` before anything else: a symlink at the store path is refused
+        outright rather than created through, chmodded through, or written
+        through. ``mkdir`` on an existing symlink-to-a-directory succeeds
+        silently with ``exist_ok=True``, and ``Path.stat`` follows it, so
+        neither of those would have noticed.
+        """
         try:
-            self._data_dir.mkdir(parents=True, exist_ok=True)
-            if stat.S_IMODE(self._data_dir.stat().st_mode) != PRIVATE_DIR_MODE:
-                os.chmod(self._data_dir, PRIVATE_DIR_MODE)
+            info: Optional[os.stat_result] = self._data_dir.lstat()
+        except FileNotFoundError:
+            info = None
+        except OSError as exc:
+            self._record_permission_failure("could not inspect the store path", exc)
+            return
+
+        if info is not None and stat.S_ISLNK(info.st_mode):
+            self._note_root_symlink()
+            return
+
+        try:
+            if info is None:
+                self._data_dir.mkdir(parents=True, exist_ok=True)
+            if stat.S_IMODE(self._data_dir.lstat().st_mode) != PRIVATE_DIR_MODE:
+                os.chmod(self._data_dir, PRIVATE_DIR_MODE, follow_symlinks=True)
         except OSError as exc:
             self._record_permission_failure("could not make the store directory private", exc)
 
@@ -897,10 +933,29 @@ class RoomMemory:
         chmod. Never raises.
         """
         try:
-            return os.open(self._data_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+            dir_fd = os.open(self._data_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
         except OSError as exc:
-            self._record_permission_failure("could not open the store directory", exc)
+            # O_NOFOLLOW on the ROOT, which is what review found missing: the
+            # per-entry guard was doing careful work while already standing
+            # inside the attacker's directory.
+            #
+            # The errno is NOT what the obvious reading predicts, and this was
+            # measured rather than assumed. ``O_NOFOLLOW | O_DIRECTORY`` on a
+            # symlink-to-a-directory fails with **ENOTDIR** on Linux, not
+            # ELOOP: O_NOFOLLOW means the symlink itself is the object, and a
+            # symlink is not a directory. An ELOOP-only check therefore fell
+            # through to a generic permission failure — the right refusal with
+            # the wrong name on it, which is the fault an operator then goes
+            # looking for in the wrong place. ENOTDIR is ambiguous on its own
+            # (a regular file at the store path gives it too), so it is
+            # confirmed with an ``lstat`` before being called a symlink.
+            if exc.errno in (errno.ELOOP, errno.EMLINK, errno.ENOTDIR) and self._is_link():
+                self._note_root_symlink()
+            elif exc.errno != errno.ENOENT:
+                self._record_permission_failure("could not open the store directory", exc)
             return None
+        self._root_is_symlink = False
+        return dir_fd
 
     @staticmethod
     def _close_store(dir_fd: int) -> None:
@@ -941,13 +996,14 @@ class RoomMemory:
                 # The scope file for a visibility never written. Expected.
                 return
             elif exc.errno == errno.EISDIR:
-                return
+                self._note_non_file()
             else:
                 self._record_permission_failure("could not open a store entry", exc)
             return
         try:
             info = os.fstat(fd)
             if not stat.S_ISREG(info.st_mode):
+                self._note_non_file()
                 return
             if stat.S_IMODE(info.st_mode) != PRIVATE_FILE_MODE:
                 os.fchmod(fd, PRIVATE_FILE_MODE)
@@ -975,6 +1031,48 @@ class RoomMemory:
             CODE_STORE_SYMLINK,
             "a symlink inside the memory store was skipped rather than followed; "
             "see store_symlinks_skipped for the running count",
+        )
+
+    def _is_link(self) -> bool:
+        """Whether the store path is a symlink right now. Never raises."""
+        try:
+            return stat.S_ISLNK(self._data_dir.lstat().st_mode)
+        except OSError:
+            return False
+
+    def _root_refusal(self) -> Optional[Degradation]:
+        """A degradation if the store path is a symlink right now, else ``None``.
+
+        Checked per operation rather than cached from construction, because a
+        link can be planted after this object was built — and checked in the
+        WORKER, so the check is inside the caller's deadline like everything
+        else that touches the filesystem.
+        """
+        if not self._is_link():
+            return None
+        self._note_root_symlink()
+        return _degradation(
+            "store",
+            CODE_STORE_ROOT_SYMLINK,
+            "the store path is a symlink; refusing to use it",
+        )
+
+    def _note_root_symlink(self) -> None:
+        """Refuse the store and say so. Idempotent within one object."""
+        self._root_is_symlink = True
+        self._record_once(
+            CODE_STORE_ROOT_SYMLINK,
+            "the store path is a symlink; refusing to read or write through it, "
+            "because following one means operating in a directory somebody else chose",
+        )
+
+    def _note_non_file(self) -> None:
+        """Count an entry that is not a regular file; record the first."""
+        self._non_files_skipped += 1
+        self._record_once(
+            CODE_STORE_NOT_REGULAR,
+            "an entry in the memory store is not a regular file and was skipped; "
+            "see store_non_files_skipped for the running count",
         )
 
     def _record_once(self, code: str, reason: str) -> None:
@@ -1008,6 +1106,25 @@ class RoomMemory:
         this module does creates one.
         """
         return self._symlinks_skipped
+
+    @property
+    def store_non_files_skipped(self) -> int:
+        """Entries at a store path that were not regular files, and were skipped.
+
+        A directory, fifo, socket or device planted at a scope-file name. Not
+        something this module created, so not something it modifies — but
+        silently returning made a tampered store look ordinary.
+        """
+        return self._non_files_skipped
+
+    @property
+    def store_root_is_symlink(self) -> bool:
+        """Whether the store path is a symlink, which makes it unusable.
+
+        Writes are refused rather than followed. Re-evaluated on every
+        operation, not cached from construction: a link can be planted later.
+        """
+        return self._root_is_symlink
 
     @property
     def store_permission_failures(self) -> int:
@@ -1198,6 +1315,9 @@ class RoomMemory:
         writer = added_by if added_by is not None else self._added_by
 
         def write() -> Any:
+            refusal = self._root_refusal()
+            if refusal is not None:
+                return continuity.RememberOutcome(ok=False, record_id=None, degradation=refusal)
             outcome = self._remember_fn(
                 record,
                 data_dir=self._data_dir,
@@ -1220,7 +1340,7 @@ class RoomMemory:
                 degradation=_degradation(
                     "remember",
                     refusal or CODE_CLOSED,
-                    f"record {identifier} was NOT written: "
+                    f"record {safe_label(identifier)} was NOT written: "
                     + (
                         "every in-flight memory slot is occupied"
                         if refusal == CODE_SATURATED
@@ -1240,7 +1360,7 @@ class RoomMemory:
                 degradation=_degradation(
                     "remember",
                     CODE_REMEMBER_DEFERRED,
-                    f"record {identifier} did not confirm within {deadline}s and is "
+                    f"record {safe_label(identifier)} did not confirm within {deadline}s and is "
                     "still being written in the background; a failure will be "
                     "recorded on the abandoned ledger",
                 ),
@@ -1277,20 +1397,22 @@ class RoomMemory:
         """
 
         def reap(done: "Future[Any]") -> None:
+            # The exception is described ONCE, by ``_degradation`` below.
+            # This reason used to embed ``describe_exception(error)`` as well,
+            # so two descriptions competed for one 500-char field and the
+            # second was the one that got truncated.
+            label = safe_label(identifier)
             reason: Optional[str] = None
             error: Optional[BaseException] = None
             try:
                 error = done.exception()
                 if error is not None:
-                    reason = (
-                        f"deferred write of {identifier} failed after {deadline}s "
-                        f"[{describe_exception(error)}]"
-                    )
+                    reason = f"deferred write of {label} failed after {deadline}s"
                 elif not getattr(done.result(), "ok", False):
-                    reason = f"deferred write of {identifier} was not stored by the seam"
+                    reason = f"deferred write of {label} was not stored by the seam"
             except Exception as exc:  # noqa: BLE001  # a cancelled future has no result
                 error = exc
-                reason = f"deferred write of {identifier} could not be read back"
+                reason = f"deferred write of {label} could not be read back"
             if reason is None:
                 return
             with self._lock:
@@ -1303,13 +1425,17 @@ class RoomMemory:
     #: continuity codes whose ``reason`` this module KNOWS is a fixed literal
     #: that ``continuity.py`` wrote itself. Everything else is treated as
     #: exception-derived and withheld.
-    _LITERAL_REASON_CODES = frozenset(
-        {
-            continuity.CODE_NO_STORAGE_ANCHOR,
-            continuity.CODE_IMPORT_FAILED,
-            continuity.CODE_DOMAIN_UNAVAILABLE,
-        }
-    )
+    #: Reduced from three to one after review read continuity's source instead
+    #: of trusting this list. ``import-failed`` builds
+    #: ``f"{subsystem} could not be imported: {error}"`` where ``error`` is
+    #: ``f"{type(exc).__name__}: {exc}"`` — an ImportError's message, which
+    #: routinely carries a path — and ``domain-unavailable`` interpolates
+    #: domain names out of the report payload. Both were being copied into the
+    #: ledger unwithheld. ``no-storage-anchor`` is the only one whose reason is
+    #: a fixed literal, and ``tests/test_memory.py`` pins that against
+    #: continuity's AST rather than against this comment: a code whose reason
+    #: gains an f-string fails the suite.
+    _LITERAL_REASON_CODES = frozenset({continuity.CODE_NO_STORAGE_ANCHOR})
 
     def _safe_degradation(self, degradation: Optional[Degradation]) -> Optional[Degradation]:
         """Re-wrap a degradation that arrived from ``continuity``.
@@ -1492,6 +1618,11 @@ class RoomMemory:
         effective = mode
         resolved = RECALL_MODE_LEXICAL
 
+        refusal = self._root_refusal()
+        if refusal is not None:
+            outcome = continuity.RecallOutcome(ok=False, records=[], degradation=refusal)
+            return resolved, outcome, degradations
+
         if mode in SEMANTIC_MODES:
             online, probe_degradation = self._probe()
             if online:
@@ -1645,7 +1776,7 @@ class RoomMemory:
             _degradation(
                 "close",
                 CODE_REMEMBER_UNCONFIRMED_AT_CLOSE,
-                f"record {identifier} was still being written when close ran out of "
+                f"record {safe_label(identifier)} was still being written when close ran out of "
                 f"{deadline}s; it MAY OR MAY NOT land — it lands on a normal process "
                 "exit and is lost on a hard exit. Record this id before hard-exiting.",
             )

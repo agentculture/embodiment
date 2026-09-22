@@ -253,16 +253,27 @@ class TestNoSpeechReachesAToolRecord:
         assert_no_speech(MARKER, registry.degradations)
         assert "<<<" not in registry.degradations[0].reason
 
-    def test_a_declared_safe_detail_still_reaches_the_model(self) -> None:
-        """Self-correction is the cost of this change; ``safe_detail`` is the remedy."""
+    def test_a_declared_fault_code_still_reaches_the_model(self) -> None:
+        """Self-correction is the cost of this change; a DECLARED code is the remedy.
+
+        This test used to set a free-text ``safe_detail``. Review showed that
+        channel could not hold: ``f"bad-{city}"`` is already charset-clean, so
+        restriction removed nothing. The vocabulary is now fixed at
+        registration instead.
+        """
         registry = ToolRegistry()
 
-        def boom(**kwargs):
+        def boom(**kwargs: Any) -> str:
             exc = ValueError(f"raw {MARKER}")
-            exc.safe_detail = "missing-required-argument"
+            exc.code = "missing-required-argument"
             raise exc
 
-        registry.register("s", {"type": "object", "properties": {}}, boom)
+        registry.register(
+            "s",
+            {"type": "object", "properties": {}},
+            boom,
+            codes={"missing-required-argument"},
+        )
         raised: list[BaseException] = []
         try:
             registry.execute("s", {"said": MARKER})
@@ -280,3 +291,62 @@ class TestNoSpeechReachesAToolRecord:
         with pytest.raises(Exception):
             registry.execute("echo", {"said": MARKER})
         assert_speech_present(MARKER, registry.degradations)
+
+
+class TestDeclaredFaultCodes:
+    """A tool names its fault from a vocabulary it fixed at registration."""
+
+    @staticmethod
+    def _registry(codes: Any = frozenset({"missing-city"})) -> Any:
+        registry = ToolRegistry()
+
+        def boom(**kwargs: Any) -> str:
+            exc = ValueError(f"cannot handle {kwargs}")
+            exc.code = kwargs.get("fault", "missing-city")
+            raise exc
+
+        registry.register("weather", _SCHEMA, boom, codes=codes)
+        return registry
+
+    def test_a_declared_code_reaches_the_model_and_the_record(self) -> None:
+        registry = self._registry()
+        raised: list[BaseException] = []
+        try:
+            registry.execute("weather", {"city": MARKER})
+        except Exception as exc:  # noqa: BLE001  # the assertion IS about this object
+            raised.append(exc)
+
+        assert "missing-city" in str(raised[0])
+        assert "missing-city" in registry.degradations[0].reason
+        assert_no_speech(MARKER, str(raised[0]), registry.degradations)
+
+    def test_an_undeclared_code_is_refused(self) -> None:
+        registry = self._registry(codes=frozenset({"something-else"}))
+        with pytest.raises(Exception):
+            registry.execute("weather", {"city": MARKER, "fault": f"leak-{MARKER}"})
+
+        assert "undeclared-code" in registry.degradations[0].reason
+        assert_no_speech(MARKER, registry.degradations)
+
+    def test_a_tool_that_declared_nothing_gets_no_code_channel(self) -> None:
+        registry = self._registry(codes=frozenset())
+        with pytest.raises(Exception):
+            registry.execute("weather", {"city": MARKER})
+        assert_no_speech(MARKER, registry.degradations)
+
+    def test_codes_default_to_empty(self) -> None:
+        registry = ToolRegistry()
+        spec = registry.register("plain", _SCHEMA, lambda city: city)
+        assert spec.codes == frozenset()
+
+    def test_add_round_trips_the_declared_codes(self) -> None:
+        source = ToolRegistry()
+        spec = source.register("weather", _SCHEMA, lambda city: city, codes=frozenset({"a"}))
+        target = ToolRegistry()
+        assert target.add(spec).codes == frozenset({"a"})
+
+    def test_declared_codes_are_restricted_at_registration(self) -> None:
+        """A declared vocabulary is host text, but it is still rendered."""
+        registry = ToolRegistry()
+        spec = registry.register("t", _SCHEMA, lambda city: city, codes={"a b<<<c"})
+        assert all("<<<" not in code and " " not in code for code in spec.codes)
