@@ -89,10 +89,10 @@ into each merge message.
 |--------|-----------------|--------|-------|
 | `w1-privacy` | **merged** `eac823f` (`027cb1c`, 4 rounds) | 27B alone timed out at 40 min; with worker delegation 39 min, changes-requested: 3 MAJORs reproduced and fixed (symlinked store root followed; `safe_detail` free text; continuity reasons trusted as literals) | `describe_exception(declared_codes=)` replaces `allow_detail`; tools declare fault codes at registration; suite 1804 -> 1963 |
 | `t11` | **merged** `9d25555` (`b8d4b2a`, 3 rounds) | 27B, 34 min, changes-requested: 3 findings reproduced and fixed, 1 rejected | already class-name-only, so it needed no `describe_exception` adoption and merged ahead of `w1-privacy`; suite 1734 -> 1804 |
-| `t13` | `225b8d6` | queued | edits `tests/test_no_silent_degradation.py` (allow-list count); expect a conflict with nothing else |
-| `t7` | `e2647a4` | queued | the `AudioEndpoint` Protocol grew `stop_playback()`, `playing`, and `close()` returns `EndpointCloseReport` - `t14`/`t15` briefs must say so; `audio/__init__` re-exports collide on `SAMPLE_RATE_HZ` |
-| `t5` | `807a459` | queued | `start`/`stop`/`status` verbs live; `DEFAULT_TARGET` is `embodiment.daemon.app:main` (t15) |
-| `t6` | `07ecb66` | 27B queued (commit 1 reviewed by the worker) | `websockets` imported lazily in `connect()`, so `tests/test_zero_deps.py` needed no edit; the plan's "declare aec_mode=aec and language=he" is met via the connect URL (lobes reads only `tools`, `tool_choice`, `language` from `session.update`; the operator confirmed no deviation record) |
+| `t13` | **merged** `59467ea` (`a5bb8e5`, 4 rounds) | 27B + worker, 49 min, changes-requested: 3 behavioural findings reproduced and fixed, 2 test gaps | suite 1963 -> 2091 |
+| `t7` | `e2647a4` | 27B + workers running | the `AudioEndpoint` Protocol grew `stop_playback()`, `playing`, and `close()` returns `EndpointCloseReport` - `t14`/`t15` briefs must say so; `audio/__init__` re-exports collide on `SAMPLE_RATE_HZ` |
+| `t5` | `060afe2` (adopted `describe_exception`, 25 sites) | queued | `start`/`stop`/`status` verbs live; `DEFAULT_TARGET` is `embodiment.daemon.app:main` (t15) |
+| `t6` | `e1a2509` (adopted, 9 sites; reason bound derived from `MAX_DESCRIPTION_CHARS`) | 27B queued | `websockets` imported lazily in `connect()`, so `tests/test_zero_deps.py` needed no edit; the plan's "declare aec_mode=aec and language=he" is met via the connect URL (lobes reads only `tools`, `tool_choice`, `language` from `session.update`; the operator confirmed no deviation record) |
 
 Also on `realtime/phase-b` since wave 1: `tests/conftest.py` repoints `TMPDIR` per test
 (tests from three tasks had been writing into the machine's real fallback state dir);
@@ -116,6 +116,30 @@ pre-integration base of the verified wave-2 branches, see embodiment#85) -> wave
 `realtime`; `audio/__init__` re-exports; `CLAUDE.md` code map and the "no verb starts
 anything" sentence, now false) -> wave review. Cleanup owed: `/tmp/embodiment-state-1000`
 and `/tmp/embodiment-state-fallback-*` are test debris (confirm no real daemon first).
+
+## Waves 3 and 4 — built on a throwaway base before wave 2 finished reviewing
+
+Integrator decision (embodiment#85): wave-3 and wave-4 branches start from
+`realtime/wave2-preint` / `realtime/wave3-preint`, throwaway merges of the verified
+wave-2 (then wave-3) heads, so the build does not idle behind the serial review lane.
+They merge into `phase-b` after the wave-2 branches, each merging `phase-b` in first. The
+bases are never merged and are deleted at the end.
+
+| Branch | Head | Verified how | Review |
+|--------|------|--------------|--------|
+| `t12` voice | `6f94519` (2 rounds) | probe against a HostEndpoint-shaped fake: barge-in after `speak()` returned, paced feature trace within 2% of wall clock, no `voice` key sent to the gateway | queued |
+| `t16` http | `cc82e43` (3 rounds) | served t17's real build with a real `Bus`; the dashboard connects through the guard in Chrome (cookie vouched for by `Sec-Fetch-Site: same-origin`; Chrome sends no `Origin` on a same-origin EventSource); the installed wheel resolves `embodiment/web/dist` | queued |
+| `t14` remote endpoint | `11e2832` (2 rounds) | real websockets client: six refusal paths close 1008 before any frame; first-message auth, the secret never on the URL (a correction of the brief) | queued |
+| `t17` web app | `3b9e621` (3 rounds) | built and opened in Chrome against a fixture SSE server and then the real t16 server; envelope unwrapped, honest recall default, install-secret cookie, Hebrew `dir="auto"` | queued |
+| `t20` tunnel verb | `1849b7e` (2 rounds) | ran the verb: dry-run only, `--apply` refused, `--tunnel-name` in both commands | queued |
+| `t19` packaging/CI | `075a31a` | `uv build` rebuilt `web/dist` through the hook, 8 files in the wheel, sdist clean, installed in a scratch venv; web build 3.4 s with a warm npm cache (cold registry unmeasured) | queued |
+| `t18` oscilloscope | `e934a16` (2 rounds) | Chrome: min/max envelope band, readouts by presence, hi-DPI, token colours; lobes site scripts cited verbatim at pin `d2690a5`; no browser-ear UI in v1 (operator: phone is control + text) | queued |
+| `t15` daemon | building | — | — |
+
+Reviewer harness since `9477de6`: the worker drafts the whole review and the 27B verifies
+only the cited lines (at most 12 tool calls). Before that, the 27B's wall time was its own
+re-reading at 80-120K tokens of context: t4b 40 min, t11 34 (unaided), t13 49 (one
+worker), w1-privacy-r2 39 (two workers); unaided it did not finish a 113 kB diff in 40.
 
 ## Carried forward — obligations later tasks inherit
 
