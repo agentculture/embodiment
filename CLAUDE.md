@@ -11,17 +11,17 @@ plan is built — a daemon, a dashboard and a voice.
 
 ### Honest status — read this before you plan work
 
-**The realtime app is being built on the branch `realtime/phase-b` and is
-partly merged there** (waves 1–2 and, of waves 3–4, the host audio endpoint,
-the HTTP surface, the inbound endpoint and the dashboard, each after its review
-and a device or browser probe). The daemon (`daemon/app.py`, t15) has run live
-on the rig — ~30 Hebrew turns with the operator through the reSpeaker, memory
-stored and recalled across a restart, the dashboard reviewed over Tailscale —
-but from its own worktree; on this branch it is not merged yet, so
-`embodiment start` here launches a target that does not exist. What `main`
-holds is the small core in the code map below and a CLI with introspection
-verbs only. The state table in `docs/plans/…-progress.md` is the live truth;
-decisions live on embodiment#85.
+**The realtime app is built on the branch `realtime/phase-b` and runs.** Every
+task of waves 1–4 is merged there, each after its own review and a probe on the
+device or in a browser; the daemon (`daemon/app.py`, t15) has run live on the
+rig from this tree — Hebrew turns with the operator through the reSpeaker,
+memory stored and recalled across a restart, barge-in, the dashboard reviewed
+on a phone over Tailscale — and `embodiment start` on this branch launches it.
+What `main` holds is still the small core and the introspection verbs until
+the PR lands. Not yet done: the wave review of the whole diff, `t21` (the human
+acceptance run, latency published as measured) and `t22` (release docs). The
+state table in `docs/plans/…-progress.md` is the live truth; decisions live on
+embodiment#85.
 
 - **Spec:** `docs/specs/2026-09-21-realtime-embodiment-app.md` — 50 claims, 33
   honesty conditions, after a rigorous `/challenge` pass.
@@ -295,7 +295,11 @@ embodiment/
                         pre-set from raw argv so parse-time errors honour --json
   cli/_errors.py        CliError{code,message,remediation} + exit-code policy
   cli/_output.py        emit_result / emit_error / emit_diagnostic
-  cli/_commands/        whoami, learn, explain, overview, doctor, cli, start, status, stop
+  cli/_commands/        whoami, learn, explain, overview, doctor, cli, start, status, stop, tunnel
+  daemon/app.py         the daemon: one ear, the ears session, session + memory + voice, the
+                        HTTP surface, close(deadline) with derived shares; degrade, never raise
+  voice.py              Voice.speak: sentences -> /v1/audio/speech -> endpoint, paced features
+  cli/_commands/tunnel  prints the cultureflare/cloudflared commands; never runs them
   explain/              catalog.py: markdown keyed by command-path tuples
 web/                    the dashboard (Vite/React/TS): live waveform, transcript,
                         degradations; fetch-streamed SSE with the secret in the
@@ -303,7 +307,7 @@ web/                    the dashboard (Vite/React/TS): live waveform, transcript
                         the wheel (t19)
 scripts/dual-review.sh  the local review harness: 35B worker drafts, 27B cortex
                         verifies cited lines; one review at a time (kept deliverable)
-tests/                  2700+ tests
+tests/                  3085 tests
 .claude/skills/         19 skills, all vendored (cite-don't-import)
 docs/skill-sources.md   provenance ledger + re-sync procedure
 docs/live-test-results/ only senses-grounding{.md,-probe.py}: the measured
@@ -311,13 +315,12 @@ docs/live-test-results/ only senses-grounding{.md,-probe.py}: the measured
 docs/plans/…-progress.md the redesign's running state: what merged, what each round found
 ```
 
-Still on their branches while this is written (merged in this order as their
-reviews land): `voice.py` (t12), `cli/_commands/tunnel.py` (t20), the packaging
-hook (t19), the oscilloscope (t18), and **`daemon/app.py` — the daemon itself
-(t15)**. Until t15 merges, `embodiment start` on this branch launches
-`embodiment.daemon.app:main`, which does not exist here yet; the daemon has run
-live only from t15's worktree. `turn.py`'s truncation proxy and `is_speakable`
-stay unmeasured against the real synthesiser until plan task `t21`.
+Also merged: `voice.py` (t12: sentence-by-sentence TTS, barge-in owned by the
+daemon, a bounded body read, redirects refused), `cli/_commands/tunnel.py`
+(t20: prints the provisioning commands, runs nothing), the packaging hook
+(t19), the oscilloscope and BrowserEar (t18), and **`daemon/app.py` — the
+daemon (t15)**. `turn.py`'s truncation proxy and `is_speakable` stay
+unmeasured against the real synthesiser until plan task `t21`.
 
 `start`, `status` and `stop` are the only verbs that touch a process; nothing
 under `cli/_commands/` reaches `embodiment.loop` directly — the daemon does.

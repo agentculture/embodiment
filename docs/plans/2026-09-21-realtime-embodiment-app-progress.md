@@ -18,8 +18,8 @@ under review, every wave-3/4 branch built and verified, the daemon's first live 
 | A — archive | `t1` `t2` | merged to `main` in #84 (0.15.0). Tag `archive/pre-realtime-0.14.0` = the archive commit's parent |
 | B wave 1 | `t3` `t4` `t8` `t9` `t10` | **merged on `realtime/phase-b`**, integrated. Two follow-ups from the wave review: `t4b` (bounded-log performance + accounting) **merged** `c81d40b`, 1734 tests; `w1-privacy` (no exception text in a record; a private store) built, verified, awaiting its review |
 | B wave 2 | `t5` `t6` `t7` `t11` `t13` | `t11` `9d25555`, `w1-privacy` `eac823f`, `t13` `59467ea`, `t5` `95e7f92`, `t6` `722056e` **merged**; `t7` rebuilt on subprocess audio (deviation `d4`), device-verified, under its second review; `t7` `3540a57` **merged** (10 rounds, 3 reviews; the last defect a first-poll race found on the device) |
-| B wave 3 | `t12` `t14` `t16` `t17` | `t16` `4517365`, `t14` `d6fca10`, `t17` `371065a` **merged on `realtime/phase-b`** (each rebased off its throwaway base, reviewed, probed); `t12` waits for its rerun review |
-| B wave 4 | `t15` `t18` `t19` `t20` | **built and verified**; the daemon (`t15`) ran its first full live turn on the rig under `grant run` |
+| B wave 3 | `t12` `t14` `t16` `t17` | `t16` `4517365`, `t14` `d6fca10`, `t17` `371065a` + `t17b` `be1d2a0`, `t12` `5355db6` **merged on `realtime/phase-b`** (each rebased off its throwaway base, reviewed, probed) |
+| B wave 4 | `t15` `t18` `t19` `t20` | `t20` `ed9d190`, `t19` `b58bd91`, `t18` `302db2f`, **`t15` `6aab47f`** merged on `realtime/phase-b` (t15 cherry-picked, 16 commits, live-driven under `grant run` before the merge) |
 | B wave 5 | `t21` live acceptance | not started — **needs the operator, at the microphone, in Hebrew** |
 | B wave 6 | `t22` release docs + the final PR | not started |
 
@@ -248,3 +248,5 @@ unposted); pushing `realtime/phase-b`.
 - **Review wall times** (delegate prompt, vs the 40-min baseline): t7r3 26, t16 17, t14 20,
   t17 28, t20 19; t12's review hung on a provider retry and is rerun after the chain. The
   worker's test-file citations were wrong in every review; the lead relocated by symbol.
+
+- **16:55 — waves 3–4 complete on `phase-b`** (`6aab47f`, suite 3085, vitest 355): `t12` `5355db6` (rerun review: bounded TTS read, redirects refused, spoken/unspoken state event, stall tolerance from the speech deadline), `t15` `6aab47f` (review approve with no findings; answering its seven questions found a mute lost across a handover and two unbounded waits, all closed; live drive by counters before the merge). All throwaway pre-integration branches deleted. Next: the wave review of the whole diff, `t21`, `t22`.
