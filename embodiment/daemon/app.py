@@ -752,11 +752,51 @@ def http_complete(
         {
             "content": message.get("content") or "",
             "reasoning": message.get("reasoning") or message.get("reasoning_content") or "",
-            "tool_calls": message.get("tool_calls") or [],
+            "tool_calls": _wire_tool_calls(message.get("tool_calls")),
             "prompt_tokens": usage.get("prompt_tokens") or 0,
             "completion_tokens": usage.get("completion_tokens") or 0,
         }
     )
+
+
+def _wire_tool_calls(raw: Any) -> list[dict[str, Any]]:
+    """OpenAI-shaped ``message.tool_calls`` -> the contract's flat shape.
+
+    The gateway sends ``{"id", "type", "function": {"name", "arguments"}}``
+    with ``arguments`` as a JSON *string*; :class:`~embodiment.contract.ToolCall`
+    reads ``{"id", "name", "arguments": {...}}``. Handed over unconverted, every
+    call arrived with an EMPTY name and no arguments — which the registry
+    records as ``tool-unknown`` — and nothing noticed while the registry was
+    empty. Found by the first clip probe after ``d7`` bound a tool.
+
+    Arguments that are not valid JSON become ``{}``: the tool then refuses on
+    its own vocabulary (``remember`` says ``empty``; any other tool raises a
+    ``TypeError`` for a missing argument, recorded as a failed step). Nothing
+    silent, and the turn survives. A call that is not a mapping is dropped,
+    as :meth:`ModelResponse.from_dict` already does.
+    """
+    calls: list[dict[str, Any]] = []
+    for call in raw if isinstance(raw, (list, tuple)) else []:
+        if not isinstance(call, dict):
+            continue
+        function = call.get("function")
+        source = function if isinstance(function, dict) else call
+        arguments = source.get("arguments")
+        if isinstance(arguments, str):
+            try:
+                arguments = json.loads(arguments) if arguments.strip() else {}
+            except ValueError:
+                arguments = {}
+        if not isinstance(arguments, dict):
+            arguments = {}
+        calls.append(
+            {
+                "id": str(call.get("id") or ""),
+                "name": str(source.get("name") or ""),
+                "arguments": arguments,
+            }
+        )
+    return calls
 
 
 class DaemonApp:

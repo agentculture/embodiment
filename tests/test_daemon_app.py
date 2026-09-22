@@ -3462,6 +3462,79 @@ class TestModelSeam:
         response = app_module.http_complete([], gateway_url="http://gateway.invalid")
         assert response.content == ""
 
+    def test_a_gateway_shaped_tool_call_keeps_its_name_and_parsed_arguments(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The first live clip probe after ``d7``: every call arrived nameless.
+
+        The gateway speaks the OpenAI shape (``function.name``, ``arguments``
+        as a JSON string); the contract reads a flat one. Unconverted, the
+        registry saw ``""`` and recorded ``tool-unknown`` on every turn.
+        """
+        self._capture(
+            monkeypatch,
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": None,
+                            "tool_calls": [
+                                {
+                                    "id": "call_1",
+                                    "type": "function",
+                                    "function": {
+                                        "name": "remember",
+                                        "arguments": '{"fact": "המפתח במגירה"}',
+                                    },
+                                }
+                            ],
+                        },
+                        "finish_reason": "tool_calls",
+                    }
+                ]
+            },
+        )
+        response = app_module.http_complete([], gateway_url="http://gateway.invalid")
+        assert response.content == ""
+        assert [(c.id, c.name, c.arguments) for c in response.tool_calls] == [
+            ("call_1", "remember", {"fact": "המפתח במגירה"})
+        ]
+
+    def test_unparseable_or_odd_tool_call_arguments_never_kill_the_reply(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._capture(
+            monkeypatch,
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {
+                                    "id": "a",
+                                    "function": {"name": "remember", "arguments": "{not json"},
+                                },
+                                {"id": "b", "function": {"name": "remember", "arguments": ""}},
+                                {
+                                    "id": "c",
+                                    "function": {"name": "remember", "arguments": "[1, 2]"},
+                                },
+                                {"id": "d", "name": "flat", "arguments": {"x": 1}},
+                                "not-a-call",
+                            ]
+                        }
+                    }
+                ]
+            },
+        )
+        response = app_module.http_complete([], gateway_url="http://gateway.invalid")
+        assert [(c.id, c.name, c.arguments) for c in response.tool_calls] == [
+            ("a", "remember", {}),
+            ("b", "remember", {}),
+            ("c", "remember", {}),
+            ("d", "flat", {"x": 1}),
+        ]
+
 
 class TestTheTailnetBind:
     """Round 8: the operator reviews the dashboard from a phone over Tailscale."""
