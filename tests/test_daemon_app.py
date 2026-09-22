@@ -35,7 +35,7 @@ import pytest
 from embodiment.audio.endpoint import EndpointCloseReport, NullEndpoint
 from embodiment.audio.features import FeatureExtractor
 from embodiment.bus import Bus
-from embodiment.contract import ModelResponse
+from embodiment.contract import ModelResponse, ToolCall
 from embodiment.daemon import app as app_module
 from embodiment.daemon.app import AppConfig, DaemonApp
 from embodiment.daemon.state import DaemonState
@@ -1779,6 +1779,250 @@ class TestSupersededTurns:
         assert h.app.status()["turns"]["superseded"] == 0
 
 
+class TestTheRememberTool:
+    """d7: remembering is the MODEL's to call, not a phrase the daemon matches.
+
+    Measured before this was written: with nothing in the prompt the model
+    called the tool on 3 of 5 spoken asks and with a bland one-sentence
+    mention also 3 of 5 — missing the operator's own words both times. With
+    the obligation this module ships it was 5 of 5 across two passes, 0 of 2
+    false positives.
+    """
+
+    FACT = "המפתח נמצא במגירה הכחולה"
+
+    def _tool_call(self, fact: object) -> ModelResponse:
+        return ModelResponse(
+            content="",
+            tool_calls=[
+                ToolCall(
+                    id="call-1",
+                    name="remember",
+                    arguments={"fact": fact},
+                )
+            ],
+        )
+
+    def _senses_that_calls_the_tool(self, fact: object, reply: str = REPLY) -> Any:
+        calls: list[int] = []
+
+        def senses(messages: list[dict[str, Any]], tools: Any = None) -> ModelResponse:
+            calls.append(len(messages))
+            if len(calls) == 1:
+                senses.saw_tools = tools  # type: ignore[attr-defined]
+                return self._tool_call(fact)
+            return ModelResponse(content=reply)
+
+        senses.saw_tools = None  # type: ignore[attr-defined]
+        return senses
+
+    def _store(self, tmp_path: Path) -> RoomMemory:
+        return RoomMemory(
+            tmp_path / "store", scope="gwen", added_by="gwen", embed_probe=lambda: False
+        )
+
+    def test_a_model_tool_call_writes_the_record_and_is_counted(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        memory = self._store(tmp_path)
+        senses = self._senses_that_calls_the_tool(self.FACT)
+        h = harness(memory=memory, complete=senses)
+        h.app.attach_ear("host", FakeEndpoint())
+        h.clear()
+
+        result = h.app.run_turn("תזכרי את כל זה")
+
+        # the record is in the private store. Parsed, not substring-matched:
+        # the store writes JSON with ensure_ascii, so Hebrew is escaped on disk.
+        files = [p for p in (tmp_path / "store").rglob("*") if p.is_file()]
+        assert files, "nothing was written"
+        contents = [
+            json.loads(line).get("content")
+            for path in files
+            for line in path.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assert self.FACT in contents
+        # the counters
+        memory_status = h.app.status()["memory"]
+        assert memory_status["remember_tool_calls"] == 1
+        assert memory_status["remember_tool_written"] == 1
+        assert memory_status["remember_tool_refused"] == 0
+        # the event: an id and counts, never the fact
+        states = [
+            e
+            for e in h.events("state")
+            if e.data.get("component") == "memory" and e.data.get("status") == "remembered"
+        ]
+        assert len(states) == 1
+        assert states[0].data["source"] == "tool"
+        assert states[0].data["record_id"]
+        assert self.FACT not in json.dumps(states[0].data, ensure_ascii=False)
+        # and the model spoke from the tool result
+        assert result.spoken == REPLY
+        assert "remember" in result.tool_calls
+
+    def test_the_schema_reaches_the_wire(self, harness: Any, tmp_path: Path) -> None:
+        """A registry the model was never shown is a tool that cannot be called."""
+        senses = self._senses_that_calls_the_tool(self.FACT)
+        h = harness(memory=self._store(tmp_path), complete=senses)
+        h.app.attach_ear("host", FakeEndpoint())
+        h.app.run_turn("תזכרי את כל זה")
+
+        offered = senses.saw_tools
+        assert offered, "no tool schema was sent to the model"
+        names = [t.get("function", {}).get("name") for t in offered]
+        assert names == ["remember"]
+        properties = offered[0]["function"]["parameters"]["properties"]
+        assert "fact" in properties
+
+    @pytest.mark.parametrize(
+        "fact,reason",
+        [
+            ("", "empty"),
+            ("   ", "empty"),
+            (None, "not-text"),
+            (17, "not-text"),
+            ("x" * (app_module.REMEMBER_FACT_MAX_CHARS + 1), "too-long"),
+        ],
+    )
+    def test_an_unusable_fact_is_refused_and_counted(
+        self, harness: Any, tmp_path: Path, fact: object, reason: str
+    ) -> None:
+        memory = self._store(tmp_path)
+        h = harness(memory=memory, complete=self._senses_that_calls_the_tool(fact))
+        h.app.attach_ear("host", FakeEndpoint())
+        h.clear()
+
+        h.app.run_turn("תזכרי את כל זה")
+
+        memory_status = h.app.status()["memory"]
+        assert memory_status["remember_tool_calls"] == 1
+        assert memory_status["remember_tool_written"] == 0
+        assert memory_status["remember_tool_refused"] == 1
+        assert app_module.APP_REMEMBER_REFUSED in h.ledger_codes()
+        states = [
+            e
+            for e in h.events("state")
+            if e.data.get("component") == "memory" and e.data.get("status") == "refused"
+        ]
+        assert states and states[-1].data["reason"] == reason
+        files = [p for p in (tmp_path / "store").rglob("*") if p.is_file()]
+        assert not files, "a refused fact reached the store"
+
+    def test_a_store_that_fails_is_refused_not_raised(self, harness: Any, tmp_path: Path) -> None:
+        class Failing:
+            store_permission_failures = 0
+            store_symlinks_skipped = 0
+            store_non_files_skipped = 0
+            store_root_is_symlink = False
+            pending = 0
+            abandoned_dropped = 0
+            scope = "gwen"
+            data_dir = "/dev/null"
+            last_recall_mode = None
+
+            def recall(self, *args: Any, **kwargs: Any) -> Any:
+                return SimpleNamespace(ok=True, records=[], mode="lexical", degradations=())
+
+            def remember(self, *args: Any, **kwargs: Any) -> Any:
+                raise RuntimeError("no store")
+
+            def close(self, deadline: float = 1.0) -> Any:
+                return SimpleNamespace(degradations=(), unconfirmed=())
+
+        h = harness(memory=Failing(), complete=self._senses_that_calls_the_tool(self.FACT))
+        h.app.attach_ear("host", FakeEndpoint())
+
+        assert h.app.run_turn("תזכרי את כל זה").spoken == REPLY
+        assert h.app.status()["memory"]["remember_tool_refused"] == 1
+        assert app_module.APP_REMEMBER_REFUSED in h.ledger_codes()
+
+    def test_the_tool_prompt_is_in_the_system_prompt(self, harness: Any, tmp_path: Path) -> None:
+        seen: list[str] = []
+
+        def senses(messages: list[dict[str, Any]], tools: Any = None) -> ModelResponse:
+            seen.append(messages[0]["content"])
+            return ModelResponse(content=REPLY)
+
+        h = harness(memory=self._store(tmp_path), complete=senses)
+        h.app.attach_ear("host", FakeEndpoint())
+        h.app.run_turn(SPEECH)
+        assert seen and app_module.REMEMBER_TOOL_PROMPT in seen[0]
+
+    def test_the_prompt_is_identical_whoever_is_speaking(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        """The tool sentence says what she may DO, never who she is."""
+        seen: list[str] = []
+
+        def senses(messages: list[dict[str, Any]], tools: Any = None) -> ModelResponse:
+            seen.append(messages[0]["content"])
+            return ModelResponse(content=REPLY)
+
+        for _ in range(2):
+            h = harness(memory=self._store(tmp_path), complete=senses)
+            h.app.attach_ear("host", FakeEndpoint())
+            h.app.run_turn(SPEECH)
+        assert len(seen) == 2
+        assert seen[0] == seen[1], "the prompt is not byte-identical between runs"
+
+    def test_the_tool_can_be_turned_off(self, harness: Any, tmp_path: Path) -> None:
+        seen: list[Any] = []
+
+        def senses(messages: list[dict[str, Any]], tools: Any = None) -> ModelResponse:
+            seen.append(tools)
+            return ModelResponse(content=REPLY)
+
+        h = harness(
+            memory=self._store(tmp_path),
+            complete=senses,
+            config=AppConfig(poll_interval_s=0.01, remember_tool=False),
+        )
+        h.app.attach_ear("host", FakeEndpoint())
+        h.app.run_turn(SPEECH)
+        assert seen[0] is None, "a disabled tool still reached the wire"
+
+    def test_the_spoken_detector_still_works_as_a_fallback(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        """Primary is the tool; the phrase stays, counted, for what it catches."""
+        memory = self._store(tmp_path)
+        h = harness(memory=memory)  # senses never calls the tool
+        h.app.attach_ear("host", FakeEndpoint())
+
+        h.app.run_turn("תזכרי שהמפתח נמצא במגירה הכחולה")
+
+        memory_status = h.app.status()["memory"]
+        assert memory_status["asks_detected"] == 1
+        assert memory_status["remembered"] == 1
+        assert memory_status["remember_tool_calls"] == 0
+        files = [p for p in (tmp_path / "store").rglob("*") if p.is_file()]
+        assert files
+
+    def test_no_fact_text_reaches_a_record_a_log_or_the_status(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        marker = "MARKERFACT4242"
+        h = harness(memory=self._store(tmp_path), complete=self._senses_that_calls_the_tool(marker))
+        h.app.attach_ear("host", FakeEndpoint())
+        h.clear()
+
+        h.app.run_turn("תזכרי את כל זה")
+
+        blob = json.dumps([r.to_dict() for r in h.state.ledger.read_all()], ensure_ascii=False)
+        assert marker not in blob
+        assert marker not in json.dumps(h.app.status(), ensure_ascii=False)
+        assert marker not in (Path(h.state.dir) / "embodiment.log").read_text(encoding="utf-8")
+        non_speech = [e.to_dict() for e in h.events() if e.kind not in ("transcript", "reply")]
+        assert marker not in json.dumps(non_speech, ensure_ascii=False)
+        # but it IS in the store, which is the whole point
+        body = "".join(
+            p.read_text(encoding="utf-8") for p in (tmp_path / "store").rglob("*") if p.is_file()
+        )
+        assert marker in body
+
+
 class TestTurnInstrumentation:
     """t21's two criteria, which the record could not answer before.
 
@@ -2850,7 +3094,7 @@ class TestStopWritesNothingToStderr:
 import asyncio, io, sys, threading
 from types import SimpleNamespace
 from embodiment.bus import Bus
-from embodiment.contract import ModelResponse
+from embodiment.contract import ModelResponse, ToolCall
 from embodiment.daemon.app import AppConfig, DaemonApp
 from embodiment.daemon.state import DaemonState
 from embodiment.memory import RoomMemory

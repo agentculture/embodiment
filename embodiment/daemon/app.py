@@ -129,7 +129,7 @@ from embodiment.memory import PRIVATE, RoomMemory, render_recalled
 from embodiment.perception import perceive
 from embodiment.realtime import wire
 from embodiment.realtime.client import RealtimeConfig, RealtimeEars
-from embodiment.session import Session
+from embodiment.session import ASK_RECORD_TYPE, Session
 from embodiment.tools import ToolRegistry, bind_tools
 from embodiment.turn import SYSTEM_PROMPT, TurnConfig, TurnResult
 from embodiment.turn import turn as run_one_turn
@@ -146,6 +146,10 @@ __all__ = [
     "APP_CAPTURE_FAILED",
     "APP_FRAMES_NO_SESSION",
     "APP_REPLY_SECRET_SCRUBBED",
+    "APP_REMEMBER_REFUSED",
+    "REMEMBER_TOOL_NAME",
+    "REMEMBER_TOOL_PROMPT",
+    "REMEMBER_FACT_MAX_CHARS",
     "REPLY_REDACTED",
     "RECENT_TURNS",
     "TurnTiming",
@@ -265,6 +269,38 @@ SUMMARY_MAX_TOKENS = 300
 #: narrow enough not to fire on ordinary speech.
 _ASK_STEMS: tuple[str, ...] = ("תזכר", "זכר", "remember", "don't forget", "dont forget")
 
+#: The tool the model calls to remember something, and the one sentence in
+#: the system prompt that makes it do so. **Measured on the rig before it was
+#: written** (deviation ``d7``): with nothing in the prompt the model called
+#: the tool on 3 of 5 spoken asks, with a bland one-sentence mention also 3 of
+#: 5 — and the two it missed were the operator's own words, "remember all of
+#: this" and "keep what I said", which is exactly the case the tool exists
+#: for. With the obligation below, including naming those phrasings and
+#: forbidding a bare confirmation, it called the tool on 5 of 5 across two
+#: passes with 0 of 2 false positives on ordinary questions. The extra
+#: sentences are not decoration: one bland sentence measured no better than
+#: saying nothing at all.
+REMEMBER_TOOL_NAME = "remember"
+REMEMBER_TOOL_DESCRIPTION = (
+    "Store one fact the user asked to be remembered, so it can be recalled in a "
+    "later conversation. Call this whenever the user asks you to remember, keep, "
+    "note or not forget something — however they phrase it."
+)
+REMEMBER_FACT_DESCRIPTION = (
+    "The fact to store, in the user's own words. When the user refers to what was "
+    "just said, write out what they meant."
+)
+REMEMBER_TOOL_PROMPT = (
+    "כשהמשתמש מבקש ממך לזכור, לשמור, לרשום או לא לשכוח משהו — בכל ניסוח, "
+    "כולל «תזכרי את כל זה» או «שמרי את מה שאמרתי» — עלייך לקרוא לכלי remember "
+    "עם העובדה, לפני שאת עונה. אל תאשרי שזכרת בלי לקרוא לכלי."
+)
+
+#: The longest fact the tool will store. A **judgement call**: a spoken fact
+#: is a sentence or two, and a model handing over a kilobyte has misunderstood
+#: what it was asked to keep rather than found something worth keeping.
+REMEMBER_FACT_MAX_CHARS = 2000
+
 #: How many turns' timings :meth:`DaemonApp.status` keeps, so a reader can
 #: compute a median and a p90 from status alone without a log pipeline. A
 #: **judgement call**: twenty is a few minutes of conversation, enough for a
@@ -360,6 +396,8 @@ APP_EAR_DETACH_FAILED = "app-ear-detach-failed"
 APP_CAPTURE_FAILED = "app-capture-failed"
 #: A captured frame arrived with no realtime session to send it to.
 APP_FRAMES_NO_SESSION = "app-frames-no-session"
+#: The model called ``remember`` with something that could not be stored.
+APP_REMEMBER_REFUSED = "app-remember-refused"
 #: A model reply or summary came back with a secret inside it and was
 #: scrubbed before it reached anything that keeps or speaks text.
 APP_REPLY_SECRET_SCRUBBED = "app-reply-secret-scrubbed"  # nosec B105 - a code, not a secret
@@ -466,6 +504,10 @@ class AppConfig:
     #: reason. Never carries a secret: the install secret goes in a header,
     #: never in a URL (``embodiment.audio.remote``'s own rule).
     realtime_ws_url: Optional[str] = None
+    #: Bind the ``remember`` tool into the turn. On by default: the operator's
+    #: decision (``d7``) is that remembering is the MODEL's to call, not a
+    #: phrase the daemon pattern-matches.
+    remember_tool: bool = True
     http_enabled: bool = True
     bind: str = "127.0.0.1"
     port: int = server_module.DEFAULT_PORT
@@ -743,6 +785,24 @@ class DaemonApp:
         self._bus = bus
         self._memory = memory
         self._tools = tools if tools is not None else ToolRegistry()
+        if self._config.remember_tool and REMEMBER_TOOL_NAME not in self._tools.specs:
+            # Registered BEFORE the seam is bound below, so the schema reaches
+            # the wire: bind_tools closes over the registry as it is, and
+            # turn.turn records a registry whose tools the model was never
+            # shown. The registry is otherwise empty by default, which is the
+            # package's own rule — this daemon binds exactly one tool.
+            self._tools.register(
+                REMEMBER_TOOL_NAME,
+                {
+                    "type": "object",
+                    "properties": {
+                        "fact": {"type": "string", "description": REMEMBER_FACT_DESCRIPTION}
+                    },
+                    "required": ["fact"],
+                },
+                self._remember_tool,
+                description=REMEMBER_TOOL_DESCRIPTION,
+            )
         self._complete = (
             complete
             if getattr(complete, "__embodiment_bound_registry__", None) is self._tools
@@ -806,6 +866,9 @@ class DaemonApp:
         self._turns_superseded = 0
         self._turns_dropped = 0
         self._turns_failed = 0
+        self._remember_tool_calls = 0
+        self._remember_tool_written = 0
+        self._remember_tool_refused = 0
         self._asks_detected = 0
         self._asks_remembered = 0
         self._asks_failed = 0
@@ -1764,7 +1827,12 @@ class DaemonApp:
         window = self._window(session)
         config = TurnConfig(
             role=self._config.role,
-            system_prompt=_compose_prompt(self._config.system_prompt, window, recalled),
+            system_prompt=_compose_prompt(
+                self._config.system_prompt,
+                window,
+                recalled,
+                tool_prompt=REMEMBER_TOOL_PROMPT if self._config.remember_tool else "",
+            ),
         )
         self._publish("turn", {"phase": "thinking", "step_count": 0})
         result = run_one_turn(spoken_in, self._complete, tools=self._tools, config=config)
@@ -1852,6 +1920,89 @@ class DaemonApp:
         either way, and can tell which kind it was.
         """
         self._publish("reply", {"text": text, "superseded": superseded})
+
+    def _remember_tool(self, fact: object = "", **_ignored: Any) -> str:
+        """The ``remember`` tool: the model's own way to keep a fact. Never raises.
+
+        The operator's decision (``d7``): "we can't have the exact «תזכרי ש»
+        as key — it needs to be the model calling that tool." The spoken
+        detector stays, counted, as a FALLBACK for the phrasings it does
+        match; this is the primary path, and it works on any phrasing the
+        model recognises as a request to remember.
+
+        Writes through the same :class:`~embodiment.memory.RoomMemory` the
+        detector used — the private store, deadline-bounded — so there is one
+        kind of "the user asked me to keep this" in the store rather than two
+        that a later reader has to reconcile.
+
+        Returns a short structured line the model can speak from. It carries
+        the record id and never the fact: the model already has the fact, and
+        a tool result is one more place text could leak from.
+        """
+        with self._lock:
+            self._remember_tool_calls += 1
+        text = fact if isinstance(fact, str) else ""
+        stripped = text.strip()
+        if not isinstance(fact, str):
+            return self._refuse_remember("not-text")
+        if not stripped:
+            return self._refuse_remember("empty")
+        if len(stripped) > REMEMBER_FACT_MAX_CHARS:
+            return self._refuse_remember("too-long")
+        try:
+            result = self._memory.remember(
+                stripped,
+                visibility=PRIVATE,
+                record_type=ASK_RECORD_TYPE,
+                added_by=self._config.added_by,
+            )
+        except Exception as exc:  # noqa: BLE001 - memory is a seam; a turn never dies on it
+            self._record(APP_REMEMBER_REFUSED, f"store: {_describe(exc)}")
+            return self._refuse_remember("store-failed", recorded=True)
+        if not getattr(result, "ok", False):
+            degradation = getattr(result, "degradation", None)
+            if degradation is not None:
+                self._fold("memory", degradation)
+            return self._refuse_remember("store-refused", recorded=True)
+        record_id = _safe_record_id(getattr(result, "record_id", ""))
+        with self._lock:
+            self._remember_tool_written += 1
+            written = self._remember_tool_written
+        self._publish(
+            "state",
+            {
+                "component": "memory",
+                "status": "remembered",
+                "record_id": record_id,
+                "remembered": written,
+                "source": "tool",
+            },
+        )
+        return f"ok: stored as {record_id}" if record_id else "ok: stored"
+
+    def _refuse_remember(self, reason: str, *, recorded: bool = False) -> str:
+        """Count a refusal, say so on the bus, and tell the model why. Never text.
+
+        *reason* is a fixed token from this method's own vocabulary, never
+        anything the model supplied — the fact itself is exactly what must not
+        reach a record, a log or an event.
+        """
+        with self._lock:
+            self._remember_tool_refused += 1
+            refused = self._remember_tool_refused
+        if not recorded:
+            self._record(APP_REMEMBER_REFUSED, reason)
+        self._publish(
+            "state",
+            {
+                "component": "memory",
+                "status": "refused",
+                "reason": _safe_name(reason),
+                "refused": refused,
+                "source": "tool",
+            },
+        )
+        return f"refused: {reason}"
 
     def _note_ask(self, session: Any, text: str) -> None:
         """Add the user turn and COUNT what the explicit-ask path did with it.
@@ -2682,6 +2833,9 @@ class DaemonApp:
             },
             "memory": {
                 **_memory_status(self._memory),
+                "remember_tool_calls": self._remember_tool_calls,
+                "remember_tool_written": self._remember_tool_written,
+                "remember_tool_refused": self._remember_tool_refused,
                 "asks_detected": self._asks_detected,
                 "remembered": self._asks_remembered,
                 "remember_failed": self._asks_failed,
@@ -2727,7 +2881,12 @@ def _as_seam(complete: Callable[..., Any]) -> Callable[..., Any]:
     return seam
 
 
-def _compose_prompt(base: str, window: list[dict[str, str]], recalled: str) -> str:
+def _compose_prompt(
+    base: str,
+    window: list[dict[str, str]],
+    recalled: str,
+    tool_prompt: str = "",
+) -> str:
     """The system prompt for ONE turn: the base, the window, then recalled memory.
 
     Recall enters here and nowhere else — :func:`embodiment.memory.render_recalled`
@@ -2735,6 +2894,11 @@ def _compose_prompt(base: str, window: list[dict[str, str]], recalled: str) -> s
     because that text is the caller's own words, verbatim (the verbatim invariant).
     """
     parts = [base]
+    if tool_prompt:
+        # Fixed text, identical for every caller and every identity, so the
+        # absent-identity byte-identity rule is untouched: this says what the
+        # model may DO, never who it is.
+        parts.append(tool_prompt)
     if window:
         lines = [WINDOW_HEADER]
         for message in window:
