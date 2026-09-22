@@ -2,55 +2,95 @@ import type { EventEnvelope } from "../api/events";
 
 export interface RecallModeIndicatorProps {
   degradations: EventEnvelope<"degradation">[];
+  /** `status()["recall"]["mode"]`, seeded from `GET /api/status` on
+   *  connect (round 5) -- `null` before the daemon has ever completed a
+   *  recall call this process, `"lexical"` or `"semantic"` after. This is
+   *  a REAL daemon-reported value, not inferred. */
+  seededMode?: string | null;
+  /** `status()["recall"]["configured_mode"]` (round 6) -- what recall is
+   *  CONFIGURED to do (`AppConfig.recall_mode`, default `"keyword"`),
+   *  always present once seeded. Shown only as a fallback while
+   *  `seededMode` is still null, so the operator sees what WILL happen
+   *  rather than a bare "unknown". */
+  configuredMode?: string | null;
 }
 
-export type RecallMode = "unknown" | "semantic" | "lexical-fallback";
+export type RecallMode = "unknown" | "semantic" | "lexical" | "lexical-fallback";
 
 /**
- * Inferred, not authoritative: the bus schema (schema.json) has no
- * dedicated "recall mode" kind today, so this reads the same degradation
- * stream everything else does. CLAUDE.md's C3 names the known trap
- * directly — "eidetic falls back to lexical recall SILENTLY when the
- * embedder is down ... so the daemon must report the recall mode actually
- * in effect" — this component is the dashboard's best-effort surface of
- * that until a daemon task (t16 or later) emits an explicit event.
+ * Round 5 correction: the live daemon (`embodiment/daemon/app.py`, read
+ * directly, not assumed) folds recall-related degradations with
+ * `source="memory"` (`self._fold("memory", degradation)`), never
+ * `"continuity"` — the committed bus fixture (`tests/fixtures/events/
+ * degradation.json`, t13's own example) happens to use `"continuity"` as
+ * its sample value, which is a valid source for OTHER kinds of
+ * degradation but not what this daemon's memory/recall path actually
+ * publishes. `inferRecallMode` now matches `source === "memory"`.
  *
- * Round 2 correction: the default used to be "semantic" — that asserted
- * the BETTER state with no evidence for it, which is exactly backwards on
- * this rig, where the embedder is not ready (CLAUDE.md's rig table:
- * `embedder` — "not ready") and recall is lexical-only *today*, silently,
- * unless something reports otherwise. The honest default before any signal
- * has arrived is "unknown", not a guess dressed as a positive claim.
+ * `seededMode` (new in round 5) is the first REAL, non-inferred signal
+ * this indicator has ever had: `status()["recall"]["mode"]`, read once
+ * per connect via `GET /api/status` (`useEventStream.ts`'s
+ * `refreshStatus`). Before that seed lands, or when the daemon has never
+ * completed a recall call yet, the honest state is still "unknown" — this
+ * is NOT the round-2 mistake of defaulting to "semantic" with no
+ * evidence; `seededMode` is either a real reported value or `null`, never
+ * guessed.
  *
- * "semantic" is reachable only via a POSITIVE signal that the embedder is
- * up — no such event exists in the schema yet, so `inferRecallMode` never
- * returns "semantic" in v1; this is a real state the type keeps room for
- * once a daemon task adds that signal, not a state this build can reach.
- * "lexical-fallback" is the one degraded state this build can detect: the
- * most recent `degradation` event whose `source` is "continuity".
+ * A live "lexical-fallback" signal (a `memory`-sourced degradation) always
+ * wins over the seeded mode: a degradation is fresher, stronger evidence
+ * that something is currently wrong than a one-time snapshot taken at
+ * connect time.
  */
-export function inferRecallMode(degradations: EventEnvelope<"degradation">[]): RecallMode {
-  const latestContinuity = [...degradations]
+export function inferRecallMode(
+  degradations: EventEnvelope<"degradation">[],
+  seededMode: string | null = null,
+): RecallMode {
+  const latestMemoryDegradation = [...degradations]
     .reverse()
-    .find((entry) => entry.data.source === "continuity");
-  if (latestContinuity) return "lexical-fallback";
+    .find((entry) => entry.data.source === "memory");
+  if (latestMemoryDegradation) return "lexical-fallback";
+  if (seededMode === "semantic") return "semantic";
+  if (seededMode === "lexical") return "lexical";
   return "unknown";
 }
 
 const LABEL: Record<RecallMode, string> = {
   unknown: "recall: unknown",
   semantic: "recall: semantic",
+  lexical: "recall: lexical",
   "lexical-fallback": "recall: lexical fallback",
 };
 
-export function RecallModeIndicator({ degradations }: RecallModeIndicatorProps) {
-  const mode = inferRecallMode(degradations);
+/**
+ * The rendered label. Round 6: "unknown" (no recall call has completed
+ * yet, and nothing is degraded) is honest but unhelpful on a daemon the
+ * operator just started — `status()["recall"]["configured_mode"]` is
+ * ALWAYS present (`AppConfig.recall_mode`, default `"keyword"`), so in
+ * exactly that gap this shows what recall WILL do once it runs, labelled
+ * "(configured)" so it is never confused with a real completed-call
+ * result. Any other mode (a real seeded value, or the live
+ * "lexical-fallback" degradation signal) is shown as-is — configuredMode
+ * never overrides a real signal, only fills the true unknown gap.
+ */
+export function recallModeLabel(mode: RecallMode, configuredMode: string | null = null): string {
+  if (mode === "unknown" && configuredMode) {
+    return `recall: ${configuredMode} (configured)`;
+  }
+  return LABEL[mode];
+}
+
+export function RecallModeIndicator({
+  degradations,
+  seededMode = null,
+  configuredMode = null,
+}: RecallModeIndicatorProps) {
+  const mode = inferRecallMode(degradations, seededMode);
   return (
     <span
       data-recall-mode={mode}
-      title="inferred from the degradation stream, not an authoritative daemon signal"
+      title="seeded from GET /api/status on connect; refined live by memory-sourced degradations"
     >
-      {LABEL[mode]}
+      {recallModeLabel(mode, configuredMode)}
     </span>
   );
 }

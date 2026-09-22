@@ -25,7 +25,7 @@
 // never silent — a status field that looked "connected" because *something*
 // arrived would hide a dead daemon whose heartbeat loop crashed).
 
-import { useEffect, useMemo, useReducer, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "react";
 import {
   type ClientsData,
   type DegradationData,
@@ -44,6 +44,7 @@ import {
 } from "../api/events";
 import { connectSSE } from "../api/sseFetchReader";
 import type { SSEConnect } from "./sseConnection";
+import { fetchStatus, type StatusEnvelopeResponse } from "../api/control";
 
 export type ConnectionStatus = "connecting" | "connected" | "disconnected" | "unauthorized";
 
@@ -73,6 +74,27 @@ export interface EventStreamSnapshot {
    *  `data` not itself an object) — lesson 3: a bounded buffer counts what
    *  it drops, a dropped frame is never silently invisible. */
   droppedFrames: number;
+  /** `status()["recall"]["mode"]`, seeded from `GET /api/status` (round
+   *  5). `null` before the first successful seed, or if the daemon itself
+   *  has never completed a recall call. A REAL daemon-reported value, not
+   *  inferred — see RecallModeIndicator.tsx. */
+  recallStatusMode: string | null;
+  /** `status()["recall"]["configured_mode"]` (round 6) -- what recall is
+   *  CONFIGURED to do (`AppConfig.recall_mode`, default `"keyword"`),
+   *  always present once seeded, unlike `recallStatusMode` which stays
+   *  null until the first completed recall call. Lets the indicator show
+   *  what WILL happen rather than a bare "unknown" in that gap. */
+  recallConfiguredMode: string | null;
+  /**
+   * Re-fetch `GET /api/status` and reseed `mic`/`clients`/`recallStatusMode`
+   * from it. Called automatically on every successful (re)connect; the
+   * caller (App.tsx) also calls it after a control POST resolves 200, so
+   * Start/Stop/Mute's outcome is visible immediately from a fresh read
+   * rather than waiting on (or duplicating trust in) the live event the
+   * daemon separately publishes for the same change. Never throws: a
+   * failed refresh leaves the existing state alone.
+   */
+  refreshStatus: () => Promise<void>;
 }
 
 interface DataState {
@@ -84,6 +106,8 @@ interface DataState {
   transcript: EventEnvelope<"transcript" | "reply">[];
   degradations: EventEnvelope<"degradation">[];
   droppedFrames: number;
+  recallStatusMode: string | null;
+  recallConfiguredMode: string | null;
 }
 
 const INITIAL_DATA: DataState = {
@@ -95,6 +119,8 @@ const INITIAL_DATA: DataState = {
   transcript: [],
   degradations: [],
   droppedFrames: 0,
+  recallStatusMode: null,
+  recallConfiguredMode: null,
 };
 
 type Action =
@@ -105,7 +131,8 @@ type Action =
   | { type: "clients"; envelope: EventEnvelope<"clients">; data: ClientsData }
   | { type: "speech"; envelope: EventEnvelope<"transcript" | "reply">; data: TranscriptData | ReplyData }
   | { type: "degradation"; envelope: EventEnvelope<"degradation">; data: DegradationData }
-  | { type: "dropped" };
+  | { type: "dropped" }
+  | { type: "recallStatusMode"; mode: string | null; configuredMode: string | null };
 
 function reducer(prev: DataState, action: Action): DataState {
   switch (action.type) {
@@ -131,10 +158,19 @@ function reducer(prev: DataState, action: Action): DataState {
     }
     case "dropped":
       return { ...prev, droppedFrames: prev.droppedFrames + 1 };
+    case "recallStatusMode":
+      return { ...prev, recallStatusMode: action.mode, recallConfiguredMode: action.configuredMode };
     default:
       return prev;
   }
 }
+
+/** `GET /api/status`'s fetcher, as an injectable seam so tests never need a
+ *  real network call. Defaults to `api/control.ts`'s `fetchStatus`. */
+export type FetchStatusFn = (
+  secret: string,
+  options?: { basePath?: string; fetchFn?: typeof fetch },
+) => Promise<StatusEnvelopeResponse>;
 
 export interface UseEventStreamOptions {
   /** Test/DI seam: defaults to the fetch-based `connectSSE`. */
@@ -152,6 +188,8 @@ export interface UseEventStreamOptions {
    * re-applying the identical secret value still forces a reconnect.
    */
   reconnectKey?: unknown;
+  /** Test/DI seam: defaults to `api/control.ts`'s `fetchStatus`. */
+  fetchStatusFn?: FetchStatusFn;
 }
 
 export function useEventStream(
@@ -159,7 +197,13 @@ export function useEventStream(
   secret: string,
   options: UseEventStreamOptions = {},
 ): EventStreamSnapshot {
-  const { connect = connectSSE, nowFn = Date.now, checkIntervalMs = 1000, reconnectKey } = options;
+  const {
+    connect = connectSSE,
+    nowFn = Date.now,
+    checkIntervalMs = 1000,
+    reconnectKey,
+    fetchStatusFn = fetchStatus,
+  } = options;
 
   const [data, dispatch] = useReducer(reducer, INITIAL_DATA);
   const [opened, setOpened] = useState(false);
@@ -171,6 +215,16 @@ export function useEventStream(
 
   const urlRef = useRef(url);
   urlRef.current = url;
+
+  // The latest connection attempt's own status-seeding function, so
+  // `refreshStatus` (below, stable across renders) always calls the seed
+  // for the CURRENT secret/connection rather than a stale one captured at
+  // an earlier render.
+  const seedFromStatusRef = useRef<() => Promise<void>>(async () => {});
+
+  const refreshStatus = useCallback(async () => {
+    await seedFromStatusRef.current();
+  }, []);
 
   useEffect(() => {
     setOpened(false);
@@ -187,6 +241,68 @@ export function useEventStream(
     let everOpened = false;
 
     const headers: Record<string, string> = secret ? { Authorization: `Bearer ${secret}` } : {};
+
+    // Round 5 [LIVE, MAJOR]: a viewer who connects after the ear was
+    // already attached/muted/etc. receives no snapshot over SSE, only
+    // FUTURE changes — mic/clients/recall stayed "unknown" forever. This
+    // reads embodiment/daemon/app.py's real `status()` (via `GET
+    // /api/status`) and reseeds mic/clients/recallStatusMode from it,
+    // exactly once per call, on every successful (re)connect and again
+    // whenever the caller invokes `refreshStatus()` (App.tsx does, after a
+    // control POST resolves 200).
+    const seedFromStatus = async () => {
+      try {
+        const response = await fetchStatusFn(secret);
+        const daemon = response?.daemon;
+        if (!daemon) return;
+        const nowIso = new Date(nowFn()).toISOString();
+        if (daemon.ear) {
+          const ear = daemon.ear.active ?? null;
+          const hot = ear !== null && !daemon.ear.muted;
+          const micData: MicData = { hot, ear };
+          dispatch({
+            type: "mic",
+            envelope: {
+              v: 1,
+              kind: "mic",
+              ts: nowIso,
+              seq: -1,
+              source: "http-status-seed",
+              data: micData,
+            },
+            data: micData,
+          });
+        }
+        if (daemon.clients) {
+          const clientsData: ClientsData = {
+            count: daemon.clients.count,
+            remote: daemon.clients.remote,
+          };
+          dispatch({
+            type: "clients",
+            envelope: {
+              v: 1,
+              kind: "clients",
+              ts: nowIso,
+              seq: -1,
+              source: "http-status-seed",
+              data: clientsData,
+            },
+            data: clientsData,
+          });
+        }
+        dispatch({
+          type: "recallStatusMode",
+          mode: daemon.recall?.mode ?? null,
+          configuredMode: daemon.recall?.configured_mode ?? null,
+        });
+      } catch {
+        // GET /api/status failing is not fatal to an already-open stream —
+        // the seed simply doesn't happen this time; existing state (and
+        // whatever live events keep arriving) is left alone.
+      }
+    };
+    seedFromStatusRef.current = seedFromStatus;
 
     const handleFrame = (frame: { kind: string; data: string }) => {
       // Round 2 fix, still true under the new transport: `frame.data` is
@@ -259,6 +375,7 @@ export function useEventStream(
         setOpenedAtMs(nowFn());
         setErroredClosed(false);
         setUnauthorized(false);
+        void seedFromStatus();
       },
       onError: () => {
         if (everOpened) {
@@ -305,6 +422,9 @@ export function useEventStream(
     degradations: data.degradations,
     lastHeartbeatAtMs,
     droppedFrames: data.droppedFrames,
+    recallStatusMode: data.recallStatusMode,
+    recallConfiguredMode: data.recallConfiguredMode,
+    refreshStatus,
   };
 }
 

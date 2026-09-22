@@ -1,0 +1,93 @@
+{
+  "daemon": {
+    "running": true,
+    "closed": false,
+    "ear": {
+      "active": "host",
+      "kind": "SounddeviceEndpoint",
+      "degraded": false,
+      "generation": 1,
+      "handovers": 0,
+      "refusals": 0,
+      "preempt_policy": true,
+      "sample_rate": 24000,
+      "warmups": 1,
+      "warmup_failures": 0,
+      "declared_sample_rate": 24000,
+      "sessions": 1,
+      "redials": 0,
+      "muted": false,
+      "endpoint": {}
+    },
+    "clients": { "count": 1, "remote": 1 },
+    "transcripts": { "received": 0, "empty_commits": 0, "not_text": 0 },
+    "turns": {
+      "completed": 0,
+      "in_flight": 0,
+      "superseded": 0,
+      "dropped": 0,
+      "failed": 0,
+      "queued": 0
+    },
+    "audio": {
+      "frames_captured": 0,
+      "frames_forwarded": 0,
+      "frames_from_stale_ear": 0,
+      "frames_dropped_no_session": 0,
+      "stale_frame_tolerance": 2
+    },
+    "recall": {
+      "mode": "lexical",
+      "calls": 1,
+      "hits_total": 0,
+      "last_hits": 0,
+      "rendered_total": 0,
+      "empty_total": 1,
+      "deadline_exceeded": 0,
+      "errors": 0,
+      "lexical_fallback_hits": 0,
+      "deadline_s": 2.0,
+      "configured_mode": "keyword",
+      "semantic": false
+    },
+    "memory": {
+      "asks_detected": 0,
+      "remembered": 0,
+      "remember_failed": 0,
+      "remember_deferred": 0,
+      "ask_not_detected": 0,
+      "summary_attempted": 0,
+      "summary_written": 0,
+      "summary_skip_reason": null
+    },
+    "session": {},
+    "ears": {},
+    "voice": {},
+    "http": { "streams_open": 1 },
+    "bus": { "degradation_counts": {}, "hook_errors": 0 },
+    "state": {},
+    "degradations": {},
+    "publish_errors": 0,
+    "ledger_errors": 0
+  },
+  "http": {
+    "bind": "100.127.105.72",
+    "port": 8823,
+    "public_bind": true,
+    "dashboard": "present",
+    "include_speech": true,
+    "max_streams": 8,
+    "streams_open": 1,
+    "controls_inflight": 0,
+    "control_timeout_s": 5.0,
+    "closed": false,
+    "stopping": false,
+    "degradations": [],
+    "degradation_counts": {},
+    "degradations_dropped": 0,
+    "hook_errors": 0,
+    "configured_bind": "100.127.105.72",
+    "allowed_hosts": 1,
+    "secure_context_required": true
+  }
+}
