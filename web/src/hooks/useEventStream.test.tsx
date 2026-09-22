@@ -35,6 +35,20 @@ function setUp() {
   return { result, unmount, source };
 }
 
+function setUpWithReconnectKey(initialKey: number) {
+  FakeEventSource.reset();
+  const { result, rerender, unmount } = renderHook(
+    ({ reconnectKey }: { reconnectKey: number }) =>
+      useEventStream("/api/events", {
+        eventSourceFactory: (url: string) => new FakeEventSource(url) as unknown as EventSource,
+        reconnectKey,
+      }),
+    { initialProps: { reconnectKey: initialKey } },
+  );
+  const source = FakeEventSource.latest();
+  return { result, rerender, unmount, source };
+}
+
 describe("useEventStream", () => {
   beforeEach(() => {
     vi.useFakeTimers();
@@ -299,5 +313,84 @@ describe("useEventStream", () => {
         expect(result.current.droppedFrames).toBe(0);
       });
     }
+  });
+
+  // Round 3 item #1: t16's guard refuses GET /api/events until the
+  // embodiment_secret cookie is set; the app sets that cookie only after
+  // the operator submits the secret, which happens strictly after this
+  // hook's own connect effect has already fired once. EventSource has no
+  // "reconnect now" method, so a `reconnectKey` option lets the caller force
+  // a close+reopen without touching `url`.
+  describe("reconnectKey — forcing a reconnect after the secret cookie is set", () => {
+    it("opens a fresh EventSource when reconnectKey changes", () => {
+      const { rerender } = setUpWithReconnectKey(0);
+      expect(FakeEventSource.instances).toHaveLength(1);
+      rerender({ reconnectKey: 1 });
+      expect(FakeEventSource.instances).toHaveLength(2);
+    });
+
+    it("closes the previous EventSource when reconnecting", () => {
+      const { rerender } = setUpWithReconnectKey(0);
+      const first = FakeEventSource.latest();
+      rerender({ reconnectKey: 1 });
+      expect(first.closed).toBe(true);
+    });
+
+    it("does NOT reconnect merely on re-render when reconnectKey is unchanged", () => {
+      const { rerender } = setUpWithReconnectKey(0);
+      rerender({ reconnectKey: 0 });
+      rerender({ reconnectKey: 0 });
+      expect(FakeEventSource.instances).toHaveLength(1);
+    });
+
+    it("resets status to connecting on the new connection until it opens", () => {
+      const { result, rerender, source } = setUpWithReconnectKey(0);
+      act(() => source.open());
+      expect(result.current.status).toBe("connected");
+      rerender({ reconnectKey: 1 });
+      expect(result.current.status).toBe("connecting");
+    });
+  });
+
+  // Round 3 item #1: distinguish "never got to open at all" (very likely the
+  // guard refusing the secret -- REFUSED_SECRET_CODE / status 401) from
+  // "was connected, then the connection dropped" (a real disconnect). The
+  // browser's EventSource never exposes an HTTP status code to JS, so this
+  // is the best signal available: an error before the FIRST successful open.
+  describe("unauthorized vs disconnected (round 3 item #1)", () => {
+    it("reports 'unauthorized' when the connection errors before ever opening", () => {
+      const { result, source } = setUp();
+      act(() => source.error());
+      expect(result.current.status).toBe("unauthorized");
+    });
+
+    it("reports 'disconnected', not 'unauthorized', when the connection opened first and then errored", () => {
+      const { result, source } = setUp();
+      act(() => {
+        source.open();
+        source.error();
+      });
+      expect(result.current.status).toBe("disconnected");
+    });
+
+    it("reports 'disconnected', not 'unauthorized', once the heartbeat stops after a successful open", () => {
+      const { result, source } = setUp();
+      act(() => {
+        source.open();
+        source.emit("heartbeat", heartbeatFixture);
+        vi.advanceTimersByTime(DISCONNECTED_AFTER_MS + 1000);
+      });
+      expect(result.current.status).toBe("disconnected");
+    });
+
+    it("clears 'unauthorized' once a reconnect actually opens", () => {
+      const { result, rerender, source: firstSource } = setUpWithReconnectKey(0);
+      act(() => firstSource.error());
+      expect(result.current.status).toBe("unauthorized");
+      rerender({ reconnectKey: 1 });
+      const secondSource = FakeEventSource.latest();
+      act(() => secondSource.open());
+      expect(result.current.status).toBe("connected");
+    });
   });
 });

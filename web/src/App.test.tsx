@@ -1,4 +1,4 @@
-import { act, render, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
 import { FakeEventSource } from "./hooks/fakeEventSource";
@@ -23,13 +23,14 @@ function envelope(kind: string, data: Record<string, unknown>, seq = 1) {
   return { v: 1, kind, ts: "2026-09-22T12:00:00.000Z", seq, source: "app://embodiment", data };
 }
 
-function renderApp() {
+function renderApp(cookieWriter?: (cookieString: string) => void) {
   FakeEventSource.reset();
   render(
     <App
       eventStreamOptions={{
         eventSourceFactory: (url: string) => new FakeEventSource(url) as unknown as EventSource,
       }}
+      installSecretOptions={cookieWriter ? { cookieWriter, protocol: "http:" } : { protocol: "http:" }}
     />,
   );
   return FakeEventSource.latest();
@@ -38,10 +39,12 @@ function renderApp() {
 describe("App — every state from the committed event fixtures", () => {
   beforeEach(() => {
     vi.useFakeTimers();
+    sessionStorage.clear();
   });
 
   afterEach(() => {
     vi.useRealTimers();
+    sessionStorage.clear();
   });
 
   it("renders the connecting state before the stream opens", () => {
@@ -235,6 +238,77 @@ describe("App — every state from the committed event fixtures", () => {
     // exact symptom the round-2 report described.
     expect(screen.queryByText(/user:/)).toBeNull();
     expect(screen.queryByText(/\?:/)).toBeNull();
+  });
+
+  // Round 3 item #1: t16's guard (embodiment/http/guard.py) accepts the
+  // install secret as the `embodiment_secret` cookie for GET /api/events,
+  // since EventSource cannot set a header. Entering the secret and applying
+  // it must write that exact cookie shape and force a reconnect.
+  it("writes the embodiment_secret cookie and reconnects the EventSource when the operator applies the secret", () => {
+    const writer = vi.fn();
+    renderApp(writer);
+    expect(FakeEventSource.instances).toHaveLength(1);
+
+    fireEvent.change(screen.getByLabelText("install secret"), {
+      target: { value: "s3cr3t-value" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+
+    expect(writer).toHaveBeenCalledWith("embodiment_secret=s3cr3t-value; Path=/; SameSite=Strict");
+    // a NEW EventSource was opened -- the only "reconnect now" EventSource
+    // supports is close the old one and construct a new one.
+    expect(FakeEventSource.instances.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it("persists the applied secret to sessionStorage, not localStorage", () => {
+    renderApp(vi.fn());
+    fireEvent.change(screen.getByLabelText("install secret"), {
+      target: { value: "s3cr3t-value" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    expect(sessionStorage.getItem("embodiment.installSecret")).toBe("s3cr3t-value");
+    expect(localStorage.getItem("embodiment.installSecret")).toBeNull();
+  });
+
+  it("shows 'not authorised' rather than 'disconnected' when the stream errors before ever opening", () => {
+    const source = renderApp();
+    act(() => source.error());
+    expect(screen.getByRole("status")).toHaveAttribute("data-status", "unauthorized");
+    expect(screen.getByRole("status")).toHaveTextContent("not authorised");
+  });
+
+  it("still shows plain 'disconnected' (not 'not authorised') once it had opened successfully first", () => {
+    const source = renderApp();
+    act(() => {
+      source.open();
+      source.error();
+    });
+    expect(screen.getByRole("status")).toHaveAttribute("data-status", "disconnected");
+  });
+
+  // Brief's explicit ask: a Hebrew transcript line renders dir="auto" with
+  // the text present verbatim -- Hebrew is the spoken language (CLAUDE.md).
+  it("renders a Hebrew transcript event with dir=\"auto\" and the text verbatim", () => {
+    const source = renderApp();
+    const hebrewText = "מה מזג האוויר היום";
+    act(() => {
+      source.open();
+      source.emit(
+        "transcript",
+        envelope("transcript", { role: "user", text: hebrewText }),
+      );
+    });
+    const line = screen.getByText(hebrewText);
+    expect(line).toBeInTheDocument();
+    expect(line.closest("[dir]")).toHaveAttribute("dir", "auto");
+    expect(line.textContent).toContain(hebrewText);
+  });
+
+  it("renders the waveform as the first panel after the header (centrepiece)", () => {
+    renderApp();
+    const panels = document.querySelectorAll(".panel");
+    expect(panels.length).toBeGreaterThan(0);
+    expect(panels[0].querySelector("svg.waveform")).not.toBeNull();
   });
 
   it("renders all fixtures together end to end without throwing", () => {

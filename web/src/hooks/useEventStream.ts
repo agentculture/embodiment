@@ -35,7 +35,7 @@ import {
   parseEnvelopeFrame,
 } from "../api/events";
 
-export type ConnectionStatus = "connecting" | "connected" | "disconnected";
+export type ConnectionStatus = "connecting" | "connected" | "disconnected" | "unauthorized";
 
 /** How many speech-log / degradation-log entries to keep. Chosen, not
  *  measured — a round number generous enough for a single sitting, bounded
@@ -134,6 +134,17 @@ export interface UseEventStreamOptions {
   /** How often to re-check the heartbeat deadline. Chosen, not measured —
    *  1s is fine granularity for a UI status pill. */
   checkIntervalMs?: number;
+  /**
+   * Round 3: bump this (any value that changes by `!==`) to force the
+   * current EventSource closed and a fresh one opened, without changing
+   * `url`. EventSource has no "reconnect now" method of its own, and t16's
+   * guard (embodiment/http/guard.py) refuses `GET /api/events` until the
+   * `embodiment_secret` cookie is set — which happens strictly after this
+   * hook's connect effect already fired once on mount. The caller (App.tsx)
+   * bumps this after writing the cookie so the stream actually reconnects
+   * with the credential now present.
+   */
+  reconnectKey?: unknown;
 }
 
 function defaultFactory(url: string): EventSource {
@@ -144,7 +155,12 @@ export function useEventStream(
   url: string,
   options: UseEventStreamOptions = {},
 ): EventStreamSnapshot {
-  const { eventSourceFactory = defaultFactory, nowFn = Date.now, checkIntervalMs = 1000 } = options;
+  const {
+    eventSourceFactory = defaultFactory,
+    nowFn = Date.now,
+    checkIntervalMs = 1000,
+    reconnectKey,
+  } = options;
 
   const [data, dispatch] = useReducer(reducer, INITIAL_DATA);
   const [opened, setOpened] = useState(false);
@@ -152,6 +168,7 @@ export function useEventStream(
   const [openedAtMs, setOpenedAtMs] = useState<number | null>(null);
   const [now, setNow] = useState<number>(() => nowFn());
   const [erroredClosed, setErroredClosed] = useState(false);
+  const [unauthorized, setUnauthorized] = useState(false);
 
   const urlRef = useRef(url);
   urlRef.current = url;
@@ -161,18 +178,31 @@ export function useEventStream(
     setOpened(false);
     setOpenedAtMs(null);
     setErroredClosed(false);
+    setUnauthorized(false);
+    // Reset per connection attempt: whether THIS EventSource has ever
+    // fired onopen. An error before the first successful open is the best
+    // signal this API gives for "the guard refused the credential" (t16's
+    // guard.py returns 401 for a missing/bad secret; EventSource exposes no
+    // HTTP status to JS at all — see round 3's report).
+    let everOpened = false;
 
     source.onopen = () => {
+      everOpened = true;
       setOpened(true);
       setOpenedAtMs(nowFn());
       setErroredClosed(false);
+      setUnauthorized(false);
     };
     source.onerror = () => {
       // readyState 2 (CLOSED) means the browser gave up retrying; anything
       // else means it is already reconnecting on its own — either way,
       // report the fault rather than staying silently "connected".
       if (source.readyState === 2 /* CLOSED */) {
-        setErroredClosed(true);
+        if (everOpened) {
+          setErroredClosed(true);
+        } else {
+          setUnauthorized(true);
+        }
       }
     };
 
@@ -253,10 +283,10 @@ export function useEventStream(
       }
       source.close();
     };
-    // `url` is the only prop that should reopen the connection; the other
-    // options are DI seams a caller passes once.
+    // `url` and `reconnectKey` are the only things that should reopen the
+    // connection; the other options are DI seams a caller passes once.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [url]);
+  }, [url, reconnectKey]);
 
   useEffect(() => {
     const id = setInterval(() => setNow(nowFn()), checkIntervalMs);
@@ -264,13 +294,14 @@ export function useEventStream(
   }, [nowFn, checkIntervalMs]);
 
   const status: ConnectionStatus = useMemo(() => {
+    if (unauthorized) return "unauthorized";
     if (erroredClosed) return "disconnected";
     if (!opened) return "connecting";
     const baseline = lastHeartbeatAtMs ?? openedAtMs;
     if (baseline === null) return "connected";
     if (now - baseline >= DISCONNECTED_AFTER_MS) return "disconnected";
     return "connected";
-  }, [erroredClosed, opened, lastHeartbeatAtMs, openedAtMs, now]);
+  }, [unauthorized, erroredClosed, opened, lastHeartbeatAtMs, openedAtMs, now]);
 
   return {
     status,

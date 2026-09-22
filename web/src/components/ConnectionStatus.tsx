@@ -4,6 +4,7 @@ const LABEL: Record<Status, string> = {
   connecting: "connecting",
   connected: "connected",
   disconnected: "disconnected",
+  unauthorized: "not authorised",
 };
 
 export function ConnectionStatus({ status }: { status: Status }) {
