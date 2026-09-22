@@ -6,7 +6,11 @@ module LISTENS as a server, so a browser tab (or, later, a robot relay
 speaking the same wire) can be Gwen's ears and mouth. It satisfies the same
 :class:`~embodiment.audio.endpoint.AudioEndpoint` protocol
 :mod:`embodiment.audio.host` does, so the daemon composing endpoints can swap
-one for the other without touching anything above this seam.
+one for the other without touching anything above this seam. It also
+duck-types the protocol's read-only ``sample_rate`` member added on
+``realtime/t7`` (840b751), reporting a fixed 24000 — deliberately NOT merged
+into this branch for that, since the protocol's own member test binds only
+once both branches land on ``phase-b``.
 
 v1 ships no robot support
 --------------------------
@@ -191,6 +195,19 @@ SECRET_QUERY_PARAM = "secret"  # nosec B105 - a parameter name, not a password
 #: enough that a connection that never authenticates is not held open
 #: indefinitely.
 _DEFAULT_AUTH_DEADLINE_S = 5.0
+
+#: The rate :attr:`RemoteEndpoint.sample_rate` reports — what
+#: :meth:`AudioEndpoint.start_capture`'s ``on_frame`` callback actually
+#: receives from THIS endpoint. Unlike :class:`~embodiment.audio.host.HostEndpoint`
+#: (which resamples from whatever rate the device negotiates and reports that
+#: chosen rate), this endpoint never resamples: a browser encodes
+#: ``input_audio_buffer.append`` at the fixed wire contract rate
+#: (:data:`~embodiment.realtime.wire.INPUT_SAMPLE_RATE`, itself
+#: :data:`~embodiment.audio.endpoint.SAMPLE_RATE_HZ`), and what
+#: :meth:`_on_append` hands ``on_frame`` is that base64 payload decoded
+#: byte-for-byte — so the delivered rate IS the wire rate, always, not a
+#: measurement.
+_REMOTE_SAMPLE_RATE_HZ = SAMPLE_RATE_HZ
 
 #: How long :meth:`RemoteEndpoint.attach` waits for the server thread to
 #: confirm it is listening (or has failed) before giving up and recording
@@ -759,6 +776,20 @@ class RemoteEndpoint:
     @property
     def playing(self) -> bool:
         return self._playing
+
+    @property
+    def sample_rate(self) -> int:
+        """The rate frames reach ``on_frame`` at: always :data:`_REMOTE_SAMPLE_RATE_HZ`.
+
+        Duck-typed against the ``AudioEndpoint`` protocol's read-only
+        ``sample_rate`` member (added on ``realtime/t7``, not merged into
+        this branch — see the module docstring). Not measured: this endpoint
+        never resamples, so the delivered rate is the declared wire rate by
+        construction, the same way :class:`~embodiment.audio.endpoint.NullEndpoint`
+        reports :data:`~embodiment.audio.endpoint.SAMPLE_RATE_HZ` rather than
+        a measurement of anything.
+        """
+        return _REMOTE_SAMPLE_RATE_HZ
 
     async def _sender_loop(self) -> None:
 

@@ -758,3 +758,12 @@ class TestProtocolConformance:
         ep = _endpoint()
         assert isinstance(ep, AudioEndpoint)
         ep.close(2.0)
+
+    def test_sample_rate_is_24000(self) -> None:
+        """Pins t14 round 3: the browser delivers pcm16 already at the fixed
+        24 kHz wire rate, never resampled — so ``sample_rate`` reports exactly
+        that, not a measurement (duck-typed against ``realtime/t7``'s protocol
+        member, not merged into this branch)."""
+        ep = _endpoint()
+        assert ep.sample_rate == 24000
+        ep.close(2.0)
