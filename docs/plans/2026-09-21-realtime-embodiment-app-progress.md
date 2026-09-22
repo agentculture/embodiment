@@ -87,7 +87,7 @@ into each merge message.
 
 | Branch | Verified commit | Review | Notes |
 |--------|-----------------|--------|-------|
-| `w1-privacy` | `bbbf23c` (3 commits) | 27B timed out empty at 40 min (116 kB diff, still reading); re-queued at 60 min | merge once read; then every unmerged wave-2 branch adopts `safe_reason.describe_exception` |
+| `w1-privacy` | **merged** `eac823f` (`027cb1c`, 4 rounds) | 27B alone timed out at 40 min; with worker delegation 39 min, changes-requested: 3 MAJORs reproduced and fixed (symlinked store root followed; `safe_detail` free text; continuity reasons trusted as literals) | `describe_exception(declared_codes=)` replaces `allow_detail`; tools declare fault codes at registration; suite 1804 -> 1963 |
 | `t11` | **merged** `9d25555` (`b8d4b2a`, 3 rounds) | 27B, 34 min, changes-requested: 3 findings reproduced and fixed, 1 rejected | already class-name-only, so it needed no `describe_exception` adoption and merged ahead of `w1-privacy`; suite 1734 -> 1804 |
 | `t13` | `225b8d6` | queued | edits `tests/test_no_silent_degradation.py` (allow-list count); expect a conflict with nothing else |
 | `t7` | `e2647a4` | queued | the `AudioEndpoint` Protocol grew `stop_playback()`, `playing`, and `close()` returns `EndpointCloseReport` - `t14`/`t15` briefs must say so; `audio/__init__` re-exports collide on `SAMPLE_RATE_HZ` |
@@ -109,9 +109,10 @@ unaided (116 kB, timed out). On the one diff both read, the 27B found every work
 finding plus three more, all reproduced. **Strictly one review at a time**: six at once
 starved the rig and all timed out empty.
 
-**Merge order:** `t11` (done) -> `w1-privacy` -> each remaining wave-2 branch merges
+**Merge order:** `t11`, `w1-privacy` (done) -> each remaining wave-2 branch merges
 `realtime/phase-b` in, adopts `describe_exception` via its own agent, re-runs its probe
--> `t13`, `t5`, `t6`, `t7` -> wave-2 integration commit (`embodiment/__init__._SUBMODULES` += `bus`, `session`,
+-> `t13`, `t5`, `t6`, `t7` -> wave 3 (`t12`, `t16`, `t14`, `t17`, built on a throwaway
+pre-integration base of the verified wave-2 branches, see embodiment#85) -> wave-2 integration commit (`embodiment/__init__._SUBMODULES` += `bus`, `session`,
 `realtime`; `audio/__init__` re-exports; `CLAUDE.md` code map and the "no verb starts
 anything" sentence, now false) -> wave review. Cleanup owed: `/tmp/embodiment-state-1000`
 and `/tmp/embodiment-state-fallback-*` are test debris (confirm no real daemon first).
