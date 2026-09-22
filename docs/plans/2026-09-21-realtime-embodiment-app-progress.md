@@ -87,8 +87,8 @@ into each merge message.
 
 | Branch | Verified commit | Review | Notes |
 |--------|-----------------|--------|-------|
-| `w1-privacy` | `bbbf23c` (3 commits) | 27B running | merge next; then every wave-2 branch adopts `safe_reason.describe_exception` |
-| `t11` | `7f31162` | queued | |
+| `w1-privacy` | `bbbf23c` (3 commits) | 27B timed out empty at 40 min (116 kB diff, still reading); re-queued at 60 min | merge once read; then every unmerged wave-2 branch adopts `safe_reason.describe_exception` |
+| `t11` | **merged** `9d25555` (`b8d4b2a`, 3 rounds) | 27B, 34 min, changes-requested: 3 findings reproduced and fixed, 1 rejected | already class-name-only, so it needed no `describe_exception` adoption and merged ahead of `w1-privacy`; suite 1734 -> 1804 |
 | `t13` | `225b8d6` | queued | edits `tests/test_no_silent_degradation.py` (allow-list count); expect a conflict with nothing else |
 | `t7` | `e2647a4` | queued | the `AudioEndpoint` Protocol grew `stop_playback()`, `playing`, and `close()` returns `EndpointCloseReport` - `t14`/`t15` briefs must say so; `audio/__init__` re-exports collide on `SAMPLE_RATE_HZ` |
 | `t5` | `807a459` | queued | `start`/`stop`/`status` verbs live; `DEFAULT_TARGET` is `embodiment.daemon.app:main` (t15) |
@@ -101,14 +101,17 @@ machine-global path) after a `t6` agent read the gateway key from `~/.lobes/.env
 live dial (the value was found nowhere afterwards).
 
 **Reviewer, by the operator's word (no deviation record):** the 27B `cortex` alone,
-`DUAL_REVIEW_REVIEWERS` default `qwen27`, now with a `worker` subagent it can delegate
-to (`~/.qwen/agents/worker.md`). On the one diff both read, the 27B found every worker
+`DUAL_REVIEW_REVIEWERS` default `qwen27`, with a `worker` subagent it can delegate to
+(`~/.qwen/agents/worker.md`; plan mode refused the `agent` tool until
+`--allowed-tools=agent` was added, and the prompt must then go through `-p`). Wall
+times so far: `t4b` 40 min (64 kB), `t11` 34 min unaided (75 kB), `w1-privacy` >40 min
+unaided (116 kB, timed out). On the one diff both read, the 27B found every worker
 finding plus three more, all reproduced. **Strictly one review at a time**: six at once
 starved the rig and all timed out empty.
 
-**Merge order:** `w1-privacy` -> each wave-2 branch merges `realtime/phase-b` in, adopts
-`describe_exception` via its own agent, re-runs its probe -> `t13`, `t11`, `t5`, `t6`,
-`t7` -> wave-2 integration commit (`embodiment/__init__._SUBMODULES` += `bus`, `session`,
+**Merge order:** `t11` (done) -> `w1-privacy` -> each remaining wave-2 branch merges
+`realtime/phase-b` in, adopts `describe_exception` via its own agent, re-runs its probe
+-> `t13`, `t5`, `t6`, `t7` -> wave-2 integration commit (`embodiment/__init__._SUBMODULES` += `bus`, `session`,
 `realtime`; `audio/__init__` re-exports; `CLAUDE.md` code map and the "no verb starts
 anything" sentence, now false) -> wave review. Cleanup owed: `/tmp/embodiment-state-1000`
 and `/tmp/embodiment-state-fallback-*` are test debris (confirm no real daemon first).
