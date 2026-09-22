@@ -9,6 +9,25 @@ string; it never imports ``subprocess`` and never calls ``os.system`` or any
 ``os.exec*``/``os.spawn*`` function, so there is no code path here that could
 ever spawn ``cultureflare`` or ``cloudflared``.
 
+A printed command is only honest if a paste of it does what it says. Round 3
+closed a MAJOR found in review: ``--hostname``/``--allow``/``--tunnel-name``
+values were joined into the printed line with a bare ``" ".join`` and no
+charset check, so ``--tunnel-name 'a; touch pwned'`` printed a second shell
+command after a semicolon. Two independent layers now hold, on purpose:
+``--hostname`` (RFC-1123 labels), ``--allow`` (one ``@``, no whitespace) and
+``--tunnel-name`` ([A-Za-z0-9._-]) are rejected at argument-parsing time
+(:func:`_hostname_type`, :func:`_email_type`, :func:`_tunnel_name_type`) if
+they fall outside a safe charset — the CLI's own structured error contract
+(``error:``/``hint:``, exit 1) refuses them before a :class:`TunnelPlan` ever
+exists; and every token in a *rendered* command line is
+``shlex.quote``-d (:func:`_quoted_line`) regardless, so a value that ever
+reached :func:`build_plan`/:func:`_render` by some other path than the
+registered argparse flags — a direct caller of this module, for instance —
+still prints as inert quoted text rather than a second command. The two
+argv-list fields on :class:`TunnelPlan` (``setup_command``/``run_command``)
+stay unquoted: they are structured data for a JSON consumer, not a shell
+string, and quoting them would corrupt the literal argv a script wants back.
+
 What it prints
 --------------
 1. ``cultureflare remote-login setup --hostname <h> --service
@@ -33,6 +52,8 @@ protects (only the public hostname) and how the daemon
 from __future__ import annotations
 
 import argparse
+import re
+import shlex
 from dataclasses import dataclass
 from typing import Optional
 
@@ -59,6 +80,72 @@ DEFAULT_HOSTNAME = "agent.culture.dev"
 #: running step 2. Angle-bracketed so it reads as a placeholder, not a literal
 #: cloudflared tunnel name.
 TUNNEL_NAME_PLACEHOLDER = "<tunnel-name-from-step-1>"
+
+# ── input validation (round 3) ───────────────────────────────────────────────
+# Charsets are deliberately narrow: every character a real hostname, email or
+# cloudflared tunnel name needs, and nothing a shell would ever treat
+# specially. This is the FIRST of two independent layers — see the module
+# docstring; :func:`_quoted_line` is the second and holds even if a value ever
+# reaches :func:`build_plan` some other way.
+
+#: One RFC-1123 label: letters/digits, interior hyphens only, 1-63 chars.
+_HOSTNAME_LABEL = r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?"
+_HOSTNAME_RE = re.compile(rf"^{_HOSTNAME_LABEL}(?:\.{_HOSTNAME_LABEL})*$")
+#: RFC 1035/1123 caps the whole name at 253 octets.
+_MAX_HOSTNAME_LEN = 253
+
+#: Deliberately narrower than RFC 5322: one ``@``, no whitespace, a
+#: hostname-shaped domain. Good enough to keep a pasted command inert; this is
+#: not an email-deliverability validator.
+_EMAIL_RE = re.compile(rf"^[A-Za-z0-9][A-Za-z0-9._%+-]*@{_HOSTNAME_LABEL}(?:\.{_HOSTNAME_LABEL})+$")
+_MAX_EMAIL_LEN = 254
+
+#: cultureflare's own tunnel-name charset — letters, digits, dot, underscore,
+#: hyphen. No spaces, no shell metacharacters, nothing quoting has to fight.
+_TUNNEL_NAME_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+#: A **judgement call**: generous headroom over any real tunnel name, bounding
+#: an absurd value rather than picking a number cultureflare itself documents.
+_MAX_TUNNEL_NAME_LEN = 255
+
+
+def _hostname_type(value: str) -> str:
+    """argparse ``type=`` for ``--hostname``: RFC-1123 labels only."""
+    if not value or len(value) > _MAX_HOSTNAME_LEN or not _HOSTNAME_RE.match(value):
+        raise argparse.ArgumentTypeError(
+            f"not a valid hostname (RFC-1123 labels: letters, digits, hyphens, dots "
+            f"only, max {_MAX_HOSTNAME_LEN} chars): {value!r}"
+        )
+    return value
+
+
+def _email_type(value: str) -> str:
+    """argparse ``type=`` for ``--allow``: exactly one ``@``, no whitespace."""
+    if not value or len(value) > _MAX_EMAIL_LEN or not _EMAIL_RE.match(value):
+        raise argparse.ArgumentTypeError(
+            f"not a valid --allow email (exactly one '@', no whitespace, a "
+            f"hostname-shaped domain, max {_MAX_EMAIL_LEN} chars): {value!r}"
+        )
+    return value
+
+
+def _tunnel_name_type(value: str) -> str:
+    """argparse ``type=`` for ``--tunnel-name``: cultureflare's own charset."""
+    if not value or len(value) > _MAX_TUNNEL_NAME_LEN or not _TUNNEL_NAME_RE.match(value):
+        raise argparse.ArgumentTypeError(
+            f"not a valid --tunnel-name (letters, digits, '.', '_', '-' only, max "
+            f"{_MAX_TUNNEL_NAME_LEN} chars): {value!r}"
+        )
+    return value
+
+
+def _quoted_line(command: tuple[str, ...]) -> str:
+    """A command line safe to paste: every token individually ``shlex.quote``-d.
+
+    The second, independent defence (see the module docstring): holds even for
+    a value that reached :func:`build_plan` by some path other than the
+    registered, charset-validated argparse flags.
+    """
+    return " ".join(shlex.quote(part) for part in command)
 
 
 @dataclass(frozen=True)
@@ -141,12 +228,12 @@ def _render(plan: TunnelPlan) -> str:
         "yourself; provisioning is the operator's act, never this verb's.",
         "",
         "1) one-time provisioning (tunnel + DNS + Cloudflare Access app):",
-        "     " + " ".join(plan.setup_command),
+        "     " + _quoted_line(plan.setup_command),
         "   this only PRINTS by default; re-run cultureflare remote-login setup ... "
         "--apply yourself once you have read what it would do.",
         "",
         "2) run the tunnel, after step 1 has actually been applied:",
-        "     " + " ".join(plan.run_command),
+        "     " + _quoted_line(plan.run_command),
     ]
     if plan.tunnel_name is None:
         lines.append(
@@ -191,8 +278,12 @@ def register(sub: argparse._SubParsersAction) -> None:
     )
     p.add_argument(
         "--hostname",
+        type=_hostname_type,
         default=DEFAULT_HOSTNAME,
-        help=f"Public hostname to provision (default: {DEFAULT_HOSTNAME}).",
+        help=(
+            f"Public hostname to provision (default: {DEFAULT_HOSTNAME}). "
+            "RFC-1123 labels only (letters, digits, hyphens, dots)."
+        ),
     )
     p.add_argument(
         "--port",
@@ -203,18 +294,21 @@ def register(sub: argparse._SubParsersAction) -> None:
     p.add_argument(
         "--allow",
         action="append",
+        type=_email_type,
         default=None,
         metavar="EMAIL",
-        help="Email to allow via Cloudflare Access (repeatable).",
+        help="Email to allow via Cloudflare Access (repeatable). Exactly one '@', no whitespace.",
     )
     p.add_argument(
         "--tunnel-name",
+        type=_tunnel_name_type,
         default=None,
         metavar="NAME",
         help=(
-            "Tunnel name for both commands (cultureflare's own --tunnel-name). Omit it "
-            f"and step 2 prints {TUNNEL_NAME_PLACEHOLDER} — cultureflare derives the name "
-            "itself in step 1, and this verb will not guess it."
+            "Tunnel name for both commands (cultureflare's own --tunnel-name; letters, "
+            "digits, '.', '_', '-' only). Omit it and step 2 prints "
+            f"{TUNNEL_NAME_PLACEHOLDER} — cultureflare derives the name itself in step 1, "
+            "and this verb will not guess it."
         ),
     )
     p.add_argument(

@@ -143,6 +143,15 @@ It prints two commands and runs neither:
    step 2 prints `<tunnel-name-from-step-1>` with a line saying to read the
    real name off step 1's own output before running it.
 
+**A printed command is only honest if pasting it does what it says.**
+`--hostname` (RFC-1123 labels), `--allow` (exactly one `@`, no whitespace) and
+`--tunnel-name` (`[A-Za-z0-9._-]` only) are refused at parse time — a
+structured `error:`/`hint:` and exit `1` — if they fall outside that charset,
+and every token of a printed command line is `shlex.quote`-d regardless. So
+`embodiment tunnel --tunnel-name 'a; touch pwned'` is refused outright, and
+even a value that somehow bypassed that check would still print as one inert
+quoted token, never a second shell command.
+
 **What Cloudflare Access protects, and what it does not.** Access sits in
 front of exactly one thing: requests arriving for the **public hostname**
 named by `--hostname`. It never gates loopback names (`localhost`,

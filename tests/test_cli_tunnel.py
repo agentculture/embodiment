@@ -8,6 +8,11 @@ Covers the three acceptance criteria verbatim:
    and how the daemon validates the assertion.
 3. the verb never invokes ``cultureflare`` with ``--apply`` (structural AST
    scan + behavioural monkeypatch of every process-spawning primitive).
+
+Round 3 adds the review fix: a value outside a safe charset for
+``--hostname``/``--allow``/``--tunnel-name`` is refused at parse time, and
+every printed command line is ``shlex.quote``-d regardless (two independent
+layers — see ``embodiment/cli/_commands/tunnel.py``'s module docstring).
 """
 
 from __future__ import annotations
@@ -15,13 +20,14 @@ from __future__ import annotations
 import ast
 import json
 import os
+import shlex
 import subprocess
 from pathlib import Path
 
 import pytest
 
 from embodiment.cli import main
-from embodiment.cli._commands.tunnel import TUNNEL_NAME_PLACEHOLDER
+from embodiment.cli._commands.tunnel import TUNNEL_NAME_PLACEHOLDER, _render, build_plan
 from embodiment.explain.catalog import ENTRIES
 from embodiment.http.server import DEFAULT_PORT
 
@@ -41,7 +47,7 @@ def test_tunnel_text_prints_setup_and_run_commands(capsys: pytest.CaptureFixture
         f"cultureflare remote-login setup --hostname agent.culture.dev "
         f"--service http://127.0.0.1:{DEFAULT_PORT}" in out
     )
-    assert f"cloudflared tunnel run {TUNNEL_NAME_PLACEHOLDER}" in out
+    assert f"cloudflared tunnel run {shlex.quote(TUNNEL_NAME_PLACEHOLDER)}" in out
 
 
 def test_tunnel_default_hostname_and_port_come_from_named_constants(
@@ -112,7 +118,7 @@ def test_tunnel_run_command_uses_placeholder_when_tunnel_name_absent(
     rc = main(["tunnel"])
     out = capsys.readouterr().out
     assert rc == 0
-    assert f"cloudflared tunnel run {TUNNEL_NAME_PLACEHOLDER}" in out
+    assert f"cloudflared tunnel run {shlex.quote(TUNNEL_NAME_PLACEHOLDER)}" in out
     # One line explaining where the placeholder's value comes from.
     assert "step 1" in out
     assert "tunnel name" in out.lower()
@@ -155,6 +161,151 @@ def test_tunnel_placeholder_is_stable_and_not_derived_from_hostname(
     assert payload_one["run_command"][-1] == TUNNEL_NAME_PLACEHOLDER
     assert payload_two["run_command"][-1] == TUNNEL_NAME_PLACEHOLDER
     assert payload_one["run_command"][-1] == payload_two["run_command"][-1]
+
+
+def _assert_structured_user_error(capsys: pytest.CaptureFixture[str], argv: list[str]) -> None:
+    with pytest.raises(SystemExit) as exc:
+        main(argv)
+    assert exc.value.code == 1
+    err = capsys.readouterr().err
+    assert err.startswith("error:")
+    assert "hint:" in err
+
+
+# --- round 3: charset validation refuses shell metacharacters --------------
+
+
+def test_tunnel_reproduces_reported_attack_is_refused(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # The exact repro from the round-2 review: a paste of the printed command
+    # used to do something else. Both offending flags must now be refused.
+    _assert_structured_user_error(
+        capsys,
+        ["tunnel", "--tunnel-name", "a; touch pwned", "--allow", "x y@example.com"],
+    )
+
+
+@pytest.mark.parametrize(
+    "bad_hostname",
+    [
+        "evil.com; touch pwned",
+        "evil.com && touch pwned",
+        "$(touch pwned)",
+        "`touch pwned`",
+        "evil.com|touch pwned",
+        "evil.com\ttouch pwned",
+        "evil.com\ntouch pwned",
+        "-evil.com",  # leading hyphen label
+        "evil-.com",  # trailing hyphen label
+        "a" * 300,  # too long
+        "",
+    ],
+)
+def test_tunnel_rejects_hostname_outside_rfc1123_charset(
+    capsys: pytest.CaptureFixture[str], bad_hostname: str
+) -> None:
+    if bad_hostname == "":
+        # argparse treats an empty string as a present-but-empty value, not a
+        # missing one, so this still goes through the type= validator.
+        _assert_structured_user_error(capsys, ["tunnel", "--hostname", bad_hostname])
+    else:
+        _assert_structured_user_error(capsys, ["tunnel", "--hostname", bad_hostname])
+
+
+@pytest.mark.parametrize(
+    "bad_email",
+    [
+        "x y@example.com",  # whitespace
+        "noatsign.example.com",  # no '@'
+        "a@b@example.com",  # two '@'
+        "a@example.com; touch pwned",
+        "a@example.com\ntouch pwned",
+        "`touch pwned`@example.com",
+        "a@",  # empty domain
+        "@example.com",  # empty local part
+    ],
+)
+def test_tunnel_rejects_allow_email_outside_safe_charset(
+    capsys: pytest.CaptureFixture[str], bad_email: str
+) -> None:
+    _assert_structured_user_error(capsys, ["tunnel", "--allow", bad_email])
+
+
+@pytest.mark.parametrize(
+    "bad_name",
+    [
+        "a; touch pwned",
+        "a && touch pwned",
+        "$(touch pwned)",
+        "`touch pwned`",
+        "a|touch pwned",
+        "a touch pwned",  # bare space
+        "a\ttouch pwned",
+        "a\ntouch pwned",
+        "a" * 300,  # too long
+        "",
+    ],
+)
+def test_tunnel_rejects_tunnel_name_outside_safe_charset(
+    capsys: pytest.CaptureFixture[str], bad_name: str
+) -> None:
+    _assert_structured_user_error(capsys, ["tunnel", "--tunnel-name", bad_name])
+
+
+def test_tunnel_valid_values_still_accepted_after_validation(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    rc = main(
+        [
+            "tunnel",
+            "--hostname",
+            "gwen.example.org",
+            "--allow",
+            "me@example.com",
+            "--allow",
+            "team@sub.example.co.uk",
+            "--tunnel-name",
+            "gwen-tunnel.v1_2",
+            "--json",
+        ]
+    )
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["hostname"] == "gwen.example.org"
+    assert payload["allow"] == ["me@example.com", "team@sub.example.co.uk"]
+    assert payload["tunnel_name"] == "gwen-tunnel.v1_2"
+
+
+def test_tunnel_render_quotes_every_token_of_both_command_lines() -> None:
+    # Second, independent defence: even a value that could never reach here
+    # through the validated CLI flags must still render shell-safe if it
+    # reaches build_plan()/_render() directly (e.g. a future caller of this
+    # module that bypasses argparse). Round-trip through shlex.split proves
+    # the printed line is quoted, not a bare space-join.
+    plan = build_plan(
+        hostname="safe.example.org",
+        port=8823,
+        allow=("x y@example.com; touch pwned",),
+        with_service_token=False,
+        tunnel_name="a; touch pwned",
+    )
+    text = _render(plan)
+    setup_line = next(
+        line for line in text.splitlines() if line.strip().startswith("cultureflare")
+    ).strip()
+    run_line = next(
+        line for line in text.splitlines() if line.strip().startswith("cloudflared")
+    ).strip()
+    assert tuple(shlex.split(setup_line)) == plan.setup_command
+    assert tuple(shlex.split(run_line)) == plan.run_command
+    # And critically: shlex.split never produces a second command — "touch"
+    # and "pwned" stay glued inside one quoted token, never becoming their
+    # own argv entries.
+    assert "touch" not in shlex.split(setup_line)
+    assert "pwned" not in shlex.split(setup_line)
+    assert "touch" not in shlex.split(run_line)
+    assert "pwned" not in shlex.split(run_line)
 
 
 def test_tunnel_has_no_apply_flag() -> None:

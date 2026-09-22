@@ -304,6 +304,14 @@ requires the install secret on every guarded request, Access or not. See
 `Cf-Access-Jwt-Assertion` header and how a non-browser endpoint authenticates
 with an Access service token instead of a browser session.
 
+A printed command is only honest if pasting it does what it says. `--hostname`
+(RFC-1123 labels), `--allow` (exactly one `@`, no whitespace) and
+`--tunnel-name` (`[A-Za-z0-9._-]` only) are refused at parse time — `error:`/
+`hint:`, exit 1 — if they fall outside that charset, and every token in a
+printed command line is `shlex.quote`-d regardless, so a value like
+`--tunnel-name 'a; touch pwned'` can never turn the printed line into two
+commands.
+
 ## Usage
 
     embodiment tunnel
