@@ -2403,7 +2403,8 @@ class TestAToolStepIsAlwaysAnswered:
         written = memory.remember(
             self.FACT, visibility="private", record_type="explicit-ask", deadline=5.0
         )
-        assert written.ok and written.record_id
+        assert written.ok
+        assert written.record_id
         h = harness(
             memory=memory,
             complete=self._senses(self._forget_call(written.record_id), "done"),
