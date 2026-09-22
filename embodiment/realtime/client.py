@@ -104,7 +104,30 @@ The bearer key rides one HTTP header on one handshake and reaches nothing
 else. It is absent from the connect URL, from every degradation record, from
 ``repr`` of the config and of the ears, and from :meth:`status`. A server that
 echoes it back inside a refusal body gets it redacted out on the way into the
-record: :func:`_safe` is the ONE sanitiser every reason string goes through.
+record by :func:`_safe`, which every reason string passes through last.
+
+Two sanitisers, and which one owns what
+-----------------------------------------
+They are not alternatives and neither is a fallback for the other.
+
+* **An exception never becomes text here.**
+  :func:`~embodiment.safe_reason.describe_exception` builds every
+  exception-derived reason, and it never reads the message at all — class name,
+  bounded cause chain, ``errno`` name, integer status, message *length* and an
+  8-hex fingerprint, and nothing else. The reason this module in particular
+  needs it is concrete rather than theoretical: this seam's exceptions come
+  from a JSON/HTTP transport, and transports quote their input back. A
+  ``ConnectionClosedError`` can carry the peer's close reason and a decoder
+  error can carry the frame — on this wire, a frame is a **transcript**.
+  ``str(exc)`` here would put what somebody said into the degradation ledger.
+* **Everything else goes through** :func:`_safe`. A gateway's refusal *body* is
+  not an exception, so it stays on that belt: redact the key, collapse
+  newlines, strip control characters, truncate.
+
+:func:`_safe` also runs over the finished description, because
+:meth:`_record` sanitises uniformly — belt over braces, never instead of them.
+What is forbidden is the inverse: ``_safe(str(exc))``, which would be a filter
+guessing which substring is speech.
 
 Backpressure
 ------------
@@ -142,6 +165,7 @@ from dataclasses import dataclass, field, replace
 from typing import Any, AsyncIterator, Mapping, Optional
 
 from embodiment.realtime import wire
+from embodiment.safe_reason import MAX_DESCRIPTION_CHARS, describe_exception
 
 __all__ = [
     "RealtimeConfig",
@@ -217,7 +241,15 @@ REDACTED = "[redacted]"
 
 #: Reasons are bounded: a server can hand back a large body and a record is a
 #: line in a ledger, not a transcript of the failure.
-_MAX_REASON_LEN = 240
+#:
+#: DERIVED from the thing it has to be able to hold, not picked: a whole
+#: ``describe_exception`` description plus this module's own prose around it.
+#: At the flat 240 it started as, the longest prefix here — "session ended
+#: without a local close (…)" — plus a 4-deep cause chain of long class names
+#: clipped the tail off the description, and the tail is where the fingerprint
+#: is. Truncating a reason down to something that can no longer be correlated
+#: is the quiet half of losing it.
+_MAX_REASON_LEN = MAX_DESCRIPTION_CHARS + 120
 
 #: Five seconds of wire audio at the declared rate — derived, not picked.
 _QUEUE_SECONDS = 5
@@ -582,7 +614,7 @@ class RealtimeEars:
                 self._degradations.append(
                     RealtimeDegradation(
                         code="realtime-degrade-hook-failed",
-                        reason=_safe(type(exc).__name__, self.config.api_key),
+                        reason=_safe(describe_exception(exc), self.config.api_key),
                     )
                 )
 
@@ -611,7 +643,7 @@ class RealtimeEars:
             self._record(DISCOVERY_FAILED, "capabilities did not answer inside its deadline")
             return False
         except (urllib.error.URLError, OSError, ValueError) as exc:
-            self._record(DISCOVERY_FAILED, f"{type(exc).__name__}: {exc}")
+            self._record(DISCOVERY_FAILED, describe_exception(exc))
             return False
 
         try:
@@ -684,7 +716,7 @@ class RealtimeEars:
             from websockets.asyncio.client import connect as ws_connect
             from websockets.exceptions import InvalidStatus
         except ImportError as exc:  # pragma: no cover - an approved dependency
-            self._record(TRANSPORT_MISSING, f"{type(exc).__name__}: {exc}")
+            self._record(TRANSPORT_MISSING, describe_exception(exc))
             return False
 
         origin = self.config.realtime_url or self.config.gateway_url
@@ -722,13 +754,13 @@ class RealtimeEars:
             self._record(HANDSHAKE_TIMEOUT, f"no handshake inside {deadline}s")
             return False
         except (OSError, ValueError) as exc:
-            self._record(HANDSHAKE_FAILED, f"{type(exc).__name__}: {exc}")
+            self._record(HANDSHAKE_FAILED, describe_exception(exc))
             return False
         except Exception as exc:  # noqa: BLE001 - a transport this client does not know
             # Recorded, never re-raised: an unfamiliar transport failure is
             # still a failure the host must see, and still not a traceback the
             # daemon should wear.
-            self._record(HANDSHAKE_FAILED, f"{type(exc).__name__}: {exc}")
+            self._record(HANDSHAKE_FAILED, describe_exception(exc))
             return False
 
         self._connected = True
@@ -815,7 +847,7 @@ class RealtimeEars:
             except Exception as exc:  # noqa: BLE001 - any transport fault ends the session
                 # Recorded by _mark_lost, which is idempotent — the reader may
                 # have noticed the same drop first.
-                self._mark_lost(type(exc).__name__)
+                self._mark_lost(describe_exception(exc))
                 return
 
     # -- events in ---------------------------------------------------------
@@ -857,7 +889,7 @@ class RealtimeEars:
             # Recorded by _mark_lost below; the close reason is deliberately
             # NOT read off the exception — a server close reason is text this
             # client did not write and could carry anything, including speech.
-            self._mark_lost(type(exc).__name__)
+            self._mark_lost(describe_exception(exc))
             return
         self._mark_lost("clean close by the peer")
 
@@ -895,7 +927,7 @@ class RealtimeEars:
             except Exception as exc:  # noqa: BLE001 - teardown answers to nobody
                 self._record(
                     CLOSE_INCOMPLETE,
-                    f"writer teardown raised {type(exc).__name__}",
+                    f"writer teardown raised {describe_exception(exc)}",
                     once=True,
                 )
         if self._ws is not None:
@@ -911,7 +943,7 @@ class RealtimeEars:
                 # completion, and C3 says a host hears about it.
                 self._record(
                     CLOSE_INCOMPLETE,
-                    f"socket close raised {type(exc).__name__}",
+                    f"socket close raised {describe_exception(exc)}",
                     once=True,
                 )
 

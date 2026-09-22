@@ -27,6 +27,7 @@ from typing import Any, Callable
 import pytest
 from websockets.asyncio.server import serve
 
+from embodiment import safe_reason
 from embodiment.realtime import client as rtc
 from embodiment.realtime import wire
 
@@ -65,6 +66,10 @@ def stt_advert(
 class _CapsHandler(BaseHTTPRequestHandler):
     payload: bytes = b"{}"
     status: int = 200
+    #: A hostile HTTP reason phrase. `urllib` puts it straight into
+    #: `HTTPError`'s message, which is how a server's text reaches a client's
+    #: exception — the whole reason `describe_exception` exists.
+    reason_phrase: str = ""
     seen_authorization: list[str | None] = []
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib handler spelling
@@ -72,7 +77,7 @@ class _CapsHandler(BaseHTTPRequestHandler):
         if self.path.split("?")[0] != "/capabilities":
             self.send_error(404)
             return
-        self.send_response(type(self).status)
+        self.send_response(type(self).status, type(self).reason_phrase or None)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(type(self).payload)))
         self.end_headers()
@@ -88,6 +93,7 @@ class Rig:
 
     caps_body: dict[str, Any] | str = field(default_factory=dict)
     caps_status: int = 200
+    caps_reason: str = ""
     ws_reject: Callable[[Any, Any], Any] | None = None
     handler: Callable[[Any], Any] | None = None
 
@@ -102,6 +108,7 @@ class Rig:
         body = self.caps_body
         _CapsHandler.payload = body.encode() if isinstance(body, str) else json.dumps(body).encode()
         _CapsHandler.status = self.caps_status
+        _CapsHandler.reason_phrase = self.caps_reason
         _CapsHandler.seen_authorization = self.seen_authorization
         self._http = ThreadingHTTPServer(("127.0.0.1", 0), _CapsHandler)
         self._thread = threading.Thread(target=self._http.serve_forever, daemon=True)
@@ -1048,3 +1055,116 @@ class TestTheLivenessClockIsOwned:
         assert ears.latency is None
         assert ears.status()["last_event_age_s"] is None
         assert ears.status()["latency_s"] is None
+
+
+# ── the exception sanitiser ──────────────────────────────────────────────────
+
+
+class TestNoExceptionMessageReachesARecord:
+    """Every exception-derived reason goes through ``describe_exception``.
+
+    ``tests/test_safe_reason.py``'s AST guard proves the *shape* — no
+    ``str(exc)``, no ``{exc}`` — over ``client.py``, which it now scans because
+    ``client.py`` imports ``safe_reason``. These prove the *effect*, with a
+    marker planted where a real server would put text: a gateway's HTTP reason
+    phrase, and a WebSocket close reason.
+    """
+
+    MARKER = "ZZSPEECHMARKERZZ"
+
+    def test_a_hostile_http_reason_phrase_does_not_reach_the_record(self) -> None:
+        # urllib puts the reason phrase straight into HTTPError's message, so
+        # this is exactly the path where a server's text becomes a client's
+        # exception. Before adoption the reason read
+        # "HTTPError: HTTP Error 500: Internal <marker> Failure".
+        with Rig(
+            caps_body={}, caps_status=500, caps_reason=f"Internal {self.MARKER} Failure"
+        ) as rig:
+            ears = rtc.RealtimeEars(rig.config())
+            assert run(ears.connect()) is False
+
+        assert codes(ears) == [rtc.DISCOVERY_FAILED]
+        reason = ears.degradations[0].reason
+        assert self.MARKER not in reason
+        # The facts survive: the class, the status, the withheld length, and a
+        # fingerprint to correlate two occurrences of the same fault.
+        assert "HTTPError" in reason
+        assert "status=500" in reason
+        assert "chars" in reason and "fp:" in reason
+
+    def test_the_plant_is_real(self) -> None:
+        """The marker really does reach the exception — so the test can fail."""
+        with Rig(
+            caps_body={}, caps_status=500, caps_reason=f"Internal {self.MARKER} Failure"
+        ) as rig:
+            caught: list[str] = []
+            try:
+                urllib.request.urlopen(f"{rig.origin}/capabilities", timeout=5)  # nosec B310
+            except urllib.error.HTTPError as exc:
+                caught.append(str(exc))
+        assert caught and self.MARKER in caught[0]
+
+    def test_a_close_reason_carrying_speech_does_not_reach_the_record(self) -> None:
+        async def handler(ws: Any) -> None:
+            await ws.send(FIXTURE("session_created.json"))
+            # A close reason is server-chosen text. On THIS wire the server is
+            # holding a transcript.
+            await ws.close(code=1011, reason=f"bridge died {self.MARKER}")
+
+        with Rig(caps_body=capabilities(), handler=handler) as rig:
+
+            async def go() -> rtc.RealtimeEars:
+                async with rig.websocket():
+                    ears = rtc.RealtimeEars(rig.config(realtime_url=rig.ws_origin()))
+                    await ears.connect()
+                    async for _ in ears.events():
+                        pass
+                    await ears.close()
+                    return ears
+
+            ears = run(go())
+
+        assert codes(ears) == [rtc.SESSION_DROPPED]
+        reason = ears.degradations[0].reason
+        assert self.MARKER not in reason
+        assert "ConnectionClosedError" in reason
+        assert "fp:" in reason
+
+    def test_the_same_fault_twice_carries_the_same_fingerprint(self) -> None:
+        """What the fingerprint buys: correlation without the text."""
+
+        def one() -> str:
+            with Rig(caps_body={}, caps_status=503, caps_reason="Overloaded") as rig:
+                ears = rtc.RealtimeEars(rig.config())
+                run(ears.connect())
+                return ears.degradations[0].reason
+
+        first, second = one(), one()
+        assert first.split("fp:")[1] == second.split("fp:")[1]
+
+    def test_the_reason_bound_can_hold_a_whole_description(self) -> None:
+        """A truncation that clips the fingerprint loses the correlation."""
+        assert rtc._MAX_REASON_LEN > safe_reason.MAX_DESCRIPTION_CHARS
+
+    def test_a_refusal_body_still_rides_the_other_sanitiser(self) -> None:
+        """A gateway's JSON body is not an exception; ``_safe`` still owns it."""
+
+        def process(connection: Any, request: Any) -> Any:
+            return connection.respond(
+                503, json.dumps({"error": {"message": f"your key {MARKER_KEY} is stale"}})
+            )
+
+        with Rig(caps_body=capabilities(), ws_reject=process) as rig:
+
+            async def go() -> rtc.RealtimeEars:
+                async with rig.websocket():
+                    ears = rtc.RealtimeEars(rig.config(realtime_url=rig.ws_origin()))
+                    await ears.connect()
+                    return ears
+
+            ears = run(go())
+        reason = ears.degradations[0].reason
+        assert MARKER_KEY not in reason and rtc.REDACTED in reason
+        # It came from the BODY, not from the exception, so it is prose and not
+        # a description — the two lanes stay distinguishable.
+        assert "fp:" not in reason
