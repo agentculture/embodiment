@@ -4888,3 +4888,40 @@ class TestDegradeHooksAreWired:
             hook("", "")
         finally:
             application.close(deadline=2.0)
+
+
+# ── a missed ask never puts the transcript in a record (post-wave review) ─────
+
+
+class TestMissedAskCarriesNoSpeech:
+    """``_note_missed_ask(text)`` is called with the raw user transcript. It
+    may count and publish a ``state`` event; the text itself must never reach
+    the ledger, the operational log, ``status()`` or any non-speech event
+    (Q1: no speech in a record).
+    """
+
+    def test_the_marker_in_a_missed_ask_reaches_no_record(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        marker = "MARKERMISSED4242"
+        # Carries an ask stem (so the heuristic fires) but matches no pattern
+        # the detector knows, so Session.add_user returns None.
+        utterance = f"I might remember {marker} someday"
+        memory = RoomMemory(
+            tmp_path / "store", scope="gwen", added_by="gwen", embed_probe=lambda: False
+        )
+        h = harness(memory=memory)
+        h.app.attach_ear("host", FakeEndpoint())
+        h.clear()
+
+        h.app.run_turn(utterance)
+
+        assert h.app.status()["memory"]["ask_not_detected"] == 1, "the heuristic did not fire"
+        blob = json.dumps([r.to_dict() for r in h.state.ledger.read_all()], ensure_ascii=False)
+        assert marker not in blob
+        assert marker not in json.dumps(h.app.status(), ensure_ascii=False)
+        assert marker not in (Path(h.state.dir) / "embodiment.log").read_text(encoding="utf-8")
+        non_speech = [e.to_dict() for e in h.events() if e.kind not in ("transcript", "reply")]
+        assert marker not in json.dumps(non_speech, ensure_ascii=False)
+        states = [e.data for e in h.events("state") if e.data.get("status") == "ask-not-detected"]
+        assert states and states[-1]["ask_not_detected"] == 1
