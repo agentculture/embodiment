@@ -719,6 +719,36 @@ class TestAttacks:
         finally:
             ep.close(2.0)
 
+    def test_a_send_that_raises_is_counted_and_the_chunk_is_dropped_not_requeued(self) -> None:
+        """The sender loop's third outcome, beside "no chunk" and "no peer": a
+        peer that vanishes mid-send. The chunk is dropped (never re-queued —
+        the peer is gone), ``send_errors`` counts it, nothing is reported as
+        sent, and the loop goes on serving."""
+
+        class _VanishedPeer:
+            async def send(self, _frame: str) -> None:
+                raise RuntimeError("connection is closed")
+
+        ep = _endpoint()
+        ep.attach()
+        try:
+            with ep._lock:
+                ep._connection = _VanishedPeer()
+            ep.play(b"\x00\x01" * 100)
+
+            async def scenario() -> bool:
+                return await _wait_until(lambda: ep.status()["send_errors"] == 1, timeout=2.0)
+
+            assert _run(scenario()) is True
+            status = ep.status()
+            assert status["send_errors"] == 1
+            assert status["playback_queued_bytes"] == 0
+            assert status["playback_sent_bytes"] == 0
+        finally:
+            with ep._lock:
+                ep._connection = None
+            ep.close(2.0)
+
     def test_mute_drops_frames_before_they_reach_on_frame(self) -> None:
         ep = _endpoint()
         received: list[bytes] = []
