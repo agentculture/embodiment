@@ -303,17 +303,43 @@ class RealtimeDegradation:
 class CloseReport:
     """What :meth:`RealtimeEars.close` finished, and what it left.
 
-    ``graceful`` is ``False`` when the socket did not shut inside the deadline
-    or the writer had to be cancelled with frames still queued. The queued and
-    dropped counts are what was left unfinished — shutdown that reports nothing
-    is shutdown a host cannot audit.
+    **The report alone is the truth.** A host is entitled to read this and stop
+    — it must never have to cross-check the degradation ledger to learn that a
+    shutdown went wrong, because a report that needs corroboration is a report
+    that will be believed without it. That was a real defect here: a socket
+    whose ``close()`` raised recorded ``realtime-close-incomplete`` on the
+    ledger and still returned ``graceful=True``.
+
+    So there are **two specific causes and one summary derived from them**:
+
+    * ``deadline_exceeded`` — the close did not finish inside its budget.
+    * ``close_error`` — the writer's teardown or the socket's own ``close()``
+      raised. The session is over either way; what is not true is that it ended
+      cleanly.
+    * ``graceful`` — **not a field**. It is a property, ``not
+      deadline_exceeded and not close_error``, precisely so it cannot
+      desynchronise from its causes. A summary flag that can disagree with the
+      facts beside it is a second source of truth, and the whole point of this
+      object is that there is one.
+
+    Keeping both causes rather than collapsing them into the summary is what
+    lets a host act: a missed deadline is a slow peer and may be worth
+    retrying; a raising socket is a broken one and is not.
+
+    The queued and dropped counts are what was left unfinished — a shutdown
+    that reports nothing is a shutdown a host cannot audit.
     """
 
-    graceful: bool = True
     queued_frames: int = 0
     queued_bytes: int = 0
     dropped_frames: int = 0
     deadline_exceeded: bool = False
+    close_error: bool = False
+
+    @property
+    def graceful(self) -> bool:
+        """Did the close finish, inside its budget, without raising?"""
+        return not self.deadline_exceeded and not self.close_error
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -322,6 +348,7 @@ class CloseReport:
             "queued_bytes": self.queued_bytes,
             "dropped_frames": self.dropped_frames,
             "deadline_exceeded": self.deadline_exceeded,
+            "close_error": self.close_error,
         }
 
 
@@ -899,9 +926,12 @@ class RealtimeEars:
         """Shut the session down inside *deadline*. Idempotent; never raises.
 
         Reports what it left unfinished: frames still queued, bytes with them,
-        and whether the deadline fired. Queued audio is **discarded**, not
-        flushed — a shutdown that waits to push five seconds of stale audio
-        into a socket is a shutdown that misses its deadline.
+        whether the deadline fired and whether anything raised. Queued audio is
+        **discarded**, not flushed — a shutdown that waits to push five seconds
+        of stale audio into a socket is a shutdown that misses its deadline.
+
+        A second call is a no-op reporting ``graceful`` — there was nothing
+        left to fail. The first call's verdict is the one that meant something.
         """
         budget = float(deadline if deadline is not None else self.config.close_deadline)
         self._closing = True
@@ -912,9 +942,10 @@ class RealtimeEars:
             self._queued_bytes = 0
 
         if self._closed:
-            return CloseReport(graceful=True, dropped_frames=self._dropped_frames)
+            return CloseReport(dropped_frames=self._dropped_frames)
 
         exceeded = False
+        close_error = False
         writer = self._writer
         if writer is not None:
             writer.cancel()
@@ -925,6 +956,9 @@ class RealtimeEars:
             except asyncio.CancelledError:
                 raise
             except Exception as exc:  # noqa: BLE001 - teardown answers to nobody
+                # On the REPORT as well as the ledger: a host reading only the
+                # return value must not be told this close went cleanly.
+                close_error = True
                 self._record(
                     CLOSE_INCOMPLETE,
                     f"writer teardown raised {describe_exception(exc)}",
@@ -940,7 +974,10 @@ class RealtimeEars:
             except (OSError, RuntimeError) as exc:
                 # An already-dead peer is a closed one, so this is not a second
                 # SESSION_DROPPED — but it is still a close that did not run to
-                # completion, and C3 says a host hears about it.
+                # completion, and C3 says a host hears about it. `websockets`'
+                # ConnectionClosed is an OSError subclass, so this is the
+                # handler a vanished peer lands in.
+                close_error = True
                 self._record(
                     CLOSE_INCOMPLETE,
                     f"socket close raised {describe_exception(exc)}",
@@ -954,11 +991,11 @@ class RealtimeEars:
         if exceeded:
             self._record(CLOSE_INCOMPLETE, f"close did not finish inside {budget}s")
         return CloseReport(
-            graceful=not exceeded,
             queued_frames=queued_frames,
             queued_bytes=queued_bytes,
             dropped_frames=self._dropped_frames,
             deadline_exceeded=exceeded,
+            close_error=close_error,
         )
 
 

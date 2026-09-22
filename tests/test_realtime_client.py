@@ -14,6 +14,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import dataclasses
 import json
 import os
 import socket
@@ -977,36 +978,86 @@ class TestTheLivenessClockIsOwned:
     def test_a_vanished_peer_is_noticed_inside_the_configured_bound(self) -> None:
         with Rig(caps_body=capabilities()) as rig:
 
-            async def go() -> tuple[float, rtc.RealtimeEars]:
+            cfg = rig.config(
+                realtime_url="",
+                ping_interval=0.2,
+                ping_timeout=0.2,
+                close_handshake_timeout=0.2,
+            )
+
+            async def go() -> tuple[float, rtc.RealtimeEars, rtc.RealtimeConfig]:
                 async with DeafServer(FIXTURE("session_created.json")) as deaf:
-                    ears = rtc.RealtimeEars(
-                        rig.config(
-                            realtime_url=deaf.origin(),
-                            ping_interval=0.2,
-                            ping_timeout=0.2,
-                            close_handshake_timeout=0.2,
-                        )
-                    )
+                    session = dataclasses.replace(cfg, realtime_url=deaf.origin())
+                    ears = rtc.RealtimeEars(session)
                     assert await ears.connect() is True
                     started = asyncio.get_running_loop().time()
                     seen = [event async for event in ears.events()]
                     elapsed = asyncio.get_running_loop().time() - started
                     assert isinstance(seen[0], wire.SessionCreated)
                     await ears.close(deadline=1.0)
-                    return elapsed, ears
+                    return elapsed, ears, session
 
-            elapsed, ears = run(go())
+            elapsed, ears, session = run(go())
 
         # The stream ENDED rather than raising, and said why, exactly once.
         assert codes(ears) == [rtc.SESSION_DROPPED]
         assert ears.connected is False
-        # It was THIS session's configured bound that fired, not the module
-        # default, and certainly not the transport's inherited 20+20+10.
+
+        # Every bound below is DERIVED FROM THE CONFIG THE CLIENT WAS GIVEN, not
+        # written as a literal. An earlier version of this test asserted only
+        # `elapsed < 3.0` and `>= 0.2`, which a client whose bound was two terms
+        # instead of three would have passed — the test could not fail on the
+        # claim it exists to make.
+        floor = session.ping_interval + session.ping_timeout
+        assert session.liveness_bound > floor, "the third term must be in the bound"
+
+        # LOWER: the peer never pongs, so the keep-alive cannot give up before a
+        # whole interval and a whole timeout have passed. Detecting sooner would
+        # mean something other than this clock closed the socket.
+        assert elapsed >= floor
+
+        # UPPER: the close-handshake term is the remaining slack, plus scheduling
+        # latency under a parallel test run.
+        assert elapsed < session.liveness_bound + 2.0
+        # And it was THIS session's clock, not the module default, and certainly
+        # not the transport's inherited 20 + 20 + 10.
         assert elapsed < rtc.RealtimeConfig().liveness_bound
-        assert elapsed < 3.0
-        # And it fired no EARLIER than the bound allows: a detection that beat
-        # its own clock would mean something else closed the socket.
-        assert elapsed >= 0.2
+
+    def test_detection_tracks_the_configured_bound_term_by_term(self) -> None:
+        """Raise ONE term and detection moves by exactly that much.
+
+        The three-term claim asserted arithmetically above, measured instead:
+        the only difference between the two runs is the close-handshake term,
+        so the difference in detection time IS that term. A client whose bound
+        were really two terms would show no difference at all.
+        """
+
+        def detect(close_handshake_timeout: float) -> float:
+            with Rig(caps_body=capabilities()) as rig:
+
+                async def go() -> float:
+                    async with DeafServer(FIXTURE("session_created.json")) as deaf:
+                        ears = rtc.RealtimeEars(
+                            rig.config(
+                                realtime_url=deaf.origin(),
+                                ping_interval=0.2,
+                                ping_timeout=0.2,
+                                close_handshake_timeout=close_handshake_timeout,
+                            )
+                        )
+                        assert await ears.connect() is True
+                        started = asyncio.get_running_loop().time()
+                        async for _ in ears.events():
+                            pass
+                        elapsed = asyncio.get_running_loop().time() - started
+                        await ears.close(deadline=1.0)
+                        return elapsed
+
+                return run(go())
+
+        short, long = detect(0.2), detect(0.8)
+        moved = long - short
+        assert 0.4 < moved < 1.0, f"detection moved {moved:.3f}s for a 0.6s term"
 
     def test_the_default_bound_is_a_spoken_turn_not_the_transport_default(self) -> None:
         cfg = rtc.RealtimeConfig()
@@ -1168,3 +1219,181 @@ class TestNoExceptionMessageReachesARecord:
         # It came from the BODY, not from the exception, so it is prose and not
         # a description — the two lanes stay distinguishable.
         assert "fp:" not in reason
+
+
+# ── the close report tells the truth by itself ───────────────────────────────
+
+
+class _RaisingSocket:
+    """A socket whose ``close()`` raises. Injected, because the natural trigger
+    does not reach that handler — see ``TestACloseThatFailedSaysSo``."""
+
+    def __init__(self, error: BaseException) -> None:
+        self.error = error
+        self.latency = 0.0
+
+    async def close(self) -> None:
+        raise self.error
+
+
+class TestACloseThatFailedSaysSo:
+    """A host reading only the report must not be told a bad close went well.
+
+    The defect this pins: ``close()`` recorded ``realtime-close-incomplete`` on
+    the ledger when the socket's own ``close()`` raised, and still returned
+    ``graceful=True``. A report that needs the ledger to be corroborated is a
+    report that will be believed without it.
+
+    **Honest note on the trigger.** The review described this as reachable when
+    a peer vanishes mid-session and the caller then closes. Measured here, it is
+    not: `websockets`' ``close()`` is idempotent and returns cleanly on an
+    already-dropped connection, in both the deaf-peer and server-1011 cases
+    (``test_the_natural_drop_path_does_not_actually_raise`` pins that, so the
+    claim stays checked rather than remembered). The handler is genuinely
+    defensive — a ``RuntimeError`` from a closed loop, a transport that wraps
+    its socket differently — so the socket is injected rather than provoked.
+    """
+
+    def _closed_with(self, error: BaseException) -> tuple[Any, rtc.RealtimeEars]:
+        with Rig(caps_body=capabilities()) as rig:
+
+            async def go() -> tuple[Any, rtc.RealtimeEars]:
+                async with rig.websocket():
+                    ears = rtc.RealtimeEars(rig.config(realtime_url=rig.ws_origin()))
+                    assert await ears.connect() is True
+                    real = ears._ws
+                    ears._ws = _RaisingSocket(error)
+                    report = await ears.close(deadline=1.0)
+                    with contextlib.suppress(Exception):
+                        await real.close()
+                    return report, ears
+
+            return run(go())
+
+    def test_an_oserror_from_close_reaches_the_report(self) -> None:
+        report, ears = self._closed_with(OSError(104, "Connection reset by peer"))
+        assert report.close_error is True
+        assert report.graceful is False
+        # and it is DISTINGUISHABLE from the other way a close can fail
+        assert report.deadline_exceeded is False
+        assert codes(ears).count(rtc.CLOSE_INCOMPLETE) == 1
+
+    def test_a_runtime_error_from_close_reaches_the_report(self) -> None:
+        report, ears = self._closed_with(RuntimeError("Event loop is closed"))
+        assert report.close_error is True and report.graceful is False
+        assert codes(ears).count(rtc.CLOSE_INCOMPLETE) == 1
+
+    def test_the_report_alone_is_enough(self) -> None:
+        """A host that never reads the ledger still learns the close failed."""
+        report, _ = self._closed_with(OSError("broken"))
+        assert report.to_dict()["graceful"] is False
+        assert report.to_dict()["close_error"] is True
+
+    def test_the_failing_close_still_leaves_the_ears_shut(self) -> None:
+        report, ears = self._closed_with(OSError("broken"))
+        assert report.graceful is False
+        assert ears.connected is False
+        # Idempotent: a second close has nothing left to fail.
+        assert run(ears.close()).graceful is True
+
+    def test_a_writer_teardown_that_raises_reaches_the_report(self) -> None:
+        with Rig(caps_body=capabilities()) as rig:
+
+            async def go() -> tuple[Any, rtc.RealtimeEars]:
+                async with rig.websocket():
+                    ears = rtc.RealtimeEars(rig.config(realtime_url=rig.ws_origin()))
+                    await ears.connect()
+                    real_writer = ears._writer
+                    assert real_writer is not None
+                    real_writer.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await real_writer
+
+                    async def explode() -> None:
+                        raise RuntimeError("teardown went wrong")
+
+                    ears._writer = asyncio.get_running_loop().create_task(explode())
+                    await asyncio.sleep(0)
+                    report = await ears.close(deadline=1.0)
+                    return report, ears
+
+            report, ears = run(go())
+        assert report.close_error is True and report.graceful is False
+        assert codes(ears).count(rtc.CLOSE_INCOMPLETE) == 1
+
+    def test_a_missed_deadline_is_the_other_cause_not_this_one(self) -> None:
+        class _Wedged:
+            latency = 0.0
+
+            async def close(self) -> None:
+                await asyncio.sleep(10)
+
+        with Rig(caps_body=capabilities()) as rig:
+
+            async def go() -> Any:
+                async with rig.websocket():
+                    ears = rtc.RealtimeEars(rig.config(realtime_url=rig.ws_origin()))
+                    await ears.connect()
+                    real = ears._ws
+                    ears._ws = _Wedged()
+                    report = await ears.close(deadline=0.2)
+                    with contextlib.suppress(Exception):
+                        await real.close()
+                    return report
+
+            report = run(go())
+        assert report.deadline_exceeded is True
+        assert report.close_error is False
+        assert report.graceful is False
+
+    def test_the_natural_drop_path_does_not_actually_raise(self) -> None:
+        """The measurement behind this class's docstring, kept executable."""
+
+        async def handler(ws: Any) -> None:
+            await ws.send(FIXTURE("session_created.json"))
+            await ws.close(code=1011, reason="bridge died")
+
+        with Rig(caps_body=capabilities(), handler=handler) as rig:
+
+            async def go() -> Any:
+                async with rig.websocket():
+                    ears = rtc.RealtimeEars(rig.config(realtime_url=rig.ws_origin()))
+                    await ears.connect()
+                    async for _ in ears.events():
+                        pass
+                    return await ears.close(deadline=1.0)
+
+            report = run(go())
+        assert report.close_error is False and report.graceful is True
+
+
+class TestGracefulCannotDisagreeWithItsCauses:
+    """``graceful`` is derived, so there is one source of truth, not two."""
+
+    def test_it_is_not_a_field(self) -> None:
+        assert "graceful" not in {f.name for f in dataclasses.fields(rtc.CloseReport)}
+
+    @pytest.mark.parametrize(
+        ("deadline_exceeded", "close_error", "expected"),
+        [
+            (False, False, True),
+            (True, False, False),
+            (False, True, False),
+            (True, True, False),
+        ],
+    )
+    def test_the_summary_follows_the_causes(
+        self, deadline_exceeded: bool, close_error: bool, expected: bool
+    ) -> None:
+        report = rtc.CloseReport(deadline_exceeded=deadline_exceeded, close_error=close_error)
+        assert report.graceful is expected
+        assert report.to_dict()["graceful"] is expected
+
+    def test_it_cannot_be_set_to_disagree(self) -> None:
+        with pytest.raises(TypeError):
+            rtc.CloseReport(graceful=True, close_error=True)  # type: ignore[call-arg]
+
+    def test_to_dict_carries_both_causes(self) -> None:
+        keys = set(rtc.CloseReport().to_dict())
+        assert {"graceful", "deadline_exceeded", "close_error"} <= keys
+        assert json.dumps(rtc.CloseReport().to_dict())
