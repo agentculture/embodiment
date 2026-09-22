@@ -227,6 +227,47 @@ class TestSchemaValidation:
         assert client.published == []
         assert sub.qsize() == 0
 
+    @pytest.mark.parametrize(
+        "kind,data,expected",
+        [
+            ("state", "not-a-dict", "data"),
+            ("state", {"component": "daemon"}, "status"),
+            ("transcript", {"role": "narrator", "text": "x"}, "role"),
+            ("transcript", {"role": "user", "text": 5}, "text"),
+            ("reply", {"text": None}, "text"),
+            ("mic", {"hot": 1, "ear": "local"}, "hot"),
+            ("degradation", {"source": "x", "code": 7, "reason": "y"}, "code"),
+            ("degradation", {"source": "x", "code": "", "reason": "y"}, "code"),
+            ("degradation", {"source": "x", "code": "c", "reason": None}, "reason"),
+            ("degradation", {"source": "", "code": "c", "reason": "y"}, "source"),
+            ("degradation", {"source": 3, "code": "c", "reason": "y"}, "source"),
+            (
+                "features",
+                {
+                    "direction": "up",
+                    "env": "",
+                    "level_db": 0,
+                    "noise_floor_db": 0,
+                    "zero_crossing_hz": 0,
+                },
+                "direction",
+            ),
+            ("clients", {"count": True, "remote": 0}, "count"),  # bool is not a count
+            ("clients", {"count": "2", "remote": 0}, "count"),
+            ("clients", {"count": 2, "remote": 0}, None),
+            ("degradation", {"source": "x", "code": "c", "reason": "y"}, None),
+            ("heartbeat", {}, None),
+        ],
+    )
+    def test_validate_data_names_the_first_bad_field(self, kind, data, expected):
+        """Pins the field name each per-kind type check reports, including the
+        branches the publish-level tests never reach (a non-string transcript
+        text, a non-string degradation reason, an empty source, a bool count).
+        """
+        from embodiment.bus import _validate_data
+
+        assert _validate_data(kind, data) == expected
+
 
 # ── criterion 2: heartbeat at a fixed interval; missing broker degrades
 #    visibly to in-process ──────────────────────────────────────────────────
