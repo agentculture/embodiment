@@ -1411,10 +1411,8 @@ class DaemonApp:
                 ear=ear, attached=True, preempted=previous is not None, previous=previous
             )
 
-    def detach_ear(
-        self, name: object = None, *, publish: bool = True, deadline: Optional[float] = None
-    ) -> EarHandover:
-        """Drop the active ear. Idempotent; never raises."""
+    def detach_ear(self, *, publish: bool = True, deadline: Optional[float] = None) -> EarHandover:
+        """Drop the active ear, whichever it is. Idempotent; never raises."""
         with self._ear_lock:
             previous = self._ear_name
             if previous is None:
