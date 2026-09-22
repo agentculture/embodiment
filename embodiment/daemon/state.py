@@ -448,7 +448,9 @@ _LOW_WATER_RATIO = 0.75
 #: with no dots of its own — so :func:`_sweep_stale_temp_files` can never
 #: mistake an unrelated dotfile (``.gitignore``, a editor swap file, ...) for
 #: one of ours.
-_TMP_FILE_RE = re.compile(r"^\..+\.[A-Za-z0-9_]+\.tmp$")
+#: ``re.ASCII`` keeps ``\w`` to the token charset this module actually
+#: writes; unflagged it would match any Unicode letter and widen the sweep.
+_TMP_FILE_RE = re.compile(r"^\..+\.\w+\.tmp$", re.ASCII)
 
 #: Session ids are accepted only in this conservative filename charset —
 #: letters, digits, dot, underscore, hyphen — which structurally cannot

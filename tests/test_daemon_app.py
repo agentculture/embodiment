@@ -39,7 +39,7 @@ from embodiment.audio.features import FeatureExtractor
 from embodiment.bus import Bus
 from embodiment.contract import ModelResponse, ToolCall
 from embodiment.daemon import app as app_module
-from embodiment.daemon.app import AppConfig, DaemonApp
+from embodiment.daemon.app import AppConfig, AppFactories, DaemonApp
 from embodiment.daemon.state import DaemonState
 from embodiment.memory import RoomMemory
 from embodiment.realtime import wire
@@ -361,9 +361,12 @@ def harness(tmp_path: Path, request: pytest.FixtureRequest) -> Any:
             bus=bus,
             memory=memory,
             complete=complete,
-            ears_factory=overrides.pop("ears_factory", ears_factory),
-            endpoint_factory=overrides.pop("endpoint_factory", endpoint_factory),
-            voice_factory=voice_factory,
+            factories=AppFactories(
+                ears=overrides.pop("ears_factory", ears_factory),
+                endpoint=overrides.pop("endpoint_factory", endpoint_factory),
+                voice=voice_factory,
+                session=overrides.pop("session_factory", None),
+            ),
             # Frozen by default so "the prompt is byte-identical between runs"
             # is a statement about the prompt, not about the minute hand (d8).
             now=overrides.pop("now", None) or (lambda: FROZEN_NOW),
@@ -3652,7 +3655,7 @@ import asyncio, io, sys, threading
 from types import SimpleNamespace
 from embodiment.bus import Bus
 from embodiment.contract import ModelResponse, ToolCall
-from embodiment.daemon.app import AppConfig, DaemonApp
+from embodiment.daemon.app import AppConfig, AppFactories, DaemonApp
 from embodiment.daemon.state import DaemonState
 from embodiment.memory import RoomMemory
 
@@ -3702,9 +3705,7 @@ app = DaemonApp(
     bus=bus,
     memory=memory,
     complete=lambda messages, tools=None: ModelResponse(content="shalom"),
-    ears_factory=lambda rate: Ears(rate),
-    endpoint_factory=None,
-    voice_factory=lambda ep: None,
+    factories=AppFactories(ears=lambda rate: Ears(rate), voice=lambda ep: None),
 )
 stop = threading.Event()
 thread = threading.Thread(target=lambda: app.run(stop), daemon=True)

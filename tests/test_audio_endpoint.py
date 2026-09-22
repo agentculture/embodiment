@@ -216,3 +216,37 @@ def test_null_endpoint_close_returns_a_close_report():
     assert report.writer_thread_stopped is True
     assert report.samples_discarded == 0
     assert report.streams_close_failed == 0
+
+
+class TestTheNullEndpointSaysWhatItDropped:
+    """S1172: `play`'s frames and `close`'s deadline stopped being ignored.
+
+    A no-op endpoint that reports nothing is the C3 trap in miniature — the
+    daemon looks attentive and the room hears nothing. The parameters the
+    protocol hands it are now the two facts it can honestly report: how much
+    audio went nowhere, and what budget its close was given.
+    """
+
+    def test_played_audio_is_counted_as_dropped(self) -> None:
+        endpoint = NullEndpoint()
+        endpoint.play(b"\x00\x00" * 480)
+        endpoint.play(b"\x00\x00" * 20)
+        assert endpoint.status()["samples_dropped_total"] == 500
+
+    def test_the_protocol_number_still_means_queued_audio(self) -> None:
+        endpoint = NullEndpoint()
+        endpoint.play(b"\x00\x00" * 480)
+        assert endpoint.stop_playback() == 0
+        assert endpoint.close(1.0).samples_discarded == 0
+        assert endpoint.status()["samples_dropped_total"] == 480
+
+    def test_the_close_deadline_is_reported_not_discarded(self) -> None:
+        endpoint = NullEndpoint()
+        assert endpoint.status()["close_deadline_s"] is None
+        endpoint.close(2.5)
+        assert endpoint.status()["close_deadline_s"] == 2.5
+
+    def test_a_non_buffer_counts_as_nothing_and_never_raises(self) -> None:
+        endpoint = NullEndpoint()
+        endpoint.play(object())  # type: ignore[arg-type]
+        assert endpoint.status()["samples_dropped_total"] == 0

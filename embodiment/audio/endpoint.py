@@ -300,13 +300,22 @@ class NullEndpoint:
     absence of an endpoint separately from the presence of a degraded one.
     """
 
-    __slots__ = ("_muted", "_on_frame", "_attached", "_capturing")
+    __slots__ = (
+        "_muted",
+        "_on_frame",
+        "_attached",
+        "_capturing",
+        "_discarded_samples",
+        "_close_deadline",
+    )
 
     def __init__(self) -> None:
         self._muted = False
         self._on_frame: FrameCallback | None = None
         self._attached = False
         self._capturing = False
+        self._discarded_samples = 0
+        self._close_deadline: float | None = None
 
     def attach(self) -> None:
         self._attached = True
@@ -329,9 +338,28 @@ class NullEndpoint:
         return SAMPLE_RATE_HZ
 
     def play(self, frames: bytes) -> None:
-        return None
+        """Nowhere to play, so the samples are counted as discarded.
+
+        "Does nothing" and "says nothing about what it did" are different
+        promises (C3). A daemon degraded onto this endpoint has a real
+        question — how much reply audio went nowhere — and the running total
+        in ``status()`` (``samples_dropped_total``) is the only honest answer
+        to it. It is deliberately NOT the protocol's ``samples_discarded``,
+        which counts queued audio a stop dropped; nothing is ever queued here.
+        """
+        # Never raises, on anything: this endpoint is what a degraded daemon
+        # falls back to, and it is handed whatever the caller had. Something
+        # that is not a buffer counts as zero samples rather than an error.
+        buffered = isinstance(frames, (bytes, bytearray, memoryview))
+        self._discarded_samples += (len(frames) // SAMPLE_WIDTH_BYTES) if buffered else 0
 
     def stop_playback(self) -> int:
+        """Always ``0``: this endpoint never QUEUES anything for a stop to drop.
+
+        The protocol's number is undelivered queued audio, and the running
+        total of what went nowhere is a different fact — ``status()`` carries
+        that as ``samples_dropped_total``.
+        """
         return 0
 
     @property
@@ -346,8 +374,15 @@ class NullEndpoint:
         return self._muted
 
     def close(self, deadline: float) -> EndpointCloseReport:
+        """Nothing to wait for — but the budget it was given is kept.
+
+        A caller reading the report can then tell a close that had no work
+        from a close whose deadline was never honoured, without having to
+        know which endpoint it held.
+        """
         self._attached = False
         self._capturing = False
+        self._close_deadline = float(deadline)
         return EndpointCloseReport(
             capture_thread_stopped=True,
             writer_thread_stopped=True,
@@ -364,4 +399,6 @@ class NullEndpoint:
             "degradation": EndpointDegradation(
                 DEGRADED_NO_ENDPOINT, "no audio endpoint configured"
             ).to_dict(),
+            "samples_dropped_total": self._discarded_samples,
+            "close_deadline_s": self._close_deadline,
         }

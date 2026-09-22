@@ -199,6 +199,7 @@ __all__ = [
     "APP_TURN_FAILED",
     "APP_TURN_QUEUE_FULL",
     "AppConfig",
+    "AppFactories",
     "AppCloseReport",
     "EarHandover",
     "DaemonApp",
@@ -1029,6 +1030,27 @@ def _wire_tool_arguments(arguments: Any) -> dict[str, Any]:
     return arguments
 
 
+@dataclass(frozen=True)
+class AppFactories:
+    """The four things the daemon BUILDS rather than is handed.
+
+    They travel together because they are one decision — what this daemon's
+    audio and conversation are made of — and because a constructor that takes
+    them one by one grows a parameter list nobody reads (SonarCloud ``S107``).
+    Every one is optional except the ears: a daemon with no endpoint factory
+    runs deaf and says so, which is a degradation, not a crash.
+    """
+
+    #: Called with the ear's sample rate; returns the realtime ears client.
+    ears: Callable[[int], Any]
+    #: Called with nothing; returns the audio endpoint to attach.
+    endpoint: Optional[Callable[[], Any]] = None
+    #: Called with an endpoint; returns the voice that speaks through it.
+    voice: Optional[Callable[[Any], Any]] = None
+    #: Called with nothing; returns the conversation session.
+    session: Optional[Callable[[], Any]] = None
+
+
 class DaemonApp:
     """The wiring: one ear, one turn at a time, everything published."""
 
@@ -1039,11 +1061,8 @@ class DaemonApp:
         bus: Any,
         memory: Any,
         complete: Callable[..., Any],
-        ears_factory: Callable[[int], Any],
+        factories: AppFactories,
         config: Optional[AppConfig] = None,
-        endpoint_factory: Optional[Callable[[], Any]] = None,
-        voice_factory: Optional[Callable[[Any], Any]] = None,
-        session_factory: Optional[Callable[[], Any]] = None,
         summarise: Optional[Callable[..., Any]] = None,
         redact: Iterable[str] = (),
         server: Any = None,
@@ -1093,14 +1112,14 @@ class DaemonApp:
             if getattr(complete, "__embodiment_bound_registry__", None) is self._tools
             else bind_tools(_as_seam(complete), self._tools)
         )
-        self._ears_factory = ears_factory
+        self._ears_factory = factories.ears
         self._ears: Any = None
         self._ears_rate: Optional[int] = None
         self._ears_sessions = 0
         self._ears_redials = 0
-        self._endpoint_factory = endpoint_factory
-        self._voice_factory = voice_factory or (lambda endpoint: None)
-        self._session_factory = session_factory
+        self._endpoint_factory = factories.endpoint
+        self._voice_factory = factories.voice or (lambda endpoint: None)
+        self._session_factory = factories.session
         self._summarise = summarise
         #: Every literal spelling of every secret this daemon holds, in the
         #: forms they can arrive in. Built once: the scrub runs on every
@@ -1436,7 +1455,7 @@ class DaemonApp:
         self._log("stopped", unfinished=list(report.unfinished))
         return report
 
-    def _bounded(self, call: Callable[[], bool], deadline: float) -> bool:
+    def _bounded(self, call: Callable[[], Any], deadline: float) -> bool:
         """Run one shutdown step on a worker thread, bounded by *deadline*.
 
         Lesson 2, found by attacking this module: a seam that ignores the
@@ -1450,7 +1469,12 @@ class DaemonApp:
 
         def work() -> None:
             try:
-                box.append(bool(call()))
+                # Completing IS the success. A step with no verdict of its own
+                # returns nothing and counts as done; only an explicit False
+                # (a step that really did fail) reads as failure. Before this,
+                # such a step had to end in `return True`, a sentinel that says
+                # nothing and that every reader had to have explained to them.
+                box.append(call() is not False)
             except Exception as exc:  # noqa: BLE001  # a step that raises is a step that failed
                 self._record(APP_SHUTDOWN_INCOMPLETE, _describe(exc))
                 box.append(False)
@@ -1717,11 +1741,11 @@ class DaemonApp:
         if voice is not None:
             self._fold_voice(voice)
 
-        def work() -> bool:
-            # Always True on its own: every sub-call below is folded through
-            # _safely, which records the failure and moves on, so this step
-            # has no verdict of its own. The only way it reads as False is
-            # _bounded's timeout, which the caller counts and records below.
+        def work() -> None:
+            # No verdict of its own: every sub-call below is folded through
+            # _safely, which records the failure and moves on. The only way
+            # this step reads as failure is _bounded's timeout, which the
+            # caller counts and records below.
             if voice is not None:
                 # The voice outlives the ear: it is pointed at a NullEndpoint
                 # rather than closed, so a reply with no ear attached is still
@@ -1735,11 +1759,10 @@ class DaemonApp:
                     f"{ear} voice",
                 )
             if endpoint is None:
-                return True
+                return
             self._safely(endpoint.stop_capture, APP_EAR_DETACH_FAILED, ear)
             self._safely(endpoint.detach, APP_EAR_DETACH_FAILED, ear)
             self._safely(lambda: endpoint.close(TEARDOWN_DEADLINE_S), APP_EAR_DETACH_FAILED, ear)
-            return True
 
         bound = TEARDOWN_DEADLINE_S if deadline is None else max(0.05, float(deadline))
         if self._bounded(work, bound):
@@ -1763,12 +1786,11 @@ class DaemonApp:
         reaped = True
         for endpoint in pending:
 
-            def close_one(ep: Any = endpoint) -> bool:
-                # Always True: whether the close RAISED is recorded by
-                # _safely, and is a different fact from whether it RETURNED.
-                # Only the second one is what this bound is asking about.
+            def close_one(ep: Any = endpoint) -> None:
+                # No verdict: whether the close RAISED is recorded by _safely,
+                # and is a different fact from whether it RETURNED. Only the
+                # second one is what this bound is asking about.
                 self._safely(lambda: ep.close(share), APP_EAR_DETACH_FAILED, "unreaped")
-                return True
 
             if not self._bounded(close_one, share):
                 reaped = False
@@ -2917,13 +2939,12 @@ class DaemonApp:
         if voice is None or not (speaking or playing):
             return
 
-        def stop_speaking() -> bool:
-            # Always True for the same reason as _reap_endpoints: a stop that
+        def stop_speaking() -> None:
+            # No verdict, for the same reason as _reap_endpoints: a stop that
             # RAISED is recorded by _safely; this bound asks only whether it
             # RETURNED, and conflating the two would report a timeout for a
             # speaker that answered immediately with an error.
             self._safely(voice.on_speech_started, APP_TURN_FAILED, "barge-in")
-            return True
 
         if not self._bounded(stop_speaking, BARGE_IN_STOP_BOUND_S):
             # The speaker did not stop in the time the VOICE says it needs.
@@ -3886,16 +3907,18 @@ def main() -> DaemonApp:
         # ``app`` is bound below and the factory only runs on attach, after.
         # Once per code here: the client already collapses its repeating
         # faults, and the count in status() carries the magnitude.
-        ears_factory=lambda rate: RealtimeEars(
-            replace(realtime, input_sample_rate=rate),
-            on_degrade=lambda record: app._fold("ears", record, once=True),
+        factories=AppFactories(
+            ears=lambda rate: RealtimeEars(
+                replace(realtime, input_sample_rate=rate),
+                on_degrade=lambda record: app._fold("ears", record, once=True),
+            ),
+            endpoint=HostEndpoint,
+            voice=voice_factory,
         ),
-        endpoint_factory=HostEndpoint,
         summarise=summarise,
         # The bus already redacts these on its way out; this is the other
         # direction — what the GATEWAY sends back.
         redact=tuple(s for s in (realtime.api_key, secret.secret) if s),
-        voice_factory=voice_factory,
     )
     try:
         app._server = server_module.DashboardServer(
