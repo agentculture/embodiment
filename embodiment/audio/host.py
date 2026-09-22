@@ -507,6 +507,12 @@ PLAYER_LATENCY_MS = 40
 #: grace period the child gets to use.
 _BARGE_IN_KILL_TIMEOUT_S = 0.15
 
+#: How long the capture thread waits to reap a child that ended ON ITS OWN
+#: (review finding 5, PR #87). The child has already closed stdout by then,
+#: so the wait is normally instant; the bound only keeps this module's own
+#: thread from hanging on a child that lingers after EOF.
+_SELF_EXIT_REAP_TIMEOUT_S = 0.5
+
 #: Round 3 finding 1's cooldown, unchanged in shape, now guarding a process
 #: spawn instead of a PortAudio open: 2 s doubling to a 30 s cap.
 _OPEN_COOLDOWN_BASE_S = 2.0
@@ -1317,16 +1323,20 @@ class HostEndpoint:
             self._degradation_in = None
             self._record_event({"type": "recovered", "direction": "in"})
 
-        self._capture_proc = proc
-        self._capture_stop.clear()
-        self._capture_thread = threading.Thread(
+        thread = threading.Thread(
             target=self._capture_loop,
             args=(proc,),
             name="embodiment-audio-host-capture",
             daemon=True,
         )
-        self._capture_thread.start()
-        self._capturing = True
+        with self._counter_lock:
+            # Finding 5: the capture thread clears these itself on a
+            # self-exit, so every writer of them holds the lock.
+            self._capture_proc = proc
+            self._capture_stop.clear()
+            self._capture_thread = thread
+            self._capturing = True
+        thread.start()
         self._attached = True
 
         # Round 7: verify, don't trust — confirm the stream actually linked
@@ -1348,21 +1358,22 @@ class HostEndpoint:
         """Terminate the subprocess FIRST — that is what unblocks the reader's
         pipe read (see the module docstring's threads section)."""
         self._reap_unreaped()
-        self._capture_stop.set()
-        proc = self._capture_proc
-        self._capture_proc = None
+        with self._counter_lock:
+            self._capture_stop.set()
+            proc = self._capture_proc
+            self._capture_proc = None
+            thread = self._capture_thread
+            self._capture_thread = None
+            self._capturing = False
         half = max(0.0, timeout) / 2.0
         close_failures = 0
         if proc is not None:
             close_failures = self._terminate_process(proc, timeout=half)
 
-        thread = self._capture_thread
-        self._capture_thread = None
         stopped = True
         if thread is not None:
             thread.join(timeout=half)
             stopped = not thread.is_alive()
-        self._capturing = False
         return stopped, close_failures
 
     def _capture_loop(self, proc: "subprocess.Popen[bytes]") -> None:
@@ -1392,13 +1403,37 @@ class HostEndpoint:
 
             self._deliver_capture_chunk(raw)
 
-        if ended_cleanly and not self._capture_stop.is_set():
+        if self._capture_stop.is_set():
+            return  # a requested stop: _stop_capture owns the reap and the state
+        if ended_cleanly:
             # The subprocess exited (EOF) without stop_capture() asking it to
             # — a real fault (device unplugged, subprocess crashed), not a
             # teardown. Recorded and named — see status()'s degradation_in.
             self._degradation_in = EndpointDegradation(
                 DEGRADED_CAPTURE_ENDED, f"capture subprocess ended: {_describe_process_exit(proc)}"
             )
+        self._release_self_ended_capture(proc)
+
+    def _release_self_ended_capture(self, proc: "subprocess.Popen[bytes]") -> None:
+        """The capture loop ended on its own (EOF or a read fault), not by a
+        requested stop. Review finding 5 (PR #87): leaving ``_capturing``,
+        ``_capture_proc`` and ``_capture_thread`` set made ``status()`` lie,
+        the next ``start_capture()`` a no-op and the child a zombie holding
+        two open pipe ends. Reap it (bounded), close its pipes, and clear the
+        shared state — only if that state is still THIS loop's, so a
+        concurrent ``_stop_capture``/restart is never undone. The
+        degradation recorded above is left in place.
+        """
+        # An EOF means the child has already closed stdout, so this wait is
+        # normally instant; a child that lingers past the bound joins
+        # `_unreaped` (round 7b finding 2) rather than blocking this thread.
+        self._terminate_process(proc, timeout=_SELF_EXIT_REAP_TIMEOUT_S)
+        with self._counter_lock:
+            if self._capture_proc is proc:
+                self._capture_proc = None
+                self._capturing = False
+            if self._capture_thread is threading.current_thread():
+                self._capture_thread = None
 
     def _count_callback_error(self) -> None:
         with self._counter_lock:

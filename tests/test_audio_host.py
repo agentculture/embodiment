@@ -1394,6 +1394,46 @@ def test_capture_subprocess_ending_unexpectedly_is_recorded_named():
     endpoint.close(2.0)
 
 
+def test_finding5_capture_child_self_exit_clears_state_reaps_and_allows_restart():
+    """Review finding 5: when the capture child exited on its own the loop
+    recorded DEGRADED_CAPTURE_ENDED and returned, but ``_capturing``,
+    ``_capture_proc`` and ``_capture_thread`` stayed set and the child was
+    never waited — ``status()["capturing"]`` lied, the next
+    ``start_capture()`` was a no-op, and the child was a zombie holding two
+    open pipe ends. On self-exit the child is reaped, its pipes closed and
+    the state cleared so a restart spawns again; the degradation stays."""
+    spawned: list[subprocess.Popen] = []
+    inner = _make_popen(capture_script=_CAPTURE_ENDS_SCRIPT)
+
+    def popen(argv, **kwargs):
+        proc = inner(argv, **kwargs)
+        if argv[0] in CAPTURE_BINARIES:
+            spawned.append(proc)
+        return proc
+
+    endpoint = HostEndpoint(which=_fake_which({"arecord", "aplay"}), popen=popen)
+    received: list[bytes] = []
+    endpoint.start_capture(received.append)
+    _wait_until(lambda: endpoint.status()["degradation_in"] is not None)
+    assert endpoint.status()["degradation_in"]["code"] == DEGRADED_CAPTURE_ENDED
+
+    assert _wait_until(lambda: endpoint.status()["capturing"] is False), "capturing still True"
+    first = spawned[0]
+    assert first.returncode is not None, "the exited child was never reaped"
+    assert first.stdout is not None and first.stdout.closed, "child stdout pipe left open"
+    assert first.stderr is not None and first.stderr.closed, "child stderr pipe left open"
+    # The degradation survives the cleanup: the host still learns why.
+    assert endpoint.status()["degradation_in"]["code"] == DEGRADED_CAPTURE_ENDED
+
+    endpoint.start_capture(received.append)
+    assert len(spawned) == 2, "start_capture() after a self-exit was a no-op"
+    assert endpoint.status()["capturing"] is True
+    recovered = [e for e in endpoint.events if e.get("type") == "recovered"]
+    assert recovered and recovered[-1]["direction"] == "in"
+    endpoint.close(2.0)
+    assert endpoint.status()["capturing"] is False
+
+
 def test_select_channel_helper_never_raises_on_malformed_input():
     numpy = _import_numpy_real()
     assert _select_channel(numpy, b"", 2, 1) == b""
