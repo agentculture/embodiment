@@ -889,7 +889,12 @@ class TestSplitSentences:
         assert sum(len(s) for s in out) <= MAX_REPLY_CHARS
 
     def test_unicode_bidi_and_control_characters_do_not_crash(self) -> None:
-        hostile = "hello ‮world‬. \x00\x01 second sentence here."
+        # chr(), not literal: a bidi character in a source file is its own
+        # finding (S6389); what is under test is what the splitter does with
+        # one, not whether this file contains one.
+        hostile = (
+            "hello " + chr(0x202E) + "world" + chr(0x202C) + ". \x00\x01 second sentence here."
+        )
         out = split_sentences(hostile)
         assert isinstance(out, list)
         assert all(isinstance(s, str) for s in out)

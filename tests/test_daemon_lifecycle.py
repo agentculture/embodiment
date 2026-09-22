@@ -1500,7 +1500,10 @@ class TestTheStopReasonIsKept:
             target=DEFAULT_TARGET,
             exit_process=lambda code: None,
         )
-        runner.request_stop("/etc/passwd\n‮evil")
+        # Built with chr(), never written literally: a bidi character in a
+        # source file is its own finding (S6389), and the point here is what
+        # the sanitiser does with it, not what the file looks like.
+        runner.request_stop("/etc/passwd\n" + chr(0x202E) + "evil")
         runner._finalise(0, hard=False)
 
         record, _ = pidfile.read()
@@ -1508,7 +1511,7 @@ class TestTheStopReasonIsKept:
         written = record["stop_reason"]
         assert "/" not in written
         assert "\n" not in written
-        assert "‮" not in written
+        assert chr(0x202E) not in written
 
     def test_a_daemon_that_never_stopped_records_no_reason(self, tmp_path: Path) -> None:
         state = DaemonState(tmp_path / "state3")
