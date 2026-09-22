@@ -1266,8 +1266,9 @@ class HostEndpoint:
 
         # A normal end of session (unlike stop_playback()'s barge-in) gets a
         # brief chance to exit on its own after EOF — up to a THIRD of the
-        # deadline, so plenty is still left for the capture/writer joins
-        # below even if the player uses its whole share.
+        # deadline, and a player that ignores EOF gets terminate+kill inside
+        # a second third (finding 6), so a third is always left for the
+        # capture/writer joins below even if the player uses its whole share.
         samples_discarded, playback_close_failures = self._stop_playback_internal(
             drain_timeout=deadline / 3.0
         )
@@ -1633,7 +1634,13 @@ class HostEndpoint:
                 try:
                     proc.wait(timeout=drain_timeout)
                 except subprocess.TimeoutExpired:
-                    close_failures = self._terminate_process(proc)
+                    # Review finding 6 (PR #87): the default 3 s + 3 s here
+                    # let close(1.0) run for seconds. The escalation gets
+                    # the same share the drain had, split between the
+                    # SIGTERM wait and the SIGKILL wait, so this whole
+                    # branch stays within 2x the drain share — lesson 1:
+                    # a clock sized against the wrong quantity.
+                    close_failures = self._terminate_process(proc, timeout=drain_timeout / 2.0)
             else:
                 # Barge-in: SIGKILL at once, no SIGTERM grace period (round 5).
                 close_failures = self._kill_process_fast(proc)

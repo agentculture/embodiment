@@ -1848,6 +1848,39 @@ def test_round7b_finding2_unreaped_child_is_tracked_and_reaped_later():
     assert report2.children_unreaped == 0
 
 
+_PLAYBACK_IGNORES_EOF_AND_SIGTERM_SCRIPT = """
+import signal, sys, time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+sys.stdin.buffer.read(4)
+while True:
+    time.sleep(0.05)
+"""
+
+
+def test_finding6_close_deadline_holds_against_a_player_that_ignores_eof_and_sigterm():
+    """Review finding 6: `_stop_playback_internal` on a drain TimeoutExpired
+    called `_terminate_process(proc)` with its DEFAULT 3 s + 3 s while the
+    daemon calls `close(1.0)` — the close overran its deadline by seconds.
+    The remaining budget must be passed through: close never exceeds its
+    deadline by more than one slice."""
+    endpoint = HostEndpoint(
+        which=_fake_which({"arecord", "aplay"}),
+        popen=_make_popen(playback_script=_PLAYBACK_IGNORES_EOF_AND_SIGTERM_SCRIPT),
+    )
+    endpoint.play(_silence_frame(4800))
+    _wait_until(lambda: endpoint.status()["playback_written_samples"] > 0)
+
+    start = time.perf_counter()
+    report = endpoint.close(1.0)
+    elapsed = time.perf_counter() - start
+
+    assert elapsed < 1.2, f"close(1.0) took {elapsed:.2f} s"
+    assert report.elapsed_s < 1.2
+    # The player was SIGKILLed inside the budget, not abandoned.
+    assert report.children_unreaped == 0
+    assert report.streams_close_failed == 0
+
+
 def test_close_is_idempotent_and_bounded(tmp_path):
     sink = tmp_path / "sink.txt"
     endpoint = HostEndpoint(
