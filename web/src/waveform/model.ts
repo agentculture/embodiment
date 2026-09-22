@@ -12,6 +12,15 @@
 // assistant trace must not borrow liveness from a chatty listener trace or
 // vice versa (mirrors Waveform.tsx round 3's per-signal idle rule, now
 // applied to two signals instead of one).
+//
+// Round 2 correction (coordinator's live-Chrome review): a bucket's min and
+// max were previously collapsed into one "peak magnitude" number and drawn
+// as ONE polyline -- which reads as a sawtooth, not an oscilloscope trace,
+// because it alternates between a bucket's floor and ceiling with no
+// relation to which is which. `features.py`'s own envelope is a MIN line
+// and a MAX line; `NormalizedEnvelope` now carries both, separately,
+// normalized to [-1, 1] (int8 range, signed) rather than collapsed to a
+// single [0, 1] magnitude.
 
 import { decodeEnvelope } from "../audio/envelope";
 import type { EventEnvelope, FeaturesData } from "../api/events";
@@ -32,10 +41,21 @@ export const DEFAULT_IDLE_AFTER_MS = 500;
  */
 const RESONANCE_FIELD = "resonance_hz";
 
+/** The min line and the max line of one bucketed envelope, each value
+ *  normalized to [-1, 1] -- what `features.py`'s min/max envelope actually
+ *  means (two bounds per bucket, not one collapsed magnitude). Both arrays
+ *  are always the same length. */
+export interface NormalizedEnvelope {
+  mins: number[];
+  maxs: number[];
+}
+
+export const EMPTY_ENVELOPE: NormalizedEnvelope = { mins: [], maxs: [] };
+
 /** One decoded `features` event, still carrying the fields a readout needs --
  *  distinct from `TraceFrame` (below), which is what the CANVAS draws. */
 export interface TraceSample {
-  bars: number[];
+  envelope: NormalizedEnvelope;
   levelDb: number;
   noiseFloorDb: number | null;
   zeroCrossingHz: number | null;
@@ -53,10 +73,10 @@ export interface TraceSample {
 /** What the canvas actually draws for one trace on one animation frame. */
 export interface TraceFrame {
   isIdle: boolean;
-  /** Per-bucket peak magnitude, normalized to [0, 1]. Empty while idle --
-   *  idle is its own state, never the last live frame redrawn (see
-   *  `traceFrame`'s own doc). */
-  bars: number[];
+  /** The min/max envelope to draw as two polylines with a filled band
+   *  between them. Both arrays empty while idle -- idle is its own state,
+   *  never the last live frame redrawn (see `traceFrame`'s own doc). */
+  envelope: NormalizedEnvelope;
   levelNorm: number;
   direction: string | null;
 }
@@ -64,6 +84,11 @@ export interface TraceFrame {
 function clamp01(value: number): number {
   if (Number.isNaN(value)) return 0;
   return Math.min(1, Math.max(0, value));
+}
+
+function clampSigned(value: number): number {
+  if (Number.isNaN(value)) return 0;
+  return Math.min(1, Math.max(-1, value));
 }
 
 /** dBFS floor a level normalizes against -- the same constant Waveform.tsx's
@@ -96,14 +121,11 @@ export function sampleFromFeatures(
   const decoded = decodeEnvelope(env);
   if (!decoded || decoded.mins.length === 0) return null;
 
-  const bars = decoded.mins.map((min, i) => {
-    const max = decoded.maxs[i] ?? min;
-    const peak = Math.max(Math.abs(min), Math.abs(max));
-    return clamp01(peak / INT8_RANGE);
-  });
-
   return {
-    bars,
+    envelope: {
+      mins: decoded.mins.map((v) => clampSigned(v / INT8_RANGE)),
+      maxs: decoded.maxs.map((v) => clampSigned(v / INT8_RANGE)),
+    },
     levelDb: Number(data.level_db ?? LEVEL_FLOOR_DB),
     noiseFloorDb: readOptionalNumber(data, "noise_floor_db"),
     zeroCrossingHz: readOptionalNumber(data, "zero_crossing_hz"),
@@ -116,8 +138,8 @@ export function sampleFromFeatures(
 /**
  * The frame one trace draws right now: live (moving with the sample) while
  * `nowMs` is within `idleAfterMs` of the sample's own arrival, idle (flat,
- * `bars: []`) once it is not -- evaluated fresh on EVERY call against the
- * caller's current clock, never cached. This is what makes idle its own
+ * empty envelope) once it is not -- evaluated fresh on EVERY call against
+ * the caller's current clock, never cached. This is what makes idle its own
  * state rather than a frozen last frame: an oscilloscope re-evaluating this
  * on every animation frame goes flat exactly `idleAfterMs` after the last
  * sample, with no new event required to notice the silence (t18 acceptance
@@ -130,11 +152,16 @@ export function traceFrame(
   idleAfterMs: number = DEFAULT_IDLE_AFTER_MS,
 ): TraceFrame {
   if (!sample || nowMs - sample.receivedAtMs >= idleAfterMs) {
-    return { isIdle: true, bars: [], levelNorm: 0, direction: sample?.direction ?? null };
+    return {
+      isIdle: true,
+      envelope: EMPTY_ENVELOPE,
+      levelNorm: 0,
+      direction: sample?.direction ?? null,
+    };
   }
   return {
     isIdle: false,
-    bars: sample.bars,
+    envelope: sample.envelope,
     levelNorm: clamp01((sample.levelDb - LEVEL_FLOOR_DB) / -LEVEL_FLOOR_DB),
     direction: sample.direction,
   };

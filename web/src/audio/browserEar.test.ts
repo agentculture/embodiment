@@ -179,7 +179,9 @@ describe("BrowserEar listener analyser source -- AnalyserNode only when the brow
     expect(ear.status().analyserActive).toBe(true);
     const source = ear.listenerAnalyserSource();
     expect(source).not.toBeNull();
-    expect(source?.readTrace()).toHaveLength(16);
+    const envelope = source?.readTrace();
+    expect(envelope?.mins).toHaveLength(16);
+    expect(envelope?.maxs).toHaveLength(16);
   });
 
   it("stays without an analyser when mic capture fails to start (e.g. permission denied)", async () => {
@@ -193,21 +195,25 @@ describe("BrowserEar listener analyser source -- AnalyserNode only when the brow
     expect(ear.listenerAnalyserSource()).toBeNull();
   });
 
-  it("converts analyser bytes to the same [0, 1]-per-bucket shape the bus envelope uses", () => {
+  it("converts analyser bytes to the same min/max-per-bucket NormalizedEnvelope shape the bus envelope uses", () => {
     const { deps } = makeDeps({ createAnalyser: () => fakeAnalyser(255) }); // full-scale positive
     const ear = new BrowserEar({ wsUrl: "ws://x", secret: "s" }, fakeContext(), deps);
     const micCapture = { start: vi.fn(async () => true), stop: vi.fn() };
     (deps as { createMicCapture: unknown }).createMicCapture = () =>
       micCapture as unknown as ReturnType<BrowserEarDeps["createMicCapture"]>;
     return ear.startMic().then(() => {
-      const trace = ear.listenerAnalyserSource()?.readTrace();
-      expect(trace).toHaveLength(16);
-      trace?.forEach((bar) => {
-        expect(bar).toBeGreaterThanOrEqual(0);
-        expect(bar).toBeLessThanOrEqual(1);
+      const envelope = ear.listenerAnalyserSource()?.readTrace();
+      expect(envelope?.mins).toHaveLength(16);
+      expect(envelope?.maxs).toHaveLength(16);
+      envelope?.maxs.forEach((v) => {
+        expect(v).toBeGreaterThanOrEqual(-1);
+        expect(v).toBeLessThanOrEqual(1);
       });
-      // byte 255 -> |255-128|/128 = 0.9921875, clamped at <= 1.
-      expect(trace?.[0]).toBeCloseTo(127 / 128, 5);
+      // Every analyser byte is 255 (constant full-scale positive), so the
+      // bucket never sees a value below the initial min=0 -- the min line
+      // stays 0 and the max line saturates near +1 (|255-128|/128, clamped).
+      expect(envelope?.mins[0]).toBe(0);
+      expect(envelope?.maxs[0]).toBeCloseTo(127 / 128, 5);
     });
   });
 

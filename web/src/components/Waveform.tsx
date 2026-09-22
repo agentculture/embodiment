@@ -3,20 +3,26 @@
 // Task t18: replaces the round-3 SVG bar chart with a canvas oscilloscope
 // drawing TWO traces -- the assistant (`direction: "out"`) and the listener
 // (`direction: "in"`) -- from the same `features` bus event kind, at
-// animation-frame rate. Split deliberately across three files so the parts
-// that can be tested without a canvas are (integrator note: "jsdom has no
-// canvas ... test the pure events -> frame model function and keep the
-// canvas thin"):
+// animation-frame rate. Split deliberately across several files so the
+// parts that can be tested without a canvas are (integrator note: "jsdom
+// has no canvas ... test the pure events -> frame model function and keep
+// the canvas thin"):
 //
-//   - `waveform/model.ts`  -- pure: features event -> live/idle trace frame.
+//   - `waveform/model.ts`  -- pure: features event -> live/idle trace frame
+//                             (a min line and a max line per trace).
 //   - `waveform/draw.ts`   -- thin: a frame -> 2D context calls, against an
-//                             injectable `DrawableContext2D` so a test can
-//                             assert the calls without a real canvas.
+//                             injectable `DrawableContext2D`, and the design-
+//                             token color resolver.
+//   - `waveform/hidpi.ts`  -- pure arithmetic: CSS size + DPR -> backing
+//                             store size, plus the `ResizeObserver` seam.
 //   - this file            -- wiring: owns the `<canvas>` element, the
 //                             requestAnimationFrame loop (coalescing every
 //                             `features` event that arrived since the last
 //                             frame into whatever the NEXT frame draws,
-//                             cancelling on unmount), and the readouts.
+//                             cancelling on unmount), the hi-DPI backing-
+//                             store sizing (mount + ResizeObserver), the
+//                             design-token color re-read (mount + resize),
+//                             and the readouts.
 //
 // `AnalyserNode` only when the browser is the ear (t18 instruction): by
 // default the listener trace is built from bus `features` events exactly
@@ -30,24 +36,42 @@
 import { useEffect, useRef, useState } from "react";
 import type { EventEnvelope } from "../api/events";
 import { Readouts } from "./Readouts";
-import type { DrawableContext2D } from "../waveform/draw";
-import { drawOscilloscope } from "../waveform/draw";
-import type { TraceSample } from "../waveform/model";
+import type { ComputedStyleReader, DrawableContext2D, OscilloscopeColors } from "../waveform/draw";
+import { DEFAULT_OSCILLOSCOPE_COLORS, drawOscilloscope, readOscilloscopeColors } from "../waveform/draw";
+import type { NormalizedEnvelope, TraceSample } from "../waveform/model";
 import { DEFAULT_IDLE_AFTER_MS, oscilloscopeModel, sampleFromFeatures } from "../waveform/model";
+import type { CssSize, ResizeObserverFactory } from "../waveform/hidpi";
+import {
+  computeBackingSize,
+  defaultResizeObserverFactory,
+  readDevicePixelRatio,
+} from "../waveform/hidpi";
 
 export { DEFAULT_IDLE_AFTER_MS };
 
-const CANVAS_WIDTH = 640;
-const CANVAS_HEIGHT = 160;
+/** Fallback CSS size used only before the canvas has ever been laid out
+ *  (e.g. the very first `applySize()` call, or a `measureSize` that reports
+ *  0x0 -- jsdom never runs layout at all, so `clientWidth`/`clientHeight`
+ *  are 0 there by construction). Matches the stylesheet's own default
+ *  `.waveform` box (`web/src/styles/app.css`). */
+const FALLBACK_CSS_WIDTH = 640;
+const FALLBACK_CSS_HEIGHT = 160;
+
+/** A 2D context that can also scale for hi-DPI backing stores -- the real
+ *  `CanvasRenderingContext2D` satisfies both this and `DrawableContext2D`
+ *  for free; a test's fake context must implement `setTransform` too. */
+export type ScalableContext2D = DrawableContext2D & {
+  setTransform(a: number, b: number, c: number, d: number, e: number, f: number): void;
+};
 
 /** A live audio analyser this component reads once per animation frame --
  *  never owns or creates the `AnalyserNode` itself (that lives in
- *  `audio/browserEar.ts`, which owns the mic's AudioContext). Returns
- *  per-bucket magnitudes already normalized to [0, 1], the same shape
- *  `sampleFromFeatures` produces from the bus, or `null` when there is
- *  nothing to show yet (e.g. capture just started). */
+ *  `audio/browserEar.ts`, which owns the mic's AudioContext). Returns a
+ *  min/max envelope in the SAME normalized shape `sampleFromFeatures`
+ *  produces from the bus (one draw path serves both sources), or `null`
+ *  when there is nothing to show yet (e.g. capture just started). */
 export interface ListenerAnalyserSource {
-  readTrace(): number[] | null;
+  readTrace(): NormalizedEnvelope | null;
 }
 
 export interface RafScheduler {
@@ -60,16 +84,27 @@ const defaultRaf: RafScheduler = {
   cancel: (id) => window.cancelAnimationFrame(id),
 };
 
-function defaultContextFactory(canvas: HTMLCanvasElement): DrawableContext2D | null {
+function defaultContextFactory(canvas: HTMLCanvasElement): ScalableContext2D | null {
   // Never throws (lesson 3): a browser without 2D canvas support, or a
   // test environment (jsdom has no canvas backend at all), degrades to "no
   // context" -- the draw loop below already treats that as a no-op rather
   // than a crash.
   try {
-    return canvas.getContext("2d") as unknown as DrawableContext2D | null;
+    return canvas.getContext("2d") as unknown as ScalableContext2D | null;
   } catch {
     return null;
   }
+}
+
+/** Defaults to the canvas's own laid-out CSS size. Under jsdom (no layout
+ *  engine) this is always 0x0 -- `computeBackingSize` already floors that
+ *  at a valid 1x1 backing store, and `FALLBACK_CSS_WIDTH`/`HEIGHT` are used
+ *  as the LOGICAL drawing size in that case so the trace still has a
+ *  sensible coordinate space to draw into. */
+function defaultMeasureSize(canvas: HTMLCanvasElement): CssSize {
+  const width = canvas.clientWidth || FALLBACK_CSS_WIDTH;
+  const height = canvas.clientHeight || FALLBACK_CSS_HEIGHT;
+  return { width, height };
 }
 
 export interface WaveformProps {
@@ -79,7 +114,7 @@ export interface WaveformProps {
   idleAfterMs?: number;
   /** Test seam: defaults to `canvas.getContext("2d")`. jsdom returns `null`
    *  here, which is why every canvas-behavior test injects a fake. */
-  contextFactory?: (canvas: HTMLCanvasElement) => DrawableContext2D | null;
+  contextFactory?: (canvas: HTMLCanvasElement) => ScalableContext2D | null;
   /** Test seam: defaults to `window.requestAnimationFrame`. */
   raf?: RafScheduler;
   /** Test seam: defaults to `Date.now`. */
@@ -89,6 +124,15 @@ export interface WaveformProps {
    *  which case the listener trace comes from bus `features` events like
    *  the assistant trace. */
   listenerAnalyser?: ListenerAnalyserSource | null;
+  /** Test seam (round 2): defaults to `canvas.clientWidth`/`clientHeight`. */
+  measureSize?: (canvas: HTMLCanvasElement) => CssSize;
+  /** Test seam (round 2): defaults to a real `ResizeObserver` when the
+   *  global exists, a no-op otherwise (jsdom has none at all). */
+  resizeObserverFactory?: ResizeObserverFactory;
+  /** Test seam (round 2): defaults to `window.devicePixelRatio`. */
+  devicePixelRatioFn?: () => number;
+  /** Test seam (round 2): defaults to `window.getComputedStyle`. */
+  styleReader?: ComputedStyleReader;
 }
 
 /**
@@ -107,6 +151,10 @@ export function Waveform({
   raf = defaultRaf,
   nowFn = Date.now,
   listenerAnalyser = null,
+  measureSize = defaultMeasureSize,
+  resizeObserverFactory = defaultResizeObserverFactory,
+  devicePixelRatioFn = readDevicePixelRatio,
+  styleReader,
 }: WaveformProps) {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const outSampleRef = useRef<TraceSample | null>(null);
@@ -157,6 +205,52 @@ export function Waveform({
     let cancelled = false;
     let frameId: number | null = null;
 
+    // The logical (CSS-pixel) drawing size, re-derived every time the
+    // canvas is resized -- draw calls always use THIS, never the backing
+    // store's device-pixel dimensions, because `ctx.setTransform` below
+    // already maps logical pixels to device pixels once per resize.
+    let drawSize: CssSize = { width: FALLBACK_CSS_WIDTH, height: FALLBACK_CSS_HEIGHT };
+    let colors: OscilloscopeColors = DEFAULT_OSCILLOSCOPE_COLORS;
+
+    // Round 2 (coordinator, item 2): size the BACKING STORE from
+    // `clientWidth * devicePixelRatio`, on mount and on every resize, and
+    // scale the context so every draw call keeps using CSS-pixel
+    // coordinates -- a canvas whose backing store matches its CSS box 1:1
+    // renders blurry on any display denser than 1x. The CSS size itself is
+    // untouched here (no `canvas.style.width/height` write): it stays
+    // exactly what the stylesheet already gives `.waveform`.
+    const applySize = () => {
+      const cssSize = measureSize(canvas);
+      drawSize = {
+        width: cssSize.width || FALLBACK_CSS_WIDTH,
+        height: cssSize.height || FALLBACK_CSS_HEIGHT,
+      };
+      const dpr = devicePixelRatioFn();
+      const backing = computeBackingSize(drawSize, dpr);
+      canvas.width = backing.width;
+      canvas.height = backing.height;
+      // setTransform (not scale()): idempotent across repeated resizes --
+      // scale() would compound with whatever transform was already there.
+      try {
+        ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      } catch {
+        // A fake/degraded context without setTransform -- draw calls still
+        // work, just against the raw backing-store pixel grid; never a
+        // crash (lesson 3).
+      }
+
+      // Round 2 (coordinator, item 3): re-read the design-token colors on
+      // every resize too, not only on mount -- a resize is the same signal
+      // this component already reacts to, and re-reading here means a
+      // stylesheet swap or a theme change that also reflows the page is
+      // picked up without a separate observer.
+      colors = readOscilloscopeColors(canvas, styleReader);
+    };
+
+    applySize();
+    const resizeObserver = resizeObserverFactory(applySize);
+    resizeObserver.observe(canvas);
+
     const tick = () => {
       if (cancelled) return;
       const now = nowFn();
@@ -166,7 +260,7 @@ export function Waveform({
         const trace = listenerAnalyser.readTrace();
         if (trace) {
           inSample = {
-            bars: trace,
+            envelope: trace,
             levelDb: 0,
             noiseFloorDb: null,
             zeroCrossingHz: null,
@@ -178,7 +272,7 @@ export function Waveform({
       }
 
       const model = oscilloscopeModel(outSampleRef.current, inSample, now, idleAfterMs);
-      drawOscilloscope(ctx, CANVAS_WIDTH, CANVAS_HEIGHT, model);
+      drawOscilloscope(ctx, drawSize.width, drawSize.height, model, colors);
 
       setOutIdle((prev) => (prev === model.out.isIdle ? prev : model.out.isIdle));
       setInIdle((prev) => (prev === model.in.isIdle ? prev : model.in.isIdle));
@@ -191,8 +285,19 @@ export function Waveform({
     return () => {
       cancelled = true;
       if (frameId !== null) raf.cancel(frameId);
+      resizeObserver.disconnect();
     };
-  }, [contextFactory, raf, nowFn, idleAfterMs, listenerAnalyser]);
+  }, [
+    contextFactory,
+    raf,
+    nowFn,
+    idleAfterMs,
+    listenerAnalyser,
+    measureSize,
+    resizeObserverFactory,
+    devicePixelRatioFn,
+    styleReader,
+  ]);
 
   return (
     <div
@@ -206,8 +311,8 @@ export function Waveform({
         className="waveform"
         role="img"
         aria-label="live assistant and listener audio oscilloscope"
-        width={CANVAS_WIDTH}
-        height={CANVAS_HEIGHT}
+        width={FALLBACK_CSS_WIDTH}
+        height={FALLBACK_CSS_HEIGHT}
       />
       <div className="waveform__readouts-row">
         <Readouts sample={outSample} label="assistant" />

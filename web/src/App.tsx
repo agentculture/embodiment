@@ -22,7 +22,17 @@ export interface AppProps {
    *  undefined in production, where `Waveform`'s own defaults
    *  (`canvas.getContext("2d")`, `window.requestAnimationFrame`,
    *  `Date.now`, no analyser) apply. */
-  waveformOptions?: Pick<WaveformProps, "contextFactory" | "raf" | "nowFn" | "listenerAnalyser">;
+  waveformOptions?: Pick<
+    WaveformProps,
+    | "contextFactory"
+    | "raf"
+    | "nowFn"
+    | "listenerAnalyser"
+    | "measureSize"
+    | "resizeObserverFactory"
+    | "devicePixelRatioFn"
+    | "styleReader"
+  >;
 }
 
 const DEFAULT_EVENTS_URL = "/api/events";

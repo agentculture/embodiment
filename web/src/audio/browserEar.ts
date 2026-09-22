@@ -23,12 +23,19 @@
 // and records rather than throwing, and `status()` reports which listener
 // source is actually in effect -- the same "observable, not merely correct"
 // requirement `remote.py` states of itself on the server side.
+//
+// No UI wires this module to a control in v1: the operator's decision is
+// that the phone is control + text, not voice, so `BrowserEar` stays a
+// standalone module with no on-screen toggle to start/stop it (t18 round 2,
+// accepted as-is by the coordinator; nothing here is unfinished on that
+// account).
 
 import type { AudioContextLike } from "./lobes/audio-graph";
 import { MicCapture, type MicCaptureState, type MicStateDetail } from "./lobes/mic-capture";
 import { DeltaPlayer, type PlaybackState, type PlaybackStopInfo } from "./lobes/audio-playback";
 import { AUDIO_DELTA_EVENT_TYPE, type AppendEvent } from "./lobes/pcm-wire";
 import type { ListenerAnalyserSource } from "../components/Waveform";
+import type { NormalizedEnvelope } from "../waveform/model";
 
 /** `RemoteEndpoint`'s own first-message contract (`embodiment/audio/
  *  remote.py`): `{"type": "auth", "secret": "..."}`, sent before anything
@@ -99,24 +106,35 @@ export interface BrowserEarConfig {
 const ANALYSER_BUCKETS = 16;
 
 /** `getByteTimeDomainData` centers silence at 128 (unsigned byte PCM) --
- *  converted to the same [0, 1] peak-magnitude-per-bucket shape
- *  `waveform/model.ts`'s `sampleFromFeatures` produces from the bus, so one
- *  draw path serves both sources. */
-function analyserBytesToBars(bytes: Uint8Array, bucketCount: number): number[] {
-  if (bytes.length === 0) return new Array(bucketCount).fill(0);
+ *  converted to the SAME min/max-per-bucket `NormalizedEnvelope` shape
+ *  `waveform/model.ts`'s `sampleFromFeatures` produces from the bus (round
+ *  2: previously collapsed to one peak-magnitude number per bucket, which
+ *  drew as a single sawtooth line rather than a min line and a max line),
+ *  so one draw path serves both sources with no special-casing. */
+function analyserBytesToEnvelope(bytes: Uint8Array, bucketCount: number): NormalizedEnvelope {
+  if (bytes.length === 0) {
+    return { mins: new Array(bucketCount).fill(0), maxs: new Array(bucketCount).fill(0) };
+  }
   const bucketSize = Math.max(1, Math.floor(bytes.length / bucketCount));
-  const bars: number[] = [];
+  const mins: number[] = [];
+  const maxs: number[] = [];
   for (let b = 0; b < bucketCount; b += 1) {
-    let peak = 0;
+    let min = 0;
+    let max = 0;
     const start = b * bucketSize;
     const end = b === bucketCount - 1 ? bytes.length : start + bucketSize;
     for (let i = start; i < end && i < bytes.length; i += 1) {
-      const magnitude = Math.abs(bytes[i] - 128) / 128;
-      if (magnitude > peak) peak = magnitude;
+      // Signed deviation from silence (128), normalized to [-1, 1] -- the
+      // same convention `sampleFromFeatures` uses for the bus envelope's
+      // signed int8 mins/maxs.
+      const signed = (bytes[i] - 128) / 128;
+      if (signed < min) min = signed;
+      if (signed > max) max = signed;
     }
-    bars.push(Math.min(1, peak));
+    mins.push(Math.max(-1, min));
+    maxs.push(Math.min(1, max));
   }
-  return bars;
+  return { mins, maxs };
 }
 
 export interface BrowserEarStatus {
@@ -269,7 +287,7 @@ export class BrowserEar {
       readTrace: () => {
         const bytes = new Uint8Array(analyser.frequencyBinCount);
         analyser.getByteTimeDomainData(bytes);
-        return analyserBytesToBars(bytes, ANALYSER_BUCKETS);
+        return analyserBytesToEnvelope(bytes, ANALYSER_BUCKETS);
       },
     };
   }

@@ -1,9 +1,9 @@
 import { act, render } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { Waveform } from "./Waveform";
-import type { RafScheduler } from "./Waveform";
-import type { DrawableContext2D } from "../waveform/draw";
+import type { RafScheduler, ScalableContext2D } from "./Waveform";
 import type { EventEnvelope } from "../api/events";
+import type { ResizeObserverLike } from "../waveform/hidpi";
 
 function encode(values: number[]): string {
   const bytes = new Uint8Array(values.map((v) => v & 0xff));
@@ -63,18 +63,52 @@ function fakeRaf(): { scheduler: RafScheduler; tick: (nowMs: number) => void; ca
   };
 }
 
-function fakeContext(): DrawableContext2D {
+function fakeContext(): ScalableContext2D {
   return {
     clearRect: () => {},
     beginPath: () => {},
     moveTo: () => {},
     lineTo: () => {},
+    closePath: () => {},
     stroke: () => {},
+    fill: () => {},
     fillRect: () => {},
+    setTransform: () => {},
     strokeStyle: "",
     fillStyle: "",
     lineWidth: 0,
     globalAlpha: 1,
+  };
+}
+
+/** A controllable ResizeObserver double: `trigger()` invokes whatever
+ *  callback the component last registered; `observedCount`/`disconnected`
+ *  let a test assert the wiring itself (observe on mount, disconnect on
+ *  unmount) without a real `ResizeObserver` -- jsdom has none at all. */
+function fakeResizeObserverFactory(): {
+  factory: (callback: () => void) => ResizeObserverLike;
+  trigger: () => void;
+  observedCount: () => number;
+  disconnected: () => boolean;
+} {
+  let callback: (() => void) | null = null;
+  let observed = 0;
+  let disconnected = false;
+  return {
+    factory: (cb: () => void) => {
+      callback = cb;
+      return {
+        observe: () => {
+          observed += 1;
+        },
+        disconnect: () => {
+          disconnected = true;
+        },
+      };
+    },
+    trigger: () => callback?.(),
+    observedCount: () => observed,
+    disconnected: () => disconnected,
   };
 }
 
@@ -160,9 +194,10 @@ describe("Waveform", () => {
     let now = 1_000;
     const nowFn = () => now;
     const drawn: unknown[] = [];
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const ctx: any = fakeContext();
-    ctx.lineTo = (...args: unknown[]) => drawn.push(args);
+    const ctx: ScalableContext2D = fakeContext();
+    ctx.lineTo = (...args: unknown[]) => {
+      drawn.push(args);
+    };
 
     const { rerender } = render(
       <Waveform
@@ -288,7 +323,7 @@ describe("Waveform", () => {
       "bus",
     );
 
-    const analyser = { readTrace: () => [0.1, 0.2] };
+    const analyser = { readTrace: () => ({ mins: [-0.1, -0.2], maxs: [0.1, 0.2] }) };
     const { container: analyserContainer } = render(
       <Waveform
         features={null}
@@ -334,5 +369,173 @@ describe("Waveform", () => {
       />,
     );
     expect(container.querySelector('[data-readouts-for="assistant"] [data-readout="pitch"]')).toBeNull();
+  });
+
+  // -- Round 2, item 2: hi-DPI backing store sizing -------------------------
+
+  describe("hi-DPI canvas backing store", () => {
+    it("sizes the backing store from clientWidth/clientHeight * devicePixelRatio on mount", () => {
+      const raf = fakeRaf();
+      const canvasSize = { width: 300, height: 150 };
+      const { container } = render(
+        <Waveform
+          features={null}
+          contextFactory={fakeContext}
+          raf={raf.scheduler}
+          measureSize={() => canvasSize}
+          devicePixelRatioFn={() => 2}
+        />,
+      );
+      const canvas = container.querySelector("canvas.waveform") as HTMLCanvasElement;
+      expect(canvas.width).toBe(600);
+      expect(canvas.height).toBe(300);
+    });
+
+    it("scales the context by the device pixel ratio via setTransform", () => {
+      const raf = fakeRaf();
+      const setTransformCalls: number[][] = [];
+      const ctx = fakeContext();
+      ctx.setTransform = (a, b, c, d, e, f) => setTransformCalls.push([a, b, c, d, e, f]);
+      render(
+        <Waveform
+          features={null}
+          contextFactory={() => ctx}
+          raf={raf.scheduler}
+          measureSize={() => ({ width: 300, height: 150 })}
+          devicePixelRatioFn={() => 3}
+        />,
+      );
+      expect(setTransformCalls).toContainEqual([3, 0, 0, 3, 0, 0]);
+    });
+
+    it("re-sizes the backing store when the injected ResizeObserver fires", () => {
+      const raf = fakeRaf();
+      const ro = fakeResizeObserverFactory();
+      let size = { width: 300, height: 150 };
+      const { container } = render(
+        <Waveform
+          features={null}
+          contextFactory={fakeContext}
+          raf={raf.scheduler}
+          measureSize={() => size}
+          devicePixelRatioFn={() => 1}
+          resizeObserverFactory={ro.factory}
+        />,
+      );
+      const canvas = container.querySelector("canvas.waveform") as HTMLCanvasElement;
+      expect(canvas.width).toBe(300);
+      expect(ro.observedCount()).toBe(1);
+
+      size = { width: 600, height: 300 };
+      act(() => {
+        ro.trigger();
+      });
+      expect(canvas.width).toBe(600);
+      expect(canvas.height).toBe(300);
+    });
+
+    it("disconnects the ResizeObserver on unmount", () => {
+      const raf = fakeRaf();
+      const ro = fakeResizeObserverFactory();
+      const { unmount } = render(
+        <Waveform
+          features={null}
+          contextFactory={fakeContext}
+          raf={raf.scheduler}
+          resizeObserverFactory={ro.factory}
+        />,
+      );
+      expect(ro.disconnected()).toBe(false);
+      unmount();
+      expect(ro.disconnected()).toBe(true);
+    });
+
+    it("never throws when devicePixelRatio is absurd (attack: a spoofed huge value)", () => {
+      const raf = fakeRaf();
+      expect(() =>
+        render(
+          <Waveform
+            features={null}
+            contextFactory={fakeContext}
+            raf={raf.scheduler}
+            devicePixelRatioFn={() => 1_000_000}
+          />,
+        ),
+      ).not.toThrow();
+    });
+
+    it("keeps the CSS size untouched (never writes canvas.style)", () => {
+      const raf = fakeRaf();
+      const { container } = render(
+        <Waveform
+          features={null}
+          contextFactory={fakeContext}
+          raf={raf.scheduler}
+          measureSize={() => ({ width: 300, height: 150 })}
+          devicePixelRatioFn={() => 2}
+        />,
+      );
+      const canvas = container.querySelector("canvas.waveform") as HTMLCanvasElement;
+      expect(canvas.style.width).toBe("");
+      expect(canvas.style.height).toBe("");
+    });
+  });
+
+  // -- Round 2, item 3: colors from design tokens ---------------------------
+
+  describe("design-token colors", () => {
+    it("reads colors via the injected style reader once on mount", () => {
+      const raf = fakeRaf();
+      const styleReader = vi.fn(() => ({
+        getPropertyValue: (name: string) =>
+          name === "--accent" ? "#111111" : name === "--ink-soft" ? "#222222" : "",
+      }));
+      render(
+        <Waveform
+          features={null}
+          contextFactory={fakeContext}
+          raf={raf.scheduler}
+          styleReader={styleReader}
+        />,
+      );
+      expect(styleReader).toHaveBeenCalled();
+    });
+
+    it("re-reads colors when the ResizeObserver callback fires (a theme/resize signal)", () => {
+      const raf = fakeRaf();
+      const ro = fakeResizeObserverFactory();
+      const styleReader = vi.fn(() => ({ getPropertyValue: () => "#abcdef" }));
+      render(
+        <Waveform
+          features={null}
+          contextFactory={fakeContext}
+          raf={raf.scheduler}
+          resizeObserverFactory={ro.factory}
+          styleReader={styleReader}
+        />,
+      );
+      const callsAfterMount = styleReader.mock.calls.length;
+      expect(callsAfterMount).toBeGreaterThan(0);
+      act(() => {
+        ro.trigger();
+      });
+      expect(styleReader.mock.calls.length).toBeGreaterThan(callsAfterMount);
+    });
+
+    it("falls back to the hardcoded default color when a token resolves empty, without throwing", () => {
+      const raf = fakeRaf();
+      const styleReader = () => ({ getPropertyValue: () => "" });
+      expect(() =>
+        render(
+          <Waveform
+            features={featuresEvent()}
+            idleAfterMs={500}
+            contextFactory={fakeContext}
+            raf={raf.scheduler}
+            styleReader={styleReader}
+          />,
+        ),
+      ).not.toThrow();
+    });
   });
 });

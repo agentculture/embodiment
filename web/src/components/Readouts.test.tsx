@@ -11,7 +11,7 @@ import type { TraceSample } from "../waveform/model";
 
 function sample(overrides: Partial<TraceSample> = {}): TraceSample {
   return {
-    bars: [],
+    envelope: { mins: [], maxs: [] },
     levelDb: -20,
     noiseFloorDb: -60,
     zeroCrossingHz: 220,
