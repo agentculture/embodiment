@@ -39,6 +39,15 @@ from embodiment.daemon import lifecycle
 
 def _render(report: lifecycle.StatusReport) -> str:
     lines = [f"embodiment status: {report.state}"]
+    lines.extend(_headline_lines(report))
+    lines.extend(_counter_lines(report))
+    lines.extend(_note_lines(report))
+    return "\n".join(lines)
+
+
+def _headline_lines(report: lifecycle.StatusReport) -> list[str]:
+    """The process facts: pid, target, directory, how it exited, identity."""
+    lines: list[str] = []
     if report.pid is not None:
         lines.append(f"  pid: {report.pid}")
     if report.target:
@@ -56,6 +65,12 @@ def _render(report: lifecycle.StatusReport) -> str:
                 report.identity_verified
             ]
         )
+    return lines
+
+
+def _counter_lines(report: lifecycle.StatusReport) -> list[str]:
+    """The counters: the daemon's own write errors, and the ledger's tally."""
+    lines: list[str] = []
     snapshot = report.daemon_state or {}
     log = snapshot.get("operational_log") or {}
     ledger_snapshot = snapshot.get("ledger") or {}
@@ -68,6 +83,12 @@ def _render(report: lifecycle.StatusReport) -> str:
     lines.append(f"  degradations recorded: {report.ledger.get('count', 0)}")
     for record in report.ledger.get("recent", []):
         lines.append(f"    - {record.get('code')}: {record.get('detail')}")
+    return lines
+
+
+def _note_lines(report: lifecycle.StatusReport) -> list[str]:
+    """The notes: the detail, the other candidate directories, where we looked."""
+    lines: list[str] = []
     if report.detail:
         lines.append(f"  note: {report.detail}")
     for other in report.other_candidates:
@@ -78,7 +99,7 @@ def _render(report: lifecycle.StatusReport) -> str:
         )
     if not report.state_dir:
         lines.append(f"  looked in: {', '.join(report.candidates)}")
-    return "\n".join(lines)
+    return lines
 
 
 def cmd_status(args: argparse.Namespace) -> int:

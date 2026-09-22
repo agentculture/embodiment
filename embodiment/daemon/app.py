@@ -800,10 +800,18 @@ def _safe_name(value: object) -> str:
     return safe_reason.safe_label(value, fallback=_SAFE_NAME_FALLBACK)
 
 
+def _as_text(value: object) -> str:
+    """*value* as text: a string as it is, ``None`` as empty, anything else via ``str``."""
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return ""
+    return str(value)
+
+
 def _safe_reason_text(value: object) -> str:
     """One sanitiser for every reason this module records."""
-    text = value if isinstance(value, str) else ("" if value is None else str(value))
-    return safe_reason.scrub(text)[:MAX_REASON_CHARS]
+    return safe_reason.scrub(_as_text(value))[:MAX_REASON_CHARS]
 
 
 def http_complete(
@@ -881,26 +889,35 @@ def _wire_tool_calls(raw: Any) -> list[dict[str, Any]]:
     """
     calls: list[dict[str, Any]] = []
     for call in raw if isinstance(raw, (list, tuple)) else []:
-        if not isinstance(call, dict):
-            continue
-        function = call.get("function")
-        source = function if isinstance(function, dict) else call
-        arguments = source.get("arguments")
-        if isinstance(arguments, str):
-            try:
-                arguments = json.loads(arguments) if arguments.strip() else {}
-            except ValueError:
-                arguments = {}
-        if not isinstance(arguments, dict):
-            arguments = {}
-        calls.append(
-            {
-                "id": str(call.get("id") or ""),
-                "name": str(source.get("name") or ""),
-                "arguments": arguments,
-            }
-        )
+        converted = _wire_tool_call(call)
+        if converted is not None:
+            calls.append(converted)
     return calls
+
+
+def _wire_tool_call(call: Any) -> Optional[dict[str, Any]]:
+    """One call of :func:`_wire_tool_calls`; ``None`` for a call that is not a mapping."""
+    if not isinstance(call, dict):
+        return None
+    function = call.get("function")
+    source = function if isinstance(function, dict) else call
+    return {
+        "id": str(call.get("id") or ""),
+        "name": str(source.get("name") or ""),
+        "arguments": _wire_tool_arguments(source.get("arguments")),
+    }
+
+
+def _wire_tool_arguments(arguments: Any) -> dict[str, Any]:
+    """The call's ``arguments`` as a mapping: a JSON string is parsed, anything else is ``{}``."""
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments) if arguments.strip() else {}
+        except ValueError:
+            arguments = {}
+    if not isinstance(arguments, dict):
+        arguments = {}
+    return arguments
 
 
 class DaemonApp:
@@ -1146,7 +1163,7 @@ class DaemonApp:
         said, and the operator should hear about it even though the daemon
         has already made it harmless.
         """
-        value = text if isinstance(text, str) else ("" if text is None else str(text))
+        value = _as_text(text)
         if not value or not self._secret_forms:
             return value
         scrubbed = value
@@ -1394,10 +1411,8 @@ class DaemonApp:
                 ear=ear, attached=True, preempted=previous is not None, previous=previous
             )
 
-    def detach_ear(
-        self, name: object = None, *, publish: bool = True, deadline: Optional[float] = None
-    ) -> EarHandover:
-        """Drop the active ear. Idempotent; never raises."""
+    def detach_ear(self, *, publish: bool = True, deadline: Optional[float] = None) -> EarHandover:
+        """Drop the active ear, whichever it is. Idempotent; never raises."""
         with self._ear_lock:
             previous = self._ear_name
             if previous is None:
@@ -2812,12 +2827,12 @@ class DaemonApp:
             and loop.is_running()
             and not loop.is_closed()
             and not self._ears_closed.is_set()
+            and self._schedule_ears_close(loop, close_bound)
         ):
-            if self._schedule_ears_close(loop, close_bound):
-                # Strictly longer than what the client itself was given, so a
-                # client answering inside its own bound always wins the race
-                # against this wait.
-                self._ears_close_done.wait(timeout=close_bound + _EARS_CLOSE_GRACE_S)
+            # Strictly longer than what the client itself was given, so a
+            # client answering inside its own bound always wins the race
+            # against this wait.
+            self._ears_close_done.wait(timeout=close_bound + _EARS_CLOSE_GRACE_S)
         thread.join(timeout=max(0.05, deadline))
         return not thread.is_alive()
 

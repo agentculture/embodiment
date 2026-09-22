@@ -1567,18 +1567,7 @@ def stop(
         return StopResult(False, False, code=NO_STATE_DIR_CODE, detail=scan_error)
     live = _live(candidates)
     if live is None:
-        # The same precedence rule ``status`` follows: a live lock in ANY
-        # candidate is the thing to stop, but with nothing live the answer is
-        # reported against the PRIMARY directory. A dead record in the
-        # machine-wide fallback is not something to stop, and naming it here
-        # would point the operator at the wrong directory.
-        primary = candidates[0] if candidates else None
-        return StopResult(
-            False,
-            False,
-            state_dir=str(primary.dir) if primary is not None else None,
-            detail="no running daemon found in any candidate state directory",
-        )
+        return _nothing_to_stop(candidates)
 
     ledger = DegradationLedger(live.dir / LEDGER_FILENAME)
     pid = _record_pid(live.record)
@@ -1596,118 +1585,153 @@ def stop(
         )
     assert pid is not None  # nosec B101 - _signallable already vouched for it
 
-    # The daemon's identity: the pid PLUS the moment its process started. The
-    # child records the pair at spawn; if it is missing (an older pidfile, or
-    # no /proc at spawn time) it is captured here, right after the lock probe
-    # — later than ideal, still before any signal.
-    recorded_start = live.record.get("start_time") if live.record else None
-    expected_start = (
-        recorded_start
-        if isinstance(recorded_start, int) and not isinstance(recorded_start, bool)
-        else _process_start_time(pid)
+    target = _StopTarget(
+        pidfile=live.pidfile,
+        dir=live.dir,
+        pid=pid,
+        expected_start=_expected_start_time(live.record, pid),
+        ledger=ledger,
+        began=began,
     )
 
-    verified: Optional[bool] = None
-    unverifiable_recorded = False
-
-    def _signal(sig: int, escalating: bool) -> Optional[StopResult]:
-        """Signal *pid* only if it is still the daemon. Returns a result to
-        return early, or ``None`` to carry on to :func:`_wait_for_release`."""
-        nonlocal verified, unverifiable_recorded
-        check = _verify_target(live.pidfile, pid, expected_start)
-        verified = check.verified
-        if check.safe and check.verified is None and not unverifiable_recorded:
-            # Signalling without having been able to prove identity. That is
-            # the old behaviour, which is fine, but it is a degradation of
-            # this check and the host is told (C3) — once per stop, not once
-            # per signal.
-            unverifiable_recorded = True
-            ledger.append(
-                IDENTITY_UNVERIFIABLE_CODE,
-                f"could not prove pid {pid} is the daemon ({check.reason}); "
-                "signalling on the pid alone",
-            )
-        if not check.safe:
-            if check.reason != "lock-released":
-                # A named code and the reason only. NOT the stranger's pid,
-                # its name or anything else about it: this is a record, and
-                # the process that inherited the pid is not ours to describe.
-                ledger.append(
-                    STOP_TARGET_CHANGED_CODE,
-                    f"refused to signal pid {pid}: {check.reason}",
-                )
-            return None
-        try:
-            os.kill(pid, sig)
-        except OSError as exc:
-            detail = f"could not signal pid {pid}: {describe_exception(exc)}"
-            ledger.append(
-                SIGNAL_FAILED_CODE, f"signal {int(sig)} to pid {pid}: {describe_exception(exc)}"
-            )
-            return StopResult(
-                False,
-                True,
-                pid=pid,
-                escalated=escalating,
-                state_dir=str(live.dir),
-                waited_seconds=time.monotonic() - began,
-                identity_verified=verified,
-                code=SIGNAL_FAILED_CODE,
-                detail=detail,
-            )
-        return None
-
-    failure = _signal(signal.SIGTERM, False)
+    failure = _signal_target(target, signal.SIGTERM, False)
     if failure is not None:
         return failure
 
     if _wait_for_release(live.pidfile, timeout):
-        return StopResult(
-            True,
-            True,
-            pid=pid,
-            confirmed=True,
-            state_dir=str(live.dir),
-            waited_seconds=time.monotonic() - began,
-            identity_verified=verified,
-            detail=f"daemon {pid} stopped",
-        )
+        return target.result(True, confirmed=True, detail=f"daemon {pid} stopped")
 
     ledger.append(
         STOP_ESCALATED_CODE,
         f"pid {pid} did not exit within {timeout}s of SIGTERM; escalating to SIGKILL",
     )
-    failure = _signal(signal.SIGKILL, True)
+    failure = _signal_target(target, signal.SIGKILL, True)
     if failure is not None:
         return failure
 
     if _wait_for_release(live.pidfile, kill_grace):
-        return StopResult(
+        return target.result(
             True,
-            True,
-            pid=pid,
             escalated=True,
             confirmed=True,
-            state_dir=str(live.dir),
-            waited_seconds=time.monotonic() - began,
-            identity_verified=verified,
             detail=f"daemon {pid} did not shut down and was killed",
         )
 
     detail = f"pid {pid} still holds the daemon lock after SIGKILL"
     ledger.append(STOP_UNCONFIRMED_CODE, detail)
+    return target.result(
+        False, escalated=True, confirmed=False, code=STOP_UNCONFIRMED_CODE, detail=detail
+    )
+
+
+def _nothing_to_stop(candidates: list[_Candidate]) -> StopResult:
+    """The result for a ``stop`` that found no live lock anywhere."""
+    # The same precedence rule ``status`` follows: a live lock in ANY
+    # candidate is the thing to stop, but with nothing live the answer is
+    # reported against the PRIMARY directory. A dead record in the
+    # machine-wide fallback is not something to stop, and naming it here
+    # would point the operator at the wrong directory.
+    primary = candidates[0] if candidates else None
     return StopResult(
         False,
-        True,
-        pid=pid,
-        escalated=True,
-        confirmed=False,
-        state_dir=str(live.dir),
-        waited_seconds=time.monotonic() - began,
-        identity_verified=verified,
-        code=STOP_UNCONFIRMED_CODE,
-        detail=detail,
+        False,
+        state_dir=str(primary.dir) if primary is not None else None,
+        detail="no running daemon found in any candidate state directory",
     )
+
+
+def _expected_start_time(record: Optional[dict[str, Any]], pid: int) -> Optional[int]:
+    """The process start time the daemon's identity is checked against."""
+    # The daemon's identity: the pid PLUS the moment its process started. The
+    # child records the pair at spawn; if it is missing (an older pidfile, or
+    # no /proc at spawn time) it is captured here, right after the lock probe
+    # — later than ideal, still before any signal.
+    recorded_start = record.get("start_time") if record else None
+    if isinstance(recorded_start, int) and not isinstance(recorded_start, bool):
+        return recorded_start
+    return _process_start_time(pid)
+
+
+@dataclass
+class _StopTarget:
+    """The daemon :func:`stop` is signalling, and what each signal learned about it."""
+
+    pidfile: Path
+    dir: Path
+    pid: int
+    expected_start: Optional[int]
+    ledger: DegradationLedger
+    #: When ``stop`` began, for ``waited_seconds``.
+    began: float
+    #: The latest :attr:`_TargetCheck.verified`, carried onto every result.
+    verified: Optional[bool] = None
+    #: The unverifiable degradation is recorded once per stop, not once per signal.
+    unverifiable_recorded: bool = False
+
+    def result(
+        self,
+        stopped: bool,
+        *,
+        escalated: bool = False,
+        confirmed: bool = False,
+        code: Optional[str] = None,
+        detail: str = "",
+    ) -> StopResult:
+        """A :class:`StopResult` about this target, stamped with what is known now."""
+        return StopResult(
+            stopped,
+            True,
+            pid=self.pid,
+            escalated=escalated,
+            confirmed=confirmed,
+            state_dir=str(self.dir),
+            waited_seconds=time.monotonic() - self.began,
+            identity_verified=self.verified,
+            code=code,
+            detail=detail,
+        )
+
+
+def _signal_target(target: _StopTarget, sig: int, escalating: bool) -> Optional[StopResult]:
+    """Signal the target only if it is still the daemon. Returns a result to
+    return early, or ``None`` to carry on to :func:`_wait_for_release`."""
+    check = _verify_target(target.pidfile, target.pid, target.expected_start)
+    target.verified = check.verified
+    if check.safe and check.verified is None and not target.unverifiable_recorded:
+        # Signalling without having been able to prove identity. That is
+        # the old behaviour, which is fine, but it is a degradation of
+        # this check and the host is told (C3) — once per stop, not once
+        # per signal.
+        target.unverifiable_recorded = True
+        target.ledger.append(
+            IDENTITY_UNVERIFIABLE_CODE,
+            f"could not prove pid {target.pid} is the daemon ({check.reason}); "
+            "signalling on the pid alone",
+        )
+    if not check.safe:
+        if check.reason != "lock-released":
+            # A named code and the reason only. NOT the stranger's pid,
+            # its name or anything else about it: this is a record, and
+            # the process that inherited the pid is not ours to describe.
+            target.ledger.append(
+                STOP_TARGET_CHANGED_CODE,
+                f"refused to signal pid {target.pid}: {check.reason}",
+            )
+        return None
+    try:
+        os.kill(target.pid, sig)
+    except OSError as exc:
+        target.ledger.append(
+            SIGNAL_FAILED_CODE,
+            f"signal {int(sig)} to pid {target.pid}: {describe_exception(exc)}",
+        )
+        return target.result(
+            False,
+            escalated=escalating,
+            code=SIGNAL_FAILED_CODE,
+            detail=f"could not signal pid {target.pid}: {describe_exception(exc)}",
+        )
+    return None
 
 
 # ── the daemon side of the stop path ─────────────────────────────────────────

@@ -172,6 +172,65 @@ class TestStatusVerb:
         assert main(["status", "--json"]) == 0
         assert json.loads(capsys.readouterr().out)["state"] == "state unavailable"
 
+    def test_the_text_rendering_prints_every_optional_line_it_has(self) -> None:
+        """Pinned before ``_render`` was split: every optional line, in order,
+        for a dead report, and the identity line for a running one."""
+        from embodiment.cli._commands.status import _render
+
+        dead = lifecycle_mod.StatusReport(
+            state=lifecycle_mod.STATE_DEAD_UNCLEAN,
+            pid=4242,
+            state_dir="/state/primary",
+            target="embodiment.daemon.app:main",
+            exit_code=70,
+            hard_exit=True,
+            unfinished_threads=2,
+            ledger={"count": 3, "recent": [{"code": "x-code", "detail": "x detail"}]},
+            daemon_state={
+                "operational_log": {"write_error_count": 1},
+                "ledger": {"write_error_count": 0},
+            },
+            candidates=["/state/primary", "/state/fallback"],
+            other_candidates=[
+                {"state_dir": "/state/fallback", "state": "stopped", "pid": None},
+                {"state_dir": "/state/third", "state": "dead (unclean)", "pid": 7},
+            ],
+            detail="the last write failed",
+        )
+        assert _render(dead).splitlines() == [
+            "embodiment status: dead (unclean)",
+            "  pid: 4242",
+            "  target: embodiment.daemon.app:main",
+            "  state dir: /state/primary",
+            "  exit code: 70 (hard exit: True)",
+            "  unfinished threads at exit: 2",
+            "  write errors (as the daemon last reported them): log 1, ledger 0",
+            "  degradations recorded: 3",
+            "    - x-code: x detail",
+            "  note: the last write failed",
+            "  other state dir: /state/fallback — stopped",
+            "  other state dir: /state/third — dead (unclean) (pid 7)",
+        ]
+
+        for verified, word in (
+            (True, "verified"),
+            (False, "MISMATCH"),
+            (None, "unverifiable here"),
+        ):
+            running = lifecycle_mod.StatusReport(
+                state=STATE_RUNNING, pid=1, state_dir="/s", identity_verified=verified
+            )
+            assert f"  identity (pid + process start time): {word}" in _render(running)
+
+        unavailable = lifecycle_mod.StatusReport(
+            state=lifecycle_mod.STATE_UNAVAILABLE, candidates=["/a", "/b"]
+        )
+        assert _render(unavailable).splitlines() == [
+            "embodiment status: state unavailable",
+            "  degradations recorded: 0",
+            "  looked in: /a, /b",
+        ]
+
 
 class TestStartVerb:
     def test_start_with_a_missing_target_is_a_clean_environment_error(

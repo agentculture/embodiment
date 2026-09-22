@@ -1922,27 +1922,7 @@ class RoomMemory:
             writes = dict(self._writes)
             reads = list(self._reads)
 
-        landed: list[str] = []
-        unconfirmed: list[str] = []
-        failed: list[str] = []
-        if writes:
-            try:
-                wait(list(writes), timeout=max(0.0, float(deadline)))
-            except Exception as exc:  # noqa: BLE001  # a failed wait is still a close
-                with self._lock:
-                    self._record_abandoned(
-                        _degradation(
-                            "close", CODE_CLOSED, "waiting on in-flight writes failed", exc
-                        )
-                    )
-            for future, identifier in writes.items():
-                bucket = _settled(future)
-                if bucket is None:
-                    unconfirmed.append(identifier)
-                elif bucket:
-                    landed.append(identifier)
-                else:
-                    failed.append(identifier)
+        landed, unconfirmed, failed = self._settle_writes(writes, deadline)
 
         degradations = tuple(
             _degradation(
@@ -1960,13 +1940,7 @@ class RoomMemory:
                     self._record_abandoned(degradation)
 
         if self._owns_executor:
-            try:
-                self._executor.shutdown(wait=False)
-            except Exception as exc:  # noqa: BLE001  # teardown failure is not the host's problem
-                with self._lock:
-                    self._record_abandoned(
-                        _degradation("close", CODE_CLOSED, "executor shutdown failed", exc)
-                    )
+            self._shutdown_own_executor()
 
         return CloseReport(
             landed=tuple(sorted(landed)),
@@ -1976,6 +1950,42 @@ class RoomMemory:
             abandoned_dropped=self._abandoned_dropped,
             degradations=degradations,
         )
+
+    def _settle_writes(
+        self, writes: dict["Future[Any]", str], deadline: float
+    ) -> tuple[list[str], list[str], list[str]]:
+        """Wait at most *deadline* for *writes*; sort them into landed / unconfirmed / failed."""
+        landed: list[str] = []
+        unconfirmed: list[str] = []
+        failed: list[str] = []
+        if not writes:
+            return landed, unconfirmed, failed
+        try:
+            wait(list(writes), timeout=max(0.0, float(deadline)))
+        except Exception as exc:  # noqa: BLE001  # a failed wait is still a close
+            with self._lock:
+                self._record_abandoned(
+                    _degradation("close", CODE_CLOSED, "waiting on in-flight writes failed", exc)
+                )
+        for future, identifier in writes.items():
+            bucket = _settled(future)
+            if bucket is None:
+                unconfirmed.append(identifier)
+            elif bucket:
+                landed.append(identifier)
+            else:
+                failed.append(identifier)
+        return landed, unconfirmed, failed
+
+    def _shutdown_own_executor(self) -> None:
+        """Shut down the executor this object created; a failure is recorded, never raised."""
+        try:
+            self._executor.shutdown(wait=False)
+        except Exception as exc:  # noqa: BLE001  # teardown failure is not the host's problem
+            with self._lock:
+                self._record_abandoned(
+                    _degradation("close", CODE_CLOSED, "executor shutdown failed", exc)
+                )
 
     def __enter__(self) -> "RoomMemory":
         return self

@@ -61,6 +61,7 @@ from embodiment.daemon.lifecycle import (
     IDENTITY_UNVERIFIABLE_CODE,
     PIDFILE_NAME,
     REFUSED_PID_CODE,
+    SIGNAL_FAILED_CODE,
     STALE_PIDFILE_RECLAIMED_CODE,
     STATE_DEAD_UNCLEAN,
     STATE_RUNNING,
@@ -68,6 +69,7 @@ from embodiment.daemon.lifecycle import (
     STATE_UNAVAILABLE,
     STOP_ESCALATED_CODE,
     STOP_TARGET_CHANGED_CODE,
+    STOP_UNCONFIRMED_CODE,
     TARGET_UNAVAILABLE_CODE,
     THREADS_LINGERING_CODE,
     DaemonRunner,
@@ -834,6 +836,83 @@ class TestStopSignalsOnlyTheDaemonItFound:
         assert result.stopped is False
         assert result.identity_verified is False
         assert STOP_TARGET_CHANGED_CODE in _ledger_codes(state_dir)
+
+    def _hold_lock_for_a_stranger(self, state_dir: Path, stranger: subprocess.Popen) -> PidFile:
+        DaemonState(state_dir)
+        holder = PidFile(state_dir / PIDFILE_NAME)
+        assert holder.acquire() is True
+        real_start = lifecycle_mod._process_start_time(stranger.pid)
+        assert real_start is not None
+        holder.write(
+            {"schema": 1, "pid": stranger.pid, "state": "running", "start_time": real_start}
+        )
+        return holder
+
+    def test_a_signal_the_kernel_refuses_is_a_named_failure_not_a_traceback(
+        self, state_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Pinned before ``stop``'s signalling closure moved to a helper: an
+        ``OSError`` from ``os.kill`` records ``SIGNAL_FAILED_CODE``, returns
+        ``stopped=False`` with that code, and does not escalate."""
+        stranger = subprocess.Popen(  # nosec B603 - fixed argv, shell=False
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        signals: list[int] = []
+
+        def refuse(pid: int, sig: int) -> None:
+            signals.append(sig)
+            raise PermissionError(1, "Operation not permitted")
+
+        holder = self._hold_lock_for_a_stranger(state_dir, stranger)
+        try:
+            monkeypatch.setattr(lifecycle_mod.os, "kill", refuse)
+            result = stop(state_dir=state_dir, timeout=0.2, kill_grace=0.2)
+        finally:
+            monkeypatch.undo()
+            holder.close()
+            stranger.kill()
+            stranger.wait(timeout=10)
+
+        assert signals == [signal.SIGTERM]
+        assert (result.stopped, result.was_running, result.escalated) == (False, True, False)
+        assert result.code == SIGNAL_FAILED_CODE
+        assert result.pid == stranger.pid
+        assert result.identity_verified is True
+        assert "Operation not permitted" not in result.detail
+        assert _ledger_codes(state_dir) == [SIGNAL_FAILED_CODE]
+
+    def test_a_lock_released_before_the_signal_is_not_a_changed_target(
+        self, state_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """``lock-released`` is the one unsafe reason that records nothing:
+        the daemon left on its own. With the lock still held by this test,
+        ``stop`` then waits out both bounds and reports ``unconfirmed``."""
+        stranger = subprocess.Popen(  # nosec B603 - fixed argv, shell=False
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        holder = self._hold_lock_for_a_stranger(state_dir, stranger)
+        try:
+            monkeypatch.setattr(
+                lifecycle_mod,
+                "_verify_target",
+                lambda *_a: lifecycle_mod._TargetCheck(False, None, "lock-released"),
+            )
+            result = stop(state_dir=state_dir, timeout=0.2, kill_grace=0.2)
+        finally:
+            holder.close()
+        assert stranger.poll() is None, "stop signalled a process it had not re-verified"
+        stranger.kill()
+        stranger.wait(timeout=10)
+
+        assert (result.stopped, result.was_running, result.escalated) == (False, True, True)
+        assert result.confirmed is False
+        assert result.code == STOP_UNCONFIRMED_CODE
+        assert result.identity_verified is None
+        assert _ledger_codes(state_dir) == [STOP_ESCALATED_CODE, STOP_UNCONFIRMED_CODE]
 
     def test_an_unreadable_proc_degrades_and_says_so(
         self, state_dir: Path, make_target, reaper: list[int], monkeypatch: pytest.MonkeyPatch
