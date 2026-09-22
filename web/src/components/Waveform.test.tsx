@@ -1,6 +1,8 @@
 import { act, render } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { Waveform } from "./Waveform";
+import type { RafScheduler } from "./Waveform";
+import type { DrawableContext2D } from "../waveform/draw";
 import type { EventEnvelope } from "../api/events";
 
 function encode(values: number[]): string {
@@ -10,8 +12,8 @@ function encode(values: number[]): string {
   return btoa(binary);
 }
 
-function featuresEnvelope(
-  overrides: Partial<{ env: string; level_db: number; direction: string }> = {},
+function featuresEvent(
+  overrides: Record<string, unknown> = {},
   seq = 1,
 ): EventEnvelope<"features"> {
   const mins = Array.from({ length: 16 }, () => -40);
@@ -33,114 +35,304 @@ function featuresEnvelope(
   };
 }
 
+/** A controllable requestAnimationFrame double: `tick()` runs the most
+ *  recently scheduled callback exactly once, at the caller's chosen time --
+ *  never a real timer, so the test drives frame cadence deterministically. */
+function fakeRaf(): { scheduler: RafScheduler; tick: (nowMs: number) => void; cancelled: number[] } {
+  let pending: FrameRequestCallback | null = null;
+  let nextId = 1;
+  const cancelled: number[] = [];
+  const scheduler: RafScheduler = {
+    request: (cb) => {
+      pending = cb;
+      return nextId++;
+    },
+    cancel: (id) => {
+      cancelled.push(id);
+      pending = null;
+    },
+  };
+  return {
+    scheduler,
+    tick: (nowMs: number) => {
+      const cb = pending;
+      pending = null;
+      cb?.(nowMs);
+    },
+    cancelled,
+  };
+}
+
+function fakeContext(): DrawableContext2D {
+  return {
+    clearRect: () => {},
+    beginPath: () => {},
+    moveTo: () => {},
+    lineTo: () => {},
+    stroke: () => {},
+    fillRect: () => {},
+    strokeStyle: "",
+    fillStyle: "",
+    lineWidth: 0,
+    globalAlpha: 1,
+  };
+}
+
 describe("Waveform", () => {
-  beforeEach(() => {
-    vi.useFakeTimers();
-  });
-
   afterEach(() => {
-    vi.useRealTimers();
+    vi.restoreAllMocks();
   });
 
-  it("is idle before any features event", () => {
+  it("is idle before any features event and before the first animation frame runs", () => {
     const { container } = render(<Waveform features={null} idleAfterMs={50} />);
-    const svg = container.querySelector("svg.waveform");
-    expect(svg).toHaveAttribute("data-waveform-state", "idle");
-  });
-
-  it("is idle for a rejected/undecodable envelope even though a features event arrived", () => {
-    const bad = featuresEnvelope({ env: "not valid base64!!!" });
-    const { container } = render(<Waveform features={bad} idleAfterMs={50} />);
-    const svg = container.querySelector("svg.waveform");
-    expect(svg).toHaveAttribute("data-waveform-state", "idle");
-  });
-
-  it("becomes live immediately when a valid features event arrives", () => {
-    const { container } = render(<Waveform features={featuresEnvelope()} idleAfterMs={50} />);
-    const svg = container.querySelector("svg.waveform");
-    expect(svg).toHaveAttribute("data-waveform-state", "live");
-    expect(svg).toHaveAttribute("data-direction", "out");
-  });
-
-  it("draws one mirrored bar per envelope bucket", () => {
-    const { container } = render(<Waveform features={featuresEnvelope()} idleAfterMs={50} />);
-    const bars = container.querySelectorAll(".waveform__bar");
-    expect(bars).toHaveLength(16);
-  });
-
-  it("draws bars symmetric about the vertical center (mirrored)", () => {
-    const { container } = render(<Waveform features={featuresEnvelope()} idleAfterMs={50} />);
-    const bar = container.querySelector(".waveform__bar") as SVGRectElement;
-    const y = Number(bar.getAttribute("y"));
-    const height = Number(bar.getAttribute("height"));
-    // center of the viewBox is VIEWBOX_HEIGHT/2 == 50; a mirrored bar's
-    // midpoint must sit exactly on that center line.
-    expect(y + height / 2).toBeCloseTo(50, 5);
-  });
-
-  it("renders a level-fill element whose height reflects level_db", () => {
-    const { container } = render(
-      <Waveform features={featuresEnvelope({ level_db: -6 })} idleAfterMs={50} />,
+    expect(container.querySelector(".waveform-wrap")).toHaveAttribute(
+      "data-waveform-state",
+      "idle",
     );
-    const loud = container.querySelector(".waveform__level-fill") as SVGRectElement;
-    const loudHeight = Number(loud.getAttribute("height"));
-
-    const { container: quietContainer } = render(
-      <Waveform features={featuresEnvelope({ level_db: -90 }, 2)} idleAfterMs={50} />,
-    );
-    const quiet = quietContainer.querySelector(".waveform__level-fill") as SVGRectElement;
-    const quietHeight = Number(quiet.getAttribute("height"));
-
-    expect(loudHeight).toBeGreaterThan(quietHeight);
   });
 
-  it("goes idle again after idleAfterMs with no new features event -- never a frozen last frame", () => {
-    // The SAME object reference across both renders: a plain re-render (no
-    // new SSE frame) must not look like a new event just because a parent
-    // re-rendered for an unrelated reason.
-    const frame = featuresEnvelope();
-    const { container, rerender } = render(<Waveform features={frame} idleAfterMs={50} />);
-    expect(container.querySelector("svg.waveform")).toHaveAttribute("data-waveform-state", "live");
-
-    act(() => {
-      vi.advanceTimersByTime(60);
-    });
-    rerender(<Waveform features={frame} idleAfterMs={50} />);
-    // the idle timeout already fired with no NEW event in between -- must
-    // show idle, never a frozen last frame.
-    expect(container.querySelector("svg.waveform")).toHaveAttribute("data-waveform-state", "idle");
+  it("renders a <canvas> element (the oscilloscope), not an SVG", () => {
+    const { container } = render(<Waveform features={null} idleAfterMs={50} />);
+    expect(container.querySelector("canvas.waveform")).not.toBeNull();
+    expect(container.querySelector("svg")).toBeNull();
   });
 
-  it("stays live if a new features event arrives before the idle timeout", () => {
+  it("does not crash when the injected context factory returns null (e.g. an unsupported canvas)", () => {
+    const raf = fakeRaf();
+    expect(() =>
+      render(
+        <Waveform
+          features={featuresEvent()}
+          idleAfterMs={50}
+          contextFactory={() => null}
+          raf={raf.scheduler}
+        />,
+      ),
+    ).not.toThrow();
+  });
+
+  it("becomes live on the animation frame after a features event arrives, and goes flat (idle) -- not frozen -- once the stream stops, at animation-frame rate", () => {
+    const raf = fakeRaf();
+    let now = 1_000;
+    const nowFn = () => now;
+
     const { container, rerender } = render(
-      <Waveform features={featuresEnvelope({}, 1)} idleAfterMs={100} />,
+      <Waveform
+        features={null}
+        idleAfterMs={50}
+        contextFactory={fakeContext}
+        raf={raf.scheduler}
+        nowFn={nowFn}
+      />,
+    );
+    const wrap = () => container.querySelector(".waveform-wrap") as HTMLElement;
+    expect(wrap()).toHaveAttribute("data-waveform-state", "idle");
+
+    // A features event arrives; the NEXT animation frame is what notices it
+    // (not the React render itself -- the canvas is drawn imperatively).
+    act(() => {
+      rerender(
+        <Waveform
+          features={featuresEvent()}
+          idleAfterMs={50}
+          contextFactory={fakeContext}
+          raf={raf.scheduler}
+          nowFn={nowFn}
+        />,
+      );
+    });
+    act(() => {
+      raf.tick(now);
+    });
+    expect(wrap()).toHaveAttribute("data-waveform-state", "live");
+
+    // No new event; time advances past idleAfterMs. The very next frame
+    // (with no new event in between) must notice the silence on its own.
+    now += 51;
+    act(() => {
+      raf.tick(now);
+    });
+    expect(wrap()).toHaveAttribute("data-waveform-state", "idle");
+  });
+
+  it("coalesces multiple features events that arrive between two animation frames into the LATEST one", () => {
+    const raf = fakeRaf();
+    let now = 1_000;
+    const nowFn = () => now;
+    const drawn: unknown[] = [];
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const ctx: any = fakeContext();
+    ctx.lineTo = (...args: unknown[]) => drawn.push(args);
+
+    const { rerender } = render(
+      <Waveform
+        features={featuresEvent({}, 1)}
+        idleAfterMs={500}
+        contextFactory={() => ctx}
+        raf={raf.scheduler}
+        nowFn={nowFn}
+      />,
+    );
+
+    // Two more events land before the animation frame ever fires.
+    act(() => {
+      rerender(
+        <Waveform
+          features={featuresEvent(
+            {
+              env: encode([
+                ...Array.from({ length: 16 }, () => -5),
+                ...Array.from({ length: 16 }, () => 5),
+              ]),
+            },
+            2,
+          )}
+          idleAfterMs={500}
+          contextFactory={() => ctx}
+          raf={raf.scheduler}
+          nowFn={nowFn}
+        />,
+      );
+    });
+    act(() => {
+      rerender(
+        <Waveform
+          features={featuresEvent(
+            {
+              env: encode([
+                ...Array.from({ length: 16 }, () => -127),
+                ...Array.from({ length: 16 }, () => 127),
+              ]),
+            },
+            3,
+          )}
+          idleAfterMs={500}
+          contextFactory={() => ctx}
+          raf={raf.scheduler}
+          nowFn={nowFn}
+        />,
+      );
+    });
+
+    // Only ONE animation frame runs for all of the above.
+    drawn.length = 0;
+    act(() => {
+      raf.tick(now);
+    });
+    expect(drawn.length).toBeGreaterThan(0);
+    // Only one frame was drawn despite three events -- the loop ran exactly
+    // once (it re-scheduled itself for the NEXT frame, which we never tick).
+  });
+
+  it("cancels the animation frame loop on unmount", () => {
+    const raf = fakeRaf();
+    const { unmount } = render(
+      <Waveform
+        features={featuresEvent()}
+        idleAfterMs={50}
+        contextFactory={fakeContext}
+        raf={raf.scheduler}
+      />,
+    );
+    unmount();
+    expect(raf.cancelled.length).toBeGreaterThan(0);
+  });
+
+  it("keeps the listener trace's idle state independent of the assistant trace's", () => {
+    const raf = fakeRaf();
+    let now = 1_000;
+    const nowFn = () => now;
+
+    const { container, rerender } = render(
+      <Waveform
+        features={featuresEvent({ direction: "out" }, 1)}
+        idleAfterMs={50}
+        contextFactory={fakeContext}
+        raf={raf.scheduler}
+        nowFn={nowFn}
+      />,
     );
     act(() => {
-      vi.advanceTimersByTime(60);
+      raf.tick(now);
     });
-    rerender(<Waveform features={featuresEnvelope({}, 2)} idleAfterMs={100} />);
+    const wrap = () => container.querySelector(".waveform-wrap") as HTMLElement;
+    // No "in" event ever arrived -- listener stays idle even while the
+    // assistant is live.
+    expect(wrap()).toHaveAttribute("data-waveform-state", "live");
+    expect(wrap()).toHaveAttribute("data-listener-idle", "idle");
+
     act(() => {
-      vi.advanceTimersByTime(60);
+      rerender(
+        <Waveform
+          features={featuresEvent({ direction: "in" }, 2)}
+          idleAfterMs={50}
+          contextFactory={fakeContext}
+          raf={raf.scheduler}
+          nowFn={nowFn}
+        />,
+      );
     });
-    // 120ms total have passed, but the second event reset the clock at 60ms,
-    // so only 60ms has elapsed since the last event -- still live.
-    expect(container.querySelector("svg.waveform")).toHaveAttribute("data-waveform-state", "live");
+    act(() => {
+      raf.tick(now);
+    });
+    expect(wrap()).toHaveAttribute("data-listener-idle", "live");
   });
 
-  it("actually goes idle 500ms (the default) after the last event, using the real default", () => {
-    const frame = featuresEnvelope();
-    const { container, rerender } = render(<Waveform features={frame} />);
-    expect(container.querySelector("svg.waveform")).toHaveAttribute("data-waveform-state", "live");
-    act(() => {
-      vi.advanceTimersByTime(501);
-    });
-    rerender(<Waveform features={frame} />);
-    expect(container.querySelector("svg.waveform")).toHaveAttribute("data-waveform-state", "idle");
+  it("draws from the bus by default, and reports the analyser as the listener source only when one is supplied (AnalyserNode only when the browser is the ear)", () => {
+    const raf = fakeRaf();
+    const { container: busContainer } = render(
+      <Waveform features={null} idleAfterMs={50} contextFactory={fakeContext} raf={raf.scheduler} />,
+    );
+    expect(busContainer.querySelector(".waveform-wrap")).toHaveAttribute(
+      "data-listener-source",
+      "bus",
+    );
+
+    const analyser = { readTrace: () => [0.1, 0.2] };
+    const { container: analyserContainer } = render(
+      <Waveform
+        features={null}
+        idleAfterMs={50}
+        contextFactory={fakeContext}
+        raf={raf.scheduler}
+        listenerAnalyser={analyser}
+      />,
+    );
+    expect(analyserContainer.querySelector(".waveform-wrap")).toHaveAttribute(
+      "data-listener-source",
+      "analyser",
+    );
   });
 
-  it("uses a viewBox with preserveAspectRatio=none so the bars stretch to fill any container width", () => {
-    const { container } = render(<Waveform features={featuresEnvelope()} idleAfterMs={50} />);
-    const svg = container.querySelector("svg.waveform");
-    expect(svg).toHaveAttribute("preserveAspectRatio", "none");
+  it("renders readouts for fields present on the latest assistant sample, and omits fields that are absent", () => {
+    const raf = fakeRaf();
+    const { container } = render(
+      <Waveform
+        features={featuresEvent({ zero_crossing_hz: 180, noise_floor_db: -55 })}
+        idleAfterMs={500}
+        contextFactory={fakeContext}
+        raf={raf.scheduler}
+      />,
+    );
+    expect(container.querySelector('[data-readouts-for="assistant"] [data-readout="pitch"]')).not.toBeNull();
+    expect(
+      container.querySelector('[data-readouts-for="assistant"] [data-readout="noise-floor"]'),
+    ).not.toBeNull();
+    expect(
+      container.querySelector('[data-readouts-for="assistant"] [data-readout="resonance"]'),
+    ).toBeNull();
+  });
+
+  it("omits a readout (never renders 0) when its field is null on the event", () => {
+    const raf = fakeRaf();
+    const { container } = render(
+      <Waveform
+        features={featuresEvent({ zero_crossing_hz: null })}
+        idleAfterMs={500}
+        contextFactory={fakeContext}
+        raf={raf.scheduler}
+      />,
+    );
+    expect(container.querySelector('[data-readouts-for="assistant"] [data-readout="pitch"]')).toBeNull();
   });
 });

@@ -5,7 +5,7 @@ import { Transcript } from "./components/Transcript";
 import { DegradationsLog } from "./components/DegradationsLog";
 import { RecallModeIndicator } from "./components/RecallModeIndicator";
 import { RemoteViewers } from "./components/RemoteViewers";
-import { Waveform } from "./components/Waveform";
+import { Waveform, type WaveformProps } from "./components/Waveform";
 import { useEventStream, type UseEventStreamOptions } from "./hooks/useEventStream";
 import { parseControlOutcome, setMicMute, startVoice, stopVoice } from "./api/control";
 import { loadInstallSecretFromSession, saveInstallSecretToSession } from "./api/secret";
@@ -14,6 +14,15 @@ export interface AppProps {
   /** Test seam: override the SSE endpoint's URL and connector. */
   eventsUrl?: string;
   eventStreamOptions?: UseEventStreamOptions;
+  /** Test seam (task t18): override the oscilloscope's canvas context
+   *  factory / animation-frame scheduler / clock / listener-analyser
+   *  source -- jsdom has no canvas, so an end-to-end App test that needs to
+   *  observe the waveform go live has to inject these, the same way
+   *  `eventStreamOptions` already lets a test inject the SSE seam. Left
+   *  undefined in production, where `Waveform`'s own defaults
+   *  (`canvas.getContext("2d")`, `window.requestAnimationFrame`,
+   *  `Date.now`, no analyser) apply. */
+  waveformOptions?: Pick<WaveformProps, "contextFactory" | "raf" | "nowFn" | "listenerAnalyser">;
 }
 
 const DEFAULT_EVENTS_URL = "/api/events";
@@ -26,7 +35,11 @@ const ACTION_LABEL: Record<ControlAction, string> = {
   mute: "mic mute",
 };
 
-export default function App({ eventsUrl = DEFAULT_EVENTS_URL, eventStreamOptions }: AppProps) {
+export default function App({
+  eventsUrl = DEFAULT_EVENTS_URL,
+  eventStreamOptions,
+  waveformOptions,
+}: AppProps) {
   // `secret` is the live-typed value, bound to the input. It is NEVER used
   // as a credential directly (round 5 fix) -- only `applySecret` reads it,
   // at the moment "Apply" is submitted.
@@ -107,7 +120,7 @@ export default function App({ eventsUrl = DEFAULT_EVENTS_URL, eventStreamOptions
           without competing with the waveform itself for visual weight. */}
       <section className="panel panel--waveform">
         <h2 className="panel__title panel__title--sr-only">Waveform</h2>
-        <Waveform features={stream.features} />
+        <Waveform features={stream.features} {...waveformOptions} />
       </section>
 
       <section className="panel">

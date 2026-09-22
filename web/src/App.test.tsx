@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import App from "./App";
+import App, { type AppProps } from "./App";
 import { FakeSSEConnection, fakeConnect } from "./hooks/fakeSSEConnection";
 import { DISCONNECTED_AFTER_MS } from "./api/events";
 import * as control from "./api/control";
@@ -33,10 +33,54 @@ const NOOP_STATUS_FN = async () => ({ daemon: null }) as unknown as Awaited<
   ReturnType<typeof import("./api/control").fetchStatus>
 >;
 
-function renderApp() {
+function renderApp(waveformOptions?: AppProps["waveformOptions"]) {
   FakeSSEConnection.reset();
-  render(<App eventStreamOptions={{ connect: fakeConnect, fetchStatusFn: NOOP_STATUS_FN }} />);
+  render(
+    <App
+      eventStreamOptions={{ connect: fakeConnect, fetchStatusFn: NOOP_STATUS_FN }}
+      waveformOptions={waveformOptions}
+    />,
+  );
   return FakeSSEConnection.latest();
+}
+
+/** Task t18: the oscilloscope's canvas draw loop, made observable under
+ *  jsdom (which has no canvas backend at all -- see `Waveform.test.tsx`'s
+ *  own copy of this pattern). `tick()` runs the single most recently
+ *  scheduled animation-frame callback. */
+function fakeWaveformSeam() {
+  let pending: FrameRequestCallback | null = null;
+  const ctx = {
+    clearRect: () => {},
+    beginPath: () => {},
+    moveTo: () => {},
+    lineTo: () => {},
+    stroke: () => {},
+    fillRect: () => {},
+    strokeStyle: "",
+    fillStyle: "",
+    lineWidth: 0,
+    globalAlpha: 1,
+  };
+  return {
+    options: {
+      contextFactory: () => ctx as never,
+      raf: {
+        request: (cb: FrameRequestCallback) => {
+          pending = cb;
+          return 1;
+        },
+        cancel: () => {
+          pending = null;
+        },
+      },
+    },
+    tick: (nowMs: number) => {
+      const cb = pending;
+      pending = null;
+      cb?.(nowMs);
+    },
+  };
 }
 
 describe("App — every state from the committed event fixtures", () => {
@@ -199,19 +243,27 @@ describe("App — every state from the committed event fixtures", () => {
   });
 
   it("renders the features.json fixture as a live waveform", () => {
-    const source = renderApp();
+    // featuresFixture.data.direction is "in" -- the LISTENER trace, not the
+    // assistant one; each trace's liveness is tracked independently (t18).
+    const seam = fakeWaveformSeam();
+    const source = renderApp(seam.options);
     act(() => {
       source.open();
       source.emit("features", featuresFixture);
     });
-    const svg = document.querySelector("svg.waveform");
-    expect(svg).toHaveAttribute("data-waveform-state", "live");
+    act(() => {
+      seam.tick(Date.now());
+    });
+    const wrap = document.querySelector(".waveform-wrap");
+    expect(document.querySelector("canvas.waveform")).not.toBeNull();
+    expect(wrap).toHaveAttribute("data-listener-idle", "live");
   });
 
   it("shows the idle waveform placeholder before any features event", () => {
-    renderApp();
-    const svg = document.querySelector("svg.waveform");
-    expect(svg).toHaveAttribute("data-waveform-state", "idle");
+    const seam = fakeWaveformSeam();
+    renderApp(seam.options);
+    const wrap = document.querySelector(".waveform-wrap");
+    expect(wrap).toHaveAttribute("data-waveform-state", "idle");
   });
 
   it("renders the clients.json fixture as the remote-viewer indicator", () => {
@@ -598,7 +650,7 @@ describe("App — every state from the committed event fixtures", () => {
     renderApp();
     const panels = document.querySelectorAll(".panel");
     expect(panels.length).toBeGreaterThan(0);
-    expect(panels[0].querySelector("svg.waveform")).not.toBeNull();
+    expect(panels[0].querySelector("canvas.waveform")).not.toBeNull();
   });
 
   it("renders all fixtures together end to end without throwing", () => {
