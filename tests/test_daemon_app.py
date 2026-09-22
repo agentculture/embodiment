@@ -116,8 +116,15 @@ class FakeEndpoint:
 class FakeEars:
     """An ears-only realtime client: one async connect, one event stream, one close."""
 
-    def __init__(self, *, connect_ok: bool = True, events: tuple[Any, ...] = ()) -> None:
+    def __init__(
+        self,
+        *,
+        connect_ok: bool = True,
+        events: tuple[Any, ...] = (),
+        connect_delay: float = 0.0,
+    ) -> None:
         self.connect_ok = connect_ok
+        self.connect_delay = connect_delay
         self.initial = list(events)
         self.sent: list[bytes] = []
         self.connect_calls = 0
@@ -128,6 +135,8 @@ class FakeEars:
 
     async def connect(self) -> bool:
         self.connect_calls += 1
+        if self.connect_delay:
+            await asyncio.sleep(self.connect_delay)
         self._loop = asyncio.get_running_loop()
         self._queue = asyncio.Queue()
         for event in self.initial:
@@ -496,19 +505,34 @@ class TestOneEar:
 class TestInjectedFailures:
     """Five injected faults. Each: one ledger record, one bus event, a live daemon."""
 
-    def _assert_degraded_and_alive(self, h: Harness, code: str) -> None:
-        assert code in h.ledger_codes(), f"{code} not in {h.ledger_codes()}"
-        published = [e.data["code"] for e in h.events("degradation")]
-        assert code in published, f"{code} not published: {published}"
+    def _assert_degraded_and_alive(self, h: Harness, code: str, *, timeout: float = 15.0) -> None:
+        """Both facts, and the daemon still answering. Eventually, not atomically.
+
+        The daemon appends to the crash ledger BEFORE it publishes the
+        ``degradation`` event, deliberately (the ledger is the record that
+        must survive a kill; see ``DaemonApp._record``). So a poll that stops
+        the moment the ledger record appears can drain the bus before the
+        publish has run — measured on ``realtime/t15`` at ``28a4b46``:
+        4 of 25 runs of the dead-gateway test failed exactly there, with
+        ``app-ears-unavailable not published: []``. Waiting for both facts is
+        the assertion the criterion actually makes; asserting them
+        simultaneously was asserting an ordering the code does not promise.
+        """
+        deadline = time.monotonic() + timeout
+        while True:
+            in_ledger = code in h.ledger_codes()
+            published = [e.data["code"] for e in h.events("degradation")]
+            if in_ledger and code in published:
+                break
+            assert (
+                time.monotonic() < deadline
+            ), f"{code}: in_ledger={in_ledger} published={published}"
+            time.sleep(0.02)
         assert isinstance(h.app.status(), dict)
 
     def test_a_dead_gateway_degrades_and_the_daemon_keeps_running(self, harness: Any) -> None:
         h = harness(ears=FakeEars(connect_ok=False))
         h.app.start()
-        deadline = time.monotonic() + 15.0
-        while app_module.APP_EARS_UNAVAILABLE not in h.ledger_codes():
-            assert time.monotonic() < deadline, "the dead gateway was never recorded"
-            time.sleep(0.02)
         self._assert_degraded_and_alive(h, app_module.APP_EARS_UNAVAILABLE)
         assert h.app.run_turn(SPEECH).spoken == REPLY
 
@@ -516,10 +540,6 @@ class TestInjectedFailures:
         h = harness()
         h.app.start()
         h.ears.emit(wire.ServerError(code="stt_failed", message="whisper fell over"))
-        deadline = time.monotonic() + 15.0
-        while app_module.APP_STT_ERROR not in h.ledger_codes():
-            assert time.monotonic() < deadline, "the STT error was never recorded"
-            time.sleep(0.02)
         self._assert_degraded_and_alive(h, app_module.APP_STT_ERROR)
         assert h.app.run_turn(SPEECH).spoken == REPLY
         assert "whisper fell over" not in json.dumps(
@@ -684,6 +704,95 @@ class TestEarsLoop:
         assert [e.data["text"] for e in h.events("transcript")] == [hostile]
 
 
+class TestVoiceSeams:
+    """t12 round 3: one voice, re-pointed; features drained through its own API."""
+
+    def test_a_handover_re_points_the_same_voice_instead_of_rebuilding(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        built: list[Voice] = []
+
+        h = harness()
+        original_factory = h.app._voice_factory
+
+        def counting_factory(endpoint: Any) -> Voice:
+            voice = original_factory(endpoint)
+            built.append(voice)
+            return voice
+
+        h.app._voice_factory = counting_factory
+        h.app.attach_ear("host", FakeEndpoint(name="host"))
+        h.app.attach_ear("browser", FakeEndpoint(name="browser"))
+        assert len(built) == 1, "the voice was rebuilt for the second ear"
+        assert h.app._voice is built[0]
+
+    def test_a_degradation_from_after_the_handover_is_still_recorded(self, harness: Any) -> None:
+        """The fold index used to point past a freshly rebuilt voice's empty list."""
+
+        def exploding_synth(sentence: str, config: Any) -> bytes:
+            raise RuntimeError("tts is down")
+
+        h = harness(synthesize=exploding_synth)
+        h.app.attach_ear("host", FakeEndpoint(name="host"))
+        h.app.run_turn(SPEECH)
+        assert "voice-tts-failed" in h.ledger_codes()
+        h.app.attach_ear("browser", FakeEndpoint(name="browser"))
+        h.clear()
+        h.app.run_turn(SPEECH)
+        published = [e.data["code"] for e in h.events("degradation")]
+        assert "voice-tts-failed" in published, published
+
+    def test_the_pump_drains_through_the_voices_own_api(self, harness: Any) -> None:
+        """A voice with NO ``feature_frames`` attribute still gets drained."""
+
+        class DrainOnly:
+            def __init__(self) -> None:
+                self.calls: list[int] = []
+
+            def drain_features(self, max_n: int = 256) -> list[dict[str, object]]:
+                self.calls.append(max_n)
+                if len(self.calls) > 1:
+                    return []
+                return [
+                    {
+                        "level_db": -30.0,
+                        "noise_floor_db": -96.0,
+                        "zero_crossing_hz": 120.0,
+                        "env": "AAAA",
+                    }
+                ]
+
+        h = harness()
+        h.app._voice = DrainOnly()
+        h.app.pump()
+        assert h.app._voice.calls == [app_module.MAX_FEATURE_DRAIN]
+        out = [e for e in h.events("features") if e.data["direction"] == "out"]
+        assert len(out) == 1
+
+    def test_a_voice_whose_drain_raises_is_recorded_once(self, harness: Any) -> None:
+        class Hostile:
+            def drain_features(self, max_n: int = 256) -> Any:
+                raise RuntimeError("no")
+
+        h = harness()
+        h.app._voice = Hostile()
+        for _ in range(50):
+            h.app.pump()
+        assert app_module.APP_FEATURES_FAILED in h.ledger_codes()
+        records = [c for c in h.ledger_codes() if c == app_module.APP_FEATURES_FAILED]
+        assert len(records) == 1, "a per-pump fault flooded the ledger"
+
+    def test_detaching_leaves_a_voice_that_still_publishes_the_reply(self, harness: Any) -> None:
+        h = harness()
+        endpoint = FakeEndpoint()
+        h.app.attach_ear("host", endpoint)
+        h.app.detach_ear()
+        h.clear()
+        assert h.app.run_turn(SPEECH).spoken == REPLY
+        assert [e.data["text"] for e in h.events("reply")] == [REPLY]
+        assert not endpoint.played, "a detached endpoint was played into"
+
+
 class TestShutdown:
     def test_close_is_idempotent_and_bounded(self, harness: Any) -> None:
         h = harness()
@@ -763,6 +872,31 @@ class TestShutdown:
         release.set()
         thread.join(timeout=5)
         assert h.app.status()["turns"]["in_flight"] == 0
+
+    def test_a_stop_during_the_handshake_still_closes_the_ear(self, harness: Any) -> None:
+        """Found by a 2-in-25 flake: close() used to skip an ear not yet serving.
+
+        ``start()`` then ``close()`` with the handshake still in flight left
+        the ears thread parked in ``events()`` with nothing ever telling it
+        to stop — the ears step burned its whole slice on a join that could
+        not succeed, and a real client would have left its socket open.
+        """
+        ears = FakeEars(connect_delay=0.3)
+        h = harness(ears=ears)
+        h.app.start()
+        report = h.app.close(deadline=2.0)
+        assert ears.closed is True, "the ear was never told to stop"
+        assert report.ears_stopped is True
+        assert "ears" not in report.unfinished
+
+    def test_start_then_close_immediately_is_clean_every_time(self, harness: Any) -> None:
+        """The flake's own shape, run enough times to catch it if it returns."""
+        for _ in range(20):
+            h = harness()
+            h.app.start()
+            report = h.app.close(deadline=2.0)
+            assert report.ears_stopped is True
+            assert report.unfinished == (), report.unfinished
 
     def test_a_turn_after_close_is_refused_and_recorded(self, harness: Any) -> None:
         h = harness()

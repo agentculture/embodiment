@@ -171,6 +171,18 @@ MAX_REASON_CHARS = 300
 #: while still bounding memory against a sub-module that invents codes.
 MAX_DEGRADATION_CODES = 128
 
+#: The share of the ears' shutdown slice that may be spent waiting for the
+#: ears thread to publish its event loop. A **judgement call**: the loop is
+#: created on the thread's first statement, so this only ever covers thread
+#: start-up, and a quarter of the slice leaves three quarters for the close
+#: and the join themselves.
+_EARS_LOOP_WAIT_SHARE = 0.25
+
+#: The share of the ears' shutdown slice spent waiting for the ear's own
+#: ``close`` before the thread join. A **judgement call**: half, so a close
+#: that stalls still leaves the join half a slice to see the thread finish.
+_EARS_CLOSE_WAIT_SHARE = 0.5
+
 #: How many traced played-audio feature frames one :meth:`DaemonApp.pump` may
 #: publish. A **judgement call**: the voice's own buffer holds at most 2048
 #: frames, and 256 per tick (≈10 ticks to drain a full buffer at the default
@@ -490,6 +502,7 @@ class DaemonApp:
         self._ears_thread: Optional[threading.Thread] = None
         self._ears_loop: Optional[asyncio.AbstractEventLoop] = None
         self._ears_connected = False
+        self._ears_closed = threading.Event()
         self._worker_stop = threading.Event()
 
     # ── the ONE recording path ───────────────────────────────────────────
@@ -498,6 +511,13 @@ class DaemonApp:
         self, code: str, reason: object, *, source: str = APP_SOURCE, once: bool = False
     ) -> None:
         """Count it, append it to the crash ledger, publish it. Never raises.
+
+        The ledger is appended BEFORE the event is published, and that order
+        is deliberate: the ledger is the crash record (t4 ``fsync``-s every
+        append), so a process killed between the two keeps the durable fact
+        and loses only the notification. A reader that has seen the ledger
+        record has therefore not necessarily seen the event yet — they are
+        eventually both, never atomically.
 
         *once* is for the per-frame paths: a capture that fails once fails
         30 times a second, and a ledger that is deliberately unbounded (t4)
@@ -766,13 +786,35 @@ class DaemonApp:
         self._ear_name = ear
         self._ear_endpoint = endpoint
         self._features_in.reset()
-        try:
-            self._voice = self._voice_factory(endpoint)
-        except Exception as exc:  # noqa: BLE001 - a factory is a seam, not a promise
-            self._voice = None
-            self._record(APP_EAR_ATTACH_FAILED, f"{ear} voice: {_describe(exc)}")
+        self._ensure_voice(ear, endpoint)
         self._fold_endpoint(endpoint)
         return True
+
+    def _ensure_voice(self, ear: str, endpoint: Any) -> None:
+        """ONE :class:`~embodiment.voice.Voice` for the daemon's life, re-pointed.
+
+        Built by the injected factory the first time an ear attaches, and
+        afterwards handed the new endpoint with ``set_endpoint`` (t12 round 3)
+        rather than rebuilt. Three reasons, all of them defects in the
+        rebuild-per-ear shape this replaces:
+
+        * a new :class:`Voice` starts its degradation list empty while this
+          app's fold index still pointed past it, so the new voice's first
+          degradations were silently skipped until its count caught up;
+        * every rebuild started a new pacing thread and a new timeline, which
+          is exactly what that module's pacing worker is written to avoid; and
+        * ``queued_not_traced`` and the degradation counts — the numbers that
+          say what a handover cost — were thrown away with the old object.
+        """
+        voice = self._voice
+        if voice is None:
+            try:
+                self._voice = self._voice_factory(endpoint)
+            except Exception as exc:  # noqa: BLE001 - a factory is a seam, not a promise
+                self._voice = None
+                self._record(APP_EAR_ATTACH_FAILED, f"{ear} voice: {_describe(exc)}")
+            return
+        self._safely(lambda: voice.set_endpoint(endpoint), APP_EAR_ATTACH_FAILED, f"{ear} voice")
 
     def _fold_endpoint(self, endpoint: Any) -> None:
         """Record what the endpoint says about ITSELF at the moment it attaches.
@@ -796,10 +838,18 @@ class DaemonApp:
         self._ear_name = None
         self._ear_endpoint = None
         self._generation += 1
-        voice, self._voice = self._voice, None
+        voice = self._voice
         if voice is not None:
+            # The voice outlives the ear: it is pointed at a NullEndpoint
+            # rather than closed, so a reply with no ear attached is still
+            # PUBLISHED through the one code path that publishes replies, and
+            # the next attach costs a re-point instead of a rebuild.
             self._fold_voice(voice)
-            self._safely(lambda: voice.close(1.0), APP_EAR_DETACH_FAILED, f"{ear} voice")
+            self._safely(
+                lambda: voice.set_endpoint(NullEndpoint()),
+                APP_EAR_DETACH_FAILED,
+                f"{ear} voice",
+            )
         if endpoint is None:
             return
         self._safely(endpoint.stop_capture, APP_EAR_DETACH_FAILED, ear)
@@ -897,14 +947,22 @@ class DaemonApp:
             self._publish("features", {"direction": direction, **frame})
 
     def _drain_out_features(self) -> None:
-        """Publish what the voice traced from PLAYED audio since the last pump."""
+        """Publish what the voice traced from PLAYED audio since the last pump.
+
+        Through :meth:`~embodiment.voice.Voice.drain_features` only (t12 round
+        3), never by slicing ``feature_frames`` from outside: that list is
+        appended to under the voice's own lock by its pacing thread, and a
+        caller reaching past that lock is a race waiting for a slow pump.
+        """
         voice = self._voice
-        frames = getattr(voice, "feature_frames", None)
-        if not isinstance(frames, list) or not frames:
+        if voice is None:
             return
-        taken = frames[:MAX_FEATURE_DRAIN]
-        del frames[: len(taken)]
-        for frame in taken:
+        try:
+            taken = voice.drain_features(MAX_FEATURE_DRAIN)
+        except Exception as exc:  # noqa: BLE001 - the voice is a seam like any other
+            self._record(APP_FEATURES_FAILED, f"out: {_describe(exc)}", once=True)
+            return
+        for frame in taken or ():
             if isinstance(frame, dict):
                 self._publish("features", {"direction": "out", **frame})
 
@@ -1167,6 +1225,15 @@ class DaemonApp:
         except Exception as exc:  # noqa: BLE001 - the client promises False, not an exception
             self._record(APP_EARS_UNAVAILABLE, _describe(exc))
             return
+        if self._stopping:
+            # A stop that arrived while the handshake was in flight. Without
+            # this the thread would go on to serve an event stream nobody is
+            # going to close (found by a 2-in-25 flake on close(): the ears
+            # step burned its whole slice joining a thread parked in
+            # ``events()``), and the real client would leave its WebSocket
+            # open behind it.
+            await self._shut_ears_down()
+            return
         if not connected:
             self._ears_connected = False
             self._record(APP_EARS_UNAVAILABLE, "the gateway did not give us a session")
@@ -1185,6 +1252,10 @@ class DaemonApp:
             self._record(APP_EARS_STREAM_ENDED, _describe(exc))
         finally:
             self._ears_connected = False
+            # Whatever ended the stream — a stop, a peer close, a transport
+            # fault — the client is closed from inside its own loop, which is
+            # the only thread that can close it gracefully.
+            await self._shut_ears_down()
         if not self._stopping:
             self._record(APP_EARS_STREAM_ENDED, "the event stream ended; no reconnect in t15")
             self._publish("state", {"component": "ears", "status": "ended"})
@@ -1222,18 +1293,80 @@ class DaemonApp:
         self._safely(voice.on_speech_started, APP_TURN_FAILED, "barge-in")
         self._fold_voice(voice)
 
+    async def _shut_ears_down(self) -> None:
+        """Close the ears from INSIDE their own loop. Idempotent; never raises.
+
+        The ONE place ``ears.close`` is awaited, and it is guarded by an
+        event rather than left to whoever gets there first: the listening
+        coroutine closes the ear when its own loop ends, and :meth:`_stop_ears`
+        schedules this from the outside, so without the guard both could run
+        and the loser's coroutine would be destroyed pending — noise that
+        looks exactly like a leak when it is not.
+        """
+        if self._ears_closed.is_set():
+            return
+        self._ears_closed.set()
+        try:
+            await self._ears.close(self._config.shutdown_deadline)
+        except Exception as exc:  # noqa: BLE001 - the client promises a report, not silence
+            self._record(APP_EARS_THREAD_FAILED, f"close: {_describe(exc)}")
+
     def _stop_ears(self, deadline: float) -> bool:
-        loop, thread = self._ears_loop, self._ears_thread
-        if loop is not None and not loop.is_closed():
-            try:
-                future = asyncio.run_coroutine_threadsafe(self._ears.close(deadline), loop)
-                future.result(timeout=max(0.05, deadline))
-            except Exception as exc:  # noqa: BLE001 - a close that will not finish is recorded
-                self._record(APP_EARS_THREAD_FAILED, f"close: {_describe(exc)}")
-        if thread is None:
+        """Tell the ear to stop and wait, bounded, for its thread. Never raises.
+
+        Three guards, each for a way this step was measured burning its whole
+        slice for nothing (1-2 runs in 40, which is what surfaced as a flaky
+        ``close()`` report):
+
+        * a thread that has already finished needs nothing scheduled — the
+          old code still built a coroutine and waited on it;
+        * a loop that is not running (not started yet, or already stopped)
+          never runs what is scheduled on it, so
+          ``run_coroutine_threadsafe(...).result()`` waits out its whole
+          timeout on a future that cannot resolve. ``is_running`` is checked
+          first and the future is cancelled if it does not land; and
+        * the wait for that future takes only a SHARE of the slice, so the
+          join afterwards still has time to observe the thread finishing —
+          the old code could spend the entire slice on the close and then
+          report the thread unstopped when it had in fact stopped.
+        """
+        thread = self._ears_thread
+        if thread is None or not thread.is_alive():
             return True
+        loop = self._await_ears_loop(deadline)
+        if (
+            loop is not None
+            and loop.is_running()
+            and not loop.is_closed()
+            and not self._ears_closed.is_set()
+        ):
+            future = None
+            try:
+                future = asyncio.run_coroutine_threadsafe(self._shut_ears_down(), loop)
+                future.result(timeout=max(0.05, deadline * _EARS_CLOSE_WAIT_SHARE))
+            except Exception as exc:  # noqa: BLE001 - a close that will not finish is recorded
+                self._record(APP_EARS_THREAD_FAILED, f"close: {_describe(exc)}", once=True)
+                if future is not None:
+                    future.cancel()
         thread.join(timeout=max(0.05, deadline))
         return not thread.is_alive()
+
+    def _await_ears_loop(self, deadline: float) -> Optional[asyncio.AbstractEventLoop]:
+        """The ears loop, waiting a slice of *deadline* for the thread to make one.
+
+        ``start()`` immediately followed by ``close()`` used to find the loop
+        absent, skip the close entirely, and then join a thread that was only
+        just getting going — so the ear was never told to stop. A bounded
+        wait closes that window from this side; :meth:`_listen`'s own
+        ``_stopping`` check closes it from the other.
+        """
+        thread = self._ears_thread
+        if thread is None or not thread.is_alive():
+            return self._ears_loop
+        limit = self._clock() + max(0.05, deadline) * _EARS_LOOP_WAIT_SHARE
+        while self._ears_loop is None and self._clock() < limit:
+            time.sleep(0.005)
+        return self._ears_loop
 
     # ── the dashboard ────────────────────────────────────────────────────
 
