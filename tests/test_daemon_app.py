@@ -1050,6 +1050,49 @@ class TestDeclaredSampleRate:
         assert h.app.status()["ear"]["active"] == "null"
         assert h.declared_rates == [SAMPLE_RATE_HZ]
 
+    def test_the_browser_ear_declares_24k_by_contract_not_by_fallback(self, harness: Any) -> None:
+        """t14 round 3 gave :class:`RemoteEndpoint` the protocol's ``sample_rate``.
+
+        The distinction this pins is the one that mattered while it was
+        missing: before, a browser ear produced 24000 because the *fallback*
+        happens to be the wire default, with ``app-ear-rate-unknown`` in the
+        ledger saying so. Now it comes from the endpoint itself, and the
+        absence of that record is the evidence.
+        """
+        from embodiment.audio.remote import RemoteEndpoint
+
+        endpoint = RemoteEndpoint(secret="s" * 32, port=0)
+        assert app_module._endpoint_rate_or_none(endpoint) == 24000
+
+        h = harness()
+        h.app.attach_ear("browser", endpoint)
+        try:
+            assert h.declared_rates == [24000]
+            assert app_module.APP_EAR_RATE_UNKNOWN not in h.ledger_codes()
+            status = h.app.status()
+            assert status["ear"]["sample_rate"] == 24000
+            assert status["ear"]["declared_sample_rate"] == 24000
+        finally:
+            h.app.detach_ear()
+
+    def test_a_host_to_browser_handover_re_dials_from_16k_to_24k(self, harness: Any) -> None:
+        """The two real endpoints, at their two real rates, in one handover."""
+        from embodiment.audio.host import CAPTURE_RATE_HZ, HostEndpoint
+        from embodiment.audio.remote import RemoteEndpoint
+
+        h = harness(config=AppConfig(preempt_ear=True, poll_interval_s=0.01))
+        h.app.attach_ear("host", HostEndpoint(which=lambda name: None))
+        assert h.declared_rates == [CAPTURE_RATE_HZ]
+
+        browser = RemoteEndpoint(secret="s" * 32, port=0)
+        h.app.attach_ear("browser", browser)
+        try:
+            assert h.declared_rates == [CAPTURE_RATE_HZ, 24000]
+            assert app_module.APP_EARS_REDIALLED in h.ledger_codes()
+            assert app_module.APP_EAR_RATE_UNKNOWN not in h.ledger_codes()
+        finally:
+            h.app.detach_ear()
+
     def test_an_endpoint_that_cannot_say_is_recorded_not_assumed(self, harness: Any) -> None:
         class Mute(FakeEndpoint):
             @property
