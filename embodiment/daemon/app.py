@@ -800,10 +800,18 @@ def _safe_name(value: object) -> str:
     return safe_reason.safe_label(value, fallback=_SAFE_NAME_FALLBACK)
 
 
+def _as_text(value: object) -> str:
+    """*value* as text: a string as it is, ``None`` as empty, anything else via ``str``."""
+    if isinstance(value, str):
+        return value
+    if value is None:
+        return ""
+    return str(value)
+
+
 def _safe_reason_text(value: object) -> str:
     """One sanitiser for every reason this module records."""
-    text = value if isinstance(value, str) else ("" if value is None else str(value))
-    return safe_reason.scrub(text)[:MAX_REASON_CHARS]
+    return safe_reason.scrub(_as_text(value))[:MAX_REASON_CHARS]
 
 
 def http_complete(
@@ -1155,7 +1163,7 @@ class DaemonApp:
         said, and the operator should hear about it even though the daemon
         has already made it harmless.
         """
-        value = text if isinstance(text, str) else ("" if text is None else str(text))
+        value = _as_text(text)
         if not value or not self._secret_forms:
             return value
         scrubbed = value
