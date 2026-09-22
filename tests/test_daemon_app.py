@@ -3913,6 +3913,37 @@ class TestModelSeam:
             ("d", "flat", {"x": 1}),
         ]
 
+    def test_blank_or_missing_tool_call_fields_become_empty_never_absent(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The branches the odd-arguments test does not reach, pinned before a
+        refactor moved them: whitespace-only arguments, no ``arguments`` key at
+        all, no ``id``, and a ``tool_calls`` that is not a list."""
+        self._capture(
+            monkeypatch,
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "tool_calls": [
+                                {"id": "w", "function": {"name": "remember", "arguments": "  "}},
+                                {"function": {"name": "remember"}},
+                                {"id": "n", "function": {"name": None, "arguments": 7}},
+                            ]
+                        }
+                    }
+                ]
+            },
+        )
+        response = app_module.http_complete([], gateway_url="http://gateway.invalid")
+        assert [(c.id, c.name, c.arguments) for c in response.tool_calls] == [
+            ("w", "remember", {}),
+            ("", "remember", {}),
+            ("n", "", {}),
+        ]
+        assert app_module._wire_tool_calls("not-a-list") == []
+        assert app_module._wire_tool_calls(None) == []
+
 
 class TestTheTailnetBind:
     """Round 8: the operator reviews the dashboard from a phone over Tailscale."""

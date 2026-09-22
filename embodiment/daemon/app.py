@@ -881,26 +881,35 @@ def _wire_tool_calls(raw: Any) -> list[dict[str, Any]]:
     """
     calls: list[dict[str, Any]] = []
     for call in raw if isinstance(raw, (list, tuple)) else []:
-        if not isinstance(call, dict):
-            continue
-        function = call.get("function")
-        source = function if isinstance(function, dict) else call
-        arguments = source.get("arguments")
-        if isinstance(arguments, str):
-            try:
-                arguments = json.loads(arguments) if arguments.strip() else {}
-            except ValueError:
-                arguments = {}
-        if not isinstance(arguments, dict):
-            arguments = {}
-        calls.append(
-            {
-                "id": str(call.get("id") or ""),
-                "name": str(source.get("name") or ""),
-                "arguments": arguments,
-            }
-        )
+        converted = _wire_tool_call(call)
+        if converted is not None:
+            calls.append(converted)
     return calls
+
+
+def _wire_tool_call(call: Any) -> Optional[dict[str, Any]]:
+    """One call of :func:`_wire_tool_calls`; ``None`` for a call that is not a mapping."""
+    if not isinstance(call, dict):
+        return None
+    function = call.get("function")
+    source = function if isinstance(function, dict) else call
+    return {
+        "id": str(call.get("id") or ""),
+        "name": str(source.get("name") or ""),
+        "arguments": _wire_tool_arguments(source.get("arguments")),
+    }
+
+
+def _wire_tool_arguments(arguments: Any) -> dict[str, Any]:
+    """The call's ``arguments`` as a mapping: a JSON string is parsed, anything else is ``{}``."""
+    if isinstance(arguments, str):
+        try:
+            arguments = json.loads(arguments) if arguments.strip() else {}
+        except ValueError:
+            arguments = {}
+    if not isinstance(arguments, dict):
+        arguments = {}
+    return arguments
 
 
 class DaemonApp:
