@@ -1001,8 +1001,6 @@ class Bus:
         # ever going to be delivered for it). The lock is never held across
         # _degrade/on_degrade or the broker enqueue — both happen below, after
         # release.
-        reject_code: Optional[str] = None
-        reject_reason = ""
         protected_kinds: list[str] = []
         event: Optional[Event] = None
         with self._lock:
@@ -1015,28 +1013,13 @@ class Bus:
                 source=self._source,
                 data=payload,
             )
-            try:
-                serialised = candidate.to_json()
-            except (TypeError, ValueError) as exc:
-                reject_code = DEGRADED_SCHEMA_INVALID
-                reject_reason = f"{kind}: not JSON-serialisable: {describe_exception(exc)}"
-            else:
-                size = len(serialised.encode("utf-8"))
-                if _contains_secret(payload, self._redact):
-                    reject_code = DEGRADED_SECRET_REDACTED
-                    reject_reason = f"{kind}: payload matched a redacted value"
-                elif size > self._max_event_bytes:
-                    reject_code = DEGRADED_OVERSIZE
-                    reject_reason = f"{kind}: {size} bytes exceeds {self._max_event_bytes}"
-                else:
-                    event = candidate
-                    for sub in self._subscribers:
-                        protected = sub._offer(event)  # noqa: SLF001  # one unit
-                        if protected is not None:
-                            protected_kinds.append(protected)
+            rejection = self._screen_candidate(candidate)
+            if rejection is None:
+                event = candidate
+                protected_kinds = self._offer_to_subscribers_locked(event)
 
-        if reject_code is not None:
-            self._degrade(reject_code, reject_reason)
+        if rejection is not None:
+            self._degrade(*rejection)
             return None
 
         for protected_kind in protected_kinds:
@@ -1048,6 +1031,43 @@ class Bus:
         assert event is not None  # nosec B101
         self._enqueue_broker(event)
         return event
+
+    def _screen_candidate(self, candidate: Event) -> Optional[tuple[str, str]]:
+        """``(code, reason)`` refusing *candidate*, or ``None`` when it may go out.
+
+        The three serialisation-time refusals, in the order they are checked:
+        not JSON-serialisable, a redacted value present in the raw payload
+        (see :func:`_contains_secret`), oversize. Runs under ``_lock`` and
+        only reads; the caller records the degradation after release.
+        """
+        kind = candidate.kind
+        try:
+            serialised = candidate.to_json()
+        except (TypeError, ValueError) as exc:
+            return (
+                DEGRADED_SCHEMA_INVALID,
+                f"{kind}: not JSON-serialisable: {describe_exception(exc)}",
+            )
+        size = len(serialised.encode("utf-8"))
+        if _contains_secret(candidate.data, self._redact):
+            return DEGRADED_SECRET_REDACTED, f"{kind}: payload matched a redacted value"
+        if size > self._max_event_bytes:
+            return DEGRADED_OVERSIZE, f"{kind}: {size} bytes exceeds {self._max_event_bytes}"
+        return None
+
+    def _offer_to_subscribers_locked(self, event: Event) -> list[str]:
+        """Deliver *event* to every live subscriber (caller holds ``_lock``).
+
+        Returns the kinds of the PROTECTED events any subscriber's queue had to
+        sacrifice to make room — one entry per drop — so the caller can record
+        each as :data:`DEGRADED_PROTECTED_DROP` after the lock is released.
+        """
+        protected_kinds: list[str] = []
+        for sub in self._subscribers:
+            protected = sub._offer(event)  # noqa: SLF001  # one unit
+            if protected is not None:
+                protected_kinds.append(protected)
+        return protected_kinds
 
     def subscribe(
         self,
