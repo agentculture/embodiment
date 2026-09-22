@@ -686,3 +686,251 @@ class TestTheCookieWithoutAnOriginRule:
         )
         assert MARKER_SECRET not in decision.reason
         assert "cross-site" not in decision.reason
+
+
+class TestASymlinkedStateDirectory:
+    """Round 3 review: the secret FILE was ``O_NOFOLLOW``-protected; the
+    directory holding it was not.
+
+    ``mkdir(exist_ok=True)`` on an existing symlink-to-a-directory succeeds
+    silently and ``os.chmod`` follows it, so a state dir that is a symlink
+    elsewhere was accepted, chmodded through, and the install secret created
+    behind it — where something that controls the link target controls the
+    credential. Refused the way :mod:`embodiment.memory` refuses a symlinked
+    store root: ``lstat`` first, record a reason, never chmod through it.
+    """
+
+    def test_a_symlinked_state_dir_is_refused(self, tmp_path: Path) -> None:
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        state = tmp_path / "state"
+        state.symlink_to(elsewhere, target_is_directory=True)
+        result = g.load_or_create_install_secret(state)
+        assert result.persisted is False
+        assert result.code == g.SECRET_UNPERSISTED_CODE
+        assert "symlink" in result.detail
+        assert len(result.secret) >= 32
+
+    def test_nothing_is_written_behind_the_symlink(self, tmp_path: Path) -> None:
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir()
+        state = tmp_path / "state"
+        state.symlink_to(elsewhere, target_is_directory=True)
+        g.load_or_create_install_secret(state)
+        assert list(elsewhere.iterdir()) == []
+
+    def test_the_symlink_itself_is_never_chmodded_through(self, tmp_path: Path) -> None:
+        elsewhere = tmp_path / "elsewhere"
+        elsewhere.mkdir(mode=0o755)
+        state = tmp_path / "state"
+        state.symlink_to(elsewhere, target_is_directory=True)
+        g.load_or_create_install_secret(state)
+        assert stat.S_IMODE(elsewhere.stat().st_mode) == 0o755
+
+    def test_a_symlink_to_a_nonexistent_target_is_refused_too(self, tmp_path: Path) -> None:
+        state = tmp_path / "state"
+        state.symlink_to(tmp_path / "nowhere", target_is_directory=True)
+        result = g.load_or_create_install_secret(state)
+        assert result.persisted is False
+        assert "symlink" in result.detail
+
+    def test_a_symlinked_PARENT_of_the_state_dir_is_still_usable(self, tmp_path: Path) -> None:
+        """Only the state directory itself is refused.
+
+        An operator whose whole ``~/.local/state`` is a symlink to another
+        volume is doing something ordinary; refusing that would refuse the
+        machine rather than an attacker.
+        """
+        real_parent = tmp_path / "volume"
+        real_parent.mkdir()
+        linked_parent = tmp_path / "parent"
+        linked_parent.symlink_to(real_parent, target_is_directory=True)
+        result = g.load_or_create_install_secret(linked_parent / "state")
+        assert result.persisted is True
+        assert result.code == g.SECRET_CREATED_CODE
+
+    def test_an_ordinary_directory_is_unaffected(self, tmp_path: Path) -> None:
+        result = g.load_or_create_install_secret(tmp_path / "state")
+        assert result.persisted is True
+        assert stat.S_IMODE((tmp_path / "state").stat().st_mode) == 0o700
+
+
+class TestTwoDaemonsRacingTheFirstStart:
+    """Found by the attack script after round 3, not by review.
+
+    The original create was ``O_CREAT|O_EXCL`` then write, which leaves the
+    file **existing and empty** for the length of one syscall. A second daemon
+    in that window read nothing usable and replaced it — so the first daemon
+    served a secret that was no longer on disk and every client re-reading the
+    file was refused. 24 concurrent callers produced 4 different secrets.
+
+    The fix publishes the complete file with ``os.link``, so a racer sees
+    either no file or a whole one. The probe that "passed" in round 1 is the
+    warning here: a concurrency test that passes proves a window is narrow,
+    never that it is closed.
+    """
+
+    @staticmethod
+    def _race(state: Path, callers: int) -> list[str]:
+        import threading
+
+        seen: list[str] = []
+        lock = threading.Lock()
+        start = threading.Barrier(callers)
+
+        def grab() -> None:
+            start.wait(10)
+            result = g.load_or_create_install_secret(state)
+            with lock:
+                seen.append(result.secret)
+
+        threads = [threading.Thread(target=grab) for _ in range(callers)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(30)
+        return seen
+
+    def test_every_racing_caller_gets_the_same_secret(self, tmp_path: Path) -> None:
+        seen = self._race(tmp_path / "state", 24)
+        assert len(seen) == 24
+        assert len(set(seen)) == 1, f"{len(set(seen))} different secrets"
+
+    def test_the_secret_on_disk_is_the_one_they_all_hold(self, tmp_path: Path) -> None:
+        state = tmp_path / "state"
+        seen = self._race(state, 24)
+        on_disk = (state / g.INSTALL_SECRET_FILENAME).read_text(encoding="utf-8").strip()
+        assert set(seen) == {on_disk}
+
+    def test_the_race_leaves_no_temporary_files_behind(self, tmp_path: Path) -> None:
+        state = tmp_path / "state"
+        self._race(state, 24)
+        leftovers = [p.name for p in state.iterdir() if p.name != g.INSTALL_SECRET_FILENAME]
+        assert leftovers == []
+
+    def test_exactly_one_caller_reports_creating_it(self, tmp_path: Path) -> None:
+        """Losers report ``created=False``: a host reading the ledger sees one
+        creation, not twenty-four."""
+        import threading
+
+        state = tmp_path / "state"
+        results: list[g.InstallSecret] = []
+        lock = threading.Lock()
+        start = threading.Barrier(16)
+
+        def grab() -> None:
+            start.wait(10)
+            result = g.load_or_create_install_secret(state)
+            with lock:
+                results.append(result)
+
+        threads = [threading.Thread(target=grab) for _ in range(16)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(30)
+        assert len([r for r in results if r.created]) == 1
+        assert all(r.persisted for r in results)
+
+    def test_the_published_file_is_never_observed_empty(self, tmp_path: Path) -> None:
+        """A watcher polling the path must never catch it mid-write."""
+        import threading
+
+        state = tmp_path / "state"
+        state.mkdir(mode=0o700)
+        path = state / g.INSTALL_SECRET_FILENAME
+        empty_sightings: list[int] = []
+        stop = threading.Event()
+
+        def watch() -> None:
+            while not stop.is_set():
+                try:
+                    size = path.stat().st_size
+                except OSError:
+                    continue
+                if size < g.MIN_SECRET_CHARS:
+                    empty_sightings.append(size)
+
+        watcher = threading.Thread(target=watch, daemon=True)
+        watcher.start()
+        try:
+            for _ in range(40):
+                g.load_or_create_install_secret(state)
+                path.unlink(missing_ok=True)
+        finally:
+            stop.set()
+            watcher.join(5)
+        assert empty_sightings == []
+
+    def test_a_truncated_secret_file_is_replaced_and_everyone_converges(
+        self, tmp_path: Path
+    ) -> None:
+        state = tmp_path / "state"
+        state.mkdir(mode=0o700)
+        (state / g.INSTALL_SECRET_FILENAME).write_text("frag", encoding="utf-8")
+        seen = self._race(state, 12)
+        on_disk = (state / g.INSTALL_SECRET_FILENAME).read_text(encoding="utf-8").strip()
+        assert len(set(seen)) == 1
+        assert set(seen) == {on_disk}
+        assert on_disk != "frag"
+
+
+class TestTheRepairLock:
+    """The lock that makes a corrupt-file repair single-winner must not be a
+    way to wedge a start.
+
+    A daemon killed mid-repair leaves the lock behind. The next start waits
+    :data:`REPAIR_WAIT_S` for a repair that will never come, steals the lock
+    and does the work itself — so a crash costs one bounded wait, not a
+    daemon that never comes up.
+    """
+
+    def test_a_stale_lock_is_stolen_and_the_secret_is_still_written(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(g, "REPAIR_WAIT_S", 0.05)
+        state = tmp_path / "state"
+        state.mkdir(mode=0o700)
+        (state / g.INSTALL_SECRET_FILENAME).write_text("frag", encoding="utf-8")
+        stale = state / (g.INSTALL_SECRET_FILENAME + g.LOCK_SUFFIX)
+        stale.write_text("", encoding="utf-8")
+
+        result = g.load_or_create_install_secret(state)
+
+        assert result.persisted is True
+        assert len(result.secret) >= 32
+        assert (state / g.INSTALL_SECRET_FILENAME).read_text(encoding="utf-8").strip() == (
+            result.secret
+        )
+
+    def test_a_successful_repair_leaves_no_lock_behind(self, tmp_path: Path) -> None:
+        state = tmp_path / "state"
+        state.mkdir(mode=0o700)
+        (state / g.INSTALL_SECRET_FILENAME).write_text("frag", encoding="utf-8")
+        g.load_or_create_install_secret(state)
+        assert not (state / (g.INSTALL_SECRET_FILENAME + g.LOCK_SUFFIX)).exists()
+
+    def test_the_wait_is_bounded_rather_than_indefinite(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import time as _time
+
+        monkeypatch.setattr(g, "REPAIR_WAIT_S", 0.05)
+        state = tmp_path / "state"
+        state.mkdir(mode=0o700)
+        (state / g.INSTALL_SECRET_FILENAME).write_text("frag", encoding="utf-8")
+        (state / (g.INSTALL_SECRET_FILENAME + g.LOCK_SUFFIX)).write_text("", encoding="utf-8")
+        started = _time.monotonic()
+        g.load_or_create_install_secret(state)
+        assert _time.monotonic() - started < 2.0
+
+    def test_the_lock_is_never_followed_if_it_is_a_symlink(self, tmp_path: Path) -> None:
+        """A planted symlink at the lock path must not become a write elsewhere."""
+        target = tmp_path / "planted"
+        state = tmp_path / "state"
+        state.mkdir(mode=0o700)
+        (state / g.INSTALL_SECRET_FILENAME).write_text("frag", encoding="utf-8")
+        (state / (g.INSTALL_SECRET_FILENAME + g.LOCK_SUFFIX)).symlink_to(target)
+        result = g.load_or_create_install_secret(state)
+        assert not target.exists()
+        assert result.secret

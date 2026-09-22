@@ -85,6 +85,7 @@ import hmac
 import os
 import secrets
 import stat
+import time
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
@@ -163,6 +164,25 @@ MAX_SECRET_BYTES = 4096
 
 #: Below this, a secret read off disk is treated as no secret at all.
 MIN_SECRET_CHARS = 16
+
+#: Suffix of the lock one daemon takes to repair an unusable secret file, so
+#: that concurrent starts converge instead of each replacing the other's work.
+#: See :func:`_repair_unusable`.
+LOCK_SUFFIX = ".lock"
+
+#: How long a daemon waits for whoever holds that lock. A **judgement call**
+#: bounded by what it waits FOR: writing ~43 bytes and renaming them, which is
+#: microseconds, so two seconds is four orders of magnitude of slack and still
+#: a deadline rather than a hang.
+REPAIR_WAIT_S = 2.0
+
+#: Poll interval while waiting. Short because the thing waited on is short.
+REPAIR_POLL_S = 0.005
+
+#: How many times the create path re-tries the whole read/publish/repair cycle
+#: before giving up on persistence. Two: one ordinary attempt, one after
+#: stealing a lock whose holder died.
+CREATE_ATTEMPTS = 2
 
 #: Bytes of entropy in a generated secret — 32 bytes, ~43 url-safe characters.
 SECRET_ENTROPY_BYTES = 32
@@ -702,10 +722,40 @@ def _ensure_dir(directory: Path) -> Optional[str]:
     :class:`embodiment.daemon.state.DaemonState` normally owns this directory
     and has already made it 0700; this is the case where the secret is asked
     for first, and it must not be the thing that widens it.
+
+    **A state directory that is itself a symlink is refused outright**, the
+    same way :mod:`embodiment.memory` refuses a symlinked store root, and for
+    a sharper reason: the secret *file* is opened ``O_NOFOLLOW``, but that
+    protects nothing if the directory it is created in is a link somewhere
+    else — whoever controls the link target controls the credential.
+    ``mkdir(exist_ok=True)`` on an existing symlink-to-a-directory succeeds
+    silently and ``os.chmod`` follows the link, so neither of those would
+    have noticed; only an ``lstat`` before anything else does. Found in
+    review, round 3.
+
+    Only the final component is checked. A symlinked *parent* — an operator
+    whose whole ``~/.local/state`` lives on another volume — is ordinary, and
+    refusing it would refuse the machine rather than an attacker.
     """
     try:
-        directory.mkdir(parents=True, exist_ok=True)
-        os.chmod(directory, 0o700)
+        info: Optional[os.stat_result] = directory.lstat()
+    except FileNotFoundError:
+        info = None
+    except OSError as exc:
+        return f"could not inspect the state directory: {describe_exception(exc)}"
+
+    if info is not None and stat.S_ISLNK(info.st_mode):
+        return (
+            "refusing a state directory that is a symlink: the install secret "
+            "would be created behind it, where whatever controls the link "
+            "target controls the credential"
+        )
+
+    try:
+        if info is None:
+            directory.mkdir(parents=True, exist_ok=True)
+        if stat.S_IMODE(directory.lstat().st_mode) != 0o700:
+            os.chmod(directory, 0o700)
     except OSError as exc:
         return f"could not prepare the state directory: {describe_exception(exc)}"
     return None
@@ -765,74 +815,192 @@ def load_or_create_install_secret(
 
 
 def _create(path: Path) -> InstallSecret:
-    """Write a fresh secret at 0600, or degrade to an in-memory one."""
+    """Publish a fresh secret ATOMICALLY, or degrade to an in-memory one.
+
+    The obvious shape — ``O_CREAT|O_EXCL`` on the real path, then write —
+    leaves a window in which the file exists and is **empty**. A second daemon
+    starting inside that window finds a file, reads nothing usable from it,
+    and replaces it; the first is then serving a secret that is no longer on
+    disk, and every client that re-reads the file is refused. Measured with 24
+    concurrent callers on a fresh state dir: **4 different secrets** came
+    back. The window was always there — round 3's ``lstat`` fast path merely
+    made the callers arrive closer together and turned it from rare into
+    reproducible, which is a good argument for treating a concurrency probe
+    that passes as weak evidence.
+
+    Two mechanisms, one per case:
+
+    * **No file yet** — the secret is written to a private temporary sibling,
+      flushed, and linked into place with ``os.link``, which refuses to
+      clobber exactly like ``O_EXCL`` but publishes the **complete** file. A
+      racer sees either no file or a whole one, so every loser reads the
+      winner's secret and all of them converge.
+    * **A file that no daemon could authenticate with** (a truncated write, a
+      crash fragment) — replacing it cannot be done by everyone at once, so
+      one daemon takes a lock and the others wait for it and re-read. See
+      :func:`_repair_unusable`.
+    """
     fresh = _generate()
-    try:
-        handle = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
-    except FileExistsError:
-        # Either a racing daemon just created it, or an unusable file (empty,
-        # too short) is sitting there. Replace it atomically-ish: read first.
+    for _attempt in range(CREATE_ATTEMPTS):
+        published = _publish(path, fresh, clobber=False)
+        if published is not None:
+            return published
+
         existing, code, detail = _read_existing(path)
         if existing is not None:
             return InstallSecret(
                 secret=existing, path=path, created=False, persisted=True, code=code, detail=detail
             )
-        return _overwrite(path, fresh)
-    except OSError as exc:
-        return InstallSecret(
-            secret=fresh,
-            path=path,
-            created=True,
-            persisted=False,
-            code=SECRET_UNPERSISTED_CODE,
-            detail=f"could not write the install secret: {describe_exception(exc)}",
-        )
-    return _finish_write(handle, path, fresh)
+
+        repaired = _repair_unusable(path, fresh)
+        if repaired is not None:
+            return repaired
+
+        waited = _await_usable(path)
+        if waited is not None:
+            return waited
+
+        # Whoever held the lock never finished — it died mid-repair, or the
+        # lock is left over from a previous crash. Steal it and go round once.
+        _unlink(path.with_name(path.name + LOCK_SUFFIX))
+
+    return _unpersisted(
+        path, fresh, "could not converge on an install secret file", OSError("unconverged")
+    )
 
 
-def _overwrite(path: Path, fresh: str) -> InstallSecret:
-    """Replace a present-but-unusable (empty/too-short) secret file."""
+def _repair_unusable(path: Path, fresh: str) -> Optional[InstallSecret]:
+    """Replace an unusable secret file, under a lock. ``None`` = not our turn.
+
+    Without exclusion every concurrent starter replaces the same corrupt file
+    with its own secret and each keeps the one it wrote, so they end up
+    disagreeing — the very defect the link publish closes for the fresh case.
+    Measured before this existed: 12 callers against a 4-byte fragment
+    produced 12 different secrets.
+
+    The lock is a file created ``O_EXCL``; one daemon wins it, re-checks under
+    it (somebody may have repaired the file while this one was deciding), and
+    replaces. Everyone else gets ``None`` and waits in :func:`_await_usable`.
+    A lock whose holder died is stolen by the caller's second attempt, so a
+    crash mid-repair costs one poll interval, not a wedged start.
+    """
+    lock = path.with_name(path.name + LOCK_SUFFIX)
     try:
-        handle = os.open(path, os.O_WRONLY | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+        handle = os.open(lock, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+    except FileExistsError:
+        return None
     except OSError as exc:
-        return InstallSecret(
-            secret=fresh,
-            path=path,
-            created=True,
-            persisted=False,
-            code=SECRET_UNPERSISTED_CODE,
-            detail=f"could not replace the unusable install secret: {describe_exception(exc)}",
-        )
-    return _finish_write(handle, path, fresh)
-
-
-def _finish_write(handle: int, path: Path, fresh: str) -> InstallSecret:
+        return _unpersisted(path, fresh, "could not lock the install secret for repair", exc)
     try:
-        os.write(handle, fresh.encode("utf-8"))
-        os.fsync(handle)
+        os.close(handle)
     except OSError as exc:
-        return InstallSecret(
-            secret=fresh,
-            path=path,
-            created=True,
-            persisted=False,
-            code=SECRET_UNPERSISTED_CODE,
-            detail=f"could not write the install secret: {describe_exception(exc)}",
-        )
+        del exc  # the lock exists, which is all the open was for
+    try:
+        existing, code, detail = _read_existing(path)
+        if existing is not None:
+            return InstallSecret(
+                secret=existing, path=path, created=False, persisted=True, code=code, detail=detail
+            )
+        return _publish(path, fresh, clobber=True)
     finally:
-        try:
-            os.close(handle)
-        except OSError as exc:
-            del exc  # a close that fails after a successful fsync changes nothing
+        _unlink(lock)
+
+
+def _await_usable(path: Path) -> Optional[InstallSecret]:
+    """Wait :data:`REPAIR_WAIT_S` for another daemon's repair. ``None`` = it never came."""
+    deadline = time.monotonic() + REPAIR_WAIT_S
+    while time.monotonic() < deadline:
+        existing, code, detail = _read_existing(path)
+        if existing is not None:
+            return InstallSecret(
+                secret=existing, path=path, created=False, persisted=True, code=code, detail=detail
+            )
+        time.sleep(REPAIR_POLL_S)
+    return None
+
+
+def _publish(path: Path, fresh: str, *, clobber: bool) -> Optional[InstallSecret]:
+    """Write *fresh* to a temp sibling and move it onto *path*. Never raises.
+
+    ``clobber=False`` uses ``os.link``, which fails with ``EEXIST`` rather
+    than overwriting — that is the first-start race, and ``None`` comes back
+    so the caller reads whoever won. ``clobber=True`` uses ``os.replace``,
+    which is atomic and is only ever called under the repair lock, so it is
+    never two daemons overwriting each other.
+    """
+    what = (
+        "could not replace the unusable install secret"
+        if clobber
+        else ("could not write the install secret")
+    )
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.{secrets.token_hex(4)}.tmp")
     try:
-        os.chmod(path, 0o600)
+        handle = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
     except OSError as exc:
-        del exc  # created with 0600 already; a failed re-assert is not a new fact
+        return _unpersisted(path, fresh, what, exc)
+    problem = _write_secret(handle, fresh)
+    if problem is not None:
+        _unlink(tmp)
+        return _unpersisted(path, fresh, what, problem)
+    try:
+        if clobber:
+            os.replace(tmp, path)
+        else:
+            os.link(tmp, path)
+    except FileExistsError:
+        _unlink(tmp)
+        return None
+    except OSError as exc:
+        _unlink(tmp)
+        return _unpersisted(path, fresh, what, exc)
+    finally:
+        if not clobber:
+            _unlink(tmp)
     return InstallSecret(
         secret=fresh,
         path=path,
         created=True,
         persisted=True,
         code=SECRET_CREATED_CODE,
-        detail="generated a new install secret on first start",
+        detail=(
+            "replaced an unusable install secret file"
+            if clobber
+            else "generated a new install secret on first start"
+        ),
     )
+
+
+def _unlink(path: Path) -> None:
+    """Remove a temporary file. Never raises; a leftover is swept next start."""
+    try:
+        os.unlink(path)
+    except OSError as exc:
+        del exc  # already gone, or the directory is read-only
+
+
+def _unpersisted(path: Path, fresh: str, what: str, exc: BaseException) -> InstallSecret:
+    """The in-memory floor: a working secret that dies with the process."""
+    return InstallSecret(
+        secret=fresh,
+        path=path,
+        created=True,
+        persisted=False,
+        code=SECRET_UNPERSISTED_CODE,
+        detail=f"{what}: {describe_exception(exc)}",
+    )
+
+
+def _write_secret(handle: int, fresh: str) -> Optional[OSError]:
+    """Write and flush *fresh* to *handle*, closing it. The error, or ``None``."""
+    problem: Optional[OSError] = None
+    try:
+        os.write(handle, fresh.encode("utf-8"))
+        os.fsync(handle)
+    except OSError as exc:
+        problem = exc
+    finally:
+        try:
+            os.close(handle)
+        except OSError as exc:
+            del exc  # a close that fails after a successful fsync changes nothing
+    return problem

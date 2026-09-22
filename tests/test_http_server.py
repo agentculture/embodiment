@@ -133,6 +133,8 @@ def build(
     public_hostname: Optional[str] = None,
     max_streams: int = s.DEFAULT_MAX_STREAMS,
     max_body_bytes: int = s.DEFAULT_MAX_BODY_BYTES,
+    control_timeout_s: float = s.DEFAULT_CONTROL_TIMEOUT_S,
+    control_workers: int = s.DEFAULT_CONTROL_WORKERS,
 ) -> Harness:
     port = free_port()
     guard = g.Guard(
@@ -149,6 +151,8 @@ def build(
         redact=redact,
         max_streams=max_streams,
         max_body_bytes=max_body_bytes,
+        control_timeout_s=control_timeout_s,
+        control_workers=control_workers,
         stream_poll_s=0.05,
         keepalive_s=0.2,
     )
@@ -1098,3 +1102,186 @@ class TestTheDefaultDistDirInBothLayouts:
             assert server.status()["dashboard"] == "present"
         finally:
             server.shutdown(2.0)
+
+
+class TestTheRedactFilterMatchesTheEncodedForm:
+    """Round 3 review: the filter compared the RAW secret against the JSON.
+
+    A secret containing ``"`` or ``\\`` is escaped inside ``event.to_json()``,
+    so the raw substring never appeared and the event was streamed. The filter
+    now checks the JSON-escaped form as well.
+    """
+
+    AWKWARD = 'he"llo\\x'
+
+    def test_a_quote_and_backslash_bearing_key_is_dropped(self) -> None:
+        bus = Bus()
+        built = build(bus=bus, redact=(self.AWKWARD,))
+        try:
+            conn, response = built.open_stream()
+            bus.publish("state", {"component": self.AWKWARD, "status": "leaking"})
+            bus.publish("state", {"component": "voice", "status": "listening"})
+            captured = read_until(response, "listening", seconds=3.0)
+            response.close()
+            conn.close()
+            assert "listening" in captured
+            assert self.AWKWARD not in captured
+            assert 'he\\"llo' not in captured
+            assert json.dumps(self.AWKWARD)[1:-1] not in captured
+            status = built.server.status()
+            assert status["degradation_counts"][s.SECRET_IN_STREAM_CODE] == 1
+            assert status["events_dropped_for_secret"] == 1
+        finally:
+            built.server.shutdown(2.0)
+            bus.close(1.0)
+
+    @pytest.mark.parametrize(
+        "secret",
+        ['a"b', "a\\b", "a\nb", "a\tb", 'quote"and\\slash', "unicode sep", "plain-key"],
+    )
+    def test_every_awkward_secret_shape_is_caught(self, secret: str) -> None:
+        bus = Bus()
+        built = build(bus=bus, redact=(secret,))
+        try:
+            conn, response = built.open_stream()
+            bus.publish("state", {"component": f"x{secret}y", "status": "leaking"})
+            bus.publish("state", {"component": "voice", "status": "listening"})
+            captured = read_until(response, "listening", seconds=3.0)
+            response.close()
+            conn.close()
+            assert secret not in captured
+            assert json.dumps(secret)[1:-1] not in captured
+            assert built.server.status()["events_dropped_for_secret"] == 1
+        finally:
+            built.server.shutdown(2.0)
+            bus.close(1.0)
+
+
+class TestAControlThatBlocks:
+    """Round 3 review: ``Controls`` documents "may not block" and nothing
+    enforced it.
+
+    A blocking callable pinned its ``ThreadingHTTPServer`` thread for as long
+    as it liked, and the client waited with it. The contract is enforced now:
+    the call runs on a bounded pool, the request waits at most
+    ``control_timeout_s``, and the answer is a recorded 503. The callable is
+    not killed — Python cannot — it is *abandoned*, which is why the pool is
+    bounded and why exhausting it is its own recorded refusal.
+    """
+
+    def test_a_blocking_control_is_a_503_within_the_bound(self) -> None:
+        release = threading.Event()
+
+        def sleeper() -> dict[str, Any]:
+            release.wait(60)
+            return {}
+
+        built = build(controls=s.Controls(start_voice=sleeper), control_timeout_s=0.5)
+        try:
+            started = time.monotonic()
+            status, body = built.request("POST", "/api/voice/start", hdrs=built.headers())
+            elapsed = time.monotonic() - started
+            assert status == 503
+            assert s.CONTROL_TIMEOUT_CODE.encode() in body
+            assert elapsed < 3.0, f"the client waited {elapsed:.1f}s"
+            counts = built.server.status()["degradation_counts"]
+            assert counts[s.CONTROL_TIMEOUT_CODE] == 1
+            assert built.server.status()["controls_timed_out"] == 1
+        finally:
+            release.set()
+            built.server.shutdown(2.0)
+
+    def test_the_server_still_answers_after_a_control_wedges(self) -> None:
+        release = threading.Event()
+        built = build(
+            controls=s.Controls(
+                start_voice=lambda: (release.wait(60), {})[1],
+                status=lambda: {"alive": True},
+            ),
+            control_timeout_s=0.5,
+        )
+        try:
+            built.request("POST", "/api/voice/start", hdrs=built.headers())
+            code, body = built.request("GET", "/api/status", hdrs=built.headers())
+            assert code == 200
+            assert json.loads(body)["daemon"] == {"alive": True}
+            assert built.request("GET", "/", hdrs=built.headers())[0] == 200
+        finally:
+            release.set()
+            built.server.shutdown(2.0)
+
+    def test_status_is_bounded_by_the_same_deadline(self) -> None:
+        release = threading.Event()
+        built = build(
+            controls=s.Controls(status=lambda: (release.wait(60), {})[1]), control_timeout_s=0.5
+        )
+        try:
+            started = time.monotonic()
+            code, body = built.request("GET", "/api/status", hdrs=built.headers())
+            assert code == 503
+            assert s.CONTROL_TIMEOUT_CODE.encode() in body
+            assert time.monotonic() - started < 3.0
+        finally:
+            release.set()
+            built.server.shutdown(2.0)
+
+    def test_exhausting_the_pool_is_its_own_recorded_refusal(self) -> None:
+        release = threading.Event()
+        built = build(
+            controls=s.Controls(start_voice=lambda: (release.wait(60), {})[1]),
+            control_timeout_s=0.3,
+            control_workers=1,
+        )
+        try:
+            for _ in range(s.MAX_CONTROL_INFLIGHT + 2):
+                status, body = built.request("POST", "/api/voice/start", hdrs=built.headers())
+                assert status == 503
+            counts = built.server.status()["degradation_counts"]
+            assert counts.get(s.CONTROL_BUSY_CODE, 0) >= 1
+            assert built.server.status()["controls_inflight"] >= 1
+        finally:
+            release.set()
+            built.server.shutdown(2.0)
+
+    def test_an_abandoned_control_releases_its_slot_when_it_finishes(self) -> None:
+        release = threading.Event()
+        built = build(
+            controls=s.Controls(start_voice=lambda: (release.wait(60), {})[1]),
+            control_timeout_s=0.3,
+        )
+        try:
+            built.request("POST", "/api/voice/start", hdrs=built.headers())
+            assert built.server.status()["controls_inflight"] == 1
+            release.set()
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and built.server.status()["controls_inflight"]:
+                time.sleep(0.05)
+            assert built.server.status()["controls_inflight"] == 0
+        finally:
+            release.set()
+            built.server.shutdown(2.0)
+
+    def test_a_prompt_control_is_not_slowed_down(self) -> None:
+        built = build(controls=s.Controls(start_voice=lambda: {"state": "listening"}))
+        try:
+            started = time.monotonic()
+            status, body = built.request("POST", "/api/voice/start", hdrs=built.headers())
+            assert status == 200
+            assert json.loads(body)["result"] == {"state": "listening"}
+            assert time.monotonic() - started < 1.0
+        finally:
+            built.server.shutdown(2.0)
+
+    def test_shutdown_reports_a_control_it_left_running(self) -> None:
+        release = threading.Event()
+        built = build(
+            controls=s.Controls(start_voice=lambda: (release.wait(60), {})[1]),
+            control_timeout_s=0.3,
+        )
+        built.request("POST", "/api/voice/start", hdrs=built.headers())
+        started = time.monotonic()
+        report = built.server.shutdown(2.0)
+        elapsed = time.monotonic() - started
+        release.set()
+        assert elapsed < 2.5, "shutdown waited for an abandoned control"
+        assert report.controls_unfinished == 1

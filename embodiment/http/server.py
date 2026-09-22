@@ -91,6 +91,7 @@ import os
 import threading
 import time
 import unicodedata
+from concurrent.futures import Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -112,6 +113,11 @@ __all__ = [
     "NO_DASHBOARD_CODE",
     "CONTROL_UNBOUND_CODE",
     "CONTROL_FAILED_CODE",
+    "CONTROL_TIMEOUT_CODE",
+    "CONTROL_BUSY_CODE",
+    "DEFAULT_CONTROL_TIMEOUT_S",
+    "DEFAULT_CONTROL_WORKERS",
+    "MAX_CONTROL_INFLIGHT",
     "BAD_REQUEST_CODE",
     "BODY_TOO_LARGE_CODE",
     "TOO_MANY_STREAMS_CODE",
@@ -129,6 +135,8 @@ __all__ = [
     "DashboardServer",
     "resolve_bind",
     "default_dist_dir",
+    "redaction_forms",
+    "ControlOutcome",
     "is_loopback_address",
 ]
 
@@ -158,6 +166,26 @@ DEFAULT_KEEPALIVE_S = 15.0
 #: or stops reading mid-stream — releases its thread instead of pinning it.
 DEFAULT_SOCKET_TIMEOUT_S = 30.0
 
+#: How long a request waits for a control callable before giving up on it.
+#: Derived from the quantity it bounds rather than picked round (``CLAUDE.md``
+#: lesson 1): the bounded thing is a browser click on Start/Stop/Mute, so this
+#: is the outer edge of "the page still feels like it answered". It does NOT
+#: bound what the daemon does — a control that needs longer should return
+#: promptly and report progress on the event stream.
+DEFAULT_CONTROL_TIMEOUT_S = 5.0
+
+#: Threads available to run control callables. A **judgement call**: four
+#: controls exist and an operator clicks one at a time, so this is headroom,
+#: not capacity.
+DEFAULT_CONTROL_WORKERS = 4
+
+#: How many control calls may be outstanding — running plus abandoned — before
+#: new ones are refused. A timed-out callable cannot be killed (Python offers
+#: no such thing), only abandoned, so without this bound a wedged control
+#: would accumulate one leaked task per retry. A **judgement call**, sized at
+#: twice the worker count.
+MAX_CONTROL_INFLIGHT = 8
+
 #: Distinct degradation codes kept with their first occurrence. Same bound and
 #: same reasoning as :mod:`embodiment.bus`: generous for this module's own
 #: fixed vocabulary, closed against a client that could invent codes.
@@ -171,6 +199,12 @@ NO_DASHBOARD_CODE = "http-no-dashboard"
 CONTROL_UNBOUND_CODE = "http-control-unbound"
 #: A bound control callable raised.
 CONTROL_FAILED_CODE = "http-control-failed"
+#: A control callable did not return within :attr:`ServerConfig.control_timeout_s`.
+#: The request is answered; the callable is abandoned, not killed.
+CONTROL_TIMEOUT_CODE = "http-control-timeout"
+#: :data:`MAX_CONTROL_INFLIGHT` control calls are already outstanding — which
+#: is what a wedged control looks like after a few retries.
+CONTROL_BUSY_CODE = "http-control-busy"
 #: The body was absent, was not JSON, or did not match the route's contract.
 BAD_REQUEST_CODE = "http-bad-request"
 #: ``Content-Length`` exceeded :attr:`ServerConfig.max_body_bytes`.
@@ -319,8 +353,14 @@ class Controls:
     """The daemon's verbs, injected. ``None`` means "t15 has not bound it".
 
     Each callable returns a JSON-serialisable dict, which is echoed back under
-    ``result``. None of them may block indefinitely: they run on a request
-    thread, and the caller's own deadline is the only one there is.
+    ``result``. **None of them may block**, and that is now enforced rather
+    than merely documented (round 3 review): a call runs on a bounded pool and
+    the request waits at most :attr:`ServerConfig.control_timeout_s` before
+    answering 503 :data:`CONTROL_TIMEOUT_CODE`. A callable that overruns is
+    *abandoned*, never killed — Python cannot kill a thread — so overrunning
+    repeatedly exhausts :data:`MAX_CONTROL_INFLIGHT` and the refusal changes to
+    :data:`CONTROL_BUSY_CODE`. Both are recorded; neither stops the daemon
+    serving the dashboard, the stream, or anything else.
     """
 
     start_voice: Optional[Callable[[], dict[str, Any]]] = None
@@ -345,6 +385,8 @@ class ServerConfig:
     include_speech: bool = True
     max_streams: int = DEFAULT_MAX_STREAMS
     max_body_bytes: int = DEFAULT_MAX_BODY_BYTES
+    control_timeout_s: float = DEFAULT_CONTROL_TIMEOUT_S
+    control_workers: int = DEFAULT_CONTROL_WORKERS
     stream_poll_s: float = DEFAULT_STREAM_POLL_S
     keepalive_s: float = DEFAULT_KEEPALIVE_S
     socket_timeout_s: float = DEFAULT_SOCKET_TIMEOUT_S
@@ -358,6 +400,10 @@ class ServerCloseReport:
     streams_closed: int
     serve_thread_stopped: bool
     elapsed_s: float
+    #: Control callables still running when the deadline came. They are
+    #: abandoned on daemon threads, never waited for — reported so a host can
+    #: see that something of its own did not finish.
+    controls_unfinished: int = 0
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -365,6 +411,7 @@ class ServerCloseReport:
             "streams_closed": self.streams_closed,
             "serve_thread_stopped": self.serve_thread_stopped,
             "elapsed_s": self.elapsed_s,
+            "controls_unfinished": self.controls_unfinished,
         }
 
 
@@ -382,6 +429,8 @@ class _Counters:
     streams_timed_out: int = 0
     events_streamed: int = 0
     events_dropped_for_secret: int = 0
+    controls_timed_out: int = 0
+    controls_refused_busy: int = 0
 
 
 class _HttpServer(ThreadingHTTPServer):
@@ -591,39 +640,23 @@ class _Handler(BaseHTTPRequestHandler):
         self._invoke(route, callable_)
 
     def _invoke(self, route: str, action: Optional[Callable[..., Any]], *args: Any) -> None:
-        app = self._app
         label = route.replace("/", ".").strip(".")
-        if action is None:
-            app._degrade(CONTROL_UNBOUND_CODE, f"{label} is not bound to a daemon action")
-            self._send_error(
-                503,
-                CONTROL_UNBOUND_CODE,
-                "this control is not bound to a running daemon yet",
-            )
+        outcome = self._app.call_control(label, action, *args)
+        if not outcome.ok:
+            self._send_error(outcome.status, outcome.code, outcome.message)
             return
-        try:
-            result = action(*args)
-        except Exception as exc:  # noqa: BLE001 - a control's fault is not the server's death
-            app._degrade(CONTROL_FAILED_CODE, f"{label} raised: {describe_exception(exc)}")
-            self._send_error(500, CONTROL_FAILED_CODE, "the control failed; see the daemon's log")
-            return
-        self._send_json(200, {"ok": True, "result": result if isinstance(result, dict) else {}})
+        self._send_json(200, {"ok": True, "result": outcome.result})
 
     def _status(self, *, head: bool) -> None:
         app = self._app
-        if app.controls.status is None:
-            app._degrade(CONTROL_UNBOUND_CODE, "api.status is not bound to a daemon action")
-            self._send_error(
-                503, CONTROL_UNBOUND_CODE, "this control is not bound to a running daemon yet"
-            )
+        # The same bounded path as every other control (lesson 8, one code
+        # path): a status snapshot that hangs is exactly as able to pin a
+        # thread as a start/stop that hangs.
+        outcome = app.call_control("api.status", app.controls.status)
+        if not outcome.ok:
+            self._send_error(outcome.status, outcome.code, outcome.message)
             return
-        try:
-            snapshot = app.controls.status()
-        except Exception as exc:  # noqa: BLE001 - see _invoke
-            app._degrade(CONTROL_FAILED_CODE, f"api.status raised: {describe_exception(exc)}")
-            self._send_error(500, CONTROL_FAILED_CODE, "the control failed; see the daemon's log")
-            return
-        self._send_json(200, {"daemon": snapshot, "http": app.status()}, head=head)
+        self._send_json(200, {"daemon": outcome.result, "http": app.status()}, head=head)
 
     # ── static ───────────────────────────────────────────────────────────────
 
@@ -721,14 +754,14 @@ class _Handler(BaseHTTPRequestHandler):
                 last_write = now
                 continue
             payload = event.to_json()
-            if any(secret and secret in payload for secret in config.redact):
+            if any(form in payload for form in app.redaction_forms):
                 app._count_secret_drop()
                 app._degrade(
                     SECRET_IN_STREAM_CODE,
                     "an event carrying a configured secret was dropped from the stream",
                 )
                 continue
-            frame = f"event: {_safe_kind(event.kind)}\nid: {int(event.seq)}\ndata: {payload}\n\n"
+            frame = f"event: {_safe_token(event.kind)}\nid: {int(event.seq)}\ndata: {payload}\n\n"
             if not self._write(frame):
                 return
             app._count_event()
@@ -766,8 +799,55 @@ class _Handler(BaseHTTPRequestHandler):
 _REFUSED = object()
 
 
-def _safe_kind(kind: object) -> str:
-    """An SSE event name, restricted so a kind can never inject a frame."""
+def redaction_forms(secrets: Any) -> tuple[str, ...]:
+    """Every literal spelling *secrets* can take inside a serialised event.
+
+    Round 3 review: the filter compared the RAW secret against
+    ``Event.to_json()``. A secret containing ``"`` or ``\\`` is escaped in the
+    payload — ``he"llo`` is written ``he\\"llo`` — so the raw substring never
+    appeared and the event streamed out intact. Both spellings are checked
+    now. ``json.dumps(secret)[1:-1]`` is the string as JSON would write it,
+    with the surrounding quotes stripped; it is only added when it differs, so
+    an ordinary key stays one comparison.
+
+    ``Bus`` serialises with ``ensure_ascii=False`` and this helper's encoded
+    form is ASCII-escaped, which is why both are kept rather than one: they
+    are the two spellings a non-ASCII secret can arrive in.
+    """
+    forms: list[str] = []
+    for secret in secrets or ():
+        text = str(secret)
+        if not text:
+            continue
+        forms.append(text)
+        try:
+            encoded = json.dumps(text)[1:-1]
+        except (TypeError, ValueError):
+            continue
+        if encoded != text:
+            forms.append(encoded)
+    return tuple(forms)
+
+
+@dataclass(frozen=True)
+class ControlOutcome:
+    """What one bounded control call produced. ``ok`` decides which half is set."""
+
+    ok: bool
+    result: dict[str, Any]
+    status: int
+    code: str
+    message: str
+
+
+def _safe_token(kind: object) -> str:
+    """A restricted token: an SSE event name, or a control's label in a record.
+
+    One sanitiser for both (lesson 8). An SSE event name that could carry a
+    newline would inject a frame; a label that could carry anything at all
+    would be the one attacker-shaped string in an otherwise fixed reason. Both
+    are ``[A-Za-z0-9._-]`` and capped.
+    """
     text = str(kind)
     return (
         "".join(character for character in text if character.isalnum() or character in "._-")[:40]
@@ -849,6 +929,10 @@ class DashboardServer:
             Path(config.dist_dir) if config.dist_dir is not None else default_dist_dir()
         )
 
+        #: Every literal spelling a configured secret can take in a streamed
+        #: event, computed once. See :func:`redaction_forms`.
+        self.redaction_forms = redaction_forms(config.redact)
+
         self._lock = threading.Lock()
         self._counters = _Counters()
         self.degradations: list[dict[str, str]] = []
@@ -858,6 +942,16 @@ class DashboardServer:
 
         self._streams_open = 0
         self._subscriptions: set[Any] = set()
+
+        #: Control callables run here, never on the request thread, so a
+        #: blocking one costs an abandoned pool task rather than a pinned
+        #: connection. Bounded by ``control_workers`` and, for the abandoned
+        #: ones, by :data:`MAX_CONTROL_INFLIGHT`.
+        self._controls_pool = ThreadPoolExecutor(
+            max_workers=max(1, int(config.control_workers)),
+            thread_name_prefix="embodiment-control",
+        )
+        self._controls_inflight = 0
 
         self._stopping = threading.Event()
         self._closed = False
@@ -955,12 +1049,27 @@ class DashboardServer:
                     f"a stream subscription would not close: {describe_exception(exc)}",
                 )
 
+        with self._lock:
+            unfinished = self._controls_inflight
+        try:
+            # Never ``wait=True``: an abandoned control would hold shutdown for
+            # as long as it likes, which is the defect this whole seam exists
+            # to close. Queued-but-unstarted calls are cancelled; a running one
+            # keeps its daemon thread and dies with the process.
+            self._controls_pool.shutdown(wait=False, cancel_futures=True)
+        except Exception as exc:  # noqa: BLE001 - a pool that will not close is recorded
+            self._degrade(
+                "http-control-pool-close-failed",
+                f"the control pool would not close: {describe_exception(exc)}",
+            )
+
         stopped = self._stop_accept_loop(httpd, thread, deadline, started)
         return ServerCloseReport(
             already_closed=False,
             streams_closed=len(subscriptions),
             serve_thread_stopped=stopped,
             elapsed_s=time.monotonic() - started,
+            controls_unfinished=unfinished,
         )
 
     def _stop_accept_loop(
@@ -995,6 +1104,128 @@ class DashboardServer:
             return True
         thread.join(remaining())
         return not thread.is_alive()
+
+    # ── controls, on a deadline the caller does not have to trust ────────────
+
+    def call_control(
+        self, label: str, action: Optional[Callable[..., Any]], *args: Any
+    ) -> ControlOutcome:
+        """Run *action* under :attr:`ServerConfig.control_timeout_s`. Never raises.
+
+        The contract ``Controls`` states — "none of them may block" — is
+        enforced here rather than trusted. The callable runs on
+        :attr:`_controls_pool`; the caller waits the deadline and then answers
+        without it. An overrunning callable is **abandoned, not cancelled**:
+        Python cannot kill a running thread, so it keeps its pool slot until
+        it returns on its own, which is exactly why the outstanding count is
+        bounded and why exhausting it is its own recorded refusal rather than
+        a slow leak nobody sees.
+
+        Four refusals, each naming the fault a host would look for:
+        :data:`CONTROL_UNBOUND_CODE` (t15 has not bound it),
+        :data:`CONTROL_BUSY_CODE` (too many outstanding),
+        :data:`CONTROL_TIMEOUT_CODE` (it did not answer in time) and
+        :data:`CONTROL_FAILED_CODE` (it raised).
+        """
+        if action is None:
+            self._degrade(CONTROL_UNBOUND_CODE, f"{_safe_token(label)} is not bound")
+            return ControlOutcome(
+                ok=False,
+                result={},
+                status=503,
+                code=CONTROL_UNBOUND_CODE,
+                message="this control is not bound to a running daemon yet",
+            )
+
+        with self._lock:
+            accepted = self._controls_inflight < MAX_CONTROL_INFLIGHT
+            if accepted:
+                self._controls_inflight += 1
+            else:
+                self._counters.controls_refused_busy += 1
+        if not accepted:
+            self._degrade(
+                CONTROL_BUSY_CODE,
+                f"{MAX_CONTROL_INFLIGHT} control calls are already outstanding; "
+                "an earlier one has not returned",
+            )
+            return ControlOutcome(
+                ok=False,
+                result={},
+                status=503,
+                code=CONTROL_BUSY_CODE,
+                message="too many control calls are outstanding",
+            )
+
+        try:
+            future: Future[Any] = self._controls_pool.submit(action, *args)
+        except RuntimeError as exc:
+            # The pool is shut down: this arrives during teardown.
+            self._release_control()
+            self._degrade(
+                CONTROL_FAILED_CODE,
+                f"{_safe_token(label)} could not be started: {describe_exception(exc)}",
+            )
+            return ControlOutcome(
+                ok=False,
+                result={},
+                status=503,
+                code=CONTROL_FAILED_CODE,
+                message="the server is shutting down",
+            )
+        future.add_done_callback(lambda _future: self._release_control())
+        return self._await_control(label, future)
+
+    def _await_control(self, label: str, future: "Future[Any]") -> ControlOutcome:
+        """Wait the deadline, then answer with or without the callable.
+
+        ``wait()`` rather than ``future.result(timeout=…)`` deliberately: in
+        3.11+ ``concurrent.futures.TimeoutError`` *is* ``TimeoutError``, so a
+        control that itself raised ``TimeoutError`` (a socket deadline inside
+        the daemon) would be reported as a control that never answered. Asking
+        whether the future is done separates the two.
+        """
+        deadline = max(0.0, float(self.config.control_timeout_s))
+        done, _pending = wait([future], timeout=deadline)
+        if not done:
+            with self._lock:
+                self._counters.controls_timed_out += 1
+            self._degrade(
+                CONTROL_TIMEOUT_CODE,
+                f"{_safe_token(label)} did not return within {deadline}s and was abandoned",
+            )
+            return ControlOutcome(
+                ok=False,
+                result={},
+                status=503,
+                code=CONTROL_TIMEOUT_CODE,
+                message="the control did not answer in time",
+            )
+        try:
+            result = future.result()
+        except Exception as exc:  # noqa: BLE001 - a control's fault is not the server's death
+            self._degrade(
+                CONTROL_FAILED_CODE, f"{_safe_token(label)} raised: {describe_exception(exc)}"
+            )
+            return ControlOutcome(
+                ok=False,
+                result={},
+                status=500,
+                code=CONTROL_FAILED_CODE,
+                message="the control failed; see the daemon's log",
+            )
+        return ControlOutcome(
+            ok=True,
+            result=result if isinstance(result, dict) else {},
+            status=200,
+            code="",
+            message="",
+        )
+
+    def _release_control(self) -> None:
+        """One outstanding control finished — on time or long after."""
+        with self._lock:
+            self._controls_inflight = max(0, self._controls_inflight - 1)
 
     # ── bookkeeping ──────────────────────────────────────────────────────────
 
@@ -1075,6 +1306,7 @@ class DashboardServer:
             dropped = self.degradations_dropped
             hook_errors = self.hook_errors
             streams_open = self._streams_open
+            controls_inflight = self._controls_inflight
         return {
             "bind": self.config.bind,
             "port": self.port,
@@ -1084,6 +1316,8 @@ class DashboardServer:
             "include_speech": bool(self.config.include_speech),
             "max_streams": int(self.config.max_streams),
             "streams_open": streams_open,
+            "controls_inflight": controls_inflight,
+            "control_timeout_s": float(self.config.control_timeout_s),
             "closed": self._closed,
             "stopping": self._stopping.is_set(),
             "degradations": degradations,
