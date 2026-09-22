@@ -14,6 +14,15 @@ import featuresFixture from "../../tests/fixtures/events/features.json";
 import clientsFixture from "../../tests/fixtures/events/clients.json";
 import heartbeatFixture from "../../tests/fixtures/events/heartbeat.json";
 
+/** Build a synthetic-but-wire-shaped envelope, for attack tests that need
+ *  arbitrary/malformed `data` rather than a committed fixture. Emitting
+ *  only a bare `data`-shaped object (round 1's bug) would now be silently
+ *  DROPPED by parseEnvelopeFrame, so an attack payload has to travel
+ *  inside a real envelope to actually reach the components under test. */
+function envelope(kind: string, data: Record<string, unknown>, seq = 1) {
+  return { v: 1, kind, ts: "2026-09-22T12:00:00.000Z", seq, source: "app://embodiment", data };
+}
+
 function renderApp() {
   FakeEventSource.reset();
   render(
@@ -46,11 +55,19 @@ describe("App — every state from the committed event fixtures", () => {
     expect(screen.getByRole("status")).toHaveAttribute("data-status", "connected");
   });
 
+  // Round 2: every fixture below is emitted as the WHOLE envelope object
+  // (`stateFixture`, not `stateFixture.data`) — exactly the shape the wire
+  // carries (`{v, kind, ts, seq, source, data}`). Emitting the inner
+  // `data` object alone is what let round 1's bug (the hook conflating the
+  // parsed frame with `data` itself) pass every test while rendering
+  // nothing real: a probe server serving these exact fixture files verbatim
+  // over SSE showed every pane empty against that version.
+
   it("renders the state.json fixture as the voice-on/off control", () => {
     const source = renderApp();
     act(() => {
       source.open();
-      source.emit("state", stateFixture.data);
+      source.emit("state", stateFixture);
     });
     // stateFixture.data.status is "up", not "voice-on" -> Start voice shown
     expect(screen.getByRole("button", { name: "Start voice" })).toBeInTheDocument();
@@ -60,7 +77,7 @@ describe("App — every state from the committed event fixtures", () => {
     const source = renderApp();
     act(() => {
       source.open();
-      source.emit("mic", micFixture.data);
+      source.emit("mic", micFixture);
     });
     // mic.json: hot: true -> "Mute mic"
     expect(screen.getByRole("button", { name: "Mute mic" })).toBeInTheDocument();
@@ -71,7 +88,7 @@ describe("App — every state from the committed event fixtures", () => {
     expect(() =>
       act(() => {
         source.open();
-        source.emit("turn", turnFixture.data);
+        source.emit("turn", turnFixture);
       }),
     ).not.toThrow();
   });
@@ -80,8 +97,8 @@ describe("App — every state from the committed event fixtures", () => {
     const source = renderApp();
     act(() => {
       source.open();
-      source.emit("transcript", transcriptFixture.data);
-      source.emit("reply", replyFixture.data);
+      source.emit("transcript", transcriptFixture);
+      source.emit("reply", replyFixture);
     });
     const userLine = screen.getByText(new RegExp(transcriptFixture.data.text));
     const replyLine = screen.getByText(new RegExp(replyFixture.data.text));
@@ -95,17 +112,22 @@ describe("App — every state from the committed event fixtures", () => {
     const source = renderApp();
     act(() => {
       source.open();
-      source.emit("degradation", degradationFixture.data);
+      source.emit("degradation", degradationFixture);
     });
     expect(screen.getByText(new RegExp(degradationFixture.data.code))).toBeInTheDocument();
   });
 
-  it("switches the recall-mode indicator once a continuity degradation arrives", () => {
+  it("shows the recall-mode indicator as unknown until a signal arrives, then lexical-fallback on a continuity degradation", () => {
     const source = renderApp();
-    expect(screen.getByText(/recall: semantic/)).toBeInTheDocument();
+    // No positive "semantic" signal exists in v1 (see RecallModeIndicator's
+    // own comment) -- the honest default is "unknown", never a claim of the
+    // better state with no evidence for it (this rig's embedder is not
+    // ready; CLAUDE.md's C3).
+    expect(screen.getByText(/recall: unknown/)).toBeInTheDocument();
+    expect(screen.queryByText(/recall: semantic/)).toBeNull();
     act(() => {
       source.open();
-      source.emit("degradation", degradationFixture.data); // source: "continuity"
+      source.emit("degradation", degradationFixture); // source: "continuity"
     });
     expect(screen.getByText(/recall: lexical fallback/)).toBeInTheDocument();
   });
@@ -114,7 +136,7 @@ describe("App — every state from the committed event fixtures", () => {
     const source = renderApp();
     act(() => {
       source.open();
-      source.emit("features", featuresFixture.data);
+      source.emit("features", featuresFixture);
     });
     const svg = document.querySelector("svg.waveform");
     expect(svg).toHaveAttribute("data-waveform-state", "live");
@@ -130,7 +152,7 @@ describe("App — every state from the committed event fixtures", () => {
     const source = renderApp();
     act(() => {
       source.open();
-      source.emit("clients", clientsFixture.data);
+      source.emit("clients", clientsFixture);
     });
     expect(screen.getByText(/2 viewers \(1 remote\)/)).toBeInTheDocument();
   });
@@ -139,7 +161,7 @@ describe("App — every state from the committed event fixtures", () => {
     const source = renderApp();
     act(() => {
       source.open();
-      source.emit("heartbeat", heartbeatFixture.data);
+      source.emit("heartbeat", heartbeatFixture);
     });
     expect(screen.getByRole("status")).toHaveAttribute("data-status", "connected");
 
@@ -165,7 +187,10 @@ describe("App — every state from the committed event fixtures", () => {
     expect(() =>
       act(() => {
         source.open();
-        source.emit("transcript", { role: "user", text: `\u0000${bidi}${huge}${withDelimiters}` });
+        source.emit(
+          "transcript",
+          envelope("transcript", { role: "user", text: `\u0000${bidi}${huge}${withDelimiters}` }),
+        );
       }),
     ).not.toThrow();
     // React escapes text content; no raw HTML/script tag can execute even if
@@ -179,7 +204,10 @@ describe("App — every state from the committed event fixtures", () => {
       act(() => {
         source.open();
         // deliberately malformed shape, mirrors a hostile/buggy upstream
-        source.emit("degradation", { source: 42, code: null, reason: ["not", "a", "string"] });
+        source.emit(
+          "degradation",
+          envelope("degradation", { source: 42, code: null, reason: ["not", "a", "string"] }),
+        );
       }),
     ).not.toThrow();
   });
@@ -195,25 +223,57 @@ describe("App — every state from the committed event fixtures", () => {
     expect(screen.getByRole("button", { name: "Start voice" })).toBeInTheDocument();
   });
 
+  it("drops (rather than mis-renders) a frame that is only the inner data object -- round 1's exact bug, reproduced end to end", () => {
+    const source = renderApp();
+    act(() => {
+      source.open();
+      source.emit("transcript", transcriptFixture.data); // no v, no data wrapper
+      source.emit("degradation", degradationFixture.data);
+    });
+    // Neither pane renders anything for the dropped frames: no "user:" line
+    // with empty text, no "[app://embodiment] ?:" degradation row -- the
+    // exact symptom the round-2 report described.
+    expect(screen.queryByText(/user:/)).toBeNull();
+    expect(screen.queryByText(/\?:/)).toBeNull();
+  });
+
   it("renders all fixtures together end to end without throwing", () => {
     const source = renderApp();
     expect(() =>
       act(() => {
         source.open();
-        source.emit("state", stateFixture.data);
-        source.emit("mic", micFixture.data);
-        source.emit("turn", turnFixture.data);
-        source.emit("transcript", transcriptFixture.data);
-        source.emit("reply", replyFixture.data);
-        source.emit("degradation", degradationFixture.data);
-        source.emit("features", featuresFixture.data);
-        source.emit("clients", clientsFixture.data);
-        source.emit("heartbeat", heartbeatFixture.data);
+        source.emit("state", stateFixture);
+        source.emit("mic", micFixture);
+        source.emit("turn", turnFixture);
+        source.emit("transcript", transcriptFixture);
+        source.emit("reply", replyFixture);
+        source.emit("degradation", degradationFixture);
+        source.emit("features", featuresFixture);
+        source.emit("clients", clientsFixture);
+        source.emit("heartbeat", heartbeatFixture);
       }),
     ).not.toThrow();
-    // sanity: the transcript pane holds both speech-carrying entries
+    // sanity: the transcript pane holds both speech-carrying entries, WITH
+    // their actual text (round 1 would have passed this "not throw" check
+    // too -- the assertions below are what round 1 failed).
     const transcriptPanel = screen.getByRole("heading", { name: "Transcript" }).closest("section");
     expect(transcriptPanel).not.toBeNull();
-    expect(within(transcriptPanel as HTMLElement).getAllByText(/:/).length).toBeGreaterThan(0);
+    expect(
+      within(transcriptPanel as HTMLElement).getByText(new RegExp(transcriptFixture.data.text)),
+    ).toBeInTheDocument();
+    expect(
+      within(transcriptPanel as HTMLElement).getByText(new RegExp(replyFixture.data.text)),
+    ).toBeInTheDocument();
+    const degradationsPanel = screen
+      .getByRole("heading", { name: "Degradations" })
+      .closest("section");
+    expect(
+      within(degradationsPanel as HTMLElement).getByText(new RegExp(degradationFixture.data.code)),
+    ).toBeInTheDocument();
+    expect(
+      within(degradationsPanel as HTMLElement).getByText(
+        new RegExp(degradationFixture.data.reason),
+      ),
+    ).toBeInTheDocument();
   });
 });

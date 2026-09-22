@@ -128,3 +128,58 @@ export function isEventEnvelope(value: unknown): value is EventEnvelope {
     v.data !== null
   );
 }
+
+/** Why a raw SSE frame body was rejected by :func:`parseEnvelopeFrame`. */
+export type EnvelopeRejectionReason =
+  | "unparseable-json"
+  | "not-an-object"
+  | "unsupported-version"
+  | "data-not-object";
+
+export interface EnvelopeParseResult {
+  /** The parsed, wire-shaped envelope, or null if rejected. */
+  envelope: EventEnvelope | null;
+  /** Present only when `envelope` is null. */
+  rejectionReason?: EnvelopeRejectionReason;
+}
+
+/**
+ * Parse one SSE frame's `data:` body as a WHOLE envelope — round 2's fix:
+ * the wire carries `{v, kind, ts, seq, source, data: {...}}` (exactly what
+ * tests/fixtures/events/*.json commits), never the inner `data` object on
+ * its own. A probe server serving the committed fixtures verbatim caught
+ * the previous version of this hook treating the parsed JSON as if it
+ * *were* `data` — every pane rendered the envelope's outer shape (`.text`,
+ * `.code`, `.env` all `undefined`) instead of the inner one.
+ *
+ * Validates only what the brief calls out as load-bearing: `v === 1` (the
+ * one schema version this dashboard understands — schema.json's own
+ * `schemaVersion`) and that `data` is a plain object (never null, never an
+ * array — every kind's fields live directly on it). Every other envelope
+ * field (`kind`, `ts`, `seq`, `source`) is passed through as the server
+ * sent it, unvalidated here — `kind` routing already comes from which
+ * `addEventListener` fired, so a spoofed/missing `kind` field on the body
+ * cannot mis-route an event; `ts`/`seq`/`source` are display-only.
+ *
+ * Never throws (lesson 3): a malformed frame is reported as a rejection,
+ * not an exception — the caller counts it rather than losing it silently.
+ */
+export function parseEnvelopeFrame(raw: string): EnvelopeParseResult {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { envelope: null, rejectionReason: "unparseable-json" };
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    return { envelope: null, rejectionReason: "not-an-object" };
+  }
+  const obj = parsed as Record<string, unknown>;
+  if (obj.v !== 1) {
+    return { envelope: null, rejectionReason: "unsupported-version" };
+  }
+  if (typeof obj.data !== "object" || obj.data === null || Array.isArray(obj.data)) {
+    return { envelope: null, rejectionReason: "data-not-object" };
+  }
+  return { envelope: obj as unknown as EventEnvelope };
+}

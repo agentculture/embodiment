@@ -32,6 +32,7 @@ import {
   type TurnData,
   DISCONNECTED_AFTER_MS,
   isEventEnvelope,
+  parseEnvelopeFrame,
 } from "../api/events";
 
 export type ConnectionStatus = "connecting" | "connected" | "disconnected";
@@ -57,6 +58,11 @@ export interface EventStreamSnapshot {
    *  the first one. Exposed for callers that want to render "last seen Ns
    *  ago" rather than only the coarse connected/disconnected status. */
   lastHeartbeatAtMs: number | null;
+  /** Count of SSE frames dropped for failing parseEnvelopeFrame's
+   *  validation (unparseable JSON, not an object, wrong schema version, or
+   *  `data` not itself an object) — lesson 3: a bounded buffer counts what
+   *  it drops, a dropped frame is never silently invisible. */
+  droppedFrames: number;
 }
 
 interface DataState {
@@ -67,6 +73,7 @@ interface DataState {
   clients: EventEnvelope<"clients"> | null;
   transcript: EventEnvelope<"transcript" | "reply">[];
   degradations: EventEnvelope<"degradation">[];
+  droppedFrames: number;
 }
 
 const INITIAL_DATA: DataState = {
@@ -77,6 +84,7 @@ const INITIAL_DATA: DataState = {
   clients: null,
   transcript: [],
   degradations: [],
+  droppedFrames: 0,
 };
 
 type Action =
@@ -86,7 +94,8 @@ type Action =
   | { type: "features"; envelope: EventEnvelope<"features">; data: FeaturesData }
   | { type: "clients"; envelope: EventEnvelope<"clients">; data: ClientsData }
   | { type: "speech"; envelope: EventEnvelope<"transcript" | "reply">; data: TranscriptData | ReplyData }
-  | { type: "degradation"; envelope: EventEnvelope<"degradation">; data: DegradationData };
+  | { type: "degradation"; envelope: EventEnvelope<"degradation">; data: DegradationData }
+  | { type: "dropped" };
 
 function reducer(prev: DataState, action: Action): DataState {
   switch (action.type) {
@@ -110,6 +119,8 @@ function reducer(prev: DataState, action: Action): DataState {
       const overflow = next.length - DEGRADATION_LOG_LIMIT;
       return { ...prev, degradations: overflow > 0 ? next.slice(overflow) : next };
     }
+    case "dropped":
+      return { ...prev, droppedFrames: prev.droppedFrames + 1 };
     default:
       return prev;
   }
@@ -168,20 +179,19 @@ export function useEventStream(
     const makeHandler =
       <K extends EventKind>(kind: K) =>
       (raw: MessageEvent<string>) => {
-        let parsedData: unknown;
-        try {
-          parsedData = JSON.parse(raw.data);
-        } catch {
-          return; // an unparseable frame is dropped, never guessed at
+        // Round 2 fix: raw.data is the WHOLE envelope on the wire
+        // ({v, kind, ts, seq, source, data: {...}}), never the inner
+        // `data` object on its own — a real SSE server serving the
+        // committed fixtures verbatim caught the previous version of this
+        // handler fabricating an envelope around what it wrongly assumed
+        // was already `data`, so every pane read `.text`/`.code`/`.env` off
+        // the OUTER envelope and got `undefined`.
+        const result = parseEnvelopeFrame(raw.data);
+        if (!result.envelope) {
+          dispatch({ type: "dropped" });
+          return;
         }
-        const envelope: EventEnvelope<K> = {
-          v: 1,
-          kind,
-          ts: new Date(nowFn()).toISOString(),
-          seq: -1,
-          source: "sse",
-          data: (parsedData ?? {}) as Record<string, unknown>,
-        };
+        const envelope = result.envelope as EventEnvelope<K>;
         if (kind === "heartbeat") {
           setLastHeartbeatAtMs(nowFn());
         }
@@ -272,6 +282,7 @@ export function useEventStream(
     transcript: data.transcript,
     degradations: data.degradations,
     lastHeartbeatAtMs,
+    droppedFrames: data.droppedFrames,
   };
 }
 
