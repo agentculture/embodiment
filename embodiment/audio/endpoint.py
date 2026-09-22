@@ -3,11 +3,12 @@
 This module defines a shape, not a device. :class:`AudioEndpoint` is a
 :class:`typing.Protocol` that any concrete "how does audio actually reach and
 leave this process" implementation satisfies: a host loudspeaker/microphone
-pair (:mod:`embodiment.audio.host`, ``sounddevice``-backed), a browser
-speaking over a websocket, a robot's relay. Nothing here imports a real audio
-library, opens a socket, or touches a device — that keeps this module free to
+pair (:mod:`embodiment.audio.host`, subprocess-driven — ``pw-record``/
+``pw-play`` or ``arecord``/``aplay``, deviation d4), a browser speaking over a
+websocket, a robot's relay. Nothing here imports a real audio library, opens a
+socket, spawns a process, or touches a device — that keeps this module free to
 be imported by :mod:`embodiment.turn` and the daemon composition root without
-either one paying for, or depending on, ``sounddevice`` or PortAudio.
+either one paying for, or depending on, any of it.
 
 The contract every implementation must meet
 --------------------------------------------

@@ -87,15 +87,14 @@ dependencies = [
     "websockets>=15",
 ]
 
-[project.optional-dependencies]
-# Host microphone and speaker (plan task t7). Optional because a daemon with no
-# audio device, or a host that only ever uses the browser as its ear, must still
-# install and start: a missing extra degrades to a recorded no-voice state.
-# sounddevice -> cffi -> pycparser, and needs the system PortAudio library
-# (libportaudio2), which pip cannot install.
-audio = [
-    "sounddevice>=0.5",
-]
+# Deviation d4 (operator decision, round 4 of plan task t7): the `audio` extra
+# (sounddevice -> cffi -> pycparser, plus the system PortAudio library) is
+# WITHDRAWN. embodiment/audio/host.py now drives the microphone/speaker as
+# subprocesses (`pw-record`/`pw-play` or `arecord`/`aplay`) — the same shape
+# ../lobes-cli and ../shabbos-goy already run against the same hardware — so
+# no Python audio binding is installed at all; the backend binaries are a
+# runtime PATH lookup (`shutil.which`), not a pip dependency. No extra pin
+# replaces this one: there is nothing left for pip to install.
 
 [project.urls]
 Homepage = "https://github.com/agentculture/embodiment"
