@@ -2,7 +2,7 @@
   "plan_slug": "realtime-embodiment-app",
   "schema_version": 2,
   "created": "2026-09-21T20:45:09Z",
-  "updated": "2026-09-22T03:51:59Z",
+  "updated": "2026-09-22T06:08:33Z",
   "deviations": [
     {
       "id": "d1",
@@ -50,6 +50,20 @@
       "status": "approved",
       "classification": "acceptable",
       "seq": 4
+    },
+    {
+      "id": "d5",
+      "what": "t15 works around eidetic's ASCII-only keyword tokeniser: a lexical recall that returns nothing for an utterance with no ASCII alphanumeric run records app-recall-lexical-blind once and retries the two longest words in exact (substring) mode within the remaining recall deadline; recall.hits_total/rendered_total/lexical_fallback_hits make the path visible. The proper fix is upstream (eidetic-cli issue drafted, unposted); the workaround is pinned by a test on the upstream tokeniser so it is removed when eidetic learns Hebrew.",
+      "task_ref": "t15",
+      "reason": "Measured 2026-09-22 on the acoustic self-test: eidetic/memory/scoring.py _WORD_RE=[a-z0-9]+ tokenises Hebrew to nothing, so every keyword and hybrid recall Gwen made on this rig returned zero hits with ok=True and no degradation - the remembered fact was stored correctly and never reached a prompt. Verified after the workaround: hits 3, rendered 3, and the reply after a restart carries the fact.",
+      "affects": [
+        "t11",
+        "t21"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable",
+      "seq": 5
     }
   ],
   "evidence": [],
