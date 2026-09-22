@@ -181,11 +181,14 @@ absence, not an implication.
   the daemon.
 - **A robot relay.** Same seam, same status: a Reachy Mini speaking the lobes
   wire into that endpoint is a future, separate implementation.
-- **Cloudflare Access verification.** The guard *requires* the assertion on a
-  public Host and then **refuses every one**, because verifying its RS256
-  signature needs a dependency that is not yet approved. That refusal is a
-  recorded state (`http-access-verifier-missing`), never a silent hole, and
-  it means the dashboard is not reachable through a public hostname today.
+- **Cloudflare Access verification.** The guard *requires* the assertion on
+  the public Host — the one named by `embodiment start --public-hostname` or
+  `EMBODIMENT_PUBLIC_HOSTNAME`; with neither set, no Host is public and no
+  assertion is asked for — and then **refuses every one**, because verifying
+  its RS256 signature needs a dependency that is not yet approved. That
+  refusal is a recorded state (`http-access-verifier-missing`), never a
+  silent hole, and it means the dashboard is not reachable through a public
+  hostname today.
 - **Semantic recall.** The embedder is down on the rig; recall is lexical, and
   Hebrew recall runs on the exact-substring fallback above.
 - **Reconnection.** A dropped realtime session is recorded and the daemon
@@ -242,7 +245,10 @@ daemon does not rely on Access alone either (see below).
 **How the daemon validates the assertion.** `embodiment/http/guard.py`
 requires the `Cf-Access-Jwt-Assertion` header on every guarded request whose
 `Host` is the configured public hostname, and only on those — a loopback
-request is never asked for one. Verifying that header's RS256 signature
+request is never asked for one. The hostname must be configured for the
+rule to apply at all: `embodiment start --public-hostname <name>` (or
+`EMBODIMENT_PUBLIC_HOSTNAME`); a daemon started without it treats no Host as
+public, and `status()["http"]["public_hostname_configured"]` says which. Verifying that header's RS256 signature
 against Cloudflare's JWKS needs an RSA primitive the standard library does
 not have, and this package takes no new dependency for it (dependencies are
 human-gated; see below). So the shipped verifier

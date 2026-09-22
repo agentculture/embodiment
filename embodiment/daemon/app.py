@@ -105,6 +105,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import queue
 import threading
@@ -123,6 +124,7 @@ from embodiment.audio.endpoint import NullEndpoint
 from embodiment.audio.features import FeatureExtractor
 from embodiment.bus import Bus, fold_degradation
 from embodiment.contract import ModelResponse
+from embodiment.daemon.lifecycle import DEFAULT_SHUTDOWN_DEADLINE, ENV_SHUTDOWN_DEADLINE
 from embodiment.daemon.state import DaemonState, resolve_state_dir
 from embodiment.http import guard as guard_module
 from embodiment.http import server as server_module
@@ -146,6 +148,7 @@ __all__ = [
     "APP_BOOTSTRAP_DEGRADED",
     "APP_CAPTURE_FAILED",
     "APP_FRAMES_NO_SESSION",
+    "APP_FRAMES_REFUSED",
     "APP_REPLY_SECRET_SCRUBBED",
     "APP_REMEMBER_REFUSED",
     "REMEMBER_TOOL_NAME",
@@ -203,8 +206,12 @@ __all__ = [
     "ENV_HTTP_BIND",
     "ENV_BIND_PUBLIC",
     "ENV_ALLOWED_HOSTS",
+    "ENV_PUBLIC_HOSTNAME",
+    "APP_CLOSE_SHARE",
+    "close_budget_for",
     "guard_host_of",
     "allowed_origins_for",
+    "loopback_origin_hosts",
     "SUMMARY_PROMPT",
     "SUMMARY_MAX_TOKENS",
     "main",
@@ -250,6 +257,34 @@ _EARS_CLOSE_WAIT_SHARE = 0.5
 #: must agree on it: the step itself, and the bound the ear is handed.
 _EARS_STEP_FRACTION = 0.35
 
+#: The share of the RUNNER's watchdog bound that the app's whole close gets.
+#: The watchdog (:data:`embodiment.daemon.lifecycle.DEFAULT_SHUTDOWN_DEADLINE`)
+#: is the one clock; every step share in :meth:`DaemonApp.close` is a
+#: fraction of the budget derived here, so the last step (the bus, at 1.0)
+#: is scheduled strictly before the watchdog fires and the summary and the
+#: memory close — the two that used to sit past it — land inside it. A
+#: **judgement call**: a fifth left over covers the runner's own bookkeeping
+#: after ``run`` returns (``shutdown``, the ledger, the pidfile) and the
+#: ``_bounded`` join granularity, on this rig measured well under 50 ms.
+APP_CLOSE_SHARE = 0.8
+
+
+def close_budget_for(runner_deadline: object) -> float:
+    """The app's close budget, derived from the runner's watchdog bound.
+
+    Strictly below *runner_deadline* for any positive value; a value that is
+    not a positive number degrades to the runner's default rather than to a
+    budget nothing else agrees with. Never raises.
+    """
+    try:
+        bound = float(runner_deadline)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        bound = float(DEFAULT_SHUTDOWN_DEADLINE)
+    if not (math.isfinite(bound) and bound > 0):
+        bound = float(DEFAULT_SHUTDOWN_DEADLINE)
+    return max(0.05, bound * APP_CLOSE_SHARE)
+
+
 #: How the ``start`` verb hands its HTTP flags to the daemon CHILD: ``start``
 #: re-execs a fresh interpreter, so a flag parsed in the CLI reaches
 #: :func:`main` only through the environment.
@@ -257,6 +292,13 @@ ENV_HTTP_BIND = "EMBODIMENT_HTTP_BIND"
 ENV_BIND_PUBLIC = "EMBODIMENT_BIND_PUBLIC"
 #: Comma-separated.
 ENV_ALLOWED_HOSTS = "EMBODIMENT_ALLOWED_HOSTS"
+#: The ONE hostname the guard treats as public: a request whose ``Host`` is
+#: this name must carry a Cloudflare Access assertion, and the shipped
+#: verifier refuses every one (``http-access-verifier-missing``). Unset, no
+#: Host is public and nothing is asked — which is what a default install is.
+#: This is how ``--public-hostname`` reaches :class:`GuardConfig`; before it
+#: existed the documented refusal was unreachable (review finding 3).
+ENV_PUBLIC_HOSTNAME = "EMBODIMENT_PUBLIC_HOSTNAME"
 
 #: The system prompt for the end-of-session summary. Hebrew, because the
 #: window it summarises is Hebrew, and short because the record is a memory
@@ -491,6 +533,11 @@ APP_EAR_DETACH_FAILED = "app-ear-detach-failed"
 APP_CAPTURE_FAILED = "app-capture-failed"
 #: A captured frame arrived with no realtime session to send it to.
 APP_FRAMES_NO_SESSION = "app-frames-no-session"
+#: The realtime client REFUSED a frame — ``send_audio`` returned False: the
+#: session is gone, or its send queue is full. Counted apart from a forwarded
+#: frame (review finding 12): a callback that counted every non-raising call
+#: as forwarded made a deaf session look like a busy one.
+APP_FRAMES_REFUSED = "app-frames-refused"
 #: The model called ``remember`` with something that could not be stored.
 APP_REMEMBER_REFUSED = "app-remember-refused"
 #: The model called ``forget`` with an id that could not be archived: not an
@@ -585,8 +632,11 @@ class AppConfig:
     recall_mode: str = "keyword"
     #: How often :meth:`DaemonApp.run` pumps the bus clock and the out-features.
     poll_interval_s: float = 0.5
-    #: The whole-app shutdown bound; lifecycle's watchdog is the backstop.
-    shutdown_deadline: float = 5.0
+    #: The whole-app shutdown bound. Derived from lifecycle's watchdog, never
+    #: chosen beside it: :func:`main` reads the runner's value from
+    #: :data:`~embodiment.daemon.lifecycle.ENV_SHUTDOWN_DEADLINE` and the
+    #: default here is the same derivation from the runner's default.
+    shutdown_deadline: float = close_budget_for(DEFAULT_SHUTDOWN_DEADLINE)
     #: Utterances that may wait for the turn thread before one is dropped.
     turn_queue_size: int = 8
     #: The model seam's own bound, in seconds.
@@ -625,6 +675,11 @@ class AppConfig:
     #: name, for instance. Each is also accepted as an ``http://<host>``
     #: Origin, so the dashboard's own fetches pass the Origin check.
     allowed_hosts: tuple[str, ...] = ()
+    #: The public hostname, when the dashboard sits behind a Cloudflare
+    #: tunnel. ``None`` means no Host is public. Its Origin (both schemes) is
+    #: allow-listed so the dashboard's own POSTs reach the assertion check
+    #: and meet the DOCUMENTED refusal rather than ``http-refused-origin``.
+    public_hostname: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -704,6 +759,27 @@ class _Heard:
     eos_wall: Optional[float] = None
     eos_at_ms: Optional[int] = None
     transcript_at: Optional[float] = None
+
+
+@dataclass(eq=False)
+class _EarsSession:
+    """One dialled realtime session and everything the thread serving it owns.
+
+    Captured at start and carried by the thread, so a thread that outlives
+    a redial closes the client and the loop IT was given — never
+    ``self._ears`` or ``self._ears_loop``, which by then name the NEW
+    session (review finding 7: the old listener's ``finally`` closed the new
+    client and cleared the new loop). ``closed`` and ``close_done`` are per
+    session for the same reason: the app-level events were ``clear()``-ed by
+    the new session, which re-armed the old thread's close.
+    """
+
+    client: Any
+    rate: int
+    closed: threading.Event = field(default_factory=threading.Event)
+    close_done: threading.Event = field(default_factory=threading.Event)
+    loop: Optional[asyncio.AbstractEventLoop] = None
+    thread: Optional[threading.Thread] = None
 
 
 @dataclass(frozen=True)
@@ -913,7 +989,12 @@ def _wire_tool_arguments(arguments: Any) -> dict[str, Any]:
     if isinstance(arguments, str):
         try:
             arguments = json.loads(arguments) if arguments.strip() else {}
-        except ValueError:
+        except (ValueError, RecursionError):
+            # RecursionError too: a deeply nested ``[[[[…`` (a few tens of KB,
+            # well inside one completion) is what the decoder raises for
+            # depth, and it is not a ValueError. Left uncaught it escaped
+            # http_complete and folded the whole turn as a failure; here the
+            # arguments become {} and the tool refuses on its own vocabulary.
             arguments = {}
     if not isinstance(arguments, dict):
         arguments = {}
@@ -1028,6 +1109,7 @@ class DaemonApp:
         self._stale_generation_recorded = False
         self._frames_captured = 0
         self._frames_forwarded = 0
+        self._frames_refused = 0
         self._features_in = FeatureExtractor()
 
         self._clients = 0
@@ -1087,9 +1169,8 @@ class DaemonApp:
         self._turn_thread: Optional[threading.Thread] = None
         self._ears_thread: Optional[threading.Thread] = None
         self._ears_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._ears_session: Optional[_EarsSession] = None
         self._ears_connected = False
-        self._ears_closed = threading.Event()
-        self._ears_close_done = threading.Event()
         self._ears_close_bound: Optional[float] = None
         self._worker_stop = threading.Event()
 
@@ -1198,10 +1279,10 @@ class DaemonApp:
 
         return scrubbed
 
-    def _fold(self, source: str, record: Any) -> None:
+    def _fold(self, source: str, record: Any, *, once: bool = False) -> None:
         """Record a sibling module's own degradation, keeping its own code."""
         folded = fold_degradation(record, source=source)
-        self._record(folded["code"], folded["reason"], source=folded["source"])
+        self._record(folded["code"], folded["reason"], source=folded["source"], once=once)
 
     def _publish(self, kind: str, data: dict[str, Any]) -> None:
         """Publish one event. A publish failure is recorded, never raised."""
@@ -1247,9 +1328,14 @@ class DaemonApp:
         except Exception as exc:  # noqa: BLE001  # an injected bus is not trusted
             self._record(APP_PUBLISH_FAILED, f"tick: {_describe(exc)}")
 
-    def shutdown(self, deadline: float = 5.0) -> AppCloseReport:
-        """The name :class:`embodiment.daemon.lifecycle.DaemonRunner` calls."""
-        return self.close(deadline=deadline)
+    def shutdown(self, deadline: float = DEFAULT_SHUTDOWN_DEADLINE) -> AppCloseReport:
+        """The name :class:`embodiment.daemon.lifecycle.DaemonRunner` calls.
+
+        *deadline* is the RUNNER's watchdog bound, so the close budget is
+        derived below it here exactly as :func:`main` derives the config's —
+        one clock, whichever path reaches ``close`` first.
+        """
+        return self.close(deadline=close_budget_for(deadline))
 
     def close(self, deadline: float = 5.0) -> AppCloseReport:
         """Stop everything within *deadline*, reporting what is unfinished.
@@ -1736,12 +1822,23 @@ class DaemonApp:
                 self._record(APP_FRAMES_NO_SESSION, "no realtime session to send to", once=True)
                 return
             try:
-                ears.send_audio(pcm)
+                accepted = ears.send_audio(pcm)
             except Exception as exc:  # noqa: BLE001  # the ears client is a seam
                 self._record(APP_CAPTURE_FAILED, _describe(exc), once=True)
             else:
-                with self._lock:
-                    self._frames_forwarded += 1
+                # The client's own answer: False is a frame that went nowhere,
+                # and it is counted as such, not as forwarded.
+                if accepted is False:
+                    with self._lock:
+                        self._frames_refused += 1
+                    self._record(
+                        APP_FRAMES_REFUSED,
+                        "the realtime client refused a frame (no session, or its queue is full)",
+                        once=True,
+                    )
+                else:
+                    with self._lock:
+                        self._frames_forwarded += 1
             self._publish_features("in", self._features_in, pcm)
 
         return on_frame
@@ -2575,29 +2672,49 @@ class DaemonApp:
             return
         self._ears_rate = rate
         self._ears_sessions += 1
-        self._ears_closed.clear()
-        self._ears_close_done.clear()
+        session = _EarsSession(client=self._ears, rate=rate)
         self._publish(
             "state",
             {"component": "ears", "status": "dialling", "input_sample_rate": rate},
         )
-        thread = threading.Thread(target=self._ears_main, name="embodiment-ears", daemon=True)
+        thread = threading.Thread(
+            target=self._ears_main, args=(session,), name="embodiment-ears", daemon=True
+        )
+        session.thread = thread
+        self._ears_session = session
         self._ears_thread = thread
         thread.start()
 
     def _stop_ears_session(self, deadline: float) -> bool:
-        """Close the current session and reap its thread. Never raises."""
+        """Close the current session and reap its thread. Never raises.
+
+        A thread that outlives *deadline* is recorded and left to finish on
+        its own: it holds its session record, so whatever it closes on the
+        way out is its own client and its own loop, not the next session's.
+        """
         stopped = self._stop_ears(max(0.05, deadline))
+        if not stopped:
+            self._record(
+                APP_EARS_CLOSE_INCOMPLETE,
+                "the previous session's thread outlived the redial bound; it closes its own client",
+            )
         self._ears_thread = None
         self._ears_loop = None
+        self._ears_session = None
         return stopped
 
-    def _ears_main(self) -> None:
+    def _is_current(self, session: _EarsSession) -> bool:
+        """Whether *session* is still the one the app is listening through."""
+        return self._ears_session is session
+
+    def _ears_main(self, session: _EarsSession) -> None:
         loop = asyncio.new_event_loop()
-        self._ears_loop = loop
+        session.loop = loop
+        if self._is_current(session):
+            self._ears_loop = loop
         try:
             asyncio.set_event_loop(loop)
-            loop.run_until_complete(self._listen())
+            loop.run_until_complete(self._listen(session))
         except Exception as exc:  # noqa: BLE001  # the ear may die; the daemon may not
             self._record(APP_EARS_THREAD_FAILED, _describe(exc))
         finally:
@@ -2605,13 +2722,15 @@ class DaemonApp:
                 loop.close()
             except Exception:  # noqa: BLE001  # a loop that will not close is counted, not raised
                 self._record(APP_EARS_THREAD_FAILED, "event loop would not close")
-            self._ears_loop = None
+            # Only OUR loop is cleared: after a redial this attribute names
+            # the new session's loop, which is not this thread's to touch.
+            if self._ears_loop is loop:
+                self._ears_loop = None
 
-    async def _listen(self) -> None:
-        if self._ears is None:
-            return
+    async def _listen(self, session: _EarsSession) -> None:
+        ears = session.client
         try:
-            connected = await self._ears.connect()
+            connected = await ears.connect()
         except Exception as exc:  # noqa: BLE001  # the client promises False, not an exception
             self._record(APP_EARS_UNAVAILABLE, _describe(exc))
             return
@@ -2622,17 +2741,20 @@ class DaemonApp:
             # step burned its whole slice joining a thread parked in
             # ``events()``), and the real client would leave its WebSocket
             # open behind it.
-            await self._shut_ears_down()
+            await self._shut_ears_down(session)
             return
         if not connected:
-            self._ears_connected = False
+            if self._is_current(session):
+                self._ears_connected = False
             self._record(APP_EARS_UNAVAILABLE, "the gateway did not give us a session")
             self._publish("state", {"component": "ears", "status": "unavailable"})
             return
-        self._ears_connected = True
+        if self._is_current(session):
+            self._ears_connected = True
         self._publish("state", {"component": "ears", "status": "listening"})
+        requested = False
         try:
-            async for event in self._ears.events():
+            async for event in ears.events():
                 if self._stopping:
                     break
                 self._on_event(event)
@@ -2641,12 +2763,17 @@ class DaemonApp:
         except Exception as exc:  # noqa: BLE001  # any transport fault ends the stream
             self._record(APP_EARS_STREAM_ENDED, _describe(exc))
         finally:
-            self._ears_connected = False
+            if self._is_current(session):
+                self._ears_connected = False
+            # ``closed`` is set by the daemon's own stop BEFORE the client is
+            # asked to close (``_shut_ears_down``), so reading it here — before
+            # this path sets it — tells a requested stop from a peer's.
+            requested = session.closed.is_set()
             # Whatever ended the stream — a stop, a peer close, a transport
             # fault — the client is closed from inside its own loop, which is
             # the only thread that can close it gracefully.
-            await self._shut_ears_down()
-        if not self._stopping:
+            await self._shut_ears_down(session)
+        if not self._stopping and not requested:
             self._record(APP_EARS_STREAM_ENDED, "the event stream ended; no reconnect in t15")
             self._publish("state", {"component": "ears", "status": "ended"})
 
@@ -2760,8 +2887,10 @@ class DaemonApp:
             count = self._turns_superseded
         self._publish("state", {"component": "turn", "status": "superseded", "superseded": count})
 
-    async def _shut_ears_down(self, deadline: Optional[float] = None) -> None:
-        """Close the ears from INSIDE their own loop. Idempotent; never raises.
+    async def _shut_ears_down(
+        self, session: _EarsSession, deadline: Optional[float] = None
+    ) -> None:
+        """Close *session*'s ears from INSIDE their own loop. Idempotent; never raises.
 
         The ONE place ``ears.close`` is awaited. *deadline* is the bound the
         CLIENT is given, and it is the caller's business because the caller is
@@ -2774,17 +2903,17 @@ class DaemonApp:
         against an ear that was closing perfectly well (CLAUDE.md lesson 1 —
         a clock sized against the wrong quantity becomes the measurement).
 
-        :attr:`_ears_close_done` is set on the way out whichever path ran, so
+        ``session.close_done`` is set on the way out whichever path ran, so
         a waiter outside the loop never needs a future linked across it.
         """
-        if self._ears_closed.is_set() or self._ears is None:
+        if session.closed.is_set():
             return
-        self._ears_closed.set()
+        session.closed.set()
         bound = deadline
         if bound is None:
             bound = self._ears_close_bound or self._config.shutdown_deadline
         try:
-            report = await self._ears.close(max(0.05, float(bound)))
+            report = await session.client.close(max(0.05, float(bound)))
         except Exception as exc:  # noqa: BLE001  # the client promises a report, not silence
             self._record(APP_EARS_THREAD_FAILED, f"close: {_describe(exc)}")
         else:
@@ -2793,7 +2922,7 @@ class DaemonApp:
                 # completed — not our clock running out on it.
                 self._record(APP_EARS_CLOSE_INCOMPLETE, "the close handshake did not complete")
         finally:
-            self._ears_close_done.set()
+            session.close_done.set()
 
     def _stop_ears(self, deadline: float) -> bool:
         """Tell the ear to stop and wait, bounded, for its thread. Never raises.
@@ -2817,8 +2946,9 @@ class DaemonApp:
         * the wait for the close takes only a share of the slice, so the join
           afterwards still has time to observe the thread finishing.
         """
+        session = self._ears_session
         thread = self._ears_thread
-        if thread is None or not thread.is_alive():
+        if session is None or thread is None or not thread.is_alive():
             return True
         loop = self._await_ears_loop(deadline)
         close_bound = max(0.05, deadline * _EARS_CLOSE_WAIT_SHARE)
@@ -2826,17 +2956,19 @@ class DaemonApp:
             loop is not None
             and loop.is_running()
             and not loop.is_closed()
-            and not self._ears_closed.is_set()
-            and self._schedule_ears_close(loop, close_bound)
+            and not session.closed.is_set()
+            and self._schedule_ears_close(session, loop, close_bound)
         ):
             # Strictly longer than what the client itself was given, so a
             # client answering inside its own bound always wins the race
             # against this wait.
-            self._ears_close_done.wait(timeout=close_bound + _EARS_CLOSE_GRACE_S)
+            session.close_done.wait(timeout=close_bound + _EARS_CLOSE_GRACE_S)
         thread.join(timeout=max(0.05, deadline))
         return not thread.is_alive()
 
-    def _schedule_ears_close(self, loop: asyncio.AbstractEventLoop, bound: float) -> bool:
+    def _schedule_ears_close(
+        self, session: _EarsSession, loop: asyncio.AbstractEventLoop, bound: float
+    ) -> bool:
         """Ask the ears loop to close its client, from its own thread. Never raises.
 
         The coroutine is built inside the callback, on the loop's thread, so a
@@ -2845,7 +2977,7 @@ class DaemonApp:
         """
 
         def spawn() -> None:
-            loop.create_task(self._shut_ears_down(bound))
+            loop.create_task(self._shut_ears_down(session, bound))
 
         try:
             loop.call_soon_threadsafe(spawn)
@@ -3028,6 +3160,7 @@ class DaemonApp:
             audio = {
                 "frames_captured": self._frames_captured,
                 "frames_forwarded": self._frames_forwarded,
+                "frames_refused": self._frames_refused,
                 "frames_from_stale_ear": self._stale_frames,
                 "frames_dropped_no_session": self._frames_dropped_no_session,
                 "stale_frame_tolerance": _STALE_FRAME_TOLERANCE,
@@ -3426,6 +3559,30 @@ def allowed_origins_for(hosts: Iterable[str]) -> tuple[str, ...]:
     return tuple(out)
 
 
+def loopback_origin_hosts(port: int) -> tuple[str, ...]:
+    """The ``host[:port]`` forms a browser puts in ``Origin`` for a loopback dashboard.
+
+    The guard accepts every :data:`~embodiment.http.guard.DEFAULT_ALLOWED_HOSTS`
+    entry as a ``Host`` with the port stripped, but an ``Origin`` keeps its
+    port and a browser sends one on EVERY ``POST`` — so an Origin list built
+    only from the operator's extra hosts refused Start/Stop/Mute on every
+    default install (``http-refused-origin`` at ``http://127.0.0.1:8823``).
+    Both the bound port and the bare host are listed (a reverse proxy on 80
+    or 443 presents the bare form), and an IPv6 literal is bracketed the way
+    a browser writes it; the unbracketed spellings the guard keeps for the
+    ``Host`` comparison would never match an Origin and are not repeated.
+    """
+    out: list[str] = []
+    for host in sorted(guard_module.DEFAULT_ALLOWED_HOSTS):
+        cleaned = host.strip().lower()
+        if ":" in cleaned and not cleaned.startswith("["):
+            cleaned = f"[{cleaned}]"
+        for form in (f"{cleaned}:{int(port)}", cleaned):
+            if form not in out:
+                out.append(form)
+    return tuple(out)
+
+
 def _lexical_can_index(text: str) -> bool:
     """Whether a lexical (BM25) search has anything to work with here.
 
@@ -3484,6 +3641,9 @@ def _http_status(server: Any, config: AppConfig) -> Optional[dict[str, Any]]:
         "configured_bind": config.bind,
         "bind_public": bool(config.bind_public),
         "allowed_hosts": len(config.allowed_hosts),
+        # Whether a Host is public at all — the name itself is not published,
+        # for the same reason the allow-list is a count.
+        "public_hostname_configured": bool(config.public_hostname),
         # True when the browser will withhold what the cookie rule needs —
         # see the module docstring's "Reaching the dashboard from another
         # device". Not a fault, and not something this daemon can fix from
@@ -3581,9 +3741,15 @@ def main() -> DaemonApp:
     config = AppConfig(
         gateway_url=realtime.gateway_url,
         api_key=realtime.api_key,
+        # The runner's watchdog bound, exported by the lifecycle child; the
+        # close budget is derived strictly below it (one clock, finding 1).
+        shutdown_deadline=close_budget_for(
+            os.environ.get(ENV_SHUTDOWN_DEADLINE) or DEFAULT_SHUTDOWN_DEADLINE
+        ),
         bind=os.environ.get(ENV_HTTP_BIND) or AppConfig.bind,
         bind_public=_env_flag(os.environ.get(ENV_BIND_PUBLIC)),
         allowed_hosts=parse_allowed_hosts(os.environ.get(ENV_ALLOWED_HOSTS)),
+        public_hostname=(os.environ.get(ENV_PUBLIC_HOSTNAME) or "").strip().lower() or None,
     )
 
     data_dir = Path(state.dir) / "memory" if state.dir is not None else Path(".")
@@ -3635,7 +3801,15 @@ def main() -> DaemonApp:
         memory=memory,
         complete=bind_tools(seam, tools),
         tools=tools,
-        ears_factory=lambda rate: RealtimeEars(replace(realtime, input_sample_rate=rate)),
+        # The client's own degradations (SESSION_DROPPED, AUDIO_DROPPED,
+        # NOT_CONNECTED …) reach the ledger through this hook (finding 14);
+        # ``app`` is bound below and the factory only runs on attach, after.
+        # Once per code here: the client already collapses its repeating
+        # faults, and the count in status() carries the magnitude.
+        ears_factory=lambda rate: RealtimeEars(
+            replace(realtime, input_sample_rate=rate),
+            on_degrade=lambda record: app._fold("ears", record, once=True),
+        ),
         endpoint_factory=HostEndpoint,
         summarise=summarise,
         # The bus already redacts these on its way out; this is the other
@@ -3656,11 +3830,25 @@ def main() -> DaemonApp:
                     install_secret=secret.secret,
                     allowed_hosts=guard_module.DEFAULT_ALLOWED_HOSTS
                     | frozenset(guard_host_of(host) for host in config.allowed_hosts),
-                    allowed_origins=frozenset(allowed_origins_for(config.allowed_hosts)),
+                    # Loopback FIRST: a default install's own dashboard sends
+                    # an Origin on every POST (finding 2), then the operator's.
+                    allowed_origins=frozenset(
+                        allowed_origins_for(
+                            (
+                                *loopback_origin_hosts(config.port),
+                                *config.allowed_hosts,
+                                *((config.public_hostname,) if config.public_hostname else ()),
+                            )
+                        )
+                    ),
+                    public_hostname=config.public_hostname,
                 ),
             ),
             bus=bus,
             controls=app.controls(),
+            # The server notifies on the FIRST occurrence of each code only;
+            # once here keeps the ledger to that as well (finding 14).
+            on_degrade=lambda code, reason: app._record(code, reason, source="http", once=True),
         )
     except Exception as exc:  # noqa: BLE001  # no dashboard is a degradation, not a crash
         app._record(APP_BOOTSTRAP_DEGRADED, f"dashboard: {_describe(exc)}")

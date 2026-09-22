@@ -20,10 +20,12 @@ not pretend to be.
 
 ``--http-bind`` / ``--bind-public`` / ``--allowed-host`` configure where the
 dashboard listens and which ``Host`` headers its guard accepts — for reviewing
-the dashboard from a phone over a tailnet, say. The bind is checked *before*
+the dashboard from a phone over a tailnet, say — and ``--public-hostname``
+names the one Host the guard treats as public (behind a Cloudflare tunnel),
+on which an Access assertion is required. The bind is checked *before*
 anything is spawned, so a routable address without ``--bind-public`` is a
 refusal here rather than a daemon that starts and then declines to serve. All
-three reach the daemon through the environment
+four reach the daemon through the environment
 (:data:`~embodiment.daemon.app.ENV_HTTP_BIND` and its siblings), because
 ``start`` re-execs a fresh interpreter rather than forking this one.
 """
@@ -94,6 +96,9 @@ def _http_env(args: argparse.Namespace) -> dict[str, str]:
     hosts = daemon_app.parse_allowed_hosts(",".join(args.allowed_host or ()))
     if hosts:
         env[daemon_app.ENV_ALLOWED_HOSTS] = ",".join(hosts)
+    public = (getattr(args, "public_hostname", None) or "").strip()
+    if public:
+        env[daemon_app.ENV_PUBLIC_HOSTNAME] = public
     return env
 
 
@@ -167,6 +172,17 @@ def register(sub: argparse._SubParsersAction) -> None:
             "A Host header the guard accepts beyond loopback, e.g. a tailnet "
             "address or name. Repeatable. Each is also accepted as an Origin "
             "with the plain-http scheme so the dashboard's own requests pass."
+        ),
+    )
+    p.add_argument(
+        "--public-hostname",
+        default=None,
+        metavar="HOSTNAME",
+        help=(
+            "The one Host the guard treats as public (a Cloudflare tunnel hostname). "
+            "Requests for it must carry a Cloudflare Access assertion, and the shipped "
+            "verifier refuses every one (http-access-verifier-missing) until an RS256 "
+            "dependency is approved. Unset, no Host is public and nothing is asked."
         ),
     )
     p.add_argument("--json", action="store_true", help="Emit structured JSON.")

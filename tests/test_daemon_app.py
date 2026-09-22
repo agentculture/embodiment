@@ -315,13 +315,15 @@ def harness(tmp_path: Path, request: pytest.FixtureRequest) -> Any:
         bus = overrides.pop("bus", None) or Bus()
         ears = overrides.pop("ears", None) or FakeEars()
         rates: list[int] = []
+        # Popped BEFORE the factory closes over it: the factory runs after
+        # this function returns, when the key is long gone from ``overrides``.
+        ears_for_rate: dict[int, Any] = overrides.pop("_ears_for_rate", None) or {}
 
         def ears_factory(rate: int) -> Any:
             rates.append(rate)
-            built = overrides.get("_ears_for_rate", {}).get(rate)
+            built = ears_for_rate.get(rate)
             return built if built is not None else ears
 
-        overrides.pop("_ears_for_rate", None)
         recall_fn = overrides.pop("recall_fn", None) or (
             lambda query, **kwargs: SimpleNamespace(ok=True, records=[], degradation=None)
         )
@@ -3944,6 +3946,47 @@ class TestModelSeam:
         assert app_module._wire_tool_calls("not-a-list") == []
         assert app_module._wire_tool_calls(None) == []
 
+    def test_deeply_nested_arguments_become_empty_not_a_failed_turn(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Post-wave review: ``json.loads`` on a deep ``[[[[…`` raises
+        ``RecursionError``, not ``ValueError``; it escaped ``_wire_tool_calls``
+        and ``http_complete`` and folded the whole turn as a failure. The
+        arguments become ``{}`` and the tool refuses on its own vocabulary.
+
+        The review's ~3 KB (depth 1500) does NOT raise on this rig's
+        CPython 3.12.12, whose C recursion limit is higher; depth 20 000
+        (~40 KB, well inside a chat completion) does. The depth is measured
+        here rather than assumed, so the test fails on the base wherever the
+        interpreter's limit sits below it."""
+        depth = 20_000
+        nested = "[" * depth + "]" * depth
+        with pytest.raises(RecursionError):
+            json.loads(nested)
+        self._capture(
+            monkeypatch,
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "deep",
+                                    "function": {"name": "remember", "arguments": nested},
+                                }
+                            ],
+                        }
+                    }
+                ]
+            },
+        )
+        response = app_module.http_complete([], gateway_url="http://gateway.invalid")
+        assert [(c.id, c.name, c.arguments) for c in response.tool_calls] == [
+            ("deep", "remember", {})
+        ]
+        assert app_module._wire_tool_arguments(nested) == {}
+
 
 class TestTheTailnetBind:
     """Round 8: the operator reviews the dashboard from a phone over Tailscale."""
@@ -4319,3 +4362,566 @@ class TestProcessModel:
             assert isinstance(application.status(), dict)
         finally:
             application.close(deadline=2.0)
+
+
+# ── one shutdown clock (review finding 1) ─────────────────────────────────────
+
+
+class TestOneShutdownClock:
+    """The runner's watchdog and the app's close budget are ONE clock.
+
+    CLAUDE.md lesson 1: a clock sized against the wrong quantity silently
+    becomes the measurement. The runner hard-exits ``DEFAULT_SHUTDOWN_DEADLINE``
+    after a stop; the app used to close under its own 5.0 s and schedule the
+    summary and the memory close past that watchdog, so a stop mid-turn ended
+    in ``lifecycle-hard-exit`` with the summary never written.
+    """
+
+    def test_the_apps_close_budget_is_derived_strictly_below_the_runners(self) -> None:
+        from embodiment.daemon import lifecycle
+
+        for runner in (lifecycle.DEFAULT_SHUTDOWN_DEADLINE, 2.0, 0.5, 10.0):
+            budget = app_module.close_budget_for(runner)
+            assert 0 < budget < runner, (runner, budget)
+            # Every scheduled share is a fraction <= 1.0 of the budget, so the
+            # LAST step (the bus, at 1.0) is the latest anything is scheduled.
+            assert budget * 1.0 < runner
+
+    def test_main_reads_the_runners_deadline_from_the_environment(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from embodiment.daemon import lifecycle
+
+        monkeypatch.setenv("EMBODIMENT_STATE_DIR", str(tmp_path / "state"))
+        monkeypatch.setenv(lifecycle.ENV_SHUTDOWN_DEADLINE, "2.0")
+        application = app_module.main()
+        try:
+            assert application._config.shutdown_deadline == app_module.close_budget_for(2.0)
+            assert application._config.shutdown_deadline < 2.0
+        finally:
+            application.close(deadline=2.0)
+
+    def test_main_without_the_variable_still_sits_below_the_runners_default(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from embodiment.daemon import lifecycle
+
+        monkeypatch.setenv("EMBODIMENT_STATE_DIR", str(tmp_path / "state"))
+        monkeypatch.delenv(lifecycle.ENV_SHUTDOWN_DEADLINE, raising=False)
+        application = app_module.main()
+        try:
+            assert application._config.shutdown_deadline < lifecycle.DEFAULT_SHUTDOWN_DEADLINE
+        finally:
+            application.close(deadline=2.0)
+
+    def test_a_garbage_variable_degrades_to_the_default_never_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from embodiment.daemon import lifecycle
+
+        monkeypatch.setenv("EMBODIMENT_STATE_DIR", str(tmp_path / "state"))
+        monkeypatch.setenv(lifecycle.ENV_SHUTDOWN_DEADLINE, "soon")
+        application = app_module.main()
+        try:
+            assert application._config.shutdown_deadline == app_module.close_budget_for(
+                lifecycle.DEFAULT_SHUTDOWN_DEADLINE
+            )
+        finally:
+            application.close(deadline=2.0)
+
+    def test_a_stop_mid_session_writes_the_summary_and_never_hard_exits(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        """The failure from today's ledger, under the real runner's watchdog.
+
+        One seam (memory) ignores its deadline, as the live memory layer can.
+        The app's budget must be sized so the summary lands and close returns
+        BEFORE the watchdog, whatever a late step does.
+        """
+        from embodiment.daemon import lifecycle
+
+        release = threading.Event()
+
+        class SlowCloseMemory(RoomMemory):
+            def close(self, deadline: float = 1.0) -> Any:
+                release.wait(15.0)
+                return super().close(deadline=deadline)
+
+        summaries: list[Any] = []
+
+        def summarise(messages: list[dict[str, Any]]) -> str:
+            summaries.append(messages)
+            return "דיברו על החלב."
+
+        runner_deadline = 2.0
+        memory = SlowCloseMemory(
+            tmp_path / "store", scope="gwen", added_by="gwen", embed_probe=lambda: False
+        )
+        h = harness(
+            memory=memory,
+            summarise=summarise,
+            config=AppConfig(
+                poll_interval_s=0.01,
+                shutdown_deadline=app_module.close_budget_for(runner_deadline),
+            ),
+        )
+        exits: list[int] = []
+        runner = lifecycle.DaemonRunner(
+            h.app, state=h.state, exit_process=exits.append, shutdown_deadline=runner_deadline
+        )
+        worker = threading.Thread(
+            target=lambda: runner.run(install_signal_handlers=False), daemon=True
+        )
+        worker.start()
+        try:
+            deadline = time.monotonic() + 5.0
+            while h.app._ear_endpoint is None and time.monotonic() < deadline:
+                time.sleep(0.01)
+            h.app.run_turn(SPEECH)
+
+            runner.request_stop("test")
+            deadline = time.monotonic() + runner_deadline + 3.0
+            while not exits and time.monotonic() < deadline:
+                time.sleep(0.01)
+        finally:
+            release.set()
+        worker.join(timeout=3.0)
+
+        assert exits == [0]
+        codes = h.ledger_codes()
+        assert lifecycle.HARD_EXIT_CODE not in codes, codes
+        assert summaries, "the summariser was never called"
+        assert h.app.status()["memory"]["summary_written"] == 1
+        report = h.app._close_report
+        assert report is not None
+        assert report.elapsed_s < runner_deadline
+        assert "memory" in report.unfinished, "the seam that ignored its deadline must be named"
+
+
+# ── loopback Origins (review finding 2) ───────────────────────────────────────
+
+
+class _RecordingServer:
+    """A DashboardServer stand-in that keeps what main() built it with."""
+
+    captured: dict[str, Any] = {}
+
+    def __init__(self, *, config: Any, guard: Any, **kwargs: Any) -> None:
+        type(self).captured = {"config": config, "guard": guard, **kwargs}
+
+    def start(self) -> None:
+        return None
+
+    def shutdown(self, deadline: float) -> None:
+        return None
+
+    def status(self) -> dict[str, Any]:
+        return {}
+
+
+class TestLoopbackOrigins:
+    """A default install's dashboard at http://127.0.0.1:8823 must pass its own POSTs.
+
+    Browsers send ``Origin`` on every POST, and the guard refuses any Origin
+    that is not allow-listed — so an Origin list built only from
+    ``EMBODIMENT_ALLOWED_HOSTS`` refused Start/Stop/Mute on every default
+    install with ``http-refused-origin``.
+    """
+
+    @pytest.mark.parametrize(
+        "origin",
+        [
+            "http://127.0.0.1:8823",
+            "http://localhost:8823",
+            "http://[::1]:8823",
+            "http://127.0.0.1",
+            "https://127.0.0.1:8823",
+        ],
+    )
+    def test_a_default_install_passes_its_own_control_posts(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, origin: str
+    ) -> None:
+        from embodiment.http import guard as guard_module
+
+        monkeypatch.setenv("EMBODIMENT_STATE_DIR", str(tmp_path / "state"))
+        monkeypatch.delenv(app_module.ENV_ALLOWED_HOSTS, raising=False)
+        monkeypatch.setattr(app_module.server_module, "DashboardServer", _RecordingServer)
+
+        application = app_module.main()
+        try:
+            guard = _RecordingServer.captured["guard"]
+            secret = guard.config.install_secret
+            assert secret
+            host = origin.split("://", 1)[1]
+            decision = guard.check(
+                "POST",
+                "/api/control/mute",
+                {"host": host, "origin": origin, "authorization": f"Bearer {secret}"},
+            )
+            assert decision.allowed is True, decision.to_dict()
+            assert decision.code != guard_module.REFUSED_ORIGIN_CODE
+        finally:
+            application.close(deadline=2.0)
+
+    def test_an_unlisted_origin_is_still_refused(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from embodiment.http import guard as guard_module
+
+        monkeypatch.setenv("EMBODIMENT_STATE_DIR", str(tmp_path / "state"))
+        monkeypatch.delenv(app_module.ENV_ALLOWED_HOSTS, raising=False)
+        monkeypatch.setattr(app_module.server_module, "DashboardServer", _RecordingServer)
+
+        application = app_module.main()
+        try:
+            guard = _RecordingServer.captured["guard"]
+            secret = guard.config.install_secret
+            decision = guard.check(
+                "POST",
+                "/api/control/mute",
+                {
+                    "host": "127.0.0.1:8823",
+                    "origin": "http://evil.example",
+                    "authorization": f"Bearer {secret}",
+                },
+            )
+            assert decision.allowed is False
+            assert decision.code == guard_module.REFUSED_ORIGIN_CODE
+        finally:
+            application.close(deadline=2.0)
+
+    def test_loopback_origin_hosts_carry_the_bound_port_and_bracket_ipv6(self) -> None:
+        hosts = app_module.loopback_origin_hosts(8823)
+        assert "127.0.0.1:8823" in hosts
+        assert "127.0.0.1" in hosts
+        assert "localhost:8823" in hosts
+        assert "[::1]:8823" in hosts
+        assert "[::1]" in hosts
+        assert not any(h.startswith("::") for h in hosts), hosts
+        # Distinct entries; a browser would never send the unbracketed form.
+        assert len(hosts) == len(set(hosts))
+
+
+# ── the public hostname reaches the guard (review finding 3) ──────────────────
+
+
+class TestPublicHostname:
+    """``GuardConfig.public_hostname`` had no env or flag, so the documented
+    "refuse a public Host until the RS256 verifier exists" path was dead code
+    and the README overclaimed it. Now it is configured, and only then applies.
+    """
+
+    HOSTNAME = "gwen.example.com"
+
+    def _guard_from_main(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
+        monkeypatch.setenv("EMBODIMENT_STATE_DIR", str(tmp_path / "state"))
+        monkeypatch.setattr(app_module.server_module, "DashboardServer", _RecordingServer)
+        application = app_module.main()
+        return application, _RecordingServer.captured["guard"]
+
+    def test_a_request_for_the_public_host_is_refused_by_the_missing_verifier(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from embodiment.http import guard as guard_module
+
+        monkeypatch.setenv(app_module.ENV_PUBLIC_HOSTNAME, self.HOSTNAME)
+        application, guard = self._guard_from_main(tmp_path, monkeypatch)
+        try:
+            assert guard.public_hostname == self.HOSTNAME
+            secret = guard.config.install_secret
+            headers = {
+                "host": self.HOSTNAME,
+                "origin": f"https://{self.HOSTNAME}",
+                "authorization": f"Bearer {secret}",
+                guard_module.ACCESS_ASSERTION_HEADER: "not-a-real-jwt",
+            }
+            decision = guard.check("POST", "/api/control/mute", headers)
+            assert decision.allowed is False
+            assert decision.code == guard_module.ACCESS_VERIFIER_MISSING_CODE, decision.to_dict()
+
+            without = dict(headers)
+            del without[guard_module.ACCESS_ASSERTION_HEADER]
+            decision = guard.check("POST", "/api/control/mute", without)
+            assert decision.allowed is False
+            assert decision.code == guard_module.REFUSED_ACCESS_MISSING_CODE
+        finally:
+            application.close(deadline=2.0)
+
+    def test_loopback_is_never_asked_for_an_assertion(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(app_module.ENV_PUBLIC_HOSTNAME, self.HOSTNAME)
+        application, guard = self._guard_from_main(tmp_path, monkeypatch)
+        try:
+            secret = guard.config.install_secret
+            decision = guard.check(
+                "POST",
+                "/api/control/mute",
+                {
+                    "host": "127.0.0.1:8823",
+                    "origin": "http://127.0.0.1:8823",
+                    "authorization": f"Bearer {secret}",
+                },
+            )
+            assert decision.allowed is True, decision.to_dict()
+        finally:
+            application.close(deadline=2.0)
+
+    def test_unset_means_no_host_is_public(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv(app_module.ENV_PUBLIC_HOSTNAME, raising=False)
+        application, guard = self._guard_from_main(tmp_path, monkeypatch)
+        try:
+            assert guard.public_hostname == ""
+            assert application._config.public_hostname is None
+            assert application.status()["http"]["public_hostname_configured"] is False
+        finally:
+            application.close(deadline=2.0)
+
+    def test_status_says_it_is_configured_without_naming_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(app_module.ENV_PUBLIC_HOSTNAME, self.HOSTNAME)
+        application, _guard = self._guard_from_main(tmp_path, monkeypatch)
+        try:
+            status = application.status()
+            assert status["http"]["public_hostname_configured"] is True
+            assert self.HOSTNAME not in json.dumps(status), "the hostname leaked into status"
+        finally:
+            application.close(deadline=2.0)
+
+    def test_the_start_verb_hands_the_hostname_to_the_child(self) -> None:
+        from embodiment.cli import _build_parser
+        from embodiment.cli._commands import start as start_cmd
+
+        args = _build_parser().parse_args(["start", "--public-hostname", self.HOSTNAME])
+        env = start_cmd._http_env(args)
+        assert env[app_module.ENV_PUBLIC_HOSTNAME] == self.HOSTNAME
+
+        plain = _build_parser().parse_args(["start"])
+        assert app_module.ENV_PUBLIC_HOSTNAME not in start_cmd._http_env(plain)
+
+
+# ── a redial never touches the new session (review finding 7) ─────────────────
+
+
+class TestRedialOwnership:
+    """The old ears thread closes the client and loop IT owns, never the new ones.
+
+    ``_ensure_ears_session`` stopped the old session (returning even when the
+    thread had not finished) and started the new one; the OLD thread's
+    ``_listen`` finally then ran ``_shut_ears_down()`` on ``self._ears`` —
+    by then the NEW client — and its ``_ears_main`` finally cleared
+    ``self._ears_loop``, orphaning the new loop. And it recorded the stop the
+    daemon itself requested as "the event stream ended; no reconnect".
+    """
+
+    def _redial(self, harness: Any) -> tuple[Any, FakeEars, FakeEars, threading.Thread]:
+        old = FakeEars(sample_rate=16000, close_delay=1.0)
+        new = FakeEars(sample_rate=24000)
+        h = harness(
+            _ears_for_rate={16000: old, 24000: new},
+            # Small on purpose: the redial's stop deadline is a share of this,
+            # and the old client's close outlives it, so the old thread is
+            # still parked when the new session starts.
+            config=AppConfig(poll_interval_s=0.01, shutdown_deadline=0.4),
+        )
+        h.app.attach_ear("a", FakeEndpoint(name="a", sample_rate=16000))
+        assert old._ready.wait(5.0), "the first session never connected"
+        old_thread = h.app._ears_thread
+        assert old_thread is not None
+
+        h.app.attach_ear("b", FakeEndpoint(name="b", sample_rate=24000))
+        assert new._ready.wait(5.0), "the second session never connected"
+        assert h.app._ears is new
+        # Let the parked old thread finish its own close and run its finally.
+        old_thread.join(timeout=5.0)
+        assert not old_thread.is_alive(), "the old ears thread never finished"
+        return h, old, new, old_thread
+
+    def test_the_old_thread_leaves_the_new_client_and_loop_alone(self, harness: Any) -> None:
+        h, old, new, _old_thread = self._redial(harness)
+
+        assert old.closed is True
+        assert new.closed is False, "the old thread closed the NEW client"
+        assert new.close_deadlines == []
+        assert h.app._ears_loop is not None, "the old thread cleared the new loop"
+        assert h.app._ears_thread is not None and h.app._ears_thread.is_alive()
+        assert h.app.status()["ear"]["redials"] == 1
+
+    def test_the_new_session_still_delivers_after_the_old_thread_exits(self, harness: Any) -> None:
+        h, _old, new, _old_thread = self._redial(harness)
+        assert h.app.status()["transcripts"]["received"] == 0
+
+        # Received is counted on the EARS thread, before the turn queue: it
+        # proves the new session's loop is alive and dispatching, which is
+        # exactly what the old thread's finally used to take down.
+        new.emit(wire.TranscriptionCompleted(text=SPEECH, item_id="i1"))
+        deadline = time.monotonic() + 5.0
+        while h.app.status()["transcripts"]["received"] < 1 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert h.app.status()["transcripts"]["received"] == 1
+
+    def test_a_stop_the_daemon_requested_is_not_recorded_as_a_dropped_stream(
+        self, harness: Any
+    ) -> None:
+        h, _old, _new, _old_thread = self._redial(harness)
+        ended = [
+            getattr(r, "detail", "")
+            for r in h.state.ledger.read_all()
+            if r.code == app_module.APP_EARS_STREAM_ENDED
+        ]
+        assert ended == [], ended
+        assert app_module.APP_EARS_REDIALLED in h.ledger_codes()
+
+
+# ── a refused frame is not a forwarded frame (review finding 12) ──────────────
+
+
+class TestRefusedFrames:
+    """``send_audio`` returns False when the session is gone or its queue is
+    full; the callback counted every non-raising call as forwarded, so a deaf
+    session looked like a busy one.
+    """
+
+    def test_send_audio_false_is_counted_as_refused_and_recorded_once(self, harness: Any) -> None:
+        class RefusingEars(FakeEars):
+            def send_audio(self, pcm: bytes) -> bool:
+                self.sent.append(bytes(pcm))
+                return False
+
+        ears = RefusingEars()
+        h = harness(ears=ears)
+        endpoint = FakeEndpoint()
+        h.app.attach_ear("host", endpoint)
+        assert endpoint.on_frame is not None
+        for _ in range(5):
+            endpoint.on_frame(silent_pcm())
+
+        audio = h.app.status()["audio"]
+        assert audio["frames_captured"] == 5
+        assert audio["frames_forwarded"] == 0, "a refused frame was counted as forwarded"
+        assert audio["frames_refused"] == 5
+        assert h.ledger_codes().count(app_module.APP_FRAMES_REFUSED) == 1
+        assert h.app.status()["degradations"][app_module.APP_FRAMES_REFUSED] == 5
+
+    def test_a_forwarded_frame_is_still_forwarded(self, harness: Any) -> None:
+        h = harness()
+        endpoint = FakeEndpoint()
+        h.app.attach_ear("host", endpoint)
+        for _ in range(2):
+            endpoint.on_frame(silent_pcm())
+        audio = h.app.status()["audio"]
+        assert audio["frames_forwarded"] == 2
+        assert audio["frames_refused"] == 0
+        assert app_module.APP_FRAMES_REFUSED not in h.ledger_codes()
+
+
+# ── on_degrade is wired (review finding 14) ───────────────────────────────────
+
+
+class TestDegradeHooksAreWired:
+    """``RealtimeEars`` and ``DashboardServer`` were built without their
+    ``on_degrade`` hooks, so the client's SESSION_DROPPED / AUDIO_DROPPED /
+    NOT_CONNECTED and the server's refusals never reached the ledger.
+    """
+
+    def test_a_client_degradation_reaches_the_ledger_once_per_code(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from embodiment.realtime import client as client_module
+
+        built: list[Any] = []
+
+        class RecordingEars:
+            def __init__(self, config: Any = None, *, on_degrade: Any = None) -> None:
+                self.config = config
+                self.on_degrade = on_degrade
+                built.append(self)
+
+        monkeypatch.setenv("EMBODIMENT_STATE_DIR", str(tmp_path / "state"))
+        monkeypatch.setattr(app_module, "RealtimeEars", RecordingEars)
+        monkeypatch.setattr(app_module.server_module, "DashboardServer", _RecordingServer)
+
+        application = app_module.main()
+        try:
+            application._ears_factory(16000)
+            assert built and built[0].on_degrade is not None, "the client has no hook"
+            record = client_module.RealtimeDegradation(
+                code=client_module.SESSION_DROPPED, reason="session ended without a local close"
+            )
+            built[0].on_degrade(record)
+            built[0].on_degrade(record)
+            codes = [r.code for r in application._state.ledger.read_all()]
+            assert codes.count(client_module.SESSION_DROPPED) == 1, codes
+            assert application.status()["degradations"][client_module.SESSION_DROPPED] == 2
+        finally:
+            application.close(deadline=2.0)
+
+    def test_a_server_refusal_reaches_the_ledger(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("EMBODIMENT_STATE_DIR", str(tmp_path / "state"))
+        monkeypatch.setattr(app_module.server_module, "DashboardServer", _RecordingServer)
+
+        application = app_module.main()
+        try:
+            hook = _RecordingServer.captured.get("on_degrade")
+            assert hook is not None, "the server has no hook"
+            hook("http-refused-origin", "the Origin header is not on the allow-list")
+            codes = [r.code for r in application._state.ledger.read_all()]
+            assert "http-refused-origin" in codes
+        finally:
+            application.close(deadline=2.0)
+
+    def test_a_hook_that_is_handed_garbage_never_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("EMBODIMENT_STATE_DIR", str(tmp_path / "state"))
+        monkeypatch.setattr(app_module.server_module, "DashboardServer", _RecordingServer)
+        application = app_module.main()
+        try:
+            hook = _RecordingServer.captured.get("on_degrade")
+            assert hook is not None
+            hook(None, object())
+            hook("", "")
+        finally:
+            application.close(deadline=2.0)
+
+
+# ── a missed ask never puts the transcript in a record (post-wave review) ─────
+
+
+class TestMissedAskCarriesNoSpeech:
+    """``_note_missed_ask(text)`` is called with the raw user transcript. It
+    may count and publish a ``state`` event; the text itself must never reach
+    the ledger, the operational log, ``status()`` or any non-speech event
+    (Q1: no speech in a record).
+    """
+
+    def test_the_marker_in_a_missed_ask_reaches_no_record(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        marker = "MARKERMISSED4242"
+        # Carries an ask stem (so the heuristic fires) but matches no pattern
+        # the detector knows, so Session.add_user returns None.
+        utterance = f"I might remember {marker} someday"
+        memory = RoomMemory(
+            tmp_path / "store", scope="gwen", added_by="gwen", embed_probe=lambda: False
+        )
+        h = harness(memory=memory)
+        h.app.attach_ear("host", FakeEndpoint())
+        h.clear()
+
+        h.app.run_turn(utterance)
+
+        assert h.app.status()["memory"]["ask_not_detected"] == 1, "the heuristic did not fire"
+        blob = json.dumps([r.to_dict() for r in h.state.ledger.read_all()], ensure_ascii=False)
+        assert marker not in blob
+        assert marker not in json.dumps(h.app.status(), ensure_ascii=False)
+        assert marker not in (Path(h.state.dir) / "embodiment.log").read_text(encoding="utf-8")
+        non_speech = [e.to_dict() for e in h.events() if e.kind not in ("transcript", "reply")]
+        assert marker not in json.dumps(non_speech, ensure_ascii=False)
+        states = [e.data for e in h.events("state") if e.data.get("status") == "ask-not-detected"]
+        assert states and states[-1]["ask_not_detected"] == 1
