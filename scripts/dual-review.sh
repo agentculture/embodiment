@@ -74,6 +74,34 @@ main() {
   } >"$wt/REVIEW_BRIEF.md"
   cp "$wt/REVIEW_BRIEF.md" "$wt/REVIEW_STAT.txt" "$wt/REVIEW_DIFF.patch" "$out_dir/"
 
+  # The 27B's time goes into re-reading whole files at 80-120K tokens of context (3-5 min
+  # per call there). Measured 2026-09-22: unaided it did not finish a 113 kB diff in 40
+  # min; with one worker gathering evidence it took 49 min because it re-read everything
+  # the worker cited. So the split below makes the WORKER write the whole draft and the
+  # 27B verify only the cited lines. DUAL_REVIEW_DELEGATE=0 restores the older prompt.
+  if [[ "${DUAL_REVIEW_DELEGATE:-1}" == "1" ]]; then
+  read -r -d '' prompt <<'PROMPT' || true
+You are the REVIEW LEAD for a code change in this repository. You cannot run commands or edit files; read only. You have a `worker` subagent (the `agent` tool, subagent_type "worker") that is faster than you. Your job is to judge, not to read: keep your own reading to the lines a finding cites.
+
+Step 1 (delegate, in ONE agent call, run_in_background false): send the worker this exact task: "Read REVIEW_BRIEF.md, REVIEW_STAT.txt and REVIEW_DIFF.patch in this directory, then the changed files, their tests and CLAUDE.md. Answer every MANDATORY integrator question in the brief with file:line evidence. Judge each acceptance criterion MET / NOT MET / CANNOT TELL with the test that proves it. Then hunt real defects, in this order: a failure swallowed without a recorded degradation; anything that can raise into a caller promised never-raise; secrets or transcript text reaching a log, event or served file; an unbounded wait, a blocking call on a hot path, a thread that cannot be stopped; a test that cannot fail or asserts on a mock; behaviour the brief did not ask for. For EVERY finding give file:line, the defect in one sentence, and a concrete input or sequence that triggers it. No style, naming or formatting. Write the complete draft review in exactly this shape: ## Criteria / ## Findings ([BLOCKER|MAJOR|MINOR] file:line - defect - trigger) / ## Not examined / VERDICT: approve | changes-requested." If the worker fails or returns nothing usable, send it once more with the same task; if it fails again, do the work yourself.
+
+Step 2 (verify, yourself): for each finding in the draft open ONLY the cited file at the cited lines (a bounded read_file range, not the whole file) and confirm the trigger is real; drop a finding you cannot confirm and say so under "## Not examined" as "dropped: <finding> - <why>". Do the same spot-check for each criterion's cited test (the test exists and asserts behaviour, not a mock). Do not re-read files the draft did not cite. Do not exceed 12 tool calls in this step.
+
+Step 3: output the final review in exactly this shape and nothing else (severity is yours to adjust; add a finding only if you saw it yourself in step 2):
+
+## Criteria
+- <criterion, shortened>: MET | NOT MET | CANNOT TELL - <evidence: file:line or test name>
+
+## Findings
+- [BLOCKER|MAJOR|MINOR] <file>:<line> - <the defect> - <a concrete input or sequence that triggers it>
+(write "none" if there are none; do not invent findings to fill the section)
+
+## Not examined
+- <what the worker and you did not or could not check; each dropped finding>
+
+VERDICT: approve | changes-requested
+PROMPT
+  else
   read -r -d '' prompt <<'PROMPT' || true
 You are reviewing a code change in this repository. You cannot run commands or edit files; read only.
 
@@ -102,6 +130,7 @@ Answer in exactly this shape and nothing else:
 
 VERDICT: approve | changes-requested
 PROMPT
+  fi
 
   # qwen27: the same Qwen Code harness against the dense Qwen 3.8 27B (the `cortex`
   # model). THE DEFAULT AND SOLE REVIEWER since 2026-09-22, by the operator's word: on
