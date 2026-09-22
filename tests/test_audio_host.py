@@ -26,6 +26,7 @@ from pathlib import Path
 from typing import Callable
 
 from embodiment.audio.host import (
+    _OPEN_COOLDOWN_BASE_S,
     CAPTURE_CHANNEL_INDEX,
     CAPTURE_CHANNELS,
     DEGRADED_CAPTURE_ENDED,
@@ -1829,6 +1830,135 @@ def test_privacy_no_audio_bytes_written_to_disk(tmp_path, monkeypatch):
 
     files = [p for p in work_dir.rglob("*") if p.is_file()]
     assert files == [], f"unexpected files written during a fake audio session: {files}"
+
+
+# ---------------------------------------------------------------------------
+# seams pinned before the S3776 refactor (PR #87): branches the helpers
+# extracted from _capture_loop / play / _pw_find_stream_node /
+# _verify_pipewire_link must keep byte-for-byte — same counters, same
+# codes, same events.
+# ---------------------------------------------------------------------------
+
+
+def test_capture_loop_callback_raise_is_counted_and_capture_continues():
+    """A raising frame callback is ONE callback_errors tick per frame, never
+    the end of capture and never a degradation_in."""
+    endpoint = HostEndpoint(which=_fake_which({"arecord", "aplay"}), popen=_make_popen())
+    seen: list[int] = []
+
+    def boom(frame: bytes) -> None:
+        seen.append(len(frame))
+        raise RuntimeError("consumer fault")
+
+    endpoint.start_capture(boom)
+    _wait_until(lambda: len(seen) >= 3)
+    status = endpoint.status()
+    assert status["callback_errors"] >= 3
+    assert status["degradation_in"] is None
+    assert endpoint._capturing is True  # noqa: SLF001 - the loop kept going
+    endpoint.close(2.0)
+
+
+def test_capture_loop_numpy_import_failure_is_counted_and_delivers_nothing():
+    """A numpy that cannot be imported is a per-frame callback_errors tick,
+    zero frames delivered, and NO degradation_in (mute-drop and EOF are the
+    only other exits from that loop)."""
+
+    def no_numpy():
+        raise ImportError("numpy unavailable")
+
+    endpoint = HostEndpoint(
+        which=_fake_which({"arecord", "aplay"}), popen=_make_popen(), numpy_importer=no_numpy
+    )
+    received: list[bytes] = []
+    endpoint.start_capture(received.append)
+    _wait_until(lambda: endpoint.status()["callback_errors"] >= 2)
+    status = endpoint.status()
+    assert status["callback_errors"] >= 2
+    assert received == []
+    assert status["degradation_in"] is None
+    endpoint.close(2.0)
+
+
+def test_play_after_an_expired_cooldown_records_recovered_and_clears_the_degradation():
+    """The out-direction recovery branch of play(): a first spawn that fails
+    (DEGRADED_OPEN, cooldown armed), then — once the cooldown has expired —
+    a successful spawn clears degradation_out, resets the backoff and records
+    exactly one ``recovered``/``out`` event."""
+    calls = {"n": 0}
+    inner = _make_popen()
+
+    def popen(argv, **kwargs):
+        if argv[0] in PLAYBACK_BINARIES:
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise OSError("fake: first player spawn fails")
+        return inner(argv, **kwargs)
+
+    endpoint = HostEndpoint(which=_fake_which({"arecord", "aplay"}), popen=popen)
+    endpoint.play(_silence_frame(480))
+    assert endpoint.status()["degradation_out"]["code"] == DEGRADED_OPEN
+    assert endpoint.status()["playback_dropped_no_device"] == 1
+    assert endpoint._out_open_backoff_s > _OPEN_COOLDOWN_BASE_S  # noqa: SLF001 - doubled
+
+    endpoint.play(_silence_frame(480))  # inside the cooldown: dropped, not retried
+    assert calls["n"] == 1
+    assert endpoint.status()["playback_dropped_no_device"] == 2
+
+    endpoint._out_open_cooldown_until = 0.0  # noqa: SLF001 - expire the cooldown
+    endpoint.play(_silence_frame(480))
+    assert calls["n"] == 2
+    status = endpoint.status()
+    assert status["degradation_out"] is None
+    assert endpoint._out_open_backoff_s == _OPEN_COOLDOWN_BASE_S  # noqa: SLF001 - reset
+    recovered = [e for e in endpoint.events if e.get("type") == "recovered"]
+    assert recovered == [{"type": "recovered", "direction": "out"}]
+    endpoint.close(2.0)
+
+
+def test_pw_find_stream_node_unparsable_node_pid_falls_through_to_the_client_pid():
+    """Resolution order pin: a node whose own ``application.process.id`` is
+    garbage is NOT a resolved-to-another-pid exclusion — it falls through to
+    the ``client.id`` hop and matches ours there."""
+    our_pid = 4242
+    node = _stream_node_obj(301, client_id=300)
+    node["info"]["props"]["application.process.id"] = "not-a-pid"
+    dump = [_client_obj(300, our_pid), node]
+    found, ambiguous = _pw_find_stream_node(dump, "Stream/Output/Audio", pid=our_pid)
+    assert found is not None
+    assert found["id"] == 301
+    assert ambiguous is False
+
+
+class _AmbiguousCaptureState(ClientPidState):
+    """Two pw-record streams with no pid anywhere: ours and a foreign one."""
+
+    def dump_json(self) -> bytes | None:
+        payload = super().dump_json()
+        if payload is None:
+            return None
+        objs = json.loads(payload)
+        objs.append(_stream_node_obj(9001, name="pw-record", media_class="Stream/Input/Audio"))
+        return json.dumps(objs).encode("utf-8")
+
+
+def test_verify_pipewire_link_capture_direction_ambiguity_ticks_the_capture_counter():
+    """The direction-tagged counter in _verify_pipewire_link: an ambiguous
+    CAPTURE verification ticks capture_target_ambiguous_count, never the
+    playback one, and ends in an honest mismatch."""
+    state = _AmbiguousCaptureState(foreign="no_pid")
+    endpoint = HostEndpoint(
+        which=_fake_which({"pw-record", "pw-play", "arecord", "aplay"}),
+        popen=_make_popen(pw_state=state),
+    )
+    endpoint.start_capture(lambda _f: None)
+    _wait_until(lambda: endpoint.status()["capture_target_verified"] is not None)
+    status = endpoint.status()
+    assert status["capture_target_verified"] is False
+    assert status["capture_target_ambiguous_count"] == 1
+    assert status["playback_target_ambiguous_count"] == 0
+    assert status["degradation_in"]["code"] == DEGRADED_DEVICE_MISMATCH
+    endpoint.close(2.0)
 
 
 # ---------------------------------------------------------------------------

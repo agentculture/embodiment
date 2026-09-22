@@ -366,7 +366,7 @@ import threading
 import time
 from collections import deque
 from pathlib import Path
-from typing import Any, Callable
+from typing import IO, Any, Callable
 
 from embodiment.audio.endpoint import (
     SAMPLE_RATE_HZ,
@@ -822,27 +822,14 @@ def _pw_find_stream_node(
     for node in candidates:
         props = node["props"]
         assert isinstance(props, dict)
-
-        resolved_pid: int | None = None
-        raw_pid = props.get("application.process.id")
-        if raw_pid is not None:
-            try:
-                resolved_pid = int(raw_pid)
-            except (TypeError, ValueError):
-                resolved_pid = None
-        if resolved_pid is None:
-            client_pid = client_pids.get(props.get("client.id"))
-            if client_pid is not None:
-                resolved_pid = client_pid
-
+        resolved_pid = _pw_stream_node_pid(props, client_pids)
+        if resolved_pid == pid:
+            return node, False
         if resolved_pid is not None:
-            if resolved_pid == pid:
-                return node, False
             # Resolved to a DIFFERENT pid by either path: a KNOWN stream
             # that is definitively not ours — never eligible for a
             # name-match guess (round 10 finding).
             continue
-
         name_eligible.append(node)
 
     if client_pids:
@@ -851,7 +838,28 @@ def _pw_find_stream_node(
         # (ours simply hasn't appeared yet) must read as "not yet found",
         # never as "the only remaining candidate must be ours."
         return None, False
+    return _pw_lone_name_match(name_eligible)
 
+
+def _pw_stream_node_pid(props: dict[str, object], client_pids: dict[object, int]) -> "int | None":
+    """Resolution steps (1) and (2) of :func:`_pw_find_stream_node`: the node's
+    own ``application.process.id`` when parseable, else its ``client.id``
+    resolved through *client_pids*; ``None`` when neither path yields a pid."""
+    raw_pid = props.get("application.process.id")
+    if raw_pid is not None:
+        try:
+            return int(raw_pid)
+        except (TypeError, ValueError):
+            pass
+    return client_pids.get(props.get("client.id"))
+
+
+def _pw_lone_name_match(
+    name_eligible: list[dict[str, object]],
+) -> "tuple[dict[str, object] | None, bool]":
+    """Resolution step (3) of :func:`_pw_find_stream_node`: EXACTLY ONE
+    pw-play/pw-record among *name_eligible* is it; more than one is
+    ``(None, ambiguous=True)``, never a guess; none is ``(None, False)``."""
     name_matches = [
         node
         for node in name_eligible
@@ -1367,11 +1375,8 @@ class HostEndpoint:
         stdout = proc.stdout
         ended_cleanly = False
         while not self._capture_stop.is_set():
-            try:
-                raw = stdout.read(_CAPTURE_CHUNK_BYTES) if stdout is not None else b""
-            except Exception:
-                with self._counter_lock:
-                    self._callback_errors += 1
+            raw = self._read_capture_chunk(stdout)
+            if raw is None:
                 break
             if not raw:
                 ended_cleanly = True
@@ -1382,22 +1387,7 @@ class HostEndpoint:
                     self._capture_muted_dropped += 1
                 continue
 
-            try:
-                np = self._np_importer()
-                selected = _select_channel(np, raw, CAPTURE_CHANNELS, CAPTURE_CHANNEL_INDEX)
-            except Exception:
-                with self._counter_lock:
-                    self._callback_errors += 1
-                continue
-
-            callback = self._on_frame
-            if callback is None:
-                continue
-            try:
-                callback(selected)
-            except Exception:
-                with self._counter_lock:
-                    self._callback_errors += 1
+            self._deliver_capture_chunk(raw)
 
         if ended_cleanly and not self._capture_stop.is_set():
             # The subprocess exited (EOF) without stop_capture() asking it to
@@ -1406,6 +1396,44 @@ class HostEndpoint:
             self._degradation_in = EndpointDegradation(
                 DEGRADED_CAPTURE_ENDED, f"capture subprocess ended: {_describe_process_exit(proc)}"
             )
+
+    def _count_callback_error(self) -> None:
+        with self._counter_lock:
+            self._callback_errors += 1
+
+    def _read_capture_chunk(self, stdout: "IO[bytes] | None") -> "bytes | None":
+        """One blocking pipe read for :meth:`_capture_loop`.
+
+        ``b""`` is EOF (the subprocess ended); ``None`` is a read fault,
+        counted on ``callback_errors`` — the loop ends on either.
+        """
+        try:
+            return stdout.read(_CAPTURE_CHUNK_BYTES) if stdout is not None else b""
+        except Exception:
+            self._count_callback_error()
+            return None
+
+    def _deliver_capture_chunk(self, raw: bytes) -> None:
+        """Select the configured channel and hand the frame to ``on_frame``.
+
+        A failing numpy import / channel select and a raising callback are
+        each ONE ``callback_errors`` tick for this chunk; neither ends
+        capture and nothing raises out.
+        """
+        try:
+            np = self._np_importer()
+            selected = _select_channel(np, raw, CAPTURE_CHANNELS, CAPTURE_CHANNEL_INDEX)
+        except Exception:
+            self._count_callback_error()
+            return
+
+        callback = self._on_frame
+        if callback is None:
+            return
+        try:
+            callback(selected)
+        except Exception:
+            self._count_callback_error()
 
     # -- playback --------------------------------------------------------
 
@@ -1417,61 +1445,78 @@ class HostEndpoint:
             return
         if self._degradation is not None or self._closed:
             return
-
-        if self._playback_proc is None:
-            if (
-                self._degradation_out is not None
-                and time.monotonic() < self._out_open_cooldown_until
-            ):
-                # Round 3 finding 1, recurring at a process spawn: a dead
-                # player does NOT get retried on every play() call.
-                with self._counter_lock:
-                    self._playback_dropped_no_device += 1
-                return
-
-            was_degraded = self._degradation_out is not None
-            playback_target = (
-                self._pw_sink_node_name if self._backend == "pipewire" else self._device
-            )
-            argv = _build_playback_argv(
-                self._backend, playback_target, PLAYBACK_RATE_HZ, PLAYBACK_CHANNELS
-            )
-            try:
-                proc = self._popen(
-                    argv, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
-                )
-            except OSError as exc:
-                self._enter_output_degradation(
-                    DEGRADED_OPEN, exc, "playback subprocess failed to start"
-                )
-                with self._counter_lock:
-                    self._playback_dropped_no_device += 1
-                return
-            if was_degraded:
-                self._degradation_out = None
-                self._out_open_backoff_s = _OPEN_COOLDOWN_BASE_S
-                self._record_event({"type": "recovered", "direction": "out"})
-            self._playback_proc = proc
-            self._start_writer()
-            self._attached = True
-
-            # Round 7 (BLOCKER): verify, don't trust. An unresolvable
-            # `--target` silently falls back to pipewire's default sink —
-            # exactly how a reply ended up on the HDMI monitor instead of
-            # the reSpeaker. Confirm the stream actually linked to the
-            # resolved node; if not, kill it AT ONCE (never let audio keep
-            # flowing to the wrong device) rather than merely flag it.
-            verified = self._verify_pipewire_link(proc, playback=True)
-            if verified is not None:
-                self._playback_target_verified = verified
-                if not verified:
-                    self._handle_playback_mismatch()
-                    return
+        if self._playback_proc is None and not self._open_playback_process():
+            return
 
         chunk_bytes = bytes(frames)
         if not chunk_bytes:
             return
+        self._enqueue_playback_chunk(chunk_bytes)
 
+    def _open_playback_process(self) -> bool:
+        """Spawn, start the writer for, and verify a fresh player.
+
+        ``False`` means this ``play()`` call drops its chunk: the cooldown
+        after a dead player, a spawn failure, or a stream that linked to the
+        wrong device (killed at once). Side effects in the original order.
+        """
+        if self._degradation_out is not None and time.monotonic() < self._out_open_cooldown_until:
+            # Round 3 finding 1, recurring at a process spawn: a dead
+            # player does NOT get retried on every play() call.
+            with self._counter_lock:
+                self._playback_dropped_no_device += 1
+            return False
+
+        was_degraded = self._degradation_out is not None
+        proc = self._spawn_playback_process()
+        if proc is None:
+            return False
+        if was_degraded:
+            self._degradation_out = None
+            self._out_open_backoff_s = _OPEN_COOLDOWN_BASE_S
+            self._record_event({"type": "recovered", "direction": "out"})
+        self._playback_proc = proc
+        self._start_writer()
+        self._attached = True
+
+        # Round 7 (BLOCKER): verify, don't trust. An unresolvable
+        # `--target` silently falls back to pipewire's default sink —
+        # exactly how a reply ended up on the HDMI monitor instead of
+        # the reSpeaker. Confirm the stream actually linked to the
+        # resolved node; if not, kill it AT ONCE (never let audio keep
+        # flowing to the wrong device) rather than merely flag it.
+        verified = self._verify_pipewire_link(proc, playback=True)
+        if verified is None:
+            return True
+        self._playback_target_verified = verified
+        if not verified:
+            self._handle_playback_mismatch()
+            return False
+        return True
+
+    def _spawn_playback_process(self) -> "subprocess.Popen[bytes] | None":
+        """The player subprocess, or ``None`` after a spawn failure — recorded
+        as DEGRADED_OPEN (cooldown armed) and one dropped chunk."""
+        playback_target = self._pw_sink_node_name if self._backend == "pipewire" else self._device
+        argv = _build_playback_argv(
+            self._backend, playback_target, PLAYBACK_RATE_HZ, PLAYBACK_CHANNELS
+        )
+        try:
+            return self._popen(
+                argv, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
+            )
+        except OSError as exc:
+            self._enter_output_degradation(
+                DEGRADED_OPEN, exc, "playback subprocess failed to start"
+            )
+            with self._counter_lock:
+                self._playback_dropped_no_device += 1
+            return None
+
+    def _enqueue_playback_chunk(self, chunk_bytes: bytes) -> None:
+        """Queue one chunk for the writer under the buffer bound, all under
+        ``_counter_lock``: a vanished player drops it, an overflow is named
+        once per episode and counted, otherwise it is pushed."""
         limit_samples = self._playback_buffer_limit_samples()
         with self._counter_lock:
             if self._playback_proc is None:
@@ -1486,18 +1531,22 @@ class HostEndpoint:
                 self._playback_queued_bytes + len(self._writer_pending)
             ) // SAMPLE_WIDTH_BYTES
             if in_flight + len(chunk_bytes) // SAMPLE_WIDTH_BYTES > limit_samples:
-                if not self._playback_overflow_episode_active:
-                    self._playback_overflow_episode_active = True
-                    self._record_event(
-                        {"type": "degraded", "code": DEGRADED_PLAYBACK_OVERFLOW, "direction": "out"}
-                    )
-                self._playback_overflow_count += 1
+                self._note_playback_overflow()
                 return
             self._playback_overflow_episode_active = False
             self._playback_chunks.append(chunk_bytes)
             self._playback_queued_bytes += len(chunk_bytes)
             self._playback_total_pushed_samples += len(chunk_bytes) // SAMPLE_WIDTH_BYTES
             self._playing = True
+
+    def _note_playback_overflow(self) -> None:
+        """Caller holds ``_counter_lock``. One degraded event per episode, every drop counted."""
+        if not self._playback_overflow_episode_active:
+            self._playback_overflow_episode_active = True
+            self._record_event(
+                {"type": "degraded", "code": DEGRADED_PLAYBACK_OVERFLOW, "direction": "out"}
+            )
+        self._playback_overflow_count += 1
 
     def stop_playback(self) -> int:
         """Barge-in: close stdin, SIGKILL AT ONCE (round 5 — no SIGTERM grace period).
@@ -1824,34 +1873,59 @@ class HostEndpoint:
         """
         if self._backend != "pipewire":
             return None
-        expected_id = self._pw_sink_node_id if playback else self._pw_source_node_id
+        expected_id, media_class = self._expected_link(playback=playback)
         if expected_id is None:
             return None
-        media_class = _PW_STREAM_OUTPUT_CLASS if playback else _PW_STREAM_INPUT_CLASS
         deadline = time.monotonic() + _PW_VERIFY_TOTAL_S
         was_ambiguous = False
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
-            dump = self._run_pw_dump(timeout=min(remaining, _PW_DUMP_TIMEOUT_S))
-            if dump is not None:
-                stream, ambiguous = _pw_find_stream_node(dump, media_class, proc.pid)
-                was_ambiguous = was_ambiguous or ambiguous
-                if stream is not None:
-                    linked_id = _pw_link_target_id(dump, stream["id"], as_output=playback)
-                    if linked_id is not None:
-                        return linked_id == expected_id
+            linked_id, ambiguous = self._poll_stream_link(
+                media_class, proc.pid, playback=playback, timeout=remaining
+            )
+            was_ambiguous = was_ambiguous or ambiguous
+            if linked_id is not None:
+                return linked_id == expected_id
             if time.monotonic() >= deadline:
                 break
             time.sleep(_PW_VERIFY_POLL_S)
         if was_ambiguous:
-            with self._counter_lock:
-                if playback:
-                    self._playback_target_ambiguous_count += 1
-                else:
-                    self._capture_target_ambiguous_count += 1
+            self._count_target_ambiguous(playback=playback)
         return False
+
+    def _expected_link(self, *, playback: bool) -> "tuple[object | None, str]":
+        """The resolved node id the stream must link to (``None`` when target
+        resolution never completed) and the stream media class to look for,
+        by direction."""
+        if playback:
+            return self._pw_sink_node_id, _PW_STREAM_OUTPUT_CLASS
+        return self._pw_source_node_id, _PW_STREAM_INPUT_CLASS
+
+    def _poll_stream_link(
+        self, media_class: str, pid: int, *, playback: bool, timeout: float
+    ) -> "tuple[object | None, bool]":
+        """One ``pw-dump`` poll for :meth:`_verify_pipewire_link` —
+        ``(linked_target_id, ambiguous)``. The target is ``None`` when the
+        dump failed, our stream is not up yet, or it has no link yet; the
+        dump call is bounded by *timeout* (what is LEFT of the verify
+        budget), never the full :data:`_PW_DUMP_TIMEOUT_S`.
+        """
+        dump = self._run_pw_dump(timeout=min(timeout, _PW_DUMP_TIMEOUT_S))
+        if dump is None:
+            return None, False
+        stream, ambiguous = _pw_find_stream_node(dump, media_class, pid)
+        if stream is None:
+            return None, ambiguous
+        return _pw_link_target_id(dump, stream["id"], as_output=playback), ambiguous
+
+    def _count_target_ambiguous(self, *, playback: bool) -> None:
+        with self._counter_lock:
+            if playback:
+                self._playback_target_ambiguous_count += 1
+            else:
+                self._capture_target_ambiguous_count += 1
 
     def _start_writer(self) -> None:
         if self._writer_thread is not None:
@@ -1900,18 +1974,7 @@ class HostEndpoint:
                     active_proc = proc
                     clock_start = time.monotonic()
                     samples_written_for_clock = 0
-
-                slice_: bytes | None = None
-                if proc is not None and proc.stdin is not None:
-                    while len(self._writer_pending) < slice_bytes:
-                        try:
-                            extra = self._playback_chunks.popleft()
-                        except IndexError:
-                            break
-                        self._playback_queued_bytes -= len(extra)
-                        self._writer_pending += extra
-                    if self._writer_pending:
-                        slice_ = self._writer_pending[:slice_bytes]
+                slice_ = self._next_write_slice(proc, slice_bytes)
 
             if slice_ is None:
                 time.sleep(_POLL_INTERVAL_S)
@@ -1931,16 +1994,40 @@ class HostEndpoint:
                 active_proc = None  # force a fresh clock for whatever comes next
                 continue
 
-            with self._counter_lock:
-                # Only advance state if this write's bytes are still the
-                # front of `_writer_pending` — a concurrent stop_playback()/
-                # write-failure may have cleared it while this thread was
-                # blocked inside write() above.
-                if self._writer_pending[: len(slice_)] == slice_:
-                    self._writer_pending = self._writer_pending[len(slice_) :]
-                self._playback_written_samples += len(slice_) // SAMPLE_WIDTH_BYTES
-                self._playing = bool(self._playback_chunks) or bool(self._writer_pending)
+            self._commit_written_slice(slice_)
             samples_written_for_clock += len(slice_) // SAMPLE_WIDTH_BYTES
+
+    def _next_write_slice(
+        self, proc: "subprocess.Popen[bytes] | None", slice_bytes: int
+    ) -> "bytes | None":
+        """Caller holds ``_counter_lock``. Top up :attr:`_writer_pending` from
+        the queued chunks to at least one slice and return the front slice
+        (possibly shorter, at the tail), or ``None`` when there is no live
+        pipe or nothing pending."""
+        if proc is None or proc.stdin is None:
+            return None
+        while len(self._writer_pending) < slice_bytes:
+            try:
+                extra = self._playback_chunks.popleft()
+            except IndexError:
+                break
+            self._playback_queued_bytes -= len(extra)
+            self._writer_pending += extra
+        if self._writer_pending:
+            return self._writer_pending[:slice_bytes]
+        return None
+
+    def _commit_written_slice(self, slice_: bytes) -> None:
+        """Advance the counters for one slice the pipe accepted."""
+        with self._counter_lock:
+            # Only advance state if this write's bytes are still the
+            # front of `_writer_pending` — a concurrent stop_playback()/
+            # write-failure may have cleared it while this thread was
+            # blocked inside write() above.
+            if self._writer_pending[: len(slice_)] == slice_:
+                self._writer_pending = self._writer_pending[len(slice_) :]
+            self._playback_written_samples += len(slice_) // SAMPLE_WIDTH_BYTES
+            self._playing = bool(self._playback_chunks) or bool(self._writer_pending)
 
     # -- mute --------------------------------------------------------------
 
