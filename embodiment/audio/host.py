@@ -90,15 +90,49 @@ Barge-in is simpler with a process boundary, not just different
 Round 2/3 spent real effort making ``stop_playback()`` cut sounding audio
 without a cheap way to interrupt a blocking device write — slicing every
 ``stream.write()`` to 20 ms, a "generation" stamp checked between slices, an
-``abort()``-if-available-else-reopen dance. A subprocess makes this
-STRUCTURALLY simpler: closing its stdin and sending it SIGTERM (SIGKILL
-after :data:`_TERMINATE_TIMEOUT_S` if it ignores that) stops the sound at
-the OS level almost immediately, with no slicing needed. The trade-off this
-buys instead: there is no cheap "keep the pipe open across a barge-in" the
-way round 3's follow-up fix kept a sounddevice stream open by calling
-``abort()`` — every barge-in costs a fresh process spawn on the next
-``play()``. What that costs on real hardware is reported in this task's
-delivery notes rather than restated here.
+``abort()``-if-available-else-reopen dance. A subprocess makes the CUT
+structurally simpler: closing stdin and SIGKILLing the player stops the
+sound at the OS level almost immediately, no per-write slicing needed for
+the cut itself. The trade-off: there is no cheap "keep the pipe open across
+a barge-in" the way round 3's follow-up fix kept a sounddevice stream open
+by calling ``abort()`` — every barge-in costs a fresh process spawn on the
+next ``play()``.
+
+Round 5: pacing is a SEPARATE problem the cut alone did not solve
+---------------------------------------------------------------------
+A live device probe of round 4 found that ``play()`` handed a whole reply to
+the writer, which wrote it into the player's stdin as fast as the pipe would
+take it — a 3 s reply landed in ``pw-play``'s stdin within 0.3 s. Three
+consequences: (a) ``playback_written_samples``/``playing`` stopped
+describing what was actually SOUNDING — ``playing`` went ``False`` while
+~2.7 s of audio was still buffered in the pipe/player; (b) a barge-in had
+nothing left in THIS module's own FIFO to discard, so ``stop_playback()``
+had to fall back to killing a process that already held seconds of unplayed
+audio; (c) that fallback used :meth:`~HostEndpoint._terminate_process`'s
+graceful SIGTERM-then-wait path, which could take up to
+:data:`_TERMINATE_TIMEOUT_S` (3 s) — measured at 1.3 s on one run, far past
+the ~200 ms barge-in bound the voice works to.
+
+Both halves are fixed. :meth:`HostEndpoint._writer_loop` now PACES itself
+against a monotonic clock, writing :data:`_WRITE_SLICE_MS` (20 ms) slices
+and staying at most :data:`_PACE_LEAD_S` (100 ms) ahead of real playback
+time — slicing across `play()` call boundaries, since a caller's own
+chunking has nothing to do with a pacing granularity. This means the FIFO
+(:attr:`HostEndpoint._playback_chunks` plus the writer's own
+:attr:`~HostEndpoint._writer_pending` tail) genuinely holds "the rest of the
+reply" at any moment, so ``written`` approximates played, ``playing`` is
+true while audio is actually sounding, and :meth:`~HostEndpoint.stop_playback`
+has a real, non-zero count to discard. And ``stop_playback()`` itself no
+longer goes through the graceful path at all: it closes stdin and SIGKILLs
+the player AT ONCE (:meth:`~HostEndpoint._kill_process_fast`, bounded by
+:data:`_BARGE_IN_KILL_TIMEOUT_S`) — a player process is disposable, and the
+next ``play()`` simply respawns one. :data:`_PACE_LEAD_S`'s ~100 ms is the
+DOCUMENTED, unmeasured overshoot this buys: audio already written into the
+pipe/player by the moment of a barge-in can still be heard for about that
+long, which is the accepted cost of never letting the player underrun
+between writer wake-ups. :meth:`~HostEndpoint.close`, unlike
+``stop_playback()``, keeps its graceful natural-EOF drain window — a normal
+end of session is not an interruption.
 
 Mute is enforced in the capture path (plan obligation ``o8``), unchanged
 -----------------------------------------------------------------------
@@ -207,7 +241,10 @@ CAPTURE_CHANNEL_INDEX = 1
 PLAYBACK_RATE_HZ = SAMPLE_RATE_HZ
 PLAYBACK_CHANNELS = 1
 
-#: How long stop_playback()/close() wait for SIGTERM before sending SIGKILL.
+#: How long close()'s GRACEFUL playback teardown waits for SIGTERM before
+#: sending SIGKILL. NOT used by stop_playback() (round 5) — a barge-in kills
+#: at once (see :data:`_BARGE_IN_KILL_TIMEOUT_S`); a player process is
+#: disposable and the next play() simply respawns one.
 _TERMINATE_TIMEOUT_S = 3.0
 
 #: How many SECONDS of audio the playback buffer holds before a NEW `play()`
@@ -221,6 +258,33 @@ _CAPTURE_CHUNK_BYTES = int(CAPTURE_RATE_HZ * 0.02) * CAPTURE_CHANNELS * SAMPLE_W
 #: How long a reader/writer thread waits on an idle queue before re-checking
 #: its stop signal. Bounds shutdown latency without busy-waiting.
 _POLL_INTERVAL_S = 0.1
+
+#: Round 5: the writer paces itself against a monotonic clock in slices this
+#: size, rather than dumping a whole `play()` chunk into the pipe/player at
+#: once — round 4's own probe measured a 3 s reply written to pw-play's
+#: stdin within 0.3 s, meaning `stop_playback()` had nothing left in the
+#: FIFO to discard and had to fall back to killing a process that already
+#: had ~2.7 s of audio queued past what the OS/player could possibly have
+#: sounded yet.
+_WRITE_SLICE_MS = 20
+
+#: How far AHEAD of real playback time the writer is allowed to stay written
+#: into the pipe/player before pausing (round 5). A judgement call, stated
+#: because it is one: large enough that the player's own internal buffering
+#: never underruns between writer wake-ups (a stall is audible as a click or
+#: gap — the failure mode a lead protects against), small enough that a
+#: barge-in's kill only has to discard/lose about this much already-written-
+#: but-not-yet-sounding audio, keeping `stop_playback()` well under the
+#: 200 ms barge-in bound the voice works to. 100 ms is documented,
+#: unmeasured overshoot on a real barge-in — see the module docstring.
+_PACE_LEAD_S = 0.1
+
+#: How long stop_playback() waits for SIGKILL to land before giving up and
+#: reporting the process as not-confirmed-dead (round 5). Bounds
+#: stop_playback() itself, not just the audio's own cutoff — SIGKILL cannot
+#: be ignored by the child, so this is a wait for the OS to reap it, not a
+#: grace period the child gets to use.
+_BARGE_IN_KILL_TIMEOUT_S = 0.15
 
 #: Round 3 finding 1's cooldown, unchanged in shape, now guarding a process
 #: spawn instead of a PortAudio open: 2 s doubling to a 30 s cap.
@@ -615,6 +679,7 @@ class HostEndpoint:
         self._playback_proc: "subprocess.Popen[bytes] | None" = None
         self._playback_chunks: "deque[bytes]" = deque()
         self._playback_queued_bytes = 0
+        self._writer_pending = b""
         self._playback_written_samples = 0
         self._playback_total_pushed_samples = 0
         self._playback_stop_discarded_total = 0
@@ -699,6 +764,32 @@ class HostEndpoint:
                 with self._counter_lock:
                     self._callback_errors += 1
             return 0 if proc.poll() is not None else 1
+
+    def _kill_process_fast(
+        self, proc: "subprocess.Popen[bytes]", timeout: float = _BARGE_IN_KILL_TIMEOUT_S
+    ) -> int:
+        """SIGKILL at once, no SIGTERM grace period (round 5's barge-in path).
+
+        A player process is disposable: the next play() simply respawns one.
+        Waiting out a SIGTERM grace period before escalating (as
+        :meth:`_terminate_process` does for a graceful close) is exactly what
+        made round 4's own barge-in miss its 200 ms bound. Returns 1 if the
+        OS never confirmed the kill within *timeout* (SIGKILL itself cannot
+        be ignored, so this bounds the WAIT for reaping, not a grace period
+        the child gets to use).
+        """
+        if proc.poll() is not None:
+            return 0
+        try:
+            proc.kill()
+        except Exception:
+            with self._counter_lock:
+                self._callback_errors += 1
+        try:
+            proc.wait(timeout=max(0.0, timeout))
+            return 0
+        except subprocess.TimeoutExpired:
+            return 1
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -917,7 +1008,9 @@ class HostEndpoint:
                 # recurring at a process reference instead of a stream one).
                 self._playback_dropped_no_device += 1
                 return
-            in_flight = self._playback_queued_bytes // SAMPLE_WIDTH_BYTES
+            in_flight = (
+                self._playback_queued_bytes + len(self._writer_pending)
+            ) // SAMPLE_WIDTH_BYTES
             if in_flight + len(chunk_bytes) // SAMPLE_WIDTH_BYTES > limit_samples:
                 if not self._playback_overflow_episode_active:
                     self._playback_overflow_episode_active = True
@@ -933,22 +1026,33 @@ class HostEndpoint:
             self._playing = True
 
     def stop_playback(self) -> int:
-        """Barge-in: close stdin, terminate IMMEDIATELY (kill after a bound).
+        """Barge-in: close stdin, SIGKILL AT ONCE (round 5 — no SIGTERM grace period).
 
-        No drain grace period — that is the whole point of a barge-in: stop
-        the sound NOW. :meth:`close`, by contrast, gives the player a brief
-        chance to exit naturally on EOF first (see
-        :meth:`_stop_playback_internal`'s ``drain_timeout``), since a normal
-        end of session is not an interruption.
+        No drain grace period, no polite terminate-then-wait — that is the
+        whole point of a barge-in: stop the sound NOW. A player process is
+        disposable; the next :meth:`play` simply respawns one. Measured
+        target: returns in under 200 ms with :attr:`playing` already
+        ``False``. The writer's pacing (:data:`_PACE_LEAD_S`) means only
+        about 100 ms of already-written-but-not-yet-sounding audio can
+        possibly still be heard after this returns — a documented,
+        unmeasured overshoot, not an unbounded one.
+
+        :meth:`close`, by contrast, gives the player a brief chance to exit
+        naturally on EOF first (see :meth:`_stop_playback_internal`'s
+        ``drain_timeout``), since a normal end of session is not an
+        interruption.
         """
         discarded, _close_failures = self._stop_playback_internal(drain_timeout=0.0)
         return discarded
 
     def _stop_playback_internal(self, *, drain_timeout: float = 0.0) -> tuple[int, int]:
         with self._counter_lock:
-            discarded = self._playback_queued_bytes // SAMPLE_WIDTH_BYTES
+            discarded = (
+                self._playback_queued_bytes + len(self._writer_pending)
+            ) // SAMPLE_WIDTH_BYTES
             self._playback_chunks.clear()
             self._playback_queued_bytes = 0
+            self._writer_pending = b""
             self._playback_stop_discarded_total += discarded
             self._playback_generation += 1
             self._playing = False
@@ -969,7 +1073,8 @@ class HostEndpoint:
                 except subprocess.TimeoutExpired:
                     close_failures = self._terminate_process(proc)
             else:
-                close_failures = self._terminate_process(proc)
+                # Barge-in: SIGKILL at once, no SIGTERM grace period (round 5).
+                close_failures = self._kill_process_fast(proc)
         return discarded, close_failures
 
     @property
@@ -981,9 +1086,12 @@ class HostEndpoint:
         with self._counter_lock:
             proc = self._playback_proc
             self._playback_proc = None
-            discarded = self._playback_queued_bytes // SAMPLE_WIDTH_BYTES
+            discarded = (
+                self._playback_queued_bytes + len(self._writer_pending)
+            ) // SAMPLE_WIDTH_BYTES
             self._playback_chunks.clear()
             self._playback_queued_bytes = 0
+            self._writer_pending = b""
             self._playback_stop_discarded_total += discarded
             self._playback_generation += 1
             self._playing = False
@@ -1011,32 +1119,74 @@ class HostEndpoint:
         return stopped
 
     def _writer_loop(self) -> None:
+        """Write PACED 20 ms slices, staying at most :data:`_PACE_LEAD_S` ahead
+        of real playback time (round 5) — never a whole `play()` chunk dumped
+        into the pipe at once. This is what makes ``written``/``playing``
+        describe what is actually sounding, and what leaves
+        :meth:`stop_playback` something real to discard from the FIFO
+        instead of a player already holding seconds of unplayed audio.
+
+        Slicing happens ACROSS chunk boundaries (chunks queued by separate
+        `play()` calls are concatenated into :attr:`_writer_pending`, a flat
+        byte buffer), because a caller's own chunking has nothing to do with
+        a 20 ms pacing granularity.
+        """
+        slice_bytes = int(PLAYBACK_RATE_HZ * _WRITE_SLICE_MS / 1000) * SAMPLE_WIDTH_BYTES
+        clock_start = 0.0
+        samples_written_for_clock = 0
+        active_proc: "subprocess.Popen[bytes] | None" = None
+
         while not self._writer_stop.is_set():
             with self._counter_lock:
-                try:
-                    chunk = self._playback_chunks.popleft()
-                except IndexError:
-                    chunk = None
-                if chunk is not None:
-                    self._playback_queued_bytes -= len(chunk)
                 proc = self._playback_proc
+                if proc is not active_proc:
+                    # A fresh process (first play(), or a respawn after a
+                    # barge-in/write-failure): pacing restarts from now,
+                    # never carries a stale clock across processes.
+                    active_proc = proc
+                    clock_start = time.monotonic()
+                    samples_written_for_clock = 0
 
-            if chunk is None:
+                slice_: bytes | None = None
+                if proc is not None and proc.stdin is not None:
+                    while len(self._writer_pending) < slice_bytes:
+                        try:
+                            extra = self._playback_chunks.popleft()
+                        except IndexError:
+                            break
+                        self._playback_queued_bytes -= len(extra)
+                        self._writer_pending += extra
+                    if self._writer_pending:
+                        slice_ = self._writer_pending[:slice_bytes]
+
+            if slice_ is None:
                 time.sleep(_POLL_INTERVAL_S)
                 continue
-            if proc is None or proc.stdin is None:
-                with self._counter_lock:
-                    self._playback_dropped_no_device += 1
+
+            target_time = clock_start + samples_written_for_clock / PLAYBACK_RATE_HZ
+            lead = target_time - time.monotonic()
+            if lead > _PACE_LEAD_S:
+                time.sleep(min(_POLL_INTERVAL_S, lead - _PACE_LEAD_S))
                 continue
+
             try:
-                proc.stdin.write(chunk)
-                proc.stdin.flush()
+                proc.stdin.write(slice_)  # type: ignore[union-attr]
+                proc.stdin.flush()  # type: ignore[union-attr]
             except Exception as exc:
                 self._handle_write_failure(exc)
+                active_proc = None  # force a fresh clock for whatever comes next
                 continue
+
             with self._counter_lock:
-                self._playback_written_samples += len(chunk) // SAMPLE_WIDTH_BYTES
-                self._playing = bool(self._playback_chunks)
+                # Only advance state if this write's bytes are still the
+                # front of `_writer_pending` — a concurrent stop_playback()/
+                # write-failure may have cleared it while this thread was
+                # blocked inside write() above.
+                if self._writer_pending[: len(slice_)] == slice_:
+                    self._writer_pending = self._writer_pending[len(slice_) :]
+                self._playback_written_samples += len(slice_) // SAMPLE_WIDTH_BYTES
+                self._playing = bool(self._playback_chunks) or bool(self._writer_pending)
+            samples_written_for_clock += len(slice_) // SAMPLE_WIDTH_BYTES
 
     # -- mute --------------------------------------------------------------
 

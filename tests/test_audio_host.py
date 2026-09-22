@@ -532,12 +532,92 @@ def test_stop_playback_discards_queued_bytes_and_terminates_the_player(tmp_path)
     )
     chunk = _silence_frame(4800)  # 200 ms per call
     for _ in range(20):
-        endpoint.play(chunk)
+        endpoint.play(chunk)  # 4 s of audio queued
     _wait_until(lambda: endpoint.playing)
     discarded = endpoint.stop_playback()
-    assert discarded >= 0
+    # Round 5: pacing means most of a 4 s reply is still genuinely UNWRITTEN
+    # moments after play() returns — this must have something real to
+    # discard, not the round-4 defect (the whole reply already dumped into
+    # the pipe, discarded=0).
+    assert discarded > 0
     assert endpoint.playing is False
     assert endpoint.status()["playback_stop_discarded_total"] == discarded
+    endpoint.close(2.0)
+
+
+def test_round5_writer_paces_against_the_clock_not_a_burst(tmp_path):
+    """The exact defect the coordinator's probe found: a 3 s reply must NOT
+    land in the player's stdin within a fraction of a second. Proven with a
+    real child that reads (and discards) one 20 ms slice every 20 ms, like a
+    real player actually consuming audio at playback speed, and records how
+    many slices it had seen by a checkpoint partway through."""
+    progress = tmp_path / "progress.txt"
+    script = f"""
+import sys, time
+n = 0
+slice_bytes = 960  # 20 ms @ 24 kHz mono pcm16
+while True:
+    chunk = sys.stdin.buffer.read(slice_bytes)
+    if not chunk:
+        break
+    n += 1
+    time.sleep(0.02)
+with open({str(progress)!r}, "w", encoding="utf-8") as fh:
+    fh.write(str(n))
+"""
+    endpoint = HostEndpoint(
+        which=_fake_which({"arecord", "aplay"}), popen=_make_popen(playback_script=script)
+    )
+    three_seconds = _silence_frame(24000 * 3)
+    t0 = time.perf_counter()
+    endpoint.play(three_seconds)
+    play_call_elapsed = time.perf_counter() - t0
+    assert play_call_elapsed < 0.5  # play() itself never blocks on pacing
+
+    time.sleep(0.3)
+    written_at_300ms = endpoint.status()["playback_written_samples"]
+    # At most ~(300ms + lead) worth of samples should have been WRITTEN to
+    # the pipe by 300ms in — not all 72000 samples of the 3 s reply (round 4's
+    # defect measured the whole reply landing within 300ms).
+    assert written_at_300ms < 24000, f"wrote {written_at_300ms} samples by 300ms — not paced"
+    endpoint.stop_playback()
+    endpoint.close(3.0)
+
+    # Independent confirmation from the CHILD's own count, not just this
+    # module's internal counters: it must have seen only a modest number of
+    # 20 ms slices, never the whole 3 s reply (150 slices) at once.
+    if _wait_until(progress.exists, timeout=1.0):
+        seen = int(progress.read_text(encoding="utf-8").strip() or "0")
+        assert seen < 75, f"child saw {seen} of 150 slices — not paced"
+
+
+def test_round5_stop_playback_returns_under_200ms_with_seconds_queued(tmp_path):
+    """Measured target: stop_playback() returns in < 200 ms and playing is
+    False on return, even with many seconds of audio queued."""
+
+    script = """
+import sys, time
+while True:
+    chunk = sys.stdin.buffer.read(960)
+    if not chunk:
+        break
+    time.sleep(0.02)
+"""
+    endpoint = HostEndpoint(
+        which=_fake_which({"arecord", "aplay"}), popen=_make_popen(playback_script=script)
+    )
+    ten_seconds = _silence_frame(24000 * 10)
+    endpoint.play(ten_seconds)
+    _wait_until(lambda: endpoint.playing)
+    time.sleep(0.3)
+
+    t0 = time.perf_counter()
+    discarded = endpoint.stop_playback()
+    elapsed = time.perf_counter() - t0
+
+    assert elapsed < 0.2, f"stop_playback took {elapsed * 1000:.0f} ms"
+    assert endpoint.playing is False
+    assert discarded > 0
     endpoint.close(2.0)
 
 
