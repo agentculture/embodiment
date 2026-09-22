@@ -1,11 +1,19 @@
 // hooks/useEventStream.ts
 //
-// The EventSource hook against t13's bus-event schema (task t17). Opens one
-// SSE connection (t16's projection of embodiment/bus.py) and registers an
-// `addEventListener` for every kind in EVENT_KINDS — EventSource has no
-// wildcard listener, so an unknown future kind is simply not seen, never
-// mis-rendered, mirroring the pattern culture-nodes' useSharedEvents.tsx
-// uses against its own fixed vocabulary.
+// The event-stream hook against t13's bus-event schema (task t17). Opens
+// one SSE connection (t16's projection of embodiment/bus.py) via the
+// `SSEConnect` seam (sseConnection.ts) and routes each frame by its `kind`
+// — an unknown future kind is simply not seen, never mis-rendered.
+//
+// Round 4: this used to be EventSource-based. A LIVE finding (the operator
+// opening the dashboard over Tailscale, off-loopback and off-https) showed
+// EventSource's cookie-credentialed stream gets refused by t16's guard
+// there (`http-refused-cookie-without-origin`) — see
+// api/sseFetchReader.ts's module docstring for the full story. The default
+// connector is now `api/sseFetchReader.ts`'s fetch-based reader, and the
+// credential travels as `Authorization: Bearer <secret>`, a header WE set
+// on the fetch call — never a cookie, so the guard's Origin/Sec-Fetch-Site
+// rule for cookies is never consulted for this request at all.
 //
 // Liveness is judged ONLY by the `heartbeat` kind (embodiment/bus.py emits
 // it on a fixed cadence via Bus.tick(), independent of other traffic): the
@@ -34,6 +42,8 @@ import {
   isEventEnvelope,
   parseEnvelopeFrame,
 } from "../api/events";
+import { connectSSE } from "../api/sseFetchReader";
+import type { SSEConnect } from "./sseConnection";
 
 export type ConnectionStatus = "connecting" | "connected" | "disconnected" | "unauthorized";
 
@@ -127,40 +137,29 @@ function reducer(prev: DataState, action: Action): DataState {
 }
 
 export interface UseEventStreamOptions {
-  /** Test/DI seam: defaults to `(url) => new EventSource(url)`. */
-  eventSourceFactory?: (url: string) => EventSource;
+  /** Test/DI seam: defaults to the fetch-based `connectSSE`. */
+  connect?: SSEConnect;
   /** Test seam: defaults to Date.now. */
   nowFn?: () => number;
   /** How often to re-check the heartbeat deadline. Chosen, not measured —
    *  1s is fine granularity for a UI status pill. */
   checkIntervalMs?: number;
   /**
-   * Round 3: bump this (any value that changes by `!==`) to force the
-   * current EventSource closed and a fresh one opened, without changing
-   * `url`. EventSource has no "reconnect now" method of its own, and t16's
-   * guard (embodiment/http/guard.py) refuses `GET /api/events` until the
-   * `embodiment_secret` cookie is set — which happens strictly after this
-   * hook's connect effect already fired once on mount. The caller (App.tsx)
-   * bumps this after writing the cookie so the stream actually reconnects
-   * with the credential now present.
+   * Bump this (any value that changes by `!==`) to force the current
+   * connection closed and a fresh one opened, without changing `url` or
+   * `secret`. Kept as an explicit escape hatch alongside `secret` itself
+   * already being a reconnect trigger (see below) — e.g. the operator
+   * re-applying the identical secret value still forces a reconnect.
    */
   reconnectKey?: unknown;
 }
 
-function defaultFactory(url: string): EventSource {
-  return new EventSource(url);
-}
-
 export function useEventStream(
   url: string,
+  secret: string,
   options: UseEventStreamOptions = {},
 ): EventStreamSnapshot {
-  const {
-    eventSourceFactory = defaultFactory,
-    nowFn = Date.now,
-    checkIntervalMs = 1000,
-    reconnectKey,
-  } = options;
+  const { connect = connectSSE, nowFn = Date.now, checkIntervalMs = 1000, reconnectKey } = options;
 
   const [data, dispatch] = useReducer(reducer, INITIAL_DATA);
   const [opened, setOpened] = useState(false);
@@ -174,119 +173,111 @@ export function useEventStream(
   urlRef.current = url;
 
   useEffect(() => {
-    const source = eventSourceFactory(url);
     setOpened(false);
     setOpenedAtMs(null);
     setErroredClosed(false);
     setUnauthorized(false);
-    // Reset per connection attempt: whether THIS EventSource has ever
-    // fired onopen. An error before the first successful open is the best
-    // signal this API gives for "the guard refused the credential" (t16's
-    // guard.py returns 401 for a missing/bad secret; EventSource exposes no
-    // HTTP status to JS at all — see round 3's report).
+    // Reset per connection attempt: whether THIS connection has ever fired
+    // onOpen. An error before the first successful open is the best signal
+    // available for "the guard refused the credential" (t16's guard.py
+    // returns 401 for a missing/bad secret; neither EventSource nor a plain
+    // fetch() response status distinguishes "refused" from "network drop"
+    // without inspecting the body, which this hook deliberately does not
+    // do — the status code plus this heuristic is enough for the pill).
     let everOpened = false;
 
-    source.onopen = () => {
-      everOpened = true;
-      setOpened(true);
-      setOpenedAtMs(nowFn());
-      setErroredClosed(false);
-      setUnauthorized(false);
+    const headers: Record<string, string> = secret ? { Authorization: `Bearer ${secret}` } : {};
+
+    const handleFrame = (frame: { kind: string; data: string }) => {
+      // Round 2 fix, still true under the new transport: `frame.data` is
+      // the WHOLE envelope on the wire ({v, kind, ts, seq, source, data:
+      // {...}}), never the inner `data` object on its own.
+      const result = parseEnvelopeFrame(frame.data);
+      if (!result.envelope) {
+        dispatch({ type: "dropped" });
+        return;
+      }
+      const kind = frame.kind as EventKind;
+      if (!(EVENT_KINDS as readonly string[]).includes(kind)) {
+        return; // an unknown kind is simply not seen, never mis-rendered
+      }
+      const envelope = result.envelope as EventEnvelope<EventKind>;
+      if (kind === "heartbeat") {
+        setLastHeartbeatAtMs(nowFn());
+      }
+      switch (kind) {
+        case "state":
+          dispatch({ type: "state", envelope: envelope as EventEnvelope<"state">, data: envelope.data as StateData });
+          break;
+        case "mic":
+          dispatch({ type: "mic", envelope: envelope as EventEnvelope<"mic">, data: envelope.data as MicData });
+          break;
+        case "turn":
+          dispatch({ type: "turn", envelope: envelope as EventEnvelope<"turn">, data: envelope.data as TurnData });
+          break;
+        case "features":
+          dispatch({
+            type: "features",
+            envelope: envelope as EventEnvelope<"features">,
+            data: envelope.data as FeaturesData,
+          });
+          break;
+        case "clients":
+          dispatch({
+            type: "clients",
+            envelope: envelope as EventEnvelope<"clients">,
+            data: envelope.data as ClientsData,
+          });
+          break;
+        case "transcript":
+        case "reply":
+          dispatch({
+            type: "speech",
+            envelope: envelope as EventEnvelope<"transcript" | "reply">,
+            data: envelope.data as TranscriptData | ReplyData,
+          });
+          break;
+        case "degradation":
+          dispatch({
+            type: "degradation",
+            envelope: envelope as EventEnvelope<"degradation">,
+            data: envelope.data as DegradationData,
+          });
+          break;
+        case "heartbeat":
+          // no data state to update beyond lastHeartbeatAtMs, set above
+          break;
+        default:
+          break;
+      }
     };
-    source.onerror = () => {
-      // readyState 2 (CLOSED) means the browser gave up retrying; anything
-      // else means it is already reconnecting on its own — either way,
-      // report the fault rather than staying silently "connected".
-      if (source.readyState === 2 /* CLOSED */) {
+
+    const handle = connect(url, headers, {
+      onOpen: () => {
+        everOpened = true;
+        setOpened(true);
+        setOpenedAtMs(nowFn());
+        setErroredClosed(false);
+        setUnauthorized(false);
+      },
+      onError: () => {
         if (everOpened) {
           setErroredClosed(true);
         } else {
           setUnauthorized(true);
         }
-      }
-    };
-
-    const makeHandler =
-      <K extends EventKind>(kind: K) =>
-      (raw: MessageEvent<string>) => {
-        // Round 2 fix: raw.data is the WHOLE envelope on the wire
-        // ({v, kind, ts, seq, source, data: {...}}), never the inner
-        // `data` object on its own — a real SSE server serving the
-        // committed fixtures verbatim caught the previous version of this
-        // handler fabricating an envelope around what it wrongly assumed
-        // was already `data`, so every pane read `.text`/`.code`/`.env` off
-        // the OUTER envelope and got `undefined`.
-        const result = parseEnvelopeFrame(raw.data);
-        if (!result.envelope) {
-          dispatch({ type: "dropped" });
-          return;
-        }
-        const envelope = result.envelope as EventEnvelope<K>;
-        if (kind === "heartbeat") {
-          setLastHeartbeatAtMs(nowFn());
-        }
-        switch (kind) {
-          case "state":
-            dispatch({ type: "state", envelope: envelope as EventEnvelope<"state">, data: envelope.data as StateData });
-            break;
-          case "mic":
-            dispatch({ type: "mic", envelope: envelope as EventEnvelope<"mic">, data: envelope.data as MicData });
-            break;
-          case "turn":
-            dispatch({ type: "turn", envelope: envelope as EventEnvelope<"turn">, data: envelope.data as TurnData });
-            break;
-          case "features":
-            dispatch({
-              type: "features",
-              envelope: envelope as EventEnvelope<"features">,
-              data: envelope.data as FeaturesData,
-            });
-            break;
-          case "clients":
-            dispatch({
-              type: "clients",
-              envelope: envelope as EventEnvelope<"clients">,
-              data: envelope.data as ClientsData,
-            });
-            break;
-          case "transcript":
-          case "reply":
-            dispatch({
-              type: "speech",
-              envelope: envelope as EventEnvelope<"transcript" | "reply">,
-              data: envelope.data as TranscriptData | ReplyData,
-            });
-            break;
-          case "degradation":
-            dispatch({
-              type: "degradation",
-              envelope: envelope as EventEnvelope<"degradation">,
-              data: envelope.data as DegradationData,
-            });
-            break;
-          case "heartbeat":
-            // no data state to update beyond lastHeartbeatAtMs, set above
-            break;
-          default:
-            break;
-        }
-      };
-
-    const handlers = EVENT_KINDS.map((kind) => [kind, makeHandler(kind)] as const);
-    for (const [kind, handler] of handlers) {
-      source.addEventListener(kind, handler as EventListener);
-    }
+      },
+      onFrame: handleFrame,
+    });
 
     return () => {
-      for (const [kind, handler] of handlers) {
-        source.removeEventListener(kind, handler as EventListener);
-      }
-      source.close();
+      handle.close();
     };
-    // `url` and `reconnectKey` are the only things that should reopen the
-    // connection; the other options are DI seams a caller passes once.
+    // `url`, `secret` and `reconnectKey` are the only things that should
+    // reopen the connection; the other options are DI seams a caller passes
+    // once.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [url, reconnectKey]);
+  }, [url, secret, reconnectKey]);
 
   useEffect(() => {
     const id = setInterval(() => setNow(nowFn()), checkIntervalMs);

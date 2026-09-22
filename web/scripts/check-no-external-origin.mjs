@@ -13,22 +13,25 @@
 //       `url(http...)` inside e.g. @font-face src (fonts are bundled --
 //       @fontsource-variable ships local woff2 files Vite hashes into
 //       dist/assets/, never a Google Fonts / CDN URL).
-//
-// It deliberately does NOT grep the whole JS bundle for the substring
-// "http": React's own minified runtime embeds two kinds of inert string
-// literals that are never fetched --
-//   - XML/SVG namespace URIs (http://www.w3.org/2000/svg, .../1999/xlink,
-//     .../XML/1998/namespace) -- identifiers the XML spec requires, never
-//     resolved over the network;
-//   - the dev-mode invariant error-decoder link
-//     (https://reactjs.org/docs/error-decoder.html) -- a human-readable
-//     link printed in a thrown Error's message text on a React invariant
-//     violation, never fetched by the running page.
-// culture-nodes' own dist/ carries the same class of inert literals from
-// its dependencies (elkjs embeds Eclipse/Apache/W3C license URLs). A
-// substring grep over the whole bundle would fail on every React app and
-// catches nothing a real network request would ever reach; this script
-// checks the surfaces that do.
+//   (c) every dist/assets/*.js: no `http(s)://` literal AT ALL, except an
+//       explicit, narrow allow-list (ALLOWED_JS_ORIGIN_PATTERNS below) for
+//       the known false positives a JS bundle legitimately carries:
+//         - XML/SVG/MathML/XHTML namespace URIs (http://www.w3.org/...) --
+//           identifiers the XML spec requires, never resolved over the
+//           network;
+//         - React's dev-mode invariant error-decoder link
+//           (https://reactjs.org/docs/error-decoder.html) -- a
+//           human-readable link printed in a thrown Error's message text
+//           on a React invariant violation, never fetched by the running
+//           page.
+//       Reviewer finding (t17 round 4, MINOR): the previous version of
+//       this script scanned only index.html and *.css, so a real
+//       `fetch("https://example.com")` (or any other external network
+//       call) anywhere in application source would pass silently once
+//       bundled into JS. culture-nodes' own dist/ carries the same class
+//       of inert literals from its dependencies (elkjs embeds
+//       Eclipse/Apache/W3C license URLs), which is why the allow-list is
+//       narrow and explicit rather than "skip JS entirely".
 //
 // The functions below are exported so web/src/build-output.test.ts can
 // exercise the detection logic directly against synthetic fixtures (fast,
@@ -46,6 +49,19 @@ const WEB_ROOT = path.resolve(SCRIPT_DIR, "..");
 export const DIST_DIR = path.join(WEB_ROOT, "dist");
 
 const EXTERNAL_RE = /^(https?:)?\/\//;
+
+/** Narrow, explicit allow-list for the two known-inert classes of
+ *  http(s):// literal a React JS bundle legitimately carries. Anything
+ *  else found in a *.js file fails the check -- see the module docstring
+ *  for why this exists (round 4's MINOR finding) and what each entry is. */
+export const ALLOWED_JS_ORIGIN_PATTERNS = [
+  /^https?:\/\/www\.w3\.org\//i,
+  /^https?:\/\/reactjs\.org\/docs\/error-decoder\.html/i,
+];
+
+function isAllowedJsOrigin(url) {
+  return ALLOWED_JS_ORIGIN_PATTERNS.some((pattern) => pattern.test(url));
+}
 
 export function walk(dir, exts) {
   return readdirSync(dir, { withFileTypes: true }).flatMap((entry) => {
@@ -92,6 +108,25 @@ export function checkCssText(css, label = "styles.css") {
   return findings;
 }
 
+/** Check one JS file's text for a http(s):// literal not on the allow-list.
+ *  Pure. Matches a run of non-whitespace, non-quote, non-paren/backtick
+ *  characters starting at "http://" or "https://" -- generous enough to
+ *  catch `fetch("https://example.com")`, a template-literal URL, or a
+ *  bare string constant, while stopping at the closing quote/paren a real
+ *  URL literal would be wrapped in. */
+export function checkJsText(js, label = "bundle.js") {
+  const findings = [];
+  const urlRe = /https?:\/\/[^\s"'`)]+/g;
+  let match;
+  while ((match = urlRe.exec(js))) {
+    const url = match[0];
+    if (!isAllowedJsOrigin(url)) {
+      findings.push(`${label}: external origin literal "${url}" is not on the allow-list`);
+    }
+  }
+  return findings;
+}
+
 /** Run every check against the real, already-built dist/ directory. Throws
  *  if dist/ or dist/index.html is missing (the caller decides whether that
  *  is a skip or a failure — see build-output.test.ts). */
@@ -102,13 +137,19 @@ export function checkDist(distDir = DIST_DIR) {
   ];
   const assetsDir = join(distDir, "assets");
   let cssFiles = [];
+  let jsFiles = [];
   try {
     cssFiles = walk(assetsDir, [".css"]);
+    jsFiles = walk(assetsDir, [".js"]);
   } catch {
     cssFiles = []; // no assets/ dir at all (e.g. a CSS-free build) is fine
+    jsFiles = [];
   }
   for (const file of cssFiles) {
     findings.push(...checkCssText(readFileSync(file, "utf8"), file));
+  }
+  for (const file of jsFiles) {
+    findings.push(...checkJsText(readFileSync(file, "utf8"), file));
   }
   return findings;
 }
@@ -120,7 +161,9 @@ function main() {
     for (const f of findings) console.error(`  ${f}`);
     process.exit(1);
   }
-  console.log("ok   - dist/index.html and dist/assets/*.css reference no external origin");
+  console.log(
+    "ok   - dist/index.html, dist/assets/*.css and dist/assets/*.js reference no external origin",
+  );
   console.log("check-no-external-origin: PASS");
 }
 

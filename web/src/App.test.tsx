@@ -1,7 +1,7 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import App from "./App";
-import { FakeEventSource } from "./hooks/fakeEventSource";
+import { FakeSSEConnection, fakeConnect } from "./hooks/fakeSSEConnection";
 import { DISCONNECTED_AFTER_MS } from "./api/events";
 
 import stateFixture from "../../tests/fixtures/events/state.json";
@@ -23,17 +23,10 @@ function envelope(kind: string, data: Record<string, unknown>, seq = 1) {
   return { v: 1, kind, ts: "2026-09-22T12:00:00.000Z", seq, source: "app://embodiment", data };
 }
 
-function renderApp(cookieWriter?: (cookieString: string) => void) {
-  FakeEventSource.reset();
-  render(
-    <App
-      eventStreamOptions={{
-        eventSourceFactory: (url: string) => new FakeEventSource(url) as unknown as EventSource,
-      }}
-      installSecretOptions={cookieWriter ? { cookieWriter, protocol: "http:" } : { protocol: "http:" }}
-    />,
-  );
-  return FakeEventSource.latest();
+function renderApp() {
+  FakeSSEConnection.reset();
+  render(<App eventStreamOptions={{ connect: fakeConnect }} />);
+  return FakeSSEConnection.latest();
 }
 
 describe("App — every state from the committed event fixtures", () => {
@@ -240,34 +233,55 @@ describe("App — every state from the committed event fixtures", () => {
     expect(screen.queryByText(/\?:/)).toBeNull();
   });
 
-  // Round 3 item #1: t16's guard (embodiment/http/guard.py) accepts the
-  // install secret as the `embodiment_secret` cookie for GET /api/events,
-  // since EventSource cannot set a header. Entering the secret and applying
-  // it must write that exact cookie shape and force a reconnect.
-  it("writes the embodiment_secret cookie and reconnects the EventSource when the operator applies the secret", () => {
-    const writer = vi.fn();
-    renderApp(writer);
-    expect(FakeEventSource.instances).toHaveLength(1);
+  // Round 4 item #1 [LIVE, MAJOR]: t16's guard refused every cookie-
+  // credentialed stream request over Tailscale (off-loopback, off-https)
+  // with http-refused-cookie-without-origin. Fixed by dropping the cookie
+  // path entirely: the secret now travels ONLY as an Authorization header
+  // on the stream request itself, applied by clicking "Apply", and forces
+  // a reconnect (fetch-based streams have no "reconnect now" either).
+  it("carries the applied secret as an Authorization header and reconnects when the operator applies it", () => {
+    renderApp();
+    expect(FakeSSEConnection.instances).toHaveLength(1);
+    // No secret was ever applied yet -- no Authorization header at all.
+    expect(FakeSSEConnection.instances[0].headers.Authorization).toBeUndefined();
 
     fireEvent.change(screen.getByLabelText("install secret"), {
       target: { value: "s3cr3t-value" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Apply" }));
 
-    expect(writer).toHaveBeenCalledWith("embodiment_secret=s3cr3t-value; Path=/; SameSite=Strict");
-    // a NEW EventSource was opened -- the only "reconnect now" EventSource
-    // supports is close the old one and construct a new one.
-    expect(FakeEventSource.instances.length).toBeGreaterThanOrEqual(2);
+    // A NEW connection was opened -- the only "reconnect now" this
+    // transport supports is close the old one and open a new one.
+    expect(FakeSSEConnection.instances.length).toBeGreaterThanOrEqual(2);
+    expect(FakeSSEConnection.latest().headers.Authorization).toBe("Bearer s3cr3t-value");
+  });
+
+  it("never writes document.cookie when the secret is applied (round 4: one credential path)", () => {
+    renderApp();
+    const before = document.cookie;
+    fireEvent.change(screen.getByLabelText("install secret"), {
+      target: { value: "s3cr3t-value" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    expect(document.cookie).toBe(before);
+    expect(document.cookie).not.toContain("embodiment_secret");
   });
 
   it("persists the applied secret to sessionStorage, not localStorage", () => {
-    renderApp(vi.fn());
+    renderApp();
     fireEvent.change(screen.getByLabelText("install secret"), {
       target: { value: "s3cr3t-value" },
     });
     fireEvent.click(screen.getByRole("button", { name: "Apply" }));
     expect(sessionStorage.getItem("embodiment.installSecret")).toBe("s3cr3t-value");
     expect(localStorage.getItem("embodiment.installSecret")).toBeNull();
+  });
+
+  it("restores a previously applied secret from sessionStorage on mount, carried on the very first connection", () => {
+    sessionStorage.setItem("embodiment.installSecret", "restored-secret");
+    renderApp();
+    expect(FakeSSEConnection.instances).toHaveLength(1);
+    expect(FakeSSEConnection.latest().headers.Authorization).toBe("Bearer restored-secret");
   });
 
   it("shows 'not authorised' rather than 'disconnected' when the stream errors before ever opening", () => {

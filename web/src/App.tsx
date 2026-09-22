@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useState } from "react";
 import { ConnectionStatus } from "./components/ConnectionStatus";
 import { VoiceControls } from "./components/VoiceControls";
 import { Transcript } from "./components/Transcript";
@@ -8,66 +8,44 @@ import { RemoteViewers } from "./components/RemoteViewers";
 import { Waveform } from "./components/Waveform";
 import { useEventStream, type UseEventStreamOptions } from "./hooks/useEventStream";
 import { setMicMute, startVoice, stopVoice } from "./api/control";
-import {
-  type InstallSecretCookieOptions,
-  loadInstallSecretFromSession,
-  saveInstallSecretToSession,
-  setInstallSecretCookie,
-} from "./api/secret";
+import { loadInstallSecretFromSession, saveInstallSecretToSession } from "./api/secret";
 
 export interface AppProps {
-  /** Test seam: override the SSE endpoint's URL and factory. */
+  /** Test seam: override the SSE endpoint's URL and connector. */
   eventsUrl?: string;
   eventStreamOptions?: UseEventStreamOptions;
-  /** Test seam: override how the install-secret cookie gets written. */
-  installSecretOptions?: InstallSecretCookieOptions;
 }
 
 const DEFAULT_EVENTS_URL = "/api/events";
 
-export default function App({
-  eventsUrl = DEFAULT_EVENTS_URL,
-  eventStreamOptions,
-  installSecretOptions,
-}: AppProps) {
+export default function App({ eventsUrl = DEFAULT_EVENTS_URL, eventStreamOptions }: AppProps) {
+  // `secret` is the live-typed value, bound to the input and used
+  // immediately for every control-API POST (Start/Stop/Mute) -- those have
+  // always sent whatever is currently typed, with no separate "apply" step.
   const [secret, setSecret] = useState(() => loadInstallSecretFromSession());
-  // Bumped every time the operator applies a secret, so useEventStream
-  // closes the current EventSource and opens a fresh one carrying the
-  // now-set embodiment_secret cookie (round 3 item #1) -- EventSource has
-  // no "reconnect now" of its own, and t16's guard refuses GET /api/events
-  // until the cookie is present, which is strictly after the FIRST connect
-  // attempt this hook already made on mount.
+  // `appliedSecret` is what the STREAM actually authenticates with. It is
+  // deliberately NOT the same as `secret`: reconnecting the stream on every
+  // keystroke would be wasteful and would spam t16's guard. It changes only
+  // via `applySecret` (the "Apply" button), and initializes from
+  // sessionStorage directly -- so the FIRST `useEventStream` call already
+  // carries a restored secret, with no separate mount-effect / extra
+  // reconnect cycle needed (round 3 needed one, because the credential
+  // travelled by cookie and had to be written as a side effect before the
+  // stream could see it; round 4's Authorization header is just a value
+  // passed straight into the hook).
+  const [appliedSecret, setAppliedSecret] = useState(() => loadInstallSecretFromSession());
+  // An explicit escape hatch alongside `appliedSecret` itself already being
+  // a reconnect trigger -- re-applying the IDENTICAL secret value still
+  // forces a reconnect (e.g. after the guard was reconfigured server-side).
   const [reconnectVersion, setReconnectVersion] = useState(0);
 
-  const applySecret = useCallback(
-    (value: string) => {
-      setInstallSecretCookie(value, installSecretOptions);
-      saveInstallSecretToSession(value);
-      setReconnectVersion((v) => v + 1);
-    },
-    [installSecretOptions],
-  );
-
-  // A secret restored from a previous tab session is applied once, on
-  // mount, so a reload doesn't force the operator to retype it. Effects run
-  // in the order they were REGISTERED during render, and this useEffect
-  // call happens (in source order) before `useEventStream` is called
-  // below -- so this mount effect's synchronous cookie write completes
-  // before useEventStream's own connect effect ever runs, and the very
-  // first EventSource this hook opens already carries the restored cookie
-  // (no failed "unauthorized" attempt first). The reconnect bump this also
-  // triggers then closes and reopens that already-good connection once
-  // more; a harmless extra cycle, kept so mount-restore and the explicit
-  // "Apply" button share one code path (applySecret) rather than two.
-  useEffect(() => {
-    if (secret) {
-      applySecret(secret);
-    }
-    // Deliberately runs once, on mount, only -- see comment above.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+  const applySecret = useCallback((value: string) => {
+    saveInstallSecretToSession(value);
+    setAppliedSecret(value);
+    setReconnectVersion((v) => v + 1);
   }, []);
 
-  const stream = useEventStream(eventsUrl, {
+  const stream = useEventStream(eventsUrl, appliedSecret, {
     ...eventStreamOptions,
     reconnectKey: reconnectVersion,
   });

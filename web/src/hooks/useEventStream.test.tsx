@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useEventStream } from "./useEventStream";
-import { FakeEventSource } from "./fakeEventSource";
+import { FakeSSEConnection, fakeConnect } from "./fakeSSEConnection";
 import { DISCONNECTED_AFTER_MS, EVENT_KINDS, HEARTBEAT_INTERVAL_S } from "../api/events";
 
 import stateFixture from "../../../tests/fixtures/events/state.json";
@@ -17,6 +17,7 @@ import clientsFixture from "../../../tests/fixtures/events/clients.json";
 import heartbeatFixture from "../../../tests/fixtures/events/heartbeat.json";
 
 const FIXTURES_DIR = join(__dirname, "../../../tests/fixtures/events");
+const TEST_SECRET = "s3cr3t-test";
 
 /** Build a synthetic-but-wire-shaped envelope for tests that need arbitrary
  *  data (bounded-log stress tests) rather than a committed fixture. */
@@ -25,27 +26,22 @@ function envelope(kind: string, data: Record<string, unknown>, seq = 1) {
 }
 
 function setUp() {
-  FakeEventSource.reset();
+  FakeSSEConnection.reset();
   const { result, unmount } = renderHook(() =>
-    useEventStream("/api/events", {
-      eventSourceFactory: (url: string) => new FakeEventSource(url) as unknown as EventSource,
-    }),
+    useEventStream("/api/events", TEST_SECRET, { connect: fakeConnect }),
   );
-  const source = FakeEventSource.latest();
+  const source = FakeSSEConnection.latest();
   return { result, unmount, source };
 }
 
 function setUpWithReconnectKey(initialKey: number) {
-  FakeEventSource.reset();
+  FakeSSEConnection.reset();
   const { result, rerender, unmount } = renderHook(
     ({ reconnectKey }: { reconnectKey: number }) =>
-      useEventStream("/api/events", {
-        eventSourceFactory: (url: string) => new FakeEventSource(url) as unknown as EventSource,
-        reconnectKey,
-      }),
+      useEventStream("/api/events", TEST_SECRET, { connect: fakeConnect, reconnectKey }),
     { initialProps: { reconnectKey: initialKey } },
   );
-  const source = FakeEventSource.latest();
+  const source = FakeSSEConnection.latest();
   return { result, rerender, unmount, source };
 }
 
@@ -244,11 +240,28 @@ describe("useEventStream", () => {
     expect(result.current.droppedFrames).toBe(0);
   });
 
-  it("closes the underlying EventSource on unmount", () => {
+  it("closes the underlying connection on unmount", () => {
     const { unmount, source } = setUp();
     act(() => source.open());
     unmount();
     expect(source.closed).toBe(true);
+  });
+
+  // Round 4 item #1: the credential now travels ONLY as
+  // Authorization: Bearer <secret> on the stream request -- never a cookie
+  // (see api/secret.ts's module docstring for why the cookie path was
+  // removed: t16's guard refuses a cookie credential off-loopback/off-https,
+  // which the live probe hit over Tailscale).
+  it("carries the secret as an Authorization: Bearer header on the connection", () => {
+    const { source } = setUp();
+    expect(source.headers.Authorization).toBe(`Bearer ${TEST_SECRET}`);
+  });
+
+  it("never writes document.cookie for the stream credential", () => {
+    const before = document.cookie;
+    setUp();
+    expect(document.cookie).toBe(before);
+    expect(document.cookie).not.toContain("embodiment_secret");
   });
 
   it("bounds the transcript log so an unbounded stream cannot grow memory forever", () => {
@@ -324,14 +337,14 @@ describe("useEventStream", () => {
   describe("reconnectKey — forcing a reconnect after the secret cookie is set", () => {
     it("opens a fresh EventSource when reconnectKey changes", () => {
       const { rerender } = setUpWithReconnectKey(0);
-      expect(FakeEventSource.instances).toHaveLength(1);
+      expect(FakeSSEConnection.instances).toHaveLength(1);
       rerender({ reconnectKey: 1 });
-      expect(FakeEventSource.instances).toHaveLength(2);
+      expect(FakeSSEConnection.instances).toHaveLength(2);
     });
 
     it("closes the previous EventSource when reconnecting", () => {
       const { rerender } = setUpWithReconnectKey(0);
-      const first = FakeEventSource.latest();
+      const first = FakeSSEConnection.latest();
       rerender({ reconnectKey: 1 });
       expect(first.closed).toBe(true);
     });
@@ -340,7 +353,7 @@ describe("useEventStream", () => {
       const { rerender } = setUpWithReconnectKey(0);
       rerender({ reconnectKey: 0 });
       rerender({ reconnectKey: 0 });
-      expect(FakeEventSource.instances).toHaveLength(1);
+      expect(FakeSSEConnection.instances).toHaveLength(1);
     });
 
     it("resets status to connecting on the new connection until it opens", () => {
@@ -388,7 +401,7 @@ describe("useEventStream", () => {
       act(() => firstSource.error());
       expect(result.current.status).toBe("unauthorized");
       rerender({ reconnectKey: 1 });
-      const secondSource = FakeEventSource.latest();
+      const secondSource = FakeSSEConnection.latest();
       act(() => secondSource.open());
       expect(result.current.status).toBe("connected");
     });
