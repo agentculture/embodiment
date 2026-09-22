@@ -1,0 +1,311 @@
+// hooks/useEventStream.ts
+//
+// The event-stream hook against t13's bus-event schema (task t17). Opens
+// one SSE connection (t16's projection of embodiment/bus.py) via the
+// `SSEConnect` seam (sseConnection.ts) and routes each frame by its `kind`
+// — an unknown future kind is simply not seen, never mis-rendered.
+//
+// Round 4: this used to be EventSource-based. A LIVE finding (the operator
+// opening the dashboard over Tailscale, off-loopback and off-https) showed
+// EventSource's cookie-credentialed stream gets refused by t16's guard
+// there (`http-refused-cookie-without-origin`) — see
+// api/sseFetchReader.ts's module docstring for the full story. The default
+// connector is now `api/sseFetchReader.ts`'s fetch-based reader, and the
+// credential travels as `Authorization: Bearer <secret>`, a header WE set
+// on the fetch call — never a cookie, so the guard's Origin/Sec-Fetch-Site
+// rule for cookies is never consulted for this request at all.
+//
+// Liveness is judged ONLY by the `heartbeat` kind (embodiment/bus.py emits
+// it on a fixed cadence via Bus.tick(), independent of other traffic): the
+// stream is "disconnected" once DISCONNECTED_AFTER_MS has passed since the
+// later of (a) the connection opening or (b) the last heartbeat — "no
+// heartbeat for 2 intervals" (the brief's own wording). Any other kind of
+// traffic does NOT reset this timer; a chatty features/transcript stream
+// with a stalled heartbeat is still reported as disconnected (lesson 3:
+// never silent — a status field that looked "connected" because *something*
+// arrived would hide a dead daemon whose heartbeat loop crashed).
+
+import { useEffect, useMemo, useReducer, useRef, useState } from "react";
+import {
+  type ClientsData,
+  type DegradationData,
+  type EventEnvelope,
+  type EventKind,
+  EVENT_KINDS,
+  type FeaturesData,
+  type MicData,
+  type ReplyData,
+  type StateData,
+  type TranscriptData,
+  type TurnData,
+  DISCONNECTED_AFTER_MS,
+  isEventEnvelope,
+  parseEnvelopeFrame,
+} from "../api/events";
+import { connectSSE } from "../api/sseFetchReader";
+import type { SSEConnect } from "./sseConnection";
+
+export type ConnectionStatus = "connecting" | "connected" | "disconnected" | "unauthorized";
+
+/** How many speech-log / degradation-log entries to keep. Chosen, not
+ *  measured — a round number generous enough for a single sitting, bounded
+ *  so a long-running daemon cannot grow the tab's memory without limit
+ *  (lesson 3: a bounded buffer, never an unbounded one). */
+export const TRANSCRIPT_LOG_LIMIT = 500;
+export const DEGRADATION_LOG_LIMIT = 200;
+
+export interface EventStreamSnapshot {
+  status: ConnectionStatus;
+  state: EventEnvelope<"state"> | null;
+  mic: EventEnvelope<"mic"> | null;
+  turn: EventEnvelope<"turn"> | null;
+  features: EventEnvelope<"features"> | null;
+  clients: EventEnvelope<"clients"> | null;
+  /** transcript + reply, merged into one speech log in arrival order. */
+  transcript: EventEnvelope<"transcript" | "reply">[];
+  degradations: EventEnvelope<"degradation">[];
+  /** Wall-clock ms of the last heartbeat this hook has seen, or null before
+   *  the first one. Exposed for callers that want to render "last seen Ns
+   *  ago" rather than only the coarse connected/disconnected status. */
+  lastHeartbeatAtMs: number | null;
+  /** Count of SSE frames dropped for failing parseEnvelopeFrame's
+   *  validation (unparseable JSON, not an object, wrong schema version, or
+   *  `data` not itself an object) — lesson 3: a bounded buffer counts what
+   *  it drops, a dropped frame is never silently invisible. */
+  droppedFrames: number;
+}
+
+interface DataState {
+  state: EventEnvelope<"state"> | null;
+  mic: EventEnvelope<"mic"> | null;
+  turn: EventEnvelope<"turn"> | null;
+  features: EventEnvelope<"features"> | null;
+  clients: EventEnvelope<"clients"> | null;
+  transcript: EventEnvelope<"transcript" | "reply">[];
+  degradations: EventEnvelope<"degradation">[];
+  droppedFrames: number;
+}
+
+const INITIAL_DATA: DataState = {
+  state: null,
+  mic: null,
+  turn: null,
+  features: null,
+  clients: null,
+  transcript: [],
+  degradations: [],
+  droppedFrames: 0,
+};
+
+type Action =
+  | { type: "state"; envelope: EventEnvelope<"state">; data: StateData }
+  | { type: "mic"; envelope: EventEnvelope<"mic">; data: MicData }
+  | { type: "turn"; envelope: EventEnvelope<"turn">; data: TurnData }
+  | { type: "features"; envelope: EventEnvelope<"features">; data: FeaturesData }
+  | { type: "clients"; envelope: EventEnvelope<"clients">; data: ClientsData }
+  | { type: "speech"; envelope: EventEnvelope<"transcript" | "reply">; data: TranscriptData | ReplyData }
+  | { type: "degradation"; envelope: EventEnvelope<"degradation">; data: DegradationData }
+  | { type: "dropped" };
+
+function reducer(prev: DataState, action: Action): DataState {
+  switch (action.type) {
+    case "state":
+      return { ...prev, state: action.envelope };
+    case "mic":
+      return { ...prev, mic: action.envelope };
+    case "turn":
+      return { ...prev, turn: action.envelope };
+    case "features":
+      return { ...prev, features: action.envelope };
+    case "clients":
+      return { ...prev, clients: action.envelope };
+    case "speech": {
+      const next = [...prev.transcript, action.envelope];
+      const overflow = next.length - TRANSCRIPT_LOG_LIMIT;
+      return { ...prev, transcript: overflow > 0 ? next.slice(overflow) : next };
+    }
+    case "degradation": {
+      const next = [...prev.degradations, action.envelope];
+      const overflow = next.length - DEGRADATION_LOG_LIMIT;
+      return { ...prev, degradations: overflow > 0 ? next.slice(overflow) : next };
+    }
+    case "dropped":
+      return { ...prev, droppedFrames: prev.droppedFrames + 1 };
+    default:
+      return prev;
+  }
+}
+
+export interface UseEventStreamOptions {
+  /** Test/DI seam: defaults to the fetch-based `connectSSE`. */
+  connect?: SSEConnect;
+  /** Test seam: defaults to Date.now. */
+  nowFn?: () => number;
+  /** How often to re-check the heartbeat deadline. Chosen, not measured —
+   *  1s is fine granularity for a UI status pill. */
+  checkIntervalMs?: number;
+  /**
+   * Bump this (any value that changes by `!==`) to force the current
+   * connection closed and a fresh one opened, without changing `url` or
+   * `secret`. Kept as an explicit escape hatch alongside `secret` itself
+   * already being a reconnect trigger (see below) — e.g. the operator
+   * re-applying the identical secret value still forces a reconnect.
+   */
+  reconnectKey?: unknown;
+}
+
+export function useEventStream(
+  url: string,
+  secret: string,
+  options: UseEventStreamOptions = {},
+): EventStreamSnapshot {
+  const { connect = connectSSE, nowFn = Date.now, checkIntervalMs = 1000, reconnectKey } = options;
+
+  const [data, dispatch] = useReducer(reducer, INITIAL_DATA);
+  const [opened, setOpened] = useState(false);
+  const [lastHeartbeatAtMs, setLastHeartbeatAtMs] = useState<number | null>(null);
+  const [openedAtMs, setOpenedAtMs] = useState<number | null>(null);
+  const [now, setNow] = useState<number>(() => nowFn());
+  const [erroredClosed, setErroredClosed] = useState(false);
+  const [unauthorized, setUnauthorized] = useState(false);
+
+  const urlRef = useRef(url);
+  urlRef.current = url;
+
+  useEffect(() => {
+    setOpened(false);
+    setOpenedAtMs(null);
+    setErroredClosed(false);
+    setUnauthorized(false);
+    // Reset per connection attempt: whether THIS connection has ever fired
+    // onOpen. An error before the first successful open is the best signal
+    // available for "the guard refused the credential" (t16's guard.py
+    // returns 401 for a missing/bad secret; neither EventSource nor a plain
+    // fetch() response status distinguishes "refused" from "network drop"
+    // without inspecting the body, which this hook deliberately does not
+    // do — the status code plus this heuristic is enough for the pill).
+    let everOpened = false;
+
+    const headers: Record<string, string> = secret ? { Authorization: `Bearer ${secret}` } : {};
+
+    const handleFrame = (frame: { kind: string; data: string }) => {
+      // Round 2 fix, still true under the new transport: `frame.data` is
+      // the WHOLE envelope on the wire ({v, kind, ts, seq, source, data:
+      // {...}}), never the inner `data` object on its own.
+      const result = parseEnvelopeFrame(frame.data);
+      if (!result.envelope) {
+        dispatch({ type: "dropped" });
+        return;
+      }
+      const kind = frame.kind as EventKind;
+      if (!(EVENT_KINDS as readonly string[]).includes(kind)) {
+        return; // an unknown kind is simply not seen, never mis-rendered
+      }
+      const envelope = result.envelope as EventEnvelope<EventKind>;
+      if (kind === "heartbeat") {
+        setLastHeartbeatAtMs(nowFn());
+      }
+      switch (kind) {
+        case "state":
+          dispatch({ type: "state", envelope: envelope as EventEnvelope<"state">, data: envelope.data as StateData });
+          break;
+        case "mic":
+          dispatch({ type: "mic", envelope: envelope as EventEnvelope<"mic">, data: envelope.data as MicData });
+          break;
+        case "turn":
+          dispatch({ type: "turn", envelope: envelope as EventEnvelope<"turn">, data: envelope.data as TurnData });
+          break;
+        case "features":
+          dispatch({
+            type: "features",
+            envelope: envelope as EventEnvelope<"features">,
+            data: envelope.data as FeaturesData,
+          });
+          break;
+        case "clients":
+          dispatch({
+            type: "clients",
+            envelope: envelope as EventEnvelope<"clients">,
+            data: envelope.data as ClientsData,
+          });
+          break;
+        case "transcript":
+        case "reply":
+          dispatch({
+            type: "speech",
+            envelope: envelope as EventEnvelope<"transcript" | "reply">,
+            data: envelope.data as TranscriptData | ReplyData,
+          });
+          break;
+        case "degradation":
+          dispatch({
+            type: "degradation",
+            envelope: envelope as EventEnvelope<"degradation">,
+            data: envelope.data as DegradationData,
+          });
+          break;
+        case "heartbeat":
+          // no data state to update beyond lastHeartbeatAtMs, set above
+          break;
+        default:
+          break;
+      }
+    };
+
+    const handle = connect(url, headers, {
+      onOpen: () => {
+        everOpened = true;
+        setOpened(true);
+        setOpenedAtMs(nowFn());
+        setErroredClosed(false);
+        setUnauthorized(false);
+      },
+      onError: () => {
+        if (everOpened) {
+          setErroredClosed(true);
+        } else {
+          setUnauthorized(true);
+        }
+      },
+      onFrame: handleFrame,
+    });
+
+    return () => {
+      handle.close();
+    };
+    // `url`, `secret` and `reconnectKey` are the only things that should
+    // reopen the connection; the other options are DI seams a caller passes
+    // once.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [url, secret, reconnectKey]);
+
+  useEffect(() => {
+    const id = setInterval(() => setNow(nowFn()), checkIntervalMs);
+    return () => clearInterval(id);
+  }, [nowFn, checkIntervalMs]);
+
+  const status: ConnectionStatus = useMemo(() => {
+    if (unauthorized) return "unauthorized";
+    if (erroredClosed) return "disconnected";
+    if (!opened) return "connecting";
+    const baseline = lastHeartbeatAtMs ?? openedAtMs;
+    if (baseline === null) return "connected";
+    if (now - baseline >= DISCONNECTED_AFTER_MS) return "disconnected";
+    return "connected";
+  }, [unauthorized, erroredClosed, opened, lastHeartbeatAtMs, openedAtMs, now]);
+
+  return {
+    status,
+    state: data.state,
+    mic: data.mic,
+    turn: data.turn,
+    features: data.features,
+    clients: data.clients,
+    transcript: data.transcript,
+    degradations: data.degradations,
+    lastHeartbeatAtMs,
+    droppedFrames: data.droppedFrames,
+  };
+}
+
+export { isEventEnvelope };
