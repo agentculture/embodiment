@@ -2,7 +2,7 @@
   "plan_slug": "realtime-embodiment-app",
   "schema_version": 2,
   "created": "2026-09-21T20:45:09Z",
-  "updated": "2026-09-21T22:09:26Z",
+  "updated": "2026-09-22T03:51:59Z",
   "deviations": [
     {
       "id": "d1",
@@ -36,6 +36,20 @@
       "status": "approved",
       "classification": null,
       "seq": 3
+    },
+    {
+      "id": "d4",
+      "what": "the host audio endpoint (t7) drives the rig's audio through subprocesses the way lobes-cli's realtime-he-accept.py and shabbos-goy do - pw-record/arecord for capture (int16, 16 kHz, 2 channels, channel 1 selected) and pw-play/aplay on plughw for playback (ALSA resamples the 24 kHz TTS) - instead of sounddevice/PortAudio. The sounddevice audio extra approved in d2 is withdrawn; the package keeps zero audio dependencies. Any concrete benefit sounddevice would have had is filed as an improvement issue, not built.",
+      "task_ref": "t7",
+      "reason": "on the real reSpeaker XVF3800 the sounddevice endpoint never played (OutputStream.write(bytes) TypeError, silent), defaulted output to the HDMI device so the array's AEC had no far-end reference, and needed its own 2:3 resampler for a 16 kHz-only device; both sibling projects that already run this rig use subprocess audio with ALSA's plug layer resampling, and the operator chose to follow them (2026-09-22)",
+      "affects": [
+        "t21",
+        "t3"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 4
     }
   ],
   "evidence": [],
