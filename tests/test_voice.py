@@ -16,14 +16,18 @@ default.
 
 from __future__ import annotations
 
+import json
 import math
 import struct
 import threading
 import time
+import urllib.request
 from dataclasses import replace
+from typing import Optional
 
 import pytest
 
+import embodiment.voice as V
 from embodiment.audio.endpoint import EndpointCloseReport
 from embodiment.audio.features import BLOCK_SAMPLES, extract_features
 from embodiment.voice import (
@@ -355,7 +359,10 @@ class TestTtsFailureStillPublishesReply:
         result = voice.speak(text)
 
         assert result.published is True
-        assert bus.published == [("reply", {"text": text})]
+        assert bus.published == [
+            ("reply", {"text": text}),
+            ("state", {"component": "voice", "status": "unspoken"}),
+        ]
 
     def test_reply_still_published_when_endpoint_play_fails(self) -> None:
         player = RaisingPlayPlayer()
@@ -364,7 +371,10 @@ class TestTtsFailureStillPublishesReply:
         voice = Voice(endpoint=player, bus=bus, synthesize=lambda s, c: _tone_pcm())
         result = voice.speak(text)
         assert result.published is True
-        assert bus.published == [("reply", {"text": text})]
+        assert bus.published == [
+            ("reply", {"text": text}),
+            ("state", {"component": "voice", "status": "unspoken"}),
+        ]
         assert VOICE_ENDPOINT_FAILED in [d.code for d in voice.degradations]
 
     def test_no_bus_degrades_never_raises(self) -> None:
@@ -388,7 +398,10 @@ class TestTtsFailureStillPublishesReply:
         result = voice.speak("")
         assert result.sentences_total == 0
         assert result.published is True
-        assert bus.published == [("reply", {"text": ""})]
+        assert bus.published == [
+            ("reply", {"text": ""}),
+            ("state", {"component": "voice", "status": "unspoken"}),
+        ]
 
     def test_non_string_reply_never_raises(self) -> None:
         player = FakePlayer()
@@ -396,7 +409,10 @@ class TestTtsFailureStillPublishesReply:
         voice = Voice(endpoint=player, bus=bus, synthesize=lambda s, c: _tone_pcm())
         result = voice.speak(None)  # type: ignore[arg-type]
         assert result.sentences_total == 0
-        assert bus.published == [("reply", {"text": ""})]
+        assert bus.published == [
+            ("reply", {"text": ""}),
+            ("state", {"component": "voice", "status": "unspoken"}),
+        ]
 
 
 # ── criterion 3: played audio is fed to the feature extractor ───────────────
@@ -852,6 +868,52 @@ class TestSplitSentences:
 # ── http_synthesize: scheme guard, key placement, voice field ───────────────
 
 
+class _FakeResponse:
+    """Satisfies the context-manager + ``read(n)`` shape ``_read_bounded``
+    (and the ``with ... as response`` in ``http_synthesize``) needs."""
+
+    def __init__(self, body: bytes = b"") -> None:
+        self._body = body
+        self._pos = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self, n: int = -1) -> bytes:
+        if n is None or n < 0:
+            chunk = self._body[self._pos :]
+            self._pos = len(self._body)
+            return chunk
+        chunk = self._body[self._pos : self._pos + n]
+        self._pos += len(chunk)
+        return chunk
+
+
+class _FakeOpener:
+    """Injectable in place of :data:`embodiment.voice._REDIRECT_REFUSING_OPENER`
+    (the round 4 ``opener=`` seam) — a plain double, not real ``urllib``
+    machinery, so these tests never touch a real socket."""
+
+    def __init__(self, response: object = None, *, exc: Optional[BaseException] = None) -> None:
+        self._response = response if response is not None else _FakeResponse()
+        self._exc = exc
+        self.calls = 0
+        self.captured: dict[str, object] = {}
+
+    def open(self, request, timeout=None):  # noqa: ANN001
+        self.calls += 1
+        self.captured["url"] = request.full_url
+        self.captured["headers"] = dict(request.headers)
+        self.captured["timeout"] = timeout
+        self.captured["body"] = json.loads(request.data) if request.data else None
+        if self._exc is not None:
+            raise self._exc
+        return self._response
+
+
 class TestHttpSynthesize:
     def test_rejects_non_http_scheme(self) -> None:
         config = VoiceConfig(gateway_url="file:///etc/passwd")
@@ -862,31 +924,13 @@ class TestHttpSynthesize:
         config = VoiceConfig(api_key="SUPER-SECRET-KEY-MARKER")
         assert "SUPER-SECRET-KEY-MARKER" not in repr(config)
 
-    def test_api_key_goes_only_into_the_authorization_header(self, monkeypatch) -> None:
-        captured: dict[str, object] = {}
-
-        class _FakeResponse:
-            def __enter__(self):
-                return self
-
-            def __exit__(self, *exc):
-                return False
-
-            def read(self):
-                return b"\x00\x00" * 800
-
-        def fake_urlopen(request, timeout=None):  # noqa: ANN001
-            captured["url"] = request.full_url
-            captured["headers"] = dict(request.headers)
-            return _FakeResponse()
-
-        monkeypatch.setattr("embodiment.voice.urllib.request.urlopen", fake_urlopen)
-
+    def test_api_key_goes_only_into_the_authorization_header(self) -> None:
+        opener = _FakeOpener(_FakeResponse(b"\x00\x00" * 800))
         config = VoiceConfig(gateway_url="http://gw.example", api_key="SECRET-MARKER-42")
-        http_synthesize("hi there", config)
+        http_synthesize("hi there", config, opener=opener)
 
-        assert "SECRET-MARKER-42" not in captured["url"]
-        assert captured["headers"].get("Authorization") == "Bearer SECRET-MARKER-42"
+        assert "SECRET-MARKER-42" not in opener.captured["url"]
+        assert opener.captured["headers"].get("Authorization") == "Bearer SECRET-MARKER-42"
 
 
 class TestHttpSynthesizeVoiceField:
@@ -896,46 +940,284 @@ class TestHttpSynthesizeVoiceField:
     ``"default"`` used to reach the synthesizer as a voice it does not have.
     """
 
-    @staticmethod
-    def _capture(monkeypatch) -> dict[str, object]:
-        captured: dict[str, object] = {}
+    def test_voice_key_omitted_when_config_voice_is_empty(self) -> None:
+        opener = _FakeOpener(_FakeResponse(b"\x00\x00" * 800))
+        config = VoiceConfig(gateway_url="http://gw.example")
+        http_synthesize("hello there", config, opener=opener)
+        assert "voice" not in opener.captured["body"]
+        assert opener.captured["body"]["response_format"] == "pcm"
 
-        class _FakeResponse:
+    def test_voice_key_present_when_config_voice_is_set(self) -> None:
+        opener = _FakeOpener(_FakeResponse(b"\x00\x00" * 800))
+        config = VoiceConfig(gateway_url="http://gw.example", voice="chatterbox-alex")
+        http_synthesize("hello there", config, opener=opener)
+        assert opener.captured["body"]["voice"] == "chatterbox-alex"
+
+    def test_never_sends_the_literal_string_default(self) -> None:
+        opener = _FakeOpener(_FakeResponse(b"\x00\x00" * 800))
+        http_synthesize("hello there", VoiceConfig(gateway_url="http://gw.example"), opener=opener)
+        assert opener.captured["body"].get("voice") != "default"
+
+
+# ── round 4: bounded read, redirect refusal, stall-tolerance widening ───────
+
+
+class TestBoundedRead:
+    """Round 4, defect 1: a total-deadline, chunked read so a gateway
+    dribbling bytes just under the per-socket timeout cannot block
+    ``speak()`` (and the barge-in record with it) for as long as it likes."""
+
+    def test_reads_full_body_under_the_deadline(self) -> None:
+        payload = _silence_pcm(800)  # small, well under the cap
+        opener = _FakeOpener(_FakeResponse(payload))
+        config = VoiceConfig(gateway_url="http://gw.example")
+        result = http_synthesize("hi", config, opener=opener)
+        assert result == payload
+
+    def test_stops_at_max_bytes_plus_one_for_the_oversize_path(self) -> None:
+        config = VoiceConfig(gateway_url="http://gw.example", max_sentence_audio_bytes=100)
+        payload = b"\x01" * 10_000  # far larger than the 100-byte cap
+        opener = _FakeOpener(_FakeResponse(payload))
+        result = http_synthesize("hi", config, opener=opener)
+        assert len(result) == 101  # cap + 1, exactly enough to detect oversize
+
+    def test_a_dribbling_response_times_out_and_is_bounded(self) -> None:
+        """A fake response whose read(n) sleeps — the regression case the
+        review named directly."""
+
+        class _SleepyResponse:
             def __enter__(self):
                 return self
 
             def __exit__(self, *exc):
                 return False
 
-            def read(self):
-                return b"\x00\x00" * 800
+            def read(self, n: int = -1) -> bytes:
+                time.sleep(0.05)
+                return b"\x00"  # one byte at a time, forever
 
-        def fake_urlopen(request, timeout=None):  # noqa: ANN001
-            import json as _json
+        config = VoiceConfig(
+            gateway_url="http://gw.example",
+            speech_deadline=0.05,
+            max_sentence_audio_bytes=100,
+        )
+        opener = _FakeOpener(_SleepyResponse())
+        start = time.monotonic()
+        with pytest.raises(V.VoiceReadTimeoutError):
+            http_synthesize("hi", config, opener=opener)
+        elapsed = time.monotonic() - start
+        # Bounded: the deadline (speech_deadline + cap/floor-rate) plus, at
+        # most, one more speech_deadline for the one read() call already in
+        # flight when the deadline is discovered — see _read_deadline's
+        # own docstring for why that slack exists.
+        deadline = (
+            config.speech_deadline + config.max_sentence_audio_bytes / V.MIN_TTS_STREAM_BYTES_PER_S
+        )
+        assert elapsed < deadline + config.speech_deadline + 1.0
 
-            captured["body"] = _json.loads(request.data)
-            return _FakeResponse()
+    def test_read_timeout_is_recorded_as_its_own_code_via_voice(self) -> None:
+        class _SleepyResponse:
+            def __enter__(self):
+                return self
 
-        monkeypatch.setattr("embodiment.voice.urllib.request.urlopen", fake_urlopen)
-        return captured
+            def __exit__(self, *exc):
+                return False
 
-    def test_voice_key_omitted_when_config_voice_is_empty(self, monkeypatch) -> None:
-        captured = self._capture(monkeypatch)
+            def read(self, n: int = -1) -> bytes:
+                time.sleep(0.05)
+                return b"\x00"
+
+        config = VoiceConfig(
+            gateway_url="http://gw.example", speech_deadline=0.05, max_sentence_audio_bytes=100
+        )
+        opener = _FakeOpener(_SleepyResponse())
+
+        def synth(sentence: str, cfg: VoiceConfig) -> bytes:
+            return http_synthesize(sentence, cfg, opener=opener)
+
+        voice = Voice(endpoint=FakePlayer(), bus=FakeBus(), config=config, synthesize=synth)
+        result = voice.speak("one sentence")
+        assert result.tts_degraded is True
+        codes = [d.code for d in voice.degradations]
+        assert V.VOICE_TTS_READ_TIMEOUT in codes
+        assert V.VOICE_TTS_FAILED not in codes  # the specific code, not the generic one
+
+
+class TestRedirectRefused:
+    """Round 4, defect 2: the bearer key must never follow a redirect to
+    another host — stdlib ``urlopen`` resends ``Authorization`` on a 3xx,
+    unlike a browser."""
+
+    def test_no_redirect_handler_raises_on_any_redirect(self) -> None:
+        handler = V._NoRedirectHandler()
+        with pytest.raises(V.VoiceRedirectRefusedError):
+            handler.redirect_request(None, None, 302, "Found", {}, "https://evil.example/steal")
+
+    def test_a_302_to_another_host_yields_the_degradation_and_no_second_request(self) -> None:
+        import email.message
+        import io
+        from urllib.response import addinfourl
+
+        class _RedirectingHandler(urllib.request.BaseHandler):
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def https_open(self, req):  # noqa: ANN001
+                self.calls += 1
+                headers = email.message.Message()
+                headers["Location"] = "https://evil.example/steal"
+                resp = addinfourl(io.BytesIO(b""), headers, req.full_url, 302)
+                resp.msg = "Found"
+                return resp
+
+            http_open = https_open
+
+        fake_handler = _RedirectingHandler()
+        opener = urllib.request.OpenerDirector()
+        opener.add_handler(fake_handler)
+        opener.add_handler(V._NoRedirectHandler())
+        opener.add_handler(urllib.request.HTTPErrorProcessor())
+
+        config = VoiceConfig(gateway_url="https://gw.example", api_key="k")
+        with pytest.raises(V.VoiceRedirectRefusedError):
+            http_synthesize("hi", config, opener=opener)
+
+        assert fake_handler.calls == 1  # no second request to the redirect target
+
+    def test_redirect_refusal_is_recorded_as_its_own_code_via_voice(self) -> None:
+        class _RaisingOpener:
+            def open(self, request, timeout=None):  # noqa: ANN001
+                raise V.VoiceRedirectRefusedError("refused redirect: status=302")
+
         config = VoiceConfig(gateway_url="http://gw.example")
-        http_synthesize("hello there", config)
-        assert "voice" not in captured["body"]
-        assert captured["body"]["response_format"] == "pcm"
+        opener = _RaisingOpener()
 
-    def test_voice_key_present_when_config_voice_is_set(self, monkeypatch) -> None:
-        captured = self._capture(monkeypatch)
-        config = VoiceConfig(gateway_url="http://gw.example", voice="chatterbox-alex")
-        http_synthesize("hello there", config)
-        assert captured["body"]["voice"] == "chatterbox-alex"
+        def synth(sentence: str, cfg: VoiceConfig) -> bytes:
+            return http_synthesize(sentence, cfg, opener=opener)
 
-    def test_never_sends_the_literal_string_default(self, monkeypatch) -> None:
-        captured = self._capture(monkeypatch)
-        http_synthesize("hello there", VoiceConfig(gateway_url="http://gw.example"))
-        assert captured["body"].get("voice") != "default"
+        voice = Voice(endpoint=FakePlayer(), bus=FakeBus(), config=config, synthesize=synth)
+        result = voice.speak("one sentence")
+        assert result.tts_degraded is True
+        codes = [d.code for d in voice.degradations]
+        assert V.VOICE_TTS_REDIRECT_REFUSED in codes
+        assert V.VOICE_TTS_FAILED not in codes
+
+
+class TestVoiceStateEvent:
+    """Round 4, defect 3: a second, small event once the outcome is known,
+    so a viewer can tell a reply that was actually voiced from one that only
+    published text."""
+
+    def test_spoken_when_at_least_one_sentence_was_queued(self) -> None:
+        bus = FakeBus()
+        voice = Voice(endpoint=FakePlayer(), bus=bus, synthesize=lambda s, c: _tone_pcm())
+        voice.speak("hello there")
+        assert ("state", {"component": "voice", "status": "spoken"}) in bus.published
+
+    def test_unspoken_when_tts_fails_outright(self) -> None:
+        bus = FakeBus()
+
+        def failing(sentence: str, config: VoiceConfig) -> bytes:
+            raise RuntimeError("down")
+
+        voice = Voice(endpoint=FakePlayer(), bus=bus, synthesize=failing)
+        voice.speak("hello there")
+        assert ("state", {"component": "voice", "status": "unspoken"}) in bus.published
+
+    def test_state_event_never_carries_reply_text(self) -> None:
+        bus = FakeBus()
+        marker = "the user's actual words go here"
+        voice = Voice(endpoint=FakePlayer(), bus=bus, synthesize=lambda s, c: _tone_pcm())
+        voice.speak(marker)
+        state_events = [data for kind, data in bus.published if kind == "state"]
+        assert state_events
+        for data in state_events:
+            assert marker not in json.dumps(data)
+
+    def test_no_bus_does_not_double_record_no_bus(self) -> None:
+        voice = Voice(endpoint=FakePlayer(), bus=None, synthesize=lambda s, c: _tone_pcm())
+        voice.speak("hello")
+        no_bus_records = [d for d in voice.degradations if d.code == VOICE_NO_BUS]
+        assert len(no_bus_records) == 1  # not one per publish call
+
+    def test_state_publish_failure_is_recorded_independently(self) -> None:
+        class _FlakyBus:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def publish(self, kind, data):  # noqa: ANN001, ANN201
+                self.calls += 1
+                if kind == "reply":
+                    return True
+                raise RuntimeError("state publish exploded")
+
+        voice = Voice(endpoint=FakePlayer(), bus=_FlakyBus(), synthesize=lambda s, c: _tone_pcm())
+        result = voice.speak("hello")
+        assert result.published is True  # the reply publish itself succeeded
+        assert VOICE_PUBLISH_FAILED in [d.code for d in voice.degradations]
+
+
+class TestPaceStallToleranceWidened:
+    """Round 4, defect 4: a live daemon session measured false
+    voice-pace-stalled records between sentences on a healthy run. The fix
+    widens the tolerance to one sentence's synthesis budget
+    (config.speech_deadline)."""
+
+    def test_stall_limit_is_derived_from_speech_deadline(self) -> None:
+        voice = Voice(endpoint=FakePlayer(), bus=FakeBus(), config=VoiceConfig(speech_deadline=4.0))
+        # 4.0s / 0.02s per tick = 200 ticks, above the 100-tick floor.
+        assert voice._pace_stall_limit_ticks() == 200  # noqa: SLF001 - testing the derivation
+
+    def test_floor_applies_for_a_small_speech_deadline(self) -> None:
+        from embodiment.voice import PACE_STALL_TICKS
+
+        voice = Voice(endpoint=FakePlayer(), bus=FakeBus(), config=VoiceConfig(speech_deadline=0.1))
+        assert voice._pace_stall_limit_ticks() == PACE_STALL_TICKS  # noqa: SLF001
+
+    def test_playing_flickering_between_sentences_records_zero_stalls(self) -> None:
+        """An endpoint whose ``playing`` flips False for a real gap between
+        sentences (shorter than config.speech_deadline) must record NO
+        voice-pace-stalled — this is exactly the false-positive the live
+        daemon session hit."""
+
+        class FlickeringEndpoint(FakePlayer):
+            """playing reads False for a stretch after each play() call,
+            simulating the writer having fully drained one sentence and not
+            yet started the next."""
+
+            def __init__(self) -> None:
+                super().__init__()
+                self._flip_at: Optional[float] = None
+
+            def play(self, frames: bytes) -> None:
+                super().play(frames)
+                with self._lock:
+                    self._flip_at = time.monotonic() + 0.15  # "still playing" window
+
+            @property
+            def playing(self) -> bool:
+                with self._lock:
+                    if self._flip_at is None:
+                        return False
+                    return time.monotonic() < self._flip_at
+
+        endpoint = FlickeringEndpoint()
+        bus = FakeBus()
+        payload = _tone_pcm()
+        # A generous speech_deadline: the "gap" a flickering endpoint
+        # introduces here (tens of ms) is far under it.
+        config = VoiceConfig(speech_deadline=5.0)
+        voice = Voice(endpoint=endpoint, bus=bus, config=config, synthesize=lambda s, c: payload)
+
+        voice.speak("First sentence. Second sentence. Third sentence.")
+        # Give the pacer time to fully drain (each sentence is one short
+        # block; the 150ms "still playing" window per sentence is generous
+        # relative to the ~40ms two ticks need to drain one 800-sample block).
+        assert _wait_until(lambda: len(voice.feature_frames) == 3, timeout=3.0)
+
+        codes = [d.code for d in voice.degradations]
+        assert V.VOICE_PACE_STALLED not in codes
+        voice.close(deadline=1.0)
 
 
 # ── attacks that found nothing, kept as regression proof ────────────────────

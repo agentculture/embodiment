@@ -161,10 +161,13 @@ Degradation vocabulary (C3 — never raise, always record)
 - :data:`VOICE_BARGE_IN` — a barge-in dropped one or more un-synthesized or
   un-queued sentences. The reason names ONLY the count and total, never any
   sentence text.
-- :data:`VOICE_PACE_STALLED` — the pacing buffer held audio for more than
-  :data:`PACE_STALL_TICKS` consecutive slices while the endpoint never once
-  reported ``playing``; the remainder is dropped and counted rather than held
-  forever (nothing here may block without a deadline — lesson 2).
+- :data:`VOICE_PACE_STALLED` — the pacing buffer held audio for longer than
+  :meth:`Voice._pace_stall_limit_ticks` consecutive slices while the endpoint
+  never once reported ``playing``; the remainder is dropped and counted
+  rather than held forever (nothing here may block without a deadline —
+  lesson 2). Round 4: this bound is now derived from ``config.speech_deadline``
+  (one sentence's synthesis budget) rather than the old fixed 2 s — see "The
+  stall bound is one sentence's gap" below.
 - :data:`VOICE_NO_BUS` — no bus was configured, so the reply text could not be
   published as an event.
 - :data:`VOICE_PUBLISH_FAILED` — the injected bus's own ``publish`` raised.
@@ -190,6 +193,65 @@ as a voice it does not have, rather than as "use your own default". Fixed:
 the ``"voice"`` key is now omitted entirely from the request body when
 ``config.voice`` is empty. ``"response_format": "pcm"`` is unchanged — lobes'
 ``SUPPORTED_FORMATS`` is ``("wav", "pcm")``.
+
+Round 4 — a rebased-tree review found two more defects and one live symptom
+------------------------------------------------------------------------------
+1. **A dribbling gateway could block ``speak()`` unboundedly.**
+   ``urlopen(..., timeout=speech_deadline)`` bounds each individual socket
+   operation, not the whole response body — a server sending one byte every
+   ``speech_deadline - epsilon`` seconds never trips the socket timeout and
+   never stops. :func:`http_synthesize` now reads the body in bounded chunks
+   under a SEPARATE total deadline (:func:`_read_deadline`), derived from
+   what it bounds: the worst case is reading
+   :data:`MAX_SENTENCE_AUDIO_BYTES` at a conservative floor rate
+   (:data:`MIN_TTS_STREAM_BYTES_PER_S`), plus one ``speech_deadline`` (the
+   one in-flight ``read()`` call that cannot be pre-empted once started).
+   Reading also now stops the instant it would exceed
+   ``max_sentence_audio_bytes + 1`` — one byte past the cap is enough to
+   detect oversize, which the existing truncate-and-record path already
+   handles, so this never reads further than it has to. Expiry raises
+   :class:`VoiceReadTimeoutError`, recorded as
+   :data:`VOICE_TTS_READ_TIMEOUT` — distinct from the generic
+   :data:`VOICE_TTS_FAILED`, so a host can tell "the gateway is dribbling"
+   from "the call failed outright". Test: a fake response whose ``read(n)``
+   sleeps.
+2. **The bearer key could follow a redirect to another host.** stdlib
+   ``urlopen`` (unlike a browser) resends ``Authorization`` across a 3xx to a
+   different origin. :func:`http_synthesize` now goes through
+   :data:`_REDIRECT_REFUSING_OPENER`, whose :class:`_NoRedirectHandler`
+   refuses every redirect outright (raises
+   :class:`VoiceRedirectRefusedError`, recorded as
+   :data:`VOICE_TTS_REDIRECT_REFUSED`) rather than following any of them —
+   the key never leaves the one origin ``config.gateway_url`` names. Test: a
+   302 to another host yields the degradation and the fake handler is
+   called exactly once (no second request follows the ``Location`` header).
+3. **A dashboard could show text nobody heard.** ``_publish_reply`` still
+   publishes the reply text BEFORE synthesis (that decision is unchanged —
+   see criterion 2), so a viewer has no way to tell a reply that later
+   failed TTS entirely from one that was actually voiced. :meth:`Voice._speak`
+   now ALSO publishes one small ``state`` event
+   (``{"component": "voice", "status": "spoken" | "unspoken"}``, matching
+   :mod:`embodiment.bus`'s own ``state`` kind contract) once the outcome is
+   known — ``"spoken"`` when at least one sentence reached ``endpoint.play()``,
+   ``"unspoken"`` when none did (TTS failed outright before any audio was
+   queued). Counts only, never text; a missing/raising bus is the same
+   already-recorded degradation as the reply publish, so this never
+   double-records "no bus" for one ``speak()`` call.
+4. **``voice-pace-stalled`` fired on healthy runs.** A live daemon session
+   measured 9 false stalls in 30 turns (3 in 6). Diagnosed against ``t7``'s
+   real ``HostEndpoint`` semantics on this branch: ``playing`` correctly
+   reads ``False`` the instant the writer finishes sounding one sentence and
+   stays that way until the NEXT ``play()`` call — which can legitimately be
+   several seconds away if that sentence's own synthesis call is slow. The
+   old fixed :data:`PACE_STALL_TICKS` (2 s) was shorter than a normal
+   inter-sentence gap. Fixed by widening the tolerance to "one sentence
+   gap" (the coordinator's first option): :meth:`Voice._pace_stall_limit_ticks`
+   derives the bound from ``config.speech_deadline`` — the same budget one
+   TTS call is already allowed — with :data:`PACE_STALL_TICKS` kept only as
+   a floor for an unusually small ``speech_deadline``. A permanently broken
+   endpoint (never plays, ever) is still caught, just after a more honest
+   wait. Test: an endpoint whose ``playing`` flickers false between
+   sentences within that budget → zero stalls recorded.
 
 Sentence splitting is a bounded, best-effort heuristic
 --------------------------------------------------------
@@ -234,16 +296,23 @@ __all__ = [
     "VOICE_TTS_FAILED",
     "VOICE_TTS_MALFORMED",
     "VOICE_TTS_OVERSIZE",
+    "VOICE_TTS_READ_TIMEOUT",
+    "VOICE_TTS_REDIRECT_REFUSED",
     "VOICE_ENDPOINT_FAILED",
     "VOICE_BARGE_IN",
     "VOICE_PACE_STALLED",
     "VOICE_NO_BUS",
     "VOICE_PUBLISH_FAILED",
+    "MIN_TTS_STREAM_BYTES_PER_S",
+    "READ_CHUNK_BYTES",
     "VoiceDegradation",
     "VoiceConfig",
     "SpeakResult",
     "VoiceCloseReport",
     "SynthesizeFn",
+    "VoiceSynthesizeError",
+    "VoiceReadTimeoutError",
+    "VoiceRedirectRefusedError",
     "split_sentences",
     "http_synthesize",
     "Voice",
@@ -287,6 +356,23 @@ BYTES_PER_SAMPLE = 2
 #: above.
 MAX_SENTENCE_AUDIO_BYTES = 10 * SAMPLE_RATE_HZ * BYTES_PER_SAMPLE
 
+#: Chunk size :func:`_read_bounded` requests per ``read()`` call. A
+#: **judgement call**: large enough that a healthy response streams without
+#: excessive syscall overhead, small enough that no single ``read()`` call
+#: can be asked for more than this many bytes at once (bounds the worst case
+#: a single call can block for, alongside the per-socket timeout).
+READ_CHUNK_BYTES = 8192
+
+#: A conservative FLOOR on how fast a genuinely healthy TTS byte stream
+#: should arrive once bytes start flowing at all. A **judgement call**: well
+#: below true real-time rate (pcm16 mono 24 kHz = 48000 B/s of playable
+#: audio), since a synthesiser typically renders faster than real time and
+#: sends the whole clip in a burst rather than trickling it out at exactly
+#: playback speed — this floor exists only to catch a gateway that has
+#: effectively stopped (or is deliberately dribbling), not to demand
+#: real-time streaming. See :func:`_read_deadline`.
+MIN_TTS_STREAM_BYTES_PER_S = 8000
+
 #: The barge-in acceptance bound (criterion 1) — see the module docstring's
 #: "barge-in bound is a clock" section for what this actually bounds.
 #: Documented here so a test asserts against the named constant, not a bare
@@ -307,13 +393,14 @@ PACE_SLICE_S = 0.02
 PACE_SLICE_SAMPLES = int(SAMPLE_RATE_HZ * PACE_SLICE_S)
 PACE_SLICE_BYTES = PACE_SLICE_SAMPLES * BYTES_PER_SAMPLE
 
-#: How many consecutive pacing ticks may see the endpoint report
+#: FLOOR on how many consecutive pacing ticks may see the endpoint report
 #: ``playing=False`` (or raise) while the pacing buffer is non-empty before
-#: the remainder is dropped and counted as :data:`VOICE_PACE_STALLED`. A
-#: **judgement call**: 100 ticks * 20 ms = 2 s — generous enough that a brief
-#: gap between two ``play()`` calls (endpoint drains one queued chunk fully
-#: before the next arrives) never trips it, bounded so a genuinely stuck
-#: endpoint cannot hold audio in limbo forever (lesson 2).
+#: the remainder is dropped and counted as :data:`VOICE_PACE_STALLED`. Round
+#: 4: the actual bound a running :class:`Voice` applies is
+#: :meth:`Voice._pace_stall_limit_ticks`, derived per-instance from
+#: ``config.speech_deadline`` (see that method) — this constant is only the
+#: floor for a config with an unusually small ``speech_deadline``. A
+#: **judgement call**: 100 ticks * 20 ms = 2 s.
 PACE_STALL_TICKS = 100
 
 # ── the degradation vocabulary (C3) ─────────────────────────────────────────
@@ -327,6 +414,14 @@ VOICE_TTS_MALFORMED = "voice-tts-malformed"
 #: One sentence's audio exceeded :data:`MAX_SENTENCE_AUDIO_BYTES` and was
 #: truncated before queueing.
 VOICE_TTS_OVERSIZE = "voice-tts-oversize"
+#: The response body read past its total deadline (round 4) — a gateway
+#: dribbling bytes just under the per-socket timeout, distinguished from the
+#: generic :data:`VOICE_TTS_FAILED` so a host can tell them apart.
+VOICE_TTS_READ_TIMEOUT = "voice-tts-read-timeout"
+#: The gateway answered with a redirect and :class:`_NoRedirectHandler`
+#: refused to follow it, so the bearer key never left the configured origin
+#: (round 4).
+VOICE_TTS_REDIRECT_REFUSED = "voice-tts-redirect-refused"
 VOICE_ENDPOINT_FAILED = "voice-endpoint-failed"
 VOICE_BARGE_IN = "voice-barge-in-dropped"
 #: The pacing buffer stalled — see :data:`PACE_STALL_TICKS`.
@@ -460,22 +555,115 @@ def split_sentences(
     return [s[:capped_len] for s in sentences[:capped_count]]
 
 
-def http_synthesize(sentence: str, config: VoiceConfig) -> bytes:
+class VoiceSynthesizeError(Exception):
+    """Base for :func:`http_synthesize`'s own recognized failure modes
+    (round 4) — distinct from a generic network/HTTP exception so
+    :class:`Voice` can record a fault-specific degradation code instead of
+    the generic :data:`VOICE_TTS_FAILED` (CLAUDE.md lesson 4: name the fault
+    the host would look for)."""
+
+
+class VoiceReadTimeoutError(VoiceSynthesizeError):
+    """The response body was not fully read within its total deadline —
+    see :func:`_read_deadline`. Recorded as :data:`VOICE_TTS_READ_TIMEOUT`."""
+
+
+class VoiceRedirectRefusedError(VoiceSynthesizeError):
+    """The gateway answered with a redirect and :class:`_NoRedirectHandler`
+    refused to follow it. Recorded as :data:`VOICE_TTS_REDIRECT_REFUSED`."""
+
+
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Refuses EVERY redirect outright (round 4, defect 2).
+
+    stdlib ``urlopen``'s default redirect handling resends every request
+    header — including ``Authorization`` — to whatever host the ``Location``
+    header names; a browser strips it, but this module is not a browser.
+    Overriding :meth:`redirect_request` (the ONE method every
+    ``HTTPRedirectHandler.http_error_30x`` alias calls internally) to raise
+    is the seam that stops that: raising here propagates straight out of
+    ``opener.open()``, so no second request is ever issued and the key never
+    reaches a second origin, same-host or not.
+    """
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # noqa: ANN001
+        raise VoiceRedirectRefusedError(f"refused redirect: status={code}")
+
+
+#: Built once, module-level, and reused by every :func:`http_synthesize`
+#: call that does not inject its own ``opener`` (the test seam). Stateless
+#: and safe to share: an ``OpenerDirector`` holds no per-request state.
+_REDIRECT_REFUSING_OPENER = urllib.request.build_opener(_NoRedirectHandler)
+
+
+def _read_deadline(config: VoiceConfig) -> float:
+    """Total wall-clock budget for reading one sentence's whole response body.
+
+    Derived from what it bounds (lesson 1), not chosen freely: the worst
+    case a HEALTHY-but-slow gateway can legitimately take is reading
+    ``max_sentence_audio_bytes`` at the conservative floor rate
+    :data:`MIN_TTS_STREAM_BYTES_PER_S`, plus one ``speech_deadline`` — the
+    one ``read()`` call already in flight when this deadline is checked
+    cannot be pre-empted mid-call (it is itself bounded by the socket
+    timeout ``urlopen`` was given), so the total wall-clock overshoot this
+    function can incur beyond its own deadline is bounded by one more
+    ``speech_deadline``, never unbounded.
+    """
+    return config.speech_deadline + (config.max_sentence_audio_bytes / MIN_TTS_STREAM_BYTES_PER_S)
+
+
+def _read_bounded(response: Any, *, max_bytes: int, deadline_s: float) -> bytes:
+    """Read *response* in bounded chunks, never past ``max_bytes + 1`` bytes
+    and never past *deadline_s* seconds total. Round 4, defect 1.
+
+    Stopping at ``max_bytes + 1`` is enough for :meth:`Voice._speak`'s
+    existing oversize path (:data:`VOICE_TTS_OVERSIZE`) to detect and
+    truncate — this function does not need to know the cap's own meaning,
+    only to stop reading once it is unambiguously exceeded, so a hostile or
+    misbehaving gateway cannot make this read arbitrarily much into memory
+    either.
+    """
+    start = time.monotonic()
+    limit = max_bytes + 1
+    chunks: list[bytes] = []
+    total = 0
+    while total < limit:
+        remaining = deadline_s - (time.monotonic() - start)
+        if remaining <= 0:
+            raise VoiceReadTimeoutError(f"exceeded {deadline_s:.1f}s reading response body")
+        to_read = min(READ_CHUNK_BYTES, limit - total)
+        chunk = response.read(to_read)
+        if not chunk:
+            break  # EOF
+        chunks.append(chunk)
+        total += len(chunk)
+    return b"".join(chunks)
+
+
+def http_synthesize(sentence: str, config: VoiceConfig, *, opener: Optional[Any] = None) -> bytes:
     """The default :data:`SynthesizeFn`: ``POST /v1/audio/speech`` on the lobes gateway.
 
-    Raises on any failure — network, non-2xx, or a malformed origin — so
-    :class:`Voice` can fold every failure through the ONE
-    :func:`~embodiment.safe_reason.describe_exception` call site. The api key
-    goes ONLY into the ``Authorization`` header, never the URL. The ``voice``
-    field is omitted entirely when ``config.voice`` is empty — see the module
-    docstring's "The request body" section for why sending the literal string
-    ``"default"`` is wrong.
+    Raises on any failure — network, non-2xx, redirect, a stalled body, or a
+    malformed origin — so :class:`Voice` can fold every failure through
+    :func:`~embodiment.safe_reason.describe_exception`, with
+    :class:`VoiceReadTimeoutError`/:class:`VoiceRedirectRefusedError` caught
+    ahead of the generic case for their own fault-specific codes (round 4).
+    The api key goes ONLY into the ``Authorization`` header, never the URL,
+    and never follows a redirect to any other origin — see
+    :class:`_NoRedirectHandler`. The ``voice`` field is omitted entirely when
+    ``config.voice`` is empty — see the module docstring's "The request
+    body" section for why sending the literal string ``"default"`` is wrong.
 
-    Not exercised against a live gateway by this task's own tests — every test
-    here injects a fake :data:`SynthesizeFn` — so this function's actual wire
-    shape is this module's own best reading of "POST /v1/audio/speech ...
-    pcm16 @ 24 kHz mono" plus a reading of lobes' own
-    ``parse_speech_request``, unverified against a running lobes instance.
+    *opener* is an injectable seam (defaults to the module's own
+    :data:`_REDIRECT_REFUSING_OPENER`) — tests supply a fake one rather than
+    reaching into ``urllib`` internals.
+
+    Not exercised against a live gateway by this task's own tests — every
+    test here injects a fake :data:`SynthesizeFn` or a fake *opener* — so
+    this function's actual wire shape is this module's own best reading of
+    "POST /v1/audio/speech ... pcm16 @ 24 kHz mono" plus a reading of lobes'
+    own ``parse_speech_request``, unverified against a running lobes
+    instance.
     """
     origin = config.gateway_url.rstrip("/")
     url = f"{origin}{SPEECH_ROUTE}"
@@ -491,10 +679,15 @@ def http_synthesize(sentence: str, config: VoiceConfig) -> bytes:
     request = urllib.request.Request(  # nosec B310 - scheme checked above
         url, data=body, headers=headers, method="POST"
     )
-    with urllib.request.urlopen(  # nosec B310 - scheme checked above
+    active_opener = opener if opener is not None else _REDIRECT_REFUSING_OPENER
+    with active_opener.open(  # nosec B310 - scheme checked above, redirects refused
         request, timeout=config.speech_deadline
     ) as response:
-        return response.read()
+        return _read_bounded(
+            response,
+            max_bytes=config.max_sentence_audio_bytes,
+            deadline_s=_read_deadline(config),
+        )
 
 
 class Voice:
@@ -733,7 +926,19 @@ class Voice:
             if not tts_degraded:
                 try:
                     pcm = self._synthesize(sentence, self._config)
-                except Exception as exc:  # noqa: BLE001 - fold every synth failure the same way
+                except VoiceReadTimeoutError as exc:
+                    # Named ahead of the generic case (round 4) — a distinct
+                    # fault from an outright failure (lesson 4).
+                    tts_degraded = True
+                    self._degrade(VOICE_TTS_READ_TIMEOUT, safe_reason.describe_exception(exc))
+                    pcm = b""
+                except VoiceRedirectRefusedError as exc:
+                    tts_degraded = True
+                    self._degrade(VOICE_TTS_REDIRECT_REFUSED, safe_reason.describe_exception(exc))
+                    pcm = b""
+                except (
+                    Exception
+                ) as exc:  # noqa: BLE001 - fold every OTHER synth failure the same way
                     tts_degraded = True
                     self._degrade(VOICE_TTS_FAILED, safe_reason.describe_exception(exc))
                     pcm = b""
@@ -786,6 +991,8 @@ class Voice:
 
         with self._state_lock:
             queued_not_traced = self.queued_not_traced
+
+        self._publish_voice_state(spoken=queued > 0)
 
         return SpeakResult(
             sentences_total=total,
@@ -896,6 +1103,24 @@ class Voice:
                     return
             self._pace_tick()
 
+    def _pace_stall_limit_ticks(self) -> int:
+        """How many consecutive not-playing ticks the pacing buffer tolerates
+        before its remainder is dropped as :data:`VOICE_PACE_STALLED`.
+
+        Round 4: derived from what it bounds (lesson 1) — a genuine, harmless
+        gap between two sentences is bounded by how long ONE sentence's
+        synthesis call may legitimately take (``config.speech_deadline``),
+        since a real ``HostEndpoint`` correctly reports ``playing=False`` the
+        instant it finishes sounding the previous sentence and stays that
+        way until ``play()`` is called again for the next one. The old fixed
+        2 s bound under-estimated this and fired spuriously on a live,
+        healthy daemon session — see the module docstring's "Round 4"
+        section. :data:`PACE_STALL_TICKS` remains a FLOOR, for a config with
+        an unusually small ``speech_deadline``.
+        """
+        derived = int(self._config.speech_deadline / PACE_SLICE_S)
+        return max(PACE_STALL_TICKS, derived)
+
     def _pace_tick(self) -> None:
         """One paced feed step. See the module docstring's pacing section."""
         if self._interrupted.is_set() or self._pace_stop.is_set():
@@ -905,7 +1130,7 @@ class Voice:
 
         if not self._endpoint_playing_safe():
             self._pace_stall_ticks += 1
-            if self._pace_stall_ticks > PACE_STALL_TICKS:
+            if self._pace_stall_ticks > self._pace_stall_limit_ticks():
                 dropped = self._drop_pace_buffer()
                 if dropped:
                     self._degrade(
@@ -953,6 +1178,36 @@ class Voice:
             return False
         try:
             event = self._bus.publish("reply", {"text": text})
+        except (
+            Exception
+        ) as exc:  # noqa: BLE001 - an injected bus is not trusted to keep its own contract
+            self._degrade(VOICE_PUBLISH_FAILED, safe_reason.describe_exception(exc))
+            return False
+        return event is not None
+
+    def _publish_voice_state(self, *, spoken: bool) -> bool:
+        """Round 4, defect 3: a second, small event once the outcome is known.
+
+        ``_publish_reply`` still runs FIRST, before synthesis — that decision
+        (criterion 2) is unchanged. This publishes ``kind="state"``,
+        ``{"component": "voice", "status": "spoken" | "unspoken"}`` (matches
+        :mod:`embodiment.bus`'s own ``state`` field contract) so a dashboard
+        viewer can tell a reply that was actually voiced from one that
+        published its text but never reached the speaker (TTS down
+        entirely). Counts only — never the reply text. A missing bus is NOT
+        recorded again here: :meth:`_publish_reply` already recorded
+        :data:`VOICE_NO_BUS` once for this call (lesson 8 — one record, not
+        two, for the SAME underlying cause). A bus that raises HERE — even
+        one that accepted the ``reply`` publish fine — is a genuinely new,
+        independent failure and is recorded (never silently swallowed —
+        lesson 3).
+        """
+        if self._bus is None:
+            return False
+        try:
+            event = self._bus.publish(
+                "state", {"component": "voice", "status": "spoken" if spoken else "unspoken"}
+            )
         except (
             Exception
         ) as exc:  # noqa: BLE001 - an injected bus is not trusted to keep its own contract
