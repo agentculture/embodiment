@@ -1420,8 +1420,10 @@ def test_finding5_capture_child_self_exit_clears_state_reaps_and_allows_restart(
     assert _wait_until(lambda: endpoint.status()["capturing"] is False), "capturing still True"
     first = spawned[0]
     assert first.returncode is not None, "the exited child was never reaped"
-    assert first.stdout is not None and first.stdout.closed, "child stdout pipe left open"
-    assert first.stderr is not None and first.stderr.closed, "child stderr pipe left open"
+    assert first.stdout is not None, "child stdout pipe left open"
+    assert first.stdout.closed, "child stdout pipe left open"
+    assert first.stderr is not None, "child stderr pipe left open"
+    assert first.stderr.closed, "child stderr pipe left open"
     # The degradation survives the cleanup: the host still learns why.
     assert endpoint.status()["degradation_in"]["code"] == DEGRADED_CAPTURE_ENDED
 
@@ -1429,7 +1431,8 @@ def test_finding5_capture_child_self_exit_clears_state_reaps_and_allows_restart(
     assert len(spawned) == 2, "start_capture() after a self-exit was a no-op"
     assert endpoint.status()["capturing"] is True
     recovered = [e for e in endpoint.events if e.get("type") == "recovered"]
-    assert recovered and recovered[-1]["direction"] == "in"
+    assert recovered
+    assert recovered[-1]["direction"] == "in"
     endpoint.close(2.0)
     assert endpoint.status()["capturing"] is False
 
@@ -1753,7 +1756,8 @@ def test_finding4_write_failure_after_barge_in_spares_the_fresh_player(tmp_path)
     # The reply after the barge-in: a FRESH, real player.
     endpoint.play(_silence_frame(480))
     fresh = endpoint._playback_proc
-    assert fresh is not None and fresh is not stub
+    assert fresh is not None
+    assert fresh is not stub
 
     # Now the parked write lands on the closed stdin and raises.
     stub.stdin.release.set()

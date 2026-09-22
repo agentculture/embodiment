@@ -4747,7 +4747,8 @@ class TestRedialOwnership:
         assert new.closed is False, "the old thread closed the NEW client"
         assert new.close_deadlines == []
         assert h.app._ears_loop is not None, "the old thread cleared the new loop"
-        assert h.app._ears_thread is not None and h.app._ears_thread.is_alive()
+        assert h.app._ears_thread is not None
+        assert h.app._ears_thread.is_alive()
         assert h.app.status()["ear"]["redials"] == 1
 
     def test_the_new_session_still_delivers_after_the_old_thread_exits(self, harness: Any) -> None:
@@ -4847,7 +4848,8 @@ class TestDegradeHooksAreWired:
         application = app_module.main()
         try:
             application._ears_factory(16000)
-            assert built and built[0].on_degrade is not None, "the client has no hook"
+            assert built, "the client has no hook"
+            assert built[0].on_degrade is not None, "the client has no hook"
             record = client_module.RealtimeDegradation(
                 code=client_module.SESSION_DROPPED, reason="session ended without a local close"
             )
@@ -4924,4 +4926,5 @@ class TestMissedAskCarriesNoSpeech:
         non_speech = [e.to_dict() for e in h.events() if e.kind not in ("transcript", "reply")]
         assert marker not in json.dumps(non_speech, ensure_ascii=False)
         states = [e.data for e in h.events("state") if e.data.get("status") == "ask-not-detected"]
-        assert states and states[-1]["ask_not_detected"] == 1
+        assert states
+        assert states[-1]["ask_not_detected"] == 1
