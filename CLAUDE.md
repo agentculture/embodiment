@@ -6,8 +6,8 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `embodiment` is the **loop + presence layer** of the AgentCulture stack, being
 rebuilt into **Gwen: a background realtime voice app** on top of the `lobes`
-gateway. It is a Python package with a small tested core, a CLI, and — once the
-plan is built — a daemon, a dashboard and a voice.
+gateway. It is a Python package with a small tested core, a CLI, a daemon, a
+dashboard and a voice.
 
 ### Honest status — read this before you plan work
 
@@ -18,10 +18,24 @@ rig from this tree — Hebrew turns with the operator through the reSpeaker,
 memory stored and recalled across a restart, barge-in, the dashboard reviewed
 on a phone over Tailscale — and `embodiment start` on this branch launches it.
 What `main` holds is still the small core and the introspection verbs until
-the PR lands. Not yet done: the wave review of the whole diff, `t21` (the human
-acceptance run, latency published as measured) and `t22` (release docs). The
-state table in `docs/plans/…-progress.md` is the live truth; decisions live on
-embodiment#85.
+the PR lands. Not yet done: the wave review of the whole diff and `t21` (the
+human acceptance run, latency published as measured, to land as
+`docs/live-test-results/2026-09-22-t21-acceptance.md`). `t22` (these release
+docs) is on the branch. The state table in `docs/plans/…-progress.md` is the
+live truth; decisions live on embodiment#85.
+
+**What v1 is, in one breath, so no doc here overclaims it:** software
+presence, not a body (`reachy-mini-cli` owns the robot and its own `agent
+embody` layer shares this package's name — say so wherever the name appears);
+one rig; Hebrew only; one active ear; the session never crosses machines;
+value unmeasured. **Not yet:** tools (the registry is empty by design),
+vision, a face, phone voice (the phone is control + text), a robot relay
+(t14's inbound endpoint and t18's `BrowserEar` exist, unwired), Cloudflare
+Access verification (the guard refuses a public Host until an RS256
+dependency is approved), semantic recall (the embedder is down; recall is
+lexical, with an exact-substring fallback for Hebrew — deviation `d5`), and a
+measured value claim. `tests/test_release_docs.py` pins the boundary and the
+not-yet list against the README and the `explain` root.
 
 - **Spec:** `docs/specs/2026-09-21-realtime-embodiment-app.md` — 50 claims, 33
   honesty conditions, after a rigorous `/challenge` pass.
@@ -47,7 +61,10 @@ an app, and no sibling repo imported the package.
 
 **The redesign makes no value claim either.** It is accepted on one rig, its
 usefulness is unmeasured, and the plan's acceptance task (`t21`) publishes
-latency as measured, including if it is bad.
+latency as measured, including if it is bad. Known from the integration runs
+and not yet measured: the gateway's segmenter can drop the first word after a
+silence (3 of ~8 synthetic utterances; the operator's ~30 live turns did not
+show it).
 
 ### Three lessons the archived cycles paid for
 
