@@ -135,6 +135,33 @@ yields EXACTLY ONE un-pid-resolved candidate. More than one is
 direction-tagged) and treats it exactly like "not yet found" — it can expire
 into an honest ``verified=False``, never a ``True`` built on a guess.
 
+Round 10 — a name match must never fire on an UNSETTLED dump
+--------------------------------------------------------------------------
+The coordinator's own live probe broke round 9's fix, non-deterministically
+— worse than round 7's bug, since it only failed 1 run in 3. Scenario: a
+foreign ``pw-play`` (targeting the HDMI sink) already running when OUR
+player spawns. Round 9's name match built its candidate pool from ALL
+pw-play/pw-record nodes, including ones whose pid HAD resolved to something
+other than ours — so on the very FIRST poll, before our own Stream node has
+even appeared in ``pw-dump``'s output, the foreign node (already settled,
+its own Client pid resolved and rejected) was the lone remaining "name
+match" and was returned as ours; its link pointed at the HDMI sink, the
+verifier returned a confident ``False`` (no retry — a definite answer), and
+:meth:`HostEndpoint._handle_playback_mismatch` killed OUR player over a
+stream that was never ours to begin with.
+
+Two changes, both required, in :func:`_pw_find_stream_node` (see its own
+docstring for the full resolution order): a node whose pid resolved — by
+EITHER path — to something other than the pid being searched for is now
+excluded from the name-match pool entirely, never merely de-prioritized; and
+if the dump reports a resolvable pid on ANY ``PipeWire:Interface:Client``
+object at all, a name match is refused outright in favour of "not yet
+found" — a build/config that DOES attach Client pids will attach one to OUR
+node too, once it appears, so an unsettled dump must never be read as "the
+only remaining candidate must be ours." The name-match fallback is now only
+for a build that reports NO pid anywhere in the dump, never for a race
+against one that does.
+
 Round 8 — a stream can be correctly routed and still be too quiet to hear
 --------------------------------------------------------------------------
 The operator's own ears, with Gwen live on the array: her replies were "very
@@ -756,35 +783,78 @@ def _pw_find_stream_node(
     and THAT object carries ``pipewire.sec.pid``/``application.process.id``
     (see :func:`_pw_client_pids`) — measured live and now the primary path.
 
+    Round 10 (BLOCKER on round 9's own fix, found by the coordinator's live
+    probe — non-deterministic, worse than round 9's own bug): the FIRST poll
+    inside :meth:`HostEndpoint._verify_pipewire_link` can catch a dump where
+    OUR node has not appeared yet but a FOREIGN pw-play's Client pid already
+    has (measured: ours -> node 75 -> sink 48 arriving ~13 ms after spawn,
+    alongside a foreign stream that was already settled). Round 9's own name
+    match built its candidate list from ALL pw-play/pw-record nodes,
+    including ones whose pid resolved to something OTHER than *pid* — so
+    with our node absent, the foreign node became the lone "candidate" and
+    was returned as ours. Two fixes, both required:
+
+    1. A node whose pid resolved (either path) to a DIFFERENT pid is
+       excluded from the name-match candidate pool entirely — it is a KNOWN
+       stream that is definitively not ours, never a "maybe."
+    2. If the dump reports a resolvable pid on ANY
+       ``PipeWire:Interface:Client`` object at all, a name match is refused
+       outright and this returns "not yet found" — on a build/config that
+       DOES attach Client pids, OUR node will carry one too once it appears,
+       so an unsettled dump (ours simply not up yet) must never be read as
+       "the only candidate is the foreign one." The name-match fallback is
+       for a build that reports NO pid anywhere, not for a race against one
+       that does.
+
     Resolution order: (1) the node's own ``application.process.id``, when a
     pipewire build/config DOES set it; (2) the node's ``client.id`` resolved
-    through :func:`_pw_client_pids`; (3) a name match
-    (``application.name in {"pw-play", "pw-record"}``), but ONLY when it
-    yields EXACTLY ONE candidate among nodes neither pid path resolved —
+    through :func:`_pw_client_pids`; (3) a name match, ONLY when the dump
+    carries no resolvable Client pid anywhere AND it yields EXACTLY ONE
+    candidate among nodes neither pid path resolved to a DIFFERENT pid —
     more than one is reported ``ambiguous=True`` with ``node=None``, never a
-    guess. The caller must treat ``ambiguous`` the same as "not yet found":
-    it is never allowed to become ``verified=True``.
+    guess. The caller must treat both ``ambiguous`` and a plain "not found"
+    the same as "not yet found": neither is ever allowed to become
+    ``verified=True``.
     """
     candidates = _pw_nodes_by_class(dump, media_class)
-    for node in candidates:
-        props = node["props"]
-        assert isinstance(props, dict)
-        raw_pid = props.get("application.process.id")
-        try:
-            if raw_pid is not None and int(raw_pid) == pid:
-                return node, False
-        except (TypeError, ValueError):
-            continue
     client_pids = _pw_client_pids(dump)
+    name_eligible: list[dict[str, object]] = []
     for node in candidates:
         props = node["props"]
         assert isinstance(props, dict)
-        client_pid = client_pids.get(props.get("client.id"))
-        if client_pid is not None and client_pid == pid:
-            return node, False
+
+        resolved_pid: int | None = None
+        raw_pid = props.get("application.process.id")
+        if raw_pid is not None:
+            try:
+                resolved_pid = int(raw_pid)
+            except (TypeError, ValueError):
+                resolved_pid = None
+        if resolved_pid is None:
+            client_pid = client_pids.get(props.get("client.id"))
+            if client_pid is not None:
+                resolved_pid = client_pid
+
+        if resolved_pid is not None:
+            if resolved_pid == pid:
+                return node, False
+            # Resolved to a DIFFERENT pid by either path: a KNOWN stream
+            # that is definitively not ours — never eligible for a
+            # name-match guess (round 10 finding).
+            continue
+
+        name_eligible.append(node)
+
+    if client_pids:
+        # Round 10: this dump reports a resolvable Client pid somewhere —
+        # OUR node will carry one too once it shows up. An unsettled dump
+        # (ours simply hasn't appeared yet) must read as "not yet found",
+        # never as "the only remaining candidate must be ours."
+        return None, False
+
     name_matches = [
         node
-        for node in candidates
+        for node in name_eligible
         if str(node["props"].get("application.name") or "") in ("pw-play", "pw-record")
     ]
     if len(name_matches) == 1:

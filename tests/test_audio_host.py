@@ -41,6 +41,7 @@ from embodiment.audio.host import (
     PLAYER_LATENCY_MS,
     HostEndpoint,
     _build_playback_argv,
+    _pw_find_stream_node,
     _select_channel,
 )
 
@@ -837,6 +838,196 @@ def test_round9_wpctl_timeout_increments_unparsable_count_exactly_once():
     assert status["playback_volume_unparsable_count"] == 1
     assert status["callback_errors"] == 1  # the cleanup-after-kill's own raise, recorded once
     endpoint.close(2.0)
+
+
+# ---------------------------------------------------------------------------
+# round 10: a name match must never fire on an UNSETTLED dump — the
+# coordinator's live probe caught a foreign pw-play (already running,
+# targeting the HDMI sink) fooling the FIRST poll, before our own stream
+# node had even appeared, non-deterministically (fixtures mirror the shape
+# of scratchpad/pwdump_live.json: a Client object + a Stream node whose
+# pid is reachable only via that Client's client.id).
+# ---------------------------------------------------------------------------
+
+
+def _client_obj(obj_id: int, pid: int, name: str = "pw-play") -> dict:
+    return {
+        "id": obj_id,
+        "type": "PipeWire:Interface:Client",
+        "info": {"props": {"pipewire.sec.pid": pid, "application.name": name}},
+    }
+
+
+def _stream_node_obj(
+    obj_id: int,
+    *,
+    client_id: int | None = None,
+    name: str = "pw-play",
+    media_class: str = "Stream/Output/Audio",
+) -> dict:
+    props: dict[str, object] = {
+        "media.class": media_class,
+        "application.name": name,
+        "node.name": f"n{obj_id}",
+    }
+    if client_id is not None:
+        props["client.id"] = client_id
+    return {"id": obj_id, "type": "PipeWire:Interface:Node", "info": {"props": props}}
+
+
+def test_round10_foreign_only_dump_is_not_found_never_the_foreign_node():
+    """Our node has not appeared yet; a foreign pw-play's Client pid HAS —
+    the dump reports a resolvable Client pid at all, so a name match must
+    not fire and the foreign node must never be returned as ours."""
+    foreign_client_id, foreign_node_id = 100, 101
+    dump = [
+        _client_obj(foreign_client_id, 999999),
+        _stream_node_obj(foreign_node_id, client_id=foreign_client_id),
+    ]
+    node, ambiguous = _pw_find_stream_node(dump, "Stream/Output/Audio", pid=12345)
+    assert node is None
+    assert ambiguous is False
+
+
+def test_round10_our_node_appears_one_poll_later_and_is_picked():
+    """The very next dump — same foreign stream, now alongside ours — must
+    resolve to OUR node, never the foreign one, regardless of list order."""
+    our_pid = 12345
+    foreign_client_id, foreign_node_id = 100, 101
+    our_client_id, our_node_id = 200, 201
+    dump = [
+        _client_obj(foreign_client_id, 999999),
+        _stream_node_obj(foreign_node_id, client_id=foreign_client_id),
+        _client_obj(our_client_id, our_pid),
+        _stream_node_obj(our_node_id, client_id=our_client_id),
+    ]
+    node, ambiguous = _pw_find_stream_node(dump, "Stream/Output/Audio", pid=our_pid)
+    assert node is not None
+    assert node["id"] == our_node_id
+    assert ambiguous is False
+
+
+class TransientForeignThenOursState(FakePwDumpState):
+    """The FIRST `pw-dump` call reports only a foreign pw-play (its own
+    resolvable, unrelated Client pid) with no sign of our own stream yet;
+    every later call also includes ours, correctly linked to the resolved
+    sink — reproducing the exact race the coordinator's live probe hit."""
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self._calls = 0
+        self._foreign_client_id = 9001
+        self._foreign_node_id = 9002
+
+    def dump_json(self) -> bytes | None:
+        if not self.resolvable:
+            return None
+        self._calls += 1
+        objs = list(_pw_device_nodes())
+        objs.append(_client_obj(self._foreign_client_id, 999999))
+        objs.append(_stream_node_obj(self._foreign_node_id, client_id=self._foreign_client_id))
+        if self._calls == 1:
+            return json.dumps(objs).encode("utf-8")
+
+        next_id = self._next_id
+        for stream in self._streams:
+            stream_id = next_id
+            next_id += 1
+            client_id = next_id
+            next_id += 1
+            objs.append(_client_obj(client_id, stream["pid"]))
+            objs.append(
+                _stream_node_obj(stream_id, client_id=client_id, media_class=stream["media_class"])
+            )
+            if stream["linked_to"] is not None:
+                link_id = next_id
+                next_id += 1
+                if stream["media_class"] == "Stream/Output/Audio":
+                    out_id, in_id = stream_id, stream["linked_to"]
+                else:
+                    out_id, in_id = stream["linked_to"], stream_id
+                objs.append(
+                    {
+                        "id": link_id,
+                        "type": "PipeWire:Interface:Link",
+                        "info": {"output-node-id": out_id, "input-node-id": in_id},
+                    }
+                )
+        self._next_id = next_id
+        return json.dumps(objs).encode("utf-8")
+
+
+def test_round10_verify_pipewire_link_survives_a_transient_foreign_only_dump():
+    """_verify_pipewire_link polls PAST the first dump (foreign stream only,
+    ours not yet visible) and settles True once ours appears — never
+    treating the foreign stream as ours, never killing our own player over
+    a stream that was never ours."""
+    state = TransientForeignThenOursState()
+    endpoint = HostEndpoint(
+        which=_fake_which({"pw-record", "pw-play", "arecord", "aplay"}),
+        popen=_make_popen(pw_state=state),
+    )
+    endpoint.play(_silence_frame(480))
+    _wait_until(lambda: endpoint.status()["playback_target_verified"] is not None)
+    status = endpoint.status()
+    assert status["playback_target_verified"] is True
+    assert status["degradation_out"] is None
+    assert status["playback_target_ambiguous_count"] == 0
+    assert status["playback_target_mismatch_count"] == 0
+    endpoint.close(2.0)
+
+
+def test_round10_old_behaviour_would_have_failed_a_and_c():
+    """Documents the regression this round fixes: round 9's own algorithm
+    (name match built from ALL pw-play/pw-record nodes, unfiltered by
+    whether their pid resolved to someone else) DOES return the foreign
+    node as a match on a foreign-only dump — the exact live failure mode.
+    Reverting the round 10 filter locally reproduces (a)'s and (c)'s
+    failure; this test pins what that reverted algorithm returns, so the
+    fix above must differ from it."""
+    foreign_client_id, foreign_node_id = 100, 101
+    dump = [
+        _client_obj(foreign_client_id, 999999),
+        _stream_node_obj(foreign_node_id, client_id=foreign_client_id),
+    ]
+
+    def old_algorithm(dump, media_class, pid):
+        candidates = [
+            {"id": o["id"], "props": o["info"]["props"]}
+            for o in dump
+            if o.get("type") == "PipeWire:Interface:Node"
+            and o["info"]["props"].get("media.class") == media_class
+        ]
+        client_pids = {}
+        for o in dump:
+            if o.get("type") != "PipeWire:Interface:Client":
+                continue
+            props = o["info"]["props"]
+            raw = props.get("pipewire.sec.pid", props.get("application.process.id"))
+            if raw is not None:
+                client_pids[o["id"]] = int(raw)
+        for node in candidates:
+            client_pid = client_pids.get(node["props"].get("client.id"))
+            if client_pid is not None and client_pid == pid:
+                return node, False
+        name_matches = [
+            node
+            for node in candidates
+            if str(node["props"].get("application.name") or "") in ("pw-play", "pw-record")
+        ]
+        if len(name_matches) == 1:
+            return name_matches[0], False
+        if len(name_matches) > 1:
+            return None, True
+        return None, False
+
+    old_node, old_ambiguous = old_algorithm(dump, "Stream/Output/Audio", pid=12345)
+    assert old_node is not None and old_node["id"] == foreign_node_id  # the bug, pinned
+    assert old_ambiguous is False
+
+    fixed_node, fixed_ambiguous = _pw_find_stream_node(dump, "Stream/Output/Audio", pid=12345)
+    assert fixed_node is None  # round 10: never the foreign node
+    assert fixed_ambiguous is False
 
 
 # ---------------------------------------------------------------------------
