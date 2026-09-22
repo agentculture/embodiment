@@ -107,16 +107,13 @@ Round 2 — what an independent probe found, and the fix
    message can legally echo back the payload it choked on. The round-1 code
    interpolated ``{exc}`` at four sites and copied ``result.reason`` verbatim
    into a degradation ``reason``, which is delivered to every subscriber of
-   ``kind="degradation"``, authenticated or not. Fixed: :func:`_describe_exception`
-   returns ONLY the exception's class name (plus the ``OSError`` errno NAME,
-   itself a fixed, safe vocabulary — never ``strerror``); ``result.reason`` goes
-   through :func:`_reason_or_generic`, which surfaces it ONLY when restricting
-   it to a safe charset changes nothing at all — any alteration means the text
-   was untrusted, and the whole thing is replaced by a fixed generic string
-   rather than partially kept (a naive strip-and-keep, tried first, still let
-   an attacker's own marker text survive verbatim whenever it happened to be
-   made of "safe" characters — see :data:`_SAFE_TOKEN_CHARS`). Neither path
-   ever includes ``str(exc)``, ``repr(exc)`` or ``exc.args``.
+   ``kind="degradation"``, authenticated or not. Fixed at the time with a
+   private ``_describe_exception`` returning only the class name and an
+   ``OSError`` errno name — since replaced by the shared
+   :func:`~embodiment.safe_reason.describe_exception` (round 4, below);
+   ``result.reason`` still goes through :func:`_reason_or_generic`, a
+   different problem (see round 4's note on why the two are not merged).
+   Neither path ever includes ``str(exc)``, ``repr(exc)`` or ``exc.args``.
 2. **A slow broker blocked the publisher.** ``publish()`` used to call the
    broker client synchronously, so a hot ``features`` publish (~30-60/s from
    the audio path) blocked on however long the broker took. Fixed: broker
@@ -211,6 +208,32 @@ Round 3 — a 27B review reproduced three more behavioural defects
    the same reasoning :mod:`embodiment.daemon.state`'s own bounded ledger
    already applies to what it persists.
 
+Round 4 — adopted the shared sanitiser
+-----------------------------------------
+:mod:`embodiment.safe_reason` landed on ``realtime/phase-b`` (wave-1 lesson
+5's package-wide fix — ``turn.py``, ``tools.py`` and ``memory.py`` all broke
+the same "no speech in a record" rule the same way, ``str(exc)``, and this
+module's own round-2 defect 1 was a fourth instance of exactly that). This
+module's private ``_describe_exception`` is now
+:func:`~embodiment.safe_reason.describe_exception` at every
+exception-to-reason site — it does the same job (class name, ``OSError``
+errno NAME, never the message) plus more this module never had: the bounded
+``__cause__``/``__context__`` chain, a message-length fact and an 8-hex
+fingerprint for correlating repeats without the text, and an operator escape
+hatch (``EMBODIMENT_UNSAFE_REASONS=1``) that is off by default and loud about
+what turning it on costs. ``tests/test_safe_reason.py``'s AST guard now scans
+this module automatically, because it scans every module whose source
+mentions ``safe_reason`` — adoption is what binds the guard, not a
+maintained list.
+
+``_reason_or_generic`` is UNCHANGED and deliberately not folded into this
+adoption: it solves a different problem. ``describe_exception`` sanitises an
+EXCEPTION this module caught; ``_reason_or_generic`` sanitises a
+``PublishResult.reason`` STRING a broker client handed back with no
+exception involved at all — there is no ``BaseException`` for
+``describe_exception`` to describe. The two are cousins (both refuse to
+trust dependency-supplied text), not the same function.
+
 No thread started for the pure parts
 -------------------------------------
 Per the round-1 brief, the HEARTBEAT and RETRY decisions read no clock of
@@ -227,7 +250,6 @@ that reports what it left unsent (lesson 6 — shutdown is a feature).
 
 from __future__ import annotations
 
-import errno
 import json
 import threading
 import time
@@ -236,6 +258,8 @@ from collections import deque
 from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from typing import Any, Callable, Iterable, Optional
+
+from embodiment.safe_reason import describe_exception
 
 __all__ = [
     "SCHEMA_VERSION",
@@ -453,27 +477,6 @@ def _reason_or_generic(value: object) -> str:
     if token != text or token == "unknown":  # nosec B105
         return _GENERIC_TRANSPORT_REASON
     return token
-
-
-def _describe_exception(exc: BaseException) -> str:
-    """Describe *exc* SAFELY: the exception's class name, never its message.
-
-    Round 2, defect 1: ``str(exc)``/``repr(exc)``/``exc.args`` can legally
-    contain whatever the raising code chose to embed — including, for a
-    broker client, the very payload it choked on (which can be a spoken
-    ``transcript``). This function returns ONLY the class name
-    (``"RuntimeError"``, ``"ConnectionError"``, …), plus — for ``OSError`` —
-    the errno NAME (e.g. ``"ECONNREFUSED"``), itself a fixed, small, safe
-    vocabulary defined by the ``errno`` module, never the OS's free-text
-    ``strerror``. This is the ONE place in this module that turns an
-    exception into a reason string; every degrade-on-exception site calls it.
-    """
-    name = type(exc).__name__
-    if isinstance(exc, OSError) and exc.errno is not None:
-        code_name = errno.errorcode.get(exc.errno)
-        if code_name:
-            return f"{name}:{code_name}"
-    return name
 
 
 def fold_degradation(record: Any, *, source: str) -> dict[str, str]:
@@ -977,7 +980,7 @@ class Bus:
                 serialised = candidate.to_json()
             except (TypeError, ValueError) as exc:
                 reject_code = DEGRADED_SCHEMA_INVALID
-                reject_reason = f"{kind}: not JSON-serialisable: {_describe_exception(exc)}"
+                reject_reason = f"{kind}: not JSON-serialisable: {describe_exception(exc)}"
             else:
                 size = len(serialised.encode("utf-8"))
                 if _contains_secret(payload, self._redact):
@@ -1252,7 +1255,7 @@ class Bus:
                 reason = _reason_or_generic(getattr(result, "reason", None))
                 self._degrade_broker(f"publish failed: {reason}")
         except Exception as exc:  # noqa: BLE001 - the worker thread must never crash
-            self._degrade_broker(_describe_exception(exc))
+            self._degrade_broker(describe_exception(exc))
 
     def _ensure_broker_core(self) -> bool:
         if self._closed.is_set():  # round 3, defect 1
@@ -1265,7 +1268,7 @@ class Bus:
             try:
                 envelope_cls, type_to_topic, _now = _load_envelope_core()
             except Exception as exc:  # noqa: BLE001 - degrade, never raise
-                self._degrade_broker_locked(_describe_exception(exc))
+                self._degrade_broker_locked(describe_exception(exc))
                 return False
             self._envelope_cls = envelope_cls
             self._type_to_topic = type_to_topic
@@ -1288,7 +1291,7 @@ class Bus:
                     event_client_cls = _load_event_client_class()
                     self._broker_client = event_client_cls(host=self._host, port=self._port)
             except Exception as exc:  # noqa: BLE001 - degrade, never raise
-                self._degrade_broker_locked(_describe_exception(exc))
+                self._degrade_broker_locked(describe_exception(exc))
                 return None
             return self._broker_client
 

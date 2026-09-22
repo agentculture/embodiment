@@ -371,8 +371,11 @@ class TestExceptionTextNeverLeaked:
         assert _wait_until(lambda: bus.degradation_counts.get(DEGRADED_BROKER_UNAVAILABLE, 0) >= 1)
         for d in bus.degradations:
             assert self.MARK not in d.reason
-        # only the exception class name should appear
-        assert any(d.reason == "RuntimeError" for d in bus.degradations)
+            assert "transcript" not in d.reason
+        # round 4: embodiment.safe_reason.describe_exception -- class name,
+        # message length and a fingerprint, never the message itself.
+        assert any(d.reason.startswith("RuntimeError (message:") for d in bus.degradations)
+        assert any("fp:" in d.reason for d in bus.degradations)
 
     def test_json_not_serialisable_error_never_leaks_object_repr(self):
         bus, _client = _bus_with_ok_client()
