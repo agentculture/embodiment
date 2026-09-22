@@ -638,6 +638,7 @@ class DaemonApp:
         self._handovers = 0
         self._refusals = 0
         self._frames_dropped_no_session = 0
+        self._mute_intent = False
         self._warmups = 0
         self._warmup_failures = 0
         self._stale_frames = 0
@@ -1012,9 +1013,29 @@ class DaemonApp:
             self._safely(endpoint.detach, APP_EAR_DETACH_FAILED, ear)
             return False
         self._ensure_voice(ear, endpoint)
+        self._carry_mute(ear, endpoint)
         self._warm_up_playback(endpoint)
         self._fold_endpoint(endpoint)
         return True
+
+    def _carry_mute(self, ear: str, endpoint: Any) -> None:
+        """Apply the operator's last mute decision to a newly attached ear.
+
+        Found answering the review's Q6: without this, a handover silently
+        un-mutes. The mic is muted by muting the ENDPOINT, and a new endpoint
+        starts at its own default (hot) — so an operator who muted, then had
+        a browser ear pre-empt the host one (or used stop/start, which builds
+        a fresh endpoint), got a live microphone back without asking for it.
+        The ``mic`` event did report the change, so it was visible rather than
+        secret, but visible is not the same as intended.
+
+        "Hot mic on start" (``CLAUDE.md``) is about the daemon's INITIAL
+        state, which is what :attr:`_mute_intent` defaults to. After that the
+        operator's last word travels with the ear.
+        """
+        if not self._mute_intent:
+            return
+        self._safely(lambda: endpoint.mute(True), APP_CAPTURE_FAILED, f"{ear} mute")
 
     def _ensure_voice(self, ear: str, endpoint: Any) -> None:
         """ONE :class:`~embodiment.voice.Voice` for the daemon's life, re-pointed.
@@ -1314,8 +1335,14 @@ class DaemonApp:
         endpoint = self._ear_endpoint
         wanted = bool(muted)
         if endpoint is None:
+            # Remembered anyway: the next ear to attach honours it rather than
+            # coming up hot because nothing was listening when it was asked.
+            with self._lock:
+                self._mute_intent = wanted
             self._record(APP_NO_ENDPOINT, "mute requested with no ear attached")
             return {"muted": wanted, "ear": self._ear_name, "applied": False}
+        with self._lock:
+            self._mute_intent = wanted
         applied = self._safely(lambda: endpoint.mute(wanted), APP_CAPTURE_FAILED, "mute")
         self._publish_mic()
         return {"muted": self._muted(), "ear": self._ear_name, "applied": applied}
@@ -2266,6 +2293,7 @@ class DaemonApp:
                 "sessions": self._ears_sessions,
                 "redials": self._ears_redials,
                 "muted": self._muted(),
+                "mute_intent": self._mute_intent,
                 "endpoint": _probe(self._ear_endpoint),
             },
             "clients": clients,

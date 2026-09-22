@@ -1778,6 +1778,205 @@ class TestSupersededTurns:
         assert h.app.status()["turns"]["superseded"] == 0
 
 
+class TestReviewQuestions:
+    """Answers to the review's mandatory questions, as tests where one was owed."""
+
+    # Q5 — what submit_transcript/run_turn do with input nobody intended.
+
+    @pytest.mark.parametrize(
+        "payload",
+        [None, 17, 3.5, b"pcm bytes", bytearray(b"x"), {"a": 1}, ["a"], object()],
+    )
+    def test_q5_a_non_string_transcript_is_named_at_both_entry_points(
+        self, harness: Any, payload: Any
+    ) -> None:
+        h = harness()
+        h.app.attach_ear("host", FakeEndpoint())
+        assert h.app.submit_transcript(payload) is False
+        assert h.app.run_turn(payload).spoken == ""
+        assert app_module.APP_TRANSCRIPT_NOT_TEXT in h.ledger_codes()
+        assert h.app.status()["transcripts"]["not_text"] == 1
+
+    def test_q5_a_one_megabyte_transcript_is_survived(self, harness: Any) -> None:
+        """A commit that is a megabyte of speech, through the whole turn path."""
+        h = harness()
+        h.app.attach_ear("host", FakeEndpoint())
+        huge = "א" * 1_000_000
+
+        assert h.app.submit_transcript(huge) is True
+        result = h.app.run_turn(huge)
+
+        assert result.spoken == REPLY
+        assert h.app.status()["turns"]["failed"] == 0
+        json.dumps(h.app.status(), ensure_ascii=False)
+
+    def test_q5_a_lone_surrogate_never_escapes_as_an_exception(self, harness: Any) -> None:
+        """Text that cannot be encoded at all: the turn still answers.
+
+        A lone surrogate survives inside a ``str`` but raises on any UTF-8
+        encode, which is what a bus publish, a transcript write and a JSON
+        status all do — so it reaches more code than an ordinary hostile
+        string does.
+        """
+        h = harness()
+        h.app.attach_ear("host", FakeEndpoint())
+        lone = "שלום\ud800עולם"
+
+        assert isinstance(h.app.run_turn(lone).spoken, str)
+        assert h.app.status()["turns"]["failed"] == 0
+        # status() must stay readable even after one went through.
+        assert isinstance(h.app.status(), dict)
+        assert h.app.run_turn(SPEECH).spoken == REPLY, "the next turn was lost"
+
+    def test_q5_a_turn_seam_that_raises_is_recorded_and_survived(self, harness: Any) -> None:
+        def exploding(messages: list[dict[str, Any]], tools: Any = None) -> ModelResponse:
+            raise RuntimeError("senses fell over")
+
+        h = harness(complete=exploding)
+        h.app.attach_ear("host", FakeEndpoint())
+        assert h.app.run_turn(SPEECH).spoken  # turn.py's fallback text
+        assert h.app.status()["turns"]["completed"] == 1
+        assert h.app.run_turn(SPEECH).spoken
+
+    def test_q5_a_voice_that_raises_costs_the_speech_not_the_turn(self, harness: Any) -> None:
+        class Hostile:
+            feature_frames: list[dict[str, object]] = []
+            degradations: list[Any] = []
+
+            @property
+            def speaking(self) -> bool:
+                return False
+
+            def speak(self, text: str) -> Any:
+                raise RuntimeError("no voice")
+
+            def set_endpoint(self, endpoint: Any) -> None:
+                return None
+
+            def drain_features(self, max_n: int = 256) -> list[dict[str, object]]:
+                return []
+
+            def close(self, deadline: float = 2.0) -> Any:
+                return SimpleNamespace(to_dict=lambda: {})
+
+            def status(self) -> dict[str, object]:
+                return {}
+
+        h = harness()
+        h.app._voice_factory = lambda endpoint: Hostile()
+        h.app.attach_ear("host", FakeEndpoint())
+        assert h.app.run_turn(SPEECH).spoken == REPLY
+        assert app_module.APP_TURN_FAILED in h.ledger_codes()
+        assert h.app.status()["turns"]["completed"] == 1
+
+    # Q6 — mute is the endpoint's to enforce, and it must travel with the ear.
+
+    def test_q6_mute_is_carried_across_a_handover(self, harness: Any) -> None:
+        """Without this a handover silently un-mutes the microphone."""
+        h = harness(config=AppConfig(preempt_ear=True, poll_interval_s=0.01))
+        first = FakeEndpoint(name="host")
+        h.app.attach_ear("host", first)
+        h.app.set_mute(True)
+        assert first.muted is True
+
+        second = FakeEndpoint(name="browser")
+        h.app.attach_ear("browser", second)
+
+        assert second.muted is True, "the new ear came up hot after a mute"
+        assert h.app.status()["ear"]["muted"] is True
+        assert h.app.status()["ear"]["mute_intent"] is True
+        mics = h.events("mic")
+        assert mics[-1].data["hot"] is False
+
+    def test_q6_an_unmuted_daemon_still_starts_hot(self, harness: Any) -> None:
+        """Hot mic on start is the INITIAL state and stays that way."""
+        h = harness()
+        endpoint = FakeEndpoint()
+        h.app.attach_ear("host", endpoint)
+        assert endpoint.muted is False
+        assert h.app.status()["ear"]["mute_intent"] is False
+        assert h.events("mic")[-1].data["hot"] is True
+
+    def test_q6_a_mute_with_no_ear_is_honoured_by_the_next_one(self, harness: Any) -> None:
+        h = harness()
+        h.app.set_mute(True)
+        endpoint = FakeEndpoint()
+        h.app.attach_ear("host", endpoint)
+        assert endpoint.muted is True
+
+    def test_q6_unmuting_travels_too(self, harness: Any) -> None:
+        h = harness(config=AppConfig(preempt_ear=True, poll_interval_s=0.01))
+        h.app.attach_ear("host", FakeEndpoint())
+        h.app.set_mute(True)
+        h.app.set_mute(False)
+        second = FakeEndpoint(name="browser")
+        h.app.attach_ear("browser", second)
+        assert second.muted is False
+
+    # Q2 — an endpoint that blocks on the way out.
+
+    def test_q2_a_hanging_stop_capture_does_not_outlast_close(self, harness: Any) -> None:
+        """Through close() the teardown is bounded; the report says what stuck."""
+
+        class Hanging(FakeEndpoint):
+            def stop_capture(self) -> None:
+                time.sleep(30)
+
+        h = harness()
+        h.app.attach_ear("host", Hanging())
+        started = time.monotonic()
+        report = h.app.close(deadline=2.0)
+        assert time.monotonic() - started < 8.0
+        assert report.endpoint_closed is False
+        assert "endpoint" in report.unfinished
+
+    def test_q2_a_raising_teardown_is_recorded_not_raised(self, harness: Any) -> None:
+        class Raising(FakeEndpoint):
+            def stop_capture(self) -> None:
+                raise RuntimeError("no")
+
+            def detach(self) -> None:
+                raise RuntimeError("no")
+
+            def close(self, deadline: float) -> Any:
+                raise RuntimeError("no")
+
+        h = harness(config=AppConfig(preempt_ear=True, poll_interval_s=0.01))
+        h.app.attach_ear("host", Raising())
+        handover = h.app.attach_ear("browser", FakeEndpoint(name="browser"))
+        assert handover.attached is True, "a raising teardown blocked the handover"
+        assert app_module.APP_EAR_DETACH_FAILED in h.ledger_codes()
+
+    # Q8 — the recall mode is memory's answer, not a guess.
+
+    def test_q8_the_reported_mode_is_the_one_memory_returned(self, harness: Any) -> None:
+        h = harness()
+        h.app.attach_ear("host", FakeEndpoint())
+        h.app.run_turn(SPEECH)
+        assert h.app.status()["recall"]["mode"] == "lexical"
+        assert h.app.status()["recall"]["configured_mode"] == "keyword"
+
+    def test_q8_status_holds_up_when_memory_answers_nothing(self, harness: Any) -> None:
+        """A memory with none of the counters: reported unknown, never crashed."""
+
+        class Bare:
+            def recall(self, *args: Any, **kwargs: Any) -> Any:
+                return SimpleNamespace(ok=True, records=[], mode=None, degradations=())
+
+            def remember(self, *args: Any, **kwargs: Any) -> Any:
+                return SimpleNamespace(ok=False, record_id=None, degradation=None)
+
+            def close(self, deadline: float = 1.0) -> Any:
+                return SimpleNamespace(degradations=(), unconfirmed=())
+
+        h = harness(memory=Bare())
+        status = h.app.status()
+        assert status["memory"]["store_permission_failures"] is None
+        assert status["memory"]["store_root_is_symlink"] is None
+        assert status["recall"]["mode"] is None
+        json.dumps(status, ensure_ascii=False)
+
+
 class TestFramesBeforeTheSession:
     """Live finding B: app-capture-failed x3 at start, right after the warm-up."""
 
