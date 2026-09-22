@@ -269,6 +269,8 @@ __all__ = [
     "CODE_ABANDONED_RECALL",
     "CODE_REMEMBER_DEFERRED",
     "CODE_ABANDONED_REMEMBER",
+    "CODE_FORGET_DEFERRED",
+    "CODE_ABANDONED_FORGET",
     "CODE_REMEMBER_UNCONFIRMED_AT_CLOSE",
     "CODE_SATURATED",
     "CODE_PERMISSIONS",
@@ -281,6 +283,7 @@ __all__ = [
     "AbandonedDrain",
     "CloseReport",
     "RememberResult",
+    "ForgetResult",
     "RecallResult",
     "RoomMemory",
     "default_embed_probe",
@@ -452,6 +455,12 @@ CODE_REMEMBER_DEFERRED = "remember-deferred"
 #: :attr:`RoomMemory.abandoned` — this is the record that stops a deferred write
 #: from being a silently dropped one.
 CODE_ABANDONED_REMEMBER = "abandoned-remember"
+#: A forget (an archive-in-place) did not confirm within its deadline. Like a
+#: deferred remember it is still running and will land; a later failure is
+#: :data:`CODE_ABANDONED_FORGET`.
+CODE_FORGET_DEFERRED = "forget-deferred"
+#: A deferred forget failed after its deadline had passed. On the ledger.
+CODE_ABANDONED_FORGET = "abandoned-forget"
 #: A write was still in flight when :meth:`RoomMemory.close` ran out of
 #: deadline. It may or may not land — the host has the record id and owns the
 #: choice between waiting longer and hard-exiting.
@@ -517,6 +526,34 @@ class RememberResult:
             "ok": self.ok,
             "record_id": self.record_id,
             "visibility": self.visibility,
+        }
+        if self.degradation is not None:
+            data["degradation"] = self.degradation.to_dict()
+        return data
+
+
+@dataclass(frozen=True)
+class ForgetResult:
+    """Result of one :meth:`RoomMemory.forget`.
+
+    ``code`` is the degradation's code when ``ok`` is false — the one field a
+    caller branches on (an unknown id, an already archived record, a deferred
+    write, a closed layer) — and ``None`` on success. The id is echoed; the
+    record's text never is.
+    """
+
+    ok: bool
+    record_id: Optional[str]
+    visibility: str
+    code: Optional[str] = None
+    degradation: Optional[Degradation] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {
+            "ok": self.ok,
+            "record_id": self.record_id,
+            "visibility": self.visibility,
+            "code": self.code,
         }
         if self.degradation is not None:
             data["degradation"] = self.degradation.to_dict()
@@ -740,6 +777,7 @@ class RoomMemory:
         executor: Optional[ThreadPoolExecutor] = None,
         remember_fn: Optional[Callable[..., Any]] = None,
         recall_fn: Optional[Callable[..., Any]] = None,
+        archive_fn: Optional[Callable[..., Any]] = None,
         embed_probe: Optional[EmbedProbe] = None,
         max_abandoned: int = MAX_ABANDONED,
         max_workers: int = DEFAULT_MAX_WORKERS,
@@ -759,6 +797,7 @@ class RoomMemory:
         self._backend = backend
         self._remember_fn = remember_fn or continuity.remember
         self._recall_fn = recall_fn or continuity.recall
+        self._archive_fn = archive_fn or continuity.archive
         self._embed_probe = embed_probe or default_embed_probe
 
         # Threads absorb hung calls; they do not prevent them. A hung eidetic
@@ -1386,7 +1425,15 @@ class RoomMemory:
             raw=getattr(outcome, "raw", None),
         )
 
-    def _reap_write(self, future: "Future[Any]", identifier: str, deadline: float) -> None:
+    def _reap_write(
+        self,
+        future: "Future[Any]",
+        identifier: str,
+        deadline: float,
+        *,
+        verb: str = "write",
+        code: str = CODE_ABANDONED_REMEMBER,
+    ) -> None:
         """Record a deferred write that turns out to fail.
 
         This is what makes "deferred" different from "dropped". The caller has
@@ -1407,18 +1454,16 @@ class RoomMemory:
             try:
                 error = done.exception()
                 if error is not None:
-                    reason = f"deferred write of {label} failed after {deadline}s"
+                    reason = f"deferred {verb} of {label} failed after {deadline}s"
                 elif not getattr(done.result(), "ok", False):
-                    reason = f"deferred write of {label} was not stored by the seam"
+                    reason = f"deferred {verb} of {label} was not stored by the seam"
             except Exception as exc:  # noqa: BLE001  # a cancelled future has no result
                 error = exc
-                reason = f"deferred write of {label} could not be read back"
+                reason = f"deferred {verb} of {label} could not be read back"
             if reason is None:
                 return
             with self._lock:
-                self._record_abandoned(
-                    _degradation("remember", CODE_ABANDONED_REMEMBER, reason, error)
-                )
+                self._record_abandoned(_degradation(verb, code, reason, error))
 
         future.add_done_callback(reap)
 
@@ -1435,7 +1480,13 @@ class RoomMemory:
     #: a fixed literal, and ``tests/test_memory.py`` pins that against
     #: continuity's AST rather than against this comment: a code whose reason
     #: gains an f-string fails the suite.
-    _LITERAL_REASON_CODES = frozenset({continuity.CODE_NO_STORAGE_ANCHOR})
+    _LITERAL_REASON_CODES = frozenset(
+        {
+            continuity.CODE_NO_STORAGE_ANCHOR,
+            continuity.CODE_RECORD_NOT_FOUND,
+            continuity.CODE_ALREADY_ARCHIVED,
+        }
+    )
 
     def _safe_degradation(self, degradation: Optional[Degradation]) -> Optional[Degradation]:
         """Re-wrap a degradation that arrived from ``continuity``.
@@ -1516,6 +1567,125 @@ class RoomMemory:
             "metadata": dict(metadata) if metadata else {},
             "added_by": added_by if added_by is not None else self._added_by,
         }
+
+    # -- forgetting ---------------------------------------------------------
+
+    def forget(
+        self,
+        record_id: str,
+        *,
+        visibility: str = PRIVATE,
+        deadline: float = DEFAULT_WRITE_DEADLINE,
+    ) -> ForgetResult:
+        """Archive one record of this scope in place, bounded by *deadline*.
+
+        Decision 18 (``d8``). Live, Gwen was asked to forget where a key was
+        and said she had; nothing had happened. This is the verb that makes
+        the claim true — and it **archives, never deletes**: the record stays
+        on disk with eidetic's own ``lifecycle="archived"``, which
+        :meth:`recall` (through ``continuity.recall``'s default lifecycle
+        filter) then never serves.
+
+        The id is **untrusted** — it is what a model said — so it is
+        restricted here to :data:`HEADER_LABEL_CHARSET` and
+        :data:`HEADER_FIELD_LIMIT` before it goes anywhere near a seam, and it
+        is never interpolated raw into a reason. Anything outside that shape is
+        refused with ``continuity.CODE_INVALID_RECORD`` without touching the
+        store.
+
+        It is a WRITE and follows the write rule: the work goes to the
+        executor, only the wait is bounded, and :meth:`close` names it if it is
+        still unconfirmed. A miss returns :data:`CODE_FORGET_DEFERRED`; a later
+        failure lands as :data:`CODE_ABANDONED_FORGET`. Never raises.
+        """
+        identifier = _usable_id(record_id)
+        if identifier is None:
+            return ForgetResult(
+                ok=False,
+                record_id=None,
+                visibility=visibility,
+                code=continuity.CODE_INVALID_RECORD,
+                degradation=_degradation(
+                    "forget",
+                    continuity.CODE_INVALID_RECORD,
+                    "unusable record id: not a non-empty label of "
+                    f"at most {HEADER_FIELD_LIMIT} characters from the id charset",
+                ),
+            )
+
+        def work() -> Any:
+            refusal = self._root_refusal()
+            if refusal is not None:
+                return continuity.ArchiveOutcome(ok=False, record_id=None, degradation=refusal)
+            outcome = self._archive_fn(
+                identifier,
+                data_dir=self._data_dir,
+                scope=self._scope,
+                visibility=visibility,
+                backend=self._backend,
+            )
+            # upsert rewrites the scope file; tighten inside the deadline.
+            self._tighten_scope()
+            return outcome
+
+        future, refusal = self._submit(work, record_id=identifier)
+        if future is None:
+            code = refusal or CODE_CLOSED
+            return ForgetResult(
+                ok=False,
+                record_id=identifier,
+                visibility=visibility,
+                code=code,
+                degradation=_degradation(
+                    "forget",
+                    code,
+                    f"record {safe_label(identifier)} was NOT archived: "
+                    + (
+                        "every in-flight memory slot is occupied"
+                        if refusal == CODE_SATURATED
+                        else "this memory layer is closed"
+                    ),
+                ),
+            )
+
+        try:
+            outcome = future.result(timeout=max(0.0, float(deadline)))
+        except FutureTimeoutError:
+            self._reap_write(
+                future, identifier, deadline, verb="forget", code=CODE_ABANDONED_FORGET
+            )
+            return ForgetResult(
+                ok=False,
+                record_id=identifier,
+                visibility=visibility,
+                code=CODE_FORGET_DEFERRED,
+                degradation=_degradation(
+                    "forget",
+                    CODE_FORGET_DEFERRED,
+                    f"record {safe_label(identifier)} did not confirm as archived within "
+                    f"{deadline}s and is still being archived in the background; a failure "
+                    "will be recorded on the abandoned ledger",
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001  # a store failure never reaches the host
+            code = _failure_code(exc)
+            return ForgetResult(
+                ok=False,
+                record_id=identifier,
+                visibility=visibility,
+                code=code,
+                degradation=_degradation("forget", code, "the archive seam failed", exc),
+            )
+
+        degradation = self._safe_degradation(getattr(outcome, "degradation", None))
+        ok = bool(getattr(outcome, "ok", False))
+        return ForgetResult(
+            ok=ok,
+            record_id=identifier,
+            visibility=visibility,
+            code=None if ok else (getattr(degradation, "code", None) or CODE_CLOSED),
+            degradation=degradation,
+        )
 
     # -- reading ------------------------------------------------------------
 
@@ -1810,6 +1980,25 @@ class RoomMemory:
 
     def __exit__(self, *_exc: Any) -> None:
         self.close()
+
+
+def _usable_id(value: object) -> Optional[str]:
+    """*value* as a record id, or ``None`` if it is not one.
+
+    The same shape :func:`render_recalled` lets an id take on a header line —
+    :data:`HEADER_LABEL_CHARSET`, at most :data:`HEADER_FIELD_LIMIT` characters
+    — so an id the model read out of a prompt is accepted and anything it
+    could have invented outside that shape is not. Restriction, not escaping:
+    there is no legitimate id that needs a space or a bracket.
+    """
+    if not isinstance(value, str):
+        return None
+    stripped = value.strip()
+    if not stripped or len(stripped) > HEADER_FIELD_LIMIT:
+        return None
+    if any(character not in HEADER_LABEL_CHARSET for character in stripped):
+        return None
+    return stripped
 
 
 # ---------------------------------------------------------------------------
