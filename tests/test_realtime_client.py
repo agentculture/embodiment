@@ -19,6 +19,7 @@ import json
 import os
 import socket
 import threading
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -1387,6 +1388,56 @@ class TestACloseThatFailedSaysSo:
         assert report.deadline_exceeded is True
         assert report.close_error is False
         assert report.graceful is False
+
+    def test_finding13_the_socket_close_gets_only_what_the_writer_left(self) -> None:
+        """Review finding 13: `_reap_writer` and `_close_socket` each got the
+        FULL budget, so a writer that ate the whole deadline plus a wedged
+        socket made close() take 2x its deadline, while the daemon waits
+        `close_bound + grace`. The second wait gets what is left."""
+
+        class _Wedged:
+            latency = 0.0
+
+            async def close(self) -> None:
+                await asyncio.sleep(10)
+
+        with Rig(caps_body=capabilities()) as rig:
+
+            async def go() -> tuple[Any, rtc.RealtimeEars, float]:
+                async with rig.websocket():
+                    ears = rtc.RealtimeEars(rig.config(realtime_url=rig.ws_origin()))
+                    await ears.connect()
+                    real_writer = ears._writer
+                    assert real_writer is not None
+                    real_writer.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await real_writer
+                    real_ws = ears._ws
+
+                    async def stubborn() -> None:
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await asyncio.sleep(10)
+                        await asyncio.sleep(10)
+
+                    stuck = asyncio.get_running_loop().create_task(stubborn())
+                    ears._writer = stuck
+                    ears._ws = _Wedged()
+                    await asyncio.sleep(0)
+                    t0 = time.perf_counter()
+                    report = await ears.close(deadline=0.3)
+                    elapsed = time.perf_counter() - t0
+                    stuck.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await stuck
+                    with contextlib.suppress(Exception):
+                        await real_ws.close()
+                    return report, ears, elapsed
+
+            report, ears, elapsed = run(go())
+        assert elapsed < 0.45, f"close(0.3) took {elapsed:.2f} s — two full budgets"
+        assert report.deadline_exceeded is True
+        assert report.close_error is False
+        assert codes(ears).count(rtc.CLOSE_INCOMPLETE) == 1
 
     def test_the_natural_drop_path_does_not_actually_raise(self) -> None:
         """The measurement behind this class's docstring, kept executable."""

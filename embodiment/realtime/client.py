@@ -946,12 +946,18 @@ class RealtimeEars:
 
         exceeded = False
         close_error = False
+        started = time.monotonic()
         writer = self._writer
         if writer is not None:
             writer.cancel()
             exceeded, close_error = await self._reap_writer(writer, budget)
         if self._ws is not None:
-            timed_out, failed = await self._close_socket(self._ws, budget)
+            # Review finding 13 (PR #87): ONE budget bounds the whole close.
+            # The socket gets what the writer left, never a second full
+            # budget — a host waiting `close_bound + grace` would otherwise
+            # see this take 2x its deadline.
+            remaining = max(0.0, budget - (time.monotonic() - started))
+            timed_out, failed = await self._close_socket(self._ws, remaining)
             exceeded = exceeded or timed_out
             close_error = close_error or failed
 
