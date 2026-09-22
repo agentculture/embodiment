@@ -135,13 +135,21 @@ class EndpointCloseReport:
     its first step. ``elapsed_s`` is the real time ``close`` actually took, so
     a caller can tell "honoured the deadline" from "ran over it and gave up
     anyway" — both are honest outcomes; only the second is the same object
-    silently pretending it did not happen.
+    silently pretending it did not happen. ``streams_close_failed`` (round 3)
+    is how many of this endpoint's underlying streams raised while being
+    stopped/closed DURING this ``close`` call — previously that only bumped a
+    generic error counter, against this dataclass's own "what could not be is
+    reported there" promise. Defaults to ``0`` so an implementation that has
+    no such concept (or another endpoint that constructs this report, e.g. a
+    remote/browser endpoint with no local stream to fail) never has to name
+    an argument it has nothing to say about.
     """
 
     capture_thread_stopped: bool
     writer_thread_stopped: bool
     samples_discarded: int
     elapsed_s: float
+    streams_close_failed: int = 0
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -149,6 +157,7 @@ class EndpointCloseReport:
             "writer_thread_stopped": self.writer_thread_stopped,
             "samples_discarded": self.samples_discarded,
             "elapsed_s": self.elapsed_s,
+            "streams_close_failed": self.streams_close_failed,
         }
 
 

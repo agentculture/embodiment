@@ -29,6 +29,7 @@ from embodiment.audio.host import (
     DEGRADED_OPEN,
     DEGRADED_PLAYBACK_OVERFLOW,
     DEGRADED_PORTAUDIO,
+    DEGRADED_WRITE_FAILED,
     HostEndpoint,
     Resampler,
     _resample_pcm16,
@@ -541,6 +542,9 @@ def test_attack_play_called_ten_thousand_times_never_blocks_caller_long():
 
 
 def test_attack_writer_raises_never_kills_the_process_or_the_caller():
+    """Round 3 finding 2 changed WHERE this shows up: a write failure is now
+    a named, recorded degradation_out (never silent) rather than a bare
+    callback_errors bump — see test_round3_finding2_* for that criterion."""
     fake = _working_fake()
     endpoint = HostEndpoint(sounddevice_importer=lambda: fake, numpy_importer=_import_numpy_real)
     endpoint.play(_silence_frame())
@@ -548,8 +552,8 @@ def test_attack_writer_raises_never_kills_the_process_or_the_caller():
     fake.output_streams[0].raise_on_write = RuntimeError("device yanked mid-write")
     for _ in range(10):
         endpoint.play(_silence_frame())
-    _wait_until(lambda: endpoint.status()["callback_errors"] >= 1)
-    assert endpoint.status()["callback_errors"] >= 1
+    _wait_until(lambda: endpoint.status()["degradation_out"] is not None)
+    assert endpoint.status()["degradation_out"] is not None
     endpoint.close(2.0)
 
 
@@ -999,6 +1003,295 @@ def test_finding6b_retry_is_at_most_once_per_call_never_a_loop():
     endpoint.start_capture(lambda _f: None)
     assert time.monotonic() - start < 1.0
     assert endpoint.status()["degradation_in"] is not None
+    endpoint.close(2.0)
+
+
+# ---------------------------------------------------------------------------
+# round 3 — the 27B review of e2647a4, reproduced with scratchpad/probe_t7c.py
+# ---------------------------------------------------------------------------
+
+
+def test_round3_finding1_a_dead_output_does_not_retry_every_play_call():
+    """MAJOR, reproduced: 100 play() calls against a dead output = 200 opens.
+
+    A cooldown must bound the attempt count regardless of how many times
+    play() is called in a tight loop (a real TTS reply calls play() ~50
+    times/second) — never a per-call retry.
+    """
+    fake = FakeSoundDevice(
+        devices=[{"name": "fake-in", "default_samplerate": 24000}],
+        raise_on_output_open=True,
+    )
+    endpoint = HostEndpoint(sounddevice_importer=lambda: fake, numpy_importer=_import_numpy_real)
+    chunk = _silence_frame(480)
+    for _ in range(100):
+        endpoint.play(chunk)
+    # two opens per attempt (native 24kHz try, then the device-rate fallback);
+    # a cooldown means FAR fewer than 100 attempts, not one attempt per call.
+    assert len(fake.output_streams) < 10, f"{len(fake.output_streams)} opens for 100 play() calls"
+    assert endpoint.status()["degradation_out"]["code"] == DEGRADED_OPEN
+    endpoint.close(2.0)
+
+
+def test_round3_finding1_dropped_chunks_are_counted_while_cooling_down():
+    fake = FakeSoundDevice(
+        devices=[{"name": "fake-in", "default_samplerate": 24000}],
+        raise_on_output_open=True,
+    )
+    endpoint = HostEndpoint(sounddevice_importer=lambda: fake, numpy_importer=_import_numpy_real)
+    chunk = _silence_frame(480)
+    for _ in range(10):
+        endpoint.play(chunk)
+    assert (
+        endpoint.status()["playback_dropped_no_device"] >= 8
+    )  # first call(s) attempt, rest cool down
+    endpoint.close(2.0)
+
+
+def test_round3_finding1_degradation_recorded_once_per_episode_not_per_call():
+    fake = FakeSoundDevice(
+        devices=[{"name": "fake-in", "default_samplerate": 24000}],
+        raise_on_output_open=True,
+    )
+    endpoint = HostEndpoint(sounddevice_importer=lambda: fake, numpy_importer=_import_numpy_real)
+    for _ in range(50):
+        endpoint.play(_silence_frame(480))
+    degraded_events = [
+        e for e in endpoint.events if e.get("type") == "degraded" and e.get("direction") == "out"
+    ]
+    assert len(degraded_events) == 1, f"expected one episode record, got {degraded_events}"
+    assert endpoint.status()["output_degrade_attempts"] >= 1
+    endpoint.close(2.0)
+
+
+def test_round3_finding1_recovery_is_recorded_after_the_device_comes_back():
+    fake = FakeSoundDevice(
+        devices=[{"name": "fake-in", "default_samplerate": 24000}],
+        raise_on_output_open=True,
+    )
+    endpoint = HostEndpoint(sounddevice_importer=lambda: fake, numpy_importer=_import_numpy_real)
+    endpoint.play(_silence_frame(480))
+    assert endpoint.status()["degradation_out"] is not None
+
+    fake.raise_on_output_open = False
+    # force past the cooldown deterministically rather than sleeping for it
+    endpoint._out_open_cooldown_until = 0.0  # noqa: SLF001 - test-only introspection
+    endpoint.play(_silence_frame(480))
+    assert endpoint.status()["degradation_out"] is None
+    recovered = [
+        e for e in endpoint.events if e.get("type") == "recovered" and e.get("direction") == "out"
+    ]
+    assert len(recovered) == 1
+    endpoint.close(2.0)
+
+
+def test_round3_finding1_backoff_grows_and_is_capped():
+    """Not asserting exact timings (real-clock flake risk) — only that the
+    backoff schedule is monotonically non-decreasing and bounded."""
+    fake = FakeSoundDevice(
+        devices=[{"name": "fake-in", "default_samplerate": 24000}],
+        raise_on_output_open=True,
+    )
+    endpoint = HostEndpoint(sounddevice_importer=lambda: fake, numpy_importer=_import_numpy_real)
+    backoffs = []
+    for _ in range(6):
+        endpoint.play(_silence_frame(480))
+        backoffs.append(endpoint._out_open_backoff_s)  # noqa: SLF001
+        endpoint._out_open_cooldown_until = 0.0  # noqa: SLF001 - force the next attempt through
+    assert backoffs == sorted(backoffs)
+    assert max(backoffs) <= 30.0
+    endpoint.close(2.0)
+
+
+def test_round3_finding2_a_write_failure_is_named_counted_and_closes_the_stream():
+    """MAJOR, reproduced: 20 failing writes left callback_errors=20,
+    degradation_out=None, playing=False, and a dead stream the writer kept
+    hammering forever."""
+    fake = FakeSoundDevice(devices=[{"name": "fake-in", "default_samplerate": 24000}])
+    endpoint = HostEndpoint(sounddevice_importer=lambda: fake, numpy_importer=_import_numpy_real)
+    endpoint.play(_silence_frame(480))
+    _wait_until(lambda: len(fake.output_streams) == 1 and fake.output_streams[0].written)
+    stream = fake.output_streams[0]
+    stream.raise_on_write = RuntimeError("device gone")
+
+    for _ in range(20):
+        endpoint.play(_silence_frame(480))
+    _wait_until(lambda: endpoint.status()["degradation_out"] is not None)
+
+    status = endpoint.status()
+    assert status["degradation_out"]["code"] == DEGRADED_WRITE_FAILED
+    assert status["playing"] is False
+    assert stream.closed is True  # the dead stream was actually dropped
+    endpoint.close(2.0)
+
+
+def test_round3_finding2_the_next_play_goes_through_the_cooldown_path():
+    fake = FakeSoundDevice(devices=[{"name": "fake-in", "default_samplerate": 24000}])
+    endpoint = HostEndpoint(sounddevice_importer=lambda: fake, numpy_importer=_import_numpy_real)
+    endpoint.play(_silence_frame(480))
+    _wait_until(lambda: len(fake.output_streams) == 1 and fake.output_streams[0].written)
+    fake.output_streams[0].raise_on_write = RuntimeError("device gone")
+    endpoint.play(_silence_frame(480))
+    _wait_until(lambda: endpoint.status()["degradation_out"] is not None)
+
+    opens_before = len(fake.output_streams)
+    for _ in range(20):
+        endpoint.play(_silence_frame(480))
+    # cooldown-gated: nowhere near one open attempt per call
+    assert len(fake.output_streams) - opens_before < 5
+    endpoint.close(2.0)
+
+
+def test_round3_finding3_playback_overflow_degradation_is_named_once_per_episode():
+    fake = FakeSoundDevice(devices=[{"name": "fake-in", "default_samplerate": 24000}])
+    endpoint = HostEndpoint(sounddevice_importer=lambda: fake, numpy_importer=_import_numpy_real)
+    big_chunk = _silence_frame(24000)  # 1 second per call
+    overflowed = False
+    for _ in range(200):
+        before = endpoint.status()["playback_overflow_count"]
+        endpoint.play(big_chunk)
+        if endpoint.status()["playback_overflow_count"] > before:
+            overflowed = True
+        if overflowed:
+            break
+    assert overflowed
+    # push it into overflow several more times: still exactly one episode record
+    for _ in range(20):
+        endpoint.play(big_chunk)
+    degraded_events = [
+        e
+        for e in endpoint.events
+        if e.get("type") == "degraded" and e.get("code") == DEGRADED_PLAYBACK_OVERFLOW
+    ]
+    assert len(degraded_events) == 1
+    assert endpoint.status()["playback_overflow_count"] > 1
+    endpoint.close(2.0)
+
+
+def test_round3_finding3_degraded_constant_is_actually_used():
+    """MINOR: it must appear in a real recorded event, not just be declared."""
+    fake = FakeSoundDevice(devices=[{"name": "fake-in", "default_samplerate": 24000}])
+    endpoint = HostEndpoint(sounddevice_importer=lambda: fake, numpy_importer=_import_numpy_real)
+    big_chunk = _silence_frame(24000)
+    for _ in range(200):
+        endpoint.play(big_chunk)
+    codes = {e.get("code") for e in endpoint.events if e.get("type") == "degraded"}
+    assert DEGRADED_PLAYBACK_OVERFLOW in codes
+    endpoint.close(2.0)
+
+
+def test_round3_finding4_close_report_names_stream_close_failures():
+    """MINOR: a stream stop/close failure inside close() must be named in the report."""
+    fake = FakeSoundDevice(devices=[{"name": "fake-in", "default_samplerate": 24000}])
+    endpoint = HostEndpoint(sounddevice_importer=lambda: fake, numpy_importer=_import_numpy_real)
+    endpoint.play(_silence_frame(480))
+    _wait_until(lambda: len(fake.output_streams) == 1 and fake.output_streams[0].written)
+
+    def _raise():
+        raise RuntimeError("stuck")
+
+    fake.output_streams[0].stop = _raise
+    fake.output_streams[0].close = _raise
+
+    report = endpoint.close(2.0)
+    assert report.streams_close_failed >= 1
+    assert endpoint.status()["close_report"]["streams_close_failed"] == report.streams_close_failed
+
+
+def test_round3_finding4_close_report_default_is_zero_when_nothing_fails():
+    fake = _working_fake()
+    endpoint = HostEndpoint(sounddevice_importer=lambda: fake, numpy_importer=_import_numpy_real)
+    report = endpoint.close(2.0)
+    assert report.streams_close_failed == 0
+
+
+def test_round3_not_reproduced_play_stop_playback_interleaving_accounts_every_sample():
+    """The review's claimed race: stop clears+bumps gen, play appends to the
+    stream stop is about to close, stop closes it, the writer pops and finds
+    no stream. Mirrors the coordinator's probe (2s of two threads hammering
+    play()/stop_playback()); every pushed sample must be written, discarded
+    by a stop, or dropped-for-no-device — never simply missing.
+    """
+    fake = FakeSoundDevice(
+        devices=[{"name": "fake-in", "default_samplerate": 24000}],
+    )
+    endpoint = HostEndpoint(sounddevice_importer=lambda: fake, numpy_importer=_import_numpy_real)
+    chunk = _silence_frame(480)
+    pushed = [0]
+    stop_event = threading.Event()
+
+    def pump():
+        while not stop_event.is_set():
+            endpoint.play(chunk)
+            pushed[0] += 480
+            time.sleep(0.001)
+
+    def stopper():
+        import random
+
+        while not stop_event.is_set():
+            endpoint.stop_playback()
+            time.sleep(random.uniform(0.001, 0.01))
+
+    threads = [threading.Thread(target=pump), threading.Thread(target=stopper)]
+    for t in threads:
+        t.start()
+    time.sleep(1.0)
+    stop_event.set()
+    for t in threads:
+        t.join(timeout=5.0)
+
+    time.sleep(0.3)
+    endpoint.stop_playback()
+    status = endpoint.status()
+    written = sum(len(piece) for o in fake.output_streams for piece in o.written) // 2
+    discarded = status["playback_stop_discarded_total"]
+    dropped_no_device = status["playback_dropped_no_device"]
+    accounted = written + discarded + dropped_no_device
+    gap = pushed[0] - accounted
+    # A small amount of in-flight slack (at most a couple of slices' worth)
+    # is expected: a chunk mid-write when the pump thread stops is neither
+    # fully written nor fully discarded yet.
+    assert abs(gap) <= 480 * 4, (
+        f"pushed={pushed[0]} written={written} discarded={discarded} "
+        f"dropped_no_device={dropped_no_device} gap={gap}"
+    )
+    endpoint.close(2.0)
+
+
+def test_round3b_barge_in_keeps_the_stream_open_when_abort_succeeds():
+    """The coordinator's follow-up measurement: 345 opens in a 2s stress run,
+    because every stop_playback() used to close+reopen. A device offering a
+    working abort() now pays for exactly ONE open across many barge-ins."""
+    fake = FakeSoundDevice(devices=[{"name": "fake-in", "default_samplerate": 24000}])
+    endpoint = HostEndpoint(sounddevice_importer=lambda: fake, numpy_importer=_import_numpy_real)
+    chunk = _silence_frame(480)
+    for _ in range(20):
+        endpoint.play(chunk)
+        endpoint.stop_playback()
+    assert len(fake.output_streams) == 1, f"{len(fake.output_streams)} opens for 20 barge-ins"
+    assert fake.output_streams[0].aborted is True
+    assert fake.output_streams[0].closed is False  # never dropped: kept open
+    # And the kept-open stream still plays the next reply.
+    endpoint.play(chunk)
+    _wait_until(lambda: endpoint.status()["playback_written_samples"] > 0)
+    assert endpoint.status()["playback_written_samples"] > 0
+    endpoint.close(2.0)
+
+
+def test_round3b_barge_in_falls_back_to_close_and_reopen_without_abort():
+    """A stream with no abort() (or whose abort raises) is dropped, not reused."""
+    fake = FakeSoundDevice(devices=[{"name": "fake-in", "default_samplerate": 24000}])
+    endpoint = HostEndpoint(sounddevice_importer=lambda: fake, numpy_importer=_import_numpy_real)
+    endpoint.play(_silence_frame(480))
+    _wait_until(lambda: len(fake.output_streams) == 1)
+    fake.output_streams[0].abort = None  # this stream cannot be aborted
+
+    endpoint.stop_playback()
+    assert fake.output_streams[0].closed is True
+
+    endpoint.play(_silence_frame(480))
+    assert len(fake.output_streams) == 2, "the dropped stream must be replaced by a fresh open"
     endpoint.close(2.0)
 
 

@@ -44,11 +44,38 @@ the fault, don't just record that one occurred):
   directions; an output-device-busy failure blocking capture (or vice versa)
   was round 2's finding 6b, not a design intent. A later
   :meth:`~HostEndpoint.start_capture`/:meth:`~HostEndpoint.play` call RETRIES
-  the open once (never a loop, never a background thread) and, on success,
-  clears that direction's degradation and records exactly one recovery
-  event — a replugged USB mic no longer needs a daemon restart.
+  the open (never a loop, never a background thread) and, on success, clears
+  that direction's degradation and records exactly one recovery event — a
+  replugged USB mic no longer needs a daemon restart. **Capture** retries
+  unconditionally, once per call, because :meth:`~HostEndpoint.start_capture`
+  is called rarely (daemon startup, or a deliberate manual retry) — never
+  from a hot loop. **Playback is different and round 3 finding 1 is why**: a
+  live TTS reply calls :meth:`~HostEndpoint.play` roughly every 20 ms, and a
+  probe against a dead output measured 200 open attempts across 100 calls —
+  each one a PortAudio call that can BLOCK, against ``play()``'s own "never
+  blocks" promise. So a failed output open (or write — see
+  :data:`DEGRADED_WRITE_FAILED` below) starts an exponential cooldown
+  (:data:`_OPEN_COOLDOWN_BASE_S` doubling to :data:`_OPEN_COOLDOWN_MAX_S`)
+  before the NEXT attempt; every chunk offered while cooling down is counted
+  (:attr:`HostEndpoint._playback_dropped_no_device`), never silently
+  dropped, and the degradation is recorded ONCE per failure episode with the
+  attempt count tracked separately (:attr:`HostEndpoint._output_degrade_attempts`,
+  never capped) rather than once per attempt.
 
 The first three are checked once, at construction. All four never raise.
+
+A device that dies mid-playback is not silent either — round 3 finding 2
+----------------------------------------------------------------------------
+A ``stream.write()`` that starts raising (the USB device unplugged, the ALSA
+node gone) used to just increment ``callback_errors`` forever: the writer
+kept calling ``write()`` on a dead stream every slice, and
+``degradation_out`` stayed ``None`` — a healthy-looking status for a daemon
+that has gone mute. :meth:`HostEndpoint._handle_write_failure` now closes and
+drops the stream, discards whatever was still queued for it (a device that
+just failed IS a device no longer worth queueing for), records
+:data:`DEGRADED_WRITE_FAILED` through the same episode/cooldown mechanism as
+an open failure, and lets the next :meth:`~HostEndpoint.play` go through the
+cooldown-gated reopen above rather than hammering the dead device again.
 
 Mute is enforced in the capture path (plan obligation ``o8``)
 ----------------------------------------------------------------
@@ -80,8 +107,15 @@ the same way regardless of how a caller chunks its input. Hitting the bound
 refuses the NEW chunk (the buffer's contents are untouched — nothing already
 queued is ever silently discarded) and increments
 :attr:`HostEndpoint._playback_overflow_count` under
-:data:`DEGRADED_PLAYBACK_OVERFLOW`, a NAMED, COUNTED degradation, never a
-silent drop.
+:data:`DEGRADED_PLAYBACK_OVERFLOW`, a NAMED, COUNTED degradation. Round 3
+finding 3 closed the gap between that claim and the code: the counter was
+real but the code was a dead constant nobody ever recorded an event under.
+An overflow now also records ONE ``degraded`` event per episode (the first
+overflowing ``play()`` call after a non-overflowing period), the same
+episode discipline round 3 finding 1 uses for a dead output — the exact
+count stays in :attr:`~HostEndpoint._playback_overflow_count`, which is
+already exact; the event log just stops being silent about the fact that
+an episode happened at all.
 
 Barge-in: stop_playback() actually cuts — round 2 finding 2
 -----------------------------------------------------------
@@ -102,6 +136,24 @@ worth of audio can still be sounding by the time a barge-in request is
 noticed, regardless of how large the original :meth:`~HostEndpoint.play` call
 was.
 
+The review's third MAJOR candidate — investigated, not reproduced. A 2-second
+stress test hammering :meth:`~HostEndpoint.play` and
+:meth:`~HostEndpoint.stop_playback` from two threads found no orphaned
+stream, but did surface a genuine narrow window: :meth:`~HostEndpoint.play`
+reads ``self._output_stream`` once, BEFORE resampling, to decide whether to
+open a fresh one; a concurrent :meth:`~HostEndpoint.stop_playback` could
+close and null that same stream while the resampling ran, leaving ``play()``
+about to enqueue a chunk for a stream reference that no longer exists.
+Closed structurally rather than left as a timing bet: :meth:`_stop_playback_internal`
+now nulls ``self._output_stream`` in the SAME lock acquisition as its
+queue-clear and generation bump, and :meth:`play` RE-CHECKS
+``self._output_stream is None`` immediately before enqueueing, under that
+same lock. Either the append happens-before the clear (the chunk is cleanly
+discarded, counted in ``playback_stop_discarded_total``) or the check
+happens-after the null (the chunk is refused up front, counted in
+``playback_dropped_no_device``) — there is no window left where a chunk is
+silently unaccounted for.
+
 close(deadline) actually honours its deadline — round 2 finding 3
 -------------------------------------------------------------------
 The old code computed a "remaining deadline" and then threw it away
@@ -115,6 +167,15 @@ and (3) returns an :class:`~embodiment.audio.endpoint.EndpointCloseReport`
 (also mirrored in :meth:`~HostEndpoint.status`) naming whether each thread was
 actually confirmed stopped, how many samples were discarded, and how long
 close really took. Lesson 6 restated: a deadline nobody checks is not a bound.
+Round 3 finding 4 closed the last gap in that report: a stream that raised
+while being stopped/closed DURING ``close()`` used to only bump the generic
+``callback_errors`` counter, leaving the fault invisible to the very report
+whose whole point is "what could not be released is reported here, never
+silently dropped". ``streams_close_failed`` (also added to
+:class:`~embodiment.audio.endpoint.EndpointCloseReport` itself, defaulting to
+``0`` since not every endpoint implementation has a local stream that can
+fail this way) now sums how many of this ``close()`` call's own
+stop/close attempts raised, across the playback, capture and output streams.
 
 The resampler: anti-aliased where it counts, continuous everywhere — round 2 findings 4/5
 -------------------------------------------------------------------------------------------
@@ -209,6 +270,7 @@ from embodiment.audio.endpoint import (
     EndpointDegradation,
     FrameCallback,
 )
+from embodiment.safe_reason import describe_exception
 
 __all__ = [
     "DEGRADED_IMPORT",
@@ -216,6 +278,7 @@ __all__ = [
     "DEGRADED_ENUMERATION",
     "DEGRADED_OPEN",
     "DEGRADED_PLAYBACK_OVERFLOW",
+    "DEGRADED_WRITE_FAILED",
     "Resampler",
     "HostEndpoint",
 ]
@@ -230,6 +293,20 @@ DEGRADED_ENUMERATION = "audio-host-no-devices"
 DEGRADED_OPEN = "audio-host-open-failed"
 #: A play() chunk was refused because the playback buffer is full (round 2 finding 1).
 DEGRADED_PLAYBACK_OVERFLOW = "audio-host-playback-overflow"
+#: A write to the output stream raised — the device died mid-playback (round 3 finding 2).
+DEGRADED_WRITE_FAILED = "audio-host-write-failed"
+
+#: Round 3 finding 1: how long a NEW open attempt is refused after one fails,
+#: starting here and doubling (capped) on each further failure. A judgement
+#: call: 2 s means a genuinely transient hiccup (a device claimed for one
+#: beat by another process) recovers within a couple of retries, while a
+#: truly dead device stops costing an open-syscall's worth of blocking per
+#: `play()` call — measured on the real device to matter: PortAudio's own
+#: open call can block, and `play()` promises it never blocks the caller.
+_OPEN_COOLDOWN_BASE_S = 2.0
+#: Upper bound on the backoff above, so a permanently dead device settles at
+#: one attempt every 30 s rather than growing without limit.
+_OPEN_COOLDOWN_MAX_S = 30.0
 
 #: Default bounded-queue depth for CAPTURE only (playback has its own,
 #: seconds-based bound — see :data:`_PLAYBACK_BUFFER_SECONDS`). A judgement
@@ -510,7 +587,10 @@ class HostEndpoint:
         self._sd_importer = sounddevice_importer
         self._np_importer = numpy_importer
 
-        self._counter_lock = threading.Lock()
+        # RLock, not Lock: round 3 needs a nested acquisition (the overflow
+        # path records an event, under the same lock that guards the
+        # playback-queue decision, from inside an already-held lock).
+        self._counter_lock = threading.RLock()
         self._muted = False
         self._events: "deque[dict[str, object]]" = deque(maxlen=_MAX_RETAINED_EVENTS)
         self._mute_event_count = 0
@@ -556,22 +636,43 @@ class HostEndpoint:
         self._degradation_out: EndpointDegradation | None = None
         self._last_close_report: EndpointCloseReport | None = None
 
+        # round 3 finding 1: a cooldown before retrying a dead OUTPUT device,
+        # so `play()` never attempts (and potentially blocks on) an open on
+        # every call. Scoped to output only: capture's start_capture() is
+        # called rarely (daemon startup, or a deliberate manual retry), never
+        # from a per-chunk hot loop, so it keeps round 2's simpler
+        # retry-once-per-call behaviour.
+        self._out_open_cooldown_until = 0.0
+        self._out_open_backoff_s = _OPEN_COOLDOWN_BASE_S
+        self._output_degrade_attempts = 0
+        self._playback_dropped_no_device = 0
+        self._playback_overflow_episode_active = False
+
     # -- construction-time probe (never raises) --------------------------
 
     def _probe(self) -> EndpointDegradation | None:
         try:
             sd = self._sd_importer()
-        except OSError:
-            return EndpointDegradation(DEGRADED_PORTAUDIO, "PortAudio native library unavailable")
-        except ImportError:
-            return EndpointDegradation(DEGRADED_IMPORT, "sounddevice is not installed")
-        except Exception:
-            return EndpointDegradation(DEGRADED_IMPORT, "sounddevice import raised")
+        except OSError as exc:
+            return EndpointDegradation(
+                DEGRADED_PORTAUDIO,
+                f"PortAudio native library unavailable: {describe_exception(exc)}",
+            )
+        except ImportError as exc:
+            return EndpointDegradation(
+                DEGRADED_IMPORT, f"sounddevice is not installed: {describe_exception(exc)}"
+            )
+        except Exception as exc:
+            return EndpointDegradation(
+                DEGRADED_IMPORT, f"sounddevice import raised: {describe_exception(exc)}"
+            )
 
         try:
             devices = sd.query_devices()
-        except Exception:
-            return EndpointDegradation(DEGRADED_ENUMERATION, "device enumeration raised")
+        except Exception as exc:
+            return EndpointDegradation(
+                DEGRADED_ENUMERATION, f"device enumeration raised: {describe_exception(exc)}"
+            )
         if not devices:
             return EndpointDegradation(DEGRADED_ENUMERATION, "no audio devices found")
 
@@ -628,16 +729,17 @@ class HostEndpoint:
         deadline = max(0.0, float(deadline))
         start = time.monotonic()
 
-        samples_discarded = self.stop_playback()
+        samples_discarded, playback_close_failures = self._stop_playback_internal()
 
         remaining = max(0.0, deadline - (time.monotonic() - start))
-        capture_stopped = self._stop_capture(timeout=remaining / 2.0)
+        capture_stopped, capture_close_failures = self._stop_capture(timeout=remaining / 2.0)
 
         remaining = max(0.0, deadline - (time.monotonic() - start))
         writer_stopped = self._stop_writer(timeout=remaining)
 
+        output_close_failures = 0
         if self._output_stream is not None:
-            self._safe_stream_close(self._output_stream)
+            output_close_failures = self._safe_stream_close(self._output_stream)
             self._output_stream = None
 
         self._attached = False
@@ -648,6 +750,9 @@ class HostEndpoint:
             writer_thread_stopped=writer_stopped,
             samples_discarded=samples_discarded,
             elapsed_s=elapsed,
+            streams_close_failed=(
+                playback_close_failures + capture_close_failures + output_close_failures
+            ),
         )
         self._last_close_report = report
         return report
@@ -700,8 +805,10 @@ class HostEndpoint:
         was_degraded = self._degradation_in is not None
         try:
             stream, rate, path = self._open_input_stream()
-        except Exception:
-            self._degradation_in = EndpointDegradation(DEGRADED_OPEN, "input device open failed")
+        except Exception as exc:
+            self._degradation_in = EndpointDegradation(
+                DEGRADED_OPEN, f"input device open failed: {describe_exception(exc)}"
+            )
             return
 
         if was_degraded:
@@ -724,7 +831,7 @@ class HostEndpoint:
     def stop_capture(self) -> None:
         self._stop_capture(timeout=2.0)
 
-    def _stop_capture(self, timeout: float) -> bool:
+    def _stop_capture(self, timeout: float) -> tuple[bool, int]:
         self._capture_stop.set()
         thread = self._capture_thread
         self._capture_thread = None
@@ -734,10 +841,11 @@ class HostEndpoint:
             stopped = not thread.is_alive()
         stream = self._input_stream
         self._input_stream = None
+        close_failures = 0
         if stream is not None:
-            self._safe_stream_close(stream)
+            close_failures = self._safe_stream_close(stream)
         self._capturing = False
-        return stopped
+        return stopped, close_failures
 
     def _on_input_callback(
         self, indata: object, frames: int, time_info: object, status: object
@@ -833,6 +941,28 @@ class HostEndpoint:
         stream.start()
         return stream, rate, _classify_resample_path(SAMPLE_RATE_HZ, rate)
 
+    def _enter_output_degradation(self, code: str, exc: BaseException, action: str) -> None:
+        """Round 3 findings 1/2: one recorded episode + a cooldown, for open OR write failures.
+
+        Shared by :meth:`play`'s open path and :meth:`_handle_write_failure`
+        (lesson 8 — one code path for "the output direction just broke"): an
+        episode-start event is appended only on the FIRST failure since the
+        last recovery, the exact attempt count is tracked separately
+        (:attr:`_output_degrade_attempts`, never capped), and the retry
+        cooldown backs off exponentially so a permanently dead device costs
+        this module one open (or, for a write failure, one already-attempted
+        write) per backoff period rather than one per `play()` call.
+        """
+        is_new_episode = self._degradation_out is None
+        reason = f"{action}: {describe_exception(exc)}"
+        self._degradation_out = EndpointDegradation(code, reason)
+        if is_new_episode:
+            self._record_event({"type": "degraded", "code": code, "direction": "out"})
+        with self._counter_lock:
+            self._output_degrade_attempts += 1
+        self._out_open_cooldown_until = time.monotonic() + self._out_open_backoff_s
+        self._out_open_backoff_s = min(_OPEN_COOLDOWN_MAX_S, self._out_open_backoff_s * 2.0)
+
     def play(self, frames: bytes) -> None:
         if not isinstance(frames, (bytes, bytearray)):
             return
@@ -840,16 +970,29 @@ class HostEndpoint:
             return
 
         if self._output_stream is None:
+            if (
+                self._degradation_out is not None
+                and time.monotonic() < self._out_open_cooldown_until
+            ):
+                # Round 3 finding 1: a dead device does NOT get retried (and
+                # potentially block the caller) on every single play() call —
+                # every chunk offered while cooling down is counted, never
+                # silently dropped.
+                with self._counter_lock:
+                    self._playback_dropped_no_device += 1
+                return
+
             was_degraded = self._degradation_out is not None
             try:
                 stream, rate, path = self._open_output_stream()
-            except Exception:
-                self._degradation_out = EndpointDegradation(
-                    DEGRADED_OPEN, "output device open failed"
-                )
+            except Exception as exc:
+                self._enter_output_degradation(DEGRADED_OPEN, exc, "output device open failed")
+                with self._counter_lock:
+                    self._playback_dropped_no_device += 1
                 return
             if was_degraded:
                 self._degradation_out = None
+                self._out_open_backoff_s = _OPEN_COOLDOWN_BASE_S
                 self._record_event({"type": "recovered", "direction": "out"})
             self._device_rate_out = rate
             self._resample_path_out = path
@@ -871,14 +1014,30 @@ class HostEndpoint:
         chunk_bytes = len(resampled)
         limit_samples = self._playback_buffer_limit_samples()
         with self._counter_lock:
+            if self._output_stream is None:
+                # A concurrent stop_playback()/write failure closed the
+                # stream while this call was resampling above: this re-check,
+                # done under the SAME lock that governs both the queue and
+                # the stream reference, is what closes the play()/
+                # stop_playback() interleaving the round 3 review raised — a
+                # chunk is never silently queued onto a device that no
+                # longer exists.
+                self._playback_dropped_no_device += 1
+                return
             in_flight = (
                 self._playback_queued_bytes + self._playback_active_remaining_bytes
             ) // SAMPLE_WIDTH_BYTES
             if in_flight + chunk_bytes // SAMPLE_WIDTH_BYTES > limit_samples:
                 # Refuse the NEW chunk only — everything already buffered is
                 # untouched (round 2 finding 1: never silently eat a sentence).
+                if not self._playback_overflow_episode_active:
+                    self._playback_overflow_episode_active = True
+                    self._record_event(
+                        {"type": "degraded", "code": DEGRADED_PLAYBACK_OVERFLOW, "direction": "out"}
+                    )
                 self._playback_overflow_count += 1
                 return
+            self._playback_overflow_episode_active = False
             self._playback_chunks.append(resampled)
             self._playback_queued_bytes += chunk_bytes
             self._playback_total_pushed_samples += chunk_bytes // SAMPLE_WIDTH_BYTES
@@ -886,6 +1045,20 @@ class HostEndpoint:
 
     def stop_playback(self) -> int:
         """Barge-in (round 2 finding 2): discard queued + in-flight audio; cut what sounds."""
+        discarded, _close_failures = self._stop_playback_internal()
+        return discarded
+
+    def _stop_playback_internal(self) -> tuple[int, int]:
+        """As :meth:`stop_playback`, also reporting stream close failures (round 3 finding 4).
+
+        Round 3's not-reproduced follow-up measured 345 stream opens in a
+        2 s play()/stop_playback() stress run, because every barge-in used to
+        close the output stream unconditionally and the next `play()` had to
+        reopen it. The stream is now kept open across a barge-in whenever it
+        offers a cheap ``abort()`` that succeeds — only a device with no
+        abort support, or whose abort itself raises, pays for a close and a
+        cooldown-gated reopen (round 3 finding 1) on its NEXT `play()` call.
+        """
         with self._counter_lock:
             queued_samples = self._playback_queued_bytes // SAMPLE_WIDTH_BYTES
             active_samples = self._playback_active_remaining_bytes // SAMPLE_WIDTH_BYTES
@@ -896,19 +1069,62 @@ class HostEndpoint:
             self._playback_stop_discarded_total += discarded
             self._playback_generation += 1
             self._playing = False
+            # The stream reference is nulled UNCONDITIONALLY, in THE SAME
+            # lock acquisition as the generation bump above — this is what
+            # closes the race a concurrent play() could otherwise hit (read
+            # `self._output_stream` as non-None, then raced to append a
+            # chunk to it after this call moved on): play()'s own re-check,
+            # a few lines below in `play()`, happens under this same lock.
+            # Reinstating the SAME object below (if abort succeeds) is a
+            # SEPARATE, later lock acquisition, guarded so it can never
+            # clobber a stream a concurrent play() opened in between.
+            stream = self._output_stream
+            self._output_stream = None
 
-        stream = self._output_stream
+        close_failures = 0
         if stream is not None:
             abort = getattr(stream, "abort", None)
+            aborted = False
             if callable(abort):
                 try:
                     abort()
+                    aborted = True
                 except Exception:
                     with self._counter_lock:
                         self._callback_errors += 1
-            self._safe_stream_close(stream)
+            if aborted:
+                with self._counter_lock:
+                    if self._output_stream is None:
+                        self._output_stream = stream
+            else:
+                close_failures = self._safe_stream_close(stream)
+        return discarded, close_failures
+
+    def _handle_write_failure(self, exc: BaseException) -> None:
+        """Round 3 finding 2: a dead device mid-playback is never silent.
+
+        Closes and drops the stream, discards whatever was still buffered
+        for it (a device that just failed a write is not a device to keep
+        queueing for), and records :data:`DEGRADED_WRITE_FAILED` through the
+        same episode/cooldown mechanism as an open failure — so the next
+        `play()` goes through :meth:`play`'s cooldown-gated reopen rather
+        than hammering a dead device again.
+        """
+        with self._counter_lock:
+            stream = self._output_stream
             self._output_stream = None
-        return discarded
+            discarded = (
+                self._playback_queued_bytes + self._playback_active_remaining_bytes
+            ) // SAMPLE_WIDTH_BYTES
+            self._playback_chunks.clear()
+            self._playback_queued_bytes = 0
+            self._playback_active_remaining_bytes = 0
+            self._playback_stop_discarded_total += discarded
+            self._playback_generation += 1
+            self._playing = False
+        if stream is not None:
+            self._safe_stream_close(stream)
+        self._enter_output_degradation(DEGRADED_WRITE_FAILED, exc, "output write failed")
 
     @property
     def playing(self) -> bool:
@@ -987,12 +1203,18 @@ class HostEndpoint:
             piece = chunk[offset:end]
             stream = self._output_stream
             if stream is None:
+                # Defensive only: `_output_stream` and `_playback_generation`
+                # always change together (see `_stop_playback_internal` and
+                # `_handle_write_failure`), so a matching generation implies a
+                # live stream reference — this branch should be unreachable,
+                # but a nullable value is never trusted blindly (lesson 3).
+                with self._counter_lock:
+                    self._callback_errors += 1
                 return
             try:
                 stream.write(piece)
-            except Exception:
-                with self._counter_lock:
-                    self._callback_errors += 1
+            except Exception as exc:
+                self._handle_write_failure(exc)
                 return
             offset = end
             with self._counter_lock:
@@ -1020,17 +1242,31 @@ class HostEndpoint:
 
     # -- introspection -----------------------------------------------------
 
-    def _safe_stream_close(self, stream: Any) -> None:
+    def _safe_stream_close(self, stream: Any) -> int:
+        """Stop and close *stream*, never raising. Returns how many of the two raised.
+
+        Round 3 finding 4: previously this only bumped ``callback_errors``,
+        so a stream that failed to stop/close cleanly was invisible to
+        :class:`~embodiment.audio.endpoint.EndpointCloseReport`. Callers that
+        are building a close report sum this return value into
+        ``streams_close_failed``; callers that are not (``detach()``, a
+        mid-life `stop_playback()`) still get the ``callback_errors`` bump,
+        unchanged.
+        """
+        failures = 0
         try:
             stream.stop()
         except Exception:
+            failures += 1
             with self._counter_lock:
                 self._callback_errors += 1
         try:
             stream.close()
         except Exception:
+            failures += 1
             with self._counter_lock:
                 self._callback_errors += 1
+        return failures
 
     def status(self) -> dict[str, object]:
         with self._counter_lock:
@@ -1047,6 +1283,8 @@ class HostEndpoint:
                 "playback_total_pushed_samples": self._playback_total_pushed_samples,
                 "playback_stop_discarded_total": self._playback_stop_discarded_total,
                 "playback_queued_bytes": self._playback_queued_bytes,
+                "playback_dropped_no_device": self._playback_dropped_no_device,
+                "output_degrade_attempts": self._output_degrade_attempts,
             }
         return {
             "attached": self._attached,

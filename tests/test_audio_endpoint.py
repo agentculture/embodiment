@@ -148,18 +148,20 @@ def test_protocol_members_match_the_documented_contract():
     assert expected <= set(dir(AudioEndpoint))
 
 
-def test_endpoint_close_report_is_frozen_and_carries_the_four_fields():
+def test_endpoint_close_report_is_frozen_and_carries_the_five_fields():
     report = EndpointCloseReport(
         capture_thread_stopped=True,
         writer_thread_stopped=False,
         samples_discarded=42,
         elapsed_s=0.05,
+        streams_close_failed=2,
     )
     assert report.to_dict() == {
         "capture_thread_stopped": True,
         "writer_thread_stopped": False,
         "samples_discarded": 42,
         "elapsed_s": 0.05,
+        "streams_close_failed": 2,
     }
     try:
         report.samples_discarded = 0  # type: ignore[misc]
@@ -169,6 +171,18 @@ def test_endpoint_close_report_is_frozen_and_carries_the_four_fields():
     assert raised, "EndpointCloseReport must be immutable"
 
 
+def test_endpoint_close_report_streams_close_failed_defaults_to_zero():
+    """round 3 fix 4: a constructor that doesn't know about this field (e.g. a
+    remote endpoint with no local stream to fail) never has to name it."""
+    report = EndpointCloseReport(
+        capture_thread_stopped=True,
+        writer_thread_stopped=True,
+        samples_discarded=0,
+        elapsed_s=0.0,
+    )
+    assert report.streams_close_failed == 0
+
+
 def test_null_endpoint_close_returns_a_close_report():
     endpoint = NullEndpoint()
     report = endpoint.close(1.0)
@@ -176,3 +190,4 @@ def test_null_endpoint_close_returns_a_close_report():
     assert report.capture_thread_stopped is True
     assert report.writer_thread_stopped is True
     assert report.samples_discarded == 0
+    assert report.streams_close_failed == 0
