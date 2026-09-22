@@ -626,28 +626,64 @@ def _validate_data(kind: str, data: Any) -> Optional[str]:
     for field_name in required:
         if field_name not in data:
             return field_name
-    if kind == "transcript":
-        if data.get("role") not in ("user", "assistant"):
-            return "role"
-        if not isinstance(data.get("text"), str):
-            return "text"
-    if kind == "reply" and not isinstance(data.get("text"), str):
+    type_check = _KIND_TYPE_CHECKS.get(kind)
+    return type_check(data) if type_check is not None else None
+
+
+def _nonempty_str(value: Any) -> bool:
+    return isinstance(value, str) and bool(value)
+
+
+def _plain_int(value: Any) -> bool:
+    """An ``int`` that is not a ``bool`` (``True`` must not count as ``1``)."""
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _check_transcript_types(data: dict[str, Any]) -> Optional[str]:
+    if data.get("role") not in ("user", "assistant"):
+        return "role"
+    if not isinstance(data.get("text"), str):
         return "text"
-    if kind == "mic" and not isinstance(data.get("hot"), bool):
-        return "hot"
-    if kind == "degradation":
-        if not isinstance(data.get("code"), str) or not data.get("code"):
-            return "code"
-        if not isinstance(data.get("reason"), str):
-            return "reason"
-        if not isinstance(data.get("source"), str) or not data.get("source"):
-            return "source"
-    if kind == "features" and data.get("direction") not in ("in", "out"):
-        return "direction"
-    if kind == "clients":
-        if not isinstance(data.get("count"), int) or isinstance(data.get("count"), bool):
-            return "count"
     return None
+
+
+def _check_reply_types(data: dict[str, Any]) -> Optional[str]:
+    return None if isinstance(data.get("text"), str) else "text"
+
+
+def _check_mic_types(data: dict[str, Any]) -> Optional[str]:
+    return None if isinstance(data.get("hot"), bool) else "hot"
+
+
+def _check_degradation_types(data: dict[str, Any]) -> Optional[str]:
+    if not _nonempty_str(data.get("code")):
+        return "code"
+    if not isinstance(data.get("reason"), str):
+        return "reason"
+    if not _nonempty_str(data.get("source")):
+        return "source"
+    return None
+
+
+def _check_features_types(data: dict[str, Any]) -> Optional[str]:
+    return None if data.get("direction") in ("in", "out") else "direction"
+
+
+def _check_clients_types(data: dict[str, Any]) -> Optional[str]:
+    return None if _plain_int(data.get("count")) else "count"
+
+
+#: The targeted per-kind type checks :func:`_validate_data` runs AFTER the
+#: presence check, keyed by kind. Each returns the first offending field name
+#: or ``None``; a kind absent here has presence-only validation.
+_KIND_TYPE_CHECKS: dict[str, Callable[[dict[str, Any]], Optional[str]]] = {
+    "transcript": _check_transcript_types,
+    "reply": _check_reply_types,
+    "mic": _check_mic_types,
+    "degradation": _check_degradation_types,
+    "features": _check_features_types,
+    "clients": _check_clients_types,
+}
 
 
 def _drop_policy(
