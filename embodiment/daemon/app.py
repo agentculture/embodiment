@@ -148,6 +148,7 @@ __all__ = [
     "APP_BOOTSTRAP_DEGRADED",
     "APP_CAPTURE_FAILED",
     "APP_FRAMES_NO_SESSION",
+    "APP_FRAMES_REFUSED",
     "APP_REPLY_SECRET_SCRUBBED",
     "APP_REMEMBER_REFUSED",
     "REMEMBER_TOOL_NAME",
@@ -532,6 +533,11 @@ APP_EAR_DETACH_FAILED = "app-ear-detach-failed"
 APP_CAPTURE_FAILED = "app-capture-failed"
 #: A captured frame arrived with no realtime session to send it to.
 APP_FRAMES_NO_SESSION = "app-frames-no-session"
+#: The realtime client REFUSED a frame — ``send_audio`` returned False: the
+#: session is gone, or its send queue is full. Counted apart from a forwarded
+#: frame (review finding 12): a callback that counted every non-raising call
+#: as forwarded made a deaf session look like a busy one.
+APP_FRAMES_REFUSED = "app-frames-refused"
 #: The model called ``remember`` with something that could not be stored.
 APP_REMEMBER_REFUSED = "app-remember-refused"
 #: The model called ``forget`` with an id that could not be archived: not an
@@ -1098,6 +1104,7 @@ class DaemonApp:
         self._stale_generation_recorded = False
         self._frames_captured = 0
         self._frames_forwarded = 0
+        self._frames_refused = 0
         self._features_in = FeatureExtractor()
 
         self._clients = 0
@@ -1810,12 +1817,23 @@ class DaemonApp:
                 self._record(APP_FRAMES_NO_SESSION, "no realtime session to send to", once=True)
                 return
             try:
-                ears.send_audio(pcm)
+                accepted = ears.send_audio(pcm)
             except Exception as exc:  # noqa: BLE001  # the ears client is a seam
                 self._record(APP_CAPTURE_FAILED, _describe(exc), once=True)
             else:
-                with self._lock:
-                    self._frames_forwarded += 1
+                # The client's own answer: False is a frame that went nowhere,
+                # and it is counted as such, not as forwarded.
+                if accepted is False:
+                    with self._lock:
+                        self._frames_refused += 1
+                    self._record(
+                        APP_FRAMES_REFUSED,
+                        "the realtime client refused a frame (no session, or its queue is full)",
+                        once=True,
+                    )
+                else:
+                    with self._lock:
+                        self._frames_forwarded += 1
             self._publish_features("in", self._features_in, pcm)
 
         return on_frame
@@ -3137,6 +3155,7 @@ class DaemonApp:
             audio = {
                 "frames_captured": self._frames_captured,
                 "frames_forwarded": self._frames_forwarded,
+                "frames_refused": self._frames_refused,
                 "frames_from_stale_ear": self._stale_frames,
                 "frames_dropped_no_session": self._frames_dropped_no_session,
                 "stale_frame_tolerance": _STALE_FRAME_TOLERANCE,

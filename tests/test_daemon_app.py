@@ -4733,3 +4733,45 @@ class TestRedialOwnership:
         ]
         assert ended == [], ended
         assert app_module.APP_EARS_REDIALLED in h.ledger_codes()
+
+
+# ── a refused frame is not a forwarded frame (review finding 12) ──────────────
+
+
+class TestRefusedFrames:
+    """``send_audio`` returns False when the session is gone or its queue is
+    full; the callback counted every non-raising call as forwarded, so a deaf
+    session looked like a busy one.
+    """
+
+    def test_send_audio_false_is_counted_as_refused_and_recorded_once(self, harness: Any) -> None:
+        class RefusingEars(FakeEars):
+            def send_audio(self, pcm: bytes) -> bool:
+                self.sent.append(bytes(pcm))
+                return False
+
+        ears = RefusingEars()
+        h = harness(ears=ears)
+        endpoint = FakeEndpoint()
+        h.app.attach_ear("host", endpoint)
+        assert endpoint.on_frame is not None
+        for _ in range(5):
+            endpoint.on_frame(silent_pcm())
+
+        audio = h.app.status()["audio"]
+        assert audio["frames_captured"] == 5
+        assert audio["frames_forwarded"] == 0, "a refused frame was counted as forwarded"
+        assert audio["frames_refused"] == 5
+        assert h.ledger_codes().count(app_module.APP_FRAMES_REFUSED) == 1
+        assert h.app.status()["degradations"][app_module.APP_FRAMES_REFUSED] == 5
+
+    def test_a_forwarded_frame_is_still_forwarded(self, harness: Any) -> None:
+        h = harness()
+        endpoint = FakeEndpoint()
+        h.app.attach_ear("host", endpoint)
+        for _ in range(2):
+            endpoint.on_frame(silent_pcm())
+        audio = h.app.status()["audio"]
+        assert audio["frames_forwarded"] == 2
+        assert audio["frames_refused"] == 0
+        assert app_module.APP_FRAMES_REFUSED not in h.ledger_codes()
