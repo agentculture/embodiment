@@ -76,7 +76,32 @@ _APPROVED_DEPENDENCIES: dict[str, str] = {
     #    imports `events_cli` LAZILY (inside the emit path), so paho-mqtt stays
     #    out of the measured top-level import set below.
     "events-cli>=0.10": "pulls paho-mqtt",
+    # -> nothing. websockets declares zero Requires-Dist entries (17.1), so it is
+    #    one package in every host. Approved for the realtime redesign (plan task
+    #    t3): the lobes `/v1/realtime` client and the daemon's inbound endpoint.
+    #    No module imports it yet, so it is absent from the runtime set below;
+    #    the task that adds the first import (t6) adds it there, with an owner.
+    "websockets>=15": "pulls nothing (zero Requires-Dist)",
 }
+
+#: Optional extras, pinned as exactly as the base set and for the same reason:
+#: an extra is still a supply-chain decision, it is just one a host opts into.
+#: Extras are NEVER imported at module scope by anything in the package, so they
+#: cannot appear in the runtime-import set; the consumer imports lazily and
+#: degrades to a recorded state when the extra is missing.
+#:
+#: Empty: deviation d4 (round 4 of plan task t7) withdrew the `audio` extra
+#: (`sounddevice>=0.5`) — embodiment/audio/host.py drives the microphone and
+#: speaker as subprocesses (`pw-record`/`pw-play`/`arecord`/`aplay`, found via
+#: `shutil.which` at runtime) instead of an in-process PortAudio binding, so
+#: there is no Python package left to pin here.
+_APPROVED_EXTRAS: dict[str, dict[str, str]] = {}
+
+#: Packages that must never be a dependency, in any form. `lobes-cli` is the
+#: gateway embodiment talks to; it is reached over the network and its modules
+#: are coupled to its own server machinery. Importing it would also drag its
+#: `realtime` extra (torch, fastapi, silero-vad) toward every host.
+_FORBIDDEN_DISTRIBUTIONS: frozenset[str] = frozenset({"lobes-cli", "lobes"})
 
 #: Third-party top-level modules that importing **every** embodiment module
 #: introduces. Measured, not guessed — see :func:`_measure_runtime_imports`.
@@ -287,6 +312,59 @@ def test_declared_dependencies_match_the_approved_set():
             "     CHANGELOG.md — a new dependency changes every host's install.\n"
             "  3. Then update _APPROVED_DEPENDENCIES in tests/test_zero_deps.py."
         ),
+    )
+
+
+def _declared_extras() -> dict[str, list[str]]:
+    with open(REPO_ROOT / "pyproject.toml", "rb") as handle:
+        data = tomllib.load(handle)
+    return data.get("project", {}).get("optional-dependencies", {})
+
+
+def test_declared_extras_match_the_approved_set():
+    """``[project.optional-dependencies]`` is exactly the approved extras — no drift."""
+    declared = {name: set(reqs) for name, reqs in _declared_extras().items()}
+    approved = {name: set(reqs) for name, reqs in _APPROVED_EXTRAS.items()}
+    assert declared == approved, (
+        "pyproject.toml [project.optional-dependencies] differs from _APPROVED_EXTRAS.\n"
+        f"  declared: {declared}\n  approved: {approved}\n"
+        "An extra is still a dependency decision a human makes: establish its full\n"
+        "transitive cost, record why in pyproject.toml, then update _APPROVED_EXTRAS."
+    )
+    for reqs in _APPROVED_EXTRAS.values():
+        for requirement in reqs:
+            assert ">=" in requirement or "==" in requirement, f"{requirement!r} has no floor"
+
+
+def test_forbidden_distributions_are_absent_everywhere():
+    """``lobes-cli`` is never a dependency, an extra, or a required runtime import."""
+
+    def dist_name(requirement: str) -> str:
+        for sep in (">=", "==", "<", ">", "~=", "[", ";", " "):
+            requirement = requirement.split(sep)[0]
+        return requirement.strip().lower()
+
+    everything = list(_declared_dependencies())
+    for reqs in _declared_extras().values():
+        everything.extend(reqs)
+    offenders = {dist_name(r) for r in everything} & _FORBIDDEN_DISTRIBUTIONS
+    assert not offenders, f"forbidden distribution(s) declared: {sorted(offenders)}"
+    assert not (_REQUIRED_RUNTIME_IMPORTS & _FORBIDDEN_DISTRIBUTIONS)
+
+
+def test_no_module_imports_an_optional_extra_at_module_scope():
+    """An extra that is imported at import time is not optional.
+
+    No extras are approved right now (d4 withdrew `audio`'s `sounddevice`),
+    so this set is empty — kept as a real check, not deleted, so the NEXT
+    extra this repo approves is covered automatically rather than by
+    someone remembering to re-add this test.
+    """
+    extra_modules: set[str] = set()
+    observed = _measure_runtime_imports(_discover_embodiment_modules())
+    assert not (observed & extra_modules), (
+        f"{sorted(observed & extra_modules)} imported at module scope; import it lazily "
+        "inside the function that needs it and degrade when it is missing."
     )
 
 

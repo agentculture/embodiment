@@ -1,0 +1,7 @@
+{
+  "session_id": "sess_aaaaaaaaaaaaaaaaaaaaaaaa",
+  "event_id": "event_000000000000000000000003",
+  "timestamp_ms": 9000,
+  "reason": "client disconnected",
+  "type": "session.closed"
+}

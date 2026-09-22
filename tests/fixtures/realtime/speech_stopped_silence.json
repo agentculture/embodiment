@@ -1,0 +1,9 @@
+{
+  "session_id": "sess_aaaaaaaaaaaaaaaaaaaaaaaa",
+  "event_id": "event_000000000000000000000005",
+  "timestamp_ms": 2600,
+  "item_id": "item_bbbbbbbbbbbbbbbbbbbbbbbb",
+  "at_ms": 2848,
+  "reason": "silence",
+  "type": "input_audio_buffer.speech_stopped"
+}

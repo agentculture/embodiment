@@ -1,6 +1,6 @@
 [project]
 name = "embodiment"
-version = "0.15.0"
+version = "0.16.0"
 description = "The agentic loop that gives an app an embodied AI presence. Install embodiment in an app or wrap one, supply a model seam plus IO callbacks, and it drives the perceive-decide-act loop and the presence pump - extracted from colleague so the loop is written once and imported, not reimplemented per host."
 readme = "README.md"
 license = "Apache-2.0"
@@ -67,18 +67,34 @@ classifiers = [
 # list and tests/test_zero_deps.py together; do not let it happen silently.
 #
 # Every entry below has an approval record in the deviation ledger
-# (`devague deviate --list`), naming its version floor and why the floor is
-# where it is. headspace-cli>=0.11 is d17: the floor is 0.11 precisely because
-# 0.11.0 is the release that resolved d2's open condition, declaring
-# create/run/put/export/destroy on `headspace.api` under headspace's own semver
-# with `headspace.core` private (headspace-cli#18). 0.10.0 advertised only
-# `__version__` in `__all__`, which is why the condition existed at all. A
-# dependency whose floor is not explained here is a floor nobody chose.
+# (`devague deviate --list`, and `.devague/deliveries/` for earlier cycles).
+# A dependency whose floor is not explained here is a floor nobody chose.
+#
+# websockets>=15 (realtime redesign, plan task t3, approved 2026-09-21): the
+# lobes `/v1/realtime` client AND the daemon's inbound audio endpoint server.
+# Zero Requires-Dist entries of its own (checked against 17.1's PyPI metadata),
+# so it adds exactly one package to every host. The floor is 15 because that is
+# the first release whose `websockets.asyncio` client and server are the
+# default, non-legacy implementations. lobes ships no importable client, and
+# `lobes-cli` must NEVER appear here: the gateway is reached over the network.
+#
+# headspace-cli left in 0.15.0 with its only consumer (the archived
+# workspace.py), taking the docker SDK with it.
 dependencies = [
     "eidetic-cli>=0.12",
     "coherence-cli>=0.6",
     "events-cli>=0.10",
+    "websockets>=15",
 ]
+
+# Deviation d4 (operator decision, round 4 of plan task t7): the `audio` extra
+# (sounddevice -> cffi -> pycparser, plus the system PortAudio library) is
+# WITHDRAWN. embodiment/audio/host.py now drives the microphone/speaker as
+# subprocesses (`pw-record`/`pw-play` or `arecord`/`aplay`) — the same shape
+# ../lobes-cli and ../shabbos-goy already run against the same hardware — so
+# no Python audio binding is installed at all; the backend binaries are a
+# runtime PATH lookup (`shutil.which`), not a pip dependency. No extra pin
+# replaces this one: there is nothing left for pip to install.
 
 [project.urls]
 Homepage = "https://github.com/agentculture/embodiment"
@@ -93,6 +109,32 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["embodiment"]
+
+# Task t19: ship the t17 dashboard's built artifact inside the wheel. This
+# bypasses git-ignore-based file selection (web/dist is gitignored — it is a
+# build artifact, not source) so the files the hook below produces are
+# packaged regardless. embodiment/http/server.py:default_dist_dir() reads
+# this at runtime; see the t19 handoff note for the path mismatch this task
+# found but did not fix (out of scope: server.py belongs to t16).
+[tool.hatch.build.targets.wheel.force-include]
+"web/dist" = "embodiment/web/dist"
+
+# Runs before the wheel's file list is built. Builds web/dist with npm when it
+# is missing; refuses the build (raises) rather than shipping an empty
+# dashboard. See hatch_build.py.
+[tool.hatch.build.targets.wheel.hooks.custom]
+path = "hatch_build.py"
+
+# The sdist ships web/ source (so a wheel built from the sdist can still run
+# the hook) but never web/node_modules or web/dist — both are already
+# git-ignored, which hatchling's default sdist file selection already
+# excludes; listed explicitly so the exclusion survives a change to that
+# default.
+[tool.hatch.build.targets.sdist]
+exclude = [
+    "web/node_modules",
+    "web/dist",
+]
 
 [dependency-groups]
 dev = [
@@ -138,3 +180,6 @@ skips = ["B101", "B404", "B603"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+markers = [
+    "slow: not selected by default (builds a wheel with npm); tests/test_wheel_ships_the_dashboard.py, run explicitly in CI",
+]

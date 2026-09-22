@@ -68,3 +68,37 @@ def _no_ambient_rig_credentials(
         return
     for name in LIVE_RIG_ENV:
         monkeypatch.delenv(name, raising=False)
+
+
+#: The temp directory as it was when the session started - the REAL one, where a
+#: real daemon's deterministic fallback state dir (`<tmp>/embodiment-state-<uid>`)
+#: would live. Captured at import, before any fixture can repoint it, so a guard
+#: test can prove the real one was left alone.
+REAL_TMPDIR = __import__("tempfile").gettempdir()
+
+
+@pytest.fixture(autouse=True)
+def _no_writes_to_the_real_tmpdir(
+    monkeypatch: pytest.MonkeyPatch, tmp_path_factory: pytest.TempPathFactory
+) -> None:
+    """Point ``tempfile.gettempdir()`` at a per-test directory, children included.
+
+    ``embodiment.daemon.state`` falls back to ``<tmp>/embodiment-state-<uid>`` when
+    the requested state dir is unusable. That path is machine-global and is where a
+    real daemon would keep its pidfile and crash ledger - and a dozen tests force
+    exactly that fallback. Found by driving the real CLI: ``embodiment status`` on
+    a clean machine reported ``dead (unclean)`` from a pidfile a test run had left
+    there, beside 24 ledger entries written by three different tasks' tests.
+
+    The same shape as the credentials guard above: closing it per test leaves the
+    class open, so it is closed for every test. ``TMPDIR`` goes into the
+    environment so spawned daemons inherit it; ``tempfile.tempdir`` is reset so
+    this process re-reads it. ``tmp_path_factory`` is requested first, so pytest's
+    own base directory is already resolved against the real temp dir and
+    ``tmp_path`` keeps working.
+    """
+    import tempfile
+
+    private_tmp = tmp_path_factory.mktemp("tmpdir")
+    monkeypatch.setenv("TMPDIR", str(private_tmp))
+    monkeypatch.setattr(tempfile, "tempdir", None)

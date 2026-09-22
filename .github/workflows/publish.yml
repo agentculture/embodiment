@@ -49,6 +49,20 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
 
+      # Task t19: build the dashboard before `uv build` so hatch_build.py's
+      # hook (which would otherwise run this same npm build itself, inside
+      # the wheel build) is a no-op and the step that fails on a broken
+      # web/ build is this explicit one, not a hook buried inside `uv build`.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20'
+
+      - name: Build web dashboard (task t17)
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
       - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
 
       - run: uv python install 3.12
@@ -83,6 +97,17 @@ jobs:
       id-token: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+
+      # Task t19: build the dashboard before `uv build`, same as test-publish.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20'
+
+      - name: Build web dashboard (task t17)
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
 
       - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
 

@@ -248,3 +248,11 @@ skills.local.yaml
 # records are committed deliberately by the task that publishes the verdict,
 # never picked up mid-run as if they were a finished measurement.
 docs/live-test-results/scopebench-config-raw/
+
+# web/ (task t17) — the Vite/React/TS dashboard. node_modules is npm's
+# install footprint (reproducible from package.json/package-lock.json);
+# web/dist is a build artifact (reproducible from `npm run build`). Neither
+# is committed.
+web/node_modules/
+web/dist/
+web/node_modules/.tmp/

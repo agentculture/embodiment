@@ -1,0 +1,9 @@
+{
+  "session_id": "sess_aaaaaaaaaaaaaaaaaaaaaaaa",
+  "event_id": "event_000000000000000000000013",
+  "timestamp_ms": 4013,
+  "code": "tts_failed",
+  "message": "the speech lane refused the request",
+  "item_id": null,
+  "type": "error"
+}

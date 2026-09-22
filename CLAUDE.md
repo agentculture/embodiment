@@ -6,14 +6,38 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `embodiment` is the **loop + presence layer** of the AgentCulture stack, being
 rebuilt into **Gwen: a background realtime voice app** on top of the `lobes`
-gateway. It is a Python package with a small tested core, a CLI, and — once the
-plan is built — a daemon, a dashboard and a voice.
+gateway. It is a Python package with a small tested core, a CLI, a daemon, a
+dashboard and a voice.
 
 ### Honest status — read this before you plan work
 
-**The realtime app is planned, not built.** Nothing in the package listens,
-speaks, runs as a daemon or serves a dashboard. What is checked in is the small
-core in the code map below and a CLI with introspection verbs only.
+**The realtime app is built on the branch `realtime/phase-b` and runs.** Every
+task of waves 1–4 is merged there, each after its own review and a probe on the
+device or in a browser; the daemon (`daemon/app.py`, t15) has run live on the
+rig from this tree — Hebrew turns with the operator through the reSpeaker,
+memory stored and recalled across a restart, barge-in, the dashboard reviewed
+on a phone over Tailscale — and `embodiment start` on this branch launches it.
+What `main` holds is still the small core and the introspection verbs until
+the PR lands. Not yet done: the wave review of the whole diff and `t21` (the
+human acceptance run, latency published as measured, to land as
+`docs/live-test-results/2026-09-22-t21-acceptance.md`). `t22` (these release
+docs) is on the branch. The state table in `docs/plans/…-progress.md` is the
+live truth; decisions live on embodiment#85.
+
+**What v1 is, in one breath, so no doc here overclaims it:** software
+presence, not a body (`reachy-mini-cli` owns the robot and its own `agent
+embody` layer shares this package's name — say so wherever the name appears);
+one rig; Hebrew only; one active ear; the session never crosses machines;
+value unmeasured. **Not yet:** tools beyond memory (the daemon binds exactly
+two, `remember` and `forget`; the registry is otherwise empty by design),
+vision, a face, phone voice (the phone is control + text), a robot relay
+(t14's inbound endpoint and t18's `BrowserEar` exist, unwired), Cloudflare
+Access verification (the guard refuses the public Host — the one configured
+with `--public-hostname` / `EMBODIMENT_PUBLIC_HOSTNAME`; unset, no Host is
+public — until an RS256 dependency is approved), semantic recall (the embedder is down; recall is
+lexical, with an exact-substring fallback for Hebrew — deviation `d5`), and a
+measured value claim. `tests/test_release_docs.py` pins the boundary and the
+not-yet list against the README and the `explain` root.
 
 - **Spec:** `docs/specs/2026-09-21-realtime-embodiment-app.md` — 50 claims, 33
   honesty conditions, after a rigorous `/challenge` pass.
@@ -39,7 +63,10 @@ an app, and no sibling repo imported the package.
 
 **The redesign makes no value claim either.** It is accepted on one rig, its
 usefulness is unmeasured, and the plan's acceptance task (`t21`) publishes
-latency as measured, including if it is bad.
+latency as measured, including if it is bad. Known from the integration runs
+and not yet measured: the gateway's segmenter can drop the first word after a
+silence (3 of ~8 synthetic utterances; the operator's ~30 live turns did not
+show it).
 
 ### Three lessons the archived cycles paid for
 
@@ -256,28 +283,69 @@ embodiment/
   senses_text.py        SENSES_GROUNDING + KNOWLEDGE_ATTRIBUTION (measured text)
   continuity.py         the eidetic/coherence seam, in-process
   events.py             optional observer onto events-cli (MQTT)
+  turn.py               ONE spoken turn, driven through loop.run; never silent, never raises
+  tools.py              ToolRegistry (empty by default; the daemon binds remember + forget)
+                        + bind_tools; the additive tool seam
+  memory.py             RoomMemory over continuity: private, pinned, deadline-bounded;
+                        render_recalled is the ONE place recall enters a prompt
+  session.py            the conversation: explicit-ask detector (Hebrew/English), the
+                        turn queue, supersede on barge-in, summary on close
+  safe_reason.py        degradation reasons that never carry speech, a secret or a raw id
+  bus.py                in-process event bus + optional MQTT publish; redact at publish
+  audio/features.py     FeatureExtractor: streaming min/max envelope + level, no IO
+  audio/endpoint.py     AudioEndpoint protocol (+ NullEndpoint): start_capture, play,
+                        stop_playback, playing, sample_rate, close -> EndpointCloseReport
+  audio/host.py         the reSpeaker through pw-record/pw-play (arecord/aplay fallback,
+                        d4): targets by pipewire node name, link verified, own stream by
+                        client pid, mute in the capture path; imported only inside
+                        daemon/app.py:main() (AST test)
+  audio/remote.py       the inbound /v1/realtime endpoint (browser ear / robot relay):
+                        first-message auth, one peer, bounded handshake reclaim
+  realtime/wire.py      the lobes /v1/realtime wire, typed
+  realtime/client.py    RealtimeEars: ears-only client (never response.create), bounded
+  http/guard.py         install secret + Host/Origin allow-list + Access assertion seam
+                        (refusing by default); the secret file, 0600, race-free
+  http/server.py        loopback (or --bind-public) HTTP: static dashboard, SSE
+                        projection with a last-ditch redact, control API under a deadline
+  daemon/state.py       state dir (0700), bounded log, crash-durable degradation ledger,
+                        per-session transcript logs (0600)
+  daemon/lifecycle.py   start/status/stop by (pid, starttime) identity; never raises
   cli/__init__.py       parser + dispatch; _CliArgumentParser routes argparse
                         errors through the structured format; _json_hint is
                         pre-set from raw argv so parse-time errors honour --json
   cli/_errors.py        CliError{code,message,remediation} + exit-code policy
   cli/_output.py        emit_result / emit_error / emit_diagnostic
-  cli/_commands/        whoami, learn, explain, overview, doctor, cli
+  cli/_commands/        whoami, learn, explain, overview, doctor, cli, start, status, stop, tunnel
+  daemon/app.py         the daemon: one ear, the ears session, session + memory + voice, the
+                        HTTP surface, close(deadline) with derived shares; degrade, never raise
+  voice.py              Voice.speak: sentences -> /v1/audio/speech -> endpoint, paced features
+  cli/_commands/tunnel  prints the cultureflare/cloudflared commands; never runs them
   explain/              catalog.py: markdown keyed by command-path tuples
-tests/                  1271 tests, 97% coverage
+web/                    the dashboard (Vite/React/TS): live waveform, transcript,
+                        degradations; fetch-streamed SSE with the secret in the
+                        Authorization header; web/dist is built, gitignored, shipped in
+                        the wheel (t19)
+scripts/dual-review.sh  the local review harness: 35B worker drafts, 27B cortex
+                        verifies cited lines; one review at a time (kept deliverable)
+tests/                  3085 tests
 .claude/skills/         19 skills, all vendored (cite-don't-import)
 docs/skill-sources.md   provenance ledger + re-sync procedure
 docs/live-test-results/ only senses-grounding{.md,-probe.py}: the measured
                         evidence tests/test_senses_text.py pins against
+docs/plans/…-progress.md the redesign's running state: what merged, what each round found
 ```
 
-Planned by the redesign and **not present yet**: `daemon/`, `realtime/`,
-`audio/`, `http/`, `turn.py`, `tools.py`, `memory.py`, `session.py`, `voice.py`,
-`bus.py`, and `web/`. Mark any of them here only when it is checked in.
+Also merged: `voice.py` (t12: sentence-by-sentence TTS, barge-in owned by the
+daemon, a bounded body read, redirects refused), `cli/_commands/tunnel.py`
+(t20: prints the provisioning commands, runs nothing), the packaging hook
+(t19), the oscilloscope and BrowserEar (t18), and **`daemon/app.py` — the
+daemon (t15)**. `turn.py`'s truncation proxy and `is_speakable` stay
+unmeasured against the real synthesiser until plan task `t21`.
 
-No verb drives the loop or starts anything: nothing under `cli/_commands/`
-reaches `embodiment.loop`. `framing.py` keeps `frame_muse` and `ROLE_MUSE` (pure
-text) but no longer has `muse_system_message` — that needed the archived muse
-module's `MUSE_AUTHORITY`.
+`start`, `status` and `stop` are the only verbs that touch a process; nothing
+under `cli/_commands/` reaches `embodiment.loop` directly — the daemon does.
+`framing.py` keeps `frame_muse` and `ROLE_MUSE` (pure text) but no longer has
+`muse_system_message` — that needed the archived muse module's `MUSE_AUTHORITY`.
 
 Contracts worth knowing before you add a verb:
 

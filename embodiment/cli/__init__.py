@@ -67,6 +67,10 @@ def _build_parser() -> argparse.ArgumentParser:
     from embodiment.cli._commands import explain as _explain_cmd
     from embodiment.cli._commands import learn as _learn_cmd
     from embodiment.cli._commands import overview as _overview_cmd
+    from embodiment.cli._commands import start as _start_cmd
+    from embodiment.cli._commands import status as _status_cmd
+    from embodiment.cli._commands import stop as _stop_cmd
+    from embodiment.cli._commands import tunnel as _tunnel_cmd
     from embodiment.cli._commands import whoami as _whoami_cmd
 
     parser = _CliArgumentParser(
@@ -88,6 +92,14 @@ def _build_parser() -> argparse.ArgumentParser:
     _overview_cmd.register(sub)
     _doctor_cmd.register(sub)
     _cli_group.register(sub)
+    # The daemon lifecycle verbs (plan task t5). These are the only verbs that
+    # act on a process rather than describe the agent.
+    _start_cmd.register(sub)
+    _stop_cmd.register(sub)
+    _status_cmd.register(sub)
+    # Remote access (plan task t20): dry-run only, prints the cultureflare /
+    # cloudflared commands. Never provisions or runs anything itself.
+    _tunnel_cmd.register(sub)
     # Register your own noun groups here:
     #   from embodiment.cli._commands import my_noun as _my_noun_group
     #   _my_noun_group.register(sub)
