@@ -10,7 +10,9 @@ What runs, and on which thread
 ------------------------------
 * **The ears thread.** One daemon thread with its own asyncio loop, running
   :meth:`connect` and then the event stream of an ears-only realtime client
-  (:mod:`embodiment.realtime.client`). It never sends ``response.create`` —
+  (:mod:`embodiment.realtime.client`). Measured against the real array:
+  ``session.created`` at 30 ms, end-of-speech to transcript median 161 ms and
+  p90 209 ms, 0 dropped frames over 1971 frames. It never sends ``response.create`` —
   this daemon runs the turn itself, because memory (and later vision and
   tools) must reach the prompt. The thread does no work beyond classifying an
   event: a transcription is *queued*, never answered inline, so a slow turn
@@ -136,7 +138,9 @@ __all__ = [
     "APP_SHUTDOWN_INCOMPLETE",
     "APP_STT_ERROR",
     "APP_STT_FRAME_MALFORMED",
-    "APP_TRANSCRIPT_EMPTY",
+    "TRANSCRIPT_EMPTY",
+    "TRANSCRIPT_NOT_TEXT",
+    "TRANSCRIPT_SPEECH",
     "APP_TRANSCRIPT_NOT_TEXT",
     "APP_TURN_FAILED",
     "APP_TURN_QUEUE_FULL",
@@ -220,10 +224,10 @@ APP_CAPTURE_FAILED = "app-capture-failed"
 APP_FRAME_FROM_STALE_EAR = "app-frame-from-stale-ear"
 #: The feature extractor failed on captured or played audio.
 APP_FEATURES_FAILED = "app-features-failed"
-#: The transcript the ear delivered was not text.
+#: The transcript the ear delivered was not text. Still a degradation: the
+#: wire says a transcript is a string, so anything else is a fault, not a
+#: quiet room.
 APP_TRANSCRIPT_NOT_TEXT = "app-transcript-not-text"
-#: The transcript the ear delivered was empty; no turn was run.
-APP_TRANSCRIPT_EMPTY = "app-transcript-empty"
 #: The turn queue was full; this utterance was dropped rather than queued.
 APP_TURN_QUEUE_FULL = "app-turn-queue-full"
 #: The turn path itself failed. The daemon keeps running.
@@ -236,6 +240,12 @@ APP_HTTP_UNAVAILABLE = "app-http-unavailable"
 APP_SHUTDOWN_INCOMPLETE = "app-shutdown-incomplete"
 #: Something was asked of the app after it closed.
 APP_CLOSED = "app-closed"
+
+#: What one delivered transcript turned out to be. :func:`classify_transcript`
+#: is the ONE place the test is written; both entry points read its answer.
+TRANSCRIPT_SPEECH = "speech"
+TRANSCRIPT_EMPTY = "empty"
+TRANSCRIPT_NOT_TEXT = "not-text"
 
 _SAFE_NAME_FALLBACK = "ear"
 
@@ -352,6 +362,24 @@ class AppCloseReport:
             ("bus", self.bus_closed),
         )
         return tuple(name for name, done in pairs if not done)
+
+
+def classify_transcript(text: object) -> str:
+    """What the ear delivered: :data:`TRANSCRIPT_SPEECH`, ``EMPTY`` or ``NOT_TEXT``.
+
+    The ONE place the test lives, read by both
+    :meth:`DaemonApp.submit_transcript` and :meth:`DaemonApp.run_turn`, so the
+    queued path and a direct call can never disagree about what counts as
+    something to answer. Pure: it counts nothing, publishes nothing and
+    records nothing.
+
+    "Empty" is whitespace-only by ``str.strip``, which also covers the
+    separators ``str.splitlines`` honours (U+0085, U+2028, U+2029) — a commit
+    made of nothing but those is a quiet room, not an utterance.
+    """
+    if not isinstance(text, str):
+        return TRANSCRIPT_NOT_TEXT
+    return TRANSCRIPT_SPEECH if text.strip() else TRANSCRIPT_EMPTY
 
 
 def _safe_name(value: object) -> str:
@@ -476,6 +504,9 @@ class DaemonApp:
         self._clients = 0
         self._remote_clients = 0
 
+        self._transcripts_received = 0
+        self._empty_commits = 0
+        self._transcripts_not_text = 0
         self._turns_completed = 0
         self._turns_in_flight = 0
         self._turns_dropped = 0
@@ -1018,12 +1049,22 @@ class DaemonApp:
     # ── the turn ─────────────────────────────────────────────────────────
 
     def submit_transcript(self, text: object) -> bool:
-        """Queue one heard utterance for the turn thread. Never blocks, never raises."""
+        """Queue one heard utterance for the turn thread. Never blocks, never raises.
+
+        This is where what the EAR delivered is counted, and where an empty
+        commit stops: it never takes a slot in the bounded turn queue, so a
+        quiet room cannot displace a real utterance under back-pressure.
+        """
         if self._closed:
             self._record(APP_CLOSED, "transcript after close")
             return False
-        if not isinstance(text, str):
+        kind = classify_transcript(text)
+        if kind == TRANSCRIPT_NOT_TEXT:
+            self._note_transcript(kind)
             self._record(APP_TRANSCRIPT_NOT_TEXT, _safe_name(type(text).__name__))
+            return False
+        self._note_transcript(kind)
+        if kind == TRANSCRIPT_EMPTY:
             return False
         try:
             self._turn_queue.put_nowait(text)
@@ -1036,19 +1077,56 @@ class DaemonApp:
             return False
         return True
 
+    def _note_transcript(self, kind: str) -> None:
+        """Count one delivered transcript, and say so on the bus. Never raises.
+
+        An empty commit is **counted and published, never recorded**. Measured
+        on the rig: in 60 s of the operator speaking, the server VAD committed
+        15 turns and 7 of them came back with an empty transcript (breath and
+        room noise, whisper returning nothing). That is the segmenter doing
+        its job at roughly seven a minute while the room is quiet — writing it
+        to the crash ledger would bury the things that actually went wrong
+        under the sound of nobody talking.
+        """
+        with self._lock:
+            if kind == TRANSCRIPT_EMPTY:
+                self._empty_commits += 1
+            elif kind == TRANSCRIPT_NOT_TEXT:
+                self._transcripts_not_text += 1
+            else:
+                self._transcripts_received += 1
+            counts = (self._transcripts_received, self._empty_commits)
+        if kind != TRANSCRIPT_EMPTY:
+            return
+        self._publish(
+            "state",
+            {
+                "component": "ears",
+                "status": "empty-commit",
+                "empty_commits": counts[1],
+                "transcripts": counts[0],
+            },
+        )
+
     def run_turn(self, text: object) -> TurnResult:
         """ONE spoken turn, start to finish. Never raises; the daemon survives it.
 
-        The ONE code path: the turn thread calls exactly this.
+        The ONE code path: the turn thread calls exactly this. It classifies
+        through :func:`classify_transcript` exactly as
+        :meth:`submit_transcript` does, so a direct caller cannot start a turn
+        on something the ear path would have refused. The COUNTERS live at the
+        ear's entry point, not here, so a queued transcript is counted once.
         """
         if self._closed:
             self._record(APP_CLOSED, "run_turn after close")
             return TurnResult(spoken="")
-        if not isinstance(text, str):
+        kind = classify_transcript(text)
+        if kind == TRANSCRIPT_NOT_TEXT:
             self._record(APP_TRANSCRIPT_NOT_TEXT, _safe_name(type(text).__name__))
             return TurnResult(spoken="")
-        if not text.strip():
-            self._record(APP_TRANSCRIPT_EMPTY, f"{len(text)} character(s), none spoken")
+        if kind == TRANSCRIPT_EMPTY:
+            # Counted where it arrived (``submit_transcript``), not here, and
+            # never recorded: an empty commit is not a fault.
             return TurnResult(spoken="")
         with self._lock:
             self._turns_in_flight += 1
@@ -1279,7 +1357,19 @@ class DaemonApp:
             self._record(APP_EARS_THREAD_FAILED, _describe(exc))
 
     def _barge_in(self) -> None:
-        """Speech onset while we are talking: stop our own speaker. We own barge-in."""
+        """Speech onset while we are talking: stop our own speaker. We own barge-in.
+
+        An ears-only session never receives ``response.interrupted`` and lobes
+        accepts ``aec_mode`` without acting on it, so this is the whole of the
+        daemon's barge-in: on ``speech_started`` during playback, stop our own
+        output. Measured on the rig after t7 round 5: the endpoint's
+        ``stop_playback`` (close the player's stdin, ``SIGKILL`` it) takes
+        **1 ms** and discarded 52320 queued samples — it was 1.3 s before that
+        round, when the player was asked to terminate politely. The voice's
+        own bookkeeping (dropping the pacing buffer, counting the discarded
+        samples) is in-memory and runs after it, inside the 200 ms bound
+        :data:`embodiment.voice.BARGE_IN_BOUND_S` states.
+        """
         voice, endpoint = self._voice, self._ear_endpoint
         speaking = bool(getattr(voice, "speaking", False))
         playing = False
@@ -1341,13 +1431,16 @@ class DaemonApp:
             and not self._ears_closed.is_set()
         ):
             future = None
+            coroutine = self._shut_ears_down()
             try:
-                future = asyncio.run_coroutine_threadsafe(self._shut_ears_down(), loop)
+                future = asyncio.run_coroutine_threadsafe(coroutine, loop)
                 future.result(timeout=max(0.05, deadline * _EARS_CLOSE_WAIT_SHARE))
             except Exception as exc:  # noqa: BLE001 - a close that will not finish is recorded
                 self._record(APP_EARS_THREAD_FAILED, f"close: {_describe(exc)}", once=True)
                 if future is not None:
                     future.cancel()
+            finally:
+                _discard_if_unstarted(coroutine)
         thread.join(timeout=max(0.05, deadline))
         return not thread.is_alive()
 
@@ -1481,6 +1574,11 @@ class DaemonApp:
         with self._lock:
             counts = dict(self._degradation_counts)
             clients = {"count": self._clients, "remote": self._remote_clients}
+            transcripts = {
+                "received": self._transcripts_received,
+                "empty_commits": self._empty_commits,
+                "not_text": self._transcripts_not_text,
+            }
             turns = {
                 "completed": self._turns_completed,
                 "in_flight": self._turns_in_flight,
@@ -1522,6 +1620,11 @@ class DaemonApp:
                 "endpoint": _probe(self._ear_endpoint),
             },
             "clients": clients,
+            # What the EAR delivered. Separate from ``turns`` because an empty
+            # commit is a transcript that never became one, and separate from
+            # ``ears`` because that key is the realtime client's own report,
+            # which this module never writes into.
+            "transcripts": transcripts,
             "turns": turns,
             "audio": audio,
             "recall": {
@@ -1635,6 +1738,25 @@ def _memory_status(memory: Any) -> dict[str, Any]:
         out["scope"] = out.get("scope", "")
         out["data_dir"] = ""
     return out
+
+
+def _discard_if_unstarted(coroutine: Any) -> bool:
+    """Close a coroutine the ears loop never got round to running.
+
+    The loop can stop between ``is_running()`` and the scheduling, and then
+    nothing ever awaits what was handed to it — which surfaces later, from
+    whatever thread happens to run the collector, as ``coroutine
+    '_shut_ears_down' was never awaited``. That is noise that reads exactly
+    like a leak during shutdown, so the coroutine is closed here instead.
+    Closing one that DID start raises, which is the signal that there was
+    nothing to clean up. Returns whether anything was actually discarded, so
+    the answer is a value a caller can read rather than a silence.
+    """
+    try:
+        coroutine.close()
+    except Exception:  # noqa: BLE001 - it ran, so there was nothing to discard
+        return False
+    return True
 
 
 def _endpoint_degraded(endpoint: Any) -> Optional[bool]:

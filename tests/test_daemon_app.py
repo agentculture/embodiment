@@ -16,6 +16,7 @@ that proves no record carries speech.
 from __future__ import annotations
 
 import asyncio
+import io
 import json
 import threading
 import time
@@ -170,6 +171,57 @@ class FakeEars:
         assert self._ready.wait(timeout), "ears never connected"
         assert self._loop is not None and self._queue is not None
         self._loop.call_soon_threadsafe(self._queue.put_nowait, event)
+
+
+class _LiveStdout:
+    """A pipe that stays open until the child is told to stop.
+
+    A ``BytesIO`` returns EOF on the first read, which the real endpoint
+    correctly reads as "the capture child exited" and degrades on — so a fake
+    child needs a stdout that blocks the way a live one does.
+    """
+
+    def __init__(self, process: "_FakePopen") -> None:
+        self._process = process
+
+    def read(self, size: int = -1) -> bytes:
+        while self._process.returncode is None:
+            time.sleep(0.005)
+        return b""
+
+    def close(self) -> None:
+        return None
+
+
+class _FakePopen:
+    """A child process that starts, stays up, produces nothing, and exits when told.
+
+    Stands in for ``pw-record``/``pw-play`` so a test can exercise the paths
+    past the PATH probe without spawning a real audio process. Nothing here
+    ever reaches PipeWire or ALSA.
+    """
+
+    def __init__(self, argv: Any = (), **kwargs: Any) -> None:
+        self.argv = argv
+        self.returncode: Optional[int] = None
+        self.stdout = _LiveStdout(self)
+        self.stdin = io.BytesIO()
+        self.stderr = io.BytesIO()
+
+    def poll(self) -> Optional[int]:
+        return self.returncode
+
+    def wait(self, timeout: Optional[float] = None) -> int:
+        if self.returncode is None:
+            self.returncode = 0
+        return self.returncode
+
+    def terminate(self) -> None:
+        if self.returncode is None:
+            self.returncode = 0
+
+    def kill(self) -> None:
+        self.returncode = -9
 
 
 def silent_pcm(blocks: int = 1) -> bytes:
@@ -570,32 +622,91 @@ class TestInjectedFailures:
         assert [e.data["text"] for e in h.events("reply")] == [REPLY]
         assert h.app.status()["ear"]["active"] is not None
 
-    def test_no_driver_leaves_a_HOST_ear_that_is_degraded_and_recoverable(
+    def test_no_backend_leaves_a_HOST_ear_that_is_degraded_and_recoverable(
         self, harness: Any
     ) -> None:
-        """The case a host actually meets: sounddevice absent, HostEndpoint attached.
+        """The case a host actually meets: no audio backend on PATH.
 
-        The real :class:`HostEndpoint` degrades at ``attach`` rather than
-        raising, so the ear is ``host`` and *deaf*, not ``null``. Pinned
-        because the two are easy to confuse in the ledger and only this one
-        can be recovered by re-attaching after the driver appears.
+        t7 round 4 replaced the sounddevice import with subprocess audio, so
+        "no device" is now "no pipewire or alsa on PATH". The real
+        :class:`HostEndpoint` still degrades at ``attach`` rather than
+        raising, so the ear is ``host`` and *deaf*, never ``null`` — and a
+        later stop/start builds a fresh endpoint that re-probes PATH, which
+        is the recovery a NullEndpoint could not offer.
         """
-        from embodiment.audio.host import DEGRADED_IMPORT, HostEndpoint
+        from embodiment.audio.host import DEGRADED_NO_BACKEND, HostEndpoint
 
-        def no_driver() -> Any:
-            def importer() -> Any:
-                raise ImportError("No module named 'sounddevice'")
+        def no_backend() -> Any:
+            return HostEndpoint(which=lambda name: None)
 
-            return HostEndpoint(sounddevice_importer=importer)
-
-        h = harness(endpoints=no_driver)
+        h = harness(endpoints=no_backend)
         h.app.start()
         status = h.app.status()
         assert status["ear"]["active"] == "host"
         assert status["ear"]["kind"] == "HostEndpoint"
         assert status["ear"]["degraded"] is True
-        self._assert_degraded_and_alive(h, DEGRADED_IMPORT)
+        self._assert_degraded_and_alive(h, DEGRADED_NO_BACKEND)
         assert app_module.APP_NO_ENDPOINT not in h.ledger_codes()
+        assert h.app.run_turn(SPEECH).spoken == REPLY
+
+    def test_a_stop_then_start_re_probes_for_a_backend_that_appeared(self, harness: Any) -> None:
+        """The recovery the degraded host ear exists for, driven as a host would."""
+        from embodiment.audio.host import HostEndpoint
+
+        present = {"path": False}
+
+        def probing() -> Any:
+            return HostEndpoint(
+                which=lambda name: "/usr/bin/pw-record" if present["path"] else None,
+                popen=_FakePopen,
+            )
+
+        h = harness(endpoints=probing)
+        h.app.start()
+        assert h.app.status()["ear"]["degraded"] is True
+
+        present["path"] = True  # the operator installs pipewire
+        controls = h.app.controls()
+        controls.stop_voice()
+        controls.start_voice()
+        assert h.app.status()["ear"]["active"] == "host"
+        assert h.app.status()["ear"]["degraded"] is False
+
+    def test_a_box_without_proc_asound_cards_degrades_rather_than_raising(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        """A container with no ``/proc/asound/cards`` must not take the daemon down."""
+        from embodiment.audio.host import HostEndpoint
+
+        missing = tmp_path / "no-such-cards"
+
+        def without_cards() -> Any:
+            return HostEndpoint(
+                device="usb",
+                which=lambda name: f"/usr/bin/{name}",
+                cards_path=missing,
+                popen=_FakePopen,
+            )
+
+        h = harness(endpoints=without_cards)
+        h.app.start()
+        assert h.app.status()["ear"]["active"] == "host"
+        assert isinstance(h.app.status(), dict)
+        assert h.app.run_turn(SPEECH).spoken == REPLY
+
+    def test_a_backend_that_cannot_be_spawned_degrades(self, harness: Any) -> None:
+        from embodiment.audio.host import DEGRADED_OPEN, HostEndpoint
+
+        def refusing_popen(*args: Any, **kwargs: Any) -> Any:
+            raise OSError(2, "No such file or directory")
+
+        def cannot_spawn() -> Any:
+            return HostEndpoint(which=lambda name: f"/usr/bin/{name}", popen=refusing_popen)
+
+        h = harness(endpoints=cannot_spawn)
+        h.app.start()
+        self._assert_degraded_and_alive(h, DEGRADED_OPEN)
+        assert h.app.status()["ear"]["active"] == "host"
         assert h.app.run_turn(SPEECH).spoken == REPLY
 
     def test_a_factory_that_fails_leaves_a_NULL_ear_instead(self, harness: Any) -> None:
@@ -702,6 +813,97 @@ class TestEarsLoop:
         h.app.attach_ear("host", FakeEndpoint())
         h.app.run_turn(hostile)
         assert [e.data["text"] for e in h.events("transcript")] == [hostile]
+
+
+class TestEmptyCommits:
+    """An empty commit is the segmenter working, not a fault (round 4).
+
+    Measured on the rig: 15 VAD commits in 60 s of the operator speaking,
+    7 of them with an empty transcript. At that rate a ledger record each
+    would bury the real faults under the sound of a quiet room.
+    """
+
+    def test_an_empty_commit_is_counted_and_published_never_recorded(self, harness: Any) -> None:
+        h = harness()
+        h.app.start()
+        h.clear()
+        for _ in range(7):
+            assert h.app.submit_transcript("") is False
+
+        assert h.ledger_codes() == [] or "app-transcript-empty" not in h.ledger_codes()
+        assert h.events("degradation") == []
+        transcripts = h.app.status()["transcripts"]
+        assert transcripts["empty_commits"] == 7
+        assert transcripts["received"] == 0
+        states = [e for e in h.events("state") if e.data.get("status") == "empty-commit"]
+        assert len(states) == 7
+        assert states[-1].data == {
+            "component": "ears",
+            "status": "empty-commit",
+            "empty_commits": 7,
+            "transcripts": 0,
+        }
+
+    def test_an_empty_commit_never_takes_a_queue_slot(self, harness: Any) -> None:
+        """Seven a minute must not be able to displace a real utterance."""
+        h = harness(config=AppConfig(turn_queue_size=2, poll_interval_s=0.01))
+        for _ in range(50):
+            h.app.submit_transcript("   \u2028\u0085  ")
+        assert h.app.status()["turns"]["queued"] == 0
+        assert h.app.submit_transcript(SPEECH) is True
+        assert h.app.status()["turns"]["queued"] == 1
+        assert app_module.APP_TURN_QUEUE_FULL not in h.ledger_codes()
+
+    def test_whitespace_separators_count_as_empty(self, harness: Any) -> None:
+        """The separators ``splitlines`` honours are a quiet room, not speech."""
+        for text in ("", "   ", "\u2028", "\u2029", "\u0085", "\r\n", "\t"):
+            assert app_module.classify_transcript(text) == app_module.TRANSCRIPT_EMPTY
+        assert app_module.classify_transcript("\x00") == app_module.TRANSCRIPT_SPEECH
+        assert app_module.classify_transcript(SPEECH) == app_module.TRANSCRIPT_SPEECH
+        for value in (None, 17, b"bytes", {"a": 1}):
+            assert app_module.classify_transcript(value) == app_module.TRANSCRIPT_NOT_TEXT
+
+    def test_a_transcript_that_is_not_text_is_still_a_degradation(self, harness: Any) -> None:
+        h = harness()
+        h.app.start()
+        h.clear()
+        assert h.app.submit_transcript(b"pcm bytes") is False
+        assert app_module.APP_TRANSCRIPT_NOT_TEXT in h.ledger_codes()
+        published = [e.data["code"] for e in h.events("degradation")]
+        assert app_module.APP_TRANSCRIPT_NOT_TEXT in published
+        assert h.app.status()["transcripts"]["not_text"] == 1
+
+    def test_an_empty_commit_from_the_ear_starts_no_turn(self, harness: Any) -> None:
+        h = harness()
+        h.app.start()
+        h.ears.emit(wire.TranscriptionCompleted(text="", item_id="i1"))
+        h.ears.emit(wire.TranscriptionCompleted(text=SPEECH, item_id="i2"))
+        deadline = time.monotonic() + 15.0
+        while h.app.status()["turns"]["completed"] < 1:
+            assert time.monotonic() < deadline, "the real utterance never ran"
+            time.sleep(0.02)
+        time.sleep(0.2)
+        status = h.app.status()
+        assert status["turns"]["completed"] == 1, "the empty commit started a turn"
+        assert status["transcripts"]["empty_commits"] == 1
+        assert status["transcripts"]["received"] == 1
+
+    def test_a_queued_transcript_is_counted_exactly_once(self, harness: Any) -> None:
+        h = harness()
+        h.app.start()
+        h.ears.emit(wire.TranscriptionCompleted(text=SPEECH, item_id="i1"))
+        deadline = time.monotonic() + 15.0
+        while h.app.status()["turns"]["completed"] < 1:
+            assert time.monotonic() < deadline, "no turn ran"
+            time.sleep(0.02)
+        assert h.app.status()["transcripts"]["received"] == 1
+
+    def test_the_counts_survive_a_status_probe_and_are_json_safe(self, harness: Any) -> None:
+        h = harness()
+        h.app.submit_transcript("")
+        h.app.submit_transcript(None)
+        blob = json.loads(json.dumps(h.app.status(), ensure_ascii=False))
+        assert blob["transcripts"] == {"received": 0, "empty_commits": 1, "not_text": 1}
 
 
 class TestVoiceSeams:
