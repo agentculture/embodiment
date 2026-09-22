@@ -2017,11 +2017,26 @@ class HostEndpoint:
         `play()` calls are concatenated into :attr:`_writer_pending`, a flat
         byte buffer), because a caller's own chunking has nothing to do with
         a 20 ms pacing granularity.
+
+        The clock measures AUDIO, never wall time (2026-09-22, diagnosed
+        from the live daemon's ledger — lesson 1, a clock sized against the
+        wrong quantity): it is anchored when the stream starts or RESUMES
+        after an idle gap, not once at spawn. Anchored at spawn only, an idle
+        gap of G seconds read as being G seconds behind real time, and the
+        next reply was written into the pipe at once — a whole short
+        sentence fits the 64 KiB kernel pipe without one blocking write —
+        so ``playing`` flipped False within milliseconds of ``play()`` while
+        the player still held over a second of unsounded audio. The voice's
+        pacing loop then recorded the whole sentence as
+        ``voice-pace-stalled`` ("endpoint never reported playing"), and the
+        daemon's barge-in, which reads the same ``playing``, had nothing to
+        stop. Idle time is not debt the pipe is owed.
         """
         slice_bytes = int(PLAYBACK_RATE_HZ * _WRITE_SLICE_MS / 1000) * SAMPLE_WIDTH_BYTES
         clock_start = 0.0
         samples_written_for_clock = 0
         active_proc: "subprocess.Popen[bytes] | None" = None
+        idle = True
 
         while not self._writer_stop.is_set():
             with self._counter_lock:
@@ -2034,13 +2049,20 @@ class HostEndpoint:
                     # barge-in/write-failure): pacing restarts from now,
                     # never carries a stale clock across processes.
                     active_proc = proc
-                    clock_start = time.monotonic()
-                    samples_written_for_clock = 0
+                    idle = True
                 slice_ = self._next_write_slice(proc, slice_bytes)
 
             if slice_ is None:
+                idle = True
                 time.sleep(_POLL_INTERVAL_S)
                 continue
+            if idle:
+                # Audio resumes after a gap (or starts): the clock restarts
+                # from THIS slice, so the writer stays at most _PACE_LEAD_S
+                # ahead of what is sounding, not G seconds of gap ahead.
+                clock_start = time.monotonic()
+                samples_written_for_clock = 0
+                idle = False
 
             target_time = clock_start + samples_written_for_clock / PLAYBACK_RATE_HZ
             lead = target_time - time.monotonic()
