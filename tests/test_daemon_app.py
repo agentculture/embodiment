@@ -1,0 +1,976 @@
+"""The daemon application: wiring, one ear, zero clients (plan task ``t15``).
+
+Every seam is injected and faked here. No gateway is dialled, no device is
+opened, no key is read: the live rig is ``t21``'s job. The three acceptance
+criteria this file proves, and where:
+
+1. *zero clients* — :class:`TestZeroClients`.
+2. *one ear, one recorded handover* — :class:`TestOneEar`.
+3. *every injected failure degrades and keeps running* — :class:`TestInjectedFailures`.
+
+The rest is the attack surface: stale frames, hostile transcripts, the same
+call ten thousand times, a shutdown that must stay bounded, and a marker scan
+that proves no record carries speech.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import threading
+import time
+from pathlib import Path
+from types import SimpleNamespace
+from typing import Any, Optional
+
+import pytest
+
+from embodiment.audio.endpoint import EndpointCloseReport, NullEndpoint
+from embodiment.audio.features import FeatureExtractor
+from embodiment.bus import Bus
+from embodiment.contract import ModelResponse
+from embodiment.daemon import app as app_module
+from embodiment.daemon.app import AppConfig, DaemonApp
+from embodiment.daemon.state import DaemonState
+from embodiment.memory import RoomMemory
+from embodiment.realtime import wire
+from embodiment.voice import Voice, VoiceConfig
+
+SPEECH = "שלום גוון"
+REPLY = "שלום לך."
+
+
+# ── fakes ─────────────────────────────────────────────────────────────────────
+
+
+class FakeEndpoint:
+    """An :class:`~embodiment.audio.endpoint.AudioEndpoint` that records everything."""
+
+    def __init__(self, *, name: str = "fake", fail_on: str = "") -> None:
+        self.name = name
+        self.fail_on = fail_on
+        self.on_frame: Any = None
+        self.attached = False
+        self.capturing = False
+        self.played: list[bytes] = []
+        self.stopped_playback = 0
+        self.closed = False
+        self._muted = False
+        self._playing = False
+
+    def _maybe_fail(self, what: str) -> None:
+        if self.fail_on == what:
+            raise RuntimeError(f"endpoint refuses to {what}")
+
+    def attach(self) -> None:
+        self._maybe_fail("attach")
+        self.attached = True
+
+    def detach(self) -> None:
+        self.attached = False
+        self.capturing = False
+
+    def start_capture(self, on_frame: Any) -> None:
+        self._maybe_fail("start_capture")
+        self.on_frame = on_frame
+        self.capturing = True
+
+    def stop_capture(self) -> None:
+        self.capturing = False
+
+    def play(self, frames: bytes) -> None:
+        self.played.append(bytes(frames))
+        self._playing = True
+
+    def stop_playback(self) -> int:
+        self.stopped_playback += 1
+        self._playing = False
+        return 0
+
+    @property
+    def playing(self) -> bool:
+        return self._playing
+
+    def mute(self, muted: bool) -> None:
+        self._muted = bool(muted)
+
+    @property
+    def muted(self) -> bool:
+        return self._muted
+
+    def close(self, deadline: float) -> EndpointCloseReport:
+        self.closed = True
+        self.capturing = False
+        self.attached = False
+        return EndpointCloseReport(
+            capture_thread_stopped=True,
+            writer_thread_stopped=True,
+            samples_discarded=0,
+            elapsed_s=0.0,
+        )
+
+    def status(self) -> dict[str, object]:
+        return {"name": self.name, "attached": self.attached, "capturing": self.capturing}
+
+
+class FakeEars:
+    """An ears-only realtime client: one async connect, one event stream, one close."""
+
+    def __init__(self, *, connect_ok: bool = True, events: tuple[Any, ...] = ()) -> None:
+        self.connect_ok = connect_ok
+        self.initial = list(events)
+        self.sent: list[bytes] = []
+        self.connect_calls = 0
+        self.closed = False
+        self._queue: Optional[asyncio.Queue] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._ready = threading.Event()
+
+    async def connect(self) -> bool:
+        self.connect_calls += 1
+        self._loop = asyncio.get_running_loop()
+        self._queue = asyncio.Queue()
+        for event in self.initial:
+            self._queue.put_nowait(event)
+        self._ready.set()
+        return self.connect_ok
+
+    def send_audio(self, pcm: bytes) -> bool:
+        self.sent.append(bytes(pcm))
+        return True
+
+    async def events(self) -> Any:
+        assert self._queue is not None
+        while True:
+            event = await self._queue.get()
+            if event is None:
+                return
+            yield event
+
+    async def close(self, deadline: Optional[float] = None) -> Any:
+        self.closed = True
+        if self._queue is not None:
+            self._queue.put_nowait(None)
+        return SimpleNamespace(graceful=True)
+
+    def status(self) -> dict[str, Any]:
+        return {"connected": self.connect_ok and not self.closed, "fake": True}
+
+    # test-side driving
+    def emit(self, event: Any, *, timeout: float = 15.0) -> None:
+        assert self._ready.wait(timeout), "ears never connected"
+        assert self._loop is not None and self._queue is not None
+        self._loop.call_soon_threadsafe(self._queue.put_nowait, event)
+
+
+def silent_pcm(blocks: int = 1) -> bytes:
+    return b"\x00\x01" * (800 * blocks)
+
+
+def make_complete(reply: str = REPLY, *, fail: bool = False) -> Any:
+    def complete(messages: list[dict[str, Any]], tools: Any = None) -> ModelResponse:
+        if fail:
+            raise RuntimeError("gateway is down")
+        complete.seen.append(messages)  # type: ignore[attr-defined]
+        return ModelResponse(content=reply, prompt_tokens=3, completion_tokens=4)
+
+    complete.seen = []  # type: ignore[attr-defined]
+    return complete
+
+
+class Harness:
+    """One fully-wired app over fakes, plus the bus subscription that watches it."""
+
+    def __init__(self, app: DaemonApp, bus: Bus, ears: FakeEars, state: DaemonState) -> None:
+        self.app = app
+        self.bus = bus
+        self.ears = ears
+        self.state = state
+        self.subscription = bus.subscribe(include_speech=True)
+
+    def events(self, kind: Optional[str] = None) -> list[Any]:
+        self._seen = getattr(self, "_seen", []) + self.subscription.drain()
+        if kind is None:
+            return list(self._seen)
+        return [event for event in self._seen if event.kind == kind]
+
+    def clear(self) -> None:
+        """Forget every event so far: the next :meth:`events` starts from now."""
+        self.subscription.drain()
+        self._seen = []
+
+    def ledger_codes(self) -> list[str]:
+        return [record.code for record in self.state.ledger.read_all()]
+
+
+def _bounded_teardown(call: Any, *, timeout: float = 3.0) -> None:
+    thread = threading.Thread(target=lambda: _swallow(call), daemon=True)
+    thread.start()
+    thread.join(timeout=timeout)
+
+
+def _swallow(call: Any) -> None:
+    try:
+        call()
+    except Exception:  # noqa: BLE001 - teardown is best-effort in a test harness
+        pass
+
+
+@pytest.fixture
+def harness(tmp_path: Path, request: pytest.FixtureRequest) -> Any:
+    """A factory: ``harness(**overrides)`` builds one wired :class:`DaemonApp`."""
+    built: list[DaemonApp] = []
+
+    def build(**overrides: Any) -> Harness:
+        index = len(built)
+        state = overrides.pop("state", None) or DaemonState(tmp_path / f"state{index}")
+        bus = overrides.pop("bus", None) or Bus()
+        ears = overrides.pop("ears", None) or FakeEars()
+        recall_fn = overrides.pop("recall_fn", None) or (
+            lambda query, **kwargs: SimpleNamespace(ok=True, records=[], degradation=None)
+        )
+        memory = overrides.pop("memory", None) or RoomMemory(
+            tmp_path / f"memory{index}",
+            scope="gwen",
+            recall_fn=recall_fn,
+            remember_fn=lambda text, **kwargs: SimpleNamespace(
+                ok=True, record_id="r1", degradation=None
+            ),
+            embed_probe=lambda: False,
+        )
+        synthesize = overrides.pop("synthesize", None) or (lambda sentence, config: b"\x00\x00")
+        complete = overrides.pop("complete", None) or make_complete()
+        endpoints = overrides.pop("endpoints", None)
+
+        def endpoint_factory() -> Any:
+            if endpoints is None:
+                return FakeEndpoint(name="host")
+            return endpoints()
+
+        def voice_factory(endpoint: Any) -> Voice:
+            return Voice(
+                endpoint=endpoint,
+                config=VoiceConfig(gateway_url="http://gateway.invalid"),
+                bus=bus,
+                features=FeatureExtractor(),
+                synthesize=synthesize,
+            )
+
+        app = DaemonApp(
+            config=overrides.pop("config", None) or AppConfig(poll_interval_s=0.01),
+            state=state,
+            bus=bus,
+            memory=memory,
+            complete=complete,
+            ears=ears,
+            endpoint_factory=overrides.pop("endpoint_factory", endpoint_factory),
+            voice_factory=voice_factory,
+            **overrides,
+        )
+        built.append(app)
+        # Bounded, because a test may deliberately hand the app a seam that
+        # hangs; teardown must not inherit that.
+        request.addfinalizer(lambda: _bounded_teardown(lambda: app.close(deadline=2.0)))
+        request.addfinalizer(lambda: _bounded_teardown(lambda: memory.close(deadline=1.0)))
+        request.addfinalizer(lambda: _bounded_teardown(lambda: bus.close(deadline=1.0)))
+        return Harness(app, bus, ears, state)
+
+    return build
+
+
+# ── criterion 1: zero clients ─────────────────────────────────────────────────
+
+
+class TestZeroClients:
+    """With nobody watching, a full turn still happens; a watcher changes nothing."""
+
+    def test_a_full_turn_completes_with_zero_clients(self, harness: Any) -> None:
+        h = harness()
+        h.app.attach_ear("host", FakeEndpoint())
+        assert h.app.status()["clients"]["count"] == 0
+
+        result = h.app.run_turn(SPEECH)
+
+        assert result.spoken == REPLY
+        assert h.app.status()["clients"]["count"] == 0
+        assert [e.data["text"] for e in h.events("transcript")] == [SPEECH]
+        assert [e.data["text"] for e in h.events("reply")] == [REPLY]
+        assert h.app.status()["turns"]["completed"] == 1
+
+    def test_attaching_then_detaching_a_client_changes_no_daemon_state(self, harness: Any) -> None:
+        h = harness()
+        h.app.attach_ear("host", FakeEndpoint())
+        h.app.run_turn(SPEECH)
+        _settle(h.app)
+        before = _status_without_clients(h.app)
+
+        h.app.attach_client()
+        h.app.attach_client(remote=True)
+        h.app.detach_client()
+        h.app.detach_client(remote=True)
+
+        assert _status_without_clients(h.app) == before
+
+    def test_the_client_count_is_published_as_information(self, harness: Any) -> None:
+        h = harness()
+        h.app.attach_client()
+        h.app.attach_client(remote=True)
+        h.app.detach_client()
+
+        counts = [event.data["count"] for event in h.events("clients")]
+        assert counts == [1, 2, 1]
+        assert [event.data["remote"] for event in h.events("clients")] == [0, 1, 1]
+
+    def test_the_turn_runs_identically_with_and_without_clients(self, harness: Any) -> None:
+        h = harness()
+        h.app.attach_ear("host", FakeEndpoint())
+        first = h.app.run_turn(SPEECH)
+        h.app.attach_client()
+        h.app.attach_client()
+        second = h.app.run_turn(SPEECH)
+        assert first.spoken == second.spoken
+        assert h.app.status()["turns"]["completed"] == 2
+
+    def test_a_client_count_of_zero_never_blocks_speech(self, harness: Any) -> None:
+        endpoint = FakeEndpoint()
+        h = harness(endpoints=lambda: endpoint)
+        h.app.attach_ear("host", endpoint)
+        h.app.run_turn(SPEECH)
+        assert endpoint.played, "nothing was queued to the speaker"
+
+
+def _settle(app: DaemonApp, *, timeout: float = 3.0) -> None:
+    """Wait until the voice has finished pacing the last reply.
+
+    The pace buffer drains on the voice's own thread, so ``status()`` keeps
+    moving for a fraction of a second after a turn. Settling first is what
+    makes the byte-identical comparison below a statement about clients rather
+    than about timing.
+    """
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        app.pump()
+        voice = app.status().get("voice") or {}
+        if not voice.get("pending_pace_bytes"):
+            return
+        time.sleep(0.02)
+
+
+def _status_without_clients(app: DaemonApp) -> str:
+    status = app.status()
+    status.pop("clients", None)
+    return json.dumps(status, sort_keys=True, ensure_ascii=False)
+
+
+# ── criterion 2: one ear ──────────────────────────────────────────────────────
+
+
+class TestOneEar:
+    """Exactly one attached endpoint, and the handover is said out loud."""
+
+    def test_a_second_ear_pre_empts_with_exactly_one_handover_event(self, harness: Any) -> None:
+        h = harness(config=AppConfig(preempt_ear=True, poll_interval_s=0.01))
+        first = FakeEndpoint(name="host")
+        second = FakeEndpoint(name="browser")
+        h.app.attach_ear("host", first)
+        h.clear()  # forget the first attach
+        handover = h.app.attach_ear("browser", second)
+
+        assert handover.attached and handover.preempted and not handover.refused
+        assert handover.previous == "host"
+        states = [e for e in h.events("state") if e.data.get("component") == "ear"]
+        assert len(states) == 1, states
+        assert states[0].data["status"] == "handover"
+        assert states[0].data["ear"] == "browser"
+        assert states[0].data["previous"] == "host"
+        assert app_module.APP_EAR_PREEMPTED in h.ledger_codes()
+
+    def test_a_second_ear_is_refused_visibly(self, harness: Any) -> None:
+        h = harness(config=AppConfig(preempt_ear=False, poll_interval_s=0.01))
+        first = FakeEndpoint(name="host")
+        second = FakeEndpoint(name="browser")
+        h.app.attach_ear("host", first)
+        h.clear()
+        handover = h.app.attach_ear("browser", second)
+
+        assert not handover.attached and handover.refused
+        assert handover.ear == "browser" and handover.previous == "host"
+        states = [e for e in h.events("state") if e.data.get("component") == "ear"]
+        assert len(states) == 1
+        assert states[0].data["status"] == "refused"
+        assert app_module.APP_EAR_REFUSED in h.ledger_codes()
+        assert h.app.status()["ear"]["active"] == "host"
+        assert second.attached is False
+
+    def test_a_pre_empted_ear_stops_capturing_before_the_new_one_starts(self, harness: Any) -> None:
+        h = harness(config=AppConfig(preempt_ear=True, poll_interval_s=0.01))
+        first = FakeEndpoint(name="host")
+        second = FakeEndpoint(name="browser")
+        h.app.attach_ear("host", first)
+        h.app.attach_ear("browser", second)
+        assert first.capturing is False and first.attached is False
+        assert second.capturing is True
+        assert h.app.status()["ear"]["active"] == "browser"
+
+    def test_never_two_capture_callbacks_feed_the_ears(self, harness: Any) -> None:
+        h = harness(config=AppConfig(preempt_ear=True, poll_interval_s=0.01))
+        first = FakeEndpoint(name="host")
+        second = FakeEndpoint(name="browser")
+        h.app.attach_ear("host", first)
+        h.app.attach_ear("browser", second)
+
+        first.on_frame(silent_pcm())  # the displaced ear's capture thread, one frame late
+        second.on_frame(silent_pcm())
+
+        assert len(h.ears.sent) == 1, "a displaced ear still reached the gateway"
+        assert app_module.APP_FRAME_FROM_STALE_EAR in h.ledger_codes()
+
+    def test_a_refused_ear_never_feeds_the_ears(self, harness: Any) -> None:
+        h = harness(config=AppConfig(preempt_ear=False, poll_interval_s=0.01))
+        first = FakeEndpoint(name="host")
+        second = FakeEndpoint(name="browser")
+        h.app.attach_ear("host", first)
+        h.app.attach_ear("browser", second)
+        assert second.on_frame is None
+        first.on_frame(silent_pcm())
+        assert len(h.ears.sent) == 1
+
+    def test_re_attaching_the_same_name_is_still_one_handover(self, harness: Any) -> None:
+        h = harness(config=AppConfig(preempt_ear=True, poll_interval_s=0.01))
+        h.app.attach_ear("host", FakeEndpoint())
+        h.clear()
+        h.app.attach_ear("host", FakeEndpoint())
+        states = [e for e in h.events("state") if e.data.get("component") == "ear"]
+        assert len(states) == 1
+        assert h.app.status()["ear"]["handovers"] == 1
+
+    def test_detaching_publishes_one_state_event_and_leaves_no_ear(self, harness: Any) -> None:
+        h = harness()
+        endpoint = FakeEndpoint()
+        h.app.attach_ear("host", endpoint)
+        h.clear()
+        outcome = h.app.detach_ear()
+        assert outcome.attached is False and outcome.previous == "host"
+        states = [e for e in h.events("state") if e.data.get("component") == "ear"]
+        assert len(states) == 1 and states[0].data["status"] == "detached"
+        assert h.app.status()["ear"]["active"] is None
+        assert endpoint.closed is True
+
+    def test_the_ear_name_is_restricted_to_a_safe_charset(self, harness: Any) -> None:
+        h = harness()
+        handover = h.app.attach_ear("../../etc/passwd\x00‮", FakeEndpoint())
+        assert "/" not in handover.ear and "\x00" not in handover.ear
+        assert "‮" not in handover.ear
+        blob = json.dumps(h.app.status(), ensure_ascii=False)
+        assert "/etc/passwd" not in blob
+
+    def test_hot_mic_on_attach_is_published_and_mutable(self, harness: Any) -> None:
+        h = harness()
+        endpoint = FakeEndpoint()
+        h.app.attach_ear("host", endpoint)
+        mics = h.events("mic")
+        assert mics and mics[-1].data["hot"] is True
+        h.app.set_mute(True)
+        assert endpoint.muted is True
+        assert h.events("mic")[-1].data["hot"] is False
+
+    def test_an_endpoint_that_refuses_to_capture_is_recorded_not_attached(
+        self, harness: Any
+    ) -> None:
+        h = harness()
+        handover = h.app.attach_ear("host", FakeEndpoint(fail_on="start_capture"))
+        assert handover.attached is False
+        assert app_module.APP_EAR_ATTACH_FAILED in h.ledger_codes()
+        assert h.app.status()["ear"]["active"] is None
+
+
+# ── criterion 3: every injected failure degrades and keeps running ────────────
+
+
+class TestInjectedFailures:
+    """Five injected faults. Each: one ledger record, one bus event, a live daemon."""
+
+    def _assert_degraded_and_alive(self, h: Harness, code: str) -> None:
+        assert code in h.ledger_codes(), f"{code} not in {h.ledger_codes()}"
+        published = [e.data["code"] for e in h.events("degradation")]
+        assert code in published, f"{code} not published: {published}"
+        assert isinstance(h.app.status(), dict)
+
+    def test_a_dead_gateway_degrades_and_the_daemon_keeps_running(self, harness: Any) -> None:
+        h = harness(ears=FakeEars(connect_ok=False))
+        h.app.start()
+        deadline = time.monotonic() + 15.0
+        while app_module.APP_EARS_UNAVAILABLE not in h.ledger_codes():
+            assert time.monotonic() < deadline, "the dead gateway was never recorded"
+            time.sleep(0.02)
+        self._assert_degraded_and_alive(h, app_module.APP_EARS_UNAVAILABLE)
+        assert h.app.run_turn(SPEECH).spoken == REPLY
+
+    def test_an_stt_error_degrades_and_the_next_turn_still_runs(self, harness: Any) -> None:
+        h = harness()
+        h.app.start()
+        h.ears.emit(wire.ServerError(code="stt_failed", message="whisper fell over"))
+        deadline = time.monotonic() + 15.0
+        while app_module.APP_STT_ERROR not in h.ledger_codes():
+            assert time.monotonic() < deadline, "the STT error was never recorded"
+            time.sleep(0.02)
+        self._assert_degraded_and_alive(h, app_module.APP_STT_ERROR)
+        assert h.app.run_turn(SPEECH).spoken == REPLY
+        assert "whisper fell over" not in json.dumps(
+            [r.to_dict() for r in h.state.ledger.read_all()]
+        )
+
+    def test_a_tts_error_degrades_and_the_next_turn_still_runs(self, harness: Any) -> None:
+        def exploding_synth(sentence: str, config: Any) -> bytes:
+            raise RuntimeError("tts is down")
+
+        h = harness(synthesize=exploding_synth)
+        h.app.attach_ear("host", FakeEndpoint())
+        h.app.run_turn(SPEECH)
+        self._assert_degraded_and_alive(h, "voice-tts-failed")
+        assert h.app.run_turn(SPEECH).spoken == REPLY
+        assert h.app.status()["turns"]["completed"] == 2
+
+    def test_no_device_degrades_and_the_daemon_still_speaks_into_the_void(
+        self, harness: Any
+    ) -> None:
+        def no_device() -> Any:
+            raise RuntimeError("PortAudio is not installed")
+
+        h = harness(endpoints=no_device)
+        h.app.start()
+        self._assert_degraded_and_alive(h, app_module.APP_NO_ENDPOINT)
+        assert h.app.run_turn(SPEECH).spoken == REPLY
+        assert [e.data["text"] for e in h.events("reply")] == [REPLY]
+        assert h.app.status()["ear"]["active"] is not None
+
+    def test_a_recall_timeout_degrades_and_the_turn_continues(self, harness: Any) -> None:
+        def slow_recall(query: str, **kwargs: Any) -> Any:
+            time.sleep(1.0)
+            return SimpleNamespace(ok=True, records=[], degradation=None)
+
+        h = harness(
+            recall_fn=slow_recall,
+            config=AppConfig(recall_deadline=0.05, poll_interval_s=0.01),
+        )
+        h.app.attach_ear("host", FakeEndpoint())
+        result = h.app.run_turn(SPEECH)
+        assert result.spoken == REPLY
+        self._assert_degraded_and_alive(h, "recall-deadline-exceeded")
+        assert h.app.status()["recall"]["mode"] is None
+
+    def test_the_recall_mode_actually_in_effect_is_reported(self, harness: Any) -> None:
+        h = harness()
+        h.app.attach_ear("host", FakeEndpoint())
+        h.app.run_turn(SPEECH)
+        assert h.app.status()["recall"]["mode"] == "lexical"
+        assert h.app.status()["recall"]["semantic"] is False
+
+    def test_an_endpoint_that_attaches_degraded_says_so(self, harness: Any) -> None:
+        """An ear with no driver behind it still attaches — and must not look healthy."""
+        h = harness()
+        h.app.attach_ear("host", NullEndpoint())
+        self._assert_degraded_and_alive(h, "endpoint-null")
+
+    def test_a_model_seam_that_raises_still_speaks_a_fallback(self, harness: Any) -> None:
+        h = harness(complete=make_complete(fail=True))
+        h.app.attach_ear("host", FakeEndpoint())
+        result = h.app.run_turn(SPEECH)
+        assert result.spoken
+        assert any(code.startswith("turn-") for code in h.ledger_codes())
+        assert h.app.run_turn(SPEECH).spoken
+
+
+# ── the ears loop, the turn queue and shutdown ────────────────────────────────
+
+
+class TestEarsLoop:
+    def test_a_transcription_drives_one_turn_end_to_end(self, harness: Any) -> None:
+        h = harness()
+        h.app.start()
+        h.ears.emit(wire.TranscriptionCompleted(text=SPEECH, item_id="i1"))
+        deadline = time.monotonic() + 15.0
+        while h.app.status()["turns"]["completed"] < 1:
+            assert time.monotonic() < deadline, "no turn ran"
+            time.sleep(0.02)
+        assert [e.data["text"] for e in h.events("reply")] == [REPLY]
+
+    def test_speech_started_during_playback_is_the_barge_in(self, harness: Any) -> None:
+        endpoint = FakeEndpoint()
+        h = harness(endpoints=lambda: endpoint)
+        h.app.start()
+        endpoint._playing = True
+        h.ears.emit(wire.SpeechStarted(item_id="i1"))
+        deadline = time.monotonic() + 15.0
+        while endpoint.stopped_playback == 0:
+            assert time.monotonic() < deadline, "playback was never stopped"
+            time.sleep(0.02)
+
+    def test_a_captured_frame_reaches_the_ears_and_the_bus(self, harness: Any) -> None:
+        endpoint = FakeEndpoint()
+        h = harness(endpoints=lambda: endpoint)
+        h.app.start()
+        endpoint.on_frame(silent_pcm(2))
+        assert len(h.ears.sent) == 1
+        features = [e for e in h.events("features") if e.data["direction"] == "in"]
+        assert len(features) == 2
+
+    def test_played_audio_is_traced_out_to_the_bus(self, harness: Any) -> None:
+        h = harness(synthesize=lambda sentence, config: silent_pcm(4))
+        h.app.attach_ear("host", FakeEndpoint())
+        h.app.run_turn(SPEECH)
+        deadline = time.monotonic() + 15.0
+        while True:
+            h.app.pump()
+            out = [e for e in h.events("features") if e.data["direction"] == "out"]
+            if out:
+                break
+            assert time.monotonic() < deadline, "played audio was never traced"
+            time.sleep(0.02)
+
+    def test_the_transcript_text_is_verbatim(self, harness: Any) -> None:
+        hostile = "  שלום‮  ‏gwen  "
+        h = harness()
+        h.app.attach_ear("host", FakeEndpoint())
+        h.app.run_turn(hostile)
+        assert [e.data["text"] for e in h.events("transcript")] == [hostile]
+
+
+class TestShutdown:
+    def test_close_is_idempotent_and_bounded(self, harness: Any) -> None:
+        h = harness()
+        h.app.start()
+        started = time.monotonic()
+        first = h.app.close(deadline=2.0)
+        second = h.app.close(deadline=2.0)
+        assert time.monotonic() - started < 6.0
+        assert first.closed is True
+        assert second.already_closed is True
+
+    def test_run_returns_zero_when_the_stop_event_is_set(self, harness: Any) -> None:
+        h = harness()
+        stop = threading.Event()
+        returned: list[Any] = []
+
+        def runner() -> None:
+            returned.append(h.app.run(stop))
+
+        thread = threading.Thread(target=runner, daemon=True)
+        thread.start()
+        time.sleep(0.2)
+        stop.set()
+        thread.join(timeout=8.0)
+        assert not thread.is_alive(), "run() did not return within its bound"
+        assert returned == [0]
+
+    def test_close_reports_what_it_left_unfinished(self, harness: Any) -> None:
+        h = harness()
+        h.app.start()
+        report = h.app.close(deadline=2.0)
+        assert isinstance(report.to_dict(), dict)
+        assert report.ears_stopped is True
+
+    def test_close_returns_within_its_deadline_when_a_seam_hangs(self, harness: Any) -> None:
+        """Found by attacking: a seam that ignores its deadline unbounded close()."""
+
+        class HangingMemory:
+            store_permission_failures = 0
+            store_symlinks_skipped = 0
+            pending = 0
+            abandoned_dropped = 0
+            scope = "gwen"
+            data_dir = "/dev/null"
+            last_recall_mode = None
+
+            def recall(self, *args: Any, **kwargs: Any) -> Any:
+                time.sleep(30)
+
+            def close(self, deadline: float = 1.0) -> Any:
+                time.sleep(30)
+
+        h = harness(memory=HangingMemory())
+        h.app.start()
+        started = time.monotonic()
+        report = h.app.close(deadline=1.0)
+        assert time.monotonic() - started < 5.0, "close() outran its deadline"
+        assert report.memory_closed is False
+        assert "memory" in report.unfinished
+        assert app_module.APP_SHUTDOWN_INCOMPLETE in h.ledger_codes()
+
+    def test_a_stuck_turn_is_visible_in_status(self, harness: Any) -> None:
+        release = threading.Event()
+
+        def blocking_complete(messages: list[dict[str, Any]], tools: Any = None) -> ModelResponse:
+            release.wait(timeout=10)
+            return ModelResponse(content=REPLY)
+
+        h = harness(complete=blocking_complete)
+        h.app.attach_ear("host", FakeEndpoint())
+        thread = threading.Thread(target=lambda: h.app.run_turn(SPEECH), daemon=True)
+        thread.start()
+        deadline = time.monotonic() + 15.0
+        while h.app.status()["turns"]["in_flight"] == 0:
+            assert time.monotonic() < deadline, "a turn in flight was never visible"
+            time.sleep(0.02)
+        release.set()
+        thread.join(timeout=5)
+        assert h.app.status()["turns"]["in_flight"] == 0
+
+    def test_a_turn_after_close_is_refused_and_recorded(self, harness: Any) -> None:
+        h = harness()
+        h.app.attach_ear("host", FakeEndpoint())
+        h.app.close(deadline=2.0)
+        result = h.app.run_turn(SPEECH)
+        assert result.spoken == ""
+        assert app_module.APP_CLOSED in h.ledger_codes()
+
+
+class TestStatus:
+    def test_status_is_json_serialisable_and_never_raises(self, harness: Any) -> None:
+        h = harness()
+        h.app.start()
+        json.dumps(h.app.status(), ensure_ascii=False)
+
+    def test_status_carries_the_store_counters(self, harness: Any) -> None:
+        h = harness()
+        memory_status = h.app.status()["memory"]
+        assert "store_permission_failures" in memory_status
+        assert "store_symlinks_skipped" in memory_status
+
+    def test_status_names_the_active_ear_and_the_client_count(self, harness: Any) -> None:
+        h = harness()
+        h.app.attach_ear("host", FakeEndpoint())
+        h.app.attach_client()
+        status = h.app.status()
+        assert status["ear"]["active"] == "host"
+        assert status["clients"]["count"] == 1
+
+    def test_the_controls_bind_to_the_app(self, harness: Any) -> None:
+        h = harness()
+        controls = h.app.controls()
+        started = controls.start_voice()
+        assert started["ear"]
+        assert controls.set_mute(True)["muted"] is True
+        assert controls.status()["ear"]["active"]
+        assert controls.stop_voice()["ear"] is None
+
+
+# ── the attack surface ────────────────────────────────────────────────────────
+
+
+class TestAttacks:
+    def test_no_record_or_log_carries_what_was_said(self, harness: Any, tmp_path: Path) -> None:
+        marker = "MARKERCANARY7788"
+
+        def exploding_synth(sentence: str, config: Any) -> bytes:
+            raise RuntimeError(f"tts blew up on {marker}")
+
+        h = harness(synthesize=exploding_synth, complete=make_complete(f"reply {marker}"))
+        h.app.attach_ear("host", FakeEndpoint())
+        h.app.run_turn(f"user said {marker}")
+
+        blob = json.dumps([r.to_dict() for r in h.state.ledger.read_all()], ensure_ascii=False)
+        assert marker not in blob, blob
+        assert marker not in json.dumps(h.app.status(), ensure_ascii=False)
+        non_speech = [e.to_dict() for e in h.events() if e.kind not in ("transcript", "reply")]
+        assert marker not in json.dumps(non_speech, ensure_ascii=False)
+
+    def test_a_ten_thousand_character_transcript_is_survived(self, harness: Any) -> None:
+        h = harness()
+        h.app.attach_ear("host", FakeEndpoint())
+        result = h.app.run_turn("א" * 10_000)
+        assert result.spoken == REPLY
+
+    def test_a_transcript_of_control_characters_is_survived(self, harness: Any) -> None:
+        h = harness()
+        h.app.attach_ear("host", FakeEndpoint())
+        for text in ("\x00\x01\x02", "  \u0085", "‮​", "```", ""):
+            assert isinstance(h.app.run_turn(text).spoken, str)
+
+    def test_a_non_string_transcript_never_raises(self, harness: Any) -> None:
+        h = harness()
+        h.app.attach_ear("host", FakeEndpoint())
+        for text in (None, 17, b"bytes", {"a": 1}):
+            assert isinstance(h.app.run_turn(text).spoken, str)  # type: ignore[arg-type]
+
+    def test_ten_thousand_frames_do_not_grow_without_bound(self, harness: Any) -> None:
+        endpoint = FakeEndpoint()
+        h = harness(endpoints=lambda: endpoint)
+        h.app.start()
+        frame = silent_pcm()
+        for _ in range(10_000):
+            endpoint.on_frame(frame)
+        assert len(h.ears.sent) == 10_000
+        assert h.app.status()["audio"]["frames_captured"] == 10_000
+
+    def test_a_bus_that_raises_never_stops_a_turn(self, harness: Any, tmp_path: Path) -> None:
+        class HostileBus(Bus):
+            def publish(self, kind: str, data: Any = None) -> Any:
+                if kind == "turn":
+                    raise RuntimeError("bus exploded")
+                return super().publish(kind, data)
+
+        bus = HostileBus()
+        h = harness(bus=bus)
+        h.app.attach_ear("host", FakeEndpoint())
+        assert h.app.run_turn(SPEECH).spoken == REPLY
+        assert app_module.APP_PUBLISH_FAILED in h.ledger_codes()
+
+    def test_an_endpoint_that_raises_on_every_call_is_survived(self, harness: Any) -> None:
+        class Hostile(FakeEndpoint):
+            def stop_capture(self) -> None:
+                raise RuntimeError("no")
+
+            def detach(self) -> None:
+                raise RuntimeError("no")
+
+            def close(self, deadline: float) -> EndpointCloseReport:
+                raise RuntimeError("no")
+
+        h = harness()
+        h.app.attach_ear("host", Hostile())
+        outcome = h.app.detach_ear()
+        assert outcome.attached is False
+        assert app_module.APP_EAR_DETACH_FAILED in h.ledger_codes()
+
+    def test_concurrent_attaches_never_leave_two_ears(self, harness: Any) -> None:
+        h = harness(config=AppConfig(preempt_ear=True, poll_interval_s=0.01))
+        endpoints = [FakeEndpoint(name=f"e{i}") for i in range(12)]
+        barrier = threading.Barrier(len(endpoints))
+
+        def attach(index: int) -> None:
+            barrier.wait(timeout=5)
+            h.app.attach_ear(f"e{index}", endpoints[index])
+
+        threads = [threading.Thread(target=attach, args=(i,)) for i in range(len(endpoints))]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=10)
+        capturing = [e for e in endpoints if e.capturing]
+        assert len(capturing) == 1, [e.name for e in capturing]
+
+    def test_status_survives_every_seam_raising_on_attribute_access(self, harness: Any) -> None:
+        """Found by attacking: one hostile seam used to blank the whole report."""
+
+        class Exploding:
+            def __getattr__(self, name: str) -> Any:
+                raise RuntimeError("no")
+
+        h = harness()
+        h.app.attach_ear("host", FakeEndpoint())
+        h.app._ears = Exploding()
+        h.app._voice = Exploding()
+        h.app._server = Exploding()
+        status = h.app.status()
+        assert status["ear"]["active"] == "host"
+        assert status["ears"] == {"unavailable": True}
+        assert status["voice"] == {"unavailable": True}
+        h.app._ears = FakeEars()
+        h.app._voice = None
+        h.app._server = None
+
+    def test_the_null_endpoint_is_a_legal_ear(self, harness: Any) -> None:
+        h = harness()
+        handover = h.app.attach_ear("null", NullEndpoint())
+        assert handover.attached is True
+        assert h.app.run_turn(SPEECH).spoken == REPLY
+
+
+class TestModelSeam:
+    """:func:`http_complete` — shaped here, dialled for real only in ``t21``."""
+
+    def _capture(self, monkeypatch: pytest.MonkeyPatch, payload: dict[str, Any]) -> list[Any]:
+        seen: list[Any] = []
+
+        class FakeResponse:
+            def __enter__(self) -> Any:
+                return self
+
+            def __exit__(self, *args: Any) -> bool:
+                return False
+
+            def read(self) -> bytes:
+                return json.dumps(payload).encode("utf-8")
+
+        def fake_urlopen(request: Any, timeout: float = 0) -> Any:
+            seen.append(request)
+            return FakeResponse()
+
+        monkeypatch.setattr(app_module.urllib.request, "urlopen", fake_urlopen)
+        return seen
+
+    def test_the_role_is_the_model_and_the_key_is_a_header(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen = self._capture(
+            monkeypatch,
+            {
+                "choices": [{"message": {"content": "שלום"}}],
+                "usage": {"prompt_tokens": 7, "completion_tokens": 9},
+            },
+        )
+        response = app_module.http_complete(
+            [{"role": "user", "content": "היי"}],
+            gateway_url="http://gateway.invalid/",
+            api_key="SECRETKEY",
+            role="senses",
+        )
+        assert response.content == "שלום"
+        assert (response.prompt_tokens, response.completion_tokens) == (7, 9)
+        request = seen[0]
+        assert request.full_url == "http://gateway.invalid/v1/chat/completions"
+        assert "SECRETKEY" not in request.full_url
+        assert request.headers["Authorization"] == "Bearer SECRETKEY"
+        body = json.loads(request.data.decode("utf-8"))
+        assert body["model"] == "senses"
+        assert body["messages"] == [{"role": "user", "content": "היי"}]
+        assert "tools" not in body
+
+    def test_a_non_http_origin_is_refused_before_any_request(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen = self._capture(monkeypatch, {})
+        with pytest.raises(ValueError):
+            app_module.http_complete([], gateway_url="file:///etc/passwd")
+        assert seen == []
+
+    def test_a_malformed_body_still_yields_a_model_response(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        self._capture(monkeypatch, {"choices": []})
+        response = app_module.http_complete([], gateway_url="http://gateway.invalid")
+        assert response.content == ""
+
+
+class TestProcessModel:
+    def test_main_is_a_zero_argument_factory_returning_a_runnable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("EMBODIMENT_STATE_DIR", str(tmp_path / "state"))
+        monkeypatch.delenv("EMBODIMENT_GATEWAY_KEY", raising=False)
+        monkeypatch.delenv("CULTURE_VLLM_API_KEY", raising=False)
+        application = app_module.main()
+        try:
+            assert callable(getattr(application, "run", None))
+            assert callable(getattr(application, "shutdown", None))
+        finally:
+            application.close(deadline=2.0)
+
+    def test_the_lifecycle_default_target_resolves_to_main(self) -> None:
+        from embodiment.daemon import lifecycle
+
+        factory, detail = lifecycle.resolve_target(lifecycle.DEFAULT_TARGET)
+        assert detail is None, detail
+        assert factory is app_module.main
+
+    def test_main_never_raises_when_the_environment_is_hostile(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("EMBODIMENT_STATE_DIR", str(tmp_path / "nope" / "deep"))
+        monkeypatch.setenv("EMBODIMENT_GATEWAY_URL", "not-a-url")
+        application = app_module.main()
+        try:
+            assert isinstance(application.status(), dict)
+        finally:
+            application.close(deadline=2.0)
