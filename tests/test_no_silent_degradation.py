@@ -88,7 +88,25 @@ SILENT_SWALLOWS: dict[tuple[str, str], str] = {
         "to None before the call). Mirrors events-cli's own 'safe to call from "
         "a finally' contract; there is no run left to degrade."
     ),
+    (
+        "bus.py",
+        "Bus.close",
+    ): (
+        "Teardown of an already-detached broker client (self._broker_client is "
+        "set to None before the call), same precedent as EventEmitter.close: "
+        "events-cli's own 'safe to call from a finally' contract, and there is "
+        "no run left to degrade. What close() actually did is reported on the "
+        "returned BusCloseReport regardless of which branch ran."
+    ),
 }
+
+# Note: an earlier round of Bus._degrade had a bare `except Exception: pass`
+# around its on_degrade hook call, mirroring EventEmitter._degrade, and was
+# allow-listed here too. Round 2 replaced the bare `pass` with `self.hook_errors
+# += 1` (Bus.hook_errors) — a broken notifier's own failure is COUNTED, not
+# swallowed, so that handler no longer classifies as an inert silent swallow at
+# all and needs no allow-list entry. See embodiment/bus.py's module docstring,
+# "Round 2, defect 4".
 
 #: ``(module, qualified function) -> why None is the honest answer here.``
 ABSENT_BY_DESIGN: dict[tuple[str, str], str] = {
@@ -229,9 +247,16 @@ class TestNoSilentSwallow:
             f"{h.module}:{h.lineno} in {h.function}" for h in unknown
         )
 
-    def test_the_sanctioned_set_is_exactly_three(self) -> None:
-        """Stated as a number so growth is visible in a diff, not just in a set."""
-        assert len(SILENT_SWALLOWS) == 3
+    def test_the_sanctioned_set_size_is_pinned(self) -> None:
+        """Stated as a number so growth is visible in a diff, not just in a set.
+
+        Was "exactly three" when only presence_engine.py and events.py had
+        entries; renamed when bus.py's Bus.close joined (round 1) and again
+        when Bus._degrade LEFT the set (round 2 — see the comment above
+        SILENT_SWALLOWS: its swallow now counts hook_errors instead of a bare
+        pass, so it is no longer inert and needs no entry here at all).
+        """
+        assert len(SILENT_SWALLOWS) == 4
         assert {h.key for h in SILENT} == set(SILENT_SWALLOWS)
 
     def test_the_narrate_swallow_is_the_only_one_on_the_presence_pump(self) -> None:
