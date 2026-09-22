@@ -199,11 +199,18 @@ _DEFAULT_AUTH_DEADLINE_S = 5.0
 #: How long the WebSocket opening handshake itself (from the TCP accept
 #: through the ``101`` response) is allowed to take — explicitly passed to
 #: ``serve()`` as ``open_timeout`` rather than left at the library's own
-#: unstated default, so :data:`_PENDING_CLAIM_MARGIN_S` below is derived from
-#: a NAMED quantity (this repo's own lesson: a clock nobody named becomes the
-#: measurement). Matches the library's own out-of-the-box default (10 s), so
-#: this is a naming, not a tightening.
-_DEFAULT_HANDSHAKE_OPEN_TIMEOUT_S = 10.0
+#: unstated default (this repo's own lesson: a clock nobody named becomes the
+#: measurement), and — round 5 — sized against what it actually bounds
+#: rather than inherited from that library default: an HTTP upgrade over a
+#: LAN or a tailnet is ONE round trip, not the multi-hop, possibly-congested
+#: path the library's 10 s assumes nothing about. 3.0 s is generous for one
+#: round trip on a healthy local link and small enough that an aborted
+#: handshake (round 4 finding 1) only ever costs a later peer a few seconds,
+#: not the better part of a human breath. Still a per-endpoint config field:
+#: an operator on a slower link (a real WAN hop, not the LAN/tailnet this
+#: default assumes) raises it explicitly rather than this default silently
+#: covering for them.
+_DEFAULT_HANDSHAKE_OPEN_TIMEOUT_S = 3.0
 
 #: Round 4 finding 1's backstop. ``process_response`` (see
 #: :meth:`RemoteEndpoint._process_response`) releases a pending claim
@@ -217,10 +224,15 @@ _DEFAULT_HANDSHAKE_OPEN_TIMEOUT_S = 10.0
 #: upgrade request left the claim held with ``process_response`` never
 #: firing). So a pending claim older than the handshake's own bound is ALSO
 #: treated as abandoned by the next ``process_request`` call — this margin
-#: is the slack added on top of :data:`_DEFAULT_HANDSHAKE_OPEN_TIMEOUT_S`
-#: for the library's own bookkeeping between "handshake failed" and this
-#: process's next ``process_request`` call landing.
-_PENDING_CLAIM_MARGIN_S = 1.0
+#: is the slack added on top of :data:`_DEFAULT_HANDSHAKE_OPEN_TIMEOUT_S`,
+#: sized (round 5) for the library's own bookkeeping between "handshake
+#: failed" and this process's next ``process_request`` call landing, not for
+#: network latency (that is what the timeout above already bounds) — 0.5 s
+#: is comfortably more than that bookkeeping needs on a healthy host, small
+#: enough that the total worst case (3.5 s) stays a handful of seconds, not
+#: the 11 s the pre-round-5 default (10 s + 1 s) cost every legitimate peer
+#: behind one aborted handshake.
+_PENDING_CLAIM_MARGIN_S = 0.5
 
 #: The rate :attr:`RemoteEndpoint.sample_rate` reports — what
 #: :meth:`AudioEndpoint.start_capture`'s ``on_frame`` callback actually
@@ -1045,9 +1057,13 @@ class RemoteEndpoint:
                 "send_errors": self._send_errors,
                 "connection_drop_count": self._connection_drop_count,
                 "unauthorized_connections": self._unauthorized_count,
-                "connections_rejected_busy": self._rejected_busy_count,
                 "secret_in_url_count": self._secret_in_url_count,
                 "path_parse_errors": self._path_parse_errors,
+                # round 5: exposed beside its sibling so a probe reading
+                # this dict sees both one-peer-at-a-time counts together —
+                # how many were refused outright vs. how many were an
+                # abandoned handshake reclaimed instead of refused.
+                "rejected_busy_count": self._rejected_busy_count,
                 "handshake_aborted_count": self._handshake_aborted_count,
                 "server_thread_fault_count": self._server_thread_fault_count,
                 "control_sends_dropped": self._control_sends_dropped,

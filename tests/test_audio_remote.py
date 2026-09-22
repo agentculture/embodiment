@@ -39,6 +39,22 @@ deterministic, clearly-synthetic PCM16 (``bytes(range(16))`` and
 ``bytes(range(16, 32))`` — never real audio), and one is an
 ``input_audio_buffer.append`` with a zero-byte payload, exercising
 ``wire.py``'s own documented rule that an empty buffer is a valid frame.
+
+Round 5: the round-4 default bound was too large
+--------------------------------------------------
+The coordinator's own probe against the merged round-4 fix found the
+endpoint no longer bricked, but the pre-round-5 defaults
+(``handshake_open_timeout`` 10 s + ``_PENDING_CLAIM_MARGIN_S`` 1 s) meant one
+aborted handshake still refused every legitimate peer for up to 11 s.
+``TestRound5ReviewFindings`` pins the new defaults (3.0 s / 0.5 s, derived
+from "an HTTP upgrade over a LAN/tailnet is one round trip" rather than
+inherited from the library's own unstated 10 s) and proves an aborted
+handshake recovers in low single digits of seconds using the plain,
+unoverridden defaults — not just the short test-only overrides round 4's own
+tests used. The probe also could not find a ``rejected_busy_count`` key;
+what existed was named ``connections_rejected_busy`` — renamed and moved
+beside ``handshake_aborted_count`` in :meth:`~embodiment.audio.remote.RemoteEndpoint.status`,
+and every test that read the old key name is updated here too.
 """
 
 from __future__ import annotations
@@ -654,7 +670,7 @@ class TestAttacks:
                     await first.close()
 
             _run(scenario())
-            assert ep.status()["connections_rejected_busy"] == 1
+            assert ep.status()["rejected_busy_count"] == 1
         finally:
             ep.close(2.0)
 
@@ -678,7 +694,7 @@ class TestAttacks:
                     await first.close()
 
             _run(scenario())
-            assert ep.status()["connections_rejected_busy"] == 1
+            assert ep.status()["rejected_busy_count"] == 1
         finally:
             ep.close(2.0)
 
@@ -872,9 +888,10 @@ class TestRound4ReviewFindings:
                 first = await _connect(ep.bound_port)  # handshake completes; holds the claim
                 try:
                     await asyncio.sleep(0.1)
-                    # Wait well past handshake_open_timeout+margin (1.2 s) —
-                    # if the fix wrongly treated an ACTIVE handler's claim as
-                    # stale, this second dial-in would now succeed.
+                    # Wait well past handshake_open_timeout+margin (round 5:
+                    # 0.2 + 0.5 = 0.7 s) — if the fix wrongly treated an
+                    # ACTIVE handler's claim as stale, this second dial-in
+                    # would now succeed.
                     await asyncio.sleep(1.5)
                     with pytest.raises(InvalidStatus) as excinfo:
                         await _connect(ep.bound_port)
@@ -883,7 +900,7 @@ class TestRound4ReviewFindings:
                     await first.close()
 
             _run(scenario())
-            assert ep.status()["connections_rejected_busy"] >= 1
+            assert ep.status()["rejected_busy_count"] >= 1
             assert ep.status()["handshake_aborted_count"] == 0
         finally:
             ep.close(2.0)
@@ -974,6 +991,66 @@ class TestRound4ReviewFindings:
             status = ep.status()
             assert status["control_sends_dropped"] > 0
             assert status["session_updates_received"] == 200  # every one was still DECODED
+        finally:
+            ep.close(2.0)
+
+
+# ── Round 5: the coordinator's own probe found the default bound too large ──
+
+
+class TestRound5ReviewFindings:
+    def test_default_handshake_bound_is_derived_not_inherited(self) -> None:
+        """Pins round 5: the pre-round-5 default (10 s open_timeout + 1 s
+        margin = 11 s) let one aborted handshake refuse every legitimate peer
+        for up to 11 s. An HTTP upgrade over a LAN/tailnet is one round trip,
+        so the new default is sized against that, not the library's own
+        unstated 10 s."""
+        ep = _endpoint()
+        try:
+            assert ep.config.handshake_open_timeout == 3.0
+            assert rt._PENDING_CLAIM_MARGIN_S == 0.5
+        finally:
+            ep.close(2.0)
+
+    def test_an_aborted_handshake_recovers_quickly_under_the_default_bound(self) -> None:
+        """End-to-end, with NO override: a real operator running this
+        endpoint's plain defaults sees an aborted handshake recover in low
+        single-digit seconds, not up to 11."""
+        ep = _endpoint()  # the actual shipped default, not a test-shortened one
+        ep.attach()
+        try:
+
+            async def scenario() -> None:
+                start = time.monotonic()
+                await asyncio.to_thread(_abort_handshake_after_request, "127.0.0.1", ep.bound_port)
+                ws = await _retry_authed_connect(ep.bound_port, DEFAULT_SECRET, attempts=100)
+                try:
+                    raw = await asyncio.wait_for(ws.recv(), timeout=5.0)
+                    elapsed = time.monotonic() - start
+                    assert json.loads(raw)["type"] == "session.created"
+                    # Generous ceiling: the bound itself is 3.5 s; this just
+                    # proves it is nowhere near the old 11 s, without pinning
+                    # test-machine scheduling jitter to the second decimal.
+                    assert elapsed < 6.0
+                finally:
+                    await ws.close()
+
+            _run(scenario())
+            assert ep.status()["handshake_aborted_count"] >= 1
+        finally:
+            ep.close(2.0)
+
+    def test_rejected_busy_count_is_exposed_beside_handshake_aborted_count(self) -> None:
+        """The coordinator's probe went looking for this key and didn't find
+        it under its OLD name (``connections_rejected_busy``, round 4) —
+        renamed and moved next to its sibling counter."""
+        ep = _endpoint()
+        try:
+            status = ep.status()
+            assert "rejected_busy_count" in status
+            assert "handshake_aborted_count" in status
+            assert status["rejected_busy_count"] == 0
+            assert status["handshake_aborted_count"] == 0
         finally:
             ep.close(2.0)
 
