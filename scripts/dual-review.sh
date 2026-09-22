@@ -113,9 +113,11 @@ PROMPT
   # (~/.qwen/agents/worker.md, the 35B on thor) for evidence gathering. Plan mode still
   # denies it a shell and edits (smoke-tested 2026-09-22: the worker read a file, could
   # not run wc); without the flag the 27B's first `agent` call is refused non-interactively
-  # and it reviews unaided, which on a 116 kB diff did not finish in 40 min. The `=` form
-  # matters: as an array flag, a bare `--allowed-tools agent` swallows the prompt.
-  call_qwen27() { ( cd "$wt" && timeout "$timeout_s" qwen -m "${DUAL_REVIEW_QWEN27_MODEL:-unsloth/Qwen3.8-27B-NVFP4}" --approval-mode plan --allowed-tools=agent "$prompt" </dev/null ); }
+  # and it reviews unaided, which on a 116 kB diff did not finish in 40 min. The prompt
+  # goes through -p: `--allowed-tools` is an array flag and swallows a positional prompt
+  # in both its bare and `=` forms (four queued reviews died in 1 s with "No input
+  # provided via stdin" before this was corrected).
+  call_qwen27() { ( cd "$wt" && timeout "$timeout_s" qwen -m "${DUAL_REVIEW_QWEN27_MODEL:-unsloth/Qwen3.8-27B-NVFP4}" --approval-mode plan --allowed-tools=agent -p "$prompt" </dev/null ); }
   run_qwen27() { run_reviewer qwen27; }
   call_qwen() { ( cd "$wt" && timeout "$timeout_s" qwen --approval-mode plan "$prompt" </dev/null ); }
   # The associate model can spend its ENTIRE output budget reasoning about a large
