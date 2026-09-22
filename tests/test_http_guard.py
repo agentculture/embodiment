@@ -407,7 +407,7 @@ class TestHeaderAttacks:
 
     def test_a_bidi_override_in_an_origin_is_refused(self) -> None:
         decision = make_guard().check(
-            "POST", "/api/voice/start", headers(Origin="http://127.0.0.1:8823‮")
+            "POST", "/api/voice/start", headers(Origin="http://127.0.0.1:8823\u202e")
         )
         assert decision.allowed is False
 

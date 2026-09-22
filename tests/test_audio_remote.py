@@ -562,7 +562,7 @@ class TestAttacks:
         ep = _endpoint()
         ep.attach()
         try:
-            hostile = "x" * 10_000 + "‮\u0085 " + "'; DROP TABLE--"
+            hostile = "x" * 10_000 + "\u202e\u0085 " + "'; DROP TABLE--"
 
             async def scenario() -> None:
                 from websockets.exceptions import ConnectionClosedError
@@ -585,7 +585,7 @@ class TestAttacks:
         ep = _endpoint(auth_deadline=0.3)
         ep.attach()
         try:
-            hostile = "y" * 2000 + "‮\u0085 " + "'; DROP TABLE--"
+            hostile = "y" * 2000 + "\u202e\u0085 " + "'; DROP TABLE--"
 
             async def scenario() -> None:
                 from websockets.exceptions import ConnectionClosedError

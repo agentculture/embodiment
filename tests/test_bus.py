@@ -344,14 +344,14 @@ class TestExceptionTextNeverLeaked:
         real broker's reason is a short slug like "no_conn"); anything that
         required alteration to become safe is dropped WHOLESALE to a fixed
         generic string, never partially kept (round 2, defect 1)."""
-        poisoned = f'inject "{self.MARK}" ‮ and spaces'
+        poisoned = f'inject "{self.MARK}" \u202e and spaces'
         bus = Bus(client=_FailingResultClient(reason=poisoned))
         bus.publish("heartbeat", {})
         assert _wait_until(lambda: bus.degradation_counts.get(DEGRADED_BROKER_UNAVAILABLE, 0) >= 1)
         record = next(d for d in bus.degradations if d.code == DEGRADED_BROKER_UNAVAILABLE)
         assert self.MARK not in record.reason
         assert '"' not in record.reason
-        assert "‮" not in record.reason
+        assert "\u202e" not in record.reason
 
     def test_clean_transport_reason_slug_survives_unaltered(self):
         """A real broker's reason ("no_conn", a paho rc slug) is exactly the
@@ -1060,10 +1060,10 @@ class TestSecretRedaction:
     def test_bidi_and_format_chars_stripped_from_degradation_reason(self):
         bus = Bus(client=_OkClient())
         # U+202E RIGHT-TO-LEFT OVERRIDE, U+200B ZERO WIDTH SPACE
-        poisoned = "safe‮text​here"
+        poisoned = "safe\u202etext​here"
         event = bus.publish("degradation", {"source": "x", "code": "y", "reason": poisoned})
         assert event is not None
-        assert "‮" not in event.data["reason"]
+        assert "\u202e" not in event.data["reason"]
         assert "​" not in event.data["reason"]
         assert "safe" in event.data["reason"] and "text" in event.data["reason"]
 
@@ -1113,9 +1113,9 @@ class TestFoldDegradation:
         assert event is not None
 
     def test_fold_sanitises_bidi_in_reason(self):
-        rec = TurnDegradation(code="x", reason="a‮b")
+        rec = TurnDegradation(code="x", reason="a\u202eb")
         folded = fold_degradation(rec, source="turn")
-        assert "‮" not in folded["reason"]
+        assert "\u202e" not in folded["reason"]
 
     def test_fold_never_raises_on_missing_attributes(self):
         class _Empty:
@@ -1156,7 +1156,7 @@ class TestAttacks:
 
     def test_unicode_bidi_line_separators_in_text(self):
         bus, _client = _bus_with_ok_client()
-        poisoned = "line1 line2\u0085line3‮"
+        poisoned = "line1 line2\u0085line3\u202e"
         event = bus.publish("reply", {"text": poisoned})
         assert event is not None  # reply text is speech; not sanitised, only degradation is
 

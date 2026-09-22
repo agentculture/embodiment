@@ -514,7 +514,7 @@ class TestAttack:
         self, tmp_path: Path
     ) -> None:
         session, _mem, _state = _session(tmp_path, budget_tokens=5000)
-        text = "hello ‮​world⁦"
+        text = "hello \u202e​world\u2066"
         session.add_user(text)
         assert session.messages()[-1]["content"] == text
 

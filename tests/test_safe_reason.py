@@ -249,12 +249,12 @@ class TestDescribeExceptionSaysNothingItWasToldIn:
         assert "Nasty" in described
 
     def test_a_class_name_carrying_format_characters_is_stripped(self) -> None:
-        hostile = type("Ev‮il", (Exception,), {})
+        hostile = type("Ev\u202eil", (Exception,), {})
         described = describe_exception(hostile("x"))
-        assert "‮" not in described
+        assert "\u202e" not in described
 
     def test_no_format_or_separator_characters_ever_survive(self) -> None:
-        for character in ("‮", "⁦", "​", "﻿", " ", "\u0085"):
+        for character in ("\u202e", "\u2066", "​", "﻿", " ", "\u0085"):
             exc = OSError(1, f"a{character}b")
             setattr(exc, "weird", character)
             described = describe_exception(exc)
@@ -329,8 +329,8 @@ class TestTheUnsafeEscapeHatch:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setenv(safe_reason.UNSAFE_ENV, "1")
-        described = describe_exception(ValueError("a‮b c"))
-        assert "‮" not in described and " " not in described
+        described = describe_exception(ValueError("a\u202eb c"))
+        assert "\u202e" not in described and " " not in described
 
     def test_the_env_var_name_says_what_it_does(self) -> None:
         assert "UNSAFE" in safe_reason.UNSAFE_ENV
@@ -370,7 +370,7 @@ class TestSafeLabel:
         assert safe_reason.safe_label("") == safe_reason.LABEL_FALLBACK
 
     def test_format_characters_never_survive(self) -> None:
-        assert "‮" not in safe_reason.safe_label("a‮b")
+        assert "\u202e" not in safe_reason.safe_label("a\u202eb")
 
 
 class TestTheSharedCategorySetLivesHere:
@@ -385,7 +385,7 @@ class TestTheSharedCategorySetLivesHere:
         assert {"Cc", "Cf", "Zl", "Zp"} <= safe_reason.STRIPPED_CATEGORIES
 
     def test_scrub_removes_every_member_of_the_set(self) -> None:
-        for character in ("‮", "⁦", "​", "﻿", " ", " ", "\x85"):
+        for character in ("\u202e", "\u2066", "​", "﻿", " ", " ", "\x85"):
             assert character not in safe_reason.scrub(f"a{character}b")
             assert unicodedata.category(character) in safe_reason.STRIPPED_CATEGORIES
 

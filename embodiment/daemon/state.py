@@ -650,7 +650,7 @@ def _bootstrap_fallback_dir() -> tuple[Optional[Path], str]:
         random_dir = Path(tempfile.mkdtemp(prefix="embodiment-state-fallback-"))
     except OSError as exc:
         combined = (
-            f"{detail}; could not create a random fallback either: " f"{type(exc).__name__}: {exc}"
+            f"{detail}; could not create a random fallback either: {type(exc).__name__}: {exc}"
         )
         return None, combined
     try:

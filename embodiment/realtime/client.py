@@ -1009,7 +1009,9 @@ async def _swallow(task: "asyncio.Task[Any]") -> None:
     catches everything it can name, so anything arriving here is a surprise and
     deserves to be written down rather than dropped.
     """
-    try:
-        await task
-    except asyncio.CancelledError:
-        return
+    # gather(return_exceptions=True) hands the writer's own CancelledError back
+    # as a RESULT, while a cancellation of the awaiting task still propagates
+    # through the await: the caller's cancel is never swallowed here.
+    outcome = (await asyncio.gather(task, return_exceptions=True))[0]
+    if isinstance(outcome, Exception):
+        raise outcome

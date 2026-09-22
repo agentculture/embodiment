@@ -618,9 +618,9 @@ class TestOneEar:
 
     def test_the_ear_name_is_restricted_to_a_safe_charset(self, harness: Any) -> None:
         h = harness()
-        handover = h.app.attach_ear("../../etc/passwd\x00‮", FakeEndpoint())
+        handover = h.app.attach_ear("../../etc/passwd\x00\u202e", FakeEndpoint())
         assert "/" not in handover.ear and "\x00" not in handover.ear
-        assert "‮" not in handover.ear
+        assert "\u202e" not in handover.ear
         blob = json.dumps(h.app.status(), ensure_ascii=False)
         assert "/etc/passwd" not in blob
 
@@ -901,7 +901,7 @@ class TestEarsLoop:
             time.sleep(0.02)
 
     def test_the_transcript_text_is_verbatim(self, harness: Any) -> None:
-        hostile = "  שלום‮  ‏gwen  "
+        hostile = "  שלום\u202e  \u200fgwen  "
         h = harness()
         h.app.attach_ear("host", FakeEndpoint())
         h.app.run_turn(hostile)
@@ -3652,7 +3652,7 @@ class TestAttacks:
     def test_a_transcript_of_control_characters_is_survived(self, harness: Any) -> None:
         h = harness()
         h.app.attach_ear("host", FakeEndpoint())
-        for text in ("\x00\x01\x02", "  \u0085", "‮​", "```", ""):
+        for text in ("\x00\x01\x02", "  \u0085", "\u202e​", "```", ""):
             assert isinstance(h.app.run_turn(text).spoken, str)
 
     def test_a_non_string_transcript_never_raises(self, harness: Any) -> None:

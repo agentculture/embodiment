@@ -214,6 +214,7 @@ timed-out worker keeps running in the background.
 
 from __future__ import annotations
 
+import math
 import re
 import secrets
 import threading
@@ -417,7 +418,7 @@ def _sanitize_deadline(deadline: Any) -> tuple[float, bool]:
         value = float(deadline)
     except (TypeError, ValueError):
         return DEFAULT_SUMMARY_DEADLINE, True
-    if value != value or value < 0 or value == float("inf"):  # value != value is the NaN check
+    if math.isnan(value) or value < 0 or math.isinf(value):
         return DEFAULT_SUMMARY_DEADLINE, True
     return value, False
 

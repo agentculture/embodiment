@@ -580,11 +580,12 @@ class RemoteEndpoint:
             await self._stop_event.wait()
         finally:
             sender.cancel()
-            try:
-                await sender
-            except asyncio.CancelledError:
-                pass  # the expected outcome of cancelling it above
-            except Exception:  # noqa: BLE001 - an unexpected teardown fault, still recorded
+            # gather(return_exceptions=True) hands the sender's own
+            # CancelledError back as a RESULT (the expected outcome of the
+            # cancel above) while a cancellation of THIS task still propagates
+            # through the await, so nothing here swallows a caller's cancel.
+            outcome = (await asyncio.gather(sender, return_exceptions=True))[0]
+            if isinstance(outcome, Exception):  # an unexpected teardown fault, still recorded
                 with self._lock:
                     self._send_errors += 1
             server.close()

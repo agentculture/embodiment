@@ -2,7 +2,7 @@
   "plan_slug": "realtime-embodiment-app",
   "schema_version": 2,
   "created": "2026-09-21T20:45:09Z",
-  "updated": "2026-09-22T12:08:59Z",
+  "updated": "2026-09-22T12:46:41Z",
   "deviations": [
     {
       "id": "d1",
@@ -64,6 +64,47 @@
       "status": "approved",
       "classification": "acceptable",
       "seq": 5
+    },
+    {
+      "id": "d6",
+      "what": "Remembering is a tool the model calls, not a phrase the daemon matches: the turn binds a  tool into the (otherwise empty) registry so  decides when something said is worth keeping and calls it with the fact in its own words; the tool writes to the private store through RoomMemory and is counted (tool calls, records written, refusals). The spoken-phrase detector () stays only as a counted fallback, never the primary path. Recall stays explicit and attributed as before.",
+      "task_ref": "t15",
+      "reason": "Operator, 2026-09-22 during t21: \"We can't have the exact '\u05ea\u05d6\u05db\u05e8\u05d9 \u05e9' as key. It needs to be the model calling that tool.\" Measured in the run: the operator said \"remember it all\" and the model confirmed while the store wrote nothing (asks_detected 0, ask_not_detected 1) - a phrase key is invisible to the user and wrong for natural speech. Supersedes the t9/t15 decision that v1 ships no tools (the registry gains exactly one).",
+      "affects": [
+        "t9",
+        "t11",
+        "t21"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 46
+    },
+    {
+      "id": "d7",
+      "what": "Remembering is a tool the model calls, not a phrase the daemon matches: the turn binds one remember(fact) tool into the otherwise empty registry, so senses decides when something said is worth keeping and calls it with the fact in its own words; the tool writes to the private store through RoomMemory and is counted (tool calls, records written, refusals). The spoken-phrase detector (the Hebrew \"remember that\" form) stays only as a counted fallback, never the primary path. Recall stays explicit and attributed as before.",
+      "task_ref": "t15",
+      "reason": "Restates d6 verbatim - d6 text was mangled by shell quoting when recorded. Operator, 2026-09-22 during t21: \"We cannot have the exact phrase as key. It needs to be the model calling that tool.\" Measured in the run: the operator said \"remember it all\" and the model confirmed while the store wrote nothing (asks_detected 0, ask_not_detected 1). Supersedes the t9/t15 decision that v1 ships no tools: the registry gains exactly one.",
+      "affects": [
+        "t9",
+        "t11",
+        "t21"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 47
+    },
+    {
+      "id": "d8",
+      "what": "Decision 18: Gwen gains a forget(record_id) tool that archives a record (eidetic lifecycle archived, excluded from recall), counted like remember; the system prompt forbids claiming to remember or forget unless the tool returned ok; the prompt carries the current local date and time so a recalled record's recorded= timestamp can be related to now. Found in the operator's live session: asked to forget the key location, Gwen said she had, with no tool to do it and the record still active.",
+      "task_ref": "t15",
+      "reason": "the registry had one tool; a model that claims to forget without a way to is the appearing-attentive failure CLAUDE.md names; recorded= without a clock is unreadable to the model",
+      "affects": [],
+      "origin": "user",
+      "status": "approved",
+      "classification": null,
+      "seq": 48
     }
   ],
   "evidence": [
@@ -755,6 +796,18 @@
       "evidence_refs": [],
       "origin": "llm",
       "status": "approved",
+      "superseded": false
+    },
+    {
+      "id": "b3",
+      "kind": "added",
+      "behavior_text": "remembering is a remember(fact) tool the model calls (bound as the registry's one tool, counters remember_tool_calls/_written/_refused in status memory); the spoken phrase detector is a counted fallback, no longer the key",
+      "caused_by": [
+        "d7"
+      ],
+      "evidence_refs": [],
+      "origin": "llm",
+      "status": "proposed",
       "superseded": false
     }
   ],

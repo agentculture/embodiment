@@ -165,8 +165,8 @@ def register(sub: argparse._SubParsersAction) -> None:
         metavar="HOST[:PORT]",
         help=(
             "A Host header the guard accepts beyond loopback, e.g. a tailnet "
-            "address or name. Repeatable. Each is also accepted as an "
-            "http://HOST Origin so the dashboard's own requests pass."
+            "address or name. Repeatable. Each is also accepted as an Origin "
+            "with the plain-http scheme so the dashboard's own requests pass."
         ),
     )
     p.add_argument("--json", action="store_true", help="Emit structured JSON.")

@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-21T18:39:43Z",
-  "updated": "2026-09-21T19:49:04Z",
+  "updated": "2026-09-22T12:26:10Z",
   "claims": [
     {
       "id": "c1",
@@ -1131,6 +1131,18 @@
       ]
     }
   ],
-  "lapses": [],
+  "lapses": [
+    {
+      "id": "l1",
+      "code": "assumption-for-measurement",
+      "what": "the d7 tool-call probe measured the gateway directly and reported the seam usable; the daemon's http_complete seam was never exercised and hands OpenAI-shaped tool_calls to ToolCall.from_dict unconverted, so every live call arrived with an empty name (tool-unknown x2 in the first clip probe)",
+      "skipped_check": "a test driving http_complete with a gateway-shaped tool_calls reply, or a probe through the daemon rather than the API",
+      "refs": [
+        "daemon/app.py http_complete"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    }
+  ],
   "obligations": []
 }
