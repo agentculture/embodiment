@@ -399,6 +399,26 @@ class TestHeaderAttacks:
         ]
         assert make_guard().check("POST", "/", raw).allowed is True
 
+    def test_a_control_character_in_a_non_host_sensitive_header_is_malformed(self) -> None:
+        """Pins the malformed code itself: a bad ``Origin`` cannot fall through
+        to the Host check, which the Host variant of this test would let it.
+        """
+        decision = make_guard().check("POST", "/api/voice/start", headers(Origin="evil\r\nX: 1"))
+        assert decision.allowed is False
+        assert decision.code == g.REFUSED_MALFORMED_HEADER_CODE
+        assert decision.status == 400
+
+    def test_a_duplicated_header_is_reported_before_a_malformed_one(self) -> None:
+        """Order pinned: duplicate detection runs first, whatever the values."""
+        raw = [
+            ("Host", "127.0.0.1:8823"),
+            ("Origin", "evil\r\nX: 1"),
+            ("Origin", "http://127.0.0.1:8823"),
+            ("Authorization", f"Bearer {MARKER_SECRET}"),
+        ]
+        decision = make_guard().check("POST", "/api/voice/start", raw)
+        assert decision.code == g.REFUSED_DUPLICATE_HEADER_CODE
+
     @pytest.mark.parametrize("payload", ["evil\r\nX: 1", "evil\n", "evil\x00", "evil\x85host"])
     def test_a_control_character_in_a_guarded_header_is_refused(self, payload: str) -> None:
         decision = make_guard().check("POST", "/api/voice/start", headers(Host=payload))

@@ -518,31 +518,21 @@ class Guard:
         if not requires_guard(method, path):
             return _ALLOWED_UNGUARDED
 
-        pairs = _header_pairs(headers)
-        seen: dict[str, set[str]] = {}
-        for name, value in pairs:
-            if name in SENSITIVE_HEADERS:
-                seen.setdefault(name, set()).add(value)
-        if any(len(values) > 1 for values in seen.values()):
-            return self._refuse(REFUSED_DUPLICATE_HEADER_CODE, 400)
-        if any(not _is_clean(name, next(iter(values))) for name, values in seen.items()):
-            return self._refuse(REFUSED_MALFORMED_HEADER_CODE, 400)
+        sensitive = self._sensitive_headers(headers)
+        if isinstance(sensitive, GuardDecision):
+            return sensitive
 
-        def one(name: str) -> str:
-            values = seen.get(name)
-            return next(iter(values)) if values else ""
-
-        host = _hostname_of(one("host"))
+        host = _hostname_of(sensitive.get("host", ""))
         if not host or host not in self._allowed_hosts:
             return self._refuse(REFUSED_HOST_CODE, 403)
 
-        origin = one("origin").strip()
+        origin = sensitive.get("origin", "").strip()
         if origin and origin.rstrip("/").lower() not in self._allowed_origins:
             return self._refuse(REFUSED_ORIGIN_CODE, 403)
 
         secret_decision = self._check_secret(
-            one("authorization"),
-            one("cookie"),
+            sensitive.get("authorization", ""),
+            sensitive.get("cookie", ""),
             origin_present=bool(origin),
             # The header NAME is matched case-insensitively, as every header
             # here is; the VALUE is matched exactly. ``Sec-Fetch-Site`` carries
@@ -550,15 +540,34 @@ class Guard:
             # types, so accepting ``SAME-ORIGIN`` could only ever widen the
             # rule for a client that is not a browser. Found by attacking the
             # round-2 rule: case-folding the value let that through.
-            same_origin_metadata=one(SEC_FETCH_SITE_HEADER).strip() == SAME_ORIGIN_SITE,
+            same_origin_metadata=sensitive.get(SEC_FETCH_SITE_HEADER, "").strip()
+            == SAME_ORIGIN_SITE,
         )
         if secret_decision is not None:
             return secret_decision
 
         if self._public_hostname and host == self._public_hostname:
-            return self._check_assertion(one(ACCESS_ASSERTION_HEADER).strip())
+            return self._check_assertion(sensitive.get(ACCESS_ASSERTION_HEADER, "").strip())
 
         return _ALLOWED
+
+    def _sensitive_headers(self, headers: HeaderSource) -> dict[str, str] | GuardDecision:
+        """One value per :data:`SENSITIVE_HEADERS` name, or the refusal.
+
+        A name presented with two DIFFERENT values is request smuggling and is
+        refused before anything else is looked at; an identical repeat is not
+        (the set collapses it). A value with a control/format character or an
+        absurd length is refused next, before any value is interpreted.
+        """
+        seen: dict[str, set[str]] = {}
+        for name, value in _header_pairs(headers):
+            if name in SENSITIVE_HEADERS:
+                seen.setdefault(name, set()).add(value)
+        if any(len(values) > 1 for values in seen.values()):
+            return self._refuse(REFUSED_DUPLICATE_HEADER_CODE, 400)
+        if any(not _is_clean(name, next(iter(values))) for name, values in seen.items()):
+            return self._refuse(REFUSED_MALFORMED_HEADER_CODE, 400)
+        return {name: next(iter(values)) for name, values in seen.items()}
 
     def _check_secret(
         self,
