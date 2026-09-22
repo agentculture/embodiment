@@ -148,6 +148,11 @@ BROKEN_TARGET = """
 raise RuntimeError("this target explodes at import")
 """
 
+#: A target module that genuinely does not exist, for the tests that need
+#: ``start`` to refuse. Under ``embodiment.daemon`` so the refusal is about the
+#: *module* being absent rather than about an unimportable parent package.
+MISSING_TARGET = "embodiment.daemon.nope:main"
+
 
 #: The REAL machine-wide fallback directory, captured at import time — before
 #: any fixture repoints ``tempfile`` — so a test can prove it was never touched.
@@ -186,6 +191,42 @@ def _isolated_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     state = tmp_path / "state"
     monkeypatch.setenv(STATE_DIR_ENV_VAR, str(state))
     return state
+
+
+@pytest.fixture(autouse=True)
+def _never_spawn_the_real_daemon(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test in this file may start the REAL daemon application.
+
+    Three tests here and in ``test_cli_lifecycle.py`` used ``start()`` with no
+    target as a convenient way to exercise "the target module does not exist",
+    because ``embodiment.daemon.app`` did not exist yet. When t15 built it,
+    those tests quietly turned into tests that **launch a real detached daemon
+    on every suite run and never stop it** — three had to be killed by hand.
+
+    No assertion could have caught that, because nothing about the tests
+    changed. So the guard is structural and lives at the choke point: any call
+    to :func:`~embodiment.daemon.lifecycle.start` that would use
+    :data:`DEFAULT_TARGET` fails the test instead of spawning. Both bindings
+    are patched — the module attribute the CLI reaches through
+    ``lifecycle.start(...)``, and this module's own imported ``start`` name,
+    which a plain ``monkeypatch.setattr`` on the module would not touch.
+    Patching ``DEFAULT_TARGET`` alone would not do it either: ``start``'s own
+    default argument was bound at definition time.
+    """
+    real_start = lifecycle_mod.start
+
+    def guarded(target: str = lifecycle_mod.DEFAULT_TARGET, **kwargs: object):
+        if target == lifecycle_mod.DEFAULT_TARGET:
+            pytest.fail(
+                "this test would start the REAL daemon application "
+                f"({lifecycle_mod.DEFAULT_TARGET}) as a detached process that nothing "
+                f"stops. Pass an explicit target — {MISSING_TARGET} to exercise a "
+                "missing one, or a fake module via the make_target fixture."
+            )
+        return real_start(target, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(lifecycle_mod, "start", guarded)
+    monkeypatch.setitem(globals(), "start", guarded)
 
 
 @pytest.fixture
@@ -526,17 +567,29 @@ class TestFiveSecondBudget:
 
 
 class TestTheTargetSeam:
-    def test_the_default_target_names_the_unbuilt_daemon_app(self) -> None:
+    def test_the_default_target_names_the_daemon_app(self) -> None:
+        """The seam t15 plugs into. It is now built, which is why no test uses it."""
         assert DEFAULT_TARGET == "embodiment.daemon.app:main"
 
-    def test_start_fails_cleanly_when_the_default_target_is_not_built(
+    def test_start_fails_cleanly_when_the_target_module_does_not_exist(
         self, state_dir: Path
     ) -> None:
-        result = start(state_dir=state_dir)
+        """This used to point at the default target, and must never again.
+
+        ``embodiment.daemon.app`` did not exist when this was written, so
+        ``start()`` with no target was a safe way to exercise the
+        target-unavailable path. t15 built it, and the test silently became
+        one that launched a **real detached daemon on every suite run and
+        never stopped it**. The intent — a missing target is a clean,
+        pidfile-free refusal — is kept by naming a module that genuinely does
+        not exist; :data:`MISSING_TARGET` is that module, and
+        ``_never_spawn_the_real_daemon`` makes the old shape impossible.
+        """
+        result = start(MISSING_TARGET, state_dir=state_dir)
         assert result.started is False
         assert result.already_running is False
         assert result.code == TARGET_UNAVAILABLE_CODE
-        assert "embodiment.daemon.app" in result.detail
+        assert MISSING_TARGET.split(":")[0] in result.detail
         assert not (state_dir / PIDFILE_NAME).exists()
 
     def test_start_reports_a_child_that_dies_at_import(self, state_dir: Path, make_target) -> None:

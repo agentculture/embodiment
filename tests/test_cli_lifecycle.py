@@ -11,8 +11,10 @@ CLI contract this repo's agent-first rubric is built on:
 * results go to stdout, errors and diagnostics to stderr, never mixed;
 * every failure is a ``CliError`` — exit 1 for user error, 2 for environment —
   and **no Python traceback ever reaches stderr**;
-* ``embodiment start`` with the daemon application unbuilt (plan task t15) is a
-  clean environment error with a hint, not a crash.
+* ``embodiment start`` with a target that cannot be imported is a clean
+  environment error with a hint, not a crash — and no test here may name the
+  REAL daemon application, which would spawn one (see
+  ``_never_spawn_the_real_daemon``).
 
 One test drives a real detached child end to end through ``main()``; the rest
 run against real (empty) state directories, so the honest ``stopped`` and
@@ -30,12 +32,19 @@ from pathlib import Path
 
 import pytest
 
+import embodiment.daemon.lifecycle as lifecycle_mod
 from embodiment.cli import _build_parser, main
-from embodiment.daemon.lifecycle import DEFAULT_TARGET, STATE_RUNNING, STATE_STOPPED
+from embodiment.daemon.lifecycle import STATE_RUNNING, STATE_STOPPED
 from embodiment.daemon.state import STATE_DIR_ENV_VAR, DaemonState
 from embodiment.explain.catalog import ENTRIES
 
 LIFECYCLE_VERBS = ("start", "stop", "status")
+
+#: A target module that genuinely does not exist. See
+#: ``tests/test_daemon_lifecycle.py``: the real default target is a working
+#: daemon application now, so a test that wants a refusal must name a module
+#: that is missing rather than relying on the default being unbuilt.
+MISSING_TARGET = "embodiment.daemon.nope:main"
 
 IDLE_TARGET = """
 class App:
@@ -64,6 +73,31 @@ def _isolated_state(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(tempfile, "tempdir", str(fake_tmp), raising=False)
     monkeypatch.setenv("TMPDIR", str(fake_tmp))
     monkeypatch.setenv(STATE_DIR_ENV_VAR, str(tmp_path / "state"))
+
+
+@pytest.fixture(autouse=True)
+def _never_spawn_the_real_daemon(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No test in this file may start the REAL daemon application.
+
+    The same structural guard ``tests/test_daemon_lifecycle.py`` carries, and
+    for the same reason: two tests here ran ``main(["start"])`` with no
+    ``--target`` while ``embodiment.daemon.app`` did not exist, and silently
+    became launchers for a detached daemon nothing stopped once it did.
+    ``cmd_start`` reaches the function through the module attribute, so
+    patching that one binding covers every CLI path.
+    """
+    real_start = lifecycle_mod.start
+
+    def guarded(target: str = lifecycle_mod.DEFAULT_TARGET, **kwargs: object):
+        if target == lifecycle_mod.DEFAULT_TARGET:
+            pytest.fail(
+                "this test would start the REAL daemon application "
+                f"({lifecycle_mod.DEFAULT_TARGET}) as a detached process that nothing "
+                f"stops. Pass '--target {MISSING_TARGET}' to exercise a missing target."
+            )
+        return real_start(target, **kwargs)  # type: ignore[arg-type]
+
+    monkeypatch.setattr(lifecycle_mod, "start", guarded)
 
 
 @pytest.fixture
@@ -140,22 +174,30 @@ class TestStatusVerb:
 
 
 class TestStartVerb:
-    def test_start_without_the_daemon_app_is_a_clean_environment_error(
+    def test_start_with_a_missing_target_is_a_clean_environment_error(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        rc = main(["start"])
+        """Both of these used to run ``main(["start"])`` with no target.
+
+        That was safe only while ``embodiment.daemon.app`` did not exist. t15
+        built it, and the two tests became launchers for a real detached
+        daemon that nothing stopped. The contract they exist to prove — a
+        target that cannot be imported is exit 2, ``error:`` + ``hint:``, no
+        traceback — needs a missing target, not the default one.
+        """
+        rc = main(["start", "--target", MISSING_TARGET])
         captured = capsys.readouterr()
         assert rc == 2
         assert captured.out == ""
         assert captured.err.startswith("error:")
         assert "hint:" in captured.err
         assert "Traceback" not in captured.err
-        assert DEFAULT_TARGET.split(":")[0] in captured.err
+        assert MISSING_TARGET.split(":")[0] in captured.err
 
     def test_start_failure_in_json_mode_is_structured(
         self, capsys: pytest.CaptureFixture[str]
     ) -> None:
-        rc = main(["start", "--json"])
+        rc = main(["start", "--target", MISSING_TARGET, "--json"])
         captured = capsys.readouterr()
         assert rc == 2
         assert captured.out == ""

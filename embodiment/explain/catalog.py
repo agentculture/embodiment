@@ -181,10 +181,10 @@ not the pid, is what proves liveness, so a reused pid can never make a dead
 daemon look alive. A pidfile left by a dead process is reclaimed and the
 reclamation is recorded as a degradation.
 
-**The daemon application is not built yet.** `--target` defaults to
-`embodiment.daemon.app:main`, which plan task `t15` adds. Until then this verb
-exits `2` with a hint naming it — it never raises and never leaves a half-made
-claim behind.
+**A target that cannot be imported is a clean refusal.** `--target` defaults
+to `embodiment.daemon.app:main`, the daemon application. If the named module
+cannot be found, this verb exits `2` with a hint naming it — it never raises,
+never spawns, and never leaves a half-made claim behind.
 
 `--target` imports and runs the module it names with your own authority. It is
 an entry-point selector, not a sandbox.

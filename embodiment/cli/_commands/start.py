@@ -8,9 +8,10 @@ stdout, diagnostics on stderr, never a traceback.
 
 Idempotent: starting a daemon that is already running exits ``0`` and starts
 nothing, which is what makes ``start`` safe to put in a retry loop or a unit
-file. The daemon application itself (``embodiment/daemon/app.py``) is plan task
-``t15`` and is **not built yet**, so ``embodiment start`` with the default
-target is a clean environment error (exit ``2``) naming it.
+file. A target module that cannot be imported — the default
+(``embodiment/daemon/app.py``) or one given with ``--target`` — is a clean
+environment error (exit ``2``) naming it, never a traceback and never a
+half-made claim.
 
 ``--target`` imports and runs the module it names, with the invoking user's
 full authority. It exists so a host can run its own daemon application (and so
@@ -28,8 +29,8 @@ from embodiment.daemon import lifecycle
 
 _HINTS = {
     lifecycle.TARGET_UNAVAILABLE_CODE: (
-        "the daemon application is not built yet (plan task t15 adds "
-        "embodiment/daemon/app.py); pass --target to run a different entry point"
+        "the named module could not be found on this interpreter's path; check "
+        f"the spelling, or omit --target to run the default ({lifecycle.DEFAULT_TARGET})"
     ),
     lifecycle.TARGET_INVALID_CODE: (
         "--target must look like 'package.module:attribute', e.g. " f"'{lifecycle.DEFAULT_TARGET}'"

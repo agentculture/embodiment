@@ -1,19 +1,20 @@
 """embodiment.daemon.lifecycle — how the daemon is started, found, reported on, stopped.
 
-Task ``t5`` of the ``realtime-embodiment-app`` plan. There is no daemon
-*application* yet (``embodiment/daemon/app.py`` is task ``t15``); what this
-module owns is the lifecycle around one: the exclusive claim on being the
-running daemon, the detached spawn, the truthful report, and the bounded stop.
+Task ``t5`` of the ``realtime-embodiment-app`` plan. The daemon *application*
+is task ``t15``'s (``embodiment/daemon/app.py``); what this module owns is the
+lifecycle around one: the exclusive claim on being the running daemon, the
+detached spawn, the truthful report, and the bounded stop.
 
 The seam t15 plugs into
 -----------------------
 A daemon application is any object with ``run(stop_event) -> int | None``
 (:class:`Runnable`). It is named to :func:`start` as a dotted path,
 ``package.module:attribute``, where the attribute is a **zero-argument factory
-returning the runnable**. :data:`DEFAULT_TARGET` is ``embodiment.daemon.app:main``
-— the module t15 builds. Until it exists, ``embodiment start`` fails as a clean
-environment error naming it, never a traceback, and nothing is spawned. An
-optional ``shutdown(deadline)`` method is called on the way out.
+returning the runnable**. :data:`DEFAULT_TARGET` is
+``embodiment.daemon.app:main``, task t15's module. A target that cannot be
+imported fails as a clean environment error naming it, never a traceback, and
+nothing is spawned. An optional ``shutdown(deadline)`` method is called on the
+way out.
 
 Single instance, and why a pidfile is not enough
 ------------------------------------------------
@@ -216,8 +217,8 @@ PIDFILE_NAME = "daemon.pid"
 #: the raw fd a crashing interpreter writes its traceback to.
 DAEMON_STDERR_NAME = "daemon.err"
 
-#: The daemon application task ``t15`` builds. Until it exists, ``start``
-#: fails cleanly naming it.
+#: The daemon application, built by task ``t15``. A target that cannot be
+#: imported makes ``start`` fail cleanly, naming it.
 DEFAULT_TARGET = "embodiment.daemon.app:main"
 
 #: Bumped when the pidfile record's shape changes; an unknown schema is read
