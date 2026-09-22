@@ -315,13 +315,15 @@ def harness(tmp_path: Path, request: pytest.FixtureRequest) -> Any:
         bus = overrides.pop("bus", None) or Bus()
         ears = overrides.pop("ears", None) or FakeEars()
         rates: list[int] = []
+        # Popped BEFORE the factory closes over it: the factory runs after
+        # this function returns, when the key is long gone from ``overrides``.
+        ears_for_rate: dict[int, Any] = overrides.pop("_ears_for_rate", None) or {}
 
         def ears_factory(rate: int) -> Any:
             rates.append(rate)
-            built = overrides.get("_ears_for_rate", {}).get(rate)
+            built = ears_for_rate.get(rate)
             return built if built is not None else ears
 
-        overrides.pop("_ears_for_rate", None)
         recall_fn = overrides.pop("recall_fn", None) or (
             lambda query, **kwargs: SimpleNamespace(ok=True, records=[], degradation=None)
         )
@@ -4658,3 +4660,76 @@ class TestPublicHostname:
 
         plain = _build_parser().parse_args(["start"])
         assert app_module.ENV_PUBLIC_HOSTNAME not in start_cmd._http_env(plain)
+
+
+# ── a redial never touches the new session (review finding 7) ─────────────────
+
+
+class TestRedialOwnership:
+    """The old ears thread closes the client and loop IT owns, never the new ones.
+
+    ``_ensure_ears_session`` stopped the old session (returning even when the
+    thread had not finished) and started the new one; the OLD thread's
+    ``_listen`` finally then ran ``_shut_ears_down()`` on ``self._ears`` —
+    by then the NEW client — and its ``_ears_main`` finally cleared
+    ``self._ears_loop``, orphaning the new loop. And it recorded the stop the
+    daemon itself requested as "the event stream ended; no reconnect".
+    """
+
+    def _redial(self, harness: Any) -> tuple[Any, FakeEars, FakeEars, threading.Thread]:
+        old = FakeEars(sample_rate=16000, close_delay=1.0)
+        new = FakeEars(sample_rate=24000)
+        h = harness(
+            _ears_for_rate={16000: old, 24000: new},
+            # Small on purpose: the redial's stop deadline is a share of this,
+            # and the old client's close outlives it, so the old thread is
+            # still parked when the new session starts.
+            config=AppConfig(poll_interval_s=0.01, shutdown_deadline=0.4),
+        )
+        h.app.attach_ear("a", FakeEndpoint(name="a", sample_rate=16000))
+        assert old._ready.wait(5.0), "the first session never connected"
+        old_thread = h.app._ears_thread
+        assert old_thread is not None
+
+        h.app.attach_ear("b", FakeEndpoint(name="b", sample_rate=24000))
+        assert new._ready.wait(5.0), "the second session never connected"
+        assert h.app._ears is new
+        # Let the parked old thread finish its own close and run its finally.
+        old_thread.join(timeout=5.0)
+        assert not old_thread.is_alive(), "the old ears thread never finished"
+        return h, old, new, old_thread
+
+    def test_the_old_thread_leaves_the_new_client_and_loop_alone(self, harness: Any) -> None:
+        h, old, new, _old_thread = self._redial(harness)
+
+        assert old.closed is True
+        assert new.closed is False, "the old thread closed the NEW client"
+        assert new.close_deadlines == []
+        assert h.app._ears_loop is not None, "the old thread cleared the new loop"
+        assert h.app._ears_thread is not None and h.app._ears_thread.is_alive()
+        assert h.app.status()["ear"]["redials"] == 1
+
+    def test_the_new_session_still_delivers_after_the_old_thread_exits(self, harness: Any) -> None:
+        h, _old, new, _old_thread = self._redial(harness)
+        assert h.app.status()["transcripts"]["received"] == 0
+
+        # Received is counted on the EARS thread, before the turn queue: it
+        # proves the new session's loop is alive and dispatching, which is
+        # exactly what the old thread's finally used to take down.
+        new.emit(wire.TranscriptionCompleted(text=SPEECH, item_id="i1"))
+        deadline = time.monotonic() + 5.0
+        while h.app.status()["transcripts"]["received"] < 1 and time.monotonic() < deadline:
+            time.sleep(0.01)
+        assert h.app.status()["transcripts"]["received"] == 1
+
+    def test_a_stop_the_daemon_requested_is_not_recorded_as_a_dropped_stream(
+        self, harness: Any
+    ) -> None:
+        h, _old, _new, _old_thread = self._redial(harness)
+        ended = [
+            getattr(r, "detail", "")
+            for r in h.state.ledger.read_all()
+            if r.code == app_module.APP_EARS_STREAM_ENDED
+        ]
+        assert ended == [], ended
+        assert app_module.APP_EARS_REDIALLED in h.ledger_codes()
