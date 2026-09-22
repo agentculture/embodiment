@@ -1445,61 +1445,78 @@ class HostEndpoint:
             return
         if self._degradation is not None or self._closed:
             return
-
-        if self._playback_proc is None:
-            if (
-                self._degradation_out is not None
-                and time.monotonic() < self._out_open_cooldown_until
-            ):
-                # Round 3 finding 1, recurring at a process spawn: a dead
-                # player does NOT get retried on every play() call.
-                with self._counter_lock:
-                    self._playback_dropped_no_device += 1
-                return
-
-            was_degraded = self._degradation_out is not None
-            playback_target = (
-                self._pw_sink_node_name if self._backend == "pipewire" else self._device
-            )
-            argv = _build_playback_argv(
-                self._backend, playback_target, PLAYBACK_RATE_HZ, PLAYBACK_CHANNELS
-            )
-            try:
-                proc = self._popen(
-                    argv, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
-                )
-            except OSError as exc:
-                self._enter_output_degradation(
-                    DEGRADED_OPEN, exc, "playback subprocess failed to start"
-                )
-                with self._counter_lock:
-                    self._playback_dropped_no_device += 1
-                return
-            if was_degraded:
-                self._degradation_out = None
-                self._out_open_backoff_s = _OPEN_COOLDOWN_BASE_S
-                self._record_event({"type": "recovered", "direction": "out"})
-            self._playback_proc = proc
-            self._start_writer()
-            self._attached = True
-
-            # Round 7 (BLOCKER): verify, don't trust. An unresolvable
-            # `--target` silently falls back to pipewire's default sink —
-            # exactly how a reply ended up on the HDMI monitor instead of
-            # the reSpeaker. Confirm the stream actually linked to the
-            # resolved node; if not, kill it AT ONCE (never let audio keep
-            # flowing to the wrong device) rather than merely flag it.
-            verified = self._verify_pipewire_link(proc, playback=True)
-            if verified is not None:
-                self._playback_target_verified = verified
-                if not verified:
-                    self._handle_playback_mismatch()
-                    return
+        if self._playback_proc is None and not self._open_playback_process():
+            return
 
         chunk_bytes = bytes(frames)
         if not chunk_bytes:
             return
+        self._enqueue_playback_chunk(chunk_bytes)
 
+    def _open_playback_process(self) -> bool:
+        """Spawn, start the writer for, and verify a fresh player.
+
+        ``False`` means this ``play()`` call drops its chunk: the cooldown
+        after a dead player, a spawn failure, or a stream that linked to the
+        wrong device (killed at once). Side effects in the original order.
+        """
+        if self._degradation_out is not None and time.monotonic() < self._out_open_cooldown_until:
+            # Round 3 finding 1, recurring at a process spawn: a dead
+            # player does NOT get retried on every play() call.
+            with self._counter_lock:
+                self._playback_dropped_no_device += 1
+            return False
+
+        was_degraded = self._degradation_out is not None
+        proc = self._spawn_playback_process()
+        if proc is None:
+            return False
+        if was_degraded:
+            self._degradation_out = None
+            self._out_open_backoff_s = _OPEN_COOLDOWN_BASE_S
+            self._record_event({"type": "recovered", "direction": "out"})
+        self._playback_proc = proc
+        self._start_writer()
+        self._attached = True
+
+        # Round 7 (BLOCKER): verify, don't trust. An unresolvable
+        # `--target` silently falls back to pipewire's default sink —
+        # exactly how a reply ended up on the HDMI monitor instead of
+        # the reSpeaker. Confirm the stream actually linked to the
+        # resolved node; if not, kill it AT ONCE (never let audio keep
+        # flowing to the wrong device) rather than merely flag it.
+        verified = self._verify_pipewire_link(proc, playback=True)
+        if verified is None:
+            return True
+        self._playback_target_verified = verified
+        if not verified:
+            self._handle_playback_mismatch()
+            return False
+        return True
+
+    def _spawn_playback_process(self) -> "subprocess.Popen[bytes] | None":
+        """The player subprocess, or ``None`` after a spawn failure — recorded
+        as DEGRADED_OPEN (cooldown armed) and one dropped chunk."""
+        playback_target = self._pw_sink_node_name if self._backend == "pipewire" else self._device
+        argv = _build_playback_argv(
+            self._backend, playback_target, PLAYBACK_RATE_HZ, PLAYBACK_CHANNELS
+        )
+        try:
+            return self._popen(
+                argv, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
+            )
+        except OSError as exc:
+            self._enter_output_degradation(
+                DEGRADED_OPEN, exc, "playback subprocess failed to start"
+            )
+            with self._counter_lock:
+                self._playback_dropped_no_device += 1
+            return None
+
+    def _enqueue_playback_chunk(self, chunk_bytes: bytes) -> None:
+        """Queue one chunk for the writer under the buffer bound, all under
+        ``_counter_lock``: a vanished player drops it, an overflow is named
+        once per episode and counted, otherwise it is pushed."""
         limit_samples = self._playback_buffer_limit_samples()
         with self._counter_lock:
             if self._playback_proc is None:
@@ -1514,18 +1531,22 @@ class HostEndpoint:
                 self._playback_queued_bytes + len(self._writer_pending)
             ) // SAMPLE_WIDTH_BYTES
             if in_flight + len(chunk_bytes) // SAMPLE_WIDTH_BYTES > limit_samples:
-                if not self._playback_overflow_episode_active:
-                    self._playback_overflow_episode_active = True
-                    self._record_event(
-                        {"type": "degraded", "code": DEGRADED_PLAYBACK_OVERFLOW, "direction": "out"}
-                    )
-                self._playback_overflow_count += 1
+                self._note_playback_overflow()
                 return
             self._playback_overflow_episode_active = False
             self._playback_chunks.append(chunk_bytes)
             self._playback_queued_bytes += len(chunk_bytes)
             self._playback_total_pushed_samples += len(chunk_bytes) // SAMPLE_WIDTH_BYTES
             self._playing = True
+
+    def _note_playback_overflow(self) -> None:
+        """Caller holds ``_counter_lock``. One degraded event per episode, every drop counted."""
+        if not self._playback_overflow_episode_active:
+            self._playback_overflow_episode_active = True
+            self._record_event(
+                {"type": "degraded", "code": DEGRADED_PLAYBACK_OVERFLOW, "direction": "out"}
+            )
+        self._playback_overflow_count += 1
 
     def stop_playback(self) -> int:
         """Barge-in: close stdin, SIGKILL AT ONCE (round 5 — no SIGTERM grace period).
