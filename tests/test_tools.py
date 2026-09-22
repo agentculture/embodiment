@@ -56,7 +56,8 @@ class TestEmptyIsTheDefault:
         registry = ToolRegistry()
         registry.register("weather", _SCHEMA, lambda city: f"{city}: clear", description="d")
         wire = registry.wire_tools()
-        assert wire is not None and len(wire) == 1
+        assert wire is not None
+        assert len(wire) == 1
         assert wire[0] == {
             "type": "function",
             "function": {"name": "weather", "description": "d", "parameters": _SCHEMA},
@@ -96,8 +97,9 @@ class TestRegistration:
         assert "ping" in registry
 
     def test_a_blank_name_is_refused(self) -> None:
+        registry = ToolRegistry()
         with pytest.raises(ValueError):
-            ToolRegistry().register("  ", {}, lambda: "x")
+            registry.register("  ", {}, lambda: "x")
 
     def test_a_duplicate_name_is_refused_rather_than_silently_replaced(self) -> None:
         registry = ToolRegistry()
@@ -225,12 +227,13 @@ class TestNoSpeechReachesAToolRecord:
 
     def test_the_tool_failure_is_still_named(self) -> None:
         registry = self._registry_with_an_echoing_tool()
-        with pytest.raises(Exception):
+        with pytest.raises(ToolError):
             registry.execute("echo", {"said": MARKER})
 
         assert [d.code for d in registry.degradations] == [DEGRADED_TOOL_FAILED]
         reason = registry.degradations[0].reason
-        assert "echo" in reason and "ValueError" in reason
+        assert "echo" in reason
+        assert "ValueError" in reason
 
     def test_a_hostile_exception_leaks_through_no_corner(self) -> None:
         registry = ToolRegistry()
@@ -239,14 +242,14 @@ class TestNoSpeechReachesAToolRecord:
             raise hostile_exception(MARKER)
 
         registry.register("h", {"type": "object", "properties": {}}, boom)
-        with pytest.raises(Exception):
+        with pytest.raises(ToolError):
             registry.execute("h", {"said": MARKER})
         assert_no_speech(MARKER, registry.degradations)
 
     def test_an_unknown_tool_name_is_restricted_not_interpolated(self) -> None:
         """The model chose this name, so it is attacker-controlled too."""
         registry = ToolRegistry()
-        with pytest.raises(Exception):
+        with pytest.raises(UnknownToolError):
             registry.execute(f"<<<{MARKER} evil", {})
 
         assert [d.code for d in registry.degradations] == [DEGRADED_TOOL_UNKNOWN]
@@ -288,7 +291,7 @@ class TestNoSpeechReachesAToolRecord:
     ) -> None:
         monkeypatch.setenv(UNSAFE_ENV, "1")
         registry = self._registry_with_an_echoing_tool()
-        with pytest.raises(Exception):
+        with pytest.raises(ToolError):
             registry.execute("echo", {"said": MARKER})
         assert_speech_present(MARKER, registry.degradations)
 
@@ -322,7 +325,7 @@ class TestDeclaredFaultCodes:
 
     def test_an_undeclared_code_is_refused(self) -> None:
         registry = self._registry(codes=frozenset({"something-else"}))
-        with pytest.raises(Exception):
+        with pytest.raises(ToolError):
             registry.execute("weather", {"city": MARKER, "fault": f"leak-{MARKER}"})
 
         assert "undeclared-code" in registry.degradations[0].reason
@@ -330,7 +333,7 @@ class TestDeclaredFaultCodes:
 
     def test_a_tool_that_declared_nothing_gets_no_code_channel(self) -> None:
         registry = self._registry(codes=frozenset())
-        with pytest.raises(Exception):
+        with pytest.raises(ToolError):
             registry.execute("weather", {"city": MARKER})
         assert_no_speech(MARKER, registry.degradations)
 

@@ -1065,7 +1065,8 @@ class TestSecretRedaction:
         assert event is not None
         assert "\u202e" not in event.data["reason"]
         assert "​" not in event.data["reason"]
-        assert "safe" in event.data["reason"] and "text" in event.data["reason"]
+        assert "safe" in event.data["reason"]
+        assert "text" in event.data["reason"]
 
 
 # ── fold_degradation: the one fold function, against all four real shapes ──

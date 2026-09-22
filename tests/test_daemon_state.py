@@ -1542,7 +1542,8 @@ class TestOnePathOneLockAndCachedTranscripts:
         t2.start()
         t1.join(timeout=30)
         t2.join(timeout=30)
-        assert not t1.is_alive() and not t2.is_alive()
+        assert not t1.is_alive()
+        assert not t2.is_alive()
 
         assert a.path.stat().st_size <= 3_000
         records = a.read_all()
@@ -1573,7 +1574,8 @@ class TestOnePathOneLockAndCachedTranscripts:
         t2.start()
         t1.join(timeout=30)
         t2.join(timeout=30)
-        assert not t1.is_alive() and not t2.is_alive()
+        assert not t1.is_alive()
+        assert not t2.is_alive()
 
         raw = path.read_text(encoding="utf-8")
         lines = [ln for ln in raw.splitlines() if ln.strip()]

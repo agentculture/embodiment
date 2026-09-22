@@ -31,19 +31,20 @@ REAL_README = REPO_ROOT / "web" / "src" / "culture-design" / "README.md"
 
 def _load_script() -> ModuleType:
     spec = importlib.util.spec_from_file_location("check_culture_design", SCRIPT_PATH)
-    assert spec is not None and spec.loader is not None  # nosec B101 - test setup invariant
+    assert spec is not None  # nosec B101 - test setup invariant
+    assert spec.loader is not None  # nosec B101 - test setup invariant
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
 
 
-@pytest.fixture()
+@pytest.fixture
 def script() -> ModuleType:
     return _load_script()
 
 
-@pytest.fixture()
+@pytest.fixture
 def org_repo(tmp_path: Path) -> tuple[Path, str]:
     """A throwaway git repo standing in for /home/spark/git/org, with one
     commit holding the pinned source path. Returns (repo_dir, commit_sha)."""
@@ -207,7 +208,8 @@ def test_run_checks_missing_readme_fails_without_raising(
     module.TOKENS_CSS_PATH = module.CULTURE_DESIGN_DIR / "tokens.css"
 
     results = module.run_checks()
-    assert results and results[0][1] is False
+    assert results
+    assert results[0][1] is False
 
 
 def test_main_against_the_real_committed_layer_and_the_real_org_checkout() -> None:

@@ -954,7 +954,7 @@ class Session:
     def _check_ask(self, text: str) -> Optional[AskOutcome]:
         try:
             extracted = self._ask_detector(text)
-        except Exception as exc:  # noqa: BLE001 - a hostile/buggy detector must not crash a turn
+        except Exception as exc:  # noqa: BLE001  # a hostile/buggy detector must not crash a turn
             self._record_degradation(
                 CODE_ASK_DETECTOR_FAILED,
                 f"ask detector raised {type(exc).__name__}; treated as no ask detected",
@@ -971,7 +971,8 @@ class Session:
                 added_by=self._added_by if self._added_by is not None else DEFAULT_ADDED_BY,
                 deadline=self._remember_deadline,
             )
-        except Exception as exc:  # noqa: BLE001 - memory is duck-typed and untrusted; see docstring
+        # memory is duck-typed and untrusted; see docstring
+        except Exception as exc:  # noqa: BLE001
             self._record_degradation(
                 CODE_ASK_MEMORY_ERROR, f"memory.remember raised {type(exc).__name__}"
             )
@@ -1029,7 +1030,7 @@ class Session:
         self._closed = True
         try:
             self._run_close(summarise, deadline)
-        except Exception as exc:  # noqa: BLE001 - close() must never raise, per its own contract
+        except Exception as exc:  # noqa: BLE001  # close() must never raise, per its own contract
             self._record_degradation(
                 CODE_CLOSE_ERROR,
                 f"close() raised {type(exc).__name__}; a minimal report was recorded instead",
@@ -1113,7 +1114,7 @@ class Session:
         def worker() -> None:
             try:
                 box.value = summarise(messages)
-            except Exception as exc:  # noqa: BLE001 - the injected summariser is untrusted
+            except Exception as exc:  # noqa: BLE001  # the injected summariser is untrusted
                 box.error = exc
             finally:
                 box.done.set()
@@ -1121,7 +1122,7 @@ class Session:
         try:
             thread = threading.Thread(target=worker, name="embodiment-session-close", daemon=True)
             thread.start()
-        except Exception as exc:  # noqa: BLE001 - starting the worker must not crash close()
+        except Exception as exc:  # noqa: BLE001  # starting the worker must not crash close()
             self._record_degradation(
                 CODE_SUMMARY_ERROR, f"could not start summariser thread: {type(exc).__name__}"
             )
@@ -1163,7 +1164,8 @@ class Session:
                 deadline=self._remember_deadline,
                 metadata={"turns_seen": self._turns_seen, "turns_summarised": turns_summarised},
             )
-        except Exception as exc:  # noqa: BLE001 - memory is duck-typed and untrusted; see docstring
+        # memory is duck-typed and untrusted; see docstring
+        except Exception as exc:  # noqa: BLE001
             self._record_degradation(
                 CODE_SUMMARY_MEMORY_ERROR, f"memory.remember raised {type(exc).__name__}"
             )

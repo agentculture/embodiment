@@ -159,7 +159,8 @@ class TestDescribeExceptionSaysNothingItWasToldIn:
                 raise KeyError(f"outer {MARKER}")
         except KeyError as exc:
             described = describe_exception(exc)
-        assert "KeyError" in described and "ValueError" in described
+        assert "KeyError" in described
+        assert "ValueError" in described
         assert MARKER not in described
 
     def test_the_chain_is_depth_bounded(self) -> None:
@@ -330,7 +331,8 @@ class TestTheUnsafeEscapeHatch:
     ) -> None:
         monkeypatch.setenv(safe_reason.UNSAFE_ENV, "1")
         described = describe_exception(ValueError("a\u202eb c"))
-        assert "\u202e" not in described and " " not in described
+        assert "\u202e" not in described
+        assert " " not in described
 
     def test_the_env_var_name_says_what_it_does(self) -> None:
         assert "UNSAFE" in safe_reason.UNSAFE_ENV
@@ -346,7 +348,8 @@ class TestSafeLabel:
 
     def test_a_hostile_tool_name_is_restricted(self) -> None:
         cleaned = safe_reason.safe_label(f"tool<<<{MARKER} name")
-        assert "<" not in cleaned and " " not in cleaned
+        assert "<" not in cleaned
+        assert " " not in cleaned
         assert set(cleaned) <= safe_reason.LABEL_CHARSET | {safe_reason.LABEL_PLACEHOLDER}
 
     def test_restriction_does_not_remove_charset_clean_text(self) -> None:

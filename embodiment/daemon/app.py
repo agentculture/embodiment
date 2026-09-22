@@ -368,7 +368,7 @@ def _resolve_zone() -> tuple[tzinfo, bool]:
         from zoneinfo import ZoneInfo
 
         return ZoneInfo(CLOCK_ZONE_NAME), True
-    except Exception:  # noqa: BLE001 - a missing tzdata is a degradation, not a crash
+    except Exception:  # noqa: BLE001  # a missing tzdata is a degradation, not a crash
         return timezone.utc, False
 
 
@@ -1109,7 +1109,7 @@ class DaemonApp:
                 return
         try:
             self._state.ledger.append(safe_code, safe_text)
-        except Exception:  # noqa: BLE001 - the ledger promises never to raise; count anyway
+        except Exception:  # noqa: BLE001  # the ledger promises never to raise; count anyway
             with self._lock:
                 self._ledger_errors += 1
         self._publish_degradation(_safe_name(source), safe_code, safe_text)
@@ -1118,7 +1118,7 @@ class DaemonApp:
         """The one publish that must never re-enter :meth:`_record`."""
         try:
             self._bus.publish("degradation", {"source": source, "code": code, "reason": reason})
-        except Exception:  # noqa: BLE001 - an injected bus is not trusted; count, never recurse
+        except Exception:  # noqa: BLE001  # an injected bus is not trusted; count, never recurse
             with self._lock:
                 self._publish_errors += 1
 
@@ -1190,7 +1190,7 @@ class DaemonApp:
         """Publish one event. A publish failure is recorded, never raised."""
         try:
             self._bus.publish(kind, data)
-        except Exception as exc:  # noqa: BLE001 - an injected bus is not trusted
+        except Exception as exc:  # noqa: BLE001  # an injected bus is not trusted
             with self._lock:
                 self._publish_errors += 1
             self._record(APP_PUBLISH_FAILED, f"{_safe_name(kind)}: {_describe(exc)}", once=True)
@@ -1216,7 +1216,7 @@ class DaemonApp:
         try:
             while not stop_event.wait(max(0.01, float(self._config.poll_interval_s))):
                 self.pump()
-        except Exception as exc:  # noqa: BLE001 - a daemon loop must not die on a fault
+        except Exception as exc:  # noqa: BLE001  # a daemon loop must not die on a fault
             self._record(APP_TURN_FAILED, _describe(exc))
         finally:
             self.close(deadline=self._config.shutdown_deadline)
@@ -1227,7 +1227,7 @@ class DaemonApp:
         self._drain_out_features()
         try:
             self._bus.tick(self._clock())
-        except Exception as exc:  # noqa: BLE001 - an injected bus is not trusted
+        except Exception as exc:  # noqa: BLE001  # an injected bus is not trusted
             self._record(APP_PUBLISH_FAILED, f"tick: {_describe(exc)}")
 
     def shutdown(self, deadline: float = 5.0) -> AppCloseReport:
@@ -1319,7 +1319,7 @@ class DaemonApp:
         def work() -> None:
             try:
                 box.append(bool(call()))
-            except Exception as exc:  # noqa: BLE001 - a step that raises is a step that failed
+            except Exception as exc:  # noqa: BLE001  # a step that raises is a step that failed
                 self._record(APP_SHUTDOWN_INCOMPLETE, _describe(exc))
                 box.append(False)
 
@@ -1442,7 +1442,7 @@ class DaemonApp:
         self._ensure_ears_session(ear, endpoint)
         try:
             endpoint.start_capture(self._frame_callback(generation))
-        except Exception as exc:  # noqa: BLE001 - an endpoint is not trusted to keep its word
+        except Exception as exc:  # noqa: BLE001  # an endpoint is not trusted to keep its word
             self._record(APP_EAR_ATTACH_FAILED, f"{ear}: {_describe(exc)}")
             self._ear_name = None
             self._ear_endpoint = None
@@ -1494,7 +1494,7 @@ class DaemonApp:
         if voice is None:
             try:
                 self._voice = self._voice_factory(endpoint)
-            except Exception as exc:  # noqa: BLE001 - a factory is a seam, not a promise
+            except Exception as exc:  # noqa: BLE001  # a factory is a seam, not a promise
                 self._voice = None
                 self._record(APP_EAR_ATTACH_FAILED, f"{ear} voice: {_describe(exc)}")
             return
@@ -1526,7 +1526,7 @@ class DaemonApp:
         silence = b"\x00\x00" * int(PLAYBACK_RATE_HZ * WARMUP_SILENCE_S)
         try:
             endpoint.play(silence)
-        except Exception:  # noqa: BLE001 - a warm-up is a convenience, never a promise
+        except Exception:  # noqa: BLE001  # a warm-up is a convenience, never a promise
             with self._lock:
                 self._warmup_failures += 1
             return
@@ -1588,6 +1588,10 @@ class DaemonApp:
             self._fold_voice(voice)
 
         def work() -> bool:
+            # Always True on its own: every sub-call below is folded through
+            # _safely, which records the failure and moves on, so this step
+            # has no verdict of its own. The only way it reads as False is
+            # _bounded's timeout, which the caller counts and records below.
             if voice is not None:
                 # The voice outlives the ear: it is pointed at a NullEndpoint
                 # rather than closed, so a reply with no ear attached is still
@@ -1646,7 +1650,7 @@ class DaemonApp:
         """Run *call*, recording any failure under *code*. Never raises."""
         try:
             call()
-        except Exception as exc:  # noqa: BLE001 - every teardown step is best-effort
+        except Exception as exc:  # noqa: BLE001  # every teardown step is best-effort
             self._record(code, f"{_safe_name(what)}: {_describe(exc)}")
             return False
         return True
@@ -1685,7 +1689,7 @@ class DaemonApp:
         if self._endpoint_factory is not None:
             try:
                 endpoint = self._endpoint_factory()
-            except Exception as exc:  # noqa: BLE001 - no device is a degradation, not a crash
+            except Exception as exc:  # noqa: BLE001  # no device is a degradation, not a crash
                 self._record(APP_NO_ENDPOINT, _describe(exc))
                 endpoint = None
         if endpoint is None:
@@ -1718,7 +1722,7 @@ class DaemonApp:
                 return
             try:
                 ears.send_audio(pcm)
-            except Exception as exc:  # noqa: BLE001 - the ears client is a seam
+            except Exception as exc:  # noqa: BLE001  # the ears client is a seam
                 self._record(APP_CAPTURE_FAILED, _describe(exc), once=True)
             else:
                 with self._lock:
@@ -1774,7 +1778,7 @@ class DaemonApp:
     def _publish_features(self, direction: str, extractor: Any, pcm: bytes) -> None:
         try:
             frames = extractor.feed(pcm)
-        except Exception as exc:  # noqa: BLE001 - a dashboard trace must not stop the ear
+        except Exception as exc:  # noqa: BLE001  # a dashboard trace must not stop the ear
             self._record(APP_FEATURES_FAILED, f"{direction}: {_describe(exc)}", once=True)
             return
         for frame in frames:
@@ -1793,7 +1797,7 @@ class DaemonApp:
             return
         try:
             taken = voice.drain_features(MAX_FEATURE_DRAIN)
-        except Exception as exc:  # noqa: BLE001 - the voice is a seam like any other
+        except Exception as exc:  # noqa: BLE001  # the voice is a seam like any other
             self._record(APP_FEATURES_FAILED, f"out: {_describe(exc)}", once=True)
             return
         for frame in taken or ():
@@ -1847,7 +1851,7 @@ class DaemonApp:
             return True
         try:
             return bool(endpoint.muted)
-        except Exception as exc:  # noqa: BLE001 - an endpoint probe is not trusted
+        except Exception as exc:  # noqa: BLE001  # an endpoint probe is not trusted
             self._record(APP_CAPTURE_FAILED, f"muted: {_describe(exc)}")
             return True
 
@@ -1964,7 +1968,7 @@ class DaemonApp:
         )
         try:
             return self._run_turn(text, serial, timing)
-        except Exception as exc:  # noqa: BLE001 - a turn fault must not kill the daemon
+        except Exception as exc:  # noqa: BLE001  # a turn fault must not kill the daemon
             with self._lock:
                 self._turns_failed += 1
             self._record(APP_TURN_FAILED, _describe(exc))
@@ -2121,7 +2125,7 @@ class DaemonApp:
                 record_type=ASK_RECORD_TYPE,
                 added_by=self._config.added_by,
             )
-        except Exception as exc:  # noqa: BLE001 - memory is a seam; a turn never dies on it
+        except Exception as exc:  # noqa: BLE001  # memory is a seam; a turn never dies on it
             self._record(APP_REMEMBER_REFUSED, f"store: {_describe(exc)}")
             return self._refuse_remember("store-failed", recorded=True)
         if not getattr(result, "ok", False):
@@ -2191,7 +2195,7 @@ class DaemonApp:
             return self._refuse_forget("bad-id")
         try:
             result = self._memory.forget(stripped, visibility=PRIVATE)
-        except Exception as exc:  # noqa: BLE001 - memory is a seam; a turn never dies on it
+        except Exception as exc:  # noqa: BLE001  # memory is a seam; a turn never dies on it
             self._record(APP_FORGET_REFUSED, f"store: {_describe(exc)}")
             return self._refuse_forget("store-failed", recorded=True)
         if not getattr(result, "ok", False):
@@ -2249,7 +2253,7 @@ class DaemonApp:
         """The prompt's clock line, or ``""`` — recorded — if the clock fails."""
         try:
             return clock_line(self._now())
-        except Exception as exc:  # noqa: BLE001 - a turn never waits on a clock
+        except Exception as exc:  # noqa: BLE001  # a turn never waits on a clock
             self._record(APP_CLOCK_FAILED, _describe(exc), once=True)
             return ""
 
@@ -2265,7 +2269,7 @@ class DaemonApp:
         """
         try:
             outcome = session.add_user(text)
-        except Exception as exc:  # noqa: BLE001 - the session is a seam
+        except Exception as exc:  # noqa: BLE001  # the session is a seam
             self._record(APP_TURN_FAILED, f"add_user: {_describe(exc)}")
             return
         if outcome is None:
@@ -2375,7 +2379,7 @@ class DaemonApp:
                 top_k=self._config.recall_top_k,
                 visibility=PRIVATE,
             )
-        except Exception as exc:  # noqa: BLE001 - memory is a seam; a turn never waits on it
+        except Exception as exc:  # noqa: BLE001  # memory is a seam; a turn never waits on it
             with self._lock:
                 self._recall_errors += 1
             self._record(APP_RECALL_FAILED, _describe(exc))
@@ -2435,7 +2439,7 @@ class DaemonApp:
             return ""
         try:
             return render_recalled(records)
-        except Exception as exc:  # noqa: BLE001 - a render fault must not lose the turn
+        except Exception as exc:  # noqa: BLE001  # a render fault must not lose the turn
             with self._lock:
                 self._recall_errors += 1
             self._record(APP_RECALL_FAILED, f"render: {_describe(exc)}")
@@ -2446,7 +2450,7 @@ class DaemonApp:
             return []
         try:
             messages = session.messages()
-        except Exception as exc:  # noqa: BLE001 - the session is a seam
+        except Exception as exc:  # noqa: BLE001  # the session is a seam
             self._record(APP_TURN_FAILED, f"window: {_describe(exc)}")
             return []
         return [m for m in messages if isinstance(m, dict)][:-1]
@@ -2460,7 +2464,7 @@ class DaemonApp:
                 lambda: Session(self._state, self._memory, added_by=self._config.added_by)
             )
             session = factory()
-        except Exception as exc:  # noqa: BLE001 - a turn happens with or without a session
+        except Exception as exc:  # noqa: BLE001  # a turn happens with or without a session
             self._record(APP_TURN_FAILED, f"session: {_describe(exc)}")
             return None
         with self._lock:
@@ -2478,7 +2482,7 @@ class DaemonApp:
     def _fold_session(self, session: Any) -> None:
         try:
             records = list(session.degradations)
-        except Exception as exc:  # noqa: BLE001 - the session is a seam
+        except Exception as exc:  # noqa: BLE001  # the session is a seam
             self._record(APP_TURN_FAILED, f"session degradations: {_describe(exc)}")
             return
         with self._lock:
@@ -2499,7 +2503,7 @@ class DaemonApp:
                 heard = self._turn_queue.get(timeout=0.1)
             except queue.Empty:
                 continue
-            except Exception as exc:  # noqa: BLE001 - a queue fault must not kill the worker
+            except Exception as exc:  # noqa: BLE001  # a queue fault must not kill the worker
                 self._record(APP_TURN_FAILED, _describe(exc))
                 continue
             self._run_heard(heard)
@@ -2538,7 +2542,7 @@ class DaemonApp:
         """What this endpoint says it delivers. Never assumed, never raised."""
         try:
             rate = int(endpoint.sample_rate)
-        except Exception as exc:  # noqa: BLE001 - an endpoint without the property
+        except Exception as exc:  # noqa: BLE001  # an endpoint without the property
             self._record(APP_EAR_RATE_UNKNOWN, f"{_safe_name(ear)}: {_describe(exc)}")
             return int(wire.INPUT_SAMPLE_RATE)
         if rate <= 0:
@@ -2550,7 +2554,7 @@ class DaemonApp:
         """Build a client for *rate* and put it on its own thread. Never raises."""
         try:
             self._ears = self._ears_factory(rate)
-        except Exception as exc:  # noqa: BLE001 - a factory is a seam, not a promise
+        except Exception as exc:  # noqa: BLE001  # a factory is a seam, not a promise
             self._ears = None
             self._record(APP_EARS_UNAVAILABLE, f"factory: {_describe(exc)}")
             return
@@ -2579,12 +2583,12 @@ class DaemonApp:
         try:
             asyncio.set_event_loop(loop)
             loop.run_until_complete(self._listen())
-        except Exception as exc:  # noqa: BLE001 - the ear may die; the daemon may not
+        except Exception as exc:  # noqa: BLE001  # the ear may die; the daemon may not
             self._record(APP_EARS_THREAD_FAILED, _describe(exc))
         finally:
             try:
                 loop.close()
-            except Exception:  # noqa: BLE001 - a loop that will not close is counted, not raised
+            except Exception:  # noqa: BLE001  # a loop that will not close is counted, not raised
                 self._record(APP_EARS_THREAD_FAILED, "event loop would not close")
             self._ears_loop = None
 
@@ -2593,7 +2597,7 @@ class DaemonApp:
             return
         try:
             connected = await self._ears.connect()
-        except Exception as exc:  # noqa: BLE001 - the client promises False, not an exception
+        except Exception as exc:  # noqa: BLE001  # the client promises False, not an exception
             self._record(APP_EARS_UNAVAILABLE, _describe(exc))
             return
         if self._stopping:
@@ -2619,7 +2623,7 @@ class DaemonApp:
                 self._on_event(event)
         except asyncio.CancelledError:
             raise
-        except Exception as exc:  # noqa: BLE001 - any transport fault ends the stream
+        except Exception as exc:  # noqa: BLE001  # any transport fault ends the stream
             self._record(APP_EARS_STREAM_ENDED, _describe(exc))
         finally:
             self._ears_connected = False
@@ -2655,7 +2659,7 @@ class DaemonApp:
                 self._publish("state", {"component": "ears", "status": "session"})
             elif isinstance(event, wire.SessionClosed):
                 self._record(APP_EARS_STREAM_ENDED, "the server closed the session")
-        except Exception as exc:  # noqa: BLE001 - one bad event never ends the stream
+        except Exception as exc:  # noqa: BLE001  # one bad event never ends the stream
             self._record(APP_EARS_THREAD_FAILED, _describe(exc))
 
     def _barge_in(self) -> None:
@@ -2687,7 +2691,7 @@ class DaemonApp:
         if endpoint is not None:
             try:
                 playing = bool(endpoint.playing)
-            except Exception as exc:  # noqa: BLE001 - an endpoint probe is not trusted
+            except Exception as exc:  # noqa: BLE001  # an endpoint probe is not trusted
                 self._record(APP_CAPTURE_FAILED, f"playing: {_describe(exc)}")
         if voice is None or not (speaking or playing):
             return
@@ -2766,7 +2770,7 @@ class DaemonApp:
             bound = self._ears_close_bound or self._config.shutdown_deadline
         try:
             report = await self._ears.close(max(0.05, float(bound)))
-        except Exception as exc:  # noqa: BLE001 - the client promises a report, not silence
+        except Exception as exc:  # noqa: BLE001  # the client promises a report, not silence
             self._record(APP_EARS_THREAD_FAILED, f"close: {_describe(exc)}")
         else:
             if getattr(report, "graceful", True) is False:
@@ -2889,7 +2893,7 @@ class DaemonApp:
             return
         try:
             server.start()
-        except Exception as exc:  # noqa: BLE001 - no dashboard is a degradation, not a crash
+        except Exception as exc:  # noqa: BLE001  # no dashboard is a degradation, not a crash
             self._record(APP_HTTP_UNAVAILABLE, _describe(exc))
 
     def _stop_server(self, deadline: float) -> bool:
@@ -2898,7 +2902,7 @@ class DaemonApp:
             return True
         try:
             server.shutdown(max(0.05, deadline))
-        except Exception as exc:  # noqa: BLE001 - a server that will not stop is recorded
+        except Exception as exc:  # noqa: BLE001  # a server that will not stop is recorded
             self._record(APP_HTTP_UNAVAILABLE, f"shutdown: {_describe(exc)}")
             return False
         return True
@@ -2930,7 +2934,7 @@ class DaemonApp:
             self._summary_attempted += 1
         try:
             report = session.close(self._scrubbing_summariser(), deadline=max(0.05, deadline))
-        except Exception as exc:  # noqa: BLE001 - the session is a seam
+        except Exception as exc:  # noqa: BLE001  # the session is a seam
             self._record(APP_TURN_FAILED, f"session close: {_describe(exc)}")
             with self._lock:
                 self._summary_skip_reason = "close-raised"
@@ -2951,7 +2955,7 @@ class DaemonApp:
     def _close_memory(self, deadline: float) -> bool:
         try:
             report = self._memory.close(deadline=max(0.05, deadline))
-        except Exception as exc:  # noqa: BLE001 - memory is a seam
+        except Exception as exc:  # noqa: BLE001  # memory is a seam
             self._record("app-memory-close-failed", _describe(exc))
             return False
         for degradation in getattr(report, "degradations", ()) or ():
@@ -2961,7 +2965,7 @@ class DaemonApp:
     def _close_bus(self, deadline: float) -> bool:
         try:
             self._bus.close(max(0.05, deadline))
-        except Exception:  # noqa: BLE001 - the bus is closing; there is nowhere left to publish
+        except Exception:  # noqa: BLE001  # the bus is closing; there is nowhere left to publish
             with self._lock:
                 self._publish_errors += 1
             return False
@@ -2971,7 +2975,7 @@ class DaemonApp:
         """One operational-log line. Never carries transcript text."""
         try:
             self._state.operational_log.write(event, **fields)
-        except Exception:  # noqa: BLE001 - the log promises never to raise; count anyway
+        except Exception:  # noqa: BLE001  # the log promises never to raise; count anyway
             with self._lock:
                 self._ledger_errors += 1
 
@@ -2981,7 +2985,7 @@ class DaemonApp:
         """A JSON-safe snapshot of every part. Never raises; never carries speech."""
         try:
             return self._status()
-        except Exception as exc:  # noqa: BLE001 - a status probe must never raise
+        except Exception as exc:  # noqa: BLE001  # a status probe must never raise
             self._record("app-status-failed", _describe(exc))
             return {"running": False, "detail": "status probe failed"}
 
@@ -3189,7 +3193,7 @@ def _probe(subject: Any) -> Optional[dict[str, Any]]:
         if not callable(probe):
             return None
         result = probe()
-    except Exception:  # noqa: BLE001 - a sub-status that fails is reported as unavailable
+    except Exception:  # noqa: BLE001  # a sub-status that fails is reported as unavailable
         return {"unavailable": True}
     return result if isinstance(result, dict) else {"unavailable": True}
 
@@ -3213,18 +3217,18 @@ def _memory_status(memory: Any) -> dict[str, Any]:
     for name in counters:
         try:
             value = getattr(memory, name, None)
-        except Exception:  # noqa: BLE001 - a counter probe is not trusted either
+        except Exception:  # noqa: BLE001  # a counter probe is not trusted either
             value = None
         out[name] = value if isinstance(value, int) and not isinstance(value, bool) else None
     try:
         flag = getattr(memory, "store_root_is_symlink", None)
-    except Exception:  # noqa: BLE001 - a probe that fails cannot clear the store
+    except Exception:  # noqa: BLE001  # a probe that fails cannot clear the store
         flag = None
     out["store_root_is_symlink"] = flag if isinstance(flag, bool) else None
     try:
         out["scope"] = str(getattr(memory, "scope", ""))
         out["data_dir"] = str(getattr(memory, "data_dir", ""))
-    except Exception:  # noqa: BLE001 - a path probe that fails is reported as unknown
+    except Exception:  # noqa: BLE001  # a path probe that fails is reported as unknown
         out["scope"] = out.get("scope", "")
         out["data_dir"] = ""
     return out
@@ -3497,7 +3501,7 @@ def _semantic_available(memory: Any) -> bool:
     """
     try:
         return bool(getattr(memory, "last_recall_mode", None) == "semantic")
-    except Exception:  # noqa: BLE001 - a probe that fails means "we cannot claim it"
+    except Exception:  # noqa: BLE001  # a probe that fails means "we cannot claim it"
         return False
 
 
@@ -3532,7 +3536,7 @@ def _session_status(session: Any) -> Optional[dict[str, Any]]:
             "degradation_counts": dict(session.degradation_counts),
             "transcript": transcript,
         }
-    except Exception:  # noqa: BLE001 - a session probe that fails is reported as unavailable
+    except Exception:  # noqa: BLE001  # a session probe that fails is reported as unavailable
         return {"unavailable": True}
 
 
@@ -3643,6 +3647,6 @@ def main() -> DaemonApp:
             bus=bus,
             controls=app.controls(),
         )
-    except Exception as exc:  # noqa: BLE001 - no dashboard is a degradation, not a crash
+    except Exception as exc:  # noqa: BLE001  # no dashboard is a degradation, not a crash
         app._record(APP_BOOTSTRAP_DEGRADED, f"dashboard: {_describe(exc)}")
     return app

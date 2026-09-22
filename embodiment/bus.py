@@ -470,7 +470,10 @@ def _reason_or_generic(value: object) -> str:
     anything that required ANY alteration to become safe is untrusted and is
     replaced wholesale, never partially kept.
     """
-    text = value if isinstance(value, str) else ("" if value is None else str(value))
+    if isinstance(value, str):
+        text = value
+    else:
+        text = "" if value is None else str(value)
     if not text:
         return _GENERIC_TRANSPORT_REASON
     token = _safe_token(text)
@@ -992,7 +995,7 @@ class Bus:
                 else:
                     event = candidate
                     for sub in self._subscribers:
-                        protected = sub._offer(event)  # noqa: SLF001 - one unit
+                        protected = sub._offer(event)  # noqa: SLF001  # one unit
                         if protected is not None:
                             protected_kinds.append(protected)
 
@@ -1110,7 +1113,7 @@ class Bus:
             try:
                 client.close()
                 closed_client = True
-            except Exception:  # nosec B110 # noqa: BLE001 - teardown must never raise
+            except Exception:  # nosec B110 # noqa: BLE001  # teardown must never raise
                 pass
         elapsed = time.monotonic() - start
         return BusCloseReport(
@@ -1148,7 +1151,7 @@ class Bus:
         if is_new and self._on_degrade is not None:
             try:
                 self._on_degrade(record)
-            except Exception:  # noqa: BLE001 - a hook must never raise; count, don't swallow
+            except Exception:  # noqa: BLE001  # a hook must never raise; count, don't swallow
                 with self._lock:
                     self.hook_errors += 1
 
@@ -1254,7 +1257,7 @@ class Bus:
                 # partially leaked.
                 reason = _reason_or_generic(getattr(result, "reason", None))
                 self._degrade_broker(f"publish failed: {reason}")
-        except Exception as exc:  # noqa: BLE001 - the worker thread must never crash
+        except Exception as exc:  # noqa: BLE001  # the worker thread must never crash
             self._degrade_broker(describe_exception(exc))
 
     def _ensure_broker_core(self) -> bool:
@@ -1267,7 +1270,7 @@ class Bus:
                 return False
             try:
                 envelope_cls, type_to_topic, _now = _load_envelope_core()
-            except Exception as exc:  # noqa: BLE001 - degrade, never raise
+            except Exception as exc:  # noqa: BLE001  # degrade, never raise
                 self._degrade_broker_locked(describe_exception(exc))
                 return False
             self._envelope_cls = envelope_cls
@@ -1290,7 +1293,7 @@ class Bus:
                 else:
                     event_client_cls = _load_event_client_class()
                     self._broker_client = event_client_cls(host=self._host, port=self._port)
-            except Exception as exc:  # noqa: BLE001 - degrade, never raise
+            except Exception as exc:  # noqa: BLE001  # degrade, never raise
                 self._degrade_broker_locked(describe_exception(exc))
                 return None
             return self._broker_client

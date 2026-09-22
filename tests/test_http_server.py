@@ -215,11 +215,10 @@ class TestResolveBind:
             s.resolve_bind("127.0.0.1\nX: 1", bind_public=False)
 
     def test_the_server_refuses_a_routable_bind_at_construction(self) -> None:
+        config = s.ServerConfig(bind="0.0.0.0", port=free_port())
+        guard = g.Guard(g.GuardConfig(install_secret=MARKER_SECRET))
         with pytest.raises(CliError):
-            s.DashboardServer(
-                config=s.ServerConfig(bind="0.0.0.0", port=free_port()),
-                guard=g.Guard(g.GuardConfig(install_secret=MARKER_SECRET)),
-            )
+            s.DashboardServer(config=config, guard=guard)
 
 
 # ── criterion 1: the three refusals, on the control API ──────────────────────
@@ -748,8 +747,9 @@ class TestShutdown:
     def test_a_request_after_shutdown_simply_fails_to_connect(self) -> None:
         built = build()
         built.server.shutdown(2.0)
+        headers = built.headers()
         with pytest.raises(OSError):
-            built.request("GET", "/", hdrs=built.headers())
+            built.request("GET", "/", hdrs=headers)
 
 
 # ── status, and what it may never contain ────────────────────────────────────

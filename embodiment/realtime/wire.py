@@ -384,7 +384,7 @@ def decode_server_event(raw: object) -> ServerEvent:
         return MalformedEvent(reason=_MALFORMED_NOT_TEXT)
     try:
         payload = json.loads(raw)
-    except (json.JSONDecodeError, ValueError, RecursionError):
+    except (ValueError, RecursionError):  # json.JSONDecodeError is a ValueError
         return MalformedEvent(reason=_MALFORMED_NOT_JSON)
     if not isinstance(payload, dict):
         return MalformedEvent(reason=_MALFORMED_NOT_OBJECT)

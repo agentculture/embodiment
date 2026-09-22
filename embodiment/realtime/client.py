@@ -634,7 +634,7 @@ class RealtimeEars:
         if self._on_degrade is not None:
             try:
                 self._on_degrade(record)
-            except Exception as exc:  # noqa: BLE001 - the record is already stored
+            except Exception as exc:  # noqa: BLE001  # the record is already stored
                 # The degradation IS recorded above, unconditionally and first.
                 # Only the host's optional notification hook failed, and a hook
                 # that raises must not take down the ear it was watching.
@@ -669,7 +669,7 @@ class RealtimeEars:
         except asyncio.TimeoutError:
             self._record(DISCOVERY_FAILED, "capabilities did not answer inside its deadline")
             return False
-        except (urllib.error.URLError, OSError, ValueError) as exc:
+        except (OSError, ValueError) as exc:  # urllib.error.URLError is an OSError
             self._record(DISCOVERY_FAILED, describe_exception(exc))
             return False
 
@@ -783,7 +783,7 @@ class RealtimeEars:
         except (OSError, ValueError) as exc:
             self._record(HANDSHAKE_FAILED, describe_exception(exc))
             return False
-        except Exception as exc:  # noqa: BLE001 - a transport this client does not know
+        except Exception as exc:  # noqa: BLE001  # a transport this client does not know
             # Recorded, never re-raised: an unfamiliar transport failure is
             # still a failure the host must see, and still not a traceback the
             # daemon should wear.
@@ -871,7 +871,7 @@ class RealtimeEars:
                 await self._ws.send(wire.encode_audio_append(frame))
             except asyncio.CancelledError:
                 raise
-            except Exception as exc:  # noqa: BLE001 - any transport fault ends the session
+            except Exception as exc:  # noqa: BLE001  # any transport fault ends the session
                 # Recorded by _mark_lost, which is idempotent — the reader may
                 # have noticed the same drop first.
                 self._mark_lost(describe_exception(exc))
@@ -912,7 +912,7 @@ class RealtimeEars:
                 yield event
         except asyncio.CancelledError:
             raise
-        except Exception as exc:  # noqa: BLE001 - any transport fault ends the stream
+        except Exception as exc:  # noqa: BLE001  # any transport fault ends the stream
             # Recorded by _mark_lost below; the close reason is deliberately
             # NOT read off the exception — a server close reason is text this
             # client did not write and could carry anything, including speech.
@@ -955,7 +955,7 @@ class RealtimeEars:
                 exceeded = True
             except asyncio.CancelledError:
                 raise
-            except Exception as exc:  # noqa: BLE001 - teardown answers to nobody
+            except Exception as exc:  # noqa: BLE001  # teardown answers to nobody
                 # On the REPORT as well as the ledger: a host reading only the
                 # return value must not be told this close went cleanly.
                 close_error = True

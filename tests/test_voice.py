@@ -22,7 +22,7 @@ import struct
 import threading
 import time
 import urllib.request
-from dataclasses import replace
+from dataclasses import FrozenInstanceError, replace
 from typing import Optional
 
 import pytest
@@ -334,13 +334,8 @@ class TestBargeInStopsOutputFast:
 
         voice.close(deadline=1.0)
 
-    def test_barge_in_run_1(self) -> None:
-        self._run_once()
-
-    def test_barge_in_run_2(self) -> None:
-        self._run_once()
-
-    def test_barge_in_run_3(self) -> None:
+    @pytest.mark.parametrize("run", [1, 2, 3])
+    def test_barge_in(self, run: int) -> None:
         self._run_once()
 
     def test_on_speech_started_is_a_fast_noop_when_idle(self) -> None:
@@ -1403,7 +1398,7 @@ class TestAttacks:
 
     def test_config_is_frozen(self) -> None:
         config = VoiceConfig()
-        with pytest.raises(Exception):
+        with pytest.raises(FrozenInstanceError):
             config.api_key = "nope"  # type: ignore[misc]
 
     def test_replace_config_does_not_mutate_shared_default(self) -> None:

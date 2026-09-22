@@ -334,7 +334,8 @@ class TestDoubleStartIsIdempotent:
         first = start(target, state_dir=state_dir, env=env)
         reaper.append(first.pid or 0)
         assert first.started is True
-        assert first.pid and first.pid > 0
+        assert first.pid
+        assert first.pid > 0
 
         second = start(target, state_dir=state_dir, env=env)
         assert second.started is False
@@ -638,16 +639,15 @@ class TestTheTargetSeam:
         assert resolved is None
         assert error
 
-    def test_a_resolvable_target_returns_a_runnable_factory(self, make_target) -> None:
+    def test_a_resolvable_target_returns_a_runnable_factory(
+        self, make_target, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         target, env = make_target("resolvable", IDLE_TARGET)
-        sys.path.insert(0, env["PYTHONPATH"])
-        try:
-            factory, error = resolve_target(target)
-            assert error is None
-            assert factory is not None
-            assert hasattr(factory(), "run")
-        finally:
-            sys.path.remove(env["PYTHONPATH"])
+        monkeypatch.syspath_prepend(env["PYTHONPATH"])
+        factory, error = resolve_target(target)
+        assert error is None
+        assert factory is not None
+        assert hasattr(factory(), "run")
 
 
 # ── the daemon-side stop path, in process ────────────────────────────────────
@@ -681,8 +681,9 @@ class TestRunDaemonInProcess:
                 stop_event.set()
                 return 0
 
+        app = App()
         with pytest.raises(SystemExit):
-            run_daemon(App(), state=state, exit_process=exiter, install_signal_handlers=False)
+            run_daemon(app, state=state, exit_process=exiter, install_signal_handlers=False)
         assert exiter.code == 0
 
     def test_the_watchdog_hard_exits_and_records_first(self, state_dir: Path) -> None:
@@ -724,8 +725,9 @@ class TestRunDaemonInProcess:
                 return 0
 
         try:
+            app = App()
             with pytest.raises(SystemExit):
-                run_daemon(App(), state=state, exit_process=exiter, install_signal_handlers=False)
+                run_daemon(app, state=state, exit_process=exiter, install_signal_handlers=False)
         finally:
             release.set()
         assert THREADS_LINGERING_CODE in _ledger_codes(state_dir)
@@ -738,8 +740,9 @@ class TestRunDaemonInProcess:
             def run(self, stop_event: threading.Event) -> int:
                 raise RuntimeError("target blew up")
 
+        app = App()
         with pytest.raises(SystemExit):
-            run_daemon(App(), state=state, exit_process=exiter, install_signal_handlers=False)
+            run_daemon(app, state=state, exit_process=exiter, install_signal_handlers=False)
         assert exiter.code != 0
         codes = _ledger_codes(state_dir)
         assert any(code.startswith("lifecycle-") for code in codes)
@@ -757,9 +760,11 @@ class TestRunDaemonInProcess:
                 called.append(deadline)
                 raise RuntimeError("shutdown blew up")
 
+        app = App()
         with pytest.raises(SystemExit):
-            run_daemon(App(), state=state, exit_process=exiter, install_signal_handlers=False)
-        assert called and called[0] > 0
+            run_daemon(app, state=state, exit_process=exiter, install_signal_handlers=False)
+        assert called
+        assert called[0] > 0
         assert any(c.startswith("lifecycle-") for c in _ledger_codes(state_dir))
 
 
@@ -1064,8 +1069,9 @@ class TestDefectsFoundByAttackingTheModule:
                 return 0
 
         try:
+            app = App()
             with pytest.raises(SystemExit):
-                run_daemon(App(), state=state, exit_process=exiter, install_signal_handlers=False)
+                run_daemon(app, state=state, exit_process=exiter, install_signal_handlers=False)
         finally:
             release.set()
         ledger_text = (state_dir / LEDGER_FILENAME).read_text(encoding="utf-8")

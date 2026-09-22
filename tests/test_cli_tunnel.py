@@ -80,7 +80,8 @@ def test_tunnel_allow_flag_is_repeatable(capsys: pytest.CaptureFixture[str]) -> 
     assert payload["allow"] == ["a@example.com", "b@example.com"]
     cmd = payload["setup_command"]
     assert cmd.count("--allow") == 2
-    assert "a@example.com" in cmd and "b@example.com" in cmd
+    assert "a@example.com" in cmd
+    assert "b@example.com" in cmd
 
 
 def test_tunnel_with_service_token_flag(capsys: pytest.CaptureFixture[str]) -> None:

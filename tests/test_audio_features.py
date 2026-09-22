@@ -184,7 +184,8 @@ def test_envelope_catches_an_off_stride_transient_in_exactly_one_bucket():
         if i == spike_bucket:
             assert hi > 0, "the bucket containing the spike must show it"
         else:
-            assert lo == 0 and hi == 0, f"bucket {i} should be silent, got ({lo}, {hi})"
+            assert lo == 0, f"bucket {i} should be silent, got ({lo}, {hi})"
+            assert hi == 0, f"bucket {i} should be silent, got ({lo}, {hi})"
 
 
 def test_strided_slice_would_have_missed_an_off_stride_spike():
@@ -310,7 +311,8 @@ def test_floor_falls_immediately_on_silence():
     loud_frames = extractor.feed(loud)
     silent_frames = extractor.feed(silence)
 
-    assert loud_frames and silent_frames
+    assert loud_frames
+    assert silent_frames
     # The floor is at (or very near) the loud level by the end of the loud
     # run, then drops to exactly FLOOR_DB on the very first silent block.
     assert silent_frames[0]["noise_floor_db"] == FLOOR_DB

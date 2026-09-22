@@ -521,7 +521,7 @@ class RemoteEndpoint:
     def _run(self, ready: threading.Event) -> None:
         try:
             asyncio.run(self._serve(ready))
-        except Exception as exc:  # noqa: BLE001 - the thread's top: record, never raise out
+        except Exception as exc:  # noqa: BLE001  # the thread's top: record, never raise out
             # Round 4 finding 2: EVERY fault out of _serve is counted, not
             # just the first — a second fault after an earlier bind failure
             # (e.g. one raised during that failure's own teardown) used to
@@ -594,7 +594,7 @@ class RemoteEndpoint:
             except asyncio.TimeoutError:
                 with self._lock:
                     self._send_errors += 1
-            except Exception:  # noqa: BLE001 - best effort, still recorded
+            except Exception:  # noqa: BLE001  # best effort, still recorded
                 with self._lock:
                     self._send_errors += 1
 
@@ -615,7 +615,7 @@ class RemoteEndpoint:
         try:
             query = urlsplit(request.path).query
             leaked = bool(parse_qs(query).get(SECRET_QUERY_PARAM))
-        except Exception:  # noqa: BLE001 - a malformed path is not itself a refusal
+        except Exception:  # noqa: BLE001  # a malformed path is not itself a refusal
             with self._lock:
                 self._path_parse_errors += 1
             leaked = False
@@ -706,14 +706,14 @@ class RemoteEndpoint:
         except (asyncio.TimeoutError, TimeoutError):
             await self._refuse_unauthenticated(connection, "no auth message inside the deadline")
             return False
-        except Exception:  # noqa: BLE001 - the peer vanished before authenticating
+        except Exception:  # noqa: BLE001  # the peer vanished before authenticating
             await self._refuse_unauthenticated(connection, "connection ended before authenticating")
             return False
 
         try:
             text = raw if isinstance(raw, str) else bytes(raw).decode("utf-8")
             payload = json.loads(text)
-        except Exception:  # noqa: BLE001 - not this client's job to parse garbage
+        except Exception:  # noqa: BLE001  # not this client's job to parse garbage
             await self._refuse_unauthenticated(connection, "first message was not valid JSON")
             return False
         if not isinstance(payload, dict) or payload.get("type") != AUTH_EVENT_TYPE:
@@ -736,7 +736,7 @@ class RemoteEndpoint:
                 supplied.encode("utf-8", "surrogatepass"),
                 self.config.secret.encode("utf-8", "surrogatepass"),
             )
-        except Exception:  # noqa: BLE001 - an unencodable secret is simply not a match
+        except Exception:  # noqa: BLE001  # an unencodable secret is simply not a match
             return False
 
     async def _refuse_unauthenticated(self, connection: Any, reason: str) -> None:
@@ -747,7 +747,7 @@ class RemoteEndpoint:
             await connection.close(code=1008, reason="unauthorized")
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001 - the peer is already gone; nothing to report to it
+        except Exception:  # noqa: BLE001  # the peer is already gone; nothing to report to it
             with self._lock:
                 self._send_errors += 1
 
@@ -771,7 +771,7 @@ class RemoteEndpoint:
                 self._connected = True
             try:
                 await connection.send(self._session_created_json())
-            except Exception:  # noqa: BLE001 - the peer vanished before it heard anything
+            except Exception:  # noqa: BLE001  # the peer vanished before it heard anything
                 with self._lock:
                     self._send_errors += 1
             try:
@@ -779,7 +779,7 @@ class RemoteEndpoint:
                     self._on_client_message(raw)
             except asyncio.CancelledError:
                 raise
-            except Exception:  # noqa: BLE001 - any transport fault just ends this connection
+            except Exception:  # noqa: BLE001  # any transport fault just ends this connection
                 with self._lock:
                     self._connection_drop_count += 1
         finally:
@@ -796,7 +796,7 @@ class RemoteEndpoint:
         try:
             text = raw if isinstance(raw, str) else bytes(raw).decode("utf-8")
             payload = json.loads(text)
-        except Exception:  # noqa: BLE001 - a frame this client did not write
+        except Exception:  # noqa: BLE001  # a frame this client did not write
             with self._lock:
                 self._frames_malformed += 1
             return
@@ -824,7 +824,7 @@ class RemoteEndpoint:
             return
         try:
             frame = base64.b64decode(audio_b64, validate=False)
-        except Exception:  # noqa: BLE001 - malformed base64 from the peer
+        except Exception:  # noqa: BLE001  # malformed base64 from the peer
             with self._lock:
                 self._frames_malformed += 1
             return
@@ -841,7 +841,7 @@ class RemoteEndpoint:
             return
         try:
             callback(frame)
-        except Exception:  # noqa: BLE001 - a caller's callback must never kill this reader
+        except Exception:  # noqa: BLE001  # a caller's callback must never kill this reader
             with self._lock:
                 self._callback_errors += 1
 
@@ -874,7 +874,7 @@ class RemoteEndpoint:
         async def _send() -> None:
             try:
                 await connection.send(frame_json)
-            except Exception:  # noqa: BLE001 - a control reply the peer never gets
+            except Exception:  # noqa: BLE001  # a control reply the peer never gets
                 with self._lock:
                     self._send_errors += 1
             finally:
@@ -986,7 +986,7 @@ class RemoteEndpoint:
                 await connection.send(self._audio_delta_json(chunk))
             except asyncio.CancelledError:
                 raise
-            except Exception:  # noqa: BLE001 - the peer vanished mid-send
+            except Exception:  # noqa: BLE001  # the peer vanished mid-send
                 with self._lock:
                     self._send_errors += 1
                     self._playback_active_bytes = 0
