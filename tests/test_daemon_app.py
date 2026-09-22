@@ -1778,6 +1778,175 @@ class TestSupersededTurns:
         assert h.app.status()["turns"]["superseded"] == 0
 
 
+class TestTheGatewayIsNotTrustedWithItsOwnKey:
+    """The wave review's one finding: a reply that carries the key back.
+
+    A model reply is persisted (the 0600 transcript, the session record in the
+    private store), published (the ``reply`` event every dashboard viewer
+    receives) and spoken. A gateway that echoes its bearer token inside
+    ``message.content`` — or an error page that quotes it — would put it in
+    all three. The realtime client already guards this on its own wire; the
+    HTTP seam did not.
+    """
+
+    KEY = "GATEWAYKEY-abcdef0123456789"  # nosec B105 - a planted marker
+    SECRET = "INSTALLSECRET-9876543210"  # nosec B105 - a planted marker
+
+    def _harness_with_a_leaky_gateway(
+        self, harness: Any, tmp_path: Path, reply: str, **over: Any
+    ) -> Any:
+        memory = RoomMemory(
+            tmp_path / "store", scope="gwen", added_by="gwen", embed_probe=lambda: False
+        )
+
+        def leaky(messages: list[dict[str, Any]], tools: Any = None) -> ModelResponse:
+            return ModelResponse(content=reply)
+
+        return harness(
+            memory=memory,
+            complete=leaky,
+            config=AppConfig(poll_interval_s=0.01, api_key=self.KEY),
+            redact=(self.SECRET,),
+            **over,
+        )
+
+    def test_a_key_in_a_reply_reaches_nothing_that_keeps_or_speaks_it(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        spoken: list[str] = []
+
+        def recording_synth(sentence: str, config: Any) -> bytes:
+            # The real Voice, so the reply event is published the way it is
+            # in production — and this is every sentence that reached the
+            # synthesiser, which is the closest a test gets to "what she said".
+            spoken.append(sentence)
+            return b"\x00\x00"
+
+        h = self._harness_with_a_leaky_gateway(
+            harness,
+            tmp_path,
+            f"שלום, המפתח שלך הוא {self.KEY} בבקשה",
+            synthesize=recording_synth,
+        )
+        h.app.attach_ear("host", FakeEndpoint())
+        h.clear()
+
+        result = h.app.run_turn(SPEECH)
+
+        # 1. the value the caller gets
+        assert self.KEY not in result.spoken
+        assert app_module.REPLY_REDACTED in result.spoken
+        # 2. what was spoken
+        assert spoken and all(self.KEY not in text for text in spoken)
+        # 3. the reply event on the bus
+        replies = h.events("reply")
+        assert replies and all(self.KEY not in e.data["text"] for e in replies)
+        # 4. the transcript file on disk
+        sessions = Path(h.state.dir) / "sessions"
+        logs = [p for p in sessions.iterdir() if p.is_file()]
+        assert logs
+        for log in logs:
+            assert self.KEY not in log.read_text(encoding="utf-8")
+        # 5. the counter and the record
+        assert h.app.status()["replies_scrubbed"] == 1
+        assert app_module.APP_REPLY_SECRET_SCRUBBED in h.ledger_codes()
+        # 6. and nothing anywhere else in the status
+        assert self.KEY not in json.dumps(h.app.status(), ensure_ascii=False)
+
+    def test_the_install_secret_is_scrubbed_too(self, harness: Any, tmp_path: Path) -> None:
+        h = self._harness_with_a_leaky_gateway(harness, tmp_path, f"הנה הסוד {self.SECRET} שלך")
+        h.app.attach_ear("host", FakeEndpoint())
+        result = h.app.run_turn(SPEECH)
+        assert self.SECRET not in result.spoken
+        assert h.app.status()["replies_scrubbed"] == 1
+
+    def test_a_summary_that_carries_the_key_never_reaches_the_store(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        """Session.close writes what the summariser returns straight to disk."""
+        data_dir = tmp_path / "store"
+        memory = RoomMemory(data_dir, scope="gwen", added_by="gwen", embed_probe=lambda: False)
+        h = harness(
+            memory=memory,
+            config=AppConfig(poll_interval_s=0.01, api_key=self.KEY),
+            redact=(self.SECRET,),
+            summarise=lambda messages: f"דיברו על המפתח {self.KEY} ועל {self.SECRET}",
+        )
+        h.app.attach_ear("host", FakeEndpoint())
+        h.app.run_turn(SPEECH)
+
+        h.app.close(deadline=4.0)
+
+        files = [p for p in data_dir.rglob("*") if p.is_file()]
+        assert files, "no summary was written, so this proves nothing"
+        for path in files:
+            body = path.read_text(encoding="utf-8")
+            assert self.KEY not in body
+            assert self.SECRET not in body
+        assert app_module.REPLY_REDACTED in "".join(p.read_text(encoding="utf-8") for p in files)
+        assert h.app.status()["memory"]["summary_written"] == 1
+        assert h.app.status()["replies_scrubbed"] == 1
+
+    def test_a_json_escaped_key_is_caught_as_well_as_the_raw_one(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        """A key with a quote arrives escaped; a raw filter would never see it."""
+        awkward = 'KEY-with"a-quote\\and-a-backslash'
+        memory = RoomMemory(
+            tmp_path / "store", scope="gwen", added_by="gwen", embed_probe=lambda: False
+        )
+        escaped = json.dumps(awkward)[1:-1]
+        assert escaped != awkward, "this test needs a key JSON has to escape"
+
+        def leaky(messages: list[dict[str, Any]], tools: Any = None) -> ModelResponse:
+            return ModelResponse(content=f"echoing {escaped} back")
+
+        h = harness(
+            memory=memory,
+            complete=leaky,
+            config=AppConfig(poll_interval_s=0.01, api_key=awkward),
+        )
+        h.app.attach_ear("host", FakeEndpoint())
+        result = h.app.run_turn(SPEECH)
+        assert escaped not in result.spoken
+        assert h.app.status()["replies_scrubbed"] == 1
+
+    def test_an_honest_reply_is_left_exactly_alone(self, harness: Any, tmp_path: Path) -> None:
+        """The counter has to be able to stay at zero."""
+        h = self._harness_with_a_leaky_gateway(harness, tmp_path, REPLY)
+        h.app.attach_ear("host", FakeEndpoint())
+        result = h.app.run_turn(SPEECH)
+        assert result.spoken == REPLY
+        assert h.app.status()["replies_scrubbed"] == 0
+        assert app_module.APP_REPLY_SECRET_SCRUBBED not in h.ledger_codes()
+
+    def test_a_daemon_with_no_secrets_scrubs_nothing(self, harness: Any) -> None:
+        h = harness()
+        h.app.attach_ear("host", FakeEndpoint())
+        assert h.app.run_turn(SPEECH).spoken == REPLY
+        assert h.app.status()["replies_scrubbed"] == 0
+
+    def test_the_marker_matches_the_realtime_clients_own(self) -> None:
+        """Two surfaces, one spelling — pinned rather than trusted."""
+        from embodiment.realtime.client import REDACTED
+
+        assert app_module.REPLY_REDACTED == REDACTED
+
+    def test_main_hands_the_app_both_secrets(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("EMBODIMENT_STATE_DIR", str(tmp_path / "state"))
+        monkeypatch.setenv("EMBODIMENT_GATEWAY_KEY", self.KEY)
+        application = app_module.main()
+        try:
+            forms = application._secret_forms
+            assert self.KEY in forms
+            # the install secret is minted by the guard at first start
+            assert len(forms) >= 2, forms
+        finally:
+            application.close(deadline=2.0)
+
+
 class TestReviewQuestions:
     """Answers to the review's mandatory questions, as tests where one was owed."""
 

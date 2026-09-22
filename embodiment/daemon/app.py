@@ -144,6 +144,8 @@ __all__ = [
     "APP_BOOTSTRAP_DEGRADED",
     "APP_CAPTURE_FAILED",
     "APP_FRAMES_NO_SESSION",
+    "APP_REPLY_SECRET_SCRUBBED",
+    "REPLY_REDACTED",
     "APP_EAR_TEARDOWN_TIMEOUT",
     "APP_BARGE_IN_STOP_TIMEOUT",
     "TEARDOWN_DEADLINE_S",
@@ -260,6 +262,13 @@ SUMMARY_MAX_TOKENS = 300
 #: narrow enough not to fire on ordinary speech.
 _ASK_STEMS: tuple[str, ...] = ("תזכר", "זכר", "remember", "don't forget", "dont forget")
 
+#: What replaces a secret found inside a model reply. The same spelling
+#: :data:`embodiment.realtime.client.REDACTED` uses, so the two surfaces read
+#: alike in a log — pinned by a test rather than trusted to stay in step. It
+#: is a marker a person can act on, not an empty string that would leave a
+#: reply reading as though nothing had happened.
+REPLY_REDACTED = "[redacted]"
+
 #: The whole ear teardown's bound, in seconds — stopping capture, re-pointing
 #: the voice, detaching and closing one endpoint. **Derived from what it
 #: bounds**: those are device calls measured in tens of milliseconds, and the
@@ -342,6 +351,9 @@ APP_EAR_DETACH_FAILED = "app-ear-detach-failed"
 APP_CAPTURE_FAILED = "app-capture-failed"
 #: A captured frame arrived with no realtime session to send it to.
 APP_FRAMES_NO_SESSION = "app-frames-no-session"
+#: A model reply or summary came back with a secret inside it and was
+#: scrubbed before it reached anything that keeps or speaks text.
+APP_REPLY_SECRET_SCRUBBED = "app-reply-secret-scrubbed"  # nosec B105 - a code, not a secret
 #: An ear's teardown did not finish inside :data:`TEARDOWN_DEADLINE_S`. The
 #: handover went ahead anyway; the endpoint is kept for a later close to retry.
 APP_EAR_TEARDOWN_TIMEOUT = "app-ear-teardown-timeout"
@@ -633,6 +645,7 @@ class DaemonApp:
         voice_factory: Optional[Callable[[Any], Any]] = None,
         session_factory: Optional[Callable[[], Any]] = None,
         summarise: Optional[Callable[..., Any]] = None,
+        redact: Iterable[str] = (),
         server: Any = None,
         tools: Optional[ToolRegistry] = None,
         clock: Callable[[], float] = time.monotonic,
@@ -656,6 +669,13 @@ class DaemonApp:
         self._voice_factory = voice_factory or (lambda endpoint: None)
         self._session_factory = session_factory
         self._summarise = summarise
+        #: Every literal spelling of every secret this daemon holds, in the
+        #: forms they can arrive in. Built once: the scrub runs on every
+        #: reply, and recomputing the escaped forms per turn would be work
+        #: done on the hot path for a value that never changes.
+        self._secret_forms = server_module.redaction_forms(
+            tuple(s for s in (self._config.api_key, *redact) if s)
+        )
         self._server = server
         self._clock = clock
 
@@ -668,6 +688,7 @@ class DaemonApp:
         self._handovers = 0
         self._refusals = 0
         self._frames_dropped_no_session = 0
+        self._replies_scrubbed = 0
         self._teardown_timeouts = 0
         self._unreaped_endpoints: list[Any] = []
         self._barge_in_stop_timeouts = 0
@@ -782,6 +803,65 @@ class DaemonApp:
         except Exception:  # noqa: BLE001 - an injected bus is not trusted; count, never recurse
             with self._lock:
                 self._publish_errors += 1
+
+    def _scrub_reply(self, text: object) -> str:
+        """Take the secrets out of a model reply before anything keeps it.
+
+        The gateway is not trusted with its own key. A reply is *persisted*
+        (the 0600 transcript, the session record in the private store),
+        *published* (the ``reply`` event, which every dashboard viewer
+        receives) and *spoken* — so a gateway that echoes the bearer token
+        back inside ``message.content``, or an error page that quotes it,
+        would put it in all three. The realtime client already guards this
+        class on its own wire
+        (:func:`embodiment.realtime.client._safe`); the HTTP seam did not,
+        which is the wave review's one finding.
+
+        Both spellings are checked, through the same helper the dashboard
+        server uses (:func:`embodiment.http.server.redaction_forms`): the raw
+        secret, and the secret as JSON would write it, because a key
+        containing a quote or a backslash arrives escaped and a raw-substring
+        filter would never see it.
+
+        Scrubbing is counted and recorded once. A hit is not a formatting
+        detail — it means the gateway said something it should never have
+        said, and the operator should hear about it even though the daemon
+        has already made it harmless.
+        """
+        value = text if isinstance(text, str) else ("" if text is None else str(text))
+        if not value or not self._secret_forms:
+            return value
+        scrubbed = value
+        for form in self._secret_forms:
+            if form in scrubbed:
+                scrubbed = scrubbed.replace(form, REPLY_REDACTED)
+        if scrubbed == value:
+            return value
+        with self._lock:
+            self._replies_scrubbed += 1
+        self._record(
+            APP_REPLY_SECRET_SCRUBBED,
+            "a secret came back inside a model reply and was removed",
+            once=True,
+        )
+        return scrubbed
+
+    def _scrubbing_summariser(self) -> Optional[Callable[[list[dict[str, Any]]], str]]:
+        """The injected summariser, with its answer scrubbed on the way out.
+
+        Wrapped here rather than at the call site because
+        :meth:`embodiment.session.Session.close` takes the summariser and
+        writes what it returns straight into the private store — there is no
+        later point at which this module sees that text.
+        """
+        summarise = self._summarise
+        if summarise is None:
+            return None
+
+        def scrubbed(messages: list[dict[str, Any]]) -> str:
+            return self._scrub_reply(summarise(messages))
+
+        return scrubbed
 
     def _fold(self, source: str, record: Any) -> None:
         """Record a sibling module's own degradation, keeping its own code."""
@@ -1574,6 +1654,10 @@ class DaemonApp:
         )
         self._publish("turn", {"phase": "thinking", "step_count": 0})
         result = run_one_turn(spoken_in, self._complete, tools=self._tools, config=config)
+        # Before the session, the transcript, the bus or the voice see it.
+        spoken_out = self._scrub_reply(result.spoken)
+        if spoken_out != result.spoken:
+            result = replace(result, spoken=spoken_out)
         for degradation in result.degradations:
             self._fold("turn", degradation)
         if session is not None:
@@ -2283,7 +2367,7 @@ class DaemonApp:
         with self._lock:
             self._summary_attempted += 1
         try:
-            report = session.close(self._summarise, deadline=max(0.05, deadline))
+            report = session.close(self._scrubbing_summariser(), deadline=max(0.05, deadline))
         except Exception as exc:  # noqa: BLE001 - the session is a seam
             self._record(APP_TURN_FAILED, f"session close: {_describe(exc)}")
             with self._lock:
@@ -2460,6 +2544,7 @@ class DaemonApp:
             },
             "state": self._state.status(),
             "degradations": counts,
+            "replies_scrubbed": self._replies_scrubbed,
             "publish_errors": publish_errors,
             "ledger_errors": ledger_errors,
         }
@@ -2888,6 +2973,9 @@ def main() -> DaemonApp:
         ears_factory=lambda rate: RealtimeEars(replace(realtime, input_sample_rate=rate)),
         endpoint_factory=HostEndpoint,
         summarise=summarise,
+        # The bus already redacts these on its way out; this is the other
+        # direction — what the GATEWAY sends back.
+        redact=tuple(s for s in (realtime.api_key, secret.secret) if s),
         voice_factory=voice_factory,
     )
     try:
