@@ -108,7 +108,17 @@ verbs are the only layer that raises, and they raise ``CliError``.
 No speech in a record
 ---------------------
 Nothing this module writes to disk or returns to a caller carries the target's
-output. A child that dies at import leaves its traceback in ``daemon.err`` and
+output. **Every caught exception goes through**
+:func:`embodiment.safe_reason.describe_exception`, never ``str(exc)`` — an
+exception message is the *dependency's* text, and dependencies quote their
+input back, so a store raising ``could not write {record}`` would put the
+user's words in the ledger. What lands instead is the class name, the cause
+chain, an ``errno`` name, the message's *length* and a fingerprint of it.
+``tests/test_safe_reason.py``'s AST guard scans this module — it scans anything
+that imports the sanitiser — so the rule survives the next edit rather than
+this paragraph.
+
+A child that dies at import leaves its traceback in ``daemon.err`` and
 the result carries the *path* and the exit code, never the text. Thread names
 and reasons are sanitised to ``[A-Za-z0-9._-]``; the embedded ``DaemonState``
 snapshot is reduced to counts and paths, dropping the free-form
@@ -151,6 +161,7 @@ from embodiment.daemon.state import (
     candidate_state_dirs,
     resolve_state_dir,
 )
+from embodiment.safe_reason import describe_exception
 
 __all__ = [
     "PIDFILE_NAME",
@@ -374,7 +385,7 @@ class PidFile:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             fd = os.open(self._path, os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, _PRIVATE_FILE_MODE)
         except OSError as exc:
-            self.last_error = f"could not open {self._path}: {type(exc).__name__}"
+            self.last_error = f"could not open {self._path}: {describe_exception(exc)}"
             return False
         try:
             os.fchmod(fd, _PRIVATE_FILE_MODE)
@@ -389,7 +400,7 @@ class PidFile:
                     time.sleep(_ACQUIRE_RETRY_INTERVAL)
                     continue
             except OSError as exc:
-                self.last_error = f"could not lock {self._path}: {type(exc).__name__}"
+                self.last_error = f"could not lock {self._path}: {describe_exception(exc)}"
                 break
             else:
                 self._fd = fd
@@ -406,7 +417,7 @@ class PidFile:
             try:
                 raw = os.pread(self._fd, _MAX_PIDFILE_BYTES + 1, 0)
             except OSError as exc:
-                return None, f"{type(exc).__name__}: {exc}"
+                return None, describe_exception(exc)
             return _decode_record(raw)
         return read_pid_record(self._path)
 
@@ -417,13 +428,13 @@ class PidFile:
         try:
             data = json.dumps(record, sort_keys=True).encode("utf-8")
         except (TypeError, ValueError) as exc:
-            return f"unserialisable pidfile record: {type(exc).__name__}: {exc}"
+            return f"unserialisable pidfile record: {describe_exception(exc)}"
         try:
             os.ftruncate(self._fd, 0)
             os.pwrite(self._fd, data, 0)
             os.fsync(self._fd)
         except OSError as exc:
-            return f"{type(exc).__name__}: {exc}"
+            return describe_exception(exc)
         return None
 
     def unlink(self) -> None:
@@ -453,7 +464,7 @@ def _decode_record(raw: bytes) -> tuple[Optional[dict[str, Any]], Optional[str]]
     try:
         data = json.loads(raw.decode("utf-8"))
     except (UnicodeDecodeError, json.JSONDecodeError) as exc:
-        return None, f"unreadable pidfile: {type(exc).__name__}"
+        return None, f"unreadable pidfile: {describe_exception(exc)}"
     if not isinstance(data, dict):
         return None, "pidfile does not hold a JSON object"
     schema = data.get("schema")
@@ -469,7 +480,7 @@ def read_pid_record(path: str | Path) -> tuple[Optional[dict[str, Any]], Optiona
     except FileNotFoundError:
         return None, None
     except OSError as exc:
-        return None, f"{type(exc).__name__}: {exc}"
+        return None, describe_exception(exc)
     return _decode_record(raw)
 
 
@@ -486,18 +497,18 @@ def _probe_locked(path: Path) -> tuple[Optional[bool], Optional[str]]:
     except FileNotFoundError:
         return None, None
     except OSError as exc:
-        return None, f"{type(exc).__name__}: {exc}"
+        return None, describe_exception(exc)
     try:
         try:
             fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
             return True, None
         except OSError as exc:
-            return None, f"{type(exc).__name__}: {exc}"
+            return None, describe_exception(exc)
         try:
             fcntl.flock(fd, fcntl.LOCK_UN)
         except OSError as exc:
-            return False, f"{type(exc).__name__}: {exc}"
+            return False, describe_exception(exc)
         return False, None
     finally:
         try:
@@ -564,9 +575,9 @@ def resolve_target(dotted: str) -> tuple[Optional[Callable[[], Any]], Optional[s
     try:
         module = importlib.import_module(module_name)
     except ImportError as exc:
-        return None, f"cannot import {module_name}: {type(exc).__name__}: {exc}"
+        return None, f"cannot import {module_name}: {describe_exception(exc)}"
     except Exception as exc:  # noqa: BLE001 - a target's own import-time failure
-        return None, f"{module_name} failed at import: {type(exc).__name__}"
+        return None, f"{module_name} failed at import: {describe_exception(exc)}"
     factory = getattr(module, attribute, None)
     if factory is None:
         return None, f"{module_name} has no attribute {attribute!r}"
@@ -594,7 +605,7 @@ def _target_is_findable(dotted: str, child_path: Optional[str] = None) -> Option
     try:
         spec = importlib.util.find_spec(module_name)
     except (ImportError, AttributeError, ValueError) as exc:
-        return f"cannot locate {module_name}: {type(exc).__name__}: {exc}"
+        return f"cannot locate {module_name}: {describe_exception(exc)}"
     finally:
         if extra:
             sys.path[:] = original
@@ -648,7 +659,7 @@ def _scan(override: Optional[str | Path] = None) -> tuple[list[_Candidate], Opti
     try:
         directories = candidate_state_dirs(override)
     except (ValueError, OSError, RuntimeError) as exc:
-        return [], f"{_UNUSABLE_PREFIX}: {type(exc).__name__}"
+        return [], f"{_UNUSABLE_PREFIX}: {describe_exception(exc)}"
     found: list[_Candidate] = []
     seen: set[Path] = set()
     for directory in directories:
@@ -678,7 +689,7 @@ def _probe_candidate(directory: Path) -> _Candidate:
             pidfile_exists=False,
             locked=None,
             record=None,
-            detail=f"{_UNUSABLE_PREFIX}: {type(exc).__name__}",
+            detail=f"{_UNUSABLE_PREFIX}: {describe_exception(exc)}",
         )
     if exists and not readable:
         detail = f"{directory} exists but is not readable"
@@ -986,7 +997,9 @@ def _open_stderr_log(directory: Path, ledger: DegradationLedger) -> tuple[Option
         try:
             os.ftruncate(fd, 0)
         except OSError as exc:
-            ledger.append(STDERR_LOG_TRUNCATED_CODE, f"could not truncate: {type(exc).__name__}")
+            ledger.append(
+                STDERR_LOG_TRUNCATED_CODE, f"could not truncate: {describe_exception(exc)}"
+            )
         else:
             ledger.append(
                 STDERR_LOG_TRUNCATED_CODE,
@@ -1241,7 +1254,7 @@ def _spawn(
         )
     except OSError as exc:
         pidfile.unlink()
-        detail = f"could not spawn the daemon: {type(exc).__name__}: {exc}"
+        detail = f"could not spawn the daemon: {describe_exception(exc)}"
         ledger.append(CHILD_EXITED_EARLY_CODE, detail)
         return StartResult(
             False,
@@ -1416,8 +1429,8 @@ def stop(
     try:
         os.kill(pid, signal.SIGTERM)
     except OSError as exc:
-        detail = f"could not signal pid {pid}: {type(exc).__name__}: {exc}"
-        ledger.append(SIGNAL_FAILED_CODE, f"SIGTERM to pid {pid}: {type(exc).__name__}")
+        detail = f"could not signal pid {pid}: {describe_exception(exc)}"
+        ledger.append(SIGNAL_FAILED_CODE, f"SIGTERM to pid {pid}: {describe_exception(exc)}")
         return StopResult(
             False,
             True,
@@ -1446,8 +1459,8 @@ def stop(
     try:
         os.kill(pid, signal.SIGKILL)
     except OSError as exc:
-        detail = f"could not SIGKILL pid {pid}: {type(exc).__name__}: {exc}"
-        ledger.append(SIGNAL_FAILED_CODE, f"SIGKILL to pid {pid}: {type(exc).__name__}")
+        detail = f"could not SIGKILL pid {pid}: {describe_exception(exc)}"
+        ledger.append(SIGNAL_FAILED_CODE, f"SIGKILL to pid {pid}: {describe_exception(exc)}")
         return StopResult(
             False,
             True,
@@ -1611,7 +1624,8 @@ class DaemonRunner:
                 except (ValueError, OSError) as exc:
                     self._state.ledger.append(
                         SHUTDOWN_FAILED_CODE,
-                        f"could not install a handler for signal {int(sig)}: {type(exc).__name__}",
+                        f"could not install a handler for signal {int(sig)}: "
+                        f"{describe_exception(exc)}",
                     )
         threading.Thread(target=self._watch, name="embodiment-daemon-watchdog", daemon=True).start()
         self._mark_running()
@@ -1623,7 +1637,7 @@ class DaemonRunner:
             code = result if isinstance(result, int) and not isinstance(result, bool) else 0
         except Exception as exc:  # noqa: BLE001 - a target's failure is recorded, never raised
             self._state.ledger.append(
-                TARGET_FAILED_CODE, f"the daemon target raised {type(exc).__name__}"
+                TARGET_FAILED_CODE, f"the daemon target raised {describe_exception(exc)}"
             )
             code = DAEMON_EXIT_TARGET_FAILED
 
@@ -1636,7 +1650,7 @@ class DaemonRunner:
             except Exception as exc:  # noqa: BLE001 - recorded, never raised
                 self._state.ledger.append(
                     SHUTDOWN_FAILED_CODE,
-                    f"the daemon target's shutdown raised {type(exc).__name__}",
+                    f"the daemon target's shutdown raised {describe_exception(exc)}",
                 )
         self._finished = True
         self._finalise(code, hard=False)
@@ -1775,7 +1789,7 @@ def _child_main(argv: Optional[list[str]] = None) -> int:
         runnable = factory()
     except Exception as exc:  # noqa: BLE001 - the target's own failure, recorded
         state.ledger.append(
-            TARGET_FAILED_CODE, f"building the daemon target raised {type(exc).__name__}"
+            TARGET_FAILED_CODE, f"building the daemon target raised {describe_exception(exc)}"
         )
         _mark_child_failure(pidfile, state, DAEMON_EXIT_TARGET_FAILED)
         return DAEMON_EXIT_TARGET_FAILED
