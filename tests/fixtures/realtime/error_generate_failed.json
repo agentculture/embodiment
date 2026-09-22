@@ -1,0 +1,9 @@
+{
+  "session_id": "sess_aaaaaaaaaaaaaaaaaaaaaaaa",
+  "event_id": "event_000000000000000000000012",
+  "timestamp_ms": 4012,
+  "code": "generate_failed",
+  "message": "the generate lane refused the request",
+  "item_id": null,
+  "type": "error"
+}

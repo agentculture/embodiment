@@ -1,0 +1,9 @@
+{
+  "session_id": "sess_aaaaaaaaaaaaaaaaaaaaaaaa",
+  "event_id": "event_000000000000000000000008",
+  "timestamp_ms": 4008,
+  "code": "invalid_session_config",
+  "message": "unsupported input_sample_rate 44100; accepted rates are (24000, 16000)",
+  "item_id": null,
+  "type": "error"
+}

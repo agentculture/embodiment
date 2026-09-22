@@ -1,0 +1,9 @@
+{
+  "session_id": "sess_aaaaaaaaaaaaaaaaaaaaaaaa",
+  "event_id": "event_000000000000000000000014",
+  "timestamp_ms": 4014,
+  "code": "response_timeout",
+  "message": "stage 'generate' exceeded its deadline",
+  "item_id": null,
+  "type": "error"
+}
