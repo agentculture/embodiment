@@ -688,6 +688,34 @@ class TestDefaultAskDetector:
 # ── round 2, point 2: memory.remember raising must never propagate ─────────
 
 
+class TestTheHebrewAskKeepsItsWordInitialShin:
+    """Review finding 10: the pattern used to strip the ש after the trigger as
+    if it were a detachable "that". In Hebrew it is a bound prefix on the
+    next word, and that word can BEGIN with ש on its own: «תזכרי שמי אורי»
+    (remember, my name is Ori) became «מי אורי» (who is Ori), «שהחלב נגמר»
+    became «החלב נגמר». Keeping the ש in the captured clause is lossless —
+    a reader of the stored record parses it exactly as the speaker said it —
+    and costs one letter on the cases where the strip happened to be right.
+    """
+
+    @pytest.mark.parametrize(
+        "text,expected",
+        [
+            ("תזכרי שמי אורי", "שמי אורי"),
+            ("תזכרי, שמי אורי", "שמי אורי"),
+            ("תזכרי שהחלב נגמר", "שהחלב נגמר"),
+            ("זכרי שהחלב נגמר", "שהחלב נגמר"),
+            ("גוון, תזכרי ששכחתי את המפתח", "ששכחתי את המפתח"),
+        ],
+    )
+    def test_the_clause_is_stored_intact(self, text: str, expected: str) -> None:
+        assert sess.default_ask_detector(text) == expected
+
+    def test_a_bare_shin_is_still_not_an_ask(self) -> None:
+        assert sess.default_ask_detector("תזכרי ש") is None
+        assert sess.default_ask_detector("תזכרי, ש") is None
+
+
 class TestTriggerPunctuation:
     """A transcriber's comma between the trigger and its ש (t15 round 6).
 
@@ -712,7 +740,10 @@ class TestTriggerPunctuation:
         ],
     )
     def test_the_same_ask_however_it_is_punctuated(self, text: str) -> None:
-        assert sess.default_ask_detector(text) == "החלב נגמר"
+        # Was «החלב נגמר» until review finding 10: the ש is part of the
+        # clause, not a separable "that", so it is kept (see
+        # TestTheHebrewAskKeepsItsWordInitialShin).
+        assert sess.default_ask_detector(text) == "שהחלב נגמר"
 
     @pytest.mark.parametrize(
         "text",

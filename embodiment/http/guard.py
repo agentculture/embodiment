@@ -596,7 +596,15 @@ class Guard:
         for candidate, is_cookie in ((bearer, False), (from_cookie, True)):
             if not candidate:
                 continue
-            if not hmac.compare_digest(candidate, self._secret):
+            # Bytes, not str: ``compare_digest`` on two ``str`` raises
+            # ``TypeError`` when either side is non-ASCII, and check()'s
+            # catch-all would then log an ordinary wrong password as a
+            # malformed-header degradation — or, with a non-ASCII secret,
+            # refuse the secret's own holder on every request (finding 9).
+            if not hmac.compare_digest(
+                candidate.encode("utf-8", "surrogateescape"),
+                self._secret.encode("utf-8", "surrogateescape"),
+            ):
                 continue
             if is_cookie and not (origin_present or same_origin_metadata):
                 return self._refuse(REFUSED_COOKIE_WITHOUT_ORIGIN_CODE, 403)

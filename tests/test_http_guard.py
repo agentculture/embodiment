@@ -365,6 +365,57 @@ class TestTheInstallSecret:
         assert guard.check("GET", "/index.html", {"Host": "localhost"}).allowed is True
 
 
+# ── review finding 9: compare_digest on str refuses non-ASCII with a TypeError ─
+
+
+class TestANonAsciiCredentialIsAnOrdinaryBadSecret:
+    """``hmac.compare_digest`` on two ``str`` raises ``TypeError`` when either
+    side carries a non-ASCII character. ``check()``'s catch-all then turned a
+    plain wrong password into a REFUSED_MALFORMED_HEADER degradation — and a
+    non-ASCII secret file broke EVERY request, good credential included. The
+    comparison is on UTF-8 bytes now, so a bad credential is a 401 with no
+    degradation, and a non-ASCII secret is simply a secret.
+    """
+
+    def test_a_non_ascii_bearer_is_a_plain_secret_refusal(self) -> None:
+        seen: list[tuple[str, str]] = []
+        guard = make_guard(on_degrade=lambda code, reason: seen.append((code, reason)))
+        decision = guard.check("POST", "/api/voice/start", headers(Authorization="Bearer é"))
+        assert decision.allowed is False
+        assert decision.status == 401
+        assert decision.code == g.REFUSED_SECRET_CODE
+        assert seen == []
+
+    def test_a_non_ascii_cookie_is_a_plain_secret_refusal(self) -> None:
+        seen: list[tuple[str, str]] = []
+        guard = make_guard(on_degrade=lambda code, reason: seen.append((code, reason)))
+        decision = guard.check(
+            "GET",
+            "/api/events",
+            headers(Authorization=None, Cookie=f"{g.SECRET_COOKIE_NAME}=סוד"),
+        )
+        assert decision.code == g.REFUSED_SECRET_CODE
+        assert seen == []
+
+    def test_a_non_ascii_secret_still_admits_its_own_holder(self) -> None:
+        seen: list[tuple[str, str]] = []
+        guard = make_guard(
+            install_secret="סוד-MARKER-é",
+            on_degrade=lambda code, reason: seen.append((code, reason)),
+        )
+        assert (
+            guard.check(
+                "POST", "/api/voice/start", headers(Authorization="Bearer סוד-MARKER-é")
+            ).allowed
+            is True
+        )
+        refused = guard.check(
+            "POST", "/api/voice/start", headers(Authorization="Bearer סוד-MARKER-e")
+        )
+        assert refused.code == g.REFUSED_SECRET_CODE
+        assert seen == []
+
+
 # ── header-level attacks ─────────────────────────────────────────────────────
 
 
