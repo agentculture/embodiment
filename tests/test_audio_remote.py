@@ -92,6 +92,29 @@ async def _authed_connect(port: int, secret: str, *, timeout: float = 5.0) -> An
     return ws
 
 
+async def _retry_authed_connect(
+    port: int, secret: str, *, attempts: int = 40, interval: float = 0.1
+) -> Any:
+    """Retry an authenticated connect past a transient "busy" refusal.
+
+    The staleness backstop (round 4 finding 1) only reclaims an abandoned
+    pending claim lazily, INSIDE a later connection's own attempt — there is
+    no background timer — so proving it works means retrying the connect
+    itself, not polling a status field.
+    """
+    from websockets.exceptions import InvalidStatus
+
+    last: Exception | None = None
+    for _ in range(attempts):
+        try:
+            return await _authed_connect(port, secret)
+        except InvalidStatus as exc:
+            last = exc
+            await asyncio.sleep(interval)
+    assert last is not None
+    raise last
+
+
 async def _wait_until(predicate: Any, *, timeout: float = 5.0, interval: float = 0.02) -> bool:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
@@ -105,6 +128,41 @@ def _endpoint(**overrides: Any) -> rt.RemoteEndpoint:
     kwargs: dict[str, Any] = {"secret": DEFAULT_SECRET, "host": "127.0.0.1", "port": 0}
     kwargs.update(overrides)
     return rt.RemoteEndpoint(**kwargs)
+
+
+def _abort_handshake_after_request(host: str, port: int) -> None:
+    """A raw socket that completes the HTTP upgrade REQUEST bytes, then aborts
+    before ever reading the ``101`` response — round 4 finding 1's attack.
+
+    ``process_request`` runs (and approves — the request is a well-formed
+    upgrade) the instant the server finishes parsing these headers, well
+    before this function returns; the abortive close (``SO_LINGER`` with a
+    zero timeout, forcing an RST rather than a graceful FIN) is what makes
+    the server's transport notice ``connection_lost`` promptly rather than
+    sitting on a socket it might still believe it can write the response to.
+    Blocking, stdlib-only, run off the event loop via ``asyncio.to_thread``.
+    """
+    import base64
+    import os
+    import socket
+    import struct
+
+    key = base64.b64encode(os.urandom(16)).decode("ascii")
+    request = (
+        "GET /v1/realtime HTTP/1.1\r\n"
+        f"Host: {host}:{port}\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n"
+        f"Sec-WebSocket-Key: {key}\r\n"
+        "Sec-WebSocket-Version: 13\r\n"
+        "\r\n"
+    )
+    sock = socket.create_connection((host, port), timeout=5.0)
+    try:
+        sock.sendall(request.encode("ascii"))
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack("ii", 1, 0))
+    finally:
+        sock.close()
 
 
 # ── AC1: a recorded lobes-wire fixture drives the endpoint end to end ───────
@@ -122,7 +180,13 @@ class TestFixtureDrivesFrames:
             async def scenario() -> None:
                 ws = await _connect(ep.bound_port)
                 try:
-                    for event in _load_fixture_lines():  # first line is the auth event
+                    events = _load_fixture_lines()
+                    await ws.send(json.dumps(events[0]))  # the auth event
+                    # Round 4 finding 4: a broken first send used to go
+                    # unnoticed here — assert it's really session.created.
+                    created = json.loads(await asyncio.wait_for(ws.recv(), timeout=5.0))
+                    assert created["type"] == "session.created"
+                    for event in events[1:]:
                         await ws.send(json.dumps(event))
                     await _wait_until(lambda: len(received) == 3)
                 finally:
@@ -747,6 +811,169 @@ class TestAttacks:
             _run(scenario())
             blob = json.dumps(ep.status())
             assert MARKER_SECRET not in blob
+        finally:
+            ep.close(2.0)
+
+
+# ── Round 4: review findings ─────────────────────────────────────────────────
+
+
+class TestRound4ReviewFindings:
+    def test_aborted_handshake_after_approval_does_not_brick_the_endpoint(self) -> None:
+        """Finding 1: a client that gets past ``process_request`` and then
+        aborts before the ``101`` completes must not permanently occupy the
+        one-peer-at-a-time claim. This is the exact scenario finding 1
+        described: the old code left ``_connection_pending`` stuck True
+        forever, and every later connection — even a legitimate, correctly
+        authenticated one — got refused with "endpoint already has an active
+        peer" until the process restarted.
+
+        A short ``handshake_open_timeout`` keeps the staleness backstop's
+        window small enough for a fast test; reconnecting (not polling
+        status) is what actually proves the fix, since the reclaim only ever
+        happens lazily, inside a later connection's own attempt — confirmed
+        empirically against this exact attack: ``process_response``'s
+        immediate detection does NOT fire for a ``SO_LINGER``-forced RST this
+        close on the heels of the request (the abort is not yet visible to
+        the server when that hook runs), so the deadline-based backstop is
+        what actually recovers this specific case."""
+        ep = _endpoint(handshake_open_timeout=0.3)
+        ep.attach()
+        try:
+
+            async def scenario() -> None:
+                await asyncio.to_thread(_abort_handshake_after_request, "127.0.0.1", ep.bound_port)
+                ws = await _retry_authed_connect(ep.bound_port, DEFAULT_SECRET)
+                try:
+                    raw = await asyncio.wait_for(ws.recv(), timeout=5.0)
+                    payload = json.loads(raw)
+                    assert payload["type"] == "session.created"
+                finally:
+                    await ws.close()
+
+            _run(scenario())
+            assert ep.status()["handshake_aborted_count"] >= 1
+        finally:
+            ep.close(2.0)
+
+    def test_second_connection_while_first_is_mid_auth_is_still_refused_busy(self) -> None:
+        """The staleness backstop must never fire while a REAL handler is
+        actively running a connection through authentication — round 2's
+        "refused even mid-auth" guarantee stays true with the round 4 fix in
+        place, for as long as ``auth_deadline`` allows, regardless of how
+        short ``handshake_open_timeout`` is configured."""
+        ep = _endpoint(handshake_open_timeout=0.2, auth_deadline=3.0)
+        ep.attach()
+        try:
+
+            async def scenario() -> None:
+                from websockets.exceptions import InvalidStatus
+
+                first = await _connect(ep.bound_port)  # handshake completes; holds the claim
+                try:
+                    await asyncio.sleep(0.1)
+                    # Wait well past handshake_open_timeout+margin (1.2 s) —
+                    # if the fix wrongly treated an ACTIVE handler's claim as
+                    # stale, this second dial-in would now succeed.
+                    await asyncio.sleep(1.5)
+                    with pytest.raises(InvalidStatus) as excinfo:
+                        await _connect(ep.bound_port)
+                    assert excinfo.value.response.status_code == 503
+                finally:
+                    await first.close()
+
+            _run(scenario())
+            assert ep.status()["connections_rejected_busy"] >= 1
+            assert ep.status()["handshake_aborted_count"] == 0
+        finally:
+            ep.close(2.0)
+
+    def test_process_response_never_clears_a_different_connections_claim(self) -> None:
+        """Ownership guard, unit-level: a late ``process_response`` callback
+        for a connection that is NOT the CURRENT pending owner — e.g. it was
+        already superseded by the staleness backstop reclaiming the slot for
+        a newer connection — must never clear that newer, still-legitimate
+        claim."""
+        ep = _endpoint()
+        try:
+            from websockets.protocol import State
+
+            class _FakeConnection:
+                def __init__(self, state: State) -> None:
+                    self.state = state
+
+            stale_owner = _FakeConnection(State.CLOSED)  # the old, aborted connection
+            current_owner = _FakeConnection(State.CONNECTING)  # claimed by someone else since
+
+            ep._connection_pending = True
+            ep._pending_connection = current_owner
+            ep._connection_pending_since = time.monotonic()
+
+            ep._process_response(stale_owner, None, None)  # a late, unrelated callback
+
+            assert ep._connection_pending is True
+            assert ep._pending_connection is current_owner
+            assert ep.status()["handshake_aborted_count"] == 0
+        finally:
+            ep.close(2.0)
+
+    def test_a_second_fault_out_of_serve_after_a_bind_failure_is_still_counted(self) -> None:
+        """Finding 2: the old ``_run`` guard recorded only the FIRST fault out
+        of ``_serve`` (via ``if self._bind_error is None``); a SECOND one —
+        simulated here by making the server thread raise twice, the second
+        time after a bind failure was already recorded — left no trace
+        anywhere. Every fault must be counted, even once a degradation is
+        already on record."""
+        ep = _endpoint()
+        ep._bind_error = rt.EndpointDegradation(rt.DEGRADED_BIND_FAILED, "seeded")
+
+        class _Boom:
+            def __call__(self, *_a: Any, **_kw: Any) -> None:
+                raise RuntimeError("second fault, after a bind failure was already recorded")
+
+        # Drive _run directly (off any real thread) with a _serve stand-in
+        # that raises — exactly the "a second fault after the first" shape
+        # finding 2 described, without needing a real doomed asyncio.run.
+        import threading as _threading
+
+        ready = _threading.Event()
+        original_serve = ep._serve
+        ep._serve = _Boom()  # type: ignore[method-assign]
+        try:
+            ep._run(ready)
+        finally:
+            ep._serve = original_serve  # type: ignore[method-assign]
+
+        assert ep.status()["server_thread_fault_count"] == 1
+        assert ep._bind_error is not None
+        assert ep._bind_error.code == rt.DEGRADED_BIND_FAILED  # the FIRST fault, kept
+
+    def test_control_send_burst_against_a_never_reading_peer_is_bounded(self) -> None:
+        """Finding 3: a burst of ``session.update`` control replies against a
+        peer that stops reading must not pile up one fire-and-forget send
+        task per message without limit — a NEW send past the cap is dropped
+        and counted, never queued."""
+        ep = _endpoint()
+        ep.attach()
+        try:
+
+            async def scenario() -> None:
+                ws = await _authed_connect(ep.bound_port, DEFAULT_SECRET)
+                try:
+                    await asyncio.wait_for(ws.recv(), timeout=5.0)  # session.created
+                    # Stop reading entirely — every control reply from here
+                    # on has nowhere to drain to, exactly what floods
+                    # _enqueue_control's fire-and-forget tasks.
+                    for _ in range(200):
+                        await ws.send(json.dumps({"type": "session.update", "session": {}}))
+                    await _wait_until(lambda: ep.status()["control_sends_dropped"] > 0, timeout=5.0)
+                finally:
+                    await ws.close()
+
+            _run(scenario())
+            status = ep.status()
+            assert status["control_sends_dropped"] > 0
+            assert status["session_updates_received"] == 200  # every one was still DECODED
         finally:
             ep.close(2.0)
 

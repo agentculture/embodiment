@@ -196,6 +196,32 @@ SECRET_QUERY_PARAM = "secret"  # nosec B105 - a parameter name, not a password
 #: indefinitely.
 _DEFAULT_AUTH_DEADLINE_S = 5.0
 
+#: How long the WebSocket opening handshake itself (from the TCP accept
+#: through the ``101`` response) is allowed to take — explicitly passed to
+#: ``serve()`` as ``open_timeout`` rather than left at the library's own
+#: unstated default, so :data:`_PENDING_CLAIM_MARGIN_S` below is derived from
+#: a NAMED quantity (this repo's own lesson: a clock nobody named becomes the
+#: measurement). Matches the library's own out-of-the-box default (10 s), so
+#: this is a naming, not a tightening.
+_DEFAULT_HANDSHAKE_OPEN_TIMEOUT_S = 10.0
+
+#: Round 4 finding 1's backstop. ``process_response`` (see
+#: :meth:`RemoteEndpoint._process_response`) releases a pending claim
+#: IMMEDIATELY for the common case — the peer's disconnect was already
+#: noticed by the time that hook runs. It cannot cover every case: a peer
+#: that disconnects in the narrow window between that check and the
+#: server's actual attempt to WRITE the ``101`` response fails OUTSIDE any
+#: hook this module can register, landing in the ``websockets`` library's
+#: own bare aborted-handshake path with no callback at all (confirmed by a
+#: reproduction: forcing an RST immediately after sending a well-formed
+#: upgrade request left the claim held with ``process_response`` never
+#: firing). So a pending claim older than the handshake's own bound is ALSO
+#: treated as abandoned by the next ``process_request`` call — this margin
+#: is the slack added on top of :data:`_DEFAULT_HANDSHAKE_OPEN_TIMEOUT_S`
+#: for the library's own bookkeeping between "handshake failed" and this
+#: process's next ``process_request`` call landing.
+_PENDING_CLAIM_MARGIN_S = 1.0
+
 #: The rate :attr:`RemoteEndpoint.sample_rate` reports — what
 #: :meth:`AudioEndpoint.start_capture`'s ``on_frame`` callback actually
 #: receives from THIS endpoint. Unlike :class:`~embodiment.audio.host.HostEndpoint`
@@ -248,6 +274,16 @@ _SENDER_POLL_S = 0.2
 #: attach.
 _NO_PEER_RETRY_S = 0.05
 
+#: How many ``_enqueue_control`` sends (currently: one per ``session.update``
+#: echo) may be in flight at once (round 4 finding 3). Derived from the
+#: quantity it bounds, not picked independently (wave 1 lesson 1): a control
+#: reply is ONE small JSON frame, so a healthy peer never has more than one
+#: or two outstanding at a time — this cap only ever engages against a burst
+#: aimed at a peer that never reads, where an unbounded fire-and-forget task
+#: per message would otherwise pile up without limit. A NEW send past the cap
+#: is dropped and counted (``control_sends_dropped``), never queued.
+_MAX_INFLIGHT_CONTROL_SENDS = 4
+
 
 def _new_id(prefix: str) -> str:
     """A short, non-secret identifier. Never derived from anything client-supplied."""
@@ -281,6 +317,7 @@ class RemoteEndpointConfig:
     port: int = 8765
     start_deadline: float = _DEFAULT_START_DEADLINE_S
     auth_deadline: float = _DEFAULT_AUTH_DEADLINE_S
+    handshake_open_timeout: float = _DEFAULT_HANDSHAKE_OPEN_TIMEOUT_S
     ping_interval: float = 20.0
     ping_timeout: float = 20.0
     close_handshake_timeout: float = 5.0
@@ -310,6 +347,7 @@ class RemoteEndpoint:
         port: int = 8765,
         start_deadline: float = _DEFAULT_START_DEADLINE_S,
         auth_deadline: float = _DEFAULT_AUTH_DEADLINE_S,
+        handshake_open_timeout: float = _DEFAULT_HANDSHAKE_OPEN_TIMEOUT_S,
         ping_interval: float = 20.0,
         ping_timeout: float = 20.0,
         close_handshake_timeout: float = 5.0,
@@ -320,6 +358,7 @@ class RemoteEndpoint:
             port=port,
             start_deadline=start_deadline,
             auth_deadline=auth_deadline,
+            handshake_open_timeout=handshake_open_timeout,
             ping_interval=ping_interval,
             ping_timeout=ping_timeout,
             close_handshake_timeout=close_handshake_timeout,
@@ -340,6 +379,15 @@ class RemoteEndpoint:
         self._bound_port: int = port
         self._connection: Any = None
         self._connection_pending = False
+        #: The exact connection object that currently holds the pending
+        #: claim — round 4 finding 1's ownership guard, so a later
+        #: connection's own handshake outcome can never release a DIFFERENT
+        #: connection's still-legitimate claim.
+        self._pending_connection: Any = None
+        #: When the current claim was made, or ``None`` once a REAL running
+        #: handler has confirmed it (see :meth:`_handle_connection`'s entry) —
+        #: the staleness backstop only ever fires while this is set.
+        self._connection_pending_since: float | None = None
         self._connected = False
 
         self._session_id = ""
@@ -368,6 +416,10 @@ class RemoteEndpoint:
         self._rejected_busy_count = 0
         self._secret_in_url_count = 0
         self._path_parse_errors = 0
+        self._handshake_aborted_count = 0
+        self._server_thread_fault_count = 0
+        self._control_sends_dropped = 0
+        self._control_sends_inflight = 0
         self._bind_error: EndpointDegradation | None = None
 
     # -- lifecycle -----------------------------------------------------
@@ -448,6 +500,13 @@ class RemoteEndpoint:
         try:
             asyncio.run(self._serve(ready))
         except Exception as exc:  # noqa: BLE001 - the thread's top: record, never raise out
+            # Round 4 finding 2: EVERY fault out of _serve is counted, not
+            # just the first — a second fault after an earlier bind failure
+            # (e.g. one raised during that failure's own teardown) used to
+            # leave no trace at all, because the old guard only ever wrote
+            # the FIRST EndpointDegradation and counted nothing.
+            with self._lock:
+                self._server_thread_fault_count += 1
             if self._bind_error is None:
                 self._bind_error = EndpointDegradation(
                     DEGRADED_BIND_FAILED, f"{type(exc).__name__}: server thread raised"
@@ -475,6 +534,8 @@ class RemoteEndpoint:
                 self.config.host,
                 self.config.port,
                 process_request=self._process_request,
+                process_response=self._process_response,
+                open_timeout=self.config.handshake_open_timeout,
                 ping_interval=self.config.ping_interval,
                 ping_timeout=self.config.ping_timeout,
                 close_timeout=self.config.close_handshake_timeout,
@@ -545,12 +606,63 @@ class RemoteEndpoint:
             )
 
         with self._lock:
-            if self._connection is not None or self._connection_pending:
+            if self._connection is not None:
                 self._rejected_busy_count += 1
                 return connection.respond(503, "endpoint already has an active peer\n")
+            if self._connection_pending and not self._pending_claim_is_stale_locked():
+                self._rejected_busy_count += 1
+                return connection.respond(503, "endpoint already has an active peer\n")
+            if self._connection_pending:
+                # Stale: the previous claim's handshake never reached the
+                # handler and process_response never got a chance to notice
+                # (round 4 finding 1's backstop — see
+                # :data:`_PENDING_CLAIM_MARGIN_S`). Reclaim it for THIS
+                # connection instead of refusing a perfectly good one.
+                self._handshake_aborted_count += 1
             self._connection_pending = True
+            self._connection_pending_since = time.monotonic()
+            self._pending_connection = connection
 
         return None  # allow the handshake to proceed
+
+    def _pending_claim_is_stale_locked(self) -> bool:
+        """``True`` when the current pending claim outlived the handshake's
+        own bound — must be called with :attr:`_lock` already held."""
+        since = self._connection_pending_since
+        if since is None:  # a REAL handler is running it now; never stale
+            return False
+        bound = self.config.handshake_open_timeout + _PENDING_CLAIM_MARGIN_S
+        return (time.monotonic() - since) > bound
+
+    def _process_response(self, connection: Any, request: Any, response: Any) -> Any:
+        """Round 4 finding 1: release a pending claim the handler will never see.
+
+        Runs at the end of EVERY handshake attempt this process's
+        ``process_request`` saw — successful or not — including one that
+        approved a client that then vanished before the ``101`` response
+        could be sent. ``_handle_connection`` is only ever invoked for a
+        handshake that reaches :data:`~websockets.protocol.State.OPEN`; a
+        peer that aborts after being approved but before that never runs the
+        handler at all, so nothing would otherwise clear
+        :attr:`_connection_pending`, and this endpoint would refuse every
+        later connection as "already has an active peer" until the process
+        restarted. Only ever touches the claim THIS connection object itself
+        made (``_pending_connection is connection``) — never another,
+        still-legitimate connection's. Never alters the response.
+        """
+        from websockets.protocol import State
+
+        with self._lock:
+            if (
+                self._pending_connection is connection
+                and self._connection_pending
+                and connection.state is not State.CONNECTING
+            ):
+                self._connection_pending = False
+                self._connection_pending_since = None
+                self._pending_connection = None
+                self._handshake_aborted_count += 1
+        return None
 
     # -- one connection's lifetime ---------------------------------------
 
@@ -617,6 +729,14 @@ class RemoteEndpoint:
                 self._send_errors += 1
 
     async def _handle_connection(self, connection: Any) -> None:
+        # The handler is running: this handshake definitely reached OPEN, so
+        # the claim is no longer eligible for the staleness backstop above —
+        # only THIS handler's own `finally` releases it from here on, no
+        # matter how long authentication or the session itself take (round 4
+        # finding 1; keeps round 2's "refused even mid-auth" guarantee).
+        with self._lock:
+            if self._pending_connection is connection:
+                self._connection_pending_since = None
         self._session_id = _new_id("sess")
         self._response_id = _new_id("resp")
         try:
@@ -642,6 +762,8 @@ class RemoteEndpoint:
         finally:
             with self._lock:
                 self._connection_pending = False
+                if self._pending_connection is connection:
+                    self._pending_connection = None
                 if self._connection is connection:
                     self._connection = None
                     self._connected = False
@@ -701,15 +823,28 @@ class RemoteEndpoint:
                 self._callback_errors += 1
 
     def _enqueue_control(self, frame_json: str) -> None:
-        """Fire-and-forget: send one small control-plane reply, best effort."""
+        """Fire-and-forget: send one small control-plane reply, best effort.
+
+        Bounded (round 4 finding 3): at most :data:`_MAX_INFLIGHT_CONTROL_SENDS`
+        of these may be outstanding at once. A burst past the cap (a peer
+        that stops reading while still sending ``session.update``) drops the
+        NEW send and counts it, rather than piling up one fire-and-forget
+        task per message without limit.
+        """
         loop = self._loop
         connection = self._connection
         if loop is None or connection is None:
             return
+        with self._lock:
+            if self._control_sends_inflight >= _MAX_INFLIGHT_CONTROL_SENDS:
+                self._control_sends_dropped += 1
+                return
+            self._control_sends_inflight += 1
         try:
             loop.call_soon_threadsafe(self._schedule_send, connection, frame_json)
         except RuntimeError:
-            pass
+            with self._lock:
+                self._control_sends_inflight -= 1
 
     def _schedule_send(self, connection: Any, frame_json: str) -> None:
 
@@ -719,6 +854,9 @@ class RemoteEndpoint:
             except Exception:  # noqa: BLE001 - a control reply the peer never gets
                 with self._lock:
                     self._send_errors += 1
+            finally:
+                with self._lock:
+                    self._control_sends_inflight -= 1
 
         asyncio.get_running_loop().create_task(_send())
 
@@ -910,6 +1048,9 @@ class RemoteEndpoint:
                 "connections_rejected_busy": self._rejected_busy_count,
                 "secret_in_url_count": self._secret_in_url_count,
                 "path_parse_errors": self._path_parse_errors,
+                "handshake_aborted_count": self._handshake_aborted_count,
+                "server_thread_fault_count": self._server_thread_fault_count,
+                "control_sends_dropped": self._control_sends_dropped,
                 "playback_overflow_count": self._playback_overflow_count,
                 "playback_sent_bytes": self._playback_sent_bytes,
                 "playback_stop_discarded_total": self._playback_stop_discarded_total,
