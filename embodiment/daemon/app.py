@@ -1799,6 +1799,14 @@ class DaemonApp:
                 # Mine, not the client's: ``ears`` below is the realtime
                 # client's own report and this module never writes into it.
                 "sample_rate": _endpoint_rate_or_none(self._ear_endpoint),
+                # t7 round 7: the endpoint verifies that its child is really
+                # linked to the node it asked for, rather than to whatever
+                # the server picked. Surfaced here so a dashboard — and t21's
+                # acceptance run — can assert BOTH before the first turn:
+                # a playback stream on the wrong sink is Gwen talking to the
+                # monitor, and a capture stream on the wrong source is Gwen
+                # listening to it.
+                **_target_verification(self._ear_endpoint),
                 "declared_sample_rate": self._ears_rate,
                 "sessions": self._ears_sessions,
                 "redials": self._ears_redials,
@@ -1945,6 +1953,21 @@ def _endpoint_rate_or_none(endpoint: Any) -> Optional[int]:
     return rate if rate > 0 else None
 
 
+def _target_verification(endpoint: Any) -> dict[str, Optional[bool]]:
+    """The endpoint's own verdict on whether its streams reached the right node.
+
+    ``None`` from an endpoint that does not report one (a browser ear, a
+    :class:`NullEndpoint`) means "not applicable", which is different from
+    ``False`` — "asked, and it is linked somewhere else". Never raises.
+    """
+    probed = _probe(endpoint) or {}
+    out: dict[str, Optional[bool]] = {}
+    for key in ("playback_target_verified", "capture_target_verified"):
+        value = probed.get(key)
+        out[key] = value if isinstance(value, bool) else None
+    return out
+
+
 def _endpoint_degraded(endpoint: Any) -> Optional[bool]:
     """Whether the attached endpoint reports ANY degradation about itself."""
     if endpoint is None:
@@ -1983,17 +2006,6 @@ def _session_status(session: Any) -> Optional[dict[str, Any]]:
         return {"unavailable": True}
 
 
-def _default_endpoint_factory() -> Callable[[], Any]:
-    """The host mic+speaker, imported lazily so the optional extra stays optional."""
-
-    def factory() -> Any:
-        from embodiment.audio.host import HostEndpoint
-
-        return HostEndpoint()
-
-    return factory
-
-
 def main() -> DaemonApp:
     """Build the daemon from the environment. Zero arguments; never raises.
 
@@ -2003,6 +2015,14 @@ def main() -> DaemonApp:
     be built degrades to a working stand-in and is recorded, because a daemon
     that refuses to start is a daemon whose host learns nothing.
     """
+    # The ONE place this package imports the host endpoint, and it is inside
+    # ``main`` on purpose: ``embodiment.daemon.app`` is the daemon's
+    # composition root, and the import-graph rule (t7 criterion 3) allows a
+    # host import here and nowhere else — not at module scope, not in a helper
+    # beside it, and not in a function nested inside this one. Every other
+    # module in this package depends on the AudioEndpoint protocol only.
+    from embodiment.audio.host import HostEndpoint
+
     state = DaemonState(resolve_state_dir())
     realtime = RealtimeConfig.from_env()
     secret = guard_module.load_or_create_install_secret(state.dir)
@@ -2042,7 +2062,7 @@ def main() -> DaemonApp:
         complete=bind_tools(seam, tools),
         tools=tools,
         ears_factory=lambda rate: RealtimeEars(replace(realtime, input_sample_rate=rate)),
-        endpoint_factory=_default_endpoint_factory(),
+        endpoint_factory=HostEndpoint,
         voice_factory=voice_factory,
     )
     try:

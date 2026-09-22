@@ -1093,6 +1093,51 @@ class TestDeclaredSampleRate:
         finally:
             h.app.detach_ear()
 
+    def test_status_carries_both_target_verifications(self, harness: Any) -> None:
+        """t7 round 7: the dashboard and t21 assert these BEFORE the first turn.
+
+        A playback stream on the wrong sink is Gwen talking to the monitor; a
+        capture stream on the wrong source is Gwen listening to it. Both are
+        the endpoint's own verdict, surfaced in a block this module owns.
+        """
+
+        class Verifying(FakeEndpoint):
+            def status(self) -> dict[str, object]:
+                return {
+                    **super().status(),
+                    "playback_target_verified": True,
+                    "capture_target_verified": True,
+                }
+
+        h = harness()
+        h.app.attach_ear("host", Verifying())
+        ear = h.app.status()["ear"]
+        assert ear["playback_target_verified"] is True
+        assert ear["capture_target_verified"] is True
+
+    def test_a_mis_linked_stream_reads_false_not_missing(self, harness: Any) -> None:
+        class MisLinked(FakeEndpoint):
+            def status(self) -> dict[str, object]:
+                return {
+                    **super().status(),
+                    "playback_target_verified": False,
+                    "capture_target_verified": True,
+                }
+
+        h = harness()
+        h.app.attach_ear("host", MisLinked())
+        ear = h.app.status()["ear"]
+        assert ear["playback_target_verified"] is False
+        assert ear["capture_target_verified"] is True
+
+    def test_an_endpoint_that_does_not_verify_reads_none_not_false(self, harness: Any) -> None:
+        """``None`` is "not applicable", which is not the same claim as "wrong"."""
+        h = harness()
+        h.app.attach_ear("browser", FakeEndpoint())
+        ear = h.app.status()["ear"]
+        assert ear["playback_target_verified"] is None
+        assert ear["capture_target_verified"] is None
+
     def test_an_endpoint_that_cannot_say_is_recorded_not_assumed(self, harness: Any) -> None:
         class Mute(FakeEndpoint):
             @property
