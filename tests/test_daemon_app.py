@@ -18,6 +18,9 @@ from __future__ import annotations
 import asyncio
 import io
 import json
+import os
+import re
+import sys
 import threading
 import time
 from pathlib import Path
@@ -47,8 +50,9 @@ REPLY = "שלום לך."
 class FakeEndpoint:
     """An :class:`~embodiment.audio.endpoint.AudioEndpoint` that records everything."""
 
-    def __init__(self, *, name: str = "fake", fail_on: str = "") -> None:
+    def __init__(self, *, name: str = "fake", fail_on: str = "", sample_rate: int = 24000) -> None:
         self.name = name
+        self._sample_rate = sample_rate
         self.fail_on = fail_on
         self.on_frame: Any = None
         self.attached = False
@@ -92,6 +96,10 @@ class FakeEndpoint:
     def playing(self) -> bool:
         return self._playing
 
+    @property
+    def sample_rate(self) -> int:
+        return self._sample_rate
+
     def mute(self, muted: bool) -> None:
         self._muted = bool(muted)
 
@@ -123,9 +131,16 @@ class FakeEars:
         connect_ok: bool = True,
         events: tuple[Any, ...] = (),
         connect_delay: float = 0.0,
+        close_delay: float = 0.0,
+        graceful: bool = True,
+        sample_rate: int = 24000,
     ) -> None:
+        self.sample_rate = sample_rate
         self.connect_ok = connect_ok
         self.connect_delay = connect_delay
+        self.close_delay = close_delay
+        self.graceful = graceful
+        self.close_deadlines: list[Optional[float]] = []
         self.initial = list(events)
         self.sent: list[bytes] = []
         self.connect_calls = 0
@@ -136,6 +151,7 @@ class FakeEars:
 
     async def connect(self) -> bool:
         self.connect_calls += 1
+        self.closed = False
         if self.connect_delay:
             await asyncio.sleep(self.connect_delay)
         self._loop = asyncio.get_running_loop()
@@ -158,10 +174,13 @@ class FakeEars:
             yield event
 
     async def close(self, deadline: Optional[float] = None) -> Any:
+        self.close_deadlines.append(deadline)
+        if self.close_delay:
+            await asyncio.sleep(self.close_delay)
         self.closed = True
         if self._queue is not None:
             self._queue.put_nowait(None)
-        return SimpleNamespace(graceful=True)
+        return SimpleNamespace(graceful=self.graceful)
 
     def status(self) -> dict[str, Any]:
         return {"connected": self.connect_ok and not self.closed, "fake": True}
@@ -247,6 +266,7 @@ class Harness:
         self.bus = bus
         self.ears = ears
         self.state = state
+        self.declared_rates: list[int] = []
         self.subscription = bus.subscribe(include_speech=True)
 
     def events(self, kind: Optional[str] = None) -> list[Any]:
@@ -287,6 +307,14 @@ def harness(tmp_path: Path, request: pytest.FixtureRequest) -> Any:
         state = overrides.pop("state", None) or DaemonState(tmp_path / f"state{index}")
         bus = overrides.pop("bus", None) or Bus()
         ears = overrides.pop("ears", None) or FakeEars()
+        rates: list[int] = []
+
+        def ears_factory(rate: int) -> Any:
+            rates.append(rate)
+            built = overrides.get("_ears_for_rate", {}).get(rate)
+            return built if built is not None else ears
+
+        overrides.pop("_ears_for_rate", None)
         recall_fn = overrides.pop("recall_fn", None) or (
             lambda query, **kwargs: SimpleNamespace(ok=True, records=[], degradation=None)
         )
@@ -323,7 +351,7 @@ def harness(tmp_path: Path, request: pytest.FixtureRequest) -> Any:
             bus=bus,
             memory=memory,
             complete=complete,
-            ears=ears,
+            ears_factory=overrides.pop("ears_factory", ears_factory),
             endpoint_factory=overrides.pop("endpoint_factory", endpoint_factory),
             voice_factory=voice_factory,
             **overrides,
@@ -334,7 +362,9 @@ def harness(tmp_path: Path, request: pytest.FixtureRequest) -> Any:
         request.addfinalizer(lambda: _bounded_teardown(lambda: app.close(deadline=2.0)))
         request.addfinalizer(lambda: _bounded_teardown(lambda: memory.close(deadline=1.0)))
         request.addfinalizer(lambda: _bounded_teardown(lambda: bus.close(deadline=1.0)))
-        return Harness(app, bus, ears, state)
+        harness_obj = Harness(app, bus, ears, state)
+        harness_obj.declared_rates = rates
+        return harness_obj
 
     return build
 
@@ -490,7 +520,61 @@ class TestOneEar:
         second.on_frame(silent_pcm())
 
         assert len(h.ears.sent) == 1, "a displaced ear still reached the gateway"
-        assert app_module.APP_FRAME_FROM_STALE_EAR in h.ledger_codes()
+        assert h.app.status()["audio"]["frames_from_stale_ear"] == 1
+        # One late frame is what a handover looks like, not a fault.
+        assert app_module.APP_FRAME_FROM_STALE_EAR not in h.ledger_codes()
+
+    def test_one_late_frame_is_published_but_not_recorded(self, harness: Any) -> None:
+        """Seen on the first live stop: the handover swap put one in the ledger."""
+        h = harness(config=AppConfig(preempt_ear=True, poll_interval_s=0.01))
+        first = FakeEndpoint(name="host")
+        h.app.attach_ear("host", first)
+        h.app.attach_ear("browser", FakeEndpoint(name="browser"))
+        h.clear()
+
+        first.on_frame(silent_pcm())
+
+        assert app_module.APP_FRAME_FROM_STALE_EAR not in h.ledger_codes()
+        assert h.events("degradation") == []
+        stale = [e for e in h.events("state") if e.data.get("status") == "stale-frame"]
+        assert len(stale) == 1
+        assert stale[0].data["stale_frames"] == 1
+        assert h.app.status()["audio"]["frames_from_stale_ear"] == 1
+
+    def test_an_ear_that_will_not_stop_is_recorded(self, harness: Any) -> None:
+        """A count that keeps growing past the tolerance IS the fault."""
+        h = harness(config=AppConfig(preempt_ear=True, poll_interval_s=0.01))
+        first = FakeEndpoint(name="host")
+        h.app.attach_ear("host", first)
+        h.app.attach_ear("browser", FakeEndpoint(name="browser"))
+        h.clear()
+
+        frame = silent_pcm()
+        for _ in range(app_module._STALE_FRAME_TOLERANCE):
+            first.on_frame(frame)
+        assert app_module.APP_FRAME_FROM_STALE_EAR not in h.ledger_codes()
+
+        for _ in range(40):  # it still will not stop
+            first.on_frame(frame)
+
+        records = [c for c in h.ledger_codes() if c == app_module.APP_FRAME_FROM_STALE_EAR]
+        assert len(records) == 1, "one record per runaway ear, not one per frame"
+        stale = [e for e in h.events("state") if e.data.get("status") == "stale-frame"]
+        assert len(stale) == 2, "published on the first frame and on the crossing only"
+
+    def test_a_new_handover_starts_the_stale_count_again(self, harness: Any) -> None:
+        """The per-generation count is kept for one generation, so nothing accrues."""
+        h = harness(config=AppConfig(preempt_ear=True, poll_interval_s=0.01))
+        first = FakeEndpoint(name="a")
+        h.app.attach_ear("a", first)
+        second = FakeEndpoint(name="b")
+        h.app.attach_ear("b", second)
+        first.on_frame(silent_pcm())
+        h.app.attach_ear("c", FakeEndpoint(name="c"))
+        second.on_frame(silent_pcm())
+
+        assert h.app.status()["audio"]["frames_from_stale_ear"] == 2
+        assert app_module.APP_FRAME_FROM_STALE_EAR not in h.ledger_codes()
 
     def test_a_refused_ear_never_feeds_the_ears(self, harness: Any) -> None:
         h = harness(config=AppConfig(preempt_ear=False, poll_interval_s=0.01))
@@ -906,6 +990,107 @@ class TestEmptyCommits:
         assert blob["transcripts"] == {"received": 0, "empty_commits": 1, "not_text": 1}
 
 
+class TestDeclaredSampleRate:
+    """Decision 15 (#85): the session declares the EAR's rate, never an assumption."""
+
+    def test_a_16k_ear_dials_a_16k_session(self, harness: Any) -> None:
+        h = harness(endpoints=lambda: FakeEndpoint(name="host", sample_rate=16000))
+        h.app.start()
+        assert h.declared_rates == [16000]
+        status = h.app.status()
+        assert status["ear"]["sample_rate"] == 16000
+        assert status["ear"]["declared_sample_rate"] == 16000
+
+    def test_a_24k_ear_dials_a_24k_session(self, harness: Any) -> None:
+        h = harness(endpoints=lambda: FakeEndpoint(name="browser", sample_rate=24000))
+        h.app.start()
+        assert h.declared_rates == [24000]
+        assert h.app.status()["ear"]["declared_sample_rate"] == 24000
+
+    def test_a_handover_between_rates_re_dials(self, harness: Any) -> None:
+        """The rate is in the session's URL, so it cannot change under a live one."""
+        h = harness(config=AppConfig(preempt_ear=True, poll_interval_s=0.01))
+        h.app.attach_ear("host", FakeEndpoint(name="host", sample_rate=16000))
+        assert h.declared_rates == [16000]
+        h.clear()
+
+        h.app.attach_ear("browser", FakeEndpoint(name="browser", sample_rate=24000))
+
+        assert h.declared_rates == [16000, 24000], "the session kept the old rate"
+        assert app_module.APP_EARS_REDIALLED in h.ledger_codes()
+        status = h.app.status()
+        assert status["ear"]["declared_sample_rate"] == 24000
+        assert status["ear"]["sessions"] == 2
+        assert status["ear"]["redials"] == 1
+        dialling = [e for e in h.events("state") if e.data.get("status") == "dialling"]
+        assert dialling and dialling[-1].data["input_sample_rate"] == 24000
+
+    def test_a_handover_at_the_same_rate_keeps_the_session(self, harness: Any) -> None:
+        h = harness(config=AppConfig(preempt_ear=True, poll_interval_s=0.01))
+        h.app.attach_ear("a", FakeEndpoint(name="a", sample_rate=16000))
+        h.app.attach_ear("b", FakeEndpoint(name="b", sample_rate=16000))
+        assert h.declared_rates == [16000], "a same-rate handover re-dialled"
+        assert h.app.status()["ear"]["sessions"] == 1
+        assert app_module.APP_EARS_REDIALLED not in h.ledger_codes()
+
+    def test_the_real_host_endpoint_declares_its_native_rate(self, harness: Any) -> None:
+        """Against the real class, not a fake: 16 kHz native after t7 round 6."""
+        from embodiment.audio.host import CAPTURE_RATE_HZ, HostEndpoint
+
+        h = harness(endpoints=lambda: HostEndpoint(which=lambda name: None))
+        h.app.start()
+        assert CAPTURE_RATE_HZ == 16000
+        assert h.declared_rates == [16000]
+
+    def test_the_null_endpoint_declares_its_own_rate(self, harness: Any) -> None:
+        from embodiment.audio.endpoint import SAMPLE_RATE_HZ
+
+        h = harness(endpoints=lambda: None)
+        h.app.start()
+        assert h.app.status()["ear"]["active"] == "null"
+        assert h.declared_rates == [SAMPLE_RATE_HZ]
+
+    def test_an_endpoint_that_cannot_say_is_recorded_not_assumed(self, harness: Any) -> None:
+        class Mute(FakeEndpoint):
+            @property
+            def sample_rate(self) -> int:  # type: ignore[override]
+                raise RuntimeError("no idea")
+
+        h = harness()
+        h.app.attach_ear("odd", Mute())
+        assert app_module.APP_EAR_RATE_UNKNOWN in h.ledger_codes()
+        assert h.declared_rates == [wire.INPUT_SAMPLE_RATE]
+
+    def test_a_nonsense_rate_is_recorded_not_declared(self, harness: Any) -> None:
+        h = harness()
+        h.app.attach_ear("odd", FakeEndpoint(sample_rate=0))
+        assert app_module.APP_EAR_RATE_UNKNOWN in h.ledger_codes()
+        assert h.declared_rates == [wire.INPUT_SAMPLE_RATE]
+
+    def test_app_py_never_writes_a_sample_rate_down(self) -> None:
+        """Structural: every rate comes from the ear, so none is a literal here.
+
+        Narrow on purpose — a blunt search for ``16000`` also finds
+        ``max_tokens=16000``, which has nothing to do with audio. This checks
+        the lines that actually talk about a rate.
+        """
+        source = Path(app_module.__file__).read_text(encoding="utf-8")
+        offenders = [
+            line.strip()
+            for line in source.splitlines()
+            if not line.lstrip().startswith("#")
+            and ("sample_rate" in line or "input_sample_rate" in line)
+            and re.search(r"\b\d{4,6}\b", line)
+        ]
+        assert not offenders, offenders
+
+    def test_the_guard_would_catch_a_written_down_rate(self) -> None:
+        """A test of the test: the pattern above really does reject a literal."""
+        planted = "    config = RealtimeConfig(input_sample_rate=24000)"
+        assert re.search(r"\b\d{4,6}\b", planted)
+        assert "sample_rate" in planted
+
+
 class TestVoiceSeams:
     """t12 round 3: one voice, re-pointed; features drained through its own API."""
 
@@ -1100,6 +1285,60 @@ class TestShutdown:
             assert report.ears_stopped is True
             assert report.unfinished == (), report.unfinished
 
+    def test_the_client_is_given_the_bound_this_module_waits_on(self, harness: Any) -> None:
+        """Lesson 1: the clock comes from the quantity it bounds, not the other way.
+
+        Live, the client was handed the whole 5 s shutdown deadline while the
+        wait was half the ears step's slice, so the wait timed out first and
+        recorded ``close: TimeoutError`` against an ear that was closing
+        perfectly well.
+        """
+        ears = FakeEars()
+        h = harness(ears=ears)
+        h.app.start()
+        h.app.close(deadline=2.0)
+
+        assert ears.close_deadlines, "the ear was never asked to close"
+        given = ears.close_deadlines[0]
+        assert given is not None
+        assert given < 2.0, f"the client outranks its own waiter: {given}"
+
+    def test_a_slow_close_that_finishes_is_not_a_timeout(self, harness: Any) -> None:
+        """A close inside the client's own bound must not be recorded as a failure."""
+        ears = FakeEars(close_delay=0.35)
+        h = harness(ears=ears)
+        h.app.start()
+        report = h.app.close(deadline=4.0)
+
+        assert ears.closed is True
+        assert report.ears_stopped is True
+        assert app_module.APP_EARS_THREAD_FAILED not in h.ledger_codes()
+        assert app_module.APP_EARS_CLOSE_INCOMPLETE not in h.ledger_codes()
+
+    def test_a_client_that_reports_its_own_close_incomplete_is_recorded(self, harness: Any) -> None:
+        """The CLIENT's report is what says the handshake failed, not our clock."""
+        h = harness(ears=FakeEars(graceful=False))
+        h.app.start()
+        h.app.close(deadline=2.0)
+        assert app_module.APP_EARS_CLOSE_INCOMPLETE in h.ledger_codes()
+
+    def test_a_close_that_really_never_finishes_is_named(self, harness: Any) -> None:
+        """The record still exists for the case it was invented for."""
+
+        class NeverCloses(FakeEars):
+            async def close(self, deadline: Optional[float] = None) -> Any:
+                self.close_deadlines.append(deadline)
+                await asyncio.sleep(30)
+                return SimpleNamespace(graceful=True)
+
+        h = harness(ears=NeverCloses())
+        h.app.start()
+        started = time.monotonic()
+        report = h.app.close(deadline=1.0)
+        assert time.monotonic() - started < 6.0
+        assert report.ears_stopped is False
+        assert "ears" in report.unfinished
+
     def test_a_turn_after_close_is_refused_and_recorded(self, harness: Any) -> None:
         h = harness()
         h.app.attach_ear("host", FakeEndpoint())
@@ -1107,6 +1346,117 @@ class TestShutdown:
         result = h.app.run_turn(SPEECH)
         assert result.spoken == ""
         assert app_module.APP_CLOSED in h.ledger_codes()
+
+
+class TestStopWritesNothingToStderr:
+    """A stop must leave ``daemon.err`` empty — checked in a real child process.
+
+    The futures machinery prints ``RuntimeError: Event loop is closed`` from a
+    done-callback that no caller can catch, so an in-process assertion cannot
+    see it: it arrives on the interpreter's own stderr, from a thread, at
+    whatever moment the collector runs. This test therefore runs a whole
+    start/turn/stop in a CHILD and reads what the child printed — which is
+    exactly what ``daemon.err`` is.
+    """
+
+    SCRIPT = """
+import asyncio, io, sys, threading
+from types import SimpleNamespace
+from embodiment.bus import Bus
+from embodiment.contract import ModelResponse
+from embodiment.daemon.app import AppConfig, DaemonApp
+from embodiment.daemon.state import DaemonState
+from embodiment.memory import RoomMemory
+
+
+class Ears:
+    def __init__(self, rate=24000):
+        self.q = None
+        self.rate = rate
+
+    async def connect(self):
+        self.q = asyncio.Queue()
+        return True
+
+    def send_audio(self, pcm):
+        return True
+
+    async def events(self):
+        while True:
+            item = await self.q.get()
+            if item is None:
+                return
+            yield item
+
+    async def close(self, deadline=None):
+        await asyncio.sleep(0.2)
+        if self.q is not None:
+            self.q.put_nowait(None)
+        return SimpleNamespace(graceful=True)
+
+    def status(self):
+        return {"connected": True}
+
+
+root = sys.argv[1]
+state = DaemonState(root + "/state")
+bus = Bus()
+memory = RoomMemory(
+    root + "/memory",
+    scope="gwen",
+    recall_fn=lambda q, **k: SimpleNamespace(ok=True, records=[], degradation=None),
+    remember_fn=lambda t, **k: SimpleNamespace(ok=True, record_id="r", degradation=None),
+    embed_probe=lambda: False,
+)
+app = DaemonApp(
+    config=AppConfig(poll_interval_s=0.01, shutdown_deadline=2.0),
+    state=state,
+    bus=bus,
+    memory=memory,
+    complete=lambda messages, tools=None: ModelResponse(content="shalom"),
+    ears_factory=lambda rate: Ears(rate),
+    endpoint_factory=None,
+    voice_factory=lambda ep: None,
+)
+stop = threading.Event()
+thread = threading.Thread(target=lambda: app.run(stop), daemon=True)
+thread.start()
+import time as _t
+_t.sleep(0.5)
+stop.set()
+thread.join(timeout=10)
+memory.close(deadline=1.0)
+bus.close(deadline=1.0)
+del app, bus, memory, state
+import gc
+gc.collect()
+_t.sleep(0.3)
+print("OK", flush=True)
+"""
+
+    def test_a_full_run_and_stop_prints_nothing_to_stderr(self, tmp_path: Path) -> None:
+        import subprocess  # noqa: S404 - a child is the only place this is visible
+
+        script = tmp_path / "run_daemon.py"
+        script.write_text(self.SCRIPT, encoding="utf-8")
+        env = {
+            "PATH": os.environ.get("PATH", ""),
+            "HOME": str(tmp_path / "home"),
+            "TMPDIR": str(tmp_path / "tmp"),
+            "PYTHONPATH": str(Path.cwd()),
+        }
+        for directory in (tmp_path / "home", tmp_path / "tmp", tmp_path / "state"):
+            directory.mkdir(parents=True, exist_ok=True)
+        result = subprocess.run(  # noqa: S603 - our own interpreter, our own script
+            [sys.executable, str(script), str(tmp_path)],
+            capture_output=True,
+            text=True,
+            timeout=120,
+            env=env,
+        )
+        assert "OK" in result.stdout, result.stderr
+        assert result.returncode == 0, result.stderr
+        assert result.stderr == "", f"a stop wrote to stderr:\n{result.stderr}"
 
 
 class TestStatus:
