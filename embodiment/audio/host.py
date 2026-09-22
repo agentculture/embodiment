@@ -1974,18 +1974,7 @@ class HostEndpoint:
                     active_proc = proc
                     clock_start = time.monotonic()
                     samples_written_for_clock = 0
-
-                slice_: bytes | None = None
-                if proc is not None and proc.stdin is not None:
-                    while len(self._writer_pending) < slice_bytes:
-                        try:
-                            extra = self._playback_chunks.popleft()
-                        except IndexError:
-                            break
-                        self._playback_queued_bytes -= len(extra)
-                        self._writer_pending += extra
-                    if self._writer_pending:
-                        slice_ = self._writer_pending[:slice_bytes]
+                slice_ = self._next_write_slice(proc, slice_bytes)
 
             if slice_ is None:
                 time.sleep(_POLL_INTERVAL_S)
@@ -2005,16 +1994,40 @@ class HostEndpoint:
                 active_proc = None  # force a fresh clock for whatever comes next
                 continue
 
-            with self._counter_lock:
-                # Only advance state if this write's bytes are still the
-                # front of `_writer_pending` — a concurrent stop_playback()/
-                # write-failure may have cleared it while this thread was
-                # blocked inside write() above.
-                if self._writer_pending[: len(slice_)] == slice_:
-                    self._writer_pending = self._writer_pending[len(slice_) :]
-                self._playback_written_samples += len(slice_) // SAMPLE_WIDTH_BYTES
-                self._playing = bool(self._playback_chunks) or bool(self._writer_pending)
+            self._commit_written_slice(slice_)
             samples_written_for_clock += len(slice_) // SAMPLE_WIDTH_BYTES
+
+    def _next_write_slice(
+        self, proc: "subprocess.Popen[bytes] | None", slice_bytes: int
+    ) -> "bytes | None":
+        """Caller holds ``_counter_lock``. Top up :attr:`_writer_pending` from
+        the queued chunks to at least one slice and return the front slice
+        (possibly shorter, at the tail), or ``None`` when there is no live
+        pipe or nothing pending."""
+        if proc is None or proc.stdin is None:
+            return None
+        while len(self._writer_pending) < slice_bytes:
+            try:
+                extra = self._playback_chunks.popleft()
+            except IndexError:
+                break
+            self._playback_queued_bytes -= len(extra)
+            self._writer_pending += extra
+        if self._writer_pending:
+            return self._writer_pending[:slice_bytes]
+        return None
+
+    def _commit_written_slice(self, slice_: bytes) -> None:
+        """Advance the counters for one slice the pipe accepted."""
+        with self._counter_lock:
+            # Only advance state if this write's bytes are still the
+            # front of `_writer_pending` — a concurrent stop_playback()/
+            # write-failure may have cleared it while this thread was
+            # blocked inside write() above.
+            if self._writer_pending[: len(slice_)] == slice_:
+                self._writer_pending = self._writer_pending[len(slice_) :]
+            self._playback_written_samples += len(slice_) // SAMPLE_WIDTH_BYTES
+            self._playing = bool(self._playback_chunks) or bool(self._writer_pending)
 
     # -- mute --------------------------------------------------------------
 
