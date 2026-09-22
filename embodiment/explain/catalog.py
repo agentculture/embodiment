@@ -51,8 +51,9 @@ drawn from the name.
 None of this is in the first daemon release — each is a stated seam or a stated
 absence, never an implication:
 
-- **Tools** — the turn runs on `embodiment.loop` with an empty tool registry,
-  by design.
+- **Other tools** — the daemon binds exactly two, both over Gwen's own private
+  memory: `remember` and `forget` (archive in place, never delete). No shell,
+  no files, no Qwen Code.
 - **Vision** — the session is audio-only.
 - **A face** — the dashboard's centrepiece is a waveform.
 - **Phone voice** — the phone is control and text; the `BrowserEar` client and

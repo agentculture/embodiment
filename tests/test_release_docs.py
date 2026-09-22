@@ -38,7 +38,7 @@ NAME_COLLISION = ("reachy-mini-cli", "agent embody")
 #: What v1 does NOT ship. Each phrase must appear, lower-cased, in the
 #: ``## Not yet`` section of both surfaces.
 NOT_YET = (
-    "tools",
+    "other tools",
     "vision",
     "a face",
     "phone voice",
@@ -47,6 +47,11 @@ NOT_YET = (
     "semantic recall",
     "value",
 )
+
+#: The two tools the daemon binds (``d7`` remember, ``d8`` forget). Both
+#: surfaces must name both, in the same ``## Not yet`` section that used to
+#: say the registry was empty — the claim changed, and it changed on both.
+TOOLS_BOUND = ("remember", "forget")
 
 #: Where t21 — the human acceptance run — publishes latency as measured.
 T21_RESULT_FILE = "docs/live-test-results/2026-09-22-t21-acceptance.md"
@@ -96,6 +101,16 @@ def test_surface_has_the_not_yet_list(surface: str, request: pytest.FixtureReque
     section = _section(text, "Not yet").lower()
     missing = [phrase for phrase in NOT_YET if phrase not in section]
     assert not missing, f"{surface} 'Not yet' section lacks {missing}"
+
+
+@pytest.mark.parametrize("surface", ["readme", "explain_root"])
+def test_surface_names_both_tools_and_no_empty_registry(
+    surface: str, request: pytest.FixtureRequest
+) -> None:
+    section = _section(request.getfixturevalue(surface), "Not yet").lower()
+    for tool in TOOLS_BOUND:
+        assert f"`{tool}`" in section, f"{surface} does not name the {tool} tool"
+    assert "empty tool registry" not in section, "the registry is no longer empty (d7, d8)"
 
 
 # --- criterion 2: README status — unmeasured, one rig, t21's result file ----

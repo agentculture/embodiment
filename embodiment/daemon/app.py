@@ -112,6 +112,7 @@ import time
 import urllib.request
 from collections import deque
 from dataclasses import dataclass, field, replace
+from datetime import datetime, timezone, tzinfo
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Optional
 
@@ -149,6 +150,15 @@ __all__ = [
     "APP_REMEMBER_REFUSED",
     "REMEMBER_TOOL_NAME",
     "REMEMBER_TOOL_PROMPT",
+    "FORGET_TOOL_NAME",
+    "FORGET_TOOL_DESCRIPTION",
+    "FORGET_ID_DESCRIPTION",
+    "CLOCK_ZONE_NAME",
+    "CLOCK_ZONE",
+    "CLOCK_LINE_PREFIX",
+    "CLOCK_LINE_PATTERN",
+    "HEBREW_DAYS",
+    "clock_line",
     "REMEMBER_FACT_MAX_CHARS",
     "REPLY_REDACTED",
     "RECENT_TURNS",
@@ -293,8 +303,93 @@ REMEMBER_FACT_DESCRIPTION = (
 REMEMBER_TOOL_PROMPT = (
     "כשהמשתמש מבקש ממך לזכור, לשמור, לרשום או לא לשכוח משהו — בכל ניסוח, "
     "כולל «תזכרי את כל זה» או «שמרי את מה שאמרתי» — עלייך לקרוא לכלי remember "
-    "עם העובדה, לפני שאת עונה. אל תאשרי שזכרת בלי לקרוא לכלי."
+    "עם העובדה, לפני שאת עונה. אל תאשרי שזכרת בלי לקרוא לכלי. "
+    "כשהמשתמש מבקש ממך לשכוח משהו, קראי לכלי forget עם מזהה הרשומה — הוא מופיע "
+    "כ־id= ברשומה שנזכרה למעלה, או חוזר מהכלי remember. "
+    "לעולם אל תגידי שזכרת או ששכחת משהו אלא אם הכלי החזיר ok. "
+    "אם אין רשומה מתאימה לשכוח, אמרי שלא מצאת אותה."
 )
+
+#: The tool the model calls to forget something (decision 18, deviation
+#: ``d8``). Live, Gwen was asked to forget where a key was and said she had;
+#: the registry held one tool, the ledger showed no ``tool-unknown``, and the
+#: record was still ``active``. It archives — eidetic's own lifecycle — and
+#: never deletes a byte; only Gwen's own private store; the id is
+#: model-supplied and therefore validated before it goes anywhere.
+#:
+#: **Measured on the rig before it was committed** (single-turn asks to the
+#: live ``senses`` role, the real two schemas and the real prompt, a recalled
+#: record present, two passes of five per cell): a forget-ask called
+#: ``forget`` with the recalled id on 10 of 10; an ordinary question called
+#: no tool on 10 of 10; a forget-ask with NOTHING recalled invented no id and
+#: made no "I forgot" claim on 10 of 10. That last cell is what the no-claim
+#: sentence in :data:`REMEMBER_TOOL_PROMPT` buys. The claim check is a stem
+#: scan of the reply, so "neither" says the reply did not claim success; it
+#: does not prove the reply said "not found".
+FORGET_TOOL_NAME = "forget"
+FORGET_TOOL_DESCRIPTION = (
+    "Forget one stored fact the user asked you to forget, by its record id. Call "
+    "this whenever the user asks you to forget, drop or erase something you "
+    "remembered — however they phrase it. Use the id shown as id= on the recalled "
+    "record, or the id remember returned."
+)
+FORGET_ID_DESCRIPTION = "The record id to forget, exactly as shown (id=...)."
+
+#: Memory's own codes for a forget that was refused as a FACT about the
+#: store rather than a fault in it, mapped to the fixed tokens the tool
+#: reports. Anything else is a fault and is folded with its own code.
+_FORGET_REFUSAL_BY_CODE = {
+    memory_module.continuity.CODE_RECORD_NOT_FOUND: "unknown-id",
+    memory_module.continuity.CODE_ALREADY_ARCHIVED: "already-archived",
+    memory_module.continuity.CODE_INVALID_RECORD: "bad-id",
+}
+
+#: The clock the prompt carries (decision 18). Recalled records render
+#: ``recorded=<UTC ISO>``; without a "now" the model cannot relate that to
+#: anything. One fixed-shape line, local to the rig's room, injected through
+#: :class:`DaemonApp`'s ``now`` so a test can freeze it. It says what time it
+#: is, never who is speaking, so absent-identity byte-identity is untouched.
+CLOCK_ZONE_NAME = "Asia/Jerusalem"
+CLOCK_LINE_PREFIX = "השעה עכשיו:"
+#: Monday-first, as :meth:`datetime.weekday` counts.
+HEBREW_DAYS = ("יום שני", "יום שלישי", "יום רביעי", "יום חמישי", "יום שישי", "שבת", "יום ראשון")
+CLOCK_LINE_PATTERN = (
+    r"השעה עכשיו: \d{4}-\d{2}-\d{2} \d{2}:\d{2} \((?:" + "|".join(HEBREW_DAYS) + r")\)"
+)
+
+
+def _resolve_zone() -> tuple[tzinfo, bool]:
+    """``(zone, available)``: the rig's zone, or UTC and ``False`` without tzdata.
+
+    Degrade, never raise — a daemon with no timezone database still runs, and
+    :meth:`DaemonApp.status` reports which clock the prompt is carrying.
+    """
+    try:
+        from zoneinfo import ZoneInfo
+
+        return ZoneInfo(CLOCK_ZONE_NAME), True
+    except Exception:  # noqa: BLE001 - a missing tzdata is a degradation, not a crash
+        return timezone.utc, False
+
+
+CLOCK_ZONE, CLOCK_ZONE_AVAILABLE = _resolve_zone()
+
+
+def clock_line(moment: datetime) -> str:
+    """The one prompt line that says what time it is, in the documented shape.
+
+    An aware *moment* is converted to :data:`CLOCK_ZONE`; a naive one is taken
+    as already local. Minutes, not seconds — the model is relating a timestamp
+    to "now", not measuring latency.
+    """
+    local = moment.astimezone(CLOCK_ZONE) if moment.tzinfo is not None else moment
+    day = HEBREW_DAYS[local.weekday()]
+    return f"{CLOCK_LINE_PREFIX} {local.strftime('%Y-%m-%d %H:%M')} ({day})"
+
+
+def _now_local() -> datetime:
+    return datetime.now(CLOCK_ZONE)
+
 
 #: The longest fact the tool will store. A **judgement call**: a spoken fact
 #: is a sentence or two, and a model handing over a kilobyte has misunderstood
@@ -398,6 +493,13 @@ APP_CAPTURE_FAILED = "app-capture-failed"
 APP_FRAMES_NO_SESSION = "app-frames-no-session"
 #: The model called ``remember`` with something that could not be stored.
 APP_REMEMBER_REFUSED = "app-remember-refused"
+#: The model called ``forget`` with an id that could not be archived: not an
+#: id, unknown, already archived, or the store failed. Counted with a fixed
+#: reason token; the id the model supplied is never in the record.
+APP_FORGET_REFUSED = "app-forget-refused"
+#: The wall clock the prompt line reads from raised; the turn ran without
+#: the line. A prompt with no time in it is a recorded absence, not a crash.
+APP_CLOCK_FAILED = "app-clock-failed"
 #: A model reply or summary came back with a secret inside it and was
 #: scrubbed before it reached anything that keeps or speaks text.
 APP_REPLY_SECRET_SCRUBBED = "app-reply-secret-scrubbed"  # nosec B105 - a code, not a secret
@@ -504,9 +606,11 @@ class AppConfig:
     #: reason. Never carries a secret: the install secret goes in a header,
     #: never in a URL (``embodiment.audio.remote``'s own rule).
     realtime_ws_url: Optional[str] = None
-    #: Bind the ``remember`` tool into the turn. On by default: the operator's
-    #: decision (``d7``) is that remembering is the MODEL's to call, not a
-    #: phrase the daemon pattern-matches.
+    #: Bind the memory tools — ``remember`` (``d7``) and ``forget`` (``d8``) —
+    #: into the turn. On by default: the operator's decision is that
+    #: remembering and forgetting are the MODEL's to call, not phrases the
+    #: daemon pattern-matches. One flag for both: a Gwen who can remember but
+    #: not forget is the live failure this replaced.
     remember_tool: bool = True
     http_enabled: bool = True
     bind: str = "127.0.0.1"
@@ -819,6 +923,7 @@ class DaemonApp:
         server: Any = None,
         tools: Optional[ToolRegistry] = None,
         clock: Callable[[], float] = time.monotonic,
+        now: Optional[Callable[[], datetime]] = None,
     ) -> None:
         self._config = config or AppConfig()
         self._state = state
@@ -830,7 +935,8 @@ class DaemonApp:
             # the wire: bind_tools closes over the registry as it is, and
             # turn.turn records a registry whose tools the model was never
             # shown. The registry is otherwise empty by default, which is the
-            # package's own rule — this daemon binds exactly one tool.
+            # package's own rule — this daemon binds exactly two tools, both
+            # over Gwen's own private memory.
             self._tools.register(
                 REMEMBER_TOOL_NAME,
                 {
@@ -842,6 +948,19 @@ class DaemonApp:
                 },
                 self._remember_tool,
                 description=REMEMBER_TOOL_DESCRIPTION,
+            )
+        if self._config.remember_tool and FORGET_TOOL_NAME not in self._tools.specs:
+            self._tools.register(
+                FORGET_TOOL_NAME,
+                {
+                    "type": "object",
+                    "properties": {
+                        "record_id": {"type": "string", "description": FORGET_ID_DESCRIPTION}
+                    },
+                    "required": ["record_id"],
+                },
+                self._forget_tool,
+                description=FORGET_TOOL_DESCRIPTION,
             )
         self._complete = (
             complete
@@ -866,6 +985,7 @@ class DaemonApp:
         )
         self._server = server
         self._clock = clock
+        self._now = now or _now_local
 
         self._lock = threading.RLock()
         self._ear_lock = threading.RLock()
@@ -909,6 +1029,9 @@ class DaemonApp:
         self._remember_tool_calls = 0
         self._remember_tool_written = 0
         self._remember_tool_refused = 0
+        self._forget_tool_calls = 0
+        self._forget_tool_written = 0
+        self._forget_tool_refused = 0
         self._asks_detected = 0
         self._asks_remembered = 0
         self._asks_failed = 0
@@ -925,6 +1048,7 @@ class DaemonApp:
         self._recall_deadline_exceeded = 0
         self._recall_errors = 0
         self._recall_fallback_hits = 0
+        self._recall_archived_hidden = 0
         self._recall_last_ids: tuple[str, ...] = ()
         self._recall_calls = 0
         self._degradation_counts: dict[str, int] = {}
@@ -1872,6 +1996,7 @@ class DaemonApp:
                 window,
                 recalled,
                 tool_prompt=REMEMBER_TOOL_PROMPT if self._config.remember_tool else "",
+                clock=self._clock_line(),
             ),
         )
         self._publish("turn", {"phase": "thinking", "step_count": 0})
@@ -2044,6 +2169,90 @@ class DaemonApp:
         )
         return f"refused: {reason}"
 
+    def _forget_tool(self, record_id: object = "", **_ignored: Any) -> str:
+        """The ``forget`` tool: the model's own way to drop a fact. Never raises.
+
+        Decision 18 (``d8``). Archives through :meth:`RoomMemory.forget` —
+        eidetic's own lifecycle, in Gwen's private store, deadline-bounded —
+        and never deletes a byte. The id is what the model said, so it is
+        untrusted: restricted to :func:`_safe_record_id`'s charset here and
+        again inside memory, and refused with a fixed token otherwise.
+
+        Returns a short structured line: ``ok: forgot <id>`` or ``refused:
+        <reason>``. The prompt forbids the model from claiming it forgot
+        anything unless it saw the ``ok``.
+        """
+        with self._lock:
+            self._forget_tool_calls += 1
+        if not isinstance(record_id, str):
+            return self._refuse_forget("not-text")
+        stripped = record_id.strip()
+        if not stripped or _safe_record_id(stripped) != stripped:
+            return self._refuse_forget("bad-id")
+        try:
+            result = self._memory.forget(stripped, visibility=PRIVATE)
+        except Exception as exc:  # noqa: BLE001 - memory is a seam; a turn never dies on it
+            self._record(APP_FORGET_REFUSED, f"store: {_describe(exc)}")
+            return self._refuse_forget("store-failed", recorded=True)
+        if not getattr(result, "ok", False):
+            code = getattr(result, "code", None)
+            reason = _FORGET_REFUSAL_BY_CODE.get(code)
+            if reason is not None:
+                # A fact about the store, not a fault in it: one ledger line,
+                # the fixed token, and never the id the model supplied.
+                return self._refuse_forget(reason)
+            degradation = getattr(result, "degradation", None)
+            if degradation is not None:
+                self._fold("memory", degradation)
+            return self._refuse_forget("store-refused", recorded=degradation is not None)
+        with self._lock:
+            self._forget_tool_written += 1
+            written = self._forget_tool_written
+        self._publish(
+            "state",
+            {
+                "component": "memory",
+                "status": "forgotten",
+                "record_id": stripped,
+                "forgotten": written,
+                "source": "tool",
+            },
+        )
+        return f"ok: forgot {stripped}"
+
+    def _refuse_forget(self, reason: str, *, recorded: bool = False) -> str:
+        """Count a forget refusal, say so on the bus, tell the model why. Never the id.
+
+        *reason* is a fixed token from this method's vocabulary — ``not-text``,
+        ``bad-id``, ``unknown-id``, ``already-archived``, ``store-failed``,
+        ``store-refused`` — never anything the model supplied.
+        """
+        with self._lock:
+            self._forget_tool_refused += 1
+            refused = self._forget_tool_refused
+        if not recorded:
+            self._record(APP_FORGET_REFUSED, reason)
+        self._publish(
+            "state",
+            {
+                "component": "memory",
+                "status": "refused",
+                "reason": _safe_name(reason),
+                "refused": refused,
+                "source": "tool",
+                "tool": FORGET_TOOL_NAME,
+            },
+        )
+        return f"refused: {reason}"
+
+    def _clock_line(self) -> str:
+        """The prompt's clock line, or ``""`` — recorded — if the clock fails."""
+        try:
+            return clock_line(self._now())
+        except Exception as exc:  # noqa: BLE001 - a turn never waits on a clock
+            self._record(APP_CLOCK_FAILED, _describe(exc), once=True)
+            return ""
+
     def _note_ask(self, session: Any, text: str) -> None:
         """Add the user turn and COUNT what the explicit-ask path did with it.
 
@@ -2125,11 +2334,19 @@ class DaemonApp:
         if not records and not _lexical_can_index(text):
             records = self._recall_blind_fallback(text, started)
 
+        # Belt over braces (d8). ``continuity.recall`` applies eidetic's
+        # lifecycle filter, verified by test — but a forgotten fact that comes
+        # back in the prompt is the whole feature failing silently, so the
+        # daemon drops an archived record itself and COUNTS it: a non-zero
+        # count says the seam below stopped filtering.
+        records, hidden = _drop_archived(records)
+
         rendered = self._render(records)
         rendered_ids = _rendered_ids(records) if rendered else ()
         with self._lock:
             self._recall_last_hits = len(records)
             self._recall_hits_total += len(records)
+            self._recall_archived_hidden += hidden
             if not records:
                 self._recall_empty_total += 1
             rendered_count = len(records) if rendered else 0
@@ -2143,6 +2360,7 @@ class DaemonApp:
                 "status": "searched" if counts[0] else "empty",
                 "last_hits": counts[0],
                 "rendered": counts[1],
+                "archived_hidden": hidden,
             },
         )
         return rendered, rendered_ids
@@ -2866,6 +3084,7 @@ class DaemonApp:
                 "deadline_exceeded": self._recall_deadline_exceeded,
                 "errors": self._recall_errors,
                 "lexical_fallback_hits": self._recall_fallback_hits,
+                "archived_hidden_total": self._recall_archived_hidden,
                 "last_rendered_ids": list(self._recall_last_ids),
                 "deadline_s": self._config.recall_deadline,
                 "configured_mode": self._config.recall_mode,
@@ -2876,6 +3095,9 @@ class DaemonApp:
                 "remember_tool_calls": self._remember_tool_calls,
                 "remember_tool_written": self._remember_tool_written,
                 "remember_tool_refused": self._remember_tool_refused,
+                "forget_tool_calls": self._forget_tool_calls,
+                "forget_tool_written": self._forget_tool_written,
+                "forget_tool_refused": self._forget_tool_refused,
                 "asks_detected": self._asks_detected,
                 "remembered": self._asks_remembered,
                 "remember_failed": self._asks_failed,
@@ -2886,6 +3108,7 @@ class DaemonApp:
                 "summary_skip_reason": self._summary_skip_reason,
             },
             "session": _session_status(session),
+            "clock": {"zone": CLOCK_ZONE_NAME, "zone_available": CLOCK_ZONE_AVAILABLE},
             "ears": _probe(self._ears),
             "voice": _probe(self._voice),
             "http": _http_status(self._server, self._config),
@@ -2926,14 +3149,20 @@ def _compose_prompt(
     window: list[dict[str, str]],
     recalled: str,
     tool_prompt: str = "",
+    clock: str = "",
 ) -> str:
-    """The system prompt for ONE turn: the base, the window, then recalled memory.
+    """The system prompt for ONE turn: base, clock, tools, the window, then recall.
 
     Recall enters here and nowhere else — :func:`embodiment.memory.render_recalled`
     has already attributed and fenced it as data. It never enters the user text,
     because that text is the caller's own words, verbatim (the verbatim invariant).
+
+    *clock* is :func:`clock_line`'s one line, or empty when the clock failed
+    (recorded by the caller). It says what time it is, never who is speaking.
     """
     parts = [base]
+    if clock:
+        parts.append(clock)
     if tool_prompt:
         # Fixed text, identical for every caller and every identity, so the
         # absent-identity byte-identity rule is untouched: this says what the
@@ -3059,6 +3288,26 @@ def _target_verification(endpoint: Any) -> dict[str, Any]:
         count = probed.get(key)
         out[key] = count if isinstance(count, int) and not isinstance(count, bool) else None
     return out
+
+
+def _drop_archived(records: list[Any]) -> tuple[list[Any], int]:
+    """``(kept, hidden)``: every record whose ``lifecycle`` is archived, removed.
+
+    Reads eidetic's own field and value (``continuity.LIFECYCLE_ARCHIVED``);
+    a record that is not a mapping is kept for :func:`render_recalled` to
+    render as explicitly empty, as before.
+    """
+    kept: list[Any] = []
+    hidden = 0
+    for record in records:
+        if (
+            isinstance(record, Mapping)
+            and record.get("lifecycle") == memory_module.continuity.LIFECYCLE_ARCHIVED
+        ):
+            hidden += 1
+            continue
+        kept.append(record)
+    return kept, hidden
 
 
 def _rendered_ids(records: list[Any]) -> tuple[str, ...]:

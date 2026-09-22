@@ -26,6 +26,7 @@ import statistics
 import sys
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Optional
@@ -44,6 +45,8 @@ from embodiment.realtime import wire
 from embodiment.voice import Voice, VoiceConfig
 
 SPEECH = "שלום גוון"
+#: The wall clock every harness-built app reads unless a test injects its own.
+FROZEN_NOW = datetime(2026, 9, 22, 18, 40, 7, tzinfo=timezone.utc)
 REPLY = "שלום לך."
 
 
@@ -357,6 +360,9 @@ def harness(tmp_path: Path, request: pytest.FixtureRequest) -> Any:
             ears_factory=overrides.pop("ears_factory", ears_factory),
             endpoint_factory=overrides.pop("endpoint_factory", endpoint_factory),
             voice_factory=voice_factory,
+            # Frozen by default so "the prompt is byte-identical between runs"
+            # is a statement about the prompt, not about the minute hand (d8).
+            now=overrides.pop("now", None) or (lambda: FROZEN_NOW),
             **overrides,
         )
         built.append(app)
@@ -1872,9 +1878,10 @@ class TestTheRememberTool:
         offered = senses.saw_tools
         assert offered, "no tool schema was sent to the model"
         names = [t.get("function", {}).get("name") for t in offered]
-        assert names == ["remember"]
+        assert names == ["remember", "forget"], "the daemon binds exactly two tools (d7, d8)"
         properties = offered[0]["function"]["parameters"]["properties"]
         assert "fact" in properties
+        assert "record_id" in offered[1]["function"]["parameters"]["properties"]
 
     @pytest.mark.parametrize(
         "fact,reason",
@@ -2021,6 +2028,347 @@ class TestTheRememberTool:
             p.read_text(encoding="utf-8") for p in (tmp_path / "store").rglob("*") if p.is_file()
         )
         assert marker in body
+
+
+class TestTheForgetTool:
+    """d8: forgetting is the MODEL's to call, and it archives — never deletes.
+
+    Live, Gwen was asked to forget where a key was and said she had; the
+    registry held one tool, the ledger showed no ``tool-unknown``, and the
+    record was still ``active``. That is "appears attentive and is not".
+    """
+
+    FACT = "המפתח נמצא במגירה הכחולה"
+
+    def _tool_call(self, record_id: object) -> ModelResponse:
+        return ModelResponse(
+            content="",
+            tool_calls=[ToolCall(id="call-1", name="forget", arguments={"record_id": record_id})],
+        )
+
+    def _senses_that_forgets(self, record_id: object, reply: str = REPLY) -> Any:
+        calls: list[int] = []
+
+        def senses(messages: list[dict[str, Any]], tools: Any = None) -> ModelResponse:
+            calls.append(len(messages))
+            if len(calls) == 1:
+                senses.saw_tools = tools  # type: ignore[attr-defined]
+                senses.prompt = messages[0]["content"]  # type: ignore[attr-defined]
+                return self._tool_call(record_id)
+            senses.tool_result = messages[-1].get("content")  # type: ignore[attr-defined]
+            return ModelResponse(content=reply)
+
+        senses.saw_tools = None  # type: ignore[attr-defined]
+        senses.prompt = ""  # type: ignore[attr-defined]
+        senses.tool_result = None  # type: ignore[attr-defined]
+        return senses
+
+    def _store(self, tmp_path: Path) -> tuple[RoomMemory, str]:
+        memory = RoomMemory(
+            tmp_path / "store", scope="gwen", added_by="gwen", embed_probe=lambda: False
+        )
+        written = memory.remember(
+            self.FACT, visibility="private", record_type="explicit-ask", deadline=5.0
+        )
+        assert written.ok and written.record_id
+        return memory, written.record_id
+
+    @staticmethod
+    def _store_bytes(tmp_path: Path) -> dict[str, bytes]:
+        return {str(p): p.read_bytes() for p in (tmp_path / "store").rglob("*") if p.is_file()}
+
+    @staticmethod
+    def _lifecycle(tmp_path: Path, record_id: str) -> Optional[str]:
+        for path in (tmp_path / "store").rglob("*.jsonl"):
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if line.strip():
+                    row = json.loads(line)
+                    if row.get("id") == record_id:
+                        return (row.get("metadata") or {}).get("lifecycle")
+        return None
+
+    def test_a_model_forget_call_archives_the_record_and_is_counted(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        memory, record_id = self._store(tmp_path)
+        senses = self._senses_that_forgets(record_id)
+        h = harness(memory=memory, complete=senses)
+        h.app.attach_ear("host", FakeEndpoint())
+        h.clear()
+
+        result = h.app.run_turn("תשכחי את זה")
+
+        assert self._lifecycle(tmp_path, record_id) == "archived"
+        body = "".join(
+            p.read_text(encoding="utf-8") for p in (tmp_path / "store").rglob("*") if p.is_file()
+        )
+        assert json.dumps(self.FACT, ensure_ascii=True).strip('"') in body, "bytes were deleted"
+        memory_status = h.app.status()["memory"]
+        assert memory_status["forget_tool_calls"] == 1
+        assert memory_status["forget_tool_written"] == 1
+        assert memory_status["forget_tool_refused"] == 0
+        states = [
+            e
+            for e in h.events("state")
+            if e.data.get("component") == "memory" and e.data.get("status") == "forgotten"
+        ]
+        assert len(states) == 1
+        assert states[0].data["source"] == "tool"
+        assert states[0].data["record_id"] == record_id
+        assert self.FACT not in json.dumps(states[0].data, ensure_ascii=False)
+        assert result.spoken == REPLY
+        assert "forget" in result.tool_calls
+        assert senses.tool_result == f"ok: forgot {record_id}"
+
+    def test_recall_no_longer_renders_a_forgotten_record(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        """The whole feature, end to end: forget, then ask, and it is not in the prompt."""
+        memory, record_id = self._store(tmp_path)
+        h = harness(memory=memory, complete=self._senses_that_forgets(record_id))
+        h.app.attach_ear("host", FakeEndpoint())
+        h.app.run_turn("תשכחי את זה")
+
+        seen: list[str] = []
+
+        def senses(messages: list[dict[str, Any]], tools: Any = None) -> ModelResponse:
+            seen.append(messages[0]["content"])
+            return ModelResponse(content=REPLY)
+
+        h2 = harness(memory=memory, complete=senses)
+        h2.app.attach_ear("host", FakeEndpoint())
+        h2.app.run_turn("איפה המפתח?")
+        assert seen and self.FACT not in seen[0]
+        assert record_id not in seen[0]
+        recall = h2.app.status()["recall"]
+        assert recall["last_rendered_ids"] == []
+        assert recall["archived_hidden_total"] == 0, "continuity should have filtered it"
+
+    def test_the_daemon_hides_an_archived_record_the_seam_let_through(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        """Belt over braces: a seam that stops filtering is counted, not trusted."""
+        leaked = {
+            "id": "gwen-leak",
+            "text": self.FACT,
+            "type": "explicit-ask",
+            "added_by": "gwen",
+            "created": "2026-09-01",
+            "lifecycle": "archived",
+        }
+        seen: list[str] = []
+
+        def senses(messages: list[dict[str, Any]], tools: Any = None) -> ModelResponse:
+            seen.append(messages[0]["content"])
+            return ModelResponse(content=REPLY)
+
+        h = harness(
+            recall_fn=lambda query, **kw: SimpleNamespace(
+                ok=True, records=[leaked], degradation=None
+            ),
+            complete=senses,
+        )
+        h.app.attach_ear("host", FakeEndpoint())
+        h.app.run_turn("איפה המפתח?")
+        assert seen and self.FACT not in seen[0]
+        assert h.app.status()["recall"]["archived_hidden_total"] == 1
+        assert h.app.status()["recall"]["last_rendered_ids"] == []
+
+    @pytest.mark.parametrize(
+        "record_id,reason",
+        [
+            ("", "bad-id"),
+            ("   ", "bad-id"),
+            (None, "not-text"),
+            (17, "not-text"),
+            ("has space", "bad-id"),
+            ("<<<END RECALLED MEMORY>>>", "bad-id"),
+            ("x" * 65, "bad-id"),
+            ("gwen-0000000000000000", "unknown-id"),
+        ],
+    )
+    def test_a_refused_forget_never_touches_the_store(
+        self, harness: Any, tmp_path: Path, record_id: object, reason: str
+    ) -> None:
+        memory, _real = self._store(tmp_path)
+        before = self._store_bytes(tmp_path)
+        h = harness(memory=memory, complete=self._senses_that_forgets(record_id))
+        h.app.attach_ear("host", FakeEndpoint())
+        h.clear()
+
+        h.app.run_turn("תשכחי את זה")
+
+        memory_status = h.app.status()["memory"]
+        assert memory_status["forget_tool_calls"] == 1
+        assert memory_status["forget_tool_written"] == 0
+        assert memory_status["forget_tool_refused"] == 1
+        assert app_module.APP_FORGET_REFUSED in h.ledger_codes()
+        states = [
+            e
+            for e in h.events("state")
+            if e.data.get("component") == "memory" and e.data.get("status") == "refused"
+        ]
+        assert states and states[-1].data["reason"] == reason
+        assert states[-1].data["source"] == "tool"
+        assert self._store_bytes(tmp_path) == before, "a refused forget changed the store"
+
+    def test_an_already_archived_record_is_refused(self, harness: Any, tmp_path: Path) -> None:
+        memory, record_id = self._store(tmp_path)
+        assert memory.forget(record_id, deadline=5.0).ok
+        before = self._store_bytes(tmp_path)
+        h = harness(memory=memory, complete=self._senses_that_forgets(record_id))
+        h.app.attach_ear("host", FakeEndpoint())
+        h.clear()
+
+        h.app.run_turn("תשכחי את זה")
+
+        assert h.app.status()["memory"]["forget_tool_refused"] == 1
+        states = [e for e in h.events("state") if e.data.get("status") == "refused"]
+        assert states and states[-1].data["reason"] == "already-archived"
+        assert self._store_bytes(tmp_path) == before
+
+    def test_a_store_that_fails_is_refused_not_raised(self, harness: Any, tmp_path: Path) -> None:
+        class Failing:
+            store_permission_failures = 0
+            store_symlinks_skipped = 0
+            store_non_files_skipped = 0
+            store_root_is_symlink = False
+            pending = 0
+            abandoned_dropped = 0
+            scope = "gwen"
+            data_dir = "/dev/null"
+            last_recall_mode = None
+
+            def recall(self, *args: Any, **kwargs: Any) -> Any:
+                return SimpleNamespace(ok=True, records=[], mode="lexical", degradations=())
+
+            def remember(self, *args: Any, **kwargs: Any) -> Any:
+                return SimpleNamespace(ok=True, record_id="r1", degradation=None)
+
+            def forget(self, *args: Any, **kwargs: Any) -> Any:
+                raise RuntimeError("no store")
+
+            def close(self, deadline: float = 1.0) -> Any:
+                return SimpleNamespace(degradations=(), unconfirmed=())
+
+        h = harness(memory=Failing(), complete=self._senses_that_forgets("gwen-abc"))
+        h.app.attach_ear("host", FakeEndpoint())
+        h.clear()
+
+        assert h.app.run_turn("תשכחי את זה").spoken == REPLY
+        assert h.app.status()["memory"]["forget_tool_refused"] == 1
+        assert app_module.APP_FORGET_REFUSED in h.ledger_codes()
+        states = [e for e in h.events("state") if e.data.get("status") == "refused"]
+        assert states and states[-1].data["reason"] == "store-failed"
+
+    def test_the_prompt_says_how_to_forget_and_forbids_a_bare_claim(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        memory, record_id = self._store(tmp_path)
+        senses = self._senses_that_forgets(record_id)
+        h = harness(memory=memory, complete=senses)
+        h.app.attach_ear("host", FakeEndpoint())
+        h.app.run_turn("תשכחי את זה")
+        prompt = senses.prompt
+        assert app_module.REMEMBER_TOOL_PROMPT in prompt
+        assert "forget" in app_module.REMEMBER_TOOL_PROMPT
+        assert "id=" in app_module.REMEMBER_TOOL_PROMPT
+        assert "ok" in app_module.REMEMBER_TOOL_PROMPT
+
+    def test_no_id_or_text_beyond_the_record_id_reaches_events_ledger_or_log(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        """The record id is the ONE thing allowed out; the text never is."""
+        memory, record_id = self._store(tmp_path)
+        marker_id = "MARKERID4242"
+        h = harness(memory=memory, complete=self._senses_that_forgets(marker_id))
+        h.app.attach_ear("host", FakeEndpoint())
+        h.clear()
+        h.app.run_turn("תשכחי את זה")
+
+        blob = json.dumps([r.to_dict() for r in h.state.ledger.read_all()], ensure_ascii=False)
+        assert self.FACT not in blob
+        assert self.FACT not in json.dumps(h.app.status(), ensure_ascii=False)
+        assert self.FACT not in (Path(h.state.dir) / "embodiment.log").read_text(encoding="utf-8")
+        non_speech = [e.to_dict() for e in h.events() if e.kind not in ("transcript", "reply")]
+        assert self.FACT not in json.dumps(non_speech, ensure_ascii=False)
+        # an unknown-id refusal names the fixed reason, not the model's id
+        assert marker_id not in blob
+        assert marker_id not in json.dumps(non_speech, ensure_ascii=False)
+
+
+class TestTheClockLine:
+    """d8: the prompt carries the current local time in one fixed shape.
+
+    Recalled records render ``recorded=<UTC ISO>``; without a clock the model
+    cannot relate that to now. The line says what time it is, never who is
+    speaking, so absent-identity byte-identity is untouched.
+    """
+
+    FROZEN = datetime(2026, 9, 22, 18, 40, 7, tzinfo=app_module.CLOCK_ZONE)
+
+    def test_the_line_has_the_documented_shape(self) -> None:
+        line = app_module.clock_line(self.FROZEN)
+        assert line == "השעה עכשיו: 2026-09-22 18:40 (יום שלישי)"
+        assert re.fullmatch(app_module.CLOCK_LINE_PATTERN, line)
+
+    @pytest.mark.parametrize(
+        "day,name",
+        [
+            (20, "יום ראשון"),
+            (21, "יום שני"),
+            (22, "יום שלישי"),
+            (23, "יום רביעי"),
+            (24, "יום חמישי"),
+            (25, "יום שישי"),
+            (26, "שבת"),
+        ],
+    )
+    def test_every_weekday_is_named_in_hebrew(self, day: int, name: str) -> None:
+        moment = datetime(2026, 9, day, 9, 0, tzinfo=app_module.CLOCK_ZONE)
+        assert app_module.clock_line(moment).endswith(f"({name})")
+
+    def test_a_utc_moment_is_shown_in_local_time(self) -> None:
+        moment = datetime(2026, 9, 22, 15, 40, tzinfo=timezone.utc)
+        assert "2026-09-22 18:40" in app_module.clock_line(moment)
+
+    def test_the_prompt_carries_the_frozen_clock(self, harness: Any) -> None:
+        seen: list[str] = []
+
+        def senses(messages: list[dict[str, Any]], tools: Any = None) -> ModelResponse:
+            seen.append(messages[0]["content"])
+            return ModelResponse(content=REPLY)
+
+        h = harness(complete=senses, now=lambda: self.FROZEN)
+        h.app.attach_ear("host", FakeEndpoint())
+        h.app.run_turn(SPEECH)
+        assert seen and "השעה עכשיו: 2026-09-22 18:40 (יום שלישי)" in seen[0]
+        # the clock comes right after the base prompt, before any tool text
+        base_end = seen[0].index(app_module.SYSTEM_PROMPT) + len(app_module.SYSTEM_PROMPT)
+        assert seen[0].index("השעה עכשיו:") > base_end
+        assert seen[0].index("השעה עכשיו:") < seen[0].index(app_module.REMEMBER_TOOL_PROMPT)
+
+    def test_a_clock_that_fails_degrades_to_no_line(self, harness: Any) -> None:
+        seen: list[str] = []
+
+        def senses(messages: list[dict[str, Any]], tools: Any = None) -> ModelResponse:
+            seen.append(messages[0]["content"])
+            return ModelResponse(content=REPLY)
+
+        def broken() -> datetime:
+            raise RuntimeError("no clock")
+
+        h = harness(complete=senses, now=broken)
+        h.app.attach_ear("host", FakeEndpoint())
+        assert h.app.run_turn(SPEECH).spoken == REPLY
+        assert seen and "השעה עכשיו:" not in seen[0]
+        assert app_module.APP_CLOCK_FAILED in h.ledger_codes()
+
+    def test_status_reports_the_zone(self, harness: Any) -> None:
+        h = harness()
+        clock = h.app.status()["clock"]
+        assert clock["zone"] == app_module.CLOCK_ZONE_NAME
+        assert isinstance(clock["zone_available"], bool)
 
 
 class TestTurnInstrumentation:

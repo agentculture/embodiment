@@ -167,8 +167,10 @@ address the browser withholds what the guard needs to vouch for a cookie, and
 None of the following is in this release. Each is a stated seam or a stated
 absence, not an implication.
 
-- **Tools.** The turn runs on `loop.py` with an **empty** tool registry, by
-  design. Gwen cannot act on anything.
+- **Other tools.** The daemon binds exactly two tools, both over Gwen's own
+  private memory: `remember` (d7) and `forget` (d8, which archives a record
+  in place and never deletes a byte). Nothing else — no shell, no files, no
+  Qwen Code. Gwen cannot act on anything outside her own memory.
 - **Vision.** The session is audio-only; `senses` does not advertise image
   understanding on this rig.
 - **A face.** The dashboard's centrepiece is a waveform; a speech-driven face
@@ -293,7 +295,7 @@ composes endpoints.
 | Module | What it is |
 |--------|------------|
 | `loop.py` | The bounded perceive → decide → act tool loop the turn runs on. Termination is proved *structurally* by AST tests |
-| `turn.py`, `tools.py` | One spoken turn through `loop.run`, never silent, never raises; the empty-by-default tool registry |
+| `turn.py`, `tools.py` | One spoken turn through `loop.run`, never silent, never raises; the tool registry (empty by default; the daemon binds `remember` and `forget`) |
 | `session.py`, `memory.py` | The conversation (explicit-ask detector, turn queue, supersede on barge-in, summary on close) and `RoomMemory`: private, pinned, deadline-bounded |
 | `realtime/`, `voice.py` | The typed lobes wire and the ears-only client; sentence-by-sentence TTS with paced waveform features |
 | `audio/` | `AudioEndpoint` protocol, the host endpoint, the inbound endpoint, the feature extractor |

@@ -230,9 +230,13 @@ __all__ = [
     "CODE_DOMAIN_UNAVAILABLE",
     "CODE_ARTIFACT_UNREADABLE",
     "CODE_REINFORCE_FAILED",
+    "CODE_RECORD_NOT_FOUND",
+    "CODE_ALREADY_ARCHIVED",
+    "LIFECYCLE_ARCHIVED",
     "Degradation",
     "RememberOutcome",
     "RecallOutcome",
+    "ArchiveOutcome",
     "AssessOutcome",
     "ContinuityStatus",
     "eidetic_available",
@@ -240,6 +244,7 @@ __all__ = [
     "probe",
     "remember",
     "recall",
+    "archive",
     "assess",
     "traverse",
     "traverse_available",
@@ -319,6 +324,16 @@ CODE_DOMAIN_UNAVAILABLE = "domain-unavailable"
 CODE_ARTIFACT_UNREADABLE = "artifact-unreadable"
 #: Recall succeeded but its passive write-back did not; records are still returned.
 CODE_REINFORCE_FAILED = "reinforce-failed"
+#: :func:`archive` found no record with that id in the given scope and
+#: visibility. Not an error in the store — a fact about it.
+CODE_RECORD_NOT_FOUND = "record-not-found"
+#: :func:`archive` found the record already ``archived``; nothing was written.
+CODE_ALREADY_ARCHIVED = "already-archived"
+
+#: eidetic's own lifecycle value for a record that is kept but never served.
+#: Its ``memory/lifecycle.py`` marks records with this string and the CLI
+#: filters on it; this seam writes the same value and never invents another.
+LIFECYCLE_ARCHIVED = "archived"
 
 # Cap on reason text lifted from a subsystem's exception, so a runaway message
 # cannot blow up a host's log or artifact.
@@ -395,6 +410,27 @@ class RememberOutcome:
     record_id: Optional[str]
     degradation: Optional[Degradation]
     raw: Optional[dict[str, Any]] = None
+
+    def to_dict(self) -> dict[str, Any]:
+        data: dict[str, Any] = {"ok": self.ok, "record_id": self.record_id}
+        if self.degradation is not None:
+            data["degradation"] = self.degradation.to_dict()
+        return data
+
+
+@dataclass(frozen=True)
+class ArchiveOutcome:
+    """Result of one :func:`archive` call.
+
+    ``record_id`` is the id that was asked for, echoed so a caller holding
+    several outcomes can tell them apart. It carries no text: an archived
+    record's content stays where it was, on disk, and never rides out through
+    this object.
+    """
+
+    ok: bool
+    record_id: Optional[str]
+    degradation: Optional[Degradation]
 
     def to_dict(self) -> dict[str, Any]:
         data: dict[str, Any] = {"ok": self.ok, "record_id": self.record_id}
@@ -890,6 +926,108 @@ def recall(
         )
 
     return RecallOutcome(ok=True, records=records, degradation=degradation)
+
+
+def archive(
+    record_id: str,
+    *,
+    data_dir: Optional[_StrPath] = None,
+    scope: str = DEFAULT_SCOPE,
+    visibility: str = DEFAULT_VISIBILITY,
+    backend: str = DEFAULT_BACKEND,
+) -> ArchiveOutcome:
+    """Mark one record ``archived`` in place. **Never deletes a byte.**
+
+    eidetic's own lifecycle engine (``memory/lifecycle.py``) only ever
+    *proposes* a lifecycle change and leaves persisting it to the caller; its
+    persist path is the backend's ``upsert`` of the same record with the field
+    flipped, which is exactly what this does. The record stays on disk with
+    its text, and :func:`recall`'s default lifecycle filter (the CLI's
+    documented default, applied here too) stops serving it.
+
+    Only a record in *this* scope **and** *this* visibility is touched — a
+    daemon forgetting from its own private store cannot reach a public record
+    another agent wrote, however the id is spelled. The lookup goes through the
+    backend's enumeration rather than a search, because a search ranks and a
+    lookup by id must not depend on a ranker's opinion of the query.
+
+    Same storage-anchor requirement as :func:`remember` (trap #1). Never
+    raises: a missing anchor, a missing subsystem, an unknown id, an already
+    archived record and a store that fails all degrade to
+    ``ArchiveOutcome(ok=False, …)`` with a coded :class:`Degradation`, and the
+    reasons are this module's own literals — an id is content, so it is not
+    interpolated into one.
+    """
+    anchor = _usable_anchor(data_dir)
+    if anchor is None:
+        return ArchiveOutcome(
+            ok=False, record_id=None, degradation=_storage_anchor_degradation("archive")
+        )
+    if _EIDETIC_IMPORT_ERROR is not None:
+        return ArchiveOutcome(
+            ok=False,
+            record_id=None,
+            degradation=_import_degradation("eidetic", "archive", _EIDETIC_IMPORT_ERROR),
+        )
+    if not isinstance(record_id, str) or not record_id.strip():
+        return ArchiveOutcome(
+            ok=False,
+            record_id=None,
+            degradation=Degradation(
+                subsystem="eidetic",
+                stage="archive",
+                code=CODE_INVALID_RECORD,
+                reason="a record id must be a non-empty string",
+            ),
+        )
+
+    try:
+        with _pinned_store(anchor):
+            store = _eidetic_get_backend(backend)
+            found = None
+            for candidate in store.all():
+                candidate_scope = getattr(candidate, "scope", None)
+                if (
+                    getattr(candidate, "id", None) == record_id
+                    and getattr(candidate_scope, "name", None) == scope
+                    and getattr(candidate_scope, "visibility", None) == visibility
+                ):
+                    found = candidate
+                    break
+            if found is None:
+                return ArchiveOutcome(
+                    ok=False,
+                    record_id=record_id,
+                    degradation=Degradation(
+                        subsystem="eidetic",
+                        stage="archive",
+                        code=CODE_RECORD_NOT_FOUND,
+                        reason="no record with that id in this scope and visibility",
+                    ),
+                )
+            if getattr(found, "lifecycle", "active") == LIFECYCLE_ARCHIVED:
+                return ArchiveOutcome(
+                    ok=False,
+                    record_id=record_id,
+                    degradation=Degradation(
+                        subsystem="eidetic",
+                        stage="archive",
+                        code=CODE_ALREADY_ARCHIVED,
+                        reason="the record is already archived; nothing was written",
+                    ),
+                )
+            found.lifecycle = LIFECYCLE_ARCHIVED
+            found.score = None
+            found.signal = None
+            store.upsert(found)
+    except Exception as exc:  # noqa: BLE001  # a store failure never reaches the host
+        return ArchiveOutcome(
+            ok=False,
+            record_id=record_id,
+            degradation=_error_degradation("eidetic", "archive", exc),
+        )
+
+    return ArchiveOutcome(ok=True, record_id=record_id, degradation=None)
 
 
 # ---------------------------------------------------------------------------

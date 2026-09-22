@@ -28,7 +28,8 @@ live truth; decisions live on embodiment#85.
 presence, not a body (`reachy-mini-cli` owns the robot and its own `agent
 embody` layer shares this package's name — say so wherever the name appears);
 one rig; Hebrew only; one active ear; the session never crosses machines;
-value unmeasured. **Not yet:** tools (the registry is empty by design),
+value unmeasured. **Not yet:** tools beyond memory (the daemon binds exactly
+two, `remember` and `forget`; the registry is otherwise empty by design),
 vision, a face, phone voice (the phone is control + text), a robot relay
 (t14's inbound endpoint and t18's `BrowserEar` exist, unwired), Cloudflare
 Access verification (the guard refuses a public Host until an RS256
@@ -282,7 +283,8 @@ embodiment/
   continuity.py         the eidetic/coherence seam, in-process
   events.py             optional observer onto events-cli (MQTT)
   turn.py               ONE spoken turn, driven through loop.run; never silent, never raises
-  tools.py              ToolRegistry (empty by default) + bind_tools; the additive tool seam
+  tools.py              ToolRegistry (empty by default; the daemon binds remember + forget)
+                        + bind_tools; the additive tool seam
   memory.py             RoomMemory over continuity: private, pinned, deadline-bounded;
                         render_recalled is the ONE place recall enters a prompt
   session.py            the conversation: explicit-ask detector (Hebrew/English), the

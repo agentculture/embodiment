@@ -2603,3 +2603,166 @@ class TestARecordIdNeverReachesAReasonRaw:
         finally:
             release.set()
             room.close()
+
+
+# ── forget: archive in place, never delete ───────────────────────────────────
+
+
+def _lifecycles(store: Path) -> dict[str, str]:
+    """``{id: lifecycle}`` read straight off the store's files."""
+    import json
+
+    out: dict[str, str] = {}
+    for path in store.rglob("*.jsonl"):
+        for line in path.read_text(encoding="utf-8").splitlines():
+            if line.strip():
+                row = json.loads(line)
+                out[row["id"]] = (row.get("metadata") or {}).get("lifecycle", "active")
+    return out
+
+
+class TestForget:
+    """Decision 18 (``d8``): a forgotten record is archived on disk, never deleted.
+
+    Real continuity, real eidetic, a ``tmp_path`` store. The daemon's whole
+    feature rests on two facts pinned here: the archive changes the bytes on
+    disk (the record stays, its lifecycle flips), and a recall afterwards does
+    not return it.
+    """
+
+    TEXT = "probe text for forget"
+
+    def _room(self, tmp_path: Path) -> mem.RoomMemory:
+        return mem.RoomMemory(tmp_path / "store", scope="gwen", embed_probe=lambda: False)
+
+    def _remembered(self, room: mem.RoomMemory) -> str:
+        result = room.remember(self.TEXT, deadline=5.0)
+        assert result.ok and result.record_id
+        return result.record_id
+
+    def test_recall_hides_an_archived_record_before_any_filter_of_ours(
+        self, tmp_path: Path
+    ) -> None:
+        """The finding the brief asks for: does the in-process path filter lifecycle?
+
+        Archived with eidetic's own backend, not through :meth:`RoomMemory.forget`,
+        so this pins what ``continuity.recall`` does on its own.
+        """
+        room = self._room(tmp_path)
+        record_id = self._remembered(room)
+        assert room.recall("probe", mode="exact", deadline=5.0).records, "not recallable"
+
+        from eidetic.memory.backend import get_backend
+
+        with mem.continuity._pinned_store(room.data_dir):
+            backend = get_backend("files")
+            for record in backend.all():
+                if record.id == record_id:
+                    record.lifecycle = "archived"
+                    backend.upsert(record)
+
+        after = room.recall("probe", mode="exact", deadline=5.0)
+        assert after.ok
+        assert [r["id"] for r in after.records] == []
+
+    def test_forget_archives_in_place_and_recall_then_hides_it(self, tmp_path: Path) -> None:
+        room = self._room(tmp_path)
+        record_id = self._remembered(room)
+        before = _snapshot(room.data_dir)
+
+        result = room.forget(record_id, deadline=5.0)
+
+        assert result.ok, result
+        assert result.record_id == record_id
+        assert result.code is None
+        # the bytes changed, and the record is still there — archived, not gone
+        assert _snapshot(room.data_dir) != before
+        assert _lifecycles(room.data_dir) == {record_id: "archived"}
+        body = "".join(p.read_text(encoding="utf-8") for p in room.data_dir.rglob("*.jsonl"))
+        assert self.TEXT in body, "forget deleted bytes; it must only archive"
+        # and recall no longer returns it
+        assert room.recall("probe", mode="exact", deadline=5.0).records == []
+
+    def test_an_already_archived_record_is_refused_with_its_own_code(self, tmp_path: Path) -> None:
+        room = self._room(tmp_path)
+        record_id = self._remembered(room)
+        assert room.forget(record_id, deadline=5.0).ok
+        before = _snapshot(room.data_dir)
+
+        again = room.forget(record_id, deadline=5.0)
+
+        assert not again.ok
+        assert again.code == mem.continuity.CODE_ALREADY_ARCHIVED
+        assert _snapshot(room.data_dir) == before
+
+    def test_an_unknown_id_is_refused_and_the_store_is_untouched(self, tmp_path: Path) -> None:
+        room = self._room(tmp_path)
+        self._remembered(room)
+        before = _snapshot(room.data_dir)
+
+        result = room.forget("gwen-0000000000000000", deadline=5.0)
+
+        assert not result.ok
+        assert result.code == mem.continuity.CODE_RECORD_NOT_FOUND
+        assert _snapshot(room.data_dir) == before
+
+    @pytest.mark.parametrize(
+        "bad",
+        ["", "   ", None, 17, "has space", "a/b", "x" * (mem.HEADER_FIELD_LIMIT + 1), "<<<x>>>"],
+    )
+    def test_an_unusable_id_never_reaches_the_seam(self, tmp_path: Path, bad: object) -> None:
+        calls: list[Any] = []
+
+        def archive_fn(record_id: str, **kwargs: Any) -> Any:
+            calls.append(record_id)
+            raise AssertionError("the seam must not be reached")
+
+        room = mem.RoomMemory(
+            tmp_path / "store", scope="gwen", embed_probe=lambda: False, archive_fn=archive_fn
+        )
+        result = room.forget(bad, deadline=5.0)  # type: ignore[arg-type]
+        assert not result.ok
+        assert result.code == mem.continuity.CODE_INVALID_RECORD
+        assert calls == []
+        # the reason never carries the id the model supplied
+        assert result.degradation is not None
+        if isinstance(bad, str) and bad.strip():
+            assert bad not in result.degradation.reason
+
+    def test_a_seam_that_raises_is_a_degradation_not_an_exception(self, tmp_path: Path) -> None:
+        def archive_fn(record_id: str, **kwargs: Any) -> Any:
+            raise RuntimeError("store exploded on " + record_id)
+
+        room = mem.RoomMemory(
+            tmp_path / "store", scope="gwen", embed_probe=lambda: False, archive_fn=archive_fn
+        )
+        result = room.forget("gwen-abc", deadline=5.0)
+        assert not result.ok
+        assert result.code == mem.continuity.CODE_SUBSYSTEM_ERROR
+        assert result.degradation is not None
+        assert "exploded" not in result.degradation.reason
+        assert "gwen-abc" not in result.degradation.reason
+
+    def test_a_forget_that_misses_its_deadline_is_deferred_and_reaped(self, tmp_path: Path) -> None:
+        blocking = _Blocking(raises=RuntimeError("late"))
+        room = mem.RoomMemory(
+            tmp_path / "store", scope="gwen", embed_probe=lambda: False, archive_fn=blocking
+        )
+        result = room.forget("gwen-abc", deadline=0.05)
+        assert not result.ok
+        assert result.code == mem.CODE_FORGET_DEFERRED
+        blocking.release.set()
+        limit = time.monotonic() + _PROMPT_SECONDS
+        while not room.abandoned and time.monotonic() < limit:
+            time.sleep(0.005)
+        codes = [d.code for d in room.abandoned]
+        assert mem.CODE_ABANDONED_FORGET in codes
+        room.close(deadline=1.0)
+
+    def test_a_closed_layer_refuses_a_forget(self, tmp_path: Path) -> None:
+        room = self._room(tmp_path)
+        record_id = self._remembered(room)
+        room.close(deadline=2.0)
+        result = room.forget(record_id, deadline=1.0)
+        assert not result.ok
+        assert result.code == mem.CODE_CLOSED
