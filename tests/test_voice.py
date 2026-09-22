@@ -1303,6 +1303,25 @@ class TestAttacks:
         assert VOICE_TTS_OVERSIZE in [d.code for d in voice.degradations]
         voice.close(deadline=1.0)
 
+    def test_oversize_is_not_a_synth_failure_so_later_sentences_still_speak(self) -> None:
+        """Truncation records a degradation but does NOT trip the
+        stop-synthesizing latch that a raise or a malformed return does: the
+        next sentence is still synthesized, played, and truncated again."""
+        from embodiment.voice import VOICE_TTS_OVERSIZE
+
+        player = FakePlayer()
+        bus = FakeBus()
+        huge = _silence_pcm(20 * 24000)
+        voice = Voice(endpoint=player, bus=bus, synthesize=lambda s, c: huge)
+        result = voice.speak("first sentence. second sentence.")
+        assert result.sentences_total == 2
+        assert result.sentences_queued == 2
+        assert result.tts_degraded is False
+        assert len(player.play_calls) == 2
+        oversize = [d for d in voice.degradations if d.code == VOICE_TTS_OVERSIZE]
+        assert len(oversize) == 2
+        voice.close(deadline=1.0)
+
     def test_api_key_never_leaks_into_a_degradation_reason(self) -> None:
         marker = "SECRET-MARKER-ZZZ-999"
         config = VoiceConfig(api_key=marker)
