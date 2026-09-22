@@ -2,7 +2,7 @@
   "plan_slug": "realtime-embodiment-app",
   "schema_version": 2,
   "created": "2026-09-21T20:45:09Z",
-  "updated": "2026-09-22T14:37:19Z",
+  "updated": "2026-09-22T15:38:18Z",
   "deviations": [
     {
       "id": "d1",
@@ -105,6 +105,28 @@
       "status": "approved",
       "classification": null,
       "seq": 48
+    },
+    {
+      "id": "d9",
+      "what": "Decision 19: the daemon's stop budget is re-derived from what stop actually has to do. The runner's shutdown deadline default rises from 2.0 s to 4.0 s, and on stop the session summary runs FIRST, under its own ~2 s share, before the ear and the rest of the close. Measured: at 2.0 s the app's share was 1.6 s and the summary window ~0.24 s, so a live stop recorded session-summary-timeout 1.32 s abandoned and app-shutdown-incomplete: session - the end-of-session memory record was rarely written on a default stop. t21 requires stop under 5 s, which 4.0 s still satisfies.",
+      "task_ref": "t15",
+      "reason": "the operator's approval, 2026-09-22 ('confirmed all'), on the evidence of the 17:16:55 stop that abandoned its summary",
+      "affects": [],
+      "origin": "llm",
+      "status": "approved",
+      "classification": null,
+      "seq": 51
+    },
+    {
+      "id": "d10",
+      "what": "Decision 20: the forget tool accepts the fact's text as well as a record id. When nothing was recalled into the prompt the model has no id to pass, and the live probe showed it refusing with unknown-id on a perfectly ordinary spoken ask. The daemon exact-matches the text against its own private store: exactly one match is archived, no match returns not-found, several return ambiguous - the model never invents an id, and the tool still never deletes a byte.",
+      "task_ref": "t15",
+      "reason": "the operator's approval, 2026-09-22 ('confirmed all'), on the evidence of the one-sentence forget clip that called the tool and was refused unknown-id",
+      "affects": [],
+      "origin": "llm",
+      "status": "approved",
+      "classification": null,
+      "seq": 52
     }
   ],
   "evidence": [
@@ -771,6 +793,44 @@
       "status": "approved",
       "superseded": false,
       "seq": 45
+    },
+    {
+      "id": "e41",
+      "obligation_ref": "o1",
+      "test_ref": "tests/test_daemon_app.py::TestAToolStepIsAlwaysAnswered",
+      "behavior_text": "7 tests: a Latin reply after a successful remember/forget speaks the fixed Hebrew confirmation and is counted; a Hebrew reply is left byte-identical; a turn with no tool step is never rewritten; a refused tool speaks the generic apology and never a false confirmation; the record carries the tool name and a character count and never the reply; the prompt carries the Hebrew-confirmation obligation",
+      "contract_text": "on this rig, 10 consecutive spoken turns complete with 0 silent failures (every failed turn leaves a degradation record)",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the 7 tests fail on the parent commit 01b52de (silence, no record) and pass at the named commit; the full suite is green",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-22T18:17:03+03:00",
+        "commit": "a7f0768506c66537ab05df0415e46092afb65c2e"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 49
+    },
+    {
+      "id": "e42",
+      "obligation_ref": "o1",
+      "test_ref": "live probe: scratchpad/tool_reply_probe.py against the running daemon (pid 113798)",
+      "behavior_text": "after a spoken remember ask the tool wrote (1/1/0), the reply came back in Hebrew and the endpoint pushed ~3.7 s of audio (playback_total_pushed_samples 59244 vs the warmup's 2400); tool_replies_answered stayed 0, so the prompt half carried the turn without the guard",
+      "contract_text": "on this rig, 10 consecutive spoken turns complete with 0 silent failures (every failed turn leaves a degradation record)",
+      "evidence_type": "manual",
+      "strength": "execution",
+      "strength_basis": "one synthetic ask clip played into the reSpeaker through the HDMI monitor on the restarted daemon; counters read from the daemon's own status, n=2 turns",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-09-22T18:02:00+03:00",
+        "commit": "f4e6d5b"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 50
     }
   ],
   "deltas": [
@@ -806,6 +866,21 @@
         "d7"
       ],
       "evidence_refs": [],
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false
+    },
+    {
+      "id": "b4",
+      "kind": "added",
+      "behavior_text": "a reply that follows a successful tool round and carries no Hebrew is replaced by a fixed spoken confirmation bounded by what the tool did (remember wrote -> \u05e9\u05de\u05e8\u05ea\u05d9., forget wrote -> \u05e9\u05db\u05d7\u05ea\u05d9., refused -> the generic apology), recorded as app-tool-reply-unspoken with the tool name and a character count and counted as memory.tool_replies_answered; REMEMBER_TOOL_PROMPT now obliges one spoken Hebrew sentence after the tool returns ok",
+      "caused_by": [
+        "d7"
+      ],
+      "evidence_refs": [
+        "e41",
+        "e42"
+      ],
       "origin": "llm",
       "status": "approved",
       "superseded": false

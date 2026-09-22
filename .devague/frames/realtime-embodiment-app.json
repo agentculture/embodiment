@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-21T18:39:43Z",
-  "updated": "2026-09-22T14:37:19Z",
+  "updated": "2026-09-22T15:28:05Z",
   "claims": [
     {
       "id": "c1",
@@ -1144,5 +1144,15 @@
       "status": "approved"
     }
   ],
-  "obligations": []
+  "obligations": [
+    {
+      "id": "o1",
+      "claim_id": "c27",
+      "seam": "the tool round (daemon/app.py: the reply that follows a remember/forget call)",
+      "behavior": "a turn that called a tool never ends in silence: the reply is speakable by this rig's Hebrew voice, or the daemon speaks a fixed confirmation bounded by what the tool actually did and records app-tool-reply-unspoken",
+      "source_text": "on this rig, 10 consecutive spoken turns complete with 0 silent failures (every failed turn leaves a degradation record), median end-of-speech to first reply audio is measured and published with its n, a fact stated in one session is recalled aloud after a daemon restart, and `stop` then `start` from both the CLI and the dashboard each take effect in < 5 s",
+      "origin": "llm",
+      "status": "approved"
+    }
+  ]
 }
