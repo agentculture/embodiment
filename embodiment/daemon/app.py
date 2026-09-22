@@ -2829,12 +2829,12 @@ class DaemonApp:
             and loop.is_running()
             and not loop.is_closed()
             and not self._ears_closed.is_set()
+            and self._schedule_ears_close(loop, close_bound)
         ):
-            if self._schedule_ears_close(loop, close_bound):
-                # Strictly longer than what the client itself was given, so a
-                # client answering inside its own bound always wins the race
-                # against this wait.
-                self._ears_close_done.wait(timeout=close_bound + _EARS_CLOSE_GRACE_S)
+            # Strictly longer than what the client itself was given, so a
+            # client answering inside its own bound always wins the race
+            # against this wait.
+            self._ears_close_done.wait(timeout=close_bound + _EARS_CLOSE_GRACE_S)
         thread.join(timeout=max(0.05, deadline))
         return not thread.is_alive()
 
