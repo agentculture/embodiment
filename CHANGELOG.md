@@ -6,6 +6,7 @@ Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.16.0] - 2026-09-22
+
 **The first daemon release.** Gwen listens, answers in Hebrew, remembers what
 she is explicitly asked to, and shows what she is doing. Accepted on **one rig
 only** and its usefulness is **unmeasured**: the human acceptance run (plan
