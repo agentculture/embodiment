@@ -52,6 +52,27 @@ merged code, folded into this same round of fixes):
     concurrent writers; an oversize record is never written, is counted
     every time, and degrades exactly once per log instance
 
+Round 6 (two reviewers, both independently reproduced by the coordinator
+before filing):
+
+17. two instances on one path (two ``open_transcript`` calls for the same
+    session, two ``DaemonState``s on the same directory) share ONE
+    process-wide lock, not one each — closing a race that silently dropped
+    records AND double-counted evictions; ``open_transcript`` is now
+    idempotent per session id (pinned: ``a is b``)
+18. the torn-tail newline PREFIX byte is counted in the append-vs-rewrite
+    decision, so it can never itself push a file one byte over its bound
+19. a read failure on the tail-probe (an unreadable-but-writable file) is
+    treated as dirty, never as "confirmed clean" — a spurious blank line
+    beats a silently glued-and-lost record — and is counted
+20. a torn fragment a trim pops is counted separately from a real evicted
+    record, never conflated with one
+21. a record with a non-JSON-serializable field degrades instead of raising
+    a bare ``TypeError`` out of a "never raises" API
+22. ``on_degrade`` is called only after the write lock is released, for
+    every reason a write can degrade — a hook that writes back to the same
+    log does not deadlock
+
 Every test passes an explicit ``tmp_path``-derived override or monkeypatches
 the env/tempdir seams (``EMBODIMENT_STATE_DIR`` / ``XDG_STATE_HOME`` / ``HOME``
 / ``tempfile.gettempdir``) — none ever writes to the real home directory or a
@@ -62,6 +83,7 @@ workers sharing a real ``/tmp`` would otherwise collide).
 
 from __future__ import annotations
 
+import json
 import os
 import stat
 import tempfile
@@ -1452,3 +1474,394 @@ class TestOversizeRecordsAreNeverWrittenCountedAndDegradeOnce:
 
         assert log.oversize_records == 0
         assert len(log.read_all()) == 1
+
+
+# ── round 6, fix 1: one lock per PATH, process-wide; cached transcripts ────
+
+
+class TestOnePathOneLockAndCachedTranscripts:
+    def test_open_transcript_twice_returns_the_same_object(self, tmp_path) -> None:
+        state = DaemonState(tmp_path / "state")
+        a = state.open_transcript("s")
+        b = state.open_transcript("s")
+        assert a is b
+
+    def test_a_different_max_bytes_on_the_second_call_is_ignored(self, tmp_path) -> None:
+        state = DaemonState(tmp_path / "state")
+        a = state.open_transcript("s", max_bytes=1_000)
+        b = state.open_transcript("s", max_bytes=5_000)
+        assert a is b
+        assert a.max_bytes == 1_000
+
+    def test_different_session_ids_get_different_objects(self, tmp_path) -> None:
+        state = DaemonState(tmp_path / "state")
+        a = state.open_transcript("s1")
+        b = state.open_transcript("s2")
+        assert a is not b
+        assert a.path != b.path
+
+    def test_two_raw_transcript_log_instances_on_one_path_share_one_lock(self, tmp_path) -> None:
+        path = tmp_path / "shared.jsonl"
+        a = TranscriptLog(path, max_bytes=3_000)
+        b = TranscriptLog(path, max_bytes=3_000)
+        assert a is not b
+        assert a._lock is b._lock
+
+    def test_two_daemon_states_on_the_same_dir_share_the_ledger_and_log_locks(
+        self, tmp_path
+    ) -> None:
+        d = tmp_path / "state"
+        s1 = DaemonState(d)
+        s2 = DaemonState(d)
+        assert s1.ledger._lock is s2.ledger._lock
+        assert s1.operational_log._lock is s2.operational_log._lock
+
+    def test_the_probes_scenario_via_cached_open_transcript_exact_accounting(
+        self, tmp_path
+    ) -> None:
+        """Reproduces the reviewers' probe exactly (two open_transcript calls
+        for the same session id, two threads each writing 400 records over a
+        3 kB bound) through the public API. With caching, ``a is b``, so
+        there is only ONE object's own counters to reason about — and the
+        exact invariant holds: records currently on disk plus everything
+        that object's own eviction count claims must equal everything
+        written, with the file never exceeding its bound.
+        """
+        state = DaemonState(tmp_path / "state")
+        a = state.open_transcript("s", max_bytes=3_000)
+        b = state.open_transcript("s", max_bytes=3_000)
+        assert a is b
+
+        def worker(key: str) -> None:
+            for i in range(400):
+                a.write("user", f"{key}-{i} " + "z" * 30)
+
+        t1 = threading.Thread(target=worker, args=("A",))
+        t2 = threading.Thread(target=worker, args=("B",))
+        t1.start()
+        t2.start()
+        t1.join(timeout=30)
+        t2.join(timeout=30)
+        assert not t1.is_alive() and not t2.is_alive()
+
+        assert a.path.stat().st_size <= 3_000
+        records = a.read_all()
+        written = 800
+        assert len(records) + a.evicted_records == written
+
+    def test_two_raw_instances_on_one_path_share_a_lock_and_never_corrupt(self, tmp_path) -> None:
+        """Even bypassing DaemonState's caching — constructing TranscriptLog
+        directly twice on the same path, as the reviewers' probe originally
+        did — the shared per-path lock guarantees no byte-level corruption
+        and the bound is never exceeded. Two SEPARATE Python objects' own
+        eviction counters are independently kept and are not expected to sum
+        to a meaningful total across two different objects (that
+        attribution problem is exactly what caching removes — see the test
+        above, which IS exact because there is only one object there).
+        """
+        path = tmp_path / "shared.jsonl"
+        a = TranscriptLog(path, max_bytes=3_000)
+        b = TranscriptLog(path, max_bytes=3_000)
+
+        def worker(log: TranscriptLog, key: str) -> None:
+            for i in range(400):
+                log.write("user", f"{key}-{i} " + "z" * 30)
+
+        t1 = threading.Thread(target=worker, args=(a, "A"))
+        t2 = threading.Thread(target=worker, args=(b, "B"))
+        t1.start()
+        t2.start()
+        t1.join(timeout=30)
+        t2.join(timeout=30)
+        assert not t1.is_alive() and not t2.is_alive()
+
+        raw = path.read_text(encoding="utf-8")
+        lines = [ln for ln in raw.splitlines() if ln.strip()]
+        for ln in lines:
+            json.loads(ln)  # must not raise — no interleaved/corrupted line
+        assert path.stat().st_size <= 3_000
+
+
+# ── round 6, fix 2: the torn-tail prefix byte counts toward the bound ──────
+
+
+class TestTornTailPrefixByteCountsTowardTheBound:
+    def test_prefix_byte_never_pushes_the_file_over_the_bound(self, tmp_path) -> None:
+        """Deterministic, byte-exact version of the reviewers' finding: a
+        torn 1-byte tail plus a line chosen so existing+line alone lands
+        EXACTLY at max_bytes — which only fits if the prefix byte the write
+        must also add is (wrongly) not counted. The fixed code must instead
+        take the rewrite path and keep the file within bound.
+        """
+        path = tmp_path / "op.log"
+        path.write_bytes(b"{")  # a 1-byte torn fragment, no trailing newline
+
+        line = "x" * 10
+        encoded_len = len(line.encode("utf-8")) + 1  # + this line's own newline
+        max_bytes = 1 + encoded_len  # existing(1) + line_with_newline — NO prefix counted
+
+        log = OperationalLog(path, max_bytes=max_bytes)
+        with log._lock:
+            log._append_or_rewrite(line)
+
+        assert log.path.stat().st_size <= max_bytes
+
+    def test_prefix_byte_never_pushes_over_the_bound_across_many_record_sizes(
+        self, tmp_path
+    ) -> None:
+        """A sweep instead of hunting for one exact boundary value (which the
+        reviewers' probe does and which can miss depending on timestamp
+        digit width) — the invariant must hold for every size, not just one
+        lucky hit.
+        """
+        for n in range(1, 100, 7):
+            path = tmp_path / f"op-{n}.log"
+            log = OperationalLog(path, max_bytes=200)
+            log.write("seed")
+            with open(path, "ab") as fh:
+                fh.write(b"{")  # torn, no trailing newline
+            log.write("y" * n)
+            assert log.path.stat().st_size <= 200
+
+
+# ── round 6, fix 3: an unreadable tail is treated as dirty, never as clean ─
+
+
+class TestUnreadableTailIsTreatedAsDirty:
+    def test_0200_torn_tail_does_not_glue_the_new_record(self, tmp_path) -> None:
+        log = OperationalLog(tmp_path / "op.log", max_bytes=10**6)
+        log.write("first")
+        with open(log.path, "ab") as fh:
+            fh.write(b'{"torn')  # no trailing newline
+        os.chmod(log.path, 0o200)  # write-only: the tail probe cannot read it
+        try:
+            log.write("second")
+        finally:
+            os.chmod(log.path, 0o600)
+
+        events = [r["event"] for r in log.read_all()]
+        assert "second" in events
+
+    def test_probe_error_is_counted(self, tmp_path) -> None:
+        log = OperationalLog(tmp_path / "op.log", max_bytes=10**6)
+        log.write("first")
+        with open(log.path, "ab") as fh:
+            fh.write(b'{"torn')
+        os.chmod(log.path, 0o200)
+        try:
+            log.write("second")
+        finally:
+            os.chmod(log.path, 0o600)
+
+        assert log.probe_errors >= 1
+        assert log.status()["probe_errors"] >= 1
+
+    def test_probe_tail_directly_treats_a_read_error_as_dirty_and_reports_it(
+        self, tmp_path
+    ) -> None:
+        path = tmp_path / "unreadable.jsonl"
+        path.write_bytes(b"no newline here")
+        os.chmod(path, 0o200)
+        try:
+            needs_prefix, probe_error = state_mod._probe_tail(path)
+        finally:
+            os.chmod(path, 0o600)
+        assert needs_prefix is True
+        assert probe_error is True
+
+    def test_probe_tail_on_a_nonexistent_file_is_not_an_error(self, tmp_path) -> None:
+        needs_prefix, probe_error = state_mod._probe_tail(tmp_path / "does-not-exist")
+        assert needs_prefix is False
+        assert probe_error is False
+
+    def test_last_byte_wrapper_returns_false_on_a_read_error(self, tmp_path) -> None:
+        """The thin boolean wrapper: an unreadable tail is no longer read as
+        "confirmed clean" — the old, buggy default this round replaces."""
+        path = tmp_path / "unreadable.jsonl"
+        path.write_bytes(b"content\n")
+        os.chmod(path, 0o200)
+        try:
+            result = _last_byte_is_newline_or_empty(path)
+        finally:
+            os.chmod(path, 0o600)
+        assert result is False
+
+
+# ── round 6, fix 4: a trimmed torn fragment is not an evicted record ───────
+
+
+class TestTrimmedFragmentIsNotAnEvictedRecord:
+    def test_trim_classifies_a_popped_fragment_separately_from_a_real_record(
+        self, tmp_path
+    ) -> None:
+        """Hand-constructed, byte-exact content: one real JSON record
+        followed by a torn fragment (no trailing newline) — exactly what an
+        interrupted earlier write leaves sitting at the front of the file.
+        A crossing trim forced small enough to drop both must count them
+        separately.
+        """
+        path = tmp_path / "op.log"
+        path.write_bytes(b'{"event": "first"}\n{"torn')
+
+        dropped_records, dropped_fragments = state_mod._bounded_rewrite_append(
+            path, '{"event": "second"}', max_bytes=40, low_water_bytes=20
+        )
+
+        assert dropped_records == 1
+        assert dropped_fragments == 1
+        assert '"second"' in path.read_text(encoding="utf-8")
+
+    def test_fragments_dropped_is_visible_via_the_public_write_api(self, tmp_path) -> None:
+        """max_bytes=150 (not a tighter bound): round 6's oversize handling
+        rejects a single record whose OWN encoded size exceeds max_bytes
+        before it ever reaches the rewrite path (see
+        TestOversizeRecordsAreNeverWrittenCountedAndDegradeOnce), so the
+        crossing write here must stay individually under the bound while
+        still combining with the existing content to cross it.
+        """
+        log = OperationalLog(tmp_path / "op.log", max_bytes=150)
+        log.write("first")
+        with open(log.path, "ab") as fh:
+            fh.write(b'{"event": "torn-fragment-that-will-never-parse')  # no newline
+        # Individually under 150 bytes; combined with what's already on
+        # disk (the real "first" record plus the torn fragment), over it.
+        log.write("y" * 40)
+
+        assert log.fragments_dropped >= 1
+        status = log.status()
+        assert status["fragments_dropped"] == log.fragments_dropped
+
+    def test_fragments_dropped_is_zero_when_nothing_is_ever_torn(self, tmp_path) -> None:
+        log = OperationalLog(tmp_path / "op.log", max_bytes=2_000)
+        for i in range(400):
+            log.write("heartbeat", step=i, note="a fixed-shape note to force several crossings")
+        assert log.rewrites > 0
+        assert log.fragments_dropped == 0
+
+
+# ── round 6, fix 5: a non-serializable field degrades, never raises ────────
+
+
+class TestNonSerializableFieldNeverRaisesOutOfWrite:
+    def test_write_with_a_bytes_field_does_not_raise(self, tmp_path) -> None:
+        log = OperationalLog(tmp_path / "op.log", max_bytes=10**6)
+        log.write("evt", raw=b"x")  # must not raise
+
+    def test_the_record_is_dropped_not_written(self, tmp_path) -> None:
+        log = OperationalLog(tmp_path / "op.log", max_bytes=10**6)
+        log.write("evt", raw=b"x")
+        assert log.read_all() == []
+
+    def test_write_error_names_the_field_and_its_type(self, tmp_path) -> None:
+        log = OperationalLog(tmp_path / "op.log", max_bytes=10**6)
+        log.write("evt", raw=b"x")
+        assert log.write_errors
+        assert "raw" in log.write_errors[0]
+        assert "bytes" in log.write_errors[0]
+
+    def test_write_error_never_carries_a_repr_of_the_value(self, tmp_path) -> None:
+        marker = "super-secret-value-content-xyz"
+
+        class Weird:
+            def __repr__(self) -> str:
+                return marker
+
+        log = OperationalLog(tmp_path / "op.log", max_bytes=10**6)
+        log.write("evt", odd=Weird())
+
+        assert log.write_errors
+        assert marker not in log.write_errors[0]
+
+    def test_other_writes_still_work_after_a_serialization_failure(self, tmp_path) -> None:
+        log = OperationalLog(tmp_path / "op.log", max_bytes=10**6)
+        log.write("evt", raw=b"x")
+        log.write("evt", step=1)
+        records = log.read_all()
+        assert len(records) == 1
+        assert records[0]["step"] == 1
+
+    def test_transcript_log_shares_the_same_code_path(self, tmp_path) -> None:
+        transcript = TranscriptLog(tmp_path / "sess.jsonl", max_bytes=10**6)
+        transcript._write({"role": "user", "text": "ok", "bad": object()})
+        assert transcript.write_errors
+        assert transcript.read_all() == []
+
+
+# ── round 6, fix 6: on_degrade never runs while a write lock is held ───────
+
+
+class TestOnDegradeNeverRunsUnderTheLock:
+    def test_a_hook_that_writes_back_to_the_same_log_does_not_deadlock(self, tmp_path) -> None:
+        holder: dict[str, OperationalLog] = {}
+
+        def hook(code: str, detail: str) -> None:
+            holder["log"].write("evt", x="y")
+
+        log = OperationalLog(tmp_path / "op.log", max_bytes=100, on_degrade=hook)
+        holder["log"] = log
+
+        done = threading.Event()
+
+        def go() -> None:
+            log.write("evt", big="q" * 500)  # triggers oversize -> degrade
+            done.set()
+
+        threading.Thread(target=go, daemon=True).start()
+        finished = done.wait(5)
+        assert finished, "write() did not return - the hook likely deadlocked"
+
+    def test_the_hooks_own_write_actually_lands(self, tmp_path) -> None:
+        """Deliberately run through a bounded background thread, exactly
+        like the sibling test above — calling ``log.write()`` directly on
+        the main test thread here would, against the PRE-FIX code, deadlock
+        the main thread itself with no timeout at all and hang the whole
+        test run rather than just this one test failing. (Caught during
+        this round's own red/green check: the first version of this test
+        called ``log.write()`` unguarded and hung pytest indefinitely
+        against the reverted, pre-fix module.)
+        """
+        holder: dict[str, OperationalLog] = {}
+        calls: list[tuple[str, str]] = []
+
+        def hook(code: str, detail: str) -> None:
+            calls.append((code, detail))
+            holder["log"].write("evt", from_hook=True)
+
+        log = OperationalLog(tmp_path / "op.log", max_bytes=100, on_degrade=hook)
+        holder["log"] = log
+
+        done = threading.Event()
+
+        def go() -> None:
+            log.write("evt", big="q" * 500)
+            done.set()
+
+        threading.Thread(target=go, daemon=True).start()
+        finished = done.wait(5)
+        assert finished, "write() did not return - the hook likely deadlocked"
+        assert calls
+        assert any(r.get("from_hook") for r in log.read_all())
+
+    def test_the_write_failure_hook_site_also_never_deadlocks(self, tmp_path) -> None:
+        """The OTHER pre-existing hook site (an OSError write failure): both
+        now share one call pattern, so this must be safe too."""
+        blocked = tmp_path / "blocked"
+        blocked.write_text("i am a file")
+        holder: dict[str, OperationalLog] = {}
+
+        def hook(code: str, detail: str) -> None:
+            holder["log2"].write("evt", noted=True)
+
+        log2 = OperationalLog(tmp_path / "ok.log", max_bytes=10**6)
+        log = OperationalLog(blocked / "sub" / "op.log", max_bytes=10**6, on_degrade=hook)
+        holder["log2"] = log2
+
+        done = threading.Event()
+
+        def go() -> None:
+            log.write("evt")  # parent dir can't be created -> OSError -> degrade
+            done.set()
+
+        threading.Thread(target=go, daemon=True).start()
+        assert done.wait(5), "write() did not return - the hook likely deadlocked"
+        assert log2.read_all()

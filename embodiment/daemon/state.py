@@ -116,14 +116,102 @@ the write under the inode lock for the duration of one ``write()`` syscall,
 for any size that one syscall actually transfers (unlike ``PIPE_BUF``, which
 bounds atomicity for pipes/FIFOs specifically, not regular files) — but this
 module does not rely on that alone: every :meth:`_BoundedJsonlLog._write` and
-:meth:`DegradationLedger.append` is additionally serialized behind a
-per-instance ``threading.Lock``, so correctness holds even on a filesystem
-where single-``write()`` atomicity does not (network filesystems such as NFS
-are the known exception; this module has not been measured against one). The
-lock also closes a race the kernel's write atomicity alone would not: two
-threads independently deciding "we're under the bound, append" from a stale
-size read could together push the file over it; holding the lock across the
-whole decide-then-write makes that decision atomic too.
+:meth:`DegradationLedger.append` is additionally serialized behind a lock, so
+correctness holds even on a filesystem where single-``write()`` atomicity
+does not (network filesystems such as NFS are the known exception; this
+module has not been measured against one). The lock also closes a race the
+kernel's write atomicity alone would not: two threads independently deciding
+"we're under the bound, append" from a stale size read could together push
+the file over it; holding the lock across the whole decide-then-write makes
+that decision atomic too.
+
+One lock per PATH, process-wide — not one per instance
+-------------------------------------------------------------
+That lock used to be per-INSTANCE, which is only as strong as "every writer
+on a file is the same object." It is not: two calls to
+:meth:`DaemonState.open_transcript` for the same session id used to each
+mint an independent :class:`TranscriptLog` on the same file, and two
+:class:`DaemonState` objects pointed at the same directory each mint their
+own :class:`OperationalLog`/:class:`DegradationLedger`. Measured with two
+independently-locked instances on one 3 kB-bounded file, two threads writing
+400 records each: 25 records survived, but the two instances' own
+``evicted_records`` summed to 807 against 800 written — a rewrite ran over a
+stale read from the OTHER instance's writes and silently dropped MORE than
+it should have, while both instances' counters kept counting as if nothing
+had been lost. No write error, nothing in ``status()`` — a second silent
+loss on top of the first (see "a bounded buffer counts what it drops" above)
+that counting alone cannot catch when the thing racing is the lock itself.
+
+:func:`_lock_for_path` fixes this at the root: a module-level registry,
+keyed by the RESOLVED path and guarded by its own lock (a handful of paths
+for a process's lifetime — no weak-reference cleanup is worth the
+complexity here), hands out the SAME ``threading.Lock`` to every
+:class:`_BoundedJsonlLog`/:class:`DegradationLedger` instance ever
+constructed on that path in this process. :meth:`DaemonState.open_transcript`
+also now caches its return per ``session_id`` (a second call for the same id
+returns the identical object — pinned by a test), which removes the most
+common way two instances on one path would arise in practice; the registry
+lock is the fix for the general case, including the one caching cannot
+reach (two separate :class:`DaemonState` objects on the same directory).
+
+Explicitly out of scope: a SECOND PROCESS writing the same path. This
+registry is in-process memory only and coordinates nothing across processes
+— the daemon design keeps exactly one process per state directory (a
+pidfile-guarded single-instance lock, plan task t5, not this one), which is
+the actual control against a cross-process collision.
+
+on_degrade never runs while a write lock is held
+------------------------------------------------------
+A hook passed as ``on_degrade`` might itself write to the SAME log instance
+(a host logging "I got told about a degradation" back into its own
+operational log, say) — if the hook fired while :func:`_lock_for_path`'s
+lock were still held, that write would try to re-acquire a lock this
+thread already holds and deadlock forever (``threading.Lock`` is not
+re-entrant; measured: a 2 s wait that never returns). Every write path
+collects what it needs to tell ``on_degrade`` — a ``(code, detail)`` pair —
+while the lock is held, but only CALLS the hook after the ``with`` block
+that holds the lock has exited, whether the write succeeded, failed, or hit
+an oversize record. One rule, one code path, for every reason a write can
+degrade.
+
+An unreadable tail is treated as dirty, never as clean
+-------------------------------------------------------------
+Deciding whether the next append needs a leading newline (see "a crash
+mid-append cannot glue" above) means reading the file's last byte. That
+read can itself fail — a file made writable-but-unreadable (mode ``0200``)
+by something else touching it, for instance — and treating a failed probe
+as "confirmed clean, no prefix needed" glues the new record onto whatever
+the file's actual (unread, possibly torn) tail was, with no error anywhere:
+the write still reports success. :func:`_probe_tail` treats any probe
+failure other than the file simply not existing as UNKNOWN, and unknown is
+treated as dirty: a newline prefix is written regardless. A spurious blank
+line ahead of a good record is harmless (the reader already skips blank
+lines); a record silently glued onto an unread fragment and then dropped by
+the reader is a lost record. The probe failure itself is also counted, on
+:attr:`~_BoundedJsonlLog.probe_errors`, so this defensive choice is visible
+rather than another silent correction.
+
+A trimmed torn fragment is not an evicted record
+--------------------------------------------------
+A rewrite's trim can pop a line that was never a real record to begin with
+— the torn fragment an interrupted earlier write left behind, still sitting
+unparsed at the front of the file when a later crossing trims it away.
+Counting that as one more "evicted record" overstates how much real history
+a log has lost. :func:`_trim_to_low_water` checks whether each popped line
+parses as JSON: a real record bumps :attr:`~_BoundedJsonlLog.evicted_records`
+as before; an unparsed fragment bumps the separate
+:attr:`~_BoundedJsonlLog.fragments_dropped` instead.
+
+A record that cannot be JSON-serialized degrades, never raises
+-------------------------------------------------------------------
+``OperationalLog.write(event, **fields)`` accepts arbitrary keyword fields,
+and nothing stopped a caller from passing something ``json.dumps`` cannot
+encode (bytes, a custom object, ...) — that raised a bare ``TypeError``
+straight out of an API this whole module promises never raises. The record
+is now dropped, counted on ``write_errors`` naming the offending field(s)
+and their TYPE (``bytes``, ``MyClass``, ...) — never ``repr()`` of the
+value, which could itself carry exactly the kind of arbitrary or sensitive
+payload this module elsewhere goes out of its way never to log.
 
 A bounded buffer counts what it drops
 -----------------------------------------
@@ -369,6 +457,32 @@ _TMP_FILE_RE = re.compile(r"^\..+\.[A-Za-z0-9_]+\.tmp$")
 _SESSION_ID_RE = re.compile(r"^[A-Za-z0-9._-]+$")
 _SESSION_ID_MAX_LEN = 200
 
+# ── one lock per resolved path, process-wide ────────────────────────────────
+
+#: Guards :data:`_PATH_LOCKS` itself — never held for longer than a dict
+#: lookup/insert.
+_PATH_LOCKS_GUARD = threading.Lock()
+
+#: ``resolved path -> the lock every writer on that path shares``. See the
+#: module docstring's "one lock per PATH, process-wide" section. Grows by at
+#: most a handful of entries over a process's life; never pruned (per-process
+#: state directory paths are few and this module does not churn them).
+_PATH_LOCKS: dict[Path, threading.Lock] = {}
+
+
+def _lock_for_path(path: Path) -> threading.Lock:
+    """The process-wide lock every ``_BoundedJsonlLog``/``DegradationLedger``
+    instance on *path* shares. See the module docstring's "one lock per PATH,
+    process-wide" section for why a per-instance lock was not enough.
+    """
+    resolved = path.resolve()
+    with _PATH_LOCKS_GUARD:
+        lock = _PATH_LOCKS.get(resolved)
+        if lock is None:
+            lock = threading.Lock()
+            _PATH_LOCKS[resolved] = lock
+        return lock
+
 
 def resolve_state_dir(override: Optional[str | Path] = None) -> Path:
     """Resolve the daemon's state directory. Never consults the cwd.
@@ -604,7 +718,9 @@ def _atomic_write_bytes(path: Path, data: bytes) -> None:
         raise
 
 
-def _trim_to_low_water(combined: bytes, max_bytes: int, low_water_bytes: int) -> tuple[bytes, int]:
+def _trim_to_low_water(
+    combined: bytes, max_bytes: int, low_water_bytes: int
+) -> tuple[bytes, int, int]:
     """Drop whole lines from the OLDEST end of *combined* until it fits at or
     under *low_water_bytes*. Only called when *combined* already exceeds
     *max_bytes*; a single line larger than *max_bytes* on its own is kept
@@ -612,23 +728,34 @@ def _trim_to_low_water(combined: bytes, max_bytes: int, low_water_bytes: int) ->
     valid JSONL. See :data:`_LOW_WATER_RATIO` for why the target is the low
     water mark and not *max_bytes* itself.
 
-    Returns ``(trimmed, dropped_count)`` — *dropped_count* is the number of
-    whole lines popped, which the caller adds to :attr:`_BoundedJsonlLog.
-    evicted_records` (a bounded buffer counts what it drops; see the module
-    docstring's "eviction is counted, never silent" section). Only ever pops
-    from index 0, which is always a real prior line — the sentinel empty
-    element ``combined.split(b"\\n")`` leaves at the end (from the trailing
-    newline) is never counted as a dropped record.
+    Returns ``(trimmed, dropped_records, dropped_fragments)``. Each popped
+    line is classified by whether it parses as JSON: a real record bumps
+    *dropped_records* (what the caller adds to :attr:`_BoundedJsonlLog.
+    evicted_records`); a torn fragment an earlier interrupted write left
+    behind — never a real record to begin with — bumps *dropped_fragments*
+    instead, so eviction counts never overstate how much real history a log
+    has lost (see the module docstring's "a trimmed torn fragment is not an
+    evicted record" section). Only ever pops from index 0, which is always a
+    real prior line — the sentinel empty element ``combined.split(b"\\n")``
+    leaves at the end (from the trailing newline) is never popped.
     """
     lines = combined.split(b"\n")
-    dropped = 0
+    dropped_records = 0
+    dropped_fragments = 0
     while len(lines) > 2 and sum(len(item) + 1 for item in lines) > low_water_bytes:
-        lines.pop(0)
-        dropped += 1
-    return b"\n".join(lines), dropped
+        popped = lines.pop(0)
+        try:
+            json.loads(popped)
+        except json.JSONDecodeError:
+            dropped_fragments += 1
+        else:
+            dropped_records += 1
+    return b"\n".join(lines), dropped_records, dropped_fragments
 
 
-def _bounded_rewrite_append(path: Path, line: str, max_bytes: int, low_water_bytes: int) -> int:
+def _bounded_rewrite_append(
+    path: Path, line: str, max_bytes: int, low_water_bytes: int
+) -> tuple[int, int]:
     """Append *line* to *path* by rewriting it, trimming to *low_water_bytes*
     if the combined size would exceed *max_bytes*.
 
@@ -641,8 +768,8 @@ def _bounded_rewrite_append(path: Path, line: str, max_bytes: int, low_water_byt
     :func:`_append_line` does: gluing onto a fragment would make the new
     record unparseable forever, not just skip the fragment once.
 
-    Returns the number of existing records evicted by this call (``0`` when
-    the new line fit without trimming) — see :func:`_trim_to_low_water`.
+    Returns ``(dropped_records, dropped_fragments)`` — both ``0`` when the
+    new line fit without trimming — see :func:`_trim_to_low_water`.
     """
     existing = b""
     if path.exists():
@@ -651,32 +778,58 @@ def _bounded_rewrite_append(path: Path, line: str, max_bytes: int, low_water_byt
         existing += b"\n"
     encoded = line.encode("utf-8") + b"\n"
     combined = existing + encoded
-    dropped = 0
+    dropped_records = 0
+    dropped_fragments = 0
     if len(combined) > max_bytes:
-        combined, dropped = _trim_to_low_water(combined, max_bytes, low_water_bytes)
+        combined, dropped_records, dropped_fragments = _trim_to_low_water(
+            combined, max_bytes, low_water_bytes
+        )
     _atomic_write_bytes(path, combined)
-    return dropped
+    return dropped_records, dropped_fragments
 
 
-def _last_byte_is_newline_or_empty(path: Path) -> bool:
-    """``True`` if *path* does not exist, is empty, or already ends in ``\\n``.
+def _probe_tail(path: Path) -> tuple[bool, bool]:
+    """Whether the next append needs a leading newline, and whether the
+    probe itself failed.
 
-    One small read (never the whole file) used by :func:`_append_line` to
-    decide whether a leading newline is needed before the new line, so a torn
-    last line from an interrupted previous write is never glued to.
+    Returns ``(needs_prefix, probe_error)``. A file that does not exist yet
+    is not an error — there is no fragment to avoid — so ``(False, False)``.
+    Any OTHER read failure (a file made writable-but-unreadable, mode
+    ``0200``, by something else touching it) can never be read as "confirmed
+    clean": that would risk gluing the next record onto an unread, possibly
+    torn tail and losing it. So it is treated as dirty — ``needs_prefix``
+    is ``True`` regardless — and reported back as a probe error so the
+    caller can count it; see the module docstring's "an unreadable tail is
+    treated as dirty" section.
     """
     try:
         with open(path, "rb") as handle:  # noqa: PTH123 - a raw byte peek, not text
             handle.seek(0, os.SEEK_END)
             if handle.tell() == 0:
-                return True
+                return False, False
             handle.seek(-1, os.SEEK_END)
-            return handle.read(1) == b"\n"
+            return handle.read(1) != b"\n", False
+    except FileNotFoundError:
+        return False, False
     except OSError:
-        return True  # no file yet — the first write has no fragment to avoid
+        return True, True
 
 
-def _append_line(path: Path, line: str, *, fsync: bool) -> None:
+def _last_byte_is_newline_or_empty(path: Path) -> bool:
+    """``True`` if *path* does not exist, is empty, or already ends in ``\\n``.
+
+    ``False`` if the tail could not even be read — see :func:`_probe_tail`,
+    which this is a thin boolean-only wrapper over (kept for existing
+    callers; new code that also needs the probe-failure flag should call
+    :func:`_probe_tail` directly).
+    """
+    needs_prefix, _probe_error = _probe_tail(path)
+    return not needs_prefix
+
+
+def _append_line(
+    path: Path, line: str, *, fsync: bool, prefix_needed: Optional[bool] = None
+) -> None:
     """A true ``O_APPEND`` write of exactly one JSONL line. Never reads or
     rewrites existing content — the CHEAP path, used for every write that
     stays under a log's bound (and always, for the unbounded ledger). Mode
@@ -684,8 +837,12 @@ def _append_line(path: Path, line: str, *, fsync: bool) -> None:
 
     Prefixes the write with a newline when the file's current last byte is
     not already one, so a torn last line from an interrupted previous append
-    is never glued to — see :func:`_last_byte_is_newline_or_empty` and the
-    module docstring's "a crash mid-append cannot glue" section.
+    is never glued to — see the module docstring's "a crash mid-append
+    cannot glue" and "an unreadable tail is treated as dirty" sections.
+    *prefix_needed*, when given, skips this function's own probe (the caller
+    already ran :func:`_probe_tail` once, e.g. to fold into its size
+    decision — see :meth:`_BoundedJsonlLog._append_or_rewrite`); when
+    omitted, this function probes for itself.
 
     *fsync* decides whether this call durably syncs to disk before
     returning — see the module docstring's fsync policy section and
@@ -694,7 +851,9 @@ def _append_line(path: Path, line: str, *, fsync: bool) -> None:
     callers decide how to degrade.
     """
     path.parent.mkdir(parents=True, exist_ok=True)
-    prefix = b"" if _last_byte_is_newline_or_empty(path) else b"\n"
+    if prefix_needed is None:
+        prefix_needed, _probe_error = _probe_tail(path)
+    prefix = b"\n" if prefix_needed else b""
     encoded = prefix + (line + "\n").encode("utf-8")
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, _PRIVATE_FILE_MODE)
     try:
@@ -771,8 +930,10 @@ class DegradationLedger:
     torn final line, which is what an interrupted append looks like on disk:
     everything before it stays readable, and :func:`_append_line`'s own
     torn-line guard means the NEXT append after one starts on a fresh line
-    rather than gluing onto the fragment. Every append is serialized behind a
-    per-instance lock (see the module docstring's concurrency section).
+    rather than gluing onto the fragment. Every append is serialized behind
+    the PROCESS-WIDE lock every instance on this same path shares — see
+    :func:`_lock_for_path` and the module docstring's "one lock per PATH,
+    process-wide" section.
 
     *path* may be ``None`` — the no-persistence floor described in the module
     docstring, used when :class:`DaemonState` could not create a state
@@ -784,7 +945,7 @@ class DegradationLedger:
 
     def __init__(self, path: Optional[str | Path]) -> None:
         self._path = Path(path) if path is not None else None
-        self._lock = threading.Lock()
+        self._lock = _lock_for_path(self._path) if self._path is not None else threading.Lock()
         #: Records this instance could not persist at all (the ledger file's
         #: own directory is unwritable, or there is no directory at all).
         #: Best-effort visibility of last resort; normally empty. Surfaced by
@@ -871,19 +1032,32 @@ class _BoundedJsonlLog:
     it" section. *fsync* is a required, explicit, per-subclass choice (see
     the module docstring's fsync policy section) — there is deliberately no
     default, so a new subclass cannot inherit a policy by accident. Every
-    write is serialized behind a per-instance lock (module docstring's
-    concurrency section).
+    write is serialized behind the PROCESS-WIDE lock every instance on this
+    same path shares (:func:`_lock_for_path`, module docstring's "one lock
+    per PATH, process-wide" section), and ``on_degrade`` is always called
+    AFTER that lock is released (module docstring's "on_degrade never runs
+    while a write lock is held" section) — never from inside
+    :meth:`_append_or_rewrite` itself.
 
     *path* may be ``None`` — the no-persistence floor (module docstring):
     every :meth:`_write` is dropped and counted on :attr:`write_errors`
     rather than the object being unusable.
 
-    Three more counters — :attr:`evicted_records`, :attr:`rewrites`,
-    :attr:`oversize_records` — track what trimming and oversize rejection
-    have done, in memory only; see the module docstring's "a bounded buffer
-    counts what it drops" section. Mutated only from :meth:`_append_or_rewrite`
-    while :attr:`_lock` is held, so they are exact under concurrent writers,
-    same as everything else this lock protects.
+    Counters — all in memory only, never persisted:
+
+    * :attr:`evicted_records` / :attr:`rewrites` / :attr:`oversize_records` —
+      see the module docstring's "a bounded buffer counts what it drops"
+      section.
+    * :attr:`fragments_dropped` — a torn fragment a trim popped, counted
+      separately from a real evicted record (module docstring's "a trimmed
+      torn fragment is not an evicted record" section).
+    * :attr:`probe_errors` — the tail-newline probe itself failed and a
+      prefix was written defensively (module docstring's "an unreadable
+      tail is treated as dirty" section).
+
+    All mutated only from :meth:`_append_or_rewrite` while the process-wide
+    path lock is held, so they are exact under concurrent writers, same as
+    everything else that lock protects.
     """
 
     def __init__(
@@ -898,7 +1072,7 @@ class _BoundedJsonlLog:
         self._max_bytes = max_bytes
         self._fsync = fsync
         self._on_degrade = on_degrade
-        self._lock = threading.Lock()
+        self._lock = _lock_for_path(self._path) if self._path is not None else threading.Lock()
         self._oversize_degraded = False
         #: Failures to persist a record. Best-effort visibility of last
         #: resort; surfaced by :meth:`DaemonState.status`.
@@ -911,6 +1085,13 @@ class _BoundedJsonlLog:
         #: Records whose own encoded size alone exceeds *max_bytes* — never
         #: written, always counted, see :data:`OVERSIZE_RECORD_CODE`.
         self.oversize_records: int = 0
+        #: Torn fragments a trim popped, counted separately from real
+        #: evicted records — see the class docstring.
+        self.fragments_dropped: int = 0
+        #: Times the tail-newline probe itself failed (an unreadable file) —
+        #: a prefix was written defensively regardless; see the class
+        #: docstring.
+        self.probe_errors: int = 0
 
     @property
     def path(self) -> Optional[Path]:
@@ -934,68 +1115,107 @@ class _BoundedJsonlLog:
         if self._path is None:
             self.write_errors.append("no persistence available: dropped one record")
             return
-        line = json.dumps(record, sort_keys=True)
+        try:
+            line = json.dumps(record, sort_keys=True)
+        except (TypeError, ValueError) as exc:
+            self._record_serialization_failure(record, exc)
+            return
+        pending_degrade: Optional[tuple[str, str]] = None
         try:
             with self._lock:
-                self._append_or_rewrite(line)
+                pending_degrade = self._append_or_rewrite(line)
         except OSError as exc:
             reason = f"{type(exc).__name__}: {exc}"
             self.write_errors.append(reason)
-            if self._on_degrade is not None:
-                try:
-                    self._on_degrade("log-write-failed", reason)
-                except OSError:
-                    pass  # narrow except; the degrade hook must never itself raise
+            pending_degrade = ("log-write-failed", reason)
+        # ONE call site for the hook, always after the lock is released — a
+        # hook that writes back to this same log would otherwise deadlock on
+        # a lock this thread still held. See the module docstring's
+        # "on_degrade never runs while a write lock is held" section.
+        if pending_degrade is not None and self._on_degrade is not None:
+            code, detail = pending_degrade
+            try:
+                self._on_degrade(code, detail)
+            except OSError:
+                pass  # narrow except; the degrade hook must never itself raise
 
-    def _append_or_rewrite(self, line: str) -> None:
-        """Called with :attr:`_lock` held. Picks the cheap or expensive path.
+    def _record_serialization_failure(self, record: dict[str, Any], exc: Exception) -> None:
+        """A record with a field ``json.dumps`` cannot encode never raises out
+        of :meth:`_write`. Names each offending field and its TYPE — never
+        ``repr()`` of the value, which could carry exactly the kind of
+        arbitrary or sensitive payload this module never logs elsewhere.
+        """
+        bad_fields = []
+        for key, value in record.items():
+            try:
+                json.dumps(value)
+            except (TypeError, ValueError):
+                bad_fields.append(f"{key}:{type(value).__name__}")
+        if not bad_fields:
+            bad_fields = [f"<unknown field>:{type(exc).__name__}"]
+        self.write_errors.append(f"record dropped, not JSON-serializable: {', '.join(bad_fields)}")
+
+    def _append_or_rewrite(self, line: str) -> Optional[tuple[str, str]]:
+        """Called with the process-wide path lock held. Picks the cheap or
+        expensive path.
 
         An oversize record (encoded size alone over *max_bytes*) is never
         written; a plain append is taken when it stays under the bound
-        (O(1): an encoded-length comparison plus one ``stat()``, no file
-        read); only a genuine crossing reaches the rewrite path, which is
-        where the eviction count comes from.
+        (O(1): one tail probe, one ``stat()``, no file read); only a genuine
+        crossing reaches the rewrite path, which is where the eviction count
+        comes from. Returns a pending ``(code, detail)`` for
+        :meth:`_write` to hand ``on_degrade`` AFTER releasing the lock, or
+        ``None`` when nothing needs to degrade — this method itself never
+        calls the hook.
         """
         assert self._path is not None  # guarded by the caller
-        encoded_len = len(line.encode("utf-8")) + 1  # + the trailing newline
-        if encoded_len > self._max_bytes:
-            self._record_oversize(encoded_len)
-            return
+        encoded_body_len = len(line.encode("utf-8")) + 1  # + the line's own trailing newline
+        if encoded_body_len > self._max_bytes:
+            return self._record_oversize(encoded_body_len)
         try:
             current_size = self._path.stat().st_size
         except OSError:
             current_size = 0
-        if current_size + encoded_len <= self._max_bytes:
-            _append_line(self._path, line, fsync=self._fsync)
-            return
+        needs_prefix, probe_error = _probe_tail(self._path)
+        if probe_error:
+            self.probe_errors += 1
+        prefix_len = 1 if needs_prefix else 0
+        if current_size + prefix_len + encoded_body_len <= self._max_bytes:
+            _append_line(self._path, line, fsync=self._fsync, prefix_needed=needs_prefix)
+            return None
         low_water_bytes = int(self._max_bytes * _LOW_WATER_RATIO)
-        dropped = _bounded_rewrite_append(self._path, line, self._max_bytes, low_water_bytes)
+        dropped_records, dropped_fragments = _bounded_rewrite_append(
+            self._path, line, self._max_bytes, low_water_bytes
+        )
         self.rewrites += 1
-        self.evicted_records += dropped
+        self.evicted_records += dropped_records
+        self.fragments_dropped += dropped_fragments
+        return None
 
-    def _record_oversize(self, encoded_len: int) -> None:
-        """Count an oversize record and, the first time only, degrade once."""
+    def _record_oversize(self, encoded_len: int) -> Optional[tuple[str, str]]:
+        """Count an oversize record; return a pending degrade for the FIRST
+        occurrence only (deduped) — the caller invokes it after releasing
+        the lock (never from here — see :meth:`_append_or_rewrite`).
+        """
         self.oversize_records += 1
         if self._oversize_degraded:
-            return
+            return None
         self._oversize_degraded = True
-        if self._on_degrade is not None:
-            detail = f"record of {encoded_len} bytes exceeds the {self._max_bytes}-byte bound"
-            try:
-                self._on_degrade(OVERSIZE_RECORD_CODE, detail)
-            except OSError:
-                pass  # narrow except; the degrade hook must never itself raise
+        detail = f"record of {encoded_len} bytes exceeds the {self._max_bytes}-byte bound"
+        return OVERSIZE_RECORD_CODE, detail
 
     def status(self) -> dict[str, Any]:
-        """This instance's own eviction/rewrite/oversize counters plus its
-        write-error status — what :meth:`DaemonState.status` surfaces for the
-        operational log, and what a caller holding a :class:`TranscriptLog`
-        directly can read the same way.
+        """This instance's own counters plus its write-error status — what
+        :meth:`DaemonState.status` surfaces for the operational log, and what
+        a caller holding a :class:`TranscriptLog` directly can read the same
+        way.
         """
         return {
             "evicted_records": self.evicted_records,
             "rewrites": self.rewrites,
             "oversize_records": self.oversize_records,
+            "fragments_dropped": self.fragments_dropped,
+            "probe_errors": self.probe_errors,
             **_write_error_status(self.write_errors),
         }
 
@@ -1115,6 +1335,12 @@ class DaemonState:
     orphaned atomic-rewrite temp files (a previous process killed mid-write)
     and records one degradation naming the count when it finds any — see
     :func:`_sweep_stale_temp_files`.
+
+    :meth:`open_transcript` is IDEMPOTENT per ``session_id``: a second call
+    for the same id returns the identical :class:`TranscriptLog` object the
+    first call did, never a second independent instance on the same file —
+    see the module docstring's "one lock per PATH, process-wide" section for
+    why two instances on one path was a real defect, not just wasted memory.
     """
 
     def __init__(
@@ -1125,6 +1351,12 @@ class DaemonState:
         transcript_log_max_bytes: int = DEFAULT_TRANSCRIPT_LOG_MAX_BYTES,
     ) -> None:
         self._transcript_log_max_bytes = transcript_log_max_bytes
+        #: session_id -> the ONE TranscriptLog ever handed out for it by
+        #: this DaemonState instance. Guarded by ``_transcripts_lock``, a
+        #: separate lock from the per-path write lock (:func:`_lock_for_path`)
+        #: — this one only ever guards the cache dict itself.
+        self._transcripts: dict[str, TranscriptLog] = {}
+        self._transcripts_lock = threading.Lock()
         preferred = resolve_state_dir(state_dir)
         self.dir, used_fallback, detail = self._ensure_dir(preferred)
 
@@ -1188,6 +1420,16 @@ class DaemonState:
         rejected id. The resolved path is asserted to stay inside the
         sessions directory before use.
 
+        IDEMPOTENT per *session_id*: a second call for the same id returns
+        the SAME :class:`TranscriptLog` object as the first (cached on this
+        instance), never a second independent one on the same file — see the
+        module docstring's "one lock per PATH, process-wide" section for why
+        that used to be a real defect. *max_bytes* is honoured only on the
+        FIRST call for a given *session_id*; a later call with a different
+        value is silently ignored in favor of the cached instance (session
+        ids are expected to be daemon-chosen, so a caller passing a second,
+        different bound is not treated as an error worth degrading over).
+
         In no-persistence mode (:attr:`persistent` is ``False``) this returns
         a working :class:`TranscriptLog` that drops every write and counts it
         on ``write_errors``, exactly like every other write path in that mode
@@ -1199,6 +1441,20 @@ class DaemonState:
         same transcript file. Session ids are expected to be generated by the
         daemon itself (not chosen by whoever is talking to it), so this is
         noted rather than guarded against.
+        """
+        with self._transcripts_lock:
+            cached = self._transcripts.get(session_id)
+            if cached is not None:
+                return cached
+            transcript = self._open_transcript_uncached(session_id, max_bytes=max_bytes)
+            self._transcripts[session_id] = transcript
+            return transcript
+
+    def _open_transcript_uncached(
+        self, session_id: str, *, max_bytes: Optional[int]
+    ) -> TranscriptLog:
+        """The actual construction :meth:`open_transcript` caches. Called
+        with ``_transcripts_lock`` held, exactly once per *session_id*.
         """
         bound = self._transcript_log_max_bytes if max_bytes is None else max_bytes
         if self.dir is None:
