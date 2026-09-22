@@ -366,7 +366,7 @@ import threading
 import time
 from collections import deque
 from pathlib import Path
-from typing import Any, Callable
+from typing import IO, Any, Callable
 
 from embodiment.audio.endpoint import (
     SAMPLE_RATE_HZ,
@@ -1375,11 +1375,8 @@ class HostEndpoint:
         stdout = proc.stdout
         ended_cleanly = False
         while not self._capture_stop.is_set():
-            try:
-                raw = stdout.read(_CAPTURE_CHUNK_BYTES) if stdout is not None else b""
-            except Exception:
-                with self._counter_lock:
-                    self._callback_errors += 1
+            raw = self._read_capture_chunk(stdout)
+            if raw is None:
                 break
             if not raw:
                 ended_cleanly = True
@@ -1390,22 +1387,7 @@ class HostEndpoint:
                     self._capture_muted_dropped += 1
                 continue
 
-            try:
-                np = self._np_importer()
-                selected = _select_channel(np, raw, CAPTURE_CHANNELS, CAPTURE_CHANNEL_INDEX)
-            except Exception:
-                with self._counter_lock:
-                    self._callback_errors += 1
-                continue
-
-            callback = self._on_frame
-            if callback is None:
-                continue
-            try:
-                callback(selected)
-            except Exception:
-                with self._counter_lock:
-                    self._callback_errors += 1
+            self._deliver_capture_chunk(raw)
 
         if ended_cleanly and not self._capture_stop.is_set():
             # The subprocess exited (EOF) without stop_capture() asking it to
@@ -1414,6 +1396,44 @@ class HostEndpoint:
             self._degradation_in = EndpointDegradation(
                 DEGRADED_CAPTURE_ENDED, f"capture subprocess ended: {_describe_process_exit(proc)}"
             )
+
+    def _count_callback_error(self) -> None:
+        with self._counter_lock:
+            self._callback_errors += 1
+
+    def _read_capture_chunk(self, stdout: "IO[bytes] | None") -> "bytes | None":
+        """One blocking pipe read for :meth:`_capture_loop`.
+
+        ``b""`` is EOF (the subprocess ended); ``None`` is a read fault,
+        counted on ``callback_errors`` — the loop ends on either.
+        """
+        try:
+            return stdout.read(_CAPTURE_CHUNK_BYTES) if stdout is not None else b""
+        except Exception:
+            self._count_callback_error()
+            return None
+
+    def _deliver_capture_chunk(self, raw: bytes) -> None:
+        """Select the configured channel and hand the frame to ``on_frame``.
+
+        A failing numpy import / channel select and a raising callback are
+        each ONE ``callback_errors`` tick for this chunk; neither ends
+        capture and nothing raises out.
+        """
+        try:
+            np = self._np_importer()
+            selected = _select_channel(np, raw, CAPTURE_CHANNELS, CAPTURE_CHANNEL_INDEX)
+        except Exception:
+            self._count_callback_error()
+            return
+
+        callback = self._on_frame
+        if callback is None:
+            return
+        try:
+            callback(selected)
+        except Exception:
+            self._count_callback_error()
 
     # -- playback --------------------------------------------------------
 
