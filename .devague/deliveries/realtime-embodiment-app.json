@@ -2,7 +2,7 @@
   "plan_slug": "realtime-embodiment-app",
   "schema_version": 2,
   "created": "2026-09-21T20:45:09Z",
-  "updated": "2026-09-22T12:46:41Z",
+  "updated": "2026-09-22T14:37:19Z",
   "deviations": [
     {
       "id": "d1",
@@ -807,7 +807,7 @@
       ],
       "evidence_refs": [],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false
     }
   ],

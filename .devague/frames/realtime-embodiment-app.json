@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-09-21T18:39:43Z",
-  "updated": "2026-09-22T12:26:10Z",
+  "updated": "2026-09-22T14:37:19Z",
   "claims": [
     {
       "id": "c1",
@@ -1141,7 +1141,7 @@
         "daemon/app.py http_complete"
       ],
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     }
   ],
   "obligations": []
