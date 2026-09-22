@@ -507,6 +507,12 @@ PLAYER_LATENCY_MS = 40
 #: grace period the child gets to use.
 _BARGE_IN_KILL_TIMEOUT_S = 0.15
 
+#: How long the capture thread waits to reap a child that ended ON ITS OWN
+#: (review finding 5, PR #87). The child has already closed stdout by then,
+#: so the wait is normally instant; the bound only keeps this module's own
+#: thread from hanging on a child that lingers after EOF.
+_SELF_EXIT_REAP_TIMEOUT_S = 0.5
+
 #: Round 3 finding 1's cooldown, unchanged in shape, now guarding a process
 #: spawn instead of a PortAudio open: 2 s doubling to a 30 s cap.
 _OPEN_COOLDOWN_BASE_S = 2.0
@@ -1042,6 +1048,9 @@ class HostEndpoint:
         self._playback_overflow_count = 0
         self._playback_overflow_episode_active = False
         self._playback_generation = 0
+        # Finding 4: write failures the writer attributed to a generation a
+        # barge-in had already superseded — counted, never acted on.
+        self._playback_stale_write_count = 0
         self._playing = False
         self._writer_thread: threading.Thread | None = None
         self._writer_stop = threading.Event()
@@ -1257,8 +1266,9 @@ class HostEndpoint:
 
         # A normal end of session (unlike stop_playback()'s barge-in) gets a
         # brief chance to exit on its own after EOF — up to a THIRD of the
-        # deadline, so plenty is still left for the capture/writer joins
-        # below even if the player uses its whole share.
+        # deadline, and a player that ignores EOF gets terminate+kill inside
+        # a second third (finding 6), so a third is always left for the
+        # capture/writer joins below even if the player uses its whole share.
         samples_discarded, playback_close_failures = self._stop_playback_internal(
             drain_timeout=deadline / 3.0
         )
@@ -1314,16 +1324,20 @@ class HostEndpoint:
             self._degradation_in = None
             self._record_event({"type": "recovered", "direction": "in"})
 
-        self._capture_proc = proc
-        self._capture_stop.clear()
-        self._capture_thread = threading.Thread(
+        thread = threading.Thread(
             target=self._capture_loop,
             args=(proc,),
             name="embodiment-audio-host-capture",
             daemon=True,
         )
-        self._capture_thread.start()
-        self._capturing = True
+        with self._counter_lock:
+            # Finding 5: the capture thread clears these itself on a
+            # self-exit, so every writer of them holds the lock.
+            self._capture_proc = proc
+            self._capture_stop.clear()
+            self._capture_thread = thread
+            self._capturing = True
+        thread.start()
         self._attached = True
 
         # Round 7: verify, don't trust — confirm the stream actually linked
@@ -1345,21 +1359,22 @@ class HostEndpoint:
         """Terminate the subprocess FIRST — that is what unblocks the reader's
         pipe read (see the module docstring's threads section)."""
         self._reap_unreaped()
-        self._capture_stop.set()
-        proc = self._capture_proc
-        self._capture_proc = None
+        with self._counter_lock:
+            self._capture_stop.set()
+            proc = self._capture_proc
+            self._capture_proc = None
+            thread = self._capture_thread
+            self._capture_thread = None
+            self._capturing = False
         half = max(0.0, timeout) / 2.0
         close_failures = 0
         if proc is not None:
             close_failures = self._terminate_process(proc, timeout=half)
 
-        thread = self._capture_thread
-        self._capture_thread = None
         stopped = True
         if thread is not None:
             thread.join(timeout=half)
             stopped = not thread.is_alive()
-        self._capturing = False
         return stopped, close_failures
 
     def _capture_loop(self, proc: "subprocess.Popen[bytes]") -> None:
@@ -1389,13 +1404,37 @@ class HostEndpoint:
 
             self._deliver_capture_chunk(raw)
 
-        if ended_cleanly and not self._capture_stop.is_set():
+        if self._capture_stop.is_set():
+            return  # a requested stop: _stop_capture owns the reap and the state
+        if ended_cleanly:
             # The subprocess exited (EOF) without stop_capture() asking it to
             # — a real fault (device unplugged, subprocess crashed), not a
             # teardown. Recorded and named — see status()'s degradation_in.
             self._degradation_in = EndpointDegradation(
                 DEGRADED_CAPTURE_ENDED, f"capture subprocess ended: {_describe_process_exit(proc)}"
             )
+        self._release_self_ended_capture(proc)
+
+    def _release_self_ended_capture(self, proc: "subprocess.Popen[bytes]") -> None:
+        """The capture loop ended on its own (EOF or a read fault), not by a
+        requested stop. Review finding 5 (PR #87): leaving ``_capturing``,
+        ``_capture_proc`` and ``_capture_thread`` set made ``status()`` lie,
+        the next ``start_capture()`` a no-op and the child a zombie holding
+        two open pipe ends. Reap it (bounded), close its pipes, and clear the
+        shared state — only if that state is still THIS loop's, so a
+        concurrent ``_stop_capture``/restart is never undone. The
+        degradation recorded above is left in place.
+        """
+        # An EOF means the child has already closed stdout, so this wait is
+        # normally instant; a child that lingers past the bound joins
+        # `_unreaped` (round 7b finding 2) rather than blocking this thread.
+        self._terminate_process(proc, timeout=_SELF_EXIT_REAP_TIMEOUT_S)
+        with self._counter_lock:
+            if self._capture_proc is proc:
+                self._capture_proc = None
+                self._capturing = False
+            if self._capture_thread is threading.current_thread():
+                self._capture_thread = None
 
     def _count_callback_error(self) -> None:
         with self._counter_lock:
@@ -1595,7 +1634,13 @@ class HostEndpoint:
                 try:
                     proc.wait(timeout=drain_timeout)
                 except subprocess.TimeoutExpired:
-                    close_failures = self._terminate_process(proc)
+                    # Review finding 6 (PR #87): the default 3 s + 3 s here
+                    # let close(1.0) run for seconds. The escalation gets
+                    # the same share the drain had, split between the
+                    # SIGTERM wait and the SIGKILL wait, so this whole
+                    # branch stays within 2x the drain share — lesson 1:
+                    # a clock sized against the wrong quantity.
+                    close_failures = self._terminate_process(proc, timeout=drain_timeout / 2.0)
             else:
                 # Barge-in: SIGKILL at once, no SIGTERM grace period (round 5).
                 close_failures = self._kill_process_fast(proc)
@@ -1605,9 +1650,23 @@ class HostEndpoint:
     def playing(self) -> bool:
         return self._playing
 
-    def _handle_write_failure(self, exc: BaseException) -> None:
-        """Round 3 finding 2, recurring at a pipe: never silent, never hammered again."""
+    def _handle_write_failure(self, exc: BaseException, generation: int) -> None:
+        """Round 3 finding 2, recurring at a pipe: never silent, never hammered again.
+
+        *generation* is the :attr:`_playback_generation` the writer read
+        together with the proc it wrote to. Review finding 4 (PR #87): the
+        writer reads ``proc`` under the lock, releases it, and writes; a
+        ``stop_playback()`` in that window closes THAT stdin, so the flush
+        raises — but by the time this runs ``_playback_proc`` is ``None``
+        or the player the next ``play()`` just spawned. Tearing that one
+        down and arming the write-failed cooldown dropped the reply after a
+        barge-in. A failure from a superseded generation is counted as a
+        stale write and touches nothing else.
+        """
         with self._counter_lock:
+            if generation != self._playback_generation:
+                self._playback_stale_write_count += 1
+                return
             proc = self._playback_proc
             self._playback_proc = None
             discarded = (
@@ -1967,6 +2026,9 @@ class HostEndpoint:
         while not self._writer_stop.is_set():
             with self._counter_lock:
                 proc = self._playback_proc
+                # Read WITH the proc, under the same lock: a write failure
+                # is attributed to the generation it belongs to (finding 4).
+                generation = self._playback_generation
                 if proc is not active_proc:
                     # A fresh process (first play(), or a respawn after a
                     # barge-in/write-failure): pacing restarts from now,
@@ -1990,7 +2052,7 @@ class HostEndpoint:
                 proc.stdin.write(slice_)  # type: ignore[union-attr]
                 proc.stdin.flush()  # type: ignore[union-attr]
             except Exception as exc:
-                self._handle_write_failure(exc)
+                self._handle_write_failure(exc, generation)
                 active_proc = None  # force a fresh clock for whatever comes next
                 continue
 
@@ -2083,6 +2145,7 @@ class HostEndpoint:
                 "playback_written_samples": self._playback_written_samples,
                 "playback_total_pushed_samples": self._playback_total_pushed_samples,
                 "playback_stop_discarded_total": self._playback_stop_discarded_total,
+                "playback_stale_write_count": self._playback_stale_write_count,
                 "playback_queued_bytes": self._playback_queued_bytes,
                 "playback_dropped_no_device": self._playback_dropped_no_device,
                 "output_degrade_attempts": self._output_degrade_attempts,

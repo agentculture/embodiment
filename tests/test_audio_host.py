@@ -1394,6 +1394,46 @@ def test_capture_subprocess_ending_unexpectedly_is_recorded_named():
     endpoint.close(2.0)
 
 
+def test_finding5_capture_child_self_exit_clears_state_reaps_and_allows_restart():
+    """Review finding 5: when the capture child exited on its own the loop
+    recorded DEGRADED_CAPTURE_ENDED and returned, but ``_capturing``,
+    ``_capture_proc`` and ``_capture_thread`` stayed set and the child was
+    never waited — ``status()["capturing"]`` lied, the next
+    ``start_capture()`` was a no-op, and the child was a zombie holding two
+    open pipe ends. On self-exit the child is reaped, its pipes closed and
+    the state cleared so a restart spawns again; the degradation stays."""
+    spawned: list[subprocess.Popen] = []
+    inner = _make_popen(capture_script=_CAPTURE_ENDS_SCRIPT)
+
+    def popen(argv, **kwargs):
+        proc = inner(argv, **kwargs)
+        if argv[0] in CAPTURE_BINARIES:
+            spawned.append(proc)
+        return proc
+
+    endpoint = HostEndpoint(which=_fake_which({"arecord", "aplay"}), popen=popen)
+    received: list[bytes] = []
+    endpoint.start_capture(received.append)
+    _wait_until(lambda: endpoint.status()["degradation_in"] is not None)
+    assert endpoint.status()["degradation_in"]["code"] == DEGRADED_CAPTURE_ENDED
+
+    assert _wait_until(lambda: endpoint.status()["capturing"] is False), "capturing still True"
+    first = spawned[0]
+    assert first.returncode is not None, "the exited child was never reaped"
+    assert first.stdout is not None and first.stdout.closed, "child stdout pipe left open"
+    assert first.stderr is not None and first.stderr.closed, "child stderr pipe left open"
+    # The degradation survives the cleanup: the host still learns why.
+    assert endpoint.status()["degradation_in"]["code"] == DEGRADED_CAPTURE_ENDED
+
+    endpoint.start_capture(received.append)
+    assert len(spawned) == 2, "start_capture() after a self-exit was a no-op"
+    assert endpoint.status()["capturing"] is True
+    recovered = [e for e in endpoint.events if e.get("type") == "recovered"]
+    assert recovered and recovered[-1]["direction"] == "in"
+    endpoint.close(2.0)
+    assert endpoint.status()["capturing"] is False
+
+
 def test_select_channel_helper_never_raises_on_malformed_input():
     numpy = _import_numpy_real()
     assert _select_channel(numpy, b"", 2, 1) == b""
@@ -1631,6 +1671,108 @@ def test_a_subsequent_play_after_stop_playback_starts_a_fresh_process(tmp_path):
     endpoint2.close(2.0)
 
 
+class _BlockingStdin:
+    """A player stdin whose ``write`` parks until the test releases it, then
+    behaves like a pipe that was closed underneath the writer: the flush
+    raises. Models the window between the writer reading ``proc`` under the
+    lock and its write landing, during which ``stop_playback()`` ran."""
+
+    def __init__(self) -> None:
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.closed = False
+
+    def write(self, data: bytes) -> int:
+        self.entered.set()
+        self.release.wait(timeout=5.0)
+        if self.closed:
+            raise ValueError("write to closed file")
+        return len(data)
+
+    def flush(self) -> None:
+        if self.closed:
+            raise ValueError("flush of closed file")
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _StubPlayer:
+    """A Popen-shaped player that never reads: alive until killed."""
+
+    def __init__(self) -> None:
+        self.stdin = _BlockingStdin()
+        self.stdout = None
+        self.stderr = None
+        self.pid = -1
+        self.returncode: int | None = None
+
+    def poll(self) -> int | None:
+        return self.returncode
+
+    def wait(self, timeout: float | None = None) -> int:
+        if self.returncode is None:
+            raise subprocess.TimeoutExpired(cmd="stub", timeout=timeout or 0.0)
+        return self.returncode
+
+    def kill(self) -> None:
+        self.returncode = -9
+
+    def terminate(self) -> None:
+        self.returncode = -15
+
+
+def test_finding4_write_failure_after_barge_in_spares_the_fresh_player(tmp_path):
+    """Review finding 4: the writer read the OLD proc under the lock, released
+    it, and was inside ``write`` when ``stop_playback()`` closed that stdin;
+    the flush then raised and ``_handle_write_failure`` tore down whatever
+    ``_playback_proc`` was NOW — the player the next ``play()`` had just
+    spawned — and armed the write-failed cooldown, so the reply after a
+    barge-in was dropped. The failure belongs to a superseded generation and
+    must be counted as a stale write, nothing more."""
+    sink = tmp_path / "sink.txt"
+    real_popen = _make_popen(sink_path=sink)
+    stub = _StubPlayer()
+    stubbed: list[bool] = []
+
+    def popen(argv, **kwargs):
+        if argv[0] in PLAYBACK_BINARIES and not stubbed:
+            stubbed.append(True)
+            return stub
+        return real_popen(argv, **kwargs)
+
+    endpoint = HostEndpoint(which=_fake_which({"arecord", "aplay"}), popen=popen)
+    endpoint.play(_silence_frame(480))
+    assert stub.stdin.entered.wait(timeout=3.0), "writer never reached the stub's write"
+
+    # Barge-in while the writer is parked inside write(): closes the stub's
+    # stdin, bumps the generation, spawns nothing yet.
+    endpoint.stop_playback()
+    assert stub.stdin.closed is True
+
+    # The reply after the barge-in: a FRESH, real player.
+    endpoint.play(_silence_frame(480))
+    fresh = endpoint._playback_proc
+    assert fresh is not None and fresh is not stub
+
+    # Now the parked write lands on the closed stdin and raises.
+    stub.stdin.release.set()
+    _wait_until(lambda: endpoint.status()["playback_stale_write_count"] >= 1)
+
+    status = endpoint.status()
+    assert status["playback_stale_write_count"] == 1
+    assert status["degradation_out"] is None, "a stale write must not arm the cooldown"
+    assert endpoint._playback_proc is fresh, "the fresh player was torn down"
+    assert fresh.poll() is None, "the fresh player was killed"
+
+    # And the fresh player actually plays: bytes reach it.
+    for _ in range(5):
+        endpoint.play(_silence_frame(480))
+    _wait_until(lambda: endpoint.status()["playback_written_samples"] >= 480 * 3)
+    endpoint.close(2.0)
+    assert _read_sink(sink) >= 480 * 2 * 3
+
+
 # ---------------------------------------------------------------------------
 # close(deadline): bounded, reports what could not be released
 # ---------------------------------------------------------------------------
@@ -1704,6 +1846,39 @@ def test_round7b_finding2_unreaped_child_is_tracked_and_reaped_later():
     time.sleep(0.3)
     report2 = endpoint.close(2.0)
     assert report2.children_unreaped == 0
+
+
+_PLAYBACK_IGNORES_EOF_AND_SIGTERM_SCRIPT = """
+import signal, sys, time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+sys.stdin.buffer.read(4)
+while True:
+    time.sleep(0.05)
+"""
+
+
+def test_finding6_close_deadline_holds_against_a_player_that_ignores_eof_and_sigterm():
+    """Review finding 6: `_stop_playback_internal` on a drain TimeoutExpired
+    called `_terminate_process(proc)` with its DEFAULT 3 s + 3 s while the
+    daemon calls `close(1.0)` — the close overran its deadline by seconds.
+    The remaining budget must be passed through: close never exceeds its
+    deadline by more than one slice."""
+    endpoint = HostEndpoint(
+        which=_fake_which({"arecord", "aplay"}),
+        popen=_make_popen(playback_script=_PLAYBACK_IGNORES_EOF_AND_SIGTERM_SCRIPT),
+    )
+    endpoint.play(_silence_frame(4800))
+    _wait_until(lambda: endpoint.status()["playback_written_samples"] > 0)
+
+    start = time.perf_counter()
+    report = endpoint.close(1.0)
+    elapsed = time.perf_counter() - start
+
+    assert elapsed < 1.2, f"close(1.0) took {elapsed:.2f} s"
+    assert report.elapsed_s < 1.2
+    # The player was SIGKILLed inside the budget, not abandoned.
+    assert report.children_unreaped == 0
+    assert report.streams_close_failed == 0
 
 
 def test_close_is_idempotent_and_bounded(tmp_path):

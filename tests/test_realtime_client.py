@@ -19,6 +19,7 @@ import json
 import os
 import socket
 import threading
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -447,6 +448,52 @@ class TestSession:
             ears = run(go())
         assert codes(ears) == [rtc.SERVER_ERROR]
         assert "vad_unavailable" in ears.degradations[0].reason
+
+    def test_finding15_a_thousand_server_errors_are_one_record_and_a_count(self) -> None:
+        """Review finding 15: `_degradations` was uncapped and every server
+        error appended a record; a gateway with STT down emits one per turn,
+        and `status()` serialised them all. One record per session for the
+        code, the magnitude on a counter, and the ledger itself bounded."""
+        error = FIXTURE("error_vad_unavailable.json")
+
+        async def handler(ws: Any) -> None:
+            await ws.send(FIXTURE("session_created.json"))
+            for _ in range(1000):
+                await ws.send(error)
+            await asyncio.sleep(0.5)
+
+        with Rig(caps_body=capabilities(), handler=handler) as rig:
+
+            async def go() -> rtc.RealtimeEars:
+                async with rig.websocket():
+                    ears = rtc.RealtimeEars(rig.config(realtime_url=rig.ws_origin()))
+                    await ears.connect()
+                    seen = 0
+                    async for event in ears.events():
+                        if isinstance(event, wire.ServerError):
+                            seen += 1
+                            if seen == 1000:
+                                break
+                    await ears.close()
+                    return ears
+
+            ears = run(go())
+        status = ears.status()
+        assert codes(ears).count(rtc.SERVER_ERROR) == 1
+        assert status["server_errors"] == 1000
+        assert len(status["degradations"]) <= rtc.MAX_DEGRADATIONS
+        assert len(json.dumps(status)) < 4096
+
+    def test_finding15_the_ledger_is_bounded_and_evictions_are_counted(self) -> None:
+        """A degradation the ledger could not keep is still a number the host
+        sees: nothing degrades silently (C3)."""
+        ears = rtc.RealtimeEars(rtc.RealtimeConfig())
+        for i in range(rtc.MAX_DEGRADATIONS + 25):
+            ears._record("realtime-test-flood", f"record {i}")
+        assert len(ears.degradations) == rtc.MAX_DEGRADATIONS
+        assert ears.status()["degradations_evicted"] == 25
+        # The newest records are the ones kept.
+        assert ears.degradations[-1].reason.endswith(str(rtc.MAX_DEGRADATIONS + 24))
 
     def test_a_malformed_server_frame_records_once_and_the_session_survives(self) -> None:
         async def handler(ws: Any) -> None:
@@ -1387,6 +1434,56 @@ class TestACloseThatFailedSaysSo:
         assert report.deadline_exceeded is True
         assert report.close_error is False
         assert report.graceful is False
+
+    def test_finding13_the_socket_close_gets_only_what_the_writer_left(self) -> None:
+        """Review finding 13: `_reap_writer` and `_close_socket` each got the
+        FULL budget, so a writer that ate the whole deadline plus a wedged
+        socket made close() take 2x its deadline, while the daemon waits
+        `close_bound + grace`. The second wait gets what is left."""
+
+        class _Wedged:
+            latency = 0.0
+
+            async def close(self) -> None:
+                await asyncio.sleep(10)
+
+        with Rig(caps_body=capabilities()) as rig:
+
+            async def go() -> tuple[Any, rtc.RealtimeEars, float]:
+                async with rig.websocket():
+                    ears = rtc.RealtimeEars(rig.config(realtime_url=rig.ws_origin()))
+                    await ears.connect()
+                    real_writer = ears._writer
+                    assert real_writer is not None
+                    real_writer.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await real_writer
+                    real_ws = ears._ws
+
+                    async def stubborn() -> None:
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await asyncio.sleep(10)
+                        await asyncio.sleep(10)
+
+                    stuck = asyncio.get_running_loop().create_task(stubborn())
+                    ears._writer = stuck
+                    ears._ws = _Wedged()
+                    await asyncio.sleep(0)
+                    t0 = time.perf_counter()
+                    report = await ears.close(deadline=0.3)
+                    elapsed = time.perf_counter() - t0
+                    stuck.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await stuck
+                    with contextlib.suppress(Exception):
+                        await real_ws.close()
+                    return report, ears, elapsed
+
+            report, ears, elapsed = run(go())
+        assert elapsed < 0.45, f"close(0.3) took {elapsed:.2f} s — two full budgets"
+        assert report.deadline_exceeded is True
+        assert report.close_error is False
+        assert codes(ears).count(rtc.CLOSE_INCOMPLETE) == 1
 
     def test_the_natural_drop_path_does_not_actually_raise(self) -> None:
         """The measurement behind this class's docstring, kept executable."""
