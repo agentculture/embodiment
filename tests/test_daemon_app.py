@@ -4775,3 +4775,75 @@ class TestRefusedFrames:
         assert audio["frames_forwarded"] == 2
         assert audio["frames_refused"] == 0
         assert app_module.APP_FRAMES_REFUSED not in h.ledger_codes()
+
+
+# ── on_degrade is wired (review finding 14) ───────────────────────────────────
+
+
+class TestDegradeHooksAreWired:
+    """``RealtimeEars`` and ``DashboardServer`` were built without their
+    ``on_degrade`` hooks, so the client's SESSION_DROPPED / AUDIO_DROPPED /
+    NOT_CONNECTED and the server's refusals never reached the ledger.
+    """
+
+    def test_a_client_degradation_reaches_the_ledger_once_per_code(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from embodiment.realtime import client as client_module
+
+        built: list[Any] = []
+
+        class RecordingEars:
+            def __init__(self, config: Any = None, *, on_degrade: Any = None) -> None:
+                self.config = config
+                self.on_degrade = on_degrade
+                built.append(self)
+
+        monkeypatch.setenv("EMBODIMENT_STATE_DIR", str(tmp_path / "state"))
+        monkeypatch.setattr(app_module, "RealtimeEars", RecordingEars)
+        monkeypatch.setattr(app_module.server_module, "DashboardServer", _RecordingServer)
+
+        application = app_module.main()
+        try:
+            application._ears_factory(16000)
+            assert built and built[0].on_degrade is not None, "the client has no hook"
+            record = client_module.RealtimeDegradation(
+                code=client_module.SESSION_DROPPED, reason="session ended without a local close"
+            )
+            built[0].on_degrade(record)
+            built[0].on_degrade(record)
+            codes = [r.code for r in application._state.ledger.read_all()]
+            assert codes.count(client_module.SESSION_DROPPED) == 1, codes
+            assert application.status()["degradations"][client_module.SESSION_DROPPED] == 2
+        finally:
+            application.close(deadline=2.0)
+
+    def test_a_server_refusal_reaches_the_ledger(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("EMBODIMENT_STATE_DIR", str(tmp_path / "state"))
+        monkeypatch.setattr(app_module.server_module, "DashboardServer", _RecordingServer)
+
+        application = app_module.main()
+        try:
+            hook = _RecordingServer.captured.get("on_degrade")
+            assert hook is not None, "the server has no hook"
+            hook("http-refused-origin", "the Origin header is not on the allow-list")
+            codes = [r.code for r in application._state.ledger.read_all()]
+            assert "http-refused-origin" in codes
+        finally:
+            application.close(deadline=2.0)
+
+    def test_a_hook_that_is_handed_garbage_never_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("EMBODIMENT_STATE_DIR", str(tmp_path / "state"))
+        monkeypatch.setattr(app_module.server_module, "DashboardServer", _RecordingServer)
+        application = app_module.main()
+        try:
+            hook = _RecordingServer.captured.get("on_degrade")
+            assert hook is not None
+            hook(None, object())
+            hook("", "")
+        finally:
+            application.close(deadline=2.0)

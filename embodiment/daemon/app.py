@@ -1274,10 +1274,10 @@ class DaemonApp:
 
         return scrubbed
 
-    def _fold(self, source: str, record: Any) -> None:
+    def _fold(self, source: str, record: Any, *, once: bool = False) -> None:
         """Record a sibling module's own degradation, keeping its own code."""
         folded = fold_degradation(record, source=source)
-        self._record(folded["code"], folded["reason"], source=folded["source"])
+        self._record(folded["code"], folded["reason"], source=folded["source"], once=once)
 
     def _publish(self, kind: str, data: dict[str, Any]) -> None:
         """Publish one event. A publish failure is recorded, never raised."""
@@ -3796,7 +3796,15 @@ def main() -> DaemonApp:
         memory=memory,
         complete=bind_tools(seam, tools),
         tools=tools,
-        ears_factory=lambda rate: RealtimeEars(replace(realtime, input_sample_rate=rate)),
+        # The client's own degradations (SESSION_DROPPED, AUDIO_DROPPED,
+        # NOT_CONNECTED …) reach the ledger through this hook (finding 14);
+        # ``app`` is bound below and the factory only runs on attach, after.
+        # Once per code here: the client already collapses its repeating
+        # faults, and the count in status() carries the magnitude.
+        ears_factory=lambda rate: RealtimeEars(
+            replace(realtime, input_sample_rate=rate),
+            on_degrade=lambda record: app._fold("ears", record, once=True),
+        ),
         endpoint_factory=HostEndpoint,
         summarise=summarise,
         # The bus already redacts these on its way out; this is the other
@@ -3833,6 +3841,9 @@ def main() -> DaemonApp:
             ),
             bus=bus,
             controls=app.controls(),
+            # The server notifies on the FIRST occurrence of each code only;
+            # once here keeps the ledger to that as well (finding 14).
+            on_degrade=lambda code, reason: app._record(code, reason, source="http", once=True),
         )
     except Exception as exc:  # noqa: BLE001  # no dashboard is a degradation, not a crash
         app._record(APP_BOOTSTRAP_DEGRADED, f"dashboard: {_describe(exc)}")
