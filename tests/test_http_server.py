@@ -1285,3 +1285,68 @@ class TestAControlThatBlocks:
         release.set()
         assert elapsed < 2.5, "shutdown waited for an abandoned control"
         assert report.controls_unfinished == 1
+
+
+# ── review finding 8: a refusal with an unread body must not poison keep-alive ─
+
+
+class TestARefusedPostWithAnUnreadBody:
+    """``protocol_version`` is HTTP/1.1, so the connection stays open after an
+    answer. A refusal issued BEFORE the body is read (the guard's 401/403, a
+    route's 405) used to leave the body sitting in the socket, where it was
+    parsed as the NEXT request line — reproduced live by the reviewer: a
+    refused POST followed by a valid GET on the same connection got the GET
+    answered with a 400 for a request it never sent. Now every such refusal
+    closes the connection and says so (``Connection: close``), so a keep-alive
+    client reconnects and the follow-up is answered on a clean socket.
+    """
+
+    @staticmethod
+    def _refused_then_get(
+        built: Harness, refused_headers: dict[str, str], path: str = "/api/voice/start"
+    ) -> tuple[http.client.HTTPResponse, int, bytes]:
+        conn = http.client.HTTPConnection("127.0.0.1", built.port, timeout=5)
+        try:
+            conn.request("POST", path, body=b'{"muted": true}' * 8, headers=refused_headers)
+            first = conn.getresponse()
+            first.read()
+            # The same HTTPConnection object: it reuses the socket unless the
+            # server said ``Connection: close``, in which case it reopens.
+            conn.request("GET", "/index.html", headers=built.headers())
+            second = conn.getresponse()
+            return first, second.status, second.read()
+        finally:
+            conn.close()
+
+    def test_a_guard_refusal_then_a_valid_get_on_the_same_connection(
+        self, harness: Harness
+    ) -> None:
+        first, status, body = self._refused_then_get(
+            harness, harness.headers(Origin="https://evil.example")
+        )
+        assert first.status == 403
+        assert first.getheader("Connection", "").lower() == "close"
+        assert status == 200, body
+        assert b"<title>gwen</title>" in body
+
+    def test_a_route_refusal_then_a_valid_get_on_the_same_connection(
+        self, harness: Harness
+    ) -> None:
+        first, status, body = self._refused_then_get(harness, harness.headers(), path="/api/status")
+        assert first.status == 405
+        assert first.getheader("Connection", "").lower() == "close"
+        assert status == 200, body
+
+    def test_an_unknown_api_route_then_a_valid_get(self, harness: Harness) -> None:
+        first, status, body = self._refused_then_get(
+            harness, harness.headers(), path="/api/no-such-thing"
+        )
+        assert first.status == 404
+        assert status == 200, body
+
+    def test_a_refusal_never_consumes_the_body_as_a_request(self, harness: Harness) -> None:
+        """The body's bytes must not be counted as a request of their own."""
+        self._refused_then_get(harness, harness.headers(Origin="https://evil.example"))
+        status = harness.server.status()
+        assert status["requests_refused"] == 1
+        assert status["requests_served"] == 1

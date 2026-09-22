@@ -504,9 +504,7 @@ class _Handler(BaseHTTPRequestHandler):
             decision = app.guard.check(method, self.path, self.headers)
             if not decision.allowed:
                 app._count_refusal(decision.code)
-                self._send_json(
-                    decision.status, {"error": {"code": decision.code, "message": decision.reason}}
-                )
+                self._refuse_unread(decision.status, decision.code, decision.reason)
                 return
             app._count_request()
             self._route(method)
@@ -521,27 +519,27 @@ class _Handler(BaseHTTPRequestHandler):
         route = self.path.split("?", 1)[0].split("#", 1)[0]
         if route == STREAM_ROUTE:
             if method != "GET":
-                self._send_error(405, "http-method-not-allowed", "the stream is GET only")
+                self._refuse_unread(405, "http-method-not-allowed", "the stream is GET only")
                 return
             self._stream()
             return
         if route == "/api/status":
             if method not in ("GET", "HEAD"):
-                self._send_error(405, "http-method-not-allowed", "status is GET only")
+                self._refuse_unread(405, "http-method-not-allowed", "status is GET only")
                 return
             self._status(head=method == "HEAD")
             return
         if route in _CONTROL_ROUTES:
             if method != "POST":
-                self._send_error(405, "http-method-not-allowed", "this control is POST only")
+                self._refuse_unread(405, "http-method-not-allowed", "this control is POST only")
                 return
             self._control(route)
             return
         if route.startswith("/api/"):
-            self._send_error(404, "http-unknown-route", "no such API route")
+            self._refuse_unread(404, "http-unknown-route", "no such API route")
             return
         if method == "POST":
-            self._send_error(405, "http-method-not-allowed", "nothing here accepts a POST")
+            self._refuse_unread(405, "http-method-not-allowed", "nothing here accepts a POST")
             return
         self._static(route, head=method == "HEAD")
 
@@ -563,6 +561,11 @@ class _Handler(BaseHTTPRequestHandler):
             self.send_header("X-Content-Type-Options", "nosniff")
             self.send_header("Referrer-Policy", "no-referrer")
             self.send_header("Cache-Control", "no-store")
+            if self.close_connection:
+                # Said out loud, not only decided: a keep-alive client that is
+                # not told will queue its next request on a socket about to
+                # be closed under it (finding 8).
+                self.send_header("Connection", "close")
             for name, value in (extra or {}).items():
                 self.send_header(name, value)
             self.end_headers()
@@ -587,10 +590,25 @@ class _Handler(BaseHTTPRequestHandler):
     def _send_error(self, status: int, code: str, message: str) -> None:
         self._send_json(status, {"error": {"code": code, "message": message}})
 
+    def _refuse_unread(self, status: int, code: str, message: str) -> None:
+        """An error answered BEFORE the request body was read.
+
+        ``protocol_version`` is HTTP/1.1, so the socket stays open after an
+        answer — and a body nobody read is still sitting in it, where the
+        next ``handle_one_request`` parses it as a request line (the reviewer
+        reproduced this live: a refused POST, then a valid GET on the same
+        connection, answered 400 for the body's bytes). Draining the body
+        instead would mean reading attacker-shaped bytes under the socket
+        timeout for a request already refused; closing costs one reconnect
+        and reads nothing. The unread bytes are discarded with the socket.
+        """
+        self.close_connection = True
+        self._send_error(status, code, message)
+
     def _safe_error(self, status: int, code: str, message: str) -> None:
         """Answer even when the normal path is what failed. Never raises."""
         try:
-            self._send_error(status, code, message)
+            self._refuse_unread(status, code, message)
         except Exception as exc:  # noqa: BLE001  # last resort; the connection is closing
             del exc
             self.close_connection = True
@@ -604,7 +622,7 @@ class _Handler(BaseHTTPRequestHandler):
             length = int(str(raw_length).strip())
         except ValueError:
             self._app._degrade(BAD_REQUEST_CODE, "a request carried an unparseable Content-Length")
-            self._send_error(400, BAD_REQUEST_CODE, "Content-Length is not a number")
+            self._refuse_unread(400, BAD_REQUEST_CODE, "Content-Length is not a number")
             return None
         if length < 0 or length > self._app.config.max_body_bytes:
             self._app._degrade(
