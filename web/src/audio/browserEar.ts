@@ -58,6 +58,33 @@ export const DEGRADED_SOCKET_ERROR = "browser_ear.socket_error";
 export const DEGRADED_SOCKET_CLOSED = "browser_ear.socket_closed";
 export const DEGRADED_UNPARSEABLE_FRAME = "browser_ear.unparseable_frame";
 export const DEGRADED_APPEND_BEFORE_AUTH = "browser_ear.append_before_auth";
+/** Round 3 (coordinator review, finding 1): `socket.send()` on the auth
+ *  frame can throw (the socket closed in the gap between `onopen` firing
+ *  and this handler running) -- counted and recorded rather than left to
+ *  propagate out of a WebSocket event handler, which this module's own
+ *  never-raises contract (see the module docstring) forbids. */
+export const DEGRADED_AUTH_SEND_FAILED = "browser_ear.auth_send_failed";
+/** Round 3, finding 2: an append attempted while `state === "live"` but the
+ *  socket itself has since closed (a race between the socket's internal
+ *  close and this module noticing via `onclose`) -- distinct from
+ *  `DEGRADED_APPEND_BEFORE_AUTH` (which fires before auth completes) so a
+ *  host can tell "too early" apart from "the wire died mid-session". */
+export const DEGRADED_APPEND_SOCKET_CLOSED = "browser_ear.append_socket_closed";
+
+/** `remote.py`'s own server->client event on successful auth (see the
+ *  module docstring's "mirror image" note: this module decodes the events
+ *  lobes' own wire vocabulary names -- `session.created`, `session.updated`,
+ *  `response.audio.delta`). This is the ONLY signal this module treats as
+ *  "auth accepted" -- round 3 correction: the previous version treated the
+ *  auth frame merely being SENT as acceptance, which claimed a state the
+ *  server had not yet confirmed. */
+export const SESSION_CREATED_EVENT_TYPE = "session.created";
+
+/** The standard `WebSocket.OPEN` numeric ready-state (1) -- this module
+ *  never references the `WebSocket` global itself (`SocketLike.readyState`
+ *  is typed as a plain `number` so a test double never needs to be an
+ *  actual `WebSocket`), so the value is named here instead. */
+const WS_OPEN_READY_STATE = 1;
 
 export interface SocketLike {
   readonly readyState: number;
@@ -147,6 +174,16 @@ export interface BrowserEarStatus {
   analyserActive: boolean;
   appendsSentBeforeAuthDropped: number;
   unparseableFramesDropped: number;
+  /** Round 3, finding 1: count of auth frames that failed to send. */
+  authSendFailures: number;
+  /** Round 3, finding 2: count of appends dropped because the socket had
+   *  closed even though `state` still read "live" at the time of the call
+   *  (a send that threw, or a readyState check that caught it first). */
+  appendsDroppedSocketClosed: number;
+  /** Round 3, finding 4: count of times `startMic()` was called while a
+   *  previous capture session was still attached -- the previous one is
+   *  always stopped and its analyser disconnected first, never orphaned. */
+  micRestartCount: number;
 }
 
 /**
@@ -169,6 +206,9 @@ export class BrowserEar {
   private playbackState: PlaybackState | null = null;
   private appendsSentBeforeAuthDropped = 0;
   private unparseableFramesDropped = 0;
+  private authSendFailures = 0;
+  private appendsDroppedSocketClosed = 0;
+  private micRestartCount = 0;
 
   constructor(config: BrowserEarConfig, context: AudioContextLike, deps: BrowserEarDeps) {
     this.config = config;
@@ -184,17 +224,22 @@ export class BrowserEar {
       analyserActive: this.analyser !== null,
       appendsSentBeforeAuthDropped: this.appendsSentBeforeAuthDropped,
       unparseableFramesDropped: this.unparseableFramesDropped,
+      authSendFailures: this.authSendFailures,
+      appendsDroppedSocketClosed: this.appendsDroppedSocketClosed,
+      micRestartCount: this.micRestartCount,
     };
   }
 
   /**
    * Open the socket and send the auth message the instant it opens --
-   * nothing else is ever sent before it, and no append frame is relayed
-   * until the wire confirms the socket is open (this module never learns an
-   * explicit "auth accepted" event from `remote.py`'s wire beyond the
-   * socket staying open; a subsequent `onclose`/`onerror` before any audio
-   * ever played is the only signal a wrong secret gives, exactly as
-   * `remote.py`'s docstring describes).
+   * nothing else is ever sent before it. Round 3 correction: `state` only
+   * becomes `"live"` once `handleMessage` sees the server's own
+   * `session.created` frame (below) -- it stays `"authenticating"` from the
+   * moment the auth frame is SENT until that confirmation arrives, so an
+   * append attempted in that window is dropped and counted exactly like one
+   * attempted before the socket ever opened, satisfying the "auth first,
+   * nothing else until it's accepted" contract this module's docstring
+   * claims rather than merely asserting it.
    */
   connect(): void {
     this.state = "connecting";
@@ -203,8 +248,16 @@ export class BrowserEar {
 
     socket.onopen = () => {
       this.state = "authenticating";
-      socket.send(JSON.stringify({ type: AUTH_MESSAGE_TYPE, secret: this.config.secret }));
-      this.state = "live";
+      // Round 3, finding 1: `send()` can throw (the socket closed in the
+      // gap between `onopen` firing and this handler running) -- never let
+      // that propagate out of a WebSocket event handler, which nothing
+      // downstream is set up to catch.
+      try {
+        socket.send(JSON.stringify({ type: AUTH_MESSAGE_TYPE, secret: this.config.secret }));
+      } catch {
+        this.authSendFailures += 1;
+        this.state = "failed";
+      }
     };
     socket.onerror = () => {
       this.state = "failed";
@@ -228,20 +281,37 @@ export class BrowserEar {
       return;
     }
     const obj = parsed as Record<string, unknown>;
+    if (obj.type === SESSION_CREATED_EVENT_TYPE && this.state === "authenticating") {
+      this.state = "live";
+      return;
+    }
     if (obj.type === AUDIO_DELTA_EVENT_TYPE && typeof obj.audio === "string" && this.player) {
       this.player.enqueueDelta(obj.audio);
     }
   }
 
-  /** Relay one append frame -- dropped and counted (never sent) if the
-   *  socket is not open yet, satisfying the same "auth first, nothing
-   *  before it" contract from this side. */
+  /** Relay one append frame -- dropped and counted (never sent) if auth
+   *  has not completed yet (`state !== "live"`) or the socket has since
+   *  closed underneath an otherwise-"live" state (round 3, finding 2: a
+   *  race between the socket's own close and this module noticing via
+   *  `onclose`). A `send()` that itself throws is caught and counted the
+   *  same way -- never an exception out of `MicCapture`'s `onAppend`
+   *  callback, which this module owns and which `MicCapture` itself is not
+   *  written to expect to throw. */
   private sendAppend(event: AppendEvent): void {
     if (!this.socket || this.state !== "live") {
       this.appendsSentBeforeAuthDropped += 1;
       return;
     }
-    this.socket.send(JSON.stringify(event));
+    if (this.socket.readyState !== WS_OPEN_READY_STATE) {
+      this.appendsDroppedSocketClosed += 1;
+      return;
+    }
+    try {
+      this.socket.send(JSON.stringify(event));
+    } catch {
+      this.appendsDroppedSocketClosed += 1;
+    }
   }
 
   /**
@@ -249,8 +319,20 @@ export class BrowserEar {
    * never at construction, never speculatively -- so `status().
    * analyserActive` is true precisely while the browser is genuinely the
    * ear, per t18's instruction.
+   *
+   * Round 3, finding 4: a second call while a previous capture is still
+   * attached first stops that capture and disconnects its analyser --
+   * never leaves the old `getUserMedia` stream and `AnalyserNode` orphaned
+   * (lesson 6: shutdown is a feature, and that applies to a capture this
+   * module is about to replace, not only to `close()`).
    */
   async startMic(): Promise<boolean> {
+    if (this.micCapture) {
+      this.micCapture.stop();
+      this.analyser?.disconnect();
+      this.analyser = null;
+      this.micRestartCount += 1;
+    }
     const micCapture = this.deps.createMicCapture(
       this.context,
       (event) => this.sendAppend(event),

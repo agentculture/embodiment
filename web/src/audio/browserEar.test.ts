@@ -17,10 +17,22 @@ import {
 } from "./browserEar";
 import { AUDIO_DELTA_EVENT_TYPE, buildAppendEvent } from "./lobes/pcm-wire";
 
-function fakeSocket(): SocketLike & { sent: string[]; open(): void } {
+/** `WebSocket.OPEN`/`CLOSED` numeric ready-states, mirrored here rather than
+ *  imported (this test double is not a real `WebSocket`). */
+const READY_STATE_OPEN = 1;
+const READY_STATE_CLOSED = 3;
+
+function fakeSocket(): SocketLike & {
+  sent: string[];
+  open(): void;
+  forceClosed(): void;
+} {
   const sent: string[] = [];
-  return {
-    readyState: 0,
+  let readyState = 0; // CONNECTING, like a real WebSocket before onopen.
+  const socket: SocketLike & { sent: string[]; open(): void; forceClosed(): void } = {
+    get readyState() {
+      return readyState;
+    },
     sent,
     send(data: string) {
       sent.push(data);
@@ -31,9 +43,17 @@ function fakeSocket(): SocketLike & { sent: string[]; open(): void } {
     onerror: null,
     onmessage: null,
     open() {
-      this.onopen?.();
+      readyState = READY_STATE_OPEN;
+      socket.onopen?.();
+    },
+    /** Round 3, finding 2: simulate the socket closing out from under an
+     *  otherwise-"live" `BrowserEar` -- a real race between the socket's
+     *  own close and this module's `onclose` handler noticing it. */
+    forceClosed() {
+      readyState = READY_STATE_CLOSED;
     },
   };
+  return socket;
 }
 
 function fakeAnalyser(fill: number): AnalyserLike {
@@ -117,15 +137,75 @@ describe("BrowserEar.connect", () => {
     expect(occurrences).toBe(1);
   });
 
-  it("drops (and counts) an append attempted before the socket has opened -- never sent out of order", () => {
+  it("drops (and counts) an append attempted before auth completes -- while connecting AND while authenticating -- then sends it once live", async () => {
+    // Round 3, finding 3: the previous version of this test attempted no
+    // append at all -- both its assertions held regardless of what
+    // `sendAppend` did. This drives a REAL `MicCapture.onAppend` callback
+    // (captured from `createMicCapture`, exactly how `startMic()` wires it)
+    // at each stage, so a mutated `sendAppend` (sending too early, or
+    // throwing) fails this test.
+    const { deps, socket } = makeDeps();
+    const captured: { onAppend: ((event: ReturnType<typeof buildAppendEvent>) => void) | null } = {
+      onAppend: null,
+    };
+    (deps as { createMicCapture: BrowserEarDeps["createMicCapture"] }).createMicCapture = (
+      _context,
+      onAppend,
+    ) => {
+      captured.onAppend = onAppend;
+      return { start: vi.fn(async () => true), stop: vi.fn() } as unknown as ReturnType<
+        BrowserEarDeps["createMicCapture"]
+      >;
+    };
+    const ear = new BrowserEar({ wsUrl: "ws://x", secret: "s" }, fakeContext(), deps);
+
+    ear.connect();
+    await ear.startMic();
+    expect(captured.onAppend).not.toBeNull();
+
+    // Still "connecting" -- the socket has not opened yet.
+    captured.onAppend?.(buildAppendEvent(new Float32Array([0])));
+    expect(ear.status().appendsSentBeforeAuthDropped).toBe(1);
+    expect(socket.sent).toHaveLength(0);
+
+    // The socket opens -> the auth frame is sent, state becomes
+    // "authenticating" (round 3: NOT "live" yet -- see the dedicated test
+    // below). An append attempted here is still dropped.
+    socket.open();
+    expect(ear.status().state).toBe("authenticating");
+    expect(socket.sent).toHaveLength(1); // the auth frame, nothing else
+    captured.onAppend?.(buildAppendEvent(new Float32Array([0])));
+    expect(ear.status().appendsSentBeforeAuthDropped).toBe(2);
+    expect(socket.sent).toHaveLength(1); // the append was NOT sent
+
+    // The server confirms auth -> now live. An append now IS sent.
+    socket.onmessage?.({ data: JSON.stringify({ type: "session.created" }) });
+    expect(ear.status().state).toBe("live");
+    captured.onAppend?.(buildAppendEvent(new Float32Array([0])));
+    expect(socket.sent).toHaveLength(2);
+    expect(ear.status().appendsSentBeforeAuthDropped).toBe(2); // unchanged
+  });
+
+  it("stays 'authenticating' once the auth frame is sent -- becomes 'live' only when session.created arrives, never merely on send", () => {
     const { deps, socket } = makeDeps();
     const ear = new BrowserEar({ wsUrl: "ws://x", secret: "s" }, fakeContext(), deps);
     ear.connect();
-    // Reach the private sendAppend path the way MicCapture's onAppend
-    // callback would, via startMic's wiring -- simulated here by calling
-    // connect() only (never opening the socket) and inspecting status().
-    expect(ear.status().state).toBe("connecting");
-    expect(socket.sent).toHaveLength(0);
+    socket.open();
+    expect(ear.status().state).toBe("authenticating");
+    socket.onmessage?.({ data: JSON.stringify({ type: "session.created" }) });
+    expect(ear.status().state).toBe("live");
+  });
+
+  it("counts (and never throws on) an auth-send failure, marking the connection failed rather than stuck authenticating forever", () => {
+    const { deps, socket } = makeDeps();
+    socket.send = () => {
+      throw new Error("socket closed between open and send");
+    };
+    const ear = new BrowserEar({ wsUrl: "ws://x", secret: "s" }, fakeContext(), deps);
+    ear.connect();
+    expect(() => socket.open()).not.toThrow();
+    expect(ear.status().state).toBe("failed");
+    expect(ear.status().authSendFailures).toBe(1);
   });
 
   it("routes response.audio.delta frames to the player", () => {
@@ -155,8 +235,65 @@ describe("BrowserEar.connect", () => {
     ear.connect();
     ear.startPlayback();
     socket.open();
-    socket.onmessage?.({ data: JSON.stringify({ type: "session.created" }) });
+    socket.onmessage?.({ data: JSON.stringify({ type: "some-other-event" }) });
     expect(enqueued).toEqual([]);
+    expect(ear.status().state).toBe("authenticating"); // unrecognized -- did NOT flip to live
+  });
+
+  // -- Round 3, finding 2: sendAppend must also guard on socket.readyState --
+
+  it("drops (and counts) an append when state reads 'live' but the socket has since closed (a race with onclose) -- never throws", async () => {
+    const { deps, socket } = makeDeps();
+    const captured: { onAppend: ((event: ReturnType<typeof buildAppendEvent>) => void) | null } = {
+      onAppend: null,
+    };
+    (deps as { createMicCapture: BrowserEarDeps["createMicCapture"] }).createMicCapture = (
+      _context,
+      onAppend,
+    ) => {
+      captured.onAppend = onAppend;
+      return { start: vi.fn(async () => true), stop: vi.fn() } as unknown as ReturnType<
+        BrowserEarDeps["createMicCapture"]
+      >;
+    };
+    const ear = new BrowserEar({ wsUrl: "ws://x", secret: "s" }, fakeContext(), deps);
+    ear.connect();
+    socket.open();
+    socket.onmessage?.({ data: JSON.stringify({ type: "session.created" }) });
+    expect(ear.status().state).toBe("live");
+    await ear.startMic();
+
+    socket.forceClosed(); // readyState now CLOSED, but `state` still reads "live"
+    expect(() => captured.onAppend?.(buildAppendEvent(new Float32Array([0])))).not.toThrow();
+    expect(ear.status().appendsDroppedSocketClosed).toBe(1);
+    expect(socket.sent).toHaveLength(1); // only the auth frame -- the append never went out
+  });
+
+  it("counts (and never throws on) a send() that itself throws during a 'live' append", async () => {
+    const { deps, socket } = makeDeps();
+    const captured: { onAppend: ((event: ReturnType<typeof buildAppendEvent>) => void) | null } = {
+      onAppend: null,
+    };
+    (deps as { createMicCapture: BrowserEarDeps["createMicCapture"] }).createMicCapture = (
+      _context,
+      onAppend,
+    ) => {
+      captured.onAppend = onAppend;
+      return { start: vi.fn(async () => true), stop: vi.fn() } as unknown as ReturnType<
+        BrowserEarDeps["createMicCapture"]
+      >;
+    };
+    const ear = new BrowserEar({ wsUrl: "ws://x", secret: "s" }, fakeContext(), deps);
+    ear.connect();
+    socket.open();
+    socket.onmessage?.({ data: JSON.stringify({ type: "session.created" }) });
+    await ear.startMic();
+
+    socket.send = () => {
+      throw new Error("send after close");
+    };
+    expect(() => captured.onAppend?.(buildAppendEvent(new Float32Array([0])))).not.toThrow();
+    expect(ear.status().appendsDroppedSocketClosed).toBe(1);
   });
 });
 
@@ -230,6 +367,40 @@ describe("BrowserEar listener analyser source -- AnalyserNode only when the brow
     ear.close();
     expect(disconnect).toHaveBeenCalledTimes(1);
     expect(ear.listenerAnalyserSource()).toBeNull();
+  });
+
+  it("round 3, finding 4: a second startMic() stops and disconnects the previous capture/analyser -- never orphans them", async () => {
+    const stops = [vi.fn(), vi.fn()];
+    const disconnects = [vi.fn(), vi.fn()];
+    let micCalls = 0;
+    let analyserCalls = 0;
+    const { deps } = makeDeps({
+      createMicCapture: () => {
+        const stop = stops[micCalls];
+        micCalls += 1;
+        return { start: vi.fn(async () => true), stop } as unknown as ReturnType<
+          BrowserEarDeps["createMicCapture"]
+        >;
+      },
+      createAnalyser: () => {
+        const disconnect = disconnects[analyserCalls];
+        analyserCalls += 1;
+        return { ...fakeAnalyser(200), disconnect };
+      },
+    });
+    const ear = new BrowserEar({ wsUrl: "ws://x", secret: "s" }, fakeContext(), deps);
+
+    await ear.startMic();
+    expect(stops[0]).not.toHaveBeenCalled();
+    expect(disconnects[0]).not.toHaveBeenCalled();
+    expect(ear.status().micRestartCount).toBe(0);
+
+    await ear.startMic();
+    expect(stops[0]).toHaveBeenCalledTimes(1); // the FIRST capture was stopped
+    expect(disconnects[0]).toHaveBeenCalledTimes(1); // the FIRST analyser was disconnected
+    expect(stops[1]).not.toHaveBeenCalled(); // the new one is still running
+    expect(ear.status().micRestartCount).toBe(1);
+    expect(ear.status().analyserActive).toBe(true); // still an (new) analyser attached
   });
 });
 
