@@ -449,6 +449,52 @@ class TestSession:
         assert codes(ears) == [rtc.SERVER_ERROR]
         assert "vad_unavailable" in ears.degradations[0].reason
 
+    def test_finding15_a_thousand_server_errors_are_one_record_and_a_count(self) -> None:
+        """Review finding 15: `_degradations` was uncapped and every server
+        error appended a record; a gateway with STT down emits one per turn,
+        and `status()` serialised them all. One record per session for the
+        code, the magnitude on a counter, and the ledger itself bounded."""
+        error = FIXTURE("error_vad_unavailable.json")
+
+        async def handler(ws: Any) -> None:
+            await ws.send(FIXTURE("session_created.json"))
+            for _ in range(1000):
+                await ws.send(error)
+            await asyncio.sleep(0.5)
+
+        with Rig(caps_body=capabilities(), handler=handler) as rig:
+
+            async def go() -> rtc.RealtimeEars:
+                async with rig.websocket():
+                    ears = rtc.RealtimeEars(rig.config(realtime_url=rig.ws_origin()))
+                    await ears.connect()
+                    seen = 0
+                    async for event in ears.events():
+                        if isinstance(event, wire.ServerError):
+                            seen += 1
+                            if seen == 1000:
+                                break
+                    await ears.close()
+                    return ears
+
+            ears = run(go())
+        status = ears.status()
+        assert codes(ears).count(rtc.SERVER_ERROR) == 1
+        assert status["server_errors"] == 1000
+        assert len(status["degradations"]) <= rtc.MAX_DEGRADATIONS
+        assert len(json.dumps(status)) < 4096
+
+    def test_finding15_the_ledger_is_bounded_and_evictions_are_counted(self) -> None:
+        """A degradation the ledger could not keep is still a number the host
+        sees: nothing degrades silently (C3)."""
+        ears = rtc.RealtimeEars(rtc.RealtimeConfig())
+        for i in range(rtc.MAX_DEGRADATIONS + 25):
+            ears._record("realtime-test-flood", f"record {i}")
+        assert len(ears.degradations) == rtc.MAX_DEGRADATIONS
+        assert ears.status()["degradations_evicted"] == 25
+        # The newest records are the ones kept.
+        assert ears.degradations[-1].reason.endswith(str(rtc.MAX_DEGRADATIONS + 24))
+
     def test_a_malformed_server_frame_records_once_and_the_session_survives(self) -> None:
         async def handler(ws: Any) -> None:
             await ws.send(FIXTURE("session_created.json"))

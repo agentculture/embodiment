@@ -183,6 +183,7 @@ __all__ = [
     "FRAME_MALFORMED",
     "HANDSHAKE_FAILED",
     "HANDSHAKE_TIMEOUT",
+    "MAX_DEGRADATIONS",
     "NOT_CONNECTED",
     "ROLE_INFEASIBLE",
     "SERVER_ERROR",
@@ -250,6 +251,12 @@ REDACTED = "[redacted]"
 #: is. Truncating a reason down to something that can no longer be correlated
 #: is the quiet half of losing it.
 _MAX_REASON_LEN = MAX_DESCRIPTION_CHARS + 120
+
+#: How many degradation records one session keeps (review finding 15, PR
+#: #87). Every repeating fault records once, so the ledger is short in
+#: practice; the bound is what keeps :meth:`RealtimeEars.status` a payload
+#: rather than a log if a new code ever repeats. Evictions are counted.
+MAX_DEGRADATIONS = 64
 
 #: Five seconds of wire audio at the declared rate — derived, not picked.
 _QUEUE_SECONDS = 5
@@ -508,7 +515,11 @@ class RealtimeEars:
     ) -> None:
         self.config = config or RealtimeConfig()
         self._on_degrade = on_degrade
-        self._degradations: list[RealtimeDegradation] = []
+        # Review finding 15 (PR #87): bounded, with the evictions counted —
+        # a record the ledger could not keep is still a number a host sees.
+        self._degradations: deque[RealtimeDegradation] = deque(maxlen=MAX_DEGRADATIONS)
+        self._degradations_evicted = 0
+        self._server_errors = 0
         self._recorded_once: set[str] = set()
         self._lock = threading.Lock()
         self._queue: deque[bytes] = deque()
@@ -608,6 +619,8 @@ class RealtimeEars:
             "liveness_bound_s": self.config.liveness_bound,
             "last_event_age_s": None if age is None else round(age, 3),
             "latency_s": None if latency is None else round(latency, 4),
+            "server_errors": self._server_errors,
+            "degradations_evicted": self._degradations_evicted,
             "degradations": [d.to_dict() for d in self._degradations],
         }
 
@@ -630,7 +643,7 @@ class RealtimeEars:
                 return
             self._recorded_once.add(code)
         record = RealtimeDegradation(code=code, reason=_safe(reason, self.config.api_key))
-        self._degradations.append(record)
+        self._append_degradation(record)
         if self._on_degrade is not None:
             try:
                 self._on_degrade(record)
@@ -638,12 +651,18 @@ class RealtimeEars:
                 # The degradation IS recorded above, unconditionally and first.
                 # Only the host's optional notification hook failed, and a hook
                 # that raises must not take down the ear it was watching.
-                self._degradations.append(
+                self._append_degradation(
                     RealtimeDegradation(
                         code="realtime-degrade-hook-failed",
                         reason=_safe(describe_exception(exc), self.config.api_key),
                     )
                 )
+
+    def _append_degradation(self, record: RealtimeDegradation) -> None:
+        """Append under the bound; an eviction is counted, never silent."""
+        if len(self._degradations) >= MAX_DEGRADATIONS:
+            self._degradations_evicted += 1
+        self._degradations.append(record)
 
     # -- discovery ---------------------------------------------------------
 
@@ -894,7 +913,9 @@ class RealtimeEars:
         yielded as :class:`~embodiment.realtime.wire.MalformedEvent` so a host
         sees the gap rather than a silent skip, and the session continues. A
         server error event is recorded and yielded too: the server said it out
-        loud, and swallowing it here would make this client the quiet one.
+        loud, and swallowing it here would make this client the quiet one —
+        recorded once per session, counted every time (``server_errors`` on
+        :meth:`status`), since a lane that is down says so on every turn.
         """
         if not self._connected or self._ws is None:
             self._record(NOT_CONNECTED, "events requested with no live session", once=True)
@@ -906,7 +927,10 @@ class RealtimeEars:
                 if isinstance(event, wire.MalformedEvent):
                     self._record(FRAME_MALFORMED, event.reason, once=True)
                 elif isinstance(event, wire.ServerError):
-                    self._record(SERVER_ERROR, f"server error {event.code!r}")
+                    # Finding 15: a gateway with STT down says this once per
+                    # turn. One record per session, the magnitude counted.
+                    self._server_errors += 1
+                    self._record(SERVER_ERROR, f"server error {event.code!r}", once=True)
                 elif isinstance(event, wire.SessionCreated) and event.session_id:
                     self._session_id = event.session_id
                 yield event
