@@ -128,7 +128,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
 from urllib.parse import parse_qs, urlsplit
 
 from embodiment.audio.endpoint import (
@@ -349,6 +349,14 @@ class RemoteEndpoint:
         port: listening port. 8765 is an arbitrary default (a judgement call,
             unmeasured against any real deployment) meant to be overridden by
             whatever composes this endpoint.
+        clock: zero-argument callable returning a monotonic float, used ONLY
+            for the pending-claim staleness check (round 6). Defaults to
+            :func:`time.monotonic`; tests inject a fake, manually-advanced
+            clock so the staleness backstop's timing logic can be proven
+            without any real sleeping — a real socket can still be aborted
+            for real, while whether the resulting claim reads as "stale" is
+            driven deterministically rather than by racing a wall clock
+            against a loaded CI box.
     """
 
     def __init__(
@@ -363,6 +371,7 @@ class RemoteEndpoint:
         ping_interval: float = 20.0,
         ping_timeout: float = 20.0,
         close_handshake_timeout: float = 5.0,
+        clock: Callable[[], float] = time.monotonic,
     ) -> None:
         self.config = RemoteEndpointConfig(
             secret=secret or "",
@@ -376,6 +385,7 @@ class RemoteEndpoint:
             close_handshake_timeout=close_handshake_timeout,
         )
 
+        self._clock = clock
         self._lock = threading.Lock()
         self._attached = False
         self._closed = False
@@ -632,7 +642,7 @@ class RemoteEndpoint:
                 # connection instead of refusing a perfectly good one.
                 self._handshake_aborted_count += 1
             self._connection_pending = True
-            self._connection_pending_since = time.monotonic()
+            self._connection_pending_since = self._clock()
             self._pending_connection = connection
 
         return None  # allow the handshake to proceed
@@ -644,7 +654,7 @@ class RemoteEndpoint:
         if since is None:  # a REAL handler is running it now; never stale
             return False
         bound = self.config.handshake_open_timeout + _PENDING_CLAIM_MARGIN_S
-        return (time.monotonic() - since) > bound
+        return (self._clock() - since) > bound
 
     def _process_response(self, connection: Any, request: Any, response: Any) -> Any:
         """Round 4 finding 1: release a pending claim the handler will never see.

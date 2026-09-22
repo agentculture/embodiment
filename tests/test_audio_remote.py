@@ -55,6 +55,48 @@ tests used. The probe also could not find a ``rejected_busy_count`` key;
 what existed was named ``connections_rejected_busy`` — renamed and moved
 beside ``handshake_aborted_count`` in :meth:`~embodiment.audio.remote.RemoteEndpoint.status`,
 and every test that read the old key name is updated here too.
+
+Round 6: two real-socket, real-wall-clock tests were flaky under load
+---------------------------------------------------------------------
+25 runs each under ``-n auto``: ``TestRound4ReviewFindings``'s
+"does not brick" test and ``TestRound5ReviewFindings``'s "recovers quickly"
+test both failed intermittently (7/25 and 5/25 respectively in one
+measured batch), always the same way —
+``assert ep.status()["handshake_aborted_count"] >= 1`` with the count at
+``0``, in a run where the retried connect had ALREADY succeeded and
+received ``session.created`` moments earlier. That ruled out a bricked
+endpoint (a real client always eventually got through, every time, across
+both batches) and pointed at the test's assertion instead: a connection
+approved by ``process_request`` and then aborted can be cleaned up by
+EITHER of two equally-valid paths — ``process_response``'s immediate
+detection or the staleness backstop in ``process_request`` (both count
+``handshake_aborted_count``) — OR, when the OS-level race resolves the
+other way and the doomed handshake actually completes to ``OPEN``, by
+``_handle_connection`` running for it, failing authentication instantly
+(the peer is already gone), and releasing the claim through its own
+ordinary ``finally`` — counted under ``unauthorized_connections``, never
+``handshake_aborted_count``. Which path fires is genuine, expected TCP
+timing nondeterminism (whether a peer's RST is processed by the kernel
+before or after the server's attempted write), not a bug; pinning ONE of
+the two paths was the test's mistake.
+
+The fix has two parts:
+
+1. A new dependency-injected ``clock`` argument on ``RemoteEndpoint``
+   (default :func:`time.monotonic`) lets the staleness backstop's TIMING
+   claim be driven deterministically, with zero real sleeping —
+   ``TestRound6ReviewFindings`` calls ``_process_request`` directly against
+   fake connections and a :class:`_FakeClock`, proving the exact reclaim
+   boundary (refused just under the bound, reclaimed just over it) with no
+   real socket and no possibility of the OS-timing race above ever
+   entering into it at all.
+2. The one remaining real-socket, real-wall-clock test
+   (``TestRound4ReviewFindings::test_aborted_handshake_after_approval_does_not_brick_the_endpoint``)
+   keeps proving the actual end-to-end claim — a real aborted TCP handshake
+   really does get cleaned up and a real client really does get through —
+   but now accepts EITHER valid recovery path, stated in its own docstring,
+   with a generous, explicitly-margined real-time ceiling for a loaded CI
+   box.
 """
 
 from __future__ import annotations
@@ -144,6 +186,46 @@ def _endpoint(**overrides: Any) -> rt.RemoteEndpoint:
     kwargs: dict[str, Any] = {"secret": DEFAULT_SECRET, "host": "127.0.0.1", "port": 0}
     kwargs.update(overrides)
     return rt.RemoteEndpoint(**kwargs)
+
+
+class _FakeClock:
+    """A manually-advanced monotonic clock (round 6).
+
+    Injected as ``RemoteEndpoint(clock=...)`` so the staleness backstop's
+    TIMING claim can be proven with zero real time elapsed — no sleeping,
+    so nothing here can be flaky under a loaded scheduler the way racing a
+    real wall clock against a real socket abort was (see the round 6 note
+    at the top of this file)."""
+
+    def __init__(self, start: float = 0.0) -> None:
+        self._t = start
+
+    def __call__(self) -> float:
+        return self._t
+
+    def advance(self, seconds: float) -> None:
+        self._t += seconds
+
+
+class _FakeConnection:
+    """Just enough of a ``ServerConnection`` for ``_process_request`` /
+    ``_process_response`` to run against directly — no real socket, no real
+    handshake. ``respond`` mirrors the real method's signature closely
+    enough to prove nothing there raises; its return value is never a real
+    HTTP response object, so it is never sent anywhere."""
+
+    def __init__(self, state: Any) -> None:
+        self.state = state
+
+    def respond(self, status: int, text: str) -> tuple[int, str]:
+        return (status, text)
+
+
+class _FakeRequest:
+    """Just enough of a ``Request`` for ``_process_request``'s query-string
+    parsing to run against — no query parameters, the common case."""
+
+    path = "/v1/realtime"
 
 
 def _abort_handshake_after_request(host: str, port: int) -> None:
@@ -844,15 +926,30 @@ class TestRound4ReviewFindings:
         authenticated one — got refused with "endpoint already has an active
         peer" until the process restarted.
 
-        A short ``handshake_open_timeout`` keeps the staleness backstop's
-        window small enough for a fast test; reconnecting (not polling
-        status) is what actually proves the fix, since the reclaim only ever
-        happens lazily, inside a later connection's own attempt — confirmed
-        empirically against this exact attack: ``process_response``'s
-        immediate detection does NOT fire for a ``SO_LINGER``-forced RST this
-        close on the heels of the request (the abort is not yet visible to
-        the server when that hook runs), so the deadline-based backstop is
-        what actually recovers this specific case."""
+        The ONE deliberately real-socket, real-wall-clock test in this file
+        (round 6): a genuine raw-socket abort, a genuine retry against a
+        genuine listening endpoint. Real time elapses here on purpose — the
+        exact reclaim TIMING is proven separately and deterministically by
+        ``TestRound6ReviewFindings``, with no sleeping at all; this test's
+        job is only to prove the real system, wired together, really does
+        recover. A short ``handshake_open_timeout`` keeps that real elapsed
+        time small; ``_retry_authed_connect``'s generous attempt budget is
+        the margin for a loaded CI box the round 6 brief asked for.
+
+        Round 6: do not assert WHICH internal path released the claim.
+        25 real runs under ``-n auto`` showed this resolving via either of
+        two equally-valid paths, depending on nondeterministic OS-level TCP
+        timing (whether the client's RST is processed before or after the
+        server's attempted write of the ``101``): ``handshake_aborted_count``
+        (``process_response``'s immediate detection, or the staleness
+        backstop) OR ``unauthorized_connections`` (the doomed handshake
+        actually completed, and ``_handle_connection`` ran for it just long
+        enough to fail authentication instantly against an already-vanished
+        peer, releasing the claim through its own ordinary ``finally``). The
+        endpoint never bricked in any of those 25 runs — a real client
+        always got through — so recovery via EITHER counter is the thing
+        this test exists to prove; the previous version asserted only the
+        first, and about 20-30% of runs took the second."""
         ep = _endpoint(handshake_open_timeout=0.3)
         ep.attach()
         try:
@@ -868,7 +965,11 @@ class TestRound4ReviewFindings:
                     await ws.close()
 
             _run(scenario())
-            assert ep.status()["handshake_aborted_count"] >= 1
+            status = ep.status()
+            recovered_via_either_path = (
+                status["handshake_aborted_count"] + status["unauthorized_connections"]
+            )
+            assert recovered_via_either_path >= 1
         finally:
             ep.close(2.0)
 
@@ -877,8 +978,19 @@ class TestRound4ReviewFindings:
         actively running a connection through authentication — round 2's
         "refused even mid-auth" guarantee stays true with the round 4 fix in
         place, for as long as ``auth_deadline`` allows, regardless of how
-        short ``handshake_open_timeout`` is configured."""
-        ep = _endpoint(handshake_open_timeout=0.2, auth_deadline=3.0)
+        short ``handshake_open_timeout`` is configured.
+
+        Round 6: made deterministic. The claim's immunity to staleness once
+        a real handler is running it (:meth:`_handle_connection` clears
+        ``_connection_pending_since`` at entry) does not depend on how much
+        TIME passes, only on that boolean — so instead of really sleeping
+        past the bound, the injected fake clock jumps by a huge amount. A
+        REAL first connection still completes a REAL handshake (this test
+        still proves the guard against real ``_handle_connection`` entry
+        timing, not just against the clock), but nothing here waits on a
+        real wall clock for its assertion to hold."""
+        clock = _FakeClock(start=5000.0)
+        ep = _endpoint(auth_deadline=3.0, clock=clock)
         ep.attach()
         try:
 
@@ -887,12 +999,12 @@ class TestRound4ReviewFindings:
 
                 first = await _connect(ep.bound_port)  # handshake completes; holds the claim
                 try:
-                    await asyncio.sleep(0.1)
-                    # Wait well past handshake_open_timeout+margin (round 5:
-                    # 0.2 + 0.5 = 0.7 s) — if the fix wrongly treated an
-                    # ACTIVE handler's claim as stale, this second dial-in
-                    # would now succeed.
-                    await asyncio.sleep(1.5)
+                    await _wait_until(lambda: ep._connection_pending_since is None, timeout=2.0)
+                    # Jump the fake clock far past ANY bound this endpoint
+                    # could ever be configured with — if the fix wrongly
+                    # treated an ACTIVE handler's claim as stale, this second
+                    # dial-in would now succeed regardless.
+                    clock.advance(10_000.0)
                     with pytest.raises(InvalidStatus) as excinfo:
                         await _connect(ep.bound_port)
                     assert excinfo.value.response.status_code == 503
@@ -911,20 +1023,17 @@ class TestRound4ReviewFindings:
         already superseded by the staleness backstop reclaiming the slot for
         a newer connection — must never clear that newer, still-legitimate
         claim."""
-        ep = _endpoint()
+        from websockets.protocol import State
+
+        clock = _FakeClock(start=100.0)
+        ep = _endpoint(clock=clock)
         try:
-            from websockets.protocol import State
-
-            class _FakeConnection:
-                def __init__(self, state: State) -> None:
-                    self.state = state
-
             stale_owner = _FakeConnection(State.CLOSED)  # the old, aborted connection
             current_owner = _FakeConnection(State.CONNECTING)  # claimed by someone else since
 
             ep._connection_pending = True
             ep._pending_connection = current_owner
-            ep._connection_pending_since = time.monotonic()
+            ep._connection_pending_since = clock()
 
             ep._process_response(stale_owner, None, None)  # a late, unrelated callback
 
@@ -983,7 +1092,20 @@ class TestRound4ReviewFindings:
                     # _enqueue_control's fire-and-forget tasks.
                     for _ in range(200):
                         await ws.send(json.dumps({"type": "session.update", "session": {}}))
-                    await _wait_until(lambda: ep.status()["control_sends_dropped"] > 0, timeout=5.0)
+                    # Round 6 (a third flaky test, found by this task's own
+                    # repro): wait for the server to actually have DECODED
+                    # all 200 sends, not just for the FIRST dropped reply —
+                    # closing the socket the instant one drop is observed
+                    # can race the server's own read loop under load, tearing
+                    # the connection down before it finishes draining bytes
+                    # already in flight, undercounting session_updates_received.
+                    await _wait_until(
+                        lambda: (
+                            ep.status()["session_updates_received"] == 200
+                            and ep.status()["control_sends_dropped"] > 0
+                        ),
+                        timeout=10.0,
+                    )
                 finally:
                     await ws.close()
 
@@ -1012,34 +1134,6 @@ class TestRound5ReviewFindings:
         finally:
             ep.close(2.0)
 
-    def test_an_aborted_handshake_recovers_quickly_under_the_default_bound(self) -> None:
-        """End-to-end, with NO override: a real operator running this
-        endpoint's plain defaults sees an aborted handshake recover in low
-        single-digit seconds, not up to 11."""
-        ep = _endpoint()  # the actual shipped default, not a test-shortened one
-        ep.attach()
-        try:
-
-            async def scenario() -> None:
-                start = time.monotonic()
-                await asyncio.to_thread(_abort_handshake_after_request, "127.0.0.1", ep.bound_port)
-                ws = await _retry_authed_connect(ep.bound_port, DEFAULT_SECRET, attempts=100)
-                try:
-                    raw = await asyncio.wait_for(ws.recv(), timeout=5.0)
-                    elapsed = time.monotonic() - start
-                    assert json.loads(raw)["type"] == "session.created"
-                    # Generous ceiling: the bound itself is 3.5 s; this just
-                    # proves it is nowhere near the old 11 s, without pinning
-                    # test-machine scheduling jitter to the second decimal.
-                    assert elapsed < 6.0
-                finally:
-                    await ws.close()
-
-            _run(scenario())
-            assert ep.status()["handshake_aborted_count"] >= 1
-        finally:
-            ep.close(2.0)
-
     def test_rejected_busy_count_is_exposed_beside_handshake_aborted_count(self) -> None:
         """The coordinator's probe went looking for this key and didn't find
         it under its OLD name (``connections_rejected_busy``, round 4) —
@@ -1051,6 +1145,88 @@ class TestRound5ReviewFindings:
             assert "handshake_aborted_count" in status
             assert status["rejected_busy_count"] == 0
             assert status["handshake_aborted_count"] == 0
+        finally:
+            ep.close(2.0)
+
+
+# ── Round 6: two real-socket tests were flaky under load; see the module ────
+# ── docstring's round 6 note for the diagnosis (test, not mechanism).    ────
+
+
+class TestRound6ReviewFindings:
+    def test_default_bound_reclaims_deterministically_at_its_own_boundary(self) -> None:
+        """Round 6 replacement for a real-socket, real-sleep reproduction
+        that was flaky under load (5/25 runs in one measured batch): NOT
+        because the mechanism bricked (every failing run had already
+        connected successfully by the time the assertion ran), but because a
+        real aborted TCP handshake can be cleaned up by either of two valid
+        paths depending on OS-level timing, and because racing a real
+        ~3.5 s wall-clock bound against a loaded ``-n auto`` box is itself an
+        unforced source of slowness and jitter this claim does not need.
+
+        This proves the SAME claim — the plain, unoverridden default bound
+        recovers a claim, not up to the old 11 s — deterministically: the
+        endpoint's real default config (no ``handshake_open_timeout``
+        override) drives ``_process_request`` directly against fake
+        connections and an injected, manually-advanced clock. Real socket
+        I/O and real end-to-end recovery are covered separately by
+        ``TestRound4ReviewFindings``'s one deliberately real-time test."""
+        from websockets.protocol import State
+
+        clock = _FakeClock(start=9000.0)
+        ep = _endpoint(clock=clock)  # the actual shipped defaults: no override
+        try:
+            request = _FakeRequest()
+            holder = _FakeConnection(State.CONNECTING)
+            assert ep._process_request(holder, request) is None  # claims the slot
+
+            # Just under the real default bound (3.0 + 0.5 = 3.5 s): still refused.
+            clock.advance(3.49)
+            refused = ep._process_request(_FakeConnection(State.CONNECTING), request)
+            assert refused is not None
+            assert ep.status()["rejected_busy_count"] == 1
+            assert ep.status()["handshake_aborted_count"] == 0
+
+            # Just over it: reclaimed.
+            clock.advance(0.02)  # total 3.51 s
+            reclaimer = _FakeConnection(State.CONNECTING)
+            approved = ep._process_request(reclaimer, request)
+            assert approved is None
+            assert ep.status()["handshake_aborted_count"] == 1
+            assert ep._pending_connection is reclaimer
+        finally:
+            ep.close(2.0)
+
+    def test_a_custom_bound_reclaims_at_its_own_boundary_too(self) -> None:
+        """The seam is general, not just correct for the one pair of numbers
+        the default happens to be: an operator-configured
+        ``handshake_open_timeout`` drives the same boundary, still with zero
+        real time elapsed."""
+        from websockets.protocol import State
+
+        clock = _FakeClock(start=42.0)
+        ep = _endpoint(handshake_open_timeout=1.2, clock=clock)
+        try:
+            request = _FakeRequest()
+            assert ep._process_request(_FakeConnection(State.CONNECTING), request) is None
+
+            clock.advance(1.2 + 0.5 - 0.01)  # just under this endpoint's own bound
+            assert ep._process_request(_FakeConnection(State.CONNECTING), request) is not None
+            assert ep.status()["handshake_aborted_count"] == 0
+
+            clock.advance(0.02)  # now just over it
+            assert ep._process_request(_FakeConnection(State.CONNECTING), request) is None
+            assert ep.status()["handshake_aborted_count"] == 1
+        finally:
+            ep.close(2.0)
+
+    def test_clock_defaults_to_real_monotonic_time(self) -> None:
+        """The injection seam must not change production behaviour when
+        nobody uses it — the default is the real clock, not a fake one left
+        in by accident."""
+        ep = _endpoint()
+        try:
+            assert ep._clock is time.monotonic
         finally:
             ep.close(2.0)
 
