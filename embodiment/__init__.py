@@ -65,6 +65,7 @@ _SUBMODULES = frozenset(
         "subagent",
         "tools",
         "turn",
+        "voice",
     }
 )
 
@@ -350,6 +351,7 @@ if TYPE_CHECKING:  # pragma: no cover - type-checker visibility for the lazy nam
         subagent,
         tools,
         turn,
+        voice,
     )
     from embodiment.contract import (  # noqa: F401
         ERROR,
