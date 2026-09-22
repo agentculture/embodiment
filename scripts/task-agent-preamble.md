@@ -19,6 +19,12 @@ isolated git worktree, and commit it. The main agent integrates, reviews and mer
   `websockets` (base); `sounddevice` (the optional `audio` extra - import it LAZILY
   inside the function that needs it, never at module scope). `lobes-cli` is forbidden.
 - Read `CLAUDE.md` in your worktree first, the constraints section especially.
+- Never open a credential file (`~/.lobes/.env`, any `.env`, a keyring, `~/.ssh`), and
+  never print, log or commit a secret. A live test that needs a key uses what is ALREADY
+  exported in the environment, or skips and says so in your report.
+- Anything you run that can fall back to a machine-global path (a state dir under the
+  system temp dir, `$HOME`) sets `TMPDIR`/`HOME` to a scratch directory FIRST. The suite
+  does this for you (`tests/conftest.py`); your own attack scripts must do it themselves.
 
 ## Test-first, and prove it
 

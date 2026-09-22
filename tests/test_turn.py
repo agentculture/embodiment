@@ -25,6 +25,7 @@ import pytest
 
 from embodiment.contract import ModelResponse, ToolCall
 from embodiment.loop import EXIT_BUDGET, EXIT_FINISHED, EXIT_STOPPED
+from embodiment.safe_reason import UNSAFE_ENV
 from embodiment.tools import DEGRADED_TOOL_FAILED, ToolRegistry, bind_tools
 from embodiment.turn import (
     DEGRADED_BUDGET_EXHAUSTED,
@@ -41,6 +42,12 @@ from embodiment.turn import (
     TurnResult,
     is_speakable,
     turn,
+)
+from tests.test_safe_reason import (
+    MARKER,
+    assert_no_speech,
+    assert_speech_present,
+    hostile_exception,
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
@@ -897,7 +904,16 @@ class TestTheTurnNeverRaises:
         codes = {d.code for d in result.degradations}
         assert DEGRADED_SEAM_ABORTED in codes
         assert result.spoken == FALLBACK_TEXT
-        assert "gateway is down" in " ".join(d.reason for d in result.degradations)
+
+        # This used to assert the seam's MESSAGE appeared in the reason. That
+        # assertion encoded the leak: the message is the dependency's text and
+        # an HTTP client puts the request body in it. The fault must still be
+        # nameable, so the class names are asserted instead — which is what an
+        # operator looks for — and the message is asserted ABSENT.
+        reasons = " ".join(d.reason for d in result.degradations)
+        assert "ConnectionError" in reasons
+        assert "LoopAborted" in reasons
+        assert "gateway is down" not in reasons
 
     def test_a_seam_that_dies_after_speaking_still_speaks_what_it_said(self) -> None:
         state = {"n": 0}
@@ -1000,3 +1016,73 @@ class TestConfigDefaults:
 
     def test_the_budget_leaves_room_for_a_tool_and_a_reply(self) -> None:
         assert TurnConfig().max_steps >= 2
+
+
+class TestNoSpeechReachesATurnRecord:
+    """Wave-1 lesson 5, proved by planting a marker and scanning everything.
+
+    The leak this closes was measured, not imagined: a seam that raises
+    ``RuntimeError(f"400 bad request: body={messages}")`` — which is what an
+    HTTP client does — put the entire system prompt and the user's turn into
+    ``turn-seam-aborted``'s reason, and from there into the operational log and
+    the dashboard event stream.
+    """
+
+    @staticmethod
+    def _seam_echoing_the_request(marker: str):
+        def seam(messages, tools=None):
+            raise RuntimeError(f"{marker} 400 bad request: body={messages}")
+
+        return seam
+
+    @staticmethod
+    def _recorded(result: TurnResult) -> tuple[Any, ...]:
+        """The surfaces that become RECORDS, which is what lesson 5 is about.
+
+        Deliberately NOT the whole :class:`TurnResult`: its ``packet`` carries
+        ``original``, the user's words verbatim, and that is the arc's core
+        invariant rather than a leak — the daemon needs them to answer. What
+        must never carry speech is what gets *recorded*: the degradations, and
+        the ``to_dict()`` a host logs or puts on an event stream.
+        """
+        return (result.to_dict(), result.degradations, result.spoken)
+
+    def test_a_seam_that_echoes_the_request_leaks_nothing(self) -> None:
+        result = turn(MARKER, self._seam_echoing_the_request(MARKER))
+        assert_no_speech(MARKER, *self._recorded(result))
+
+    def test_the_serialised_turn_omits_the_verbatim_packet(self) -> None:
+        """The existing design that makes the above true; pinned so it stays.
+
+        ``to_dict`` is the log/event shape and it leaves ``packet`` out. If a
+        future edit added it for convenience, every promise here would quietly
+        become false, so the omission is asserted rather than assumed.
+        """
+        result = turn(MARKER, lambda messages, tools=None: _says("ok"))
+        assert "packet" not in result.to_dict()
+        assert result.packet is not None
+        assert MARKER in (result.packet.original or "")
+
+    def test_the_seam_abort_is_still_named(self) -> None:
+        result = turn(MARKER, self._seam_echoing_the_request(MARKER))
+        codes = [d.code for d in result.degradations]
+        assert "turn-seam-aborted" in codes
+        reason = next(d.reason for d in result.degradations if d.code == "turn-seam-aborted")
+        assert "RuntimeError" in reason, reason
+
+    def test_a_hostile_exception_leaks_through_no_corner(self) -> None:
+        """args, __cause__ and __notes__ as well as the message."""
+
+        def seam(messages, tools=None):
+            raise hostile_exception(MARKER)
+
+        result = turn(MARKER, seam)
+        assert_no_speech(MARKER, *self._recorded(result))
+
+    def test_the_marker_appears_when_the_unsafe_hatch_is_on(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The negative control: this suite's scanning really does reach here."""
+        monkeypatch.setenv(UNSAFE_ENV, "1")
+        result = turn(MARKER, self._seam_echoing_the_request(MARKER))
+        assert_speech_present(MARKER, result.degradations)

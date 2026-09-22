@@ -148,6 +148,7 @@ from embodiment.framing import frame_cortex
 from embodiment.loop import EXIT_BUDGET, LoopAborted, LoopControls, LoopOutcome
 from embodiment.loop import run as loop_run
 from embodiment.perception import perceive
+from embodiment.safe_reason import describe_exception
 from embodiment.tools import BOUND_REGISTRY_ATTR, ToolRegistry
 
 __all__ = [
@@ -778,7 +779,26 @@ def _model_turns(outcome: Optional[LoopOutcome]) -> int:
 
 
 def _degradation(code: str, exc: BaseException) -> TurnDegradation:
-    return TurnDegradation(code=code, reason=_short(f"{type(exc).__name__}: {exc}"))
+    """Record a failure without recording what the user said.
+
+    The seam is an HTTP client more often than not, and an HTTP client raising
+    ``400 bad request: body=[…]`` puts the entire request — the system prompt
+    and the user's turn — into its message. Interpolating that here put speech
+    into this degradation's reason, and from there into the operational log
+    (which promises transcript text never reaches it) and the dashboard event
+    stream. :func:`~embodiment.safe_reason.describe_exception` builds the
+    reason from structured facts instead and never reads the message.
+
+    ``LoopAborted`` is unwrapped first: it is this package's own wrapper and
+    naming it alone would hide the fault the operator is looking for, so the
+    cause is described and the wrapper named around it.
+    """
+    cause = getattr(exc, "__cause__", None)
+    if isinstance(exc, LoopAborted) and isinstance(cause, BaseException):
+        return TurnDegradation(
+            code=code, reason=_short(f"LoopAborted <- {describe_exception(cause)}")
+        )
+    return TurnDegradation(code=code, reason=_short(describe_exception(exc)))
 
 
 def _spent(response: ModelResponse) -> int:
