@@ -23,6 +23,7 @@ from embodiment.bus import (
     DEGRADED_BROKER_UNAVAILABLE,
     DEGRADED_OVERSIZE,
     DEGRADED_PROTECTED_DROP,
+    DEGRADED_PUBLISH_AFTER_CLOSE,
     DEGRADED_SCHEMA_INVALID,
     DEGRADED_SECRET_REDACTED,
     EVENT_KINDS,
@@ -90,13 +91,22 @@ class _FailingResultClient:
 
 
 class _SlowClient:
-    """A client double whose publish_event blocks for a fixed duration."""
+    """A client double whose publish_event blocks for a fixed duration.
+
+    ``calls_started`` increments the INSTANT a call begins (before the sleep),
+    so a test can wait for "a call is genuinely in flight" -- distinct from
+    ``published``, which only grows once a call FINISHES. Waiting on
+    ``published`` for a multi-second delay client would defeat the point of a
+    bounded-wait helper; waiting on ``calls_started`` does not.
+    """
 
     def __init__(self, delay: float = 0.5):
         self._delay = delay
         self.published = []
+        self.calls_started = 0
 
     def publish_event(self, envelope, topic, **kwargs):
+        self.calls_started += 1
         time.sleep(self._delay)
         self.published.append((envelope, topic))
         return type("R", (), {"ok": True, "reason": ""})()
@@ -137,6 +147,25 @@ class TestSchemaValidation:
             assert field_name in fixture
         for required in schema["kinds"][kind]["required"]:
             assert required in fixture["data"], f"{kind} fixture missing required '{required}'"
+
+    @pytest.mark.parametrize("kind", sorted(EVENT_KINDS))
+    def test_schema_required_fields_exactly_match_the_bus_own_contract(self, kind):
+        """Round 3, defect 5: the fixture contract was pinned one way only
+        (schema.json's required set is a SUBSET of the fixture, and the
+        fixture is a subset of it) -- nothing forced schema.json and
+        embodiment.bus._REQUIRED_DATA_FIELDS to actually AGREE with each
+        other. A schema.json edit that drifted from the real validator could
+        pass every other test here. Assert equality, not just subset."""
+        import embodiment.bus as bus_mod
+
+        schema = _load_schema()
+        assert set(schema["kinds"][kind]["required"]) == set(bus_mod._REQUIRED_DATA_FIELDS[kind])
+
+    def test_schema_and_bus_agree_on_the_full_kind_set(self):
+        import embodiment.bus as bus_mod
+
+        schema = _load_schema()
+        assert set(schema["kinds"]) == set(bus_mod._REQUIRED_DATA_FIELDS) == EVENT_KINDS
 
     @pytest.mark.parametrize("kind", sorted(EVENT_KINDS))
     def test_bus_publish_of_fixture_data_succeeds(self, kind):
@@ -392,15 +421,36 @@ class TestAsyncBrokerFanOut:
         assert _wait_until(lambda: len(client.published) == 4, timeout=5.0)
 
     def test_close_reports_unsent_events_when_broker_is_too_slow_to_drain(self):
+        """Round 3, defect 1/4: assert the REAL contract, not a tautology.
+
+        With a 2s-per-call client and a 0.2s close deadline, the worker
+        cannot possibly finish draining: worker_stopped must read False,
+        unsent must be > 0, and -- the actual round-3 bug -- the client's
+        publish count must NOT keep growing after close() returns (it used to:
+        the worker kept draining the backlog, rebuilding a second client, for
+        several more seconds after a "successful" close()).
+        """
         client = _SlowClient(delay=2.0)
         bus = Bus(client=client)
         for _ in range(3):
             bus.publish("heartbeat", {})
+        # Wait for a call to be genuinely IN FLIGHT (not just enqueued, and not
+        # merely "a thread object exists") before closing -- otherwise close()
+        # can race a worker that has not reached its first publish_event call
+        # yet, and broker_worker_stopped trivially reads True for "there was
+        # nothing to interrupt".
+        assert _wait_until(lambda: client.calls_started >= 1, timeout=2.0)
         report = bus.close(deadline=0.2)
         assert report.elapsed_s < 1.0
-        # at most one event made it through the slow client in 0.2s; the rest
-        # are reported, never silently lost
-        assert report.broker_events_unsent >= 0
+        assert report.broker_worker_stopped is False
+        assert report.broker_events_unsent > 0
+        count_at_close = len(client.published)
+        time.sleep(2.5)  # long enough for the 2s in-flight call to finish
+        assert len(client.published) <= count_at_close + 1  # at most the one in-flight call
+        # and, decisively, no growth AFTER that one in-flight call settles
+        settled = len(client.published)
+        time.sleep(0.2)
+        assert len(client.published) == settled
 
 
 # ── round 2, defect 3: seq assignment and in-process delivery are atomic ────
@@ -682,6 +732,167 @@ class TestBrokerRetry:
             bus.tick(1000.0 + i)  # 20 ticks, 1 second apart -- well under the 100s gate
 
         assert len(calls) <= 2  # at most one retry attempt across a sub-100s window
+
+
+# ── round 3: a 27B review reproduced three more behavioural defects ─────────
+
+
+class TestCloseActuallyDisablesTheBroker:
+    """Round 3, defect 1 (reproduced by an independent 27B review's own probe:
+    6 events queued against a 0.5s-per-call client, close(deadline=0.3)
+    reported unsent=4 yet all 6 reached the broker 3.5s later through a
+    SECOND, rebuilt client close() never closed)."""
+
+    def test_worker_stops_draining_a_non_empty_queue_once_closed(self):
+        client = _SlowClient(delay=1.5)
+        builds = {"n": 0}
+
+        def factory():
+            builds["n"] += 1
+            return client
+
+        bus = Bus(client_factory=factory)
+        for _ in range(6):
+            bus.publish("heartbeat", {})
+        # Wait for a call to be genuinely IN FLIGHT (not merely "the client was
+        # constructed") -- so a 0.05s close deadline cannot possibly join it.
+        assert _wait_until(lambda: client.calls_started >= 1, timeout=2.0)
+        report = bus.close(deadline=0.05)
+
+        count_at_close = len(client.published)
+        time.sleep(2.0)  # long enough for the ONE in-flight call to settle
+        count_after_in_flight_settles = len(client.published)
+        time.sleep(2.0)  # long enough to drain the whole remaining backlog, if it still could
+        count_much_later = len(client.published)
+
+        # at most the ONE call already in flight when close() ran may complete
+        # (an in-progress blocking network call cannot be aborted from here);
+        # nothing past it -- and decisively, no further growth afterwards.
+        assert count_after_in_flight_settles <= count_at_close + 1
+        assert count_much_later == count_after_in_flight_settles, (
+            f"fan-out continued after the in-flight call settled: "
+            f"{count_after_in_flight_settles} -> {count_much_later}"
+        )
+        assert builds["n"] == 1, "a second client was rebuilt after close()"
+        assert report.broker_worker_stopped is False  # 0.05s cannot catch a 1.5s in-flight call
+        assert report.broker_events_unsent > 0
+
+    def test_close_report_unsent_count_is_true_not_a_snapshot(self):
+        """The events counted as 'unsent' at close() must STAY unsent."""
+        client = _SlowClient(delay=0.3)
+        bus = Bus(client=client)
+        for _ in range(5):
+            bus.publish("heartbeat", {})
+        time.sleep(0.05)
+        report = bus.close(deadline=0.1)
+        unsent_at_close = report.broker_events_unsent
+        time.sleep(2.0)
+        # at most one more delivery (the one in-flight when close() ran) can
+        # have landed; the reported "unsent" count must not have been a lie
+        assert len(client.published) <= 5 - unsent_at_close + 1
+
+    def test_no_client_is_built_after_close_even_for_a_never_started_broker(self):
+        """A bus that never enqueued anything before close() must never build
+        a client afterwards either -- covers _ensure_broker_core/_client's own
+        closed check, not just the worker loop."""
+        calls = {"n": 0}
+
+        def factory():
+            calls["n"] += 1
+            return _OkClient()
+
+        bus = Bus(client_factory=factory)
+        bus.close()
+        assert bus._ensure_broker_core() is False
+        assert bus._ensure_broker_client() is None
+        assert calls["n"] == 0
+
+    def test_tick_is_a_no_op_after_close(self):
+        calls = []
+
+        def flaky():
+            calls.append(1)
+            raise OSError("down")
+
+        bus = Bus(client_factory=flaky, broker_retry_interval_s=0.0)
+        bus.publish("heartbeat", {})
+        assert _wait_until(lambda: len(calls) == 1)
+        bus.close()
+        calls_at_close = len(calls)
+        assert bus.tick(999999.0) is None  # no heartbeat, no retry attempt
+        assert len(calls) == calls_at_close
+
+
+class TestPublishAfterClose:
+    """Round 3, defect 2 (reproduced: publish() after close() returned a real
+    Event, burned a seq, and recorded nothing)."""
+
+    def test_publish_after_close_is_refused(self):
+        bus, _client = _bus_with_ok_client()
+        bus.close()
+        event = bus.publish("heartbeat", {})
+        assert event is None
+
+    def test_publish_after_close_is_recorded_once_as_a_distinct_code(self):
+        bus, _client = _bus_with_ok_client()
+        bus.close()
+        for _ in range(5):
+            bus.publish("heartbeat", {})
+        assert bus.degradation_counts.get(DEGRADED_PUBLISH_AFTER_CLOSE, 0) == 5
+        assert sum(1 for d in bus.degradations if d.code == DEGRADED_PUBLISH_AFTER_CLOSE) == 1
+
+    def test_publish_after_close_touches_no_subscriber(self):
+        bus, _client = _bus_with_ok_client()
+        sub = bus.subscribe()
+        bus.close()
+        bus.publish("heartbeat", {})
+        assert sub.qsize() == 0  # sub was closed too; nothing to receive anyway
+
+    def test_publish_after_close_does_not_burn_a_seq(self):
+        bus, _client = _bus_with_ok_client()
+        last = bus.publish("heartbeat", {})
+        bus.close()
+        for _ in range(10):
+            rejected = bus.publish("heartbeat", {})
+            assert rejected is None
+        # a fresh bus's next real publish (were it reopened) would still be
+        # seq+1 -- there is no reopening, but this pins that publish() checked
+        # the closed flag BEFORE touching self._seq at all
+        assert last.seq == 1
+
+
+class TestHookFiresOncePerDistinctCode:
+    """Round 3, defect 3 (reproduced: 1000 invalid publishes -> 1000 hook
+    calls for 1 distinct code; the docstring always promised once per NEW
+    code)."""
+
+    def test_hook_fires_once_for_a_thousand_occurrences_of_one_code(self):
+        hooks = []
+        bus = Bus(client=_OkClient(), on_degrade=hooks.append)
+        for _ in range(1000):
+            bus.publish("not-a-kind", {})
+        assert len(hooks) == 1
+        assert bus.degradation_counts[DEGRADED_SCHEMA_INVALID] == 1000
+
+    def test_hook_fires_once_per_distinct_code_for_several_codes(self):
+        hooks = []
+        secret = "sk-gatewaykey-marker"
+        bus = Bus(client=_OkClient(), redact=[secret], on_degrade=hooks.append)
+        for _ in range(10):
+            bus.publish(123, {})  # DEGRADED_SCHEMA_INVALID
+        for _ in range(10):
+            bus.publish("state", {"component": secret, "status": "up"})  # DEGRADED_SECRET_REDACTED
+        assert len(hooks) == 2
+        assert {h.code for h in hooks} == {DEGRADED_SCHEMA_INVALID, DEGRADED_SECRET_REDACTED}
+
+    def test_hook_not_called_again_after_the_first_occurrence_of_a_code(self):
+        hooks = []
+        bus = Bus(client=_OkClient(), on_degrade=hooks.append)
+        bus.publish("nope", {})
+        first_call_count = len(hooks)
+        for _ in range(50):
+            bus.publish("nope", {})
+        assert len(hooks) == first_call_count == 1
 
 
 # ── round 2, defect 6b: speech is opt-in on a subscription ──────────────────

@@ -168,6 +168,49 @@ Round 2 — what an independent probe found, and the fix
    b. **``subscribe()`` defaulted to everything, including speech.** Fixed —
       see the privacy-boundary section above.
 
+Round 3 — a 27B review reproduced three more behavioural defects
+------------------------------------------------------------------
+1. **``close()`` never actually disabled the broker.** The round-2 worker
+   loop only checked ``_broker_stop`` when its queue was EMPTY
+   (``while not queue and not stop: wait()``) — a non-empty queue skipped
+   that check entirely and kept draining, ignoring a concurrent ``close()``
+   for as long as the backlog took to send. Worse, ``close()`` cleared
+   ``self._broker_client`` to ``None`` unconditionally while the worker could
+   still be mid-drain, so the worker's very next ``_ensure_broker_client()``
+   call rebuilt a SECOND client via ``client_factory`` and kept publishing
+   through it — measured: 6 queued events against a 0.5s-per-call client,
+   ``close(deadline=0.3)`` reported ``unsent=4``, yet all 6 had reached the
+   broker 3.5s later through a rebuilt client the report never mentioned.
+   Fixed: :attr:`Bus._closed` (a :class:`threading.Event`, distinct from the
+   temporary, retry-eligible ``_broker_disabled``) is set FIRST in
+   :meth:`close`, before anything else, and is honoured at the top of
+   :meth:`_publish_broker_sync`, :meth:`_ensure_broker_core`,
+   :meth:`_ensure_broker_client` AND :meth:`tick` — a closed bus builds no
+   client, ever, after ``close()`` was called. The worker loop now checks
+   ``_broker_stop`` BEFORE looking at the queue, every iteration, so a
+   non-empty queue no longer masks a pending stop. The one event already
+   mid-flight when ``close()`` runs may still complete (an in-progress
+   blocking network call cannot be aborted from outside), but nothing past it
+   ever gets dequeued — making :attr:`BusCloseReport.broker_events_unsent`
+   genuinely true, not a snapshot a moment before more sending happened.
+2. **``publish()`` after ``close()`` was silently accepted.** It returned a
+   real :class:`Event`, burned a ``seq``, delivered to zero subscribers (they
+   were already closed) and recorded nothing — C3 violated by omission.
+   Fixed: :meth:`publish` checks :attr:`Bus._closed` FIRST, before validating
+   anything or touching ``seq``, and refuses with one bounded, counted
+   :data:`DEGRADED_PUBLISH_AFTER_CLOSE`.
+3. **``on_degrade`` fired per OCCURRENCE, not per new distinct code.** The
+   docstring on :meth:`Bus.__init__`'s ``on_degrade`` parameter always said
+   "whenever a NEW distinct code is first recorded"; the round-2
+   implementation called the hook on every :meth:`_degrade` invocation
+   regardless — measured: 1000 invalid publishes (one distinct code) meant
+   1000 hook calls. Fixed to match the DOCSTRING's contract, not the code's:
+   the hook now fires exactly once per distinct code, the moment it is FIRST
+   recorded; :attr:`Bus.degradation_counts` already carries every subsequent
+   occurrence, so nothing is lost, only de-duplicated at the hook boundary —
+   the same reasoning :mod:`embodiment.daemon.state`'s own bounded ledger
+   already applies to what it persists.
+
 No thread started for the pure parts
 -------------------------------------
 Per the round-1 brief, the HEARTBEAT and RETRY decisions read no clock of
@@ -210,6 +253,7 @@ __all__ = [
     "DEGRADED_SECRET_REDACTED",
     "DEGRADED_OVERSIZE",
     "DEGRADED_PROTECTED_DROP",
+    "DEGRADED_PUBLISH_AFTER_CLOSE",
     "BusDegradation",
     "BusCloseReport",
     "Event",
@@ -309,6 +353,8 @@ DEGRADED_OVERSIZE = "bus-event-oversize"
 #: resort (round 2, defect 5). Never the payload of the evicted event, only
 #: its kind — see :meth:`Bus._deliver_and_record_locked`.
 DEGRADED_PROTECTED_DROP = "bus-protected-drop"
+#: ``publish()`` was called after :meth:`Bus.close`. Round 3, defect 2.
+DEGRADED_PUBLISH_AFTER_CLOSE = "bus-publish-after-close"
 
 #: Characters in Unicode category ``Cf`` ("format") — includes every bidi
 #: override/embedding/isolate control (U+200E/F, U+202A-E, U+2066-69) and
@@ -842,6 +888,15 @@ class Bus:
         self._seq = 0
         self._subscribers: list[Subscription] = []
 
+        #: Set exactly once, first thing, by :meth:`close` (round 3, defect 1).
+        #: Distinct from ``_broker_disabled``, which is a TEMPORARY,
+        #: retry-eligible state ``tick()`` may clear again — ``_closed`` never
+        #: clears. Honoured at the top of :meth:`publish`, :meth:`tick`,
+        #: :meth:`_publish_broker_sync`, :meth:`_ensure_broker_core` and
+        #: :meth:`_ensure_broker_client`: once set, no new client is ever
+        #: built and no new work is ever accepted.
+        self._closed = threading.Event()
+
         # ── bounded degradation ledger (round 2, defect 4) ──────────────────
         self.degradations: list[BusDegradation] = []
         self.degradation_counts: dict[str, int] = {}
@@ -877,6 +932,13 @@ class Bus:
         refused — every refusal is recorded on :attr:`degradations` naming the
         reason, never silent.
         """
+        if self._closed.is_set():
+            # Round 3, defect 2: checked FIRST, before any validation or seq
+            # assignment, so a publish after close() costs nothing — no seq
+            # burned, no subscriber touched — and still records (C3).
+            self._degrade(DEGRADED_PUBLISH_AFTER_CLOSE, "publish() called after close()")
+            return None
+
         payload = dict(data) if isinstance(data, dict) else {}
         if kind == "degradation" and isinstance(payload.get("reason"), str):
             payload["reason"] = _sanitize_reason(payload["reason"])
@@ -994,8 +1056,11 @@ class Bus:
         Independently, when the broker is currently disabled, attempts a
         bounded reconnect at most once per :data:`DEFAULT_BROKER_RETRY_INTERVAL_S`
         (round 2, defect 6a) and records :data:`DEGRADED_BROKER_RECOVERED` on
-        success.
+        success. A no-op, returning ``None``, once :meth:`close` has been
+        called (round 3, defect 1) — a closed bus neither emits nor retries.
         """
+        if self._closed.is_set():
+            return None
         self._maybe_retry_broker(now)
         with self._lock:
             due = (
@@ -1010,9 +1075,13 @@ class Bus:
         """Idempotent, never raises, returns within *deadline* seconds (lesson 6).
 
         Stops the broker worker thread with a bounded join and reports how
-        many queued events it left unsent (round 2, defect 2).
+        many queued events it left unsent (round 2, defect 2; made TRUE in
+        round 3, defect 1 — see the module docstring). ``self._closed`` is set
+        FIRST, before anything else, so a publish/tick racing this call sees
+        a closed bus rather than slipping in more work.
         """
         start = time.monotonic()
+        self._closed.set()
         with self._lock:
             subs = list(self._subscribers)
             self._subscribers.clear()
@@ -1052,7 +1121,18 @@ class Bus:
     # ── internals: the bounded degradation ledger (round 2, defect 4) ──────
 
     def _degrade(self, code: str, reason: str) -> None:
+        """Record *code*/*reason* in the bounded ledger (defect 4). Round 3,
+        defect 3: ``on_degrade`` fires exactly once per NEW distinct code —
+        the moment it is first recorded — matching this class's own
+        docstring, not once per occurrence. Every subsequent occurrence of
+        the same code still increments :attr:`degradation_counts`; only the
+        hook call is de-duplicated, the same way
+        :mod:`embodiment.daemon.state`'s bounded ledger already treats a
+        repeated code as one thing that happened N times rather than N
+        separate things.
+        """
         record = BusDegradation(code=code, reason=_sanitize_reason(reason))
+        is_new = False
         with self._lock:
             self.degradation_counts[code] = self.degradation_counts.get(code, 0) + 1
             if code not in self._degradation_seen:
@@ -1061,7 +1141,8 @@ class Bus:
                 else:
                     self._degradation_seen.add(code)
                     self.degradations.append(record)
-        if self._on_degrade is not None:
+                    is_new = True
+        if is_new and self._on_degrade is not None:
             try:
                 self._on_degrade(record)
             except Exception:  # noqa: BLE001 - a hook must never raise; count, don't swallow
@@ -1101,20 +1182,40 @@ class Bus:
 
     def _broker_worker(self) -> None:
         """Drains :attr:`_broker_queue`, one event at a time, off the caller's
-        thread (round 2, defect 2). Exits once stopped AND drained."""
+        thread (round 2, defect 2).
+
+        Round 3, defect 1: ``_broker_stop`` is checked FIRST, every
+        iteration, REGARDLESS of whether the queue is empty. The round-2
+        version only checked it inside the empty-queue wait loop, so a
+        non-empty queue masked a pending stop entirely and the worker kept
+        draining a full backlog after ``close()`` had already returned.
+        Whatever remains queued the moment stop is observed is abandoned —
+        never dequeued, never sent — which is what makes
+        :attr:`BusCloseReport.broker_events_unsent` true rather than a
+        snapshot. The one event already popped and mid-``_publish_broker_sync``
+        when stop fires may still complete (an in-flight network call cannot
+        be aborted from here), but nothing past it ever starts.
+        """
         while True:
             with self._broker_cv:
+                if self._broker_stop.is_set():
+                    return
                 while not self._broker_queue and not self._broker_stop.is_set():
                     self._broker_cv.wait(timeout=1.0)
+                if self._broker_stop.is_set():
+                    return
                 if not self._broker_queue:
-                    if self._broker_stop.is_set():
-                        return
                     continue
                 event = self._broker_queue.popleft()
             self._publish_broker_sync(event)
 
     def _publish_broker_sync(self, event: Event) -> None:
         """The actual network call. Runs ONLY on the broker worker thread."""
+        if self._closed.is_set():
+            # Round 3, defect 1: checked FIRST, before even a CACHED client is
+            # used — a closed bus must never publish again, even through a
+            # client built before close() ran.
+            return
         with self._broker_lock:
             if self._broker_disabled:
                 return
@@ -1154,6 +1255,8 @@ class Bus:
             self._degrade_broker(_describe_exception(exc))
 
     def _ensure_broker_core(self) -> bool:
+        if self._closed.is_set():  # round 3, defect 1
+            return False
         with self._broker_lock:
             if self._envelope_cls is not None:
                 return True
@@ -1169,6 +1272,8 @@ class Bus:
             return True
 
     def _ensure_broker_client(self) -> Optional[Any]:
+        if self._closed.is_set():  # round 3, defect 1: never rebuild after close
+            return None
         with self._broker_lock:
             if self._broker_client is not None:
                 return self._broker_client
