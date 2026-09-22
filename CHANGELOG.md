@@ -130,6 +130,7 @@ shipped and, with the same weight, what did not.
 - A `## [Unreleased]` heading that had sat inside the 0.7.0 entry since #13 is
   re-headed as that release's continuation; two `[Unreleased]` headings are a
   markdownlint duplicate.
+
 ## [0.15.0] - 2026-09-21
 
 **Breaking.** The experiments are archived in git history and the package
