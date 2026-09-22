@@ -1042,6 +1042,9 @@ class HostEndpoint:
         self._playback_overflow_count = 0
         self._playback_overflow_episode_active = False
         self._playback_generation = 0
+        # Finding 4: write failures the writer attributed to a generation a
+        # barge-in had already superseded — counted, never acted on.
+        self._playback_stale_write_count = 0
         self._playing = False
         self._writer_thread: threading.Thread | None = None
         self._writer_stop = threading.Event()
@@ -1605,9 +1608,23 @@ class HostEndpoint:
     def playing(self) -> bool:
         return self._playing
 
-    def _handle_write_failure(self, exc: BaseException) -> None:
-        """Round 3 finding 2, recurring at a pipe: never silent, never hammered again."""
+    def _handle_write_failure(self, exc: BaseException, generation: int) -> None:
+        """Round 3 finding 2, recurring at a pipe: never silent, never hammered again.
+
+        *generation* is the :attr:`_playback_generation` the writer read
+        together with the proc it wrote to. Review finding 4 (PR #87): the
+        writer reads ``proc`` under the lock, releases it, and writes; a
+        ``stop_playback()`` in that window closes THAT stdin, so the flush
+        raises — but by the time this runs ``_playback_proc`` is ``None``
+        or the player the next ``play()`` just spawned. Tearing that one
+        down and arming the write-failed cooldown dropped the reply after a
+        barge-in. A failure from a superseded generation is counted as a
+        stale write and touches nothing else.
+        """
         with self._counter_lock:
+            if generation != self._playback_generation:
+                self._playback_stale_write_count += 1
+                return
             proc = self._playback_proc
             self._playback_proc = None
             discarded = (
@@ -1967,6 +1984,9 @@ class HostEndpoint:
         while not self._writer_stop.is_set():
             with self._counter_lock:
                 proc = self._playback_proc
+                # Read WITH the proc, under the same lock: a write failure
+                # is attributed to the generation it belongs to (finding 4).
+                generation = self._playback_generation
                 if proc is not active_proc:
                     # A fresh process (first play(), or a respawn after a
                     # barge-in/write-failure): pacing restarts from now,
@@ -1990,7 +2010,7 @@ class HostEndpoint:
                 proc.stdin.write(slice_)  # type: ignore[union-attr]
                 proc.stdin.flush()  # type: ignore[union-attr]
             except Exception as exc:
-                self._handle_write_failure(exc)
+                self._handle_write_failure(exc, generation)
                 active_proc = None  # force a fresh clock for whatever comes next
                 continue
 
@@ -2083,6 +2103,7 @@ class HostEndpoint:
                 "playback_written_samples": self._playback_written_samples,
                 "playback_total_pushed_samples": self._playback_total_pushed_samples,
                 "playback_stop_discarded_total": self._playback_stop_discarded_total,
+                "playback_stale_write_count": self._playback_stale_write_count,
                 "playback_queued_bytes": self._playback_queued_bytes,
                 "playback_dropped_no_device": self._playback_dropped_no_device,
                 "output_degrade_attempts": self._output_degrade_attempts,
