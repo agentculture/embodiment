@@ -212,6 +212,14 @@ default.
 An escalation to `SIGKILL` is **reported and recorded**, in the result and in
 the degradation ledger: a daemon that had to be killed did not shut down.
 
+**It only ever signals the daemon.** Immediately before each signal it
+re-proves that the pid it is about to use still holds the lock and still has
+the process start time recorded for the daemon, so a pid the kernel recycled
+to another process after the daemon exited is refused rather than signalled
+(`identity_verified: false`, `lifecycle-stop-target-changed`). Where `/proc`
+cannot answer, it degrades to the pid alone and says so
+(`identity_verified: null`).
+
 Stopping nothing is not an error — it exits `0` and says `not running`, so
 `stop` is as safe to repeat as `start`. A stop that cannot be confirmed (the
 process still holds the lock after `SIGKILL`) exits `2` rather than claiming
@@ -236,9 +244,11 @@ directory, and never starts anything.
 
 Four states:
 
-- `running` — a process holds the daemon lock. This means the process is alive;
-  it is **not** evidence that anything was heard. The degradation count and the
-  recent ledger entries printed beside it are.
+- `running` — a process holds the daemon lock, and the line below says whether
+  that process's `(pid, start time)` still matches what the daemon recorded.
+  This means the process is alive; it is **not** evidence that anything was
+  heard. The degradation count and the recent ledger entries printed beside it
+  are.
 - `stopped` — the daemon exited and said so, or nothing has ever run here.
 - `dead (unclean)` — a pidfile still says "running" while nothing holds its
   lock. Reported with the last ledger entries, because the question after an

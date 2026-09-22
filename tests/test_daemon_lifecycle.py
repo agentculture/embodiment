@@ -58,6 +58,7 @@ from embodiment.daemon.lifecycle import (
     DEFAULT_STOP_TIMEOUT,
     DEFAULT_TARGET,
     HARD_EXIT_CODE,
+    IDENTITY_UNVERIFIABLE_CODE,
     PIDFILE_NAME,
     REFUSED_PID_CODE,
     STALE_PIDFILE_RECLAIMED_CODE,
@@ -66,6 +67,7 @@ from embodiment.daemon.lifecycle import (
     STATE_STOPPED,
     STATE_UNAVAILABLE,
     STOP_ESCALATED_CODE,
+    STOP_TARGET_CHANGED_CODE,
     TARGET_UNAVAILABLE_CODE,
     THREADS_LINGERING_CODE,
     DaemonRunner,
@@ -299,6 +301,17 @@ def _ledger_codes(state_dir: Path) -> list[str]:
         if line.strip():
             codes.append(json.loads(line)["code"])
     return codes
+
+
+def _stat_line(comm: str, starttime: int) -> str:
+    """A synthetic ``/proc/<pid>/stat`` line whose field 22 is *starttime*.
+
+    Built rather than hand-written because the index is easy to get wrong:
+    after the last ``)`` the remaining fields start at field 3 (``state``), so
+    field 22 sits at index 19.
+    """
+    after = ["S"] + [str(value) for value in range(1, 19)] + [str(starttime), "999", "888"]
+    return f"7 ({comm}) " + " ".join(after) + "\n"
 
 
 def _dead_pid() -> int:
@@ -748,6 +761,134 @@ class TestRunDaemonInProcess:
             run_daemon(App(), state=state, exit_process=exiter, install_signal_handlers=False)
         assert called and called[0] > 0
         assert any(c.startswith("lifecycle-") for c in _ledger_codes(state_dir))
+
+
+class TestStopSignalsOnlyTheDaemonItFound:
+    """A pid is not an identity. ``(pid, process start time)`` is.
+
+    ``stop`` evaluated liveness once, read the pid, and then signalled it. If
+    the daemon dies in the gap and the kernel recycles pid N to another
+    same-user process, that stranger gets the SIGTERM — and later the SIGKILL.
+    ``_signallable`` (pid<=1 / self / parent) and an ``EPERM`` from the kernel
+    do not cover it, because the stranger is ours to signal.
+
+    ``os.pidfd_open`` would close the window outright and is **not available on
+    this interpreter**, so the fix is the Linux fact underneath it: a process's
+    start time (``/proc/<pid>/stat`` field 22) is fixed for its life, so a
+    recycled pid can never match the one recorded for the daemon.
+    """
+
+    def test_a_live_daemons_start_time_is_recorded_and_matches_proc(
+        self, state_dir: Path, make_target, reaper: list[int]
+    ) -> None:
+        target, env = make_target("idle_ident", IDLE_TARGET)
+        started = start(target, state_dir=state_dir, env=env)
+        reaper.append(started.pid or 0)
+        record = json.loads((state_dir / PIDFILE_NAME).read_text(encoding="utf-8"))
+        assert isinstance(record["start_time"], int)
+        assert record["start_time"] > 0
+        assert record["start_time"] == lifecycle_mod._process_start_time(started.pid)
+        assert stop(state_dir=state_dir).identity_verified is True
+
+    def test_stop_refuses_to_signal_a_pid_whose_start_time_does_not_match(
+        self, state_dir: Path
+    ) -> None:
+        """The recycled-pid case, with a real live stranger standing in for it.
+
+        The lock is held (so ``stop`` believes a daemon is there) and the
+        record names a **real, running, same-user process** — but with a start
+        time that is not its own, exactly as a recycled pid would look. The
+        stranger must survive.
+        """
+        stranger = subprocess.Popen(  # nosec B603 - fixed argv, shell=False
+            [sys.executable, "-c", "import time; time.sleep(30)"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        DaemonState(state_dir)
+        holder = PidFile(state_dir / PIDFILE_NAME)
+        assert holder.acquire() is True
+        try:
+            real_start = lifecycle_mod._process_start_time(stranger.pid)
+            assert real_start is not None
+            holder.write(
+                {
+                    "schema": 1,
+                    "pid": stranger.pid,
+                    "state": "running",
+                    "start_time": real_start + 1000,
+                }
+            )
+            result = stop(state_dir=state_dir, timeout=0.2, kill_grace=0.2)
+        finally:
+            holder.close()
+        assert stranger.poll() is None, "stop signalled a process that was not the daemon"
+        stranger.kill()
+        stranger.wait(timeout=10)
+
+        assert result.stopped is False
+        assert result.identity_verified is False
+        assert STOP_TARGET_CHANGED_CODE in _ledger_codes(state_dir)
+
+    def test_an_unreadable_proc_degrades_and_says_so(
+        self, state_dir: Path, make_target, reaper: list[int], monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Non-Linux, or a hardened /proc: keep working, report that it is unverified."""
+        target, env = make_target("idle_noproc", IDLE_TARGET)
+        started = start(target, state_dir=state_dir, env=env)
+        reaper.append(started.pid or 0)
+        monkeypatch.setattr(lifecycle_mod, "_process_start_time", lambda pid: None)
+        # The record still carries a start time, which cannot be checked now.
+        result = stop(state_dir=state_dir)
+        assert result.stopped is True
+        assert result.identity_verified is None
+        assert IDENTITY_UNVERIFIABLE_CODE in _ledger_codes(state_dir)
+
+    def test_status_reports_whether_a_running_daemons_identity_checks_out(
+        self, state_dir: Path, make_target, reaper: list[int]
+    ) -> None:
+        target, env = make_target("idle_statident", IDLE_TARGET)
+        started = start(target, state_dir=state_dir, env=env)
+        reaper.append(started.pid or 0)
+        assert status(state_dir=state_dir).identity_verified is True
+        stop(state_dir=state_dir)
+        assert status(state_dir=state_dir).identity_verified is None
+
+    @pytest.mark.parametrize(
+        "comm",
+        [
+            "python3",
+            # A comm containing spaces AND parens — the reason the parse must
+            # split after the LAST ')' rather than on whitespace. A process can
+            # set this to almost anything, so it is untrusted input.
+            "weird ) ( name",
+            "",
+            ") S 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 99999",
+        ],
+    )
+    def test_the_start_time_parser_survives_a_hostile_comm(self, comm: str) -> None:
+        assert lifecycle_mod._parse_start_time(_stat_line(comm, 4242)) == 4242
+
+    @pytest.mark.parametrize(
+        "line",
+        [
+            "",
+            "no parens here at all",
+            "7 (short) S 1 2 3",
+            "7 (x) S " + " ".join(["notanumber"] * 25),
+            "7 (x) S " + " ".join(["1"] * 25).replace("1", "9.5"),
+        ],
+    )
+    def test_an_unparseable_stat_line_is_absent_not_a_guess(self, line: str) -> None:
+        assert lifecycle_mod._parse_start_time(line) is None
+
+    def test_the_parser_agrees_with_proc_for_a_real_process(self) -> None:
+        """A test of the test: the synthetic lines above must match reality."""
+        raw = Path(f"/proc/{os.getpid()}/stat").read_text(encoding="utf-8")
+        assert lifecycle_mod._parse_start_time(raw) == lifecycle_mod._process_start_time(
+            os.getpid()
+        )
+        assert lifecycle_mod._process_start_time(os.getpid()) > 0
 
 
 class TestCandidatePrecedence:

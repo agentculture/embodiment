@@ -49,6 +49,13 @@ def _render(report: lifecycle.StatusReport) -> str:
         lines.append(f"  exit code: {report.exit_code} (hard exit: {bool(report.hard_exit)})")
     if report.unfinished_threads:
         lines.append(f"  unfinished threads at exit: {report.unfinished_threads}")
+    if report.state == lifecycle.STATE_RUNNING:
+        lines.append(
+            "  identity (pid + process start time): "
+            + {True: "verified", False: "MISMATCH", None: "unverifiable here"}[
+                report.identity_verified
+            ]
+        )
     snapshot = report.daemon_state or {}
     log = snapshot.get("operational_log") or {}
     ledger_snapshot = snapshot.get("ledger") or {}

@@ -82,6 +82,32 @@ checkout — eidetic resolves its store from the cwd, so a daemon inheriting a
 repo cwd could write room conversation into a committed store (CLAUDE.md,
 "Privacy of the room").
 
+A pid is not an identity
+------------------------
+``stop`` re-proves, **immediately before each signal**, that the process it is
+about to signal is still the daemon: the lock is still held, the pidfile still
+names the same pid, and that pid's *process start time* (``/proc/<pid>/stat``
+field 22, fixed for the life of a process) still matches the one recorded when
+the daemon started. Evaluating liveness once and then signalling is the bug
+this closes: if the daemon exits in the gap and the kernel recycles its pid to
+another process of the same user, that stranger receives the ``SIGTERM`` and
+then the ``SIGKILL``. Neither :func:`_signallable` nor an ``EPERM`` catches it,
+because the stranger is ours to signal.
+
+A mismatch is never a signal: it records :data:`STOP_TARGET_CHANGED_CODE` — a
+named code and a fixed reason, never anything about the stranger — and falls
+through to :func:`_wait_for_release`, which decides "stopped" on the lock's
+truth rather than on ours. Where ``/proc`` cannot answer (not Linux, hardened
+``/proc``), the check degrades to today's pid-only behaviour and says so, in
+the ledger (:data:`IDENTITY_UNVERIFIABLE_CODE`) and in
+``StopResult.identity_verified`` / ``StatusReport.identity_verified``, rather
+than refusing to stop the daemon.
+
+This narrows the window to the microseconds between the ``/proc`` read and the
+``kill``; it does not close it. ``os.pidfd_open`` would, and is **not
+available on this interpreter** — so this is the Linux fact underneath it,
+used directly.
+
 Bounded stop, from both ends
 ----------------------------
 :func:`stop` sends ``SIGTERM``, waits at most *timeout* for the lock to go
@@ -181,6 +207,8 @@ __all__ = [
     "STALE_PIDFILE_RECLAIMED_CODE",
     "STOP_ESCALATED_CODE",
     "STOP_UNCONFIRMED_CODE",
+    "STOP_TARGET_CHANGED_CODE",
+    "IDENTITY_UNVERIFIABLE_CODE",
     "SIGNAL_FAILED_CODE",
     "REFUSED_PID_CODE",
     "HARD_EXIT_CODE",
@@ -259,6 +287,8 @@ STATE_UNAVAILABLE = "state unavailable"
 STALE_PIDFILE_RECLAIMED_CODE = "lifecycle-stale-pidfile-reclaimed"
 STOP_ESCALATED_CODE = "lifecycle-stop-escalated"
 STOP_UNCONFIRMED_CODE = "lifecycle-stop-unconfirmed"
+STOP_TARGET_CHANGED_CODE = "lifecycle-stop-target-changed"
+IDENTITY_UNVERIFIABLE_CODE = "lifecycle-identity-unverifiable"
 SIGNAL_FAILED_CODE = "lifecycle-signal-failed"
 REFUSED_PID_CODE = "lifecycle-refused-pid"
 HARD_EXIT_CODE = "lifecycle-hard-exit"
@@ -288,6 +318,12 @@ _ACQUIRE_RETRY_INTERVAL = 0.05
 #: than merely absent. ``_scan`` keys its error on it, so the wording is
 #: load-bearing and lives in one place.
 _UNUSABLE_PREFIX = "unusable state directory"
+
+#: Where ``starttime`` (``/proc/<pid>/stat`` field 22) sits once the line has
+#: been split after its last ``)``: the remaining fields begin at field 3, so
+#: 22 - 3 = 19. See :func:`_parse_start_time` for why the split is not a plain
+#: ``.split()``.
+_STARTTIME_INDEX_AFTER_COMM = 19
 
 #: A pidfile bigger than this was not written by us; refuse to parse it.
 _MAX_PIDFILE_BYTES = 64_000
@@ -518,6 +554,50 @@ def _probe_locked(path: Path) -> tuple[Optional[bool], Optional[str]]:
             pass  # narrow except; the probe's descriptor, nothing depends on it
 
 
+def _parse_start_time(stat_line: str) -> Optional[int]:
+    """Field 22 (``starttime``) of a ``/proc/<pid>/stat`` line. Never raises.
+
+    Parsed **after the last ``)``**, never by splitting the whole line on
+    whitespace: field 2 is ``comm``, a process can set it to almost anything,
+    and ``prctl(PR_SET_NAME)`` happily accepts spaces and parentheses. A naive
+    split reads a field of the process's own choosing as the start time, which
+    is the one number this check must not let a process control. After the
+    last ``)`` the remaining fields start at field 3, so field 22 is at index
+    :data:`_STARTTIME_INDEX_AFTER_COMM`.
+
+    Returns ``None`` — absent, never a guess — for anything that does not parse.
+    """
+    head, separator, after = stat_line.rpartition(")")
+    if not separator or not head:
+        return None
+    fields = after.split()
+    if len(fields) <= _STARTTIME_INDEX_AFTER_COMM:
+        return None
+    try:
+        return int(fields[_STARTTIME_INDEX_AFTER_COMM])
+    except ValueError:
+        return None
+
+
+def _process_start_time(pid: int) -> Optional[int]:
+    """When *pid*'s process started, in clock ticks since boot. Never raises.
+
+    The second half of a process identity. A pid alone is a slot the kernel
+    reuses; a pid **and** the moment that process started is unique for as long
+    as the process lives, so a recycled pid can never match the pair recorded
+    for the daemon.
+
+    ``None`` means *unknowable here* — no ``/proc`` (not Linux), a hardened
+    ``/proc``, or the process is already gone — and callers degrade rather
+    than refuse. It is never confused with "does not match".
+    """
+    try:
+        raw = Path(f"/proc/{int(pid)}/stat").read_text(encoding="utf-8", errors="replace")
+    except (OSError, ValueError):
+        return None
+    return _parse_start_time(raw)
+
+
 def _record_pid(record: Optional[dict[str, Any]]) -> Optional[int]:
     """The pid in a record, if it is plausibly one. Never raises."""
     if not record:
@@ -739,6 +819,22 @@ def _classify(candidate: _Candidate) -> tuple[str, str]:
     return STATE_DEAD_UNCLEAN, "a pidfile says 'running' but nothing holds its lock"
 
 
+def _identity_of(candidate: _Candidate) -> Optional[bool]:
+    """Does the live process still match the ``(pid, start time)`` recorded?
+
+    ``True`` proved, ``False`` disproved — a pidfile naming a process that is
+    not the one that wrote it, which is worth seeing in ``status`` rather than
+    only at ``stop`` time — and ``None`` when ``/proc`` cannot answer.
+    """
+    record = candidate.record or {}
+    pid = _record_pid(record)
+    recorded = record.get("start_time")
+    if pid is None or not isinstance(recorded, int) or isinstance(recorded, bool):
+        return None
+    current = _process_start_time(pid)
+    return None if current is None else current == recorded
+
+
 def _candidate_note(candidate: _Candidate) -> Optional[dict[str, Any]]:
     """A secondary-note entry for *candidate*, or ``None`` if it has nothing to say."""
     if not candidate.pidfile_exists:
@@ -805,6 +901,12 @@ class StopResult:
     confirmed: bool = False
     waited_seconds: float = 0.0
     state_dir: Optional[str] = None
+    #: Whether the process signalled was proved to be the daemon — ``True``
+    #: (pid AND start time matched immediately before each signal), ``False``
+    #: (they did not, so nothing was signalled) or ``None`` (no ``/proc``, so
+    #: the pair could not be checked; today's pid-only behaviour, reported
+    #: rather than hidden).
+    identity_verified: Optional[bool] = None
     code: Optional[str] = None
     detail: str = ""
 
@@ -817,6 +919,7 @@ class StopResult:
             "confirmed": self.confirmed,
             "waited_seconds": round(self.waited_seconds, 3),
             "state_dir": self.state_dir,
+            "identity_verified": self.identity_verified,
             "code": self.code,
             "detail": self.detail,
         }
@@ -842,6 +945,10 @@ class StatusReport:
     exit_code: Optional[int] = None
     hard_exit: Optional[bool] = None
     unfinished_threads: Optional[int] = None
+    #: For a ``running`` daemon: whether the recorded ``(pid, start time)``
+    #: still matches the live process. ``None`` when it is not running or
+    #: ``/proc`` cannot answer.
+    identity_verified: Optional[bool] = None
     ledger: dict[str, Any] = field(default_factory=dict)
     daemon_state: Optional[dict[str, Any]] = None
     candidates: list[str] = field(default_factory=list)
@@ -863,6 +970,7 @@ class StatusReport:
             "exit_code": self.exit_code,
             "hard_exit": self.hard_exit,
             "unfinished_threads": self.unfinished_threads,
+            "identity_verified": self.identity_verified,
             "ledger": self.ledger,
             "daemon_state": self.daemon_state,
             "candidates": list(self.candidates),
@@ -930,12 +1038,13 @@ def status(*, state_dir: Optional[str | Path] = None) -> StatusReport:
 
     headline = _live(candidates) or candidates[0]
     state, detail = _classify(headline)
+    identity = _identity_of(headline) if state == STATE_RUNNING else None
     notes = [
         note
         for candidate in candidates
         if candidate is not headline and (note := _candidate_note(candidate)) is not None
     ]
-    return _report(state, headline, names, scan_error or detail, notes)
+    return _report(state, headline, names, scan_error or detail, notes, identity)
 
 
 def _report(
@@ -944,6 +1053,7 @@ def _report(
     names: list[str],
     detail: str,
     other_candidates: Optional[list[dict[str, Any]]] = None,
+    identity_verified: Optional[bool] = None,
 ) -> StatusReport:
     """Build one :class:`StatusReport` from a scanned candidate. One code path."""
     record = candidate.record or {}
@@ -967,6 +1077,7 @@ def _report(
             record.get("daemon_state") if isinstance(record.get("daemon_state"), dict) else None
         ),
         candidates=names,
+        identity_verified=identity_verified,
         other_candidates=list(other_candidates or []),
         detail=detail or (candidate.detail or ""),
     )
@@ -1280,6 +1391,10 @@ def _spawn(
             "target": target,
             "state": "spawned",
             "started_at": time.time(),
+            # Half of the daemon's identity, recorded as early as it can be:
+            # a later ``stop`` compares it against /proc before every  signal, so a
+            # recycled pid can never be mistaken for this process.
+            "start_time": _process_start_time(proc.pid),
         }
     )
     return _confirm(
@@ -1365,6 +1480,60 @@ def _confirm(
 # ── stop ─────────────────────────────────────────────────────────────────────
 
 
+@dataclass(frozen=True)
+class _TargetCheck:
+    """Whether the process about to be signalled is still the daemon."""
+
+    #: Safe to send a signal to this pid right now.
+    safe: bool
+    #: ``True`` proved, ``False`` disproved, ``None`` unknowable (no ``/proc``).
+    verified: Optional[bool]
+    #: A fixed vocabulary — never free text, never anything about the stranger.
+    reason: str
+
+
+def _verify_target(pidfile: Path, pid: int, expected_start: Optional[int]) -> _TargetCheck:
+    """Re-prove the daemon's identity immediately before signalling it.
+
+    Called once per signal rather than once per :func:`stop`, because the
+    whole hazard lives in the gap: the daemon can exit between the scan and
+    the ``os.kill``, and the kernel can hand pid *N* to another process of the
+    same user, which would then receive our ``SIGTERM`` — and, worse, our
+    ``SIGKILL``. ``_signallable`` does not cover it (the stranger is ours to
+    signal) and neither does ``EPERM`` (we have permission).
+
+    Three facts are re-read, in the order that makes each cheap:
+
+    1. the lock is still held — if it is free the daemon is already gone and
+       there is nothing to signal;
+    2. the pidfile still names the same pid;
+    3. the live process's start time still equals the one recorded for the
+       daemon, which is what a recycled pid cannot fake.
+
+    ``expected_start`` of ``None`` means the pair was never obtainable, so the
+    check degrades to today's pid-only behaviour and says so through
+    ``verified=None`` rather than refusing to stop the daemon.
+
+    This narrows the window to the microseconds between the ``/proc`` read and
+    the ``kill``; it does not close it. ``os.pidfd_open`` would, and is not
+    available on this interpreter.
+    """
+    locked, _ = _probe_locked(pidfile)
+    if locked is not True:
+        return _TargetCheck(False, None, "lock-released")
+    record, _ = read_pid_record(pidfile)
+    if _record_pid(record) != pid:
+        return _TargetCheck(False, False, "pid-changed")
+    if expected_start is None:
+        return _TargetCheck(True, None, "start-time-unavailable")
+    current = _process_start_time(pid)
+    if current is None:
+        return _TargetCheck(True, None, "start-time-unavailable")
+    if current != expected_start:
+        return _TargetCheck(False, False, "start-time-changed")
+    return _TargetCheck(True, True, "verified")
+
+
 def _wait_for_release(pidfile: Path, seconds: float) -> bool:
     """Wait up to *seconds* for the pidfile's lock to go free."""
     deadline = time.monotonic() + seconds
@@ -1427,20 +1596,70 @@ def stop(
         )
     assert pid is not None  # nosec B101 - _signallable already vouched for it
 
-    try:
-        os.kill(pid, signal.SIGTERM)
-    except OSError as exc:
-        detail = f"could not signal pid {pid}: {describe_exception(exc)}"
-        ledger.append(SIGNAL_FAILED_CODE, f"SIGTERM to pid {pid}: {describe_exception(exc)}")
-        return StopResult(
-            False,
-            True,
-            pid=pid,
-            state_dir=str(live.dir),
-            waited_seconds=time.monotonic() - began,
-            code=SIGNAL_FAILED_CODE,
-            detail=detail,
-        )
+    # The daemon's identity: the pid PLUS the moment its process started. The
+    # child records the pair at spawn; if it is missing (an older pidfile, or
+    # no /proc at spawn time) it is captured here, right after the lock probe
+    # — later than ideal, still before any signal.
+    recorded_start = live.record.get("start_time") if live.record else None
+    expected_start = (
+        recorded_start
+        if isinstance(recorded_start, int) and not isinstance(recorded_start, bool)
+        else _process_start_time(pid)
+    )
+
+    verified: Optional[bool] = None
+    unverifiable_recorded = False
+
+    def _signal(sig: int, escalating: bool) -> Optional[StopResult]:
+        """Signal *pid* only if it is still the daemon. Returns a result to
+        return early, or ``None`` to carry on to :func:`_wait_for_release`."""
+        nonlocal verified, unverifiable_recorded
+        check = _verify_target(live.pidfile, pid, expected_start)
+        verified = check.verified
+        if check.safe and check.verified is None and not unverifiable_recorded:
+            # Signalling without having been able to prove identity. That is
+            # the old behaviour, which is fine, but it is a degradation of
+            # this check and the host is told (C3) — once per stop, not once
+            # per signal.
+            unverifiable_recorded = True
+            ledger.append(
+                IDENTITY_UNVERIFIABLE_CODE,
+                f"could not prove pid {pid} is the daemon ({check.reason}); "
+                "signalling on the pid alone",
+            )
+        if not check.safe:
+            if check.reason != "lock-released":
+                # A named code and the reason only. NOT the stranger's pid,
+                # its name or anything else about it: this is a record, and
+                # the process that inherited the pid is not ours to describe.
+                ledger.append(
+                    STOP_TARGET_CHANGED_CODE,
+                    f"refused to signal pid {pid}: {check.reason}",
+                )
+            return None
+        try:
+            os.kill(pid, sig)
+        except OSError as exc:
+            detail = f"could not signal pid {pid}: {describe_exception(exc)}"
+            ledger.append(
+                SIGNAL_FAILED_CODE, f"signal {int(sig)} to pid {pid}: {describe_exception(exc)}"
+            )
+            return StopResult(
+                False,
+                True,
+                pid=pid,
+                escalated=escalating,
+                state_dir=str(live.dir),
+                waited_seconds=time.monotonic() - began,
+                identity_verified=verified,
+                code=SIGNAL_FAILED_CODE,
+                detail=detail,
+            )
+        return None
+
+    failure = _signal(signal.SIGTERM, False)
+    if failure is not None:
+        return failure
 
     if _wait_for_release(live.pidfile, timeout):
         return StopResult(
@@ -1450,6 +1669,7 @@ def stop(
             confirmed=True,
             state_dir=str(live.dir),
             waited_seconds=time.monotonic() - began,
+            identity_verified=verified,
             detail=f"daemon {pid} stopped",
         )
 
@@ -1457,21 +1677,9 @@ def stop(
         STOP_ESCALATED_CODE,
         f"pid {pid} did not exit within {timeout}s of SIGTERM; escalating to SIGKILL",
     )
-    try:
-        os.kill(pid, signal.SIGKILL)
-    except OSError as exc:
-        detail = f"could not SIGKILL pid {pid}: {describe_exception(exc)}"
-        ledger.append(SIGNAL_FAILED_CODE, f"SIGKILL to pid {pid}: {describe_exception(exc)}")
-        return StopResult(
-            False,
-            True,
-            pid=pid,
-            escalated=True,
-            state_dir=str(live.dir),
-            waited_seconds=time.monotonic() - began,
-            code=SIGNAL_FAILED_CODE,
-            detail=detail,
-        )
+    failure = _signal(signal.SIGKILL, True)
+    if failure is not None:
+        return failure
 
     if _wait_for_release(live.pidfile, kill_grace):
         return StopResult(
@@ -1482,6 +1690,7 @@ def stop(
             confirmed=True,
             state_dir=str(live.dir),
             waited_seconds=time.monotonic() - began,
+            identity_verified=verified,
             detail=f"daemon {pid} did not shut down and was killed",
         )
 
@@ -1495,6 +1704,7 @@ def stop(
         confirmed=False,
         state_dir=str(live.dir),
         waited_seconds=time.monotonic() - began,
+        identity_verified=verified,
         code=STOP_UNCONFIRMED_CODE,
         detail=detail,
     )
@@ -1609,6 +1819,8 @@ class DaemonRunner:
                 "pid": os.getpid(),
                 "state": STATE_RUNNING,
                 "started_at": time.time(),
+                # Authoritative: read by the process it identifies.
+                "start_time": _process_start_time(os.getpid()),
                 "daemon_state": _reduced_state_snapshot(self._state),
             }
         )
