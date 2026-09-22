@@ -153,10 +153,14 @@ class EndpointCloseReport:
     is how many of this endpoint's underlying streams raised while being
     stopped/closed DURING this ``close`` call — previously that only bumped a
     generic error counter, against this dataclass's own "what could not be is
-    reported there" promise. Defaults to ``0`` so an implementation that has
-    no such concept (or another endpoint that constructs this report, e.g. a
-    remote/browser endpoint with no local stream to fail) never has to name
-    an argument it has nothing to say about.
+    reported there" promise. ``children_unreaped`` (round 7b) is how many
+    child processes this ``close`` could not confirm dead even after
+    escalating to SIGKILL — left as zombies until a LATER stop/close
+    happens to reap them, rather than silently forgotten. Both default to
+    ``0`` so an implementation that has no such concept (or another endpoint
+    that constructs this report, e.g. a remote/browser endpoint with no
+    local stream or child process to fail) never has to name an argument it
+    has nothing to say about.
     """
 
     capture_thread_stopped: bool
@@ -164,6 +168,7 @@ class EndpointCloseReport:
     samples_discarded: int
     elapsed_s: float
     streams_close_failed: int = 0
+    children_unreaped: int = 0
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -172,6 +177,7 @@ class EndpointCloseReport:
             "samples_discarded": self.samples_discarded,
             "elapsed_s": self.elapsed_s,
             "streams_close_failed": self.streams_close_failed,
+            "children_unreaped": self.children_unreaped,
         }
 
 

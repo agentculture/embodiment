@@ -16,6 +16,7 @@ Covers plan task t7's three acceptance criteria (now at a process boundary):
 from __future__ import annotations
 
 import ast
+import json
 import struct
 import subprocess  # nosec B404 - test-only, fixed argv, real small Python children
 import sys
@@ -28,9 +29,11 @@ from embodiment.audio.host import (
     CAPTURE_CHANNEL_INDEX,
     CAPTURE_CHANNELS,
     DEGRADED_CAPTURE_ENDED,
+    DEGRADED_DEVICE_MISMATCH,
     DEGRADED_DEVICE_UNRESOLVED,
     DEGRADED_NO_BACKEND,
     DEGRADED_OPEN,
+    DEGRADED_PIPEWIRE_UNAVAILABLE,
     DEGRADED_PLAYBACK_OVERFLOW,
     DEGRADED_WRITE_FAILED,
     HostEndpoint,
@@ -123,11 +126,139 @@ sys.stdin.buffer.read(4)
 """
 
 
+# ---------------------------------------------------------------------------
+# round 7: a fake `pw-dump` graph — a device (array) with a Sink+Source, a
+# SECOND device (the HDMI monitor's sink) that is NOT the array, and the
+# ability to synthesize a Stream node + Link for a just-spawned capture/
+# playback child, either linked correctly or (to prove the mismatch is
+# caught) linked to the wrong node, or not linked at all.
+# ---------------------------------------------------------------------------
+
+PW_SINK_ID = 48
+PW_SOURCE_ID = 49
+PW_HDMI_SINK_ID = 62
+PW_ARRAY_DEVICE_ID = 1
+PW_HDMI_DEVICE_ID = 2
+
+
+def _pw_device_nodes() -> list[dict]:
+    return [
+        {
+            "id": PW_SINK_ID,
+            "type": "PipeWire:Interface:Node",
+            "info": {
+                "props": {
+                    "media.class": "Audio/Sink",
+                    "node.name": "alsa_output.usb-Seeed_XVF3800.stereo",
+                    "node.description": "reSpeaker XVF3800 4-Mic Array",
+                    "device.id": PW_ARRAY_DEVICE_ID,
+                }
+            },
+        },
+        {
+            "id": PW_SOURCE_ID,
+            "type": "PipeWire:Interface:Node",
+            "info": {
+                "props": {
+                    "media.class": "Audio/Source",
+                    "node.name": "alsa_input.usb-Seeed_XVF3800.stereo",
+                    "node.description": "reSpeaker XVF3800 4-Mic Array",
+                    "device.id": PW_ARRAY_DEVICE_ID,
+                }
+            },
+        },
+        {
+            "id": PW_HDMI_SINK_ID,
+            "type": "PipeWire:Interface:Node",
+            "info": {
+                "props": {
+                    "media.class": "Audio/Sink",
+                    "node.name": "alsa_output.pci-0000_00_01.0.hdmi-stereo",
+                    "node.description": "NVIDIA HDMI",
+                    "device.id": PW_HDMI_DEVICE_ID,
+                }
+            },
+        },
+    ]
+
+
+class FakePwDumpState:
+    """Controls what the fake `pw-dump` binary reports.
+
+    ``resolvable=False`` simulates `pw-dump` being missing/unparsable.
+    ``default_link_playback``/``default_link_capture`` (a node id, or
+    ``None`` for "never links") decide what a NEWLY spawned pw-play/
+    pw-record child is reported as linked to — default: the array's own
+    sink/source, so every EXISTING test (which never configures this) keeps
+    exercising the "verified" path without change.
+    """
+
+    def __init__(
+        self,
+        *,
+        resolvable: bool = True,
+        default_link_playback: int | None = PW_SINK_ID,
+        default_link_capture: int | None = PW_SOURCE_ID,
+    ):
+        self.resolvable = resolvable
+        self.default_link_playback = default_link_playback
+        self.default_link_capture = default_link_capture
+        self._streams: list[dict] = []
+        self._next_id = 5000
+
+    def note_spawned(self, pid: int, *, playback: bool) -> None:
+        media_class = "Stream/Output/Audio" if playback else "Stream/Input/Audio"
+        linked_to = self.default_link_playback if playback else self.default_link_capture
+        self._streams.append({"pid": pid, "media_class": media_class, "linked_to": linked_to})
+
+    def dump_json(self) -> bytes | None:
+        if not self.resolvable:
+            return None
+        objs = list(_pw_device_nodes())
+        for stream in self._streams:
+            stream_id = self._next_id
+            self._next_id += 1
+            objs.append(
+                {
+                    "id": stream_id,
+                    "type": "PipeWire:Interface:Node",
+                    "info": {
+                        "props": {
+                            "media.class": stream["media_class"],
+                            "application.process.id": stream["pid"],
+                            "application.name": (
+                                "pw-play"
+                                if stream["media_class"] == "Stream/Output/Audio"
+                                else "pw-record"
+                            ),
+                            "node.name": f"stream-{stream_id}",
+                        }
+                    },
+                }
+            )
+            if stream["linked_to"] is not None:
+                link_id = self._next_id
+                self._next_id += 1
+                if stream["media_class"] == "Stream/Output/Audio":
+                    out_id, in_id = stream_id, stream["linked_to"]
+                else:
+                    out_id, in_id = stream["linked_to"], stream_id
+                objs.append(
+                    {
+                        "id": link_id,
+                        "type": "PipeWire:Interface:Link",
+                        "info": {"output-node-id": out_id, "input-node-id": in_id},
+                    }
+                )
+        return json.dumps(objs).encode("utf-8")
+
+
 def _make_popen(
     capture_script: str = _CAPTURE_STREAM_SCRIPT,
     playback_script: str = _PLAYBACK_SINK_SCRIPT,
     sink_path: Path | None = None,
     fail_binaries: frozenset[str] = frozenset(),
+    pw_state: FakePwDumpState | None = None,
 ):
     """Build a `popen` callable HostEndpoint can use instead of subprocess.Popen.
 
@@ -135,11 +266,23 @@ def _make_popen(
     launches the corresponding REAL Python child instead, preserving every
     stdin/stdout/stderr kwarg HostEndpoint itself passed — so the actual
     pipe wiring is exercised for real, only the "which real binary" part is
-    substituted.
+    substituted. `pw-dump` is answered from *pw_state* (a fresh, default
+    "everything resolves to the array" state when not given), also via a
+    real child that just prints the fixture JSON — never a mock.
     """
+    state = pw_state if pw_state is not None else FakePwDumpState()
 
     def popen(argv, **kwargs):
         binary = argv[0]
+        if binary == "pw-dump":
+            payload = state.dump_json()
+            if payload is None:
+                script = "import sys; sys.exit(1)"
+            else:
+                script = f"import sys; sys.stdout.buffer.write({payload!r})"
+            return subprocess.Popen(  # nosec B603 - fixed argv, test-only
+                [sys.executable, "-c", script], **kwargs
+            )
         if binary in fail_binaries:
             raise OSError(f"fake: {binary} not actually runnable")
         if binary in CAPTURE_BINARIES:
@@ -150,7 +293,9 @@ def _make_popen(
                 cmd.append(str(sink_path))
         else:
             raise OSError(f"unrecognised fake binary {binary!r}")
-        return subprocess.Popen(cmd, **kwargs)  # nosec B603 - fixed argv, test-only
+        proc = subprocess.Popen(cmd, **kwargs)  # nosec B603 - fixed argv, test-only
+        state.note_spawned(proc.pid, playback=binary in PLAYBACK_BINARIES)
+        return proc
 
     return popen
 
@@ -193,6 +338,226 @@ def test_criterion1_alsa_used_when_only_alsa_binaries_present():
     endpoint = HostEndpoint(which=_fake_which({"arecord", "aplay"}), popen=_make_popen())
     assert endpoint.status()["backend"] == "alsa"
     endpoint.close(1.0)
+
+
+# ---------------------------------------------------------------------------
+# round 7 (BLOCKER): pipewire target resolution + verify-don't-trust
+# ---------------------------------------------------------------------------
+
+
+def test_round7_playback_targets_the_arrays_node_name_not_a_card_index():
+    """The exact defect: --target must be a resolved pipewire node.name,
+    never an ALSA card index (an unresolvable index silently falls back to
+    the system default sink — how a reply ended up on the HDMI monitor)."""
+    endpoint = HostEndpoint(
+        which=_fake_which({"pw-record", "pw-play", "arecord", "aplay"}),
+        popen=_make_popen(),
+        device="XVF3800",
+    )
+    assert endpoint.status()["backend"] == "pipewire"
+    endpoint.play(_silence_frame(480))
+    _wait_until(lambda: endpoint.status()["playback_target_verified"] is not None)
+    assert endpoint.status()["playback_target_verified"] is True
+    assert endpoint.status()["degradation_out"] is None
+    endpoint.close(2.0)
+
+
+def test_round7_auto_detected_alsa_card_number_is_never_used_as_a_pipewire_needle(tmp_path):
+    """An auto-detected card index (e.g. "1") is a terrible pipewire
+    node.name substring — it can match an UNRELATED node by accident (a
+    digit inside some other device's name/path). Auto-detect must always
+    fall back to the fixed "XVF3800" needle for pipewire, never the ALSA
+    card number it found. Uses a cards fixture so this does not depend on
+    the real box's own /proc/asound/cards content."""
+    cards = _cards_file(tmp_path, " 1 [Array]: USB-Audio - reSpeaker XVF3800 4-Mic Array\n")
+    endpoint = HostEndpoint(
+        which=_fake_which({"pw-record", "pw-play", "arecord", "aplay"}),
+        popen=_make_popen(),
+        cards_path=cards,
+    )
+    assert endpoint._device == "1"  # noqa: SLF001 - auto-detected card number
+    assert endpoint.status()["degradation"] is None  # resolved via "XVF3800", not "1"
+    endpoint.close(2.0)
+
+
+def test_round7_resolution_ignores_which_sink_is_the_pipewire_default():
+    """wpctl status on the real box: the HDMI is the DEFAULT sink, the array
+    is not. Resolution must match by NAME, never by default-ness."""
+    endpoint = HostEndpoint(
+        which=_fake_which({"pw-record", "pw-play", "arecord", "aplay"}), popen=_make_popen()
+    )
+    assert endpoint.status()["degradation"] is None
+    endpoint.play(_silence_frame(480))
+    _wait_until(lambda: endpoint.status()["playback_target_verified"] is not None)
+    assert endpoint.status()["playback_target_verified"] is True
+    endpoint.close(2.0)
+
+
+def test_round7_playback_mismatch_is_named_counted_and_kills_the_stream():
+    """A fixture where the stream links to the HDMI sink instead of the
+    array — the exact live scenario — must be caught, not trusted."""
+    state = FakePwDumpState(default_link_playback=PW_HDMI_SINK_ID)
+    endpoint = HostEndpoint(
+        which=_fake_which({"pw-record", "pw-play", "arecord", "aplay"}),
+        popen=_make_popen(pw_state=state),
+    )
+    endpoint.play(_silence_frame(480))
+    _wait_until(lambda: endpoint.status()["playback_target_verified"] is not None)
+
+    status = endpoint.status()
+    assert status["playback_target_verified"] is False
+    assert status["degradation_out"]["code"] == DEGRADED_DEVICE_MISMATCH
+    assert status["playback_target_mismatch_count"] == 1
+    assert status["playing"] is False  # killed at once, never left sounding
+    endpoint.close(2.0)
+
+
+def test_round7_playback_never_links_within_the_verify_budget_is_a_mismatch():
+    """A link that never appears (a race, or a genuinely failed route) must
+    time out to a mismatch, not hang or silently pass."""
+    state = FakePwDumpState(default_link_playback=None)
+    endpoint = HostEndpoint(
+        which=_fake_which({"pw-record", "pw-play", "arecord", "aplay"}),
+        popen=_make_popen(pw_state=state),
+    )
+    t0 = time.perf_counter()
+    endpoint.play(_silence_frame(480))
+    elapsed = time.perf_counter() - t0
+    assert elapsed < 1.0  # bounded by the verify budget, not indefinite
+    assert endpoint.status()["playback_target_verified"] is False
+    assert endpoint.status()["degradation_out"]["code"] == DEGRADED_DEVICE_MISMATCH
+    endpoint.close(2.0)
+
+
+def test_round7_capture_mismatch_is_named_and_counted():
+    state = FakePwDumpState(default_link_capture=PW_HDMI_SINK_ID)  # any wrong id
+    endpoint = HostEndpoint(
+        which=_fake_which({"pw-record", "pw-play", "arecord", "aplay"}),
+        popen=_make_popen(pw_state=state),
+    )
+    received: list[bytes] = []
+    endpoint.start_capture(received.append)
+    _wait_until(lambda: endpoint.status()["capture_target_verified"] is not None)
+
+    status = endpoint.status()
+    assert status["capture_target_verified"] is False
+    assert status["degradation_in"]["code"] == DEGRADED_DEVICE_MISMATCH
+    assert status["capture_target_mismatch_count"] == 1
+    endpoint.close(2.0)
+
+
+def test_round7_capture_verified_on_the_happy_path():
+    endpoint = HostEndpoint(
+        which=_fake_which({"pw-record", "pw-play", "arecord", "aplay"}), popen=_make_popen()
+    )
+    received: list[bytes] = []
+    endpoint.start_capture(received.append)
+    _wait_until(lambda: endpoint.status()["capture_target_verified"] is not None)
+    assert endpoint.status()["capture_target_verified"] is True
+    assert endpoint.status()["degradation_in"] is None
+    endpoint.close(2.0)
+
+
+def test_round7_pw_dump_missing_falls_back_to_alsa_when_available():
+    state = FakePwDumpState(resolvable=False)
+    endpoint = HostEndpoint(
+        which=_fake_which({"pw-record", "pw-play", "arecord", "aplay"}),
+        popen=_make_popen(pw_state=state),
+    )
+    assert endpoint.status()["backend"] == "alsa"
+    assert endpoint.status()["degradation"] is None
+    degraded = [e for e in endpoint.events if e.get("code") == DEGRADED_PIPEWIRE_UNAVAILABLE]
+    assert len(degraded) == 1
+    endpoint.close(2.0)
+
+
+def test_round7_pw_dump_missing_with_no_alsa_fallback_is_a_construction_fault():
+    state = FakePwDumpState(resolvable=False)
+    endpoint = HostEndpoint(
+        which=_fake_which({"pw-record", "pw-play"}),  # no arecord/aplay
+        popen=_make_popen(pw_state=state),
+    )
+    assert endpoint.status()["degradation"]["code"] == DEGRADED_PIPEWIRE_UNAVAILABLE
+    received: list[bytes] = []
+    endpoint.start_capture(received.append)  # never raises
+    endpoint.play(_silence_frame())  # never raises
+    endpoint.close(1.0)
+
+
+def test_round7_resolution_matches_by_device_serial():
+    """The operator's configured device may be a serial rather than a name."""
+
+    def dump_with_serial() -> list[dict]:
+        objs = _pw_device_nodes()
+        objs[0]["info"]["props"]["device.serial"] = "usb-Seeed_Studio_reSpeaker_XVF3800_114993"
+        objs[1]["info"]["props"]["device.serial"] = "usb-Seeed_Studio_reSpeaker_XVF3800_114993"
+        return objs
+
+    class SerialState(FakePwDumpState):
+        def dump_json(self):
+            if not self.resolvable:
+                return None
+            objs = dump_with_serial()
+            for stream in self._streams:
+                stream_id = self._next_id
+                self._next_id += 1
+                objs.append(
+                    {
+                        "id": stream_id,
+                        "type": "PipeWire:Interface:Node",
+                        "info": {
+                            "props": {
+                                "media.class": stream["media_class"],
+                                "application.process.id": stream["pid"],
+                                "node.name": f"stream-{stream_id}",
+                            }
+                        },
+                    }
+                )
+                if stream["linked_to"] is not None:
+                    link_id = self._next_id
+                    self._next_id += 1
+                    if stream["media_class"] == "Stream/Output/Audio":
+                        out_id, in_id = stream_id, stream["linked_to"]
+                    else:
+                        out_id, in_id = stream["linked_to"], stream_id
+                    objs.append(
+                        {
+                            "id": link_id,
+                            "type": "PipeWire:Interface:Link",
+                            "info": {"output-node-id": out_id, "input-node-id": in_id},
+                        }
+                    )
+            return json.dumps(objs).encode("utf-8")
+
+    endpoint = HostEndpoint(
+        which=_fake_which({"pw-record", "pw-play", "arecord", "aplay"}),
+        popen=_make_popen(pw_state=SerialState()),
+        device="114993",
+    )
+    assert endpoint.status()["degradation"] is None
+    endpoint.play(_silence_frame(480))
+    _wait_until(lambda: endpoint.status()["playback_target_verified"] is not None)
+    assert endpoint.status()["playback_target_verified"] is True
+    endpoint.close(2.0)
+
+
+def test_round7_split_device_sink_and_source_different_devices_is_unresolved():
+    def broken_device_nodes() -> list[dict]:
+        objs = _pw_device_nodes()
+        objs[1]["info"]["props"]["device.id"] = PW_HDMI_DEVICE_ID  # source claims the OTHER device
+        return objs
+
+    class SplitState(FakePwDumpState):
+        def dump_json(self):
+            return json.dumps(broken_device_nodes()).encode("utf-8")
+
+    endpoint = HostEndpoint(
+        which=_fake_which({"pw-record", "pw-play", "arecord", "aplay"}),
+        popen=_make_popen(pw_state=SplitState()),
+    )
+    assert endpoint.status()["degradation"]["code"] == DEGRADED_DEVICE_UNRESOLVED
+    endpoint.close(2.0)
 
 
 def test_criterion1_capture_subprocess_start_failure_is_recorded_never_raises():
@@ -354,6 +719,34 @@ def test_criterion2_mute_events_carry_no_audio_content():
     for event in endpoint.events:
         assert marker not in str(event)
     assert marker not in str(endpoint.status())
+    endpoint.close(1.0)
+
+
+def test_round7b_finding1_concurrent_mute_from_the_same_state_emits_one_event():
+    """Regression FENCE, not a repro: the reviewer hammered the old
+    check-then-act mute() 3000 times through a barrier and got 0 duplicates
+    (the window was a few bytecodes under the GIL) — this test passes
+    before AND after the fix. Its job is to stay green once mute() is
+    locked, catching a future regression that reintroduces the race, not to
+    demonstrate the race exists."""
+    endpoint = HostEndpoint(which=_fake_which({"arecord", "aplay"}), popen=_make_popen())
+    n_threads = 8
+    barrier = threading.Barrier(n_threads)
+
+    def flip_to_true():
+        barrier.wait(timeout=5.0)
+        endpoint.mute(True)
+
+    threads = [threading.Thread(target=flip_to_true) for _ in range(n_threads)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=5.0)
+
+    mute_events = [e for e in endpoint.events if e.get("type") == "mute"]
+    assert len(mute_events) == 1, f"expected exactly one mute event, got {len(mute_events)}"
+    assert endpoint.status()["mute_event_count"] == 1
+    assert endpoint.muted is True
     endpoint.close(1.0)
 
 
@@ -656,6 +1049,44 @@ def test_close_terminates_the_capture_subprocess_promptly():
     assert alive == [], f"threads still alive after close: {alive}"
 
 
+_CAPTURE_IGNORES_SIGTERM_SCRIPT = """
+import signal, struct, sys, time
+signal.signal(signal.SIGTERM, signal.SIG_IGN)
+frame = struct.pack("<hh", 100, 9000) * 160
+while True:
+    sys.stdout.buffer.write(frame)
+    sys.stdout.buffer.flush()
+    time.sleep(0.005)
+"""
+
+
+def test_round7b_finding2_unreaped_child_is_tracked_and_reaped_later():
+    """A child that ignores SIGTERM forces the SIGKILL escalation; with a
+    ~0 s wait budget the OS cannot confirm the death in time, so the Popen
+    must land in children_unreaped rather than being silently dropped (a
+    zombie until this process happens to reap it). A LATER close() with a
+    real budget, after the (already SIGKILLed) child has had time to
+    actually exit, must reap it and report 0.
+    """
+    endpoint = HostEndpoint(
+        which=_fake_which({"arecord", "aplay"}),
+        popen=_make_popen(capture_script=_CAPTURE_IGNORES_SIGTERM_SCRIPT),
+    )
+    received: list[bytes] = []
+    endpoint.start_capture(received.append)
+    _wait_until(lambda: len(received) >= 1)
+
+    report = endpoint.close(0.0)  # ~0s budget: SIGKILL fires, confirmation cannot land in time
+    assert report.children_unreaped >= 1
+    assert endpoint.status()["close_report"]["children_unreaped"] == report.children_unreaped
+
+    # The child is already SIGKILLed (unignorable) — give the OS a moment
+    # to actually finish tearing it down, then a real close() must reap it.
+    time.sleep(0.3)
+    report2 = endpoint.close(2.0)
+    assert report2.children_unreaped == 0
+
+
 def test_close_is_idempotent_and_bounded(tmp_path):
     sink = tmp_path / "sink.txt"
     endpoint = HostEndpoint(
@@ -785,10 +1216,20 @@ def test_privacy_no_audio_bytes_written_to_disk(tmp_path, monkeypatch):
 # criterion 3 — the import graph: turn/daemon import the protocol only
 # ---------------------------------------------------------------------------
 
-#: The only modules allowed to import embodiment.audio.host: the module
-#: itself and a future embodiment/daemon/app.py, the daemon's composition
-#: root — the one place SUPPOSED to wire a concrete AudioEndpoint in.
-_ALLOWED_HOST_IMPORTERS = {"embodiment.audio.host", "embodiment.daemon.app"}
+#: The only module UNCONDITIONALLY allowed to import embodiment.audio.host:
+#: the module itself. `embodiment.daemon.app` gets a NARROWER exception —
+#: see `_find_host_import_violations_outside_main` — never a blanket
+#: allow-list entry for the whole file.
+_ALLOWED_HOST_IMPORTERS = {"embodiment.audio.host"}
+
+#: The daemon's composition root, and the ONLY function in it allowed to
+#: import a concrete AudioEndpoint (round 7b finding 3). t15's `main()`
+#: wires `HostEndpoint` there; `DaemonApp` itself is built against the
+#: `AudioEndpoint` protocol only. Named explicitly rather than "app.py may
+#: import host.py anywhere in the file", which would also have passed if
+#: `DaemonApp` imported it at module scope.
+_DAEMON_APP_MODULE = "embodiment.daemon.app"
+_DAEMON_APP_ALLOWED_FUNCTION = "main"
 
 
 def _module_name_for(py_file: Path, package_root: Path) -> str:
@@ -800,24 +1241,54 @@ def _module_name_for(py_file: Path, package_root: Path) -> str:
     return ".".join(parts)
 
 
-def _imports_audio_host(tree: ast.AST) -> bool:
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            for alias in node.names:
-                if alias.name == "embodiment.audio.host" or alias.name.startswith(
-                    "embodiment.audio.host."
-                ):
-                    return True
-        elif isinstance(node, ast.ImportFrom):
-            module = node.module or ""
-            if module == "embodiment.audio.host":
-                return True
-            if module == "embodiment.audio" and any(a.name == "host" for a in node.names):
-                return True
+def _is_host_import_node(node: ast.AST) -> bool:
+    if isinstance(node, ast.Import):
+        return any(
+            a.name == "embodiment.audio.host" or a.name.startswith("embodiment.audio.host.")
+            for a in node.names
+        )
+    if isinstance(node, ast.ImportFrom):
+        module = node.module or ""
+        if module == "embodiment.audio.host":
+            return True
+        if module == "embodiment.audio" and any(a.name == "host" for a in node.names):
+            return True
     return False
 
 
+def _imports_audio_host(tree: ast.AST) -> bool:
+    return any(_is_host_import_node(node) for node in ast.walk(tree))
+
+
+def _find_host_import_violations_outside_main(tree: ast.AST) -> list[str]:
+    """Every `embodiment.audio.host` import whose NEAREST enclosing
+    FunctionDef/AsyncFunctionDef is not literally named "main" (module
+    scope, a class body, or any other function/nested function all count as
+    outside). Returns a line-numbered description per violation, or `[]`.
+    """
+    violations: list[str] = []
+
+    def walk(node: ast.AST, enclosing_function: str | None) -> None:
+        for child in ast.iter_child_nodes(node):
+            child_enclosing = enclosing_function
+            if isinstance(child, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                child_enclosing = child.name
+            if _is_host_import_node(child) and enclosing_function != _DAEMON_APP_ALLOWED_FUNCTION:
+                where = enclosing_function or "module scope"
+                violations.append(f"line {getattr(child, 'lineno', '?')} (in {where})")
+            walk(child, child_enclosing)
+
+    walk(tree, None)
+    return violations
+
+
 def test_criterion3_no_module_outside_audio_imports_host_except_the_named_allowlist():
+    """embodiment.daemon.app is the daemon's composition root — the one
+    place SUPPOSED to wire a concrete AudioEndpoint in — but ONLY inside
+    `main()` (round 7b finding 3): t15's `main()` constructs `HostEndpoint`
+    there, while `DaemonApp` itself depends on the `AudioEndpoint` protocol
+    only. A module-scope (or any other function's) host import in app.py
+    still fails this test, unlike a blanket per-file allow-list entry."""
     package_root = REPO_ROOT / "embodiment"
     offenders = []
     for py_file in sorted(package_root.rglob("*.py")):
@@ -826,15 +1297,52 @@ def test_criterion3_no_module_outside_audio_imports_host_except_the_named_allowl
         module_name = _module_name_for(py_file, package_root)
         if module_name in _ALLOWED_HOST_IMPORTERS:
             continue
-        source = py_file.read_text(encoding="utf-8")
-        tree = ast.parse(source, filename=str(py_file))
+        tree = ast.parse(py_file.read_text(encoding="utf-8"), filename=str(py_file))
+        if module_name == _DAEMON_APP_MODULE:
+            if _find_host_import_violations_outside_main(tree):
+                offenders.append(module_name)
+            continue
         if _imports_audio_host(tree):
             offenders.append(module_name)
 
     assert offenders == [], (
         f"{offenders} import embodiment.audio.host directly; only "
-        f"{sorted(_ALLOWED_HOST_IMPORTERS)} may — everything else must depend on "
-        "embodiment.audio.endpoint.AudioEndpoint only."
+        f"{sorted(_ALLOWED_HOST_IMPORTERS)} unconditionally, and "
+        f"{_DAEMON_APP_MODULE} inside {_DAEMON_APP_ALLOWED_FUNCTION}() only, may — "
+        "everything else must depend on embodiment.audio.endpoint.AudioEndpoint only."
+    )
+
+
+def test_criterion3_daemon_app_host_import_allowed_only_inside_main():
+    """Round 7b finding 3, proven with planted fixtures since daemon/app.py
+    does not exist in this worktree (t15's own branch)."""
+    inside_main = (
+        "def main():\n    from embodiment.audio.host import HostEndpoint\n    return HostEndpoint\n"
+    )
+    assert _find_host_import_violations_outside_main(ast.parse(inside_main)) == []
+
+    module_scope = "from embodiment.audio.host import HostEndpoint\n\ndef main():\n    pass\n"
+    assert _find_host_import_violations_outside_main(ast.parse(module_scope))
+
+    other_function = (
+        "def setup():\n"
+        "    from embodiment.audio.host import HostEndpoint\n"
+        "    return HostEndpoint\n"
+        "\n"
+        "def main():\n"
+        "    pass\n"
+    )
+    assert _find_host_import_violations_outside_main(ast.parse(other_function))
+
+    nested_inside_main_but_not_named_main = (
+        "def main():\n"
+        "    def _load():\n"
+        "        from embodiment.audio.host import HostEndpoint\n"
+        "        return HostEndpoint\n"
+        "    return _load()\n"
+    )
+    assert _find_host_import_violations_outside_main(
+        ast.parse(nested_inside_main_but_not_named_main)
     )
 
 

@@ -159,13 +159,14 @@ def test_null_endpoint_sample_rate_defaults_to_the_playback_contract_rate():
     assert endpoint.sample_rate == SAMPLE_RATE_HZ  # stable before/after start_capture
 
 
-def test_endpoint_close_report_is_frozen_and_carries_the_five_fields():
+def test_endpoint_close_report_is_frozen_and_carries_the_six_fields():
     report = EndpointCloseReport(
         capture_thread_stopped=True,
         writer_thread_stopped=False,
         samples_discarded=42,
         elapsed_s=0.05,
         streams_close_failed=2,
+        children_unreaped=1,
     )
     assert report.to_dict() == {
         "capture_thread_stopped": True,
@@ -173,6 +174,7 @@ def test_endpoint_close_report_is_frozen_and_carries_the_five_fields():
         "samples_discarded": 42,
         "elapsed_s": 0.05,
         "streams_close_failed": 2,
+        "children_unreaped": 1,
     }
     try:
         report.samples_discarded = 0  # type: ignore[misc]
@@ -180,6 +182,18 @@ def test_endpoint_close_report_is_frozen_and_carries_the_five_fields():
     except Exception:
         raised = True
     assert raised, "EndpointCloseReport must be immutable"
+
+
+def test_endpoint_close_report_children_unreaped_defaults_to_zero():
+    """round 7b: a constructor that doesn't know about this field (e.g. a
+    remote endpoint with no local child process) never has to name it."""
+    report = EndpointCloseReport(
+        capture_thread_stopped=True,
+        writer_thread_stopped=True,
+        samples_discarded=0,
+        elapsed_s=0.0,
+    )
+    assert report.children_unreaped == 0
 
 
 def test_endpoint_close_report_streams_close_failed_defaults_to_zero():

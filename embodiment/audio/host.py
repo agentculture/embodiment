@@ -61,6 +61,54 @@ read :attr:`HostEndpoint.sample_rate` (part of
 than assuming :data:`~embodiment.audio.endpoint.SAMPLE_RATE_HZ` — the daemon
 passes it to the realtime session as ``input_sample_rate``.
 
+Round 7 (BLOCKER) — a pipewire target must be a NODE NAME, verified, never trusted
+----------------------------------------------------------------------------------
+An operator listening in the room found Gwen's reply coming out of the HDMI
+MONITOR, not the reSpeaker — the array's hardware AEC never saw the far-end
+reference, her own voice re-entered the mic as speech, and the daemon's
+barge-in cut her off mid-sentence. Cause: the pipewire backend was passing
+the ALSA CARD INDEX (e.g. ``"1"``) as ``pw-play --target 1``/``pw-record
+--target 1``. Pipewire's ``--target`` takes a node name or id, never an ALSA
+index; an unresolvable target silently falls back to the DEFAULT sink/source
+rather than erroring — on the affected box the default sink was the HDMI, not
+the array. This module now:
+
+1. **Resolves BOTH the sink and the source by NAME**, never a card index —
+   :meth:`HostEndpoint._resolve_pipewire_targets` parses ``pw-dump`` (JSON;
+   :func:`_pw_find_device_node` matches a node's ``node.name`` /
+   ``node.description`` / ``device.serial`` / ``alsa.card`` against a needle
+   — the fixed default ``"XVF3800"``, or the operator's own configured
+   substring/serial when ``device`` is given EXPLICITLY). An auto-detected
+   ALSA card number is NEVER used as that needle even though ``device`` is
+   also used for the alsa backend's ``plughw:<card>,0`` — a bare digit like
+   ``"1"`` is a dangerously loose pipewire name substring (measured: it
+   matched ``...pci-0000_00_01.0-hdmi...`` by accident in this task's own
+   tests). The same-device rule from earlier rounds stays: a sink and source
+   that resolve to different pipewire ``device.id``s is
+   :data:`DEGRADED_DEVICE_UNRESOLVED`, exactly like an ambiguous name match.
+2. **Verifies, does not trust.** After a capture/playback subprocess starts,
+   :meth:`HostEndpoint._verify_pipewire_link` re-reads ``pw-dump`` (bounded
+   retries, :data:`_PW_VERIFY_TOTAL_S`, since pipewire's own routing takes a
+   moment), finds the Stream node OUR child created
+   (:func:`_pw_find_stream_node` — by ``application.process.id`` first,
+   falling back to ``application.name`` when a real pipewire build does not
+   set it, which is the path actually exercised on the operator's own box,
+   measured), and follows the Link (:func:`_pw_link_target_id`) to confirm
+   it landed on the resolved node — never assumed from the ``--target``
+   argument alone. A mismatch is :data:`DEGRADED_DEVICE_MISMATCH` (a NAMED,
+   COUNTED degradation — the node name itself is never put in a reason
+   string), exposed as ``status()['playback_target_verified']``/
+   ``['capture_target_verified']``. A playback mismatch is NOT left running:
+   :meth:`HostEndpoint._handle_playback_mismatch` SIGKILLs the wrongly-routed
+   stream at once, the same discipline as a barge-in — audio must never keep
+   flowing to a device this module could not confirm.
+3. **``pw-dump`` missing or unparsable degrades to the ``alsa`` backend**
+   (``plughw:`` is unambiguous — no name resolution needed) when ``arecord``/
+   ``aplay`` are available, recorded as one event
+   (:data:`DEGRADED_PIPEWIRE_UNAVAILABLE`); with no alsa fallback either,
+   that becomes a construction-time fault. This module never guesses at an
+   unverifiable pipewire target.
+
 No voice, never a raise
 ------------------------
 - :data:`DEGRADED_NO_BACKEND` — neither ``pw-record``/``pw-play`` nor
@@ -89,8 +137,14 @@ No voice, never a raise
   cooldown, never a silent ``callback_errors`` bump.
 - :data:`DEGRADED_CAPTURE_ENDED` — the capture subprocess exited (EOF on its
   stdout) without :meth:`~HostEndpoint.stop_capture` asking it to.
+- :data:`DEGRADED_DEVICE_MISMATCH` — round 7 (BLOCKER): a started stream
+  verifiably linked to a DIFFERENT pipewire node than the one this module
+  resolved and asked for. See the round 7 section below.
+- :data:`DEGRADED_PIPEWIRE_UNAVAILABLE` — round 7: ``pw-dump`` is missing or
+  unparsable, so no pipewire target could be verified.
 
-All five never raise. The first two are checked once, at construction.
+All seven never raise. The first two, and any pipewire target-resolution
+fault (round 7), are checked once, at construction.
 
 Playback still buffers the WHOLE reply (round 2 finding 1, unchanged)
 --------------------------------------------------------------------------
@@ -189,6 +243,7 @@ speculative spawn); no audio is ever written to disk.
 
 from __future__ import annotations
 
+import json
 import shutil
 import subprocess  # nosec B404 - fixed argv, shell=False, no user input reaches argv
 import threading
@@ -213,6 +268,8 @@ __all__ = [
     "DEGRADED_WRITE_FAILED",
     "DEGRADED_CAPTURE_ENDED",
     "DEGRADED_PLAYBACK_OVERFLOW",
+    "DEGRADED_DEVICE_MISMATCH",
+    "DEGRADED_PIPEWIRE_UNAVAILABLE",
     "CAPTURE_RATE_HZ",
     "CAPTURE_CHANNELS",
     "CAPTURE_CHANNEL_INDEX",
@@ -233,6 +290,17 @@ DEGRADED_WRITE_FAILED = "audio-host-write-failed"
 DEGRADED_CAPTURE_ENDED = "audio-host-capture-ended"
 #: A play() chunk was refused because the playback buffer is full.
 DEGRADED_PLAYBACK_OVERFLOW = "audio-host-playback-overflow"
+#: Round 7 (BLOCKER): the started stream verifiably linked to a DIFFERENT
+#: pipewire node than the one this module resolved and asked for — the
+#: round 7 defect itself (Gwen's reply came out of the HDMI monitor, not the
+#: reSpeaker, because an unresolvable `--target` silently falls back to the
+#: pipewire default sink/source).
+DEGRADED_DEVICE_MISMATCH = "audio-host-device-mismatch"
+#: `pw-dump` is missing or its output could not be parsed as JSON — this
+#: module refuses to pass an unverifiable target to pw-play/pw-record and
+#: either falls back to the alsa backend (if available) or, if not, treats
+#: this as a construction-time fault (see `_resolve_pipewire_targets`).
+DEGRADED_PIPEWIRE_UNAVAILABLE = "audio-host-pipewire-unavailable"
 
 #: Fixed capture request, regardless of the device's own native rate — the
 #: reSpeaker XVF3800 refuses anything else (measured, round 3b); ALSA's
@@ -314,6 +382,20 @@ _OPEN_COOLDOWN_MAX_S = 30.0
 #: capped — only the detailed per-event log has a memory bound.
 _MAX_RETAINED_EVENTS = 1000
 
+#: How long a single `pw-dump` invocation is allowed to run before this
+#: module gives up on it (round 7). A judgement call: `pw-dump` is a local
+#: IPC query, not a network call — a few seconds is generous headroom for a
+#: busy box, well short of blocking a caller indefinitely.
+_PW_DUMP_TIMEOUT_S = 5.0
+
+#: Round 7's link-verification retry budget: pipewire's own routing takes a
+#: moment after a stream is created, so a single immediate `pw-dump` can
+#: read the link before it exists. Polled every `_PW_VERIFY_POLL_S` up to
+#: `_PW_VERIFY_TOTAL_S` total before a still-missing link is treated as a
+#: genuine mismatch rather than a race.
+_PW_VERIFY_TOTAL_S = 0.3
+_PW_VERIFY_POLL_S = 0.05
+
 
 def _default_which(name: str) -> str | None:
     """The ONE place ``shutil.which`` is spelled out — tests inject a fake."""
@@ -357,7 +439,17 @@ def _find_xvf3800_cards(cards_path: Path) -> list[str]:
 
 
 def _build_capture_argv(backend: str, device: object, rate: int, channels: int) -> list[str]:
-    """Cited from ``lobes-cli/scripts/realtime-he-accept.py``'s ``build_capture_argv``."""
+    """Cited from ``lobes-cli/scripts/realtime-he-accept.py``'s ``build_capture_argv``.
+
+    Round 7: for the ``pipewire`` backend, *device* MUST be a resolved
+    pipewire ``node.name`` (:func:`HostEndpoint._resolve_pipewire_targets`)
+    — never an ALSA card index. ``pw-play``/``pw-record --target`` accepts a
+    node name or id; an unresolvable value silently falls back to the
+    DEFAULT sink/source rather than erroring, which is exactly the round 7
+    blocker (a card index landed on the wrong device by luck). The ``alsa``
+    backend is unaffected: *device* there is still the ALSA card number from
+    ``/proc/asound/cards``.
+    """
     if backend == "alsa":
         target = f"plughw:{device},0" if device is not None else "default"
         return [
@@ -382,7 +474,10 @@ def _build_capture_argv(backend: str, device: object, rate: int, channels: int) 
 
 
 def _build_playback_argv(backend: str, device: object, rate: int, channels: int) -> list[str]:
-    """Cited from ``lobes-cli/scripts/realtime-he-accept.py``'s ``build_playback_argv``."""
+    """Cited from ``lobes-cli/scripts/realtime-he-accept.py``'s ``build_playback_argv``.
+
+    Round 7: same node-name-not-card-index rule as :func:`_build_capture_argv`.
+    """
     if backend == "alsa":
         target = f"plughw:{device},0" if device is not None else "default"
         return [
@@ -404,6 +499,117 @@ def _build_playback_argv(backend: str, device: object, rate: int, channels: int)
         argv += ["--target", str(device)]
     argv += ["--rate", str(rate), "--channels", str(channels), "--format", "s16", "-"]
     return argv
+
+
+# ---------------------------------------------------------------------------
+# pipewire node resolution + link verification (round 7)
+# ---------------------------------------------------------------------------
+
+#: pipewire media.class values this module cares about.
+_PW_SINK_CLASS = "Audio/Sink"
+_PW_SOURCE_CLASS = "Audio/Source"
+_PW_STREAM_OUTPUT_CLASS = "Stream/Output/Audio"  # a pw-play process
+_PW_STREAM_INPUT_CLASS = "Stream/Input/Audio"  # a pw-record process
+
+
+def _pw_nodes_by_class(dump: list[object], media_class: str) -> list[dict[str, object]]:
+    """Every ``PipeWire:Interface:Node`` object in *dump* with the given ``media.class``."""
+    found: list[dict[str, object]] = []
+    for obj in dump:
+        if not isinstance(obj, dict) or obj.get("type") != "PipeWire:Interface:Node":
+            continue
+        info = obj.get("info")
+        props = info.get("props") if isinstance(info, dict) else None
+        if not isinstance(props, dict):
+            continue
+        if props.get("media.class") == media_class:
+            found.append({"id": obj.get("id"), "props": props})
+    return found
+
+
+def _pw_find_device_node(
+    dump: list[object], needle: str, media_class: str
+) -> dict[str, object] | None:
+    """The Sink/Source node whose name/description/serial/alsa.card matches *needle*.
+
+    Matched against ``node.name``, ``node.description``, ``device.serial``
+    and ``alsa.card`` — the same broad match the round 3b addendum used for
+    ALSA device names, now applied to pipewire's own node properties. The
+    FIRST match wins; a needle that matches more than one node is a config
+    problem the operator resolves by narrowing it, not something this
+    function tries to disambiguate further.
+    """
+    needle_lower = needle.lower()
+    for node in _pw_nodes_by_class(dump, media_class):
+        props = node["props"]
+        assert isinstance(props, dict)
+        haystacks = (
+            props.get("node.name"),
+            props.get("node.description"),
+            props.get("device.serial"),
+            props.get("alsa.card"),
+        )
+        if any(needle_lower in str(h).lower() for h in haystacks if h):
+            return {
+                "id": node["id"],
+                "name": props.get("node.name"),
+                "device_id": props.get("device.id"),
+            }
+    return None
+
+
+def _pw_find_stream_node(
+    dump: list[object], media_class: str, pid: int
+) -> dict[str, object] | None:
+    """The Stream node OUR subprocess created — matched by its OS pid first.
+
+    ``application.process.id`` is the reliable match (pipewire always sets
+    it for a client-created stream); a name match
+    (``application.name in {"pw-play", "pw-record"}``) is the fallback for a
+    pipewire build/config that omits it, best-effort since it could match a
+    DIFFERENT pw-play/pw-record process on a shared box.
+    """
+    candidates = _pw_nodes_by_class(dump, media_class)
+    for node in candidates:
+        props = node["props"]
+        assert isinstance(props, dict)
+        raw_pid = props.get("application.process.id")
+        try:
+            if raw_pid is not None and int(raw_pid) == pid:
+                return node
+        except (TypeError, ValueError):
+            continue
+    for node in candidates:
+        props = node["props"]
+        assert isinstance(props, dict)
+        if str(props.get("application.name") or "") in ("pw-play", "pw-record"):
+            return node
+    return None
+
+
+def _pw_link_target_id(dump: list[object], stream_node_id: object, *, as_output: bool) -> object:
+    """What *stream_node_id* is linked to, via a ``PipeWire:Interface:Link`` object.
+
+    ``as_output=True`` (playback): the stream is the link's OUTPUT side —
+    returns what it feeds (the sink's node id). ``as_output=False``
+    (capture): the stream is the link's INPUT side — returns what feeds it
+    (the source's node id). ``None`` if no matching link exists (yet, or at
+    all — a caller retries with a bounded budget rather than treating a
+    single miss as final, since pipewire's own routing takes a moment).
+    """
+    for obj in dump:
+        if not isinstance(obj, dict) or obj.get("type") != "PipeWire:Interface:Link":
+            continue
+        info = obj.get("info")
+        if not isinstance(info, dict):
+            continue
+        out_id = info.get("output-node-id")
+        in_id = info.get("input-node-id")
+        if as_output and out_id == stream_node_id:
+            return in_id
+        if not as_output and in_id == stream_node_id:
+            return out_id
+    return None
 
 
 def _describe_process_exit(proc: "subprocess.Popen[bytes]") -> str:
@@ -540,15 +746,39 @@ class HostEndpoint:
 
         self._last_close_report: EndpointCloseReport | None = None
 
+        # Round 7b finding 2: a child SIGKILL could not confirm dead within
+        # its wait bound becomes a zombie until reaped — tracked here and
+        # retried (non-blocking) at every later stop/close.
+        self._unreaped: "list[subprocess.Popen[bytes]]" = []
+
         self._degradation: EndpointDegradation | None = None
         self._degradation_in: EndpointDegradation | None = None
         self._degradation_out: EndpointDegradation | None = None
+
+        # Round 7: resolved pipewire node identity (never an ALSA card
+        # index) and the verify-don't-trust bookkeeping.
+        self._pw_sink_node_id: object = None
+        self._pw_sink_node_name: str | None = None
+        self._pw_source_node_id: object = None
+        self._pw_source_node_name: str | None = None
+        self._playback_target_verified: bool | None = None
+        self._capture_target_verified: bool | None = None
+        self._playback_target_mismatch_count = 0
+        self._capture_target_mismatch_count = 0
 
         self._backend = backend or _select_backend(self._which)
         if self._backend is None:
             self._degradation = EndpointDegradation(
                 DEGRADED_NO_BACKEND, "no pipewire or alsa audio backend found on PATH"
             )
+
+        # Whether `device` was configured EXPLICITLY, not auto-detected —
+        # decides the pipewire matching needle below. An auto-detected ALSA
+        # card number (a bare digit or two) is a terrible pipewire node.name
+        # substring: "1" matched "...pci-0000_00_01.0-hdmi..." by accident
+        # in testing. Only an explicit override is trusted as a name/serial
+        # needle; auto-detect always falls back to the fixed "XVF3800".
+        self._device_explicit = device is not None
 
         self._device: object = device
         if self._degradation is None and device is None:
@@ -563,6 +793,9 @@ class HostEndpoint:
                 )
             # zero matches: fall back to the ALSA/pipewire default (None), not a fault.
 
+        if self._degradation is None and self._backend == "pipewire":
+            self._resolve_pipewire_targets()
+
     # -- shared helpers ------------------------------------------------
 
     def _record_event(self, event: dict[str, object]) -> None:
@@ -571,10 +804,15 @@ class HostEndpoint:
             if event.get("type") == "mute":
                 self._mute_event_count += 1
 
-    def _enter_output_degradation(self, code: str, exc: BaseException, action: str) -> None:
-        """Round 3 finding 1/2, unchanged: one recorded episode + a cooldown."""
+    def _enter_output_degradation_reason(self, code: str, reason: str) -> None:
+        """One recorded episode + a cooldown (round 3 finding 1/2), from a PLAIN reason string.
+
+        Used directly by round 7's device-mismatch path (there is no
+        exception to describe — the fault is a fact this module observed,
+        not a caught error) and via :meth:`_enter_output_degradation` for
+        every exception-carrying caller — one code path (lesson 8).
+        """
         is_new_episode = self._degradation_out is None
-        reason = f"{action}: {describe_exception(exc)}"
         self._degradation_out = EndpointDegradation(code, reason)
         if is_new_episode:
             self._record_event({"type": "degraded", "code": code, "direction": "out"})
@@ -583,10 +821,21 @@ class HostEndpoint:
         self._out_open_cooldown_until = time.monotonic() + self._out_open_backoff_s
         self._out_open_backoff_s = min(_OPEN_COOLDOWN_MAX_S, self._out_open_backoff_s * 2.0)
 
+    def _enter_output_degradation(self, code: str, exc: BaseException, action: str) -> None:
+        """Round 3 finding 1/2, unchanged: one recorded episode + a cooldown."""
+        self._enter_output_degradation_reason(code, f"{action}: {describe_exception(exc)}")
+
     def _terminate_process(
         self, proc: "subprocess.Popen[bytes]", timeout: float = _TERMINATE_TIMEOUT_S
     ) -> int:
-        """Terminate, wait, kill if needed. Returns 1 if it never confirmed dead."""
+        """Terminate, wait, kill if needed. Returns 1 if it never confirmed dead.
+
+        Round 7b finding 2: a child that STILL will not confirm dead after
+        the kill wait is not abandoned outright — it would become a zombie
+        until this process happens to reap it. It goes into
+        :attr:`_unreaped` instead, retried (non-blocking) by
+        :meth:`_reap_unreaped` at every later stop/close.
+        """
         if proc.poll() is not None:
             return 0
         try:
@@ -604,7 +853,10 @@ class HostEndpoint:
             except Exception:
                 with self._counter_lock:
                     self._callback_errors += 1
-            return 0 if proc.poll() is not None else 1
+            if proc.poll() is not None:
+                return 0
+            self._unreaped.append(proc)
+            return 1
 
     def _kill_process_fast(
         self, proc: "subprocess.Popen[bytes]", timeout: float = _BARGE_IN_KILL_TIMEOUT_S
@@ -617,7 +869,8 @@ class HostEndpoint:
         made round 4's own barge-in miss its 200 ms bound. Returns 1 if the
         OS never confirmed the kill within *timeout* (SIGKILL itself cannot
         be ignored, so this bounds the WAIT for reaping, not a grace period
-        the child gets to use).
+        the child gets to use) — that child also joins :attr:`_unreaped`
+        (round 7b finding 2), same as :meth:`_terminate_process`.
         """
         if proc.poll() is not None:
             return 0
@@ -630,7 +883,22 @@ class HostEndpoint:
             proc.wait(timeout=max(0.0, timeout))
             return 0
         except subprocess.TimeoutExpired:
+            self._unreaped.append(proc)
             return 1
+
+    def _reap_unreaped(self) -> None:
+        """Non-blocking: poll() every previously-unconfirmed-dead child and
+        drop it once the OS confirms it exited. Never blocks, never raises.
+        """
+        still: "list[subprocess.Popen[bytes]]" = []
+        for proc in self._unreaped:
+            try:
+                if proc.poll() is None:
+                    still.append(proc)
+            except Exception:
+                with self._counter_lock:
+                    self._callback_errors += 1
+        self._unreaped = still
 
     # -- lifecycle ---------------------------------------------------------
 
@@ -650,6 +918,8 @@ class HostEndpoint:
         deadline = max(0.0, float(deadline))
         start = time.monotonic()
 
+        self._reap_unreaped()
+
         # A normal end of session (unlike stop_playback()'s barge-in) gets a
         # brief chance to exit on its own after EOF — up to a THIRD of the
         # deadline, so plenty is still left for the capture/writer joins
@@ -664,6 +934,11 @@ class HostEndpoint:
         remaining = max(0.0, deadline - (time.monotonic() - start))
         writer_stopped = self._stop_writer(timeout=remaining)
 
+        # Once more (round 7b finding 2): catch anything that finished
+        # dying during the teardown just above, so the report's count is as
+        # fresh as this close() call can make it.
+        self._reap_unreaped()
+
         self._attached = False
         self._closed = True
         elapsed = time.monotonic() - start
@@ -673,6 +948,7 @@ class HostEndpoint:
             samples_discarded=samples_discarded,
             elapsed_s=elapsed,
             streams_close_failed=playback_close_failures + capture_close_failures,
+            children_unreaped=len(self._unreaped),
         )
         self._last_close_report = report
         return report
@@ -686,7 +962,8 @@ class HostEndpoint:
         if self._capturing:
             return
 
-        argv = _build_capture_argv(self._backend, self._device, CAPTURE_RATE_HZ, CAPTURE_CHANNELS)
+        capture_target = self._pw_source_node_name if self._backend == "pipewire" else self._device
+        argv = _build_capture_argv(self._backend, capture_target, CAPTURE_RATE_HZ, CAPTURE_CHANNELS)
         was_degraded = self._degradation_in is not None
         try:
             proc = self._popen(
@@ -714,12 +991,25 @@ class HostEndpoint:
         self._capturing = True
         self._attached = True
 
+        # Round 7: verify, don't trust — confirm the stream actually linked
+        # to the resolved source node rather than assuming --target worked.
+        verified = self._verify_pipewire_link(proc, playback=False)
+        if verified is not None:
+            self._capture_target_verified = verified
+            if not verified:
+                with self._counter_lock:
+                    self._capture_target_mismatch_count += 1
+                self._degradation_in = EndpointDegradation(
+                    DEGRADED_DEVICE_MISMATCH, "capture stream linked to an unexpected device"
+                )
+
     def stop_capture(self) -> None:
         self._stop_capture(timeout=2.0)
 
     def _stop_capture(self, timeout: float) -> tuple[bool, int]:
         """Terminate the subprocess FIRST — that is what unblocks the reader's
         pipe read (see the module docstring's threads section)."""
+        self._reap_unreaped()
         self._capture_stop.set()
         proc = self._capture_proc
         self._capture_proc = None
@@ -813,8 +1103,11 @@ class HostEndpoint:
                 return
 
             was_degraded = self._degradation_out is not None
+            playback_target = (
+                self._pw_sink_node_name if self._backend == "pipewire" else self._device
+            )
             argv = _build_playback_argv(
-                self._backend, self._device, PLAYBACK_RATE_HZ, PLAYBACK_CHANNELS
+                self._backend, playback_target, PLAYBACK_RATE_HZ, PLAYBACK_CHANNELS
             )
             try:
                 proc = self._popen(
@@ -834,6 +1127,19 @@ class HostEndpoint:
             self._playback_proc = proc
             self._start_writer()
             self._attached = True
+
+            # Round 7 (BLOCKER): verify, don't trust. An unresolvable
+            # `--target` silently falls back to pipewire's default sink —
+            # exactly how a reply ended up on the HDMI monitor instead of
+            # the reSpeaker. Confirm the stream actually linked to the
+            # resolved node; if not, kill it AT ONCE (never let audio keep
+            # flowing to the wrong device) rather than merely flag it.
+            verified = self._verify_pipewire_link(proc, playback=True)
+            if verified is not None:
+                self._playback_target_verified = verified
+                if not verified:
+                    self._handle_playback_mismatch()
+                    return
 
         chunk_bytes = bytes(frames)
         if not chunk_bytes:
@@ -887,6 +1193,7 @@ class HostEndpoint:
         return discarded
 
     def _stop_playback_internal(self, *, drain_timeout: float = 0.0) -> tuple[int, int]:
+        self._reap_unreaped()
         with self._counter_lock:
             discarded = (
                 self._playback_queued_bytes + len(self._writer_pending)
@@ -939,6 +1246,160 @@ class HostEndpoint:
         if proc is not None:
             self._terminate_process(proc)
         self._enter_output_degradation(DEGRADED_WRITE_FAILED, exc, "playback write failed")
+
+    def _handle_playback_mismatch(self) -> None:
+        """Round 7 (BLOCKER): the just-started playback stream linked to the
+        WRONG pipewire node. Kill it immediately — SIGKILL, same as a
+        barge-in, never a graceful drain — so no more audio flows to the
+        wrong device, discard whatever was already queued for it, and enter
+        the same cooldown-gated degradation as any other output fault.
+        """
+        with self._counter_lock:
+            proc = self._playback_proc
+            self._playback_proc = None
+            discarded = (
+                self._playback_queued_bytes + len(self._writer_pending)
+            ) // SAMPLE_WIDTH_BYTES
+            self._playback_chunks.clear()
+            self._playback_queued_bytes = 0
+            self._writer_pending = b""
+            self._playback_stop_discarded_total += discarded
+            self._playback_generation += 1
+            self._playing = False
+            self._playback_target_mismatch_count += 1
+        if proc is not None:
+            self._kill_process_fast(proc)
+        self._enter_output_degradation_reason(
+            DEGRADED_DEVICE_MISMATCH, "playback stream linked to an unexpected device"
+        )
+
+    def _run_pw_dump(self) -> "list[object] | None":
+        """One ``pw-dump`` invocation, parsed as JSON. ``None`` on ANY failure.
+
+        Missing binary, a non-zero exit, a timeout, or output that is not a
+        JSON array all degrade to ``None`` uniformly — every caller treats
+        "cannot verify" the same way regardless of which of those it was.
+        """
+        try:
+            proc = self._popen(
+                ["pw-dump"],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except OSError:
+            return None
+        try:
+            out, _err = proc.communicate(timeout=_PW_DUMP_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            try:
+                proc.communicate(timeout=_PW_DUMP_TIMEOUT_S)
+            except Exception:
+                # Cleanup-after-kill: SIGKILL cannot be ignored, so this is a
+                # wait for the OS to reap an already-doomed process, not a
+                # second fault. Still recorded (C3), not a bare `pass`.
+                with self._counter_lock:
+                    self._callback_errors += 1
+            return None
+        except Exception:
+            with self._counter_lock:
+                self._callback_errors += 1
+            return None
+        if proc.returncode != 0:
+            return None
+        try:
+            data = json.loads(out.decode("utf-8", "replace"))
+        except Exception:
+            with self._counter_lock:
+                self._callback_errors += 1
+            return None
+        return data if isinstance(data, list) else None
+
+    def _resolve_pipewire_targets(self) -> None:
+        """Resolve the Sink/Source node NAMES for the pipewire backend (round 7 BLOCKER).
+
+        Never trusts an ALSA card index as a pipewire ``--target``:
+        ``pw-play``/``pw-record`` silently fall back to the system DEFAULT
+        sink/source when ``--target`` does not resolve to a real node — this
+        is exactly how a reply ended up on the HDMI monitor instead of the
+        reSpeaker (a card index means nothing to pipewire). If ``pw-dump``
+        itself is unavailable or unparsable, this degrades to the ``alsa``
+        backend (``plughw:`` is unambiguous) when alsa tools exist, or a
+        construction-time fault when they do not — never a guess at a
+        pipewire target this module could not verify.
+        """
+        dump = self._run_pw_dump()
+        if dump is None:
+            if self._which("arecord") and self._which("aplay"):
+                self._backend = "alsa"
+                self._record_event(
+                    {"type": "degraded", "code": DEGRADED_PIPEWIRE_UNAVAILABLE, "direction": "both"}
+                )
+            else:
+                self._degradation = EndpointDegradation(
+                    DEGRADED_PIPEWIRE_UNAVAILABLE, "pw-dump unavailable and no alsa fallback"
+                )
+            return
+
+        # An auto-detected ALSA card number is never trusted as a pipewire
+        # name/serial needle (see `self._device_explicit`'s docstring at its
+        # assignment) — only an EXPLICIT override is; auto-detect always
+        # matches the same "XVF3800" default /proc/asound/cards itself used.
+        needle = str(self._device) if self._device_explicit else "XVF3800"
+        sink = _pw_find_device_node(dump, needle, _PW_SINK_CLASS)
+        source = _pw_find_device_node(dump, needle, _PW_SOURCE_CLASS)
+        if sink is None or source is None:
+            missing = [name for name, node in (("sink", sink), ("source", source)) if node is None]
+            self._degradation = EndpointDegradation(
+                DEGRADED_DEVICE_UNRESOLVED,
+                f"pipewire {'/'.join(missing)} match failed for the configured device",
+            )
+            return
+        if (
+            sink.get("device_id") is not None
+            and source.get("device_id") is not None
+            and sink.get("device_id") != source.get("device_id")
+        ):
+            self._degradation = EndpointDegradation(
+                DEGRADED_DEVICE_UNRESOLVED, "pipewire sink and source resolved to different devices"
+            )
+            return
+
+        self._pw_sink_node_id = sink.get("id")
+        self._pw_sink_node_name = sink.get("name")
+        self._pw_source_node_id = source.get("id")
+        self._pw_source_node_name = source.get("name")
+
+    def _verify_pipewire_link(
+        self, proc: "subprocess.Popen[bytes]", *, playback: bool
+    ) -> "bool | None":
+        """Confirm *proc*'s pipewire stream is linked to the resolved target (round 7).
+
+        Returns ``True``/``False`` once checked; ``None`` when verification
+        does not apply (not the pipewire backend, or target resolution never
+        completed — e.g. the alsa fallback). Polls up to
+        :data:`_PW_VERIFY_TOTAL_S` since pipewire's own routing takes a
+        moment after a stream is created. Never raises.
+        """
+        if self._backend != "pipewire":
+            return None
+        expected_id = self._pw_sink_node_id if playback else self._pw_source_node_id
+        if expected_id is None:
+            return None
+        media_class = _PW_STREAM_OUTPUT_CLASS if playback else _PW_STREAM_INPUT_CLASS
+        deadline = time.monotonic() + _PW_VERIFY_TOTAL_S
+        while True:
+            dump = self._run_pw_dump()
+            if dump is not None:
+                stream = _pw_find_stream_node(dump, media_class, proc.pid)
+                if stream is not None:
+                    linked_id = _pw_link_target_id(dump, stream["id"], as_output=playback)
+                    if linked_id is not None:
+                        return linked_id == expected_id
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(_PW_VERIFY_POLL_S)
 
     def _start_writer(self) -> None:
         if self._writer_thread is not None:
@@ -1032,11 +1493,21 @@ class HostEndpoint:
     # -- mute --------------------------------------------------------------
 
     def mute(self, muted: bool) -> None:
+        """Round 7b finding 1: the check, the set, and the event are ONE
+        critical section under ``_counter_lock`` (an ``RLock``, so nesting
+        into ``_record_event`` below is safe) — otherwise two concurrent
+        callers reading the same ``self._muted`` before either writes it
+        could both decide "this is a change" and each record an event for
+        what is, logically, ONE transition. Not reproduced under load (3000
+        calls through a barrier, 0 duplicates — the window is a few
+        bytecodes under the GIL) but the guarantee should not rest on that.
+        """
         muted = bool(muted)
-        if muted == self._muted:
-            return
-        self._muted = muted
-        self._record_event({"type": "mute", "muted": muted})
+        with self._counter_lock:
+            if muted == self._muted:
+                return
+            self._muted = muted
+            self._record_event({"type": "mute", "muted": muted})
 
     @property
     def muted(self) -> bool:
@@ -1076,6 +1547,8 @@ class HostEndpoint:
                 "playback_queued_bytes": self._playback_queued_bytes,
                 "playback_dropped_no_device": self._playback_dropped_no_device,
                 "output_degrade_attempts": self._output_degrade_attempts,
+                "playback_target_mismatch_count": self._playback_target_mismatch_count,
+                "capture_target_mismatch_count": self._capture_target_mismatch_count,
             }
         return {
             "attached": self._attached,
@@ -1088,6 +1561,8 @@ class HostEndpoint:
             "degradation": self._degradation.to_dict() if self._degradation else None,
             "degradation_in": self._degradation_in.to_dict() if self._degradation_in else None,
             "degradation_out": self._degradation_out.to_dict() if self._degradation_out else None,
+            "playback_target_verified": self._playback_target_verified,
+            "capture_target_verified": self._capture_target_verified,
             "close_report": self._last_close_report.to_dict() if self._last_close_report else None,
             **counters,
         }
