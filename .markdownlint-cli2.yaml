@@ -16,6 +16,9 @@ config:
 
 ignores:
   - "node_modules/**"
+  # The dashboard's own install (t19). Gitignored, but present on any box
+  # that has built web/dist — 4144 errors in third-party READMEs otherwise.
+  - "web/node_modules/**"
   - ".local/**"
   - ".afi/**"
   - ".teken/**"

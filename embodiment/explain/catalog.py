@@ -12,31 +12,61 @@ from __future__ import annotations
 _ROOT = """\
 # embodiment
 
-A small, tested core for giving an app an embodied AI presence — a bounded
-perceive → decide → act **loop**, a **presence** pump, a verbatim **perception**
-seam, configured **identity**, and **continuity** through eidetic — that is being
-rebuilt into a background realtime voice app. The experiments that used to live
-here are archived in git history (tag `archive/pre-realtime-0.14.0`).
+Gwen, a background realtime voice app: a daemon that listens through a
+microphone array, answers in Hebrew through the `senses` role on the lobes
+gateway, remembers what it is explicitly asked to, and shows what it is doing
+on a dashboard. Underneath it is a small, tested core — a bounded perceive →
+decide → act **loop**, a **presence** pump, a verbatim **perception** seam,
+configured **identity**, and **continuity** through eidetic. The experiments
+that used to live here are archived in git history (tag
+`archive/pre-realtime-0.14.0`).
 
 ## Status, stated plainly
 
-**The realtime app is planned, not built.** Nothing in this package listens,
-speaks, runs as a daemon or serves a dashboard yet. What ships today is the core
-listed below and this CLI's introspection verbs. The spec and the plan are in
-`docs/specs/` and `docs/plans/` (2026-09-21, "realtime embodiment app").
+**The daemon is built and runs, on one rig.** `embodiment start` launches it:
+hot mic through the host array, an ears-only session on lobes' `/v1/realtime`
+(the daemon runs the turn and never sends `response.create`), a spoken reply
+through `POST /v1/audio/speech`, barge-in owned by the daemon, memory in a
+private store, and a dashboard behind the install secret.
 
-The archived tiers (strategist, configuration lane, muse, drones) were each
-proven as mechanisms and never as value; their own published verdicts said so.
-The redesign makes no value claim either, until it has a measurement.
+**Its usefulness is unmeasured.** Acceptance is on one rig only; the human
+acceptance run (plan task `t21`) publishes latency as measured, including if it
+is bad. The archived tiers (strategist, configuration lane, muse, drones) were
+each proven as mechanisms and never as value; their own published verdicts said
+so, and the redesign makes no value claim either until it has a measurement.
 
 ## Software presence, not a robot body
 
-"Embodiment" is an overloaded word in this mesh: `reachy-mini-cli` owns the
-physical robot (and has its own `agent embody` layer), `reachy-lobes` its local
-brain. This package gives an *application* a loop and a presence — it does not
-drive hardware, and nothing here claims a body. A later stage lets a robot act
-as a relay for the voice app's ears and voice; that is a stated, planned seam,
-never an implication drawn from the name.
+"Embodiment" is an overloaded word in this mesh. This package is
+**software presence, not a body**: `reachy-mini-cli` owns the physical robot —
+and has its own `agent embody` layer, a name collision with this package and a
+different thing — and `reachy-lobes` owns its local brain. This package gives an
+*application* ears, a voice, memory and a loop; it does not drive hardware, and
+nothing here claims a body. A later stage lets a robot act as a relay for the
+voice app's ears and voice; that is a stated, planned seam, never an implication
+drawn from the name.
+
+## Not yet
+
+None of this is in the first daemon release — each is a stated seam or a stated
+absence, never an implication:
+
+- **Tools** — the turn runs on `embodiment.loop` with an empty tool registry,
+  by design.
+- **Vision** — the session is audio-only.
+- **A face** — the dashboard's centrepiece is a waveform.
+- **Phone voice** — the phone is control and text; the `BrowserEar` client and
+  the inbound `/v1/realtime` endpoint exist and are not wired into the daemon.
+- **A robot relay** — the same unwired seam.
+- **Cloudflare Access verification** — the guard requires the assertion on a
+  public Host and refuses every one until an RS256 dependency is approved; a
+  recorded state, never a silent hole.
+- **Semantic recall** — the rig's embedder is down, so recall is lexical, with
+  an exact-substring fallback for Hebrew.
+- **A measured value claim** — see Status.
+
+Hebrew only in v1. One active ear at a time. The realtime session never crosses
+machines: the gateway's `stt` lane must be local.
 
 ## Key concepts
 
@@ -77,10 +107,11 @@ never an implication drawn from the name.
   remote access (dry-run only; no `--apply`).
 
 The lifecycle verbs are the daemon's, not the loop's: no verb drives
-`embodiment.loop`. And `start` starts a *lifecycle*, not yet an application —
-the daemon application it runs (`embodiment/daemon/app.py`) is still being
-built, so `embodiment start` with the default target reports a clean
-environment error naming it rather than pretending to come up.
+`embodiment.loop` directly — the daemon (`embodiment/daemon/app.py`, the
+default `--target`) does. The gateway key reaches the daemon through
+`grant run --inject EMBODIMENT_GATEWAY_KEY=LOBES_GATEWAY_API_KEY -- embodiment start`;
+there is no env-file fallback, and the key never reaches a browser, an event,
+a log or a `status` field.
 
 ## Exit-code policy
 
