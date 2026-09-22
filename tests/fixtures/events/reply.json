@@ -1,0 +1,10 @@
+{
+  "v": 1,
+  "kind": "reply",
+  "ts": "2026-09-22T12:00:04.000Z",
+  "seq": 5,
+  "source": "app://embodiment",
+  "data": {
+    "text": "it's sunny and 72 degrees"
+  }
+}

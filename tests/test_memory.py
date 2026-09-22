@@ -39,7 +39,9 @@ contained inside the test rather than landing in the operator's checkout.
 from __future__ import annotations
 
 import ast
+import os
 import random
+import stat
 import subprocess  # nosec B404 - fixed argv, no shell, builds a throwaway git repo
 import sys
 import threading
@@ -52,7 +54,14 @@ from typing import Any
 import pytest
 
 from embodiment import memory as mem
+from embodiment.safe_reason import UNSAFE_ENV
 from embodiment.senses_text import KNOWLEDGE_ATTRIBUTION
+from tests.test_safe_reason import (
+    MARKER,
+    assert_no_speech,
+    assert_speech_present,
+    hostile_exception,
+)
 
 MODULE_PATH = Path(mem.__file__)
 
@@ -1619,12 +1628,978 @@ class TestTheContract:
             "concurrent",
             "dataclasses",
             "embodiment",
+            "errno",
             "hashlib",
+            "os",
             "pathlib",
             "re",
+            "stat",
             "threading",
             "typing",
             "datetime",
             "eidetic",
             "unicodedata",
         }, sorted(roots)
+
+
+class TestNoSpeechReachesAMemoryRecord:
+    """A remembered line IS the user's words, and a failing store quotes them.
+
+    The store seam raising ``OSError(f"... {args} {kwargs}")`` put the record's
+    text — the heard line itself — into ``subsystem-error``'s reason, onto the
+    abandoned ledger and into the close report.
+    """
+
+    @staticmethod
+    def _exploding_store():
+        def store(*args: Any, **kwargs: Any) -> Any:
+            raise OSError(f"store failed on {args} {kwargs}")
+
+        return store
+
+    def _surfaces(self, room: Any, *results: Any) -> tuple[Any, ...]:
+        return (*results, room.abandoned, room.drain_abandoned(), room.close().to_dict())
+
+    def test_a_store_that_echoes_the_record_leaks_nothing(self, tmp_path: Path) -> None:
+        store = self._exploding_store()
+        room = mem.RoomMemory(tmp_path / "store", remember_fn=store, recall_fn=store)
+        written = room.remember(MARKER, deadline=_PROMPT_SECONDS)
+        read = room.recall(MARKER, deadline=_PROMPT_SECONDS)
+
+        assert_no_speech(MARKER, *self._surfaces(room, written, read))
+
+    def test_the_store_failure_is_still_named(self, tmp_path: Path) -> None:
+        store = self._exploding_store()
+        room = mem.RoomMemory(tmp_path / "store", remember_fn=store)
+        try:
+            written = room.remember(MARKER, deadline=_PROMPT_SECONDS)
+            assert written.degradation is not None
+            assert written.degradation.code == mem.continuity.CODE_SUBSYSTEM_ERROR
+            assert "OSError" in written.degradation.reason
+        finally:
+            room.close()
+
+    def test_a_hostile_exception_leaks_through_no_corner(self, tmp_path: Path) -> None:
+        def store(*args: Any, **kwargs: Any) -> Any:
+            raise hostile_exception(MARKER)
+
+        room = mem.RoomMemory(tmp_path / "store", remember_fn=store, recall_fn=store)
+        written = room.remember(MARKER, deadline=_PROMPT_SECONDS)
+        read = room.recall(MARKER, deadline=_PROMPT_SECONDS)
+        assert_no_speech(MARKER, *self._surfaces(room, written, read))
+
+    def test_a_deferred_write_that_fails_leaks_nothing(self, tmp_path: Path) -> None:
+        """The abandoned ledger is written from a worker thread; scan it too."""
+        release = threading.Event()
+
+        def store(*args: Any, **kwargs: Any) -> Any:
+            release.wait(timeout=30)
+            raise OSError(f"late failure on {args} {kwargs}")
+
+        room = mem.RoomMemory(tmp_path / "store", remember_fn=store)
+        try:
+            written = room.remember(MARKER, deadline=0.01)
+            release.set()
+            limit = time.monotonic() + _PROMPT_SECONDS
+            while not room.abandoned and time.monotonic() < limit:
+                time.sleep(0.005)
+
+            assert room.abandoned
+            assert_no_speech(MARKER, written, room.abandoned, room.drain_abandoned())
+        finally:
+            release.set()
+            room.close()
+
+    def test_a_continuity_degradation_is_rewrapped_before_it_is_returned(
+        self, tmp_path: Path
+    ) -> None:
+        """continuity builds reasons with ``str(exc)`` and cannot be edited here.
+
+        So a degradation arriving from that seam is re-wrapped rather than
+        passed through: a code this module knows is exception-derived has its
+        reason withheld and replaced with a safe description.
+        """
+        leaking = mem.continuity.Degradation(
+            subsystem="eidetic",
+            stage="remember",
+            code=mem.continuity.CODE_SUBSYSTEM_ERROR,
+            reason=f"OSError: could not store {MARKER}",
+            exception="OSError",
+        )
+
+        def store(*args: Any, **kwargs: Any) -> Any:
+            return mem.continuity.RememberOutcome(
+                ok=False, record_id="r", degradation=leaking, raw=None
+            )
+
+        room = mem.RoomMemory(tmp_path / "store", remember_fn=store)
+        try:
+            written = room.remember(MARKER, deadline=_PROMPT_SECONDS)
+            assert written.degradation is not None
+            assert written.degradation.code == mem.continuity.CODE_SUBSYSTEM_ERROR
+            assert "OSError" in written.degradation.reason
+            assert_no_speech(MARKER, written)
+        finally:
+            room.close()
+
+    def test_an_unknown_continuity_code_fails_closed(self, tmp_path: Path) -> None:
+        """A code this module does not recognise has its reason withheld too."""
+        leaking = mem.continuity.Degradation(
+            subsystem="eidetic",
+            stage="recall",
+            code="some-future-code",
+            reason=f"raw text with {MARKER}",
+        )
+
+        def store(*args: Any, **kwargs: Any) -> Any:
+            return mem.continuity.RecallOutcome(ok=True, records=[], degradation=leaking)
+
+        room = mem.RoomMemory(tmp_path / "store", recall_fn=store)
+        try:
+            read = room.recall("q", deadline=_PROMPT_SECONDS)
+            assert [d.code for d in read.degradations] == ["some-future-code"]
+            assert_no_speech(MARKER, read)
+        finally:
+            room.close()
+
+    def test_a_fixed_literal_continuity_reason_is_kept(self, tmp_path: Path) -> None:
+        """Withholding everything would be safe and useless; the literals survive."""
+        room = mem.RoomMemory(tmp_path / "store")
+        try:
+            outcome = mem.continuity.remember({"id": "x"}, data_dir=None)
+            assert outcome.degradation is not None
+            kept = room._safe_degradation(outcome.degradation)
+            assert "no data_dir" in kept.reason
+        finally:
+            room.close()
+
+    def test_the_marker_appears_when_the_unsafe_hatch_is_on(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(UNSAFE_ENV, "1")
+        store = self._exploding_store()
+        room = mem.RoomMemory(tmp_path / "store", remember_fn=store)
+        try:
+            written = room.remember(MARKER, deadline=_PROMPT_SECONDS)
+            assert_speech_present(MARKER, written)
+        finally:
+            room.close()
+
+
+class TestTheStoreIsPrivateOnDisk:
+    """Preamble lesson 7: 0600 files in 0700 directories, REGARDLESS of umask.
+
+    Measured before this was fixed, with the real files backend and umask 0002::
+
+        775  <data_dir>
+        664  <data_dir>/<scope>__private.jsonl
+
+    That file is what the user asked Gwen to remember, readable by every account
+    on the box. ``memory.py`` contained no ``chmod`` at all; it inherited
+    whatever the umask left, and a daemon does not get to choose its operator's
+    umask.
+
+    Every test here stats REAL files written by the REAL eidetic files backend.
+    A fake store would prove the test's own mkdir is 0700 and nothing else.
+    """
+
+    @staticmethod
+    def _modes(root: Path) -> dict[str, int]:
+        return {
+            str(path.relative_to(root)): stat.S_IMODE(path.stat().st_mode)
+            for path in sorted(root.rglob("*"))
+        }
+
+    @pytest.fixture(params=[0o000, 0o022, 0o002], ids=["umask000", "umask022", "umask002"])
+    def umask(self, request: pytest.FixtureRequest) -> Any:
+        previous = os.umask(request.param)
+        try:
+            yield request.param
+        finally:
+            os.umask(previous)
+
+    def test_the_data_dir_is_0700_whatever_the_umask(self, tmp_path: Path, umask: int) -> None:
+        room = mem.RoomMemory(tmp_path / "store", scope="probe")
+        try:
+            assert stat.S_IMODE((tmp_path / "store").stat().st_mode) == mem.PRIVATE_DIR_MODE
+        finally:
+            room.close()
+
+    def test_every_written_file_is_0600_whatever_the_umask(
+        self, tmp_path: Path, umask: int
+    ) -> None:
+        room = mem.RoomMemory(tmp_path / "store", scope="probe")
+        try:
+            assert room.remember("what the user asked Gwen to remember").ok
+            modes = self._modes(tmp_path / "store")
+            assert modes, "the real backend wrote nothing to stat"
+            assert all(mode == mem.PRIVATE_FILE_MODE for mode in modes.values()), modes
+        finally:
+            room.close()
+
+    def test_a_second_write_is_still_0600(self, tmp_path: Path, umask: int) -> None:
+        """The store REPLACES the file on every write; one chmod is not enough.
+
+        Measured: the inode changes on each ``remember``, because
+        data-refinery's files backend writes a temp sibling and ``os.replace``s
+        it. So a file pre-created 0600 does not stay 0600, and the tightening
+        has to run after every confirmed write rather than once at construction.
+        """
+        room = mem.RoomMemory(tmp_path / "store", scope="probe")
+        try:
+            assert room.remember("first").ok
+            assert room.remember("second").ok
+            modes = self._modes(tmp_path / "store")
+            assert all(mode == mem.PRIVATE_FILE_MODE for mode in modes.values()), modes
+        finally:
+            room.close()
+
+    def test_a_recall_leaves_the_store_private(self, tmp_path: Path, umask: int) -> None:
+        """Recall reinforces matched records, so recall writes too."""
+        room = mem.RoomMemory(tmp_path / "store", scope="probe")
+        try:
+            assert room.remember("the kettle is boiling").ok
+            assert room.recall("kettle", deadline=10.0).ok
+            modes = self._modes(tmp_path / "store")
+            assert all(mode == mem.PRIVATE_FILE_MODE for mode in modes.values()), modes
+        finally:
+            room.close()
+
+    def test_a_pre_existing_loose_dir_is_tightened(self, tmp_path: Path) -> None:
+        loose = tmp_path / "store"
+        loose.mkdir(mode=0o777)
+        os.chmod(loose, 0o777)
+
+        room = mem.RoomMemory(loose, scope="probe")
+        try:
+            assert stat.S_IMODE(loose.stat().st_mode) == mem.PRIVATE_DIR_MODE
+        finally:
+            room.close()
+
+    def test_pre_existing_loose_files_are_tightened_at_construction(self, tmp_path: Path) -> None:
+        loose = tmp_path / "store"
+        loose.mkdir()
+        planted = loose / "probe__private.jsonl"
+        planted.write_text("{}\n", encoding="utf-8")
+        os.chmod(planted, 0o666)
+
+        room = mem.RoomMemory(loose, scope="probe")
+        try:
+            assert stat.S_IMODE(planted.stat().st_mode) == mem.PRIVATE_FILE_MODE
+        finally:
+            room.close()
+
+    def test_a_tightening_failure_is_recorded_not_raised(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        def refuse(*args: Any, **kwargs: Any) -> None:
+            raise PermissionError("not allowed")
+
+        monkeypatch.setattr(mem.os, "chmod", refuse)
+        room = mem.RoomMemory(tmp_path / "store", scope="probe")
+        try:
+            codes = {d.code for d in room.abandoned}
+            assert mem.CODE_PERMISSIONS in codes
+        finally:
+            room.close()
+
+    def test_a_repeating_failure_records_a_transition_not_a_flood(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """C3 says record the TRANSITION; a record per write would evict the ledger."""
+        room = mem.RoomMemory(tmp_path / "store", scope="probe")
+        try:
+            room.drain_abandoned()
+
+            def refuse(*args: Any, **kwargs: Any) -> None:
+                raise PermissionError("not allowed")
+
+            monkeypatch.setattr(mem.os, "chmod", refuse)
+            monkeypatch.setattr(mem.os, "fchmod", refuse)
+            for _ in range(5):
+                room.remember(f"line {_}")
+
+            drained = room.drain_abandoned()
+            permission_records = [d for d in drained.records if d.code == mem.CODE_PERMISSIONS]
+            assert len(permission_records) == 1
+            assert room.store_permission_failures >= 5
+        finally:
+            room.close()
+
+    def test_an_unwritable_parent_degrades_rather_than_raising(self, tmp_path: Path) -> None:
+        blocked = tmp_path / "blocked"
+        blocked.mkdir(mode=0o500)
+        try:
+            room = mem.RoomMemory(blocked / "store", scope="probe")
+            try:
+                assert mem.CODE_PERMISSIONS in {d.code for d in room.abandoned}
+            finally:
+                room.close()
+        finally:
+            os.chmod(blocked, 0o700)
+
+    def test_the_modes_are_the_same_constants_the_daemon_state_uses(self) -> None:
+        """One code path in spirit: t4 and this module agree on what private means."""
+        from embodiment.daemon import state
+
+        assert mem.PRIVATE_DIR_MODE == state._PRIVATE_DIR_MODE == 0o700
+        assert mem.PRIVATE_FILE_MODE == state._PRIVATE_FILE_MODE == 0o600
+
+    def test_no_group_or_other_bit_survives_on_any_path(self, tmp_path: Path, umask: int) -> None:
+        """Stated as bits rather than as a number, which is the actual promise."""
+        room = mem.RoomMemory(tmp_path / "store", scope="probe")
+        try:
+            assert room.remember("a heard line").ok
+            for path in [tmp_path / "store", *(tmp_path / "store").rglob("*")]:
+                mode = stat.S_IMODE(path.stat().st_mode)
+                assert not mode & 0o077, f"{path}: {oct(mode)}"
+        finally:
+            room.close()
+
+
+class TestTheTightenerStaysInsideItsStore:
+    """A privacy routine must not act outside its own directory.
+
+    Measured before the fix: a planted ``store/evil.jsonl -> ../victim.txt``
+    (0644) came back **0600** after one ``remember`` + ``recall``. It only ever
+    tightens and planting needs the same uid, so this is not a privilege
+    escalation — but chmod-ing arbitrary files the user owns is a way to break
+    a system (a file another service must read), and "tighten my store" must
+    mean *my store*.
+
+    ``Path.rglob`` does not descend symlinked directories on 3.12, so the file
+    symlink was the whole exposure; both are tested anyway, because that is a
+    property of the walker and walkers get replaced.
+    """
+
+    @staticmethod
+    def _plant(root: Path) -> tuple[Path, Path, Path]:
+        victim = root / "victim.txt"
+        victim.write_text("not ours", encoding="utf-8")
+        os.chmod(victim, 0o644)
+        victim_dir = root / "victimdir"
+        victim_dir.mkdir()
+        inner = victim_dir / "secret.txt"
+        inner.write_text("also not ours", encoding="utf-8")
+        os.chmod(victim_dir, 0o755)
+        os.chmod(inner, 0o644)
+
+        store = root / "store"
+        store.mkdir()
+        os.symlink(victim, store / "evil.jsonl")
+        os.symlink(victim_dir, store / "evildir")
+        return victim, victim_dir, inner
+
+    def test_a_symlinked_file_inside_the_store_is_never_chmodded(self, tmp_path: Path) -> None:
+        victim, _, _ = self._plant(tmp_path)
+        room = mem.RoomMemory(tmp_path / "store", scope="p")
+        try:
+            assert room.remember("a heard line").ok
+            # The recall's OUTCOME is not asserted: the planted symlink is
+            # named ``evil.jsonl``, and the backend's own ``*.jsonl`` glob then
+            # tries to parse the victim as a record and degrades. That is
+            # data-refinery's behaviour on a store someone has tampered with,
+            # not this module's, and the question here is only whether the
+            # victim's mode moved.
+            room.recall("heard", deadline=10.0)
+            assert stat.S_IMODE(victim.stat().st_mode) == 0o644
+        finally:
+            room.close()
+
+    def test_a_symlinked_directory_inside_the_store_is_never_entered(self, tmp_path: Path) -> None:
+        _, victim_dir, inner = self._plant(tmp_path)
+        room = mem.RoomMemory(tmp_path / "store", scope="p")
+        try:
+            assert room.remember("a heard line").ok
+            assert stat.S_IMODE(victim_dir.stat().st_mode) == 0o755
+            assert stat.S_IMODE(inner.stat().st_mode) == 0o644
+        finally:
+            room.close()
+
+    def test_a_skipped_symlink_is_counted_and_recorded_once(self, tmp_path: Path) -> None:
+        """A symlink inside a private store is itself worth a record."""
+        self._plant(tmp_path)
+        room = mem.RoomMemory(tmp_path / "store", scope="p")
+        try:
+            assert room.store_symlinks_skipped >= 1
+            codes = [d.code for d in room.abandoned if d.code == mem.CODE_STORE_SYMLINK]
+            assert len(codes) == 1, "a symlink record per entry would flood the ledger"
+
+            room.drain_abandoned()
+            room.remember("another line")
+            assert not [d for d in room.abandoned if d.code == mem.CODE_STORE_SYMLINK]
+        finally:
+            room.close()
+
+    def test_the_symlink_record_carries_no_path_text(self, tmp_path: Path) -> None:
+        """A store path can embed a record id; a count is what is needed."""
+        self._plant(tmp_path)
+        os.symlink(tmp_path / "victim.txt", tmp_path / "store" / f"{MARKER}.jsonl")
+        room = mem.RoomMemory(tmp_path / "store", scope="p")
+        try:
+            assert_no_speech(MARKER, room.abandoned)
+        finally:
+            room.close()
+
+    def test_the_real_store_file_is_still_tightened_alongside_a_symlink(
+        self, tmp_path: Path
+    ) -> None:
+        """Skipping must not become "give up on the whole directory"."""
+        self._plant(tmp_path)
+        room = mem.RoomMemory(tmp_path / "store", scope="p")
+        try:
+            assert room.remember("a heard line").ok
+            real = tmp_path / "store" / "p__private.jsonl"
+            assert real.is_file()
+            assert stat.S_IMODE(real.stat().st_mode) == mem.PRIVATE_FILE_MODE
+        finally:
+            room.close()
+
+
+class TestTighteningIsConstantCostPerOperation:
+    """The spoken-turn path may not walk a directory that grows without bound.
+
+    Measured before the fix: recall cost 0.59 ms with 30 records and 14.52 ms
+    once 3000 unrelated files sat in the store — a linear walk on the turn
+    path, scaling with whatever accumulates there.
+
+    Asserted on **operation counts**, not wall-clock: a timing assertion on a
+    shared CI box measures the box.
+    """
+
+    @staticmethod
+    def _spy(monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
+        counts = {"chmod": 0, "fchmod": 0, "open": 0, "scandir": 0, "listdir": 0}
+        real_chmod, real_scandir, real_listdir = os.chmod, os.scandir, os.listdir
+        real_fchmod, real_open = os.fchmod, os.open
+
+        def chmod(*args: Any, **kwargs: Any) -> Any:
+            counts["chmod"] += 1
+            return real_chmod(*args, **kwargs)
+
+        def fchmod(*args: Any, **kwargs: Any) -> Any:
+            counts["fchmod"] += 1
+            return real_fchmod(*args, **kwargs)
+
+        def opener(*args: Any, **kwargs: Any) -> Any:
+            counts["open"] += 1
+            return real_open(*args, **kwargs)
+
+        def scandir(*args: Any, **kwargs: Any) -> Any:
+            counts["scandir"] += 1
+            return real_scandir(*args, **kwargs)
+
+        def listdir(*args: Any, **kwargs: Any) -> Any:
+            counts["listdir"] += 1
+            return real_listdir(*args, **kwargs)
+
+        monkeypatch.setattr(mem.os, "chmod", chmod)
+        monkeypatch.setattr(mem.os, "fchmod", fchmod)
+        monkeypatch.setattr(mem.os, "open", opener)
+        monkeypatch.setattr(mem.os, "scandir", scandir)
+        monkeypatch.setattr(mem.os, "listdir", listdir)
+        return counts
+
+    def _cost(self, room: Any, monkeypatch: pytest.MonkeyPatch) -> dict[str, int]:
+        with monkeypatch.context() as patch:
+            counts = self._spy(patch)
+            assert room.recall("record", deadline=10.0).ok
+        return counts
+
+    def test_recall_costs_the_same_with_3000_extra_files(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = tmp_path / "store"
+        room = mem.RoomMemory(store, scope="p")
+        try:
+            for index in range(30):
+                assert room.remember(f"record number {index}").ok
+
+            before = self._cost(room, monkeypatch)
+            for index in range(3000):
+                (store / f"junk{index}.dat").write_text("x", encoding="utf-8")
+            after = self._cost(room, monkeypatch)
+
+            assert after == before, f"{before} -> {after}"
+            assert after["listdir"] == 0, "the construction sweep ran on a recall"
+            # One ``scandir`` remains and it is NOT this module's: the files
+            # backend globs ``*.jsonl`` to find candidate scope files. Its
+            # COUNT is constant, which is what this test can assert; the cost
+            # inside that one call still grows with the directory, and removing
+            # it is data-refinery's to do, not ours.
+            assert after["scandir"] <= 1, after
+        finally:
+            room.close()
+
+    def test_remember_costs_the_same_with_3000_extra_files(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        store = tmp_path / "store"
+        room = mem.RoomMemory(store, scope="p")
+        try:
+            assert room.remember("first").ok
+            with monkeypatch.context() as patch:
+                before = self._spy(patch)
+                assert room.remember("second").ok
+            for index in range(3000):
+                (store / f"junk{index}.dat").write_text("x", encoding="utf-8")
+            with monkeypatch.context() as patch:
+                after = self._spy(patch)
+                assert room.remember("third").ok
+
+            assert after == before, f"{before} -> {after}"
+        finally:
+            room.close()
+
+    def test_only_this_scopes_files_are_touched_per_operation(self, tmp_path: Path) -> None:
+        """Another scope's file in the same dir is left for that scope to tighten."""
+        store = tmp_path / "store"
+        store.mkdir()
+        foreign = store / "other__private.jsonl"
+        foreign.write_text("{}\n", encoding="utf-8")
+
+        room = mem.RoomMemory(store, scope="p")
+        try:
+            room.drain_abandoned()
+            os.chmod(foreign, 0o666)
+            assert room.remember("a heard line").ok
+            assert stat.S_IMODE(foreign.stat().st_mode) == 0o666
+            assert (
+                stat.S_IMODE((store / "p__private.jsonl").stat().st_mode) == mem.PRIVATE_FILE_MODE
+            )
+        finally:
+            room.close()
+
+    def test_the_scope_file_names_are_derived_like_the_backend_derives_them(
+        self, tmp_path: Path
+    ) -> None:
+        """Not a guessed glob: the backend's own ``_scope_file`` rule."""
+        room = mem.RoomMemory(tmp_path / "store", scope="a/b\\c")
+        try:
+            names = {path.name for path in room._scope_paths()}
+            assert "a_b_c__private.jsonl" in names
+            assert "a_b_c__public.jsonl" in names
+            assert "a_b_c__private.jsonl.tmp" in names
+        finally:
+            room.close()
+
+    def test_construction_still_walks_the_directory(self, tmp_path: Path) -> None:
+        """The full sweep is kept — once, where it is not on the turn path."""
+        store = tmp_path / "store"
+        store.mkdir()
+        stale = store / "other__private.jsonl"
+        stale.write_text("{}\n", encoding="utf-8")
+        os.chmod(stale, 0o666)
+
+        room = mem.RoomMemory(store, scope="p")
+        try:
+            assert stat.S_IMODE(stale.stat().st_mode) == mem.PRIVATE_FILE_MODE
+        finally:
+            room.close()
+
+    def test_the_construction_sweep_is_capped_and_says_so(self, tmp_path: Path) -> None:
+        store = tmp_path / "store"
+        store.mkdir()
+        for index in range(mem.MAX_TIGHTEN_ENTRIES + 20):
+            (store / f"f{index}.dat").write_text("x", encoding="utf-8")
+
+        room = mem.RoomMemory(store, scope="p")
+        try:
+            assert mem.CODE_STORE_SCAN_CAPPED in {d.code for d in room.abandoned}
+        finally:
+            room.close()
+
+    def test_an_uncapped_sweep_records_nothing(self, tmp_path: Path) -> None:
+        room = mem.RoomMemory(tmp_path / "store", scope="p")
+        try:
+            assert mem.CODE_STORE_SCAN_CAPPED not in {d.code for d in room.abandoned}
+        finally:
+            room.close()
+
+    def test_the_tighten_runs_inside_the_worker_not_on_the_callers_thread(
+        self, tmp_path: Path
+    ) -> None:
+        """So the caller's deadline covers it; a slow filesystem cannot overrun it.
+
+        Asserted structurally — the thread the chmod happens on is the pool's,
+        never the one that called ``recall``.
+        """
+        threads: list[str] = []
+        real_fchmod = os.fchmod
+
+        def fchmod(*args: Any, **kwargs: Any) -> Any:
+            threads.append(threading.current_thread().name)
+            return real_fchmod(*args, **kwargs)
+
+        room = mem.RoomMemory(tmp_path / "store", scope="p")
+        try:
+            assert room.remember("seed").ok
+            for operation in ("remember", "recall"):
+                threads.clear()
+                with pytest.MonkeyPatch.context() as patch:
+                    patch.setattr(mem.os, "fchmod", fchmod)
+                    if operation == "remember":
+                        assert room.remember("a heard line").ok
+                    else:
+                        assert room.recall("heard", deadline=10.0).ok
+                assert threads, f"{operation} did not tighten at all"
+                assert all("embodiment-memory" in name for name in threads), (
+                    operation,
+                    threads,
+                )
+                assert threading.current_thread().name not in threads
+        finally:
+            room.close()
+
+
+class TestTheStoreRootIsNeverASymlink:
+    """MAJOR: the entry guard covered entries, not the root it opened them in.
+
+    Reproduced: ``ln -s <attacker dir> <state>/store`` before construction, and
+    ``RoomMemory(state / "store")`` resolved it, chmodded the attacker's
+    directory to 0700, swept it, and wrote the heard line into it — with
+    ``degradations == []``. The per-entry ``O_NOFOLLOW`` work was real and did
+    nothing here, because the walk was already standing inside somebody else's
+    directory.
+
+    Two causes, both fixed: the root was never opened ``O_NOFOLLOW``, and
+    ``Path.resolve()`` at construction baked the symlink's *target* in as the
+    store — so even the recorded ``data_dir`` named the attacker's path.
+    """
+
+    @staticmethod
+    def _planted(tmp_path: Path) -> tuple[Path, Path]:
+        attacker = tmp_path / "attacker"
+        attacker.mkdir()
+        os.chmod(attacker, 0o755)
+        state = tmp_path / "state"
+        state.mkdir()
+        os.symlink(attacker, state / "store")
+        return attacker, state / "store"
+
+    def test_nothing_is_written_through_a_symlinked_store_root(self, tmp_path: Path) -> None:
+        attacker, store = self._planted(tmp_path)
+        room = mem.RoomMemory(store, scope="p")
+        try:
+            room.remember(f"the user said {MARKER}", deadline=_PROMPT_SECONDS)
+            written = [path for path in attacker.rglob("*") if path.is_file()]
+            assert written == [], written
+        finally:
+            room.close()
+
+    def test_a_symlinked_store_root_is_recorded(self, tmp_path: Path) -> None:
+        _, store = self._planted(tmp_path)
+        room = mem.RoomMemory(store, scope="p")
+        try:
+            assert mem.CODE_STORE_ROOT_SYMLINK in {d.code for d in room.abandoned}
+        finally:
+            room.close()
+
+    def test_a_symlinked_store_root_refuses_writes_rather_than_following(
+        self, tmp_path: Path
+    ) -> None:
+        _, store = self._planted(tmp_path)
+        room = mem.RoomMemory(store, scope="p")
+        try:
+            result = room.remember("a heard line", deadline=_PROMPT_SECONDS)
+            assert result.ok is False
+            assert result.degradation is not None
+            assert result.degradation.code == mem.CODE_STORE_ROOT_SYMLINK
+        finally:
+            room.close()
+
+    def test_the_attacker_directory_is_not_chmodded(self, tmp_path: Path) -> None:
+        attacker, store = self._planted(tmp_path)
+        room = mem.RoomMemory(store, scope="p")
+        try:
+            room.remember("a heard line", deadline=_PROMPT_SECONDS)
+            assert stat.S_IMODE(attacker.stat().st_mode) == 0o755
+        finally:
+            room.close()
+
+    def test_the_pinned_path_is_the_literal_one_not_its_target(self, tmp_path: Path) -> None:
+        """``resolve()`` is gone: a pin that follows a link is not a pin."""
+        _, store = self._planted(tmp_path)
+        room = mem.RoomMemory(store, scope="p")
+        try:
+            assert room.data_dir == store
+            assert "attacker" not in str(room.data_dir)
+        finally:
+            room.close()
+
+    def test_a_relative_path_is_still_made_absolute(self, tmp_path: Path) -> None:
+        """Dropping resolve() must not reintroduce a cwd-dependent store."""
+        room = mem.RoomMemory("relative-store", scope="p")
+        try:
+            assert room.data_dir.is_absolute()
+        finally:
+            room.close()
+
+    def test_an_ordinary_store_is_unaffected(self, tmp_path: Path) -> None:
+        room = mem.RoomMemory(tmp_path / "store", scope="p")
+        try:
+            assert room.remember("a heard line").ok
+            assert mem.CODE_STORE_ROOT_SYMLINK not in {d.code for d in room.abandoned}
+        finally:
+            room.close()
+
+    def test_the_refusal_is_named_not_a_generic_permission_failure(self, tmp_path: Path) -> None:
+        """Lesson 4: name the fault the host would look for.
+
+        ``O_NOFOLLOW | O_DIRECTORY`` on a symlink-to-a-directory fails with
+        **ENOTDIR** on Linux, not ELOOP — measured, not assumed. An
+        ELOOP-only check produced the right refusal under the wrong name, so
+        an operator reading the ledger saw a permissions problem rather than a
+        tampered store.
+        """
+        _, store = self._planted(tmp_path)
+        room = mem.RoomMemory(store, scope="p")
+        try:
+            codes = [d.code for d in room.abandoned]
+            assert codes == [mem.CODE_STORE_ROOT_SYMLINK], codes
+        finally:
+            room.close()
+
+    def test_a_regular_file_at_the_store_path_is_not_called_a_symlink(self, tmp_path: Path) -> None:
+        """ENOTDIR is ambiguous; only an lstat can tell the two apart."""
+        blocker = tmp_path / "store"
+        blocker.write_text("not a directory", encoding="utf-8")
+
+        room = mem.RoomMemory(blocker, scope="p")
+        try:
+            codes = {d.code for d in room.abandoned}
+            assert mem.CODE_STORE_ROOT_SYMLINK not in codes
+            assert mem.CODE_PERMISSIONS in codes
+        finally:
+            room.close()
+
+    def test_a_symlink_appearing_after_construction_is_caught(self, tmp_path: Path) -> None:
+        """The root is re-opened O_NOFOLLOW on every operation, not just once."""
+        store = tmp_path / "store"
+        room = mem.RoomMemory(store, scope="p")
+        try:
+            assert room.remember("first").ok
+            attacker = tmp_path / "attacker"
+            attacker.mkdir()
+            for path in store.iterdir():
+                path.unlink()
+            store.rmdir()
+            os.symlink(attacker, store)
+
+            room.remember("second", deadline=_PROMPT_SECONDS)
+            assert [p for p in attacker.rglob("*") if p.is_file()] == []
+        finally:
+            room.close()
+
+
+class TestANonRegularEntryIsCountedNotIgnored:
+    """MINOR 7: a directory planted at a scope-file name returned silently."""
+
+    def test_a_directory_at_a_scope_file_name_is_recorded_once(self, tmp_path: Path) -> None:
+        store = tmp_path / "store"
+        store.mkdir()
+        (store / "p__private.jsonl").mkdir()
+
+        room = mem.RoomMemory(store, scope="p")
+        try:
+            assert room.store_non_files_skipped >= 1
+            codes = [d.code for d in room.abandoned if d.code == mem.CODE_STORE_NOT_REGULAR]
+            assert len(codes) == 1
+        finally:
+            room.close()
+
+    def test_an_ordinary_store_records_nothing(self, tmp_path: Path) -> None:
+        room = mem.RoomMemory(tmp_path / "store", scope="p")
+        try:
+            assert room.remember("a heard line").ok
+            assert room.store_non_files_skipped == 0
+            assert mem.CODE_STORE_NOT_REGULAR not in {d.code for d in room.abandoned}
+        finally:
+            room.close()
+
+
+class TestContinuityReasonsAreNotTrustedByCode:
+    """MAJOR: two of the three whitelisted codes interpolate, today.
+
+    ``continuity._import_degradation`` builds
+    ``f"{subsystem} could not be imported: {error}"`` where ``error`` is
+    ``f"{type(exc).__name__}: {exc}"`` — an ImportError's message, straight
+    into the ledger. ``domain-unavailable`` interpolates domain names from the
+    report payload. Trusting a reason because of its *code* was the mistake;
+    the whitelist is now pinned against continuity's actual source.
+    """
+
+    def test_an_import_failed_reason_is_withheld(self, tmp_path: Path) -> None:
+        room = mem.RoomMemory(tmp_path / "store", scope="p")
+        try:
+            leaking = mem.continuity.Degradation(
+                subsystem="eidetic",
+                stage="probe",
+                code=mem.continuity.CODE_IMPORT_FAILED,
+                reason=f"eidetic could not be imported: ImportError: {MARKER}",
+            )
+            assert_no_speech(MARKER, room._safe_degradation(leaking))
+        finally:
+            room.close()
+
+    def test_a_domain_unavailable_reason_is_withheld(self, tmp_path: Path) -> None:
+        room = mem.RoomMemory(tmp_path / "store", scope="p")
+        try:
+            leaking = mem.continuity.Degradation(
+                subsystem="coherence",
+                stage="assess",
+                code=mem.continuity.CODE_DOMAIN_UNAVAILABLE,
+                reason=f"domain(s) unavailable: {MARKER}",
+            )
+            assert_no_speech(MARKER, room._safe_degradation(leaking))
+        finally:
+            room.close()
+
+    def test_the_storage_anchor_literal_still_survives(self, tmp_path: Path) -> None:
+        """The whitelist is not empty; the one real literal is still readable."""
+        room = mem.RoomMemory(tmp_path / "store", scope="p")
+        try:
+            outcome = mem.continuity.remember({"id": "x"}, data_dir=None)
+            assert outcome.degradation is not None
+            assert "no data_dir" in room._safe_degradation(outcome.degradation).reason
+        finally:
+            room.close()
+
+    def test_every_whitelisted_code_really_is_a_literal_in_continuity(self) -> None:
+        """The pin: an AST check over continuity.py, not a belief about it.
+
+        For each code this module trusts, every ``Degradation(...)`` built in
+        ``continuity.py`` with that code must have a *constant* ``reason``. An
+        f-string, a name or a call there fails this test — which is exactly how
+        ``import-failed`` and ``domain-unavailable`` should have been caught.
+        """
+        source = Path(mem.continuity.__file__).read_text(encoding="utf-8")
+        trusted = {
+            name
+            for name in dir(mem.continuity)
+            if name.startswith("CODE_")
+            and getattr(mem.continuity, name) in mem.RoomMemory._LITERAL_REASON_CODES
+        }
+        assert trusted, "no trusted code resolved; the whitelist names nothing"
+
+        offenders: list[str] = []
+        for node in ast.walk(ast.parse(source)):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)):
+                continue
+            if node.func.id != "Degradation":
+                continue
+            keywords = {kw.arg: kw.value for kw in node.keywords}
+            code, reason = keywords.get("code"), keywords.get("reason")
+            if not (isinstance(code, ast.Name) and code.id in trusted):
+                continue
+            if reason is None:
+                continue
+            for child in ast.walk(reason):
+                if isinstance(child, (ast.JoinedStr, ast.Call, ast.Name)):
+                    offenders.append(f"{code.id} at continuity.py:{node.lineno}")
+                    break
+        assert not offenders, (
+            "a code in _LITERAL_REASON_CODES has an interpolated reason in "
+            "continuity.py; stop trusting it: " + ", ".join(sorted(set(offenders)))
+        )
+
+    def test_the_ast_pin_catches_an_interpolated_reason(self) -> None:
+        """A test of the test, on a planted source."""
+        planted = (
+            "CODE_X = 'x'\n"
+            "def f(exc):\n"
+            "    return Degradation(subsystem='s', stage='t', code=CODE_X,\n"
+            "                       reason=f'boom: {exc}')\n"
+        )
+        found = []
+        for node in ast.walk(ast.parse(planted)):
+            if isinstance(node, ast.Call) and getattr(node.func, "id", "") == "Degradation":
+                keywords = {kw.arg: kw.value for kw in node.keywords}
+                if any(isinstance(child, ast.JoinedStr) for child in ast.walk(keywords["reason"])):
+                    found.append(node.lineno)
+        assert found
+
+
+class TestARecordIdNeverReachesAReasonRaw:
+    """MINOR 6: the prompt side restricts ids; the ledger side interpolated them."""
+
+    def test_a_deferred_write_reason_restricts_the_id(self, tmp_path: Path) -> None:
+        release = threading.Event()
+
+        def slow(*args: Any, **kwargs: Any) -> Any:
+            release.wait(timeout=30)
+            return mem.continuity.RememberOutcome(ok=True, record_id="r", degradation=None)
+
+        room = mem.RoomMemory(tmp_path / "store", remember_fn=slow)
+        try:
+            result = room.remember("a heard line", record_id=f"<<< {MARKER} >>>", deadline=0.01)
+            assert result.degradation is not None
+            assert result.degradation.code == mem.CODE_REMEMBER_DEFERRED
+            assert "<<<" not in result.degradation.reason
+            assert " " not in result.degradation.reason.split("record ")[1].split(" ")[0]
+        finally:
+            release.set()
+            _settle(room)
+            room.close()
+
+    def test_a_close_report_reason_restricts_the_id(self, tmp_path: Path) -> None:
+        release, entered = threading.Event(), threading.Event()
+
+        def held(record: Any, **kwargs: Any) -> Any:
+            entered.set()
+            release.wait(timeout=30)
+            return mem.continuity.RememberOutcome(ok=True, record_id="r", degradation=None)
+
+        room = mem.RoomMemory(tmp_path / "store", remember_fn=held)
+        try:
+            room.remember("a heard line", record_id=f"<<<{MARKER}", deadline=0.02)
+            assert entered.wait(timeout=_PROMPT_SECONDS)
+            report = room.close(deadline=0.02)
+            assert report.degradations
+            assert "<<<" not in report.degradations[0].reason
+        finally:
+            release.set()
+
+    def test_the_abandoned_reason_restricts_the_id(self, tmp_path: Path) -> None:
+        release = threading.Event()
+
+        def failing(*args: Any, **kwargs: Any) -> Any:
+            release.wait(timeout=30)
+            raise OSError("late")
+
+        room = mem.RoomMemory(tmp_path / "store", remember_fn=failing)
+        try:
+            room.remember("a heard line", record_id="<<<bad id", deadline=0.01)
+            release.set()
+            limit = time.monotonic() + _PROMPT_SECONDS
+            while not room.abandoned and time.monotonic() < limit:
+                time.sleep(0.005)
+            assert room.abandoned
+            assert "<<<" not in room.abandoned[0].reason
+        finally:
+            release.set()
+            room.close()
+
+    def test_a_reap_reason_describes_the_exception_once(self, tmp_path: Path) -> None:
+        """MINOR 5: two descriptions competed for one 500-char field."""
+        release = threading.Event()
+
+        def failing(*args: Any, **kwargs: Any) -> Any:
+            release.wait(timeout=30)
+            raise OSError("late failure")
+
+        room = mem.RoomMemory(tmp_path / "store", remember_fn=failing)
+        try:
+            room.remember("a heard line", deadline=0.01)
+            release.set()
+            limit = time.monotonic() + _PROMPT_SECONDS
+            while not room.abandoned and time.monotonic() < limit:
+                time.sleep(0.005)
+            assert room.abandoned
+            reason = room.abandoned[0].reason
+            assert reason.count("fp:") == 1, reason
+            assert reason.count("OSError") == 1, reason
+            assert len(reason) < 300
+        finally:
+            release.set()
+            room.close()

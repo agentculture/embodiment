@@ -206,8 +206,11 @@ constraint C3, inherited from the seam below rather than reinvented.
 
 from __future__ import annotations
 
+import errno
 import hashlib
+import os
 import re
+import stat
 import threading
 import unicodedata
 from collections import deque
@@ -222,11 +225,21 @@ from typing import Any, Callable, Optional, Union
 
 from embodiment import continuity
 from embodiment.continuity import Degradation
+from embodiment.safe_reason import STRIPPED_CATEGORIES as _STRIPPED_CATEGORIES
+from embodiment.safe_reason import (
+    describe_exception,
+    mentions_shutdown,
+    name_fingerprint,
+    safe_label,
+    scrub,
+)
 from embodiment.senses_text import KNOWLEDGE_ATTRIBUTION
 
 __all__ = [
     "PRIVATE",
     "PUBLIC",
+    "PRIVATE_DIR_MODE",
+    "PRIVATE_FILE_MODE",
     "DEFAULT_DEADLINE",
     "DEFAULT_WRITE_DEADLINE",
     "DEFAULT_MAX_WORKERS",
@@ -258,6 +271,12 @@ __all__ = [
     "CODE_ABANDONED_REMEMBER",
     "CODE_REMEMBER_UNCONFIRMED_AT_CLOSE",
     "CODE_SATURATED",
+    "CODE_PERMISSIONS",
+    "CODE_STORE_SYMLINK",
+    "CODE_STORE_ROOT_SYMLINK",
+    "CODE_STORE_NOT_REGULAR",
+    "CODE_STORE_SCAN_CAPPED",
+    "MAX_TIGHTEN_ENTRIES",
     "CODE_CLOSED",
     "AbandonedDrain",
     "CloseReport",
@@ -296,6 +315,27 @@ DEFAULT_MAX_WORKERS = 4
 #: are refused outright. See :meth:`RoomMemory._submit` for why refusing beats
 #: queueing.
 MAX_INFLIGHT = 8
+
+#: Filesystem modes enforced regardless of the process umask, and identical to
+#: the ones :mod:`embodiment.daemon.state` enforces — one definition of what
+#: "private" means on this daemon's disk. They are applied with an explicit
+#: ``chmod`` rather than trusted to a ``mode=`` argument, because that argument
+#: is itself masked by the umask, and a daemon does not choose its operator's
+#: umask.
+PRIVATE_DIR_MODE = 0o700
+PRIVATE_FILE_MODE = 0o600
+
+#: How many directory entries the CONSTRUCTION sweep will tighten before it
+#: stops and records :data:`CODE_STORE_SCAN_CAPPED`. A store is a handful of
+#: files; a directory with thousands in it is somebody else's directory, and
+#: walking all of it at startup is a stall nobody asked for.
+MAX_TIGHTEN_ENTRIES = 4096
+
+#: The visibilities data-refinery's files backend writes a scope file for.
+_SCOPE_VISIBILITIES = ("private", "public")
+
+#: Its atomic-write temp sibling suffix (``<scope>__<vis>.jsonl.tmp``).
+_SCOPE_TMP_SUFFIX = ".tmp"
 
 #: Seconds :meth:`RoomMemory.close` will wait for in-flight *writes*. Bounded
 #: well below eidetic's 10 s embedder timeout on purpose: a shutdown that can
@@ -389,7 +429,10 @@ HEADER_PATTERN = re.compile(
 #: ``Cc`` are line breaks by another name — ``str.splitlines`` honours
 #: U+2028, U+2029 and U+0085, and U+0085 is *above* U+0020, which is exactly
 #: how the previous ordinal-based filter let a header line be split in two.
-STRIPPED_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
+#:
+#: Defined in :mod:`embodiment.safe_reason` and re-exported here. One
+#: definition, not two that drift: wave-1 lesson 8.
+STRIPPED_CATEGORIES = _STRIPPED_CATEGORIES
 
 # --- degradation codes this layer adds to continuity's vocabulary ----------
 
@@ -415,6 +458,22 @@ CODE_ABANDONED_REMEMBER = "abandoned-remember"
 CODE_REMEMBER_UNCONFIRMED_AT_CLOSE = "remember-unconfirmed-at-close"
 #: Every in-flight slot is occupied; the call was refused rather than queued.
 CODE_SATURATED = "memory-saturated"
+#: The store's directory or files could not be made private. Recorded as a
+#: TRANSITION, not once per write — see :meth:`RoomMemory._tighten_scope`.
+CODE_PERMISSIONS = "memory-permissions"
+#: A symlink was found inside the store and skipped. The tightener never
+#: follows one out of its own directory; a symlink in a private store is also
+#: worth a record in its own right.
+CODE_STORE_SYMLINK = "memory-store-symlink-skipped"
+#: The store path is itself a symlink. Nothing is read or written through it:
+#: following one means operating in a directory somebody else chose.
+CODE_STORE_ROOT_SYMLINK = "memory-store-root-symlink"
+#: An entry at a scope-file name is not a regular file (a directory, a fifo, a
+#: device). Skipped and counted, like a symlink.
+CODE_STORE_NOT_REGULAR = "memory-store-not-a-file"
+#: The construction sweep stopped at :data:`MAX_TIGHTEN_ENTRIES`. Files beyond
+#: the cap were not tightened, and saying so is the whole point of the code.
+CODE_STORE_SCAN_CAPPED = "memory-store-scan-capped"
 #: The memory layer was closed; no further work is submitted.
 CODE_CLOSED = "memory-closed"
 
@@ -580,12 +639,24 @@ class CloseReport:
 def _degradation(
     stage: str, code: str, reason: str, exc: Optional[BaseException] = None
 ) -> Degradation:
+    """Build one degradation. *reason* is THIS module's own text, never a message.
+
+    The distinction is the whole point of wave-1 lesson 5. A literal this
+    module wrote is safe by inspection; an exception's message is the
+    *dependency's* text and quotes its input — a store raising
+    ``f"could not write {record}"`` puts the heard line itself into the record
+    that is supposed to be speech-free. So *reason* is a fixed literal and
+    anything the exception contributes goes through
+    :func:`~embodiment.safe_reason.describe_exception`, which never reads the
+    message.
+    """
+    described = "" if exc is None else f" [{describe_exception(exc)}]"
     return Degradation(
         subsystem="eidetic",
         stage=stage,
         code=code,
-        reason=reason[:_MAX_REASON_LEN],
-        exception=None if exc is None else type(exc).__name__,
+        reason=f"{reason}{described}"[:_MAX_REASON_LEN],
+        exception=None if exc is None else safe_label(type(exc).__name__),
     )
 
 
@@ -617,7 +688,7 @@ def _failure_code(exc: BaseException) -> str:
     """
     if isinstance(exc, BrokenExecutor):
         return CODE_CLOSED
-    if isinstance(exc, RuntimeError) and "shutdown" in str(exc).lower():
+    if isinstance(exc, RuntimeError) and mentions_shutdown(exc):
         return CODE_CLOSED
     return continuity.CODE_SUBSYSTEM_ERROR
 
@@ -674,9 +745,15 @@ class RoomMemory:
         max_workers: int = DEFAULT_MAX_WORKERS,
         max_inflight: int = MAX_INFLIGHT,
     ) -> None:
-        #: Pinned ONCE, here. Resolved to an absolute path so nothing about it
-        #: can depend on the host's cwd at the moment of a later call.
-        self._data_dir = Path(str(data_dir)).expanduser().resolve()
+        #: Pinned ONCE, here. Made ABSOLUTE so nothing about it depends on the
+        #: host's cwd at the moment of a later call — but deliberately NOT
+        #: ``resolve()``\ d. ``resolve()`` follows symlinks, so a store path
+        #: that was a link to somebody else's directory used to be replaced by
+        #: its target: the pin then named the attacker's path and every
+        #: subsequent check was performed there. A pin that follows a link is
+        #: not a pin. The literal path is kept and the link is refused at open
+        #: time instead (:meth:`_open_store`).
+        self._data_dir = Path(os.path.abspath(Path(str(data_dir)).expanduser()))
         self._scope = scope
         self._added_by = added_by
         self._backend = backend
@@ -706,8 +783,358 @@ class RoomMemory:
         self._last_mode: Optional[str] = None
         self._abandoned: deque[Degradation] = deque(maxlen=max(1, int(max_abandoned)))
         self._abandoned_dropped = 0
+        # Permission tightening state. ``_permissions_ok`` makes a failure a
+        # recorded TRANSITION (C3) rather than one record per write, which
+        # would evict every other degradation from the bounded ledger during
+        # exactly the outage that made it fail.
+        self._permissions_ok = True
+        self._permission_failures = 0
+        self._symlinks_skipped = 0
+        self._non_files_skipped = 0
+        self._root_is_symlink = False
+        self._recorded_once: set[str] = set()
+
+        # Last, because it records degradations and therefore needs the ledger.
+        self._ensure_private_store()
+
+    # -- privacy on disk ----------------------------------------------------
+
+    def _ensure_private_store(self) -> None:
+        r"""Create the store 0700, tighten a looser one, and sweep its files once.
+
+        Preamble lesson 7. Measured before this existed, with the real files
+        backend and umask ``0002``: the data dir was ``775`` and the record
+        file ``664`` — what the user asked Gwen to remember, readable by every
+        account on the box.
+
+        The **directory** mode is the load-bearing control, and that is worth
+        stating rather than leaving to inference. data-refinery's files backend
+        writes a temp *sibling* and ``os.replace``\ s it into place, so every
+        byte of a record — temp and final alike — lives inside this directory
+        and never transits anywhere else. At 0700 no other account can traverse
+        in, whatever a file inside happens to be chmodded to at that instant.
+
+        The full sweep runs **here and nowhere else**: it is the one moment
+        that is not on a spoken turn's path.
+        """
+        self._tighten_dir()
+        self._sweep_store()
+
+    def _tighten_dir(self) -> None:
+        """Create the store if absent and make it 0700. Never raises.
+
+        ``lstat`` before anything else: a symlink at the store path is refused
+        outright rather than created through, chmodded through, or written
+        through. ``mkdir`` on an existing symlink-to-a-directory succeeds
+        silently with ``exist_ok=True``, and ``Path.stat`` follows it, so
+        neither of those would have noticed.
+        """
+        try:
+            info: Optional[os.stat_result] = self._data_dir.lstat()
+        except FileNotFoundError:
+            info = None
+        except OSError as exc:
+            self._record_permission_failure("could not inspect the store path", exc)
+            return
+
+        if info is not None and stat.S_ISLNK(info.st_mode):
+            self._note_root_symlink()
+            return
+
+        try:
+            if info is None:
+                self._data_dir.mkdir(parents=True, exist_ok=True)
+            if stat.S_IMODE(self._data_dir.lstat().st_mode) != PRIVATE_DIR_MODE:
+                os.chmod(self._data_dir, PRIVATE_DIR_MODE, follow_symlinks=True)
+        except OSError as exc:
+            self._record_permission_failure("could not make the store directory private", exc)
+
+    def _scope_paths(self) -> tuple[Path, ...]:
+        r"""The files an operation in THIS scope could have created.
+
+        Derived the way ``data_refinery.store.backends.files`` derives them —
+        ``_scope_file`` is ``<name with / and \ replaced by _>__<visibility>``
+        plus ``.jsonl``, and ``_atomic_write`` adds a ``.tmp`` sibling — rather
+        than guessed with a glob. A glob would be a second, drifting copy of
+        the backend's naming rule, and it would have to enumerate the directory
+        to evaluate, which is the cost this exists to avoid.
+
+        Four paths, whatever the store holds: this is the O(1) that keeps
+        tightening off the spoken-turn path's growth curve.
+        """
+        safe = self._scope.replace("/", "_").replace("\\", "_")
+        names: list[str] = []
+        for visibility in _SCOPE_VISIBILITIES:
+            base = f"{safe}__{visibility}.jsonl"
+            names.append(base)
+            names.append(base + _SCOPE_TMP_SUFFIX)
+        return tuple(self._data_dir / name for name in names)
+
+    def _tighten_scope(self) -> None:
+        """Tighten exactly what this operation could have created. Never raises.
+
+        Called after every confirmed store operation, and **constant cost**.
+        It used to be a full ``rglob`` of the store: measured at 0.59 ms with
+        30 records and 14.52 ms once 3000 unrelated files sat in the directory
+        — a linear walk on the spoken-turn path, scaling with whatever happens
+        to accumulate there rather than with anything this module owns.
+
+        Another scope's file is deliberately left alone. It is that scope's
+        ``RoomMemory`` that will tighten it, and the construction sweep catches
+        it for a store this object opened.
+        """
+        dir_fd = self._open_store()
+        if dir_fd is None:
+            return
+        try:
+            for path in self._scope_paths():
+                self._tighten_entry(dir_fd, path.name)
+        finally:
+            self._close_store(dir_fd)
+
+    def _sweep_store(self) -> None:
+        """Tighten every regular file in the store, once, bounded. Never raises.
+
+        Construction only. Bounded at :data:`MAX_TIGHTEN_ENTRIES` because a
+        directory with more entries than that is not a store this module made,
+        and a startup that walks it is a stall nobody asked for. Stopping early
+        is recorded rather than silent: the files past the cap are exactly the
+        ones still readable.
+        """
+        dir_fd = self._open_store()
+        if dir_fd is None:
+            return
+        try:
+            names = os.listdir(self._data_dir)
+        except OSError as exc:
+            self._close_store(dir_fd)
+            self._record_permission_failure("could not enumerate the store", exc)
+            return
+        try:
+            for index, name in enumerate(names):
+                if index >= MAX_TIGHTEN_ENTRIES:
+                    self._record_once(
+                        CODE_STORE_SCAN_CAPPED,
+                        f"stopped tightening the store after {MAX_TIGHTEN_ENTRIES} entries; "
+                        f"{len(names) - MAX_TIGHTEN_ENTRIES} were left as they were",
+                    )
+                    break
+                self._tighten_entry(dir_fd, name)
+        finally:
+            self._close_store(dir_fd)
+
+    # -- the no-follow primitives ------------------------------------------
+
+    def _open_store(self) -> Optional[int]:
+        """A directory fd for the store, opened ``O_NOFOLLOW``. ``None`` on failure.
+
+        Every tightening operation is performed **relative to this fd**, so the
+        directory cannot be swapped for a symlink between the check and the
+        chmod. Never raises.
+        """
+        try:
+            dir_fd = os.open(self._data_dir, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW)
+        except OSError as exc:
+            # O_NOFOLLOW on the ROOT, which is what review found missing: the
+            # per-entry guard was doing careful work while already standing
+            # inside the attacker's directory.
+            #
+            # The errno is NOT what the obvious reading predicts, and this was
+            # measured rather than assumed. ``O_NOFOLLOW | O_DIRECTORY`` on a
+            # symlink-to-a-directory fails with **ENOTDIR** on Linux, not
+            # ELOOP: O_NOFOLLOW means the symlink itself is the object, and a
+            # symlink is not a directory. An ELOOP-only check therefore fell
+            # through to a generic permission failure — the right refusal with
+            # the wrong name on it, which is the fault an operator then goes
+            # looking for in the wrong place. ENOTDIR is ambiguous on its own
+            # (a regular file at the store path gives it too), so it is
+            # confirmed with an ``lstat`` before being called a symlink.
+            if exc.errno in (errno.ELOOP, errno.EMLINK, errno.ENOTDIR) and self._is_link():
+                self._note_root_symlink()
+            elif exc.errno != errno.ENOENT:
+                self._record_permission_failure("could not open the store directory", exc)
+            return None
+        self._root_is_symlink = False
+        return dir_fd
+
+    @staticmethod
+    def _close_store(dir_fd: int) -> None:
+        try:
+            os.close(dir_fd)
+        except OSError:
+            # A descriptor that will not close is already gone; there is no
+            # degradation left to record and nothing a host could do with one.
+            return
+
+    def _tighten_entry(self, dir_fd: int, name: str) -> None:
+        r"""chmod one entry to 0600 **without ever following a symlink**.
+
+        Measured before this existed: a planted ``store/evil.jsonl ->
+        ../victim.txt`` at 0644 came back **0600** after one remember+recall.
+        It only tightens and planting needs the same uid, so it is not a
+        privilege escalation — but chmod-ing arbitrary files the user owns is a
+        way to break a system (a file another service has to read), and
+        "tighten my store" has to mean *my store*.
+
+        ``os.open(..., O_NOFOLLOW, dir_fd=…)`` is what closes it properly: a
+        symlink fails the open with ``ELOOP`` rather than being checked and
+        then raced. ``os.chmod(follow_symlinks=False)`` is not usable as the
+        primary defence — Linux does not support it, and
+        ``os.chmod in os.supports_follow_symlinks`` is ``False`` there — so it
+        is not relied on at all; the fd is the mechanism on every platform.
+
+        Only a **regular file** is chmodded. A directory, a fifo, a socket or a
+        device inside a memory store is not something this module created and
+        not something it will modify.
+        """
+        try:
+            fd = os.open(name, os.O_RDONLY | os.O_NOFOLLOW, dir_fd=dir_fd)
+        except OSError as exc:
+            if exc.errno in (errno.ELOOP, errno.EMLINK):
+                self._note_symlink()
+            elif exc.errno == errno.ENOENT:
+                # The scope file for a visibility never written. Expected.
+                return
+            elif exc.errno == errno.EISDIR:
+                self._note_non_file()
+            else:
+                self._record_permission_failure("could not open a store entry", exc)
+            return
+        try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode):
+                self._note_non_file()
+                return
+            if stat.S_IMODE(info.st_mode) != PRIVATE_FILE_MODE:
+                os.fchmod(fd, PRIVATE_FILE_MODE)
+            self._permissions_ok = True
+        except OSError as exc:
+            self._record_permission_failure("could not make a store file private", exc)
+        finally:
+            # Through the shared helper, not an inline try/except: a ``return``
+            # inside a ``finally`` swallows whatever was in flight, including a
+            # KeyboardInterrupt.
+            self._close_store(fd)
+
+    # -- recording, deduplicated ------------------------------------------
+
+    def _note_symlink(self) -> None:
+        """Count a skipped symlink; record the first one only.
+
+        The count is the useful number — one record per entry per operation
+        would flood the bounded ledger and evict everything else — and the
+        record carries **no path**, because a store path can embed a record id
+        and an id is content.
+        """
+        self._symlinks_skipped += 1
+        self._record_once(
+            CODE_STORE_SYMLINK,
+            "a symlink inside the memory store was skipped rather than followed; "
+            "see store_symlinks_skipped for the running count",
+        )
+
+    def _is_link(self) -> bool:
+        """Whether the store path is a symlink right now. Never raises."""
+        try:
+            return stat.S_ISLNK(self._data_dir.lstat().st_mode)
+        except OSError:
+            return False
+
+    def _root_refusal(self) -> Optional[Degradation]:
+        """A degradation if the store path is a symlink right now, else ``None``.
+
+        Checked per operation rather than cached from construction, because a
+        link can be planted after this object was built — and checked in the
+        WORKER, so the check is inside the caller's deadline like everything
+        else that touches the filesystem.
+        """
+        if not self._is_link():
+            return None
+        self._note_root_symlink()
+        return _degradation(
+            "store",
+            CODE_STORE_ROOT_SYMLINK,
+            "the store path is a symlink; refusing to use it",
+        )
+
+    def _note_root_symlink(self) -> None:
+        """Refuse the store and say so. Idempotent within one object."""
+        self._root_is_symlink = True
+        self._record_once(
+            CODE_STORE_ROOT_SYMLINK,
+            "the store path is a symlink; refusing to read or write through it, "
+            "because following one means operating in a directory somebody else chose",
+        )
+
+    def _note_non_file(self) -> None:
+        """Count an entry that is not a regular file; record the first."""
+        self._non_files_skipped += 1
+        self._record_once(
+            CODE_STORE_NOT_REGULAR,
+            "an entry in the memory store is not a regular file and was skipped; "
+            "see store_non_files_skipped for the running count",
+        )
+
+    def _record_once(self, code: str, reason: str) -> None:
+        """Record *code* the first time it happens, then never again."""
+        if code in self._recorded_once:
+            return
+        self._recorded_once.add(code)
+        self._record_abandoned(_degradation("permissions", code, reason))
+
+    def _record_permission_failure(self, what: str, exc: BaseException) -> None:
+        """Record the first failure of a run; count the rest. Never raises.
+
+        C3 asks for a recorded *transition*. One record per failed write would
+        be a flood that evicts the bounded ledger during precisely the outage
+        the ledger exists to describe, so the count is what carries the
+        repetition and :attr:`store_permission_failures` exposes it.
+        """
+        self._permission_failures += 1
+        if not self._permissions_ok:
+            return
+        self._permissions_ok = False
+        self._record_abandoned(_degradation("permissions", CODE_PERMISSIONS, what, exc))
 
     # -- introspection ------------------------------------------------------
+
+    @property
+    def store_symlinks_skipped(self) -> int:
+        """How many symlinks inside the store have been skipped, not followed.
+
+        Non-zero means something put a symlink in the memory store. Nothing
+        this module does creates one.
+        """
+        return self._symlinks_skipped
+
+    @property
+    def store_non_files_skipped(self) -> int:
+        """Entries at a store path that were not regular files, and were skipped.
+
+        A directory, fifo, socket or device planted at a scope-file name. Not
+        something this module created, so not something it modifies — but
+        silently returning made a tampered store look ordinary.
+        """
+        return self._non_files_skipped
+
+    @property
+    def store_root_is_symlink(self) -> bool:
+        """Whether the store path is a symlink, which makes it unusable.
+
+        Writes are refused rather than followed. Re-evaluated on every
+        operation, not cached from construction: a link can be planted later.
+        """
+        return self._root_is_symlink
+
+    @property
+    def store_permission_failures(self) -> int:
+        """How many times tightening the store's permissions has failed.
+
+        Non-zero means the store may be readable by other accounts on this
+        host. The first failure is on the abandoned ledger; this is what says
+        it is still happening.
+        """
+        return self._permission_failures
 
     @property
     def data_dir(self) -> Path:
@@ -819,7 +1246,7 @@ class RoomMemory:
             with self._lock:
                 self._inflight = max(0, self._inflight - 1)
                 self._record_abandoned(
-                    _degradation("submit", CODE_CLOSED, f"could not submit: {exc}", exc)
+                    _degradation("submit", CODE_CLOSED, "could not submit work", exc)
                 )
             return None, CODE_CLOSED
 
@@ -879,7 +1306,7 @@ class RoomMemory:
                 degradation=_degradation(
                     "remember",
                     continuity.CODE_INVALID_RECORD,
-                    f"unusable text for a memory record: {exc}",
+                    "unusable text for a memory record",
                     exc,
                 ),
             )
@@ -888,7 +1315,10 @@ class RoomMemory:
         writer = added_by if added_by is not None else self._added_by
 
         def write() -> Any:
-            return self._remember_fn(
+            refusal = self._root_refusal()
+            if refusal is not None:
+                return continuity.RememberOutcome(ok=False, record_id=None, degradation=refusal)
+            outcome = self._remember_fn(
                 record,
                 data_dir=self._data_dir,
                 scope=self._scope,
@@ -896,6 +1326,10 @@ class RoomMemory:
                 added_by=writer,
                 backend=self._backend,
             )
+            # Inside the worker, so the chmod is inside the caller's deadline
+            # and a slow filesystem cannot stall the turn on this either.
+            self._tighten_scope()
+            return outcome
 
         future, refusal = self._submit(write, record_id=identifier)
         if future is None:
@@ -906,7 +1340,7 @@ class RoomMemory:
                 degradation=_degradation(
                     "remember",
                     refusal or CODE_CLOSED,
-                    f"record {identifier} was NOT written: "
+                    f"record {safe_label(identifier)} was NOT written: "
                     + (
                         "every in-flight memory slot is occupied"
                         if refusal == CODE_SATURATED
@@ -926,7 +1360,7 @@ class RoomMemory:
                 degradation=_degradation(
                     "remember",
                     CODE_REMEMBER_DEFERRED,
-                    f"record {identifier} did not confirm within {deadline}s and is "
+                    f"record {safe_label(identifier)} did not confirm within {deadline}s and is "
                     "still being written in the background; a failure will be "
                     "recorded on the abandoned ledger",
                 ),
@@ -939,7 +1373,7 @@ class RoomMemory:
                 degradation=_degradation(
                     "remember",
                     _failure_code(exc),
-                    str(exc) or type(exc).__name__,
+                    "the store seam failed",
                     exc,
                 ),
             )
@@ -948,7 +1382,7 @@ class RoomMemory:
             ok=bool(getattr(outcome, "ok", False)),
             record_id=getattr(outcome, "record_id", None) or identifier,
             visibility=visibility,
-            degradation=getattr(outcome, "degradation", None),
+            degradation=self._safe_degradation(getattr(outcome, "degradation", None)),
             raw=getattr(outcome, "raw", None),
         )
 
@@ -963,16 +1397,22 @@ class RoomMemory:
         """
 
         def reap(done: "Future[Any]") -> None:
+            # The exception is described ONCE, by ``_degradation`` below.
+            # This reason used to embed ``describe_exception(error)`` as well,
+            # so two descriptions competed for one 500-char field and the
+            # second was the one that got truncated.
+            label = safe_label(identifier)
             reason: Optional[str] = None
             error: Optional[BaseException] = None
             try:
                 error = done.exception()
                 if error is not None:
-                    reason = f"deferred write of {identifier} failed after {deadline}s: {error}"
+                    reason = f"deferred write of {label} failed after {deadline}s"
                 elif not getattr(done.result(), "ok", False):
-                    reason = f"deferred write of {identifier} was not stored by the seam"
+                    reason = f"deferred write of {label} was not stored by the seam"
             except Exception as exc:  # noqa: BLE001  # a cancelled future has no result
-                error, reason = exc, f"deferred write of {identifier} could not be read back: {exc}"
+                error = exc
+                reason = f"deferred write of {label} could not be read back"
             if reason is None:
                 return
             with self._lock:
@@ -981,6 +1421,77 @@ class RoomMemory:
                 )
 
         future.add_done_callback(reap)
+
+    #: continuity codes whose ``reason`` this module KNOWS is a fixed literal
+    #: that ``continuity.py`` wrote itself. Everything else is treated as
+    #: exception-derived and withheld.
+    #: Reduced from three to one after review read continuity's source instead
+    #: of trusting this list. ``import-failed`` builds
+    #: ``f"{subsystem} could not be imported: {error}"`` where ``error`` is
+    #: ``f"{type(exc).__name__}: {exc}"`` — an ImportError's message, which
+    #: routinely carries a path — and ``domain-unavailable`` interpolates
+    #: domain names out of the report payload. Both were being copied into the
+    #: ledger unwithheld. ``no-storage-anchor`` is the only one whose reason is
+    #: a fixed literal, and ``tests/test_memory.py`` pins that against
+    #: continuity's AST rather than against this comment: a code whose reason
+    #: gains an f-string fails the suite.
+    _LITERAL_REASON_CODES = frozenset({continuity.CODE_NO_STORAGE_ANCHOR})
+
+    def _safe_degradation(self, degradation: Optional[Degradation]) -> Optional[Degradation]:
+        """Re-wrap a degradation that arrived from ``continuity``.
+
+        ``continuity._error_degradation`` builds its ``reason`` as ``str(exc)``,
+        and ``continuity.py`` is outside this task's edit surface — so a
+        degradation crossing that seam can carry the heard line in its reason
+        and this module cannot fix it at the source. Passing it through
+        unchanged would make every promise above false for the one path that
+        matters most: the real store failing on real speech.
+
+        So it is re-wrapped, and the rule **fails closed**. Only codes this
+        module knows are built from a fixed literal keep their text; every
+        other code — including any continuity adds in future — has its reason
+        withheld and replaced with the code, the exception class name, the
+        withheld length and a fingerprint. That is deliberately the
+        conservative direction: a new continuity code arriving here costs a
+        reason nobody can read, not a leak nobody notices.
+
+        **What this cannot guarantee.** Text ``continuity`` itself logs, emits
+        or raises never passes through here — this bounds only what crosses
+        back into ``RoomMemory``. A reason continuity builds from a literal is
+        still trusted on this module's say-so, so if continuity ever
+        interpolates into one of the three codes below, that text would survive.
+        ``tests/test_memory.py`` pins the list; closing it properly needs the
+        fix in ``continuity.py``, which this task may not touch.
+        """
+        if degradation is None:
+            return None
+        try:
+            code = str(getattr(degradation, "code", "") or "")
+            exception = getattr(degradation, "exception", None)
+            reason = str(getattr(degradation, "reason", "") or "")
+        except Exception:  # noqa: BLE001  # an unreadable degradation still degrades
+            return _degradation("continuity", continuity.CODE_MALFORMED_RESULT, "unreadable")
+
+        if code in self._LITERAL_REASON_CODES:
+            return Degradation(
+                subsystem=getattr(degradation, "subsystem", "eidetic"),
+                stage=getattr(degradation, "stage", "unknown"),
+                code=code,
+                reason=scrub(reason)[:_MAX_REASON_LEN],
+                exception=None if exception is None else safe_label(exception),
+            )
+
+        return Degradation(
+            subsystem=getattr(degradation, "subsystem", "eidetic"),
+            stage=getattr(degradation, "stage", "unknown"),
+            code=code,
+            reason=(
+                f"{safe_label(code)} from the continuity seam "
+                f"({safe_label(exception) if exception else 'no exception'}); "
+                f"reason withheld ({len(reason)} chars, fp:{name_fingerprint(reason)})"
+            )[:_MAX_REASON_LEN],
+            exception=None if exception is None else safe_label(exception),
+        )
 
     def _build(
         self,
@@ -1079,12 +1590,12 @@ class RoomMemory:
                 records=[],
                 mode=None,
                 degradations=(
-                    _degradation("recall", _failure_code(exc), str(exc) or type(exc).__name__, exc),
+                    _degradation("recall", _failure_code(exc), "the recall worker failed", exc),
                 ),
             )
 
         self._last_mode = resolved
-        seam_degradation = getattr(outcome, "degradation", None)
+        seam_degradation = self._safe_degradation(getattr(outcome, "degradation", None))
         if seam_degradation is not None:
             degradations = degradations + [seam_degradation]
         return RecallResult(
@@ -1107,6 +1618,11 @@ class RoomMemory:
         effective = mode
         resolved = RECALL_MODE_LEXICAL
 
+        refusal = self._root_refusal()
+        if refusal is not None:
+            outcome = continuity.RecallOutcome(ok=False, records=[], degradation=refusal)
+            return resolved, outcome, degradations
+
         if mode in SEMANTIC_MODES:
             online, probe_degradation = self._probe()
             if online:
@@ -1125,6 +1641,10 @@ class RoomMemory:
             reinforce=reinforce,
             backend=self._backend,
         )
+        if reinforce:
+            # Recall is not read-only: eidetic reinforces every hit, which
+            # rewrites the file and resets its mode exactly as a write does.
+            self._tighten_scope()
         return resolved, outcome, degradations
 
     def _probe(self) -> tuple[bool, Degradation]:
@@ -1142,7 +1662,7 @@ class RoomMemory:
         try:
             online = bool(self._embed_probe())
         except Exception as exc:  # noqa: BLE001  # an unreachable embedder is not an error
-            return False, _degradation("recall", CODE_EMBEDDER_OFFLINE, f"{reason}: {exc}", exc)
+            return False, _degradation("recall", CODE_EMBEDDER_OFFLINE, reason, exc)
         return online, _degradation("recall", CODE_EMBEDDER_OFFLINE, reason)
 
     # -- the abandoned worker ----------------------------------------------
@@ -1171,7 +1691,7 @@ class RoomMemory:
                     _degradation(
                         "recall",
                         CODE_ABANDONED_RECALL,
-                        f"a recall abandoned after {deadline}s failed later: {error}",
+                        f"a recall abandoned after {deadline}s failed later",
                         error,
                     )
                 )
@@ -1239,7 +1759,9 @@ class RoomMemory:
             except Exception as exc:  # noqa: BLE001  # a failed wait is still a close
                 with self._lock:
                     self._record_abandoned(
-                        _degradation("close", CODE_CLOSED, f"waiting on writes failed: {exc}", exc)
+                        _degradation(
+                            "close", CODE_CLOSED, "waiting on in-flight writes failed", exc
+                        )
                     )
             for future, identifier in writes.items():
                 bucket = _settled(future)
@@ -1254,7 +1776,7 @@ class RoomMemory:
             _degradation(
                 "close",
                 CODE_REMEMBER_UNCONFIRMED_AT_CLOSE,
-                f"record {identifier} was still being written when close ran out of "
+                f"record {safe_label(identifier)} was still being written when close ran out of "
                 f"{deadline}s; it MAY OR MAY NOT land — it lands on a normal process "
                 "exit and is lost on a hard exit. Record this id before hard-exiting.",
             )
@@ -1271,7 +1793,7 @@ class RoomMemory:
             except Exception as exc:  # noqa: BLE001  # teardown failure is not the host's problem
                 with self._lock:
                     self._record_abandoned(
-                        _degradation("close", CODE_CLOSED, f"executor shutdown failed: {exc}", exc)
+                        _degradation("close", CODE_CLOSED, "executor shutdown failed", exc)
                     )
 
         return CloseReport(

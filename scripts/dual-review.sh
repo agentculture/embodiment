@@ -31,7 +31,7 @@ main() {
   timeout_s=${DUAL_REVIEW_TIMEOUT:-1200}
   max_patch_lines=${DUAL_REVIEW_MAX_PATCH_LINES:-4000}
 
-  for bin in $(for r in ${DUAL_REVIEW_REVIEWERS:-qwen}; do echo "${r%27}"; done | sort -u); do
+  for bin in $(for r in ${DUAL_REVIEW_REVIEWERS:-qwen27}; do echo "${r%27}"; done | sort -u); do
     command -v "$bin" >/dev/null || { echo "error: reviewer '$bin' is not on PATH" >&2; echo "hint: install it, or fix PATH, before reviewing" >&2; exit 2; }
   done
 
@@ -74,6 +74,34 @@ main() {
   } >"$wt/REVIEW_BRIEF.md"
   cp "$wt/REVIEW_BRIEF.md" "$wt/REVIEW_STAT.txt" "$wt/REVIEW_DIFF.patch" "$out_dir/"
 
+  # The 27B's time goes into re-reading whole files at 80-120K tokens of context (3-5 min
+  # per call there). Measured 2026-09-22: unaided it did not finish a 113 kB diff in 40
+  # min; with one worker gathering evidence it took 49 min because it re-read everything
+  # the worker cited. So the split below makes the WORKER write the whole draft and the
+  # 27B verify only the cited lines. DUAL_REVIEW_DELEGATE=0 restores the older prompt.
+  if [[ "${DUAL_REVIEW_DELEGATE:-1}" == "1" ]]; then
+  read -r -d '' prompt <<'PROMPT' || true
+You are the REVIEW LEAD for a code change in this repository. You cannot run commands or edit files; read only. You have a `worker` subagent (the `agent` tool, subagent_type "worker") that is faster than you. Your job is to judge, not to read: keep your own reading to the lines a finding cites.
+
+Step 1 (delegate, in ONE agent call, run_in_background false): send the worker this exact task: "Read REVIEW_BRIEF.md, REVIEW_STAT.txt and REVIEW_DIFF.patch in this directory, then the changed files, their tests and CLAUDE.md. Answer every MANDATORY integrator question in the brief with file:line evidence. Judge each acceptance criterion MET / NOT MET / CANNOT TELL with the test that proves it. Then hunt real defects, in this order: a failure swallowed without a recorded degradation; anything that can raise into a caller promised never-raise; secrets or transcript text reaching a log, event or served file; an unbounded wait, a blocking call on a hot path, a thread that cannot be stopped; a test that cannot fail or asserts on a mock; behaviour the brief did not ask for. For EVERY finding give file:line, the defect in one sentence, and a concrete input or sequence that triggers it. No style, naming or formatting. Write the complete draft review in exactly this shape: ## Criteria / ## Findings ([BLOCKER|MAJOR|MINOR] file:line - defect - trigger) / ## Not examined / VERDICT: approve | changes-requested." If the worker fails or returns nothing usable, send it once more with the same task; if it fails again, do the work yourself.
+
+Step 2 (verify, yourself): for each finding in the draft open ONLY the cited file at the cited lines (a bounded read_file range, not the whole file) and confirm the trigger is real; drop a finding you cannot confirm and say so under "## Not examined" as "dropped: <finding> - <why>". Do the same spot-check for each criterion's cited test (the test exists and asserts behaviour, not a mock). Do not re-read files the draft did not cite. Do not exceed 12 tool calls in this step.
+
+Step 3: output the final review in exactly this shape and nothing else (severity is yours to adjust; add a finding only if you saw it yourself in step 2):
+
+## Criteria
+- <criterion, shortened>: MET | NOT MET | CANNOT TELL - <evidence: file:line or test name>
+
+## Findings
+- [BLOCKER|MAJOR|MINOR] <file>:<line> - <the defect> - <a concrete input or sequence that triggers it>
+(write "none" if there are none; do not invent findings to fill the section)
+
+## Not examined
+- <what the worker and you did not or could not check; each dropped finding>
+
+VERDICT: approve | changes-requested
+PROMPT
+  else
   read -r -d '' prompt <<'PROMPT' || true
 You are reviewing a code change in this repository. You cannot run commands or edit files; read only.
 
@@ -102,14 +130,23 @@ Answer in exactly this shape and nothing else:
 
 VERDICT: approve | changes-requested
 PROMPT
+  fi
 
   # qwen27: the same Qwen Code harness against the dense Qwen 3.8 27B (the `cortex`
-  # model), which the operator is bringing up as a second reviewer. Same family as
-  # `worker`, so less independent than a different lab's model - but a dense thinking
-  # model against a sparse one, behind a harness that has been reliable here.
-  # Override the model id with DUAL_REVIEW_QWEN27_MODEL. Enable with
-  # DUAL_REVIEW_REVIEWERS="qwen qwen27".
-  call_qwen27() { ( cd "$wt" && timeout "$timeout_s" qwen -m "${DUAL_REVIEW_QWEN27_MODEL:-unsloth/Qwen3.8-27B-NVFP4}" --approval-mode plan "$prompt" </dev/null ); }
+  # model). THE DEFAULT AND SOLE REVIEWER since 2026-09-22, by the operator's word: on
+  # the first diff both read, the 27B found every defect the worker found plus three
+  # more, all reproduced. The worker is kept as an opt-in (DUAL_REVIEW_REVIEWERS="qwen").
+  # Override the model id with DUAL_REVIEW_QWEN27_MODEL. One review at a time: the
+  # models are single instances on this rig and concurrent reviews starve each other.
+  # `--allowed-tools=agent` lets plan mode delegate to the operator's `worker` subagent
+  # (~/.qwen/agents/worker.md, the 35B on thor) for evidence gathering. Plan mode still
+  # denies it a shell and edits (smoke-tested 2026-09-22: the worker read a file, could
+  # not run wc); without the flag the 27B's first `agent` call is refused non-interactively
+  # and it reviews unaided, which on a 116 kB diff did not finish in 40 min. The prompt
+  # goes through -p: `--allowed-tools` is an array flag and swallows a positional prompt
+  # in both its bare and `=` forms (four queued reviews died in 1 s with "No input
+  # provided via stdin" before this was corrected).
+  call_qwen27() { ( cd "$wt" && timeout "$timeout_s" qwen -m "${DUAL_REVIEW_QWEN27_MODEL:-unsloth/Qwen3.8-27B-NVFP4}" --approval-mode plan --allowed-tools=agent -p "$prompt" </dev/null ); }
   run_qwen27() { run_reviewer qwen27; }
   call_qwen() { ( cd "$wt" && timeout "$timeout_s" qwen --approval-mode plan "$prompt" </dev/null ); }
   # The associate model can spend its ENTIRE output budget reasoning about a large
@@ -142,7 +179,7 @@ PROMPT
   # associate model repeatedly spent its whole output budget reasoning about large
   # diffs and never wrote an answer. Pass DUAL_REVIEW_REVIEWERS="qwen pi" to bring it
   # back; the JSON extraction, retry and brevity steer all still apply to it.
-  local reviewers=${DUAL_REVIEW_REVIEWERS:-"qwen"}
+  local reviewers=${DUAL_REVIEW_REVIEWERS:-"qwen27"}
   start=$(date +%s)
   for r in $reviewers; do "run_$r" & done
   wait
