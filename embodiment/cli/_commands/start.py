@@ -17,6 +17,15 @@ half-made claim.
 full authority. It exists so a host can run its own daemon application (and so
 the lifecycle can be tested against a fake one); it is not a sandbox and does
 not pretend to be.
+
+``--http-bind`` / ``--bind-public`` / ``--allowed-host`` configure where the
+dashboard listens and which ``Host`` headers its guard accepts — for reviewing
+the dashboard from a phone over a tailnet, say. The bind is checked *before*
+anything is spawned, so a routable address without ``--bind-public`` is a
+refusal here rather than a daemon that starts and then declines to serve. All
+three reach the daemon through the environment
+(:data:`~embodiment.daemon.app.ENV_HTTP_BIND` and its siblings), because
+``start`` re-execs a fresh interpreter rather than forking this one.
 """
 
 from __future__ import annotations
@@ -25,7 +34,9 @@ import argparse
 
 from embodiment.cli._errors import EXIT_ENV_ERROR, EXIT_USER_ERROR, CliError
 from embodiment.cli._output import emit_result
+from embodiment.daemon import app as daemon_app
 from embodiment.daemon import lifecycle
+from embodiment.http import server as http_server
 
 _HINTS = {
     lifecycle.TARGET_UNAVAILABLE_CODE: (
@@ -64,11 +75,34 @@ def _render(result: lifecycle.StartResult) -> str:
     return "\n".join(lines)
 
 
+def _http_env(args: argparse.Namespace) -> dict[str, str]:
+    """The HTTP flags, as environment for the daemon child.
+
+    ``start`` re-execs a fresh interpreter, so a flag parsed here reaches the
+    daemon only through the environment. The bind is validated *here*, before
+    anything is spawned: :func:`embodiment.http.server.resolve_bind` refuses a
+    routable address without ``--bind-public`` and raises the ``CliError``
+    this CLI already contracts for, which is a far better answer than a child
+    that starts, refuses, and leaves the operator reading a log.
+    """
+    bind = args.http_bind
+    http_server.resolve_bind(bind, bind_public=bool(args.bind_public))
+    env = {
+        daemon_app.ENV_HTTP_BIND: bind,
+        daemon_app.ENV_BIND_PUBLIC: "1" if args.bind_public else "0",
+    }
+    hosts = daemon_app.parse_allowed_hosts(",".join(args.allowed_host or ()))
+    if hosts:
+        env[daemon_app.ENV_ALLOWED_HOSTS] = ",".join(hosts)
+    return env
+
+
 def cmd_start(args: argparse.Namespace) -> int:
     result = lifecycle.start(
         args.target,
         state_dir=args.state_dir,
         confirm_timeout=args.confirm_timeout,
+        env=_http_env(args),
     )
     if not result.started and not result.already_running:
         code = EXIT_USER_ERROR if result.code in _USER_ERROR_CODES else EXIT_ENV_ERROR
@@ -106,6 +140,34 @@ def register(sub: argparse._SubParsersAction) -> None:
         type=float,
         default=lifecycle.DEFAULT_START_CONFIRM_TIMEOUT,
         help="Seconds to wait for the daemon to report itself running.",
+    )
+    p.add_argument(
+        "--http-bind",
+        default="127.0.0.1",
+        help=(
+            "Address the dashboard and control API listen on (default: 127.0.0.1). "
+            "Anything that is not a loopback address also requires --bind-public."
+        ),
+    )
+    p.add_argument(
+        "--bind-public",
+        action="store_true",
+        help=(
+            "Accept that a non-loopback bind puts the dashboard, the event stream "
+            "(which carries the transcript) and the control API on the network, "
+            "behind the install secret and the Host/Origin allow-list."
+        ),
+    )
+    p.add_argument(
+        "--allowed-host",
+        action="append",
+        default=[],
+        metavar="HOST[:PORT]",
+        help=(
+            "A Host header the guard accepts beyond loopback, e.g. a tailnet "
+            "address or name. Repeatable. Each is also accepted as an "
+            "http://HOST Origin so the dashboard's own requests pass."
+        ),
     )
     p.add_argument("--json", action="store_true", help="Emit structured JSON.")
     p.set_defaults(func=cmd_start)

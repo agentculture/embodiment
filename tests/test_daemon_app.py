@@ -15,6 +15,7 @@ that proves no record carries speech.
 
 from __future__ import annotations
 
+import argparse
 import asyncio
 import io
 import json
@@ -2510,6 +2511,215 @@ class TestModelSeam:
         self._capture(monkeypatch, {"choices": []})
         response = app_module.http_complete([], gateway_url="http://gateway.invalid")
         assert response.content == ""
+
+
+class TestTheTailnetBind:
+    """Round 8: the operator reviews the dashboard from a phone over Tailscale."""
+
+    def test_the_env_reaches_the_server_and_guard_config(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: dict[str, Any] = {}
+
+        class Recording:
+            def __init__(self, *, config: Any, guard: Any, **kwargs: Any) -> None:
+                captured["config"] = config
+                captured["guard"] = guard
+
+            def start(self) -> None:
+                return None
+
+            def shutdown(self, deadline: float) -> None:
+                return None
+
+            def status(self) -> dict[str, Any]:
+                return {"bind": config_bind(captured), "running": True}
+
+        monkeypatch.setenv("EMBODIMENT_STATE_DIR", str(tmp_path / "state"))
+        monkeypatch.setenv(app_module.ENV_HTTP_BIND, "100.64.0.7")
+        monkeypatch.setenv(app_module.ENV_BIND_PUBLIC, "1")
+        monkeypatch.setenv(app_module.ENV_ALLOWED_HOSTS, "100.64.0.7:8823, gwen.tailnet.ts.net")
+        monkeypatch.setattr(app_module.server_module, "DashboardServer", Recording)
+
+        application = app_module.main()
+        try:
+            assert captured["config"].bind == "100.64.0.7"
+            assert captured["config"].bind_public is True
+            allowed = captured["guard"].config.allowed_hosts
+            # The guard strips the port off a Host header before comparing,
+            # so the allow-list must hold the hostname and the ORIGIN list
+            # must keep the port. Backwards would refuse every request.
+            assert "100.64.0.7" in allowed
+            assert "100.64.0.7:8823" not in allowed
+            assert "gwen.tailnet.ts.net" in allowed
+            assert "127.0.0.1" in allowed, "loopback must stay allowed"
+            origins = captured["guard"].config.allowed_origins
+            assert "http://100.64.0.7:8823" in origins
+            assert "http://gwen.tailnet.ts.net" in origins
+        finally:
+            application.close(deadline=2.0)
+
+    def test_a_routable_bind_without_the_flag_never_binds(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """main() never raises, so the refusal here is a recorded degradation."""
+        monkeypatch.setenv("EMBODIMENT_STATE_DIR", str(tmp_path / "state"))
+        monkeypatch.setenv(app_module.ENV_HTTP_BIND, "100.64.0.7")
+        monkeypatch.delenv(app_module.ENV_BIND_PUBLIC, raising=False)
+
+        application = app_module.main()
+        try:
+            assert application._server is None
+            codes = [r.code for r in application._state.ledger.read_all()]
+            assert app_module.APP_BOOTSTRAP_DEGRADED in codes
+        finally:
+            application.close(deadline=2.0)
+
+    def test_status_reports_the_bind_without_the_hosts_or_the_secret(self, harness: Any) -> None:
+        secret = "INSTALLSECRET-abc123"  # nosec B105 - a planted marker
+        h = harness(
+            config=AppConfig(
+                poll_interval_s=0.01,
+                bind="100.64.0.7",
+                bind_public=True,
+                allowed_hosts=("100.64.0.7:8823", "gwen.tailnet.ts.net"),
+                api_key=secret,
+            )
+        )
+        http_status = h.app.status()["http"]
+        assert http_status["configured_bind"] == "100.64.0.7"
+        assert http_status["bind_public"] is True
+        assert http_status["allowed_hosts"] == 2
+        blob = json.dumps(h.app.status(), ensure_ascii=False)
+        assert "gwen.tailnet.ts.net" not in blob, "the allow-list leaked into status"
+        assert secret not in blob
+
+    def test_the_servers_own_status_still_passes_through_whole(self, harness: Any) -> None:
+        """t16 round 4's control counters must arrive without per-field plumbing."""
+
+        class Server:
+            def start(self) -> None:
+                return None
+
+            def shutdown(self, deadline: float) -> None:
+                return None
+
+            def status(self) -> dict[str, Any]:
+                return {
+                    "bind": "127.0.0.1",
+                    "controls_inflight": 1,
+                    "controls_timed_out": 2,
+                    "controls_refused_busy": 3,
+                    "control_timeout_s": 4.0,
+                }
+
+        h = harness(server=Server())
+        http_status = h.app.status()["http"]
+        assert http_status["controls_inflight"] == 1
+        assert http_status["controls_timed_out"] == 2
+        assert http_status["controls_refused_busy"] == 3
+        assert http_status["control_timeout_s"] == 4.0
+
+    def test_the_start_verb_refuses_a_routable_bind_at_parse_time(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The refusal the operator actually meets, before anything is spawned."""
+        from embodiment.cli import main as cli_main
+
+        code = cli_main(["start", "--http-bind", "100.64.0.7"])
+        captured = capsys.readouterr()
+        assert code == 1
+        assert captured.out == ""
+        assert captured.err.startswith("error:")
+        assert "hint:" in captured.err
+        assert "--bind-public" in captured.err
+        assert "Traceback" not in captured.err
+
+    def test_the_start_verb_builds_the_env_for_the_child(self) -> None:
+        """start re-execs, so a flag only reaches the daemon as environment."""
+        from embodiment.cli._commands import start as start_cmd
+
+        args = argparse.Namespace(
+            http_bind="100.64.0.7",
+            bind_public=True,
+            allowed_host=["100.64.0.7:8823", "gwen.tailnet.ts.net"],
+        )
+        env = start_cmd._http_env(args)
+        assert env[app_module.ENV_HTTP_BIND] == "100.64.0.7"
+        assert env[app_module.ENV_BIND_PUBLIC] == "1"
+        assert env[app_module.ENV_ALLOWED_HOSTS] == "100.64.0.7:8823,gwen.tailnet.ts.net"
+
+    def test_a_loopback_bind_needs_no_flag_and_lists_no_hosts(self) -> None:
+        from embodiment.cli._commands import start as start_cmd
+
+        args = argparse.Namespace(http_bind="127.0.0.1", bind_public=False, allowed_host=[])
+        env = start_cmd._http_env(args)
+        assert env[app_module.ENV_BIND_PUBLIC] == "0"
+        assert app_module.ENV_ALLOWED_HOSTS not in env
+
+    def test_an_allowed_host_passes_the_guard_and_an_unlisted_one_does_not(self) -> None:
+        """The guard is what actually decides; this is the end of the wire."""
+        from embodiment.http import guard as guard_module
+
+        config = app_module.AppConfig(
+            allowed_hosts=("100.64.0.7:8823",), bind="100.64.0.7", bind_public=True
+        )
+        guard = guard_module.Guard(
+            guard_module.GuardConfig(
+                install_secret="s" * 32,
+                allowed_hosts=guard_module.DEFAULT_ALLOWED_HOSTS
+                | frozenset(app_module.guard_host_of(h) for h in config.allowed_hosts),
+                allowed_origins=frozenset(f"http://{h}" for h in config.allowed_hosts),
+            )
+        )
+        allowed = guard.check(
+            "GET",
+            "/api/events",
+            {"host": "100.64.0.7:8823", "authorization": "Bearer " + "s" * 32},
+        )
+        assert allowed.allowed is True, allowed.to_dict()
+
+        refused = guard.check(
+            "GET",
+            "/api/events",
+            {"host": "10.1.2.3:8823", "authorization": "Bearer " + "s" * 32},
+        )
+        assert refused.allowed is False
+        assert refused.code == guard_module.REFUSED_HOST_CODE
+
+    @pytest.mark.parametrize(
+        "entry,expected",
+        [
+            ("100.64.0.7:8823", "100.64.0.7"),
+            ("100.64.0.7", "100.64.0.7"),
+            ("GWEN.tailnet.ts.net:8823", "gwen.tailnet.ts.net"),
+            ("[fd7a::1]:8823", "[fd7a::1]"),
+            ("[fd7a::1]", "[fd7a::1]"),
+        ],
+    )
+    def test_the_guard_form_drops_the_port(self, entry: str, expected: str) -> None:
+        assert app_module.guard_host_of(entry) == expected
+
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            ("", ()),
+            ("  ", ()),
+            ("a", ("a",)),
+            ("a,b", ("a", "b")),
+            (" a , b ", ("a", "b")),
+            ("a,a,b", ("a", "b")),
+            ("a,,b", ("a", "b")),
+        ],
+    )
+    def test_the_allowed_hosts_list_is_parsed_exactly(
+        self, raw: str, expected: tuple[str, ...]
+    ) -> None:
+        assert app_module.parse_allowed_hosts(raw) == expected
+
+
+def config_bind(captured: dict[str, Any]) -> str:
+    return str(getattr(captured.get("config"), "bind", ""))
 
 
 class TestProcessModel:

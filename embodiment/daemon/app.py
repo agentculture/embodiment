@@ -87,6 +87,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import queue
 import threading
 import time
@@ -158,6 +159,10 @@ __all__ = [
     "EarHandover",
     "DaemonApp",
     "http_complete",
+    "ENV_HTTP_BIND",
+    "ENV_BIND_PUBLIC",
+    "ENV_ALLOWED_HOSTS",
+    "guard_host_of",
     "SUMMARY_PROMPT",
     "SUMMARY_MAX_TOKENS",
     "main",
@@ -202,6 +207,14 @@ _EARS_CLOSE_WAIT_SHARE = 0.5
 #: Where the ears step sits in the shutdown budget. Named because two places
 #: must agree on it: the step itself, and the bound the ear is handed.
 _EARS_STEP_FRACTION = 0.35
+
+#: How the ``start`` verb hands its HTTP flags to the daemon CHILD: ``start``
+#: re-execs a fresh interpreter, so a flag parsed in the CLI reaches
+#: :func:`main` only through the environment.
+ENV_HTTP_BIND = "EMBODIMENT_HTTP_BIND"
+ENV_BIND_PUBLIC = "EMBODIMENT_BIND_PUBLIC"
+#: Comma-separated.
+ENV_ALLOWED_HOSTS = "EMBODIMENT_ALLOWED_HOSTS"
 
 #: The system prompt for the end-of-session summary. Hebrew, because the
 #: window it summarises is Hebrew, and short because the record is a memory
@@ -386,7 +399,16 @@ class AppConfig:
     http_enabled: bool = True
     bind: str = "127.0.0.1"
     port: int = server_module.DEFAULT_PORT
+    #: Required for ANY routable bind — t16's rule, enforced at the CLI's
+    #: parse time and again here. Binding off loopback puts the dashboard,
+    #: the event stream (which carries the transcript) and the control API on
+    #: the network, with the install secret and the Host/Origin allow-list as
+    #: the only things in front of them.
     bind_public: bool = False
+    #: Extra hosts the guard accepts, beyond loopback — a tailnet address or
+    #: name, for instance. Each is also accepted as an ``http://<host>``
+    #: Origin, so the dashboard's own fetches pass the Origin check.
+    allowed_hosts: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -2263,7 +2285,7 @@ class DaemonApp:
             "session": _session_status(session),
             "ears": _probe(self._ears),
             "voice": _probe(self._voice),
-            "http": _probe(self._server),
+            "http": _http_status(self._server, self._config),
             "bus": {
                 "degradation_counts": dict(getattr(self._bus, "degradation_counts", {}) or {}),
                 "hook_errors": int(getattr(self._bus, "hook_errors", 0) or 0),
@@ -2425,6 +2447,45 @@ def _target_verification(endpoint: Any) -> dict[str, Any]:
     return out
 
 
+def _env_flag(value: Optional[str]) -> bool:
+    """An env var read as a flag. Only an explicit yes is a yes."""
+    return str(value or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def parse_allowed_hosts(value: Optional[str]) -> tuple[str, ...]:
+    """Split :data:`ENV_ALLOWED_HOSTS`. Order preserved, blanks and dupes dropped.
+
+    Each entry is written the way an operator reads it off a browser's address
+    bar — a name or address, optionally with a port. Nothing is resolved,
+    looked up or guessed at: naming a tailnet address accepts that address and
+    nothing else.
+    """
+    out: list[str] = []
+    for item in str(value or "").split(","):
+        host = item.strip()
+        if host and host not in out:
+            out.append(host)
+    return tuple(out)
+
+
+def guard_host_of(value: str) -> str:
+    """The ``allowed_hosts`` form of an operator's entry: the hostname, no port.
+
+    The guard compares a request's ``Host`` header **with the port removed**
+    (``guard._hostname_of``), so an allow-list entry that keeps its port can
+    never match anything — ``100.64.0.7:8823`` in the list, ``100.64.0.7`` on
+    the wire. The ORIGIN check is the other way round: a browser sends the
+    port in ``Origin``, so that form keeps it. Getting these two backwards is
+    a refusal the operator would only discover on their phone, so the split
+    is made here and pinned by a test against the real guard.
+    """
+    host = value.strip().lower()
+    if host.startswith("["):
+        closing = host.find("]")
+        return host[: closing + 1] if closing != -1 else host
+    return host.split(":", 1)[0]
+
+
 def _lexical_can_index(text: str) -> bool:
     """Whether a lexical (BM25) search has anything to work with here.
 
@@ -2463,6 +2524,30 @@ def _playback_conditions(endpoint: Any) -> dict[str, Any]:
         "playback_muted_by_system": muted if isinstance(muted, bool) else None,
         "playback_latency_ms": latency if isinstance(latency, (int, float)) else None,
     }
+
+
+def _http_status(server: Any, config: AppConfig) -> Optional[dict[str, Any]]:
+    """The server's own status, passed through whole, plus the bind it was asked for.
+
+    t16's status already carries ``bind``/``public_bind`` and round 4's
+    control counters (``controls_inflight``, ``controls_timed_out``,
+    ``controls_refused_busy``, ``control_timeout_s``), so nothing is copied
+    field by field — a server that gains a counter gains it here for free.
+    What only this module knows is how many extra hosts the guard was
+    configured with. The host NAMES are not reported and the install secret
+    never appears anywhere: a count answers "is the allow-list what I set?"
+    without publishing the operator's tailnet address to every dashboard
+    viewer.
+    """
+    probed = _probe(server)
+    configured = {
+        "configured_bind": config.bind,
+        "bind_public": bool(config.bind_public),
+        "allowed_hosts": len(config.allowed_hosts),
+    }
+    if probed is None:
+        return {**configured, "running": False}
+    return {**probed, **configured}
 
 
 def _endpoint_degraded(endpoint: Any) -> Optional[bool]:
@@ -2548,7 +2633,13 @@ def main() -> DaemonApp:
     if secret.code:
         state.ledger.append(secret.code, _safe_reason_text(secret.detail))
     bus = Bus(redact=tuple(s for s in (realtime.api_key, secret.secret) if s))
-    config = AppConfig(gateway_url=realtime.gateway_url, api_key=realtime.api_key)
+    config = AppConfig(
+        gateway_url=realtime.gateway_url,
+        api_key=realtime.api_key,
+        bind=os.environ.get(ENV_HTTP_BIND) or AppConfig.bind,
+        bind_public=_env_flag(os.environ.get(ENV_BIND_PUBLIC)),
+        allowed_hosts=parse_allowed_hosts(os.environ.get(ENV_ALLOWED_HOSTS)),
+    )
 
     data_dir = Path(state.dir) / "memory" if state.dir is not None else Path(".")
     memory = RoomMemory(data_dir, scope=config.memory_scope, added_by=config.added_by)
@@ -2607,13 +2698,20 @@ def main() -> DaemonApp:
     try:
         app._server = server_module.DashboardServer(
             config=server_module.ServerConfig(
-                bind=config.bind,
+                bind=server_module.resolve_bind(config.bind, bind_public=config.bind_public),
                 port=config.port,
                 bind_public=config.bind_public,
                 redact=tuple(s for s in (config.api_key, secret.secret) if s),
             ),
             guard=guard_module.Guard(
-                guard_module.GuardConfig(install_secret=secret.secret),
+                guard_module.GuardConfig(
+                    install_secret=secret.secret,
+                    allowed_hosts=guard_module.DEFAULT_ALLOWED_HOSTS
+                    | frozenset(guard_host_of(host) for host in config.allowed_hosts),
+                    allowed_origins=frozenset(
+                        f"http://{host.strip().lower()}" for host in config.allowed_hosts
+                    ),
+                ),
             ),
             bus=bus,
             controls=app.controls(),

@@ -191,6 +191,32 @@ never spawns, and never leaves a half-made claim behind.
 `--target` imports and runs the module it names with your own authority. It is
 an entry-point selector, not a sandbox.
 
+## Reaching the dashboard from another device
+
+`--http-bind ADDR` sets where the dashboard, the event stream and the control
+API listen; the default, `127.0.0.1`, is reachable only from this machine.
+
+**Any non-loopback bind also requires `--bind-public`**, and without it `start`
+exits `1` before spawning anything. That is not ceremony: the event stream
+carries the transcript, and off loopback the only things in front of it are the
+install secret, the Host/Origin allow-list and — when the Host is the public
+hostname — a Cloudflare Access assertion.
+
+`--allowed-host HOST[:PORT]` adds one `Host` header the guard will accept
+beyond loopback, and is repeatable. Each value is also accepted as an
+`http://HOST` Origin, so the dashboard's own requests pass the Origin check.
+Nothing is resolved or guessed: the value is matched exactly as a browser
+sends it.
+
+    embodiment start --http-bind 100.x.y.z --bind-public --allowed-host 100.x.y.z:8823
+
+All three reach the daemon through `EMBODIMENT_HTTP_BIND`,
+`EMBODIMENT_BIND_PUBLIC` and `EMBODIMENT_ALLOWED_HOSTS` (comma-separated),
+because `start` re-execs a fresh interpreter rather than forking this one —
+so setting those variables and starting the daemon directly does the same
+thing. `status` reports the bind, whether it is public, and how many extra
+hosts the guard holds; it never reports the hosts themselves or the secret.
+
 The child is detached: its own session, `stdin` from `/dev/null`, `stdout` and
 `stderr` into `<state dir>/daemon.err` (0600) rather than your terminal, and
 its working directory set to the private state directory so nothing it writes
