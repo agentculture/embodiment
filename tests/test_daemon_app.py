@@ -1481,6 +1481,177 @@ class TestTheMemoryLane:
             application.close(deadline=2.0)
 
 
+class TestRecallReachesThePrompt:
+    """Round 7: Gwen was told where a key was, and could not say after a restart.
+
+    ``status()["recall"]`` said ``mode: lexical, calls: 1`` and no
+    degradation — which is exactly what a recall that found nothing because
+    there was nothing to find would say. These drive the real store and
+    assert on what actually reached the prompt.
+    """
+
+    ASK = "המפתח נמצא במגירה הכחולה"
+    QUESTION = "איפה נמצא המפתח?"
+    SUMMARIES = (
+        "המשתמש פנה בברכת שלום וסיפק מידע לגבי מיקום של מפתח במגירה כחולה.",
+        "המשתמש ציין את מיקום המפתח, והצד השני ביקש פירוט מדויק יותר.",
+    )
+
+    def _stocked_store(self, tmp_path: Path) -> Path:
+        """The shape of the live store: one ask record and two summaries."""
+        data_dir = tmp_path / "store"
+        memory = RoomMemory(data_dir, scope="gwen", added_by="gwen", embed_probe=lambda: False)
+        memory.remember(self.ASK, visibility="private", record_type="explicit-ask", deadline=5.0)
+        for summary in self.SUMMARIES:
+            memory.remember(
+                summary, visibility="private", record_type="session-summary", deadline=5.0
+            )
+        memory.close(deadline=2.0)  # the restart between writing and asking
+        return data_dir
+
+    def test_the_prompt_carries_the_record_after_a_restart(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        """The live miss, reproduced end to end: ask, restart, then ask about it."""
+        data_dir = self._stocked_store(tmp_path)
+        memory = RoomMemory(data_dir, scope="gwen", added_by="gwen", embed_probe=lambda: False)
+        complete = make_complete()
+        h = harness(memory=memory, complete=complete)
+        h.app.attach_ear("host", FakeEndpoint())
+        h.clear()
+
+        h.app.run_turn(self.QUESTION)
+
+        prompts = [m[0]["content"] for m in complete.seen if m and m[0]["role"] == "system"]
+        assert prompts, "no system prompt reached the model"
+        assert "מגירה" in prompts[-1], "the record never reached the prompt"
+        assert "כחול" in prompts[-1]
+
+        recall = h.app.status()["recall"]
+        assert recall["last_hits"] >= 1
+        assert recall["rendered_total"] >= 1
+        assert recall["hits_total"] >= 1
+        assert recall["empty_total"] == 0
+
+    def test_the_recall_counters_can_show_a_zero(self, harness: Any, tmp_path: Path) -> None:
+        """The counters have to be able to FAIL, or they prove nothing."""
+        data_dir = tmp_path / "empty-store"
+        memory = RoomMemory(data_dir, scope="gwen", added_by="gwen", embed_probe=lambda: False)
+        h = harness(memory=memory)
+        h.app.attach_ear("host", FakeEndpoint())
+        h.clear()
+
+        h.app.run_turn(self.QUESTION)
+
+        recall = h.app.status()["recall"]
+        assert recall["last_hits"] == 0
+        assert recall["rendered_total"] == 0
+        assert recall["empty_total"] == 1
+        states = [e for e in h.events("state") if e.data.get("component") == "recall"]
+        assert len(states) == 1 and states[0].data["status"] == "empty"
+
+    def test_every_turn_publishes_its_recall_counts(self, harness: Any, tmp_path: Path) -> None:
+        data_dir = self._stocked_store(tmp_path)
+        memory = RoomMemory(data_dir, scope="gwen", added_by="gwen", embed_probe=lambda: False)
+        h = harness(memory=memory)
+        h.app.attach_ear("host", FakeEndpoint())
+        h.clear()
+
+        h.app.run_turn(self.QUESTION)
+
+        states = [e for e in h.events("state") if e.data.get("component") == "recall"]
+        assert len(states) == 1
+        data = states[0].data
+        assert data["status"] == "searched"
+        assert data["last_hits"] >= 1
+        assert data["rendered"] >= 1
+        blob = json.dumps(data, ensure_ascii=False)
+        assert "מגירה" not in blob, "a recall event carried text"
+        assert "מפתח" not in blob
+
+    def test_the_blind_index_is_named_never_silent(self, harness: Any, tmp_path: Path) -> None:
+        """The cause: a keyword search whose tokeniser cannot see the script."""
+        data_dir = self._stocked_store(tmp_path)
+        memory = RoomMemory(data_dir, scope="gwen", added_by="gwen", embed_probe=lambda: False)
+        h = harness(memory=memory)
+        h.app.attach_ear("host", FakeEndpoint())
+
+        h.app.run_turn(self.QUESTION)
+
+        assert app_module.APP_RECALL_LEXICAL_BLIND in h.ledger_codes()
+        assert h.app.status()["recall"]["lexical_fallback_hits"] == 1
+
+    def test_the_upstream_tokeniser_is_why(self) -> None:
+        """Pinned against eidetic itself, so this diagnosis cannot rot quietly.
+
+        If a later eidetic tokenises Hebrew, this fails and the workaround —
+        and its degradation record — can be removed.
+        """
+        from eidetic.memory.scoring import _kw_tokenize
+
+        assert _kw_tokenize("the key is in the blue drawer")
+        assert _kw_tokenize("המפתח נמצא במגירה הכחולה") == []
+
+    def test_an_ascii_question_needs_no_fallback(self, harness: Any, tmp_path: Path) -> None:
+        data_dir = tmp_path / "latin-store"
+        memory = RoomMemory(data_dir, scope="gwen", added_by="gwen", embed_probe=lambda: False)
+        memory.remember("the key is in the blue drawer", visibility="private", deadline=5.0)
+        h = harness(memory=memory)
+        h.app.attach_ear("host", FakeEndpoint())
+
+        h.app.run_turn("where is the key?")
+
+        assert app_module.APP_RECALL_LEXICAL_BLIND not in h.ledger_codes()
+        assert h.app.status()["recall"]["last_hits"] >= 1
+
+    def test_a_recall_deadline_is_counted_as_its_own_thing(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        def slow_recall(query: str, **kwargs: Any) -> Any:
+            time.sleep(1.0)
+            return SimpleNamespace(ok=True, records=[], degradation=None)
+
+        h = harness(
+            recall_fn=slow_recall,
+            config=AppConfig(recall_deadline=0.05, poll_interval_s=0.01),
+        )
+        h.app.attach_ear("host", FakeEndpoint())
+        h.app.run_turn(SPEECH)
+
+        recall = h.app.status()["recall"]
+        assert recall["deadline_exceeded"] >= 1
+        assert recall["errors"] == 0
+
+    def test_a_memory_that_raises_is_counted_as_an_error(self, harness: Any) -> None:
+        class Exploding:
+            store_permission_failures = 0
+            store_symlinks_skipped = 0
+            store_non_files_skipped = 0
+            store_root_is_symlink = False
+            pending = 0
+            abandoned_dropped = 0
+            scope = "gwen"
+            data_dir = "/dev/null"
+            last_recall_mode = None
+
+            def recall(self, *args: Any, **kwargs: Any) -> Any:
+                raise RuntimeError("no store")
+
+            def remember(self, *args: Any, **kwargs: Any) -> Any:
+                return SimpleNamespace(ok=False, record_id=None, degradation=None)
+
+            def close(self, deadline: float = 1.0) -> Any:
+                return SimpleNamespace(degradations=(), unconfirmed=())
+
+        h = harness(memory=Exploding())
+        h.app.attach_ear("host", FakeEndpoint())
+        h.app.run_turn(SPEECH)
+
+        recall = h.app.status()["recall"]
+        assert recall["errors"] >= 1
+        assert app_module.APP_RECALL_FAILED in h.ledger_codes()
+
+
 class TestSupersededTurns:
     """Live: barge in, she starts thinking, barge in again — and she talks over you.
 
@@ -2094,6 +2265,17 @@ class TestStatus:
         status = h.app.status()
         assert status["realtime_ear_enabled"] is True
         assert status["realtime_ws_url"] == "ws://127.0.0.1:8765"
+
+    def test_ear_active_is_a_name_not_a_flag(self, harness: Any) -> None:
+        """Confirmed for the coordinator's predicate: a string, never a bool."""
+        h = harness()
+        assert h.app.status()["ear"]["active"] is None
+        h.app.attach_ear("host", FakeEndpoint())
+        active = h.app.status()["ear"]["active"]
+        assert isinstance(active, str) and not isinstance(active, bool)
+        assert active == "host"
+        h.app.detach_ear()
+        assert h.app.status()["ear"]["active"] is None
 
     def test_status_names_the_active_ear_and_the_client_count(self, harness: Any) -> None:
         h = harness()

@@ -95,6 +95,7 @@ from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from embodiment import memory as memory_module
 from embodiment import safe_reason
 from embodiment.audio.endpoint import SAMPLE_RATE_HZ as PLAYBACK_RATE_HZ
 from embodiment.audio.endpoint import NullEndpoint
@@ -124,6 +125,8 @@ __all__ = [
     "APP_BOOTSTRAP_DEGRADED",
     "APP_CAPTURE_FAILED",
     "APP_FRAMES_NO_SESSION",
+    "APP_RECALL_FAILED",
+    "APP_RECALL_LEXICAL_BLIND",
     "ENDPOINT_PLAYBACK_QUIET",
     "APP_CLOSED",
     "APP_EARS_STREAM_ENDED",
@@ -283,6 +286,26 @@ APP_EAR_DETACH_FAILED = "app-ear-detach-failed"
 APP_CAPTURE_FAILED = "app-capture-failed"
 #: A captured frame arrived with no realtime session to send it to.
 APP_FRAMES_NO_SESSION = "app-frames-no-session"
+
+#: A recall, or the render of one, failed outright.
+APP_RECALL_FAILED = "app-recall-failed"
+#: The lexical index cannot tokenise the utterance's script, so a keyword
+#: search over it can only ever return nothing. See
+#: :meth:`DaemonApp._recall_blind_fallback`.
+APP_RECALL_LEXICAL_BLIND = "app-recall-lexical-blind"
+
+#: :mod:`embodiment.memory`'s own code for a recall that ran out of time, and
+#: its exact-match mode. Imported rather than written out — unlike the host
+#: endpoint's codes, memory is importable from here — and named as constants
+#: only to keep the call sites readable.
+MEMORY_DEADLINE_EXCEEDED = memory_module.CODE_DEADLINE_EXCEEDED
+MEMORY_MODE_EXACT = "exact"
+
+#: How many words of an utterance the blind fallback tries, longest first. A
+#: **judgement call**: the longest word carries the most meaning in Hebrew
+#: (prefixes attach, so «המפתח» is a whole noun phrase), and two calls fit
+#: inside a 250 ms recall deadline where five would not.
+_FALLBACK_TERMS = 2
 
 #: The host endpoint's own code for a sink that is turned down or system-muted
 #: (t7 round 8). Written out rather than imported: the import-graph rule
@@ -606,6 +629,13 @@ class DaemonApp:
         self._summary_written = 0
         self._summary_skip_reason: Optional[str] = None
         self._recall_mode: Optional[str] = None
+        self._recall_last_hits = 0
+        self._recall_hits_total = 0
+        self._recall_rendered_total = 0
+        self._recall_empty_total = 0
+        self._recall_deadline_exceeded = 0
+        self._recall_errors = 0
+        self._recall_fallback_hits = 0
         self._recall_calls = 0
         self._degradation_counts: dict[str, int] = {}
         self._publish_errors = 0
@@ -1497,27 +1527,117 @@ class DaemonApp:
         )
 
     def _recall(self, text: str) -> str:
-        """The ONE place recall reaches a prompt, bounded by its own deadline."""
+        """The ONE place recall reaches a prompt, bounded by its own deadline.
+
+        Counted at every step, because the failure this replaces was a silent
+        zero: live, Gwen was told where a key was, wrote the record, was asked
+        about it after a restart and answered without it — and
+        ``status()["recall"]`` said ``mode: lexical, calls: 1`` with no
+        degradation, which is indistinguishable from a recall that found
+        nothing because there was nothing to find. ``hits`` and ``rendered``
+        are what tell those two apart.
+        """
+        started = self._clock()
+        result = self._recall_once(text, self._config.recall_mode, self._config.recall_deadline)
+        records = self._records_of(result)
+
+        if not records and not _lexical_can_index(text):
+            records = self._recall_blind_fallback(text, started)
+
+        rendered = self._render(records)
+        with self._lock:
+            self._recall_last_hits = len(records)
+            self._recall_hits_total += len(records)
+            if not records:
+                self._recall_empty_total += 1
+            rendered_count = len(records) if rendered else 0
+            self._recall_rendered_total += rendered_count
+            counts = (len(records), rendered_count)
+        self._publish(
+            "state",
+            {
+                "component": "recall",
+                "status": "searched" if counts[0] else "empty",
+                "last_hits": counts[0],
+                "rendered": counts[1],
+            },
+        )
+        return rendered
+
+    def _recall_once(self, query: str, mode: str, deadline: float) -> Any:
+        """One bounded call into memory. Counts and folds; never raises."""
         try:
             result = self._memory.recall(
-                text,
-                deadline=self._config.recall_deadline,
-                mode=self._config.recall_mode,
+                query,
+                deadline=max(0.01, deadline),
+                mode=mode,
                 top_k=self._config.recall_top_k,
                 visibility=PRIVATE,
             )
         except Exception as exc:  # noqa: BLE001 - memory is a seam; a turn never waits on it
-            self._record("app-recall-failed", _describe(exc))
-            return ""
+            with self._lock:
+                self._recall_errors += 1
+            self._record(APP_RECALL_FAILED, _describe(exc))
+            return None
         with self._lock:
             self._recall_calls += 1
             self._recall_mode = getattr(result, "mode", None)
         for degradation in getattr(result, "degradations", ()) or ():
+            if getattr(degradation, "code", "") == MEMORY_DEADLINE_EXCEEDED:
+                with self._lock:
+                    self._recall_deadline_exceeded += 1
             self._fold("memory", degradation)
+        return result
+
+    def _recall_blind_fallback(self, text: str, started: float) -> list[Any]:
+        """The lexical index cannot see this utterance. Say so, then try again.
+
+        eidetic's keyword/BM25 tokeniser is ``[a-z0-9]+``
+        (``eidetic/memory/scoring.py``), so a Hebrew utterance tokenises to
+        the EMPTY list: no query terms, no document terms, no hits, ``ok``
+        true and not one degradation anywhere. Gwen speaks Hebrew, so on this
+        rig that is every recall she will ever make — the live miss was not a
+        ranking problem, it was a search that could not see its own index.
+
+        This is an upstream defect and not ours to patch, so the workaround is
+        narrow and LOUD: recorded as :data:`APP_RECALL_LEXICAL_BLIND` the
+        first time, then the longest words of the utterance are tried in
+        ``exact`` mode, which matches by substring and therefore works in any
+        script. Whatever is left of the recall deadline bounds it; nothing
+        here is retried forever, and a turn still answers without memory
+        rather than waiting for it.
+        """
+        self._record(
+            APP_RECALL_LEXICAL_BLIND,
+            "the lexical index cannot tokenise this script; falling back to exact",
+            once=True,
+        )
+        for word in _fallback_terms(text):
+            remaining = self._config.recall_deadline - (self._clock() - started)
+            if remaining <= 0:
+                break
+            result = self._recall_once(word, MEMORY_MODE_EXACT, remaining)
+            records = self._records_of(result)
+            if records:
+                with self._lock:
+                    self._recall_fallback_hits += 1
+                return records
+        return []
+
+    @staticmethod
+    def _records_of(result: Any) -> list[Any]:
+        return list(getattr(result, "records", []) or []) if result is not None else []
+
+    def _render(self, records: list[Any]) -> str:
+        """The ONE render. A render fault costs the memory, never the turn."""
+        if not records:
+            return ""
         try:
-            return render_recalled(getattr(result, "records", []) or [])
+            return render_recalled(records)
         except Exception as exc:  # noqa: BLE001 - a render fault must not lose the turn
-            self._record("app-recall-failed", f"render: {_describe(exc)}")
+            with self._lock:
+                self._recall_errors += 1
+            self._record(APP_RECALL_FAILED, f"render: {_describe(exc)}")
             return ""
 
     def _window(self, session: Any) -> list[dict[str, str]]:
@@ -2071,6 +2191,11 @@ class DaemonApp:
             "realtime_ear_enabled": bool(self._config.realtime_ear_enabled),
             "realtime_ws_url": self._config.realtime_ws_url or None,
             "ear": {
+                # ``active`` is the ear's NAME ("host", "browser", "null") or
+                # None when nothing is attached — a string, never a bool. A
+                # predicate wanting "is an ear attached" asks
+                # ``active is not None``; the name is what distinguishes the
+                # host array from a browser ear in the same field.
                 "active": self._ear_name,
                 "kind": (
                     _safe_name(type(self._ear_endpoint).__name__)
@@ -2113,6 +2238,13 @@ class DaemonApp:
             "recall": {
                 "mode": recall_mode,
                 "calls": recall_calls,
+                "hits_total": self._recall_hits_total,
+                "last_hits": self._recall_last_hits,
+                "rendered_total": self._recall_rendered_total,
+                "empty_total": self._recall_empty_total,
+                "deadline_exceeded": self._recall_deadline_exceeded,
+                "errors": self._recall_errors,
+                "lexical_fallback_hits": self._recall_fallback_hits,
                 "deadline_s": self._config.recall_deadline,
                 "configured_mode": self._config.recall_mode,
                 "semantic": _semantic_available(self._memory),
@@ -2281,6 +2413,26 @@ def _target_verification(endpoint: Any) -> dict[str, Optional[bool]]:
         out[key] = verdict
         out[key.replace("_verified", "")] = verdict is not None
     return out
+
+
+def _lexical_can_index(text: str) -> bool:
+    """Whether a lexical (BM25) search has anything to work with here.
+
+    eidetic's keyword tokeniser keeps ASCII alphanumeric runs and nothing
+    else, so an utterance with none of them produces no terms at all — and a
+    search with no terms is not a search that found nothing, it is a search
+    that never happened. Asked behaviourally rather than by copying the
+    upstream regex, and guarded by a test that stocks a Hebrew store and
+    checks a record comes back through the daemon's own path.
+    """
+    return any(ch.isascii() and ch.isalnum() for ch in text)
+
+
+def _fallback_terms(text: str) -> list[str]:
+    """The longest words of *text*, longest first, for a substring search."""
+    words = [word.strip("?!.,;:\"'()[]{}<>") for word in text.split()]
+    ranked = sorted({word for word in words if len(word) > 1}, key=len, reverse=True)
+    return ranked[:_FALLBACK_TERMS]
 
 
 def _playback_conditions(endpoint: Any) -> dict[str, Any]:
