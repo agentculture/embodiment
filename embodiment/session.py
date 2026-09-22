@@ -52,6 +52,28 @@ budget is a case this module decides rather than crashes on: it is kept
 :data:`CODE_TURN_EXCEEDS_BUDGET` — a degradation, not an error, per
 constraint C3.
 
+**Round 3 measured the enforcement itself as the cost.** The prior
+implementation recomputed the injected counter over the WHOLE window on every
+pop, making each append O(window size); an independent probe measured 20,000
+empty (`add_user("")`) turns followed by one 15 kB turn costing 24.4 seconds
+inside a single :meth:`add_assistant` call, because empty turns estimate 0
+tokens and so never trigger eviction — they simply accumulate, each one
+paying an ever-larger O(n) rescan. Two changes fix it together:
+
+* A turn's own cost is estimated ONCE, via the injected counter applied to
+  that turn ALONE (never the whole window), and a running total
+  (:attr:`Session._window_total`) is maintained incrementally — incremented
+  on append, decremented on eviction — so :meth:`Session._enforce_budget` is
+  O(1) amortised per turn rather than O(window size). This is an
+  approximation of calling the counter once over the whole window (the two
+  can differ slightly for a counter that applies any whole-list overhead),
+  traded deliberately for bounded cost per turn.
+* A turn whose own estimated cost is exactly zero is written to the
+  transcript and counted in :attr:`Session.turns_seen` as always, but is
+  never appended to the window at all — there would be nothing for the
+  budget check to ever evict it *for*, so leaving it in the window is pure
+  unbounded accumulation with no corresponding pressure to remove it.
+
 The default counter, and its honestly-stated error
 ------------------------------------------------------
 :func:`embodiment.context.count_tokens_chars` is reused rather than
@@ -149,6 +171,23 @@ summariser's or a memory seam's exception message beyond its type name.
 summariser's and a raising memory's exception message) and scans every
 surface this module exposes for it.
 
+**Round 3 found the sweep above was not exhaustive.** ``memory`` is
+duck-typed and untrusted (see above), and two more fields of its
+``RememberResult`` were being rendered or passed through unchecked: the
+refusal ``reason`` interpolated ``result.degradation.code`` directly, and
+every :class:`AskOutcome` passed ``result.record_id`` straight through. A
+fake whose ``degradation.code`` or ``record_id`` carried an attacker string
+landed it in :attr:`Session.degradations` and :meth:`SessionCloseReport.to_dict`
+respectively. Both are now filtered: :func:`_safe_memory_code` accepts a
+``code`` only if it is one of the FIVE codes a real
+:class:`~embodiment.memory.RoomMemory` write can actually return (imported
+directly from :mod:`embodiment.memory` / :mod:`embodiment.continuity` rather
+than hand-copied, so a rename cannot silently widen or narrow the allow-list)
+and renders anything else as the literal string ``"unknown"``;
+:meth:`Session._sanitize_record_id` accepts a ``record_id`` only if it
+matches a bounded, conservative shape and otherwise discards it (returning
+``None``) and records a counted, text-free degradation.
+
 Threading
 ---------
 A :class:`Session` is **not** thread-safe. It is intended to be driven from
@@ -182,8 +221,11 @@ from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Callable, Optional
 
+from embodiment import continuity
 from embodiment.context import count_tokens_chars
 from embodiment.daemon.state import DaemonState, TranscriptLog
+from embodiment.memory import CODE_CLOSED as _MEMORY_CODE_CLOSED
+from embodiment.memory import CODE_SATURATED as _MEMORY_CODE_SATURATED
 from embodiment.memory import DEFAULT_WRITE_DEADLINE, PRIVATE
 from embodiment.turn import is_speakable
 
@@ -209,6 +251,7 @@ __all__ = [
     "CODE_SUMMARY_MEMORY_ERROR",
     "CODE_SUMMARY_INVALID_DEADLINE",
     "CODE_CLOSE_ERROR",
+    "CODE_UNSAFE_RECORD_ID",
     "Turn",
     "SessionDegradation",
     "AskOutcome",
@@ -291,6 +334,11 @@ CODE_SUMMARY_INVALID_DEADLINE = "session-summary-invalid-deadline"
 #: Something inside ``close()`` raised that none of the guards above already
 #: caught. Should be unreachable; recorded rather than trusted to be.
 CODE_CLOSE_ERROR = "session-close-error"
+#: ``memory.remember`` returned a ``record_id`` outside the bounded safe
+#: shape :data:`_SAFE_RECORD_ID_RE` accepts. Discarded (``None`` used
+#: instead) rather than passed through — ``memory`` is duck-typed and
+#: untrusted; see the module docstring.
+CODE_UNSAFE_RECORD_ID = "session-unsafe-record-id"
 
 _MAX_REASON_LEN = 200
 
@@ -299,6 +347,44 @@ _MAX_REASON_LEN = 200
 #: accepts as a filename stem. Anything else is reported as a hash, never
 #: verbatim: an id reaching this module is not assumed to already be safe.
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,200}$")
+
+#: A ``memory.remember`` result's ``record_id`` is accepted only in this
+#: bounded, conservative shape (an opaque label needs no more) before it is
+#: ever placed on an :class:`AskOutcome` a caller might log or serialize.
+#: Anything else is discarded — see :meth:`Session._sanitize_record_id`.
+_SAFE_RECORD_ID_RE = re.compile(r"^[A-Za-z0-9_.:-]{1,128}$")
+
+#: The complete set of degradation codes a real
+#: :class:`~embodiment.memory.RoomMemory` write can actually return on
+#: ``RememberResult.degradation.code`` (``CODE_REMEMBER_DEFERRED`` is handled
+#: as its own branch before this set is ever consulted, but is included for
+#: completeness). Imported directly from their owning modules rather than
+#: hand-copied as literals, so a rename upstream cannot silently widen or
+#: narrow this allow-list. Anything else — including a value a hostile or
+#: merely buggy duck-typed ``memory`` invents — renders as ``"unknown"``; see
+#: :func:`_safe_memory_code`.
+_KNOWN_MEMORY_CODES = frozenset(
+    {
+        CODE_REMEMBER_DEFERRED,
+        _MEMORY_CODE_CLOSED,
+        _MEMORY_CODE_SATURATED,
+        continuity.CODE_INVALID_RECORD,
+        continuity.CODE_SUBSYSTEM_ERROR,
+    }
+)
+
+
+def _safe_memory_code(code: Any) -> str:
+    """*code* if it is a known memory-seam code, else the literal ``"unknown"``.
+
+    *code* comes from a duck-typed, untrusted ``memory`` result (see the
+    module docstring's "Privacy" section) — rendering it unchecked into a
+    degradation reason let a hostile fake's ``degradation.code`` carry
+    arbitrary text straight into a record that promises to carry none.
+    """
+    if isinstance(code, str) and code in _KNOWN_MEMORY_CODES:
+        return code
+    return "unknown"
 
 
 def generate_session_id() -> str:
@@ -343,10 +429,20 @@ def _sanitize_deadline(deadline: Any) -> tuple[float, bool]:
 #: conjugation beyond the four covered below (e.g. Hebrew plural imperatives),
 #: an ask embedded mid-clause with no recognizable clause boundary before it
 #: ("well anyway remember that milk" — one clause, trigger not at its start),
-#: and — by design, per round 2 — ANY utterance that ends in "?", even one
-#: that also contains a genuine imperative earlier ("Remember that? Are you
-#: sure?" reads as a question and is never treated as an ask). The daemon may
-#: swap in a model-backed detector of the same signature later.
+#: a filler word before the trigger that is NOT the one recognized address
+#: ("hey, remember that milk" — "hey," is an ordinary first clause, not an
+#: address, so per round 3 only the FIRST clause is ever eligible and this is
+#: now a false negative, tightened deliberately), and — by design, per round
+#: 2/3 — ANY utterance containing "?" anywhere, even one that also contains a
+#: genuine imperative earlier ("Remember that? Are you sure?", or "remember
+#: that the milk is gone? sorry, wrong chat", reads as a question and is
+#: never treated as an ask). **Reported speech is a KNOWN, ACCEPTED false
+#: positive, not fixed**: "remember that we won, he said, and it was 1998"
+#: still matches, because "he said" makes the whole thing a quotation rather
+#: than a command, and telling the two apart needs understanding the
+#: sentence, which a regex heuristic cannot do — this is stated here rather
+#: than attempted. The daemon may swap in a model-backed detector of the same
+#: signature later.
 _ASK_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^תזכר[יו]\s*ש(.+)", re.DOTALL),
     re.compile(r"^זכר[יו]\s*ש(.+)", re.DOTALL),
@@ -382,31 +478,44 @@ _NEGATION_OR_QUESTION_PREFIXES: tuple[str, ...] = (
 
 #: An optional address token before the imperative — "גוון," / "Gwen," — is
 #: stripped before the clause is checked, so "Gwen, remember that milk" and
-#: "Gwen remember that milk" are both recognized.
+#: "Gwen remember that milk" are both recognized. This is the ONLY thing that
+#: lets a clause other than the first be checked at all — see
+#: :func:`default_ask_detector`.
 _ADDRESS_PREFIX_RE = re.compile(r"^\s*(?:גוון|gwen)[\s,:]*", re.IGNORECASE)
 
 #: Clause boundaries: a comma, sentence-ending punctuation, or a newline. The
-#: trigger must open one of the resulting clauses — never merely appear
-#: somewhere inside one — which is what keeps "I don't remember that he ever
-#: called me back" and "do you remember that film we saw" from matching: the
-#: clause each sits in starts with "I don't"/"do you", not with the trigger.
+#: trigger must OPEN the eligible clause — never merely appear somewhere
+#: inside one — which is what keeps "I don't remember that he ever called me
+#: back" and "do you remember that film we saw" from matching: the clause
+#: each sits in starts with "I don't"/"do you", not with the trigger.
 _CLAUSE_SPLIT_RE = re.compile(r"[,.!?;\n]+")
 
 
 def default_ask_detector(text: str) -> Optional[str]:
     """The thing to remember, or ``None``. A heuristic, not a model call.
 
-    An utterance ending in "?" is never an ask (a question, however phrased,
-    is not a command). Otherwise, EVERY clause (split on the punctuation in
-    :data:`_CLAUSE_SPLIT_RE`, with a leading "Gwen,"/"גוון," address stripped)
-    is checked in turn, and a clause counts only when — after that stripping —
-    it OPENS with one of :data:`_ASK_PATTERNS` and does not open with a
-    negation or question prefix. This is deliberately biased toward false
-    negatives over false positives: round 2 measured the earlier
-    contains-anywhere version firing on plain speech ABOUT remembering. See
-    the pattern tables above for exactly what is (and is not) covered, and
-    ``tests/test_session.py``'s ``TestDefaultAskDetector`` for the full
-    positive/negative table, including the three round-2 regressions.
+    An utterance containing "?" ANYWHERE — not only at its end — is never an
+    ask (round 3: "remember that the milk is gone? sorry, wrong chat" reads
+    as a question that happened to be followed by an aside, not a command,
+    even though "?" is nowhere near the end of the whole utterance).
+
+    Otherwise, only ONE clause is ever eligible: the FIRST one (split on the
+    punctuation in :data:`_CLAUSE_SPLIT_RE`) that is not consumed entirely by
+    stripping a leading "Gwen,"/"גוון," address. That means the trigger may
+    open the very first clause, or — only when the first clause is PURELY
+    that recognized address and nothing else — the second. Any clause after
+    that is never consulted (round 3: "don't you see, remember that we're
+    all in this together" used to fall through to its second clause and
+    match; it no longer does, because its first clause, "don't you see", is
+    real content, not an address, so it is the only clause checked and it
+    fails). The eligible clause counts only when it OPENS with one of
+    :data:`_ASK_PATTERNS` and does not open with a negation or question
+    prefix. This is deliberately biased toward false negatives over false
+    positives — see the pattern tables above for exactly what is (and is
+    not) covered, and ``tests/test_session.py``'s ``TestDefaultAskDetector``
+    for the full positive/negative table, including the round-2 and round-3
+    regressions (and the one round-3 case — reported speech — that is a
+    documented, accepted false positive rather than a bug).
 
     Never raises on ordinary text; :meth:`Session.add_user` additionally
     guards against a detector — including this one — raising on adversarial
@@ -414,21 +523,31 @@ def default_ask_detector(text: str) -> Optional[str]:
     """
     if not text:
         return None
-    if text.rstrip().endswith("?"):
+    if "?" in text:
         return None
+
+    eligible_clause: Optional[str] = None
     for raw_clause in _CLAUSE_SPLIT_RE.split(text):
         clause = _ADDRESS_PREFIX_RE.sub("", raw_clause).lstrip()
         if not clause:
+            # Purely the recognized address (or genuinely empty) - not
+            # itself eligible, and does not consume the "first clause"
+            # slot: the clause right after it gets to be first instead.
             continue
-        lowered = clause.lower()
-        if any(lowered.startswith(prefix) for prefix in _NEGATION_OR_QUESTION_PREFIXES):
-            continue
-        for pattern in _ASK_PATTERNS:
-            match = pattern.match(clause)
-            if match:
-                extracted = match.group(1).strip()
-                if extracted:
-                    return extracted
+        eligible_clause = clause
+        break
+    if eligible_clause is None:
+        return None
+
+    lowered = eligible_clause.lower()
+    if any(lowered.startswith(prefix) for prefix in _NEGATION_OR_QUESTION_PREFIXES):
+        return None
+    for pattern in _ASK_PATTERNS:
+        match = pattern.match(eligible_clause)
+        if match:
+            extracted = match.group(1).strip()
+            if extracted:
+                return extracted
     return None
 
 
@@ -597,6 +716,15 @@ class Session:
         )
 
         self._turns: deque[Turn] = deque()
+        #: Each turn's own estimated cost, in lockstep with ``self._turns``
+        #: (index i's cost belongs to turn i) — round 3: kept so eviction can
+        #: subtract in O(1) rather than re-running the injected counter over
+        #: the whole window.
+        self._costs: deque[int] = deque()
+        #: The running sum of ``self._costs`` — round 3's O(1) amortised
+        #: replacement for recomputing ``count_tokens(messages())`` on every
+        #: enforcement check. See the module docstring.
+        self._window_total = 0
         self._turns_seen = 0
         self._records_written = 0
         self._degradations: list[SessionDegradation] = []
@@ -648,8 +776,17 @@ class Session:
         return [{"role": t.role, "content": t.text} for t in self._turns]
 
     def window_tokens(self) -> int:
-        """The current window's estimated token cost, via the injected counter."""
-        return self._count_tokens(self.messages())
+        """The current window's estimated token cost.
+
+        The running total (:attr:`_window_total`), NOT a fresh call to the
+        injected counter over the whole window — see the module docstring's
+        round-3 "O(1) amortised" note. It is the SUM of each kept turn's own
+        individually-estimated cost, which can differ slightly from calling
+        the counter once over the whole window if that counter applies any
+        whole-list overhead of its own; :func:`embodiment.context.count_tokens_chars`
+        (the default) does not.
+        """
+        return self._window_total
 
     def __repr__(self) -> str:
         return (
@@ -676,6 +813,27 @@ class Session:
             return
         self._degradation_seen_codes.add(code)
         self._degradations.append(SessionDegradation(code, reason[:_MAX_REASON_LEN]))
+
+    def _sanitize_record_id(self, record_id: Any) -> Optional[str]:
+        """*record_id* if it matches :data:`_SAFE_RECORD_ID_RE`, else ``None``.
+
+        ``record_id`` comes from a duck-typed, untrusted ``memory`` result
+        (see the module docstring's "Privacy" section) and was previously
+        passed straight through onto :class:`AskOutcome`, which a caller may
+        log or serialize — a hostile fake's ``record_id`` landed arbitrary
+        text there (round 3 finding). A rejection is recorded (counted, via
+        :meth:`_record_degradation`, so it is not itself a silent drop) but
+        never carries the rejected value.
+        """
+        if isinstance(record_id, str) and _SAFE_RECORD_ID_RE.match(record_id):
+            return record_id
+        if record_id is not None:
+            self._record_degradation(
+                CODE_UNSAFE_RECORD_ID,
+                "memory.remember returned a record_id outside the expected safe "
+                "shape; discarded rather than passed through",
+            )
+        return None
 
     # -- the window -----------------------------------------------------------
 
@@ -715,15 +873,46 @@ class Session:
 
     def _append(self, role: str, text: str) -> None:
         self.transcript.write(role, text)
-        self._turns.append(Turn(role=role, text=text))
         self._turns_seen += 1
+        cost = self._turn_cost(role, text)
+        if cost <= 0:
+            # A zero-cost turn is transcripted and counted in turns_seen
+            # above, but never enters the window at all: there is nothing
+            # the budget check could ever evict it FOR, so keeping it would
+            # be pure unbounded accumulation with no corresponding eviction
+            # pressure (round 3: 20,000 add_user("") turns measured 24.4s
+            # inside one later add_assistant call under the old recompute-
+            # the-whole-window-per-pop design).
+            return
+        self._turns.append(Turn(role=role, text=text))
+        self._costs.append(cost)
+        self._window_total += cost
         self._enforce_budget()
 
+    def _turn_cost(self, role: str, text: str) -> int:
+        """One turn's own estimated cost, via the injected counter — round 3.
+
+        Applied to a ONE-message list holding just this turn, never the
+        whole window: this is what makes :attr:`_window_total` maintainable
+        incrementally in O(1) rather than recomputed over the whole window
+        on every append.
+        """
+        try:
+            return int(self._count_tokens([{"role": role, "content": text}]))
+        except (TypeError, ValueError):
+            return 0
+
     def _enforce_budget(self) -> None:
-        """Drop oldest turns until the window fits, or exactly one remains."""
-        while len(self._turns) > 1 and self.window_tokens() > self._budget_tokens:
+        """Drop oldest turns until the window fits, or exactly one remains.
+
+        O(1) amortised per turn (round 3): the eviction loop below compares
+        against :attr:`_window_total`, a running sum, rather than calling
+        the injected counter again — see the module docstring.
+        """
+        while len(self._turns) > 1 and self._window_total > self._budget_tokens:
             self._turns.popleft()
-        if len(self._turns) == 1 and self.window_tokens() > self._budget_tokens:
+            self._window_total -= self._costs.popleft()
+        if len(self._turns) == 1 and self._window_total > self._budget_tokens:
             self._record_degradation(
                 CODE_TURN_EXCEEDS_BUDGET,
                 "a single turn's estimated size already exceeds the configured "
@@ -760,7 +949,7 @@ class Session:
             return AskOutcome(detected=True, refused=True, record_id=None)
 
         ok = bool(getattr(result, "ok", False))
-        record_id = getattr(result, "record_id", None)
+        record_id = self._sanitize_record_id(getattr(result, "record_id", None))
         degradation = getattr(result, "degradation", None)
         code = getattr(degradation, "code", None)
 
@@ -772,7 +961,7 @@ class Session:
 
         self._record_degradation(
             CODE_ASK_REFUSED,
-            f"an explicit ask's write was refused ({code or 'unknown'})",
+            f"an explicit ask's write was refused ({_safe_memory_code(code)})",
         )
         return AskOutcome(detected=True, refused=True, record_id=record_id)
 
@@ -963,6 +1152,6 @@ class Session:
 
         self._record_degradation(
             CODE_SUMMARY_WRITE_REFUSED,
-            f"the end-of-session summary was refused ({code or 'unknown'})",
+            f"the end-of-session summary was refused ({_safe_memory_code(code)})",
         )
         return False, False, CODE_SUMMARY_WRITE_REFUSED
