@@ -31,7 +31,7 @@ main() {
   timeout_s=${DUAL_REVIEW_TIMEOUT:-1200}
   max_patch_lines=${DUAL_REVIEW_MAX_PATCH_LINES:-4000}
 
-  for bin in $(for r in ${DUAL_REVIEW_REVIEWERS:-qwen}; do echo "${r%27}"; done | sort -u); do
+  for bin in $(for r in ${DUAL_REVIEW_REVIEWERS:-qwen27}; do echo "${r%27}"; done | sort -u); do
     command -v "$bin" >/dev/null || { echo "error: reviewer '$bin' is not on PATH" >&2; echo "hint: install it, or fix PATH, before reviewing" >&2; exit 2; }
   done
 
@@ -104,11 +104,11 @@ VERDICT: approve | changes-requested
 PROMPT
 
   # qwen27: the same Qwen Code harness against the dense Qwen 3.8 27B (the `cortex`
-  # model), which the operator is bringing up as a second reviewer. Same family as
-  # `worker`, so less independent than a different lab's model - but a dense thinking
-  # model against a sparse one, behind a harness that has been reliable here.
-  # Override the model id with DUAL_REVIEW_QWEN27_MODEL. Enable with
-  # DUAL_REVIEW_REVIEWERS="qwen qwen27".
+  # model). THE DEFAULT AND SOLE REVIEWER since 2026-09-22, by the operator's word: on
+  # the first diff both read, the 27B found every defect the worker found plus three
+  # more, all reproduced. The worker is kept as an opt-in (DUAL_REVIEW_REVIEWERS="qwen").
+  # Override the model id with DUAL_REVIEW_QWEN27_MODEL. One review at a time: the
+  # models are single instances on this rig and concurrent reviews starve each other.
   call_qwen27() { ( cd "$wt" && timeout "$timeout_s" qwen -m "${DUAL_REVIEW_QWEN27_MODEL:-unsloth/Qwen3.8-27B-NVFP4}" --approval-mode plan "$prompt" </dev/null ); }
   run_qwen27() { run_reviewer qwen27; }
   call_qwen() { ( cd "$wt" && timeout "$timeout_s" qwen --approval-mode plan "$prompt" </dev/null ); }
@@ -142,7 +142,7 @@ PROMPT
   # associate model repeatedly spent its whole output budget reasoning about large
   # diffs and never wrote an answer. Pass DUAL_REVIEW_REVIEWERS="qwen pi" to bring it
   # back; the JSON extraction, retry and brevity steer all still apply to it.
-  local reviewers=${DUAL_REVIEW_REVIEWERS:-"qwen"}
+  local reviewers=${DUAL_REVIEW_REVIEWERS:-"qwen27"}
   start=$(date +%s)
   for r in $reviewers; do "run_$r" & done
   wait
