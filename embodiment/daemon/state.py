@@ -740,15 +740,24 @@ def _trim_to_low_water(combined: bytes, low_water_bytes: int) -> tuple[bytes, in
     lines = combined.split(b"\n")
     dropped_records = 0
     dropped_fragments = 0
-    while len(lines) > 2 and sum(len(item) + 1 for item in lines) > low_water_bytes:
-        popped = lines.pop(0)
+    # One pass, not lines × dropped: the old loop re-summed every remaining
+    # line for each line it popped, and ``pop(0)`` shifted the rest each
+    # time — 1.15 s for a 1 MB log, under the path lock (finding 11). A
+    # running total decremented per dropped line and a start index make
+    # the cost linear in the log; the slice at the end is one copy.
+    remaining = sum(len(item) + 1 for item in lines)
+    start = 0
+    while len(lines) - start > 2 and remaining > low_water_bytes:
+        popped = lines[start]
+        start += 1
+        remaining -= len(popped) + 1
         try:
             json.loads(popped)
         except json.JSONDecodeError:
             dropped_fragments += 1
         else:
             dropped_records += 1
-    return b"\n".join(lines), dropped_records, dropped_fragments
+    return b"\n".join(lines[start:]), dropped_records, dropped_fragments
 
 
 def _bounded_rewrite_append(

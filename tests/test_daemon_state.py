@@ -88,6 +88,7 @@ import os
 import stat
 import tempfile
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -1687,6 +1688,46 @@ class TestUnreadableTailIsTreatedAsDirty:
         finally:
             os.chmod(path, 0o600)
         assert result is False
+
+
+# ── review finding 11: the trim is linear, not lines × dropped ─────────────
+
+
+class TestTheTrimIsLinearInTheLog:
+    def test_trimming_fifteen_thousand_lines_is_fast(self) -> None:
+        """The old loop re-summed every remaining line per popped line —
+        O(lines × dropped) under the path lock: 1.15 s for a 1 MB log on the
+        rig, 2.5 s for this 1.2 MB input here (15k lines trimmed to 5%).
+        A running total decremented per dropped line makes it one pass;
+        measured at 15 ms after the change. The bound is ~16× that so a
+        loaded parallel run does not flake, and 100× below the old cost.
+        """
+        lines = [json.dumps({"event": "e", "seq": i, "pad": "x" * 40}) for i in range(15_000)]
+        combined = ("\n".join(lines) + "\n").encode("utf-8")
+        low_water = len(combined) // 20
+
+        started = time.perf_counter()
+        trimmed, dropped_records, dropped_fragments = state_mod._trim_to_low_water(
+            combined, low_water
+        )
+        elapsed = time.perf_counter() - started
+
+        assert elapsed < 0.25, f"trim took {elapsed:.3f}s"
+        assert len(trimmed) <= low_water
+        assert dropped_fragments == 0
+        assert dropped_records == 15_000 - trimmed.count(b"\n")
+        # The newest lines survive, oldest are gone, and the file stays valid JSONL.
+        assert trimmed.endswith(b"\n")
+        assert json.loads(trimmed.splitlines()[-1])["seq"] == 14_999
+        assert json.loads(trimmed.splitlines()[0])["seq"] == dropped_records
+
+    def test_the_trim_result_is_byte_identical_to_the_old_algorithm(self) -> None:
+        """Same output as a line-by-line re-sum on a small mixed input."""
+        combined = b'{"a": 1}\ntorn\n{"b": 2}\n{"c": 3}\n{"d": 4}\n'
+        low_water = len(b'{"c": 3}\n{"d": 4}\n') + 2
+        trimmed, records, fragments = state_mod._trim_to_low_water(combined, low_water)
+        assert trimmed == b'{"c": 3}\n{"d": 4}\n'
+        assert (records, fragments) == (2, 1)
 
 
 # ── round 6, fix 4: a trimmed torn fragment is not an evicted record ───────
