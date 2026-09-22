@@ -35,8 +35,12 @@ from embodiment.audio.host import (
     DEGRADED_OPEN,
     DEGRADED_PIPEWIRE_UNAVAILABLE,
     DEGRADED_PLAYBACK_OVERFLOW,
+    DEGRADED_PLAYBACK_QUIET,
     DEGRADED_WRITE_FAILED,
+    PLAYBACK_VOLUME_FLOOR,
+    PLAYER_LATENCY_MS,
     HostEndpoint,
+    _build_playback_argv,
     _select_channel,
 )
 
@@ -259,6 +263,10 @@ def _make_popen(
     sink_path: Path | None = None,
     fail_binaries: frozenset[str] = frozenset(),
     pw_state: FakePwDumpState | None = None,
+    wpctl_output: str | None = None,
+    wpctl_fail: bool = False,
+    wpctl_argv: list[list[str]] | None = None,
+    playback_argv: list[list[str]] | None = None,
 ):
     """Build a `popen` callable HostEndpoint can use instead of subprocess.Popen.
 
@@ -269,8 +277,16 @@ def _make_popen(
     substituted. `pw-dump` is answered from *pw_state* (a fresh, default
     "everything resolves to the array" state when not given), also via a
     real child that just prints the fixture JSON — never a mock.
+
+    Round 8: `wpctl` is answered from *wpctl_output* (defaults to a loud,
+    unmuted "Volume: 1.00\\n" so no EXISTING pipewire test starts seeing a
+    surprise quiet-degradation event); *wpctl_fail* makes the fake binary
+    itself unresolvable/erroring. *wpctl_argv*/*playback_argv*, when given,
+    collect every argv this fake popen was called with for that binary, so a
+    test can assert on the flags HostEndpoint actually built.
     """
     state = pw_state if pw_state is not None else FakePwDumpState()
+    volume_text = "Volume: 1.00\n" if wpctl_output is None else wpctl_output
 
     def popen(argv, **kwargs):
         binary = argv[0]
@@ -283,11 +299,22 @@ def _make_popen(
             return subprocess.Popen(  # nosec B603 - fixed argv, test-only
                 [sys.executable, "-c", script], **kwargs
             )
+        if binary == "wpctl":
+            if wpctl_argv is not None:
+                wpctl_argv.append(list(argv))
+            if wpctl_fail:
+                raise OSError("fake: wpctl not actually runnable")
+            script = f"import sys; sys.stdout.write({volume_text!r})"
+            return subprocess.Popen(  # nosec B603 - fixed argv, test-only
+                [sys.executable, "-c", script], **kwargs
+            )
         if binary in fail_binaries:
             raise OSError(f"fake: {binary} not actually runnable")
         if binary in CAPTURE_BINARIES:
             cmd = [sys.executable, "-c", capture_script]
         elif binary in PLAYBACK_BINARIES:
+            if playback_argv is not None:
+                playback_argv.append(list(argv))
             cmd = [sys.executable, "-c", playback_script]
             if sink_path is not None:
                 cmd.append(str(sink_path))
@@ -557,6 +584,153 @@ def test_round7_split_device_sink_and_source_different_devices_is_unresolved():
         popen=_make_popen(pw_state=SplitState()),
     )
     assert endpoint.status()["degradation"]["code"] == DEGRADED_DEVICE_UNRESOLVED
+    endpoint.close(2.0)
+
+
+# ---------------------------------------------------------------------------
+# round 8: pipewire sink volume, read (never set) via wpctl
+# ---------------------------------------------------------------------------
+
+
+def test_round8_quiet_sink_volume_is_reported_and_recorded():
+    """0.41 (the operator's own measured reading) -> degradation + the value."""
+    endpoint = HostEndpoint(
+        which=_fake_which({"pw-record", "pw-play", "arecord", "aplay"}),
+        popen=_make_popen(wpctl_output="Volume: 0.41\n"),
+    )
+    status = endpoint.status()
+    assert status["playback_volume"] == 0.41
+    assert status["playback_muted_by_system"] is False
+    assert status["playback_quiet_count"] == 1
+    quiet = [e for e in endpoint.events if e.get("code") == DEGRADED_PLAYBACK_QUIET]
+    assert len(quiet) == 1
+    assert quiet[0]["direction"] == "out"
+    endpoint.close(2.0)
+
+
+def test_round8_loud_sink_volume_is_reported_with_no_degradation():
+    """1.0 -> no degradation."""
+    endpoint = HostEndpoint(
+        which=_fake_which({"pw-record", "pw-play", "arecord", "aplay"}),
+        popen=_make_popen(wpctl_output="Volume: 1.00\n"),
+    )
+    status = endpoint.status()
+    assert status["playback_volume"] == 1.00
+    assert status["playback_muted_by_system"] is False
+    assert status["playback_quiet_count"] == 0
+    assert [e for e in endpoint.events if e.get("code") == DEGRADED_PLAYBACK_QUIET] == []
+    endpoint.close(2.0)
+
+
+def test_round8_volume_at_the_floor_boundary_is_not_quiet_but_below_it_is():
+    at_floor = HostEndpoint(
+        which=_fake_which({"pw-record", "pw-play", "arecord", "aplay"}),
+        popen=_make_popen(wpctl_output=f"Volume: {PLAYBACK_VOLUME_FLOOR:.2f}\n"),
+    )
+    assert at_floor.status()["playback_quiet_count"] == 0
+    at_floor.close(1.0)
+
+    below_floor = HostEndpoint(
+        which=_fake_which({"pw-record", "pw-play", "arecord", "aplay"}),
+        popen=_make_popen(wpctl_output=f"Volume: {PLAYBACK_VOLUME_FLOOR - 0.01:.2f}\n"),
+    )
+    assert below_floor.status()["playback_quiet_count"] == 1
+    below_floor.close(1.0)
+
+
+def test_round8_system_muted_sink_is_flagged_even_when_loud():
+    """ "[MUTED]" -> flag (and a degradation: a muted sink is inaudible
+    regardless of its stored volume number)."""
+    endpoint = HostEndpoint(
+        which=_fake_which({"pw-record", "pw-play", "arecord", "aplay"}),
+        popen=_make_popen(wpctl_output="Volume: 1.00 [MUTED]\n"),
+    )
+    status = endpoint.status()
+    assert status["playback_volume"] == 1.00
+    assert status["playback_muted_by_system"] is True
+    assert status["playback_quiet_count"] == 1
+    endpoint.close(2.0)
+
+
+def test_round8_unparsable_wpctl_output_is_none_and_counted():
+    """garbage -> None + counter, never raises."""
+    endpoint = HostEndpoint(
+        which=_fake_which({"pw-record", "pw-play", "arecord", "aplay"}),
+        popen=_make_popen(wpctl_output="not even close to the expected shape\n"),
+    )
+    status = endpoint.status()
+    assert status["playback_volume"] is None
+    assert status["playback_muted_by_system"] is None
+    assert status["playback_volume_unparsable_count"] == 1
+    assert status["playback_quiet_count"] == 0  # unmeasurable is not the same as quiet
+    endpoint.close(2.0)
+
+
+def test_round8_wpctl_binary_missing_is_none_and_counted_never_raises():
+    endpoint = HostEndpoint(
+        which=_fake_which({"pw-record", "pw-play", "arecord", "aplay"}),
+        popen=_make_popen(wpctl_fail=True),
+    )
+    status = endpoint.status()
+    assert status["playback_volume"] is None
+    assert status["playback_volume_unparsable_count"] == 1
+    endpoint.close(2.0)
+
+
+def test_round8_no_wpctl_read_on_the_alsa_backend():
+    """The alsa backend has no wpctl equivalent wired up this round — stays
+    an honest None rather than a half-implemented amixer guess."""
+    endpoint = HostEndpoint(which=_fake_which({"arecord", "aplay"}), popen=_make_popen())
+    status = endpoint.status()
+    assert status["playback_volume"] is None
+    assert status["playback_muted_by_system"] is None
+    endpoint.close(1.0)
+
+
+def test_round8_wpctl_is_queried_against_the_resolved_sink_id():
+    calls: list[list[str]] = []
+    endpoint = HostEndpoint(
+        which=_fake_which({"pw-record", "pw-play", "arecord", "aplay"}),
+        popen=_make_popen(wpctl_output="Volume: 0.41\n", wpctl_argv=calls),
+    )
+    assert len(calls) == 1
+    assert calls[0][:2] == ["wpctl", "get-volume"]
+    assert calls[0][2] == str(PW_SINK_ID)
+    endpoint.close(1.0)
+
+
+# ---------------------------------------------------------------------------
+# round 8 addendum: the player's own buffer, requested explicitly
+# ---------------------------------------------------------------------------
+
+
+def test_round8_addendum_pipewire_playback_argv_carries_the_latency_flag():
+    argv = _build_playback_argv("pipewire", "the-sink-node", 24000, 1)
+    assert "--latency" in argv
+    assert argv[argv.index("--latency") + 1] == f"{PLAYER_LATENCY_MS}ms"
+
+
+def test_round8_addendum_alsa_playback_argv_carries_the_buffer_time_flag():
+    argv = _build_playback_argv("alsa", "1", 24000, 1)
+    assert "--buffer-time" in argv
+    assert argv[argv.index("--buffer-time") + 1] == str(PLAYER_LATENCY_MS * 1000)
+
+
+def test_round8_addendum_playback_latency_ms_is_exposed_on_status():
+    endpoint = HostEndpoint(which=_fake_which({"arecord", "aplay"}), popen=_make_popen())
+    assert endpoint.status()["playback_latency_ms"] == PLAYER_LATENCY_MS
+    endpoint.close(1.0)
+
+
+def test_round8_addendum_actual_playback_spawn_uses_the_latency_flag():
+    calls: list[list[str]] = []
+    endpoint = HostEndpoint(
+        which=_fake_which({"pw-record", "pw-play", "arecord", "aplay"}),
+        popen=_make_popen(playback_argv=calls),
+    )
+    endpoint.play(_silence_frame(480))
+    _wait_until(lambda: len(calls) >= 1)
+    assert "--latency" in calls[0]
     endpoint.close(2.0)
 
 

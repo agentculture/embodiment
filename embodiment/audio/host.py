@@ -109,6 +109,65 @@ the array. This module now:
    that becomes a construction-time fault. This module never guesses at an
    unverifiable pipewire target.
 
+Round 8 — a stream can be correctly routed and still be too quiet to hear
+--------------------------------------------------------------------------
+The operator's own ears, with Gwen live on the array: her replies were "very
+very silent." The stream WAS correctly routed (round 7's own fix held) — the
+pipewire SINK itself was sitting at volume 0.41 while the unrelated HDMI sink
+sat at 0.97. Nothing in ``status()`` said so: a presence that speaks at 41%
+looks attentive and is not (C3 — degradation must be observable to the host).
+Cited, not imported: ``shabbos-goy``'s ``audio/pipewire.py`` already reads
+(and, there, also owns) a sink's volume through ``wpctl`` against this same
+hardware. This module only ever READS it — changing the system volume is the
+operator's mixer, not this endpoint's job; a later, explicit config knob may
+act on what is read here.
+
+After the pipewire sink is resolved (:meth:`HostEndpoint._resolve_pipewire_targets`),
+:meth:`HostEndpoint._run_wpctl_get_volume` runs ``wpctl get-volume <sink id>``
+(a fixed argv, :data:`_WPCTL_TIMEOUT_S` bound, same discipline as
+:meth:`HostEndpoint._run_pw_dump`) and parses its one line of output
+(``"Volume: 0.41"``, optionally followed by ``"[MUTED]"``) with
+:data:`_WPCTL_VOLUME_RE`. Every failure path — the binary missing, a timeout,
+a non-zero exit, or output that does not match the expected shape — is
+counted (never silently swallowed) and reports ``(None, None)``, never
+raises. The result is exposed as ``status()['playback_volume']`` (a float, or
+``None`` when it could not be read) and ``status()['playback_muted_by_system']``
+(a bool, or ``None``). When the volume is below the named floor
+(:data:`PLAYBACK_VOLUME_FLOOR`, 0.7) or the sink reports itself system-muted,
+this module records ONE ``degraded`` event under
+:data:`DEGRADED_PLAYBACK_QUIET` — today that means once per construction-time
+pipewire-target resolution, since :meth:`HostEndpoint.attach` does not
+currently retrigger resolution; "once per attach" and "once per resolution"
+are the same event today and will only diverge if a future round makes
+``attach()`` re-resolve.
+
+The ``alsa`` backend has no equivalent step: ``amixer -c <card> sget``
+parsing was explicitly left out of this round's scope, so
+``playback_volume``/``playback_muted_by_system`` are always ``None`` on that
+backend rather than a half-implemented guess.
+
+Round 8 addendum — barge-in "isn't perfect": pw-play's own 100 ms buffer
+--------------------------------------------------------------------------
+The operator reported Gwen sounding briefly after a barge-in. Measured
+(``pw-play --help``, ``pw-dump``'s ``node.latency``): pw-play defaults to a
+100 ms internal buffer, on top of this module's own :data:`_PACE_LEAD_S`
+(previously 100 ms), on top of the server VAD's own onset (~32-100 ms, not
+this module's). Two changes, both requesting less buffering rather than
+detecting an actual underrun (this module still cannot see one — see below):
+:data:`PLAYER_LATENCY_MS` (40 ms) is now passed explicitly to the player
+(``pw-play --latency``/``aplay --buffer-time``, see :func:`_build_playback_argv`),
+and :data:`_PACE_LEAD_S` is lowered to 60 ms. Exposed as
+``status()['playback_latency_ms']``. This module still cannot observe an
+actual underrun directly — ``pw-play`` prints nothing on one — so an xrun
+would only ever surface here as :data:`DEGRADED_WRITE_FAILED`/EPIPE, same as
+any other dead-player fault; if a future round adds real xrun detection, tune
+:data:`PLAYER_LATENCY_MS` back up rather than trusting silence as evidence of
+none. **Not yet measured against real hardware** — the coordinator's own
+before/after probe (play a tone, call `stop_playback()` mid-reply, time until
+the array's own capture RMS drops back to quiet) is explicitly deferred until
+the coordinator gives the word; only the argv/constant change and its unit
+test are in this round.
+
 No voice, never a raise
 ------------------------
 - :data:`DEGRADED_NO_BACKEND` — neither ``pw-record``/``pw-play`` nor
@@ -142,9 +201,12 @@ No voice, never a raise
   resolved and asked for. See the round 7 section below.
 - :data:`DEGRADED_PIPEWIRE_UNAVAILABLE` — round 7: ``pw-dump`` is missing or
   unparsable, so no pipewire target could be verified.
+- :data:`DEGRADED_PLAYBACK_QUIET` — round 8: the resolved pipewire sink is
+  below :data:`PLAYBACK_VOLUME_FLOOR` or system-muted, read via ``wpctl``,
+  never changed by this module. See the round 8 section above.
 
-All seven never raise. The first two, and any pipewire target-resolution
-fault (round 7), are checked once, at construction.
+All eight never raise. The first two, and any pipewire target-resolution
+fault (round 7) or volume read (round 8), are checked once, at construction.
 
 Playback still buffers the WHOLE reply (round 2 finding 1, unchanged)
 --------------------------------------------------------------------------
@@ -244,6 +306,7 @@ speculative spawn); no audio is ever written to disk.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess  # nosec B404 - fixed argv, shell=False, no user input reaches argv
 import threading
@@ -270,11 +333,14 @@ __all__ = [
     "DEGRADED_PLAYBACK_OVERFLOW",
     "DEGRADED_DEVICE_MISMATCH",
     "DEGRADED_PIPEWIRE_UNAVAILABLE",
+    "DEGRADED_PLAYBACK_QUIET",
     "CAPTURE_RATE_HZ",
     "CAPTURE_CHANNELS",
     "CAPTURE_CHANNEL_INDEX",
     "PLAYBACK_RATE_HZ",
     "PLAYBACK_CHANNELS",
+    "PLAYBACK_VOLUME_FLOOR",
+    "PLAYER_LATENCY_MS",
     "HostEndpoint",
 ]
 
@@ -360,9 +426,26 @@ _WRITE_SLICE_MS = 20
 #: gap — the failure mode a lead protects against), small enough that a
 #: barge-in's kill only has to discard/lose about this much already-written-
 #: but-not-yet-sounding audio, keeping `stop_playback()` well under the
-#: 200 ms barge-in bound the voice works to. 100 ms is documented,
-#: unmeasured overshoot on a real barge-in — see the module docstring.
-_PACE_LEAD_S = 0.1
+#: 200 ms barge-in bound the voice works to. Round 8 addendum: the operator
+#: measured Gwen sounding briefly after a barge-in — pw-play's OWN default
+#: node latency (100 ms) plus this 100 ms pacing lead plus the server VAD's
+#: own onset (~32-100 ms, not this module's to shrink) summed to ~200 ms of
+#: audible overshoot. Lowered to 60 ms here, alongside
+#: :data:`PLAYER_LATENCY_MS` shrinking the player's own buffer — still
+#: documented, still unmeasured on a real barge-in until the coordinator's
+#: probe runs (see the module docstring's round 8 addendum).
+_PACE_LEAD_S = 0.06
+
+#: Round 8 addendum — the player's OWN internal buffer, requested explicitly
+#: rather than left at pw-play's 100 ms default. The array's sink runs a
+#: 1024/48000 quantum, ~21 ms; 40 ms leaves roughly two quanta of headroom
+#: against an underrun while roughly halving the worst-case barge-in
+#: overshoot pw-play's default contributed. Passed to pw-play as
+#: ``--latency <PLAYER_LATENCY_MS>ms``; the alsa backend's closest equivalent
+#: is ``aplay --buffer-time=<PLAYER_LATENCY_MS * 1000>`` (aplay's
+#: ``--buffer-time`` is in MICROSECONDS, not ms — the conversion happens once,
+#: here, never re-derived at each call site).
+PLAYER_LATENCY_MS = 40
 
 #: How long stop_playback() waits for SIGKILL to land before giving up and
 #: reporting the process as not-confirmed-dead (round 5). Bounds
@@ -395,6 +478,30 @@ _PW_DUMP_TIMEOUT_S = 5.0
 #: genuine mismatch rather than a race.
 _PW_VERIFY_TOTAL_S = 0.3
 _PW_VERIFY_POLL_S = 0.05
+
+#: Round 8 — the operator's ears found Gwen "very very silent": the array's
+#: pipewire SINK sat at volume 0.41 while HDMI sat at 0.97, and nothing in
+#: `status()` said so. A presence that speaks at 41% looks attentive and is
+#: not (C3). Cited from ``shabbos-goy``'s ``audio/pipewire.py`` ("capture,
+#: playback, own volume") — cite, don't import: that module owns its volume
+#: through `wpctl`; this one only ever READS it. Below this floor, or when
+#: the sink reports itself system-muted, this module records
+#: `DEGRADED_PLAYBACK_QUIET` — it never changes the volume itself; that stays
+#: the operator's mixer (a later, explicit config knob may act on it).
+PLAYBACK_VOLUME_FLOOR = 0.7
+#: The pipewire sink this module resolved is quiet or system-muted — read via
+#: `wpctl get-volume`, recorded once per attach (mapped today to the single
+#: construction-time pipewire-target resolution, since `attach()` itself does
+#: not currently retrigger resolution).
+DEGRADED_PLAYBACK_QUIET = "audio-host-playback-quiet"
+#: `wpctl get-volume` is a local IPC query like `pw-dump`; the same generous,
+#: bounded budget applies.
+_WPCTL_TIMEOUT_S = 5.0
+
+#: Round 8's "Volume: 0.41" / "Volume: 1.00 [MUTED]" line, tolerant of any
+#: amount of internal whitespace and independent of the MUTED suffix's
+#: presence.
+_WPCTL_VOLUME_RE = re.compile(r"Volume:\s*([0-9]*\.?[0-9]+)")
 
 
 def _default_which(name: str) -> str | None:
@@ -477,6 +584,13 @@ def _build_playback_argv(backend: str, device: object, rate: int, channels: int)
     """Cited from ``lobes-cli/scripts/realtime-he-accept.py``'s ``build_playback_argv``.
 
     Round 7: same node-name-not-card-index rule as :func:`_build_capture_argv`.
+    Round 8 addendum: requests :data:`PLAYER_LATENCY_MS` explicitly rather
+    than leaving pw-play at its own 100 ms default — see that constant's
+    docstring. ``aplay``'s closest equivalent is ``--buffer-time``, which
+    aplay documents in MICROSECONDS; if a future alsa-utils build ever
+    rejects the flag, that is a construction-time surprise this module has
+    not yet needed to degrade around, since ``--buffer-time`` has shipped in
+    alsa-utils for well over a decade.
     """
     if backend == "alsa":
         target = f"plughw:{device},0" if device is not None else "default"
@@ -493,11 +607,23 @@ def _build_playback_argv(backend: str, device: object, rate: int, channels: int)
             "-t",
             "raw",
             "-q",
+            "--buffer-time",
+            str(PLAYER_LATENCY_MS * 1000),
         ]
     argv = ["pw-play"]
     if device is not None:
         argv += ["--target", str(device)]
-    argv += ["--rate", str(rate), "--channels", str(channels), "--format", "s16", "-"]
+    argv += [
+        "--rate",
+        str(rate),
+        "--channels",
+        str(channels),
+        "--format",
+        "s16",
+        "--latency",
+        f"{PLAYER_LATENCY_MS}ms",
+        "-",
+    ]
     return argv
 
 
@@ -765,6 +891,14 @@ class HostEndpoint:
         self._capture_target_verified: bool | None = None
         self._playback_target_mismatch_count = 0
         self._capture_target_mismatch_count = 0
+
+        # Round 8: the resolved sink's own volume, read (never set) via
+        # `wpctl`. None until a pipewire sink is resolved and successfully
+        # queried; stays None forever on the alsa backend.
+        self._playback_volume: float | None = None
+        self._playback_muted_by_system: bool | None = None
+        self._playback_volume_unparsable_count = 0
+        self._playback_quiet_count = 0
 
         self._backend = backend or _select_backend(self._which)
         if self._backend is None:
@@ -1371,6 +1505,92 @@ class HostEndpoint:
         self._pw_source_node_id = source.get("id")
         self._pw_source_node_name = source.get("name")
 
+        # Round 8: the sink can be correctly resolved AND too quiet to hear —
+        # a routing fix alone does not prove the reply was audible. Read-only,
+        # once per resolution (today the only "attach" this module has).
+        self._check_playback_volume()
+
+    def _run_wpctl_get_volume(self, sink_id: object) -> "tuple[float | None, bool | None]":
+        """``wpctl get-volume <sink_id>``, parsed. ``(None, None)`` on ANY failure.
+
+        Round 8. Cited, not imported: ``shabbos-goy``'s ``audio/pipewire.py``
+        already reads a sink's volume through ``wpctl`` against this same
+        hardware. This module never writes it — see the module docstring's
+        round 8 section. Missing binary, a timeout, a non-zero exit, or output
+        that does not match ``"Volume: <float>"`` all degrade to
+        ``(None, None)`` uniformly and are counted
+        (``self._playback_volume_unparsable_count``), never raised.
+        """
+        try:
+            proc = self._popen(
+                ["wpctl", "get-volume", str(sink_id)],
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+            )
+        except OSError:
+            with self._counter_lock:
+                self._playback_volume_unparsable_count += 1
+            return None, None
+        try:
+            out, _err = proc.communicate(timeout=_WPCTL_TIMEOUT_S)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            try:
+                proc.communicate(timeout=_WPCTL_TIMEOUT_S)
+            except Exception:
+                # Cleanup-after-kill: SIGKILL cannot be ignored, so this is a
+                # wait for the OS to reap an already-doomed process, not a
+                # second fault. Still recorded (C3), not a bare `pass`.
+                with self._counter_lock:
+                    self._playback_volume_unparsable_count += 1
+            with self._counter_lock:
+                self._playback_volume_unparsable_count += 1
+            return None, None
+        except Exception:
+            with self._counter_lock:
+                self._playback_volume_unparsable_count += 1
+            return None, None
+        if proc.returncode != 0:
+            with self._counter_lock:
+                self._playback_volume_unparsable_count += 1
+            return None, None
+        text = out.decode("utf-8", "replace")
+        match = _WPCTL_VOLUME_RE.search(text)
+        if match is None:
+            with self._counter_lock:
+                self._playback_volume_unparsable_count += 1
+            return None, None
+        try:
+            volume = float(match.group(1))
+        except ValueError:
+            with self._counter_lock:
+                self._playback_volume_unparsable_count += 1
+            return None, None
+        muted = "[MUTED]" in text
+        return volume, muted
+
+    def _check_playback_volume(self) -> None:
+        """Read the resolved sink's volume and record if it is too quiet (round 8).
+
+        Read-only: never changes the system volume, that stays the
+        operator's mixer. Recorded once per resolution — see the module
+        docstring's round 8 section for why that currently means "once per
+        attach."
+        """
+        if self._pw_sink_node_id is None:
+            return
+        volume, muted = self._run_wpctl_get_volume(self._pw_sink_node_id)
+        self._playback_volume = volume
+        self._playback_muted_by_system = muted
+        quiet = (volume is not None and volume < PLAYBACK_VOLUME_FLOOR) or bool(muted)
+        if quiet:
+            with self._counter_lock:
+                self._playback_quiet_count += 1
+            self._record_event(
+                {"type": "degraded", "code": DEGRADED_PLAYBACK_QUIET, "direction": "out"}
+            )
+
     def _verify_pipewire_link(
         self, proc: "subprocess.Popen[bytes]", *, playback: bool
     ) -> "bool | None":
@@ -1549,6 +1769,8 @@ class HostEndpoint:
                 "output_degrade_attempts": self._output_degrade_attempts,
                 "playback_target_mismatch_count": self._playback_target_mismatch_count,
                 "capture_target_mismatch_count": self._capture_target_mismatch_count,
+                "playback_volume_unparsable_count": self._playback_volume_unparsable_count,
+                "playback_quiet_count": self._playback_quiet_count,
             }
         return {
             "attached": self._attached,
@@ -1563,6 +1785,9 @@ class HostEndpoint:
             "degradation_out": self._degradation_out.to_dict() if self._degradation_out else None,
             "playback_target_verified": self._playback_target_verified,
             "capture_target_verified": self._capture_target_verified,
+            "playback_volume": self._playback_volume,
+            "playback_muted_by_system": self._playback_muted_by_system,
+            "playback_latency_ms": PLAYER_LATENCY_MS,
             "close_report": self._last_close_report.to_dict() if self._last_close_report else None,
             **counters,
         }
