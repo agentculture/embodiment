@@ -260,3 +260,47 @@ describe("buildAppendEvent sanity (this wrapper relays exactly this shape)", () 
     expect(typeof event.audio).toBe("string");
   });
 });
+
+describe("BrowserEar attack surface", () => {
+  it("survives a secret containing NUL bytes, quotes, and a 10k-char length", () => {
+    const nasty = 'a"b\u0000c'.repeat(2000);
+    const { deps, socket } = makeDeps();
+    const ear = new BrowserEar({ wsUrl: "ws://x", secret: nasty }, fakeContext(), deps);
+    expect(() => {
+      ear.connect();
+      socket.open();
+    }).not.toThrow();
+    const parsed = JSON.parse(socket.sent[0]);
+    expect(parsed.secret).toBe(nasty);
+  });
+
+  it("survives 10000 inbound audio-delta frames without throwing or leaking unbounded state", () => {
+    const { deps, socket, enqueued } = makeDeps();
+    const ear = new BrowserEar({ wsUrl: "ws://x", secret: "s" }, fakeContext(), deps);
+    ear.connect();
+    ear.startPlayback();
+    socket.open();
+    for (let i = 0; i < 10000; i += 1) {
+      socket.onmessage?.({ data: JSON.stringify({ type: AUDIO_DELTA_EVENT_TYPE, audio: "AA" }) });
+    }
+    expect(enqueued.length).toBe(10000);
+    expect(ear.status().unparseableFramesDropped).toBe(0);
+  });
+
+  it("survives 10000 malformed inbound frames, counting every one without throwing", () => {
+    const { deps, socket } = makeDeps();
+    const ear = new BrowserEar({ wsUrl: "ws://x", secret: "s" }, fakeContext(), deps);
+    ear.connect();
+    socket.open();
+    for (let i = 0; i < 10000; i += 1) {
+      socket.onmessage?.({ data: "{{{not json" });
+    }
+    expect(ear.status().unparseableFramesDropped).toBe(10000);
+  });
+
+  it("never throws when close() runs before connect() ever ran", () => {
+    const { deps } = makeDeps();
+    const ear = new BrowserEar({ wsUrl: "ws://x", secret: "s" }, fakeContext(), deps);
+    expect(() => ear.close()).not.toThrow();
+  });
+});
