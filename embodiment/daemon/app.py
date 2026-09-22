@@ -256,6 +256,15 @@ class AppConfig:
     memory_scope: str = "gwen"
     added_by: str = "gwen"
     session_summary_deadline: float = 5.0
+    #: Whether a browser/robot ear (:class:`~embodiment.audio.remote.RemoteEndpoint`)
+    #: is started by the daemon. **Always False in v1**, by the operator's
+    #: decision — the field exists so the dashboard has a stable contract to
+    #: read rather than a key that appears later (t18).
+    realtime_ear_enabled: bool = False
+    #: The URL such an ear would be reached on. ``None`` in v1, for the same
+    #: reason. Never carries a secret: the install secret goes in a header,
+    #: never in a URL (``embodiment.audio.remote``'s own rule).
+    realtime_ws_url: Optional[str] = None
     http_enabled: bool = True
     bind: str = "127.0.0.1"
     port: int = server_module.DEFAULT_PORT
@@ -807,7 +816,35 @@ class DaemonApp:
         return True
 
     def _attach_default_ear(self) -> None:
-        """The host ear, or a recorded :class:`NullEndpoint` when there is no device."""
+        """The host ear — degraded if there is no device — or a recorded stand-in.
+
+        Which one a host should expect, stated because the two look similar in
+        the ledger and are not the same fact:
+
+        * **No driver, no device, or a stream that will not open** (no
+          ``sounddevice`` on this box, no PortAudio, no microphone): the
+          factory still returns a :class:`~embodiment.audio.host.HostEndpoint`
+          and ``attach()`` degrades rather than raising. The ear is
+          ``host``, ``status()["ear"]["degraded"]`` is ``True``, and the
+          endpoint's own code (``audio-host-import-failed``,
+          ``audio-host-portaudio-missing``, ``audio-host-no-devices``,
+          ``audio-host-open-failed``) is in the ledger. This is deliberate: a
+          host ear that is present-but-deaf can be *recovered* without
+          restarting the daemon — install the driver or plug the device in,
+          then ``POST /api/voice/stop`` and ``/api/voice/start``, which builds
+          a fresh endpoint. A :class:`NullEndpoint` could not recover, because
+          nothing would ever build a real one again.
+        * **The factory itself failed or was never given** (it raised, or
+          returned ``None``): there is nothing to recover, so a
+          :class:`NullEndpoint` stands in under the ear name ``null`` with
+          :data:`APP_NO_ENDPOINT` recorded. The daemon still hears nothing and
+          still speaks into the void, which is the same behaviour by a
+          different route — hence one code path, not two.
+
+        Either way ``status()["ear"]`` names which (``kind``) and says it is
+        degraded, because "a healthy-looking ``status`` is not evidence that
+        Gwen heard anything" (``CLAUDE.md``).
+        """
         endpoint: Any = None
         if self._endpoint_factory is not None:
             try:
@@ -1331,8 +1368,19 @@ class DaemonApp:
         return {
             "running": self._started and not self._closed,
             "closed": self._closed,
+            # The browser-ear contract t18 reads. Fixed at False/None in v1 —
+            # this daemon starts no RemoteEndpoint — but present, so the web
+            # app branches on a value rather than on a missing key.
+            "realtime_ear_enabled": bool(self._config.realtime_ear_enabled),
+            "realtime_ws_url": self._config.realtime_ws_url or None,
             "ear": {
                 "active": self._ear_name,
+                "kind": (
+                    _safe_name(type(self._ear_endpoint).__name__)
+                    if self._ear_endpoint is not None
+                    else None
+                ),
+                "degraded": _endpoint_degraded(self._ear_endpoint),
                 "generation": self._generation,
                 "handovers": self._handovers,
                 "refusals": self._refusals,
@@ -1421,20 +1469,32 @@ def _probe(subject: Any) -> Optional[dict[str, Any]]:
 
 
 def _memory_status(memory: Any) -> dict[str, Any]:
-    """The store counters ``CLAUDE.md`` requires a host to be able to see."""
-    fields = (
+    """The store counters ``CLAUDE.md`` requires a host to be able to see.
+
+    ``store_root_is_symlink`` is a BOOL and the rest are counts, so the two
+    are coerced separately: reporting a planted symlink as the integer ``1``
+    (or, worse, as ``None`` because it failed an ``isinstance(int)`` check)
+    would be a tampered store reported as an ordinary one.
+    """
+    counters = (
         "store_permission_failures",
         "store_symlinks_skipped",
+        "store_non_files_skipped",
         "pending",
         "abandoned_dropped",
     )
     out: dict[str, Any] = {}
-    for name in fields:
+    for name in counters:
         try:
             value = getattr(memory, name, None)
         except Exception:  # noqa: BLE001 - a counter probe is not trusted either
             value = None
-        out[name] = value if isinstance(value, int) else None
+        out[name] = value if isinstance(value, int) and not isinstance(value, bool) else None
+    try:
+        flag = getattr(memory, "store_root_is_symlink", None)
+    except Exception:  # noqa: BLE001 - a probe that fails cannot clear the store
+        flag = None
+    out["store_root_is_symlink"] = flag if isinstance(flag, bool) else None
     try:
         out["scope"] = str(getattr(memory, "scope", ""))
         out["data_dir"] = str(getattr(memory, "data_dir", ""))
@@ -1442,6 +1502,17 @@ def _memory_status(memory: Any) -> dict[str, Any]:
         out["scope"] = out.get("scope", "")
         out["data_dir"] = ""
     return out
+
+
+def _endpoint_degraded(endpoint: Any) -> Optional[bool]:
+    """Whether the attached endpoint reports ANY degradation about itself."""
+    if endpoint is None:
+        return None
+    probed = _probe(endpoint) or {}
+    return any(
+        isinstance(probed.get(key), dict) and probed[key].get("code")
+        for key in ("degradation", "degradation_in", "degradation_out")
+    )
 
 
 def _semantic_available(memory: Any) -> bool:

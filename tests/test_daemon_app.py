@@ -339,21 +339,27 @@ class TestZeroClients:
         assert endpoint.played, "nothing was queued to the speaker"
 
 
-def _settle(app: DaemonApp, *, timeout: float = 3.0) -> None:
-    """Wait until the voice has finished pacing the last reply.
+def _settle(app: DaemonApp, *, timeout: float = 15.0) -> None:
+    """Wait until the daemon's own status stops moving.
 
-    The pace buffer drains on the voice's own thread, so ``status()`` keeps
-    moving for a fraction of a second after a turn. Settling first is what
-    makes the byte-identical comparison below a statement about clients rather
-    than about timing.
+    The voice paces the last reply on its own thread, so ``status()`` keeps
+    changing for a fraction of a second after a turn — and not monotonically:
+    the pace worker empties the buffer FIRST and feeds the feature extractor
+    AFTER, so "pending_pace_bytes == 0" alone is a window, not quiescence
+    (measured: that window flaked this test once in three runs under
+    ``-n auto``). Settling on two identical consecutive snapshots is what
+    makes the comparison below a statement about clients rather than timing.
     """
     deadline = time.monotonic() + timeout
+    previous: Optional[str] = None
     while time.monotonic() < deadline:
         app.pump()
-        voice = app.status().get("voice") or {}
-        if not voice.get("pending_pace_bytes"):
+        current = _status_without_clients(app)
+        if current == previous:
             return
-        time.sleep(0.02)
+        previous = current
+        time.sleep(0.05)
+    raise AssertionError("the daemon never settled")
 
 
 def _status_without_clients(app: DaemonApp) -> str:
@@ -544,6 +550,48 @@ class TestInjectedFailures:
         assert [e.data["text"] for e in h.events("reply")] == [REPLY]
         assert h.app.status()["ear"]["active"] is not None
 
+    def test_no_driver_leaves_a_HOST_ear_that_is_degraded_and_recoverable(
+        self, harness: Any
+    ) -> None:
+        """The case a host actually meets: sounddevice absent, HostEndpoint attached.
+
+        The real :class:`HostEndpoint` degrades at ``attach`` rather than
+        raising, so the ear is ``host`` and *deaf*, not ``null``. Pinned
+        because the two are easy to confuse in the ledger and only this one
+        can be recovered by re-attaching after the driver appears.
+        """
+        from embodiment.audio.host import DEGRADED_IMPORT, HostEndpoint
+
+        def no_driver() -> Any:
+            def importer() -> Any:
+                raise ImportError("No module named 'sounddevice'")
+
+            return HostEndpoint(sounddevice_importer=importer)
+
+        h = harness(endpoints=no_driver)
+        h.app.start()
+        status = h.app.status()
+        assert status["ear"]["active"] == "host"
+        assert status["ear"]["kind"] == "HostEndpoint"
+        assert status["ear"]["degraded"] is True
+        self._assert_degraded_and_alive(h, DEGRADED_IMPORT)
+        assert app_module.APP_NO_ENDPOINT not in h.ledger_codes()
+        assert h.app.run_turn(SPEECH).spoken == REPLY
+
+    def test_a_factory_that_fails_leaves_a_NULL_ear_instead(self, harness: Any) -> None:
+        """The other route: nothing to recover, so the stand-in is named as such."""
+
+        def no_factory() -> Any:
+            raise RuntimeError("PortAudio is not installed")
+
+        h = harness(endpoints=no_factory)
+        h.app.start()
+        status = h.app.status()
+        assert status["ear"]["active"] == "null"
+        assert status["ear"]["kind"] == "NullEndpoint"
+        assert status["ear"]["degraded"] is True
+        assert app_module.APP_NO_ENDPOINT in h.ledger_codes()
+
     def test_a_recall_timeout_degrades_and_the_turn_continues(self, harness: Any) -> None:
         def slow_recall(query: str, **kwargs: Any) -> Any:
             time.sleep(1.0)
@@ -731,11 +779,55 @@ class TestStatus:
         h.app.start()
         json.dumps(h.app.status(), ensure_ascii=False)
 
-    def test_status_carries_the_store_counters(self, harness: Any) -> None:
-        h = harness()
-        memory_status = h.app.status()["memory"]
-        assert "store_permission_failures" in memory_status
-        assert "store_symlinks_skipped" in memory_status
+    def test_status_carries_every_store_counter(self, harness: Any) -> None:
+        memory_status = harness().app.status()["memory"]
+        for name in (
+            "store_permission_failures",
+            "store_symlinks_skipped",
+            "store_non_files_skipped",
+        ):
+            assert memory_status[name] == 0, name
+        assert memory_status["store_root_is_symlink"] is False
+
+    def test_a_planted_store_symlink_is_reported_as_a_bool_not_a_count(self, harness: Any) -> None:
+        """The flag is a bool; coercing it to an int would hide a tampered store."""
+
+        class Tampered:
+            store_permission_failures = 2
+            store_symlinks_skipped = 1
+            store_non_files_skipped = 3
+            store_root_is_symlink = True
+            pending = 0
+            abandoned_dropped = 0
+            scope = "gwen"
+            data_dir = "/dev/null"
+            last_recall_mode = None
+
+            def close(self, deadline: float = 1.0) -> Any:
+                return SimpleNamespace(degradations=(), unconfirmed=())
+
+        memory_status = harness(memory=Tampered()).app.status()["memory"]
+        assert memory_status["store_root_is_symlink"] is True
+        assert memory_status["store_non_files_skipped"] == 3
+        assert memory_status["store_permission_failures"] == 2
+
+    def test_status_carries_the_browser_ear_contract(self, harness: Any) -> None:
+        """t18 reads these two; v1 starts no RemoteEndpoint, so they are fixed."""
+        status = harness().app.status()
+        assert status["realtime_ear_enabled"] is False
+        assert status["realtime_ws_url"] is None
+
+    def test_the_browser_ear_fields_follow_the_config_when_one_is_set(self, harness: Any) -> None:
+        h = harness(
+            config=AppConfig(
+                poll_interval_s=0.01,
+                realtime_ear_enabled=True,
+                realtime_ws_url="ws://127.0.0.1:8765",
+            )
+        )
+        status = h.app.status()
+        assert status["realtime_ear_enabled"] is True
+        assert status["realtime_ws_url"] == "ws://127.0.0.1:8765"
 
     def test_status_names_the_active_ear_and_the_client_count(self, harness: Any) -> None:
         h = harness()
@@ -963,6 +1055,41 @@ class TestProcessModel:
         factory, detail = lifecycle.resolve_target(lifecycle.DEFAULT_TARGET)
         assert detail is None, detail
         assert factory is app_module.main
+
+    def test_a_dashboard_that_cannot_bind_leaves_a_running_daemon(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Seen for real: port 8823 already taken, DashboardServer raised at __init__."""
+        monkeypatch.setenv("EMBODIMENT_STATE_DIR", str(tmp_path / "state"))
+
+        def refuse(**kwargs: Any) -> Any:
+            raise OSError(98, "Address already in use")
+
+        monkeypatch.setattr(app_module.server_module, "DashboardServer", refuse)
+        application = app_module.main()
+        try:
+            assert application._server is None
+            codes = [r.code for r in application._state.ledger.read_all()]
+            assert app_module.APP_BOOTSTRAP_DEGRADED in codes
+            assert isinstance(application.status(), dict)
+        finally:
+            application.close(deadline=2.0)
+
+    def test_a_server_that_will_not_start_is_recorded_not_fatal(self, harness: Any) -> None:
+        class RefusingServer:
+            def start(self) -> None:
+                raise OSError(98, "Address already in use")
+
+            def shutdown(self, deadline: float) -> None:
+                return None
+
+            def status(self) -> dict[str, Any]:
+                return {"bound": False}
+
+        h = harness(server=RefusingServer())
+        h.app.start()
+        assert app_module.APP_HTTP_UNAVAILABLE in h.ledger_codes()
+        assert h.app.status()["running"] is True
 
     def test_main_never_raises_when_the_environment_is_hostile(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
