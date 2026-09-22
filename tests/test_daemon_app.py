@@ -4557,3 +4557,104 @@ class TestLoopbackOrigins:
         assert not any(h.startswith("::") for h in hosts), hosts
         # Distinct entries; a browser would never send the unbracketed form.
         assert len(hosts) == len(set(hosts))
+
+
+# ── the public hostname reaches the guard (review finding 3) ──────────────────
+
+
+class TestPublicHostname:
+    """``GuardConfig.public_hostname`` had no env or flag, so the documented
+    "refuse a public Host until the RS256 verifier exists" path was dead code
+    and the README overclaimed it. Now it is configured, and only then applies.
+    """
+
+    HOSTNAME = "gwen.example.com"
+
+    def _guard_from_main(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Any:
+        monkeypatch.setenv("EMBODIMENT_STATE_DIR", str(tmp_path / "state"))
+        monkeypatch.setattr(app_module.server_module, "DashboardServer", _RecordingServer)
+        application = app_module.main()
+        return application, _RecordingServer.captured["guard"]
+
+    def test_a_request_for_the_public_host_is_refused_by_the_missing_verifier(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from embodiment.http import guard as guard_module
+
+        monkeypatch.setenv(app_module.ENV_PUBLIC_HOSTNAME, self.HOSTNAME)
+        application, guard = self._guard_from_main(tmp_path, monkeypatch)
+        try:
+            assert guard.public_hostname == self.HOSTNAME
+            secret = guard.config.install_secret
+            headers = {
+                "host": self.HOSTNAME,
+                "origin": f"https://{self.HOSTNAME}",
+                "authorization": f"Bearer {secret}",
+                guard_module.ACCESS_ASSERTION_HEADER: "not-a-real-jwt",
+            }
+            decision = guard.check("POST", "/api/control/mute", headers)
+            assert decision.allowed is False
+            assert decision.code == guard_module.ACCESS_VERIFIER_MISSING_CODE, decision.to_dict()
+
+            without = dict(headers)
+            del without[guard_module.ACCESS_ASSERTION_HEADER]
+            decision = guard.check("POST", "/api/control/mute", without)
+            assert decision.allowed is False
+            assert decision.code == guard_module.REFUSED_ACCESS_MISSING_CODE
+        finally:
+            application.close(deadline=2.0)
+
+    def test_loopback_is_never_asked_for_an_assertion(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(app_module.ENV_PUBLIC_HOSTNAME, self.HOSTNAME)
+        application, guard = self._guard_from_main(tmp_path, monkeypatch)
+        try:
+            secret = guard.config.install_secret
+            decision = guard.check(
+                "POST",
+                "/api/control/mute",
+                {
+                    "host": "127.0.0.1:8823",
+                    "origin": "http://127.0.0.1:8823",
+                    "authorization": f"Bearer {secret}",
+                },
+            )
+            assert decision.allowed is True, decision.to_dict()
+        finally:
+            application.close(deadline=2.0)
+
+    def test_unset_means_no_host_is_public(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.delenv(app_module.ENV_PUBLIC_HOSTNAME, raising=False)
+        application, guard = self._guard_from_main(tmp_path, monkeypatch)
+        try:
+            assert guard.public_hostname == ""
+            assert application._config.public_hostname is None
+            assert application.status()["http"]["public_hostname_configured"] is False
+        finally:
+            application.close(deadline=2.0)
+
+    def test_status_says_it_is_configured_without_naming_it(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv(app_module.ENV_PUBLIC_HOSTNAME, self.HOSTNAME)
+        application, _guard = self._guard_from_main(tmp_path, monkeypatch)
+        try:
+            status = application.status()
+            assert status["http"]["public_hostname_configured"] is True
+            assert self.HOSTNAME not in json.dumps(status), "the hostname leaked into status"
+        finally:
+            application.close(deadline=2.0)
+
+    def test_the_start_verb_hands_the_hostname_to_the_child(self) -> None:
+        from embodiment.cli import _build_parser
+        from embodiment.cli._commands import start as start_cmd
+
+        args = _build_parser().parse_args(["start", "--public-hostname", self.HOSTNAME])
+        env = start_cmd._http_env(args)
+        assert env[app_module.ENV_PUBLIC_HOSTNAME] == self.HOSTNAME
+
+        plain = _build_parser().parse_args(["start"])
+        assert app_module.ENV_PUBLIC_HOSTNAME not in start_cmd._http_env(plain)

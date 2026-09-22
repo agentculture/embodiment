@@ -32,8 +32,9 @@ value unmeasured. **Not yet:** tools beyond memory (the daemon binds exactly
 two, `remember` and `forget`; the registry is otherwise empty by design),
 vision, a face, phone voice (the phone is control + text), a robot relay
 (t14's inbound endpoint and t18's `BrowserEar` exist, unwired), Cloudflare
-Access verification (the guard refuses a public Host until an RS256
-dependency is approved), semantic recall (the embedder is down; recall is
+Access verification (the guard refuses the public Host — the one configured
+with `--public-hostname` / `EMBODIMENT_PUBLIC_HOSTNAME`; unset, no Host is
+public — until an RS256 dependency is approved), semantic recall (the embedder is down; recall is
 lexical, with an exact-substring fallback for Hebrew — deviation `d5`), and a
 measured value claim. `tests/test_release_docs.py` pins the boundary and the
 not-yet list against the README and the `explain` root.

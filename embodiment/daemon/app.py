@@ -205,6 +205,7 @@ __all__ = [
     "ENV_HTTP_BIND",
     "ENV_BIND_PUBLIC",
     "ENV_ALLOWED_HOSTS",
+    "ENV_PUBLIC_HOSTNAME",
     "APP_CLOSE_SHARE",
     "close_budget_for",
     "guard_host_of",
@@ -290,6 +291,13 @@ ENV_HTTP_BIND = "EMBODIMENT_HTTP_BIND"
 ENV_BIND_PUBLIC = "EMBODIMENT_BIND_PUBLIC"
 #: Comma-separated.
 ENV_ALLOWED_HOSTS = "EMBODIMENT_ALLOWED_HOSTS"
+#: The ONE hostname the guard treats as public: a request whose ``Host`` is
+#: this name must carry a Cloudflare Access assertion, and the shipped
+#: verifier refuses every one (``http-access-verifier-missing``). Unset, no
+#: Host is public and nothing is asked — which is what a default install is.
+#: This is how ``--public-hostname`` reaches :class:`GuardConfig`; before it
+#: existed the documented refusal was unreachable (review finding 3).
+ENV_PUBLIC_HOSTNAME = "EMBODIMENT_PUBLIC_HOSTNAME"
 
 #: The system prompt for the end-of-session summary. Hebrew, because the
 #: window it summarises is Hebrew, and short because the record is a memory
@@ -661,6 +669,11 @@ class AppConfig:
     #: name, for instance. Each is also accepted as an ``http://<host>``
     #: Origin, so the dashboard's own fetches pass the Origin check.
     allowed_hosts: tuple[str, ...] = ()
+    #: The public hostname, when the dashboard sits behind a Cloudflare
+    #: tunnel. ``None`` means no Host is public. Its Origin (both schemes) is
+    #: allow-listed so the dashboard's own POSTs reach the assertion check
+    #: and meet the DOCUMENTED refusal rather than ``http-refused-origin``.
+    public_hostname: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -3549,6 +3562,9 @@ def _http_status(server: Any, config: AppConfig) -> Optional[dict[str, Any]]:
         "configured_bind": config.bind,
         "bind_public": bool(config.bind_public),
         "allowed_hosts": len(config.allowed_hosts),
+        # Whether a Host is public at all — the name itself is not published,
+        # for the same reason the allow-list is a count.
+        "public_hostname_configured": bool(config.public_hostname),
         # True when the browser will withhold what the cookie rule needs —
         # see the module docstring's "Reaching the dashboard from another
         # device". Not a fault, and not something this daemon can fix from
@@ -3654,6 +3670,7 @@ def main() -> DaemonApp:
         bind=os.environ.get(ENV_HTTP_BIND) or AppConfig.bind,
         bind_public=_env_flag(os.environ.get(ENV_BIND_PUBLIC)),
         allowed_hosts=parse_allowed_hosts(os.environ.get(ENV_ALLOWED_HOSTS)),
+        public_hostname=(os.environ.get(ENV_PUBLIC_HOSTNAME) or "").strip().lower() or None,
     )
 
     data_dir = Path(state.dir) / "memory" if state.dir is not None else Path(".")
@@ -3730,9 +3747,14 @@ def main() -> DaemonApp:
                     # an Origin on every POST (finding 2), then the operator's.
                     allowed_origins=frozenset(
                         allowed_origins_for(
-                            (*loopback_origin_hosts(config.port), *config.allowed_hosts)
+                            (
+                                *loopback_origin_hosts(config.port),
+                                *config.allowed_hosts,
+                                *((config.public_hostname,) if config.public_hostname else ()),
+                            )
                         )
                     ),
+                    public_hostname=config.public_hostname,
                 ),
             ),
             bus=bus,
