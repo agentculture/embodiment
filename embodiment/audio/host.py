@@ -1873,34 +1873,59 @@ class HostEndpoint:
         """
         if self._backend != "pipewire":
             return None
-        expected_id = self._pw_sink_node_id if playback else self._pw_source_node_id
+        expected_id, media_class = self._expected_link(playback=playback)
         if expected_id is None:
             return None
-        media_class = _PW_STREAM_OUTPUT_CLASS if playback else _PW_STREAM_INPUT_CLASS
         deadline = time.monotonic() + _PW_VERIFY_TOTAL_S
         was_ambiguous = False
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
                 break
-            dump = self._run_pw_dump(timeout=min(remaining, _PW_DUMP_TIMEOUT_S))
-            if dump is not None:
-                stream, ambiguous = _pw_find_stream_node(dump, media_class, proc.pid)
-                was_ambiguous = was_ambiguous or ambiguous
-                if stream is not None:
-                    linked_id = _pw_link_target_id(dump, stream["id"], as_output=playback)
-                    if linked_id is not None:
-                        return linked_id == expected_id
+            linked_id, ambiguous = self._poll_stream_link(
+                media_class, proc.pid, playback=playback, timeout=remaining
+            )
+            was_ambiguous = was_ambiguous or ambiguous
+            if linked_id is not None:
+                return linked_id == expected_id
             if time.monotonic() >= deadline:
                 break
             time.sleep(_PW_VERIFY_POLL_S)
         if was_ambiguous:
-            with self._counter_lock:
-                if playback:
-                    self._playback_target_ambiguous_count += 1
-                else:
-                    self._capture_target_ambiguous_count += 1
+            self._count_target_ambiguous(playback=playback)
         return False
+
+    def _expected_link(self, *, playback: bool) -> "tuple[object | None, str]":
+        """The resolved node id the stream must link to (``None`` when target
+        resolution never completed) and the stream media class to look for,
+        by direction."""
+        if playback:
+            return self._pw_sink_node_id, _PW_STREAM_OUTPUT_CLASS
+        return self._pw_source_node_id, _PW_STREAM_INPUT_CLASS
+
+    def _poll_stream_link(
+        self, media_class: str, pid: int, *, playback: bool, timeout: float
+    ) -> "tuple[object | None, bool]":
+        """One ``pw-dump`` poll for :meth:`_verify_pipewire_link` —
+        ``(linked_target_id, ambiguous)``. The target is ``None`` when the
+        dump failed, our stream is not up yet, or it has no link yet; the
+        dump call is bounded by *timeout* (what is LEFT of the verify
+        budget), never the full :data:`_PW_DUMP_TIMEOUT_S`.
+        """
+        dump = self._run_pw_dump(timeout=min(timeout, _PW_DUMP_TIMEOUT_S))
+        if dump is None:
+            return None, False
+        stream, ambiguous = _pw_find_stream_node(dump, media_class, pid)
+        if stream is None:
+            return None, ambiguous
+        return _pw_link_target_id(dump, stream["id"], as_output=playback), ambiguous
+
+    def _count_target_ambiguous(self, *, playback: bool) -> None:
+        with self._counter_lock:
+            if playback:
+                self._playback_target_ambiguous_count += 1
+            else:
+                self._capture_target_ambiguous_count += 1
 
     def _start_writer(self) -> None:
         if self._writer_thread is not None:
