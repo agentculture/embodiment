@@ -9,13 +9,27 @@ writes nothing to disk itself.
 No ``pytest-asyncio`` in this repo's dev set (see ``tests/test_realtime_client.py``),
 so every async body runs under an explicit ``asyncio.run``.
 
+Round 2: authentication moved off the connect URL
+-----------------------------------------------------
+The coordinator corrected the brief after driving round-1's build
+(``8109e7b``) with a real client: a query-string secret lands in proxy
+access logs, browser history and ``Referer`` headers, so the handshake now
+carries no credential at all. The WebSocket handshake completes bare, and the
+FIRST JSON message on the socket must be ``{"type": "auth", "secret": ...}``
+— checked before any other message, audio included, is processed. Every test
+below that used to put the secret on the connect URL now sends it as that
+first message instead; ``TestAuthenticationGate`` and the secret-in-URL
+attack tests are new/rewritten for this round.
+
 Fixture provenance
 -------------------
 ``tests/fixtures/realtime/inbound_audio_append.jsonl`` is a synthetic,
 NEW (this task's own) fixture — distinct from the server->client fixtures
 task ``t6`` recorded under the same directory (that directory's README
 documents only those; this file documents its own, since only *new* files
-may be added there per this task's brief). Shaped exactly as
+may be added there per this task's brief). Its first line is the
+``{"type": "auth", ...}`` message every connection must send first (round 2);
+the rest is shaped exactly as
 ``embodiment.realtime.wire.encode_audio_append``/``encode_session_update``
 themselves produce (``{"type": ..., "audio": ...}`` /
 ``{"type": "session.update", "session": {"language": ...}}``) — a real
@@ -43,6 +57,7 @@ from embodiment.realtime import wire
 
 FIXTURES = Path(__file__).parent / "fixtures" / "realtime"
 MARKER_SECRET = "sk-planted-marker-7f3ab9-DO-NOT-LEAK"  # nosec B105 - test sentinel, not a secret
+DEFAULT_SECRET = "s3cr3t-test-only"  # nosec B105 - test sentinel, not a real secret
 
 
 def _run(coro: Any) -> Any:
@@ -54,13 +69,27 @@ def _load_fixture_lines() -> list[dict[str, Any]]:
     return [json.loads(line) for line in text.splitlines() if line.strip()]
 
 
-async def _connect(port: int, secret: str | None, *, timeout: float = 5.0) -> Any:
+async def _connect(port: int, *, timeout: float = 5.0) -> Any:
+    """A bare WebSocket connect. No secret anywhere on the URL — never has one."""
     from websockets.asyncio.client import connect as ws_connect
 
     url = f"ws://127.0.0.1:{port}/v1/realtime"
-    if secret is not None:
-        url += f"?secret={secret}"
     return await asyncio.wait_for(ws_connect(url, open_timeout=timeout), timeout=timeout)
+
+
+async def _connect_with_url_secret(port: int, secret: str, *, timeout: float = 5.0) -> Any:
+    """A connect carrying ``?secret=...`` — only ever used to prove it is ignored."""
+    from websockets.asyncio.client import connect as ws_connect
+
+    url = f"ws://127.0.0.1:{port}/v1/realtime?secret={secret}"
+    return await asyncio.wait_for(ws_connect(url, open_timeout=timeout), timeout=timeout)
+
+
+async def _authed_connect(port: int, secret: str, *, timeout: float = 5.0) -> Any:
+    """Connect, then send the one first-message auth event."""
+    ws = await _connect(port, timeout=timeout)
+    await ws.send(json.dumps({"type": "auth", "secret": secret}))
+    return ws
 
 
 async def _wait_until(predicate: Any, *, timeout: float = 5.0, interval: float = 0.02) -> bool:
@@ -73,7 +102,7 @@ async def _wait_until(predicate: Any, *, timeout: float = 5.0, interval: float =
 
 
 def _endpoint(**overrides: Any) -> rt.RemoteEndpoint:
-    kwargs: dict[str, Any] = {"secret": "s3cr3t-test-only", "host": "127.0.0.1", "port": 0}
+    kwargs: dict[str, Any] = {"secret": DEFAULT_SECRET, "host": "127.0.0.1", "port": 0}
     kwargs.update(overrides)
     return rt.RemoteEndpoint(**kwargs)
 
@@ -91,9 +120,9 @@ class TestFixtureDrivesFrames:
             assert ep.status()["degradation"] is None
 
             async def scenario() -> None:
-                ws = await _connect(ep.bound_port, ep.config.secret)
+                ws = await _connect(ep.bound_port)
                 try:
-                    for event in _load_fixture_lines():
+                    for event in _load_fixture_lines():  # first line is the auth event
                         await ws.send(json.dumps(event))
                     await _wait_until(lambda: len(received) == 3)
                 finally:
@@ -122,7 +151,7 @@ class TestFixtureDrivesFrames:
         try:
 
             async def scenario() -> None:
-                ws = await _connect(ep.bound_port, ep.config.secret)
+                ws = await _authed_connect(ep.bound_port, DEFAULT_SECRET)
                 try:
                     await ws.send(wire.encode_audio_append(b"\x01\x02\x03\x04"))
                     await _wait_until(lambda: len(received) == 1)
@@ -140,19 +169,21 @@ class TestFixtureDrivesFrames:
 
 
 class TestAuthenticationGate:
-    def test_missing_secret_is_refused_and_no_frame_is_ever_delivered(self) -> None:
-        ep = _endpoint()
+    def test_no_auth_message_inside_the_deadline_is_refused_1008(self) -> None:
+        ep = _endpoint(auth_deadline=0.3)
         received: list[bytes] = []
         ep.start_capture(received.append)
         ep.attach()
         try:
 
             async def scenario() -> None:
-                from websockets.exceptions import InvalidStatus
+                from websockets.exceptions import ConnectionClosedError
 
-                with pytest.raises(InvalidStatus) as excinfo:
-                    await _connect(ep.bound_port, None)
-                assert excinfo.value.response.status_code == 401
+                ws = await _connect(ep.bound_port)  # handshake succeeds; no auth message sent
+                with pytest.raises(ConnectionClosedError) as excinfo:
+                    await asyncio.wait_for(ws.recv(), timeout=2.0)
+                assert excinfo.value.rcvd is not None
+                assert excinfo.value.rcvd.code == 1008
 
             _run(scenario())
             status = ep.status()
@@ -162,17 +193,18 @@ class TestAuthenticationGate:
         finally:
             ep.close(2.0)
 
-    def test_wrong_secret_is_refused_and_reason_never_carries_the_guess(self) -> None:
+    def test_wrong_secret_is_refused_1008_and_reason_never_carries_the_guess(self) -> None:
         ep = _endpoint()
         ep.attach()
         try:
 
             async def scenario() -> None:
-                from websockets.exceptions import InvalidStatus
+                from websockets.exceptions import ConnectionClosedError
 
-                with pytest.raises(InvalidStatus) as excinfo:
-                    await _connect(ep.bound_port, MARKER_SECRET)
-                assert excinfo.value.response.status_code == 401
+                ws = await _authed_connect(ep.bound_port, MARKER_SECRET)
+                with pytest.raises(ConnectionClosedError) as excinfo:
+                    await asyncio.wait_for(ws.recv(), timeout=2.0)
+                assert excinfo.value.rcvd.code == 1008
 
             _run(scenario())
             status = ep.status()
@@ -183,13 +215,37 @@ class TestAuthenticationGate:
         finally:
             ep.close(2.0)
 
+    def test_malformed_first_message_is_refused_never_treated_as_audio(self) -> None:
+        ep = _endpoint()
+        received: list[bytes] = []
+        ep.start_capture(received.append)
+        ep.attach()
+        try:
+
+            async def scenario() -> None:
+                from websockets.exceptions import ConnectionClosedError
+
+                ws = await _connect(ep.bound_port)
+                # A real audio frame arrives BEFORE any auth: still refused, never processed.
+                await ws.send(wire.encode_audio_append(b"should-never-arrive"))
+                with pytest.raises(ConnectionClosedError) as excinfo:
+                    await asyncio.wait_for(ws.recv(), timeout=2.0)
+                assert excinfo.value.rcvd.code == 1008
+
+            _run(scenario())
+            assert received == []
+            assert ep.status()["frames_received"] == 0
+            assert ep.status()["unauthorized_connections"] == 1
+        finally:
+            ep.close(2.0)
+
     def test_valid_secret_is_accepted_and_receives_session_created(self) -> None:
         ep = _endpoint()
         ep.attach()
         try:
 
             async def scenario() -> tuple[str, ...]:
-                ws = await _connect(ep.bound_port, ep.config.secret)
+                ws = await _authed_connect(ep.bound_port, DEFAULT_SECRET)
                 try:
                     raw = await asyncio.wait_for(ws.recv(), timeout=5.0)
                     return (raw,)
@@ -203,7 +259,7 @@ class TestAuthenticationGate:
         finally:
             ep.close(2.0)
 
-    def test_no_secret_configured_refuses_everything_fail_closed(self) -> None:
+    def test_no_secret_configured_refuses_everything_fail_closed_pre_handshake(self) -> None:
         ep = _endpoint(secret="")
         ep.attach()
         try:
@@ -213,10 +269,36 @@ class TestAuthenticationGate:
                 from websockets.exceptions import InvalidStatus
 
                 with pytest.raises(InvalidStatus) as excinfo:
-                    await _connect(ep.bound_port, "anything")
+                    await _connect(ep.bound_port)
                 assert excinfo.value.response.status_code == 503
 
             _run(scenario())
+        finally:
+            ep.close(2.0)
+
+    def test_secret_in_url_is_ignored_for_auth_and_only_counted(self) -> None:
+        """A right OR wrong secret on the URL grants nothing — round 2's whole point."""
+        ep = _endpoint(auth_deadline=0.3)
+        ep.attach()
+        try:
+
+            async def scenario() -> None:
+                from websockets.exceptions import ConnectionClosedError
+
+                # The URL carries the CORRECT secret, but no first-message auth follows.
+                ws = await _connect_with_url_secret(ep.bound_port, DEFAULT_SECRET)
+                with pytest.raises(ConnectionClosedError) as excinfo:
+                    await asyncio.wait_for(ws.recv(), timeout=2.0)
+                assert excinfo.value.rcvd.code == 1008
+
+            _run(scenario())
+            status = ep.status()
+            # Both are counted: the URL leak AND the fact it bought no auth.
+            # ``status()["degradation"]`` holds only the MOST RECENT of the two
+            # (the later auth timeout), which is why this asserts the counters
+            # rather than that single slot.
+            assert status["secret_in_url_count"] == 1
+            assert status["unauthorized_connections"] == 1  # the URL secret bought nothing
         finally:
             ep.close(2.0)
 
@@ -233,6 +315,14 @@ class TestReadmeStatesTheSeam:
         assert "seam" in lower
         assert "audio/remote.py" in text or "remote.py" in text
 
+    def test_readme_no_longer_tells_a_client_to_put_the_secret_on_the_url(self) -> None:
+        readme = Path(__file__).parent.parent / "README.md"
+        text = readme.read_text(encoding="utf-8")
+        section = text.split("## Inbound realtime endpoint", 1)[1]
+        section = section.split("\n## ", 1)[0]
+        assert "?secret=" not in section
+        assert "first message" in section.lower() or "first-message" in section.lower()
+
 
 # ── Attacks: the wave-1-lesson checklist ─────────────────────────────────────
 
@@ -246,7 +336,7 @@ class TestAttacks:
         try:
 
             async def scenario() -> None:
-                ws = await _connect(ep.bound_port, ep.config.secret)
+                ws = await _authed_connect(ep.bound_port, DEFAULT_SECRET)
                 try:
                     await ws.send("not json at all {{{")
                     await ws.send(json.dumps(["not", "an", "object"]))
@@ -274,7 +364,7 @@ class TestAttacks:
         try:
 
             async def scenario() -> None:
-                ws = await _connect(ep.bound_port, ep.config.secret)
+                ws = await _authed_connect(ep.bound_port, DEFAULT_SECRET)
                 try:
                     await ws.send(json.dumps({"type": "response.create"}))
                     await ws.send(json.dumps({"type": "conversation.item.create"}))
@@ -293,7 +383,7 @@ class TestAttacks:
         try:
 
             async def scenario() -> None:
-                ws = await _connect(ep.bound_port, ep.config.secret)
+                ws = await _authed_connect(ep.bound_port, DEFAULT_SECRET)
                 try:
                     await ws.send(b"\xff\xfe\x00\x01binary-garbage")
                     await ws.send(wire.encode_audio_append(b"still-alive"))
@@ -306,17 +396,19 @@ class TestAttacks:
         finally:
             ep.close(2.0)
 
-    def test_10k_char_secret_query_and_bidi_control_chars_do_not_crash_the_gate(self) -> None:
+    def test_10k_char_secret_and_bidi_control_chars_in_the_auth_message_do_not_crash(self) -> None:
         ep = _endpoint()
         ep.attach()
         try:
             hostile = "x" * 10_000 + "‮\u0085 " + "'; DROP TABLE--"
 
             async def scenario() -> None:
-                from websockets.exceptions import InvalidStatus
+                from websockets.exceptions import ConnectionClosedError
 
-                with pytest.raises(InvalidStatus):
-                    await _connect(ep.bound_port, hostile)
+                ws = await _authed_connect(ep.bound_port, hostile)
+                with pytest.raises(ConnectionClosedError) as excinfo:
+                    await asyncio.wait_for(ws.recv(), timeout=2.0)
+                assert excinfo.value.rcvd.code == 1008
 
             _run(scenario())
             status = ep.status()
@@ -324,18 +416,64 @@ class TestAttacks:
         finally:
             ep.close(2.0)
 
-    def test_path_separators_and_dotdot_in_query_do_not_crash_process_request(self) -> None:
+    def test_long_secret_query_param_does_not_crash_the_gate(self) -> None:
+        """A query string within the transport's own request-line cap (see the
+        sibling test below for what happens past that cap) still reaches
+        ``process_request`` and must not crash it."""
+        ep = _endpoint(auth_deadline=0.3)
+        ep.attach()
+        try:
+            hostile = "y" * 2000 + "‮\u0085 " + "'; DROP TABLE--"
+
+            async def scenario() -> None:
+                from websockets.exceptions import ConnectionClosedError
+
+                ws = await _connect_with_url_secret(ep.bound_port, hostile)
+                with pytest.raises(ConnectionClosedError):
+                    await asyncio.wait_for(ws.recv(), timeout=2.0)
+
+            _run(scenario())
+            status = ep.status()
+            assert hostile not in json.dumps(status)
+            assert status["secret_in_url_count"] == 1
+        finally:
+            ep.close(2.0)
+
+    def test_10k_char_secret_query_param_is_refused_by_the_transports_own_uri_cap(self) -> None:
+        """Found while attacking: a 10k-char query string never reaches this
+        module's code at all — ``websockets``' own HTTP layer refuses a
+        request line over 8192 bytes with a 414 before ``process_request``
+        runs. A defense-in-depth finding, not a defect: documented here so it
+        is not mistaken for an untested path."""
         ep = _endpoint()
+        ep.attach()
+        try:
+            hostile = "z" * 10_000
+
+            async def scenario() -> None:
+                from websockets.exceptions import InvalidStatus
+
+                with pytest.raises(InvalidStatus) as excinfo:
+                    await _connect_with_url_secret(ep.bound_port, hostile)
+                assert excinfo.value.response.status_code == 414
+
+            _run(scenario())
+        finally:
+            ep.close(2.0)
+
+    def test_path_separators_and_dotdot_in_path_do_not_crash_process_request(self) -> None:
+        ep = _endpoint(auth_deadline=0.3)
         ep.attach()
         try:
 
             async def scenario() -> None:
                 from websockets.asyncio.client import connect as ws_connect
-                from websockets.exceptions import InvalidStatus
+                from websockets.exceptions import ConnectionClosedError
 
-                url = f"ws://127.0.0.1:{ep.bound_port}/../../etc/passwd?secret=../../x"
-                with pytest.raises(InvalidStatus):
-                    await asyncio.wait_for(ws_connect(url, open_timeout=5.0), timeout=5.0)
+                url = f"ws://127.0.0.1:{ep.bound_port}/../../etc/passwd?x=../../y"
+                ws = await asyncio.wait_for(ws_connect(url, open_timeout=5.0), timeout=5.0)
+                with pytest.raises(ConnectionClosedError):
+                    await asyncio.wait_for(ws.recv(), timeout=2.0)
 
             _run(scenario())
         finally:
@@ -393,7 +531,7 @@ class TestAttacks:
         try:
 
             async def scenario() -> list[dict[str, Any]]:
-                ws = await _connect(ep.bound_port, ep.config.secret)
+                ws = await _authed_connect(ep.bound_port, DEFAULT_SECRET)
                 events: list[dict[str, Any]] = []
                 try:
                     created = json.loads(await asyncio.wait_for(ws.recv(), timeout=5.0))
@@ -421,7 +559,7 @@ class TestAttacks:
         try:
 
             async def scenario() -> None:
-                ws = await _connect(ep.bound_port, ep.config.secret)
+                ws = await _authed_connect(ep.bound_port, DEFAULT_SECRET)
                 try:
                     await ws.send(wire.encode_audio_append(b"should-be-muted"))
                     await asyncio.sleep(0.1)
@@ -442,11 +580,35 @@ class TestAttacks:
             async def scenario() -> None:
                 from websockets.exceptions import InvalidStatus
 
-                first = await _connect(ep.bound_port, ep.config.secret)
+                first = await _authed_connect(ep.bound_port, DEFAULT_SECRET)
                 try:
                     await _wait_until(lambda: ep.status()["connected"] is True)
                     with pytest.raises(InvalidStatus) as excinfo:
-                        await _connect(ep.bound_port, ep.config.secret)
+                        await _connect(ep.bound_port)
+                    assert excinfo.value.response.status_code == 503
+                finally:
+                    await first.close()
+
+            _run(scenario())
+            assert ep.status()["connections_rejected_busy"] == 1
+        finally:
+            ep.close(2.0)
+
+    def test_second_connection_is_refused_even_mid_authentication(self) -> None:
+        """A second dial-in is refused even before the FIRST has authenticated —
+        the pending-auth guard, not just the post-auth ``connected`` check."""
+        ep = _endpoint(auth_deadline=2.0)
+        ep.attach()
+        try:
+
+            async def scenario() -> None:
+                from websockets.exceptions import InvalidStatus
+
+                first = await _connect(ep.bound_port)  # handshake only, no auth sent yet
+                try:
+                    await asyncio.sleep(0.1)  # let process_request's pending flag land
+                    with pytest.raises(InvalidStatus) as excinfo:
+                        await _connect(ep.bound_port)
                     assert excinfo.value.response.status_code == 503
                 finally:
                     await first.close()
@@ -492,7 +654,7 @@ class TestAttacks:
         holder.attach()
         try:
             port = holder.bound_port
-            second = rt.RemoteEndpoint(secret="s3cr3t-test-only", host="127.0.0.1", port=port)
+            second = rt.RemoteEndpoint(secret=DEFAULT_SECRET, host="127.0.0.1", port=port)
             second.attach()
             try:
                 status = second.status()
@@ -519,7 +681,7 @@ class TestAttacks:
         try:
 
             async def scenario() -> None:
-                ws = await _connect(ep.bound_port, ep.config.secret)
+                ws = await _authed_connect(ep.bound_port, DEFAULT_SECRET)
                 try:
                     await ws.send(wire.encode_audio_append(b"one"))
                     await _wait_until(lambda: len(received) == 1)
@@ -548,7 +710,7 @@ class TestAttacks:
         try:
 
             async def scenario() -> None:
-                ws = await _connect(ep.bound_port, ep.config.secret)
+                ws = await _authed_connect(ep.bound_port, DEFAULT_SECRET)
                 try:
                     await ws.send(wire.encode_audio_append(b"x"))
                     await ws.send(wire.encode_audio_append(b"y"))
@@ -576,10 +738,11 @@ class TestAttacks:
         try:
 
             async def scenario() -> None:
-                from websockets.exceptions import InvalidStatus
+                from websockets.exceptions import ConnectionClosedError
 
-                with pytest.raises(InvalidStatus):
-                    await _connect(ep.bound_port, "totally-wrong")
+                ws = await _authed_connect(ep.bound_port, "totally-wrong")
+                with pytest.raises(ConnectionClosedError):
+                    await asyncio.wait_for(ws.recv(), timeout=2.0)
 
             _run(scenario())
             blob = json.dumps(ep.status())

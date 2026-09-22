@@ -1,3 +1,4 @@
+{"type": "auth", "secret": "s3cr3t-test-only"}
 {"type": "session.update", "session": {"language": "he"}}
 {"type": "input_audio_buffer.append", "audio": "AAECAwQFBgcICQoLDA0ODw=="}
 {"type": "input_audio_buffer.append", "audio": "EBESExQVFhcYGRobHB0eHw=="}

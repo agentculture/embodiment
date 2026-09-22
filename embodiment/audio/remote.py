@@ -42,22 +42,36 @@ brief/reality gap: "reuse wire.py; do not write a second codec" could not be
 followed to the letter, because the codec this task needs is not the codec
 ``wire.py`` owns.)
 
-Authentication: a query parameter, checked before the handshake completes
----------------------------------------------------------------------------
-A browser's native ``WebSocket`` constructor cannot set a custom header, so a
-bearer-header scheme (as :mod:`embodiment.realtime.client` uses when DIALING
-OUT) is not available to a page dialing IN. The connect URL therefore carries
-``?secret=...``, and it is checked in ``process_request`` — the
-``websockets`` hook that runs *before* the opening handshake completes and
-before any WebSocket frame, let alone an audio frame, can exist on this
-connection. A missing or wrong secret gets an HTTP-level refusal
-(``401``); an empty configured secret refuses every connection
-(``503``) rather than defaulting to open, because a construction argument
-nobody supplied is not consent to skip authentication (C3: private by
-default). The refusal's recorded reason never carries the query string or
-its contents — only a static phrase — since a wrong secret guessed by an
-attacker is exactly the value this reason string must never echo back into a
-log (wave 1 lesson 5).
+Authentication: the first message, never the URL (round 2 correction)
+-------------------------------------------------------------------------
+A browser's native ``WebSocket`` constructor cannot set a custom header, so
+the bearer-header scheme :mod:`embodiment.realtime.client` uses when DIALING
+OUT is not available to a page dialing IN — but a query parameter is the
+WRONG substitute: a connect URL lands in a reverse proxy's and
+``cloudflared``'s access logs, in browser history, and in a ``Referer``
+header on the next same-origin navigation, none of which this repo's privacy
+constraints permit for a credential (and it is exactly why ``t16``'s daemon
+guard takes the install secret as a bearer header rather than a query
+parameter). So the handshake carries no secret at all: ``process_request``
+only enforces the pre-handshake fail-closed case (no secret configured at
+all — :data:`DEGRADED_NO_SECRET`, HTTP ``503``) and the one-peer-at-a-time
+limit. Once the WebSocket handshake completes, :meth:`RemoteEndpoint`
+accepts exactly ONE JSON message before anything else is processed:
+``{"type": "auth", "secret": "..."}``, read under a bounded deadline
+(:attr:`RemoteEndpointConfig.auth_deadline`, default 5 s). A wrong secret, a
+missing one, a malformed first message, a first message of any other
+``type``, or nothing arriving inside the deadline, all close the socket with
+WebSocket close code ``1008`` (policy violation) and record exactly one
+:data:`DEGRADED_UNAUTHORIZED` — never with the supplied value in the reason,
+which stays a static phrase (wave 1 lesson 5), and never having accepted a
+single audio frame: :meth:`_on_client_message` is not reachable until
+:meth:`_authenticate` returns ``True``. The secret comparison is
+constant-time (:func:`hmac.compare_digest`). A ``?secret=...`` query
+parameter, if a misconfigured client still sends one, is never read for
+authentication — it is simply ignored — but its presence IS counted
+(:data:`DEGRADED_SECRET_IN_URL`, ``secret_in_url_count`` in :meth:`status`)
+so a client still doing it the old, log-leaking way is visible to a host
+without being treated as a security event on its own.
 
 One connection at a time
 -------------------------
@@ -129,7 +143,9 @@ __all__ = [
     "DEGRADED_START_TIMEOUT",
     "DEGRADED_NO_SECRET",
     "DEGRADED_UNAUTHORIZED",
+    "DEGRADED_SECRET_IN_URL",
     "DEGRADED_PLAYBACK_OVERFLOW",
+    "AUTH_EVENT_TYPE",
     "RemoteEndpointConfig",
     "RemoteEndpoint",
 ]
@@ -146,17 +162,35 @@ DEGRADED_START_TIMEOUT = "audio-remote-start-timeout"
 #: Constructed with an empty secret. Every connection is refused (fail
 #: closed), never accepted unauthenticated.
 DEGRADED_NO_SECRET = "audio-remote-no-secret-configured"  # nosec B105 - a code, not a password
-#: A connection was refused for lacking, or not matching, the secret.
+#: The first message after the handshake was missing, malformed, the wrong
+#: ``type``, or carried a secret that did not match — or the deadline for it
+#: elapsed with nothing arriving. One code for all four: the host-visible
+#: fact is "this peer never authenticated", not which sub-case it was.
 DEGRADED_UNAUTHORIZED = "audio-remote-unauthorized"
+#: A connecting client sent ``?secret=...`` on the connect URL. Never read
+#: for authentication (round 2: a URL is the wrong place for a credential —
+#: see the module docstring) but counted so a client still doing this the
+#: log-leaking way is visible.
+DEGRADED_SECRET_IN_URL = "audio-remote-secret-in-url"  # nosec B105 - a code, not a password
 #: A ``play()`` chunk was refused because the playback buffer is full.
 DEGRADED_PLAYBACK_OVERFLOW = "audio-remote-playback-overflow"
 
-#: The query parameter a connecting browser carries the secret in. Documented
-#: choice (see module docstring): a browser's native ``WebSocket`` cannot set
-#: a custom header, so the bearer-header scheme
-#: :mod:`embodiment.realtime.client` uses when dialing OUT is not available
-#: to a page dialing IN.
+#: The ``type`` of the one JSON message :meth:`RemoteEndpoint._authenticate`
+#: accepts, and the only message processed before it returns ``True``.
+AUTH_EVENT_TYPE = "auth"
+
+#: The query parameter name a misconfigured client might still carry a
+#: secret in. Never read for authentication (see module docstring) — its
+#: presence is only ever counted, under :data:`DEGRADED_SECRET_IN_URL`.
 SECRET_QUERY_PARAM = "secret"  # nosec B105 - a parameter name, not a password
+
+#: How long :meth:`RemoteEndpoint._authenticate` waits, after the WebSocket
+#: handshake completes, for the one ``{"type": "auth", ...}`` message before
+#: giving up and refusing the connection. A judgement call: generous for a
+#: browser tab that dials in and immediately sends its one auth frame, small
+#: enough that a connection that never authenticates is not held open
+#: indefinitely.
+_DEFAULT_AUTH_DEADLINE_S = 5.0
 
 #: How long :meth:`RemoteEndpoint.attach` waits for the server thread to
 #: confirm it is listening (or has failed) before giving up and recording
@@ -229,6 +263,7 @@ class RemoteEndpointConfig:
     host: str = "127.0.0.1"
     port: int = 8765
     start_deadline: float = _DEFAULT_START_DEADLINE_S
+    auth_deadline: float = _DEFAULT_AUTH_DEADLINE_S
     ping_interval: float = 20.0
     ping_timeout: float = 20.0
     close_handshake_timeout: float = 5.0
@@ -257,6 +292,7 @@ class RemoteEndpoint:
         host: str = "127.0.0.1",
         port: int = 8765,
         start_deadline: float = _DEFAULT_START_DEADLINE_S,
+        auth_deadline: float = _DEFAULT_AUTH_DEADLINE_S,
         ping_interval: float = 20.0,
         ping_timeout: float = 20.0,
         close_handshake_timeout: float = 5.0,
@@ -266,6 +302,7 @@ class RemoteEndpoint:
             host=host,
             port=port,
             start_deadline=start_deadline,
+            auth_deadline=auth_deadline,
             ping_interval=ping_interval,
             ping_timeout=ping_timeout,
             close_handshake_timeout=close_handshake_timeout,
@@ -285,6 +322,7 @@ class RemoteEndpoint:
         self._server: Any = None
         self._bound_port: int = port
         self._connection: Any = None
+        self._connection_pending = False
         self._connected = False
 
         self._session_id = ""
@@ -311,6 +349,8 @@ class RemoteEndpoint:
         self._connection_drop_count = 0
         self._unauthorized_count = 0
         self._rejected_busy_count = 0
+        self._secret_in_url_count = 0
+        self._path_parse_errors = 0
         self._bind_error: EndpointDegradation | None = None
 
     # -- lifecycle -----------------------------------------------------
@@ -460,54 +500,131 @@ class RemoteEndpoint:
     # -- the HTTP-level gate (before any WebSocket frame exists) -------
 
     def _process_request(self, connection: Any, request: Any) -> Any:
+        """Pre-handshake: only the fail-closed and one-peer-at-a-time checks.
+
+        The secret itself is NEVER checked here (round 2 correction — see the
+        module docstring): a query parameter is the wrong place for a
+        credential, so the handshake carries none. A ``?secret=...`` query
+        parameter, if a client sends one anyway, is ignored for
+        authentication and only counted.
+        """
         if not self.config.secret:
             return connection.respond(503, "no secret configured\n")
 
         try:
             query = urlsplit(request.path).query
-            supplied = parse_qs(query).get(SECRET_QUERY_PARAM, [""])[0]
-        except Exception:  # noqa: BLE001 - a malformed path is a refusal, not a raise
-            supplied = ""
-
-        if not supplied or not hmac.compare_digest(supplied, self.config.secret):
+            leaked = bool(parse_qs(query).get(SECRET_QUERY_PARAM))
+        except Exception:  # noqa: BLE001 - a malformed path is not itself a refusal
             with self._lock:
-                self._unauthorized_count += 1
+                self._path_parse_errors += 1
+            leaked = False
+        if leaked:
+            with self._lock:
+                self._secret_in_url_count += 1
             self._degradation = EndpointDegradation(
-                DEGRADED_UNAUTHORIZED, "connection refused: missing or invalid secret"
+                DEGRADED_SECRET_IN_URL,
+                "a secret query parameter was ignored; the endpoint authenticates"
+                " on the first message instead",
             )
-            return connection.respond(401, "unauthorized\n")
 
         with self._lock:
-            if self._connection is not None:
+            if self._connection is not None or self._connection_pending:
                 self._rejected_busy_count += 1
                 return connection.respond(503, "endpoint already has an active peer\n")
+            self._connection_pending = True
 
         return None  # allow the handshake to proceed
 
     # -- one connection's lifetime ---------------------------------------
 
-    async def _handle_connection(self, connection: Any) -> None:
+    async def _authenticate(self, connection: Any) -> bool:
+        """Read exactly one ``{"type": "auth", "secret": ...}`` message.
 
-        self._session_id = _new_id("sess")
-        self._response_id = _new_id("resp")
-        with self._lock:
-            self._connection = connection
-            self._connected = True
+        Never raises. ``True`` only when the secret matched
+        (constant-time); every other outcome — timeout, malformed JSON, the
+        wrong ``type``, a missing/wrong secret, the peer vanishing mid-read —
+        closes the socket with WebSocket close code 1008 and records exactly
+        one :data:`DEGRADED_UNAUTHORIZED`, whose reason is always a static
+        phrase (wave 1 lesson 5: never the value the peer supplied).
+        """
         try:
-            await connection.send(self._session_created_json())
-        except Exception:  # noqa: BLE001 - the peer vanished before it heard anything
-            with self._lock:
-                self._send_errors += 1
-        try:
-            async for raw in connection:
-                self._on_client_message(raw)
+            raw = await asyncio.wait_for(connection.recv(), timeout=self.config.auth_deadline)
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001 - any transport fault just ends this connection
+        except (asyncio.TimeoutError, TimeoutError):
+            await self._refuse_unauthenticated(connection, "no auth message inside the deadline")
+            return False
+        except Exception:  # noqa: BLE001 - the peer vanished before authenticating
+            await self._refuse_unauthenticated(connection, "connection ended before authenticating")
+            return False
+
+        try:
+            text = raw if isinstance(raw, str) else bytes(raw).decode("utf-8")
+            payload = json.loads(text)
+        except Exception:  # noqa: BLE001 - not this client's job to parse garbage
+            await self._refuse_unauthenticated(connection, "first message was not valid JSON")
+            return False
+        if not isinstance(payload, dict) or payload.get("type") != AUTH_EVENT_TYPE:
+            await self._refuse_unauthenticated(connection, "first message was not an auth event")
+            return False
+
+        supplied = payload.get("secret")
+        if not isinstance(supplied, str) or not supplied or not self._secret_matches(supplied):
+            await self._refuse_unauthenticated(connection, "auth secret missing or did not match")
+            return False
+        return True
+
+    def _secret_matches(self, supplied: str) -> bool:
+        """Constant-time compare. Never raises: ``hmac.compare_digest(str, str)``
+        rejects any non-ASCII character with a ``TypeError`` (found by round 2's
+        own bidi/control-character attack), so both sides compare as bytes
+        instead — bytes comparison has no such restriction, for any input."""
+        try:
+            return hmac.compare_digest(
+                supplied.encode("utf-8", "surrogatepass"),
+                self.config.secret.encode("utf-8", "surrogatepass"),
+            )
+        except Exception:  # noqa: BLE001 - an unencodable secret is simply not a match
+            return False
+
+    async def _refuse_unauthenticated(self, connection: Any, reason: str) -> None:
+        with self._lock:
+            self._unauthorized_count += 1
+        self._degradation = EndpointDegradation(DEGRADED_UNAUTHORIZED, reason)
+        try:
+            await connection.close(code=1008, reason="unauthorized")
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - the peer is already gone; nothing to report to it
             with self._lock:
-                self._connection_drop_count += 1
+                self._send_errors += 1
+
+    async def _handle_connection(self, connection: Any) -> None:
+        self._session_id = _new_id("sess")
+        self._response_id = _new_id("resp")
+        try:
+            if not await self._authenticate(connection):
+                return
+
+            with self._lock:
+                self._connection = connection
+                self._connected = True
+            try:
+                await connection.send(self._session_created_json())
+            except Exception:  # noqa: BLE001 - the peer vanished before it heard anything
+                with self._lock:
+                    self._send_errors += 1
+            try:
+                async for raw in connection:
+                    self._on_client_message(raw)
+            except asyncio.CancelledError:
+                raise
+            except Exception:  # noqa: BLE001 - any transport fault just ends this connection
+                with self._lock:
+                    self._connection_drop_count += 1
         finally:
             with self._lock:
+                self._connection_pending = False
                 if self._connection is connection:
                     self._connection = None
                     self._connected = False
@@ -760,6 +877,8 @@ class RemoteEndpoint:
                 "connection_drop_count": self._connection_drop_count,
                 "unauthorized_connections": self._unauthorized_count,
                 "connections_rejected_busy": self._rejected_busy_count,
+                "secret_in_url_count": self._secret_in_url_count,
+                "path_parse_errors": self._path_parse_errors,
                 "playback_overflow_count": self._playback_overflow_count,
                 "playback_sent_bytes": self._playback_sent_bytes,
                 "playback_stop_discarded_total": self._playback_stop_discarded_total,
