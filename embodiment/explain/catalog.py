@@ -70,9 +70,15 @@ never an implication drawn from the name.
 - `embodiment overview` — descriptive snapshot of the agent.
 - `embodiment doctor` — check the agent-identity invariants.
 - `embodiment cli overview` — describe the CLI surface.
+- `embodiment start` — start the daemon as a detached background process.
+- `embodiment stop` — stop the running daemon within a bounded time.
+- `embodiment status` — report the daemon's state, truthfully.
 
-No verb drives the loop or starts anything. `start` / `stop` / `status` arrive
-with the daemon.
+The lifecycle verbs are the daemon's, not the loop's: no verb drives
+`embodiment.loop`. And `start` starts a *lifecycle*, not yet an application —
+the daemon application it runs (`embodiment/daemon/app.py`) is still being
+built, so `embodiment start` with the default target reports a clean
+environment error naming it rather than pretending to come up.
 
 ## Exit-code policy
 
@@ -163,6 +169,111 @@ itself (distinct from the global `overview`, which describes the agent).
 """
 
 
+_START = """\
+# embodiment start
+
+Starts the daemon as a detached background process and returns once the daemon
+has reported *itself* running — not merely once a process exists.
+
+**Idempotent.** A second `start` finds the first through an exclusive lock on
+`daemon.pid` in the state directory, exits `0`, and starts nothing. The lock,
+not the pid, is what proves liveness, so a reused pid can never make a dead
+daemon look alive. A pidfile left by a dead process is reclaimed and the
+reclamation is recorded as a degradation.
+
+**A target that cannot be imported is a clean refusal.** `--target` defaults
+to `embodiment.daemon.app:main`, the daemon application. If the named module
+cannot be found, this verb exits `2` with a hint naming it — it never raises,
+never spawns, and never leaves a half-made claim behind.
+
+`--target` imports and runs the module it names with your own authority. It is
+an entry-point selector, not a sandbox.
+
+The child is detached: its own session, `stdin` from `/dev/null`, `stdout` and
+`stderr` into `<state dir>/daemon.err` (0600) rather than your terminal, and
+its working directory set to the private state directory so nothing it writes
+can land in a git checkout.
+
+## Usage
+
+    embodiment start
+    embodiment start --json
+    embodiment start --target my.app:main --state-dir /tmp/gwen
+"""
+
+_STOP = """\
+# embodiment stop
+
+Stops the running daemon within a bounded time: `SIGTERM`, then at most
+`--timeout` seconds waiting for the daemon lock to be released, then `SIGKILL`
+and at most `--kill-grace` more. The whole bound is under five seconds by
+default.
+
+An escalation to `SIGKILL` is **reported and recorded**, in the result and in
+the degradation ledger: a daemon that had to be killed did not shut down.
+
+**It only ever signals the daemon.** Immediately before each signal it
+re-proves that the pid it is about to use still holds the lock and still has
+the process start time recorded for the daemon, so a pid the kernel recycled
+to another process after the daemon exited is refused rather than signalled
+(`identity_verified: false`, `lifecycle-stop-target-changed`). Where `/proc`
+cannot answer, it degrades to the pid alone and says so
+(`identity_verified: null`).
+
+Stopping nothing is not an error — it exits `0` and says `not running`, so
+`stop` is as safe to repeat as `start`. A stop that cannot be confirmed (the
+process still holds the lock after `SIGKILL`) exits `2` rather than claiming
+success.
+
+Inside the daemon the same bound is enforced from the other end: once a stop is
+requested, a watchdog writes whatever is unfinished to the ledger and then hard
+-exits, so a thread parked in a blocking read cannot hold the process open.
+
+## Usage
+
+    embodiment stop
+    embodiment stop --json
+    embodiment stop --timeout 1.5
+"""
+
+_STATUS = """\
+# embodiment status
+
+Reports the daemon's state. Read-only: it never writes, never creates the state
+directory, and never starts anything.
+
+Four states:
+
+- `running` — a process holds the daemon lock, and the line below says whether
+  that process's `(pid, start time)` still matches what the daemon recorded.
+  This means the process is alive; it is **not** evidence that anything was
+  heard. The degradation count and the recent ledger entries printed beside it
+  are.
+- `stopped` — the daemon exited and said so, or nothing has ever run here.
+- `dead (unclean)` — a pidfile still says "running" while nothing holds its
+  lock. Reported with the last ledger entries, because the question after an
+  unclean death is *why*.
+- `state unavailable` — no state directory could be read, so a running daemon
+  could not be seen from here. Reporting `stopped` instead would be a lie.
+
+It looks in every candidate state directory, in the order a daemon would have
+used them, so a daemon that fell back during bootstrap is still found. But that
+search only ever *promotes* a live daemon: with nothing running, the headline is
+the state of the directory you named, and whatever another candidate holds is
+printed under it as `other state dir: …`. A pidfile left behind in the
+machine-wide fallback directory is a note about that directory — it never makes
+a healthy machine report `dead (unclean)`, and the next `start` reclaims it.
+
+Always exits `0`: a stopped or dead daemon is a fact to report, not a failure
+of the command.
+
+## Usage
+
+    embodiment status
+    embodiment status --json
+"""
+
+
 ENTRIES: dict[tuple[str, ...], str] = {
     (): _ROOT,
     ("embodiment",): _ROOT,
@@ -173,4 +284,7 @@ ENTRIES: dict[tuple[str, ...], str] = {
     ("doctor",): _DOCTOR,
     ("cli",): _CLI,
     ("cli", "overview"): _CLI,
+    ("start",): _START,
+    ("stop",): _STOP,
+    ("status",): _STATUS,
 }
