@@ -70,6 +70,7 @@ def _build_parser() -> argparse.ArgumentParser:
     from embodiment.cli._commands import start as _start_cmd
     from embodiment.cli._commands import status as _status_cmd
     from embodiment.cli._commands import stop as _stop_cmd
+    from embodiment.cli._commands import tunnel as _tunnel_cmd
     from embodiment.cli._commands import whoami as _whoami_cmd
 
     parser = _CliArgumentParser(
@@ -96,6 +97,9 @@ def _build_parser() -> argparse.ArgumentParser:
     _start_cmd.register(sub)
     _stop_cmd.register(sub)
     _status_cmd.register(sub)
+    # Remote access (plan task t20): dry-run only, prints the cultureflare /
+    # cloudflared commands. Never provisions or runs anything itself.
+    _tunnel_cmd.register(sub)
     # Register your own noun groups here:
     #   from embodiment.cli._commands import my_noun as _my_noun_group
     #   _my_noun_group.register(sub)

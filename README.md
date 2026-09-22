@@ -112,6 +112,81 @@ robot integration: a robot relay speaking the same wire is a future,
 separate implementation of that seam, arrived at without touching the daemon
 that composes endpoints.
 
+## Remote access
+
+`embodiment tunnel` prints the `cultureflare`/`cloudflared` commands for
+exposing the daemon beyond loopback — it is **dry-run only**: unlike `lobes
+tunnel` there is no `--apply` flag here at all, because provisioning a
+Cloudflare Tunnel and Access app is the operator's act, run by hand from the
+printed command, never something this verb does itself.
+
+```bash
+embodiment tunnel
+embodiment tunnel --json
+embodiment tunnel --hostname gwen.example.org --allow me@example.com
+embodiment tunnel --with-service-token
+```
+
+It prints two commands and runs neither:
+
+1. `cultureflare remote-login setup --hostname <h> --service
+   http://127.0.0.1:<port> [--allow <email>]... [--with-service-token]
+   [--tunnel-name <name>]` — the one-time provisioning of the tunnel, the DNS
+   record and the Cloudflare Access app/policy. `--allow <email>` (repeatable)
+   is who the Access policy admits by browser login.
+2. `cloudflared tunnel run <name>` — what the operator runs afterwards, once
+   step 1 has actually been applied with `--apply`. `cloudflared` refuses a
+   bare `cloudflared tunnel run` (it needs the name, or a `--token`), and
+   `cultureflare` derives that name itself unless `--tunnel-name` overrides
+   it — a rule `embodiment tunnel` does not know and will not guess. Pass
+   `--tunnel-name <name>` and both commands carry that exact name; omit it and
+   step 2 prints `<tunnel-name-from-step-1>` with a line saying to read the
+   real name off step 1's own output before running it.
+
+**A printed command is only honest if pasting it does what it says.**
+`--hostname` (RFC-1123 labels), `--allow` (exactly one `@`, no whitespace) and
+`--tunnel-name` (`[A-Za-z0-9._-]` only) are refused at parse time — a
+structured `error:`/`hint:` and exit `1` — if they fall outside that charset,
+and every token of a printed command line is `shlex.quote`-d regardless. So
+`embodiment tunnel --tunnel-name 'a; touch pwned'` is refused outright, and
+even a value that somehow bypassed that check would still print as one inert
+quoted token, never a second shell command.
+
+**What Cloudflare Access protects, and what it does not.** Access sits in
+front of exactly one thing: requests arriving for the **public hostname**
+named by `--hostname`. It never gates loopback names (`localhost`,
+`127.0.0.1`, `::1`) — those never cross Cloudflare's edge at all, so there is
+nothing for Access to intercept. Loopback is not authentication, so the
+daemon does not rely on Access alone either (see below).
+
+**How the daemon validates the assertion.** `embodiment/http/guard.py`
+requires the `Cf-Access-Jwt-Assertion` header on every guarded request whose
+`Host` is the configured public hostname, and only on those — a loopback
+request is never asked for one. Verifying that header's RS256 signature
+against Cloudflare's JWKS needs an RSA primitive the standard library does
+not have, and this package takes no new dependency for it (dependencies are
+human-gated; see below). So the shipped verifier
+(`refusing_assertion_verifier`) **always refuses** and records
+`http-access-verifier-missing`: absence of real verification is a
+host-visible, recorded state, never a silent hole. An operator who wants
+Access enforced injects their own verifier through `GuardConfig`'s
+`assertion_verifier` seam; a verifier that raises is itself treated as a
+refusal (`http-refused-access-verifier-failed`) — fail closed, never fail
+open.
+
+Access is additive, not a replacement: whether or not a request carries a
+valid Access assertion, the daemon's own install secret
+(`Authorization: Bearer <secret>` or the `embodiment_secret` cookie) is still
+required on every guarded route. A request that passes Access but has no
+install secret is refused with `http-refused-secret`.
+
+**Non-browser endpoints** (a future robot relay, a script) cannot complete
+Cloudflare's browser login, so `--with-service-token` has
+`cultureflare remote-login setup` mint an Access **service token** instead. A
+service-token client presents it as two headers — `CF-Access-Client-Id` and
+`CF-Access-Client-Secret` — in place of the interactive Access login; it still
+needs the daemon's own install secret on top, same as a browser client.
+
 ## Dependencies — what installing this costs you
 
 Dependencies are human-gated: `tests/test_zero_deps.py` pins the exact approved

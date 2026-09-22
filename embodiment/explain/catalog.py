@@ -73,6 +73,8 @@ never an implication drawn from the name.
 - `embodiment start` — start the daemon as a detached background process.
 - `embodiment stop` — stop the running daemon within a bounded time.
 - `embodiment status` — report the daemon's state, truthfully.
+- `embodiment tunnel` — print the cultureflare/cloudflared commands for
+  remote access (dry-run only; no `--apply`).
 
 The lifecycle verbs are the daemon's, not the loop's: no verb drives
 `embodiment.loop`. And `start` starts a *lifecycle*, not yet an application —
@@ -274,6 +276,51 @@ of the command.
 """
 
 
+_TUNNEL = """\
+# embodiment tunnel
+
+Prints the two commands an operator runs by hand for remote access — never
+runs either one. Dry-run only: there is no `--apply` flag here at all (unlike
+`lobes tunnel`, its model), because provisioning is the operator's act.
+
+1. `cultureflare remote-login setup --hostname <h> --service
+   http://127.0.0.1:<port> [--allow <email>]... [--with-service-token]
+   [--tunnel-name <name>]` — the one-time provisioning command (tunnel + DNS +
+   Cloudflare Access app). It only prints unless the operator adds `--apply`
+   themselves; re-run `cultureflare remote-login setup ... --apply yourself`
+   once you have read what it would do.
+2. `cloudflared tunnel run <name>` — what the operator runs afterwards, once
+   step 1 has actually been applied. `cloudflared` refuses a bare
+   `cloudflared tunnel run` (no name, no `--token`), and `cultureflare`
+   derives that name itself unless `--tunnel-name` overrides it — a rule this
+   verb does not know and will not guess. Given `--tunnel-name`, both commands
+   carry that exact name; omitted, step 2 prints `<tunnel-name-from-step-1>`
+   and says to read the real name off step 1's own output.
+
+Cloudflare Access protects only the public hostname; it never gates loopback
+names. The daemon's own guard (`embodiment/http/guard.py`) separately
+requires the install secret on every guarded request, Access or not. See
+`README.md`'s "Remote access" section for how the daemon validates the
+`Cf-Access-Jwt-Assertion` header and how a non-browser endpoint authenticates
+with an Access service token instead of a browser session.
+
+A printed command is only honest if pasting it does what it says. `--hostname`
+(RFC-1123 labels), `--allow` (exactly one `@`, no whitespace) and
+`--tunnel-name` (`[A-Za-z0-9._-]` only) are refused at parse time — `error:`/
+`hint:`, exit 1 — if they fall outside that charset, and every token in a
+printed command line is `shlex.quote`-d regardless, so a value like
+`--tunnel-name 'a; touch pwned'` can never turn the printed line into two
+commands.
+
+## Usage
+
+    embodiment tunnel
+    embodiment tunnel --json
+    embodiment tunnel --hostname gwen.example.org --allow me@example.com
+    embodiment tunnel --with-service-token
+"""
+
+
 ENTRIES: dict[tuple[str, ...], str] = {
     (): _ROOT,
     ("embodiment",): _ROOT,
@@ -287,4 +334,5 @@ ENTRIES: dict[tuple[str, ...], str] = {
     ("start",): _START,
     ("stop",): _STOP,
     ("status",): _STATUS,
+    ("tunnel",): _TUNNEL,
 }
