@@ -51,6 +51,53 @@ from embodiment.voice import (
 # ── test doubles ─────────────────────────────────────────────────────────────
 
 
+class TestFirstPlayAt:
+    """When the first audio of a reply left for the device (t21's measurement).
+
+    Added from ``realtime/t21-instr`` with the coordinator's go-ahead: the
+    daemon measures end-of-speech to FIRST reply audio, and only this module
+    knows when that was.
+    """
+
+    def test_it_is_set_at_the_first_successful_play(self) -> None:
+        endpoint = QueueingEndpoint()
+        voice = Voice(endpoint=endpoint, synthesize=lambda s, c: b"\x00\x00")
+        before = time.monotonic()
+        result = voice.speak("שלום. מה שלומך.")
+        after = time.monotonic()
+        assert result.first_play_at is not None
+        assert before <= result.first_play_at <= after
+        assert result.to_dict()["first_play_at"] == result.first_play_at
+        voice.close(1.0)
+
+    def test_it_is_the_FIRST_play_not_the_last(self) -> None:
+        endpoint = QueueingEndpoint()
+        voice = Voice(endpoint=endpoint, synthesize=lambda s, c: b"\x00\x00")
+        result = voice.speak("אחת. שתיים. שלוש.")
+        assert result.sentences_queued >= 2, "this test needs more than one play"
+        assert result.first_play_at is not None
+        # a later play cannot move it: it is bounded by the call's own end
+        assert result.first_play_at <= time.monotonic()
+        voice.close(1.0)
+
+    def test_it_is_none_when_nothing_was_ever_queued(self) -> None:
+        endpoint = QueueingEndpoint()
+
+        def refuses(sentence: str, config: object) -> bytes:
+            raise RuntimeError("no tts")
+
+        voice = Voice(endpoint=endpoint, synthesize=refuses)
+        result = voice.speak("שלום.")
+        assert result.sentences_queued == 0
+        assert result.first_play_at is None, "None means it never happened"
+        voice.close(1.0)
+
+    def test_an_empty_reply_has_none(self) -> None:
+        voice = Voice(endpoint=QueueingEndpoint(), synthesize=lambda s, c: b"\x00\x00")
+        assert voice.speak("").first_play_at is None
+        voice.close(1.0)
+
+
 class FakePlayer:
     """A minimal, thread-safe double satisfying the AudioEndpoint Protocol shape.
 

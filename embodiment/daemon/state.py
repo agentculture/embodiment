@@ -1299,9 +1299,23 @@ class TranscriptLog(_BoundedJsonlLog):
             on_degrade=on_degrade,
         )
 
-    def write(self, role: str, text: str) -> None:
-        """Append one turn of spoken text. Never raises; see module docstring."""
-        record: dict[str, Any] = {"ts": time.time(), "role": role, "text": text}
+    def write(self, role: str, text: str, **fields: Any) -> None:
+        """Append one turn of spoken text. Never raises; see module docstring.
+
+        *fields* carries per-turn facts a host wants beside the words —
+        timings and record ids, for t21's acceptance criteria. They are
+        merged into the record, and ``ts``/``role``/``text`` always win, so a
+        caller cannot overwrite what the record IS. A value that cannot be
+        JSON-encoded degrades exactly as an oversized or unencodable record
+        already does: counted on ``write_errors``, never raised, and never
+        ``repr``-ed into the log.
+
+        Nothing here inspects what a field means. A caller that puts speech
+        in one has written speech to the transcript log, which is what this
+        file is for; a caller that puts speech in an OPERATIONAL log has made
+        a mistake this module still cannot catch for them.
+        """
+        record: dict[str, Any] = {**fields, "ts": time.time(), "role": role, "text": text}
         self._write(record)
 
 

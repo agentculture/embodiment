@@ -219,7 +219,7 @@ import secrets
 import threading
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Mapping, Optional
 
 from embodiment import continuity
 from embodiment.context import count_tokens_chars
@@ -878,22 +878,29 @@ class Session:
         self._append(ROLE_USER, text)
         return self._check_ask(text)
 
-    def add_assistant(self, text: str) -> None:
+    def add_assistant(self, text: str, metadata: Optional[Mapping[str, Any]] = None) -> None:
         """Add an assistant turn. Writes through the transcript; no ask check.
+
+        *metadata* is written beside the turn in the transcript log and
+        nowhere else: it does not enter the window, is not counted toward the
+        budget, and never reaches a memory record. It exists for the daemon's
+        per-turn timings and recalled-record ids (t21), which belong with the
+        turn they describe rather than in a parallel file a reader has to
+        join by hand.
 
         Raises ``TypeError`` if *text* is not a ``str`` — see
         :meth:`add_user`.
         """
         self._require_str(text)
-        self._append(ROLE_ASSISTANT, text)
+        self._append(ROLE_ASSISTANT, text, metadata=metadata)
 
     @staticmethod
     def _require_str(text: Any) -> None:
         if not isinstance(text, str):
             raise TypeError(f"turn text must be a str, got {type(text).__name__}")
 
-    def _append(self, role: str, text: str) -> None:
-        self.transcript.write(role, text)
+    def _append(self, role: str, text: str, metadata: Optional[Mapping[str, Any]] = None) -> None:
+        self.transcript.write(role, text, **dict(metadata or {}))
         self._turns_seen += 1
         cost = self._turn_cost(role, text)
         if cost <= 0:
