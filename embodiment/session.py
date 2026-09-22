@@ -443,6 +443,21 @@ def _sanitize_deadline(deadline: Any) -> tuple[float, bool]:
 #: sentence, which a regex heuristic cannot do — this is stated here rather
 #: than attempted. The daemon may swap in a model-backed detector of the same
 #: signature later.
+#: Punctuation a transcriber can drop between the trigger word and its ``ש``.
+#: Whisper writes «תזכרי, שהחלב נגמר» for the same breath it writes «תזכרי
+#: שהחלב נגמר» as, and the operator says both are the same ask — measured on
+#: the rig, where he opened with «תזכרי ש…» several times and one transcript
+#: came back with the comma. Without this the comma turns the trigger into a
+#: clause of its own (:data:`_CLAUSE_SPLIT_RE` splits on ``,``), leaving
+#: «תזכרי» alone as the only eligible clause, which matches nothing.
+#:
+#: Deliberately NARROW: it rewrites punctuation ONLY where it sits directly
+#: between a trigger word and a following ``ש``, so it can neither join two
+#: real clauses nor make any utterance eligible that was not already about to
+#: be. Everything after it — the address strip, the one-eligible-clause rule,
+#: the negation and question prefixes — is unchanged.
+_TRIGGER_PUNCTUATION_RE = re.compile(r"(^|\s)(תזכר[יו]|זכר[יו])\s*[,.:;־-]+\s*(ש)")
+
 _ASK_PATTERNS: tuple[re.Pattern[str], ...] = (
     re.compile(r"^תזכר[יו]\s*ש(.+)", re.DOTALL),
     re.compile(r"^זכר[יו]\s*ש(.+)", re.DOTALL),
@@ -494,6 +509,10 @@ _CLAUSE_SPLIT_RE = re.compile(r"[,.!?;\n]+")
 def default_ask_detector(text: str) -> Optional[str]:
     """The thing to remember, or ``None``. A heuristic, not a model call.
 
+    Punctuation between the trigger and its ``ש`` is normalised away first
+    (:data:`_TRIGGER_PUNCTUATION_RE`): «תזכרי, שהחלב נגמר» is the same ask as
+    «תזכרי שהחלב נגמר», and only a transcriber's comma separates them.
+
     An utterance containing "?" ANYWHERE — not only at its end — is never an
     ask (round 3: "remember that the milk is gone? sorry, wrong chat" reads
     as a question that happened to be followed by an aside, not a command,
@@ -525,6 +544,8 @@ def default_ask_detector(text: str) -> Optional[str]:
         return None
     if "?" in text:
         return None
+
+    text = _TRIGGER_PUNCTUATION_RE.sub(r"\1\2 \3", text)
 
     eligible_clause: Optional[str] = None
     for raw_clause in _CLAUSE_SPLIT_RE.split(text):

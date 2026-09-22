@@ -20,6 +20,7 @@ import io
 import json
 import os
 import re
+import stat
 import sys
 import threading
 import time
@@ -1220,6 +1221,343 @@ class TestDeclaredSampleRate:
         planted = "    config = RealtimeConfig(input_sample_rate=24000)"
         assert re.search(r"\b\d{4,6}\b", planted)
         assert "sample_rate" in planted
+
+
+class TestTheMemoryLane:
+    """The explicit-ask path, end to end, through the REAL session and store.
+
+    Live, the operator asked Gwen to remember something and she said she
+    would. The first run stored nothing and the second stored one record, and
+    nothing in ``status()`` could show which had happened. These drive the
+    real :class:`~embodiment.session.Session`, the real
+    :class:`~embodiment.memory.RoomMemory` and the real files store.
+    """
+
+    def _real_memory_harness(self, harness: Any, tmp_path: Path, **over: Any) -> Any:
+        """A harness whose memory is a real RoomMemory on a real private store."""
+        data_dir = tmp_path / f"store{len(list(tmp_path.glob('store*')))}"
+        memory = RoomMemory(data_dir, scope="gwen", added_by="gwen", embed_probe=lambda: False)
+        return harness(memory=memory, **over), data_dir
+
+    def test_a_spoken_ask_lands_a_record_in_the_private_store(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        h, data_dir = self._real_memory_harness(harness, tmp_path)
+        h.app.attach_ear("host", FakeEndpoint())
+
+        assert h.app.submit_transcript("תזכרי שהחלב נגמר") is True
+        h.app.run_turn("תזכרי שהחלב נגמר")
+
+        files = [p for p in data_dir.rglob("*") if p.is_file()]
+        assert files, f"nothing was written under {data_dir}"
+        record = files[0]
+        assert record.stat().st_size > 0
+        assert stat.S_IMODE(record.stat().st_mode) == 0o600, oct(record.stat().st_mode)
+        assert stat.S_IMODE(data_dir.stat().st_mode) == 0o700
+
+        memory_status = h.app.status()["memory"]
+        assert memory_status["asks_detected"] == 1
+        assert memory_status["remembered"] == 1
+        assert memory_status["remember_failed"] == 0
+
+    @pytest.mark.parametrize(
+        "phrase",
+        [
+            "תזכרי שהחלב נגמר",
+            "גוון, תזכרי שהחלב נגמר",
+            "תזכרי, שהחלב נגמר",
+        ],
+    )
+    def test_every_phrasing_the_operator_used_is_remembered(
+        self, harness: Any, tmp_path: Path, phrase: str
+    ) -> None:
+        h, data_dir = self._real_memory_harness(harness, tmp_path)
+        h.app.attach_ear("host", FakeEndpoint())
+        h.app.run_turn(phrase)
+        assert [p for p in data_dir.rglob("*") if p.is_file()], phrase
+        assert h.app.status()["memory"]["remembered"] == 1, phrase
+
+    def test_an_ordinary_utterance_writes_nothing_and_counts_nothing(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        h, data_dir = self._real_memory_harness(harness, tmp_path)
+        h.app.attach_ear("host", FakeEndpoint())
+        h.app.run_turn("מה שלומך היום")
+        memory_status = h.app.status()["memory"]
+        assert memory_status["asks_detected"] == 0
+        assert memory_status["ask_not_detected"] == 0, "an ordinary sentence is not a miss"
+
+    def test_an_ask_the_detector_misses_is_visible(self, harness: Any) -> None:
+        """Item 4: a spoken ask that matches no pattern must never be silent."""
+        h = harness()
+        h.app.attach_ear("host", FakeEndpoint())
+        h.clear()
+        h.app.run_turn("אני רוצה שתזכרי את מה שאמרתי")
+
+        assert h.app.status()["memory"]["ask_not_detected"] == 1
+        states = [e for e in h.events("state") if e.data.get("status") == "ask-not-detected"]
+        assert len(states) == 1
+        assert states[0].data["component"] == "memory"
+        assert h.app.status()["memory"]["asks_detected"] == 0
+
+    def test_an_ask_during_a_barge_in_still_reaches_the_store(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        """Item 4's other candidate: was the ask lost because the turn was cut?
+
+        It is not: the ask is written by ``add_user`` at INTAKE, before senses
+        is ever called, so superseding the reply cannot lose the record. Gwen
+        does not get to say "I'll remember" and then not remember because she
+        was interrupted.
+        """
+        arrived = threading.Event()
+        released = threading.Event()
+
+        def slow_senses(messages: list[dict[str, Any]], tools: Any = None) -> ModelResponse:
+            arrived.set()
+            released.wait(timeout=10)
+            return ModelResponse(content=REPLY)
+
+        h, data_dir = self._real_memory_harness(harness, tmp_path, complete=slow_senses)
+        h.app.attach_ear("host", FakeEndpoint())
+
+        thread = threading.Thread(target=lambda: h.app.run_turn("תזכרי שהחלב נגמר"), daemon=True)
+        thread.start()
+        assert arrived.wait(timeout=10)
+        h.app._barge_in()
+        released.set()
+        thread.join(timeout=10)
+
+        assert [p for p in data_dir.rglob("*") if p.is_file()], "the ask was lost to a barge-in"
+        status = h.app.status()
+        assert status["memory"]["remembered"] == 1
+        assert status["turns"]["superseded"] == 1
+
+    def test_a_session_writes_a_transcript_log(self, harness: Any, tmp_path: Path) -> None:
+        """Item 3: the per-session log the live runs never created."""
+        h, _data_dir = self._real_memory_harness(harness, tmp_path)
+        h.app.attach_ear("host", FakeEndpoint())
+        h.app.run_turn(SPEECH)
+
+        sessions_dir = Path(h.state.dir) / "sessions"
+        assert sessions_dir.is_dir(), "no per-session transcript directory"
+        assert stat.S_IMODE(sessions_dir.stat().st_mode) == 0o700
+        logs = [p for p in sessions_dir.iterdir() if p.is_file()]
+        assert logs, "no transcript log was written"
+        assert stat.S_IMODE(logs[0].stat().st_mode) == 0o600
+        assert logs[0].stat().st_size > 0
+
+        transcript_status = h.app.status()["session"]["transcript"]
+        assert transcript_status is not None
+        assert transcript_status["persistent"] is True
+        assert transcript_status["max_bytes"] > 0
+
+    def test_the_summary_is_attempted_and_written_at_close(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        """Item 2: no summary record survived either live run."""
+        summaries: list[list[dict[str, Any]]] = []
+
+        def summarise(messages: list[dict[str, Any]]) -> str:
+            summaries.append(messages)
+            return "דיברו על החלב."
+
+        h, data_dir = self._real_memory_harness(harness, tmp_path, summarise=summarise)
+        h.app.attach_ear("host", FakeEndpoint())
+        h.app.run_turn(SPEECH)
+        before = len([p for p in data_dir.rglob("*") if p.is_file()])
+
+        h.app.close(deadline=4.0)
+
+        assert summaries, "the summariser was never called"
+        memory_status = h.app.status()["memory"]
+        assert memory_status["summary_attempted"] == 1
+        assert memory_status["summary_written"] == 1
+        assert memory_status["summary_skip_reason"] is None
+        after = len([p for p in data_dir.rglob("*") if p.is_file()])
+        assert after >= before
+
+    def test_a_missing_summariser_is_NAMED_not_merely_absent(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        """What the live daemon did, and why nothing could see it."""
+        h, _data_dir = self._real_memory_harness(harness, tmp_path)
+        h.app.attach_ear("host", FakeEndpoint())
+        h.app.run_turn(SPEECH)
+        h.app.close(deadline=4.0)
+
+        memory_status = h.app.status()["memory"]
+        assert memory_status["summary_attempted"] == 1
+        assert memory_status["summary_written"] == 0
+        assert memory_status["summary_skip_reason"], "the absence was not named"
+
+    def test_a_summariser_that_hangs_does_not_outlast_the_close(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        def hanging(messages: list[dict[str, Any]]) -> str:
+            time.sleep(30)
+            return "never"
+
+        h, _data_dir = self._real_memory_harness(harness, tmp_path, summarise=hanging)
+        h.app.attach_ear("host", FakeEndpoint())
+        h.app.run_turn(SPEECH)
+
+        started = time.monotonic()
+        h.app.close(deadline=2.0)
+        assert time.monotonic() - started < 8.0
+        memory_status = h.app.status()["memory"]
+        assert memory_status["summary_written"] == 0
+        assert memory_status["summary_skip_reason"]
+
+    def test_main_wires_a_summariser_at_all(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The live gap: Session.close writes nothing unless it is GIVEN one."""
+        monkeypatch.setenv("EMBODIMENT_STATE_DIR", str(tmp_path / "state"))
+        application = app_module.main()
+        try:
+            assert application._summarise is not None
+            assert callable(application._summarise)
+        finally:
+            application.close(deadline=2.0)
+
+
+class TestSupersededTurns:
+    """Live: barge in, she starts thinking, barge in again — and she talks over you.
+
+    The second ``speech_started`` had nothing to stop, because nothing was
+    playing yet; the reply then arrived and played over the operator.
+    """
+
+    def test_a_barge_in_while_thinking_drops_the_reply(self, harness: Any) -> None:
+        released = threading.Event()
+        arrived = threading.Event()
+
+        def slow_senses(messages: list[dict[str, Any]], tools: Any = None) -> ModelResponse:
+            arrived.set()
+            released.wait(timeout=10)
+            return ModelResponse(content=REPLY)
+
+        endpoint = FakeEndpoint()
+        h = harness(complete=slow_senses, endpoints=lambda: endpoint)
+        h.app.start()
+        played_before = len(endpoint.played)
+        h.clear()
+
+        thread = threading.Thread(target=lambda: h.app.run_turn(SPEECH), daemon=True)
+        thread.start()
+        assert arrived.wait(timeout=10), "the turn never reached senses"
+
+        h.app._barge_in()  # the operator starts speaking again, mid-thought
+        released.set()
+        thread.join(timeout=10)
+
+        assert len(endpoint.played) == played_before, "the superseded reply was spoken"
+        status = h.app.status()
+        assert status["turns"]["superseded"] == 1
+        assert status["turns"]["completed"] == 1
+        replies = h.events("reply")
+        assert [e.data["text"] for e in replies] == [REPLY]
+        assert replies[0].data["superseded"] is True
+        states = [e for e in h.events("state") if e.data.get("status") == "superseded"]
+        assert len(states) == 1 and states[0].data["component"] == "turn"
+
+    def test_a_turn_nobody_interrupted_is_spoken_normally(self, harness: Any) -> None:
+        endpoint = FakeEndpoint()
+        h = harness(endpoints=lambda: endpoint)
+        h.app.start()
+        played_before = len(endpoint.played)
+        h.clear()
+
+        h.app.run_turn(SPEECH)
+
+        assert len(endpoint.played) > played_before
+        assert h.app.status()["turns"]["superseded"] == 0
+        replies = h.events("reply")
+        assert replies and replies[0].data.get("superseded") is not True
+
+    def test_speech_started_between_submit_and_the_reply_wins(self, harness: Any) -> None:
+        """The race, pinned: whoever wins, no reply may START after it was seen."""
+        endpoint = FakeEndpoint()
+        seen = threading.Event()
+
+        def racing_senses(messages: list[dict[str, Any]], tools: Any = None) -> ModelResponse:
+            # speech_started lands in the same breath as the reply
+            h.app._on_event(wire.SpeechStarted(item_id="i2"))
+            seen.set()
+            return ModelResponse(content=REPLY)
+
+        h = harness(complete=racing_senses, endpoints=lambda: endpoint)
+        h.app.start()
+        played_before = len(endpoint.played)
+
+        h.app.run_turn(SPEECH)
+
+        assert seen.is_set()
+        assert len(endpoint.played) == played_before, "a reply started after speech_started"
+        assert h.app.status()["turns"]["superseded"] == 1
+
+    def test_the_next_turn_is_not_superseded_by_the_last_barge_in(self, harness: Any) -> None:
+        """The mark is per turn, so one barge-in cannot mute the conversation."""
+        endpoint = FakeEndpoint()
+        h = harness(endpoints=lambda: endpoint)
+        h.app.start()
+        h.app._barge_in()
+        h.app.run_turn(SPEECH)
+        played_after_first = len(endpoint.played)
+        h.app.run_turn(SPEECH)
+
+        assert len(endpoint.played) > played_after_first
+        assert h.app.status()["turns"]["superseded"] == 0
+
+    def test_a_barge_in_with_no_turn_in_flight_supersedes_nothing(self, harness: Any) -> None:
+        h = harness()
+        h.app.start()
+        h.app._barge_in()
+        h.app._barge_in()
+        assert h.app.status()["turns"]["superseded"] == 0
+
+
+class TestFramesBeforeTheSession:
+    """Live finding B: app-capture-failed x3 at start, right after the warm-up."""
+
+    def test_a_frame_during_start_capture_finds_a_session(self, harness: Any) -> None:
+        """The endpoint's capture thread is live the moment start_capture returns.
+
+        Measured live on the restart: three ``app-capture-failed`` records
+        carrying an ``AttributeError`` whose message is 47 characters — which
+        is exactly ``'NoneType' object has no attribute 'send_audio'``. The
+        ears client was built AFTER capture started, so the first frames had
+        nowhere to go.
+        """
+
+        class EagerEndpoint(FakeEndpoint):
+            def start_capture(self, on_frame: Any) -> None:
+                super().start_capture(on_frame)
+                for _ in range(3):  # a real capture thread is already running
+                    on_frame(silent_pcm())
+
+        h = harness()
+        h.app.attach_ear("host", EagerEndpoint())
+
+        assert app_module.APP_CAPTURE_FAILED not in h.ledger_codes()
+        assert len(h.ears.sent) == 3, "the first frames were dropped"
+        assert h.app.status()["audio"]["frames_forwarded"] == 3
+
+    def test_a_frame_with_no_session_is_named_and_counted(self, harness: Any) -> None:
+        """Belt and braces: a factory that fails leaves no session at all."""
+
+        def refusing_factory(rate: int) -> Any:
+            raise RuntimeError("no gateway client")
+
+        h = harness(ears_factory=refusing_factory)
+        endpoint = FakeEndpoint()
+        h.app.attach_ear("host", endpoint)
+        endpoint.on_frame(silent_pcm())
+
+        assert app_module.APP_FRAMES_NO_SESSION in h.ledger_codes()
+        assert h.app.status()["audio"]["frames_dropped_no_session"] == 1
+        assert app_module.APP_CAPTURE_FAILED not in h.ledger_codes()
 
 
 class TestVoiceSeams:

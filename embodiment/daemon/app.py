@@ -123,6 +123,7 @@ __all__ = [
     "MAX_FEATURE_DRAIN",
     "APP_BOOTSTRAP_DEGRADED",
     "APP_CAPTURE_FAILED",
+    "APP_FRAMES_NO_SESSION",
     "APP_CLOSED",
     "APP_EARS_STREAM_ENDED",
     "APP_EARS_CLOSE_INCOMPLETE",
@@ -153,6 +154,8 @@ __all__ = [
     "EarHandover",
     "DaemonApp",
     "http_complete",
+    "SUMMARY_PROMPT",
+    "SUMMARY_MAX_TOKENS",
     "main",
 ]
 
@@ -195,6 +198,24 @@ _EARS_CLOSE_WAIT_SHARE = 0.5
 #: Where the ears step sits in the shutdown budget. Named because two places
 #: must agree on it: the step itself, and the bound the ear is handed.
 _EARS_STEP_FRACTION = 0.35
+
+#: The system prompt for the end-of-session summary. Hebrew, because the
+#: window it summarises is Hebrew, and short because the record is a memory
+#: entry rather than minutes.
+SUMMARY_PROMPT = (
+    "סכמי בקצרה, במשפט או שניים, על מה דיברתם בשיחה הזו. "
+    "כתבי רק את הסיכום, בגוף שלישי, בלי פתיח ובלי סיום."
+)
+
+#: Token ceiling for that call. A **judgement call**: a summary that needs
+#: more than this is not a summary.
+SUMMARY_MAX_TOKENS = 300
+
+#: Stems that make an utterance worth reporting when the ask detector did NOT
+#: fire. A heuristic for VISIBILITY only: nothing here writes, refuses or
+#: remembers anything, and the detector in :mod:`embodiment.session` remains
+#: the only thing that decides what an ask is.
+_ASK_STEMS: tuple[str, ...] = ("תזכר", "זכר", "remember", "don't forget", "dont forget")
 
 #: How long a silence the warm-up plays at attach, in seconds. A **judgement
 #: call**: long enough that the endpoint really starts its player (and so
@@ -256,6 +277,8 @@ APP_EAR_ATTACH_FAILED = "app-ear-attach-failed"
 APP_EAR_DETACH_FAILED = "app-ear-detach-failed"
 #: A captured frame could not be forwarded to the ears.
 APP_CAPTURE_FAILED = "app-capture-failed"
+#: A captured frame arrived with no realtime session to send it to.
+APP_FRAMES_NO_SESSION = "app-frames-no-session"
 #: A displaced ear is STILL delivering frames well after the handover — an ear
 #: that will not stop. The first few late frames are guaranteed by the handover
 #: design and are only counted; this code is for the count that keeps growing.
@@ -538,6 +561,7 @@ class DaemonApp:
         self._generation = 0
         self._handovers = 0
         self._refusals = 0
+        self._frames_dropped_no_session = 0
         self._warmups = 0
         self._warmup_failures = 0
         self._stale_frames = 0
@@ -556,8 +580,19 @@ class DaemonApp:
         self._transcripts_not_text = 0
         self._turns_completed = 0
         self._turns_in_flight = 0
+        self._turn_serial = 0
+        self._superseded_serial = -1
+        self._turns_superseded = 0
         self._turns_dropped = 0
         self._turns_failed = 0
+        self._asks_detected = 0
+        self._asks_remembered = 0
+        self._asks_failed = 0
+        self._asks_deferred = 0
+        self._asks_missed = 0
+        self._summary_attempted = 0
+        self._summary_written = 0
+        self._summary_skip_reason: Optional[str] = None
         self._recall_mode: Optional[str] = None
         self._recall_calls = 0
         self._degradation_counts: dict[str, int] = {}
@@ -862,22 +897,39 @@ class DaemonApp:
             return EarHandover(ear="", attached=False, previous=previous)
 
     def _install_ear(self, ear: str, endpoint: Any) -> bool:
-        """Attach, start capture, build the voice. Returns whether it took."""
+        """Attach, dial, capture, speak. In that order. Returns whether it took.
+
+        The order is the fix for a live defect, not a preference. Capture used
+        to start before the realtime session was dialled, and an endpoint's
+        capture thread is live the moment ``start_capture`` returns — so on
+        the restart of 2026-09-22 the first three frames found
+        ``self._ears is None`` and were recorded as ``app-capture-failed``
+        carrying an ``AttributeError`` (``'NoneType' object has no attribute
+        'send_audio'``: 47 characters, fingerprint ``636e0031``, exactly what
+        the ledger showed). Dialling first costs nothing — the session's rate
+        comes from a property the endpoint answers without capturing — and it
+        means a frame always has somewhere to go.
+        """
         generation = self._generation + 1
-        try:
-            endpoint.attach()
-            endpoint.start_capture(self._frame_callback(generation))
-        except Exception as exc:  # noqa: BLE001 - an endpoint is not trusted to keep its word
-            self._record(APP_EAR_ATTACH_FAILED, f"{ear}: {_describe(exc)}")
+        if not self._safely(endpoint.attach, APP_EAR_ATTACH_FAILED, ear):
             self._safely(endpoint.detach, APP_EAR_DETACH_FAILED, ear)
             return False
         self._generation = generation
         self._ear_name = ear
         self._ear_endpoint = endpoint
         self._features_in.reset()
+        self._ensure_ears_session(ear, endpoint)
+        try:
+            endpoint.start_capture(self._frame_callback(generation))
+        except Exception as exc:  # noqa: BLE001 - an endpoint is not trusted to keep its word
+            self._record(APP_EAR_ATTACH_FAILED, f"{ear}: {_describe(exc)}")
+            self._ear_name = None
+            self._ear_endpoint = None
+            self._generation += 1
+            self._safely(endpoint.detach, APP_EAR_DETACH_FAILED, ear)
+            return False
         self._ensure_voice(ear, endpoint)
         self._warm_up_playback(endpoint)
-        self._ensure_ears_session(ear, endpoint)
         self._fold_endpoint(endpoint)
         return True
 
@@ -1044,8 +1096,18 @@ class DaemonApp:
                 return
             with self._lock:
                 self._frames_captured += 1
+            ears = self._ears
+            if ears is None:
+                # No session to send to — a factory that failed, or an ear
+                # attached before one could be dialled. Named and counted
+                # rather than left to raise an AttributeError that reads like
+                # a bug in the transport.
+                with self._lock:
+                    self._frames_dropped_no_session += 1
+                self._record(APP_FRAMES_NO_SESSION, "no realtime session to send to", once=True)
+                return
             try:
-                self._ears.send_audio(pcm)
+                ears.send_audio(pcm)
             except Exception as exc:  # noqa: BLE001 - the ears client is a seam
                 self._record(APP_CAPTURE_FAILED, _describe(exc), once=True)
             else:
@@ -1261,8 +1323,10 @@ class DaemonApp:
             return TurnResult(spoken="")
         with self._lock:
             self._turns_in_flight += 1
+            self._turn_serial += 1
+            serial = self._turn_serial
         try:
-            return self._run_turn(text)
+            return self._run_turn(text, serial)
         except Exception as exc:  # noqa: BLE001 - a turn fault must not kill the daemon
             with self._lock:
                 self._turns_failed += 1
@@ -1272,7 +1336,7 @@ class DaemonApp:
             with self._lock:
                 self._turns_in_flight -= 1
 
-    def _run_turn(self, text: str) -> TurnResult:
+    def _run_turn(self, text: str, serial: int) -> TurnResult:
         self._publish("turn", {"phase": "heard", "step_count": 0})
         packet, record = perceive(text)
         spoken_in = packet.original if isinstance(packet.original, str) else text
@@ -1282,7 +1346,7 @@ class DaemonApp:
 
         session = self._ensure_session()
         if session is not None:
-            self._safely(lambda: session.add_user(spoken_in), APP_TURN_FAILED, "add_user")
+            self._note_ask(session, spoken_in)
 
         recalled = self._recall(spoken_in)
         window = self._window(session)
@@ -1302,17 +1366,111 @@ class DaemonApp:
         with self._lock:
             self._turns_completed += 1
         self._publish("turn", {"phase": "spoken", "step_count": result.steps})
-        self._speak(result.spoken)
+        self._speak(result.spoken, serial)
         return result
 
-    def _speak(self, spoken: str) -> None:
+    def _speak(self, spoken: str, serial: int) -> None:
+        """Hand the reply to the voice — unless the room moved on while we thought.
+
+        Two checks, because the race is real: a ``speech_started`` can land in
+        the microseconds between deciding to speak and the voice actually
+        starting. The FIRST check (before handing over) is what normally
+        stops a superseded reply. The SECOND (after
+        :meth:`~embodiment.voice.Voice.speak` returns, which is when the
+        audio is queued rather than played) catches the hairline case and
+        stops the speaker through the voice's own barge-in path, so nothing
+        that started playing after a ``speech_started`` was seen keeps
+        playing beyond the barge-in bound.
+        """
         voice = self._voice
+        if self._is_superseded(serial):
+            self._publish_reply(spoken, superseded=True)
+            return
         if voice is None:
             self._record(APP_NO_ENDPOINT, "nothing to speak through; the reply was not voiced")
-            self._publish("reply", {"text": spoken})
+            self._publish_reply(spoken, superseded=False)
             return
         self._safely(lambda: voice.speak(spoken), APP_TURN_FAILED, "speak")
+        if self._is_superseded(serial):
+            self._safely(voice.on_speech_started, APP_TURN_FAILED, "barge-in")
         self._fold_voice(voice)
+
+    def _is_superseded(self, serial: int) -> bool:
+        with self._lock:
+            return self._superseded_serial == serial
+
+    def _publish_reply(self, text: str, *, superseded: bool) -> None:
+        """The app's own reply publish, for replies the voice never sees.
+
+        :class:`~embodiment.voice.Voice` publishes the reply it is about to
+        speak; this is the other two cases — no voice at all, and a reply
+        dropped because the room moved on — so a dashboard sees every reply
+        either way, and can tell which kind it was.
+        """
+        self._publish("reply", {"text": text, "superseded": superseded})
+
+    def _note_ask(self, session: Any, text: str) -> None:
+        """Add the user turn and COUNT what the explicit-ask path did with it.
+
+        ``Session.add_user`` already detects a spoken "remember that …" and
+        writes it through :class:`~embodiment.memory.RoomMemory` (t11). What
+        was missing was any way to see a ZERO: the operator asked Gwen to
+        remember something, she said she would, and nothing downstream could
+        show whether a record had been written, refused, deferred, or never
+        detected at all. These counters are that view.
+        """
+        try:
+            outcome = session.add_user(text)
+        except Exception as exc:  # noqa: BLE001 - the session is a seam
+            self._record(APP_TURN_FAILED, f"add_user: {_describe(exc)}")
+            return
+        if outcome is None:
+            self._note_missed_ask(text)
+            return
+        with self._lock:
+            self._asks_detected += 1
+            if getattr(outcome, "remembered", False):
+                self._asks_remembered += 1
+                status = "remembered"
+            elif getattr(outcome, "deferred", False):
+                self._asks_deferred += 1
+                status = "deferred"
+            else:
+                self._asks_failed += 1
+                status = "refused"
+            counts = (self._asks_detected, self._asks_remembered, self._asks_failed)
+        self._publish(
+            "state",
+            {
+                "component": "memory",
+                "status": f"ask-{status}",
+                "asks_detected": counts[0],
+                "remembered": counts[1],
+                "remember_failed": counts[2],
+            },
+        )
+
+    def _note_missed_ask(self, text: str) -> None:
+        """An utterance that SOUNDS like an ask but matched no pattern.
+
+        A heuristic, and only ever a heuristic: it decides nothing, writes
+        nothing and refuses nothing — it exists so that a spoken ask the
+        detector did not recognise is visible instead of silent, which is the
+        exact failure the operator hit (he asked, she agreed, and nothing
+        anywhere showed that no record had been written). Counting EVERY
+        non-ask would be noise, so only an utterance carrying one of a few
+        remember-stems is reported.
+        """
+        lowered = text.lower()
+        if not any(stem in lowered for stem in _ASK_STEMS):
+            return
+        with self._lock:
+            self._asks_missed += 1
+            count = self._asks_missed
+        self._publish(
+            "state",
+            {"component": "memory", "status": "ask-not-detected", "ask_not_detected": count},
+        )
 
     def _recall(self, text: str) -> str:
         """The ONE place recall reaches a prompt, bounded by its own deadline."""
@@ -1559,7 +1717,16 @@ class DaemonApp:
         own bookkeeping (dropping the pacing buffer, counting the discarded
         samples) is in-memory and runs after it, inside the 200 ms bound
         :data:`embodiment.voice.BARGE_IN_BOUND_S` states.
+
+        Stopping the speaker is only half of it. Observed live: the operator
+        barged in, Gwen started the turn for what he said, he began speaking
+        AGAIN while senses was still generating — and that second
+        ``speech_started`` had nothing to stop, because nothing was playing
+        yet. The reply then arrived and played over him. So a
+        ``speech_started`` that lands while a turn is IN FLIGHT supersedes
+        that turn: see :meth:`_supersede_turn_in_flight`.
         """
+        self._supersede_turn_in_flight()
         voice, endpoint = self._voice, self._ear_endpoint
         speaking = bool(getattr(voice, "speaking", False))
         playing = False
@@ -1572,6 +1739,31 @@ class DaemonApp:
             return
         self._safely(voice.on_speech_started, APP_TURN_FAILED, "barge-in")
         self._fold_voice(voice)
+
+    def _supersede_turn_in_flight(self) -> None:
+        """A turn whose reply must not be spoken, because the room moved on.
+
+        Marks the turn that is currently between "transcript accepted" and
+        "reply handed to the voice". When that reply comes back it is dropped
+        rather than spoken, counted on ``status()["turns"]["superseded"]``,
+        and published as a ``reply`` event carrying ``superseded: true`` so a
+        dashboard can still show what she would have said.
+
+        **Not undone.** If the commit that follows turns out to be empty —
+        noise, breath, decision 14's seven-a-minute — the dropped reply is not
+        resurrected: the operator's word is that a lost reply beats a late
+        one, and an answer arriving after the room has moved on is the defect
+        this exists to prevent, not a prize to be salvaged.
+        """
+        with self._lock:
+            if self._turn_serial == 0 or self._turns_in_flight == 0:
+                return
+            if self._superseded_serial == self._turn_serial:
+                return
+            self._superseded_serial = self._turn_serial
+            self._turns_superseded += 1
+            count = self._turns_superseded
+        self._publish("state", {"component": "turn", "status": "superseded", "superseded": count})
 
     async def _shut_ears_down(self, deadline: Optional[float] = None) -> None:
         """Close the ears from INSIDE their own loop. Idempotent; never raises.
@@ -1745,14 +1937,37 @@ class DaemonApp:
         return self._safely(lambda: voice.close(max(0.05, deadline)), APP_TURN_FAILED, "voice")
 
     def _close_session(self, deadline: float) -> bool:
+        """Close the session, which is where the end-of-session summary is written.
+
+        The summary is attempted inside this step's share of the shutdown
+        budget — a summariser is a model call, and a stop that waits on one
+        without a bound is a stop that does not come back. Its ABSENCE is
+        named rather than left to be inferred from a missing record:
+        ``status()["memory"]["summary_skip_reason"]`` carries t11's own reason
+        (``session-summary-not-provided`` when no summariser was wired at all,
+        which is what a daemon built without a senses seam will report).
+        """
         session = self._session
         if session is None:
             return True
+        with self._lock:
+            self._summary_attempted += 1
         try:
             report = session.close(self._summarise, deadline=max(0.05, deadline))
         except Exception as exc:  # noqa: BLE001 - the session is a seam
             self._record(APP_TURN_FAILED, f"session close: {_describe(exc)}")
+            with self._lock:
+                self._summary_skip_reason = "close-raised"
             return False
+        landed = bool(getattr(report, "summary_landed", False))
+        with self._lock:
+            if landed:
+                self._summary_written += 1
+                self._summary_skip_reason = None
+            else:
+                self._summary_skip_reason = _safe_name(
+                    getattr(report, "summary_skip_reason", None) or "unknown"
+                )
         for degradation in getattr(report, "degradations", ()) or ():
             self._fold("session", degradation)
         return True
@@ -1806,6 +2021,7 @@ class DaemonApp:
             turns = {
                 "completed": self._turns_completed,
                 "in_flight": self._turns_in_flight,
+                "superseded": self._turns_superseded,
                 "dropped": self._turns_dropped,
                 "failed": self._turns_failed,
                 "queued": self._turn_queue.qsize(),
@@ -1814,6 +2030,7 @@ class DaemonApp:
                 "frames_captured": self._frames_captured,
                 "frames_forwarded": self._frames_forwarded,
                 "frames_from_stale_ear": self._stale_frames,
+                "frames_dropped_no_session": self._frames_dropped_no_session,
                 "stale_frame_tolerance": _STALE_FRAME_TOLERANCE,
             }
             recall_mode = self._recall_mode
@@ -1875,7 +2092,17 @@ class DaemonApp:
                 "configured_mode": self._config.recall_mode,
                 "semantic": _semantic_available(self._memory),
             },
-            "memory": _memory_status(self._memory),
+            "memory": {
+                **_memory_status(self._memory),
+                "asks_detected": self._asks_detected,
+                "remembered": self._asks_remembered,
+                "remember_failed": self._asks_failed,
+                "remember_deferred": self._asks_deferred,
+                "ask_not_detected": self._asks_missed,
+                "summary_attempted": self._summary_attempted,
+                "summary_written": self._summary_written,
+                "summary_skip_reason": self._summary_skip_reason,
+            },
             "session": _session_status(session),
             "ears": _probe(self._ears),
             "voice": _probe(self._voice),
@@ -2057,13 +2284,35 @@ def _semantic_available(memory: Any) -> bool:
 
 
 def _session_status(session: Any) -> Optional[dict[str, Any]]:
+    """The session's own counters, INCLUDING its transcript log's.
+
+    The transcript log is the wave-1 obligation carried into t15: a private,
+    size-bounded, per-session file that the host must be able to see the
+    state of — its path, whether it is persistent, what it has had to evict.
+    Reporting the session without it made "no transcript was ever written" a
+    fact nothing could show.
+    """
     if session is None:
         return None
     try:
+        log = getattr(session, "transcript", None)
+        transcript = _probe(log)
+        if transcript is not None:
+            # t4's own counters say what the log has had to drop; the path
+            # and persistence say whether there IS a log, which is the fact
+            # the live runs needed and nothing reported.
+            path = getattr(log, "path", None)
+            transcript = {
+                **transcript,
+                "path": str(path) if path is not None else None,
+                "persistent": bool(getattr(log, "persistent", False)),
+                "max_bytes": int(getattr(log, "max_bytes", 0) or 0),
+            }
         return {
             "turns_seen": int(session.turns_seen),
             "closed": bool(session.closed),
             "degradation_counts": dict(session.degradation_counts),
+            "transcript": transcript,
         }
     except Exception:  # noqa: BLE001 - a session probe that fails is reported as unavailable
         return {"unavailable": True}
@@ -2108,6 +2357,25 @@ def main() -> DaemonApp:
             deadline=config.completion_deadline,
         )
 
+    def summarise(messages: list[dict[str, Any]]) -> str:
+        """The end-of-session summary seam: one senses call, its own prompt.
+
+        Wired here because it was the missing half of the memory lane —
+        ``Session.close`` writes a summary record only when it is GIVEN a
+        summariser, and a daemon built without one reported
+        ``session-summary-not-provided`` and wrote nothing, which is exactly
+        what the live runs showed. Bounded by the close step that calls it.
+        """
+        reply = http_complete(
+            [{"role": "system", "content": SUMMARY_PROMPT}, *messages],
+            gateway_url=config.gateway_url,
+            api_key=config.api_key,
+            role=config.role,
+            max_tokens=SUMMARY_MAX_TOKENS,
+            deadline=config.session_summary_deadline,
+        )
+        return reply.content
+
     def voice_factory(endpoint: Any) -> Voice:
         return Voice(
             endpoint=endpoint,
@@ -2126,6 +2394,7 @@ def main() -> DaemonApp:
         tools=tools,
         ears_factory=lambda rate: RealtimeEars(replace(realtime, input_sample_rate=rate)),
         endpoint_factory=HostEndpoint,
+        summarise=summarise,
         voice_factory=voice_factory,
     )
     try:
