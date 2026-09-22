@@ -32,6 +32,15 @@
 //       of inert literals from its dependencies (elkjs embeds
 //       Eclipse/Apache/W3C license URLs), which is why the allow-list is
 //       narrow and explicit rather than "skip JS entirely".
+//   (d) dist/worklets/pcm-capture-processor.js (task t18's cited
+//       AudioWorklet asset, `web/public/worklets/` -- Vite copies `public/`
+//       verbatim into `dist/`) — MUST be present (a build missing it exits
+//       0 today with no signal, and the wheel then ships a mic-capture path
+//       that 404s at runtime), and — reviewer finding (t18 round 4,
+//       MINOR): rather than carrying a second, narrower JS scanner, this
+//       one small file is fed through the SAME `checkJsText` (c) already
+//       uses for the main bundle, allow-list and all, so there is exactly
+//       one JS-scanning code path in this script, not two.
 //
 // The functions below are exported so web/src/build-output.test.ts can
 // exercise the detection logic directly against synthetic fixtures (fast,
@@ -39,7 +48,7 @@
 //
 // Run standalone with: node scripts/check-no-external-origin.mjs
 
-import { readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { extname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -113,7 +122,10 @@ export function checkCssText(css, label = "styles.css") {
  *  characters starting at "http://" or "https://" -- generous enough to
  *  catch `fetch("https://example.com")`, a template-literal URL, or a
  *  bare string constant, while stopping at the closing quote/paren a real
- *  URL literal would be wrapped in. */
+ *  URL literal would be wrapped in. Used for BOTH the main JS bundle (c)
+ *  and the worklet asset (d) -- one scanner, one allow-list, per the round
+ *  4 reviewer finding: carrying a second, narrower JS-string-literal
+ *  scanner alongside this one was redundant. */
 export function checkJsText(js, label = "bundle.js") {
   const findings = [];
   const urlRe = /https?:\/\/[^\s"'`)]+/g;
@@ -151,6 +163,22 @@ export function checkDist(distDir = DIST_DIR) {
   for (const file of jsFiles) {
     findings.push(...checkJsText(readFileSync(file, "utf8"), file));
   }
+
+  // (d) the cited mic-capture AudioWorklet asset (task t18): must exist in
+  // the built output at all (a silently-missing one 404s at runtime, never
+  // caught by any test here before this check), and is scanned with the
+  // SAME `checkJsText` the main bundle (c) uses above -- reusing rather
+  // than carrying a second scanner (round 4 reviewer finding).
+  const workletPath = join(distDir, "worklets", "pcm-capture-processor.js");
+  if (!existsSync(workletPath)) {
+    findings.push(
+      `${workletPath}: missing -- the mic-capture AudioWorklet asset ` +
+        "(web/public/worklets/pcm-capture-processor.js) did not land in dist/",
+    );
+  } else {
+    findings.push(...checkJsText(readFileSync(workletPath, "utf8"), workletPath));
+  }
+
   return findings;
 }
 
@@ -162,7 +190,8 @@ function main() {
     process.exit(1);
   }
   console.log(
-    "ok   - dist/index.html, dist/assets/*.css and dist/assets/*.js reference no external origin",
+    "ok   - dist/index.html, dist/assets/*.css, dist/assets/*.js and " +
+      "dist/worklets/pcm-capture-processor.js reference no external origin",
   );
   console.log("check-no-external-origin: PASS");
 }

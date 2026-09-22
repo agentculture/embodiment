@@ -203,6 +203,43 @@ body {
   }
 }
 
+/* Task t18: the canvas oscilloscope's wrapper and readouts. The canvas
+   itself keeps the `.waveform` rules above unchanged (same class, same
+   box) -- only the readouts row is new. */
+.waveform-wrap {
+  display: flex;
+  flex-direction: column;
+}
+
+.waveform__readouts-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem 1.5rem;
+  padding: 0.5rem 0.75rem;
+  font-size: var(--ac-type-meta, 0.75rem);
+  color: var(--ink-soft);
+}
+
+.waveform__readouts {
+  display: flex;
+  gap: 0.75rem;
+  margin: 0;
+}
+
+.waveform__readout {
+  display: flex;
+  gap: 0.25rem;
+}
+
+.waveform__readout dt {
+  font-weight: 600;
+}
+
+.waveform__readout dd {
+  margin: 0;
+  font-family: var(--font-mono);
+}
+
 .indicator-row {
   display: flex;
   gap: 1rem;
