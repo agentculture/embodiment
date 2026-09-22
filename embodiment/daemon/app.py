@@ -110,6 +110,7 @@ import os
 import queue
 import threading
 import time
+import unicodedata
 import urllib.request
 from collections import deque
 from dataclasses import dataclass, field, replace
@@ -254,9 +255,28 @@ _EARS_LOOP_WAIT_SHARE = 0.25
 #: has half a slice to see the thread finish.
 _EARS_CLOSE_WAIT_SHARE = 0.5
 
-#: Where the ears step sits in the shutdown budget. Named because two places
-#: must agree on it: the step itself, and the bound the ear is handed.
-_EARS_STEP_FRACTION = 0.35
+#: How WIDE the ears step is, as a share of the shutdown budget. Named
+#: because two places must agree on it: the step itself, and the bound the ear
+#: is handed. It became a width rather than a position when the summary moved
+#: to the front (``d9``) — the ear's own bound is derived from how much time
+#: the step has, never from where in the close it happens to sit.
+_EARS_STEP_FRACTION = 0.18
+
+#: Where the ears step ENDS in the budget, after the summary and the endpoint.
+_EARS_STEP_END = 0.81
+
+#: The share of the close budget the end-of-session SUMMARY is allowed, and
+#: it runs FIRST (decision 19 / ``d9``). At the new 4.0 s watchdog this is
+#: 4.0 x 0.8 x 0.55 = 1.76 s for a step that used to be scheduled inside
+#: ~0.24 s, and every step after it still gets more absolute time than it had
+#: before, because the budget itself doubled. The summary is a model call and the
+#: only step whose work cannot be resumed later — an ear, a voice, a server
+#: and a bus all close again on the next stop, but the conversation that was
+#: never summarised is gone. Running it last meant it ran with whatever the
+#: other six steps left, which on a 2 s watchdog was ~0.24 s and a recorded
+#: ``session-summary-timeout``. It is safe first because ``_stopping`` is set
+#: before any step, so no new turn can start while it runs.
+_SUMMARY_STEP_FRACTION = 0.55
 
 #: The share of the RUNNER's watchdog bound that the app's whole close gets.
 #: The watchdog (:data:`embodiment.daemon.lifecycle.DEFAULT_SHUTDOWN_DEADLINE`)
@@ -349,6 +369,7 @@ REMEMBER_TOOL_PROMPT = (
     "עם העובדה, לפני שאת עונה. אל תאשרי שזכרת בלי לקרוא לכלי. "
     "כשהמשתמש מבקש ממך לשכוח משהו, קראי לכלי forget עם מזהה הרשומה — הוא מופיע "
     "כ־id= ברשומה שנזכרה למעלה, או חוזר מהכלי remember. "
+    "אם אין מזהה כזה, קראי ל־forget עם fact — העובדה במילים שבהן נשמרה — ואל תמציאי מזהה. "
     "לעולם אל תגידי שזכרת או ששכחת משהו אלא אם הכלי החזיר ok. "
     "אם אין רשומה מתאימה לשכוח, אמרי שלא מצאת אותה. "
     "אחרי שהכלי החזיר ok, עני משפט אחד קצר בעברית שמאשר מה נשמר או נשכח — "
@@ -373,12 +394,29 @@ REMEMBER_TOOL_PROMPT = (
 #: does not prove the reply said "not found".
 FORGET_TOOL_NAME = "forget"
 FORGET_TOOL_DESCRIPTION = (
-    "Forget one stored fact the user asked you to forget, by its record id. Call "
-    "this whenever the user asks you to forget, drop or erase something you "
-    "remembered — however they phrase it. Use the id shown as id= on the recalled "
-    "record, or the id remember returned."
+    "Forget one stored fact the user asked you to forget. Call this whenever the "
+    "user asks you to forget, drop or erase something you remembered — however "
+    "they phrase it. Pass record_id when you have one: the id shown as id= on a "
+    "recalled record, or the id remember returned. When nothing was recalled and "
+    "you have no id, pass fact instead, in the words the fact was stored in. "
+    "Never invent an id."
 )
 FORGET_ID_DESCRIPTION = "The record id to forget, exactly as shown (id=...)."
+FORGET_FACT_DESCRIPTION = (
+    "The fact to forget, in the words it was stored in — use this only when no "
+    "record id is available, for example when nothing was recalled above."
+)
+
+#: How many records the text route may look at before it decides. Decision 20
+#: (``d10``): the model gets an id only when something was recalled INTO the
+#: prompt, and a spoken "forget that" often arrives with nothing recalled at
+#: all — live, that produced a ``forget`` call refused ``unknown-id`` on a
+#: perfectly ordinary ask. The daemon resolves the text itself instead of
+#: letting the model invent an id: exactly one exact match is archived, none
+#: is ``not-found``, several is ``ambiguous``. The daemon decides, so a
+#: hostile recalled record still cannot talk the model into archiving
+#: something else.
+FORGET_TEXT_TOP_K = 10
 
 #: What the daemon says itself when the reply that followed a *successful*
 #: tool round has nothing this voice can speak. Found live during ``t21``
@@ -1100,9 +1138,12 @@ class DaemonApp:
                 {
                     "type": "object",
                     "properties": {
-                        "record_id": {"type": "string", "description": FORGET_ID_DESCRIPTION}
+                        "record_id": {"type": "string", "description": FORGET_ID_DESCRIPTION},
+                        "fact": {"type": "string", "description": FORGET_FACT_DESCRIPTION},
                     },
-                    "required": ["record_id"],
+                    # Neither is required on its own (d10): an id when one was
+                    # recalled, the fact's own words when none was.
+                    "required": [],
                 },
                 self._forget_tool,
                 description=FORGET_TOOL_DESCRIPTION,
@@ -1388,10 +1429,14 @@ class DaemonApp:
     def close(self, deadline: float = 5.0) -> AppCloseReport:
         """Stop everything within *deadline*, reporting what is unfinished.
 
-        Idempotent and never raises. The order is deliberate: the ear stops
-        first (nothing new arrives), then the ears session, then the turn
-        worker, then the parts a turn depends on, and the bus last — so every
-        degradation recorded on the way out is still published.
+        Idempotent and never raises. The order is deliberate. ``_stopping``
+        is set before any step, so no new turn can start once close begins —
+        which is what lets the **session summary run first** (``d9``): it is a
+        model call, and it is the only step whose work is lost if it is
+        skipped, because every other part closes again on the next stop. Then
+        the ear (nothing new arrives), the ears session, the turn worker, the
+        parts a turn depends on, and the bus last — so every degradation
+        recorded on the way out is still published.
         """
         with self._lock:
             if self._closed:
@@ -1418,18 +1463,20 @@ class DaemonApp:
             share = self._share(started, budget, fraction)
             return self._bounded(lambda: call(share), share)
 
+        # FIRST, and with its own share: the one step whose work is lost if it
+        # does not happen (d9). Everything below closes again on the next stop.
+        session_closed = step(_SUMMARY_STEP_FRACTION, self._close_session)
         endpoint_closed = step(
-            0.20,
+            0.63,
             lambda d: self.detach_ear(publish=False, deadline=d).attached is False
             and self._reap_endpoints(d),
         )
-        ears_stopped = step(_EARS_STEP_FRACTION, self._stop_ears)
-        turn_stopped = step(0.50, self._stop_turn_thread)
+        ears_stopped = step(_EARS_STEP_END, self._stop_ears)
+        turn_stopped = step(0.87, self._stop_turn_thread)
         abandoned = self._turn_queue.qsize()
-        voice_closed = step(0.60, self._close_voice)
-        server_stopped = step(0.75, self._stop_server)
-        session_closed = step(0.90, self._close_session)
-        memory_closed = step(0.97, self._close_memory)
+        voice_closed = step(0.92, self._close_voice)
+        server_stopped = step(0.96, self._stop_server)
+        memory_closed = step(0.98, self._close_memory)
 
         self._publish("state", {"component": "daemon", "status": "stopped"})
         bus_closed = step(1.0, self._close_bus)
@@ -2386,7 +2433,7 @@ class DaemonApp:
         )
         return f"refused: {reason}"
 
-    def _forget_tool(self, record_id: object = "", **_ignored: Any) -> str:
+    def _forget_tool(self, record_id: object = "", fact: object = "", **_ignored: Any) -> str:
         """The ``forget`` tool: the model's own way to drop a fact. Never raises.
 
         Decision 18 (``d8``). Archives through :meth:`RoomMemory.forget` —
@@ -2401,9 +2448,15 @@ class DaemonApp:
         """
         with self._lock:
             self._forget_tool_calls += 1
-        if not isinstance(record_id, str):
+        if not isinstance(record_id, str) or not isinstance(fact, str):
             return self._refuse_forget("not-text")
         stripped = record_id.strip()
+        if not stripped and fact.strip():
+            # Decision 20 (d10): no id to pass, because nothing was recalled.
+            resolved = self._forget_id_for_text(fact.strip())
+            if not isinstance(resolved, str):
+                return self._refuse_forget(resolved.reason)
+            stripped = resolved
         if not stripped or _safe_record_id(stripped) != stripped:
             return self._refuse_forget("bad-id")
         try:
@@ -2437,12 +2490,53 @@ class DaemonApp:
         )
         return f"ok: forgot {stripped}"
 
+    def _forget_id_for_text(self, text: str) -> "str | _ForgetTextRefusal":
+        """The id of the ONE record whose text is exactly *text* (``d10``).
+
+        The match is the daemon's, not the model's: an exact-mode recall in
+        Gwen's own private store, then an equality check on the record text
+        with the Unicode form and the surrounding whitespace normalised —
+        substring hits do not count, because "forget the key" must not archive
+        "the key is in the blue drawer AND the spare is with the neighbour".
+        Zero matches and several matches are distinct refusals, so the model
+        can say which happened instead of guessing.
+        """
+        wanted = _normalised_fact(text)
+        try:
+            result = self._memory.recall(
+                # The NORMALISED text is what goes to the store too: an exact
+                # (substring) search for a sentence the transcriber spaced
+                # differently finds nothing at all, and "I could not find it"
+                # would then mean "you said it slightly differently".
+                wanted,
+                mode=MEMORY_MODE_EXACT,
+                deadline=self._config.recall_deadline,
+                top_k=FORGET_TEXT_TOP_K,
+            )
+        except Exception as exc:  # noqa: BLE001  # memory is a seam; a turn never dies on it
+            self._record(APP_FORGET_REFUSED, f"lookup: {_describe(exc)}")
+            return _ForgetTextRefusal("store-failed")
+        matches = [
+            identifier
+            for record in self._records_of(result)
+            if isinstance(record, dict)
+            and _normalised_fact(record.get("text")) == wanted
+            and isinstance(identifier := record.get("id"), str)
+            and identifier
+        ]
+        if not matches:
+            return _ForgetTextRefusal("not-found")
+        if len(set(matches)) > 1:
+            return _ForgetTextRefusal("ambiguous")
+        return matches[0]
+
     def _refuse_forget(self, reason: str, *, recorded: bool = False) -> str:
         """Count a forget refusal, say so on the bus, tell the model why. Never the id.
 
         *reason* is a fixed token from this method's vocabulary — ``not-text``,
-        ``bad-id``, ``unknown-id``, ``already-archived``, ``store-failed``,
-        ``store-refused`` — never anything the model supplied.
+        ``bad-id``, ``unknown-id``, ``already-archived``, ``not-found``,
+        ``ambiguous``, ``store-failed``, ``store-refused`` — never anything
+        the model supplied.
         """
         with self._lock:
             self._forget_tool_refused += 1
@@ -3695,6 +3789,26 @@ def _lexical_can_index(text: str) -> bool:
     checks a record comes back through the daemon's own path.
     """
     return any(ch.isascii() and ch.isalnum() for ch in text)
+
+
+@dataclass(frozen=True)
+class _ForgetTextRefusal:
+    """Why a text-route forget could not name exactly one record (``d10``)."""
+
+    reason: str
+
+
+def _normalised_fact(text: object) -> str:
+    """One spelling for comparing two stored facts: NFC, collapsed whitespace.
+
+    Speech arrives through a transcriber and a model, so the same sentence can
+    come back with a different Unicode composition or a doubled space. Neither
+    is a different fact — and neither is allowed to become a silent miss when
+    the user asks for something to be forgotten.
+    """
+    if not isinstance(text, str):
+        return ""
+    return " ".join(unicodedata.normalize("NFC", text).split())
 
 
 def _fallback_terms(text: str) -> list[str]:

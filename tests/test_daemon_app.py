@@ -5107,3 +5107,167 @@ class TestMissedAskCarriesNoSpeech:
         states = [e.data for e in h.events("state") if e.data.get("status") == "ask-not-detected"]
         assert states
         assert states[-1]["ask_not_detected"] == 1
+
+
+class TestTheSummaryRunsFirstOnStop:
+    """d9: the one step whose work is lost if it is skipped goes first.
+
+    Measured before the change: a 2.0 s watchdog gave the app 1.6 s and
+    scheduled the summary — a model call — inside ~0.24 s of it, so a live
+    stop recorded ``session-summary-timeout 1.32 s; abandoned`` and the
+    conversation was never written to memory. Everything after the summary
+    closes again on the next stop; the summary does not.
+    """
+
+    def test_the_session_closes_before_the_ear_does(self, harness: Any) -> None:
+        order: list[str] = []
+
+        class Recording(FakeEndpoint):
+            def close(self, deadline: float = 1.0) -> Any:
+                order.append("endpoint")
+                return super().close(deadline)
+
+        h = harness()
+        h.app.attach_ear("host", Recording())
+        session = h.app._ensure_session()
+        assert session is not None
+        original = session.close
+
+        def close(*args: Any, **kwargs: Any) -> Any:
+            order.append("session")
+            return original(*args, **kwargs)
+
+        session.close = close  # type: ignore[method-assign]
+        h.app.close(deadline=2.0)
+
+        assert "session" in order, "the session never closed"
+        assert order.index("session") < order.index("endpoint"), order
+
+    def test_the_summary_gets_the_largest_share_of_the_budget(self, harness: Any) -> None:
+        seen: list[float] = []
+        h = harness()
+        session = h.app._ensure_session()
+        assert session is not None
+
+        def close(*args: Any, **kwargs: Any) -> Any:
+            seen.append(kwargs.get("deadline", 0.0))
+            return SimpleNamespace(summary_landed=True, summary_skip_reason=None, degradations=())
+
+        session.close = close  # type: ignore[method-assign]
+
+        h.app.close(deadline=4.0)
+
+        assert seen, "the session close never ran"
+        # 0.55 of the budget, minus whatever the steps before it spent —
+        # which is nothing, because it IS the first step.
+        assert 1.8 <= seen[0] <= 2.2, seen
+
+    def test_the_runner_bound_and_the_stop_clocks_still_nest(self) -> None:
+        from embodiment.daemon import lifecycle as lifecycle_module
+
+        assert lifecycle_module.DEFAULT_SHUTDOWN_DEADLINE == 4.0
+        assert lifecycle_module.DEFAULT_SHUTDOWN_DEADLINE < lifecycle_module.DEFAULT_STOP_TIMEOUT
+        assert (lifecycle_module.DEFAULT_STOP_TIMEOUT + lifecycle_module.DEFAULT_KILL_GRACE) < 5.0
+        assert app_module.close_budget_for(4.0) < 4.0
+
+
+class TestForgetByTheFactsOwnWords:
+    """d10: the model gets an id only when something was recalled.
+
+    Live, a one-sentence "forget that" called the tool and was refused
+    ``unknown-id``, because nothing had been recalled into the prompt and
+    there was no id to pass. The daemon now resolves the text itself — and it
+    is the daemon that resolves it, so a hostile recalled record cannot talk
+    the model into archiving a different one.
+    """
+
+    FACT = "המפתח נמצא במגירה הכחולה"
+    OTHER = "החתול אוכל בשבע בבוקר"
+
+    def _memory(self, tmp_path: Path) -> RoomMemory:
+        return RoomMemory(
+            tmp_path / "store", scope="gwen", added_by="gwen", embed_probe=lambda: False
+        )
+
+    def _store(self, memory: RoomMemory, *facts: str) -> None:
+        for fact in facts:
+            written = memory.remember(
+                fact, visibility="private", record_type="explicit-ask", deadline=5.0
+            )
+            assert written.ok
+
+    @staticmethod
+    def _lifecycle(tmp_path: Path, text: str) -> Optional[str]:
+        for path in (tmp_path / "store").rglob("*.jsonl"):
+            for line in path.read_text(encoding="utf-8").splitlines():
+                if line.strip():
+                    row = json.loads(line)
+                    if row.get("content") == text:
+                        return (row.get("metadata") or {}).get("lifecycle")
+        return None
+
+    def test_the_fact_alone_archives_the_one_record_that_matches(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        memory = self._memory(tmp_path)
+        self._store(memory, self.FACT, self.OTHER)
+        h = harness(memory=memory)
+
+        assert h.app._forget_tool(fact=self.FACT).startswith("ok:")
+
+        assert self._lifecycle(tmp_path, self.FACT) == "archived"
+        assert self._lifecycle(tmp_path, self.OTHER) == "active"
+        assert h.app.status()["memory"]["forget_tool_written"] == 1
+
+    def test_whitespace_and_composition_do_not_make_it_a_different_fact(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        memory = self._memory(tmp_path)
+        self._store(memory, self.FACT)
+        h = harness(memory=memory)
+
+        spoken_back = "  " + self.FACT.replace(" ", "  ") + " "
+        assert h.app._forget_tool(fact=spoken_back).startswith("ok:")
+        assert self._lifecycle(tmp_path, self.FACT) == "archived"
+
+    def test_a_fact_that_is_not_stored_is_not_found_not_invented(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        memory = self._memory(tmp_path)
+        self._store(memory, self.FACT)
+        h = harness(memory=memory)
+
+        assert h.app._forget_tool(fact="משהו שמעולם לא נאמר") == "refused: not-found"
+        assert self._lifecycle(tmp_path, self.FACT) == "active"
+        assert h.app.status()["memory"]["forget_tool_written"] == 0
+
+    def test_a_partial_match_is_never_treated_as_the_fact(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        """ "forget the key" must not archive the whole sentence about it."""
+        memory = self._memory(tmp_path)
+        self._store(memory, self.FACT)
+        h = harness(memory=memory)
+
+        assert h.app._forget_tool(fact="המפתח") == "refused: not-found"
+        assert self._lifecycle(tmp_path, self.FACT) == "active"
+
+    def test_an_id_still_wins_when_the_model_has_one(self, harness: Any, tmp_path: Path) -> None:
+        memory = self._memory(tmp_path)
+        written = memory.remember(
+            self.FACT, visibility="private", record_type="explicit-ask", deadline=5.0
+        )
+        assert written.record_id
+        h = harness(memory=memory)
+
+        assert h.app._forget_tool(record_id=written.record_id, fact="anything").startswith("ok:")
+        assert self._lifecycle(tmp_path, self.FACT) == "archived"
+
+    def test_the_tool_schema_requires_neither_and_the_prompt_says_so(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        h = harness(memory=self._memory(tmp_path))
+        schema = h.app._tools.specs[app_module.FORGET_TOOL_NAME].parameters
+        assert set(schema["properties"]) == {"record_id", "fact"}
+        assert schema["required"] == []
+        assert "fact" in app_module.REMEMBER_TOOL_PROMPT

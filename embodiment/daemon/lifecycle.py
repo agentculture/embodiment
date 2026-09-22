@@ -255,30 +255,40 @@ DEFAULT_TARGET = "embodiment.daemon.app:main"
 PIDFILE_SCHEMA = 1
 
 #: How long the daemon's own graceful shutdown gets before the watchdog writes
-#: what is unfinished and hard-exits. CHOSEN, not measured: it is the largest
-#: value that leaves :data:`DEFAULT_STOP_TIMEOUT` room to observe the exit
-#: inside the plan's 5 s budget.
-DEFAULT_SHUTDOWN_DEADLINE = 2.0
+#: what is unfinished and hard-exits. **Decision 19 (d9), derived from what a
+#: stop actually has to do rather than from what was left over.** At 2.0 s the
+#: app's share was 1.6 s and the end-of-session summary — a model call — was
+#: scheduled inside ~0.24 s of it; a live stop at 17:16:55 on 2026-09-22
+#: recorded ``session-summary-timeout 1.32 s; abandoned`` and
+#: ``app-shutdown-incomplete: session``, so the memory record of the
+#: conversation was rarely written on a default stop. The arithmetic that
+#: keeps ``t21``'s "stop takes effect in < 5 s" true is below and pinned by
+#: ``test_the_stop_clocks_nest``: 4.0 < 4.5, and 4.5 + 0.4 = 4.9 < 5.0.
+DEFAULT_SHUTDOWN_DEADLINE = 4.0
 
 #: How the watchdog's bound reaches the daemon APPLICATION. The target factory
 #: (``embodiment.daemon.app:main``) takes no arguments and runs in the child,
 #: so :func:`_child_main` exports ``--shutdown-deadline`` here before it
 #: builds the target, and the app derives its own close budget strictly
 #: below it. Two clocks bounding one shutdown — the watchdog at 2 s, the app
-#: scheduling its summary and its memory close past 4 s — is how a stop
+#: scheduling its summary and its memory close past 4 s — was how a stop
 #: ended in ``lifecycle-hard-exit`` with the summary never written (CLAUDE.md
 #: lesson 1: a clock sized against the wrong quantity becomes the measurement).
 ENV_SHUTDOWN_DEADLINE = "EMBODIMENT_SHUTDOWN_DEADLINE"
 
 #: How long :func:`stop` waits for ``SIGTERM`` to take effect before
 #: escalating. Strictly greater than the deadline above, so a daemon that
-#: honours its own bound is never killed for being slow.
-DEFAULT_STOP_TIMEOUT = 3.0
+#: honours its own bound is never killed for being slow (d9: 4.5 against a
+#: 4.0 s watchdog).
+DEFAULT_STOP_TIMEOUT = 4.5
 
 #: How long :func:`stop` waits after ``SIGKILL`` before reporting the stop
 #: unconfirmed. ``DEFAULT_STOP_TIMEOUT + DEFAULT_KILL_GRACE`` is the whole
-#: bound, and it is under the plan's 5 s.
-DEFAULT_KILL_GRACE = 1.0
+#: bound, and it stays under the plan's 5 s: raising the watchdog to 4.0 s
+#: (d9) spent the slack this grace used to hold, and a process that has
+#: ignored SIGKILL for 0.4 s is not going to answer at 1.0 s either — the
+#: outcome is the same "unconfirmed" report, 0.6 s sooner.
+DEFAULT_KILL_GRACE = 0.4
 
 #: How long :func:`start` waits for the child to take its record to
 #: ``running``. A counter that increments, not ``armed == True``: start does
