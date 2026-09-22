@@ -3946,6 +3946,47 @@ class TestModelSeam:
         assert app_module._wire_tool_calls("not-a-list") == []
         assert app_module._wire_tool_calls(None) == []
 
+    def test_deeply_nested_arguments_become_empty_not_a_failed_turn(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Post-wave review: ``json.loads`` on a deep ``[[[[…`` raises
+        ``RecursionError``, not ``ValueError``; it escaped ``_wire_tool_calls``
+        and ``http_complete`` and folded the whole turn as a failure. The
+        arguments become ``{}`` and the tool refuses on its own vocabulary.
+
+        The review's ~3 KB (depth 1500) does NOT raise on this rig's
+        CPython 3.12.12, whose C recursion limit is higher; depth 20 000
+        (~40 KB, well inside a chat completion) does. The depth is measured
+        here rather than assumed, so the test fails on the base wherever the
+        interpreter's limit sits below it."""
+        depth = 20_000
+        nested = "[" * depth + "]" * depth
+        with pytest.raises(RecursionError):
+            json.loads(nested)
+        self._capture(
+            monkeypatch,
+            {
+                "choices": [
+                    {
+                        "message": {
+                            "content": "",
+                            "tool_calls": [
+                                {
+                                    "id": "deep",
+                                    "function": {"name": "remember", "arguments": nested},
+                                }
+                            ],
+                        }
+                    }
+                ]
+            },
+        )
+        response = app_module.http_complete([], gateway_url="http://gateway.invalid")
+        assert [(c.id, c.name, c.arguments) for c in response.tool_calls] == [
+            ("deep", "remember", {})
+        ]
+        assert app_module._wire_tool_arguments(nested) == {}
+
 
 class TestTheTailnetBind:
     """Round 8: the operator reviews the dashboard from a phone over Tailscale."""

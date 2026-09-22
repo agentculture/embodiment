@@ -989,7 +989,12 @@ def _wire_tool_arguments(arguments: Any) -> dict[str, Any]:
     if isinstance(arguments, str):
         try:
             arguments = json.loads(arguments) if arguments.strip() else {}
-        except ValueError:
+        except (ValueError, RecursionError):
+            # RecursionError too: a deeply nested ``[[[[…`` (a few tens of KB,
+            # well inside one completion) is what the decoder raises for
+            # depth, and it is not a ValueError. Left uncaught it escaped
+            # http_complete and folded the whole turn as a failure; here the
+            # arguments become {} and the tool refuses on its own vocabulary.
             arguments = {}
     if not isinstance(arguments, dict):
         arguments = {}
