@@ -1174,6 +1174,65 @@ class TestDeclaredSampleRate:
         assert "MARKERNODE" not in json.dumps(ear, ensure_ascii=False)
         assert ear["playback_target"] is True
 
+    def test_status_carries_the_playback_conditions(self, harness: Any) -> None:
+        """t7 round 8: a reply nobody can hear is a fact about the sink."""
+
+        class Quiet(FakeEndpoint):
+            def status(self) -> dict[str, object]:
+                return {
+                    **super().status(),
+                    "playback_volume": 0.35,
+                    "playback_muted_by_system": False,
+                    "playback_latency_ms": 40,
+                }
+
+        h = harness()
+        h.app.attach_ear("host", Quiet())
+        ear = h.app.status()["ear"]
+        assert ear["playback_volume"] == 0.35
+        assert ear["playback_muted_by_system"] is False
+        assert ear["playback_latency_ms"] == 40
+
+    def test_an_endpoint_that_cannot_say_reports_none_not_fine(self, harness: Any) -> None:
+        h = harness()
+        h.app.attach_ear("browser", FakeEndpoint())
+        ear = h.app.status()["ear"]
+        assert ear["playback_volume"] is None
+        assert ear["playback_muted_by_system"] is None
+        assert ear["playback_latency_ms"] is None
+
+    def test_a_quiet_sink_is_folded_into_the_degradations(self, harness: Any) -> None:
+        """Round 8 reports it as a counter, not on a degradation slot."""
+
+        class QuietSink(FakeEndpoint):
+            def status(self) -> dict[str, object]:
+                return {**super().status(), "playback_quiet_count": 2}
+
+        h = harness()
+        h.clear()
+        h.app.attach_ear("host", QuietSink())
+
+        assert app_module.ENDPOINT_PLAYBACK_QUIET in h.ledger_codes()
+        published = [e.data["code"] for e in h.events("degradation")]
+        assert app_module.ENDPOINT_PLAYBACK_QUIET in published
+        assert h.app.status()["degradations"][app_module.ENDPOINT_PLAYBACK_QUIET] == 1
+
+    def test_a_sink_at_full_volume_folds_nothing(self, harness: Any) -> None:
+        class Loud(FakeEndpoint):
+            def status(self) -> dict[str, object]:
+                return {**super().status(), "playback_quiet_count": 0}
+
+        h = harness()
+        h.app.attach_ear("host", Loud())
+        assert app_module.ENDPOINT_PLAYBACK_QUIET not in h.ledger_codes()
+
+    def test_the_quiet_code_matches_the_endpoints_own(self) -> None:
+        """The literal is written out here because the import graph forbids the
+        import; this is the test that stops the two drifting apart."""
+        from embodiment.audio.host import DEGRADED_PLAYBACK_QUIET
+
+        assert app_module.ENDPOINT_PLAYBACK_QUIET == DEGRADED_PLAYBACK_QUIET
+
     def test_an_endpoint_that_does_not_verify_reads_none_not_false(self, harness: Any) -> None:
         """``None`` is "not applicable", which is not the same claim as "wrong"."""
         h = harness()

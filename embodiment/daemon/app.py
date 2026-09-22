@@ -124,6 +124,7 @@ __all__ = [
     "APP_BOOTSTRAP_DEGRADED",
     "APP_CAPTURE_FAILED",
     "APP_FRAMES_NO_SESSION",
+    "ENDPOINT_PLAYBACK_QUIET",
     "APP_CLOSED",
     "APP_EARS_STREAM_ENDED",
     "APP_EARS_CLOSE_INCOMPLETE",
@@ -212,9 +213,12 @@ SUMMARY_PROMPT = (
 SUMMARY_MAX_TOKENS = 300
 
 #: Stems that make an utterance worth reporting when the ask detector did NOT
-#: fire. A heuristic for VISIBILITY only: nothing here writes, refuses or
+#: fire. A **heuristic, unmeasured**: there is no live series behind this
+#: list, and it exists for VISIBILITY only — nothing here writes, refuses or
 #: remembers anything, and the detector in :mod:`embodiment.session` remains
-#: the only thing that decides what an ask is.
+#: the only thing that decides what an ask is. Kept deliberately narrow on
+#: the operator's instruction: wide enough not to miss a spoken "remember",
+#: narrow enough not to fire on ordinary speech.
 _ASK_STEMS: tuple[str, ...] = ("תזכר", "זכר", "remember", "don't forget", "dont forget")
 
 #: How long a silence the warm-up plays at attach, in seconds. A **judgement
@@ -279,6 +283,14 @@ APP_EAR_DETACH_FAILED = "app-ear-detach-failed"
 APP_CAPTURE_FAILED = "app-capture-failed"
 #: A captured frame arrived with no realtime session to send it to.
 APP_FRAMES_NO_SESSION = "app-frames-no-session"
+
+#: The host endpoint's own code for a sink that is turned down or system-muted
+#: (t7 round 8). Written out rather than imported: the import-graph rule
+#: (t7 criterion 3) allows this module to import ``embodiment.audio.host``
+#: inside :func:`main` only, so a module-level import of the constant is not
+#: available here. ``tests/test_daemon_app.py`` pins the two against each
+#: other, which is where the drift would otherwise hide.
+ENDPOINT_PLAYBACK_QUIET = "audio-host-playback-quiet"
 #: A displaced ear is STILL delivering frames well after the handover — an ear
 #: that will not stop. The first few late frames are guaranteed by the handover
 #: design and are only counted; this code is for the count that keeps growing.
@@ -1007,6 +1019,18 @@ class DaemonApp:
             record = probed.get(key)
             if isinstance(record, dict) and record.get("code"):
                 self._record(record.get("code", ""), record.get("reason", ""), source="endpoint")
+        quiet = probed.get("playback_quiet_count")
+        if isinstance(quiet, int) and not isinstance(quiet, bool) and quiet > 0:
+            # Round 8 reports a quiet sink as a COUNTER and an event of its
+            # own, not on one of the three degradation slots above, so it
+            # would otherwise never reach the ledger — and a reply nobody can
+            # hear is exactly the failure a host needs named rather than
+            # inferred from silence.
+            self._record(
+                ENDPOINT_PLAYBACK_QUIET,
+                f"the sink is below the floor or system-muted ({quiet}x)",
+                source="endpoint",
+            )
 
     def _teardown_ear(self) -> None:
         """Stop the current ear completely. Every failure is recorded, none raised."""
@@ -2069,6 +2093,7 @@ class DaemonApp:
                 # monitor, and a capture stream on the wrong source is Gwen
                 # listening to it.
                 **_target_verification(self._ear_endpoint),
+                **_playback_conditions(self._ear_endpoint),
                 "warmups": self._warmups,
                 "warmup_failures": self._warmup_failures,
                 "declared_sample_rate": self._ears_rate,
@@ -2256,6 +2281,26 @@ def _target_verification(endpoint: Any) -> dict[str, Optional[bool]]:
         out[key] = verdict
         out[key.replace("_verified", "")] = verdict is not None
     return out
+
+
+def _playback_conditions(endpoint: Any) -> dict[str, Any]:
+    """What the sink's own volume lane says (t7 round 8). Status only.
+
+    Reported, never acted on: this module changes nobody's volume, and a sink
+    the operator has turned down is a fact about the room rather than a fault
+    in the daemon. ``None`` throughout for an endpoint that does not report
+    these — a browser ear, a :class:`NullEndpoint`, or a non-pipewire backend
+    — which is "cannot say", not "fine". Never raises.
+    """
+    probed = _probe(endpoint) or {}
+    volume = probed.get("playback_volume")
+    muted = probed.get("playback_muted_by_system")
+    latency = probed.get("playback_latency_ms")
+    return {
+        "playback_volume": float(volume) if isinstance(volume, (int, float)) else None,
+        "playback_muted_by_system": muted if isinstance(muted, bool) else None,
+        "playback_latency_ms": latency if isinstance(latency, (int, float)) else None,
+    }
 
 
 def _endpoint_degraded(endpoint: Any) -> Optional[bool]:
