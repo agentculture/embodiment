@@ -10,6 +10,7 @@ from __future__ import annotations
 import ast
 import base64
 import json
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
 
@@ -71,7 +72,8 @@ class TestConnectUrl:
 
     def test_language_and_aec_are_overridable_but_default_as_the_rig_runs(self) -> None:
         params = parse_qs(wire.session_query(language="en", aec_mode="none"))
-        assert params["language"] == ["en"] and params["aec_mode"] == ["none"]
+        assert params["language"] == ["en"]
+        assert params["aec_mode"] == ["none"]
 
     def test_the_key_never_reaches_the_url(self) -> None:
         # The bearer rides a header. Nothing in this module takes a key at all.
@@ -238,7 +240,7 @@ class TestUnknownAndMalformed:
 
     def test_every_decoded_event_is_frozen(self) -> None:
         event = wire.decode_server_event(load("speech_started.json"))
-        with pytest.raises(Exception):
+        with pytest.raises(FrozenInstanceError):
             event.at_ms = 5  # type: ignore[misc]
 
 

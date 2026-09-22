@@ -1022,7 +1022,8 @@ def test_round10_old_behaviour_would_have_failed_a_and_c():
         return None, False
 
     old_node, old_ambiguous = old_algorithm(dump, "Stream/Output/Audio", pid=12345)
-    assert old_node is not None and old_node["id"] == foreign_node_id  # the bug, pinned
+    assert old_node is not None  # the bug, pinned
+    assert old_node["id"] == foreign_node_id  # the bug, pinned
     assert old_ambiguous is False
 
     fixed_node, fixed_ambiguous = _pw_find_stream_node(dump, "Stream/Output/Audio", pid=12345)
@@ -1800,7 +1801,8 @@ sys.stderr.flush()
     _wait_until(lambda: endpoint.status()["degradation_in"] is not None)
     reason = endpoint.status()["degradation_in"]["reason"]
     assert marker not in reason
-    assert "chars" in reason and "fp:" in reason
+    assert "chars" in reason
+    assert "fp:" in reason
     endpoint.close(2.0)
 
 

@@ -251,13 +251,19 @@ class TestParseErrorsStayStructured:
 
 class TestEndToEndThroughTheCli:
     def test_start_status_stop_round_trip(
-        self, tmp_path: Path, state_dir: Path, capsys: pytest.CaptureFixture[str]
+        self,
+        tmp_path: Path,
+        state_dir: Path,
+        capsys: pytest.CaptureFixture[str],
+        monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         fakes = tmp_path / "fakes"
         fakes.mkdir()
         (fakes / "cli_idle.py").write_text(IDLE_TARGET, encoding="utf-8")
         old_path = os.environ.get("PYTHONPATH")
-        os.environ["PYTHONPATH"] = str(fakes) if not old_path else f"{fakes}{os.pathsep}{old_path}"
+        monkeypatch.setenv(
+            "PYTHONPATH", str(fakes) if not old_path else f"{fakes}{os.pathsep}{old_path}"
+        )
         pid = None
         try:
             rc = main(["start", "--target", "cli_idle:main", "--json"])
@@ -285,10 +291,6 @@ class TestEndToEndThroughTheCli:
             assert main(["status", "--json"]) == 0
             assert json.loads(capsys.readouterr().out)["state"] == STATE_STOPPED
         finally:
-            if old_path is None:
-                os.environ.pop("PYTHONPATH", None)
-            else:
-                os.environ["PYTHONPATH"] = old_path
             if pid:
                 try:
                     os.kill(pid, signal.SIGKILL)

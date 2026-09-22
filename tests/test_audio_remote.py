@@ -342,8 +342,9 @@ class TestAuthenticationGate:
                 from websockets.exceptions import ConnectionClosedError
 
                 ws = await _connect(ep.bound_port)  # handshake succeeds; no auth message sent
+                pending = ws.recv()
                 with pytest.raises(ConnectionClosedError) as excinfo:
-                    await asyncio.wait_for(ws.recv(), timeout=2.0)
+                    await asyncio.wait_for(pending, timeout=2.0)
                 assert excinfo.value.rcvd is not None
                 assert excinfo.value.rcvd.code == 1008
 
@@ -364,8 +365,9 @@ class TestAuthenticationGate:
                 from websockets.exceptions import ConnectionClosedError
 
                 ws = await _authed_connect(ep.bound_port, MARKER_SECRET)
+                pending = ws.recv()
                 with pytest.raises(ConnectionClosedError) as excinfo:
-                    await asyncio.wait_for(ws.recv(), timeout=2.0)
+                    await asyncio.wait_for(pending, timeout=2.0)
                 assert excinfo.value.rcvd.code == 1008
 
             _run(scenario())
@@ -390,8 +392,9 @@ class TestAuthenticationGate:
                 ws = await _connect(ep.bound_port)
                 # A real audio frame arrives BEFORE any auth: still refused, never processed.
                 await ws.send(wire.encode_audio_append(b"should-never-arrive"))
+                pending = ws.recv()
                 with pytest.raises(ConnectionClosedError) as excinfo:
-                    await asyncio.wait_for(ws.recv(), timeout=2.0)
+                    await asyncio.wait_for(pending, timeout=2.0)
                 assert excinfo.value.rcvd.code == 1008
 
             _run(scenario())
@@ -449,8 +452,9 @@ class TestAuthenticationGate:
 
                 # The URL carries the CORRECT secret, but no first-message auth follows.
                 ws = await _connect_with_url_secret(ep.bound_port, DEFAULT_SECRET)
+                pending = ws.recv()
                 with pytest.raises(ConnectionClosedError) as excinfo:
-                    await asyncio.wait_for(ws.recv(), timeout=2.0)
+                    await asyncio.wait_for(pending, timeout=2.0)
                 assert excinfo.value.rcvd.code == 1008
 
             _run(scenario())
@@ -568,8 +572,9 @@ class TestAttacks:
                 from websockets.exceptions import ConnectionClosedError
 
                 ws = await _authed_connect(ep.bound_port, hostile)
+                pending = ws.recv()
                 with pytest.raises(ConnectionClosedError) as excinfo:
-                    await asyncio.wait_for(ws.recv(), timeout=2.0)
+                    await asyncio.wait_for(pending, timeout=2.0)
                 assert excinfo.value.rcvd.code == 1008
 
             _run(scenario())
@@ -591,8 +596,9 @@ class TestAttacks:
                 from websockets.exceptions import ConnectionClosedError
 
                 ws = await _connect_with_url_secret(ep.bound_port, hostile)
+                pending = ws.recv()
                 with pytest.raises(ConnectionClosedError):
-                    await asyncio.wait_for(ws.recv(), timeout=2.0)
+                    await asyncio.wait_for(pending, timeout=2.0)
 
             _run(scenario())
             status = ep.status()
@@ -634,8 +640,9 @@ class TestAttacks:
 
                 url = f"ws://127.0.0.1:{ep.bound_port}/../../etc/passwd?x=../../y"
                 ws = await asyncio.wait_for(ws_connect(url, open_timeout=5.0), timeout=5.0)
+                pending = ws.recv()
                 with pytest.raises(ConnectionClosedError):
-                    await asyncio.wait_for(ws.recv(), timeout=2.0)
+                    await asyncio.wait_for(pending, timeout=2.0)
 
             _run(scenario())
         finally:
@@ -903,8 +910,9 @@ class TestAttacks:
                 from websockets.exceptions import ConnectionClosedError
 
                 ws = await _authed_connect(ep.bound_port, "totally-wrong")
+                pending = ws.recv()
                 with pytest.raises(ConnectionClosedError):
-                    await asyncio.wait_for(ws.recv(), timeout=2.0)
+                    await asyncio.wait_for(pending, timeout=2.0)
 
             _run(scenario())
             blob = json.dumps(ep.status())

@@ -196,7 +196,8 @@ class TestDiscovery:
             ears = rtc.RealtimeEars(rig.config())
             assert run(ears.connect()) is False
             assert codes(ears) == [rtc.ADVERT_ABSENT]
-            assert ears.connected is False and ears.degraded is True
+            assert ears.connected is False
+            assert ears.degraded is True
 
     def test_an_stt_without_the_realtime_responsibility_is_an_absent_advert(self) -> None:
         with Rig(caps_body=capabilities(realtime=False)) as rig:
@@ -1141,7 +1142,8 @@ class TestNoExceptionMessageReachesARecord:
         # fingerprint to correlate two occurrences of the same fault.
         assert "HTTPError" in reason
         assert "status=500" in reason
-        assert "chars" in reason and "fp:" in reason
+        assert "chars" in reason
+        assert "fp:" in reason
 
     def test_the_plant_is_real(self) -> None:
         """The marker really does reach the exception — so the test can fail."""
@@ -1153,7 +1155,8 @@ class TestNoExceptionMessageReachesARecord:
                 urllib.request.urlopen(f"{rig.origin}/capabilities", timeout=5)  # nosec B310
             except urllib.error.HTTPError as exc:
                 caught.append(str(exc))
-        assert caught and self.MARKER in caught[0]
+        assert caught
+        assert self.MARKER in caught[0]
 
     def test_a_close_reason_carrying_speech_does_not_reach_the_record(self) -> None:
         async def handler(ws: Any) -> None:
@@ -1215,7 +1218,8 @@ class TestNoExceptionMessageReachesARecord:
 
             ears = run(go())
         reason = ears.degradations[0].reason
-        assert MARKER_KEY not in reason and rtc.REDACTED in reason
+        assert MARKER_KEY not in reason
+        assert rtc.REDACTED in reason
         # It came from the BODY, not from the exception, so it is prose and not
         # a description — the two lanes stay distinguishable.
         assert "fp:" not in reason
@@ -1280,7 +1284,8 @@ class TestACloseThatFailedSaysSo:
 
     def test_a_runtime_error_from_close_reaches_the_report(self) -> None:
         report, ears = self._closed_with(RuntimeError("Event loop is closed"))
-        assert report.close_error is True and report.graceful is False
+        assert report.close_error is True
+        assert report.graceful is False
         assert codes(ears).count(rtc.CLOSE_INCOMPLETE) == 1
 
     def test_the_report_alone_is_enough(self) -> None:
@@ -1318,7 +1323,8 @@ class TestACloseThatFailedSaysSo:
                     return report, ears
 
             report, ears = run(go())
-        assert report.close_error is True and report.graceful is False
+        assert report.close_error is True
+        assert report.graceful is False
         assert codes(ears).count(rtc.CLOSE_INCOMPLETE) == 1
 
     def test_a_missed_deadline_is_the_other_cause_not_this_one(self) -> None:
@@ -1364,7 +1370,8 @@ class TestACloseThatFailedSaysSo:
                     return await ears.close(deadline=1.0)
 
             report = run(go())
-        assert report.close_error is False and report.graceful is True
+        assert report.close_error is False
+        assert report.graceful is True
 
 
 class TestGracefulCannotDisagreeWithItsCauses:

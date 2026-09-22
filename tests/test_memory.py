@@ -95,7 +95,7 @@ def _git_repo(path: Path) -> Path:
     return path
 
 
-@pytest.fixture()
+@pytest.fixture
 def contained(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> dict[str, Path]:
     """Redirect both unpinned destinations into ``tmp_path``.
 
@@ -224,8 +224,10 @@ class TestPrivateByDefault:
         finally:
             room.close()
 
-        assert result.ok and result.visibility == mem.PUBLIC
-        assert result.raw is not None and result.raw["scope"]["visibility"] == "public"
+        assert result.ok
+        assert result.visibility == mem.PUBLIC
+        assert result.raw is not None
+        assert result.raw["scope"]["visibility"] == "public"
         assert _snapshot(contained["repo"] / ".eidetic") == {}
 
     def test_public_requires_an_explicit_argument(self) -> None:
@@ -254,7 +256,8 @@ class TestPrivateByDefault:
         written = _snapshot(contained["store"])
         assert list(written) == ["room__private.jsonl"]
         body = written["room__private.jsonl"].decode()
-        assert "said in the repo" in body and "said outside any repo" in body
+        assert "said in the repo" in body
+        assert "said outside any repo" in body
 
     def test_the_pinned_dir_is_absolute_and_resolved(self, contained: dict[str, Path]) -> None:
         room = mem.RoomMemory("store", scope="room")
@@ -630,7 +633,8 @@ class TestCloseAccountsForWhatIsUnfinished:
             report = room.close(deadline=_PROMPT_SECONDS)
 
             assert report.failed == (deferred.record_id,)
-            assert report.landed == () and report.unconfirmed == ()
+            assert report.landed == ()
+            assert report.unconfirmed == ()
             assert report.ok is False
         finally:
             release.set()
@@ -675,7 +679,8 @@ class TestCloseAccountsForWhatIsUnfinished:
         first = room.close()
         second = room.close()
 
-        assert first.ok is True and second.ok is True
+        assert first.ok is True
+        assert second.ok is True
         assert second.unconfirmed == ()
 
     def test_close_never_raises_on_a_broken_executor(self, tmp_path: Path) -> None:
@@ -1120,7 +1125,8 @@ class TestTheLedgerCountsWhatItDrops:
 
             assert room.abandoned_dropped == 0
             after = room.drain_abandoned()
-            assert after.records == () and after.dropped == 0
+            assert after.records == ()
+            assert after.dropped == 0
         finally:
             room.close()
 
@@ -1346,7 +1352,8 @@ class TestTheFenceHoldsUnderFuzzing:
         assert header.startswith("[1] id=")
         assert " written-by=mallory recorded=2026-09-22" in header
         assert not any(line.startswith("SYSTEM") for line in lines)
-        assert mem.END_MARK not in header and "<<<" not in header
+        assert mem.END_MARK not in header
+        assert "<<<" not in header
 
     def test_a_bidi_override_never_reaches_the_output(self) -> None:
         for hostile in ("\u202e", "\u2066", "​", "﻿", "\u200f"):
@@ -1440,7 +1447,8 @@ class TestTheAttributedBlock:
         rendered = mem.render_recalled([_record(self.IMPERATIVE)])
 
         assert KNOWLEDGE_ATTRIBUTION in rendered
-        assert mem.BEGIN_MARK in rendered and mem.END_MARK in rendered
+        assert mem.BEGIN_MARK in rendered
+        assert mem.END_MARK in rendered
         body = rendered.split(mem.BEGIN_MARK, 1)[1].split(mem.END_MARK, 1)[0]
         assert self.IMPERATIVE in body
         # The imperative never appears as a line of its own: every line of
@@ -1611,7 +1619,8 @@ class TestTheContract:
             assert getattr(mem, name) is not None
 
     def test_the_module_states_its_contract(self) -> None:
-        assert mem.__doc__ is not None and len(mem.__doc__) > 400
+        assert mem.__doc__ is not None
+        assert len(mem.__doc__) > 400
 
     def test_the_module_adds_no_new_third_party_import(self) -> None:
         """Pinned here too, so it fails in this file rather than only in the gate."""
@@ -2637,7 +2646,8 @@ class TestForget:
 
     def _remembered(self, room: mem.RoomMemory) -> str:
         result = room.remember(self.TEXT, deadline=5.0)
-        assert result.ok and result.record_id
+        assert result.ok
+        assert result.record_id
         return result.record_id
 
     def test_recall_hides_an_archived_record_before_any_filter_of_ours(

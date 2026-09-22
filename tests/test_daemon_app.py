@@ -194,7 +194,8 @@ class FakeEars:
     # test-side driving
     def emit(self, event: Any, *, timeout: float = 15.0) -> None:
         assert self._ready.wait(timeout), "ears never connected"
-        assert self._loop is not None and self._queue is not None
+        assert self._loop is not None
+        assert self._queue is not None
         self._loop.call_soon_threadsafe(self._queue.put_nowait, event)
 
 
@@ -482,7 +483,9 @@ class TestOneEar:
         h.clear()  # forget the first attach
         handover = h.app.attach_ear("browser", second)
 
-        assert handover.attached and handover.preempted and not handover.refused
+        assert handover.attached
+        assert handover.preempted
+        assert not handover.refused
         assert handover.previous == "host"
         states = [e for e in h.events("state") if e.data.get("component") == "ear"]
         assert len(states) == 1, states
@@ -499,8 +502,10 @@ class TestOneEar:
         h.clear()
         handover = h.app.attach_ear("browser", second)
 
-        assert not handover.attached and handover.refused
-        assert handover.ear == "browser" and handover.previous == "host"
+        assert not handover.attached
+        assert handover.refused
+        assert handover.ear == "browser"
+        assert handover.previous == "host"
         states = [e for e in h.events("state") if e.data.get("component") == "ear"]
         assert len(states) == 1
         assert states[0].data["status"] == "refused"
@@ -514,7 +519,8 @@ class TestOneEar:
         second = FakeEndpoint(name="browser")
         h.app.attach_ear("host", first)
         h.app.attach_ear("browser", second)
-        assert first.capturing is False and first.attached is False
+        assert first.capturing is False
+        assert first.attached is False
         assert second.capturing is True
         assert h.app.status()["ear"]["active"] == "browser"
 
@@ -610,16 +616,19 @@ class TestOneEar:
         h.app.attach_ear("host", endpoint)
         h.clear()
         outcome = h.app.detach_ear()
-        assert outcome.attached is False and outcome.previous == "host"
+        assert outcome.attached is False
+        assert outcome.previous == "host"
         states = [e for e in h.events("state") if e.data.get("component") == "ear"]
-        assert len(states) == 1 and states[0].data["status"] == "detached"
+        assert len(states) == 1
+        assert states[0].data["status"] == "detached"
         assert h.app.status()["ear"]["active"] is None
         assert endpoint.closed is True
 
     def test_the_ear_name_is_restricted_to_a_safe_charset(self, harness: Any) -> None:
         h = harness()
         handover = h.app.attach_ear("../../etc/passwd\x00\u202e", FakeEndpoint())
-        assert "/" not in handover.ear and "\x00" not in handover.ear
+        assert "/" not in handover.ear
+        assert "\x00" not in handover.ear
         assert "\u202e" not in handover.ear
         blob = json.dumps(h.app.status(), ensure_ascii=False)
         assert "/etc/passwd" not in blob
@@ -629,7 +638,8 @@ class TestOneEar:
         endpoint = FakeEndpoint()
         h.app.attach_ear("host", endpoint)
         mics = h.events("mic")
-        assert mics and mics[-1].data["hot"] is True
+        assert mics
+        assert mics[-1].data["hot"] is True
         h.app.set_mute(True)
         assert endpoint.muted is True
         assert h.events("mic")[-1].data["hot"] is False
@@ -1032,7 +1042,8 @@ class TestDeclaredSampleRate:
         assert status["ear"]["sessions"] == 2
         assert status["ear"]["redials"] == 1
         dialling = [e for e in h.events("state") if e.data.get("status") == "dialling"]
-        assert dialling and dialling[-1].data["input_sample_rate"] == 24000
+        assert dialling
+        assert dialling[-1].data["input_sample_rate"] == 24000
 
     def test_a_handover_at_the_same_rate_keeps_the_session(self, harness: Any) -> None:
         h = harness(config=AppConfig(preempt_ear=True, poll_interval_s=0.01))
@@ -1585,7 +1596,8 @@ class TestRecallReachesThePrompt:
         assert recall["rendered_total"] == 0
         assert recall["empty_total"] == 1
         states = [e for e in h.events("state") if e.data.get("component") == "recall"]
-        assert len(states) == 1 and states[0].data["status"] == "empty"
+        assert len(states) == 1
+        assert states[0].data["status"] == "empty"
 
     def test_every_turn_publishes_its_recall_counts(self, harness: Any, tmp_path: Path) -> None:
         data_dir = self._stocked_store(tmp_path)
@@ -1727,7 +1739,8 @@ class TestSupersededTurns:
         assert [e.data["text"] for e in replies] == [REPLY]
         assert replies[0].data["superseded"] is True
         states = [e for e in h.events("state") if e.data.get("status") == "superseded"]
-        assert len(states) == 1 and states[0].data["component"] == "turn"
+        assert len(states) == 1
+        assert states[0].data["component"] == "turn"
 
     def test_a_turn_nobody_interrupted_is_spoken_normally(self, harness: Any) -> None:
         endpoint = FakeEndpoint()
@@ -1741,7 +1754,8 @@ class TestSupersededTurns:
         assert len(endpoint.played) > played_before
         assert h.app.status()["turns"]["superseded"] == 0
         replies = h.events("reply")
-        assert replies and replies[0].data.get("superseded") is not True
+        assert replies
+        assert replies[0].data.get("superseded") is not True
 
     def test_speech_started_between_submit_and_the_reply_wins(self, harness: Any) -> None:
         """The race, pinned: whoever wins, no reply may START after it was seen."""
@@ -1913,7 +1927,8 @@ class TestTheRememberTool:
             for e in h.events("state")
             if e.data.get("component") == "memory" and e.data.get("status") == "refused"
         ]
-        assert states and states[-1].data["reason"] == reason
+        assert states
+        assert states[-1].data["reason"] == reason
         files = [p for p in (tmp_path / "store").rglob("*") if p.is_file()]
         assert not files, "a refused fact reached the store"
 
@@ -1955,7 +1970,8 @@ class TestTheRememberTool:
         h = harness(memory=self._store(tmp_path), complete=senses)
         h.app.attach_ear("host", FakeEndpoint())
         h.app.run_turn(SPEECH)
-        assert seen and app_module.REMEMBER_TOOL_PROMPT in seen[0]
+        assert seen
+        assert app_module.REMEMBER_TOOL_PROMPT in seen[0]
 
     def test_the_prompt_is_identical_whoever_is_speaking(
         self, harness: Any, tmp_path: Path
@@ -2070,7 +2086,8 @@ class TestTheForgetTool:
         written = memory.remember(
             self.FACT, visibility="private", record_type="explicit-ask", deadline=5.0
         )
-        assert written.ok and written.record_id
+        assert written.ok
+        assert written.record_id
         return memory, written.record_id
 
     @staticmethod
@@ -2138,7 +2155,8 @@ class TestTheForgetTool:
         h2 = harness(memory=memory, complete=senses)
         h2.app.attach_ear("host", FakeEndpoint())
         h2.app.run_turn("איפה המפתח?")
-        assert seen and self.FACT not in seen[0]
+        assert seen
+        assert self.FACT not in seen[0]
         assert record_id not in seen[0]
         recall = h2.app.status()["recall"]
         assert recall["last_rendered_ids"] == []
@@ -2170,7 +2188,8 @@ class TestTheForgetTool:
         )
         h.app.attach_ear("host", FakeEndpoint())
         h.app.run_turn("איפה המפתח?")
-        assert seen and self.FACT not in seen[0]
+        assert seen
+        assert self.FACT not in seen[0]
         assert h.app.status()["recall"]["archived_hidden_total"] == 1
         assert h.app.status()["recall"]["last_rendered_ids"] == []
 
@@ -2208,7 +2227,8 @@ class TestTheForgetTool:
             for e in h.events("state")
             if e.data.get("component") == "memory" and e.data.get("status") == "refused"
         ]
-        assert states and states[-1].data["reason"] == reason
+        assert states
+        assert states[-1].data["reason"] == reason
         assert states[-1].data["source"] == "tool"
         assert self._store_bytes(tmp_path) == before, "a refused forget changed the store"
 
@@ -2224,7 +2244,8 @@ class TestTheForgetTool:
 
         assert h.app.status()["memory"]["forget_tool_refused"] == 1
         states = [e for e in h.events("state") if e.data.get("status") == "refused"]
-        assert states and states[-1].data["reason"] == "already-archived"
+        assert states
+        assert states[-1].data["reason"] == "already-archived"
         assert self._store_bytes(tmp_path) == before
 
     def test_a_store_that_fails_is_refused_not_raised(self, harness: Any, tmp_path: Path) -> None:
@@ -2259,7 +2280,8 @@ class TestTheForgetTool:
         assert h.app.status()["memory"]["forget_tool_refused"] == 1
         assert app_module.APP_FORGET_REFUSED in h.ledger_codes()
         states = [e for e in h.events("state") if e.data.get("status") == "refused"]
-        assert states and states[-1].data["reason"] == "store-failed"
+        assert states
+        assert states[-1].data["reason"] == "store-failed"
 
     def test_the_prompt_says_how_to_forget_and_forbids_a_bare_claim(
         self, harness: Any, tmp_path: Path
@@ -2342,7 +2364,8 @@ class TestTheClockLine:
         h = harness(complete=senses, now=lambda: self.FROZEN)
         h.app.attach_ear("host", FakeEndpoint())
         h.app.run_turn(SPEECH)
-        assert seen and "השעה עכשיו: 2026-09-22 18:40 (יום שלישי)" in seen[0]
+        assert seen
+        assert "השעה עכשיו: 2026-09-22 18:40 (יום שלישי)" in seen[0]
         # the clock comes right after the base prompt, before any tool text
         base_end = seen[0].index(app_module.SYSTEM_PROMPT) + len(app_module.SYSTEM_PROMPT)
         assert seen[0].index("השעה עכשיו:") > base_end
@@ -2361,7 +2384,8 @@ class TestTheClockLine:
         h = harness(complete=senses, now=broken)
         h.app.attach_ear("host", FakeEndpoint())
         assert h.app.run_turn(SPEECH).spoken == REPLY
-        assert seen and "השעה עכשיו:" not in seen[0]
+        assert seen
+        assert "השעה עכשיו:" not in seen[0]
         assert app_module.APP_CLOCK_FAILED in h.ledger_codes()
 
     def test_status_reports_the_zone(self, harness: Any) -> None:
@@ -2425,7 +2449,8 @@ class TestTurnInstrumentation:
             (t["first_audio_at"] - t["transcript_at"]) * 1000.0, abs=0.01
         )
         assert t["eos_to_first_audio_ms"] >= t["transcript_to_first_audio_ms"]
-        assert t["superseded"] is False and t["failed"] is False
+        assert t["superseded"] is False
+        assert t["failed"] is False
         assert t["serial"] == 1
 
     def test_a_reader_can_compute_a_median_and_a_p90_from_status_alone(
@@ -2500,7 +2525,8 @@ class TestTurnInstrumentation:
         assert record_id in t["rendered_ids"]
         assert h.app.status()["recall"]["last_rendered_ids"] == t["rendered_ids"]
         spoken = [e for e in h.events("turn") if e.data.get("phase") == "spoken"]
-        assert spoken and record_id in spoken[-1].data["rendered_ids"]
+        assert spoken
+        assert record_id in spoken[-1].data["rendered_ids"]
 
     def test_a_turn_that_recalled_nothing_reports_no_ids(
         self, harness: Any, tmp_path: Path
@@ -2575,7 +2601,8 @@ class TestTurnInstrumentation:
             h.app.status()["recall"]["last_rendered_ids"], ensure_ascii=False
         )
         spoken = [e for e in h.events("turn") if e.data.get("phase") == "spoken"]
-        assert spoken and marker not in json.dumps(spoken[-1].data, ensure_ascii=False)
+        assert spoken
+        assert marker not in json.dumps(spoken[-1].data, ensure_ascii=False)
         # every value in a timing is a number, a bool, or a charset-safe id
         for entry in recent:
             for key, value in entry.items():
@@ -2644,10 +2671,12 @@ class TestTheGatewayIsNotTrustedWithItsOwnKey:
         assert self.KEY not in result.spoken
         assert app_module.REPLY_REDACTED in result.spoken
         # 2. what was spoken
-        assert spoken and all(self.KEY not in text for text in spoken)
+        assert spoken
+        assert all(self.KEY not in text for text in spoken)
         # 3. the reply event on the bus
         replies = h.events("reply")
-        assert replies and all(self.KEY not in e.data["text"] for e in replies)
+        assert replies
+        assert all(self.KEY not in e.data["text"] for e in replies)
         # 4. the transcript file on disk
         sessions = Path(h.state.dir) / "sessions"
         logs = [p for p in sessions.iterdir() if p.is_file()]
@@ -3600,7 +3629,8 @@ class TestStatus:
         assert h.app.status()["ear"]["active"] is None
         h.app.attach_ear("host", FakeEndpoint())
         active = h.app.status()["ear"]["active"]
-        assert isinstance(active, str) and not isinstance(active, bool)
+        assert isinstance(active, str)
+        assert not isinstance(active, bool)
         assert active == "host"
         h.app.detach_ear()
         assert h.app.status()["ear"]["active"] is None

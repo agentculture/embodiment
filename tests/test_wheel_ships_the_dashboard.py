@@ -47,7 +47,8 @@ def _load_hatch_build() -> ModuleType:
     works in the ordinary dev venv, not just inside a real ``hatch build``.
     """
     spec = importlib.util.spec_from_file_location("hatch_build_under_test", HATCH_BUILD_PATH)
-    assert spec is not None and spec.loader is not None  # nosec B101 - test setup invariant
+    assert spec is not None  # nosec B101 - test setup invariant
+    assert spec.loader is not None  # nosec B101 - test setup invariant
     module = importlib.util.module_from_spec(spec)
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)

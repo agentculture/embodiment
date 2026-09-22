@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import ast
 import subprocess  # nosec B404 - fixed argv, no shell, test-only git probe
+from dataclasses import FrozenInstanceError
 from pathlib import Path
 from typing import Any, Callable
 
@@ -624,7 +625,8 @@ class TestAnUnspeakableReplyIsNotAnEmptyOne:
     def test_the_reason_counts_the_characters_and_names_no_letter_or_number(self) -> None:
         reason = self._reason("...")
         assert "3 character(s)" in reason
-        assert "none" in reason and "letter or number" in reason
+        assert "none" in reason
+        assert "letter or number" in reason
 
     def test_the_reason_summarizes_punctuation_by_category(self) -> None:
         assert "Po x3" in self._reason("...")
@@ -944,7 +946,7 @@ class TestTheTurnNeverRaises:
     def test_a_result_is_always_a_frozen_turn_result_with_spoken_text(self) -> None:
         result = turn("שלום", Scripted(_says("כן.")))
         assert isinstance(result, TurnResult)
-        with pytest.raises(Exception):
+        with pytest.raises(FrozenInstanceError):
             result.spoken = "no"  # type: ignore[misc]
         assert set(result.to_dict()) == {
             "spoken",
