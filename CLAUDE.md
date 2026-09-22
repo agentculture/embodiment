@@ -11,9 +11,17 @@ plan is built — a daemon, a dashboard and a voice.
 
 ### Honest status — read this before you plan work
 
-**The realtime app is planned, not built.** Nothing in the package listens,
-speaks, runs as a daemon or serves a dashboard. What is checked in is the small
-core in the code map below and a CLI with introspection verbs only.
+**The realtime app is being built on the branch `realtime/phase-b` and is
+partly merged there** (waves 1–2 and, of waves 3–4, the host audio endpoint,
+the HTTP surface, the inbound endpoint and the dashboard, each after its review
+and a device or browser probe). The daemon (`daemon/app.py`, t15) has run live
+on the rig — ~30 Hebrew turns with the operator through the reSpeaker, memory
+stored and recalled across a restart, the dashboard reviewed over Tailscale —
+but from its own worktree; on this branch it is not merged yet, so
+`embodiment start` here launches a target that does not exist. What `main`
+holds is the small core in the code map below and a CLI with introspection
+verbs only. The state table in `docs/plans/…-progress.md` is the live truth;
+decisions live on embodiment#85.
 
 - **Spec:** `docs/specs/2026-09-21-realtime-embodiment-app.md` — 50 claims, 33
   honesty conditions, after a rigorous `/challenge` pass.
@@ -260,35 +268,61 @@ embodiment/
   tools.py              ToolRegistry (empty by default) + bind_tools; the additive tool seam
   memory.py             RoomMemory over continuity: private, pinned, deadline-bounded;
                         render_recalled is the ONE place recall enters a prompt
+  session.py            the conversation: explicit-ask detector (Hebrew/English), the
+                        turn queue, supersede on barge-in, summary on close
+  safe_reason.py        degradation reasons that never carry speech, a secret or a raw id
+  bus.py                in-process event bus + optional MQTT publish; redact at publish
   audio/features.py     FeatureExtractor: streaming min/max envelope + level, no IO
+  audio/endpoint.py     AudioEndpoint protocol (+ NullEndpoint): start_capture, play,
+                        stop_playback, playing, sample_rate, close -> EndpointCloseReport
+  audio/host.py         the reSpeaker through pw-record/pw-play (arecord/aplay fallback,
+                        d4): targets by pipewire node name, link verified, own stream by
+                        client pid, mute in the capture path; imported only inside
+                        daemon/app.py:main() (AST test)
+  audio/remote.py       the inbound /v1/realtime endpoint (browser ear / robot relay):
+                        first-message auth, one peer, bounded handshake reclaim
+  realtime/wire.py      the lobes /v1/realtime wire, typed
+  realtime/client.py    RealtimeEars: ears-only client (never response.create), bounded
+  http/guard.py         install secret + Host/Origin allow-list + Access assertion seam
+                        (refusing by default); the secret file, 0600, race-free
+  http/server.py        loopback (or --bind-public) HTTP: static dashboard, SSE
+                        projection with a last-ditch redact, control API under a deadline
   daemon/state.py       state dir (0700), bounded log, crash-durable degradation ledger,
                         per-session transcript logs (0600)
+  daemon/lifecycle.py   start/status/stop by (pid, starttime) identity; never raises
   cli/__init__.py       parser + dispatch; _CliArgumentParser routes argparse
                         errors through the structured format; _json_hint is
                         pre-set from raw argv so parse-time errors honour --json
   cli/_errors.py        CliError{code,message,remediation} + exit-code policy
   cli/_output.py        emit_result / emit_error / emit_diagnostic
-  cli/_commands/        whoami, learn, explain, overview, doctor, cli
+  cli/_commands/        whoami, learn, explain, overview, doctor, cli, start, status, stop
   explain/              catalog.py: markdown keyed by command-path tuples
-tests/                  1660 tests
+web/                    the dashboard (Vite/React/TS): live waveform, transcript,
+                        degradations; fetch-streamed SSE with the secret in the
+                        Authorization header; web/dist is built, gitignored, shipped in
+                        the wheel (t19)
+scripts/dual-review.sh  the local review harness: 35B worker drafts, 27B cortex
+                        verifies cited lines; one review at a time (kept deliverable)
+tests/                  2700+ tests
 .claude/skills/         19 skills, all vendored (cite-don't-import)
 docs/skill-sources.md   provenance ledger + re-sync procedure
 docs/live-test-results/ only senses-grounding{.md,-probe.py}: the measured
                         evidence tests/test_senses_text.py pins against
+docs/plans/…-progress.md the redesign's running state: what merged, what each round found
 ```
 
-Planned by the redesign and **not present yet**: `daemon/lifecycle.py` and
-`daemon/app.py`, `realtime/`, `audio/endpoint.py`, `audio/host.py`,
-`audio/remote.py`, `http/`, `session.py`, `voice.py`, `bus.py`, and `web/`. Mark
-any of them here only when it is checked in. **Nothing above is wired together
-yet**: there is still no daemon, no verb that starts anything, and no live model
-has been dialled - `turn.py`'s truncation proxy and `is_speakable` are untested
-against the real rig and a real synthesiser until plan task `t21`.
+Still on their branches while this is written (merged in this order as their
+reviews land): `voice.py` (t12), `cli/_commands/tunnel.py` (t20), the packaging
+hook (t19), the oscilloscope (t18), and **`daemon/app.py` — the daemon itself
+(t15)**. Until t15 merges, `embodiment start` on this branch launches
+`embodiment.daemon.app:main`, which does not exist here yet; the daemon has run
+live only from t15's worktree. `turn.py`'s truncation proxy and `is_speakable`
+stay unmeasured against the real synthesiser until plan task `t21`.
 
-No verb drives the loop or starts anything: nothing under `cli/_commands/`
-reaches `embodiment.loop`. `framing.py` keeps `frame_muse` and `ROLE_MUSE` (pure
-text) but no longer has `muse_system_message` — that needed the archived muse
-module's `MUSE_AUTHORITY`.
+`start`, `status` and `stop` are the only verbs that touch a process; nothing
+under `cli/_commands/` reaches `embodiment.loop` directly — the daemon does.
+`framing.py` keeps `frame_muse` and `ROLE_MUSE` (pure text) but no longer has
+`muse_system_message` — that needed the archived muse module's `MUSE_AUTHORITY`.
 
 Contracts worth knowing before you add a verb:
 

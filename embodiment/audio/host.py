@@ -940,6 +940,30 @@ def _import_numpy() -> Any:
     return numpy
 
 
+def _close_pipes(proc: "subprocess.Popen[bytes]") -> int:
+    """Close a dead child's pipe ends; returns how many refused. Never raises.
+
+    Integration finding (2026-09-22): the capture child is spawned with
+    ``stdout=PIPE`` and both children with ``stderr=PIPE``; terminating a
+    child closed only the player's ``stdin``, so every restart left two
+    ``BufferedReader`` objects open until garbage collection - eight
+    ``ResourceWarning`` lines per suite run, and on a daemon that redials
+    for hours, a slow file-descriptor leak. Called once the OS has confirmed
+    the exit; a child still on :attr:`HostEndpoint._unreaped` keeps its
+    pipes until :meth:`HostEndpoint._reap_unreaped` confirms it. A close
+    that raises is counted by the caller (C3), never swallowed.
+    """
+    refused = 0
+    for stream in (proc.stdin, proc.stdout, proc.stderr):
+        if stream is None:
+            continue
+        try:
+            stream.close()
+        except Exception:  # noqa: BLE001 - counted by the caller, not hidden
+            refused += 1
+    return refused
+
+
 class HostEndpoint:
     """Subprocess-driven :class:`~embodiment.audio.endpoint.AudioEndpoint` (round 4, d4).
 
@@ -1115,6 +1139,12 @@ class HostEndpoint:
         """Round 3 finding 1/2, unchanged: one recorded episode + a cooldown."""
         self._enter_output_degradation_reason(code, f"{action}: {describe_exception(exc)}")
 
+    def _count_pipe_refusals(self, refused: int) -> None:
+        """A pipe end that would not close is a recorded fault, not a silent one."""
+        if refused:
+            with self._counter_lock:
+                self._callback_errors += refused
+
     def _terminate_process(
         self, proc: "subprocess.Popen[bytes]", timeout: float = _TERMINATE_TIMEOUT_S
     ) -> int:
@@ -1127,6 +1157,7 @@ class HostEndpoint:
         :meth:`_reap_unreaped` at every later stop/close.
         """
         if proc.poll() is not None:
+            self._count_pipe_refusals(_close_pipes(proc))
             return 0
         try:
             proc.terminate()
@@ -1135,6 +1166,7 @@ class HostEndpoint:
                 self._callback_errors += 1
         try:
             proc.wait(timeout=max(0.0, timeout))
+            self._count_pipe_refusals(_close_pipes(proc))
             return 0
         except subprocess.TimeoutExpired:
             try:
@@ -1144,6 +1176,7 @@ class HostEndpoint:
                 with self._counter_lock:
                     self._callback_errors += 1
             if proc.poll() is not None:
+                self._count_pipe_refusals(_close_pipes(proc))
                 return 0
             self._unreaped.append(proc)
             return 1
@@ -1163,6 +1196,7 @@ class HostEndpoint:
         (round 7b finding 2), same as :meth:`_terminate_process`.
         """
         if proc.poll() is not None:
+            self._count_pipe_refusals(_close_pipes(proc))
             return 0
         try:
             proc.kill()
@@ -1171,6 +1205,7 @@ class HostEndpoint:
                 self._callback_errors += 1
         try:
             proc.wait(timeout=max(0.0, timeout))
+            self._count_pipe_refusals(_close_pipes(proc))
             return 0
         except subprocess.TimeoutExpired:
             self._unreaped.append(proc)
@@ -1185,6 +1220,8 @@ class HostEndpoint:
             try:
                 if proc.poll() is None:
                     still.append(proc)
+                else:
+                    self._count_pipe_refusals(_close_pipes(proc))
             except Exception:
                 with self._counter_lock:
                     self._callback_errors += 1

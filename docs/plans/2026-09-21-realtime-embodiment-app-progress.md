@@ -17,8 +17,8 @@ under review, every wave-3/4 branch built and verified, the daemon's first live 
 | Planning | — | merged to `main` in #83 (0.14.1) |
 | A — archive | `t1` `t2` | merged to `main` in #84 (0.15.0). Tag `archive/pre-realtime-0.14.0` = the archive commit's parent |
 | B wave 1 | `t3` `t4` `t8` `t9` `t10` | **merged on `realtime/phase-b`**, integrated. Two follow-ups from the wave review: `t4b` (bounded-log performance + accounting) **merged** `c81d40b`, 1734 tests; `w1-privacy` (no exception text in a record; a private store) built, verified, awaiting its review |
-| B wave 2 | `t5` `t6` `t7` `t11` `t13` | `t11` `9d25555`, `w1-privacy` `eac823f`, `t13` `59467ea`, `t5` `95e7f92`, `t6` `722056e` **merged**; `t7` rebuilt on subprocess audio (deviation `d4`), device-verified, under its second review |
-| B wave 3 | `t12` `t14` `t16` `t17` | **built and verified** on the throwaway base; reviews queued behind `t7` |
+| B wave 2 | `t5` `t6` `t7` `t11` `t13` | `t11` `9d25555`, `w1-privacy` `eac823f`, `t13` `59467ea`, `t5` `95e7f92`, `t6` `722056e` **merged**; `t7` rebuilt on subprocess audio (deviation `d4`), device-verified, under its second review; `t7` `3540a57` **merged** (10 rounds, 3 reviews; the last defect a first-poll race found on the device) |
+| B wave 3 | `t12` `t14` `t16` `t17` | `t16` `4517365`, `t14` `d6fca10`, `t17` `371065a` **merged on `realtime/phase-b`** (each rebased off its throwaway base, reviewed, probed); `t12` waits for its rerun review |
 | B wave 4 | `t15` `t18` `t19` `t20` | **built and verified**; the daemon (`t15`) ran its first full live turn on the rig under `grant run` |
 | B wave 5 | `t21` live acceptance | not started — **needs the operator, at the microphone, in Hebrew** |
 | B wave 6 | `t22` release docs + the final PR | not started |
@@ -223,3 +223,28 @@ unposted); pushing `realtime/phase-b`.
 - `devague interrogate <cN> --honesty … --instruction …` puts the instruction on the
   CLAIM and un-confirms it.
 - `pkill -f` with a plain pattern matches its own command line: use `"[x]yz"`.
+
+## Added 2026-09-22 (integration commit)
+
+- **Merged into `phase-b` today:** `t7` `3540a57`, `t16` `4517365`, `t14` `d6fca10`, `t17`
+  `371065a`; deviation `d5` recorded (`0f41683`, proposed). Waves 3–4 branches carried the
+  throwaway `wave2-preint`/`wave3-preint` history, so each was **rebased onto `phase-b`**
+  (`git rebase --onto realtime/phase-b <preint-head>`) before its merge; the preint branches
+  are deleted once the last review that uses them as a base has run.
+- **Integration:** `_SUBMODULES` and the type stub now name `bus`, `http`, `realtime`,
+  `safe_reason`, `session`; `audio/host.py` closes a dead child's pipes (the capture child's
+  stdout and both children's stderr were never closed - eight `ResourceWarning`s per suite
+  run and a slow fd leak on a daemon that redials); `CLAUDE.md`'s honest status and code map
+  say what is merged and what still lives on a branch.
+- **Live today** (details on #85 c12–c13 and in the merge messages): the unattended acoustic
+  self-test (gateway TTS through the monitor into the array) passed hear/answer/barge-in/
+  remember/summary by counters; recall after a restart failed because eidetic's keyword
+  tokeniser is `[a-z0-9]+` (every Hebrew recall returned nothing with `ok=True`) - `t15`
+  round 7 works around it (`d5`) and the reply carries the fact; the dashboard over
+  Tailscale exposed the cookie/secure-context trap (`t17` round 4: fetch-streamed SSE with
+  the secret in the Authorization header) and dead controls for a late viewer (`t17` round
+  5 in progress); `t20`'s printed commands were unquoted (round 3); `t14`'s aborted
+  handshake bricked the endpoint (rounds 4–6).
+- **Review wall times** (delegate prompt, vs the 40-min baseline): t7r3 26, t16 17, t14 20,
+  t17 28, t20 19; t12's review hung on a provider retry and is rerun after the chain. The
+  worker's test-file citations were wrong in every review; the lead relocated by symbol.
