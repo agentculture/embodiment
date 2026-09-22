@@ -949,40 +949,11 @@ class RealtimeEars:
         writer = self._writer
         if writer is not None:
             writer.cancel()
-            try:
-                await asyncio.wait_for(asyncio.shield(_swallow(writer)), timeout=budget)
-            except (asyncio.TimeoutError, TimeoutError):
-                exceeded = True
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:  # noqa: BLE001  # teardown answers to nobody
-                # On the REPORT as well as the ledger: a host reading only the
-                # return value must not be told this close went cleanly.
-                close_error = True
-                self._record(
-                    CLOSE_INCOMPLETE,
-                    f"writer teardown raised {describe_exception(exc)}",
-                    once=True,
-                )
+            exceeded, close_error = await self._reap_writer(writer, budget)
         if self._ws is not None:
-            try:
-                await asyncio.wait_for(self._ws.close(), timeout=budget)
-            except (asyncio.TimeoutError, TimeoutError):
-                exceeded = True
-            except asyncio.CancelledError:
-                raise
-            except (OSError, RuntimeError) as exc:
-                # An already-dead peer is a closed one, so this is not a second
-                # SESSION_DROPPED — but it is still a close that did not run to
-                # completion, and C3 says a host hears about it. `websockets`'
-                # ConnectionClosed is an OSError subclass, so this is the
-                # handler a vanished peer lands in.
-                close_error = True
-                self._record(
-                    CLOSE_INCOMPLETE,
-                    f"socket close raised {describe_exception(exc)}",
-                    once=True,
-                )
+            timed_out, failed = await self._close_socket(self._ws, budget)
+            exceeded = exceeded or timed_out
+            close_error = close_error or failed
 
         self._connected = False
         self._closed = True
@@ -997,6 +968,47 @@ class RealtimeEars:
             deadline_exceeded=exceeded,
             close_error=close_error,
         )
+
+    async def _reap_writer(self, writer: "asyncio.Task[Any]", budget: float) -> tuple[bool, bool]:
+        """Await the cancelled writer inside *budget*: ``(exceeded, close_error)``."""
+        try:
+            await asyncio.wait_for(asyncio.shield(_swallow(writer)), timeout=budget)
+        except (asyncio.TimeoutError, TimeoutError):
+            return True, False
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001  # teardown answers to nobody
+            # On the REPORT as well as the ledger: a host reading only the
+            # return value must not be told this close went cleanly.
+            self._record(
+                CLOSE_INCOMPLETE,
+                f"writer teardown raised {describe_exception(exc)}",
+                once=True,
+            )
+            return False, True
+        return False, False
+
+    async def _close_socket(self, ws: Any, budget: float) -> tuple[bool, bool]:
+        """Close the socket inside *budget*: ``(exceeded, close_error)``."""
+        try:
+            await asyncio.wait_for(ws.close(), timeout=budget)
+        except (asyncio.TimeoutError, TimeoutError):
+            return True, False
+        except asyncio.CancelledError:
+            raise
+        except (OSError, RuntimeError) as exc:
+            # An already-dead peer is a closed one, so this is not a second
+            # SESSION_DROPPED — but it is still a close that did not run to
+            # completion, and C3 says a host hears about it. `websockets`'
+            # ConnectionClosed is an OSError subclass, so this is the
+            # handler a vanished peer lands in.
+            self._record(
+                CLOSE_INCOMPLETE,
+                f"socket close raised {describe_exception(exc)}",
+                once=True,
+            )
+            return False, True
+        return False, False
 
 
 async def _swallow(task: "asyncio.Task[Any]") -> None:

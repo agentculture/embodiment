@@ -701,6 +701,21 @@ def http_synthesize(sentence: str, config: VoiceConfig, *, opener: Optional[Any]
         )
 
 
+@dataclass
+class _SpeakProgress:
+    """Per-call bookkeeping shared by :meth:`Voice._speak` and its helpers.
+
+    ``tts_degraded`` is the latch: once synthesis has raised or returned
+    something that is not bytes, no further sentence of this reply is sent
+    to the synthesizer (one degradation record per reply, not per sentence).
+    Truncation (:data:`VOICE_TTS_OVERSIZE`) records but does not latch.
+    """
+
+    queued: int = 0
+    first_play_at: Optional[float] = None
+    tts_degraded: bool = False
+
+
 class Voice:
     """Sentence-split synthesis, playback, and barge-in for one reply at a time.
 
@@ -924,9 +939,7 @@ class Voice:
             max_sentences=self._config.max_sentences,
         )
         total = len(sentences)
-        queued = 0
-        first_play_at: Optional[float] = None
-        tts_degraded = False
+        progress = _SpeakProgress()
         interrupted = False
 
         for sentence in sentences:
@@ -934,45 +947,7 @@ class Voice:
                 interrupted = True
                 break
 
-            pcm = b""
-            if not tts_degraded:
-                try:
-                    pcm = self._synthesize(sentence, self._config)
-                except VoiceReadTimeoutError as exc:
-                    # Named ahead of the generic case (round 4) — a distinct
-                    # fault from an outright failure (lesson 4).
-                    tts_degraded = True
-                    self._degrade(VOICE_TTS_READ_TIMEOUT, safe_reason.describe_exception(exc))
-                    pcm = b""
-                except VoiceRedirectRefusedError as exc:
-                    tts_degraded = True
-                    self._degrade(VOICE_TTS_REDIRECT_REFUSED, safe_reason.describe_exception(exc))
-                    pcm = b""
-                except (
-                    Exception
-                ) as exc:  # noqa: BLE001  # fold every OTHER synth failure the same way
-                    tts_degraded = True
-                    self._degrade(VOICE_TTS_FAILED, safe_reason.describe_exception(exc))
-                    pcm = b""
-                else:
-                    if not isinstance(pcm, (bytes, bytearray)):
-                        tts_degraded = True
-                        self._degrade(
-                            VOICE_TTS_MALFORMED,
-                            f"synthesize() returned {safe_reason.safe_label(type(pcm).__name__)}"
-                            ", not bytes",
-                        )
-                        pcm = b""
-                    else:
-                        pcm = bytes(pcm)
-                        cap = self._config.max_sentence_audio_bytes
-                        if len(pcm) > cap:
-                            self._degrade(
-                                VOICE_TTS_OVERSIZE,
-                                f"{len(pcm)} bytes truncated to {cap}",
-                            )
-                            pcm = pcm[:cap]
-
+            pcm = self._sentence_pcm(sentence, progress)
             if not pcm:
                 continue
 
@@ -980,19 +955,11 @@ class Voice:
                 interrupted = True
                 break
 
-            try:
-                endpoint.play(pcm)
-            except (
-                Exception
-            ) as exc:  # noqa: BLE001  # endpoint promised never to raise; degrade anyway
-                self._degrade(VOICE_ENDPOINT_FAILED, safe_reason.describe_exception(exc))
-                continue
+            self._play_sentence(endpoint, pcm, progress)
 
-            if first_play_at is None:
-                first_play_at = time.monotonic()
-            queued += 1
-            self._enqueue_pace(pcm)
-
+        queued = progress.queued
+        first_play_at = progress.first_play_at
+        tts_degraded = progress.tts_degraded
         dropped = total - queued
         samples_discarded = 0
         if interrupted:
@@ -1019,6 +986,74 @@ class Voice:
             published=published,
             first_play_at=first_play_at,
         )
+
+    def _sentence_pcm(self, sentence: str, progress: _SpeakProgress) -> bytes:
+        """Synthesize one sentence; ``b""`` means "nothing to play".
+
+        Every synthesis fault is folded into one degradation record and
+        latches ``progress.tts_degraded`` so the remaining sentences skip the
+        synthesizer entirely. Never raises.
+        """
+        if progress.tts_degraded:
+            return b""
+        try:
+            pcm = self._synthesize(sentence, self._config)
+        except VoiceReadTimeoutError as exc:
+            # Named ahead of the generic case (round 4) — a distinct
+            # fault from an outright failure (lesson 4).
+            progress.tts_degraded = True
+            self._degrade(VOICE_TTS_READ_TIMEOUT, safe_reason.describe_exception(exc))
+            return b""
+        except VoiceRedirectRefusedError as exc:
+            progress.tts_degraded = True
+            self._degrade(VOICE_TTS_REDIRECT_REFUSED, safe_reason.describe_exception(exc))
+            return b""
+        except Exception as exc:  # noqa: BLE001  # fold every OTHER synth failure the same way
+            progress.tts_degraded = True
+            self._degrade(VOICE_TTS_FAILED, safe_reason.describe_exception(exc))
+            return b""
+        return self._bound_pcm(pcm, progress)
+
+    def _bound_pcm(self, pcm: object, progress: _SpeakProgress) -> bytes:
+        """Validate and cap what the synthesizer returned.
+
+        A non-bytes return is a synthesis fault (latches, like a raise); an
+        oversize return is truncated to the configured cap and recorded, but
+        the reply goes on.
+        """
+        if not isinstance(pcm, (bytes, bytearray)):
+            progress.tts_degraded = True
+            self._degrade(
+                VOICE_TTS_MALFORMED,
+                f"synthesize() returned {safe_reason.safe_label(type(pcm).__name__)}" ", not bytes",
+            )
+            return b""
+        pcm = bytes(pcm)
+        cap = self._config.max_sentence_audio_bytes
+        if len(pcm) > cap:
+            self._degrade(
+                VOICE_TTS_OVERSIZE,
+                f"{len(pcm)} bytes truncated to {cap}",
+            )
+            pcm = pcm[:cap]
+        return pcm
+
+    def _play_sentence(self, endpoint: Any, pcm: bytes, progress: _SpeakProgress) -> None:
+        """Hand one sentence's pcm to *endpoint* and, on success, trace it.
+
+        A ``play()`` that raises is recorded and the sentence is dropped —
+        it is neither counted as queued nor paced.
+        """
+        try:
+            endpoint.play(pcm)
+        except Exception as exc:  # noqa: BLE001  # endpoint promised never to raise; degrade anyway
+            self._degrade(VOICE_ENDPOINT_FAILED, safe_reason.describe_exception(exc))
+            return
+
+        if progress.first_play_at is None:
+            progress.first_play_at = time.monotonic()
+        progress.queued += 1
+        self._enqueue_pace(pcm)
 
     # ── shutdown (lesson 6) ─────────────────────────────────────────────
 

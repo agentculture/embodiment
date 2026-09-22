@@ -128,7 +128,7 @@ import threading
 import time
 from collections import deque
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 from urllib.parse import parse_qs, urlsplit
 
 from embodiment.audio.endpoint import (
@@ -955,48 +955,63 @@ class RemoteEndpoint:
     async def _sender_loop(self) -> None:
 
         while True:
-            chunk = None
-            with self._lock:
-                if self._playback_chunks:
-                    chunk = self._playback_chunks.popleft()
-                    self._playback_queued_bytes -= len(chunk)
-                    self._playback_active_bytes = len(chunk)
-
+            chunk = self._take_playback_chunk()
             if chunk is None:
-                try:
-                    await asyncio.wait_for(self._playback_wake.wait(), timeout=_SENDER_POLL_S)
-                except asyncio.TimeoutError:
-                    pass
-                self._playback_wake.clear()
+                await self._wait_for_playback()
                 continue
 
             connection = self._connection
             if connection is None:
-                # Nothing to send to yet — keep the chunk queued (front) and
-                # wait for a peer; playback is never silently dropped just
-                # because nobody has connected.
-                with self._lock:
-                    self._playback_chunks.appendleft(chunk)
-                    self._playback_queued_bytes += len(chunk)
-                    self._playback_active_bytes = 0
-                await asyncio.sleep(_NO_PEER_RETRY_S)
+                await self._requeue_for_peer(chunk)
                 continue
 
-            try:
-                await connection.send(self._audio_delta_json(chunk))
-            except asyncio.CancelledError:
-                raise
-            except Exception:  # noqa: BLE001  # the peer vanished mid-send
-                with self._lock:
-                    self._send_errors += 1
-                    self._playback_active_bytes = 0
-                continue
+            await self._send_playback_chunk(connection, chunk)
 
+    def _take_playback_chunk(self) -> Optional[bytes]:
+        """Pop the next queued chunk and mark it active; ``None`` when idle."""
+        with self._lock:
+            if not self._playback_chunks:
+                return None
+            chunk = self._playback_chunks.popleft()
+            self._playback_queued_bytes -= len(chunk)
+            self._playback_active_bytes = len(chunk)
+        return chunk
+
+    async def _wait_for_playback(self) -> None:
+        """Sleep until ``play()`` wakes the loop, or one poll interval passes."""
+        try:
+            await asyncio.wait_for(self._playback_wake.wait(), timeout=_SENDER_POLL_S)
+        except asyncio.TimeoutError:
+            pass
+        self._playback_wake.clear()
+
+    async def _requeue_for_peer(self, chunk: bytes) -> None:
+        # Nothing to send to yet — keep the chunk queued (front) and
+        # wait for a peer; playback is never silently dropped just
+        # because nobody has connected.
+        with self._lock:
+            self._playback_chunks.appendleft(chunk)
+            self._playback_queued_bytes += len(chunk)
+            self._playback_active_bytes = 0
+        await asyncio.sleep(_NO_PEER_RETRY_S)
+
+    async def _send_playback_chunk(self, connection: Any, chunk: bytes) -> None:
+        """Send one active chunk; a failed send is counted and the chunk dropped."""
+        try:
+            await connection.send(self._audio_delta_json(chunk))
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001  # the peer vanished mid-send
             with self._lock:
-                self._playback_sent_bytes += len(chunk)
+                self._send_errors += 1
                 self._playback_active_bytes = 0
-                if not self._playback_chunks:
-                    self._playing = False
+            return
+
+        with self._lock:
+            self._playback_sent_bytes += len(chunk)
+            self._playback_active_bytes = 0
+            if not self._playback_chunks:
+                self._playing = False
 
     # -- mute ----------------------------------------------------------------
 

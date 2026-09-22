@@ -1327,6 +1327,42 @@ class TestACloseThatFailedSaysSo:
         assert report.graceful is False
         assert codes(ears).count(rtc.CLOSE_INCOMPLETE) == 1
 
+    def test_a_writer_that_ignores_cancellation_is_a_missed_deadline(self) -> None:
+        """The writer teardown has its own deadline branch, distinct from the
+        socket's: a writer that swallows its cancel and keeps running is
+        reported as ``deadline_exceeded``, not as ``close_error``."""
+        with Rig(caps_body=capabilities()) as rig:
+
+            async def go() -> tuple[Any, rtc.RealtimeEars]:
+                async with rig.websocket():
+                    ears = rtc.RealtimeEars(rig.config(realtime_url=rig.ws_origin()))
+                    await ears.connect()
+                    real_writer = ears._writer
+                    assert real_writer is not None
+                    real_writer.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await real_writer
+
+                    async def stubborn() -> None:
+                        with contextlib.suppress(asyncio.CancelledError):
+                            await asyncio.sleep(10)
+                        await asyncio.sleep(10)
+
+                    stuck = asyncio.get_running_loop().create_task(stubborn())
+                    ears._writer = stuck
+                    await asyncio.sleep(0)
+                    report = await ears.close(deadline=0.2)
+                    stuck.cancel()
+                    with contextlib.suppress(asyncio.CancelledError):
+                        await stuck
+                    return report, ears
+
+            report, ears = run(go())
+        assert report.deadline_exceeded is True
+        assert report.close_error is False
+        assert report.graceful is False
+        assert rtc.CLOSE_INCOMPLETE in codes(ears)
+
     def test_a_missed_deadline_is_the_other_cause_not_this_one(self) -> None:
         class _Wedged:
             latency = 0.0
