@@ -657,7 +657,7 @@ def resolve_target(dotted: str) -> tuple[Optional[Callable[[], Any]], Optional[s
         module = importlib.import_module(module_name)
     except ImportError as exc:
         return None, f"cannot import {module_name}: {describe_exception(exc)}"
-    except Exception as exc:  # noqa: BLE001 - a target's own import-time failure
+    except Exception as exc:  # noqa: BLE001  # a target's own import-time failure
         return None, f"{module_name} failed at import: {describe_exception(exc)}"
     factory = getattr(module, attribute, None)
     if factory is None:
@@ -1848,7 +1848,7 @@ class DaemonRunner:
         try:
             result = self._runnable.run(self.stop_event)
             code = result if isinstance(result, int) and not isinstance(result, bool) else 0
-        except Exception as exc:  # noqa: BLE001 - a target's failure is recorded, never raised
+        except Exception as exc:  # noqa: BLE001  # a target's failure is recorded, never raised
             self._state.ledger.append(
                 TARGET_FAILED_CODE, f"the daemon target raised {describe_exception(exc)}"
             )
@@ -1860,7 +1860,7 @@ class DaemonRunner:
         if callable(shutdown):
             try:
                 shutdown(self._shutdown_deadline)
-            except Exception as exc:  # noqa: BLE001 - recorded, never raised
+            except Exception as exc:  # noqa: BLE001  # recorded, never raised
                 self._state.ledger.append(
                     SHUTDOWN_FAILED_CODE,
                     f"the daemon target's shutdown raised {describe_exception(exc)}",
@@ -2000,7 +2000,7 @@ def _child_main(argv: Optional[list[str]] = None) -> int:
 
     try:
         runnable = factory()
-    except Exception as exc:  # noqa: BLE001 - the target's own failure, recorded
+    except Exception as exc:  # noqa: BLE001  # the target's own failure, recorded
         state.ledger.append(
             TARGET_FAILED_CODE, f"building the daemon target raised {describe_exception(exc)}"
         )

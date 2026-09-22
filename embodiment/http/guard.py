@@ -376,7 +376,7 @@ def requires_guard(method: str, path: str) -> bool:
         if route in GUARDED_PATHS:
             return True
         return any(route.startswith(prefix) for prefix in GUARDED_PATH_PREFIXES)
-    except Exception as exc:  # noqa: BLE001 - an unreadable request is guarded
+    except Exception as exc:  # noqa: BLE001  # an unreadable request is guarded
         del exc
         return True
 
@@ -391,14 +391,14 @@ def _header_pairs(headers: HeaderSource) -> list[tuple[str, str]]:
     getter = getattr(headers, "items", None)
     try:
         items = getter() if callable(getter) else headers
-    except Exception as exc:  # noqa: BLE001 - an unreadable header set has none
+    except Exception as exc:  # noqa: BLE001  # an unreadable header set has none
         del exc
         return []
     pairs: list[tuple[str, str]] = []
     try:
         for name, value in items:
             pairs.append((str(name).strip().lower(), str(value)))
-    except Exception as exc:  # noqa: BLE001 - a partially readable set is still usable
+    except Exception as exc:  # noqa: BLE001  # a partially readable set is still usable
         del exc
         return pairs
     return pairs
@@ -489,7 +489,7 @@ class Guard:
             return
         try:
             self._on_degrade(code, reason)
-        except Exception as exc:  # noqa: BLE001 - a broken sink is counted, not raised
+        except Exception as exc:  # noqa: BLE001  # a broken sink is counted, not raised
             del exc
             self.hook_errors += 1
 
@@ -507,7 +507,7 @@ class Guard:
         """The verdict for one request. Never raises, whatever it is handed."""
         try:
             return self._check(method, path, headers)
-        except Exception as exc:  # noqa: BLE001 - a guard that can crash is a guard that opens
+        except Exception as exc:  # noqa: BLE001  # a guard that can crash is a guard that opens
             self._degrade(
                 REFUSED_MALFORMED_HEADER_CODE,
                 f"the guard could not evaluate the request: {describe_exception(exc)}",
@@ -600,7 +600,7 @@ class Guard:
             return self._refuse(REFUSED_ACCESS_MISSING_CODE, 401)
         try:
             result = self._verifier(token)
-        except Exception as exc:  # noqa: BLE001 - a verifier that dies must not open the door
+        except Exception as exc:  # noqa: BLE001  # a verifier that dies must not open the door
             reason = f"the Access assertion verifier raised: {describe_exception(exc)}"
             self._degrade(REFUSED_ACCESS_VERIFIER_FAILED_CODE, reason)
             return self._refuse(REFUSED_ACCESS_VERIFIER_FAILED_CODE, 401)

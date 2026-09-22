@@ -466,14 +466,14 @@ class _Handler(BaseHTTPRequestHandler):
     def _app(self) -> "DashboardServer":
         return self.server.app  # type: ignore[attr-defined]
 
-    def setup(self) -> None:  # noqa: D102 - stdlib hook
+    def setup(self) -> None:  # noqa: D102  # stdlib hook
         super().setup()
         try:
             self.connection.settimeout(self._app.config.socket_timeout_s)
         except OSError as exc:
             del exc  # a socket that cannot take a timeout is about to fail anyway
 
-    def log_message(self, format: str, *args: Any) -> None:  # noqa: A002 - stdlib signature
+    def log_message(self, format: str, *args: Any) -> None:  # noqa: A002  # stdlib signature
         """Never write an access log.
 
         A request line carries a path, a path can carry a query string, and a
@@ -485,13 +485,13 @@ class _Handler(BaseHTTPRequestHandler):
 
     # ── methods ──────────────────────────────────────────────────────────────
 
-    def do_GET(self) -> None:  # noqa: N802 - stdlib hook
+    def do_GET(self) -> None:  # noqa: N802  # stdlib hook
         self._dispatch("GET")
 
-    def do_HEAD(self) -> None:  # noqa: N802 - stdlib hook
+    def do_HEAD(self) -> None:  # noqa: N802  # stdlib hook
         self._dispatch("HEAD")
 
-    def do_POST(self) -> None:  # noqa: N802 - stdlib hook
+    def do_POST(self) -> None:  # noqa: N802  # stdlib hook
         self._dispatch("POST")
 
     # ── routing ──────────────────────────────────────────────────────────────
@@ -508,7 +508,7 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             app._count_request()
             self._route(method)
-        except Exception as exc:  # noqa: BLE001 - a handler that raises kills a thread silently
+        except Exception as exc:  # noqa: BLE001  # a handler that raises kills a thread silently
             app._degrade(
                 "http-request-failed",
                 f"a request could not be answered: {describe_exception(exc)}",
@@ -589,7 +589,7 @@ class _Handler(BaseHTTPRequestHandler):
         """Answer even when the normal path is what failed. Never raises."""
         try:
             self._send_error(status, code, message)
-        except Exception as exc:  # noqa: BLE001 - last resort; the connection is closing
+        except Exception as exc:  # noqa: BLE001  # last resort; the connection is closing
             del exc
             self.close_connection = True
 
@@ -713,14 +713,14 @@ class _Handler(BaseHTTPRequestHandler):
             subscription = bus.subscribe(include_speech=app.config.include_speech)
             app._track(subscription)
             self._pump(subscription)
-        except Exception as exc:  # noqa: BLE001 - a dead stream must not kill the daemon
+        except Exception as exc:  # noqa: BLE001  # a dead stream must not kill the daemon
             app._degrade(STREAM_FAILED_CODE, f"a stream ended: {describe_exception(exc)}")
         finally:
             if subscription is not None:
                 app._untrack(subscription)
                 try:
                     bus.unsubscribe(subscription)
-                except Exception as exc:  # noqa: BLE001 - teardown of a detached subscription
+                except Exception as exc:  # noqa: BLE001  # teardown of a detached subscription
                     app._degrade(
                         STREAM_FAILED_CODE,
                         f"a stream could not be unsubscribed: {describe_exception(exc)}",
@@ -879,7 +879,7 @@ def _resolve_static(dist: Path, route: str) -> Any:
         return None
     try:
         decoded = unquote(route, errors="replace")
-    except Exception as exc:  # noqa: BLE001 - an undecodable path names no file
+    except Exception as exc:  # noqa: BLE001  # an undecodable path names no file
         del exc
         return None
     if any(unicodedata.category(ch) in _FORBIDDEN_PATH_CATEGORIES for ch in decoded):
@@ -1009,7 +1009,7 @@ class DashboardServer:
             return
         try:
             httpd.serve_forever(poll_interval=0.1)
-        except Exception as exc:  # noqa: BLE001 - the accept loop dying must be visible
+        except Exception as exc:  # noqa: BLE001  # the accept loop dying must be visible
             self._degrade(
                 "http-accept-loop-failed", f"the accept loop ended: {describe_exception(exc)}"
             )
@@ -1043,7 +1043,7 @@ class DashboardServer:
         for subscription in subscriptions:
             try:
                 subscription.close()
-            except Exception as exc:  # noqa: BLE001 - a subscription that will not close is noted
+            except Exception as exc:  # noqa: BLE001  # a subscription that will not close is noted
                 self._degrade(
                     STREAM_FAILED_CODE,
                     f"a stream subscription would not close: {describe_exception(exc)}",
@@ -1057,7 +1057,7 @@ class DashboardServer:
             # to close. Queued-but-unstarted calls are cancelled; a running one
             # keeps its daemon thread and dies with the process.
             self._controls_pool.shutdown(wait=False, cancel_futures=True)
-        except Exception as exc:  # noqa: BLE001 - a pool that will not close is recorded
+        except Exception as exc:  # noqa: BLE001  # a pool that will not close is recorded
             self._degrade(
                 "http-control-pool-close-failed",
                 f"the control pool would not close: {describe_exception(exc)}",
@@ -1095,7 +1095,7 @@ class DashboardServer:
             stopper.join(remaining())
         try:
             httpd.server_close()
-        except Exception as exc:  # noqa: BLE001 - a socket that will not close is recorded
+        except Exception as exc:  # noqa: BLE001  # a socket that will not close is recorded
             self._degrade(
                 "http-socket-close-failed",
                 f"the listening socket would not close: {describe_exception(exc)}",
@@ -1203,7 +1203,7 @@ class DashboardServer:
             )
         try:
             result = future.result()
-        except Exception as exc:  # noqa: BLE001 - a control's fault is not the server's death
+        except Exception as exc:  # noqa: BLE001  # a control's fault is not the server's death
             self._degrade(
                 CONTROL_FAILED_CODE, f"{_safe_token(label)} raised: {describe_exception(exc)}"
             )
@@ -1244,7 +1244,7 @@ class DashboardServer:
         if notify and self._on_degrade is not None:
             try:
                 self._on_degrade(code, reason)
-            except Exception:  # noqa: BLE001 - a broken sink is counted, not raised
+            except Exception:  # noqa: BLE001  # a broken sink is counted, not raised
                 with self._lock:
                     self.hook_errors += 1
 

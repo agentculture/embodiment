@@ -903,7 +903,7 @@ def _describe_process_exit(proc: "subprocess.Popen[bytes]") -> str:
             raw = proc.stderr.read()
             if raw:
                 text = raw.decode("utf-8", "replace")
-    except Exception:  # noqa: BLE001 - reading a dead process's stderr is best-effort
+    except Exception:  # noqa: BLE001  # reading a dead process's stderr is best-effort
         text = ""
     return f"exit={code} stderr: {len(text)} chars, fp:{name_fingerprint(text)}"
 
@@ -959,7 +959,7 @@ def _close_pipes(proc: "subprocess.Popen[bytes]") -> int:
             continue
         try:
             stream.close()
-        except Exception:  # noqa: BLE001 - counted by the caller, not hidden
+        except Exception:  # noqa: BLE001  # counted by the caller, not hidden
             refused += 1
     return refused
 

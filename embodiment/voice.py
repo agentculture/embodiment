@@ -789,7 +789,7 @@ class Voice:
                 "queued_not_traced": queued_not_traced,
                 "degradation_counts": degradation_counts,
             }
-        except Exception as exc:  # noqa: BLE001 - a status probe must never raise
+        except Exception as exc:  # noqa: BLE001  # a status probe must never raise
             self._degrade(VOICE_ENDPOINT_FAILED, safe_reason.describe_exception(exc))
             return {"speaking": False, "queued_not_traced": 0}
 
@@ -827,7 +827,7 @@ class Voice:
         discarded = 0
         try:
             discarded = endpoint.stop_playback()
-        except Exception as exc:  # noqa: BLE001 - endpoint promised never to raise; degrade anyway
+        except Exception as exc:  # noqa: BLE001  # endpoint promised never to raise; degrade anyway
             self._degrade(VOICE_ENDPOINT_FAILED, safe_reason.describe_exception(exc))
             discarded = 0
         if not isinstance(discarded, int) or isinstance(discarded, bool) or discarded < 0:
@@ -950,7 +950,7 @@ class Voice:
                     pcm = b""
                 except (
                     Exception
-                ) as exc:  # noqa: BLE001 - fold every OTHER synth failure the same way
+                ) as exc:  # noqa: BLE001  # fold every OTHER synth failure the same way
                     tts_degraded = True
                     self._degrade(VOICE_TTS_FAILED, safe_reason.describe_exception(exc))
                     pcm = b""
@@ -984,7 +984,7 @@ class Voice:
                 endpoint.play(pcm)
             except (
                 Exception
-            ) as exc:  # noqa: BLE001 - endpoint promised never to raise; degrade anyway
+            ) as exc:  # noqa: BLE001  # endpoint promised never to raise; degrade anyway
                 self._degrade(VOICE_ENDPOINT_FAILED, safe_reason.describe_exception(exc))
                 continue
 
@@ -1050,7 +1050,7 @@ class Voice:
                 elapsed_s=elapsed,
                 queued_not_traced=queued_not_traced,
             )
-        except Exception as exc:  # noqa: BLE001 - shutdown must never raise
+        except Exception as exc:  # noqa: BLE001  # shutdown must never raise
             self._degrade(VOICE_ENDPOINT_FAILED, safe_reason.describe_exception(exc))
             return VoiceCloseReport(
                 pace_thread_stopped=False,
@@ -1168,7 +1168,7 @@ class Voice:
     def _endpoint_playing_safe(self) -> bool:
         try:
             return bool(self._current_endpoint().playing)
-        except Exception as exc:  # noqa: BLE001 - endpoint promised never to raise; degrade anyway
+        except Exception as exc:  # noqa: BLE001  # endpoint promised never to raise; degrade anyway
             self._degrade(VOICE_ENDPOINT_FAILED, safe_reason.describe_exception(exc))
             return False
 
@@ -1177,7 +1177,7 @@ class Voice:
     def _feed_features(self, pcm: bytes) -> None:
         try:
             frames = self._features.feed(pcm)
-        except Exception as exc:  # noqa: BLE001 - a dashboard trace glitch must not stop speech
+        except Exception as exc:  # noqa: BLE001  # a dashboard trace glitch must not stop speech
             self._degrade(VOICE_ENDPOINT_FAILED, safe_reason.describe_exception(exc))
             return
         with self._state_lock:
@@ -1195,7 +1195,7 @@ class Voice:
             event = self._bus.publish("reply", {"text": text})
         except (
             Exception
-        ) as exc:  # noqa: BLE001 - an injected bus is not trusted to keep its own contract
+        ) as exc:  # noqa: BLE001  # an injected bus is not trusted to keep its own contract
             self._degrade(VOICE_PUBLISH_FAILED, safe_reason.describe_exception(exc))
             return False
         return event is not None
@@ -1225,7 +1225,7 @@ class Voice:
             )
         except (
             Exception
-        ) as exc:  # noqa: BLE001 - an injected bus is not trusted to keep its own contract
+        ) as exc:  # noqa: BLE001  # an injected bus is not trusted to keep its own contract
             self._degrade(VOICE_PUBLISH_FAILED, safe_reason.describe_exception(exc))
             return False
         return event is not None

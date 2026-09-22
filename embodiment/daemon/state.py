@@ -803,7 +803,7 @@ def _probe_tail(path: Path) -> tuple[bool, bool]:
     treated as dirty" section.
     """
     try:
-        with open(path, "rb") as handle:  # noqa: PTH123 - a raw byte peek, not text
+        with open(path, "rb") as handle:  # noqa: PTH123  # a raw byte peek, not text
             handle.seek(0, os.SEEK_END)
             if handle.tell() == 0:
                 return False, False
