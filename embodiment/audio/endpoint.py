@@ -12,11 +12,24 @@ either one paying for, or depending on, any of it.
 
 The contract every implementation must meet
 --------------------------------------------
-- **Frame format is fixed and never negotiated**: pcm16, mono, 24000 Hz,
-  little-endian bytes — the same format :mod:`embodiment.audio.features`
-  contracts against (task ``t8``). An implementation that talks to hardware at
-  a different native rate resamples at its own boundary; nothing above this
-  interface ever sees another rate.
+- **Playback is fixed and never negotiated**: :meth:`AudioEndpoint.play`
+  always takes pcm16, mono, 24000 Hz, little-endian bytes — the same format
+  :mod:`embodiment.audio.features` contracts against (task ``t8``). An
+  implementation whose device wants a different native rate resamples (or,
+  as :mod:`embodiment.audio.host` does, lets ALSA/pipewire resample) at its
+  own boundary; nothing above this interface ever sees another playback rate.
+- **Capture's rate is READ, never assumed — decision 15 (operator, issue
+  #85).** :meth:`AudioEndpoint.start_capture` delivers pcm16 mono frames at
+  whatever rate :attr:`AudioEndpoint.sample_rate` reports, which need not be
+  24000 Hz: the reSpeaker XVF3800 sends its NATIVE 16 kHz straight through
+  (:mod:`embodiment.audio.host` reports 16000), because resampling it up to
+  a historical 24 kHz assumption in Python bought nothing the daemon's own
+  realtime session (``input_sample_rate``) cannot already declare. This
+  superseded the original single-fixed-rate criterion for BOTH directions;
+  see :mod:`embodiment.audio.host`'s module docstring for the full
+  reasoning. A caller reads ``sample_rate`` once, before or right after
+  :meth:`~AudioEndpoint.start_capture`, and passes it on — never hard-codes
+  24000 for the capture direction.
 - **Capture is push, not pull.** :meth:`AudioEndpoint.start_capture` takes a
   callback; the endpoint calls it with frames as they arrive. There is no
   polling method, because an endpoint that has to be polled either drops
@@ -190,7 +203,7 @@ class AudioEndpoint(Protocol):
         ...
 
     def start_capture(self, on_frame: FrameCallback) -> None:
-        """Begin delivering pcm16/mono/24 kHz frames to ``on_frame`` as they arrive.
+        """Begin delivering pcm16 mono frames, at :attr:`sample_rate` Hz, to ``on_frame``.
 
         Never raises. An endpoint that cannot capture (no hardware, a
         degraded state) is a no-op: ``on_frame`` is simply never called, and
@@ -200,6 +213,17 @@ class AudioEndpoint(Protocol):
 
     def stop_capture(self) -> None:
         """Stop delivering frames. Idempotent, never raises."""
+        ...
+
+    @property
+    def sample_rate(self) -> int:
+        """The rate (Hz) of frames this endpoint delivers to ``on_frame`` (decision 15).
+
+        Read this — never assume :data:`SAMPLE_RATE_HZ` — before passing
+        captured audio on to something that needs to know its rate (e.g. the
+        daemon declaring a realtime session's ``input_sample_rate``). Stable
+        for the life of one endpoint instance; never raises.
+        """
         ...
 
     def play(self, frames: bytes) -> None:
@@ -291,6 +315,12 @@ class NullEndpoint:
 
     def stop_capture(self) -> None:
         self._capturing = False
+
+    @property
+    def sample_rate(self) -> int:
+        """No real source, so :data:`SAMPLE_RATE_HZ` — the only value a
+        no-configured-hardware default can honestly report."""
+        return SAMPLE_RATE_HZ
 
     def play(self, frames: bytes) -> None:
         return None

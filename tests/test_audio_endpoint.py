@@ -137,6 +137,7 @@ def test_protocol_members_match_the_documented_contract():
         "detach",
         "start_capture",
         "stop_capture",
+        "sample_rate",
         "play",
         "stop_playback",
         "playing",
@@ -146,6 +147,16 @@ def test_protocol_members_match_the_documented_contract():
         "status",
     }
     assert expected <= set(dir(AudioEndpoint))
+
+
+def test_null_endpoint_sample_rate_defaults_to_the_playback_contract_rate():
+    """decision 15 (issue #85): a caller reads sample_rate rather than
+    assuming 24 kHz for capture; NullEndpoint (no real source) reports the
+    one honest default it has — the fixed playback contract rate."""
+    endpoint = NullEndpoint()
+    assert endpoint.sample_rate == SAMPLE_RATE_HZ
+    endpoint.start_capture(lambda _f: None)
+    assert endpoint.sample_rate == SAMPLE_RATE_HZ  # stable before/after start_capture
 
 
 def test_endpoint_close_report_is_frozen_and_carries_the_five_fields():

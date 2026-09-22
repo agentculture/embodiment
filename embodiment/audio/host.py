@@ -35,15 +35,31 @@ the hardware wants. This module keeps that shape exactly:
   :data:`CAPTURE_CHANNELS` (2) from the subprocess, regardless of what the
   underlying device natively wants — ``plughw:``/pipewire do that
   conversion, the same way they already do for both sibling projects. What
-  THIS module still owns is the 16 kHz -> 24 kHz conversion for the wire
-  (round 2/3's :class:`Resampler`, reused byte-for-byte) and the channel
-  selection (:func:`_select_channel`, also reused).
+  THIS module still owns is the channel selection
+  (:func:`_select_channel`, cited from lobes-cli, reused unchanged).
 - **Playback** always writes :data:`PLAYBACK_RATE_HZ` (24000, the fixed
   contract rate) / mono to the subprocess's stdin — ALSA/pipewire resample
-  DOWN as needed, so this module no longer owns a 24k -> 16k output
-  resampler at all (round 3b built one; it is deleted here, not merely
-  unused, because a resampler nobody's code path reaches is a resampler
-  nobody's tests protect).
+  DOWN as needed, so this module has never owned a 24k -> 16k output
+  resampler (round 3b built one; round 4 deleted it outright rather than
+  leave a resampler nobody's code path reached).
+
+**Round 6 — decision 15 (operator, issue #85), superseding the original
+"resample to 24 kHz in Python" instruction, together with d4:** the ears now
+send the device's NATIVE 16 kHz straight to the gateway — ``../shabbos-goy``
+already runs this exact array this way, daily, validated by the operator —
+rather than this module resampling capture up to the package's historical
+24 kHz wire contract. Concretely: :meth:`HostEndpoint._capture_loop` delivers
+:data:`CAPTURE_RATE_HZ` frames AS READ (channel-selected, never resampled);
+the round 2/3/3b capture resampler (``Resampler``, its windowed-sinc
+FIR/polyphase machinery, and their tests) is DELETED, not merely unused —
+nothing in this module calls it any more, and a resampler nobody's code path
+reaches is a resampler nobody's tests protect. A reference copy of the
+polyphase design is kept in this task's own delivery notes/scratchpad, not
+in this module. Callers that need to know the rate they are being handed
+read :attr:`HostEndpoint.sample_rate` (part of
+:class:`~embodiment.audio.endpoint.AudioEndpoint` since this decision) rather
+than assuming :data:`~embodiment.audio.endpoint.SAMPLE_RATE_HZ` — the daemon
+passes it to the realtime session as ``input_sample_rate``.
 
 No voice, never a raise
 ------------------------
@@ -137,8 +153,8 @@ end of session is not an interruption.
 Mute is enforced in the capture path (plan obligation ``o8``), unchanged
 -----------------------------------------------------------------------
 The drop happens in :meth:`HostEndpoint._capture_loop`, BEFORE channel
-selection and BEFORE the 16k->24k resample — the only code path that ever
-calls the ``on_frame`` callback a caller registered through
+selection — the only code path that ever calls the ``on_frame`` callback a
+caller registered through
 :meth:`~HostEndpoint.start_capture`. Bounded event log
 (:data:`_MAX_RETAINED_EVENTS`) + an exact, never-capped mute-transition
 counter: round 2 finding 6a's fix, unchanged by the rewrite.
@@ -173,7 +189,6 @@ speculative spawn); no audio is ever written to disk.
 
 from __future__ import annotations
 
-import math
 import shutil
 import subprocess  # nosec B404 - fixed argv, shell=False, no user input reaches argv
 import threading
@@ -203,7 +218,6 @@ __all__ = [
     "CAPTURE_CHANNEL_INDEX",
     "PLAYBACK_RATE_HZ",
     "PLAYBACK_CHANNELS",
-    "Resampler",
     "HostEndpoint",
 ]
 
@@ -223,12 +237,15 @@ DEGRADED_PLAYBACK_OVERFLOW = "audio-host-playback-overflow"
 #: Fixed capture request, regardless of the device's own native rate — the
 #: reSpeaker XVF3800 refuses anything else (measured, round 3b); ALSA's
 #: ``plughw:``/pipewire perform the conversion for any device that needs one.
+#: Since decision 15 (round 6), this is ALSO the rate frames are delivered to
+#: ``on_frame`` at — see :attr:`HostEndpoint.sample_rate` — with no resample
+#: to :data:`~embodiment.audio.endpoint.SAMPLE_RATE_HZ` in between.
 CAPTURE_RATE_HZ = 16000
 #: Always request 2 channels: this module selects ONE (see
 #: :data:`CAPTURE_CHANNEL_INDEX`), never averages. A device with only one
 #: channel still gets a mono request via ``plughw:``'s own upmix; this
-#: module's own resampler/select-channel step degrades harmlessly on mono
-#: input (``_select_channel`` is a passthrough when ``channels <= 1``).
+#: module's own select-channel step degrades harmlessly on mono input
+#: (``_select_channel`` is a passthrough when ``channels <= 1``).
 CAPTURE_CHANNELS = 2
 #: Which of the (up to) 2 requested channels this module keeps. Cited from
 #: ``lobes-cli``'s own measured evidence: channel 1 carries less echo
@@ -290,15 +307,6 @@ _BARGE_IN_KILL_TIMEOUT_S = 0.15
 #: spawn instead of a PortAudio open: 2 s doubling to a 30 s cap.
 _OPEN_COOLDOWN_BASE_S = 2.0
 _OPEN_COOLDOWN_MAX_S = 30.0
-
-#: Windowed-sinc FIR low-pass filter length (round 2/3b, reused unchanged).
-_FIR_TAPS = 129
-
-#: Largest upsample/decimate factor a rational ratio is allowed to reach
-#: before falling back to unfiltered linear interpolation (round 3b,
-#: reused unchanged). The fixed 16000:24000 capture leg reduces to 2:3 —
-#: comfortably inside this bound.
-_POLY_MAX_FACTOR = 12
 
 #: How many events (mute changes, per-direction recovery) this module keeps
 #: in the retained log before evicting the oldest (round 2 finding 6a). The
@@ -417,174 +425,6 @@ def _describe_process_exit(proc: "subprocess.Popen[bytes]") -> str:
     return f"exit={code} stderr: {len(text)} chars, fp:{name_fingerprint(text)}"
 
 
-def _poly_factors(from_rate: int, to_rate: int) -> tuple[int, int]:
-    """The reduced upsample/decimate factors ``(L, M)`` for a rational rate change."""
-    if from_rate <= 0 or to_rate <= 0:
-        return 0, 0
-    g = math.gcd(from_rate, to_rate)
-    return to_rate // g, from_rate // g
-
-
-def _classify_resample_path(from_rate: int, to_rate: int) -> str:
-    """``"native"`` / ``"fir-decimate"`` / ``"polyphase"`` / ``"linear"`` (round 2/3b)."""
-    if from_rate == to_rate:
-        return "native"
-    factor_up, factor_down = _poly_factors(from_rate, to_rate)
-    if factor_up == 0:
-        return "linear"
-    if factor_up == 1 and factor_down > 1:
-        return "fir-decimate"
-    if max(factor_up, factor_down) <= _POLY_MAX_FACTOR:
-        return "polyphase"
-    return "linear"
-
-
-def _windowed_sinc_lowpass(
-    np: Any, taps: int, cutoff_hz: float, sample_rate_hz: float, *, gain: float = 1.0
-) -> Any:
-    """A Hamming-windowed sinc low-pass FIR kernel, DC gain exactly *gain* (round 2/3b)."""
-    fc = cutoff_hz / sample_rate_hz
-    m = taps - 1
-    n = np.arange(taps, dtype=np.float64)
-    kernel = 2.0 * fc * np.sinc(2.0 * fc * (n - m / 2.0))
-    window = np.hamming(taps)
-    kernel = kernel * window
-    total = np.sum(kernel)
-    if total != 0:
-        kernel = kernel * (gain / total)
-    return kernel
-
-
-class Resampler:
-    """A stateful, per-direction resampler (round 2/3b, reused unchanged for the wire leg).
-
-    ONE instance per direction; never shared across threads. Only the
-    capture leg (16000 -> 24000, fixed) uses this in :class:`HostEndpoint`
-    now — playback's 24k -> device-rate leg is ALSA/pipewire's job, not
-    this module's (round 4).
-    """
-
-    __slots__ = (
-        "_from_rate",
-        "_to_rate",
-        "_np_importer",
-        "_path",
-        "_poly_up",
-        "_poly_down",
-        "_kernel",
-        "_fir_state",
-        "_decim_phase",
-        "_pending",
-        "_cursor",
-    )
-
-    def __init__(self, from_rate: int, to_rate: int, numpy_importer: Callable[[], Any]) -> None:
-        self._from_rate = from_rate
-        self._to_rate = to_rate
-        self._np_importer = numpy_importer
-        self._path = _classify_resample_path(from_rate, to_rate)
-        if self._path in ("fir-decimate", "polyphase"):
-            self._poly_up, self._poly_down = _poly_factors(from_rate, to_rate)
-        else:
-            self._poly_up, self._poly_down = 0, 0
-        self._kernel: Any = None
-        self._fir_state: Any = None
-        self._decim_phase = 0
-        self._pending: Any = None
-        self._cursor = 0.0
-
-    @property
-    def path(self) -> str:
-        return self._path
-
-    def process(self, pcm_bytes: bytes, *, flush: bool = False) -> bytes:
-        """Resample one chunk. Never raises: malformed/degenerate input degrades to ``b""``."""
-        if not pcm_bytes or self._from_rate <= 0 or self._to_rate <= 0:
-            return b""
-        usable = pcm_bytes[: len(pcm_bytes) - (len(pcm_bytes) % SAMPLE_WIDTH_BYTES)]
-        if not usable:
-            return b""
-        if self._path == "native":
-            return bytes(usable)
-
-        np = self._np_importer()
-        new_samples = np.frombuffer(usable, dtype="<i2").astype(np.float64)
-        if self._path in ("fir-decimate", "polyphase"):
-            return self._process_poly(np, new_samples)
-        return self._process_linear(np, new_samples, flush=flush)
-
-    def _process_poly(self, np: Any, new_samples: Any) -> bytes:
-        n = int(new_samples.shape[0])
-        if n == 0:
-            return b""
-        taps = _FIR_TAPS
-        up, down = self._poly_up, self._poly_down
-        if self._kernel is None:
-            cutoff_hz = min(self._from_rate, self._to_rate) / 2.0
-            intermediate_rate_hz = float(self._from_rate * up)
-            self._kernel = _windowed_sinc_lowpass(
-                np, taps, cutoff_hz, intermediate_rate_hz, gain=float(up)
-            )
-        if self._fir_state is None:
-            self._fir_state = np.zeros(taps - 1, dtype=np.float64)
-
-        if up == 1:
-            upsampled = new_samples
-        else:
-            upsampled = np.zeros(n * up, dtype=np.float64)
-            upsampled[::up] = new_samples
-
-        combined = np.concatenate([self._fir_state, upsampled])
-        filtered = np.convolve(combined, self._kernel, mode="valid")
-
-        total_len = n * up
-        idx = np.arange(self._decim_phase, total_len, down)
-        out = filtered[idx] if idx.size else np.array([], dtype=np.float64)
-        self._decim_phase = (
-            int(idx[-1] + down - total_len) if idx.size else int(self._decim_phase - total_len)
-        )
-        self._fir_state = combined[-(taps - 1) :] if taps > 1 else combined[0:0]
-
-        out = np.clip(np.round(out), -32768, 32767).astype("<i2")
-        return out.tobytes()
-
-    def _process_linear(self, np: Any, new_samples: Any, *, flush: bool) -> bytes:
-        pending = self._pending if self._pending is not None else np.array([], dtype=np.float64)
-        combined = np.concatenate([pending, new_samples])
-        length = int(combined.shape[0])
-        if length == 0:
-            return b""
-        max_pos = length - 1
-        ratio = self._from_rate / self._to_rate
-
-        positions: list[float] = []
-        pos = self._cursor
-        while pos <= max_pos:
-            positions.append(pos)
-            pos += ratio
-
-        if positions:
-            pos_arr = np.array(positions, dtype=np.float64)
-            idx0 = np.clip(np.floor(pos_arr).astype(np.int64), 0, max_pos)
-            idx1 = np.clip(idx0 + 1, 0, max_pos)
-            frac = np.where(idx1 > idx0, pos_arr - idx0, 0.0)
-            out = combined[idx0] * (1.0 - frac) + combined[idx1] * frac
-        else:
-            out = np.array([], dtype=np.float64)
-
-        if flush:
-            self._pending = None
-            self._cursor = 0.0
-        else:
-            keep_n = min(length, max(2, math.ceil(ratio) + 2))
-            keep_start = max(0, length - keep_n)
-            self._pending = combined[keep_start:]
-            self._cursor = pos - keep_start
-
-        out = np.clip(np.round(out), -32768, 32767).astype("<i2")
-        return out.tobytes()
-
-
 def _select_channel(np: Any, raw: bytes, channels: int, channel_index: int) -> bytes:
     """Pick ONE channel out of interleaved multi-channel pcm16 — never average.
 
@@ -605,11 +445,13 @@ def _select_channel(np: Any, raw: bytes, channels: int, channel_index: int) -> b
 
 
 def _import_numpy() -> Any:
-    """Lazy numpy import point — never at module scope. Used only by :class:`Resampler`
-    and :func:`_select_channel`; numpy itself is an existing approved runtime import
+    """Lazy numpy import point — never at module scope. Used only by
+    :func:`_select_channel` (round 6 deleted the capture resampler that was
+    this function's other caller — see the module docstring, decision 15);
+    numpy itself is an existing approved runtime import
     (``embodiment.continuity``, via ``coherence-cli`` — see ``tests/test_zero_deps.py``),
     so this module pays nothing extra by using it, but stays lazy on its own merits: a
-    host that never captures or plays audio should not pay to import it either."""
+    host that never captures audio should not pay to import it either."""
     import numpy
 
     return numpy
@@ -674,7 +516,6 @@ class HostEndpoint:
         self._capture_proc: "subprocess.Popen[bytes] | None" = None
         self._capture_thread: threading.Thread | None = None
         self._capture_stop = threading.Event()
-        self._resampler_in: Resampler | None = None
 
         self._playback_proc: "subprocess.Popen[bytes] | None" = None
         self._playback_chunks: "deque[bytes]" = deque()
@@ -862,7 +703,6 @@ class HostEndpoint:
             self._record_event({"type": "recovered", "direction": "in"})
 
         self._capture_proc = proc
-        self._resampler_in = Resampler(CAPTURE_RATE_HZ, SAMPLE_RATE_HZ, self._np_importer)
         self._capture_stop.clear()
         self._capture_thread = threading.Thread(
             target=self._capture_loop,
@@ -898,11 +738,14 @@ class HostEndpoint:
         return stopped, close_failures
 
     def _capture_loop(self, proc: "subprocess.Popen[bytes]") -> None:
-        """This module's own thread: read, mute-check, select channel, resample, deliver.
+        """This module's own thread: read, mute-check, select channel, deliver.
 
-        Mute drops bytes here, BEFORE channel selection and BEFORE the
-        16k->24k resample — before encode, matching plan obligation o8.
-        Never raises out.
+        Mute drops bytes here, BEFORE channel selection and BEFORE delivery
+        — before encode, matching plan obligation o8. Frames are delivered
+        at :data:`CAPTURE_RATE_HZ` (16 kHz), the device's own native rate —
+        decision 15 (operator, issue #85): NO resample to
+        :data:`~embodiment.audio.endpoint.SAMPLE_RATE_HZ` happens here any
+        more (see the module docstring). Never raises out.
         """
         stdout = proc.stdout
         ended_cleanly = False
@@ -925,8 +768,6 @@ class HostEndpoint:
             try:
                 np = self._np_importer()
                 selected = _select_channel(np, raw, CAPTURE_CHANNELS, CAPTURE_CHANNEL_INDEX)
-                resampler = self._resampler_in
-                resampled = resampler.process(selected) if resampler is not None else selected
             except Exception:
                 with self._counter_lock:
                     self._callback_errors += 1
@@ -936,7 +777,7 @@ class HostEndpoint:
             if callback is None:
                 continue
             try:
-                callback(resampled)
+                callback(selected)
             except Exception:
                 with self._counter_lock:
                     self._callback_errors += 1
@@ -1206,6 +1047,18 @@ class HostEndpoint:
         """The retained (bounded) event log, in order. Never carries audio content."""
         with self._counter_lock:
             return tuple(self._events)
+
+    @property
+    def sample_rate(self) -> int:
+        """The rate (Hz) of frames delivered to ``on_frame`` — :data:`CAPTURE_RATE_HZ`.
+
+        Decision 15 (operator, issue #85): the ears send the device's
+        NATIVE 16 kHz; a caller (the daemon) reads this and passes it to the
+        realtime session as ``input_sample_rate`` instead of assuming
+        :data:`~embodiment.audio.endpoint.SAMPLE_RATE_HZ` (24 kHz). See the
+        module docstring.
+        """
+        return CAPTURE_RATE_HZ
 
     # -- introspection -----------------------------------------------------
 

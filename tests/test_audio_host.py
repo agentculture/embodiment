@@ -27,7 +27,6 @@ from typing import Callable
 from embodiment.audio.host import (
     CAPTURE_CHANNEL_INDEX,
     CAPTURE_CHANNELS,
-    CAPTURE_RATE_HZ,
     DEGRADED_CAPTURE_ENDED,
     DEGRADED_DEVICE_UNRESOLVED,
     DEGRADED_NO_BACKEND,
@@ -35,7 +34,6 @@ from embodiment.audio.host import (
     DEGRADED_PLAYBACK_OVERFLOW,
     DEGRADED_WRITE_FAILED,
     HostEndpoint,
-    Resampler,
     _select_channel,
 )
 
@@ -384,52 +382,6 @@ def test_capture_subprocess_ending_unexpectedly_is_recorded_named():
     endpoint.close(2.0)
 
 
-# ---------------------------------------------------------------------------
-# resampler (round 2/3b — reused unchanged for the 16k->24k capture leg)
-# ---------------------------------------------------------------------------
-
-
-def test_resampler_16k_to_24k_path_is_polyphase():
-    r = Resampler(CAPTURE_RATE_HZ, 24000, _import_numpy_real)
-    assert r.path == "polyphase"
-
-
-def test_resampler_16k_to_24k_is_spectrally_clean_at_several_frequencies():
-    """16k->24k (the real capture leg) must put >=99.9% of energy at the input
-    frequency — no aliasing, no image, across the band up to 16k's own Nyquist.
-
-    A round-trip RMSE-with-integer-lag-alignment test was tried first and
-    rejected: 16k->24k uses up=3/down=2 and the return leg 24k->16k uses
-    up=2/down=3, so the two legs' combined group delay is not, in general,
-    a whole number of samples — comparing two periodic tones under a
-    best-effort INTEGER lag search then measures phase mismatch, not
-    aliasing, and swings wildly by test frequency (measured: -74 dBFS at
-    3 kHz, -27 dBFS at 1/5/7 kHz on an IDENTICAL, spectrally clean signal —
-    confirmed clean by the FFT check below, >99.9999% of energy at the
-    correct peak in every case). Spectral concentration is the metric that
-    actually answers "did this alias", so that is what this test measures.
-    """
-    import math
-
-    numpy = _import_numpy_real()
-    n = 16000
-    for freq in (1000.0, 3000.0, 5000.0, 7000.0):
-        t = numpy.arange(n) / CAPTURE_RATE_HZ
-        tone = (numpy.sin(2 * math.pi * freq * t) * 16000).astype("<i2")
-        up = Resampler(CAPTURE_RATE_HZ, 24000, _import_numpy_real).process(
-            tone.tobytes(), flush=True
-        )
-        up_arr = numpy.frombuffer(up, dtype="<i2").astype(numpy.float64)
-        spec = numpy.abs(numpy.fft.rfft(up_arr * numpy.hanning(len(up_arr))))
-        f = numpy.fft.rfftfreq(len(up_arr), 1 / 24000)
-        peak = f[int(spec.argmax())]
-        assert abs(peak - freq) < 50, f"{freq} Hz: peak landed at {peak} Hz"
-        total_energy = float(numpy.sum(spec**2))
-        peak_energy = float(numpy.sum(spec[(f > peak - 50) & (f < peak + 50)] ** 2))
-        fraction = peak_energy / total_energy if total_energy > 0 else 0.0
-        assert fraction >= 0.999, f"{freq} Hz: only {fraction:.4%} of energy at the peak"
-
-
 def test_select_channel_helper_never_raises_on_malformed_input():
     numpy = _import_numpy_real()
     assert _select_channel(numpy, b"", 2, 1) == b""
@@ -444,6 +396,32 @@ def test_channel_index_constant_matches_measured_evidence():
     """Cited from lobes-cli: channel 1 (index 1) is the measured-better channel."""
     assert CAPTURE_CHANNEL_INDEX == 1
     assert CAPTURE_CHANNELS == 2
+
+
+def test_round6_sample_rate_reports_the_native_capture_rate_not_24k():
+    """Decision 15 (issue #85): HostEndpoint delivers capture frames at their
+    NATIVE 16 kHz — no resample to embodiment.audio.endpoint.SAMPLE_RATE_HZ."""
+    from embodiment.audio.host import CAPTURE_RATE_HZ
+
+    endpoint = HostEndpoint(which=_fake_which({"arecord", "aplay"}), popen=_make_popen())
+    assert endpoint.sample_rate == CAPTURE_RATE_HZ == 16000
+    endpoint.close(1.0)
+
+
+def test_round6_capture_frames_are_never_resampled():
+    """Delivered frame byte count must be EXACTLY read_chunk_bytes/channels —
+    the deterministic result of channel selection alone. A 16k->24k resample
+    (round 4/5's deleted capture leg) would have scaled this by 3/2 instead."""
+    from embodiment.audio.host import _CAPTURE_CHUNK_BYTES
+
+    endpoint = HostEndpoint(which=_fake_which({"arecord", "aplay"}), popen=_make_popen())
+    received: list[bytes] = []
+    endpoint.start_capture(received.append)
+    _wait_until(lambda: len(received) >= 1)
+    endpoint.stop_capture()
+    expected = _CAPTURE_CHUNK_BYTES // CAPTURE_CHANNELS
+    assert len(received[0]) == expected, f"got {len(received[0])} bytes, expected {expected}"
+    endpoint.close(2.0)
 
 
 # ---------------------------------------------------------------------------
