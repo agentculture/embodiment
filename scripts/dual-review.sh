@@ -109,7 +109,13 @@ PROMPT
   # more, all reproduced. The worker is kept as an opt-in (DUAL_REVIEW_REVIEWERS="qwen").
   # Override the model id with DUAL_REVIEW_QWEN27_MODEL. One review at a time: the
   # models are single instances on this rig and concurrent reviews starve each other.
-  call_qwen27() { ( cd "$wt" && timeout "$timeout_s" qwen -m "${DUAL_REVIEW_QWEN27_MODEL:-unsloth/Qwen3.8-27B-NVFP4}" --approval-mode plan "$prompt" </dev/null ); }
+  # `--allowed-tools=agent` lets plan mode delegate to the operator's `worker` subagent
+  # (~/.qwen/agents/worker.md, the 35B on thor) for evidence gathering. Plan mode still
+  # denies it a shell and edits (smoke-tested 2026-09-22: the worker read a file, could
+  # not run wc); without the flag the 27B's first `agent` call is refused non-interactively
+  # and it reviews unaided, which on a 116 kB diff did not finish in 40 min. The `=` form
+  # matters: as an array flag, a bare `--allowed-tools agent` swallows the prompt.
+  call_qwen27() { ( cd "$wt" && timeout "$timeout_s" qwen -m "${DUAL_REVIEW_QWEN27_MODEL:-unsloth/Qwen3.8-27B-NVFP4}" --approval-mode plan --allowed-tools=agent "$prompt" </dev/null ); }
   run_qwen27() { run_reviewer qwen27; }
   call_qwen() { ( cd "$wt" && timeout "$timeout_s" qwen --approval-mode plan "$prompt" </dev/null ); }
   # The associate model can spend its ENTIRE output budget reasoning about a large
