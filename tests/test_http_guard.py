@@ -549,3 +549,140 @@ class TestInstallSecretFile:
         result = g.load_or_create_install_secret(state)
         assert result.secret != "planted-secret"
         assert result.code == g.SECRET_UNREADABLE_CODE
+
+
+class TestTheCookieWithoutAnOriginRule:
+    """Round 2, found end-to-end: Chrome sends no ``Origin`` on a same-origin
+    ``EventSource`` GET.
+
+    The first version of this rule assumed a browser always names its origin
+    on anything that carries a cookie. It does not: a same-origin ``GET`` —
+    which is exactly what the dashboard's ``EventSource`` issues — arrives
+    with a cookie, no ``Origin``, and ``Sec-Fetch-Site: same-origin``. The
+    original rule refused the real dashboard on every reconnect (403,
+    ``http-refused-cookie-without-origin``, climbing with each retry) while
+    letting nothing hostile through, so the fix is to read the header the
+    browser *does* send rather than to drop the rule.
+
+    What may pass with a cookie and no ``Origin`` is ``Sec-Fetch-Site:
+    same-origin`` and nothing else. ``same-site`` is refused deliberately: a
+    sibling subdomain is not this origin, and the metadata headers are set by
+    the browser, never by page script, which is what makes them usable here.
+    """
+
+    def stream_headers(self, **overrides: str | None) -> dict[str, str]:
+        """What Chrome actually sends for a same-origin ``EventSource``."""
+        base: dict[str, str | None] = {
+            "Authorization": None,
+            "Origin": None,
+            "Cookie": f"{g.SECRET_COOKIE_NAME}={MARKER_SECRET}",
+            "Sec-Fetch-Site": "same-origin",
+            "Sec-Fetch-Mode": "cors",
+        }
+        base.update(overrides)
+        return headers(**base)
+
+    def test_a_same_origin_eventsource_with_no_origin_header_is_allowed(self) -> None:
+        decision = make_guard().check("GET", "/api/events", self.stream_headers())
+        assert decision.allowed is True, decision.code
+
+    @pytest.mark.parametrize("site", ["cross-site", "same-site", "none"])
+    def test_every_other_sec_fetch_site_is_refused(self, site: str) -> None:
+        decision = make_guard().check(
+            "GET", "/api/events", self.stream_headers(**{"Sec-Fetch-Site": site})
+        )
+        assert decision.allowed is False
+        assert decision.code == g.REFUSED_COOKIE_WITHOUT_ORIGIN_CODE
+
+    def test_a_stale_browser_that_sends_neither_is_refused(self) -> None:
+        """No ``Origin`` and no ``Sec-Fetch-Site``: nothing vouches for it."""
+        decision = make_guard().check(
+            "GET", "/api/events", self.stream_headers(**{"Sec-Fetch-Site": None})
+        )
+        assert decision.allowed is False
+        assert decision.code == g.REFUSED_COOKIE_WITHOUT_ORIGIN_CODE
+
+    def test_the_same_rule_applies_to_a_state_changing_post(self) -> None:
+        allowed = make_guard().check("POST", "/api/mic/mute", self.stream_headers())
+        refused = make_guard().check(
+            "POST", "/api/mic/mute", self.stream_headers(**{"Sec-Fetch-Site": "cross-site"})
+        )
+        assert allowed.allowed is True
+        assert refused.code == g.REFUSED_COOKIE_WITHOUT_ORIGIN_CODE
+
+    def test_the_header_name_is_matched_case_insensitively(self) -> None:
+        raw = [
+            ("host", "127.0.0.1:8823"),
+            ("COOKIE", f"{g.SECRET_COOKIE_NAME}={MARKER_SECRET}"),
+            ("SEC-FETCH-SITE", "same-origin"),
+        ]
+        assert make_guard().check("GET", "/api/events", raw).allowed is True
+
+    def test_the_value_is_matched_exactly_not_by_prefix(self) -> None:
+        for spoof in (
+            "same-origin-ish",
+            " same-origin evil",
+            "same-originx",
+            "SAME_ORIGIN",
+            # Found by attacking the round-2 rule: the value is a token the
+            # browser generates, so case-folding it only ever widens the rule
+            # for a client that is not a browser.
+            "SAME-ORIGIN",
+            "Same-Origin",
+            "same-origin,cross-site",
+            "same-origin;",
+        ):
+            decision = make_guard().check(
+                "GET", "/api/events", self.stream_headers(**{"Sec-Fetch-Site": spoof})
+            )
+            assert decision.allowed is False, spoof
+
+    def test_surrounding_whitespace_is_tolerated(self) -> None:
+        decision = make_guard().check(
+            "GET", "/api/events", self.stream_headers(**{"Sec-Fetch-Site": "  same-origin  "})
+        )
+        assert decision.allowed is True
+
+    def test_a_duplicated_sec_fetch_site_is_refused_as_smuggling(self) -> None:
+        raw = [
+            ("Host", "127.0.0.1:8823"),
+            ("Cookie", f"{g.SECRET_COOKIE_NAME}={MARKER_SECRET}"),
+            ("Sec-Fetch-Site", "same-origin"),
+            ("Sec-Fetch-Site", "cross-site"),
+        ]
+        decision = make_guard().check("GET", "/api/events", raw)
+        assert decision.code == g.REFUSED_DUPLICATE_HEADER_CODE
+
+    def test_a_foreign_origin_still_loses_even_with_same_origin_metadata(self) -> None:
+        """``Origin`` is checked first and on its own; metadata cannot rescue it."""
+        decision = make_guard().check(
+            "POST",
+            "/api/mic/mute",
+            self.stream_headers(Origin="https://evil.example"),
+        )
+        assert decision.code == g.REFUSED_ORIGIN_CODE
+
+    def test_sec_fetch_site_alone_is_not_a_credential(self) -> None:
+        decision = make_guard().check(
+            "GET",
+            "/api/events",
+            self.stream_headers(Cookie=None),
+        )
+        assert decision.allowed is False
+        assert decision.code == g.REFUSED_SECRET_CODE
+
+    def test_a_bearer_credential_keeps_todays_rule(self) -> None:
+        """A non-browser client with no Origin and no metadata is still fine."""
+        decision = make_guard().check(
+            "POST",
+            "/api/voice/start",
+            headers(Origin=None, **{"Sec-Fetch-Site": "cross-site"}),
+        )
+        assert decision.allowed is True
+
+    def test_the_refusal_still_names_nothing_the_client_sent(self) -> None:
+        decision = make_guard().check(
+            "GET", "/api/events", self.stream_headers(**{"Sec-Fetch-Site": "cross-site"})
+        )
+        assert MARKER_SECRET not in decision.reason
+        assert "cross-site" not in decision.reason

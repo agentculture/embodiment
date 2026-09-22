@@ -913,3 +913,86 @@ class TestAStuckStream:
         finally:
             built.server.shutdown(2.0)
             bus.close(1.0)
+
+
+class TestTheRealEventSourceRequest:
+    """Round 2: the exact request Chrome issues for the dashboard's stream.
+
+    Reproduced end-to-end by the integrator against t17's build — cookie, no
+    ``Origin``, ``Sec-Fetch-Site: same-origin`` — and refused 403 on every
+    reconnect by the first version of the CSRF rule. Driven here as a raw
+    socket rather than through ``http.client`` so the header set is exactly
+    the browser's and nothing is added on the way out.
+    """
+
+    def _raw(self, port: int, headers: list[str], *, seconds: float = 1.5) -> str:
+        request = "GET /api/events HTTP/1.1\r\n" + "".join(f"{h}\r\n" for h in headers) + "\r\n"
+        sock = socket.create_connection(("127.0.0.1", port), timeout=3)
+        try:
+            sock.sendall(request.encode())
+            sock.settimeout(seconds)
+            chunks = []
+            deadline = time.monotonic() + seconds
+            while time.monotonic() < deadline:
+                try:
+                    data = sock.recv(65536)
+                except (TimeoutError, OSError):
+                    break
+                if not data:
+                    break
+                chunks.append(data)
+            return b"".join(chunks).decode("utf-8", "replace")
+        finally:
+            sock.close()
+
+    def _chrome(self, port: int, site: str = "same-origin") -> list[str]:
+        return [
+            f"Host: 127.0.0.1:{port}",
+            "Accept: text/event-stream",
+            f"Cookie: {g.SECRET_COOKIE_NAME}={MARKER_SECRET}",
+            f"Sec-Fetch-Site: {site}",
+            "Sec-Fetch-Mode: cors",
+            "Sec-Fetch-Dest: empty",
+        ]
+
+    def test_chromes_same_origin_eventsource_is_served(self) -> None:
+        bus = Bus()
+        built = build(bus=bus)
+        try:
+            answer = self._raw(built.port, self._chrome(built.port))
+            assert "200 OK" in answer.split("\r\n", 1)[0], answer.split("\r\n", 1)[0]
+            assert "text/event-stream" in answer
+            assert ": stream open" in answer
+            status = built.server.status()
+            assert status["streams_started"] == 1
+            assert g.REFUSED_COOKIE_WITHOUT_ORIGIN_CODE not in status["refusals_by_code"]
+        finally:
+            built.server.shutdown(2.0)
+            bus.close(1.0)
+
+    @pytest.mark.parametrize("site", ["cross-site", "same-site", "none"])
+    def test_a_cross_context_eventsource_is_still_refused(self, site: str) -> None:
+        bus = Bus()
+        built = build(bus=bus)
+        try:
+            answer = self._raw(built.port, self._chrome(built.port, site))
+            assert "403 Forbidden" in answer.split("\r\n", 1)[0]
+            assert g.REFUSED_COOKIE_WITHOUT_ORIGIN_CODE in answer
+            assert built.server.status()["streams_started"] == 0
+        finally:
+            built.server.shutdown(2.0)
+            bus.close(1.0)
+
+    def test_a_cookie_with_no_metadata_at_all_is_still_refused(self) -> None:
+        built = build()
+        try:
+            answer = self._raw(
+                built.port,
+                [
+                    f"Host: 127.0.0.1:{built.port}",
+                    f"Cookie: {g.SECRET_COOKIE_NAME}={MARKER_SECRET}",
+                ],
+            )
+            assert "403 Forbidden" in answer.split("\r\n", 1)[0]
+        finally:
+            built.server.shutdown(2.0)

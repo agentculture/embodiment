@@ -29,11 +29,21 @@ guard never consults the peer address at all. What it checks instead:
    way a browser consumes an SSE stream — cannot set a request header, so the
    stream must be able to authenticate by cookie. Compared with
    :func:`hmac.compare_digest`.
-5. **A cookie credential with no ``Origin`` header at all** is refused
-   (:data:`REFUSED_COOKIE_WITHOUT_ORIGIN_CODE`). That is the CSRF rule stated
-   precisely: a browser always names its origin on a state-changing request, so
-   a cookie arriving without one is either a forged cross-site request or a
-   non-browser client that should be using the bearer header instead.
+5. **A cookie credential must be vouched for by the browser itself** — by an
+   allow-listed ``Origin``, or, when there is no ``Origin``, by
+   ``Sec-Fetch-Site: same-origin``. Anything else is refused
+   (:data:`REFUSED_COOKIE_WITHOUT_ORIGIN_CODE`). This is the CSRF rule, and
+   round 2 corrected it against a real browser: the first version assumed a
+   browser always names its origin on anything carrying a cookie, and Chrome
+   sends **no** ``Origin`` on a same-origin ``EventSource`` GET — which is
+   precisely the dashboard's own stream. It was refused 403 on every
+   reconnect. What Chrome does send on every request is the fetch-metadata
+   headers, which page script cannot forge, so the rule now reads the header
+   the browser actually sets. ``same-site`` is refused alongside
+   ``cross-site`` and ``none``: a sibling subdomain is not this origin. A
+   client with neither header vouching for it — a pre-metadata browser, or a
+   forged request — is refused and should present the bearer header instead,
+   which keeps its own rule (a non-browser client needs no ``Origin``).
 6. **A Cloudflare Access assertion**, required when — and only when — the
    request's ``Host`` is the configured public hostname.
 
@@ -86,6 +96,8 @@ __all__ = [
     "SECRET_COOKIE_NAME",
     "AUTHORIZATION_SCHEME",
     "ACCESS_ASSERTION_HEADER",
+    "SEC_FETCH_SITE_HEADER",
+    "SAME_ORIGIN_SITE",
     "INSTALL_SECRET_FILENAME",
     "MAX_SECRET_BYTES",
     "MIN_SECRET_CHARS",
@@ -130,6 +142,16 @@ AUTHORIZATION_SCHEME = "bearer"  # nosec B105 - a scheme name, not a secret
 #: The header Cloudflare Access puts its signed JWT in.
 ACCESS_ASSERTION_HEADER = "cf-access-jwt-assertion"
 
+#: The fetch-metadata header a browser sets on every request and page script
+#: cannot touch. It is what lets a same-origin ``EventSource`` — which sends no
+#: ``Origin`` — prove it is same-origin. See the module docstring, rule 5.
+SEC_FETCH_SITE_HEADER = "sec-fetch-site"
+
+#: The ONLY ``Sec-Fetch-Site`` value that vouches for a cookie credential,
+#: matched exactly (surrounding whitespace aside). ``same-site`` does not: a
+#: sibling subdomain is not this origin.
+SAME_ORIGIN_SITE = "same-origin"
+
 #: The install secret's filename inside the daemon's state directory.
 INSTALL_SECRET_FILENAME = "install-secret"  # nosec B105 - a filename, not a secret
 
@@ -160,7 +182,14 @@ STATE_CHANGING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
 
 #: Headers whose duplication or malformation is refused outright: each one is
 #: an input to a decision below, so two of them is two decisions.
-SENSITIVE_HEADERS = ("host", "origin", "authorization", "cookie", ACCESS_ASSERTION_HEADER)
+SENSITIVE_HEADERS = (
+    "host",
+    "origin",
+    "authorization",
+    "cookie",
+    ACCESS_ASSERTION_HEADER,
+    SEC_FETCH_SITE_HEADER,
+)
 
 #: The hosts a loopback-bound daemon answers to. The operator's public hostname
 #: is added by :class:`Guard` when one is configured.
@@ -174,7 +203,10 @@ REFUSED_HOST_CODE = "http-refused-host"
 REFUSED_ORIGIN_CODE = "http-refused-origin"
 #: No install secret was presented, or the one presented did not match.
 REFUSED_SECRET_CODE = "http-refused-secret"  # nosec B105 - a code, not a secret
-#: A cookie credential arrived with no ``Origin`` header — the CSRF refusal.
+#: A cookie credential arrived with neither an allow-listed ``Origin`` nor
+#: ``Sec-Fetch-Site: same-origin`` — the CSRF refusal. The code keeps its
+#: original name after the round-2 widening: it is what a host greps for, and
+#: renaming it would break every ledger entry already written.
 REFUSED_COOKIE_WITHOUT_ORIGIN_CODE = "http-refused-cookie-without-origin"
 #: The ``Host`` is the public hostname and no Access assertion was presented.
 REFUSED_ACCESS_MISSING_CODE = "http-refused-access-missing"
@@ -207,8 +239,9 @@ _REASONS: dict[str, str] = {
     REFUSED_ORIGIN_CODE: "the Origin header is not on the allow-list",
     REFUSED_SECRET_CODE: "no valid install secret was presented",
     REFUSED_COOKIE_WITHOUT_ORIGIN_CODE: (
-        "a cookie credential arrived without an Origin header; use the "
-        "Authorization header for a non-browser client"
+        "a cookie credential arrived with neither an allow-listed Origin nor "
+        "Sec-Fetch-Site: same-origin; use the Authorization header for a "
+        "non-browser client"
     ),
     REFUSED_ACCESS_MISSING_CODE: ("the public hostname requires a Cf-Access-Jwt-Assertion header"),
     REFUSED_ACCESS_VERIFIER_FAILED_CODE: "the Access assertion verifier failed",
@@ -488,7 +521,18 @@ class Guard:
             if origin.rstrip("/").lower() not in self._allowed_origins:
                 return self._refuse(REFUSED_ORIGIN_CODE, 403)
 
-        secret_decision = self._check_secret(one("authorization"), one("cookie"), bool(origin))
+        secret_decision = self._check_secret(
+            one("authorization"),
+            one("cookie"),
+            origin_present=bool(origin),
+            # The header NAME is matched case-insensitively, as every header
+            # here is; the VALUE is matched exactly. ``Sec-Fetch-Site`` carries
+            # a lowercase token a browser generates, never something a human
+            # types, so accepting ``SAME-ORIGIN`` could only ever widen the
+            # rule for a client that is not a browser. Found by attacking the
+            # round-2 rule: case-folding the value let that through.
+            same_origin_metadata=one(SEC_FETCH_SITE_HEADER).strip() == SAME_ORIGIN_SITE,
+        )
         if secret_decision is not None:
             return secret_decision
 
@@ -498,9 +542,22 @@ class Guard:
         return _ALLOWED
 
     def _check_secret(
-        self, authorization: str, cookie: str, origin_present: bool
+        self,
+        authorization: str,
+        cookie: str,
+        *,
+        origin_present: bool,
+        same_origin_metadata: bool,
     ) -> Optional[GuardDecision]:
-        """``None`` when the credential is good; a refusal otherwise."""
+        """``None`` when the credential is good; a refusal otherwise.
+
+        A bearer credential needs nothing else: it cannot be attached to a
+        request by a cross-site page, because a page cannot set a header on a
+        request it did not author. A cookie credential can, so it needs the
+        browser to vouch for the request — an allow-listed ``Origin`` (already
+        checked by the caller, which is why only its *presence* arrives here)
+        or ``Sec-Fetch-Site: same-origin``.
+        """
         if not self._secret:
             return self._refuse(REFUSED_SECRET_CODE, 401)
 
@@ -513,7 +570,7 @@ class Guard:
                 continue
             if not hmac.compare_digest(candidate, self._secret):
                 continue
-            if is_cookie and not origin_present:
+            if is_cookie and not (origin_present or same_origin_metadata):
                 return self._refuse(REFUSED_COOKIE_WITHOUT_ORIGIN_CODE, 403)
             return None
         return self._refuse(REFUSED_SECRET_CODE, 401)
