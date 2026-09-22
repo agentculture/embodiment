@@ -459,9 +459,14 @@ def _sanitize_deadline(deadline: Any) -> tuple[float, bool]:
 #: the negation and question prefixes — is unchanged.
 _TRIGGER_PUNCTUATION_RE = re.compile(r"(^|\s)(תזכר[יו]|זכר[יו])\s*[,.:;־-]+\s*(ש)")
 
+#: The Hebrew patterns capture the ``ש`` WITH the clause. It is a bound prefix
+#: on the next word, not a detachable "that", and that word can begin with ש
+#: on its own: stripping it turned «תזכרי שמי אורי» (remember, my name is
+#: Ori) into «מי אורי» (who is Ori) — review finding 10. Keeping it is
+#: lossless: the record reads exactly as the speaker said it.
 _ASK_PATTERNS: tuple[re.Pattern[str], ...] = (
-    re.compile(r"^תזכר[יו]\s*ש(.+)", re.DOTALL),
-    re.compile(r"^זכר[יו]\s*ש(.+)", re.DOTALL),
+    re.compile(r"^תזכר[יו]\s*(ש.+)", re.DOTALL),
+    re.compile(r"^זכר[יו]\s*(ש.+)", re.DOTALL),
     re.compile(r"(?i)^remember that\b(.*)", re.DOTALL),
 )
 
