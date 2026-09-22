@@ -96,6 +96,41 @@ bounded join and reports what it left unfinished, via
 on its own shutdown path, the same way it will call
 :meth:`~embodiment.audio.endpoint.AudioEndpoint.close`.
 
+Two seams the daemon needed (round 3)
+----------------------------------------
+Wiring the daemon (task ``t15``) surfaced two gaps:
+
+- **Draining the trace from outside the lock.** The daemon publishes
+  ``features`` events by reading :attr:`Voice.feature_frames` — before this
+  round it had no way to do that except ``del voice.feature_frames[:n]`` past
+  :attr:`Voice._state_lock` entirely, the exact kind of "reach into another
+  object's internals" this module's own :meth:`_feed_features` never does to
+  anyone else. :meth:`Voice.drain_features` is the one sanctioned way in:
+  it pops up to *max_n* frames under the SAME lock :meth:`_feed_features`
+  appends under, and returns them — never raises, and a bad *max_n* (wrong
+  type, negative) is read as 0 rather than raising.
+- **Swapping the endpoint without rebuilding the whole object.** An ear
+  handover (a new device attaches, a robot relay takes over) used to force
+  the daemon to construct a brand-new :class:`Voice` per ear, because
+  ``endpoint`` was constructor-only — throwing away :attr:`feature_frames`,
+  :attr:`degradations` and the pacing thread along with it.
+  :meth:`Voice.set_endpoint` swaps :attr:`Voice._endpoint` under its own
+  lock, stops the OLD endpoint's playback (an ear going away should not keep
+  sounding), counts what that discarded, and drops the pacing buffer (that
+  audio can never be traced through an endpoint this class no longer
+  targets) — all via the SAME machinery :meth:`on_speech_started` already
+  uses (lesson 8: one code path), never raising. It takes effect for the
+  NEXT :meth:`speak` call: an in-flight one captures its endpoint ONCE at
+  the start of :meth:`_speak` and keeps using that same object for the rest
+  of that call, so one utterance is never split across two endpoints by a
+  handover landing mid-sentence. This is a narrow, accepted trade: a
+  concurrent ``speak()`` racing ``set_endpoint()`` will not crash or corrupt
+  any counter (see ``TestSetEndpoint`` for the hammering proof), but audio
+  that in-flight call queues AFTER the swap is paced against whatever
+  ``playing`` the NEW endpoint reports, not the old one it is actually
+  sounding through — an ear handover during active speech is expected to be
+  rare enough that this is a documented limitation, not a solved case.
+
 Naming: "queued", not "delivered"
 ------------------------------------
 :attr:`SpeakResult.sentences_queued` (renamed from an earlier
@@ -489,6 +524,11 @@ class Voice:
         synthesize: Optional[SynthesizeFn] = None,
     ) -> None:
         self._endpoint = endpoint
+        #: Guards reads/writes of :attr:`_endpoint` itself (round 3) — see
+        #: :meth:`set_endpoint`. Deliberately separate from ``_state_lock``:
+        #: this lock is held only for the instant it takes to read or swap a
+        #: reference, never across a call into the endpoint itself.
+        self._endpoint_lock = threading.Lock()
         self._config = config or VoiceConfig()
         self._bus = bus
         self._features = features if features is not None else FeatureExtractor()
@@ -549,6 +589,68 @@ class Voice:
             self._degrade(VOICE_ENDPOINT_FAILED, safe_reason.describe_exception(exc))
             return {"speaking": False, "queued_not_traced": 0}
 
+    def drain_features(self, max_n: int = 256) -> list[dict[str, object]]:
+        """Pop up to *max_n* traced feature frames and return them. Never raises.
+
+        The ONE sanctioned way for a caller (the daemon, publishing
+        ``features`` events) to consume :attr:`feature_frames` — it pops
+        under the SAME :attr:`_state_lock` :meth:`_feed_features` appends
+        under, rather than a caller slicing the list from outside it. A
+        non-``int`` or negative *max_n* is read as 0 (an empty drain), never
+        raised.
+        """
+        try:
+            count = int(max_n)
+        except (TypeError, ValueError):
+            count = 0
+        if isinstance(max_n, bool):  # bool is an int subclass; not a meaningful count
+            count = 0
+        if count < 0:
+            count = 0
+        with self._state_lock:
+            popped = self.feature_frames[:count]
+            del self.feature_frames[:count]
+        return popped
+
+    # ── endpoint (round 3) ───────────────────────────────────────────────
+
+    def _current_endpoint(self) -> Any:
+        with self._endpoint_lock:
+            return self._endpoint
+
+    def _stop_endpoint(self, endpoint: Any) -> int:
+        """``endpoint.stop_playback()``, sanitised and never raising."""
+        discarded = 0
+        try:
+            discarded = endpoint.stop_playback()
+        except Exception as exc:  # noqa: BLE001 - endpoint promised never to raise; degrade anyway
+            self._degrade(VOICE_ENDPOINT_FAILED, safe_reason.describe_exception(exc))
+            discarded = 0
+        if not isinstance(discarded, int) or isinstance(discarded, bool) or discarded < 0:
+            discarded = 0
+        return discarded
+
+    def set_endpoint(self, endpoint: Any) -> None:
+        """Swap the playback endpoint. Never raises (C3).
+
+        Takes effect for the NEXT :meth:`speak` call — see the module
+        docstring's "Two seams the daemon needed" section for the full
+        contract and its one accepted limitation under a concurrent
+        ``speak()``. The OLD endpoint's ``stop_playback()`` is called first
+        (an ear going away should not keep sounding), the discarded sample
+        count is recorded the same way :meth:`on_speech_started` records
+        one, and the pacing buffer is dropped and counted on
+        :attr:`queued_not_traced` — audio already queued for the old
+        endpoint will never be paced through it again.
+        """
+        with self._endpoint_lock:
+            old = self._endpoint
+            self._endpoint = endpoint
+        discarded = self._stop_endpoint(old)
+        with self._state_lock:
+            self._last_discarded_samples = discarded
+        self._drop_pace_buffer()
+
     # ── barge-in ─────────────────────────────────────────────────────────
 
     def on_speech_started(self, event: object = None) -> int:
@@ -572,14 +674,7 @@ class Voice:
         Returns the number of 24 kHz samples the endpoint discarded.
         """
         self._interrupted.set()
-        discarded = 0
-        try:
-            discarded = self._endpoint.stop_playback()
-        except Exception as exc:  # noqa: BLE001 - endpoint promised never to raise; degrade anyway
-            self._degrade(VOICE_ENDPOINT_FAILED, safe_reason.describe_exception(exc))
-            discarded = 0
-        if not isinstance(discarded, int) or isinstance(discarded, bool) or discarded < 0:
-            discarded = 0
+        discarded = self._stop_endpoint(self._current_endpoint())
         with self._state_lock:
             self._last_discarded_samples = discarded
         self._drop_pace_buffer()
@@ -614,6 +709,10 @@ class Voice:
             self._speaking.clear()
 
     def _speak(self, text: str, *, published: bool) -> SpeakResult:
+        # Captured ONCE, here, for the whole call — see the module docstring's
+        # "Two seams the daemon needed" section: a set_endpoint() landing
+        # mid-call must not split one utterance across two endpoints.
+        endpoint = self._current_endpoint()
         sentences = split_sentences(
             text,
             max_reply_chars=self._config.max_reply_chars,
@@ -665,7 +764,7 @@ class Voice:
                 break
 
             try:
-                self._endpoint.play(pcm)
+                endpoint.play(pcm)
             except (
                 Exception
             ) as exc:  # noqa: BLE001 - endpoint promised never to raise; degrade anyway
@@ -828,7 +927,7 @@ class Voice:
 
     def _endpoint_playing_safe(self) -> bool:
         try:
-            return bool(self._endpoint.playing)
+            return bool(self._current_endpoint().playing)
         except Exception as exc:  # noqa: BLE001 - endpoint promised never to raise; degrade anyway
             self._degrade(VOICE_ENDPOINT_FAILED, safe_reason.describe_exception(exc))
             return False

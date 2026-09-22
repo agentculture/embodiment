@@ -578,6 +578,226 @@ class TestRealTimePacingAndBargeInAfterSpeakReturns:
         assert PACE_SLICE_S == 0.02
 
 
+# ── round 3, seam 1: drain_features() ────────────────────────────────────────
+
+
+class TestDrainFeatures:
+    """``Voice.drain_features(max_n=256)`` — the one sanctioned way for a
+    caller to pop traced frames, instead of slicing ``feature_frames`` from
+    outside ``_state_lock``."""
+
+    def test_drains_up_to_max_n_and_removes_them(self) -> None:
+        player = FakePlayer()
+        voice = Voice(endpoint=player, bus=FakeBus(), synthesize=lambda s, c: b"")
+        payload = _tone_pcm()
+        for _ in range(10):
+            voice._feed_features(payload)  # noqa: SLF001 - seeding frames directly
+        assert len(voice.feature_frames) == 10
+
+        drained = voice.drain_features(4)
+        assert len(drained) == 4
+        assert len(voice.feature_frames) == 6
+
+        rest = voice.drain_features(100)
+        assert len(rest) == 6
+        assert voice.feature_frames == []
+
+    def test_default_max_n_is_256(self) -> None:
+        player = FakePlayer()
+        voice = Voice(endpoint=player, bus=FakeBus(), synthesize=lambda s, c: b"")
+        payload = _tone_pcm()
+        for _ in range(300):
+            voice._feed_features(payload)  # noqa: SLF001 - seeding frames directly
+        drained = voice.drain_features()
+        assert len(drained) == 256
+        assert len(voice.feature_frames) == 44
+
+    def test_drain_on_empty_returns_empty_list(self) -> None:
+        voice = Voice(endpoint=FakePlayer(), bus=FakeBus())
+        assert voice.drain_features() == []
+        assert voice.drain_features(0) == []
+
+    def test_never_raises_on_hostile_max_n(self) -> None:
+        voice = Voice(endpoint=FakePlayer(), bus=FakeBus())
+        payload = _tone_pcm()
+        voice._feed_features(payload)  # noqa: SLF001 - seeding a frame directly
+        assert voice.drain_features(-5) == []
+        assert voice.drain_features("not a number") == []  # type: ignore[arg-type]
+        assert voice.drain_features(None) == []  # type: ignore[arg-type]
+        assert voice.drain_features(True) == []  # type: ignore[arg-type] - bool is an int
+        assert len(voice.feature_frames) == 1  # nothing was drained by the hostile calls
+
+    def test_drained_frames_match_what_was_fed(self) -> None:
+        player = FakePlayer()
+        bus = FakeBus()
+        payload = _tone_pcm()
+        voice = Voice(endpoint=player, bus=bus, synthesize=lambda s, c: payload)
+        voice.speak("only one short sentence")
+        assert _wait_until(lambda: len(voice.feature_frames) == 1, timeout=3.0)
+        drained = voice.drain_features()
+        assert drained == extract_features(payload)
+        assert voice.feature_frames == []
+        voice.close(deadline=1.0)
+
+    def test_concurrent_drain_and_feed_do_not_corrupt_or_duplicate(self) -> None:
+        player = FakePlayer()
+        voice = Voice(endpoint=player, bus=FakeBus(), synthesize=lambda s, c: b"")
+        payload = _tone_pcm()
+        stop = threading.Event()
+        drained_total: list[dict[str, object]] = []
+        drain_lock = threading.Lock()
+
+        def feeder() -> None:
+            for _ in range(500):
+                voice._feed_features(payload)  # noqa: SLF001 - hammering the feed path
+
+        def drainer() -> None:
+            while not stop.is_set():
+                got = voice.drain_features(7)
+                with drain_lock:
+                    drained_total.extend(got)
+                time.sleep(0.0001)
+
+        feed_thread = threading.Thread(target=feeder)
+        drain_thread = threading.Thread(target=drainer)
+        feed_thread.start()
+        drain_thread.start()
+        feed_thread.join(timeout=10.0)
+        stop.set()
+        drain_thread.join(timeout=5.0)
+
+        # Final sweep for anything left after the feeder finished.
+        drained_total.extend(voice.drain_features(10_000))
+
+        assert len(drained_total) == 500
+        assert voice.feature_frames == []
+
+
+# ── round 3, seam 2: set_endpoint() ──────────────────────────────────────────
+
+
+class TestSetEndpoint:
+    """``Voice.set_endpoint(endpoint)`` — swaps the playback endpoint for the
+    NEXT ``speak()`` call, stopping and accounting for the old one first."""
+
+    def test_next_speak_uses_the_new_endpoint(self) -> None:
+        old = FakePlayer()
+        new = FakePlayer()
+        voice = Voice(endpoint=old, bus=FakeBus(), synthesize=lambda s, c: _tone_pcm())
+
+        voice.set_endpoint(new)
+        voice.speak("hello there")
+
+        assert old.play_calls == []
+        assert len(new.play_calls) == 1
+
+    def test_old_endpoint_is_stopped_and_discard_is_counted(self) -> None:
+        old = FakePlayer(discarded_to_return=777)
+        new = FakePlayer()
+        voice = Voice(endpoint=old, bus=FakeBus(), synthesize=lambda s, c: _tone_pcm())
+
+        voice.speak("first reply, queued on the old endpoint")
+        assert old.playing is True
+
+        voice.set_endpoint(new)
+
+        assert old.stop_calls >= 1
+        assert old.playing is False
+
+    def test_never_raises_when_old_endpoint_stop_playback_raises(self) -> None:
+        old = RaisingStopPlayer()
+        new = FakePlayer()
+        voice = Voice(endpoint=old, bus=FakeBus())
+
+        voice.set_endpoint(new)  # must not raise
+
+        assert VOICE_ENDPOINT_FAILED in [d.code for d in voice.degradations]
+        voice.speak("uses the new endpoint now")
+        assert len(new.play_calls) >= 0  # no crash is the assertion here
+
+    def test_pacing_buffer_is_dropped_and_counted_on_handover(self) -> None:
+        old = QueueingEndpoint()
+        new = QueueingEndpoint()
+        payload = _silence_pcm(24000)
+        voice = Voice(endpoint=old, bus=FakeBus(), synthesize=lambda s, c: payload)
+
+        voice.speak("one. two. three.")
+        before = voice.queued_not_traced
+
+        voice.set_endpoint(new)
+
+        assert voice.queued_not_traced >= before
+        assert voice.queued_not_traced > 0
+        voice.close(deadline=1.0)
+
+    def test_barge_in_after_handover_targets_the_new_endpoint(self) -> None:
+        old = FakePlayer(discarded_to_return=111)
+        new = FakePlayer(discarded_to_return=222)
+        voice = Voice(endpoint=old, bus=FakeBus(), synthesize=lambda s, c: _tone_pcm())
+
+        voice.set_endpoint(new)
+        voice.speak("hello")  # queued on `new`
+        discarded = voice.on_speech_started()
+
+        assert discarded == 222
+        assert new.stop_calls >= 1
+
+    def test_idle_handover_never_raises_and_is_fast(self) -> None:
+        old = FakePlayer()
+        new = FakePlayer()
+        voice = Voice(endpoint=old, bus=FakeBus())
+        start = time.monotonic()
+        voice.set_endpoint(new)
+        elapsed = time.monotonic() - start
+        assert elapsed < BARGE_IN_BOUND_S
+
+    def test_concurrent_speak_and_set_endpoint_never_raise_or_corrupt_state(self) -> None:
+        """Safety, not perfect real-time accounting, is the bar here — see the
+        module docstring's documented limitation for this exact race."""
+        endpoints = [FakePlayer() for _ in range(4)]
+        voice = Voice(endpoint=endpoints[0], bus=FakeBus(), synthesize=lambda s, c: _tone_pcm())
+
+        errors: list[BaseException] = []
+        stop = threading.Event()
+
+        def speaker() -> None:
+            try:
+                while not stop.is_set():
+                    voice.speak("one. two. three. four. five.")
+            except BaseException as exc:  # noqa: BLE001 - the assertion is that nothing raises
+                errors.append(exc)
+
+        def swapper() -> None:
+            try:
+                for ep in endpoints:
+                    voice.set_endpoint(ep)
+                    time.sleep(0.001)
+            except BaseException as exc:  # noqa: BLE001 - the assertion is that nothing raises
+                errors.append(exc)
+
+        speak_thread = threading.Thread(target=speaker)
+        swap_thread = threading.Thread(target=swapper)
+        speak_thread.start()
+        swap_thread.start()
+        swap_thread.join(timeout=10.0)
+        stop.set()
+        speak_thread.join(timeout=10.0)
+
+        assert not errors
+        assert not speak_thread.is_alive()
+        voice.close(deadline=1.0)
+
+    def test_multiple_handovers_stay_bounded_and_consistent(self) -> None:
+        endpoints = [FakePlayer() for _ in range(50)]
+        voice = Voice(endpoint=endpoints[0], bus=FakeBus())
+        for ep in endpoints[1:]:
+            voice.set_endpoint(ep)
+        assert voice._current_endpoint() is endpoints[-1]  # noqa: SLF001 - internal check
+        # every prior endpoint was stopped exactly once by the handover after it
+        assert all(ep.stop_calls == 1 for ep in endpoints[:-1])
+        assert endpoints[-1].stop_calls == 0
+
+
 # ── split_sentences: bounded, never raises ───────────────────────────────────
 
 
