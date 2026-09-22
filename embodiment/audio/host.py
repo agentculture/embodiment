@@ -560,7 +560,10 @@ _WPCTL_TIMEOUT_S = 5.0
 #: Round 8's "Volume: 0.41" / "Volume: 1.00 [MUTED]" line, tolerant of any
 #: amount of internal whitespace and independent of the MUTED suffix's
 #: presence.
-_WPCTL_VOLUME_RE = re.compile(r"Volume:\s*([0-9]*\.?[0-9]+)")
+#: ``re.ASCII`` is not decoration: without it ``\d`` matches every Unicode
+#: decimal (Devanagari, Arabic-Indic, …), and a volume line is ASCII digits
+#: or it is not a volume line.
+_WPCTL_VOLUME_RE = re.compile(r"Volume:\s*(\d*\.?\d+)", re.ASCII)
 
 
 def _default_which(name: str) -> str | None:

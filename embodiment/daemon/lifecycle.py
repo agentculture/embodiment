@@ -343,9 +343,10 @@ _MAX_PIDFILE_BYTES = 64_000
 #: leading dash (which would otherwise reach the child interpreter as a flag),
 #: nothing outside the identifier charset — so a target string can never carry
 #: a path traversal, a shell metacharacter, a NUL or a bidi run.
-_TARGET_RE = re.compile(
-    r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*:[A-Za-z_][A-Za-z0-9_]*$"
-)
+#: ``re.ASCII`` carries the "nothing outside the identifier charset" promise
+#: above: unflagged, ``\w`` matches every Unicode letter and digit, which is
+#: exactly the widening this pattern exists to refuse.
+_TARGET_RE = re.compile(r"^[A-Za-z_]\w*(\.[A-Za-z_]\w*)*:[A-Za-z_]\w*$", re.ASCII)
 _MAX_TARGET_LEN = 200
 
 #: Everything recorded goes through this, once (one sanitiser, one code path).
@@ -956,6 +957,11 @@ class StatusReport:
     exit_code: Optional[int] = None
     hard_exit: Optional[bool] = None
     unfinished_threads: Optional[int] = None
+    #: Why the last stop was requested — ``signal-15``, ``run-returned``, or
+    #: whatever the control API passed — sanitised to the token charset.
+    #: ``None`` for a daemon that is running, or one that died without
+    #: recording a stop at all, which is itself the interesting case.
+    stop_reason: Optional[str] = None
     #: For a ``running`` daemon: whether the recorded ``(pid, start time)``
     #: still matches the live process. ``None`` when it is not running or
     #: ``/proc`` cannot answer.
@@ -981,6 +987,7 @@ class StatusReport:
             "exit_code": self.exit_code,
             "hard_exit": self.hard_exit,
             "unfinished_threads": self.unfinished_threads,
+            "stop_reason": self.stop_reason,
             "identity_verified": self.identity_verified,
             "ledger": self.ledger,
             "daemon_state": self.daemon_state,
@@ -1082,6 +1089,9 @@ def _report(
             record.get("unfinished_threads")
             if isinstance(record.get("unfinished_threads"), int)
             else None
+        ),
+        stop_reason=(
+            record.get("stop_reason") if isinstance(record.get("stop_reason"), str) else None
         ),
         ledger=_ledger_view(candidate.dir if candidate.readable else None),
         daemon_state=(
@@ -1804,6 +1814,7 @@ class DaemonRunner:
         self._exit_process = exit_process
         self.stop_event = threading.Event()
         self._stop_requested = False
+        self._stop_reason = ""
         self._finished = False
         self._exiting = False
         self._exit_lock = threading.Lock()
@@ -1814,7 +1825,15 @@ class DaemonRunner:
         The boolean is set *before* the event, because the watchdog reads only
         the boolean: its bound must not depend on a lock that a signal arriving
         mid-``Event.set`` could have left contended.
+
+        *reason* is kept, not discarded: a hard exit and the pidfile's exit
+        record both name it, so ``status`` after the fact can say whether the
+        daemon was stopped by a signal, by its own target returning, or by the
+        control API — three outcomes that otherwise look identical. It is
+        stored raw and sanitised only where it is written, because this can
+        run inside a signal handler and must stay a plain assignment.
         """
+        self._stop_reason = reason
         self._stop_requested = True
         self.stop_event.set()
 
@@ -1939,7 +1958,8 @@ class DaemonRunner:
         if hard:
             self._state.ledger.append(
                 HARD_EXIT_CODE,
-                f"hard exit {self._shutdown_deadline}s after a stop was requested; "
+                f"hard exit {self._shutdown_deadline}s after a stop was requested "
+                f"({_safe_token(self._stop_reason or 'unknown')}); "
                 f"{count} non-daemon thread(s) still running (name digest {digest})",
             )
         elif count:
@@ -1965,6 +1985,7 @@ class DaemonRunner:
                 "exit_code": code,
                 "hard_exit": hard,
                 "unfinished_threads": lingering,
+                "stop_reason": _safe_token(self._stop_reason) if self._stop_reason else None,
                 "stopped_at": time.time(),
                 "daemon_state": _reduced_state_snapshot(self._state),
             }

@@ -1405,3 +1405,124 @@ class TestChildExportsTheShutdownDeadline:
         assert seen["env"] is not None
         assert float(str(seen["env"])) == 0.7
         assert seen["runner_deadline"] == 0.7
+
+
+class TestTheAsciiValidatorsStayAscii:
+    """The `\\w`/`\\d` rewrite (SonarCloud S6353) must not widen what is accepted.
+
+    `\\w` unflagged matches every Unicode letter and digit, so an import
+    target, a temp-file name and a volume line would all start accepting
+    scripts the validators exist to refuse. `re.ASCII` is what keeps the
+    rewrite equivalent — these tests are the proof, not the comment.
+    """
+
+    @pytest.mark.parametrize(
+        "target",
+        [
+            "embodiment.daemon.app:main",
+            "a_1.b2:c",
+        ],
+    )
+    def test_an_ascii_target_is_still_accepted(self, target: str) -> None:
+        assert lifecycle_mod._TARGET_RE.match(target)
+
+    @pytest.mark.parametrize(
+        "target",
+        [
+            "embodiment.דאמון:main",  # Hebrew module name
+            "app:mаin",  # Cyrillic a in the attribute
+            "app:main٠",  # Arabic-Indic digit
+            "-app:main",
+            "app:ma.in",
+        ],
+    )
+    def test_a_non_ascii_or_malformed_target_is_still_refused(self, target: str) -> None:
+        assert lifecycle_mod._TARGET_RE.match(target) is None
+
+    def test_the_volume_line_only_reads_ascii_digits(self) -> None:
+        from embodiment.audio import host as host_module
+
+        assert host_module._WPCTL_VOLUME_RE.search("Volume: 0.41")
+        assert host_module._WPCTL_VOLUME_RE.search("Volume: ٠.١١") is None
+
+    def test_the_temp_file_pattern_only_matches_ascii_tokens(self) -> None:
+        from embodiment.daemon import state as state_module
+
+        assert state_module._TMP_FILE_RE.match(".daemon.pid.ab12CD.tmp")
+        assert state_module._TMP_FILE_RE.match(".daemon.pid.אב.tmp") is None
+
+
+class _NullRunnable:
+    """A target that returns immediately; the runner's own state is the subject."""
+
+    def run(self, stop_event: threading.Event) -> int:
+        return 0
+
+
+class TestTheStopReasonIsKept:
+    """S1172: `request_stop`'s reason stopped being discarded.
+
+    Three stops look identical in a pidfile that records only an exit code:
+    a signal, the target returning on its own, and the control API. Keeping
+    the reason is what lets `status` tell them apart after the fact — and it
+    goes through the module's one sanitiser, so a caller cannot write a path,
+    a newline or a bidi run into the record.
+    """
+
+    def test_the_reason_reaches_the_exit_record_and_the_status(self, tmp_path: Path) -> None:
+        state = DaemonState(tmp_path / "state")
+        pidfile = lifecycle_mod.PidFile(state.dir / PIDFILE_NAME)
+        assert pidfile.acquire()
+        exits: list[int] = []
+        runner = lifecycle_mod.DaemonRunner(
+            runnable=_NullRunnable(),
+            state=state,
+            pidfile=pidfile,
+            target=DEFAULT_TARGET,
+            exit_process=exits.append,
+        )
+        runner.request_stop("control-api")
+        runner._finalise(0, hard=False)
+
+        record, _ = pidfile.read()
+        assert record is not None
+        assert record["stop_reason"] == "control-api"
+        assert lifecycle_mod.status(state_dir=state.dir).to_dict()["stop_reason"] == "control-api"
+
+    def test_a_hostile_reason_is_sanitised_before_it_is_recorded(self, tmp_path: Path) -> None:
+        state = DaemonState(tmp_path / "state2")
+        pidfile = lifecycle_mod.PidFile(state.dir / PIDFILE_NAME)
+        assert pidfile.acquire()
+        runner = lifecycle_mod.DaemonRunner(
+            runnable=_NullRunnable(),
+            state=state,
+            pidfile=pidfile,
+            target=DEFAULT_TARGET,
+            exit_process=lambda code: None,
+        )
+        runner.request_stop("/etc/passwd\n‮evil")
+        runner._finalise(0, hard=False)
+
+        record, _ = pidfile.read()
+        assert record is not None
+        written = record["stop_reason"]
+        assert "/" not in written
+        assert "\n" not in written
+        assert "‮" not in written
+
+    def test_a_daemon_that_never_stopped_records_no_reason(self, tmp_path: Path) -> None:
+        state = DaemonState(tmp_path / "state3")
+        pidfile = lifecycle_mod.PidFile(state.dir / PIDFILE_NAME)
+        assert pidfile.acquire()
+        runner = lifecycle_mod.DaemonRunner(
+            runnable=_NullRunnable(),
+            state=state,
+            pidfile=pidfile,
+            target=DEFAULT_TARGET,
+            exit_process=lambda code: None,
+        )
+        runner._finalise(0, hard=False)
+
+        record, _ = pidfile.read()
+        assert record is not None
+        assert record["stop_reason"] is None
