@@ -1,0 +1,131 @@
+# Delivery Summary — realtime embodiment app
+
+plan: `realtime-embodiment-app` · run: `partial` — 21 of 22 tasks delivered on `realtime/phase-b` (local, unpushed); `t21` blocked on the operator at the microphone · date: `2026-09-21`
+baseline: `devague summary skeleton` (rendered 2026-09-22; execution-dependent fields filled by the integrator from the merge record and the evidence ledger)
+
+## Intent
+
+> embodiment is a background realtime app: a voice-first embodied presence built on the lobes /v1/realtime API, switched on and off from the CLI or a web dashboard, with context and memory on eidetic-cli; the prior loop/strategist/muse experiments are archived in git history
+
+After: `embodiment start` brings Gwen up as a background process that listens on the host mic, answers aloud with recalled memory in the prompt, remembers selectively into eidetic, and keeps running with no browser open; `embodiment stop` or the dashboard switch turns her off; the dashboard shows live state, transcript and degradations locally and, through agent.culture.dev behind Cloudflare Access, from a phone
+
+## Planned Work
+
+- `t1` — Archive the experiments: tag, remove, re-pin CI
+- `t2` — Rewrite the docs for the archive and handle external pointers
+- `t3` — Approve the new dependency set
+- `t4` — State directory, bounded log, persisted degradation ledger
+- `t5` — Lifecycle verbs: start, stop, status
+- `t6` — Realtime ears: the lobes client
+- `t7` — Audio endpoint interface and the host endpoint
+- `t8` — Audio feature extractor
+- `t9` — Turn engine on the bounded tool loop
+- `t10` — Memory: private, pinned, deadline-bounded, attributed
+- `t11` — Session: context window, transcript log, remembering
+- `t12` — Voice out and barge-in
+- `t13` — Event bus and the SSE projection
+- `t14` — Inbound realtime endpoint: the browser ear, robot-shaped
+- `t15` — The daemon: wiring, one ear, zero clients
+- `t16` — HTTP surface: static, SSE, control API, the guard
+- `t17` — Web app scaffold
+- `t18` — Waveform centrepiece and browser audio
+- `t19` — Packaging and CI for the web build
+- `t20` — Remote access through cultureflare
+- `t21` — Live acceptance on the rig
+- `t22` — Release docs: status, boundary, the not-yet list
+
+## Actual Delivery
+
+| Plan task | Status | What actually landed |
+|-----------|--------|----------------------|
+| `t1` | delivered | archive PR #84; tag archive/pre-realtime-0.14.0 on the parent of the archive commit; suite/lint/rubric green at the archive commit (evidence e33) |
+| `t2` | delivered | the redesign's docs/plans + .devague records; planning PR #83 |
+| `t3` | delivered | dependencies approved via d2 (websockets, stdlib http.server); sounddevice withdrawn by d4; tests/test_zero_deps.py pins install and import footprints separately (e2, e3) |
+| `t4` | delivered | daemon/state.py: 0700 state dir, bounded log, crash-durable degradation ledger, 0600 per-session transcript logs (e4) |
+| `t5` | delivered | daemon/lifecycle.py + start/status/stop: (pid, starttime) identity, bounded stop, truthful status after an unclean death; merged 95e7f92 (e5, e6) |
+| `t6` | delivered | realtime/client.py + wire.py: ears-only lobes client, never response.create, bounded; merged 722056e (e7) |
+| `t7` | delivered | audio/endpoint.py + host.py on subprocess audio (d4): targets by pipewire node name, link verified, own stream by client pid, mute in the capture path; 10 rounds, 3 reviews; merged 3540a57 (e8) |
+| `t8` | delivered | audio/features.py: streaming min/max envelope from real samples (e9) |
+| `t9` | delivered | turn.py + tools.py: one spoken turn through loop.run, empty registry by design, lost turns recorded (e10 weak, e11) |
+| `t10` | delivered | memory.py: private store under the state dir, deadline-bounded recall, render_recalled as the one attributed entry point (e12, e13, e14) |
+| `t11` | delivered | session.py: explicit-ask detector (Hebrew/English, punctuation-tolerant since t15 r6), turn queue, supersede, summary on close; merged 9d25555 |
+| `t12` | delivered | voice.py: sentence-by-sentence TTS, barge-in in memory under 0.2 s, bounded body read, redirects refused, spoken/unspoken state; merged 5355db6 (e15) |
+| `t13` | delivered | bus.py: in-process bus + optional MQTT, redaction at publish; merged 59467ea (e16) |
+| `t14` | delivered | audio/remote.py: inbound /v1/realtime endpoint, first-message auth, one peer, bounded handshake reclaim; merged d6fca10 (e37) |
+| `t15` | delivered | daemon/app.py: the daemon - one ear, handover, close(deadline) shares, memory counters, recall fallback (d5), mute intent carried, bounded waits; 16 commits cherry-picked; merged 6aab47f; live-driven by counters (e18, e19, e20) |
+| `t16` | delivered | http/guard.py + server.py: install secret, Host/Origin allow-list, Access verifier seam (refusing), race-free secret file, control deadline; merged 4517365 (e21, e22) |
+| `t17` | delivered | web/: the dashboard, fetch-streamed SSE with the secret in the Authorization header, seeded from /api/status, controls verified both ways on a phone over Tailscale; merged 371065a + be1d2a0 (e23) |
+| `t18` | delivered | the canvas oscilloscope, readouts, BrowserEar (unwired in v1), the worklet in the wheel; merged 302db2f |
+| `t19` | delivered | the dashboard inside the wheel via a bounded hatch hook; CI gates the web build; merged b58bd91 (e24) |
+| `t20` | delivered | cli/_commands/tunnel.py: prints the cultureflare/cloudflared commands, never runs them, values validated and quoted; merged ed9d190 |
+| `t21` | blocked | not run: needs the operator at the microphone (ten Hebrew turns, a fact across a restart, a barge-in, stop/start from the CLI and the dashboard). The rig is instrumented for it (`f2faff0`: per-turn eos/transcript/first-audio timestamps and rendered record ids in the daemon's own record); brief and result template are written; one synthetic turn measured 860 ms end-of-speech to first audio (n = 1, not the acceptance). Obligations o25/o26 unfiled. |
+| `t22` | delivered | README/CLAUDE.md/explain/CHANGELOG: status, boundary, the not-yet list, pinned by tests/test_release_docs.py; merged e25673a (version bump = the PR step) |
+
+## Mid-work Decisions
+
+- `d1` — every task, every wave and the final PR are additionally reviewed, in parallel, by Qwen Code on the worker role and pi on the associate role, via scripts/dual-review.sh (read-only, throwaway worktree). The plan's merge gate was tests-before-and-after only. Review output is a second opinion: the main agent verifies each finding and records a disposition; a finding it confirms is fixed before merge. — Operator instruction, 2026-09-21, after merging the archive PR: call Qwen code worker and pi associate (in parallel) to review each task, wave and final PR. Filed against t3 as the first Phase B task; it applies to t3 through t22.
+- `d2` — dependency approval record for the realtime redesign: websockets>=15 (base; zero transitive dependencies), sounddevice>=0.5 behind the optional audio extra (cffi, pycparser, system PortAudio), and stdlib http.server for HTTP and SSE. lobes-cli is forbidden as a dependency in any form. — Operator, 2026-09-21: 'dependencies approved'. Filed because pyproject.toml states every dependency has an approval record in the deviation ledger; this is the planned t3 gate being exercised, not a departure from the plan.
+- `d3` — pi (associate) reviews are paused; Qwen Code on the worker role is the sole external reviewer of each task, each wave and the final PR until the operator says otherwise. This amends d1, which named both. — Operator, 2026-09-22: 'skip pi reviews for now'. Context: across the wave-1 reviews pi returned no usable answer on five large diffs (empty output, 57-60 kB reasoning traces cut off before any answer, one sentence of filler) and no valid finding of its own; causes were diagnosed (pi -p prints only the final text part; the associate model exhausts its output budget reasoning; --thinking levels do not bind for it).
+- `d4` — the host audio endpoint (t7) drives the rig's audio through subprocesses the way lobes-cli's realtime-he-accept.py and shabbos-goy do - pw-record/arecord for capture (int16, 16 kHz, 2 channels, channel 1 selected) and pw-play/aplay on plughw for playback (ALSA resamples the 24 kHz TTS) - instead of sounddevice/PortAudio. The sounddevice audio extra approved in d2 is withdrawn; the package keeps zero audio dependencies. Any concrete benefit sounddevice would have had is filed as an improvement issue, not built. — on the real reSpeaker XVF3800 the sounddevice endpoint never played (OutputStream.write(bytes) TypeError, silent), defaulted output to the HDMI device so the array's AEC had no far-end reference, and needed its own 2:3 resampler for a 16 kHz-only device; both sibling projects that already run this rig use subprocess audio with ALSA's plug layer resampling, and the operator chose to follow them (2026-09-22)
+- pending approval (not yet a decision): `d5`
+
+## Drift From Plan
+
+| Plan item | Reason for divergence | Classification |
+|-----------|------------------------|-----------------|
+| `t3` (`d1`) | Operator instruction, 2026-09-21, after merging the archive PR: call Qwen code worker and pi associate (in parallel) to review each task, wave and final PR. Filed against t3 as the first Phase B task; it applies to t3 through t22. | acceptable |
+| `t3` (`d2`) | Operator, 2026-09-21: 'dependencies approved'. Filed because pyproject.toml states every dependency has an approval record in the deviation ledger; this is the planned t3 gate being exercised, not a departure from the plan. | acceptable |
+| `t3` (`d3`) | Operator, 2026-09-22: 'skip pi reviews for now'. Context: across the wave-1 reviews pi returned no usable answer on five large diffs (empty output, 57-60 kB reasoning traces cut off before any answer, one sentence of filler) and no valid finding of its own; causes were diagnosed (pi -p prints only the final text part; the associate model exhausts its output budget reasoning; --thinking levels do not bind for it). | acceptable |
+| `t7` (`d4`, approved) | Operator, 2026-09-22: the host audio endpoint drives the rig through pw-record/pw-play (arecord/aplay fallback) subprocesses as lobes-cli's realtime-he-accept.py and shabbos-goy do, instead of sounddevice/PortAudio; the sounddevice extra approved in d2 is withdrawn, the package keeps zero audio dependencies, and any concrete benefit of sounddevice is filed as issue #86. Affects t21 (the acceptance rig) and t3 (the approved set). | acceptable |
+| `t15` (`d5`, proposed) | Measured 2026-09-22: eidetic's keyword tokeniser is `[a-z0-9]+`, so every Hebrew recall returned nothing with `ok=True`; the daemon records `app-recall-lexical-blind` and retries the two longest words in exact mode within the recall deadline, with hit/rendered counters. The proper fix is upstream (issue drafted, unposted); the workaround is pinned by a test on the upstream regex. Affects t11 and t21. | acceptable (awaiting the operator's `--confirm`) |
+| `t7` (`d4`) | on the real reSpeaker XVF3800 the sounddevice endpoint never played (OutputStream.write(bytes) TypeError, silent), defaulted output to the HDMI device so the array's AEC had no far-end reference, and needed its own 2:3 resampler for a 16 kHz-only device; both sibling projects that already run this rig use subprocess audio with ALSA's plug layer resampling, and the operator chose to follow them (2026-09-22) | `acceptable` |
+
+## Evidence
+
+- tests: `uv run pytest -n auto` at `1770162` — `3100 passed, 1 skipped` (the skip is the live-gateway dial without a key); `web/`: `npx vitest run` — `355 passed`; per-obligation nodes filed as evidence e1–e16, e33–e40 (see Delivery Claims)
+- lint: `black --check`, `isort --check-only`, `flake8`, `bandit -c pyproject.toml -r embodiment`, `markdownlint-cli2 "**/*.md" …`, `teken cli doctor . --strict` — all clean at `1770162`
+- commits: `0582f1c..1770162` on `realtime/phase-b` (merged locally; the PR is the next step) — merge commits 95e7f92 t5, 722056e t6, 3540a57 t7, 4517365 t16, d6fca10 t14, 371065a + be1d2a0 t17, 55d9214 integration, ed9d190 t20, b58bd91 t19, 302db2f t18, 5355db6 t12, 6aab47f t15, e25673a t22, 1770162 wave-fix
+- PRs / issues: #83 (planning), #84 (archive), #85 (the cumulative decision issue, 16 numbered decisions, 15 comments), #86 (sounddevice follow-up)
+
+## Delivery Claims
+
+| Claim | Confidence | Evidence |
+|-------|------------|----------|
+| `c1` — embodiment is a background realtime app: a voice-first embodied presence built on the lobes /v1/realtime API, switched on and off from the CLI or a web dashboard, with context and memory on eidetic-cli; the prior loop/strategist/muse experiments are archived in git history | untested | (none filed) |
+| `c2` — embodiment needs its own realtime client for the lobes gateway: discover via keyless GET /capabilities (the stt role advertising `realtime_vad_session`), then dial `/v1/realtime` with a server-side Bearer key and speak the documented JSON/base64 pcm16 24 kHz wire; lobes ships no importable client, only stdlib-socket scripts under `scripts/realtime-*.py` | pending adjudication | `tests/test_realtime_client.py::TestSession::test_the_server_never_receives_an_arming_event` |
+| `c3` — the realtime session is audio-only and never crosses machines: no image/video event exists on `/v1/realtime`, and the gateway refuses to tunnel a WebSocket to a proxied peer; vision therefore arrives later as separate `/v1/chat/completions` calls to the senses role, not inside the voice session | pending adjudication | `tests/test_realtime_client.py::TestSession::test_the_server_never_receives_an_arming_event` |
+| `c4` — the web dashboard is embodiment's own front end, citing lobes' browser patterns (`site/src/scripts/pcm-wire.ts`, `mic-capture.ts`, `audio-graph.ts`, the event log and conversation view) rather than depending on them; the daemon must serve it and hold the gateway key server-side, because a browser WS handshake cannot carry an Authorization header | pending adjudication | `web/src/hooks/useEventStream.test.tsx -t 'goes disconnected once the heartbeat has been missing for 2 intervals'` |
+| `c5` — a daemon lifecycle is net-new: `start` / `stop` / `status` CLI verbs registered through the existing `register(sub)` scaffold with `explain` catalog entries, passing `teken cli doctor . --strict`, plus an HTTP control surface the dashboard uses for the same on/off switch | pending adjudication | `tests/test_daemon_lifecycle.py::TestStopIsBounded::test_stop_returns_within_the_bound_with_a_reader_thread_parked` |
+| `c6` — eidetic stays an in-process import for durable memory, with the daemon pinning its store location (`EIDETIC_DATA_DIR` or a fixed cwd) and keeping embedder-backed recall off the voice fast path (keyword mode, or an executor with a tight timeout); the conversational context window (recent turns, decay to summary) is embodiment's to build, because eidetic has no session or working-memory primitive | pending adjudication | `tests/test_memory.py::TestPrivateByDefault::test_the_repo_store_is_byte_identical_after_a_default_write` (run 2026-09-22) |
+| `c10` — archiving is a reviewed act, not a deletion spree: mark the archive point (the repo has zero git tags, so this sets the convention), remove the experiment modules, `examples/`, live-test results and their structural tests in one PR, re-pin `tests/test_zero_deps.py` to the new approved dependency set, and close the roughly 45 moot issues with a pointer to the archive point | pending adjudication | `tests/test_zero_deps.py::test_declared_dependencies_match_the_approved_set` |
+| `c11` — new runtime dependencies (a WebSocket client, an HTTP server for the dashboard and control surface, audio capture if the daemon owns a local mic) stay human-gated under d2's surviving discipline, and lobes-cli is reached over the network only, never imported | pending adjudication | `tests/test_zero_deps.py::test_runtime_imports_match_the_approved_set` |
+| `c12` — the app works with no browser open: the daemon is the app, and the dashboard is one client of it, never the thing that keeps it alive | pending adjudication | `tests/test_daemon_app.py::TestZeroClients::test_a_full_turn_completes_with_zero_clients` |
+| `c13` — the app is also reachable from a browser anywhere, including a phone, at agent.culture.dev: the Cloudflare tunnel serves the same dashboard and the same server-sent event stream the local page uses; `events-cli` remains the mesh-facing emitter and is not part of the phone path | pending adjudication | `web/src/hooks/useEventStream.test.tsx -t 'goes disconnected once the heartbeat has been missing for 2 intervals'` |
+| `c18` — host audio capture and playback is a new human-gated dependency behind an optional extra, and a missing device or extra degrades to a recorded no-voice state rather than failing `start` | pending adjudication | `tests/test_audio_host.py::test_criterion2_muted_endpoint_delivers_zero_frames_downstream` (run 2026-09-22) |
+| `c21` — the dashboard follows culture-nodes' shape: a reactive React + Vite + TypeScript single-page app under `web/`, tested with Vitest, live state over server-sent events, with a `culture-design/` folder (tokens and palette) pinned to the `org` repo; `web/dist` is built at package time and shipped inside the wheel so the daemon serves it with no node toolchain at install or run time; realtime mic and playback pieces are cited from lobes' `site/src/scripts/` | pending adjudication | `web/src/hooks/useEventStream.test.tsx -t 'goes disconnected once the heartbeat has been missing for 2 intervals'` |
+| `c22` — behind Cloudflare Access the daemon still binds to loopback only and trusts no request merely for arriving: climate-cli's web service has no authentication at all and says so, and `remote-login` fronts a local `--service` URL, so a daemon bound to a routable address would be open to the LAN with SSO protecting only the public hostname | pending adjudication | `tests/test_http_server.py::TestTheThreeRefusalsOnTheControlApi::test_a_rebinding_host_post_is_refused` |
+| `c24` — `embodiment start` brings Gwen up as a background process that listens on the host mic, answers aloud with recalled memory in the prompt, remembers selectively into eidetic, and keeps running with no browser open; `embodiment stop` or the dashboard switch turns her off; the dashboard shows live state, transcript and degradations locally and, through agent.culture.dev behind Cloudflare Access, from a phone | untested | (none filed) |
+| `c27` — on this rig, 10 consecutive spoken turns complete with 0 silent failures (every failed turn leaves a degradation record), median end-of-speech to first reply audio is measured and published with its n, a fact stated in one session is recalled aloud after a daemon restart, and `stop` then `start` from both the CLI and the dashboard each take effect in < 5 s | untested | (none filed) |
+| `c31` — because voice can live on the host with no browser audio at all, the daemon computes a compact audio feature stream (level, waveform slice, and optionally pitch and spectral readouts) from the audio it captures and plays, and publishes it as events; the page draws from that stream, and uses the browser's own AnalyserNode only when the browser is itself the audio endpoint. The same stream is what a later face consumes, and it is small enough to reach the phone where raw audio is not sent | pending adjudication | `tests/test_daemon_app.py::TestZeroClients::test_a_full_turn_completes_with_zero_clients` |
+| `c32` — Gwen must be able to grow tool use, the ability to trigger agents, and further extensions and control in future; the base is built so those arrive as additions, not as a rewrite of the turn | pending adjudication | `tests/test_tools.py::TestItIsAValidExecutor::test_the_registry_satisfies_the_tool_executor_protocol` |
+| `c33` — memory written by the daemon defaults to the private store (`visibility=private`, under the pinned data dir), never the repo's committed public store: nothing said in the room reaches git unless the operator promotes a record deliberately | pending adjudication | `tests/test_memory.py::TestPrivateByDefault::test_the_repo_store_is_byte_identical_after_a_default_write` (run 2026-09-22) |
+| `c34` — every state-changing request to the daemon's HTTP surface carries a per-install secret and passes a Host and Origin allow-list, because tunnel traffic arrives from cloudflared on loopback: binding to 127.0.0.1 does not separate a remote caller from a local one, and any web page open in a local browser can otherwise POST to the switch (CSRF, DNS rebinding); requests bearing the public hostname must also carry a valid Cloudflare Access assertion | pending adjudication | `tests/test_http_server.py::TestTheThreeRefusalsOnTheControlApi::test_a_rebinding_host_post_is_refused` |
+| `c35` — recalled memory is untrusted data: it enters the prompt quoted and attributed, never as instructions, and once tools exist no recalled text can name a tool call; the public pool is writable by every mesh agent on this host | pending adjudication | `tests/test_memory.py::TestPrivateByDefault::test_the_repo_store_is_byte_identical_after_a_default_write` (run 2026-09-22) |
+| `c36` — listening is always visible and always stoppable: mic-hot state is in `status`, in the event stream and on the dashboard; a mute control stops capture before encode; and the dashboard shows when a remote viewer is connected | pending adjudication | `tests/test_audio_host.py::test_criterion2_muted_endpoint_delivers_zero_frames_downstream` (run 2026-09-22) |
+| `c38` — `status` and the dashboard report the recall mode actually in effect (semantic, or lexical fallback) as a degradation, because eidetic falls back silently when the embedder is down and that is the rig's state today | pending adjudication | `tests/test_memory.py::TestPrivateByDefault::test_the_repo_store_is_byte_identical_after_a_default_write` (run 2026-09-22) |
+| `c39` — the daemon owns barge-in: on `input_audio_buffer.speech_started` during playback it stops the speaker within a stated bound and drops undelivered audio, because an ears-only session never receives `response.interrupted` and lobes accepts `aec_mode` without acting on it | pending adjudication | `tests/test_voice.py::TestBargeInStopsOutputFast::test_barge_in_run_1` (run 2026-09-22) |
+| `c40` — one active ear at a time: the host microphone and a browser microphone never hold realtime sessions simultaneously; attaching one releases the other, visibly | pending adjudication | `tests/test_daemon_app.py::TestZeroClients::test_a_full_turn_completes_with_zero_clients` |
+| `c42` — the daemon keeps a bounded log and its degradation ledger in a state directory, so `status` can say why it died after an unclean exit, and the log never contains transcript text unless retention allows it | pending adjudication | `tests/test_daemon_state.py::TestTranscriptNeverReachesTheOperationalLog::test_transcript_text_is_absent_from_the_operational_log` |
+| `c50` — audio endpoints are an interface, not two special cases: the host devices and the browser are v1's implementations, and the inbound side speaks the lobes `/v1/realtime` wire so a later endpoint (a Reachy Mini pointing `REACHY_REALTIME_URL` at Gwen) needs a URL and a secret rather than a new protocol; non-browser endpoints authenticate with a Cloudflare Access service token or a per-endpoint secret, since they cannot complete browser SSO | pending adjudication | `tests/test_audio_remote.py::TestAuthenticationGate::test_valid_secret_is_accepted_and_receives_session_created` |
+
+## Remaining Work / Follow-up
+
+- `t21` live acceptance (o25, o26) — the operator at the microphone; result file `docs/live-test-results/2026-09-22-t21-acceptance.md`; then the README's conditional clause is removed / integrator
+- the version bump and the PR via the `cicd` skill, then SonarCloud — integrator
+- proposed records awaiting the operator: evidence e1–e16, e33–e40 (`--confirm`), duplicates e17–e32 (`--reject`), deviation `d5` (`--confirm`), delta `b1`
+- eidetic-cli: keyword tokeniser is ASCII-only (`[a-z0-9]+`), so non-Latin recall returns nothing with `ok=True` — issue drafted, unposted, awaiting the operator's go-ahead; the `app-recall-lexical-blind` workaround is pinned so a fixed eidetic makes its test fail
+- Cloudflare Access verification needs an RS256 dependency (decision 4 on #85) — the guard refuses a public Host until approved; `agent.culture.dev` is not provisioned
+- the segmenter drops the first word after silence (~3 in 8 synthetic clips; not seen in ~30 live turns) — lobes-side, not filed; t21 counts it
+- mono-vs-channel-1 capture A/B with playback on (decision 15's open condition) — needs the array and a quiet house
+- semantic recall when the rig's embedder is up (recall is lexical today; reported honestly in `status()["recall"]`)
+- a phone-side ear (t14's inbound endpoint + t18's BrowserEar exist, unwired in v1); a Reachy Mini relay; tools, vision, a face — later stages, not this delivery
