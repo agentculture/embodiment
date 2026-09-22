@@ -23,13 +23,38 @@ jobs:
           # Sonar needs full git history for accurate "new code" blame attribution.
           fetch-depth: 0
 
+      # Task t19: the dashboard (web/) is built and tested here, before the
+      # Python suite, so tests/test_wheel_ships_the_dashboard.py (below) finds
+      # web/dist already built (hatch_build.py's hook is then a no-op) and so
+      # a broken web/ build or a failing Vitest run fails this job — and the
+      # PR — on its own, with no swallowed exit code.
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '20'
+
       - uses: astral-sh/setup-uv@38f3f104447c67c051c4a08e39b64a148898af3a # v4
 
       - run: uv python install 3.12
 
       - run: uv sync
 
-      - run: uv run pytest -n auto --cov=embodiment --cov-report=xml:coverage.xml --cov-report=term -v
+      - name: web — install, test, build (task t17 dashboard)
+        working-directory: web
+        run: |
+          npm ci
+          npx vitest run
+          npm run build
+
+      # -m "not slow" excludes tests/test_wheel_ships_the_dashboard.py from
+      # the default run (it is marked slow); the step below runs it
+      # explicitly, right after web/dist has just been built, so it is fast
+      # here even though a cold run (no pre-built web/dist) is not.
+      - run: >
+          uv run pytest -n auto -m "not slow"
+          --cov=embodiment --cov-report=xml:coverage.xml --cov-report=term -v
+
+      - name: wheel ships the dashboard (criterion 2, task t19)
+        run: uv run pytest -q -m slow tests/test_wheel_ships_the_dashboard.py -p no:cacheprovider
 
       - name: SonarCloud Scan
         if: env.SONAR_TOKEN != ''
