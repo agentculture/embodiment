@@ -133,7 +133,6 @@ Every decision below, every deviation, and every integrator call is mirrored on
 [embodiment#85](https://github.com/agentculture/embodiment/issues/85), the one
 cumulative issue the operator reviews; append there when a new one is made.
 
-
 Daemon-run turn, lobes socket ears-only. Host mic + speaker, hot on `start`, hardware AEC
 (`aec_mode=aec`). Hebrew. Gwen; the speaker is the `senses` role (Gemma 4 26B A4B). Tools
 and agent triggers later, so the turn sits on `loop.py` with an empty registry. Remote:
