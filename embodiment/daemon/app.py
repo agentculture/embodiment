@@ -105,6 +105,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import queue
 import threading
@@ -123,6 +124,7 @@ from embodiment.audio.endpoint import NullEndpoint
 from embodiment.audio.features import FeatureExtractor
 from embodiment.bus import Bus, fold_degradation
 from embodiment.contract import ModelResponse
+from embodiment.daemon.lifecycle import DEFAULT_SHUTDOWN_DEADLINE, ENV_SHUTDOWN_DEADLINE
 from embodiment.daemon.state import DaemonState, resolve_state_dir
 from embodiment.http import guard as guard_module
 from embodiment.http import server as server_module
@@ -203,6 +205,8 @@ __all__ = [
     "ENV_HTTP_BIND",
     "ENV_BIND_PUBLIC",
     "ENV_ALLOWED_HOSTS",
+    "APP_CLOSE_SHARE",
+    "close_budget_for",
     "guard_host_of",
     "allowed_origins_for",
     "SUMMARY_PROMPT",
@@ -249,6 +253,34 @@ _EARS_CLOSE_WAIT_SHARE = 0.5
 #: Where the ears step sits in the shutdown budget. Named because two places
 #: must agree on it: the step itself, and the bound the ear is handed.
 _EARS_STEP_FRACTION = 0.35
+
+#: The share of the RUNNER's watchdog bound that the app's whole close gets.
+#: The watchdog (:data:`embodiment.daemon.lifecycle.DEFAULT_SHUTDOWN_DEADLINE`)
+#: is the one clock; every step share in :meth:`DaemonApp.close` is a
+#: fraction of the budget derived here, so the last step (the bus, at 1.0)
+#: is scheduled strictly before the watchdog fires and the summary and the
+#: memory close — the two that used to sit past it — land inside it. A
+#: **judgement call**: a fifth left over covers the runner's own bookkeeping
+#: after ``run`` returns (``shutdown``, the ledger, the pidfile) and the
+#: ``_bounded`` join granularity, on this rig measured well under 50 ms.
+APP_CLOSE_SHARE = 0.8
+
+
+def close_budget_for(runner_deadline: object) -> float:
+    """The app's close budget, derived from the runner's watchdog bound.
+
+    Strictly below *runner_deadline* for any positive value; a value that is
+    not a positive number degrades to the runner's default rather than to a
+    budget nothing else agrees with. Never raises.
+    """
+    try:
+        bound = float(runner_deadline)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        bound = float(DEFAULT_SHUTDOWN_DEADLINE)
+    if not (math.isfinite(bound) and bound > 0):
+        bound = float(DEFAULT_SHUTDOWN_DEADLINE)
+    return max(0.05, bound * APP_CLOSE_SHARE)
+
 
 #: How the ``start`` verb hands its HTTP flags to the daemon CHILD: ``start``
 #: re-execs a fresh interpreter, so a flag parsed in the CLI reaches
@@ -585,8 +617,11 @@ class AppConfig:
     recall_mode: str = "keyword"
     #: How often :meth:`DaemonApp.run` pumps the bus clock and the out-features.
     poll_interval_s: float = 0.5
-    #: The whole-app shutdown bound; lifecycle's watchdog is the backstop.
-    shutdown_deadline: float = 5.0
+    #: The whole-app shutdown bound. Derived from lifecycle's watchdog, never
+    #: chosen beside it: :func:`main` reads the runner's value from
+    #: :data:`~embodiment.daemon.lifecycle.ENV_SHUTDOWN_DEADLINE` and the
+    #: default here is the same derivation from the runner's default.
+    shutdown_deadline: float = close_budget_for(DEFAULT_SHUTDOWN_DEADLINE)
     #: Utterances that may wait for the turn thread before one is dropped.
     turn_queue_size: int = 8
     #: The model seam's own bound, in seconds.
@@ -1247,9 +1282,14 @@ class DaemonApp:
         except Exception as exc:  # noqa: BLE001  # an injected bus is not trusted
             self._record(APP_PUBLISH_FAILED, f"tick: {_describe(exc)}")
 
-    def shutdown(self, deadline: float = 5.0) -> AppCloseReport:
-        """The name :class:`embodiment.daemon.lifecycle.DaemonRunner` calls."""
-        return self.close(deadline=deadline)
+    def shutdown(self, deadline: float = DEFAULT_SHUTDOWN_DEADLINE) -> AppCloseReport:
+        """The name :class:`embodiment.daemon.lifecycle.DaemonRunner` calls.
+
+        *deadline* is the RUNNER's watchdog bound, so the close budget is
+        derived below it here exactly as :func:`main` derives the config's —
+        one clock, whichever path reaches ``close`` first.
+        """
+        return self.close(deadline=close_budget_for(deadline))
 
     def close(self, deadline: float = 5.0) -> AppCloseReport:
         """Stop everything within *deadline*, reporting what is unfinished.
@@ -3581,6 +3621,11 @@ def main() -> DaemonApp:
     config = AppConfig(
         gateway_url=realtime.gateway_url,
         api_key=realtime.api_key,
+        # The runner's watchdog bound, exported by the lifecycle child; the
+        # close budget is derived strictly below it (one clock, finding 1).
+        shutdown_deadline=close_budget_for(
+            os.environ.get(ENV_SHUTDOWN_DEADLINE) or DEFAULT_SHUTDOWN_DEADLINE
+        ),
         bind=os.environ.get(ENV_HTTP_BIND) or AppConfig.bind,
         bind_public=_env_flag(os.environ.get(ENV_BIND_PUBLIC)),
         allowed_hosts=parse_allowed_hosts(os.environ.get(ENV_ALLOWED_HOSTS)),

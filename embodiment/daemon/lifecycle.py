@@ -196,6 +196,7 @@ __all__ = [
     "DEFAULT_TARGET",
     "PIDFILE_SCHEMA",
     "DEFAULT_SHUTDOWN_DEADLINE",
+    "ENV_SHUTDOWN_DEADLINE",
     "DEFAULT_STOP_TIMEOUT",
     "DEFAULT_KILL_GRACE",
     "DEFAULT_START_CONFIRM_TIMEOUT",
@@ -258,6 +259,16 @@ PIDFILE_SCHEMA = 1
 #: value that leaves :data:`DEFAULT_STOP_TIMEOUT` room to observe the exit
 #: inside the plan's 5 s budget.
 DEFAULT_SHUTDOWN_DEADLINE = 2.0
+
+#: How the watchdog's bound reaches the daemon APPLICATION. The target factory
+#: (``embodiment.daemon.app:main``) takes no arguments and runs in the child,
+#: so :func:`_child_main` exports ``--shutdown-deadline`` here before it
+#: builds the target, and the app derives its own close budget strictly
+#: below it. Two clocks bounding one shutdown — the watchdog at 2 s, the app
+#: scheduling its summary and its memory close past 4 s — is how a stop
+#: ended in ``lifecycle-hard-exit`` with the summary never written (CLAUDE.md
+#: lesson 1: a clock sized against the wrong quantity becomes the measurement).
+ENV_SHUTDOWN_DEADLINE = "EMBODIMENT_SHUTDOWN_DEADLINE"
 
 #: How long :func:`stop` waits for ``SIGTERM`` to take effect before
 #: escalating. Strictly greater than the deadline above, so a daemon that
@@ -2015,6 +2026,11 @@ def _child_main(argv: Optional[list[str]] = None) -> int:
     pidfile: Optional[PidFile] = None
     if args.pidfile_fd >= 0:
         pidfile = PidFile.from_fd(directory / PIDFILE_NAME, args.pidfile_fd)
+
+    # Exported BEFORE the target is built: the factory is where the app reads
+    # it, and it is the one clock every shutdown budget in the child is
+    # derived from (see ENV_SHUTDOWN_DEADLINE).
+    os.environ[ENV_SHUTDOWN_DEADLINE] = repr(float(args.shutdown_deadline))
 
     factory, error = resolve_target(args.target)
     if factory is None:

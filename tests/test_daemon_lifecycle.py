@@ -1366,3 +1366,42 @@ def test_state_names_are_the_four_the_task_names() -> None:
         "dead (unclean)",
         "state unavailable",
     }
+
+
+class TestChildExportsTheShutdownDeadline:
+    """Review finding 1: the runner's watchdog bound is the ONE clock the app sees.
+
+    ``_child_main`` is where ``--shutdown-deadline`` becomes a number; the
+    target factory runs in the same process, so the environment is the seam
+    it reads (``embodiment.daemon.app.main`` takes no arguments).
+    """
+
+    def test_the_child_exports_its_deadline_before_building_the_target(
+        self, state_dir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        seen: dict[str, object] = {}
+
+        class Target:
+            def run(self, stop_event: threading.Event) -> int:
+                return 0
+
+        def factory() -> Target:
+            seen["env"] = os.environ.get(lifecycle_mod.ENV_SHUTDOWN_DEADLINE)
+            return Target()
+
+        def fake_run_daemon(runnable: object, **kwargs: object) -> int:
+            seen["runner_deadline"] = kwargs.get("shutdown_deadline")
+            return 0
+
+        monkeypatch.delenv(lifecycle_mod.ENV_SHUTDOWN_DEADLINE, raising=False)
+        monkeypatch.setattr(lifecycle_mod, "resolve_target", lambda target: (factory, None))
+        monkeypatch.setattr(lifecycle_mod, "run_daemon", fake_run_daemon)
+
+        code = lifecycle_mod._child_main(
+            ["--state-dir", str(state_dir), "--shutdown-deadline", "0.7"]
+        )
+
+        assert code == 0
+        assert seen["env"] is not None
+        assert float(str(seen["env"])) == 0.7
+        assert seen["runner_deadline"] == 0.7

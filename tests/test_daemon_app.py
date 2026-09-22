@@ -4319,3 +4319,137 @@ class TestProcessModel:
             assert isinstance(application.status(), dict)
         finally:
             application.close(deadline=2.0)
+
+
+# ── one shutdown clock (review finding 1) ─────────────────────────────────────
+
+
+class TestOneShutdownClock:
+    """The runner's watchdog and the app's close budget are ONE clock.
+
+    CLAUDE.md lesson 1: a clock sized against the wrong quantity silently
+    becomes the measurement. The runner hard-exits ``DEFAULT_SHUTDOWN_DEADLINE``
+    after a stop; the app used to close under its own 5.0 s and schedule the
+    summary and the memory close past that watchdog, so a stop mid-turn ended
+    in ``lifecycle-hard-exit`` with the summary never written.
+    """
+
+    def test_the_apps_close_budget_is_derived_strictly_below_the_runners(self) -> None:
+        from embodiment.daemon import lifecycle
+
+        for runner in (lifecycle.DEFAULT_SHUTDOWN_DEADLINE, 2.0, 0.5, 10.0):
+            budget = app_module.close_budget_for(runner)
+            assert 0 < budget < runner, (runner, budget)
+            # Every scheduled share is a fraction <= 1.0 of the budget, so the
+            # LAST step (the bus, at 1.0) is the latest anything is scheduled.
+            assert budget * 1.0 < runner
+
+    def test_main_reads_the_runners_deadline_from_the_environment(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from embodiment.daemon import lifecycle
+
+        monkeypatch.setenv("EMBODIMENT_STATE_DIR", str(tmp_path / "state"))
+        monkeypatch.setenv(lifecycle.ENV_SHUTDOWN_DEADLINE, "2.0")
+        application = app_module.main()
+        try:
+            assert application._config.shutdown_deadline == app_module.close_budget_for(2.0)
+            assert application._config.shutdown_deadline < 2.0
+        finally:
+            application.close(deadline=2.0)
+
+    def test_main_without_the_variable_still_sits_below_the_runners_default(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from embodiment.daemon import lifecycle
+
+        monkeypatch.setenv("EMBODIMENT_STATE_DIR", str(tmp_path / "state"))
+        monkeypatch.delenv(lifecycle.ENV_SHUTDOWN_DEADLINE, raising=False)
+        application = app_module.main()
+        try:
+            assert application._config.shutdown_deadline < lifecycle.DEFAULT_SHUTDOWN_DEADLINE
+        finally:
+            application.close(deadline=2.0)
+
+    def test_a_garbage_variable_degrades_to_the_default_never_raises(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from embodiment.daemon import lifecycle
+
+        monkeypatch.setenv("EMBODIMENT_STATE_DIR", str(tmp_path / "state"))
+        monkeypatch.setenv(lifecycle.ENV_SHUTDOWN_DEADLINE, "soon")
+        application = app_module.main()
+        try:
+            assert application._config.shutdown_deadline == app_module.close_budget_for(
+                lifecycle.DEFAULT_SHUTDOWN_DEADLINE
+            )
+        finally:
+            application.close(deadline=2.0)
+
+    def test_a_stop_mid_session_writes_the_summary_and_never_hard_exits(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        """The failure from today's ledger, under the real runner's watchdog.
+
+        One seam (memory) ignores its deadline, as the live memory layer can.
+        The app's budget must be sized so the summary lands and close returns
+        BEFORE the watchdog, whatever a late step does.
+        """
+        from embodiment.daemon import lifecycle
+
+        release = threading.Event()
+
+        class SlowCloseMemory(RoomMemory):
+            def close(self, deadline: float = 1.0) -> Any:
+                release.wait(15.0)
+                return super().close(deadline=deadline)
+
+        summaries: list[Any] = []
+
+        def summarise(messages: list[dict[str, Any]]) -> str:
+            summaries.append(messages)
+            return "דיברו על החלב."
+
+        runner_deadline = 2.0
+        memory = SlowCloseMemory(
+            tmp_path / "store", scope="gwen", added_by="gwen", embed_probe=lambda: False
+        )
+        h = harness(
+            memory=memory,
+            summarise=summarise,
+            config=AppConfig(
+                poll_interval_s=0.01,
+                shutdown_deadline=app_module.close_budget_for(runner_deadline),
+            ),
+        )
+        exits: list[int] = []
+        runner = lifecycle.DaemonRunner(
+            h.app, state=h.state, exit_process=exits.append, shutdown_deadline=runner_deadline
+        )
+        worker = threading.Thread(
+            target=lambda: runner.run(install_signal_handlers=False), daemon=True
+        )
+        worker.start()
+        try:
+            deadline = time.monotonic() + 5.0
+            while h.app._ear_endpoint is None and time.monotonic() < deadline:
+                time.sleep(0.01)
+            h.app.run_turn(SPEECH)
+
+            runner.request_stop("test")
+            deadline = time.monotonic() + runner_deadline + 3.0
+            while not exits and time.monotonic() < deadline:
+                time.sleep(0.01)
+        finally:
+            release.set()
+        worker.join(timeout=3.0)
+
+        assert exits == [0]
+        codes = h.ledger_codes()
+        assert lifecycle.HARD_EXIT_CODE not in codes, codes
+        assert summaries, "the summariser was never called"
+        assert h.app.status()["memory"]["summary_written"] == 1
+        report = h.app._close_report
+        assert report is not None
+        assert report.elapsed_s < runner_deadline
+        assert "memory" in report.unfinished, "the seam that ignored its deadline must be named"
