@@ -110,9 +110,10 @@ import queue
 import threading
 import time
 import urllib.request
+from collections import deque
 from dataclasses import dataclass, field, replace
 from pathlib import Path
-from typing import Any, Callable, Iterable, Optional
+from typing import Any, Callable, Iterable, Mapping, Optional
 
 from embodiment import memory as memory_module
 from embodiment import safe_reason
@@ -146,6 +147,8 @@ __all__ = [
     "APP_FRAMES_NO_SESSION",
     "APP_REPLY_SECRET_SCRUBBED",
     "REPLY_REDACTED",
+    "RECENT_TURNS",
+    "TurnTiming",
     "APP_EAR_TEARDOWN_TIMEOUT",
     "APP_BARGE_IN_STOP_TIMEOUT",
     "TEARDOWN_DEADLINE_S",
@@ -261,6 +264,12 @@ SUMMARY_MAX_TOKENS = 300
 #: the operator's instruction: wide enough not to miss a spoken "remember",
 #: narrow enough not to fire on ordinary speech.
 _ASK_STEMS: tuple[str, ...] = ("תזכר", "זכר", "remember", "don't forget", "dont forget")
+
+#: How many turns' timings :meth:`DaemonApp.status` keeps, so a reader can
+#: compute a median and a p90 from status alone without a log pipeline. A
+#: **judgement call**: twenty is a few minutes of conversation, enough for a
+#: p90 to mean something and small enough that the snapshot stays a snapshot.
+RECENT_TURNS = 20
 
 #: What replaces a secret found inside a model reply. The same spelling
 #: :data:`embodiment.realtime.client.REDACTED` uses, so the two surfaces read
@@ -470,6 +479,85 @@ class AppConfig:
     #: name, for instance. Each is also accepted as an ``http://<host>``
     #: Origin, so the dashboard's own fetches pass the Origin check.
     allowed_hosts: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class TurnTiming:
+    """When each stage of one turn happened. Numbers and ids; never text.
+
+    t21 measures "end-of-speech to first reply audio", so the stages are
+    recorded where they actually occur rather than reconstructed afterwards:
+    ``eos_at`` on the ears' ``speech_stopped``, ``transcript_at`` on the
+    transcription, ``reply_text_at`` when senses returned, ``first_audio_at``
+    at the voice's first successful ``endpoint.play()``, ``spoken_done_at``
+    when the reply was fully queued.
+
+    **``spoken_done_at`` is when the audio was QUEUED, not heard.** Nothing in
+    this process can observe a listener; naming it anything else would be the
+    kind of claim this package exists to refuse.
+
+    The ``*_at`` values are ``time.monotonic()`` and are therefore comparable
+    only within one process run — which is why the derived milliseconds are
+    computed here, beside the values they come from, and why ``eos_wall``
+    carries a wall clock for anyone correlating with another machine's log.
+    ``eos_at_ms`` is lobes' OWN offset from the ``speech_stopped`` event, kept
+    unaltered so a disagreement between its clock and ours stays visible
+    instead of being averaged away.
+
+    ``None`` anywhere means that stage did not happen — a superseded turn
+    never reaches audio, a failed one never reaches a reply — and is a
+    different fact from zero.
+    """
+
+    serial: int
+    eos_at: Optional[float] = None
+    eos_wall: Optional[float] = None
+    eos_at_ms: Optional[int] = None
+    transcript_at: Optional[float] = None
+    reply_text_at: Optional[float] = None
+    first_audio_at: Optional[float] = None
+    spoken_done_at: Optional[float] = None
+    eos_to_first_audio_ms: Optional[float] = None
+    transcript_to_first_audio_ms: Optional[float] = None
+    superseded: bool = False
+    failed: bool = False
+    rendered_ids: tuple[str, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "serial": self.serial,
+            "eos_at": self.eos_at,
+            "eos_wall": self.eos_wall,
+            "eos_at_ms": self.eos_at_ms,
+            "transcript_at": self.transcript_at,
+            "reply_text_at": self.reply_text_at,
+            "first_audio_at": self.first_audio_at,
+            "spoken_done_at": self.spoken_done_at,
+            "eos_to_first_audio_ms": self.eos_to_first_audio_ms,
+            "transcript_to_first_audio_ms": self.transcript_to_first_audio_ms,
+            "superseded": self.superseded,
+            "failed": self.failed,
+            "rendered_ids": list(self.rendered_ids),
+        }
+
+    def derived(self) -> "TurnTiming":
+        """The same record with the millisecond figures filled in."""
+        return replace(
+            self,
+            eos_to_first_audio_ms=_elapsed_ms(self.eos_at, self.first_audio_at),
+            transcript_to_first_audio_ms=_elapsed_ms(self.transcript_at, self.first_audio_at),
+        )
+
+
+@dataclass(frozen=True)
+class _Heard:
+    """One utterance on its way to a turn, with when its stages happened."""
+
+    text: str
+    eos_at: Optional[float] = None
+    eos_wall: Optional[float] = None
+    eos_at_ms: Optional[int] = None
+    transcript_at: Optional[float] = None
 
 
 @dataclass(frozen=True)
@@ -688,6 +776,8 @@ class DaemonApp:
         self._handovers = 0
         self._refusals = 0
         self._frames_dropped_no_session = 0
+        self._pending_eos: Optional[tuple[float, float, Optional[int]]] = None
+        self._recent_turns: deque[dict[str, Any]] = deque(maxlen=RECENT_TURNS)
         self._replies_scrubbed = 0
         self._teardown_timeouts = 0
         self._unreaped_endpoints: list[Any] = []
@@ -732,6 +822,7 @@ class DaemonApp:
         self._recall_deadline_exceeded = 0
         self._recall_errors = 0
         self._recall_fallback_hits = 0
+        self._recall_last_ids: tuple[str, ...] = ()
         self._recall_calls = 0
         self._degradation_counts: dict[str, int] = {}
         self._publish_errors = 0
@@ -746,7 +837,7 @@ class DaemonApp:
         self._stopping = False
         self._close_report: Optional[AppCloseReport] = None
 
-        self._turn_queue: "queue.Queue[str]" = queue.Queue(
+        self._turn_queue: "queue.Queue[_Heard]" = queue.Queue(
             maxsize=max(1, int(self._config.turn_queue_size))
         )
         self._turn_thread: Optional[threading.Thread] = None
@@ -1557,8 +1648,17 @@ class DaemonApp:
         self._note_transcript(kind)
         if kind == TRANSCRIPT_EMPTY:
             return False
+        with self._lock:
+            eos, self._pending_eos = self._pending_eos, None
+        heard = _Heard(
+            text=text,
+            eos_at=eos[0] if eos else None,
+            eos_wall=eos[1] if eos else None,
+            eos_at_ms=eos[2] if eos else None,
+            transcript_at=self._clock(),
+        )
         try:
-            self._turn_queue.put_nowait(text)
+            self._turn_queue.put_nowait(heard)
         except queue.Full:
             with self._lock:
                 self._turns_dropped += 1
@@ -1619,22 +1719,35 @@ class DaemonApp:
             # Counted where it arrived (``submit_transcript``), not here, and
             # never recorded: an empty commit is not a fault.
             return TurnResult(spoken="")
+        return self._run_heard(_Heard(text=text, transcript_at=self._clock()))
+
+    def _run_heard(self, heard: _Heard) -> TurnResult:
+        """The ONE turn path. Both entry points arrive here with their timings."""
+        text = heard.text
         with self._lock:
             self._turns_in_flight += 1
             self._turn_serial += 1
             serial = self._turn_serial
+        timing = TurnTiming(
+            serial=serial,
+            eos_at=heard.eos_at,
+            eos_wall=heard.eos_wall,
+            eos_at_ms=heard.eos_at_ms,
+            transcript_at=heard.transcript_at,
+        )
         try:
-            return self._run_turn(text, serial)
+            return self._run_turn(text, serial, timing)
         except Exception as exc:  # noqa: BLE001 - a turn fault must not kill the daemon
             with self._lock:
                 self._turns_failed += 1
             self._record(APP_TURN_FAILED, _describe(exc))
+            self._note_timing(replace(timing, failed=True).derived())
             return TurnResult(spoken="")
         finally:
             with self._lock:
                 self._turns_in_flight -= 1
 
-    def _run_turn(self, text: str, serial: int) -> TurnResult:
+    def _run_turn(self, text: str, serial: int, timing: TurnTiming) -> TurnResult:
         self._publish("turn", {"phase": "heard", "step_count": 0})
         packet, record = perceive(text)
         spoken_in = packet.original if isinstance(packet.original, str) else text
@@ -1646,7 +1759,8 @@ class DaemonApp:
         if session is not None:
             self._note_ask(session, spoken_in)
 
-        recalled = self._recall(spoken_in)
+        recalled, rendered_ids = self._recall(spoken_in)
+        timing = replace(timing, rendered_ids=rendered_ids)
         window = self._window(session)
         config = TurnConfig(
             role=self._config.role,
@@ -1658,20 +1772,42 @@ class DaemonApp:
         spoken_out = self._scrub_reply(result.spoken)
         if spoken_out != result.spoken:
             result = replace(result, spoken=spoken_out)
+        timing = replace(timing, reply_text_at=self._clock())
         for degradation in result.degradations:
             self._fold("turn", degradation)
-        if session is not None:
-            self._safely(
-                lambda: session.add_assistant(result.spoken), APP_TURN_FAILED, "add_assistant"
-            )
-            self._fold_session(session)
         with self._lock:
             self._turns_completed += 1
-        self._publish("turn", {"phase": "spoken", "step_count": result.steps})
-        self._speak(result.spoken, serial)
+
+        spoke = self._speak(result.spoken, serial)
+        timing = replace(
+            timing,
+            first_audio_at=getattr(spoke, "first_play_at", None) if spoke else None,
+            spoken_done_at=self._clock() if spoke else None,
+            superseded=self._is_superseded(serial),
+        ).derived()
+
+        # The transcript record carries the timings, so a reader has the turn
+        # and its measurement in one place rather than two files to join.
+        if session is not None:
+            self._safely(
+                lambda: session.add_assistant(result.spoken, metadata=timing.to_dict()),
+                APP_TURN_FAILED,
+                "add_assistant",
+            )
+            self._fold_session(session)
+        self._publish(
+            "turn",
+            {"phase": "spoken", "step_count": result.steps, **timing.to_dict()},
+        )
+        self._note_timing(timing)
         return result
 
-    def _speak(self, spoken: str, serial: int) -> None:
+    def _note_timing(self, timing: TurnTiming) -> None:
+        """Keep one turn's measurement where a reader can find it. Never raises."""
+        with self._lock:
+            self._recent_turns.append(timing.to_dict())
+
+    def _speak(self, spoken: str, serial: int) -> Any:
         """Hand the reply to the voice — unless the room moved on while we thought.
 
         Two checks, because the race is real: a ``speech_started`` can land in
@@ -1687,15 +1823,21 @@ class DaemonApp:
         voice = self._voice
         if self._is_superseded(serial):
             self._publish_reply(spoken, superseded=True)
-            return
+            return None
         if voice is None:
             self._record(APP_NO_ENDPOINT, "nothing to speak through; the reply was not voiced")
             self._publish_reply(spoken, superseded=False)
-            return
-        self._safely(lambda: voice.speak(spoken), APP_TURN_FAILED, "speak")
+            return None
+        spoke: list[Any] = []
+
+        def say() -> None:
+            spoke.append(voice.speak(spoken))
+
+        self._safely(say, APP_TURN_FAILED, "speak")
         if self._is_superseded(serial):
             self._safely(voice.on_speech_started, APP_TURN_FAILED, "barge-in")
         self._fold_voice(voice)
+        return spoke[0] if spoke else None
 
     def _is_superseded(self, serial: int) -> bool:
         with self._lock:
@@ -1774,7 +1916,7 @@ class DaemonApp:
             {"component": "memory", "status": "ask-not-detected", "ask_not_detected": count},
         )
 
-    def _recall(self, text: str) -> str:
+    def _recall(self, text: str) -> tuple[str, tuple[str, ...]]:
         """The ONE place recall reaches a prompt, bounded by its own deadline.
 
         Counted at every step, because the failure this replaces was a silent
@@ -1793,6 +1935,7 @@ class DaemonApp:
             records = self._recall_blind_fallback(text, started)
 
         rendered = self._render(records)
+        rendered_ids = _rendered_ids(records) if rendered else ()
         with self._lock:
             self._recall_last_hits = len(records)
             self._recall_hits_total += len(records)
@@ -1801,6 +1944,7 @@ class DaemonApp:
             rendered_count = len(records) if rendered else 0
             self._recall_rendered_total += rendered_count
             counts = (len(records), rendered_count)
+            self._recall_last_ids = rendered_ids
         self._publish(
             "state",
             {
@@ -1810,7 +1954,7 @@ class DaemonApp:
                 "rendered": counts[1],
             },
         )
-        return rendered
+        return rendered, rendered_ids
 
     def _recall_once(self, query: str, mode: str, deadline: float) -> Any:
         """One bounded call into memory. Counts and folds; never raises."""
@@ -1943,13 +2087,13 @@ class DaemonApp:
     def _turn_worker(self) -> None:
         while not self._worker_stop.is_set():
             try:
-                text = self._turn_queue.get(timeout=0.1)
+                heard = self._turn_queue.get(timeout=0.1)
             except queue.Empty:
                 continue
             except Exception as exc:  # noqa: BLE001 - a queue fault must not kill the worker
                 self._record(APP_TURN_FAILED, _describe(exc))
                 continue
-            self.run_turn(text)
+            self._run_heard(heard)
 
     def _stop_turn_thread(self, deadline: float) -> bool:
         thread = self._turn_thread
@@ -2085,6 +2229,15 @@ class DaemonApp:
                 self.submit_transcript(event.text)
             elif isinstance(event, wire.SpeechStarted):
                 self._barge_in()
+            elif isinstance(event, wire.SpeechStopped):
+                # The start of t21's measurement, taken where it happens.
+                at_ms = getattr(event, "at_ms", None)
+                with self._lock:
+                    self._pending_eos = (
+                        self._clock(),
+                        time.time(),
+                        at_ms if isinstance(at_ms, int) else None,
+                    )
             elif isinstance(event, wire.ServerError):
                 self._record(APP_STT_ERROR, f"code={_safe_name(event.code)}")
             elif isinstance(event, wire.MalformedEvent):
@@ -2437,6 +2590,9 @@ class DaemonApp:
                 "in_flight": self._turns_in_flight,
                 "superseded": self._turns_superseded,
                 "barge_in_stop_timeouts": self._barge_in_stop_timeouts,
+                # The last RECENT_TURNS measurements, newest last, so a reader
+                # can compute a median and a p90 from status alone.
+                "recent": list(self._recent_turns),
                 "dropped": self._turns_dropped,
                 "failed": self._turns_failed,
                 "queued": self._turn_queue.qsize(),
@@ -2519,6 +2675,7 @@ class DaemonApp:
                 "deadline_exceeded": self._recall_deadline_exceeded,
                 "errors": self._recall_errors,
                 "lexical_fallback_hits": self._recall_fallback_hits,
+                "last_rendered_ids": list(self._recall_last_ids),
                 "deadline_s": self._config.recall_deadline,
                 "configured_mode": self._config.recall_mode,
                 "semantic": _semantic_available(self._memory),
@@ -2698,6 +2855,42 @@ def _target_verification(endpoint: Any) -> dict[str, Any]:
         count = probed.get(key)
         out[key] = count if isinstance(count, int) and not isinstance(count, bool) else None
     return out
+
+
+def _rendered_ids(records: list[Any]) -> tuple[str, ...]:
+    """The ids of the records that went into a prompt. Ids only, never text."""
+    out: list[str] = []
+    for record in records:
+        if not isinstance(record, Mapping):
+            continue
+        identifier = _safe_record_id(record.get("id"))
+        if identifier:
+            out.append(identifier)
+    return tuple(out)
+
+
+def _elapsed_ms(start: Optional[float], end: Optional[float]) -> Optional[float]:
+    """Milliseconds between two monotonic readings, or ``None`` if either is absent.
+
+    Negative is impossible from a monotonic clock and is reported as ``None``
+    rather than as a small number: it would mean the two readings did not come
+    from the same clock, and publishing a plausible-looking figure from that
+    is worse than publishing nothing.
+    """
+    if start is None or end is None:
+        return None
+    delta = (end - start) * 1000.0
+    return round(delta, 3) if delta >= 0 else None
+
+
+def _safe_record_id(value: object) -> str:
+    """A recalled record's id, restricted to the charset ids are allowed.
+
+    A record id comes out of a store every agent on this host can write to, so
+    it is untrusted text until it is restricted — the same rule the rest of
+    this module applies to any id it reports.
+    """
+    return _safe_name(value)
 
 
 def _env_flag(value: Optional[str]) -> bool:

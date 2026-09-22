@@ -22,6 +22,7 @@ import json
 import os
 import re
 import stat
+import statistics
 import sys
 import threading
 import time
@@ -1776,6 +1777,220 @@ class TestSupersededTurns:
         h.app._barge_in()
         h.app._barge_in()
         assert h.app.status()["turns"]["superseded"] == 0
+
+
+class TestTurnInstrumentation:
+    """t21's two criteria, which the record could not answer before.
+
+    (1) median and p90 from end-of-speech to first reply audio, with the raw
+    data behind them; (2) the id of the recalled record that reached the
+    prompt. Numbers and ids only — never a word of what was said.
+    """
+
+    def _timed_harness(self, harness: Any, tmp_path: Path, **over: Any) -> Any:
+        data_dir = tmp_path / "store"
+        memory = RoomMemory(data_dir, scope="gwen", added_by="gwen", embed_probe=lambda: False)
+        remembered = memory.remember(
+            "המפתח נמצא במגירה הכחולה",
+            visibility="private",
+            record_type="explicit-ask",
+            deadline=5.0,
+        )
+        return harness(memory=memory, **over), remembered.record_id
+
+    def test_a_turn_records_monotone_stages_and_derived_milliseconds(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        h, _record_id = self._timed_harness(harness, tmp_path)
+        h.app.start()
+        h.clear()
+
+        h.ears.emit(wire.SpeechStopped(item_id="i1", at_ms=1234))
+        h.ears.emit(wire.TranscriptionCompleted(text="איפה נמצא המפתח?", item_id="i1"))
+        deadline = time.monotonic() + 15.0
+        while h.app.status()["turns"]["completed"] < 1:
+            assert time.monotonic() < deadline, "no turn ran"
+            time.sleep(0.02)
+        time.sleep(0.2)
+
+        recent = h.app.status()["turns"]["recent"]
+        assert len(recent) == 1
+        t = recent[0]
+
+        # the stages, in order and all present
+        for field_name in ("eos_at", "transcript_at", "reply_text_at", "first_audio_at"):
+            assert t[field_name] is not None, field_name
+        assert t["eos_at"] <= t["transcript_at"] <= t["reply_text_at"] <= t["first_audio_at"]
+        assert t["spoken_done_at"] >= t["first_audio_at"]
+        assert t["eos_wall"] is not None
+        assert t["eos_at_ms"] == 1234, "lobes' own offset was not kept"
+
+        # the derived figures, and that they agree with the raw data
+        assert t["eos_to_first_audio_ms"] == pytest.approx(
+            (t["first_audio_at"] - t["eos_at"]) * 1000.0, abs=0.01
+        )
+        assert t["transcript_to_first_audio_ms"] == pytest.approx(
+            (t["first_audio_at"] - t["transcript_at"]) * 1000.0, abs=0.01
+        )
+        assert t["eos_to_first_audio_ms"] >= t["transcript_to_first_audio_ms"]
+        assert t["superseded"] is False and t["failed"] is False
+        assert t["serial"] == 1
+
+    def test_a_reader_can_compute_a_median_and_a_p90_from_status_alone(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        h, _record_id = self._timed_harness(harness, tmp_path)
+        h.app.attach_ear("host", FakeEndpoint())
+        for _ in range(5):
+            h.app.run_turn(SPEECH)
+
+        recent = h.app.status()["turns"]["recent"]
+        figures = [
+            t["transcript_to_first_audio_ms"]
+            for t in recent
+            if t["transcript_to_first_audio_ms"] is not None
+        ]
+        assert len(figures) == 5
+        assert statistics.median(figures) >= 0
+
+    def test_the_recent_list_is_bounded(self, harness: Any, tmp_path: Path) -> None:
+        h, _record_id = self._timed_harness(harness, tmp_path)
+        h.app.attach_ear("host", FakeEndpoint())
+        for _ in range(app_module.RECENT_TURNS + 7):
+            h.app.run_turn(SPEECH)
+
+        recent = h.app.status()["turns"]["recent"]
+        assert len(recent) == app_module.RECENT_TURNS
+        assert recent[-1]["serial"] == app_module.RECENT_TURNS + 7, "newest last"
+
+    def test_a_superseded_turn_has_no_audio_timing(self, harness: Any, tmp_path: Path) -> None:
+        """None, not zero: that stage did not happen."""
+        released = threading.Event()
+        arrived = threading.Event()
+
+        def slow(messages: list[dict[str, Any]], tools: Any = None) -> ModelResponse:
+            arrived.set()
+            released.wait(timeout=10)
+            return ModelResponse(content=REPLY)
+
+        h, _record_id = self._timed_harness(harness, tmp_path, complete=slow)
+        h.app.attach_ear("host", FakeEndpoint())
+        thread = threading.Thread(target=lambda: h.app.run_turn(SPEECH), daemon=True)
+        thread.start()
+        assert arrived.wait(timeout=10)
+        h.app._barge_in()
+        released.set()
+        thread.join(timeout=10)
+
+        t = h.app.status()["turns"]["recent"][-1]
+        assert t["superseded"] is True
+        assert t["first_audio_at"] is None
+        assert t["eos_to_first_audio_ms"] is None
+        assert t["transcript_to_first_audio_ms"] is None
+        assert t["reply_text_at"] is not None, "it did reach a reply"
+
+    def test_a_turn_with_no_voice_has_no_audio_timing(self, harness: Any, tmp_path: Path) -> None:
+        h, _record_id = self._timed_harness(harness, tmp_path)
+        h.app.run_turn(SPEECH)  # no ear attached, so no voice
+        t = h.app.status()["turns"]["recent"][-1]
+        assert t["first_audio_at"] is None
+        assert t["eos_to_first_audio_ms"] is None
+
+    def test_the_rendered_record_ids_are_reported(self, harness: Any, tmp_path: Path) -> None:
+        """(2): the id proves WHICH record answered, where a count cannot."""
+        h, record_id = self._timed_harness(harness, tmp_path)
+        h.app.attach_ear("host", FakeEndpoint())
+        h.clear()
+
+        h.app.run_turn("איפה נמצא המפתח?")
+
+        t = h.app.status()["turns"]["recent"][-1]
+        assert record_id in t["rendered_ids"]
+        assert h.app.status()["recall"]["last_rendered_ids"] == t["rendered_ids"]
+        spoken = [e for e in h.events("turn") if e.data.get("phase") == "spoken"]
+        assert spoken and record_id in spoken[-1].data["rendered_ids"]
+
+    def test_a_turn_that_recalled_nothing_reports_no_ids(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        data_dir = tmp_path / "empty"
+        memory = RoomMemory(data_dir, scope="gwen", added_by="gwen", embed_probe=lambda: False)
+        h = harness(memory=memory)
+        h.app.attach_ear("host", FakeEndpoint())
+        h.app.run_turn(SPEECH)
+        assert h.app.status()["turns"]["recent"][-1]["rendered_ids"] == []
+
+    def test_the_timings_reach_the_transcript_record_on_disk(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        h, record_id = self._timed_harness(harness, tmp_path)
+        h.app.attach_ear("host", FakeEndpoint())
+        h.app.run_turn("איפה נמצא המפתח?")
+
+        sessions = Path(h.state.dir) / "sessions"
+        logs = [p for p in sessions.iterdir() if p.is_file()]
+        assert logs
+        records = [
+            json.loads(line)
+            for log in logs
+            for line in log.read_text(encoding="utf-8").splitlines()
+            if line.strip()
+        ]
+        assistant = [r for r in records if r.get("role") == "assistant"]
+        assert assistant, "no assistant record"
+        turn_record = assistant[-1]
+        assert turn_record["serial"] == 1
+        assert turn_record["eos_to_first_audio_ms"] is None  # no eos in a direct call
+        assert turn_record["transcript_to_first_audio_ms"] is not None
+        assert record_id in turn_record["rendered_ids"]
+        # the record is still a transcript record first
+        assert turn_record["text"] == REPLY
+        assert turn_record["role"] == "assistant"
+
+    def test_a_failed_turn_is_marked_and_has_no_later_stages(
+        self, harness: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Hard to reach on purpose — the turn path guards nearly everything —
+        so the fault is injected at the one call the guards wrap."""
+        h, _record_id = self._timed_harness(harness, tmp_path)
+        h.app.attach_ear("host", FakeEndpoint())
+
+        def exploding(*args: Any, **kwargs: Any) -> Any:
+            raise RuntimeError("the turn itself fell over")
+
+        monkeypatch.setattr(app_module, "run_one_turn", exploding)
+
+        assert h.app.run_turn(SPEECH).spoken == ""
+
+        t = h.app.status()["turns"]["recent"][-1]
+        assert t["failed"] is True
+        assert t["first_audio_at"] is None
+
+    def test_no_word_of_what_was_said_enters_a_timing(self, harness: Any, tmp_path: Path) -> None:
+        """The marker scan, extended to the new fields."""
+        marker = "MARKERCANARY7788"
+        h, _record_id = self._timed_harness(
+            harness, tmp_path, complete=make_complete(f"reply {marker}")
+        )
+        h.app.attach_ear("host", FakeEndpoint())
+        h.clear()
+
+        h.app.run_turn(f"user said {marker}")
+
+        recent = h.app.status()["turns"]["recent"]
+        assert marker not in json.dumps(recent, ensure_ascii=False)
+        assert marker not in json.dumps(
+            h.app.status()["recall"]["last_rendered_ids"], ensure_ascii=False
+        )
+        spoken = [e for e in h.events("turn") if e.data.get("phase") == "spoken"]
+        assert spoken and marker not in json.dumps(spoken[-1].data, ensure_ascii=False)
+        # every value in a timing is a number, a bool, or a charset-safe id
+        for entry in recent:
+            for key, value in entry.items():
+                if key == "rendered_ids":
+                    assert all(re.fullmatch(r"[A-Za-z0-9._-]+", i) for i in value), value
+                else:
+                    assert value is None or isinstance(value, (int, float, bool)), key
 
 
 class TestTheGatewayIsNotTrustedWithItsOwnKey:

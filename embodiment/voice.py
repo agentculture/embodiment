@@ -479,6 +479,15 @@ class SpeakResult:
     it can still grow after ``speak()`` returns (a later barge-in, or the
     pacing thread finishing a drop it started), so a caller that wants the
     live number reads :meth:`Voice.status` instead.
+
+    ``first_play_at`` is ``time.monotonic()`` at the FIRST successful
+    ``endpoint.play()`` of this call, or ``None`` when nothing was ever
+    queued (every sentence dropped, a barge-in before the first one, an empty
+    reply). It is the earliest moment this module can honestly claim audio
+    left for the device — not the moment a listener heard it, which nothing
+    in this process can observe — and it exists because the daemon's
+    acceptance criterion is measured from end-of-speech to *first reply
+    audio*. Monotonic, so it is comparable only within one process run.
     """
 
     sentences_total: int
@@ -489,6 +498,7 @@ class SpeakResult:
     queued_not_traced: int
     tts_degraded: bool
     published: bool
+    first_play_at: Optional[float] = None
 
     def to_dict(self) -> dict[str, object]:
         return {
@@ -499,6 +509,7 @@ class SpeakResult:
             "samples_discarded": self.samples_discarded,
             "queued_not_traced": self.queued_not_traced,
             "tts_degraded": self.tts_degraded,
+            "first_play_at": self.first_play_at,
             "published": self.published,
         }
 
@@ -914,6 +925,7 @@ class Voice:
         )
         total = len(sentences)
         queued = 0
+        first_play_at: Optional[float] = None
         tts_degraded = False
         interrupted = False
 
@@ -976,6 +988,8 @@ class Voice:
                 self._degrade(VOICE_ENDPOINT_FAILED, safe_reason.describe_exception(exc))
                 continue
 
+            if first_play_at is None:
+                first_play_at = time.monotonic()
             queued += 1
             self._enqueue_pace(pcm)
 
@@ -1003,6 +1017,7 @@ class Voice:
             queued_not_traced=queued_not_traced,
             tts_degraded=tts_degraded,
             published=published,
+            first_play_at=first_play_at,
         )
 
     # ── shutdown (lesson 6) ─────────────────────────────────────────────
