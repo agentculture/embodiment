@@ -21,6 +21,7 @@ from pathlib import Path
 import pytest
 
 from embodiment.cli import main
+from embodiment.cli._commands.tunnel import TUNNEL_NAME_PLACEHOLDER
 from embodiment.explain.catalog import ENTRIES
 from embodiment.http.server import DEFAULT_PORT
 
@@ -40,7 +41,7 @@ def test_tunnel_text_prints_setup_and_run_commands(capsys: pytest.CaptureFixture
         f"cultureflare remote-login setup --hostname agent.culture.dev "
         f"--service http://127.0.0.1:{DEFAULT_PORT}" in out
     )
-    assert "cloudflared tunnel run" in out
+    assert f"cloudflared tunnel run {TUNNEL_NAME_PLACEHOLDER}" in out
 
 
 def test_tunnel_default_hostname_and_port_come_from_named_constants(
@@ -60,9 +61,10 @@ def test_tunnel_json_shape(capsys: pytest.CaptureFixture[str]) -> None:
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["setup_command"][:3] == ["cultureflare", "remote-login", "setup"]
-    assert payload["run_command"] == ["cloudflared", "tunnel", "run"]
+    assert payload["run_command"] == ["cloudflared", "tunnel", "run", TUNNEL_NAME_PLACEHOLDER]
     assert payload["allow"] == []
     assert payload["with_service_token"] is False
+    assert payload["tunnel_name"] is None
 
 
 def test_tunnel_allow_flag_is_repeatable(capsys: pytest.CaptureFixture[str]) -> None:
@@ -92,6 +94,67 @@ def test_tunnel_custom_hostname_and_port(capsys: pytest.CaptureFixture[str]) -> 
     assert "--hostname" in payload["setup_command"]
     assert "gwen.example.org" in payload["setup_command"]
     assert "http://127.0.0.1:9999" in payload["setup_command"]
+
+
+def test_tunnel_run_command_uses_placeholder_when_tunnel_name_absent(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # cloudflared rejects a bare `cloudflared tunnel run` — it needs the
+    # tunnel name (or --token). cultureflare derives that name in step 1; this
+    # verb never derives it itself, so it prints a placeholder plus a line
+    # saying where the real value comes from.
+    rc = main(["tunnel", "--json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["tunnel_name"] is None
+    assert payload["run_command"] == ["cloudflared", "tunnel", "run", TUNNEL_NAME_PLACEHOLDER]
+
+    rc = main(["tunnel"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert f"cloudflared tunnel run {TUNNEL_NAME_PLACEHOLDER}" in out
+    # One line explaining where the placeholder's value comes from.
+    assert "step 1" in out
+    assert "tunnel name" in out.lower()
+
+
+def test_tunnel_run_command_uses_given_tunnel_name_in_both_commands(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    rc = main(["tunnel", "--tunnel-name", "gwen-tunnel", "--json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["tunnel_name"] == "gwen-tunnel"
+    assert payload["run_command"] == ["cloudflared", "tunnel", "run", "gwen-tunnel"]
+    assert "--tunnel-name" in payload["setup_command"]
+    assert "gwen-tunnel" in payload["setup_command"]
+    # Given a name, the placeholder must not appear anywhere.
+    assert TUNNEL_NAME_PLACEHOLDER not in payload["run_command"]
+    assert TUNNEL_NAME_PLACEHOLDER not in payload["setup_command"]
+
+    rc = main(["tunnel", "--tunnel-name", "gwen-tunnel"])
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "cloudflared tunnel run gwen-tunnel" in out
+    assert "--tunnel-name gwen-tunnel" in out
+    assert TUNNEL_NAME_PLACEHOLDER not in out
+
+
+def test_tunnel_placeholder_is_stable_and_not_derived_from_hostname(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    # Regression against deriving the name ourselves: changing --hostname must
+    # never change the placeholder text, because this verb is not allowed to
+    # guess cultureflare's derivation rule.
+    rc = main(["tunnel", "--hostname", "one.example.org", "--json"])
+    assert rc == 0
+    payload_one = json.loads(capsys.readouterr().out)
+    rc = main(["tunnel", "--hostname", "two.example.org", "--json"])
+    assert rc == 0
+    payload_two = json.loads(capsys.readouterr().out)
+    assert payload_one["run_command"][-1] == TUNNEL_NAME_PLACEHOLDER
+    assert payload_two["run_command"][-1] == TUNNEL_NAME_PLACEHOLDER
+    assert payload_one["run_command"][-1] == payload_two["run_command"][-1]
 
 
 def test_tunnel_has_no_apply_flag() -> None:

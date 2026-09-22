@@ -130,12 +130,18 @@ embodiment tunnel --with-service-token
 It prints two commands and runs neither:
 
 1. `cultureflare remote-login setup --hostname <h> --service
-   http://127.0.0.1:<port> [--allow <email>]... [--with-service-token]` — the
-   one-time provisioning of the tunnel, the DNS record and the Cloudflare
-   Access app/policy. `--allow <email>` (repeatable) is who the Access policy
-   admits by browser login.
-2. `cloudflared tunnel run` — what the operator runs afterwards, once step 1
-   has actually been applied with `--apply`.
+   http://127.0.0.1:<port> [--allow <email>]... [--with-service-token]
+   [--tunnel-name <name>]` — the one-time provisioning of the tunnel, the DNS
+   record and the Cloudflare Access app/policy. `--allow <email>` (repeatable)
+   is who the Access policy admits by browser login.
+2. `cloudflared tunnel run <name>` — what the operator runs afterwards, once
+   step 1 has actually been applied with `--apply`. `cloudflared` refuses a
+   bare `cloudflared tunnel run` (it needs the name, or a `--token`), and
+   `cultureflare` derives that name itself unless `--tunnel-name` overrides
+   it — a rule `embodiment tunnel` does not know and will not guess. Pass
+   `--tunnel-name <name>` and both commands carry that exact name; omit it and
+   step 2 prints `<tunnel-name-from-step-1>` with a line saying to read the
+   real name off step 1's own output before running it.
 
 **What Cloudflare Access protects, and what it does not.** Access sits in
 front of exactly one thing: requests arriving for the **public hostname**

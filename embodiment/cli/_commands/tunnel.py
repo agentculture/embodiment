@@ -12,12 +12,18 @@ ever spawn ``cultureflare`` or ``cloudflared``.
 What it prints
 --------------
 1. ``cultureflare remote-login setup --hostname <h> --service
-   http://127.0.0.1:<port> [--allow <email>]... [--with-service-token]`` — the
-   one-time provisioning command. The port defaults to
-   :data:`embodiment.http.server.DEFAULT_PORT` (imported, never restated as a
-   literal here).
-2. ``cloudflared tunnel run`` — what the operator runs afterwards, once step 1
-   has actually been applied.
+   http://127.0.0.1:<port> [--allow <email>]... [--with-service-token]
+   [--tunnel-name <name>]`` — the one-time provisioning command. The port
+   defaults to :data:`embodiment.http.server.DEFAULT_PORT` (imported, never
+   restated as a literal here).
+2. ``cloudflared tunnel run <name>`` — what the operator runs afterwards, once
+   step 1 has actually been applied. ``cloudflared`` refuses a bare
+   ``cloudflared tunnel run`` with no name (or ``--token``), and
+   ``cultureflare`` derives that name itself unless ``--tunnel-name``
+   overrides it — a rule this module does not know and will not guess. So
+   with ``--tunnel-name`` given, that exact name is used in *both* commands;
+   without it, step 2 prints :data:`TUNNEL_NAME_PLACEHOLDER` and the text
+   output says, in one line, that the real value is whatever step 1 printed.
 
 See ``README.md``'s "Remote access" section for what Cloudflare Access
 protects (only the public hostname) and how the daemon
@@ -28,12 +34,14 @@ from __future__ import annotations
 
 import argparse
 from dataclasses import dataclass
+from typing import Optional
 
 from embodiment.cli._output import emit_result
 from embodiment.http.server import DEFAULT_PORT
 
 __all__ = [
     "DEFAULT_HOSTNAME",
+    "TUNNEL_NAME_PLACEHOLDER",
     "TunnelPlan",
     "build_plan",
     "cmd_tunnel",
@@ -43,6 +51,14 @@ __all__ = [
 #: Default public hostname documented throughout this repo's docs. A
 #: **judgement call**: any real deployment overrides it with ``--hostname``.
 DEFAULT_HOSTNAME = "agent.culture.dev"
+
+#: Printed in place of the tunnel name when ``--tunnel-name`` is not given.
+#: ``cultureflare remote-login setup`` derives the tunnel name itself from
+#: rules this module does not own and must not guess at; the operator reads
+#: the real name off step 1's own output and substitutes it here before
+#: running step 2. Angle-bracketed so it reads as a placeholder, not a literal
+#: cloudflared tunnel name.
+TUNNEL_NAME_PLACEHOLDER = "<tunnel-name-from-step-1>"
 
 
 @dataclass(frozen=True)
@@ -58,6 +74,7 @@ class TunnelPlan:
     service_url: str
     allow: tuple[str, ...]
     with_service_token: bool
+    tunnel_name: Optional[str]
     setup_command: tuple[str, ...]
     run_command: tuple[str, ...]
 
@@ -68,6 +85,7 @@ class TunnelPlan:
             "service_url": self.service_url,
             "allow": list(self.allow),
             "with_service_token": self.with_service_token,
+            "tunnel_name": self.tunnel_name,
             "setup_command": list(self.setup_command),
             "run_command": list(self.run_command),
         }
@@ -79,8 +97,15 @@ def build_plan(
     port: int,
     allow: tuple[str, ...],
     with_service_token: bool,
+    tunnel_name: Optional[str] = None,
 ) -> TunnelPlan:
-    """Compose the two command lines. Pure: builds strings, runs nothing."""
+    """Compose the two command lines. Pure: builds strings, runs nothing.
+
+    ``tunnel_name`` is never derived here — only echoed back when the caller
+    supplies it. Absent, step 2 carries :data:`TUNNEL_NAME_PLACEHOLDER`
+    instead of a guessed name, because ``cultureflare``'s derivation rule is
+    not this module's to reimplement.
+    """
     service_url = f"http://127.0.0.1:{port}"
     setup = [
         "cultureflare",
@@ -95,13 +120,16 @@ def build_plan(
         setup.extend(["--allow", email])
     if with_service_token:
         setup.append("--with-service-token")
-    run = ["cloudflared", "tunnel", "run"]
+    if tunnel_name:
+        setup.extend(["--tunnel-name", tunnel_name])
+    run = ["cloudflared", "tunnel", "run", tunnel_name if tunnel_name else TUNNEL_NAME_PLACEHOLDER]
     return TunnelPlan(
         hostname=hostname,
         port=port,
         service_url=service_url,
         allow=allow,
         with_service_token=with_service_token,
+        tunnel_name=tunnel_name,
         setup_command=tuple(setup),
         run_command=tuple(run),
     )
@@ -119,6 +147,14 @@ def _render(plan: TunnelPlan) -> str:
         "",
         "2) run the tunnel, after step 1 has actually been applied:",
         "     " + " ".join(plan.run_command),
+    ]
+    if plan.tunnel_name is None:
+        lines.append(
+            f"   {TUNNEL_NAME_PLACEHOLDER} is not a real name: cultureflare derives the "
+            "tunnel name itself in step 1 unless --tunnel-name overrides it, so read the "
+            "actual name off step 1's own output and substitute it there."
+        )
+    lines += [
         "",
         f"Cloudflare Access protects only the public hostname ({plan.hostname}); it "
         "never gates loopback names. The daemon's own guard "
@@ -138,6 +174,7 @@ def cmd_tunnel(args: argparse.Namespace) -> int:
         port=args.port,
         allow=allow,
         with_service_token=bool(args.with_service_token),
+        tunnel_name=args.tunnel_name,
     )
     json_mode = bool(getattr(args, "json", False))
     emit_result(plan.to_dict() if json_mode else _render(plan), json_mode=json_mode)
@@ -169,6 +206,16 @@ def register(sub: argparse._SubParsersAction) -> None:
         default=None,
         metavar="EMAIL",
         help="Email to allow via Cloudflare Access (repeatable).",
+    )
+    p.add_argument(
+        "--tunnel-name",
+        default=None,
+        metavar="NAME",
+        help=(
+            "Tunnel name for both commands (cultureflare's own --tunnel-name). Omit it "
+            f"and step 2 prints {TUNNEL_NAME_PLACEHOLDER} — cultureflare derives the name "
+            "itself in step 1, and this verb will not guess it."
+        ),
     )
     p.add_argument(
         "--with-service-token",

@@ -284,13 +284,18 @@ runs either one. Dry-run only: there is no `--apply` flag here at all (unlike
 `lobes tunnel`, its model), because provisioning is the operator's act.
 
 1. `cultureflare remote-login setup --hostname <h> --service
-   http://127.0.0.1:<port> [--allow <email>]... [--with-service-token]` — the
-   one-time provisioning command (tunnel + DNS + Cloudflare Access app). It
-   only prints unless the operator adds `--apply` themselves; re-run
-   `cultureflare remote-login setup ... --apply yourself` once you have read
-   what it would do.
-2. `cloudflared tunnel run` — what the operator runs afterwards, once step 1
-   has actually been applied.
+   http://127.0.0.1:<port> [--allow <email>]... [--with-service-token]
+   [--tunnel-name <name>]` — the one-time provisioning command (tunnel + DNS +
+   Cloudflare Access app). It only prints unless the operator adds `--apply`
+   themselves; re-run `cultureflare remote-login setup ... --apply yourself`
+   once you have read what it would do.
+2. `cloudflared tunnel run <name>` — what the operator runs afterwards, once
+   step 1 has actually been applied. `cloudflared` refuses a bare
+   `cloudflared tunnel run` (no name, no `--token`), and `cultureflare`
+   derives that name itself unless `--tunnel-name` overrides it — a rule this
+   verb does not know and will not guess. Given `--tunnel-name`, both commands
+   carry that exact name; omitted, step 2 prints `<tunnel-name-from-step-1>`
+   and says to read the real name off step 1's own output.
 
 Cloudflare Access protects only the public hostname; it never gates loopback
 names. The daemon's own guard (`embodiment/http/guard.py`) separately
