@@ -96,6 +96,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 
 from embodiment import safe_reason
+from embodiment.audio.endpoint import SAMPLE_RATE_HZ as PLAYBACK_RATE_HZ
 from embodiment.audio.endpoint import NullEndpoint
 from embodiment.audio.features import FeatureExtractor
 from embodiment.bus import Bus, fold_degradation
@@ -194,6 +195,14 @@ _EARS_CLOSE_WAIT_SHARE = 0.5
 #: Where the ears step sits in the shutdown budget. Named because two places
 #: must agree on it: the step itself, and the bound the ear is handed.
 _EARS_STEP_FRACTION = 0.35
+
+#: How long a silence the warm-up plays at attach, in seconds. A **judgement
+#: call**: long enough that the endpoint really starts its player (and so
+#: really runs its link check), short enough to be inaudible and to cost
+#: nothing on the attach path. Played at the protocol's playback rate, which
+#: is fixed at :data:`~embodiment.audio.endpoint.SAMPLE_RATE_HZ` — unlike the
+#: CAPTURE rate, which is the ear's to declare and is never assumed here.
+WARMUP_SILENCE_S = 0.1
 
 #: How many late frames from a displaced ear are expected rather than wrong.
 #: The handover guarantees at least one — the endpoint's capture thread can
@@ -529,6 +538,8 @@ class DaemonApp:
         self._generation = 0
         self._handovers = 0
         self._refusals = 0
+        self._warmups = 0
+        self._warmup_failures = 0
         self._stale_frames = 0
         self._stale_generation: Optional[int] = None
         self._stale_generation_frames = 0
@@ -865,6 +876,7 @@ class DaemonApp:
         self._ear_endpoint = endpoint
         self._features_in.reset()
         self._ensure_voice(ear, endpoint)
+        self._warm_up_playback(endpoint)
         self._ensure_ears_session(ear, endpoint)
         self._fold_endpoint(endpoint)
         return True
@@ -894,6 +906,39 @@ class DaemonApp:
                 self._record(APP_EAR_ATTACH_FAILED, f"{ear} voice: {_describe(exc)}")
             return
         self._safely(lambda: voice.set_endpoint(endpoint), APP_EAR_ATTACH_FAILED, f"{ear} voice")
+
+    def _warm_up_playback(self, endpoint: Any) -> None:
+        """Play a short silence so the playback link is checked before Gwen speaks.
+
+        The endpoint only verifies that its player landed on the intended node
+        once a player actually exists, so before this an ear that had never
+        spoken reported ``playback_target_verified: None`` — indistinguishable,
+        to anything asserting on it, from an endpoint that does not verify at
+        all. A tenth of a second of zeros starts the player, the check runs,
+        and the verdict is a real boolean before the first reply.
+
+        NOT a fault path: a warm-up that fails is counted
+        (``status()["ear"]["warmup_failures"]``) and nothing is written to the
+        ledger — the ledger records what went wrong, and a warm-up is a
+        convenience, not a promise. It is also not a turn: nothing is
+        published, no reply exists, and the voice is not involved.
+
+        Asynchronous by design: the verdict lands when the endpoint's own
+        thread has started the child and inspected the link, typically inside
+        a second. This does not wait for it — an attach on the hot path must
+        not block on an audio server — so a caller asserting on the boolean
+        should poll it with a bound rather than read it the instant attach
+        returns.
+        """
+        silence = b"\x00\x00" * int(PLAYBACK_RATE_HZ * WARMUP_SILENCE_S)
+        try:
+            endpoint.play(silence)
+        except Exception:  # noqa: BLE001 - a warm-up is a convenience, never a promise
+            with self._lock:
+                self._warmup_failures += 1
+            return
+        with self._lock:
+            self._warmups += 1
 
     def _fold_endpoint(self, endpoint: Any) -> None:
         """Record what the endpoint says about ITSELF at the moment it attaches.
@@ -1807,6 +1852,8 @@ class DaemonApp:
                 # monitor, and a capture stream on the wrong source is Gwen
                 # listening to it.
                 **_target_verification(self._ear_endpoint),
+                "warmups": self._warmups,
+                "warmup_failures": self._warmup_failures,
                 "declared_sample_rate": self._ears_rate,
                 "sessions": self._ears_sessions,
                 "redials": self._ears_redials,
@@ -1954,17 +2001,33 @@ def _endpoint_rate_or_none(endpoint: Any) -> Optional[int]:
 
 
 def _target_verification(endpoint: Any) -> dict[str, Optional[bool]]:
-    """The endpoint's own verdict on whether its streams reached the right node.
+    """The endpoint's verdict on whether its streams reached the right node.
 
-    ``None`` from an endpoint that does not report one (a browser ear, a
-    :class:`NullEndpoint`) means "not applicable", which is different from
-    ``False`` — "asked, and it is linked somewhere else". Never raises.
+    Four fields, two questions, and the difference between them matters:
+
+    * ``capture_target`` / ``playback_target`` — **was this target checked at
+      all?** Always a plain bool. This is what ``status()["ear"]["endpoint"]``'s
+      ``device`` cannot tell a reader: that field is the ALSA card index, which
+      after t7 round 7 is no longer what reaches ``pw-record --target`` on the
+      pipewire path. A reader wanting "is this ear pointed at something that
+      was verified" reads these, and never has to interpret a device string.
+    * ``capture_target_verified`` / ``playback_target_verified`` — **and did
+      it land there?** ``True``/``False`` once asked; ``None`` when it was not
+      asked at all (a browser ear, a :class:`NullEndpoint`, or a player that
+      has not started). ``None`` is "not applicable", which is a different
+      claim from ``False`` — "asked, and it is linked somewhere else".
+
+    The node NAME is never copied into any of them: a target is reported as a
+    boolean, and the name stays inside the endpoint that resolved it.
+    Never raises.
     """
     probed = _probe(endpoint) or {}
     out: dict[str, Optional[bool]] = {}
     for key in ("playback_target_verified", "capture_target_verified"):
         value = probed.get(key)
-        out[key] = value if isinstance(value, bool) else None
+        verdict = value if isinstance(value, bool) else None
+        out[key] = verdict
+        out[key.replace("_verified", "")] = verdict is not None
     return out
 
 

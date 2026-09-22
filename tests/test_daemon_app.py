@@ -1130,6 +1130,49 @@ class TestDeclaredSampleRate:
         assert ear["playback_target_verified"] is False
         assert ear["capture_target_verified"] is True
 
+    def test_a_checked_target_reads_true_and_an_unchecked_one_false(self, harness: Any) -> None:
+        """``*_target`` answers "was it checked", never the node name."""
+
+        class Verifying(FakeEndpoint):
+            def status(self) -> dict[str, object]:
+                return {
+                    **super().status(),
+                    "playback_target_verified": True,
+                    "capture_target_verified": False,
+                }
+
+        h = harness()
+        h.app.attach_ear("host", Verifying())
+        ear = h.app.status()["ear"]
+        assert ear["playback_target"] is True
+        assert ear["capture_target"] is True
+        assert ear["playback_target_verified"] is True
+        assert ear["capture_target_verified"] is False
+
+        h.app.detach_ear()
+        h.app.attach_ear("browser", FakeEndpoint())
+        ear = h.app.status()["ear"]
+        assert ear["playback_target"] is False
+        assert ear["capture_target"] is False
+
+    def test_no_node_name_ever_reaches_the_status_block(self, harness: Any) -> None:
+        """A target is a boolean here; the name stays inside the endpoint."""
+
+        class Named(FakeEndpoint):
+            def status(self) -> dict[str, object]:
+                return {
+                    "playback_target_verified": True,
+                    "capture_target_verified": True,
+                    "pw_sink_node_name": "alsa_output.usb-Seeed_MARKERNODE",
+                }
+
+        h = harness()
+        h.app.attach_ear("host", Named())
+        ear = dict(h.app.status()["ear"])
+        ear.pop("endpoint", None)  # the endpoint's own blob is its own business
+        assert "MARKERNODE" not in json.dumps(ear, ensure_ascii=False)
+        assert ear["playback_target"] is True
+
     def test_an_endpoint_that_does_not_verify_reads_none_not_false(self, harness: Any) -> None:
         """``None`` is "not applicable", which is not the same claim as "wrong"."""
         h = harness()
@@ -1217,6 +1260,57 @@ class TestVoiceSeams:
         published = [e.data["code"] for e in h.events("degradation")]
         assert "voice-tts-failed" in published, published
 
+    def test_attaching_warms_the_playback_link_up(self, harness: Any) -> None:
+        """The verdict must exist BEFORE the first reply, not because of it."""
+        endpoint = FakeEndpoint()
+        h = harness()
+        h.app.attach_ear("host", endpoint)
+
+        assert len(endpoint.played) == 1, "no warm-up, or more than one"
+        buffer = endpoint.played[0]
+        expected = int(app_module.PLAYBACK_RATE_HZ * app_module.WARMUP_SILENCE_S) * 2
+        assert len(buffer) == expected
+        assert set(buffer) == {0}, "the warm-up must be silence, not a click"
+        ear = h.app.status()["ear"]
+        assert ear["warmups"] == 1
+        assert ear["warmup_failures"] == 0
+
+    def test_the_warm_up_is_not_a_turn_and_not_a_reply(self, harness: Any) -> None:
+        h = harness()
+        h.clear()
+        h.app.attach_ear("host", FakeEndpoint())
+        assert h.events("reply") == []
+        status = h.app.status()
+        assert status["turns"]["completed"] == 0
+        assert status["transcripts"]["received"] == 0
+
+    def test_a_warm_up_that_fails_is_counted_never_recorded(self, harness: Any) -> None:
+        """A convenience that fails is not a fault; the count is the visibility."""
+
+        class Deaf(FakeEndpoint):
+            def play(self, frames: bytes) -> None:
+                raise RuntimeError("no player")
+
+        h = harness()
+        handover = h.app.attach_ear("host", Deaf())
+
+        assert handover.attached is True, "a failed warm-up must not fail the attach"
+        ear = h.app.status()["ear"]
+        assert ear["warmups"] == 0
+        assert ear["warmup_failures"] == 1
+        assert h.events("degradation") == []
+        assert h.ledger_codes() == []
+
+    def test_each_handover_warms_the_new_ear_up(self, harness: Any) -> None:
+        h = harness(config=AppConfig(preempt_ear=True, poll_interval_s=0.01))
+        first = FakeEndpoint(name="a")
+        second = FakeEndpoint(name="b")
+        h.app.attach_ear("a", first)
+        h.app.attach_ear("b", second)
+        assert len(first.played) == 1
+        assert len(second.played) == 1
+        assert h.app.status()["ear"]["warmups"] == 2
+
     def test_the_pump_drains_through_the_voices_own_api(self, harness: Any) -> None:
         """A voice with NO ``feature_frames`` attribute still gets drained."""
 
@@ -1262,10 +1356,11 @@ class TestVoiceSeams:
         endpoint = FakeEndpoint()
         h.app.attach_ear("host", endpoint)
         h.app.detach_ear()
+        played_before = len(endpoint.played)  # the attach warm-up, and nothing else
         h.clear()
         assert h.app.run_turn(SPEECH).spoken == REPLY
         assert [e.data["text"] for e in h.events("reply")] == [REPLY]
-        assert not endpoint.played, "a detached endpoint was played into"
+        assert len(endpoint.played) == played_before, "a detached endpoint was played into"
 
 
 class TestShutdown:
