@@ -5,8 +5,7 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
-
+## [0.16.0] - 2026-09-22
 **The first daemon release.** Gwen listens, answers in Hebrew, remembers what
 she is explicitly asked to, and shows what she is doing. Accepted on **one rig
 only** and its usefulness is **unmeasured**: the human acceptance run (plan
@@ -131,7 +130,6 @@ shipped and, with the same weight, what did not.
 - A `## [Unreleased]` heading that had sat inside the 0.7.0 entry since #13 is
   re-headed as that release's continuation; two `[Unreleased]` headings are a
   markdownlint duplicate.
-
 ## [0.15.0] - 2026-09-21
 
 **Breaking.** The experiments are archived in git history and the package
