@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-10-22T21:30:02Z",
-  "updated": "2026-10-22T21:47:50Z",
+  "updated": "2026-10-22T21:57:51Z",
   "claims": [
     {
       "id": "c1",
@@ -882,6 +882,427 @@
       "links": [],
       "instruction": "",
       "revisions": []
+    },
+    {
+      "id": "c47",
+      "kind": "requirement",
+      "text": "on the public Host a request admitted by Access JWT alone must also carry an allow-listed Origin or Sec-Fetch-Site: same-origin, because Cloudflare adds the assertion to any request carrying the CF_Authorization cookie, cross-site ones included; the guard's CSRF rule today fires only for a cookie-borne install secret",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h39",
+          "text": "a cross-site POST to the chat route with a valid assertion and no allow-listed Origin is refused",
+          "status": "confirmed",
+          "instruction": "test in tests/test_http_guard.py with a valid fake assertion and Origin https://evil.example"
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c48",
+      "kind": "requirement",
+      "text": "the Access verifier admits only an sso identity whose email is on an explicit operator allow-list (EMBODIMENT_ACCESS_EMAILS); service tokens and any other email are refused even when signature, iss and aud are valid",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h40",
+          "text": "a correctly signed token for the right audience but another email, or of kind service, is refused",
+          "status": "confirmed",
+          "instruction": "tests/test_http_access.py with locally signed tokens"
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c49",
+      "kind": "requirement",
+      "text": "an SSE stream admitted by Access is closed when its token's exp passes, so a revoked session cannot keep reading the transcript",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h41",
+          "text": "an event stream opened with a token expiring in 2 s is closed by the server within one heartbeat after exp",
+          "status": "confirmed",
+          "instruction": "test with an injected clock"
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c50",
+      "kind": "boundary",
+      "text": "the inbox trusts the local Unix account: any process running as the daemon's user can enqueue a batch and it is stamped added_by culture-rules; added_by records the channel, not an authenticated author",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h57",
+          "text": "the inbox directory is 0700 and every queued batch file 0600, owned by the daemon's user, so only that account can enqueue",
+          "status": "confirmed",
+          "instruction": "test the modes the verb creates; stat the inbox in the drain test"
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c51",
+      "kind": "requirement",
+      "text": "semantic recall makes no per-recall embed probe: the embedder's online state comes from the last real embed call and a background re-probe, so a recall costs one query embed plus cached-vector scoring",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h42",
+          "text": "a semantic recall with every candidate cached makes exactly one embed request",
+          "status": "confirmed",
+          "instruction": "counting fake embedder in tests/test_memory.py"
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c52",
+      "kind": "requirement",
+      "text": "semantic recall returns nothing when nothing is relevant: a minimum similarity, calibrated on the labelled set and published with its n, so unrelated memories (above all web-derived newspaper text) are not rendered into every turn",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h43",
+          "text": "an unrelated query returns zero records under the calibrated threshold on the labelled set",
+          "status": "confirmed",
+          "instruction": "measure_recall.py reports the threshold's false-positive and hit rates"
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c53",
+      "kind": "requirement",
+      "text": "every record lacking a cached vector \u2014 the 24 already in Gwen's store, and any written before the cache existed \u2014 is embedded by a bounded background backfill at start; the voice path never embeds an uncached candidate",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h44",
+          "text": "after start against a store with N uncached records, all N gain vectors without a turn waiting on it",
+          "status": "confirmed",
+          "instruction": "test with a fake embedder and a pre-populated store"
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c54",
+      "kind": "requirement",
+      "text": "semantic recall is a configuration switch: keyword+d5 stays shipped as the fallback and as a one-flag rollback, and the recall mode in effect is in status()",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h45",
+          "text": "setting the recall mode back to keyword restores today's behaviour on every existing memory test",
+          "status": "confirmed",
+          "instruction": "uv run pytest tests/test_memory.py with the keyword setting"
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c55",
+      "kind": "requirement",
+      "text": "the spool keeps no second copy of memory text: done/ keeps only a receipt (batch id, record ids, counts, hashes), failed/ keeps the reason and is purged after 7 days, and the vector cache is 0600 under the state dir, never committed, and drops an entry when its record is archived",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h46",
+          "text": "after ingest then forget of a recording, no file under the state dir except the archived store record contains the recording's text or its vector",
+          "status": "confirmed",
+          "instruction": "test: grep the state dir for a sentinel string after forget"
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c56",
+      "kind": "assumption",
+      "text": "culture-rules' runner on Gwen's host runs as the same Unix user that owns the embodiment state dir, so the verb can write the 0700 inbox",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c57",
+      "kind": "decision",
+      "text": "recall runs in the background, off the voice turn's critical path: the turn starts generating without waiting for memory, and recall results arrive as an event \u2014 used by the reply's next sentence, or starting Gwen speaking, or stopping and restarting her (operator decision q8)",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c58",
+      "kind": "decision",
+      "text": "a typed turn at gwen.culture.dev replies in text only, never through the room's speaker, and joins the current session, its transcript log and its summary (operator decision q9)",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c59",
+      "kind": "requirement",
+      "text": "a recall that lands while the reply is still being spoken is used by a second completion for the not-yet-spoken remainder, given the sentences already spoken as context; the first completion's unspoken sentences are dropped, never spliced",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h47",
+          "text": "with a slow fake recall that lands after sentence 1 of 3, sentence 1 plays as generated and sentences 2..n come from a second completion that saw the memory",
+          "status": "confirmed",
+          "instruction": "test in tests/test_daemon_app.py with fake model, voice and recall"
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c60",
+      "kind": "requirement",
+      "text": "a recall that lands after the reply has finished becomes at most one memory follow-up per turn: spoken only if it clears the relevance threshold (c52), only while nobody holds the floor, and only inside a window derived from the measured recall-arrival distribution; otherwise it is dropped and counted",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h48",
+          "text": "a late recall arriving while the operator is speaking, or after the window, produces no audio and increments its own dropped counter",
+          "status": "confirmed",
+          "instruction": "test with an injected clock and a speech_started event"
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c61",
+      "kind": "requirement",
+      "text": "stop-and-restart is reserved for a memory that the already-spoken text is inconsistent with; it uses the same stop_playback path as barge-in and records why it restarted",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h49",
+          "text": "a restart is recorded with a safe reason and never fires while the operator holds the floor",
+          "status": "confirmed",
+          "instruction": "test with fake voice asserting stop_playback then a new speak"
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c62",
+      "kind": "requirement",
+      "text": "background recall is observable: status() counts recalls landed before the first sentence, during the reply, after it (follow-up), and dropped, with the arrival-time distribution; a turn that answered without memory because recall was late is not a degradation, but it is counted",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h50",
+          "text": "every background recall increments exactly one of the four counters",
+          "status": "confirmed",
+          "instruction": "counter test over the four arrival cases"
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c63",
+      "kind": "requirement",
+      "text": "the daemon-initiated follow-up is built as the general 'Gwen speaks without being spoken to' seam that #89 (job results) and #90 (chosen silence) also need, not a recall-only special case; the turn contract's never-silent rule (b4) does not apply to a dropped follow-up",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h51",
+          "text": "the follow-up path has one entry point that a non-recall caller can use in a test",
+          "status": "confirmed",
+          "instruction": "test calling the seam with a synthetic event"
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c64",
+      "kind": "requirement",
+      "text": "a typed turn answers on the page first, and a memory follow-up for it arrives as a later chat message on the same stream, never through the speaker",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h52",
+          "text": "a text turn whose recall lands late shows two messages on the page and plays no audio",
+          "status": "confirmed",
+          "instruction": "vitest on the chat view + daemon test asserting no speak call"
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c65",
+      "kind": "decision",
+      "text": "the speech toggle is deferred; instead the chat front gets a button to speak a message, can upload or record audio, and has a special speech-to-speech button option \u2014 speech-to-speech is a special model and is currently off (operator, 2026-10-23)",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c66",
+      "kind": "non_goal",
+      "text": "a speech on/off toggle for the daemon is deferred: hot mic on start stays as shipped this cycle (operator decision c65)",
+      "origin": "llm",
+      "status": "proposed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c67",
+      "kind": "requirement",
+      "text": "each of Gwen's messages on the chat page has a speak button: the daemon synthesises that message through the gateway's tts lane (/v1/audio/speech) behind a guarded route and returns the audio to the requesting browser, which plays it there \u2014 never through the room's speaker; the audio is never written to disk",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h53",
+          "text": "pressing speak on a message produces audio in the browser and no call to the host endpoint's play()",
+          "status": "confirmed",
+          "instruction": "daemon test with a fake tts and a fake endpoint, plus a vitest on the button"
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c68",
+      "kind": "requirement",
+      "text": "the chat page can record audio in the browser or upload an audio file; the daemon transcribes it in memory through the gateway's stt lane (/v1/audio/transcriptions) and runs the transcript as a typed turn (text reply, c58); raw audio is never written to disk, and the upload is capped in bytes and duration",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h54",
+          "text": "an upload over the cap is refused with 413 before transcription, and no audio byte reaches the state dir on any path",
+          "status": "confirmed",
+          "instruction": "daemon test + a grep of the state dir after an upload"
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c69",
+      "kind": "requirement",
+      "text": "the chat page shows a speech-to-speech button that is disabled, with the reason shown, while the gateway serves no speech-to-speech role; the role is configured by name and never inferred from a model name; turning speech-to-speech on is not in this cycle",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h55",
+          "text": "with no such role in GET /capabilities the button is disabled and says why",
+          "status": "confirmed",
+          "instruction": "vitest with a capabilities fixture"
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c70",
+      "kind": "requirement",
+      "text": "the not-yet list says what voice on the phone now is: recorded or uploaded clips and per-message playback are shipped; live realtime voice from the phone and speech-to-speech stay not-yet, with tests/test_release_docs.py updated to match",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h56",
+          "text": "the release-docs test pins 'phone voice' to the live-realtime meaning and passes",
+          "status": "confirmed",
+          "instruction": "uv run pytest tests/test_release_docs.py"
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
     }
   ],
   "open_vagueness": [
@@ -919,6 +1340,51 @@
       "claim_id": null,
       "resolved": true,
       "resolution": "senses is served from thor through the gateway proxy (the operator is deploying it, 2026-10-23); chat completions cross machines, only the realtime WebSocket must stay local and stt is local; the plan's live acceptance tasks wait until senses reports ready",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v5",
+      "text": "eidetic's own sweep rule archives records older than 365 days or with signal below 0.25; if anyone ever runs 'eidetic sweep' against Gwen's pinned dir, recording facts could be archived by signal decay rather than by forget \u2014 embodiment never calls sweep, so this is residual",
+      "kind": "unknown_nonblocking",
+      "claim_id": null,
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v6",
+      "text": "residual: the pass examined security, latency/failure, migration, reversibility, data-flow, overlooked actors, operations and concurrency lenses, with three cheap probes; it does not establish that no other blind spots remain",
+      "kind": "unknown_nonblocking",
+      "claim_id": null,
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v7",
+      "text": "how often background recall changes what Gwen says is unmeasured: the rate of during-reply re-generations, follow-ups and restarts, and whether follow-ups feel helpful or intrusive in the room, only show up in a live run",
+      "kind": "unknown_nonblocking",
+      "claim_id": null,
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v8",
+      "text": "which audio formats the stt lane accepts is unverified against what browsers record (Chrome and Firefox MediaRecorder produce webm/opus, Safari mp4/aac); a transcode step may be needed, and no dependency is approved for one",
+      "kind": "unknown_nonblocking",
+      "claim_id": null,
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v9",
+      "text": "the speech-to-speech role's name, and what model will serve it, are not known; the button stays disabled until one is advertised",
+      "kind": "follow_up",
+      "claim_id": null,
+      "resolved": false,
+      "resolution": "",
       "resolution_claim_id": null
     }
   ],
@@ -1258,6 +1724,204 @@
       "seeds": [
         "c37"
       ]
+    },
+    {
+      "id": "s43",
+      "surface": "challenge pass / security lens: embodiment/http/guard.py:24-46,529-611",
+      "finding": "the Origin/Sec-Fetch-Site CSRF rule is applied to a cookie credential (REFUSED_COOKIE_WITHOUT_ORIGIN_CODE); c26 replaces the secret with an edge-injected assertion that rides the Access cookie, so the rule must extend to the JWT path",
+      "seeds": [
+        "c47"
+      ]
+    },
+    {
+      "id": "s44",
+      "surface": "challenge pass / security lens: pocketsync/pocketsync/web/server.py:293 + web/access.py:80-92",
+      "finding": "pocketsync calls verifier.verify() and discards the AccessIdentity, so any token valid for the AUD (including a service token) is admitted; the Access app policy is the only identity check \u2014 defence in depth is missing in the code being cited",
+      "seeds": [
+        "c48"
+      ]
+    },
+    {
+      "id": "s45",
+      "surface": "challenge pass / security lens: embodiment/http/server.py:_pump (751-788)",
+      "finding": "the event stream is long-lived and carries transcript; the guard checks once at connect",
+      "seeds": [
+        "c49"
+      ]
+    },
+    {
+      "id": "s46",
+      "surface": "challenge pass / security lens: the spool's trust boundary",
+      "finding": "the verb authenticates nothing beyond filesystem permissions (0700 inbox); the same account already owns the store itself",
+      "seeds": [
+        "c50"
+      ]
+    },
+    {
+      "id": "s47",
+      "surface": "challenge pass / failure-mode lens: embodiment/memory.py:1799,1822-1838 + probe_challenge.py",
+      "finding": "RoomMemory._work calls _probe() \u2014 a full embed round-trip \u2014 before every semantic recall; measured probe ~170 ms + batch 291 ms = 469 ms at N=24, 1128 ms at N=100, 2904 ms at N=400, against a 250 ms deadline: as shipped, semantic recall would time out on every turn and render nothing",
+      "seeds": [
+        "c51"
+      ]
+    },
+    {
+      "id": "s48",
+      "surface": "challenge pass / unstated-assumption lens: gemma2-embed probes",
+      "finding": "unrelated Hebrew pairs score cos 0.663-0.715 and approximate recall always returns top_k; keyword recall was empty when nothing matched \u2014 the frame silently assumed relevance filtering that semantic recall does not have",
+      "seeds": [
+        "c52"
+      ]
+    },
+    {
+      "id": "s49",
+      "surface": "challenge pass / migration lens: ~/.local/state/embodiment/memory/gwen__private.jsonl",
+      "finding": "24 active records (17 explicit-ask, 7 session-summary), 1 archived, all Hebrew, none with a vector; c38 fills the cache only on write",
+      "seeds": [
+        "c53"
+      ]
+    },
+    {
+      "id": "s50",
+      "surface": "challenge pass / reversibility lens: daemon/app.py:697-699 AppConfig.recall_mode",
+      "finding": "recall_mode already exists as config (default keyword); the switch is cheap if kept",
+      "seeds": [
+        "c54"
+      ]
+    },
+    {
+      "id": "s51",
+      "surface": "challenge pass / adjacent-systems lens: gateway gemma2-embed lane (member orin, proxied)",
+      "finding": "every semantic recall becomes a cross-machine call to orin; an orin outage demotes to keyword with a recorded degradation (h27); load on orin from per-turn embeds was not examined",
+      "seeds": [
+        "c54"
+      ]
+    },
+    {
+      "id": "s52",
+      "surface": "challenge pass / data-flow lens: the spool's done/ and failed/ + the vector cache",
+      "finding": "c3 moves applied batches to done/ intact, so a forgotten recording's facts would outlive forget on disk; embeddings of private text are a derived copy of it",
+      "seeds": [
+        "c55"
+      ]
+    },
+    {
+      "id": "s53",
+      "surface": "challenge pass / overlooked-actors lens: embodiment/daemon/app.py run_turn/_run_turn (2143-2235)",
+      "finding": "the one turn path speaks every reply; people in the room are an actor the text chat would affect",
+      "seeds": []
+    },
+    {
+      "id": "s54",
+      "surface": "challenge pass / operations lens: culture-rules deploy/node/install.sh:133-137",
+      "finding": "the culture-rules node is a systemd user unit; the embodiment state dir is 0700 for its owner",
+      "seeds": [
+        "c56"
+      ]
+    },
+    {
+      "id": "s55",
+      "surface": "challenge pass / concurrency lens: memory.py _STORE_LOCK + recall reinforcement",
+      "finding": "recall's reinforcement rewrites the scope file under the same lock the drain takes (h11 covers per-record yield); the background backfill and re-probe are two more lock users \u2014 the plan must bound them the same way",
+      "seeds": []
+    },
+    {
+      "id": "s56",
+      "surface": "challenge pass / unexamined: culture-rules engine retry semantics",
+      "finding": "InvocationResult.failed defaults and step-output referencing were not opened; the verbs' idempotency (h19) is the defence either way",
+      "seeds": []
+    },
+    {
+      "id": "s57",
+      "surface": "challenge pass / unexamined: lobes gateway load and orin capacity",
+      "finding": "not measured: what per-turn embeds do to orin alongside pocketsync's own embeds",
+      "seeds": []
+    },
+    {
+      "id": "s58",
+      "surface": "challenge pass / unexamined: audio/remote.py + BrowserEar",
+      "finding": "not touched by this cycle; the text chat does not use the inbound audio endpoint",
+      "seeds": []
+    },
+    {
+      "id": "s59",
+      "surface": "challenge pass / failure-mode lens: embodiment/daemon/app.py http_complete (960-1010) + voice.py sentence loop",
+      "finding": "generation is one non-streaming completion; voice.py then splits the finished reply into sentences \u2014 'ready for the next sentence' needs a second completion, the current one cannot absorb a late memory",
+      "seeds": [
+        "c59"
+      ]
+    },
+    {
+      "id": "s60",
+      "surface": "challenge pass / overlooked-actors lens: session.py turn queue + barge-in supersede",
+      "finding": "the daemon owns barge-in (speech_started stops playback); a daemon-initiated follow-up is new \u2014 Gwen today only speaks in answer to a transcript",
+      "seeds": [
+        "c60"
+      ]
+    },
+    {
+      "id": "s61",
+      "surface": "challenge pass / reversibility lens: daemon/app.py stop_playback (~3009)",
+      "finding": "barge-in already stops the speaker through one path; a restart can reuse it",
+      "seeds": [
+        "c61"
+      ]
+    },
+    {
+      "id": "s62",
+      "surface": "challenge pass / observability lens: lesson 3 (a counter that increments) + daemon status() recall block",
+      "finding": "the existing recall counters (calls, hits, rendered, empty) assume recall is on the critical path",
+      "seeds": [
+        "c62"
+      ]
+    },
+    {
+      "id": "s63",
+      "surface": "challenge pass / adjacent-systems lens: embodiment#89 + #90 + turn.py never-silent contract",
+      "finding": "#89 needs a result spoken as a later turn; #90 needs chosen silence distinguishable from failed speech; both need a turn nobody spoke to",
+      "seeds": [
+        "c63"
+      ]
+    },
+    {
+      "id": "s64",
+      "surface": "challenge pass / data-flow lens: operator decision c58 + http/server.py SSE reply events",
+      "finding": "text turns are text-only; a late memory needs a channel back to the page, and the event stream already carries reply events",
+      "seeds": [
+        "c64"
+      ]
+    },
+    {
+      "id": "s65",
+      "surface": "challenge pass / adjacent-systems lens: gateway tts lane (/v1/audio/speech, local) + voice.py",
+      "finding": "tts is local and already used by Voice.speak; the new path returns audio to an HTTP caller instead of the endpoint",
+      "seeds": [
+        "c67"
+      ]
+    },
+    {
+      "id": "s66",
+      "surface": "challenge pass / adjacent-systems lens: gateway stt lane (/v1/audio/transcriptions, local)",
+      "finding": "stt offers a file transcription path besides the realtime VAD session, so a recorded clip does not open a second ear \u2014 one active ear holds",
+      "seeds": [
+        "c68"
+      ]
+    },
+    {
+      "id": "s67",
+      "surface": "challenge pass / unexamined-surface lens: gateway GET /capabilities (2026-10-23)",
+      "finding": "no speech-to-speech, realtime-model or s2s role is advertised; only /v1/audio/speech and /v1/audio/transcriptions exist as audio paths",
+      "seeds": [
+        "c69"
+      ]
+    },
+    {
+      "id": "s68",
+      "surface": "challenge pass / docs lens: tests/test_release_docs.py NOT_YET ('phone voice') + README Not yet",
+      "finding": "NOT_YET pins 'phone voice'; the phone gains clip input and playback this cycle, so the entry must be narrowed, not removed",
+      "seeds": [
+        "c70"
+      ]
     }
   ],
   "lapses": [
@@ -1269,6 +1933,18 @@
       "refs": [
         "scratchpad/scope94-embed.sh",
         "scratchpad/scope94-newspaper.sh"
+      ],
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "l2",
+      "code": "assumption-for-measurement",
+      "what": "c38/h33 implied that cached record vectors make semantic recall fit the 0.25 s deadline; the per-recall embed probe (memory.py:1799) and the proxied query-embed round-trip were never counted until the challenge probe measured probe ~170 ms + batch 291 ms = 469 ms at N=24",
+      "skipped_check": "time the full semantic recall path, not one embed call",
+      "refs": [
+        "c38",
+        "scratchpad/recall94/probe_challenge.py"
       ],
       "origin": "llm",
       "status": "approved"

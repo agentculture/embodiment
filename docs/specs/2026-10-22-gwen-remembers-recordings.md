@@ -92,6 +92,60 @@
 - a newspaper issue's items are archived together 30 days after the issue date (operator decision q7)
   - honesty: a newspaper item is returned by recall 29 days after its issue date and not 31 days after
     - instruction: test with an injected clock
+- on the public Host a request admitted by Access JWT alone must also carry an allow-listed Origin or Sec-Fetch-Site: same-origin, because Cloudflare adds the assertion to any request carrying the `CF_Authorization` cookie, cross-site ones included; the guard's CSRF rule today fires only for a cookie-borne install secret
+  - honesty: a cross-site POST to the chat route with a valid assertion and no allow-listed Origin is refused
+    - instruction: test in tests/`test_http_guard.py` with a valid fake assertion and Origin <https://evil.example>
+- the Access verifier admits only an sso identity whose email is on an explicit operator allow-list (`EMBODIMENT_ACCESS_EMAILS`); service tokens and any other email are refused even when signature, iss and aud are valid
+  - honesty: a correctly signed token for the right audience but another email, or of kind service, is refused
+    - instruction: tests/`test_http_access.py` with locally signed tokens
+- an SSE stream admitted by Access is closed when its token's exp passes, so a revoked session cannot keep reading the transcript
+  - honesty: an event stream opened with a token expiring in 2 s is closed by the server within one heartbeat after exp
+    - instruction: test with an injected clock
+- semantic recall makes no per-recall embed probe: the embedder's online state comes from the last real embed call and a background re-probe, so a recall costs one query embed plus cached-vector scoring
+  - honesty: a semantic recall with every candidate cached makes exactly one embed request
+    - instruction: counting fake embedder in tests/`test_memory.py`
+- semantic recall returns nothing when nothing is relevant: a minimum similarity, calibrated on the labelled set and published with its n, so unrelated memories (above all web-derived newspaper text) are not rendered into every turn
+  - honesty: an unrelated query returns zero records under the calibrated threshold on the labelled set
+    - instruction: `measure_recall.py` reports the threshold's false-positive and hit rates
+- every record lacking a cached vector — the 24 already in Gwen's store, and any written before the cache existed — is embedded by a bounded background backfill at start; the voice path never embeds an uncached candidate
+  - honesty: after start against a store with N uncached records, all N gain vectors without a turn waiting on it
+    - instruction: test with a fake embedder and a pre-populated store
+- semantic recall is a configuration switch: keyword+d5 stays shipped as the fallback and as a one-flag rollback, and the recall mode in effect is in status()
+  - honesty: setting the recall mode back to keyword restores today's behaviour on every existing memory test
+    - instruction: uv run pytest tests/`test_memory.py` with the keyword setting
+- the spool keeps no second copy of memory text: done/ keeps only a receipt (batch id, record ids, counts, hashes), failed/ keeps the reason and is purged after 7 days, and the vector cache is 0600 under the state dir, never committed, and drops an entry when its record is archived
+  - honesty: after ingest then forget of a recording, no file under the state dir except the archived store record contains the recording's text or its vector
+    - instruction: test: grep the state dir for a sentinel string after forget
+- a recall that lands while the reply is still being spoken is used by a second completion for the not-yet-spoken remainder, given the sentences already spoken as context; the first completion's unspoken sentences are dropped, never spliced
+  - honesty: with a slow fake recall that lands after sentence 1 of 3, sentence 1 plays as generated and sentences 2..n come from a second completion that saw the memory
+    - instruction: test in tests/`test_daemon_app.py` with fake model, voice and recall
+- a recall that lands after the reply has finished becomes at most one memory follow-up per turn: spoken only if it clears the relevance threshold (c52), only while nobody holds the floor, and only inside a window derived from the measured recall-arrival distribution; otherwise it is dropped and counted
+  - honesty: a late recall arriving while the operator is speaking, or after the window, produces no audio and increments its own dropped counter
+    - instruction: test with an injected clock and a `speech_started` event
+- stop-and-restart is reserved for a memory that the already-spoken text is inconsistent with; it uses the same `stop_playback` path as barge-in and records why it restarted
+  - honesty: a restart is recorded with a safe reason and never fires while the operator holds the floor
+    - instruction: test with fake voice asserting `stop_playback` then a new speak
+- background recall is observable: status() counts recalls landed before the first sentence, during the reply, after it (follow-up), and dropped, with the arrival-time distribution; a turn that answered without memory because recall was late is not a degradation, but it is counted
+  - honesty: every background recall increments exactly one of the four counters
+    - instruction: counter test over the four arrival cases
+- the daemon-initiated follow-up is built as the general 'Gwen speaks without being spoken to' seam that #89 (job results) and #90 (chosen silence) also need, not a recall-only special case; the turn contract's never-silent rule (b4) does not apply to a dropped follow-up
+  - honesty: the follow-up path has one entry point that a non-recall caller can use in a test
+    - instruction: test calling the seam with a synthetic event
+- a typed turn answers on the page first, and a memory follow-up for it arrives as a later chat message on the same stream, never through the speaker
+  - honesty: a text turn whose recall lands late shows two messages on the page and plays no audio
+    - instruction: vitest on the chat view + daemon test asserting no speak call
+- each of Gwen's messages on the chat page has a speak button: the daemon synthesises that message through the gateway's tts lane (/v1/audio/speech) behind a guarded route and returns the audio to the requesting browser, which plays it there — never through the room's speaker; the audio is never written to disk
+  - honesty: pressing speak on a message produces audio in the browser and no call to the host endpoint's play()
+    - instruction: daemon test with a fake tts and a fake endpoint, plus a vitest on the button
+- the chat page can record audio in the browser or upload an audio file; the daemon transcribes it in memory through the gateway's stt lane (/v1/audio/transcriptions) and runs the transcript as a typed turn (text reply, c58); raw audio is never written to disk, and the upload is capped in bytes and duration
+  - honesty: an upload over the cap is refused with 413 before transcription, and no audio byte reaches the state dir on any path
+    - instruction: daemon test + a grep of the state dir after an upload
+- the chat page shows a speech-to-speech button that is disabled, with the reason shown, while the gateway serves no speech-to-speech role; the role is configured by name and never inferred from a model name; turning speech-to-speech on is not in this cycle
+  - honesty: with no such role in GET /capabilities the button is disabled and says why
+    - instruction: vitest with a capabilities fixture
+- the not-yet list says what voice on the phone now is: recorded or uploaded clips and per-message playback are shipped; live realtime voice from the phone and speech-to-speech stay not-yet, with tests/`test_release_docs.py` updated to match
+  - honesty: the release-docs test pins 'phone voice' to the live-realtime meaning and passes
+    - instruction: uv run pytest tests/`test_release_docs.py`
 
 ## Honesty conditions
 
@@ -121,6 +175,8 @@
   - instruction: scratchpad recall94/`measure_recall.py`, then publish under docs/live-test-results/
 - the verifier's tests sign tokens with a locally generated RSA key and a fake JWKS fetch — no network in the suite
   - instruction: uv run pytest tests/`test_http_access.py`
+- the inbox directory is 0700 and every queued batch file 0600, owned by the daemon's user, so only that account can enqueue
+  - instruction: test the modes the verb creates; stat the inbox in the drain test
 
 ## Success signals
 
@@ -133,6 +189,7 @@
 - recalled recording facts are data only: no code path turns recalled text into a tool call, recordings are unreachable by the `forget` tool, and a hostile imperative inside an ingested record provably causes no tool call (test)
 - nothing in this cycle provisions Cloudflare (Access app, tunnel route) or posts to a sibling repo; the tunnel verb prints commands and the operator runs them; 'B is live' goes to pocketsync through the communicate skill with the operator's go-ahead
 - A and B ship as one cycle: one spec, one plan (operator decision q2)
+- the inbox trusts the local Unix account: any process running as the daemon's user can enqueue a batch and it is stamped `added_by` culture-rules; `added_by` records the channel, not an authenticated author
 
 ## Non-goals
 
@@ -149,6 +206,7 @@
 - embeddinggemma-2 takes task prompt names (Retrieval-query / Retrieval-document) and refuses unknown ones with 400; eidetic sends none, so the retrieval quality of the default prompt is unmeasured (agent proposal from the gateway probe)
 - newspaper text is less trusted than a recording: it is a model's summary of arbitrary web pages, so anyone who can publish a page can place text in Gwen's memory; the fence, the no-tool-authority test and the fuzz property cover newspaper records exactly as they cover recordings (agent proposal)
 - culture-rules adds the newspaper's producer side: a rule or a workflow step after render that writes the issue's items as NDJSON to an absolute path and runs the ingest verb on Gwen's host through a runner actor; culture-rules has no file-writing action today (agent proposal)
+- culture-rules' runner on Gwen's host runs as the same Unix user that owns the embodiment state dir, so the verb can write the 0700 inbox
 
 ## Scope exploration
 
@@ -236,11 +294,69 @@
   - seeds: `c36`
 - `s42` — `culture-rules culture_rules/actors/code.py:172-182,282-295`: machine.command runs with stdin=DEVNULL in a throwaway cwd; args are scalar strings bound into a fixed argv — a batch must already exist as a file at an absolute path
   - seeds: `c37`
+- `s43` — `challenge pass / security lens: embodiment/http/guard.py:24-46,529-611`: the Origin/Sec-Fetch-Site CSRF rule is applied to a cookie credential (`REFUSED_COOKIE_WITHOUT_ORIGIN_CODE`); c26 replaces the secret with an edge-injected assertion that rides the Access cookie, so the rule must extend to the JWT path
+  - seeds: `c47`
+- `s44` — `challenge pass / security lens: pocketsync/pocketsync/web/server.py:293 + web/access.py:80-92`: pocketsync calls verifier.verify() and discards the AccessIdentity, so any token valid for the AUD (including a service token) is admitted; the Access app policy is the only identity check — defence in depth is missing in the code being cited
+  - seeds: `c48`
+- `s45` — `challenge pass / security lens: embodiment/http/server.py:_pump (751-788)`: the event stream is long-lived and carries transcript; the guard checks once at connect
+  - seeds: `c49`
+- `s46` — `challenge pass / security lens: the spool's trust boundary`: the verb authenticates nothing beyond filesystem permissions (0700 inbox); the same account already owns the store itself
+  - seeds: `c50`
+- `s47` — `challenge pass / failure-mode lens: embodiment/memory.py:1799,1822-1838 + probe_challenge.py`: RoomMemory.`_work` calls `_probe`() — a full embed round-trip — before every semantic recall; measured probe ~170 ms + batch 291 ms = 469 ms at N=24, 1128 ms at N=100, 2904 ms at N=400, against a 250 ms deadline: as shipped, semantic recall would time out on every turn and render nothing
+  - seeds: `c51`
+- `s48` — `challenge pass / unstated-assumption lens: gemma2-embed probes`: unrelated Hebrew pairs score cos 0.663-0.715 and approximate recall always returns `top_k`; keyword recall was empty when nothing matched — the frame silently assumed relevance filtering that semantic recall does not have
+  - seeds: `c52`
+- `s49` — `challenge pass / migration lens: ~/.local/state/embodiment/memory/gwen__private.jsonl`: 24 active records (17 explicit-ask, 7 session-summary), 1 archived, all Hebrew, none with a vector; c38 fills the cache only on write
+  - seeds: `c53`
+- `s50` — `challenge pass / reversibility lens: daemon/app.py:697-699 AppConfig.recall_mode`: `recall_mode` already exists as config (default keyword); the switch is cheap if kept
+  - seeds: `c54`
+- `s51` — `challenge pass / adjacent-systems lens: gateway gemma2-embed lane (member orin, proxied)`: every semantic recall becomes a cross-machine call to orin; an orin outage demotes to keyword with a recorded degradation (h27); load on orin from per-turn embeds was not examined
+  - seeds: `c54`
+- `s52` — `challenge pass / data-flow lens: the spool's done/ and failed/ + the vector cache`: c3 moves applied batches to done/ intact, so a forgotten recording's facts would outlive forget on disk; embeddings of private text are a derived copy of it
+  - seeds: `c55`
+- `s53` — `challenge pass / overlooked-actors lens: embodiment/daemon/app.py run_turn/_run_turn (2143-2235)`: the one turn path speaks every reply; people in the room are an actor the text chat would affect
+- `s54` — `challenge pass / operations lens: culture-rules deploy/node/install.sh:133-137`: the culture-rules node is a systemd user unit; the embodiment state dir is 0700 for its owner
+  - seeds: `c56`
+- `s55` — `challenge pass / concurrency lens: memory.py _STORE_LOCK + recall reinforcement`: recall's reinforcement rewrites the scope file under the same lock the drain takes (h11 covers per-record yield); the background backfill and re-probe are two more lock users — the plan must bound them the same way
+- `s56` — `challenge pass / unexamined: culture-rules engine retry semantics`: InvocationResult.failed defaults and step-output referencing were not opened; the verbs' idempotency (h19) is the defence either way
+- `s57` — `challenge pass / unexamined: lobes gateway load and orin capacity`: not measured: what per-turn embeds do to orin alongside pocketsync's own embeds
+- `s58` — `challenge pass / unexamined: audio/remote.py + BrowserEar`: not touched by this cycle; the text chat does not use the inbound audio endpoint
+- `s59` — `challenge pass / failure-mode lens: embodiment/daemon/app.py http_complete (960-1010) + voice.py sentence loop`: generation is one non-streaming completion; voice.py then splits the finished reply into sentences — 'ready for the next sentence' needs a second completion, the current one cannot absorb a late memory
+  - seeds: `c59`
+- `s60` — `challenge pass / overlooked-actors lens: session.py turn queue + barge-in supersede`: the daemon owns barge-in (`speech_started` stops playback); a daemon-initiated follow-up is new — Gwen today only speaks in answer to a transcript
+  - seeds: `c60`
+- `s61` — `challenge pass / reversibility lens: daemon/app.py stop_playback (~3009)`: barge-in already stops the speaker through one path; a restart can reuse it
+  - seeds: `c61`
+- `s62` — `challenge pass / observability lens: lesson 3 (a counter that increments) + daemon status() recall block`: the existing recall counters (calls, hits, rendered, empty) assume recall is on the critical path
+  - seeds: `c62`
+- `s63` — `challenge pass / adjacent-systems lens: embodiment#89 + #90 + turn.py never-silent contract`: \#89 needs a result spoken as a later turn; #90 needs chosen silence distinguishable from failed speech; both need a turn nobody spoke to
+  - seeds: `c63`
+- `s64` — `challenge pass / data-flow lens: operator decision c58 + http/server.py SSE reply events`: text turns are text-only; a late memory needs a channel back to the page, and the event stream already carries reply events
+  - seeds: `c64`
+- `s65` — `challenge pass / adjacent-systems lens: gateway tts lane (/v1/audio/speech, local) + voice.py`: tts is local and already used by Voice.speak; the new path returns audio to an HTTP caller instead of the endpoint
+  - seeds: `c67`
+- `s66` — `challenge pass / adjacent-systems lens: gateway stt lane (/v1/audio/transcriptions, local)`: stt offers a file transcription path besides the realtime VAD session, so a recorded clip does not open a second ear — one active ear holds
+  - seeds: `c68`
+- `s67` — `challenge pass / unexamined-surface lens: gateway GET /capabilities (2026-10-23)`: no speech-to-speech, realtime-model or s2s role is advertised; only /v1/audio/speech and /v1/audio/transcriptions exist as audio paths
+  - seeds: `c69`
+- `s68` — `challenge pass / docs lens: tests/test_release_docs.py NOT_YET ('phone voice') + README Not yet`: `NOT_YET` pins 'phone voice'; the phone gains clip input and playback this cycle, so the entry must be narrowed, not removed
+  - seeds: `c70`
+
+## Decisions
+
+- recall runs in the background, off the voice turn's critical path: the turn starts generating without waiting for memory, and recall results arrive as an event — used by the reply's next sentence, or starting Gwen speaking, or stopping and restarting her (operator decision q8)
+- a typed turn at gwen.culture.dev replies in text only, never through the room's speaker, and joins the current session, its transcript log and its summary (operator decision q9)
+- the speech toggle is deferred; instead the chat front gets a button to speak a message, can upload or record audio, and has a special speech-to-speech button option — speech-to-speech is a special model and is currently off (operator, 2026-10-23)
 
 ## Open parks
 
 - [unknown_nonblocking] whether Hebrew recall over distilled recording facts is useful at all is unmeasured: eidetic's \[a-z0-9\]+ tokeniser drops Hebrew, recall falls to the d5 exact-substring fallback, and #92 measured hit rates from 0 of 24 to 31 of 51 on the same store; semantic recall waits on lobes-cli#284
 - [unknown_nonblocking] the text chat runs through the daemon's turn path, so it answers with senses (Gemma 26B, the speaker) where pocketchat answered with the 27B cortex; whether that is the right model for cited text answers is untested
+- [unknown_nonblocking] eidetic's own sweep rule archives records older than 365 days or with signal below 0.25; if anyone ever runs 'eidetic sweep' against Gwen's pinned dir, recording facts could be archived by signal decay rather than by forget — embodiment never calls sweep, so this is residual
+- [unknown_nonblocking] residual: the pass examined security, latency/failure, migration, reversibility, data-flow, overlooked actors, operations and concurrency lenses, with three cheap probes; it does not establish that no other blind spots remain
+- [unknown_nonblocking] how often background recall changes what Gwen says is unmeasured: the rate of during-reply re-generations, follow-ups and restarts, and whether follow-ups feel helpful or intrusive in the room, only show up in a live run
+- [unknown_nonblocking] which audio formats the stt lane accepts is unverified against what browsers record (Chrome and Firefox MediaRecorder produce webm/opus, Safari mp4/aac); a transcode step may be needed, and no dependency is approved for one
+- [follow_up] the speech-to-speech role's name, and what model will serve it, are not known; the button stays disabled until one is advertised
 
 ## Resolved vagueness
 
