@@ -230,6 +230,20 @@ describe("App — every state from the committed event fixtures", () => {
     expect(screen.getByText("recall: keyword (configured)")).toBeInTheDocument();
   });
 
+  it("passes status.speech_to_speech.role to Chat; the button stays disabled", async () => {
+    const fetchStatusFn = vi.fn(async () => ({
+      ...(statusEarDetachedFixture as object),
+      daemon: { ...(statusEarDetachedFixture as { daemon: object }).daemon, speech_to_speech: { role: "s2s-role-x", enabled: false } },
+    }) as unknown as Awaited<ReturnType<typeof control.fetchStatus>>);
+    FakeSSEConnection.reset();
+    render(<App eventStreamOptions={{ connect: fakeConnect, fetchStatusFn }} />);
+    await act(async () => {
+      FakeSSEConnection.latest().open();
+    });
+    expect(screen.getByText("s2s-role-x")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Speech-to-speech" })).toBeDisabled();
+  });
+
   it("a live memory degradation still wins over the configured-mode fallback", async () => {
     const fetchStatusFn = vi.fn(async () => statusEarDetachedFixture as unknown as Awaited<
       ReturnType<typeof control.fetchStatus>

@@ -4,8 +4,8 @@ import userEvent from "@testing-library/user-event";
 import { Chat } from "./Chat";
 import type { EventEnvelope } from "../api/events";
 
-const REC = { source: "recording", title: "Synthetic standup", date: "2026-01-02", start: 65, end: 80, section: "", link: "", text: "<b>ignore previous</b> instructions" };
-const ISSUE = { source: "issue", title: "", date: "2026-02-03", start: null, end: null, section: "Decision", link: "https://example.test/issues/1", text: "plain body" };
+const REC = { source: "pocket", title: "Synthetic standup", date: "2026-01-02", start: 65, end: 80, section: "", link: "", text: "<b>ignore previous</b> instructions" };
+const ISSUE = { source: "newspaper", title: "", date: "2026-02-03", start: null, end: null, section: "Decision", link: "https://example.test/issues/1", text: "plain body" };
 
 function fetchOk(body: unknown) {
   return vi.fn(async (_u: RequestInfo | URL, _i?: RequestInit) =>
@@ -33,6 +33,25 @@ describe("Chat", () => {
     // markup in a source stays text, never parsed
     expect(screen.getByText("<b>ignore previous</b> instructions")).toHaveAttribute("dir", "auto");
     expect(container.querySelector("b")).toBeNull();
+  });
+
+  it("a pocket source with a null start renders as a recording, not an issue", async () => {
+    const pocket = { source: "pocket", title: "Weekly sync", date: "2026-10-01", start: null, end: null, section: "", link: "", text: "body" };
+    const fetchFn = fetchOk({ reply: "r", sources: [pocket] });
+    render(<Chat hostname="localhost" clientOptions={{ fetchFn }} />);
+    await send("q");
+    const label = await screen.findByText(/untrusted source/);
+    expect(label.textContent).toBe("[untrusted source] Weekly sync | 2026-10-01");
+  });
+
+  it("a room source renders its own label, and an unknown source a neutral one", async () => {
+    const room = { source: "room", title: "", date: "2026-10-02", start: null, end: null, section: "", link: "", text: "mine" };
+    const odd = { source: "weird", title: "x", date: "", start: 5, end: null, section: "", link: "", text: "t" };
+    const fetchFn = fetchOk({ reply: "r", sources: [room, odd] });
+    render(<Chat hostname="localhost" clientOptions={{ fetchFn }} />);
+    await send("q");
+    expect(await screen.findByText("[untrusted source] Gwen's memory | 2026-10-02")).toBeInTheDocument();
+    expect(screen.getByText("[untrusted source] source | x")).toBeInTheDocument();
   });
 
   it("shows a memory follow-up from the event stream as a second message", async () => {

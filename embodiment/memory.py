@@ -3311,6 +3311,15 @@ def _neutralise(value: Any) -> str:
     return _CLOSE_RUN.sub(NEUTRALISED_CLOSE, cleaned)
 
 
+def neutralise_source_text(value: Any, limit: int) -> str:
+    """Public face of :func:`_neutralise` for text shown on the page, capped.
+
+    Delegates; it is not a second sanitiser. ``limit`` bounds the *neutralised*
+    text (never the input), so a cap cannot cut a fence mark in half.
+    """
+    return _neutralise(value)[: max(0, int(limit))]
+
+
 def _label(
     value: Any,
     charset: Optional[frozenset[str]],

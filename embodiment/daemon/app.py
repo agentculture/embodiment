@@ -4522,8 +4522,8 @@ def chat_source(record: Any) -> dict[str, Any]:
     try:
         provenance = memory_module.recalled_provenance(record)
         text = record.get("text") if isinstance(record, Mapping) else ""
-        # The ONE sanitiser memory owns (it is private there; see the t16 report).
-        clean = memory_module._neutralise(text)[:SOURCE_TEXT_MAX_CHARS]
+        # memory's one sanitiser, through its public delegate.
+        clean = memory_module.neutralise_source_text(text, SOURCE_TEXT_MAX_CHARS)
     except Exception:  # noqa: BLE001  # a hostile record costs its source, never the turn
         provenance, clean = None, ""
     out: dict[str, Any] = {

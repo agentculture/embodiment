@@ -85,6 +85,9 @@ export interface EventStreamSnapshot {
    *  null until the first completed recall call. Lets the indicator show
    *  what WILL happen rather than a bare "unknown" in that gap. */
   recallConfiguredMode: string | null;
+  /** `status()["speech_to_speech"]["role"]` when the daemon reports one;
+   *  null otherwise. Informational only: s2s is never enabled this cycle. */
+  s2sRole: string | null;
   /**
    * Re-fetch `GET /api/status` and reseed `mic`/`clients`/`recallStatusMode`
    * from it. Called automatically on every successful (re)connect; the
@@ -108,6 +111,7 @@ interface DataState {
   droppedFrames: number;
   recallStatusMode: string | null;
   recallConfiguredMode: string | null;
+  s2sRole: string | null;
 }
 
 const INITIAL_DATA: DataState = {
@@ -121,6 +125,7 @@ const INITIAL_DATA: DataState = {
   droppedFrames: 0,
   recallStatusMode: null,
   recallConfiguredMode: null,
+  s2sRole: null,
 };
 
 type Action =
@@ -132,7 +137,7 @@ type Action =
   | { type: "speech"; envelope: EventEnvelope<"transcript" | "reply">; data: TranscriptData | ReplyData }
   | { type: "degradation"; envelope: EventEnvelope<"degradation">; data: DegradationData }
   | { type: "dropped" }
-  | { type: "recallStatusMode"; mode: string | null; configuredMode: string | null };
+  | { type: "recallStatusMode"; mode: string | null; configuredMode: string | null; s2sRole: string | null };
 
 function reducer(prev: DataState, action: Action): DataState {
   switch (action.type) {
@@ -159,7 +164,7 @@ function reducer(prev: DataState, action: Action): DataState {
     case "dropped":
       return { ...prev, droppedFrames: prev.droppedFrames + 1 };
     case "recallStatusMode":
-      return { ...prev, recallStatusMode: action.mode, recallConfiguredMode: action.configuredMode };
+      return { ...prev, recallStatusMode: action.mode, recallConfiguredMode: action.configuredMode, s2sRole: action.s2sRole };
     default:
       return prev;
   }
@@ -295,6 +300,8 @@ export function useEventStream(
           type: "recallStatusMode",
           mode: daemon.recall?.mode ?? null,
           configuredMode: daemon.recall?.configured_mode ?? null,
+          s2sRole:
+            typeof daemon.speech_to_speech?.role === "string" ? daemon.speech_to_speech.role : null,
         });
       } catch {
         // GET /api/status failing is not fatal to an already-open stream —
@@ -424,6 +431,7 @@ export function useEventStream(
     droppedFrames: data.droppedFrames,
     recallStatusMode: data.recallStatusMode,
     recallConfiguredMode: data.recallConfiguredMode,
+    s2sRole: data.s2sRole,
     refreshStatus,
   };
 }
