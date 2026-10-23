@@ -2121,3 +2121,252 @@ class TestTheClipResponseCarriesItsTurnSerial:
             assert payload["turn_serial"] is None
         finally:
             built.server.shutdown(2.0)
+
+
+# ── task t6: the library and to-do read routes ───────────────────────────────
+
+LIB_ITEM = {"id": 3, "title": "T", "kind": "recording", "created_at": "2026-10-01", "indexed": True}
+LIB_PASSAGE = {
+    "anchor": "p1",
+    "heading": "h",
+    "text": "x",
+    "start_s": 0.0,
+    "end_s": 1.5,
+    "speaker": None,
+}
+LIB_HIT = {
+    "item_id": 3,
+    "title": "T",
+    "kind": "recording",
+    "created_at": "2026-10-01",
+    "anchor": "p1",
+    "text": "x",
+    "score": 0.9,
+    "start_s": None,
+    "end_s": None,
+}
+TODO_GROUP = {
+    "recording_id": "r1",
+    "title": "T",
+    "date": "2026-10-01",
+    "items": [{"text": "call", "created": "2026-10-01"}],
+}
+
+
+def _lib_controls(seen: Optional[list[Any]] = None) -> s.Controls:
+    def note(*args: Any) -> None:
+        if seen is not None:
+            seen.append(args)
+
+    def get(item_id: int) -> Optional[dict[str, Any]]:
+        note("get", item_id)
+        if item_id == 3:
+            return {
+                "item": {**LIB_ITEM, "author": "a"},
+                "passages": [LIB_PASSAGE],
+            }
+        return None
+
+    def search(q: str) -> dict[str, Any]:
+        note("search", q)
+        return {"hits": [LIB_HIT]}
+
+    return s.Controls(
+        library_list=lambda: {"items": [LIB_ITEM]},
+        library_get=get,
+        library_search=search,
+        todos=lambda: {"groups": [TODO_GROUP]},
+    )
+
+
+LIB_PATHS = ("/api/library", "/api/library/3", "/api/library/search?q=hello", "/api/todos")
+
+
+class TestLibraryRoutes:
+    def test_each_route_without_a_secret_on_loopback_is_401(self) -> None:
+        built = build(controls=_lib_controls())
+        try:
+            for path in LIB_PATHS:
+                status, body = built.request("GET", path, hdrs=built.headers(Authorization=None))
+                assert status == 401, path
+                assert b"hello" not in body
+        finally:
+            built.server.shutdown(2.0)
+
+    def test_each_route_with_access_on_the_public_host_is_200(self) -> None:
+        verifier = lambda token: _Asserted(valid=True, expires_at=None)  # noqa: E731
+        built = build(
+            controls=_lib_controls(), public_hostname=PUBLIC_HOST, assertion_verifier=verifier
+        )
+        try:
+            hdrs = built.headers(
+                Host=PUBLIC_HOST, Authorization=None, Cf_Access_Jwt_Assertion="SYNTHETIC-TOKEN"
+            )
+            for path in LIB_PATHS:
+                status, _body = built.request("GET", path, hdrs=hdrs)
+                assert status == 200, path
+        finally:
+            built.server.shutdown(2.0)
+
+    def test_each_route_with_the_secret_answers_the_pinned_shape(self) -> None:
+        built = build(controls=_lib_controls())
+        try:
+            got = {p: built.request("GET", p, hdrs=built.headers()) for p in LIB_PATHS}
+            assert all(status == 200 for status, _ in got.values())
+            body = {p: json.loads(b) for p, (_, b) in got.items()}
+            assert body["/api/library"] == {"items": [LIB_ITEM]}
+            assert body["/api/library/3"] == {
+                "item": {**LIB_ITEM, "author": "a"},
+                "passages": [LIB_PASSAGE],
+            }
+            assert body["/api/library/search?q=hello"] == {"hits": [LIB_HIT]}
+            assert body["/api/todos"] == {"groups": [TODO_GROUP]}
+        finally:
+            built.server.shutdown(2.0)
+
+    def test_the_module_docstring_lists_the_routes(self) -> None:
+        doc = s.__doc__ or ""
+        for route in ("/api/library", "/api/library/{id}", "/api/library/search", "/api/todos"):
+            assert route in doc
+
+    def test_post_is_405(self) -> None:
+        built = build(controls=_lib_controls())
+        try:
+            status, _ = built.request("POST", "/api/library", body=b"{}", hdrs=built.headers())
+            assert status == 405
+        finally:
+            built.server.shutdown(2.0)
+
+
+class TestLibraryParsing:
+    def test_id_and_q_are_decoded_and_passed_as_int_and_str(self) -> None:
+        seen: list[Any] = []
+        built = build(controls=_lib_controls(seen))
+        try:
+            built.request("GET", "/api/library/%33", hdrs=built.headers())
+            built.request("GET", "/api/library/search?q=a%20b+%D7%A9", hdrs=built.headers())
+            assert seen == [("get", 3), ("search", "a b ש")]
+        finally:
+            built.server.shutdown(2.0)
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/api/library/abc",
+            "/api/library/-1",
+            "/api/library/1.5",
+            "/api/library/" + "9" * 40,
+            "/api/library/%FF",
+            "/api/library/search",
+            "/api/library/search?q=",
+            "/api/library/search?q=%20",
+            "/api/library/search?q=%FF",
+            "/api/library/search?q=a&q=b",
+            "/api/library/search?q=" + "a" * (s.LIBRARY_QUERY_MAX_CHARS + 1),
+            "/api/library/search?q=a%00b",
+        ],
+    )
+    def test_bad_input_is_400_with_a_fixed_code(self, path: str) -> None:
+        seen: list[Any] = []
+        built = build(controls=_lib_controls(seen))
+        try:
+            status, body = built.request("GET", path, hdrs=built.headers())
+            assert status == 400
+            assert json.loads(body)["code"] == s.LIBRARY_BAD_REQUEST_CODE
+            assert seen == []
+        finally:
+            built.server.shutdown(2.0)
+
+    def test_an_unknown_id_is_404(self) -> None:
+        built = build(controls=_lib_controls())
+        try:
+            status, body = built.request("GET", "/api/library/99", hdrs=built.headers())
+            assert status == 404
+            assert json.loads(body)["code"] == s.LIBRARY_NOT_FOUND_CODE
+        finally:
+            built.server.shutdown(2.0)
+
+    def test_the_longest_allowed_query_passes(self) -> None:
+        built = build(controls=_lib_controls())
+        try:
+            q = "a" * s.LIBRARY_QUERY_MAX_CHARS
+            status, _ = built.request("GET", f"/api/library/search?q={q}", hdrs=built.headers())
+            assert status == 200
+        finally:
+            built.server.shutdown(2.0)
+
+
+class TestLibraryUnconfigured:
+    @pytest.mark.parametrize(
+        ("path", "code"),
+        [
+            ("/api/library", "library-not-configured"),
+            ("/api/library/3", "library-not-configured"),
+            ("/api/library/search?q=x", "library-not-configured"),
+            ("/api/todos", "memory-unavailable"),
+        ],
+    )
+    def test_an_unbound_callable_is_503_with_its_code(self, path: str, code: str) -> None:
+        built = build()
+        try:
+            status, body = built.request("GET", path, hdrs=built.headers())
+            assert status == 503
+            assert json.loads(body)["code"] == code
+            assert code in built.server.status()["degradation_counts"]
+        finally:
+            built.server.shutdown(2.0)
+
+    def test_a_malformed_answer_is_502_not_passed_through(self) -> None:
+        built = build(controls=s.Controls(library_list=lambda: {"items": "nope"}))
+        try:
+            status, body = built.request("GET", "/api/library", hdrs=built.headers())
+            assert status == 502
+            assert json.loads(body)["code"] == s.LIBRARY_BAD_SHAPE_CODE
+        finally:
+            built.server.shutdown(2.0)
+
+
+class TestLibraryClocks:
+    def test_each_bound_is_derived_and_not_the_control_default(self) -> None:
+        assert s.DEFAULT_LIBRARY_SEARCH_TIMEOUT_S == s.LIBRARY_SEARCH_BOUND_S + s.CONTROL_SLACK_S
+        assert s.DEFAULT_LIBRARY_TIMEOUT_S == s.LIBRARY_READ_BOUND_S + s.CONTROL_SLACK_S
+        assert s.DEFAULT_TODOS_TIMEOUT_S == s.TODOS_READ_BOUND_S + s.CONTROL_SLACK_S
+        for value in (
+            s.DEFAULT_LIBRARY_TIMEOUT_S,
+            s.DEFAULT_LIBRARY_SEARCH_TIMEOUT_S,
+            s.DEFAULT_TODOS_TIMEOUT_S,
+        ):
+            assert value != s.DEFAULT_CONTROL_TIMEOUT_S
+
+    def test_a_slow_read_runs_under_its_own_bound_on_the_text_pool(self) -> None:
+        names: list[str] = []
+
+        def slow() -> dict[str, Any]:
+            names.append(threading.current_thread().name)
+            time.sleep(0.6)
+            return {"items": []}
+
+        # control_timeout_s is tiny: only the library bound can let this through.
+        built = build(
+            controls=s.Controls(library_list=slow),
+            control_timeout_s=0.1,
+            library_timeout_s=3.0,
+        )
+        try:
+            status, _ = built.request("GET", "/api/library", hdrs=built.headers())
+            assert status == 200
+            assert names and "text" in names[0].lower()
+        finally:
+            built.server.shutdown(2.0)
+
+    def test_a_read_past_its_bound_is_a_503_timeout(self) -> None:
+        built = build(
+            controls=s.Controls(todos=lambda: (time.sleep(1.0), {"groups": []})[1]),
+            todos_timeout_s=0.2,
+        )
+        try:
+            status, body = built.request("GET", "/api/todos", hdrs=built.headers())
+            assert status == 503
+            assert json.loads(body)["code"] == s.CONTROL_TIMEOUT_CODE
+        finally:
+            built.server.shutdown(2.0)
