@@ -5447,7 +5447,7 @@ def _t16_harness(harness: Any, **overrides: Any) -> Harness:
 
 
 class TestTheVoiceTurnDoesNotWaitOnRecall:
-    """Criterion 3: the reply starts without memory; recall arrives as an event."""
+    """Criterion 3: the reply never waits past the head start; a later recall is an event (d2)."""
 
     def test_a_reply_is_spoken_while_the_recall_is_still_blocked(self, harness: Any) -> None:
         gate = threading.Event()
@@ -5482,6 +5482,8 @@ class TestTheVoiceTurnDoesNotWaitOnRecall:
         assert events["dropped_reasons"] == {"no-threshold": 1}
 
     def test_a_recall_that_lands_first_reaches_the_reply_prompt(self, harness: Any) -> None:
+        # d2: a recall that lands inside the head start feeds the one and only completion,
+        # instead of forcing a regeneration (two completions before first audio).
         complete = ScriptedComplete(REPLY)
         h = _t16_harness(harness, memory=FakeSemanticMemory([_pocket_record()]), complete=complete)
         h.app.attach_ear("host", FakeEndpoint())
@@ -5489,11 +5491,11 @@ class TestTheVoiceTurnDoesNotWaitOnRecall:
         result = h.app.run_turn(SPEECH)
 
         assert result.spoken == REPLY
-        assert len(complete.prompts) == 2
-        assert POCKET_TEXT not in complete.prompts[0], "the first completion waited on memory"
-        assert POCKET_TEXT in complete.prompts[1]
-        arrivals = h.app.status()["recall_events"]["voice"]["arrivals"]
-        assert arrivals["before_first_sentence"] == 1
+        assert len(complete.prompts) == 1, "a recall inside the head start cost a second completion"
+        assert POCKET_TEXT in complete.prompts[0]
+        events = h.app.status()["recall_events"]["voice"]
+        assert events["arrivals"]["before_first_sentence"] == 1
+        assert events["head_start_hits"] == 1
         timing = h.app.status()["turns"]["recent"][-1]
         assert timing["rendered_ids"] == ["pocket.rec0.fact.0"]
 
