@@ -33,7 +33,10 @@ const NOOP_STATUS_FN = async () => ({ daemon: null }) as unknown as Awaited<
   ReturnType<typeof import("./api/control").fetchStatus>
 >;
 
-function renderApp(waveformOptions?: AppProps["waveformOptions"]) {
+function renderApp(
+  waveformOptions?: AppProps["waveformOptions"],
+  { drawer = true }: { drawer?: boolean } = {},
+) {
   FakeSSEConnection.reset();
   render(
     <App
@@ -41,7 +44,30 @@ function renderApp(waveformOptions?: AppProps["waveformOptions"]) {
       waveformOptions={waveformOptions}
     />,
   );
+  if (drawer) openStatusDrawer();
   return FakeSSEConnection.latest();
+}
+
+/** The status drawer (voice controls, recall mode, degradations) is
+ *  collapsed by default (t12, decision c2): tests that drive those
+ *  controls open it first, the way the operator would. */
+function openStatusDrawer() {
+  const toggle = screen.getByRole("button", { name: /status/i });
+  if (toggle.getAttribute("aria-expanded") !== "true") fireEvent.click(toggle);
+}
+
+/** The install-secret form appears only on an unauthorized stream (t12
+ *  AC2): an error before the first open is what the hook reads as
+ *  "refused". */
+function refuseStream() {
+  act(() => FakeSSEConnection.latest().error());
+}
+
+/** Type and apply an install secret through the (unauthorized-only) form. */
+function applySecretViaForm(value: string) {
+  refuseStream();
+  fireEvent.change(screen.getByLabelText("install secret"), { target: { value } });
+  fireEvent.click(screen.getByRole("button", { name: "Apply" }));
 }
 
 /** Task t18: the oscilloscope's canvas draw loop, made observable under
@@ -306,12 +332,26 @@ describe("App — every state from the committed event fixtures", () => {
     expect(screen.getByRole("status")).toHaveAttribute("data-status", "disconnected");
   });
 
-  it("shows every panel's heading regardless of stream state", () => {
-    renderApp();
-    expect(screen.getByRole("heading", { name: "Voice" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Waveform" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Transcript" })).toBeInTheDocument();
-    expect(screen.getByRole("heading", { name: "Degradations" })).toBeInTheDocument();
+  it("keeps Voice, recall mode and degradations in a status drawer that starts collapsed", () => {
+    renderApp(undefined, { drawer: false });
+    const toggle = screen.getByRole("button", { name: /status/i });
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    const drawer = document.getElementById(toggle.getAttribute("aria-controls") ?? "");
+    expect(drawer).not.toBeNull();
+    expect(drawer).toHaveAttribute("hidden");
+    // collapsed: the voice controls are not reachable by role
+    expect(screen.queryByRole("button", { name: "Start voice" })).toBeNull();
+
+    fireEvent.click(toggle);
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
+    expect(drawer).not.toHaveAttribute("hidden");
+    const inDrawer = within(drawer as HTMLElement);
+    expect(inDrawer.getByRole("heading", { name: "Voice" })).toBeInTheDocument();
+    expect(inDrawer.getByRole("button", { name: "Start voice" })).toBeInTheDocument();
+    expect(inDrawer.getByText(/recall: unknown/)).toBeInTheDocument();
+    expect(inDrawer.getByRole("heading", { name: "Degradations" })).toBeInTheDocument();
+    // the waveform is NOT in the drawer: it is the compact strip under the bar
+    expect((drawer as HTMLElement).querySelector("canvas.waveform")).toBeNull();
   });
 
   it("survives an attack transcript frame: NUL bytes, bidi override chars, a 10k-char string, and the module's own delimiters", () => {
@@ -384,10 +424,7 @@ describe("App — every state from the committed event fixtures", () => {
     // No secret was ever applied yet -- no Authorization header at all.
     expect(FakeSSEConnection.instances[0].headers.Authorization).toBeUndefined();
 
-    fireEvent.change(screen.getByLabelText("install secret"), {
-      target: { value: "s3cr3t-value" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    applySecretViaForm("s3cr3t-value");
 
     // A NEW connection was opened -- the only "reconnect now" this
     // transport supports is close the old one and open a new one.
@@ -398,20 +435,14 @@ describe("App — every state from the committed event fixtures", () => {
   it("never writes document.cookie when the secret is applied (round 4: one credential path)", () => {
     renderApp();
     const before = document.cookie;
-    fireEvent.change(screen.getByLabelText("install secret"), {
-      target: { value: "s3cr3t-value" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    applySecretViaForm("s3cr3t-value");
     expect(document.cookie).toBe(before);
     expect(document.cookie).not.toContain("embodiment_secret");
   });
 
   it("persists the applied secret to sessionStorage, not localStorage", () => {
     renderApp();
-    fireEvent.change(screen.getByLabelText("install secret"), {
-      target: { value: "s3cr3t-value" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+    applySecretViaForm("s3cr3t-value");
     expect(sessionStorage.getItem("embodiment.installSecret")).toBe("s3cr3t-value");
     expect(localStorage.getItem("embodiment.installSecret")).toBeNull();
   });
@@ -435,15 +466,13 @@ describe("App — every state from the committed event fixtures", () => {
       const startSpy = vi.spyOn(control, "startVoice").mockResolvedValue(
         new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 }),
       );
-      const source = renderApp();
-      act(() => source.open());
+      renderApp();
 
-      fireEvent.change(screen.getByLabelText("install secret"), {
-        target: { value: "s3cr3t-applied" },
-      });
-      fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+      applySecretViaForm("s3cr3t-applied");
 
-      // type something ELSE afterwards, but never click Apply again
+      // type something ELSE afterwards, but never click Apply again (the
+      // reconnect is refused again, so the form is back on screen)
+      refuseStream();
       fireEvent.change(screen.getByLabelText("install secret"), {
         target: { value: "something-else-never-applied" },
       });
@@ -460,13 +489,13 @@ describe("App — every state from the committed event fixtures", () => {
       const muteSpy = vi.spyOn(control, "setMicMute").mockResolvedValue(
         new Response(JSON.stringify({ ok: true, result: {} }), { status: 200 }),
       );
-      const source = renderApp();
+      renderApp();
+      applySecretViaForm("s3cr3t-x");
+      const source = FakeSSEConnection.latest();
       act(() => {
         source.open();
         source.emit("mic", micFixture); // hot: true -> Mute mic
       });
-      fireEvent.change(screen.getByLabelText("install secret"), { target: { value: "s3cr3t-x" } });
-      fireEvent.click(screen.getByRole("button", { name: "Apply" }));
 
       await act(async () => {
         fireEvent.click(screen.getByRole("button", { name: "Mute mic" }));
@@ -570,6 +599,7 @@ describe("App — every state from the committed event fixtures", () => {
       render(
         <App eventStreamOptions={{ connect: fakeConnect, fetchStatusFn }} />,
       );
+      openStatusDrawer();
       const source = FakeSSEConnection.latest();
       act(() => source.open());
       fetchStatusFn.mockClear(); // ignore the connect-time seed call
@@ -591,8 +621,7 @@ describe("App — every state from the committed event fixtures", () => {
         ),
       );
       renderApp();
-      fireEvent.change(screen.getByLabelText("install secret"), { target: { value: "s3cr3t-value" } });
-      fireEvent.click(screen.getByRole("button", { name: "Apply" }));
+      applySecretViaForm("s3cr3t-value");
 
       await act(async () => {
         fireEvent.click(screen.getByRole("button", { name: "Start voice" }));
@@ -663,11 +692,103 @@ describe("App — every state from the committed event fixtures", () => {
     expect(line.textContent).toContain(hebrewText);
   });
 
-  it("renders the waveform as the first panel after the header (centrepiece)", () => {
-    renderApp();
-    const panels = document.querySelectorAll(".panel");
-    expect(panels.length).toBeGreaterThan(0);
-    expect(panels[0].querySelector("canvas.waveform")).not.toBeNull();
+  // t12 AC1 (decision c2 supersedes obligation o9): the top bar carries
+  // brand, health pill and the Ask/Library/To-dos nav; the Ask view is the
+  // first view; the waveform is a compact strip, never the hero.
+  it("pins the chat-first order: top bar (brand, health, nav), then the Ask view, waveform a strip", () => {
+    renderApp(undefined, { drawer: false });
+    const bar = screen.getByRole("banner");
+    const brand = within(bar).getByRole("link", { name: /gwen/i });
+    const health = within(bar).getByRole("status");
+    const nav = within(bar).getByRole("navigation", { name: "Views" });
+    const links = within(nav).getAllByRole("link");
+    expect(links.map((a) => a.textContent)).toEqual(["Ask", "Library", "To-dos"]);
+    expect(links.map((a) => a.getAttribute("href"))).toEqual(["#ask", "#library", "#todos"]);
+    expect(brand.getAttribute("href")).toBe("#ask");
+    expect(health).toHaveAttribute("data-status", "connecting");
+
+    const main = screen.getByRole("main");
+    // the bar precedes main; the Ask view is the first (and current) view
+    expect(bar.compareDocumentPosition(main) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+    const views = main.querySelectorAll("[data-view]");
+    expect(views[0].getAttribute("data-view")).toBe("ask");
+    expect(views[0]).not.toHaveAttribute("hidden");
+    expect(within(nav).getByRole("link", { name: "Ask" })).toHaveAttribute("aria-current", "page");
+    // the composer (with voice-as-a-feature buttons) lives in the Ask view
+    const ask = views[0] as HTMLElement;
+    expect(within(ask).getByRole("form", { name: "composer" })).toBeInTheDocument();
+    expect(within(ask).getByRole("button", { name: "Speech-to-speech" })).toBeInTheDocument();
+
+    // the waveform is a compact strip outside main, never inside the views
+    const canvas = document.querySelector("canvas.waveform") as HTMLElement;
+    expect(canvas).not.toBeNull();
+    expect(main.contains(canvas)).toBe(false);
+    expect(canvas.closest(".strip")).not.toBeNull();
+    // the old full-width centrepiece panel is gone
+    expect(document.querySelector(".panel--waveform")).toBeNull();
+  });
+
+  it("switches views by hash nav: Library and To-dos replace Ask, Ask comes back", async () => {
+    const fetchFn = vi.fn(async (url: RequestInfo | URL) => {
+      const u = String(url);
+      if (u.endsWith("/api/library")) return new Response(JSON.stringify({ items: [] }), { status: 200 });
+      if (u.endsWith("/api/todos")) return new Response(JSON.stringify({ groups: [] }), { status: 200 });
+      return new Response("{}", { status: 404 });
+    });
+    const originalFetch = globalThis.fetch;
+    globalThis.fetch = fetchFn as unknown as typeof fetch;
+    try {
+      renderApp(undefined, { drawer: false });
+      const nav = screen.getByRole("navigation", { name: "Views" });
+      await act(async () => {
+        fireEvent.click(within(nav).getByRole("link", { name: "Library" }));
+      });
+      expect(within(nav).getByRole("link", { name: "Library" })).toHaveAttribute("aria-current", "page");
+      expect(screen.getByRole("region", { name: "Library" })).toBeInTheDocument();
+      expect(document.querySelector('[data-view="ask"]')).toHaveAttribute("hidden");
+
+      await act(async () => {
+        fireEvent.click(within(nav).getByRole("link", { name: "To-dos" }));
+      });
+      expect(screen.getByRole("region", { name: "to-dos" })).toBeInTheDocument();
+      expect(screen.queryByRole("region", { name: "Library" })).toBeNull();
+
+      await act(async () => {
+        fireEvent.click(within(nav).getByRole("link", { name: "Ask" }));
+      });
+      expect(document.querySelector('[data-view="ask"]')).not.toHaveAttribute("hidden");
+    } finally {
+      globalThis.fetch = originalFetch;
+      window.location.hash = "";
+    }
+  });
+
+  it("shows the install-secret form only while the stream is unauthorized", () => {
+    const source = renderApp(undefined, { drawer: false });
+    // connecting: no form
+    expect(screen.queryByLabelText("install secret")).toBeNull();
+    // the open drawer does not carry it either
+    openStatusDrawer();
+    expect(screen.queryByLabelText("install secret")).toBeNull();
+    act(() => source.open());
+    expect(screen.queryByLabelText("install secret")).toBeNull();
+  });
+
+  it("shows the install-secret form when the stream is refused before it ever opened", () => {
+    renderApp(undefined, { drawer: false });
+    refuseStream();
+    expect(screen.getByRole("status")).toHaveAttribute("data-status", "unauthorized");
+    expect(screen.getByLabelText("install secret")).toBeInTheDocument();
+  });
+
+  it("does not show the install-secret form on a plain disconnect after a successful open", () => {
+    const source = renderApp(undefined, { drawer: false });
+    act(() => {
+      source.open();
+      source.error();
+    });
+    expect(screen.getByRole("status")).toHaveAttribute("data-status", "disconnected");
+    expect(screen.queryByLabelText("install secret")).toBeNull();
   });
 
   it("renders all fixtures together end to end without throwing", () => {
@@ -708,5 +829,120 @@ describe("App — every state from the committed event fixtures", () => {
         new RegExp(degradationFixture.data.reason),
       ),
     ).toBeInTheDocument();
+  });
+});
+
+// t12 AC1 + AC2: on the public Host a Cloudflare Access session carries the
+// credential (a same-origin cookie the browser sends; nothing the page holds),
+// so the page must load, chat and open the reader at a citation with no
+// install secret ever entered. The fake below answers every route without
+// demanding an Authorization header, and records each request's headers so
+// the test can prove none was sent.
+describe("App — a public-host session with no secret (Access), end to end", () => {
+  const LIB_SOURCE = {
+    source: "library",
+    title: "Daily newspaper",
+    date: "2026-10-23",
+    start: null,
+    end: null,
+    section: "",
+    link: "",
+    text: "Jetson news, quoted",
+    item_id: "12",
+    anchor: "p-2",
+  };
+  const DOC = {
+    item: { id: "12", title: "Daily newspaper", kind: "article", author: "", created_at: "2026-10-23T06:00:00Z" },
+    passages: [
+      { anchor: "p-1", heading: "Jobs", text: "first passage", start_s: null, end_s: null, speaker: "" },
+      { anchor: "p-2", heading: "Jetson news", text: "the cited passage", start_s: null, end_s: null, speaker: "" },
+    ],
+  };
+  let originalFetch: typeof fetch;
+  let requests: { url: string; headers: Record<string, string> }[];
+
+  beforeEach(() => {
+    sessionStorage.clear();
+    requests = [];
+    originalFetch = globalThis.fetch;
+    globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = String(url);
+      requests.push({ url: u, headers: { ...((init?.headers as Record<string, string>) ?? {}) } });
+      if (u.endsWith("/api/chat")) {
+        return new Response(
+          JSON.stringify({ reply: "From the paper [1].", sources: [LIB_SOURCE], turn_serial: 1 }),
+          { status: 200 },
+        );
+      }
+      if (u.endsWith("/api/library/12")) return new Response(JSON.stringify(DOC), { status: 200 });
+      return new Response(JSON.stringify({ error: { code: "not-found" } }), { status: 404 });
+    }) as typeof fetch;
+  });
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    window.location.hash = "";
+  });
+
+  it("loads, chats and opens the reader at the cited passage with no secret entered", async () => {
+    const source = renderApp(undefined, { drawer: false });
+    act(() => source.open());
+    expect(source.headers.Authorization).toBeUndefined();
+    expect(screen.getByRole("status")).toHaveAttribute("data-status", "connected");
+    expect(screen.queryByLabelText("install secret")).toBeNull();
+
+    fireEvent.change(screen.getByLabelText("message"), { target: { value: "what is new on Jetson?" } });
+    await act(async () => {
+      fireEvent.submit(screen.getByRole("form", { name: "composer" }));
+    });
+    const cite = await screen.findByRole("button", { name: /Open source 1/ });
+    await act(async () => {
+      fireEvent.click(cite);
+    });
+
+    const reader = await screen.findByRole("complementary", { name: "Reader" });
+    const cited = await within(reader).findByText("the cited passage");
+    expect(cited.closest("li")).toHaveAttribute("aria-current", "true");
+    expect(within(reader).getByText("first passage").closest("li")).not.toHaveAttribute("aria-current");
+
+    // no request carried a credential, and the form never appeared
+    expect(requests.map((r) => r.url)).toEqual(expect.arrayContaining(["/api/chat", "/api/library/12"]));
+    for (const r of requests) expect(r.headers.Authorization).toBeUndefined();
+    expect(screen.queryByLabelText("install secret")).toBeNull();
+  });
+
+  it("a second citation to the open item moves the reader to the new anchor; Close dismisses it", async () => {
+    globalThis.fetch = (async (url: RequestInfo | URL) => {
+      const u = String(url);
+      if (u.endsWith("/api/chat")) {
+        return new Response(
+          JSON.stringify({
+            reply: "See [1] and [2].",
+            sources: [LIB_SOURCE, { ...LIB_SOURCE, anchor: "p-1", text: "other" }],
+            turn_serial: 1,
+          }),
+          { status: 200 },
+        );
+      }
+      if (u.endsWith("/api/library/12")) return new Response(JSON.stringify(DOC), { status: 200 });
+      return new Response("{}", { status: 404 });
+    }) as typeof fetch;
+    const source = renderApp(undefined, { drawer: false });
+    act(() => source.open());
+    fireEvent.change(screen.getByLabelText("message"), { target: { value: "q" } });
+    await act(async () => {
+      fireEvent.submit(screen.getByRole("form", { name: "composer" }));
+    });
+    await act(async () => {
+      fireEvent.click(await screen.findByRole("button", { name: /Open source 1/ }));
+    });
+    const reader = await screen.findByRole("complementary", { name: "Reader" });
+    await within(reader).findByText("the cited passage");
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /Open source 2/ }));
+    });
+    expect(within(reader).getByText("first passage").closest("li")).toHaveAttribute("aria-current", "true");
+    fireEvent.click(within(reader).getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("complementary", { name: "Reader" })).toBeNull();
   });
 });
