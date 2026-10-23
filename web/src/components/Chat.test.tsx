@@ -22,7 +22,7 @@ async function send(text: string) {
 describe("Chat", () => {
   it("posts a message; reply and sources render as dir=auto text nodes with provenance, fenced untrusted", async () => {
     const fetchFn = fetchOk({ reply: "שלום answer", sources: [REC, ISSUE] });
-    const { container } = render(<Chat secret="k" hostname="localhost" clientOptions={{ fetchFn }} />);
+    const { container } = render(<Chat secret="k" clientOptions={{ fetchFn }} />);
     await send("what happened");
     expect(await screen.findByText(/שלום answer/)).toHaveAttribute("dir", "auto");
     expect(fetchFn.mock.calls[0][0]).toBe("/api/chat");
@@ -38,7 +38,7 @@ describe("Chat", () => {
   it("a pocket source with a null start renders as a recording, not an issue", async () => {
     const pocket = { source: "pocket", title: "Weekly sync", date: "2026-10-01", start: null, end: null, section: "", link: "", text: "body" };
     const fetchFn = fetchOk({ reply: "r", sources: [pocket] });
-    render(<Chat hostname="localhost" clientOptions={{ fetchFn }} />);
+    render(<Chat clientOptions={{ fetchFn }} />);
     await send("q");
     const label = await screen.findByText(/untrusted source/);
     expect(label.textContent).toBe("[untrusted source] Weekly sync | 2026-10-01");
@@ -48,7 +48,7 @@ describe("Chat", () => {
     const room = { source: "room", title: "", date: "2026-10-02", start: null, end: null, section: "", link: "", text: "mine" };
     const odd = { source: "weird", title: "x", date: "", start: 5, end: null, section: "", link: "", text: "t" };
     const fetchFn = fetchOk({ reply: "r", sources: [room, odd] });
-    render(<Chat hostname="localhost" clientOptions={{ fetchFn }} />);
+    render(<Chat clientOptions={{ fetchFn }} />);
     await send("q");
     expect(await screen.findByText("[untrusted source] Gwen's memory | 2026-10-02")).toBeInTheDocument();
     expect(screen.getByText("[untrusted source] source | x")).toBeInTheDocument();
@@ -56,26 +56,44 @@ describe("Chat", () => {
 
   it("shows a memory follow-up from the event stream as a second message", async () => {
     const fetchFn = fetchOk({ reply: "first", sources: [], turn_serial: 7 });
-    const { rerender } = render(<Chat hostname="localhost" replyEvents={[reply(1, 3, "old")]} clientOptions={{ fetchFn }} />);
+    const { rerender } = render(<Chat replyEvents={[reply(1, 3, "old")]} clientOptions={{ fetchFn }} />);
     await send("remember x");
     await screen.findByText(/first/);
-    rerender(<Chat hostname="localhost" replyEvents={[reply(1, 3, "old"), reply(2, 7, "I stored that")]} clientOptions={{ fetchFn }} />);
+    rerender(<Chat replyEvents={[reply(1, 3, "old"), reply(2, 7, "I stored that")]} clientOptions={{ fetchFn }} />);
     expect(await screen.findByText(/I stored that/)).toHaveAttribute("dir", "auto");
     expect(screen.queryByText(/old/)).toBeNull();
   });
 
-  it("on the public Host never asks for or sends the install secret", async () => {
+  it("sends the held secret whatever the page host is", async () => {
     const fetchFn = fetchOk({ reply: "ok", sources: [] });
-    render(<Chat secret="should-not-send" hostname="gwen.example.dev" clientOptions={{ fetchFn }} />);
-    expect(screen.queryByLabelText(/secret/i)).toBeNull();
+    render(<Chat secret="held" clientOptions={{ fetchFn }} />);
+    await send("hi");
+    await screen.findByText(/ok/);
+    expect((fetchFn.mock.calls[0][1]?.headers as Record<string, string>).Authorization).toBe("Bearer held");
+  });
+
+  it("sends no Authorization header when no secret is held (Access admits the public Host)", async () => {
+    const fetchFn = fetchOk({ reply: "ok", sources: [] });
+    render(<Chat clientOptions={{ fetchFn }} />);
     await send("hi");
     await screen.findByText(/ok/);
     expect((fetchFn.mock.calls[0][1]?.headers as Record<string, string>).Authorization).toBeUndefined();
   });
 
+  it("a clip's turn serial gates follow-ups like a typed turn's", async () => {
+    const fetchFn = fetchOk({ ok: true, transcript: "t", reply: "clip answer", turn_serial: 9 });
+    const opts = { fetchFn };
+    const { rerender } = render(<Chat replyEvents={[reply(1, 3, "old")]} clientOptions={opts} />);
+    await userEvent.upload(screen.getByLabelText(/upload audio/i), new File(["abc"], "c.ogg", { type: "audio/ogg" }));
+    await screen.findByText(/clip answer/);
+    rerender(<Chat replyEvents={[reply(1, 3, "old"), reply(2, 9, "clip follow"), reply(3, 4, "other turn")]} clientOptions={opts} />);
+    expect(await screen.findByText(/clip follow/)).toBeInTheDocument();
+    expect(screen.queryByText(/other turn/)).toBeNull();
+  });
+
   it("records a visible degradation when the post fails", async () => {
     const fetchFn = vi.fn(async () => { throw new Error("down"); });
-    render(<Chat hostname="localhost" clientOptions={{ fetchFn: fetchFn as unknown as typeof fetch }} />);
+    render(<Chat clientOptions={{ fetchFn: fetchFn as unknown as typeof fetch }} />);
     await send("hi");
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("network-error"));
   });

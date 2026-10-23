@@ -19,6 +19,8 @@ export const RECORD_LIMIT_MS = (MAX_CLIP_SECONDS - 1) * 1000;
 export interface ClipReply {
   transcript: string;
   reply: string;
+  /** Serial of the turn the clip started, when the daemon reports one. */
+  turnSerial?: number | null;
 }
 
 /** Plays /api/speak audio for one message. Failures show as role=alert. */
@@ -94,7 +96,7 @@ export function AudioControls({ secret, onReply, clientOptions, s2sRole }: Audio
     const out = await postClip(clip, secret, clientOptions, durationS);
     if (out.ok) {
       setError(null);
-      onReply({ transcript: out.transcript, reply: out.reply });
+      onReply({ transcript: out.transcript, reply: out.reply, turnSerial: out.turnSerial });
     } else {
       setError(out.code);
     }

@@ -28,7 +28,7 @@ describe("postClip", () => {
     const fetchFn = vi.fn(async (_u: RequestInfo | URL, _i?: RequestInit) => resp(200, { ok: true, transcript: "t", reply: "r", code: "" }));
     const blob = new Blob(["abc"], { type: "audio/webm;codecs=opus" });
     const out = await postClip(blob, "k", { fetchFn }, 3.5);
-    expect(out).toEqual({ ok: true, transcript: "t", reply: "r" });
+    expect(out).toEqual({ ok: true, transcript: "t", reply: "r", turnSerial: null });
     const [url, init] = fetchFn.mock.calls[0];
     expect(url).toBe("/api/clip");
     expect(init?.body).toBe(blob);
@@ -37,7 +37,7 @@ describe("postClip", () => {
     expect(h["X-Clip-Duration-S"]).toBe("3.5");
   });
   it("omits duration and secret when absent", async () => {
-    const fetchFn = vi.fn(async (_u: RequestInfo | URL, _i?: RequestInit) => resp(200, { ok: true, transcript: "t", reply: "r" }));
+    const fetchFn = vi.fn(async (_u: RequestInfo | URL, _i?: RequestInit) => resp(200, { ok: true, transcript: "t", reply: "r", turnSerial: null }));
     await postClip(new Blob(["a"], { type: "audio/ogg" }), "", { fetchFn });
     const h = fetchFn.mock.calls[0][1]?.headers as Record<string, string>;
     expect(h["X-Clip-Duration-S"]).toBeUndefined();

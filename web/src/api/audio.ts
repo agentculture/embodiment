@@ -15,7 +15,7 @@ export interface AudioClientOptions {
 
 export type SpeakOutcome = { ok: true; blob: Blob } | { ok: false; code: string };
 export type ClipOutcome =
-  | { ok: true; transcript: string; reply: string }
+  | { ok: true; transcript: string; reply: string; turnSerial: number | null }
   | { ok: false; code: string; status: number };
 
 function authHeaders(secret: string, base: Record<string, string>): Record<string, string> {
@@ -97,5 +97,10 @@ export async function postClip(
   if (!o || typeof o.reply !== "string") {
     return { ok: false, code: "unparseable-response", status: response.status };
   }
-  return { ok: true, transcript: typeof o.transcript === "string" ? o.transcript : "", reply: o.reply };
+  return {
+    ok: true,
+    transcript: typeof o.transcript === "string" ? o.transcript : "",
+    reply: o.reply,
+    turnSerial: typeof o.turn_serial === "number" ? o.turn_serial : null,
+  };
 }
