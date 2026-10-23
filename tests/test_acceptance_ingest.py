@@ -79,7 +79,7 @@ from embodiment.http import access
 from embodiment.http import guard as guard_module
 from embodiment.http import server as server_module
 from embodiment.ingest.spool import Spool
-from embodiment.memory import RoomMemory
+from embodiment.memory import RoomMemory, SemanticRecall
 from embodiment.voice import Voice, VoiceConfig
 from tests.test_daemon_app import FakeEars, FakeEndpoint, _sync_spawn
 from tests.test_http_access import AUD, NOW, OPERATOR, TEAM, claims, jwks, token
@@ -161,9 +161,9 @@ class Rig:
             scope="gwen",
             added_by="gwen",
             ingest_scope=mem.INGEST_SCOPE,
-            embedder=self.embedder,
-            vector_cache=self.cache,
-            similarity_threshold=0.3,
+            semantic=SemanticRecall(
+                embedder=self.embedder, vector_cache=self.cache, similarity_threshold=0.3
+            ),
         )
         self.drain = Drain(Spool.for_state_dir(self.state_dir), self.memory)
         self.bus = Bus()

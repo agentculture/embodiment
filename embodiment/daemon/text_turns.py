@@ -120,6 +120,7 @@ TRANSCRIPTION_ROUTE = "/v1/audio/transcriptions"
 #: call**: matches :data:`embodiment.voice.MAX_REPLY_CHARS`, the longest text
 #: this package already treats as sane; bounds prompt size against a paste.
 MAX_TEXT_CHARS = 4000
+WAV_MIME = "audio/wav"
 
 #: Bounds an uploaded clip's duration, in seconds. A **judgement call** on what a
 #: clip is for — a spoken question or a short memo, not a recording session —
@@ -245,7 +246,7 @@ class SpeakResult:
 
     ok: bool
     audio: bytes = b""
-    content_type: str = "audio/wav"
+    content_type: str = WAV_MIME
     sentences: int = 0
     truncated: bool = False
     code: str = ""
@@ -319,9 +320,9 @@ def probe_clip(data: bytes) -> ClipProbe:
     try:
         if data[:4] == b"RIFF" and data[8:12] == b"WAVE":
             try:
-                return ClipProbe("wav", "audio/wav", "wav", _probe_wav(data))
+                return ClipProbe("wav", WAV_MIME, "wav", _probe_wav(data))
             except (wave.Error, EOFError, ZeroDivisionError, struct.error):
-                return ClipProbe("wav", "audio/wav", "wav", None, unreadable=True)
+                return ClipProbe("wav", WAV_MIME, "wav", None, unreadable=True)
         if data[:4] == b"OggS":
             return ClipProbe("ogg", "audio/ogg", "ogg", _probe_ogg(data))
         if data[:4] == b"\x1a\x45\xdf\xa3":
@@ -369,8 +370,7 @@ def _multipart(fields: dict[str, str], filename: str, content_type: str, audio: 
             f'filename="{filename}"\r\nContent-Type: {content_type}\r\n\r\n'
         ).encode()
     )
-    parts.append(audio)
-    parts.append(f"\r\n--{boundary}--\r\n".encode())
+    parts.extend([audio, f"\r\n--{boundary}--\r\n".encode()])
     return b"".join(parts), f"multipart/form-data; boundary={boundary}"
 
 

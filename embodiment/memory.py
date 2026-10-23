@@ -334,6 +334,8 @@ __all__ = [
     "ForgetResult",
     "RecallResult",
     "RoomMemory",
+    "MemorySeams",
+    "SemanticRecall",
     "default_embed_probe",
     "render_recalled",
 ]
@@ -976,6 +978,10 @@ def vector_cache_for(directory: _StrPath, model: str = EMBED_ROLE) -> VectorCach
     return VectorCache(directory, model=vector_model_tag(model))
 
 
+#: Why a call was refused when the in-flight bound is full.
+_SATURATED_REASON = "every in-flight memory slot is occupied"
+
+
 def _cosine(left: Sequence[float], right: Sequence[float]) -> Optional[float]:
     """Cosine similarity, or ``None`` when the vectors cannot be compared."""
     if len(left) != len(right) or not left:
@@ -1234,10 +1240,46 @@ class _ArchiveTally:
         )
 
 
+@dataclass(frozen=True)
+class MemorySeams:
+    """The injection seams of a :class:`RoomMemory`; ``None`` keeps the default.
+
+    *remember_fn*, *recall_fn*, *archive_fn* and *list_fn* stand in for the
+    continuity calls, *reinforce_fn* for the recall-count bump, *clock* for the
+    monotonic clock and *spawn* for the daemon-thread launcher. Tests inject
+    them so a deadline can block on command instead of really sleeping.
+    """
+
+    remember_fn: Optional[Callable[..., Any]] = None
+    recall_fn: Optional[Callable[..., Any]] = None
+    archive_fn: Optional[Callable[..., Any]] = None
+    list_fn: Optional[Callable[..., Any]] = None
+    reinforce_fn: Optional[Callable[..., Any]] = None
+    clock: Optional[Callable[[], float]] = None
+    spawn: Optional[Callable[[Callable[[], None]], None]] = None
+
+
+@dataclass(frozen=True)
+class SemanticRecall:
+    """The semantic-recall settings of a :class:`RoomMemory`.
+
+    *embedder* is an ``embodiment.vectors.EmbedderClient`` (or a fake with
+    ``embed``/``state``/``maybe_reprobe`` and ``model``); *vector_cache* must be
+    :func:`vector_cache_for` of it. No embedder (the default) means no semantic
+    recall. *embed_probe* overrides :func:`default_embed_probe`.
+    """
+
+    embedder: Optional[Any] = None
+    vector_cache: Optional[VectorCache] = None
+    similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD
+    embed_probe: Optional[EmbedProbe] = None
+
+
 class RoomMemory:
     """Private, pinned, deadline-bounded memory for a daemon that hears a room.
 
-    Every seam is injectable — *recall_fn*, *remember_fn*, *embed_probe* and
+    Every seam is injectable — *recall_fn* and *remember_fn* (via
+    :class:`MemorySeams`), *embed_probe* (via :class:`SemanticRecall`) and
     *executor* — because the properties that matter here are only testable that
     way: a deadline test needs a backend that blocks on command rather than one
     that really sleeps, and a mode test needs an embedder that is down without
@@ -1252,22 +1294,15 @@ class RoomMemory:
         added_by: Optional[str] = None,
         backend: str = continuity.DEFAULT_BACKEND,
         executor: Optional[ThreadPoolExecutor] = None,
-        remember_fn: Optional[Callable[..., Any]] = None,
-        recall_fn: Optional[Callable[..., Any]] = None,
-        archive_fn: Optional[Callable[..., Any]] = None,
-        list_fn: Optional[Callable[..., Any]] = None,
         ingest_scope: Optional[str] = None,
-        embed_probe: Optional[EmbedProbe] = None,
         max_abandoned: int = MAX_ABANDONED,
         max_workers: int = DEFAULT_MAX_WORKERS,
         max_inflight: int = MAX_INFLIGHT,
-        embedder: Optional[Any] = None,
-        vector_cache: Optional[VectorCache] = None,
-        similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD,
-        reinforce_fn: Optional[Callable[..., Any]] = None,
-        clock: Optional[Callable[[], float]] = None,
-        spawn: Optional[Callable[[Callable[[], None]], None]] = None,
+        seams: Optional[MemorySeams] = None,
+        semantic: Optional[SemanticRecall] = None,
     ) -> None:
+        seams = seams or MemorySeams()
+        semantic = semantic or SemanticRecall()
         #: Pinned ONCE, here. Made ABSOLUTE so nothing about it depends on the
         #: host's cwd at the moment of a later call — but deliberately NOT
         #: ``resolve()``\ d. ``resolve()`` follows symlinks, so a store path
@@ -1280,24 +1315,24 @@ class RoomMemory:
         self._scope = scope
         self._added_by = added_by
         self._backend = backend
-        self._remember_fn = remember_fn or continuity.remember
-        self._recall_fn = recall_fn or continuity.recall
-        self._archive_fn = archive_fn or continuity.archive
-        self._list_fn = list_fn or _enumerate_scope
+        self._remember_fn = seams.remember_fn or continuity.remember
+        self._recall_fn = seams.recall_fn or continuity.recall
+        self._archive_fn = seams.archive_fn or continuity.archive
+        self._list_fn = seams.list_fn or _enumerate_scope
         #: When set, :meth:`recall` also reads this one scope (private), inside
         #: the same deadline, and no other. Opt-in so a room that never ingests
         #: reads exactly what it always read.
         self._ingest_scope = ingest_scope
-        self._embed_probe = embed_probe or default_embed_probe
+        self._embed_probe = semantic.embed_probe or default_embed_probe
         #: Semantic recall (t12). *embedder* is an ``embodiment.vectors.
         #: EmbedderClient`` (or a fake with ``embed``/``state``/``maybe_reprobe``
         #: and ``model``); *vector_cache* must be :func:`vector_cache_for` of it.
-        self._embedder = embedder
-        self._vector_cache = vector_cache
-        self._threshold = float(similarity_threshold)
-        self._reinforce_fn = reinforce_fn or _reinforce_records
-        self._clock = clock or _elapsed
-        self._spawn = spawn or _spawn_daemon_thread
+        self._embedder = semantic.embedder
+        self._vector_cache = semantic.vector_cache
+        self._threshold = float(semantic.similarity_threshold)
+        self._reinforce_fn = seams.reinforce_fn or _reinforce_records
+        self._clock = seams.clock or _elapsed
+        self._spawn = seams.spawn or _spawn_daemon_thread
         self._semantic = {
             "recalls": 0,
             "query_embeds": 0,
@@ -1909,11 +1944,7 @@ class RoomMemory:
                     "remember",
                     refusal or CODE_CLOSED,
                     f"record {safe_label(identifier)} was NOT written: "
-                    + (
-                        "every in-flight memory slot is occupied"
-                        if refusal == CODE_SATURATED
-                        else _CLOSED_REASON
-                    ),
+                    + (_SATURATED_REASON if refusal == CODE_SATURATED else _CLOSED_REASON),
                 ),
             )
 
@@ -2118,11 +2149,7 @@ class RoomMemory:
                     verb,
                     why,
                     f"{verb} of {safe_label(identifier)} was NOT done: "
-                    + (
-                        "every in-flight memory slot is occupied"
-                        if refusal == CODE_SATURATED
-                        else _CLOSED_REASON
-                    ),
+                    + (_SATURATED_REASON if refusal == CODE_SATURATED else _CLOSED_REASON),
                 ),
             )
         try:
@@ -2146,7 +2173,7 @@ class RoomMemory:
 
     def _prepare_ingest(
         self, raw: Any, moment: datetime
-    ) -> Union[tuple[dict[str, Any], Optional[str]], str]:
+    ) -> tuple[dict[str, Any], str | None] | str:
         """``(eidetic record, supersedes)`` or a fixed reason string. Never raises.
 
         Scope, visibility and lifecycle are NEVER taken from the record: the
@@ -2559,11 +2586,7 @@ class RoomMemory:
                     "forget",
                     code,
                     f"record {safe_label(identifier)} was NOT archived: "
-                    + (
-                        "every in-flight memory slot is occupied"
-                        if refusal == CODE_SATURATED
-                        else _CLOSED_REASON
-                    ),
+                    + (_SATURATED_REASON if refusal == CODE_SATURATED else _CLOSED_REASON),
                 ),
             )
 

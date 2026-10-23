@@ -165,7 +165,7 @@ from embodiment.http import access as access_module
 from embodiment.http import guard as guard_module
 from embodiment.http import server as server_module
 from embodiment.ingest.spool import Spool
-from embodiment.memory import PRIVATE, RoomMemory, render_recalled
+from embodiment.memory import PRIVATE, RoomMemory, SemanticRecall, render_recalled
 from embodiment.perception import perceive
 from embodiment.realtime import wire
 from embodiment.realtime.client import RealtimeConfig, RealtimeEars
@@ -5339,9 +5339,11 @@ def main() -> DaemonApp:
         scope=config.memory_scope,
         added_by=config.added_by,
         ingest_scope=memory_module.INGEST_SCOPE,
-        embedder=embedder,
-        vector_cache=vector_cache,
-        similarity_threshold=config.similarity_threshold,
+        semantic=SemanticRecall(
+            embedder=embedder,
+            vector_cache=vector_cache,
+            similarity_threshold=config.similarity_threshold,
+        ),
     )
     # The drain is the inbox's single writer. Spool degradations reach the
     # ledger through the drain's own forwarding — spool.on_degradation stays

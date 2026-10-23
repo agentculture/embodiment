@@ -248,7 +248,7 @@ class Drain:
             return
         try:
             self._record_fn(code, reason)
-        except Exception:  # noqa: BLE001 - a broken sink must not break the drain
+        except Exception:  # noqa: BLE001  # a broken sink must not break the drain
             self._counts["record_errors"] += 1
 
     def _forward_spool(self) -> None:
@@ -273,7 +273,7 @@ class Drain:
             return DrainReport()
         try:
             return self._pass(_Pass(budget, self._monotonic))
-        except Exception as exc:  # noqa: BLE001 - degrade, never raise (C3)
+        except Exception as exc:  # noqa: BLE001  # degrade, never raise (C3)
             self._record(APP_INGEST_RECORD_FAILED, f"drain pass failed: {type(exc).__name__}")
             return DrainReport(stalled=True)
         finally:
@@ -596,7 +596,7 @@ class Drain:
                 "failed": spool.failed,
                 "oldest_pending_age_s": spool.oldest_pending_age_s,
             }
-        except Exception as exc:  # noqa: BLE001 - status is a report, never a failure
+        except Exception as exc:  # noqa: BLE001  # status is a report, never a failure
             inbox = {"error": type(exc).__name__}
         return {
             "inbox": inbox,
