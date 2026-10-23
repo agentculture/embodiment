@@ -359,6 +359,7 @@ speculative spawn); no audio is ever written to disk.
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
 import subprocess  # nosec B404 - fixed argv, shell=False, no user input reaches argv
@@ -906,6 +907,23 @@ def _pw_link_target_id(dump: list[object], stream_node_id: object, *, as_output:
     return None
 
 
+#: Name suffixes that mark a credential. An audio child (pw-record, pw-play,
+#: arecord, aplay, pw-dump, wpctl) needs none of them, so none is passed on.
+_SECRET_SUFFIXES = ("_KEY", "_TOKEN", "_SECRET")
+
+
+def _child_env(source: "dict[str, str] | None" = None) -> "dict[str, str]":
+    """The environment for an audio subprocess: the parent's, minus credentials.
+
+    Drops every variable whose name ends in ``_KEY``, ``_TOKEN`` or ``_SECRET``
+    (case-insensitive), which covers ``EMBODIMENT_GATEWAY_KEY`` and
+    ``EMBODIMENT_LIBRARY_KEY``. Everything else — ``PATH``, ``HOME``,
+    ``XDG_RUNTIME_DIR`` and the PipeWire variables — passes through.
+    """
+    env = os.environ if source is None else source
+    return {k: v for k, v in env.items() if not k.upper().endswith(_SECRET_SUFFIXES)}
+
+
 def _describe_process_exit(proc: "subprocess.Popen[bytes]") -> str:
     """The exit code and stderr's LENGTH+FINGERPRINT — never the stderr text itself.
 
@@ -1315,7 +1333,11 @@ class HostEndpoint:
         was_degraded = self._degradation_in is not None
         try:
             proc = self._popen(
-                argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+                argv,
+                stdin=subprocess.DEVNULL,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=_child_env(),
             )
         except OSError as exc:
             self._degradation_in = EndpointDegradation(
@@ -1545,7 +1567,11 @@ class HostEndpoint:
         )
         try:
             return self._popen(
-                argv, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE
+                argv,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.PIPE,
+                env=_child_env(),
             )
         except OSError as exc:
             self._enter_output_degradation(
@@ -1733,6 +1759,7 @@ class HostEndpoint:
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                env=_child_env(),
             )
         except OSError:
             return None
@@ -1840,6 +1867,7 @@ class HostEndpoint:
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
+                env=_child_env(),
             )
         except OSError:
             with self._counter_lock:
