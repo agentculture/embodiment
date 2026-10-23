@@ -7,7 +7,9 @@ Two small, independent pieces for semantic recall:
   returned, and :meth:`VectorCache.drop` removes entries by record id.
 * :class:`EmbedderClient` - ``POST /v1/embeddings`` on the lobes gateway,
   naming the embedder by ROLE (``gemma2-embed``), key via the same
-  ``Authorization: Bearer`` path the daemon uses. Stdlib only.
+  ``Authorization: Bearer`` path the daemon uses. Stdlib only. The default
+  transport is voice's hardened one: redirects refused (the key never leaves
+  the configured origin) and the body read under a derived byte cap.
 
 Degrade, never raise (C3): an unreachable or malformed embedder is an
 ``offline`` :class:`EmbedResult` with a scrubbed reason and a recorded
@@ -29,11 +31,13 @@ import os
 import threading
 import time
 import urllib.request
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 from embodiment import safe_reason
+from embodiment.voice import _REDIRECT_REFUSING_OPENER, _read_bounded
 
 EMBED_ROLE = "gemma2-embed"
 EMBED_ROUTE = "/v1/embeddings"
@@ -43,6 +47,19 @@ DEFAULT_DEADLINE = 5.0
 DEFAULT_REPROBE_INTERVAL = 30.0
 MAX_REASON_CHARS = 200
 _PROBE_TEXT = "ping"
+
+#: The largest ``/v1/embeddings`` response body read, in bytes; one byte more is refused.
+#: Derived from the request, not chosen freely (lesson 1): :meth:`EmbedderClient.embed`
+#: sends ONE input, so the reply holds one vector. ``gemma2-embed`` answers 768 dims;
+#: 4096 dims is the ceiling allowed (over 5x headroom, and above any embedder the rig
+#: lists). A float in JSON is at most ~25 bytes with its separator
+#: (``-1.2345678901234567e-05, ``); 32 is allowed. Plus 4 KiB for the envelope
+#: (``object``, ``model``, ``usage``). 1 x 4096 x 32 + 4096 = 135 168 bytes.
+_EMBED_BATCH = 1
+_MAX_EMBED_DIMS = 4096
+_MAX_JSON_FLOAT_BYTES = 32
+_ENVELOPE_BYTES = 4096
+MAX_EMBED_RESPONSE_BYTES = _EMBED_BATCH * _MAX_EMBED_DIMS * _MAX_JSON_FLOAT_BYTES + _ENVELOPE_BYTES
 
 Transport = Callable[[str, dict, bytes, float], bytes]
 
@@ -121,13 +138,30 @@ class VectorCache:
         return None
 
     def put(self, text: str, vector: list[float], record_id: Optional[str] = None) -> None:
-        with self._lock:
-            self._entries[_text_key(self.model, text)] = {
+        """Cache one vector and persist at once (atomic replace, 0600)."""
+        self.put_many([(text, vector, record_id)])
+
+    def put_many(self, items: Iterable[tuple[str, list[float], Optional[str]]]) -> int:
+        """Cache ``(text, vector, record_id)`` triples and persist ONCE; return the count.
+
+        The whole file is rewritten on every save, so a backfill that saved per
+        vector wrote O(N^2) bytes; it collects a tick's vectors and calls this
+        once. An empty batch touches nothing on disk.
+        """
+        entries = {
+            _text_key(self.model, text): {
                 "model": self.model,
                 "record_id": record_id,
                 "vec": [float(x) for x in vector],
             }
+            for text, vector, record_id in items
+        }
+        if not entries:
+            return 0
+        with self._lock:
+            self._entries.update(entries)
             self._save()
+        return len(entries)
 
     def drop(self, record_id: str) -> int:
         """Remove every entry (any model) written for *record_id*; return the count."""
@@ -148,13 +182,24 @@ class EmbedResult:
 
 
 def _urllib_transport(url: str, headers: dict, body: bytes, timeout: float) -> bytes:
+    """The default :data:`Transport`: one POST, the same discipline as ``voice.http_synthesize``.
+
+    Redirects are refused (the bearer key never leaves the configured origin)
+    and the body is read under :data:`MAX_EMBED_RESPONSE_BYTES` and *timeout*
+    in total. Raises on any failure; :meth:`EmbedderClient.embed` degrades it.
+    """
     if not url.startswith(("http://", "https://")):
         raise ValueError("gateway_url must be http(s)")
     request = urllib.request.Request(  # nosec B310 - scheme checked above
         url, data=body, headers=headers, method="POST"
     )
-    with urllib.request.urlopen(request, timeout=timeout) as response:  # nosec B310
-        return response.read()
+    with _REDIRECT_REFUSING_OPENER.open(  # nosec B310 - scheme checked, redirects refused
+        request, timeout=timeout
+    ) as response:
+        raw = _read_bounded(response, max_bytes=MAX_EMBED_RESPONSE_BYTES, deadline_s=timeout)
+    if len(raw) > MAX_EMBED_RESPONSE_BYTES:
+        raise ValueError("embedding response over cap")
+    return raw
 
 
 def _spawn_thread(fn: Callable[[], None]) -> None:

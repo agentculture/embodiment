@@ -1,13 +1,17 @@
 """Vector cache + gemma2-embed client. Synthetic data only; a fake transport, never the gateway."""
 
+import email.message
+import io
 import json
 import os
 import stat
 import time
+import urllib.request
+from urllib.response import addinfourl
 
 import pytest
 
-from embodiment import vectors
+from embodiment import vectors, voice
 from embodiment.vectors import EmbedderClient, VectorCache
 
 MODEL = "gemma2-embed"
@@ -183,3 +187,101 @@ def test_default_spawn_runs_in_daemon_thread():
             break
         time.sleep(0.01)
     assert len(tr.calls) == 1
+
+
+# -- d6: one save per batch of puts ----------------------------------------
+
+
+def test_put_many_saves_once_and_the_file_is_valid_and_0600(tmp_path, monkeypatch):
+    cache = VectorCache(tmp_path / "d", MODEL)
+    saves = []
+    real_save = cache._save
+    monkeypatch.setattr(cache, "_save", lambda: saves.append(1) or real_save())
+    written = cache.put_many([(f"text {i}", [float(i), 1.0], f"r{i}") for i in range(25)])
+    assert written == 25
+    assert len(saves) == 1
+    assert stat.S_IMODE(os.stat(cache.path).st_mode) == 0o600
+    reread = VectorCache(tmp_path / "d", MODEL)
+    assert reread.degradations == []
+    assert all(reread.get(f"text {i}") == [float(i), 1.0] for i in range(25))
+    assert reread.drop("r7") == 1
+
+
+def test_put_many_of_nothing_does_not_touch_the_disk(tmp_path, monkeypatch):
+    cache = VectorCache(tmp_path / "d", MODEL)
+    monkeypatch.setattr(cache, "_save", lambda: pytest.fail("saved an empty batch"))
+    assert cache.put_many([]) == 0
+    assert not cache.path.exists()
+
+
+def test_a_single_put_still_persists_at_once(tmp_path):
+    cache = VectorCache(tmp_path / "d", MODEL)
+    cache.put("solo", [3.0], record_id="r")
+    assert VectorCache(tmp_path / "d", MODEL).get("solo") == [3.0]
+    assert stat.S_IMODE(os.stat(cache.path).st_mode) == 0o600
+
+
+# -- d6: the default transport refuses redirects and bounds the body --------
+
+
+class _Handler(urllib.request.BaseHandler):
+    """A fake origin: answers every request with *status* and *body*, counting calls."""
+
+    def __init__(self, status=200, body=b"", location=None):
+        self.status, self.body, self.location = status, body, location
+        self.requests = []
+
+    def http_open(self, req):  # noqa: ANN001
+        self.requests.append((req.full_url, dict(req.header_items())))
+        headers = email.message.Message()
+        if self.location:
+            headers["Location"] = self.location
+        resp = addinfourl(io.BytesIO(self.body), headers, req.full_url, self.status)
+        resp.msg = "Found" if self.status == 302 else "OK"
+        return resp
+
+    https_open = http_open
+
+
+def _opener(handler):
+    opener = urllib.request.OpenerDirector()
+    opener.add_handler(handler)
+    opener.add_handler(voice._NoRedirectHandler())
+    opener.add_handler(urllib.request.HTTPErrorProcessor())
+    return opener
+
+
+def test_default_transport_refuses_a_302_and_never_resends_the_key(monkeypatch):
+    handler = _Handler(302, location="http://evil.example/steal")
+    monkeypatch.setattr(vectors, "_REDIRECT_REFUSING_OPENER", _opener(handler))
+    client = EmbedderClient("http://gw:8001", api_key="secretkey")
+    res = client.embed("x")
+    assert res.vector is None and not res.online and res.reason
+    assert "secretkey" not in res.reason
+    assert len(handler.requests) == 1, "no second request follows the Location header"
+    assert handler.requests[0][0] == "http://gw:8001/v1/embeddings"
+    assert client.transitions[-1][0] == "offline"
+
+
+def test_the_shipped_opener_is_voices_redirect_refusing_one():
+    assert vectors._REDIRECT_REFUSING_OPENER is voice._REDIRECT_REFUSING_OPENER
+
+
+def test_default_transport_refuses_an_oversized_body(monkeypatch):
+    huge = b'{"data": [{"embedding": [' + b"0.1, " * vectors.MAX_EMBED_RESPONSE_BYTES + b"0.1]}]}"
+    handler = _Handler(200, body=huge)
+    monkeypatch.setattr(vectors, "_REDIRECT_REFUSING_OPENER", _opener(handler))
+    client = EmbedderClient("http://gw", api_key="k")
+    res = client.embed("x")
+    assert res.vector is None and not res.online and res.reason
+    assert client.state()["online"] is False
+
+
+def test_default_transport_accepts_a_realistic_embedding(monkeypatch):
+    # 768 dims (gemma2-embed) at the longest float repr json.dumps produces.
+    body = _ok([-1.2345678901234567e-05] * 768)
+    assert len(body) < vectors.MAX_EMBED_RESPONSE_BYTES
+    handler = _Handler(200, body=body)
+    monkeypatch.setattr(vectors, "_REDIRECT_REFUSING_OPENER", _opener(handler))
+    res = EmbedderClient("http://gw", api_key="k").embed("x")
+    assert res.online and len(res.vector) == 768
