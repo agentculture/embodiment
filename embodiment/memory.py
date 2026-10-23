@@ -196,6 +196,30 @@ accept an injected embed client through ``continuity.recall``, which it does
 not). The probe runs inside the same deadline-bounded worker as the recall, so
 it can cost the turn nothing beyond the deadline already set.
 
+Semantic recall over cached vectors (``semantic``, plan task t12)
+-----------------------------------------------------------------
+The probe above is a full embed round-trip before every recall, and eidetic's
+``approximate`` scorer then re-embeds every candidate (``scoring.py``
+``_embed_query_and_docs``): measured ~170 ms + 291 ms = 469 ms at N=24 against a
+250 ms deadline. So :data:`SEMANTIC_MODE` scores in embodiment instead, through
+the ``gemma2-embed`` role named explicitly (``embodiment.vectors``):
+
+* **One request per recall.** The query is embedded once (:data:`QUERY_PROMPT`);
+  candidates are scored against vectors from the cache (:func:`vector_cache_for`,
+  :data:`DOCUMENT_PROMPT`). There is no probe: online state is the embedder's
+  last real call plus its own bounded background re-probe. A known-offline
+  embedder is not called.
+* **The recall path never embeds a candidate.** An uncached candidate is skipped
+  and counted (``status()["semantic"]["uncached_skipped"]``); the bounded
+  background backfill (:meth:`RoomMemory.start_backfill`) embeds it.
+* **Nothing relevant means nothing returned.** Candidates under the similarity
+  threshold (:data:`DEFAULT_SIMILARITY_THRESHOLD`, provisionally calibrated) are dropped;
+  :attr:`RecallResult.relevance` carries the best similarity scored either way.
+* **Keyword is the rollback.** ``keyword`` never touches the embedder; a missing,
+  offline or failing embedder demotes ``semantic`` to the keyword path with one
+  recorded :data:`CODE_EMBEDDER_OFFLINE`, and the mode reported is the one that
+  ran. ``status()`` names the embedder role.
+
 Never raises
 -------------
 Every public entry point here returns a value. A bad record, a dead store, a
@@ -234,6 +258,7 @@ from embodiment.safe_reason import (
     scrub,
 )
 from embodiment.senses_text import KNOWLEDGE_ATTRIBUTION
+from embodiment.vectors import EMBED_ROLE, PROMPT_NAMES, VectorCache
 
 __all__ = [
     "PRIVATE",
@@ -250,6 +275,21 @@ __all__ = [
     "SEMANTIC_MODES",
     "RECALL_MODE_LEXICAL",
     "RECALL_MODE_SEMANTIC",
+    "SEMANTIC_MODE",
+    "QUERY_PROMPT",
+    "DOCUMENT_PROMPT",
+    "DEFAULT_SIMILARITY_THRESHOLD",
+    "SIMILARITY_THRESHOLD_CALIBRATED",
+    "DEFAULT_BACKFILL_BATCH",
+    "DEFAULT_BACKFILL_BUDGET",
+    "DEFAULT_BACKFILL_BUSY_INTERVAL",
+    "DEFAULT_BACKFILL_IDLE_INTERVAL",
+    "CODE_VECTOR_CACHE_MISMATCH",
+    "CODE_BACKFILL_OFFLINE",
+    "CODE_BACKFILL_FAILED",
+    "CODE_VECTOR_DROP_FAILED",
+    "vector_model_tag",
+    "vector_cache_for",
     "MAX_ABANDONED",
     "MAX_INFLIGHT",
     "DEFAULT_CLOSE_DEADLINE",
@@ -263,6 +303,8 @@ __all__ = [
     "HEADER_PLACEHOLDER",
     "HEADER_FIELD_LIMIT",
     "HEADER_PATTERN",
+    "PROVENANCE_KEYS",
+    "recalled_provenance",
     "STRIPPED_CATEGORIES",
     "CODE_DEADLINE_EXCEEDED",
     "CODE_EMBEDDER_OFFLINE",
@@ -280,12 +322,20 @@ __all__ = [
     "CODE_STORE_SCAN_CAPPED",
     "MAX_TIGHTEN_ENTRIES",
     "CODE_CLOSED",
+    "CODE_INGEST_COLLAPSED",
+    "CODE_INGEST_NOT_ATTEMPTED",
+    "INGEST_SCOPE",
+    "INGEST_VISIBILITY",
     "AbandonedDrain",
+    "IngestResult",
+    "IngestForgetResult",
     "CloseReport",
     "RememberResult",
     "ForgetResult",
     "RecallResult",
     "RoomMemory",
+    "MemorySeams",
+    "SemanticRecall",
     "default_embed_probe",
     "render_recalled",
 ]
@@ -340,6 +390,16 @@ _SCOPE_VISIBILITIES = ("private", "public")
 #: Its atomic-write temp sibling suffix (``<scope>__<vis>.jsonl.tmp``).
 _SCOPE_TMP_SUFFIX = ".tmp"
 
+#: The one shared private scope every external source lands in. Pinned equal to
+#: ``embodiment.ingest.contract.INGEST_SCOPE`` by a test (that module imports
+#: this one, so the constant cannot be imported here without a cycle).
+INGEST_SCOPE = "gwen-ingest"
+INGEST_VISIBILITY = "private"
+
+#: Which ``metadata`` key names a source's unit of forgetting: a recording for
+#: pocket, an issue for newspaper. Pinned against the contract registry by a test.
+_SOURCE_ID_KEYS = {"pocket": "recording_id", "newspaper": "issue_date"}
+
 #: Seconds :meth:`RoomMemory.close` will wait for in-flight *writes*. Bounded
 #: well below eidetic's 10 s embedder timeout on purpose: a shutdown that can
 #: take as long as the slowest possible store call is not a bounded shutdown.
@@ -364,6 +424,72 @@ DEFAULT_TYPE = "observation"
 #: (see the module docstring), never from configuration.
 RECALL_MODE_LEXICAL = "lexical"
 RECALL_MODE_SEMANTIC = "semantic"
+
+# --- semantic recall over cached vectors (plan task t12) --------------------
+
+#: The REQUEST mode for embodiment's own semantic recall: the query is embedded
+#: once through the ``gemma2-embed`` role and scored against vectors cached
+#: embodiment-side. Distinct from :data:`SEMANTIC_MODES` (eidetic's own
+#: ``approximate``/``hybrid``, which re-embed every candidate per recall and are
+#: kept only for back-compatibility). Same string as the resolved
+#: :data:`RECALL_MODE_SEMANTIC` on purpose: asked for and in effect read alike.
+SEMANTIC_MODE = "semantic"
+
+#: The lane prompt names (``embodiment.vectors.PROMPT_NAMES``). One choice, used
+#: identically by the backfill and the query: the query embeds with
+#: ``Retrieval-query`` and every record with ``Retrieval-document``. Measured
+#: 2026-10-23 (n=1 pair): with these prompts related 0.891 vs unrelated 0.663;
+#: without, 0.901 vs 0.715 — the prompted pair separates further. The document
+#: prompt is part of the cache's model tag (:func:`vector_model_tag`), so a
+#: change of prompt invalidates every cached vector instead of mixing spaces.
+QUERY_PROMPT = PROMPT_NAMES[0]
+DOCUMENT_PROMPT = PROMPT_NAMES[1]
+
+#: Minimum cosine similarity a candidate needs to be returned. **PROVISIONALLY
+#: CALIBRATED** (t18, applied by t23; ``docs/live-test-results/2026-10-23-recall-gemma2.md``):
+#: the highest hit@5 with at most 5% false positives on unrelated queries. At 0.715,
+#: hit@5 39/48 (reworded 15/24) and false positives 2/44 (4.5%); the old 0.78 gave
+#: hit@5 27/48 (reworded 3/24) and 0/44. Provisional because n is small, the value
+#: was chosen on the data it was scored on, and the two-fold cross-check held out
+#: 2/22 and 1/22 false positives (one fold 9%, over the 5% target). The unrelated
+#: queries were easy negatives, so the false-positive rate is a floor, not a
+#: ceiling; the curve has a cliff between 0.70 and 0.72.
+DEFAULT_SIMILARITY_THRESHOLD = 0.715
+SIMILARITY_THRESHOLD_CALIBRATED = False
+
+#: Records embedded per backfill tick. Bounds the load one tick puts on the
+#: proxied ``gemma2-embed`` lane (member orin): 8 x ~158-210 ms per embed is
+#: under two seconds of lane time per tick.
+DEFAULT_BACKFILL_BATCH = 8
+
+#: Seconds one tick may spend embedding before it yields. Derived from the
+#: quantity it bounds: ~10 measured embeds at their 210 ms upper end. A tick
+#: checks it between embeds, so one embed (bounded by the client's own
+#: deadline) may overrun it.
+DEFAULT_BACKFILL_BUDGET = 2.0
+
+#: Seconds between ticks while uncached records remain — short, so a store of
+#: tens of records is covered within seconds of start.
+DEFAULT_BACKFILL_BUSY_INTERVAL = 0.5
+
+#: Seconds between ticks once caught up: the enumeration is a full store read,
+#: so an idle backfill only looks for new records at the embedder's own
+#: re-probe cadence (``embodiment.vectors.DEFAULT_REPROBE_INTERVAL``).
+DEFAULT_BACKFILL_IDLE_INTERVAL = 30.0
+
+#: A vector cache whose model tag is not :func:`vector_model_tag` of the
+#: embedder: its vectors were made in another space (another model or prompt)
+#: and are never scored against this embedder's query. Semantic recall is off.
+CODE_VECTOR_CACHE_MISMATCH = "vector-cache-mismatch"
+
+#: The backfill found the embedder unreachable and stopped its tick.
+CODE_BACKFILL_OFFLINE = "backfill-embedder-offline"
+
+#: A backfill tick failed (enumeration or cache write). Recorded, never raised.
+CODE_BACKFILL_FAILED = "backfill-failed"
+
+#: A forgotten record's vector could not be dropped from the cache.
+CODE_VECTOR_DROP_FAILED = "vector-drop-failed"
 
 #: How many abandoned-worker degradations are retained before the oldest is
 #: dropped. Bounded because an unbounded ledger of late failures is a slow leak
@@ -485,6 +611,12 @@ CODE_STORE_NOT_REGULAR = "memory-store-not-a-file"
 CODE_STORE_SCAN_CAPPED = "memory-store-scan-capped"
 #: The memory layer was closed; no further work is submitted.
 CODE_CLOSED = "memory-closed"
+#: An ingested record's text hash matched an existing record in the ingest scope.
+#: The files backend would delete the older record silently; this layer reports
+#: it instead (see :meth:`RoomMemory.ingest_records`).
+CODE_INGEST_COLLAPSED = "memory-ingest-collapsed"
+#: An ingest batch stopped early; the records it names were not written.
+CODE_INGEST_NOT_ATTEMPTED = "memory-ingest-not-attempted"
 #: The human-readable half of :data:`CODE_CLOSED`, in every refusal that names it.
 _CLOSED_REASON = "this memory layer is closed"
 
@@ -580,12 +712,89 @@ class RecallResult:
     records: list[dict[str, Any]]
     mode: Optional[str]
     degradations: tuple[Degradation, ...] = field(default_factory=tuple)
+    #: The best cosine similarity among the candidates a SEMANTIC recall scored
+    #: — whether or not it cleared the threshold — so a host can decide how
+    #: relevant the answer was (t13's follow-up rule). ``None`` for any recall
+    #: that did not run semantic, or that scored no candidate.
+    relevance: Optional[float] = None
+    #: The similarity threshold that semantic recall applied; ``None`` otherwise.
+    threshold: Optional[float] = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
             "ok": self.ok,
             "records": list(self.records),
             "mode": self.mode,
+            "degradations": [d.to_dict() for d in self.degradations],
+            "relevance": self.relevance,
+            "threshold": self.threshold,
+        }
+
+
+@dataclass(frozen=True)
+class IngestResult:
+    """Result of one :meth:`RoomMemory.ingest_records`. Ids only, never text.
+
+    ``ok`` means every record is accounted for: written, or collapsed (reported,
+    and either kept out or replacing a record it superseded). Anything in
+    ``failed`` or ``not_attempted`` means the batch is NOT done and a caller
+    should leave it queued: every write is an idempotent upsert by id, so a
+    retry converges.
+    """
+
+    ok: bool
+    written: tuple[str, ...] = ()
+    #: ``(record_id, existing_id)``: a record whose text hash matched an existing
+    #: record. Not written, unless the existing record is the one it supersedes.
+    collapsed: tuple[tuple[str, str], ...] = ()
+    #: Ids whose lifecycle was flipped because a written record superseded them.
+    superseded: tuple[str, ...] = ()
+    failed: tuple[tuple[str, str], ...] = ()  # (record_id, code)
+    not_attempted: tuple[str, ...] = ()
+    degradations: tuple[Degradation, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ok": self.ok,
+            "written": list(self.written),
+            "collapsed": [list(pair) for pair in self.collapsed],
+            "superseded": list(self.superseded),
+            "failed": [list(pair) for pair in self.failed],
+            "not_attempted": list(self.not_attempted),
+            "degradations": [d.to_dict() for d in self.degradations],
+        }
+
+
+@dataclass(frozen=True)
+class IngestForgetResult:
+    """Result of :meth:`RoomMemory.forget_source` or :meth:`RoomMemory.forget_ids`.
+
+    ``matched`` counts the records the enumeration selected (``forget_ids``: the
+    ids asked for). ``archived`` were flipped now; ``already_archived`` and
+    ``not_found`` are facts about the store, not errors; ``failed`` is
+    ``(record_id, code)``. ``ok`` is true when nothing failed.
+    """
+
+    ok: bool
+    source: Optional[str] = None
+    source_id: Optional[str] = None
+    matched: int = 0
+    archived: tuple[str, ...] = ()
+    already_archived: tuple[str, ...] = ()
+    not_found: tuple[str, ...] = ()
+    failed: tuple[tuple[str, str], ...] = ()
+    degradations: tuple[Degradation, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ok": self.ok,
+            "source": self.source,
+            "source_id": self.source_id,
+            "matched": self.matched,
+            "archived": list(self.archived),
+            "already_archived": list(self.already_archived),
+            "not_found": list(self.not_found),
+            "failed": [list(pair) for pair in self.failed],
             "degradations": [d.to_dict() for d in self.degradations],
         }
 
@@ -755,14 +964,322 @@ def default_embed_probe() -> bool:
 
 
 # ---------------------------------------------------------------------------
+# cached-vector scoring (t12)
+# ---------------------------------------------------------------------------
+
+
+def vector_model_tag(model: str = EMBED_ROLE) -> str:
+    """The cache's model tag: the embedder role AND the document prompt."""
+    return f"{model}|{DOCUMENT_PROMPT}"
+
+
+def vector_cache_for(directory: _StrPath, model: str = EMBED_ROLE) -> VectorCache:
+    """The :class:`~embodiment.vectors.VectorCache` semantic recall expects."""
+    return VectorCache(directory, model=vector_model_tag(model))
+
+
+#: Why a call was refused when the in-flight bound is full.
+_SATURATED_REASON = "every in-flight memory slot is occupied"
+
+
+def _cosine(left: Sequence[float], right: Sequence[float]) -> Optional[float]:
+    """Cosine similarity, or ``None`` when the vectors cannot be compared."""
+    if len(left) != len(right) or not left:
+        return None
+    dot = sum(a * b for a, b in zip(left, right))
+    norm = (sum(a * a for a in left) * sum(b * b for b in right)) ** 0.5
+    if norm <= 0.0:
+        return None
+    return dot / norm
+
+
+def _reinforce_records(*, data_dir: Any, backend: str, ids: Sequence[str]) -> None:
+    """Passively reinforce the records named by *ids*, as ``continuity.recall`` does.
+
+    Semantic recall ranks outside eidetic, so it reinforces its own hits the
+    same way eidetic's recall would (``continuity._reinforce``). Raises on
+    failure; the caller records it.
+    """
+    wanted = set(ids)
+    if not wanted:
+        return
+    with continuity._pinned_store(data_dir):
+        store = continuity._eidetic_get_backend(backend)
+        hits = [record for record in store.all() if getattr(record, "id", None) in wanted]
+        continuity._reinforce(store, hits, datetime.now(timezone.utc))
+
+
+@dataclass(frozen=True)
+class _SemanticOutcome:
+    """What one semantic job hands :meth:`RoomMemory.recall` (RecallOutcome's shape + relevance)."""
+
+    ok: bool
+    records: list[dict[str, Any]]
+    degradation: Optional[Degradation] = None
+    relevance: Optional[float] = None
+
+
+def _elapsed() -> float:
+    """Seconds on a clock that does not jump with wall time (``times(2)`` on Linux).
+
+    ``os`` rather than ``time`` because this module's import roots are pinned
+    by a contract test. Two readers: the backfill's per-tick budget (through
+    the injectable ``clock``), and the one total deadline of a forget
+    (:func:`_deadline_at`), which bounds real waits and so reads this directly.
+    """
+    return float(os.times().elapsed)
+
+
+def _deadline_at(deadline: Any) -> float:
+    """The :func:`_elapsed` instant *deadline* seconds from now (a bad value is now)."""
+    try:
+        budget = max(0.0, float(deadline))
+    except (TypeError, ValueError):
+        budget = 0.0
+    return _elapsed() + budget
+
+
+def _left(until: float) -> float:
+    """Seconds remaining before *until*, never negative."""
+    return max(0.0, until - _elapsed())
+
+
+def _hash_clash(existing: Iterable[Any], digest: str, record_id: Any) -> Optional[str]:
+    """The id of another stored record whose text hash is *digest*, if any."""
+    return next(
+        (
+            str(item.get("id"))
+            for item in existing
+            if item.get("hash") == digest and item.get("id") != record_id
+        ),
+        None,
+    )
+
+
+def _spawn_daemon_thread(fn: Callable[[], None]) -> None:
+    threading.Thread(target=fn, name="embodiment-backfill", daemon=True).start()
+
+
+def _is_active(record: Mapping[str, Any]) -> bool:
+    return record.get("lifecycle", "active") in (None, "active")
+
+
+# ---------------------------------------------------------------------------
 # RoomMemory
 # ---------------------------------------------------------------------------
+
+
+def _enumerate_scope(
+    *, data_dir: Any, scope: str, visibility: str, backend: str
+) -> list[dict[str, Any]]:
+    """Every stored record of one scope and visibility, as dicts. Raises on failure.
+
+    ``continuity`` has no enumeration verb (``archive`` walks ``store.all()``
+    privately), and forgetting by source must not depend on a ranker's opinion
+    of a query, so this walks ``store.all()`` the same way, under the same pin.
+    The caller (a worker) turns a raise into a recorded degradation.
+    """
+    anchor = continuity._usable_anchor(data_dir)
+    if anchor is None:
+        raise ValueError("no usable storage anchor")
+    if continuity._EIDETIC_IMPORT_ERROR is not None:
+        raise RuntimeError("eidetic is not importable")
+    with continuity._pinned_store(anchor):
+        store = continuity._eidetic_get_backend(backend)
+        found = []
+        for candidate in store.all():
+            where = getattr(candidate, "scope", None)
+            if getattr(where, "name", None) == scope and getattr(where, "visibility", None) == (
+                visibility
+            ):
+                found.append(candidate.to_dict())
+        return found
+
+
+def _shown_id(raw: Any) -> str:
+    """A record's usable id for a report, or a fixed placeholder. Never raises."""
+    shown = _usable_id(raw.get("id")) if isinstance(raw, Mapping) else None
+    return shown or "(unusable id)"
+
+
+def _select_source(
+    rows: Iterable[Any], source: str, key: str, source_id: str
+) -> tuple[list[str], list[str]]:
+    """``(to archive, already archived)``: the ids of one source unit among *rows*."""
+    todo: list[str] = []
+    already: list[str] = []
+    for item in rows:
+        meta = item.get("metadata") if isinstance(item, Mapping) else None
+        if not isinstance(meta, Mapping):
+            continue
+        if meta.get("source") != source or meta.get(key) != source_id:
+            continue
+        if item.get("lifecycle") == continuity.LIFECYCLE_ARCHIVED:
+            already.append(str(item.get("id")))
+        else:
+            todo.append(str(item.get("id")))
+    return todo, already
+
+
+@dataclass
+class _IngestTally:
+    """The running outcome of one :meth:`RoomMemory.ingest_records` batch."""
+
+    written: list[str] = field(default_factory=list)
+    collapsed: list[tuple[str, str]] = field(default_factory=list)
+    superseded: list[str] = field(default_factory=list)
+    failed: list[tuple[str, str]] = field(default_factory=list)
+    degradations: list[Degradation] = field(default_factory=list)
+
+    def invalid(self, raw: Any, reason: str) -> None:
+        self.failed.append((_shown_id(raw), continuity.CODE_INVALID_RECORD))
+        self.degradations.append(_degradation("ingest", continuity.CODE_INVALID_RECORD, reason))
+
+    def job_failed(self, identifier: str, value: Any, degradation: Optional[Degradation]) -> None:
+        self.failed.append((identifier, str(value)))
+        if degradation is not None:
+            self.degradations.append(degradation)
+
+    def collapse(self, identifier: str, detail: str, *, replaced: bool) -> None:
+        self.collapsed.append((identifier, detail))
+        tail = (
+            f"{safe_label(detail)}, which it supersedes; it replaced it"
+            if replaced
+            else f"{safe_label(detail)}; it was not written"
+        )
+        self.degradations.append(
+            _degradation(
+                "ingest",
+                CODE_INGEST_COLLAPSED,
+                f"record {safe_label(identifier)} has the same text as {tail}",
+            )
+        )
+
+    def outcome(self, identifier: str, value: Any) -> None:
+        """Fold one worker answer ``(kind, detail, flipped)`` (see ``_ingest_one``)."""
+        kind, detail, flipped = value
+        if kind == "written":
+            self.written.append(identifier)
+        elif kind == "collapsed":
+            self.collapse(identifier, str(detail), replaced=False)
+        elif kind == "replaced":
+            self.written.append(identifier)
+            self.collapse(identifier, str(detail), replaced=True)
+            self.superseded.append(str(detail))
+        else:  # "failed": the seam refused the write or the supersede flip
+            self.job_failed(identifier, detail.code if detail else CODE_CLOSED, detail)
+            return
+        if flipped:
+            self.superseded.append(flipped)
+
+    def result(self, not_attempted: tuple[str, ...]) -> IngestResult:
+        if not_attempted:
+            self.degradations.append(
+                _degradation(
+                    "ingest",
+                    CODE_INGEST_NOT_ATTEMPTED,
+                    f"the batch stopped early; {len(not_attempted)} record(s) were not written",
+                )
+            )
+        return IngestResult(
+            ok=not self.failed and not not_attempted,
+            written=tuple(self.written),
+            collapsed=tuple(self.collapsed),
+            superseded=tuple(self.superseded),
+            failed=tuple(self.failed),
+            not_attempted=not_attempted,
+            degradations=tuple(self.degradations),
+        )
+
+
+@dataclass
+class _ArchiveTally:
+    """The running outcome of one :meth:`RoomMemory._archive_ids` pass."""
+
+    archived: list[str] = field(default_factory=list)
+    already: list[str] = field(default_factory=list)
+    missing: list[str] = field(default_factory=list)
+    failed: list[tuple[str, str]] = field(default_factory=list)
+    degradations: list[Degradation] = field(default_factory=list)
+
+    def fail(self, identifiers: Iterable[str], code: str) -> None:
+        self.failed.extend((identifier, code) for identifier in identifiers)
+
+    def seam_answer(self, identifier: str, seam: Optional[Degradation]) -> None:
+        """Sort a refused archive: a fact about the store, or a failure."""
+        code = getattr(seam, "code", None)
+        if code == continuity.CODE_ALREADY_ARCHIVED:
+            self.already.append(identifier)
+        elif code == continuity.CODE_RECORD_NOT_FOUND:
+            self.missing.append(identifier)
+        else:
+            self.fail([identifier], str(code or CODE_CLOSED))
+            if seam is not None:
+                self.degradations.append(seam)
+
+    def out_of_time(self, identifiers: Sequence[str]) -> None:
+        """The one deadline ran out: the rest were not attempted (a retry resumes)."""
+        self.fail(identifiers, CODE_INGEST_NOT_ATTEMPTED)
+        self.degradations.append(
+            _degradation(
+                "forget",
+                CODE_INGEST_NOT_ATTEMPTED,
+                f"the forget deadline ran out; {len(identifiers)} record(s) were not "
+                "archived and a retry continues from them",
+            )
+        )
+
+    def result(self) -> IngestForgetResult:
+        return IngestForgetResult(
+            ok=not self.failed,
+            archived=tuple(self.archived),
+            already_archived=tuple(self.already),
+            not_found=tuple(self.missing),
+            failed=tuple(self.failed),
+            degradations=tuple(self.degradations),
+        )
+
+
+@dataclass(frozen=True)
+class MemorySeams:
+    """The injection seams of a :class:`RoomMemory`; ``None`` keeps the default.
+
+    *remember_fn*, *recall_fn*, *archive_fn* and *list_fn* stand in for the
+    continuity calls, *reinforce_fn* for the recall-count bump, *clock* for the
+    monotonic clock and *spawn* for the daemon-thread launcher. Tests inject
+    them so a deadline can block on command instead of really sleeping.
+    """
+
+    remember_fn: Optional[Callable[..., Any]] = None
+    recall_fn: Optional[Callable[..., Any]] = None
+    archive_fn: Optional[Callable[..., Any]] = None
+    list_fn: Optional[Callable[..., Any]] = None
+    reinforce_fn: Optional[Callable[..., Any]] = None
+    clock: Optional[Callable[[], float]] = None
+    spawn: Optional[Callable[[Callable[[], None]], None]] = None
+
+
+@dataclass(frozen=True)
+class SemanticRecall:
+    """The semantic-recall settings of a :class:`RoomMemory`.
+
+    *embedder* is an ``embodiment.vectors.EmbedderClient`` (or a fake with
+    ``embed``/``state``/``maybe_reprobe`` and ``model``); *vector_cache* must be
+    :func:`vector_cache_for` of it. No embedder (the default) means no semantic
+    recall. *embed_probe* overrides :func:`default_embed_probe`.
+    """
+
+    embedder: Optional[Any] = None
+    vector_cache: Optional[VectorCache] = None
+    similarity_threshold: float = DEFAULT_SIMILARITY_THRESHOLD
+    embed_probe: Optional[EmbedProbe] = None
 
 
 class RoomMemory:
     """Private, pinned, deadline-bounded memory for a daemon that hears a room.
 
-    Every seam is injectable — *recall_fn*, *remember_fn*, *embed_probe* and
+    Every seam is injectable — *recall_fn* and *remember_fn* (via
+    :class:`MemorySeams`), *embed_probe* (via :class:`SemanticRecall`) and
     *executor* — because the properties that matter here are only testable that
     way: a deadline test needs a backend that blocks on command rather than one
     that really sleeps, and a mode test needs an embedder that is down without
@@ -777,14 +1294,15 @@ class RoomMemory:
         added_by: Optional[str] = None,
         backend: str = continuity.DEFAULT_BACKEND,
         executor: Optional[ThreadPoolExecutor] = None,
-        remember_fn: Optional[Callable[..., Any]] = None,
-        recall_fn: Optional[Callable[..., Any]] = None,
-        archive_fn: Optional[Callable[..., Any]] = None,
-        embed_probe: Optional[EmbedProbe] = None,
+        ingest_scope: Optional[str] = None,
         max_abandoned: int = MAX_ABANDONED,
         max_workers: int = DEFAULT_MAX_WORKERS,
         max_inflight: int = MAX_INFLIGHT,
+        seams: Optional[MemorySeams] = None,
+        semantic: Optional[SemanticRecall] = None,
     ) -> None:
+        seams = seams or MemorySeams()
+        semantic = semantic or SemanticRecall()
         #: Pinned ONCE, here. Made ABSOLUTE so nothing about it depends on the
         #: host's cwd at the moment of a later call — but deliberately NOT
         #: ``resolve()``\ d. ``resolve()`` follows symlinks, so a store path
@@ -797,10 +1315,51 @@ class RoomMemory:
         self._scope = scope
         self._added_by = added_by
         self._backend = backend
-        self._remember_fn = remember_fn or continuity.remember
-        self._recall_fn = recall_fn or continuity.recall
-        self._archive_fn = archive_fn or continuity.archive
-        self._embed_probe = embed_probe or default_embed_probe
+        self._remember_fn = seams.remember_fn or continuity.remember
+        self._recall_fn = seams.recall_fn or continuity.recall
+        self._archive_fn = seams.archive_fn or continuity.archive
+        self._list_fn = seams.list_fn or _enumerate_scope
+        #: When set, :meth:`recall` also reads this one scope (private), inside
+        #: the same deadline, and no other. Opt-in so a room that never ingests
+        #: reads exactly what it always read.
+        self._ingest_scope = ingest_scope
+        self._embed_probe = semantic.embed_probe or default_embed_probe
+        #: Semantic recall (t12). *embedder* is an ``embodiment.vectors.
+        #: EmbedderClient`` (or a fake with ``embed``/``state``/``maybe_reprobe``
+        #: and ``model``); *vector_cache* must be :func:`vector_cache_for` of it.
+        self._embedder = semantic.embedder
+        self._vector_cache = semantic.vector_cache
+        self._threshold = float(semantic.similarity_threshold)
+        self._reinforce_fn = seams.reinforce_fn or _reinforce_records
+        self._clock = seams.clock or _elapsed
+        self._spawn = seams.spawn or _spawn_daemon_thread
+        self._semantic = {
+            "recalls": 0,
+            "query_embeds": 0,
+            "cached_hits": 0,
+            "uncached_skipped": 0,
+            "below_threshold": 0,
+            "returned": 0,
+            "demotions": 0,
+        }
+        self._last_relevance: Optional[float] = None
+        self._backfill = {
+            "ticks": 0,
+            "embedded": 0,
+            "failed": 0,
+            "remaining": None,
+            "offline_ticks": 0,
+            "write_wakes": 0,
+        }
+        self._backfill_offline = False
+        self._backfill_running = False
+        self._backfill_stop = threading.Event()
+        # Set by a write that changed a record's text; the loop clears it BEFORE
+        # each tick, so a write landing mid-tick leaves it set (no lost wake-up).
+        self._backfill_wake = threading.Event()
+        self._backfill_done = threading.Event()
+        self._backfill_done.set()
+        self._vectors_dropped = 0
 
         # Threads absorb hung calls; they do not prevent them. A hung eidetic
         # call holds a process-global lock, so extra workers buy the *next* call
@@ -837,6 +1396,7 @@ class RoomMemory:
 
         # Last, because it records degradations and therefore needs the ledger.
         self._ensure_private_store()
+        self._check_vector_cache()
 
     # -- privacy on disk ----------------------------------------------------
 
@@ -890,7 +1450,7 @@ class RoomMemory:
         except OSError as exc:
             self._record_permission_failure("could not make the store directory private", exc)
 
-    def _scope_paths(self) -> tuple[Path, ...]:
+    def _scope_paths(self, scope: Optional[str] = None) -> tuple[Path, ...]:
         r"""The files an operation in THIS scope could have created.
 
         Derived the way ``data_refinery.store.backends.files`` derives them —
@@ -903,7 +1463,7 @@ class RoomMemory:
         Four paths, whatever the store holds: this is the O(1) that keeps
         tightening off the spoken-turn path's growth curve.
         """
-        safe = self._scope.replace("/", "_").replace("\\", "_")
+        safe = (scope if scope is not None else self._scope).replace("/", "_").replace("\\", "_")
         names: list[str] = []
         for visibility in _SCOPE_VISIBILITIES:
             base = f"{safe}__{visibility}.jsonl"
@@ -911,7 +1471,7 @@ class RoomMemory:
             names.append(base + _SCOPE_TMP_SUFFIX)
         return tuple(self._data_dir / name for name in names)
 
-    def _tighten_scope(self) -> None:
+    def _tighten_scope(self, scope: Optional[str] = None) -> None:
         """Tighten exactly what this operation could have created. Never raises.
 
         Called after every confirmed store operation, and **constant cost**.
@@ -928,7 +1488,7 @@ class RoomMemory:
         if dir_fd is None:
             return
         try:
-            for path in self._scope_paths():
+            for path in self._scope_paths(scope):
                 self._tighten_entry(dir_fd, path.name)
         finally:
             self._close_store(dir_fd)
@@ -1370,6 +1930,8 @@ class RoomMemory:
             # Inside the worker, so the chmod is inside the caller's deadline
             # and a slow filesystem cannot stall the turn on this either.
             self._tighten_scope()
+            if getattr(outcome, "ok", False):
+                self._wake_backfill()
             return outcome
 
         future, refusal = self._submit(write, record_id=identifier)
@@ -1382,11 +1944,7 @@ class RoomMemory:
                     "remember",
                     refusal or CODE_CLOSED,
                     f"record {safe_label(identifier)} was NOT written: "
-                    + (
-                        "every in-flight memory slot is occupied"
-                        if refusal == CODE_SATURATED
-                        else _CLOSED_REASON
-                    ),
+                    + (_SATURATED_REASON if refusal == CODE_SATURATED else _CLOSED_REASON),
                 ),
             )
 
@@ -1570,6 +2128,387 @@ class RoomMemory:
             "added_by": added_by if added_by is not None else self._added_by,
         }
 
+    # -- ingest: the write side of the second scope ----------------------------
+
+    def _run_job(
+        self, work: Callable[[], Any], identifier: str, deadline: float, *, verb: str, code: str
+    ) -> tuple[str, Any, Optional[Degradation]]:
+        """``(status, value, degradation)`` for one bounded executor job.
+
+        *status* is ``ok``, ``refused`` (saturated or closed: nothing ran),
+        ``deferred`` (still running; a later failure lands on the abandoned
+        ledger under *code*) or ``error`` (the worker raised). Never raises.
+        """
+        future, refusal = self._submit(work, record_id=identifier)
+        if future is None:
+            why = refusal or CODE_CLOSED
+            return (
+                "refused",
+                why,
+                _degradation(
+                    verb,
+                    why,
+                    f"{verb} of {safe_label(identifier)} was NOT done: "
+                    + (_SATURATED_REASON if refusal == CODE_SATURATED else _CLOSED_REASON),
+                ),
+            )
+        try:
+            return "ok", future.result(timeout=max(0.0, float(deadline))), None
+        except FutureTimeoutError:
+            self._reap_write(future, identifier, deadline, verb=verb, code=code)
+            return (
+                "deferred",
+                CODE_REMEMBER_DEFERRED,
+                _degradation(
+                    verb,
+                    CODE_REMEMBER_DEFERRED,
+                    f"{verb} of {safe_label(identifier)} did not confirm within {deadline}s and "
+                    "is still running in the background; a failure will be recorded on the "
+                    "abandoned ledger",
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001  # a store failure never reaches the host
+            failure = _failure_code(exc)
+            return "error", failure, _degradation(verb, failure, f"the {verb} seam failed", exc)
+
+    def _prepare_ingest(
+        self, raw: Any, moment: datetime
+    ) -> tuple[dict[str, Any], str | None] | str:
+        """``(eidetic record, supersedes)`` or a fixed reason string. Never raises.
+
+        Scope, visibility and lifecycle are NEVER taken from the record: the
+        ingest scope is this layer's to name, whatever the file said.
+        """
+        if not isinstance(raw, Mapping):
+            return "a record must be a mapping"
+        identifier = _usable_id(raw.get("id"))
+        if identifier is None:
+            return "unusable record id"
+        text = raw.get("text")
+        if not isinstance(text, str) or not text.strip():
+            return "text must be a non-empty string"
+        record_type = raw.get("type")
+        if not isinstance(record_type, str) or not record_type.strip():
+            return "type must be a non-empty string"
+        metadata = raw.get("metadata")
+        if metadata is not None and not isinstance(metadata, Mapping):
+            return "metadata must be a mapping"
+        record: dict[str, Any] = {
+            "id": identifier,
+            "text": text,
+            "type": record_type,
+            "created": raw.get("created") or moment.isoformat(),
+            "metadata": dict(metadata) if metadata else {},
+            "added_by": raw.get("added_by") or self._added_by,
+        }
+        supersedes = raw.get("supersedes")
+        if supersedes is not None:
+            replaced = _usable_id(supersedes)
+            if replaced is None:
+                return "unusable supersedes id"
+            record["supersedes"] = replaced
+            return record, replaced
+        return record, None
+
+    def ingest_records(
+        self,
+        records: Iterable[Any],
+        *,
+        deadline: float = DEFAULT_WRITE_DEADLINE,
+        now: Optional[datetime] = None,
+    ) -> IngestResult:
+        """Write stamped ingest records into the private ingest scope, in order.
+
+        Each record is ONE executor job holding ``continuity._STORE_LOCK`` once:
+        it enumerates the scope, detects a text-hash collision, writes the record,
+        and — when the record carries ``supersedes`` — flips the superseded
+        record's lifecycle before the job returns. A recall after the batch is
+        reported done therefore never returns the superseded record, and nothing
+        relies on a later ``eidetic sweep``. *deadline* bounds each record's wait.
+
+        **Collapse.** data-refinery's files backend deletes an older record whose
+        text hash matches a new id. That is detected BEFORE the write: the new
+        record is not written, the older one is left alone, and the pair is
+        reported in :attr:`IngestResult.collapsed` with a recorded degradation.
+        The one exception is a record whose hash matches the very record it
+        supersedes — that write goes ahead (the backend replaces the superseded
+        record, which is the intent) and is reported in both lists.
+
+        A refused or deferred record stops the batch; the rest come back as
+        ``not_attempted``. Every write is an idempotent upsert, so a caller retries
+        the whole batch. Never raises.
+        """
+        moment = now if now is not None else datetime.now(timezone.utc)
+        try:
+            items = list(records)
+        except Exception as exc:  # noqa: BLE001  # an unreadable batch is a degradation
+            return IngestResult(
+                ok=False,
+                degradations=(
+                    _degradation(
+                        "ingest", continuity.CODE_INVALID_RECORD, "the batch was unreadable", exc
+                    ),
+                ),
+            )
+        tally = _IngestTally()
+        halted_at: Optional[int] = None
+        for position, raw in enumerate(items):
+            prepared = self._prepare_ingest(raw, moment)
+            if isinstance(prepared, str):
+                tally.invalid(raw, prepared)
+                continue
+            record, replaced = prepared
+            identifier = str(record["id"])
+            status, value, degradation = self._run_job(
+                lambda record=record, replaced=replaced: self._ingest_one(record, replaced),
+                identifier,
+                deadline,
+                verb="ingest",
+                code=CODE_ABANDONED_REMEMBER,
+            )
+            if status == "ok":
+                tally.outcome(identifier, value)
+                continue
+            tally.job_failed(identifier, value, degradation)
+            if status in ("refused", "deferred"):
+                halted_at = position + 1
+                break
+        rest = items[halted_at:] if halted_at is not None else []
+        return tally.result(tuple(_shown_id(raw) for raw in rest))
+
+    def _ingest_one(
+        self, record: dict[str, Any], replaced: Optional[str]
+    ) -> tuple[str, Any, Optional[str]]:
+        """The worker: ``(kind, detail, flipped_id)`` under ONE store-lock hold.
+
+        *kind* is ``written``, ``collapsed`` (detail: the existing id),
+        ``replaced`` (detail: the superseded id the backend replaced) or
+        ``failed`` (detail: a Degradation).
+        """
+        refusal = self._root_refusal()
+        if refusal is not None:
+            return "failed", refusal, None
+        digest = hashlib.sha256(str(record["text"]).encode("utf-8")).hexdigest()
+        with continuity._STORE_LOCK:
+            existing = self._list_fn(
+                data_dir=self._data_dir,
+                scope=INGEST_SCOPE,
+                visibility=INGEST_VISIBILITY,
+                backend=self._backend,
+            )
+            clash = _hash_clash(existing, digest, record["id"])
+            if clash is not None and clash != replaced:
+                return "collapsed", clash, None
+            outcome = self._remember_fn(
+                record,
+                data_dir=self._data_dir,
+                scope=INGEST_SCOPE,
+                visibility=INGEST_VISIBILITY,
+                added_by=record.get("added_by"),
+                backend=self._backend,
+            )
+            if not getattr(outcome, "ok", False):
+                return "failed", self._safe_degradation(getattr(outcome, "degradation", None)), None
+            flipped: Optional[str] = None
+            if replaced is not None and replaced != record["id"] and clash is None:
+                flipped, seam = self._flip_superseded(replaced)
+                if seam is not None:
+                    return "failed", seam, None
+            self._tighten_scope(INGEST_SCOPE)
+        self._wake_backfill()
+        if clash is not None:
+            return "replaced", clash, None
+        return "written", None, flipped
+
+    def _flip_superseded(self, replaced: str) -> tuple[Optional[str], Optional[Degradation]]:
+        """Archive the record *replaced* names: ``(flipped id, failure)``. Lock held by caller.
+
+        An unknown or already-hidden superseded record is a fact, not a fault:
+        ``(None, None)``.
+        """
+        flip = self._archive_fn(
+            replaced,
+            data_dir=self._data_dir,
+            scope=INGEST_SCOPE,
+            visibility=INGEST_VISIBILITY,
+            backend=self._backend,
+        )
+        if getattr(flip, "ok", False):
+            return replaced, None
+        seam = self._safe_degradation(getattr(flip, "degradation", None))
+        if getattr(seam, "code", None) in (
+            continuity.CODE_RECORD_NOT_FOUND,
+            continuity.CODE_ALREADY_ARCHIVED,
+        ):
+            return None, None
+        return None, seam
+
+    def forget_source(
+        self,
+        source: str,
+        source_id: str,
+        *,
+        deadline: float = DEFAULT_WRITE_DEADLINE,
+    ) -> IngestForgetResult:
+        """Archive every ingest record of one source unit (a recording, an issue).
+
+        Matches ``metadata.source == source`` and the source's id key (see
+        :data:`_SOURCE_ID_KEYS`) equal to *source_id*, by ENUMERATING the ingest
+        scope — never by ranked recall, which would miss records the query does
+        not favour. Only the ingest scope is read or touched. Archives, never
+        deletes. Never raises.
+
+        *deadline* bounds the WHOLE call, not each step: the enumeration and then
+        each archive waits at most what remains of it. When it runs out, the ids
+        not reached are reported in ``failed`` as :data:`CODE_INGEST_NOT_ATTEMPTED`
+        (``ok`` is false), so a caller retries; the retry re-enumerates, finds the
+        done ones ``already_archived`` and continues from the rest.
+        """
+        key = _SOURCE_ID_KEYS.get(source) if isinstance(source, str) else None
+        if key is None or not isinstance(source_id, str) or not source_id.strip():
+            return IngestForgetResult(
+                ok=False,
+                degradations=(
+                    _degradation(
+                        "forget",
+                        continuity.CODE_INVALID_RECORD,
+                        "forget_source needs a registered source and a non-empty source id",
+                    ),
+                ),
+            )
+        until = _deadline_at(deadline)
+        status, value, degradation = self._run_job(
+            self._enumerate_ingest,
+            f"{safe_label(source)}-enumerate",
+            _left(until),
+            verb="forget",
+            code=CODE_ABANDONED_FORGET,
+        )
+        if status != "ok":
+            return IngestForgetResult(
+                ok=False,
+                source=source,
+                degradations=(degradation,) if degradation is not None else (),
+            )
+        todo, already = _select_source(value, source, key, source_id)
+        outcome = self._archive_ids(todo, until)
+        return IngestForgetResult(
+            ok=not outcome.failed,
+            source=source,
+            source_id=source_id,
+            matched=len(todo) + len(already),
+            archived=outcome.archived,
+            already_archived=tuple(already) + outcome.already_archived,
+            not_found=outcome.not_found,
+            failed=outcome.failed,
+            degradations=outcome.degradations,
+        )
+
+    def _enumerate_ingest(self) -> list[dict[str, Any]]:
+        """The worker: every record of the ingest scope, under the store lock. Raises."""
+        if self._root_refusal() is not None:
+            raise RuntimeError("the store root is refused")
+        with continuity._STORE_LOCK:
+            return list(
+                self._list_fn(
+                    data_dir=self._data_dir,
+                    scope=INGEST_SCOPE,
+                    visibility=INGEST_VISIBILITY,
+                    backend=self._backend,
+                )
+            )
+
+    def forget_ids(
+        self, record_ids: Iterable[Any], *, deadline: float = DEFAULT_WRITE_DEADLINE
+    ) -> IngestForgetResult:
+        """Archive exact ids in the ingest scope (the surplus a re-distil leaves).
+
+        An id in any other scope is simply not found there. *deadline* bounds
+        the whole call, as in :meth:`forget_source`. Never raises.
+        """
+        try:
+            wanted = list(record_ids)
+        except Exception as exc:  # noqa: BLE001  # an unreadable list is a degradation
+            return IngestForgetResult(
+                ok=False,
+                degradations=(
+                    _degradation("forget", continuity.CODE_INVALID_RECORD, "unreadable ids", exc),
+                ),
+            )
+        usable: list[str] = []
+        invalid: list[tuple[str, str]] = []
+        for value in wanted:
+            identifier = _usable_id(value)
+            if identifier is None:
+                invalid.append(("(unusable id)", continuity.CODE_INVALID_RECORD))
+            elif identifier not in usable:
+                usable.append(identifier)
+        outcome = self._archive_ids(usable, _deadline_at(deadline))
+        return IngestForgetResult(
+            ok=not outcome.failed and not invalid,
+            matched=len(wanted),
+            archived=outcome.archived,
+            already_archived=outcome.already_archived,
+            not_found=outcome.not_found,
+            failed=tuple(invalid) + outcome.failed,
+            degradations=outcome.degradations
+            + tuple(
+                _degradation("forget", continuity.CODE_INVALID_RECORD, "unusable record id")
+                for _ in invalid
+            ),
+        )
+
+    def _archive_ids(self, identifiers: Sequence[str], until: float) -> IngestForgetResult:
+        """Archive each id in the ingest scope, one job (one lock hold) apiece.
+
+        *until* is the one deadline (on :func:`_elapsed`) for the whole pass:
+        each job waits at most what remains, and once nothing remains the rest
+        are reported not attempted.
+        """
+        tally = _ArchiveTally()
+        for position, identifier in enumerate(identifiers):
+            left = _left(until)
+            if left <= 0:
+                tally.out_of_time(identifiers[position:])
+                break
+            status, value, degradation = self._run_job(
+                lambda identifier=identifier: self._archive_one(identifier),
+                identifier,
+                left,
+                verb="forget",
+                code=CODE_ABANDONED_FORGET,
+            )
+            if status != "ok":
+                tally.fail([identifier], str(value))
+                if degradation is not None:
+                    tally.degradations.append(degradation)
+                if status in ("refused", "deferred"):
+                    tally.fail(identifiers[position + 1 :], str(value))
+                    break
+            elif getattr(value, "ok", False):
+                tally.archived.append(identifier)
+            else:
+                tally.seam_answer(
+                    identifier, self._safe_degradation(getattr(value, "degradation", None))
+                )
+        return tally.result()
+
+    def _archive_one(self, identifier: str) -> Any:
+        """The worker: archive one ingest record and drop its cached vector."""
+        refusal = self._root_refusal()
+        if refusal is not None:
+            return continuity.ArchiveOutcome(ok=False, record_id=None, degradation=refusal)
+        outcome = self._archive_fn(
+            identifier,
+            data_dir=self._data_dir,
+            scope=INGEST_SCOPE,
+            visibility=INGEST_VISIBILITY,
+            backend=self._backend,
+        )
+        self._tighten_scope(INGEST_SCOPE)
+        self._drop_vector_after_archive(identifier, outcome)
+        return outcome
+
     # -- forgetting ---------------------------------------------------------
 
     def forget(
@@ -1601,6 +2540,10 @@ class RoomMemory:
         failure lands as :data:`CODE_ABANDONED_FORGET`. Never raises.
         """
         identifier = _usable_id(record_id)
+        if identifier is not None and self._scope == INGEST_SCOPE:
+            # The model-facing forget must never reach recordings; forget_ids is
+            # the operator's path to the ingest scope.
+            identifier = None
         if identifier is None:
             return ForgetResult(
                 ok=False,
@@ -1628,6 +2571,7 @@ class RoomMemory:
             )
             # upsert rewrites the scope file; tighten inside the deadline.
             self._tighten_scope()
+            self._drop_vector_after_archive(identifier, outcome)
             return outcome
 
         future, refusal = self._submit(work, record_id=identifier)
@@ -1642,11 +2586,7 @@ class RoomMemory:
                     "forget",
                     code,
                     f"record {safe_label(identifier)} was NOT archived: "
-                    + (
-                        "every in-flight memory slot is occupied"
-                        if refusal == CODE_SATURATED
-                        else _CLOSED_REASON
-                    ),
+                    + (_SATURATED_REASON if refusal == CODE_SATURATED else _CLOSED_REASON),
                 ),
             )
 
@@ -1767,6 +2707,10 @@ class RoomMemory:
             )
 
         self._last_mode = resolved
+        relevance = getattr(outcome, "relevance", None)
+        semantic = resolved == RECALL_MODE_SEMANTIC and isinstance(outcome, _SemanticOutcome)
+        if semantic:
+            self._last_relevance = relevance
         seam_degradation = self._safe_degradation(getattr(outcome, "degradation", None))
         if seam_degradation is not None:
             degradations = degradations + [seam_degradation]
@@ -1775,6 +2719,8 @@ class RoomMemory:
             records=list(getattr(outcome, "records", []) or []),
             mode=resolved,
             degradations=tuple(degradations),
+            relevance=relevance if semantic else None,
+            threshold=self._threshold if semantic else None,
         )
 
     def _work(
@@ -1794,6 +2740,15 @@ class RoomMemory:
         if refusal is not None:
             outcome = continuity.RecallOutcome(ok=False, records=[], degradation=refusal)
             return resolved, outcome, degradations
+
+        if mode == SEMANTIC_MODE:
+            semantic = self._semantic_work(query, top_k, visibility, reinforce, degradations)
+            if semantic is not None:
+                return RECALL_MODE_SEMANTIC, semantic, degradations
+            # Demoted, and the reason is already on *degradations*: run the
+            # keyword path exactly as a keyword recall would.
+            mode = FAST_MODE
+            effective = FAST_MODE
 
         if mode in SEMANTIC_MODES:
             online, probe_degradation = self._probe()
@@ -1817,7 +2772,60 @@ class RoomMemory:
             # Recall is not read-only: eidetic reinforces every hit, which
             # rewrites the file and resets its mode exactly as a write does.
             self._tighten_scope()
+        if self._ingest_scope is not None:
+            outcome = self._merge_ingest(outcome, query, effective, top_k, reinforce, degradations)
         return resolved, outcome, degradations
+
+    def _merge_ingest(
+        self,
+        outcome: Any,
+        query: str,
+        mode: str,
+        top_k: int,
+        reinforce: bool,
+        degradations: list[Degradation],
+    ) -> Any:
+        """Add the ingest scope's hits to *outcome* — same job, same deadline.
+
+        Exactly one more scope (private), read by the same worker the caller is
+        already bounding. A failure there costs the ingest hits and is recorded;
+        it never costs the room's own.
+        """
+        try:
+            extra = self._recall_fn(
+                query,
+                data_dir=self._data_dir,
+                scope=self._ingest_scope,
+                visibility=INGEST_VISIBILITY,
+                top_k=top_k,
+                mode=mode,
+                reinforce=reinforce,
+                backend=self._backend,
+            )
+        except Exception as exc:  # noqa: BLE001  # the ingest scope never costs the room's hits
+            degradations.append(
+                _degradation("recall", _failure_code(exc), "the ingest-scope recall failed", exc)
+            )
+            return outcome
+        if reinforce:
+            self._tighten_scope(self._ingest_scope)
+        seam = self._safe_degradation(getattr(extra, "degradation", None))
+        if seam is not None:
+            degradations.append(seam)
+        merged = list(getattr(outcome, "records", []) or []) + list(
+            getattr(extra, "records", []) or []
+        )
+
+        def rank(record: Any) -> float:
+            score = record.get("score") if isinstance(record, Mapping) else None
+            return float(score) if isinstance(score, (int, float)) else 0.0
+
+        merged.sort(key=rank, reverse=True)
+        return continuity.RecallOutcome(
+            ok=bool(getattr(outcome, "ok", False)),
+            records=merged[: max(0, int(top_k))],
+            degradation=getattr(outcome, "degradation", None),
+        )
 
     def _probe(self) -> tuple[bool, Degradation]:
         """``(online, degradation_if_not)`` — eidetic's silent fallback, observed.
@@ -1836,6 +2844,443 @@ class RoomMemory:
         except Exception as exc:  # noqa: BLE001  # an unreachable embedder is not an error
             return False, _degradation("recall", CODE_EMBEDDER_OFFLINE, reason, exc)
         return online, _degradation("recall", CODE_EMBEDDER_OFFLINE, reason)
+
+    # -- semantic recall over cached vectors (t12) --------------------------
+
+    def _check_vector_cache(self) -> None:
+        """Refuse a cache made in another vector space, loudly (C3)."""
+        if self._embedder is None or self._vector_cache is None:
+            return
+        expected = vector_model_tag(str(getattr(self._embedder, "model", EMBED_ROLE)))
+        if getattr(self._vector_cache, "model", None) != expected:
+            self._vector_cache = None
+            self._record_abandoned(
+                _degradation(
+                    "recall",
+                    CODE_VECTOR_CACHE_MISMATCH,
+                    "the vector cache's model tag does not name this embedder and the "
+                    f"{DOCUMENT_PROMPT!r} prompt; semantic recall is off and every "
+                    "semantic recall demotes to keyword",
+                )
+            )
+
+    @property
+    def _semantic_ready(self) -> bool:
+        return self._embedder is not None and self._vector_cache is not None
+
+    def _embedder_role(self) -> str:
+        return str(getattr(self._embedder, "model", None) or EMBED_ROLE)
+
+    def _embedder_state(self) -> dict[str, Any]:
+        if self._embedder is None:
+            return {"online": None, "reason": ""}
+        try:
+            state = self._embedder.state()
+        except Exception as exc:  # noqa: BLE001  # an unreadable state reads as unknown
+            return {"online": None, "reason": describe_exception(exc)}
+        return state if isinstance(state, Mapping) else {"online": None, "reason": ""}
+
+    def _reprobe(self) -> None:
+        try:
+            self._embedder.maybe_reprobe()
+        except Exception as exc:  # noqa: BLE001  # a failed re-probe is recorded, not raised
+            self._record_abandoned(
+                _degradation("recall", CODE_EMBEDDER_OFFLINE, "the embedder re-probe failed", exc)
+            )
+
+    def _count(self, key: str, by: int = 1) -> None:
+        with self._lock:
+            self._semantic[key] += by
+
+    def _demote(self, degradations: list[Degradation], reason: str) -> None:
+        self._count("demotions")
+        degradations.append(
+            _degradation(
+                "recall",
+                CODE_EMBEDDER_OFFLINE,
+                f"{reason}; this recall was demoted to {FAST_MODE!r} (embedder role "
+                f"{self._embedder_role()!r})",
+            )
+        )
+
+    def _candidate_pools(self, visibility: str) -> list[tuple[str, str]]:
+        """Which (scope, visibility) pools a query may be served from.
+
+        A private query sees this room's private and public records; a public
+        query only its public ones (eidetic's ``can_serve`` within this scope).
+        The ingest scope is read whenever it is configured, as the keyword
+        path's :meth:`_merge_ingest` does. A foreign scope's public records —
+        which eidetic would serve — are never enumerated: this store is
+        pinned and private, so none are expected, and none are scored.
+        """
+        pools = [(self._scope, PUBLIC)]
+        if visibility == PRIVATE:
+            pools.insert(0, (self._scope, PRIVATE))
+        if self._ingest_scope is not None and (self._ingest_scope, INGEST_VISIBILITY) not in pools:
+            pools.append((self._ingest_scope, INGEST_VISIBILITY))
+        return pools
+
+    def _enumerate_active(self, pools: Sequence[tuple[str, str]]) -> list[dict[str, Any]]:
+        """Every active record of *pools*, deduplicated by id. Raises on failure."""
+        found: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        with continuity._STORE_LOCK:
+            for scope, visibility in pools:
+                for item in self._list_fn(
+                    data_dir=self._data_dir,
+                    scope=scope,
+                    visibility=visibility,
+                    backend=self._backend,
+                ):
+                    if not isinstance(item, Mapping) or not _is_active(item):
+                        continue
+                    identifier = item.get("id")
+                    text = item.get("text")
+                    if not isinstance(identifier, str) or not isinstance(text, str):
+                        continue
+                    if identifier in seen:
+                        continue
+                    seen.add(identifier)
+                    found.append(dict(item))
+        return found
+
+    def _semantic_work(
+        self,
+        query: str,
+        top_k: int,
+        visibility: str,
+        reinforce: bool,
+        degradations: list[Degradation],
+    ) -> Optional[_SemanticOutcome]:
+        """Score cached vectors against ONE query embed; ``None`` means demoted.
+
+        No probe: the embedder's online state is the outcome of its last real
+        call (``EmbedderClient.state()``), refreshed in the background by
+        ``maybe_reprobe``. A known-offline embedder is not called at all. A
+        candidate without a cached vector is skipped and counted — never
+        embedded here; the backfill embeds it off the recall path.
+        """
+        vector = self._embed_query(query, degradations)
+        if vector is None:
+            return None
+        try:
+            candidates = self._enumerate_active(self._candidate_pools(visibility))
+        except Exception as exc:  # noqa: BLE001  # a store failure is a degradation
+            return _SemanticOutcome(
+                ok=False,
+                records=[],
+                degradation=_degradation(
+                    "recall", _failure_code(exc), "enumerating recall candidates failed", exc
+                ),
+            )
+
+        hits, relevance = self._score_candidates(vector, candidates, top_k)
+        degradation = self._reinforce_hits(hits, visibility) if reinforce and hits else None
+        return _SemanticOutcome(ok=True, records=hits, degradation=degradation, relevance=relevance)
+
+    def _embed_query(self, query: str, degradations: list[Degradation]) -> Optional[list[float]]:
+        """The query's vector from ONE embed, or ``None`` with the demotion recorded."""
+        if not self._semantic_ready:
+            self._demote(degradations, "no embedder or vector cache is configured")
+            return None
+        self._count("recalls")
+        if self._embedder_state().get("online") is False:
+            self._reprobe()
+            self._demote(degradations, "the embedder was offline at its last call")
+            return None
+        self._count("query_embeds")
+        try:
+            embedded = self._embedder.embed(query, prompt=QUERY_PROMPT)
+        except Exception as exc:  # noqa: BLE001  # the client never raises; a fake might
+            self._demote(degradations, f"the query embed failed [{describe_exception(exc)}]")
+            return None
+        vector = getattr(embedded, "vector", None)
+        if not getattr(embedded, "online", False) or not vector:
+            self._reprobe()
+            self._demote(degradations, "the embedder did not answer the query embed")
+            return None
+        return vector
+
+    def _score_candidates(
+        self, vector: list[float], candidates: Sequence[dict[str, Any]], top_k: int
+    ) -> tuple[list[dict[str, Any]], Optional[float]]:
+        """``(hits at or above the threshold, best first; best similarity scored)``."""
+        scored: list[tuple[float, dict[str, Any]]] = []
+        uncached = 0
+        for record in candidates:
+            cached = self._vector_cache.get(record["text"])
+            similarity = None if cached is None else _cosine(vector, cached)
+            if similarity is None:
+                uncached += 1
+                continue
+            scored.append((similarity, record))
+        relevance = max((score for score, _ in scored), default=None)
+        kept = [(score, record) for score, record in scored if score >= self._threshold]
+        kept.sort(key=lambda pair: pair[0], reverse=True)
+        hits = []
+        for score, record in kept[: max(0, int(top_k))]:
+            record["score"] = score
+            hits.append(record)
+        with self._lock:
+            self._semantic["cached_hits"] += len(scored)
+            self._semantic["uncached_skipped"] += uncached
+            self._semantic["below_threshold"] += len(scored) - len(kept)
+            self._semantic["returned"] += len(hits)
+        return hits, relevance
+
+    def _reinforce_hits(
+        self, hits: Sequence[dict[str, Any]], visibility: str
+    ) -> Optional[Degradation]:
+        """Write back the semantic hits' recall; a failure is returned, never raised."""
+        try:
+            self._reinforce_fn(
+                data_dir=self._data_dir,
+                backend=self._backend,
+                ids=[record["id"] for record in hits],
+            )
+            for scope in dict.fromkeys(s for s, _ in self._candidate_pools(visibility)):
+                self._tighten_scope(scope)
+        except Exception as exc:  # noqa: BLE001  # a read survives a failed write-back
+            return _degradation(
+                "recall",
+                continuity.CODE_REINFORCE_FAILED,
+                "reinforcing semantic hits failed",
+                exc,
+            )
+        return None
+
+    # -- the background backfill (t12) ---------------------------------------
+
+    def backfill_tick(
+        self,
+        *,
+        max_records: int = DEFAULT_BACKFILL_BATCH,
+        budget: float = DEFAULT_BACKFILL_BUDGET,
+    ) -> dict[str, Any]:
+        """Embed up to *max_records* uncached active records, within *budget* seconds.
+
+        One bounded step of the backfill; :meth:`start_backfill` runs it in the
+        background. Embeds with :data:`DOCUMENT_PROMPT` and caches each vector
+        with its record id (so a forget can drop it). Stops at the first
+        offline answer, and does not call a known-offline embedder at all
+        (asking for a background re-probe instead). Never raises.
+        """
+        report: dict[str, Any] = {"embedded": 0, "remaining": None, "offline": False}
+        if not self._semantic_ready or self._closed or self._root_refusal() is not None:
+            return report
+        with self._lock:
+            self._backfill["ticks"] += 1
+        if self._embedder_state().get("online") is False:
+            self._reprobe()
+            report["offline"] = True
+            self._note_backfill_offline()
+            return report
+        try:
+            todo = self._backfill_todo()
+            self._backfill_embed(todo[: max(0, int(max_records))], budget, report)
+            if not report["offline"]:
+                self._backfill_offline = False
+            report["remaining"] = len(todo) - report["embedded"]
+        except Exception as exc:  # noqa: BLE001  # a tick never raises; it records
+            with self._lock:
+                self._backfill["failed"] += 1
+            self._record_abandoned(
+                _degradation("backfill", CODE_BACKFILL_FAILED, "a backfill tick failed", exc)
+            )
+        with self._lock:
+            self._backfill["embedded"] += report["embedded"]
+            if report["remaining"] is not None:
+                self._backfill["remaining"] = report["remaining"]
+            if report["offline"]:
+                self._backfill["offline_ticks"] += 1
+        return report
+
+    def _backfill_todo(self) -> list[dict[str, Any]]:
+        """Active records with no cached vector, one per distinct text. Raises on failure."""
+        todo: list[dict[str, Any]] = []
+        texts: set[str] = set()
+        for record in self._enumerate_active(self._candidate_pools(PRIVATE)):
+            text = record["text"]
+            if text in texts or self._vector_cache.get(text) is not None:
+                continue
+            texts.add(text)
+            todo.append(record)
+        return todo
+
+    def _backfill_embed(
+        self, records: Sequence[dict[str, Any]], budget: float, report: dict[str, Any]
+    ) -> None:
+        """Embed *records* within *budget*; the cache file is written ONCE, at the end.
+
+        Saving per vector rewrote the whole cache file each time (O(N^2) bytes
+        for a backfill of N). The vectors gathered so far are saved even when
+        the tick stops early or an embed raises.
+        """
+        batch: list[tuple[str, list[float], Optional[str]]] = []
+        started = self._clock()
+        try:
+            for record in records:
+                if self._backfill_stop.is_set() and self._backfill_running:
+                    break
+                if self._clock() - started >= budget:
+                    break
+                result = self._embedder.embed(record["text"], prompt=DOCUMENT_PROMPT)
+                vector = getattr(result, "vector", None)
+                if not getattr(result, "online", False) or not vector:
+                    report["offline"] = True
+                    self._note_backfill_offline()
+                    break
+                batch.append((record["text"], vector, record["id"]))
+                report["embedded"] += 1
+        finally:
+            if batch:
+                self._vector_cache.put_many(batch)
+
+    def _wake_backfill(self) -> None:
+        """Ask the running backfill for a tick now (a write changed a record's text).
+
+        Cheap and never raises; a no-op with no backfill running. The embed
+        happens in the backfill thread, never in the write.
+        """
+        try:
+            with self._lock:
+                if not self._backfill_running or self._closed:
+                    return
+                self._backfill["write_wakes"] += 1
+            self._backfill_wake.set()
+        except Exception as exc:  # noqa: BLE001  # best-effort; recorded, the idle tick still comes
+            self._record_abandoned(
+                _degradation(
+                    "backfill", CODE_BACKFILL_FAILED, "a write could not wake the backfill", exc
+                )
+            )
+
+    def _note_backfill_offline(self) -> None:
+        """Record the backfill's embedder going offline once per transition (C3)."""
+        with self._lock:
+            if self._backfill_offline:
+                return
+            self._backfill_offline = True
+        self._record_abandoned(
+            _degradation(
+                "backfill",
+                CODE_BACKFILL_OFFLINE,
+                f"the embedder (role {self._embedder_role()!r}) did not answer; uncached "
+                "records stay unscored by semantic recall until it does",
+            )
+        )
+
+    def start_backfill(
+        self,
+        *,
+        max_records: int = DEFAULT_BACKFILL_BATCH,
+        budget: float = DEFAULT_BACKFILL_BUDGET,
+        busy_interval: float = DEFAULT_BACKFILL_BUSY_INTERVAL,
+        idle_interval: float = DEFAULT_BACKFILL_IDLE_INTERVAL,
+    ) -> bool:
+        """Run :meth:`backfill_tick` in the background until stopped or closed.
+
+        ``True`` when a backfill was started; ``False`` when one is already
+        running, semantic recall is not configured, or the layer is closed.
+        Never on the recall path, never through the recall executor.
+        """
+        with self._lock:
+            if self._backfill_running or self._closed or not self._semantic_ready:
+                return False
+            self._backfill_running = True
+            self._backfill_stop.clear()
+            self._backfill_done.clear()
+
+        def loop() -> None:
+            try:
+                while not self._backfill_stop.is_set() and not self._closed:
+                    # Cleared before the tick: a write during it sets it again.
+                    self._backfill_wake.clear()
+                    report = self.backfill_tick(max_records=max_records, budget=budget)
+                    busy = bool(report.get("remaining")) and not report.get("offline")
+                    if self._backfill_wake.is_set():
+                        continue
+                    # Stop and wake share one wait: stop sets both, a write only wakes.
+                    self._backfill_wake.wait(busy_interval if busy else idle_interval)
+            finally:
+                with self._lock:
+                    self._backfill_running = False
+                self._backfill_done.set()
+
+        try:
+            self._spawn(loop)
+        except Exception as exc:  # noqa: BLE001  # a thread that cannot start is recorded
+            with self._lock:
+                self._backfill_running = False
+            self._backfill_done.set()
+            self._record_abandoned(
+                _degradation("backfill", CODE_BACKFILL_FAILED, "the backfill did not start", exc)
+            )
+            return False
+        return True
+
+    def stop_backfill(self, deadline: float = 1.0) -> bool:
+        """Ask the backfill to stop; ``True`` once it has (within *deadline*)."""
+        self._backfill_stop.set()
+        self._backfill_wake.set()
+        return self._backfill_done.wait(timeout=max(0.0, float(deadline)))
+
+    def _drop_vector_after_archive(self, identifier: str, outcome: Any) -> None:
+        """Drop *identifier*'s cached vector once its record is archived (or was)."""
+        if self._vector_cache is None:
+            return
+        archived = bool(getattr(outcome, "ok", False))
+        if not archived:
+            code = getattr(getattr(outcome, "degradation", None), "code", None)
+            archived = code == continuity.CODE_ALREADY_ARCHIVED
+        if not archived:
+            return
+        try:
+            dropped = int(self._vector_cache.drop(identifier))
+        except Exception as exc:  # noqa: BLE001  # a failed drop is recorded, never raised
+            self._record_abandoned(
+                _degradation(
+                    "forget", CODE_VECTOR_DROP_FAILED, "a forgotten record's vector stayed", exc
+                )
+            )
+            return
+        with self._lock:
+            self._vectors_dropped += dropped
+
+    @property
+    def last_relevance(self) -> Optional[float]:
+        """The best similarity the last completed SEMANTIC recall scored."""
+        return self._last_relevance
+
+    def status(self) -> dict[str, Any]:
+        """The recall surface a host reports: embedder role, mode in effect, counters.
+
+        ``last_recall_mode`` is what the last completed recall actually ran
+        under (C3) — never the configured mode. Every counter only increments.
+        """
+        state = self._embedder_state()
+        cache = self._vector_cache
+        with self._lock:
+            return {
+                "last_recall_mode": self._last_mode,
+                "embedder": {
+                    "role": self._embedder_role(),
+                    "configured": self._semantic_ready,
+                    "online": state.get("online"),
+                    "reason": str(state.get("reason") or "")[:_MAX_REASON_LEN],
+                },
+                "similarity_threshold": self._threshold,
+                "threshold_calibrated": SIMILARITY_THRESHOLD_CALIBRATED,
+                "last_relevance": self._last_relevance,
+                "semantic": dict(self._semantic),
+                "backfill": dict(self._backfill, running=self._backfill_running),
+                "vector_cache": {
+                    "configured": cache is not None,
+                    "model": getattr(cache, "model", None),
+                    "dropped": self._vectors_dropped,
+                    "degradations": len(getattr(cache, "degradations", ()) or ()),
+                },
+            }
 
     # -- the abandoned worker ----------------------------------------------
 
@@ -1921,6 +3366,9 @@ class RoomMemory:
             self._closed = True
             writes = dict(self._writes)
             reads = list(self._reads)
+        # The backfill exits at its next check; never waited for here.
+        self._backfill_stop.set()
+        self._backfill_wake.set()
 
         landed, unconfirmed, failed = self._settle_writes(writes, deadline)
 
@@ -2056,7 +3504,21 @@ def _neutralise(value: Any) -> str:
     return _CLOSE_RUN.sub(NEUTRALISED_CLOSE, cleaned)
 
 
-def _label(value: Any, charset: frozenset[str], fallback: str) -> str:
+def neutralise_source_text(value: Any, limit: int) -> str:
+    """Public face of :func:`_neutralise` for text shown on the page, capped.
+
+    Delegates; it is not a second sanitiser. ``limit`` bounds the *neutralised*
+    text (never the input), so a cap cannot cut a fence mark in half.
+    """
+    return _neutralise(value)[: max(0, int(limit))]
+
+
+def _label(
+    value: Any,
+    charset: Optional[frozenset[str]],
+    fallback: str,
+    limit: int = HEADER_FIELD_LIMIT,
+) -> str:
     """One header field: neutralised, restricted to *charset*, capped.
 
     Restriction rather than escaping, because a header field is an *opaque
@@ -2065,14 +3527,24 @@ def _label(value: Any, charset: frozenset[str], fallback: str) -> str:
     here is to make a header line read as something it is not. Anything outside
     the set becomes :data:`HEADER_PLACEHOLDER` — visible, so a mangled label
     looks mangled instead of looking like a shorter legitimate one.
+
+    ``charset=None`` is for provenance *data* that is free text (a title, a
+    section, a link): still neutralised, whitespace of every kind collapsed to
+    one space so it stays on one line, and capped at *limit* — but not
+    restricted, because a Hebrew title is legitimate. Such a field is only ever
+    rendered on a :data:`QUOTE`-prefixed line, never in the header.
     """
     cleaned = _neutralise(value).strip()
+    if charset is None:
+        cleaned = " ".join(cleaned.split())
     if not cleaned:
         return fallback
+    if charset is None:
+        return cleaned[:limit]
     restricted = "".join(
         character if character in charset else HEADER_PLACEHOLDER for character in cleaned
     )
-    return restricted[:HEADER_FIELD_LIMIT]
+    return restricted[:limit]
 
 
 def _quoted(text: Any, max_chars: int) -> list[str]:
@@ -2091,6 +3563,65 @@ def _quoted(text: Any, max_chars: int) -> list[str]:
         body = body[:max_chars] + " …[truncated]"
     lines = body.splitlines() or [""]
     return [f"{QUOTE}{line}" for line in lines]
+
+
+#: Longest title / section / link a provenance line carries.
+PROVENANCE_TEXT_LIMIT = 160
+
+#: The provenance keys :func:`recalled_provenance` returns, in render order.
+PROVENANCE_KEYS = ("source", "title", "date", "start", "end", "section", "link")
+
+#: ``metadata.source`` values that carry provenance, and which metadata key
+#: feeds each structured field. Anything else (room-scope records) has none.
+_PROVENANCE_FIELDS: dict[str, dict[str, str]] = {
+    "pocket": {"title": "title", "date": "date", "start": "timestamp"},
+    "newspaper": {"date": "issue_date", "section": "section", "link": "url"},
+}
+
+
+def recalled_provenance(record: Any) -> Optional[dict[str, str]]:
+    """The neutralised provenance of an ingest record, or ``None``.
+
+    Pure, and the same funnel as the header: every value passes through
+    :func:`_label` (so :func:`_neutralise`). ``None`` for a room-scope record,
+    a non-mapping, or a source outside the registry. Keys are
+    :data:`PROVENANCE_KEYS`; a field the source does not have is ``""``.
+    Never raises. ``end`` is always ``""`` today (the contract carries one
+    timestamp); it is reserved so a caller's shape does not change later.
+    """
+    if not isinstance(record, Mapping):
+        return None
+    meta = record.get("metadata")
+    if not isinstance(meta, Mapping):
+        return None
+    source = _label(meta.get("source"), HEADER_LABEL_CHARSET, "")
+    mapping = _PROVENANCE_FIELDS.get(source)
+    if mapping is None:
+        return None
+    out = dict.fromkeys(PROVENANCE_KEYS, "")
+    out["source"] = source
+    for key, meta_key in mapping.items():
+        raw = meta.get(meta_key)
+        if key in ("date", "start"):
+            out[key] = _label(raw, HEADER_TIMESTAMP_CHARSET, "")
+        else:
+            out[key] = _label(raw, None, "", PROVENANCE_TEXT_LIMIT)
+    return out
+
+
+def _provenance_line(provenance: Mapping[str, str]) -> str:
+    """One :data:`QUOTE`-prefixed data line; absent fields are left out."""
+    if provenance["source"] == "pocket":
+        parts = [("from", "pocket recording")]
+        parts += [(k, provenance[k]) for k in ("title", "date")]
+        parts.append(("at", provenance["start"]))
+    else:
+        parts = [("from", "newspaper")]
+        parts += [
+            (label, provenance[k])
+            for label, k in (("issue-date", "date"), ("section", "section"), ("link", "link"))
+        ]
+    return QUOTE + " | ".join(f"{k}: {v}" for k, v in parts if v)
 
 
 def render_recalled(
@@ -2129,6 +3660,9 @@ def render_recalled(
         writer = _label(record.get("added_by"), HEADER_LABEL_CHARSET, "unattributed")
         created = _label(record.get("created"), HEADER_TIMESTAMP_CHARSET, "unknown")
         lines.append(f"[{index}] id={identifier} written-by={writer} recorded={created}")
+        provenance = recalled_provenance(record)
+        if provenance is not None:
+            lines.append(_provenance_line(provenance))
         lines.extend(_quoted(record.get("text"), cap))
     lines.append(END_MARK)
     return "\n".join(lines)

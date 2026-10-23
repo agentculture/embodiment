@@ -2,6 +2,7 @@ import { useCallback, useState } from "react";
 import { ConnectionStatus } from "./components/ConnectionStatus";
 import { VoiceControls } from "./components/VoiceControls";
 import { Transcript } from "./components/Transcript";
+import { Chat } from "./components/Chat";
 import { DegradationsLog } from "./components/DegradationsLog";
 import { RecallModeIndicator } from "./components/RecallModeIndicator";
 import { RemoteViewers } from "./components/RemoteViewers";
@@ -188,6 +189,15 @@ export default function App({
       <section className="panel">
         <h2 className="panel__title">Transcript</h2>
         <Transcript entries={stream.transcript} />
+      </section>
+
+      <section className="panel">
+        <h2 className="panel__title">Chat</h2>
+        <Chat
+          secret={appliedSecret}
+          replyEvents={stream.transcript}
+          s2sRole={stream.s2sRole ?? undefined}
+        />
       </section>
 
       <section className="panel">

@@ -44,7 +44,7 @@ def test_tunnel_text_prints_setup_and_run_commands(capsys: pytest.CaptureFixture
     assert rc == 0
     out = capsys.readouterr().out
     assert (
-        f"cultureflare remote-login setup --hostname agent.culture.dev "
+        f"cultureflare remote-login setup --hostname gwen.culture.dev "
         f"--service http://127.0.0.1:{DEFAULT_PORT}" in out
     )
     assert f"cloudflared tunnel run {shlex.quote(TUNNEL_NAME_PLACEHOLDER)}" in out
@@ -59,7 +59,32 @@ def test_tunnel_default_hostname_and_port_come_from_named_constants(
     assert rc == 0
     payload = json.loads(capsys.readouterr().out)
     assert payload["port"] == DEFAULT_PORT
-    assert payload["hostname"] == "agent.culture.dev"
+    assert payload["hostname"] == "gwen.culture.dev"
+
+
+def test_tunnel_text_prints_the_access_env_names_and_no_values(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    from embodiment.http.access import ACCESS_ENV
+
+    rc = main(["tunnel"])
+    assert rc == 0
+    out = capsys.readouterr().out
+    for name in ACCESS_ENV:
+        assert name in out
+    # Names only: the verb has no value to print and must not invent one.
+    assert "EMBODIMENT_ACCESS_AUD=" not in out
+    assert "EMBODIMENT_PUBLIC_HOSTNAME" in out
+
+
+def test_tunnel_json_carries_the_access_env_names(capsys: pytest.CaptureFixture[str]) -> None:
+    from embodiment.http.access import ACCESS_ENV
+
+    rc = main(["tunnel", "--json"])
+    assert rc == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["access_env"] == list(ACCESS_ENV)
+    assert payload["public_hostname_env"] == "EMBODIMENT_PUBLIC_HOSTNAME"
 
 
 def test_tunnel_json_shape(capsys: pytest.CaptureFixture[str]) -> None:
@@ -353,9 +378,16 @@ def test_readme_documents_access_protects_only_public_hostname() -> None:
     assert "loopback" in lowered
     assert "cf-access-jwt-assertion" in lowered
     assert "install secret" in lowered
-    assert "service token" in lowered
-    assert "cf-access-client-id" in lowered
-    assert "cf-access-client-secret" in lowered
+    # Service tokens are refused on the public surface (t3): the README says so
+    # rather than documenting client-id/secret headers that would not admit anyone.
+    assert "service tokens are refused" in lowered
+    for name in (
+        "EMBODIMENT_ACCESS_TEAM_DOMAIN",
+        "EMBODIMENT_ACCESS_AUD",
+        "EMBODIMENT_ACCESS_EMAILS",
+    ):
+        assert name.lower() in lowered
+    assert "replaces the install secret" in lowered
 
 
 # --- criterion 3: never invokes cultureflare with --apply -------------------

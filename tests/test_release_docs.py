@@ -41,12 +41,27 @@ NOT_YET = (
     "other tools",
     "vision",
     "a face",
-    "phone voice",
+    "live realtime voice",
+    "speech-to-speech",
     "robot relay",
-    "cloudflare access",
-    "semantic recall",
     "value",
 )
+
+#: Shipped on this branch (Access verifier, semantic recall) and so dropped from
+#: the not-yet list: no item of that section may be headed by either again.
+SHIPPED_NOT_LISTED = ("cloudflare access", "semantic recall", "phone voice")
+
+#: Still unmeasured at this release; the README status must say so, by name.
+STILL_UNMEASURED = (
+    "provisional",
+    "follow-up window",
+    "webm",
+    "recall-gemma2",
+)
+
+#: t18's published recall measurement (t23 acted on it). The README Status
+#: cites it by name and quotes the numbers it changed, with their n.
+RECALL_RESULTS_FILE = "docs/live-test-results/2026-10-23-recall-gemma2.md"
 
 #: The two tools the daemon binds (``d7`` remember, ``d8`` forget). Both
 #: surfaces must name both, in the same ``## Not yet`` section that used to
@@ -104,6 +119,17 @@ def test_surface_has_the_not_yet_list(surface: str, request: pytest.FixtureReque
 
 
 @pytest.mark.parametrize("surface", ["readme", "explain_root"])
+def test_not_yet_list_no_longer_lists_what_shipped(
+    surface: str, request: pytest.FixtureRequest
+) -> None:
+    section = _section(request.getfixturevalue(surface), "Not yet")
+    headings = [ln.lower() for ln in section.splitlines() if ln.startswith("- **")]
+    assert headings, f"{surface} 'Not yet' has no items"
+    for shipped in SHIPPED_NOT_LISTED:
+        assert not [h for h in headings if h.startswith(f"- **{shipped}")], shipped
+
+
+@pytest.mark.parametrize("surface", ["readme", "explain_root"])
 def test_surface_names_both_tools_and_no_empty_registry(
     surface: str, request: pytest.FixtureRequest
 ) -> None:
@@ -128,3 +154,31 @@ def test_readme_status_does_not_claim_the_app_is_unbuilt(readme: str) -> None:
     # and must not survive into the daemon release.
     status = _section(readme, "Status").lower()
     assert "planned, not built" not in status
+
+
+def test_readme_status_names_what_is_still_unmeasured(readme: str) -> None:
+    status = _section(readme, "Status").lower()
+    missing = [phrase for phrase in STILL_UNMEASURED if phrase not in status]
+    assert not missing, f"README Status does not say these are unmeasured: {missing}"
+
+
+def test_readme_status_cites_the_recall_measurement_it_quotes(readme: str) -> None:
+    # t18's file landed; t23 applied it. Every recall number the README quotes
+    # comes with the file it came from and stays marked provisional.
+    status = _section(readme, "Status")
+    assert RECALL_RESULTS_FILE in status
+    assert "0.715" in status
+    assert "n = " in status
+    lowered = status.lower()
+    assert "uncalibrated" not in lowered, "the threshold is calibrated, provisionally"
+    assert "forthcoming" not in lowered, "the recall measurement is published"
+    assert "40 s clip deadline" not in lowered, "the stt clock is measured now"
+
+
+@pytest.mark.parametrize("surface", ["readme", "explain_root"])
+def test_no_surface_still_calls_the_old_threshold_the_default(
+    surface: str, request: pytest.FixtureRequest
+) -> None:
+    text = request.getfixturevalue(surface)
+    assert "`0.78`" not in text
+    assert "<date>-recall-gemma2" not in text

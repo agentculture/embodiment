@@ -97,6 +97,8 @@ export interface DaemonStatusBody {
   ear: DaemonEarStatus;
   clients: DaemonClientsStatus;
   recall: DaemonRecallStatus;
+  /** `status()["speech_to_speech"]` (t16): the advertised role; never enabled this cycle. */
+  speech_to_speech?: { role?: string | null; enabled?: boolean };
   [key: string]: unknown;
 }
 

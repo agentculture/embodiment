@@ -56,15 +56,22 @@ absence, never an implication:
   no files, no Qwen Code.
 - **Vision** — the session is audio-only.
 - **A face** — the dashboard's centrepiece is a waveform.
-- **Phone voice** — the phone is control and text; the `BrowserEar` client and
-  the inbound `/v1/realtime` endpoint exist and are not wired into the daemon.
+- **Live realtime voice and speech-to-speech** — the phone is control, text and
+  uploaded or recorded clips; the speech-to-speech button is present and
+  disabled; the `BrowserEar` client and the inbound `/v1/realtime` endpoint
+  exist and are not wired into the daemon.
 - **A robot relay** — the same unwired seam.
-- **Cloudflare Access verification** — the guard requires the assertion on a
-  public Host and refuses every one until an RS256 dependency is approved; a
-  recorded state, never a silent hole.
-- **Semantic recall** — the rig's embedder is down, so recall is lexical, with
-  an exact-substring fallback for Hebrew.
 - **A measured value claim** — see Status.
+
+Shipped in 0.17.0 and so no longer listed above: Cloudflare Access verification
+(a valid assertion replaces the install secret on the public Host only) and
+semantic recall through the `gemma2-embed` role. Measured once on one rig
+(`docs/live-test-results/2026-10-23-recall-gemma2.md`, model-written queries):
+the similarity threshold is `0.715`, provisional (hit@5 39/48, false positives
+2/44, chosen in-sample); the recall bound is derived from the active store,
+capped at 3 s; clips are capped at 60 s with an `stt` clock from the measured
+speed. Still unmeasured: precision against realistic distractors, the
+follow-up window, and MediaRecorder webm/mp4 acceptance.
 
 Hebrew only in v1. One active ear at a time. The realtime session never crosses
 machines: the gateway's `stt` lane must be local.
@@ -106,6 +113,8 @@ machines: the gateway's `stt` lane must be local.
 - `embodiment status` — report the daemon's state, truthfully.
 - `embodiment tunnel` — print the cultureflare/cloudflared commands for
   remote access (dry-run only; no `--apply`).
+- `embodiment memory` — `ingest`, `forget`, `overview`: enqueue facts for the
+  daemon to remember or forget (dry run unless `--apply`).
 
 The lifecycle verbs are the daemon's, not the loop's: no verb drives
 `embodiment.loop` directly — the daemon (`embodiment/daemon/app.py`, the
@@ -202,6 +211,45 @@ itself (distinct from the global `overview`, which describes the agent).
     embodiment cli overview --json
 """
 
+
+_MEMORY = """\
+# embodiment memory
+
+Noun group for the producer-facing memory verbs. They only **enqueue** into the
+daemon's ingest inbox; the daemon is the single writer of the store. Both write
+verbs are a dry run unless `--apply`, and every command takes `--json`.
+
+## Usage
+
+    embodiment memory ingest --file /abs/batch.ndjson [--apply] [--state-dir DIR] [--json]
+    embodiment memory ingest --status [--state-dir DIR] [--json]
+    embodiment memory forget --source pocket --source-id <recording-id> [--apply]
+    embodiment memory forget --id pocket:<rec>:fact:<n> [--apply]
+    embodiment memory overview [--json]
+
+## Record contract (one JSON object per line)
+
+    {"id": "pocket:<rec>:<kind>:<n>", "text": "...", "type": "fact",
+     "metadata": {"source": "pocket", "recording_id": "...", "title": "...", "date": "..."}}
+
+Sources: `pocket` (types fact, summary, action_item) and `newspaper` (type
+item; metadata issue_date, section, url). A batch holds one source. The verb
+stamps visibility, scope, `added_by` and `created`; the file cannot choose them.
+
+## Output (`--json`)
+
+`ingest` and `forget` print `{applied, source|target, records, enqueue, daemon}`:
+`enqueue` is `null` on a dry run, else `{ok, batch_id}`. `daemon` is the daemon's
+liveness (`running|stopped|dead (unclean)|state unavailable|unknown`), reported
+apart from the enqueue result: queued while stopped is normal. `ingest --status`
+prints `{spool: {pending, done, failed, oldest_pending_age_s}, daemon, degradations}`.
+
+## Exit codes
+
+`0` success (including a dry run); `1` a refused batch or bad arguments (stderr
+`error:` then `hint:`, or the JSON error with `--json`); `2` an unreadable file or
+an inbox that could not be written.
+"""
 
 _START = """\
 # embodiment start
@@ -356,11 +404,14 @@ runs either one. Dry-run only: there is no `--apply` flag here at all (unlike
    and says to read the real name off step 1's own output.
 
 Cloudflare Access protects only the public hostname; it never gates loopback
-names. The daemon's own guard (`embodiment/http/guard.py`) separately
-requires the install secret on every guarded request, Access or not. See
-`README.md`'s "Remote access" section for how the daemon validates the
-`Cf-Access-Jwt-Assertion` header and how a non-browser endpoint authenticates
-with an Access service token instead of a browser session.
+names. The default hostname is `gwen.culture.dev`. After the two commands the verb
+prints the Access environment variable names the daemon needs —
+`EMBODIMENT_ACCESS_TEAM_DOMAIN`, `EMBODIMENT_ACCESS_AUD`,
+`EMBODIMENT_ACCESS_EMAILS`, set together, plus `EMBODIMENT_PUBLIC_HOSTNAME` —
+names only, never values. On the public Host a valid `Cf-Access-Jwt-Assertion`
+replaces the install secret (`embodiment/http/guard.py`); every other Host
+still needs the secret. Service tokens are refused. See `README.md`'s "Remote
+access" section.
 
 A printed command is only honest if pasting it does what it says. `--hostname`
 (RFC-1123 labels), `--allow` (exactly one `@`, no whitespace) and
@@ -389,6 +440,10 @@ ENTRIES: dict[tuple[str, ...], str] = {
     ("doctor",): _DOCTOR,
     ("cli",): _CLI,
     ("cli", "overview"): _CLI,
+    ("memory",): _MEMORY,
+    ("memory", "ingest"): _MEMORY,
+    ("memory", "forget"): _MEMORY,
+    ("memory", "overview"): _MEMORY,
     ("start",): _START,
     ("stop",): _STOP,
     ("status",): _STATUS,

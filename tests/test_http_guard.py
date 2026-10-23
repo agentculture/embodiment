@@ -16,11 +16,14 @@ from __future__ import annotations
 
 import os
 import stat
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
+from embodiment.http import access as a
 from embodiment.http import guard as g
+from tests.test_http_access import AUD, NOW, OPERATOR, TEAM, claims, jwks, keypair, token
 
 MARKER_SECRET = "s3cr3t-MARKER-INSTALL-2f9a"  # nosec B105 - a test literal
 MARKER_TOKEN = "MARKER-ACCESS-ASSERTION-7b31"  # nosec B105 - a test literal
@@ -1005,3 +1008,411 @@ class TestTheRepairLock:
         result = g.load_or_create_install_secret(state)
         assert not target.exists()
         assert result.secret
+
+
+# ── t7: on the public Host an Access JWT replaces the install secret ─────────
+#
+# Operator decision q1 (spec c26/h26): a valid Access assertion admits a
+# public-Host request WITHOUT the install secret; loopback and LAN still need
+# the secret; with the Access env unset nothing changes. The CSRF rule extends
+# to the assertion (c47/h39): Cloudflare injects it into any request carrying
+# the ``CF_Authorization`` cookie, cross-site ones included. An unreachable
+# JWKS is a 503 with its own code (c20/h8). Every key and identity below is
+# synthetic and generated at test time; nothing comes from Gwen's real store.
+
+PUBLIC = "gwen.example.org"
+LAN = "192.168.7.20"
+
+
+def access_verifier(
+    *, fetch: object = None, emails: frozenset[str] = frozenset({OPERATOR}), **kw: object
+) -> a.AccessVerifier:
+    """The REAL verifier, on a fake JWKS and a frozen clock."""
+
+    def default_fetch() -> object:
+        return jwks()
+
+    return a.AccessVerifier(
+        TEAM,
+        AUD,
+        emails,
+        fetch_jwks=fetch or default_fetch,  # type: ignore[arg-type]
+        clock=lambda: float(NOW),
+        **kw,  # type: ignore[arg-type]
+    )
+
+
+def access_guard(verifier: object = None, **kwargs: object) -> g.Guard:
+    """A guard with Access configured, the public Origin allow-listed, a LAN host."""
+    kwargs.setdefault("public_hostname", PUBLIC)
+    kwargs.setdefault("allowed_origins", frozenset({"http://127.0.0.1:8823", f"https://{PUBLIC}"}))
+    kwargs.setdefault("allowed_hosts", g.DEFAULT_ALLOWED_HOSTS | {LAN})
+    return make_guard(
+        assertion_verifier=verifier if verifier is not None else access_verifier(), **kwargs
+    )
+
+
+def public(**overrides: str | None) -> dict[str, str]:
+    """What the dashboard's same-origin EventSource sends through Cloudflare:
+    no Origin, no install secret, the edge's assertion, the browser's metadata."""
+    base: dict[str, str | None] = {
+        "Host": PUBLIC,
+        "Origin": None,
+        "Authorization": None,
+        "Cf-Access-Jwt-Assertion": token(),
+        "Sec-Fetch-Site": "same-origin",
+    }
+    base.update(overrides)
+    return headers(**base)
+
+
+class TestAccessUnsetIsTodaysGuard:
+    """Criterion 2: no verifier injected is exactly the pre-t7 guard."""
+
+    def test_the_env_unset_yields_no_verifier(self) -> None:
+        assert a.verifier_from_env({}) is None
+
+    def test_a_valid_token_without_the_secret_is_refused_for_the_secret_as_today(self) -> None:
+        guard = make_guard(public_hostname=PUBLIC, assertion_verifier=a.verifier_from_env({}))
+        decision = guard.check("GET", "/api/events", public())
+        assert decision.allowed is False
+        assert decision.code == g.REFUSED_SECRET_CODE
+        assert decision.status == 401
+
+    def test_with_the_secret_the_public_host_is_still_refused_by_the_missing_verifier(
+        self,
+    ) -> None:
+        guard = make_guard(public_hostname=PUBLIC)
+        decision = guard.check(
+            "GET", "/api/events", public(Authorization=f"Bearer {MARKER_SECRET}")
+        )
+        assert decision.allowed is False
+        assert decision.code == g.ACCESS_VERIFIER_MISSING_CODE
+        assert decision.status == 401
+
+
+class TestAValidAssertionReplacesTheSecret:
+    """Criterion 3."""
+
+    def test_a_valid_assertion_admits_the_stream_without_the_secret(self) -> None:
+        decision = access_guard().check("GET", "/api/events", public())
+        assert decision.allowed is True, decision.code
+        assert decision.admitted_by == g.ADMITTED_BY_ACCESS
+        assert decision.identity == OPERATOR
+        assert decision.expires_at == float(NOW + 600)
+
+    def test_a_valid_assertion_admits_a_post_with_the_public_origin(self) -> None:
+        decision = access_guard().check(
+            "POST",
+            "/api/mic/mute",
+            public(Origin=f"https://{PUBLIC}", **{"Sec-Fetch-Site": None}),
+        )
+        assert decision.allowed is True, decision.code
+        assert decision.admitted_by == g.ADMITTED_BY_ACCESS
+
+    def test_the_secret_is_not_consulted_on_the_public_host(self) -> None:
+        """Neither a wrong bearer nor the right one changes an Access verdict."""
+        guard = access_guard()
+        wrong = guard.check("GET", "/api/events", public(Authorization="Bearer not-it"))
+        assert wrong.allowed is True
+        assert wrong.admitted_by == g.ADMITTED_BY_ACCESS
+        right_without_token = guard.check(
+            "GET",
+            "/api/events",
+            public(Authorization=f"Bearer {MARKER_SECRET}", **{"Cf-Access-Jwt-Assertion": None}),
+        )
+        assert right_without_token.allowed is False
+        assert right_without_token.code == g.REFUSED_ACCESS_MISSING_CODE
+
+    def test_loopback_still_requires_the_secret_whatever_the_assertion(self) -> None:
+        guard = access_guard()
+        refused = guard.check("GET", "/api/events", public(Host="127.0.0.1:8823"))
+        assert refused.allowed is False
+        assert refused.code == g.REFUSED_SECRET_CODE
+        allowed = guard.check("POST", "/api/voice/start", headers())
+        assert allowed.allowed is True
+        assert allowed.admitted_by == g.ADMITTED_BY_SECRET
+        assert allowed.identity == ""
+        assert allowed.expires_at is None
+
+    def test_a_lan_host_still_requires_the_secret_whatever_the_assertion(self) -> None:
+        guard = access_guard()
+        refused = guard.check("GET", "/api/events", public(Host=f"{LAN}:8823"))
+        assert refused.allowed is False
+        assert refused.code == g.REFUSED_SECRET_CODE
+        allowed = guard.check(
+            "GET",
+            "/api/events",
+            public(Host=f"{LAN}:8823", Authorization=f"Bearer {MARKER_SECRET}"),
+        )
+        assert allowed.allowed is True
+        assert allowed.admitted_by == g.ADMITTED_BY_SECRET
+
+    def test_an_unguarded_request_names_no_admission(self) -> None:
+        decision = access_guard().check("GET", "/index.html", {"Host": PUBLIC})
+        assert decision.allowed is True
+        assert decision.guarded is False
+        assert decision.admitted_by == ""
+
+    def test_a_plain_assertion_result_admits_without_identity_or_expiry(self) -> None:
+        guard = access_guard(lambda tok: g.AssertionResult(valid=True))
+        decision = guard.check("GET", "/api/events", public())
+        assert decision.allowed is True
+        assert decision.admitted_by == g.ADMITTED_BY_ACCESS
+        assert decision.identity == ""
+        assert decision.expires_at is None
+
+    def test_an_identity_of_the_wrong_type_is_dropped_not_raised(self) -> None:
+        @dataclass(frozen=True)
+        class Odd(g.AssertionResult):
+            email: object = None
+            expires_at: object = "soon"
+
+        decision = access_guard(lambda tok: Odd(valid=True, email=42)).check(
+            "GET", "/api/events", public()
+        )
+        assert decision.allowed is True
+        assert decision.identity == ""
+        assert decision.expires_at is None
+
+    def test_the_identity_never_reaches_repr_or_to_dict(self) -> None:
+        decision = access_guard().check("GET", "/api/events", public())
+        assert OPERATOR not in repr(decision)
+        assert OPERATOR not in str(decision.to_dict())
+        assert set(decision.to_dict()) == {"allowed", "guarded", "status", "code", "reason"}
+
+    def test_a_refusal_carries_no_identity(self) -> None:
+        guard = access_guard(access_verifier(emails=frozenset({"someone@example.net"})))
+        decision = guard.check("GET", "/api/events", public())
+        assert decision.allowed is False
+        assert decision.admitted_by == ""
+        assert decision.identity == ""
+        assert decision.expires_at is None
+
+
+class TestTheAssertionNeedsTheBrowserToVouchForIt:
+    """Criterion 4, first half: the CSRF rule extends to the assertion path."""
+
+    def test_no_origin_and_no_metadata_is_refused(self) -> None:
+        decision = access_guard().check("POST", "/api/mic/mute", public(**{"Sec-Fetch-Site": None}))
+        assert decision.allowed is False
+        assert decision.code == g.REFUSED_ACCESS_WITHOUT_ORIGIN_CODE
+        assert decision.status == 403
+
+    @pytest.mark.parametrize(
+        "site", ["cross-site", "same-site", "none", "SAME-ORIGIN", "same-origin-ish"]
+    )
+    def test_every_other_sec_fetch_site_is_refused(self, site: str) -> None:
+        decision = access_guard().check("GET", "/api/events", public(**{"Sec-Fetch-Site": site}))
+        assert decision.allowed is False
+        assert decision.code == g.REFUSED_ACCESS_WITHOUT_ORIGIN_CODE
+
+    def test_the_correct_bearer_secret_vouches_so_it_is_not_the_jwt_alone(self) -> None:
+        """Spec c47 is about a request admitted by the JWT *alone*. A bearer header
+        cannot be attached by a cross-site page (rule 5), so with it a non-browser
+        client needs no Origin — but still needs the assertion."""
+        guard = access_guard()
+        decision = guard.check(
+            "POST",
+            "/api/mic/mute",
+            public(Authorization=f"Bearer {MARKER_SECRET}", **{"Sec-Fetch-Site": None}),
+        )
+        assert decision.allowed is True, decision.code
+        assert decision.admitted_by == g.ADMITTED_BY_ACCESS
+        assert decision.identity == OPERATOR
+
+    @pytest.mark.parametrize(
+        "credential",
+        [
+            {"Authorization": "Bearer not-the-secret"},
+            {"Authorization": f"Basic {MARKER_SECRET}"},
+            # the cookie is as ambient as the assertion itself, so it vouches for nothing
+            {"Cookie": f"{g.SECRET_COOKIE_NAME}={MARKER_SECRET}"},
+        ],
+    )
+    def test_nothing_else_vouches_for_an_assertion(self, credential: dict[str, str]) -> None:
+        decision = access_guard().check(
+            "POST", "/api/mic/mute", public(**{"Sec-Fetch-Site": None}, **credential)
+        )
+        assert decision.allowed is False
+        assert decision.code == g.REFUSED_ACCESS_WITHOUT_ORIGIN_CODE
+
+    def test_a_foreign_origin_is_refused_by_the_origin_rule_first(self) -> None:
+        decision = access_guard().check(
+            "POST", "/api/mic/mute", public(Origin="https://evil.example")
+        )
+        assert decision.code == g.REFUSED_ORIGIN_CODE
+
+    def test_a_cross_site_request_never_reaches_the_verifier(self) -> None:
+        """No JWKS fetch on a request the browser did not vouch for."""
+        calls: list[str] = []
+
+        def spy(tok: str) -> g.AssertionResult:
+            calls.append(tok)
+            return g.AssertionResult(valid=True)
+
+        access_guard(spy).check("GET", "/api/events", public(**{"Sec-Fetch-Site": "cross-site"}))
+        assert calls == []
+
+    def test_a_missing_assertion_is_reported_before_the_csrf_rule(self) -> None:
+        decision = access_guard().check(
+            "GET",
+            "/api/events",
+            public(**{"Cf-Access-Jwt-Assertion": None, "Sec-Fetch-Site": None}),
+        )
+        assert decision.code == g.REFUSED_ACCESS_MISSING_CODE
+        assert decision.status == 401
+
+    def test_the_refusal_names_nothing_the_client_sent(self) -> None:
+        tok = token()
+        decision = access_guard().check(
+            "GET", "/api/events", public(**{"Sec-Fetch-Site": "cross-site"})
+        )
+        assert tok not in decision.reason
+        assert "cross-site" not in decision.reason
+
+
+class TestAnUnavailableJwksIsA503:
+    """Criterion 4, second half, and C3: the outage is recorded."""
+
+    @staticmethod
+    def down() -> object:
+        raise OSError("synthetic: the JWKS host is unreachable")
+
+    def test_an_unreachable_jwks_answers_503_with_its_own_code(self) -> None:
+        decision = access_guard(access_verifier(fetch=self.down)).check(
+            "GET", "/api/events", public()
+        )
+        assert decision.allowed is False
+        assert decision.status == 503
+        assert decision.code == g.ACCESS_UNAVAILABLE_CODE == a.UNAVAILABLE_CODE
+        assert decision.reason == a.REASONS[a.UNAVAILABLE_CODE]
+
+    def test_a_plain_result_with_the_unavailable_code_is_also_a_503(self) -> None:
+        guard = access_guard(lambda tok: g.AssertionResult(code=g.ACCESS_UNAVAILABLE_CODE))
+        assert guard.check("GET", "/api/events", public()).status == 503
+
+    def test_the_outage_is_recorded_once_per_transition_and_counted_per_request(self) -> None:
+        recorded: list[tuple[str, str]] = []
+        state = {"up": False}
+
+        def flaky(tok: str) -> g.AssertionResult:
+            if state["up"]:
+                return g.AssertionResult(valid=True)
+            return g.AssertionResult(code=g.ACCESS_UNAVAILABLE_CODE)
+
+        guard = access_guard(flaky, on_degrade=lambda c, r: recorded.append((c, r)))
+        for _ in range(3):
+            assert guard.check("GET", "/api/events", public()).status == 503
+        assert [c for c, _ in recorded] == [g.ACCESS_UNAVAILABLE_CODE]
+        assert guard.access_unavailable == 3
+        state["up"] = True
+        assert guard.check("GET", "/api/events", public()).allowed is True
+        state["up"] = False
+        assert guard.check("GET", "/api/events", public()).status == 503
+        assert [c for c, _ in recorded] == [g.ACCESS_UNAVAILABLE_CODE] * 2
+        assert all(token() not in r for _, r in recorded)
+
+    def test_a_broken_degradation_sink_does_not_turn_503_into_a_crash(self) -> None:
+        def sink(code: str, reason: str) -> None:
+            raise RuntimeError("sink down")
+
+        guard = access_guard(access_verifier(fetch=self.down), on_degrade=sink)
+        assert guard.check("GET", "/api/events", public()).status == 503
+        assert guard.hook_errors == 1
+
+
+class TestAccessRefusalsKeepTheirCodes:
+    def test_a_forged_signature_is_401_with_accesss_code_and_reason(self) -> None:
+        forged = token(pair=keypair("kid-1", seed=99))
+        decision = access_guard().check(
+            "GET", "/api/events", public(**{"Cf-Access-Jwt-Assertion": forged})
+        )
+        assert decision.status == 401
+        assert decision.code == a.BAD_SIGNATURE_CODE
+        assert decision.reason == a.REASONS[a.BAD_SIGNATURE_CODE]
+
+    def test_an_expired_assertion_is_401(self) -> None:
+        stale = token(claims(exp=NOW - 1))
+        decision = access_guard().check(
+            "GET", "/api/events", public(**{"Cf-Access-Jwt-Assertion": stale})
+        )
+        assert decision.status == 401
+        assert decision.code == a.EXPIRED_CODE
+
+    def test_another_person_is_403(self) -> None:
+        guard = access_guard(access_verifier(emails=frozenset({"someone@example.net"})))
+        decision = guard.check("GET", "/api/events", public())
+        assert decision.status == 403
+        assert decision.code == a.EMAIL_NOT_ALLOWED_CODE
+
+    def test_a_service_token_is_403(self) -> None:
+        service = token(claims(common_name="synthetic.access", email=None))
+        decision = access_guard().check(
+            "GET", "/api/events", public(**{"Cf-Access-Jwt-Assertion": service})
+        )
+        assert decision.status == 403
+        assert decision.code == a.SERVICE_TOKEN_CODE
+
+    def test_a_partial_configuration_refuses_every_assertion(self) -> None:
+        recorded: list[str] = []
+        verifier = a.verifier_from_env(
+            {a.ENV_TEAM_DOMAIN: TEAM}, on_degrade=lambda c, r: recorded.append(c)
+        )
+        decision = access_guard(verifier).check("GET", "/api/events", public())
+        assert decision.allowed is False
+        assert decision.status == 401
+        assert decision.code == a.CONFIG_INCOMPLETE_CODE
+        assert recorded == [a.CONFIG_INCOMPLETE_CODE]
+
+    def test_a_verifier_reason_is_never_echoed(self) -> None:
+        tok = token()
+        guard = access_guard(
+            lambda t: g.AssertionResult(code="http-access-custom", reason=f"saw {t}")
+        )
+        decision = guard.check("GET", "/api/events", public(**{"Cf-Access-Jwt-Assertion": tok}))
+        assert decision.allowed is False
+        assert tok not in decision.reason
+        assert decision.reason == "the Access assertion was refused"
+
+    def test_the_status_mapping_pins_accesss_literals(self) -> None:
+        assert g.ACCESS_UNAVAILABLE_CODE == a.UNAVAILABLE_CODE
+        assert g._ACCESS_FORBIDDEN_CODES == {a.SERVICE_TOKEN_CODE, a.EMAIL_NOT_ALLOWED_CODE}
+
+
+class TestTheAssertionHeaderCap:
+    """A Cloudflare JWT carrying many groups exceeds 2 KiB; the cap is the verifier's."""
+
+    def test_the_cap_matches_the_verifiers_token_cap(self) -> None:
+        assert g._MAX_ASSERTION_CHARS == a._MAX_TOKEN_CHARS
+        assert g._MAX_ASSERTION_CHARS > g._MAX_HEADER_CHARS
+
+    def test_a_long_valid_assertion_is_admitted(self) -> None:
+        groups = [f"synthetic-group-{i:04d}" for i in range(250)]
+        long_token = token(claims(groups=groups))
+        assert g._MAX_HEADER_CHARS < len(long_token) <= g._MAX_ASSERTION_CHARS
+        decision = access_guard().check(
+            "GET", "/api/events", public(**{"Cf-Access-Jwt-Assertion": long_token})
+        )
+        assert decision.allowed is True, decision.code
+
+    def test_an_assertion_over_the_cap_is_malformed_and_never_verified(self) -> None:
+        calls: list[str] = []
+
+        def spy(tok: str) -> g.AssertionResult:
+            calls.append(tok)
+            return g.AssertionResult(valid=True)
+
+        huge = "a" * (g._MAX_ASSERTION_CHARS + 1)
+        decision = access_guard(spy).check(
+            "GET", "/api/events", public(**{"Cf-Access-Jwt-Assertion": huge})
+        )
+        assert decision.code == g.REFUSED_MALFORMED_HEADER_CODE
+        assert decision.status == 400
+        assert calls == []
+
+    def test_other_guarded_headers_keep_the_smaller_cap(self) -> None:
+        decision = make_guard().check(
+            "POST", "/api/voice/start", headers(Origin="http://" + "o" * g._MAX_HEADER_CHARS)
+        )
+        assert decision.code == g.REFUSED_MALFORMED_HEADER_CODE

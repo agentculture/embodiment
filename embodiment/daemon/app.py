@@ -29,6 +29,28 @@ What runs, and on which thread
   attached when capture started, so a displaced ear's late frame is dropped
   and counted rather than mixed into the live session (see "one ear").
 
+What t16 (gwen-remembers-recordings) added
+-------------------------------------------
+* **Recall is off the voice turn's critical path.** The turn thread no longer
+  waits on memory: :class:`~embodiment.daemon.recall_events.BackgroundRecall`
+  starts the recall on its own job and asks for the reply at once. A memory
+  that lands before the first sentence regenerates the reply with it; one that
+  lands mid-reply regenerates only the unspoken remainder; one that lands after
+  is at most one follow-up — OFF until t18 measures the window and threshold.
+  The voice is handed ONE sentence at a time, so the dashboard's ``reply``
+  events now arrive per sentence.
+* **Typed turns** (the chat page, a transcribed clip) run the same
+  orchestration with no speaker: :class:`~embodiment.daemon.text_turns.TextTurns`
+  joins the same session; a late memory becomes one later ``reply`` event
+  carrying the typed turn's ``turn_serial`` — never audio.
+* **The drain worker thread.** :meth:`DaemonApp.pump` only kicks it; it runs
+  one bounded :meth:`~embodiment.daemon.drain.Drain.drain_once` per kick and
+  forwards the embedder's, the vector cache's and memory's own degradation
+  lists to the ledger. Closed with a share BEFORE memory, after the summary.
+* **Access.** :func:`main` reads the Access env (team domain, audience, email
+  allow-list) and injects the verifier into the guard; status says only
+  ``off`` / ``on`` / ``incomplete``.
+
 One ear, and the handover is said out loud
 ------------------------------------------
 Exactly one :class:`~embodiment.audio.endpoint.AudioEndpoint` is attached at
@@ -112,24 +134,38 @@ import threading
 import time
 import unicodedata
 import urllib.request
-from collections import deque
+from collections import OrderedDict, deque
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone, tzinfo
 from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Optional
 
 from embodiment import memory as memory_module
-from embodiment import safe_reason
+from embodiment import safe_reason, vectors
 from embodiment.audio.endpoint import SAMPLE_RATE_HZ as PLAYBACK_RATE_HZ
 from embodiment.audio.endpoint import NullEndpoint
 from embodiment.audio.features import FeatureExtractor
 from embodiment.bus import Bus, fold_degradation
 from embodiment.contract import ModelResponse
+from embodiment.daemon import drain as drain_module
 from embodiment.daemon.lifecycle import DEFAULT_SHUTDOWN_DEADLINE, ENV_SHUTDOWN_DEADLINE
+from embodiment.daemon.recall_events import (
+    PURPOSE_FOLLOW_UP,
+    PURPOSE_REMAINDER,
+    PURPOSE_REPLY,
+    PURPOSE_RESTART,
+    BackgroundRecall,
+    CompletionRequest,
+    Recalled,
+    RecallEventsConfig,
+)
 from embodiment.daemon.state import DaemonState, resolve_state_dir
+from embodiment.daemon.text_turns import TextTurns, TextTurnsConfig
+from embodiment.http import access as access_module
 from embodiment.http import guard as guard_module
 from embodiment.http import server as server_module
-from embodiment.memory import PRIVATE, RoomMemory, render_recalled
+from embodiment.ingest.spool import Spool
+from embodiment.memory import PRIVATE, RoomMemory, SemanticRecall, render_recalled
 from embodiment.perception import perceive
 from embodiment.realtime import wire
 from embodiment.realtime.client import RealtimeConfig, RealtimeEars
@@ -137,7 +173,7 @@ from embodiment.session import ASK_RECORD_TYPE, Session
 from embodiment.tools import ToolRegistry, bind_tools
 from embodiment.turn import FALLBACK_TEXT, SYSTEM_PROMPT, TurnConfig, TurnResult
 from embodiment.turn import turn as run_one_turn
-from embodiment.voice import BARGE_IN_BOUND_S, Voice, VoiceConfig, http_synthesize
+from embodiment.voice import BARGE_IN_BOUND_S, Voice, VoiceConfig, http_synthesize, split_sentences
 
 __all__ = [
     "APP_SOURCE",
@@ -173,6 +209,16 @@ __all__ = [
     "BARGE_IN_STOP_BOUND_S",
     "APP_RECALL_FAILED",
     "APP_RECALL_LEXICAL_BLIND",
+    "APP_RECALL_STORE_LARGE",
+    "RECALL_RESULTS_DOC",
+    "RECALL_EMBED_P90_S",
+    "RECALL_SCORE_S_PER_RECORD",
+    "RECALL_SLACK_S",
+    "RECALL_DEADLINE_CAP_S",
+    "RECALL_COMFORTABLE_RECORDS",
+    "RECALL_P90_CEILING_RECORDS",
+    "RECALL_STORE_WARNINGS",
+    "derive_recall_deadline",
     "ENDPOINT_PLAYBACK_QUIET",
     "APP_CLOSED",
     "APP_EARS_STREAM_ENDED",
@@ -216,6 +262,24 @@ __all__ = [
     "loopback_origin_hosts",
     "SUMMARY_PROMPT",
     "SUMMARY_MAX_TOKENS",
+    "ENV_RECALL_MODE",
+    "ENV_S2S_ROLE",
+    "RECALL_MODE_SEMANTIC",
+    "RECALL_MODE_KEYWORD",
+    "RECALL_MODES",
+    "ACCESS_MODE_OFF",
+    "ACCESS_MODE_ON",
+    "ACCESS_MODE_INCOMPLETE",
+    "APP_RECALL_MODE_UNKNOWN",
+    "APP_DRAIN_FAILED",
+    "APP_VECTOR_CACHE_DEGRADED",
+    "APP_TEXT_TURN_BUSY",
+    "APP_TEXT_FOLLOW_UP_UNROUTED",
+    "AppLanes",
+    "chat_source",
+    "drain_budget_for",
+    "access_mode_of",
+    "recall_mode_from_env",
     "main",
 ]
 
@@ -320,6 +384,30 @@ ENV_ALLOWED_HOSTS = "EMBODIMENT_ALLOWED_HOSTS"
 #: This is how ``--public-hostname`` reaches :class:`GuardConfig`; before it
 #: existed the documented refusal was unreachable (review finding 3).
 ENV_PUBLIC_HOSTNAME = "EMBODIMENT_PUBLIC_HOSTNAME"
+#: The recall mode, by name: ``semantic`` (the default — cached-vector recall
+#: through the ``gemma2-embed`` role, t12) or ``keyword`` (the one-flag
+#: rollback to keyword recall plus the d5 exact-substring fallback). Nothing
+#: else is accepted: eidetic's own ``approximate``/``hybrid`` re-embed every
+#: candidate per recall (s47) and are never asked for from here.
+ENV_RECALL_MODE = "EMBODIMENT_RECALL_MODE"
+#: The speech-to-speech role, by NAME, for the chat page's (disabled) button.
+#: Never inferred from a model name; unset means no such role is configured.
+#: Turning speech-to-speech on is not in this cycle — the name is reported only.
+ENV_S2S_ROLE = "EMBODIMENT_S2S_ROLE"
+
+#: The two recall modes this daemon will ask memory for.
+RECALL_MODE_SEMANTIC = memory_module.SEMANTIC_MODE
+RECALL_MODE_KEYWORD = memory_module.FAST_MODE
+RECALL_MODES = (RECALL_MODE_SEMANTIC, RECALL_MODE_KEYWORD)
+
+#: What ``status()["access"]["mode"]`` can say. ``off``: the Access env is
+#: unset and the guard is byte-identical to before t7. ``on``: a verifier is
+#: injected. ``incomplete``: the env is partial or malformed, and the injected
+#: verifier refuses every assertion (recorded at start). Never the team
+#: domain, the audience or an email.
+ACCESS_MODE_OFF = "off"
+ACCESS_MODE_ON = "on"
+ACCESS_MODE_INCOMPLETE = "incomplete"
 
 #: The system prompt for the end-of-session summary. Hebrew, because the
 #: window it summarises is Hebrew, and short because the record is a memory
@@ -630,6 +718,109 @@ APP_RECALL_FAILED = "app-recall-failed"
 #: search over it can only ever return nothing. See
 #: :meth:`DaemonApp._recall_blind_fallback`.
 APP_RECALL_LEXICAL_BLIND = "app-recall-lexical-blind"
+#: The active store the last semantic recall scored grew past a measured
+#: ceiling (:data:`RECALL_COMFORTABLE_RECORDS`, then
+#: :data:`RECALL_P90_CEILING_RECORDS`). Recorded once per upward crossing, never
+#: per recall; the reason carries the ceiling and the count, nothing else.
+APP_RECALL_STORE_LARGE = "app-recall-store-large"
+
+# ── the recall bound (t23): derived from the quantity it bounds ───────────────
+#
+# 0.25 s used to bound EVERY recall. Since t16 the spoken turn no longer waits
+# on recall — it waits the head start (``recall_events.DEFAULT_HEAD_START_S``,
+# still 0.25 s) and the recall runs in the background — so the 0.25 s bound on
+# the recall itself had become a clock sized against the wrong quantity
+# (lesson 1): at 600 active records it abandoned 6.5% of semantic recalls, at
+# 800 every one. The recall now gets its own bound, derived from what a
+# semantic recall measurably costs: one query embed plus a scoring pass that is
+# linear in the active store. Every number below is from this file:
+
+#: The published measurement every constant in this block cites.
+RECALL_RESULTS_DOC = "docs/live-test-results/2026-10-23-recall-gemma2.md"
+
+#: Seconds. The query embed alone, p90: 161.1 ms (median 156.4, max 163.7,
+#: n = 30). A network quantity (the proxied ``gemma2-embed`` lane), independent
+#: of the store.
+RECALL_EMBED_P90_S = 0.1611
+
+#: Seconds per active record. Scoring is linear in the store: median latency at
+#: 1000 records (286.4 ms) minus the median embed (156.4 ms), over 1000 records
+#: = 0.13 ms (enumeration about a fifth of it, the pure-Python cosine the rest).
+#: An uncached record costs only its enumeration; it is counted at full cost.
+RECALL_SCORE_S_PER_RECORD = (0.2864 - 0.1564) / 1000
+
+#: Seconds above the model for the lane's tail. Covers every measured call's max
+#: over embed-p90-plus-scoring: the largest excess is 129 ms (1000 records, max
+#: 420.0 ms) — except ONE 950.8 ms call at 800 records that the doc attributes to
+#: lane jitter (1 of 1104 calls). A **judgement call** on that margin.
+RECALL_SLACK_S = 0.15
+
+#: Seconds. The most any one recall may take, whatever the store. A recall that
+#: lands after the first completion can no longer go into the reply — only the
+#: late path (a follow-up, OFF by default, or dropped) — so a longer bound buys
+#: the reply nothing: the cap sits under the measured ``senses`` completion
+#: (median 3.983 s, n = 30). The chat route's bound (``server.DEFAULT_CHAT_TIMEOUT_S``)
+#: runs the recall alongside a completion, never after it, so the cap adds nothing
+#: serial to a typed turn. The formula only reaches it beyond ~20 000 active
+#: records, twenty times the largest store measured. An operator-suggested value.
+RECALL_DEADLINE_CAP_S = 3.0
+
+#: Active records. The largest store measured with no call over 0.25 s (400:
+#: max 246.8 ms, 0 of 184) — "comfortable" in the doc's own word.
+RECALL_COMFORTABLE_RECORDS = 400
+#: Active records. Past this the measured p90 crosses 0.25 s (600: p90 239.7 ms
+#: with 12 of 184 calls over; 800: p90 287.6 ms, every call over).
+RECALL_P90_CEILING_RECORDS = 600
+
+#: The status warning per level (1 = past comfortable, 2 = past the p90
+#: ceiling). Counts and ceilings only; one rig, one lane — never a forecast.
+RECALL_STORE_WARNINGS = {
+    1: (
+        "active store past ~400 records, the largest size measured with no recall "
+        "over 0.25 s (one rig); recall latency rises with the store and the derived "
+        "deadline grows with it"
+    ),
+    2: (
+        "active store past ~600 records, where recall p90 measured over 0.25 s "
+        "(one rig); recalls take longer and a slow embed lane lowers this ceiling"
+    ),
+}
+
+
+def derive_recall_deadline(active_records: Optional[int], *, semantic: bool = True) -> float:
+    """The bound on ONE background recall, in seconds, from the store it scores.
+
+    ``semantic``: :data:`RECALL_EMBED_P90_S` + *active_records* ×
+    :data:`RECALL_SCORE_S_PER_RECORD` + :data:`RECALL_SLACK_S`, clamped to
+    [:data:`~embodiment.memory.DEFAULT_DEADLINE`, :data:`RECALL_DEADLINE_CAP_S`].
+    An UNKNOWN size (``None``, negative, not a number) gives the cap: no size has
+    been observed, and a guessed one would censor the recall that could tell us.
+
+    Keyword (``semantic=False``): :data:`~embodiment.memory.DEFAULT_DEADLINE`,
+    today's bound — no embed, and the keyword arm measured 3.3 ms at worst
+    (n = 144), two orders under it. Pure; never raises.
+    """
+    floor = float(memory_module.DEFAULT_DEADLINE)
+    if not semantic:
+        return floor
+    if isinstance(active_records, bool) or not isinstance(active_records, (int, float)):
+        return RECALL_DEADLINE_CAP_S
+    if not math.isfinite(active_records) or active_records < 0:
+        return RECALL_DEADLINE_CAP_S
+    raw = RECALL_EMBED_P90_S + float(active_records) * RECALL_SCORE_S_PER_RECORD + RECALL_SLACK_S
+    return min(RECALL_DEADLINE_CAP_S, max(floor, raw))
+
+
+def _store_level(active_records: Optional[int]) -> int:
+    """0 below the comfortable ceiling, 1 past it, 2 past the p90 ceiling."""
+    if active_records is None:
+        return 0
+    if active_records > RECALL_P90_CEILING_RECORDS:
+        return 2
+    if active_records > RECALL_COMFORTABLE_RECORDS:
+        return 1
+    return 0
+
 
 #: :mod:`embodiment.memory`'s own code for a recall that ran out of time, and
 #: its exact-match mode. Imported rather than written out — unlike the host
@@ -673,6 +864,47 @@ APP_HTTP_UNAVAILABLE = "app-http-unavailable"
 APP_SHUTDOWN_INCOMPLETE = "app-shutdown-incomplete"
 #: Something was asked of the app after it closed.
 APP_CLOSED = "app-closed"
+#: ``EMBODIMENT_RECALL_MODE`` named a mode this daemon does not run; the
+#: default (semantic) is kept and the value itself is never recorded.
+APP_RECALL_MODE_UNKNOWN = "app-recall-mode-unknown"
+#: The drain worker's own fault (not a batch's): a pass raised past the
+#: drain's own never-raise, or the worker thread could not start.
+APP_DRAIN_FAILED = "app-drain-failed"
+#: The vector cache said it could not read or persist itself (t4 keeps these
+#: as a plain list; this is where they reach the ledger).
+APP_VECTOR_CACHE_DEGRADED = "app-vector-cache-degraded"
+#: A typed turn could not get the conversation within its bound — a voice
+#: turn held it — and answered nothing rather than racing the session.
+APP_TEXT_TURN_BUSY = "app-text-turn-busy"
+#: A typed turn's late memory follow-up had no turn left to attach to.
+APP_TEXT_FOLLOW_UP_UNROUTED = "app-text-follow-up-unrouted"
+
+#: The prompt section for a remainder, restart or follow-up completion: what
+#: Gwen already said in this reply. Her own earlier words, in the system
+#: prompt, never in the user text (the verbatim invariant). Hebrew because she
+#: speaks Hebrew; **unmeasured** wording, fixed text identical for every
+#: identity, so the absent-identity rule is untouched. Empty for a first reply,
+#: which keeps that prompt byte-identical to what it was before t16.
+SPOKEN_HEADER = "כבר אמרת בתשובה הזו:"
+REMAINDER_INSTRUCTION = (
+    "המשיכי את התשובה מהמקום שבו עצרת, בלי לחזור על מה שכבר נאמר, "
+    "והשתמשי בזיכרון שלמטה אם הוא רלוונטי."
+)
+RESTART_INSTRUCTION = "הזיכרון שלמטה סותר את מה שאמרת. תקני את עצמך בקצרה."
+FOLLOW_UP_INSTRUCTION = (
+    "עלה בזיכרון משהו שקשור לשאלה האחרונה. אמרי אותו בקצרה, כהמשך לתשובה שכבר נתת."
+)
+
+#: How many rendered recalls are kept so a completion can name the ids (and,
+#: for the chat page, the records) it actually saw. A memory bound for a
+#: long-running daemon, not a measurement: a recall is looked up within one
+#: turn, and sixteen covers a voice turn, a few concurrent typed turns and
+#: their late arrivals.
+_RECALL_INDEX_SIZE = 16
+#: How many recent typed turns a late follow-up can still find.
+_TEXT_TURN_MEMORY = 16
+#: The longest record text one chat source carries to the page.
+SOURCE_TEXT_MAX_CHARS = memory_module.DEFAULT_MAX_CHARS
 
 #: What one delivered transcript turned out to be. :func:`classify_transcript`
 #: is the ONE place the test is written; both entry points read its answer.
@@ -692,11 +924,37 @@ class AppConfig:
     language: str = wire.LANGUAGE
     #: ``True``: a second ear displaces the first. ``False``: it is refused.
     preempt_ear: bool = True
-    #: The recall clock, derived from the quantity it bounds: how long a spoken
-    #: turn may wait for memory before answering without it.
-    recall_deadline: float = 0.25
+    #: The bound on one background recall (voice and typed). ``None``, the
+    #: default, DERIVES it per recall from the store the last semantic recall
+    #: scored (:func:`derive_recall_deadline`, t23). A number pins it — tests,
+    #: or an operator overriding the derivation. How long a spoken turn WAITS
+    #: for memory is a different clock: the head start,
+    #: ``RecallEventsConfig.head_start_s`` (0.25 s).
+    recall_deadline: Optional[float] = None
     recall_top_k: int = 5
-    recall_mode: str = "keyword"
+    #: :data:`RECALL_MODE_SEMANTIC` (the shipped mode) or
+    #: :data:`RECALL_MODE_KEYWORD` (the one-flag rollback). The mode actually
+    #: in effect — a semantic request the store demoted — is what
+    #: ``status()["recall"]["mode"]`` reports, never this value.
+    recall_mode: str = RECALL_MODE_SEMANTIC
+    #: The minimum cosine similarity semantic recall returns (c52). Passed to
+    #: :class:`~embodiment.memory.RoomMemory` by :func:`main`. **Provisionally
+    #: calibrated** by t18 (0.715; ``memory.SIMILARITY_THRESHOLD_CALIBRATED`` stays
+    #: False — small n, in-sample; see :data:`RECALL_RESULTS_DOC`).
+    similarity_threshold: float = memory_module.DEFAULT_SIMILARITY_THRESHOLD
+    #: The memory follow-up gates (t13, c60). Both ``None`` = follow-ups OFF:
+    #: every late recall is dropped and counted. They are derived later from
+    #: the measured recall-arrival distribution (t18), never guessed here —
+    #: CLAUDE.md lesson 1. The threshold is in similarity units, so a keyword
+    #: recall (no score) never clears it.
+    follow_up_window_s: Optional[float] = None
+    follow_up_threshold: Optional[float] = None
+    #: ``off`` / ``on`` / ``incomplete`` — what :func:`main` found in the Access
+    #: env. Reported in status; it decides nothing here (the guard does).
+    access_mode: str = ACCESS_MODE_OFF
+    #: The speech-to-speech role NAME, or ``None``. Reported for the chat
+    #: page's button only; nothing in this daemon calls it.
+    s2s_role: Optional[str] = None
     #: How often :meth:`DaemonApp.run` pumps the bus clock and the out-features.
     poll_interval_s: float = 0.5
     #: The whole-app shutdown bound. Derived from lifecycle's watchdog, never
@@ -886,6 +1144,8 @@ class AppCloseReport:
     session_closed: bool = True
     memory_closed: bool = True
     bus_closed: bool = True
+    drain_stopped: bool = True
+    backfill_stopped: bool = True
     elapsed_s: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
@@ -901,6 +1161,8 @@ class AppCloseReport:
             "session_closed": self.session_closed,
             "memory_closed": self.memory_closed,
             "bus_closed": self.bus_closed,
+            "drain_stopped": self.drain_stopped,
+            "backfill_stopped": self.backfill_stopped,
             "elapsed_s": round(self.elapsed_s, 3),
         }
 
@@ -914,6 +1176,8 @@ class AppCloseReport:
             ("endpoint", self.endpoint_closed),
             ("server", self.server_stopped),
             ("session", self.session_closed),
+            ("drain", self.drain_stopped),
+            ("backfill", self.backfill_stopped),
             ("memory", self.memory_closed),
             ("bus", self.bus_closed),
         )
@@ -1089,6 +1353,91 @@ class AppFactories:
     session: Optional[Callable[[], Any]] = None
 
 
+@dataclass(frozen=True)
+class AppLanes:
+    """The gwen-remembers-recordings lanes (t16). Every one optional; each degrades alone.
+
+    Grouped for the same reason as :class:`AppFactories`: one decision — what
+    feeds and serves Gwen's memory beyond the room — and a constructor that
+    takes them one by one grows a parameter list nobody reads.
+    """
+
+    #: :class:`embodiment.daemon.drain.Drain` — the ingest spool's single
+    #: writer. ``None``: no inbox is drained (and ``status()["ingest"]`` is None).
+    drain: Optional[Any] = None
+    #: The ``embodiment.vectors.EmbedderClient`` memory embeds through; held
+    #: here only so its offline TRANSITIONS reach the ledger (t4 keeps them as a
+    #: plain list). Memory owns the calls.
+    embedder: Optional[Any] = None
+    #: The ``VectorCache``, for the same reason: its degradations are a list.
+    vector_cache: Optional[Any] = None
+    #: The tts seam for the chat page's speak button (``text_turns.TtsFn``);
+    #: ``None`` uses the gateway's ``/v1/audio/speech``.
+    tts: Optional[Callable[..., bytes]] = None
+    #: The stt seam for uploaded clips (``text_turns.SttFn``); ``None`` uses the
+    #: gateway's ``/v1/audio/transcriptions``.
+    stt: Optional[Callable[..., str]] = None
+    #: How a background recall job is started (``recall_events`` ``spawn``);
+    #: ``None`` is a daemon thread per recall. Tests inject a holder or a
+    #: synchronous call to choose the moment a recall lands.
+    recall_spawn: Optional[Callable[[Callable[[], None]], object]] = None
+
+
+@dataclass(eq=False)
+class _VoiceTurn:
+    """What the background-recall seams need to know about the voice turn in flight.
+
+    Only the turn thread writes it (the reply, remainder and restart
+    completions run there, inside :meth:`BackgroundRecall.run_turn`); a
+    follow-up runs on a recall thread and never touches it.
+    """
+
+    serial: int
+    thread: int
+    query: str
+    window: list[dict[str, str]]
+    clock: str
+    result: Optional[TurnResult] = None
+    first_text: str = ""
+    final_text: str = ""
+    tool_round: bool = False
+    steps: int = 0
+    reply_text_at: Optional[float] = None
+    first_play_at: Optional[float] = None
+    voiced: bool = False
+    handed: bool = False
+    no_voice_recorded: bool = False
+    rendered_ids: tuple[str, ...] = ()
+
+
+@dataclass(eq=False)
+class _TextTurn:
+    """One typed turn, from the chat page or a transcribed clip."""
+
+    serial: int
+    thread: int
+    query: str
+    window: list[dict[str, str]]
+    clock: str
+    replying: bool = True
+    result: Optional[TurnResult] = None
+    first_text: str = ""
+    final_text: str = ""
+    tool_round: bool = False
+    records: tuple[Any, ...] = ()
+    follow_up_records: tuple[Any, ...] = ()
+
+
+@dataclass(frozen=True)
+class _RecallSeen:
+    """One background recall's outcome, kept so a completion can name what it saw."""
+
+    rendered: str = ""
+    ids: tuple[str, ...] = ()
+    records: tuple[Any, ...] = ()
+    relevance: Optional[float] = None
+
+
 class DaemonApp:
     """The wiring: one ear, one turn at a time, everything published."""
 
@@ -1107,6 +1456,7 @@ class DaemonApp:
         tools: Optional[ToolRegistry] = None,
         clock: Callable[[], float] = time.monotonic,
         now: Optional[Callable[[], datetime]] = None,
+        lanes: Optional[AppLanes] = None,
     ) -> None:
         self._config = config or AppConfig()
         self._state = state
@@ -1239,6 +1589,10 @@ class DaemonApp:
         self._recall_archived_hidden = 0
         self._recall_last_ids: tuple[str, ...] = ()
         self._recall_calls = 0
+        #: The active records the last semantic recall scored (t23), or None
+        #: when unknown: never observed, or forgotten after a missed deadline.
+        self._active_records: Optional[int] = None
+        self._store_level = 0
         self._degradation_counts: dict[str, int] = {}
         self._publish_errors = 0
         self._ledger_errors = 0
@@ -1262,6 +1616,86 @@ class DaemonApp:
         self._ears_connected = False
         self._ears_close_bound: Optional[float] = None
         self._worker_stop = threading.Event()
+        self._init_lanes(lanes or AppLanes())
+
+    def _init_lanes(self, lanes: AppLanes) -> None:
+        """The t16 lanes: background recall, typed turns, the drain worker.
+
+        Split out of ``__init__`` only to keep that readable; it runs once, last,
+        because every seam it builds closes over state set above.
+        """
+        self._lanes = lanes
+        self._drain = lanes.drain
+        #: The ONE conversation: a voice turn and a typed turn never interleave
+        #: their session writes or their tool-round accounting. :class:`Session`
+        #: holds no lock of its own, and both kinds of turn now reach it.
+        self._conversation = threading.RLock()
+        self._tls = threading.local()
+        self._voice_turn: Optional[_VoiceTurn] = None
+        self._floor_taken = False
+        self._recall_seen: "OrderedDict[str, _RecallSeen]" = OrderedDict()
+        self._text_turns_recent: deque[_TextTurn] = deque(maxlen=_TEXT_TURN_MEMORY)
+        self._text_serial = 0
+        self._text_turns_run = 0
+        self._text_follow_ups = 0
+        self._text_busy = 0
+
+        events_config = RecallEventsConfig(
+            follow_up_window_s=self._config.follow_up_window_s,
+            follow_up_threshold=self._config.follow_up_threshold,
+        )
+        self._recall_events = BackgroundRecall(
+            recall=self._background_recall,
+            complete=self._voice_complete,
+            speak=self._voice_speak,
+            stop_playback=self._voice_stop_playback,
+            floor_held=self._floor_held,
+            clock=self._clock,
+            config=events_config,
+            record=self._record_recall_event,
+            spawn=lanes.recall_spawn,
+        )
+        # The typed turn runs the same orchestration with no speaker at all: its
+        # "voice" collects the reply for the page, nobody can hold its floor,
+        # and a whole message is one "sentence" — so a memory that lands after
+        # the answer is ONE later chat message on the stream (c64), never audio.
+        self._text_recall = BackgroundRecall(
+            recall=self._background_recall,
+            complete=self._text_complete,
+            speak=self._text_speak,
+            stop_playback=_no_playback,
+            floor_held=_nobody_holds_the_page,
+            clock=self._clock,
+            config=events_config,
+            record=self._record_recall_event,
+            spawn=lanes.recall_spawn,
+            split=_whole_message,
+        )
+        self._text_turns = TextTurns(
+            run_text_turn=self._run_text_turn,
+            session=self._locked_session,
+            tts=lanes.tts,
+            stt=lanes.stt,
+            config=TextTurnsConfig(
+                gateway_url=self._config.gateway_url,
+                api_key=self._config.api_key,
+                language=self._config.language,
+            ),
+            record=lambda code, reason: self._record(code, reason, source="text"),
+            clock=self._clock,
+            hold_conversation=self._hold_conversation,
+            release_conversation=self._release_conversation,
+        )
+
+        self._drain_kick = threading.Event()
+        self._drain_stop = threading.Event()
+        self._drain_thread: Optional[threading.Thread] = None
+        self._drain_kicks = 0
+        self._drain_passes = 0
+        self._drain_failures = 0
+        self._drain_last_report: Optional[dict[str, Any]] = None
+        self._embedder_seen = 0
+        self._cache_seen = 0
 
     # ── the ONE recording path ───────────────────────────────────────────
 
@@ -1395,6 +1829,8 @@ class DaemonApp:
         self._attach_default_ear()
         self._start_server()
         self._start_turn_thread()
+        self._start_drain_worker()
+        self._start_backfill()
         self._publish("state", {"component": "daemon", "status": "running"})
 
     def run(self, stop_event: threading.Event) -> int:
@@ -1410,8 +1846,20 @@ class DaemonApp:
         return 0
 
     def pump(self) -> None:
-        """One tick of the daemon's own clock: out-features, then the bus clock."""
+        """One tick of the daemon's own clock: out-features, the drain, the bus clock.
+
+        The drain pass is SCHEDULED here, never run here (plan risk r7):
+        ``forget_source`` and ``Spool.pending`` can overrun a 0.25 s budget, and
+        a heartbeat that waits on them is a bus clock that slips. ``pump`` sets
+        one event; the drain worker wakes on it and runs ONE
+        :meth:`~embodiment.daemon.drain.Drain.drain_once` bounded by
+        :func:`~embodiment.daemon.drain.budget_for` of the poll interval — so
+        the inbox is drained at the heartbeat, within a budget, and ``pump``
+        itself costs an ``Event.set``. A kick that lands while a pass is still
+        running is coalesced into the next pass, not queued.
+        """
         self._drain_out_features()
+        self._kick_drain()
         try:
             self._bus.tick(self._clock())
         except Exception as exc:  # noqa: BLE001  # an injected bus is not trusted
@@ -1474,9 +1922,18 @@ class DaemonApp:
         ears_stopped = step(_EARS_STEP_END, self._stop_ears)
         turn_stopped = step(0.87, self._stop_turn_thread)
         abandoned = self._turn_queue.qsize()
+        # Recall jobs in flight are READS: a late one is dropped as closed and
+        # counted, and waiting for it is best effort — it is not "unfinished".
+        step(0.89, self._settle_recalls)
         voice_closed = step(0.92, self._close_voice)
-        server_stopped = step(0.96, self._stop_server)
-        memory_closed = step(0.98, self._close_memory)
+        server_stopped = step(0.95, self._stop_server)
+        # The drain's share sits BEFORE memory closes, so a batch the worker
+        # was part-way through (or one enqueued just before the stop) gets one
+        # last bounded pass while the store still takes writes; whatever does
+        # not fit stays in the inbox and is applied on the next start.
+        drain_stopped = step(0.965, self._stop_drain)
+        backfill_stopped = step(0.975, self._stop_backfill)
+        memory_closed = step(0.985, self._close_memory)
 
         self._publish("state", {"component": "daemon", "status": "stopped"})
         bus_closed = step(1.0, self._close_bus)
@@ -1493,6 +1950,8 @@ class DaemonApp:
             session_closed=session_closed,
             memory_closed=memory_closed,
             bus_closed=bus_closed,
+            drain_stopped=drain_stopped,
+            backfill_stopped=backfill_stopped,
             elapsed_s=self._clock() - started,
         )
         with self._lock:
@@ -2189,6 +2648,20 @@ class DaemonApp:
                 self._turns_in_flight -= 1
 
     def _run_turn(self, text: str, serial: int, timing: TurnTiming) -> TurnResult:
+        """One voice turn: the reply starts at once; memory arrives as an event (t16).
+
+        Recall no longer sits in front of the model. :class:`BackgroundRecall`
+        starts it on its own job and asks for the reply immediately; when the
+        memory lands it is taken up at the next sentence boundary — a reply
+        regenerated with it before anything was spoken, a remainder generated
+        for what is still unsaid, or (follow-ups configured) one follow-up after
+        the reply. ``self._conversation`` keeps a typed turn from interleaving
+        with this one's session writes.
+        """
+        with self._conversation:
+            return self._run_voice_turn(text, serial, timing)
+
+    def _run_voice_turn(self, text: str, serial: int, timing: TurnTiming) -> TurnResult:
         self._publish("turn", {"phase": "heard", "step_count": 0})
         packet, record = perceive(text)
         spoken_in = packet.original if isinstance(packet.original, str) else text
@@ -2200,38 +2673,48 @@ class DaemonApp:
         if session is not None:
             self._note_ask(session, spoken_in)
 
-        recalled, rendered_ids = self._recall(spoken_in)
-        timing = replace(timing, rendered_ids=rendered_ids)
-        window = self._window(session)
-        config = TurnConfig(
-            role=self._config.role,
-            system_prompt=_compose_prompt(
-                self._config.system_prompt,
-                window,
-                recalled,
-                tool_prompt=REMEMBER_TOOL_PROMPT if self._config.remember_tool else "",
-                clock=self._clock_line(),
-            ),
+        turn = _VoiceTurn(
+            serial=serial,
+            thread=threading.get_ident(),
+            query=spoken_in,
+            window=self._window(session),
+            clock=self._clock_line(),
         )
-        self._publish("turn", {"phase": "thinking", "step_count": 0})
-        tools_before = self._tool_counts()
-        result = run_one_turn(spoken_in, self._complete, tools=self._tools, config=config)
-        # Before the session, the transcript, the bus or the voice see it.
-        spoken_out = self._answer_tool_step(self._scrub_reply(result.spoken), tools_before)
-        if spoken_out != result.spoken:
-            result = replace(result, spoken=spoken_out)
-        timing = replace(timing, reply_text_at=self._clock())
-        for degradation in result.degradations:
-            self._fold("turn", degradation)
         with self._lock:
-            self._turns_completed += 1
+            self._voice_turn = turn
+        self._publish("turn", {"phase": "thinking", "step_count": 0})
+        try:
+            outcome = self._recall_events.run_turn(spoken_in)
+        finally:
+            with self._lock:
+                if self._voice_turn is turn:
+                    self._voice_turn = None
+        # No first completion came back (the turn path raised; BackgroundRecall
+        # recorded it and voiced the never-silent fallback): a FAILED turn.
+        failed = turn.result is None
+        with self._lock:
+            if failed:
+                self._turns_failed += 1
+            else:
+                self._turns_completed += 1
 
-        spoke = self._speak(result.spoken, serial)
+        final = turn.final_text or " ".join(outcome.spoken) or FALLBACK_TEXT
+        result = turn.result or TurnResult(spoken=final)
+        result = replace(result, spoken=final, steps=max(result.steps, turn.steps))
+        superseded = self._is_superseded(serial)
+        if superseded and not turn.handed:
+            # Dropped before a word reached the voice: still shown, marked.
+            self._publish_reply(final, superseded=True)
+        if self._voice is not None:
+            self._fold_voice(self._voice)
         timing = replace(
             timing,
-            first_audio_at=getattr(spoke, "first_play_at", None) if spoke else None,
-            spoken_done_at=self._clock() if spoke else None,
-            superseded=self._is_superseded(serial),
+            rendered_ids=turn.rendered_ids,
+            reply_text_at=turn.reply_text_at,
+            first_audio_at=turn.first_play_at,
+            spoken_done_at=self._clock() if turn.voiced else None,
+            superseded=superseded,
+            failed=failed,
         ).derived()
 
         # The transcript record carries the timings, so a reader has the turn
@@ -2249,6 +2732,510 @@ class DaemonApp:
         )
         self._note_timing(timing)
         return result
+
+    # ── the background-recall seams (t13's injected seams, bound here) ───
+
+    def _complete_turn(
+        self,
+        query: str,
+        window: list[dict[str, str]],
+        memory: str,
+        clock: str,
+        continuation: str = "",
+    ) -> tuple[TurnResult, bool]:
+        """ONE completion through the turn path: (scrubbed result, whether a tool ran).
+
+        Every completion — reply, remainder, restart, follow-up, typed — goes
+        through :func:`embodiment.turn.turn` with the same tools, the same scrub
+        and the same tool-round answer, so no path speaks a secret or leaves a
+        tool round silent. *memory* is :func:`render_recalled` output, the ONE
+        place recall enters a prompt; *continuation* is fixed text plus Gwen's
+        own earlier sentences, never the user's words.
+        """
+        config = TurnConfig(
+            role=self._config.role,
+            system_prompt=_compose_prompt(
+                self._config.system_prompt,
+                window,
+                memory,
+                tool_prompt=REMEMBER_TOOL_PROMPT if self._config.remember_tool else "",
+                clock=clock,
+                continuation=continuation,
+            ),
+        )
+        before = self._tool_counts()
+        result = run_one_turn(query, self._complete, tools=self._tools, config=config)
+        # Before the session, the transcript, the bus or the voice see it.
+        spoken = self._answer_tool_step(self._scrub_reply(result.spoken), before)
+        if spoken != result.spoken:
+            result = replace(result, spoken=spoken)
+        for degradation in result.degradations:
+            self._fold("turn", degradation)
+        return result, self._tool_counts()[0] != before[0]
+
+    def _voice_complete(self, request: CompletionRequest) -> str:
+        """The ``complete`` seam of the voice turn's :class:`BackgroundRecall`."""
+        turn = self._voice_turn_here()
+        if turn is None or request.purpose == PURPOSE_FOLLOW_UP:
+            return self._follow_up_text(request)
+        first = turn.result is None
+        if not first and turn.tool_round:
+            return _replay_after_tool_round(turn.first_text, request)
+        result, tooled = self._complete_turn(
+            turn.query, turn.window, request.memory, turn.clock, _continuation(request)
+        )
+        turn.steps += result.steps
+        turn.tool_round = turn.tool_round or tooled
+        if first:
+            turn.result = result
+            turn.first_text = result.spoken
+            turn.reply_text_at = self._clock()
+        elif _fell_back(result):
+            # Unusable as a remainder: BackgroundRecall keeps the first
+            # completion's unspoken sentences instead (recorded by it).
+            return ""
+        if request.memory:
+            turn.rendered_ids = self._seen(request.memory).ids
+        turn.final_text = " ".join((*request.spoken, result.spoken)).strip()
+        return result.spoken
+
+    def _follow_up_text(self, request: CompletionRequest) -> str:
+        """A late memory's one follow-up (off by default), composed off the turn thread.
+
+        The window is the session as it is NOW, so the follow-up sees the reply
+        it follows. An unusable completion is dropped by the unprompted seam —
+        the never-silent rule does not apply to speech nobody asked for.
+        """
+        result, _ = self._complete_turn(
+            request.query,
+            self._window_now(),
+            request.memory,
+            self._clock_line(),
+            _continuation(request),
+        )
+        return "" if _fell_back(result) else result.spoken
+
+    def _voice_speak(self, sentence: str) -> None:
+        """The ``speak`` seam: ONE sentence to the voice, timed and barge-in checked.
+
+        :meth:`Voice.speak` publishes each sentence as its own ``reply`` event,
+        so the dashboard transcript shows a reply sentence by sentence.
+        """
+        turn = self._voice_turn_here()
+        voice = self._voice
+        if turn is not None:
+            turn.handed = True
+        if voice is None:
+            if turn is None or not turn.no_voice_recorded:
+                self._record(APP_NO_ENDPOINT, "nothing to speak through; the reply was not voiced")
+            if turn is not None:
+                turn.no_voice_recorded = True
+            self._publish_reply(sentence, superseded=False)
+            return
+        said: list[Any] = []
+        self._safely(lambda: said.append(voice.speak(sentence)), APP_TURN_FAILED, "speak")
+        if turn is not None:
+            turn.voiced = True
+            at = next((getattr(r, "first_play_at", None) for r in said), None)
+            if turn.first_play_at is None and at is not None:
+                turn.first_play_at = at
+            if self._is_superseded(turn.serial):
+                # The hairline case: speech_started landed while this sentence
+                # was being queued. Stop it through the voice's own barge-in.
+                self._safely(voice.on_speech_started, APP_TURN_FAILED, "barge-in")
+        self._fold_voice(voice)
+
+    def _voice_stop_playback(self) -> None:
+        """The ``stop_playback`` seam: the SAME path barge-in uses (c61)."""
+        voice = self._voice
+        if voice is not None:
+            self._safely(voice.on_speech_started, APP_TURN_FAILED, "restart")
+
+    def _floor_held(self) -> bool:
+        """The ``floor_held`` seam. Never raises.
+
+        On the voice turn's own thread the floor is held exactly when the turn
+        was superseded — a ``speech_started`` already did that, and a reply
+        loop must never be stopped by a flag the ear may never clear. Off it
+        (a follow-up), anyone speaking, any turn in flight or waiting, or a
+        daemon that is stopping, holds the floor: a follow-up never talks over.
+        """
+        turn = self._voice_turn_here()
+        if turn is not None:
+            return self._is_superseded(turn.serial)
+        with self._lock:
+            return bool(
+                self._floor_taken
+                or self._stopping
+                or self._turns_in_flight > 0
+                or self._turn_queue.qsize() > 0
+            )
+
+    def _voice_turn_here(self) -> Optional[_VoiceTurn]:
+        """The voice turn in flight, if THIS thread is the one running it."""
+        turn = self._voice_turn
+        if turn is not None and turn.thread == threading.get_ident():
+            return turn
+        return None
+
+    def _background_recall(self, query: str) -> Recalled:
+        """The ``recall`` seam: the counted, bounded recall, on the recall job."""
+        seen = self._recall(query)
+        if seen.rendered:
+            with self._lock:
+                self._recall_seen[seen.rendered] = seen
+                self._recall_seen.move_to_end(seen.rendered)
+                while len(self._recall_seen) > _RECALL_INDEX_SIZE:
+                    self._recall_seen.popitem(last=False)
+        return Recalled(
+            rendered=seen.rendered,
+            relevance=seen.relevance,
+            count=len(seen.ids) if seen.rendered else 0,
+        )
+
+    def _seen(self, rendered: str) -> _RecallSeen:
+        with self._lock:
+            return self._recall_seen.get(rendered) or _RecallSeen(rendered=rendered)
+
+    def _record_recall_event(self, code: str, reason: str) -> None:
+        self._record(code, reason, source="recall-events")
+
+    def _window_now(self) -> list[dict[str, str]]:
+        with self._lock:
+            session = self._session
+        if session is None:
+            return []
+        try:
+            messages = session.messages()
+        except Exception as exc:  # noqa: BLE001  # the session is a seam
+            self._record(APP_TURN_FAILED, f"window: {_describe(exc)}")
+            return []
+        return [m for m in messages if isinstance(m, dict)]
+
+    def _settle_recalls(self, deadline: float) -> None:
+        """Close both orchestrators and give their recall jobs a bounded wait."""
+        for events in (self._recall_events, self._text_recall):
+            events.close()
+        share = max(0.0, float(deadline)) / 2
+        for events in (self._recall_events, self._text_recall):
+            events.wait(share)
+
+    # ── typed turns (t14 handlers, t10 routes) ───────────────────────────
+
+    def _locked_session(self) -> Any:
+        """The session :class:`TextTurns` writes to, behind the conversation lock."""
+        session = self._ensure_session()
+        if session is None:
+            return None
+        return _LockedSession(session, self._conversation, self._conversation_bound())
+
+    def _conversation_bound(self) -> float:
+        """How long a typed turn waits for the conversation: one completion deadline."""
+        return max(0.05, self._config.completion_deadline)
+
+    def _hold_conversation(self) -> bool:
+        """``hold_conversation`` for :class:`TextTurns`: the conversation, BOUNDED.
+
+        Taken before the typed turn writes its user turn and held until its
+        assistant turn is written, so a typed turn neither races a voice turn's
+        session writes nor blocks a worker past the bound. ``False`` is busy:
+        :class:`TextTurns` records :data:`APP_TEXT_TURN_BUSY` (the same code) and
+        answers a retryable 503 having written nothing.
+        """
+        if self._conversation.acquire(timeout=self._conversation_bound()):
+            return True
+        with self._lock:
+            self._text_busy += 1
+        return False
+
+    def _release_conversation(self) -> None:
+        self._conversation.release()
+
+    def _run_text_turn(self, message: str) -> "_TypedReply":
+        """``run_text_turn`` for :class:`TextTurns`: recall + senses, NO speaker.
+
+        It never adds to the session — :class:`TextTurns` does ``add_user``
+        before and ``add_assistant`` after, so a typed turn joins the same
+        session and transcript log as a spoken one (c58). It runs inside the
+        conversation :meth:`_hold_conversation` took; the reply carries the
+        typed turn's serial so a clip can answer with it.
+        """
+        reply = self._run_text_turn_locked(message)
+        turn = getattr(self._tls, "text_turn", None)
+        return _TypedReply(spoken=reply, turn_serial=turn.serial if turn is not None else None)
+
+    def _run_text_turn_locked(self, message: str) -> str:
+        with self._lock:
+            self._text_serial += 1
+            self._text_turns_run += 1
+            serial = self._text_serial
+            session = self._session
+        turn = _TextTurn(
+            serial=serial,
+            thread=threading.get_ident(),
+            query=message,
+            window=self._window(session),
+            clock=self._clock_line(),
+        )
+        self._tls.text_turn = turn
+        with self._lock:
+            self._text_turns_recent.append(turn)
+        self._publish("transcript", {"role": "user", "text": message, "typed": True})
+        try:
+            outcome = self._text_recall.run_turn(message)
+        finally:
+            turn.replying = False
+        reply = turn.final_text or turn.first_text or " ".join(outcome.spoken)
+        # No turn_serial on this event: the page already has the answer from the
+        # response, and Chat.tsx appends every serial'd reply as a NEW message.
+        self._publish("reply", {"text": reply, "typed": True})
+        return reply
+
+    def _text_turn_here(self) -> Optional[_TextTurn]:
+        turn = getattr(self._tls, "text_turn", None)
+        if turn is not None and turn.replying and turn.thread == threading.get_ident():
+            return turn
+        return None
+
+    def _text_complete(self, request: CompletionRequest) -> str:
+        """The ``complete`` seam of the typed turn's :class:`BackgroundRecall`."""
+        if request.purpose == PURPOSE_FOLLOW_UP:
+            return self._text_follow_up(request)
+        turn = self._text_turn_here()
+        if turn is None:
+            return ""
+        first = turn.result is None
+        if not first and turn.tool_round:
+            return _replay_after_tool_round(turn.first_text, request)
+        result, tooled = self._complete_turn(
+            turn.query, turn.window, request.memory, turn.clock, _continuation(request)
+        )
+        turn.tool_round = turn.tool_round or tooled
+        if first:
+            turn.result = result
+            turn.first_text = result.spoken
+        elif _fell_back(result):
+            return ""
+        if request.memory:
+            turn.records = self._seen(request.memory).records
+        turn.final_text = result.spoken
+        return result.spoken
+
+    def _text_follow_up(self, request: CompletionRequest) -> str:
+        """Compose a typed turn's late memory follow-up; route it to that turn's serial."""
+        turn = self._typed_turn_for(request)
+        if turn is None:
+            self._record(APP_TEXT_FOLLOW_UP_UNROUTED, "no recent typed turn matched", source="text")
+            return ""
+        self._tls.follow_up_turn = None
+        result, _ = self._complete_turn(
+            request.query, turn.window, request.memory, self._clock_line(), _continuation(request)
+        )
+        if _fell_back(result):
+            return ""
+        turn.follow_up_records = self._seen(request.memory).records
+        self._tls.follow_up_turn = turn
+        return result.spoken
+
+    def _typed_turn_for(self, request: CompletionRequest) -> Optional[_TextTurn]:
+        """The newest finished typed turn this late recall belongs to."""
+        with self._lock:
+            recent = list(self._text_turns_recent)
+        for turn in reversed(recent):
+            if turn.replying or turn.query != request.query:
+                continue
+            if tuple(request.spoken) in ((), (turn.final_text or turn.first_text,)):
+                return turn
+        return None
+
+    def _text_speak(self, text: str) -> None:
+        """The ``speak`` seam of a typed turn: the page, never the room's speaker."""
+        if self._text_turn_here() is not None:
+            return  # the reply itself: the route returns it; nothing is played
+        turn = getattr(self._tls, "follow_up_turn", None)
+        self._tls.follow_up_turn = None
+        if turn is None:
+            self._record(APP_TEXT_FOLLOW_UP_UNROUTED, "a follow-up had no turn", source="text")
+            return
+        with self._lock:
+            self._text_follow_ups += 1
+        # A later chat message on the same stream (c64): the serial ties it to
+        # the typed turn it follows. Scrubbed like every reply; sources as the
+        # page renders them — textContent only, marked untrusted there.
+        self._publish(
+            "reply",
+            {
+                "text": self._scrub_reply(text),
+                "turn_serial": turn.serial,
+                "sources": [chat_source(record) for record in turn.follow_up_records],
+                "follow_up": True,
+            },
+        )
+
+    def _control_chat(self, message: Any) -> dict[str, Any]:
+        """``Controls.chat``: one typed turn, its reply, its sources and its serial."""
+        self._tls.text_turn = None
+        result = self._text_turns.handle_text(message)
+        turn = getattr(self._tls, "text_turn", None)
+        sources = [chat_source(r) for r in turn.records] if (turn and result.ok) else []
+        return {
+            "ok": result.ok,
+            "reply": result.reply,
+            "sources": sources,
+            "turn_serial": turn.serial if turn is not None else None,
+            "code": result.code,
+            "http_status": result.http_status,
+        }
+
+    def _control_speak(self, text: Any) -> dict[str, Any]:
+        """``Controls.speak``: synthesise for the requesting browser; nothing is played."""
+        result = self._text_turns.speak_message(text)
+        return {
+            "ok": result.ok,
+            "audio": result.audio,
+            "content_type": result.content_type,
+            "code": result.code,
+            "http_status": result.http_status,
+        }
+
+    def _control_clip(self, audio: Any, declared_duration_s: Optional[float]) -> dict[str, Any]:
+        """``Controls.clip``: transcribe in memory, then answer as a typed turn."""
+        result = self._text_turns.handle_clip(audio, declared_duration_s=declared_duration_s)
+        return {
+            "ok": result.ok,
+            "transcript": result.transcript,
+            "reply": result.reply,
+            "turn_serial": result.turn_serial if result.ok else None,
+            "code": result.code,
+            "http_status": result.http_status,
+        }
+
+    # ── the drain worker and the memory lanes' own degradations ──────────
+
+    def _start_drain_worker(self) -> None:
+        """One worker thread: the inbox drain and the lanes' degradation forwarding."""
+        lanes = self._lanes
+        if self._drain is None and lanes.embedder is None and lanes.vector_cache is None:
+            if not callable(getattr(self._memory, "drain_abandoned", None)):
+                return
+        thread = threading.Thread(target=self._drain_worker, name="embodiment-drain", daemon=True)
+        try:
+            thread.start()
+        except Exception as exc:  # noqa: BLE001  # no worker: nothing drains, said aloud
+            self._record(APP_DRAIN_FAILED, f"worker: {_describe(exc)}")
+            return
+        self._drain_thread = thread
+
+    def _kick_drain(self) -> None:
+        if self._drain_thread is None:
+            return
+        with self._lock:
+            self._drain_kicks += 1
+        self._drain_kick.set()
+
+    def _drain_worker(self) -> None:
+        """Wake on each heartbeat's kick, run ONE bounded pass, forward degradations."""
+        while not self._drain_stop.is_set():
+            self._drain_kick.wait()
+            self._drain_kick.clear()
+            if self._drain_stop.is_set():
+                break
+            self._drain_pass(drain_budget_for(self._config.poll_interval_s))
+
+    def _drain_pass(self, budget: float) -> None:
+        """One drain pass plus the forwarding. Never raises."""
+        drain = self._drain
+        if drain is not None:
+            try:
+                report = drain.drain_once(budget)
+            except Exception as exc:  # noqa: BLE001  # the drain promises not to; count anyway
+                with self._lock:
+                    self._drain_failures += 1
+                self._record(APP_DRAIN_FAILED, _describe(exc), source="ingest")
+            else:
+                to_dict = getattr(report, "to_dict", None)
+                with self._lock:
+                    self._drain_passes += 1
+                    self._drain_last_report = to_dict() if callable(to_dict) else None
+        self._forward_lane_degradations()
+
+    def _forward_lane_degradations(self) -> None:
+        """t4/t12 keep their degradations as lists; this is where they reach the ledger.
+
+        The embedder's TRANSITIONS (online → offline), the vector cache's own
+        faults, and memory's abandoned-worker ledger (which is where the
+        backfill records an offline embedder). Each list is read from where
+        the last pass stopped, so each fact is recorded once.
+        """
+        transitions = list(getattr(self._lanes.embedder, "transitions", ()) or ())
+        with self._lock:
+            start, self._embedder_seen = self._embedder_seen, len(transitions)
+        for entry in transitions[start:]:
+            state, reason = (tuple(entry) + ("", ""))[:2]
+            if state == "offline":
+                self._record(
+                    memory_module.CODE_EMBEDDER_OFFLINE,
+                    f"the embedder ({vectors.EMBED_ROLE}) went offline: {reason}",
+                    source="embedder",
+                )
+            else:
+                self._publish("state", {"component": "embedder", "status": "online"})
+        problems = list(getattr(self._lanes.vector_cache, "degradations", ()) or ())
+        with self._lock:
+            start, self._cache_seen = self._cache_seen, len(problems)
+        for problem in problems[start:]:
+            self._record(APP_VECTOR_CACHE_DEGRADED, problem, source="memory")
+        drain_abandoned = getattr(self._memory, "drain_abandoned", None)
+        if not callable(drain_abandoned):
+            return
+        try:
+            drained = drain_abandoned()
+        except Exception as exc:  # noqa: BLE001  # memory is a seam
+            self._record(APP_RECALL_FAILED, f"abandoned: {_describe(exc)}")
+            return
+        for degradation in getattr(drained, "records", ()) or ():
+            self._fold("memory", degradation)
+        dropped = getattr(drained, "dropped", 0)
+        if isinstance(dropped, int) and dropped > 0:
+            self._record("memory-abandoned-dropped", f"{dropped} abandoned record(s) evicted")
+
+    def _stop_drain(self, deadline: float) -> bool:
+        """Stop the worker, then ONE last bounded pass while memory still writes."""
+        started = self._clock()
+        budget = max(0.05, float(deadline))
+        self._drain_stop.set()
+        self._drain_kick.set()
+        thread = self._drain_thread
+        if thread is not None:
+            thread.join(timeout=budget / 2)
+            if thread.is_alive():
+                return False
+        remaining = budget - (self._clock() - started)
+        if self._drain is not None and remaining > 0:
+            self._drain_pass(remaining * drain_module.HEARTBEAT_SHARE)
+        else:
+            self._forward_lane_degradations()
+        return True
+
+    def _start_backfill(self) -> None:
+        """t12's bounded background backfill: uncached records gain vectors, off the turn."""
+        start = getattr(self._memory, "start_backfill", None)
+        if not callable(start):
+            return
+        try:
+            start()
+        except Exception as exc:  # noqa: BLE001  # memory is a seam
+            self._record(APP_BOOTSTRAP_DEGRADED, f"backfill: {_describe(exc)}")
+
+    def _stop_backfill(self, deadline: float) -> bool:
+        stop = getattr(self._memory, "stop_backfill", None)
+        if not callable(stop):
+            return True
+        try:
+            return bool(stop(max(0.05, deadline)))
+        except Exception as exc:  # noqa: BLE001  # memory is a seam
+            self._record(APP_SHUTDOWN_INCOMPLETE, f"backfill: {_describe(exc)}")
+            return False
 
     def _tool_counts(self) -> tuple[int, int, int, int]:
         """The four memory-tool counters, as one snapshot to difference against."""
@@ -2303,38 +3290,6 @@ class DaemonApp:
         """Keep one turn's measurement where a reader can find it. Never raises."""
         with self._lock:
             self._recent_turns.append(timing.to_dict())
-
-    def _speak(self, spoken: str, serial: int) -> Any:
-        """Hand the reply to the voice — unless the room moved on while we thought.
-
-        Two checks, because the race is real: a ``speech_started`` can land in
-        the microseconds between deciding to speak and the voice actually
-        starting. The FIRST check (before handing over) is what normally
-        stops a superseded reply. The SECOND (after
-        :meth:`~embodiment.voice.Voice.speak` returns, which is when the
-        audio is queued rather than played) catches the hairline case and
-        stops the speaker through the voice's own barge-in path, so nothing
-        that started playing after a ``speech_started`` was seen keeps
-        playing beyond the barge-in bound.
-        """
-        voice = self._voice
-        if self._is_superseded(serial):
-            self._publish_reply(spoken, superseded=True)
-            return None
-        if voice is None:
-            self._record(APP_NO_ENDPOINT, "nothing to speak through; the reply was not voiced")
-            self._publish_reply(spoken, superseded=False)
-            return None
-        spoke: list[Any] = []
-
-        def say() -> None:
-            spoke.append(voice.speak(spoken))
-
-        self._safely(say, APP_TURN_FAILED, "speak")
-        if self._is_superseded(serial):
-            self._safely(voice.on_speech_started, APP_TURN_FAILED, "barge-in")
-        self._fold_voice(voice)
-        return spoke[0] if spoke else None
 
     def _is_superseded(self, serial: int) -> bool:
         with self._lock:
@@ -2510,7 +3465,7 @@ class DaemonApp:
                 # would then mean "you said it slightly differently".
                 wanted,
                 mode=MEMORY_MODE_EXACT,
-                deadline=self._config.recall_deadline,
+                deadline=self._recall_deadline_now(semantic_configured=False),
                 top_k=FORGET_TEXT_TOP_K,
             )
         except Exception as exc:  # noqa: BLE001  # memory is a seam; a turn never dies on it
@@ -2627,7 +3582,7 @@ class DaemonApp:
             {"component": "memory", "status": "ask-not-detected", "ask_not_detected": count},
         )
 
-    def _recall(self, text: str) -> tuple[str, tuple[str, ...]]:
+    def _recall(self, text: str) -> _RecallSeen:
         """The ONE place recall reaches a prompt, bounded by its own deadline.
 
         Counted at every step, because the failure this replaces was a silent
@@ -2639,11 +3594,25 @@ class DaemonApp:
         are what tell those two apart.
         """
         started = self._clock()
-        result = self._recall_once(text, self._config.recall_mode, self._config.recall_deadline)
+        configured, before = _semantic_view(_probe(self._memory))
+        deadline = self._recall_deadline_now(configured)
+        result = self._recall_once(text, self._config.recall_mode, deadline)
+        self._observe_store(before, result)
         records = self._records_of(result)
+        semantic = getattr(result, "mode", None) == memory_module.RECALL_MODE_SEMANTIC
+        relevance = _finite_or_none(getattr(result, "relevance", None)) if semantic else None
 
-        if not records and not _lexical_can_index(text):
-            records = self._recall_blind_fallback(text, started)
+        # d5 under semantic recall (t16's decision). The exact-substring
+        # fallback exists because KEYWORD recall cannot tokenise Hebrew — a
+        # blind search. Semantic recall is not blind: zero records from it
+        # means nothing cleared the similarity threshold, which is c52's
+        # "returns nothing when nothing is relevant" working as specified, and
+        # an exact-substring rescue would put back exactly the unrelated
+        # memories the threshold keeps out. So the fallback runs only when the
+        # recall that ACTUALLY ran was lexical — keyword by configuration, or a
+        # semantic request the store demoted (embedder down: still blind).
+        if not records and not semantic and not _lexical_can_index(text):
+            records = self._recall_blind_fallback(text, started, deadline)
 
         # Belt over braces (d8). ``continuity.recall`` applies eidetic's
         # lifecycle filter, verified by test — but a forgotten fact that comes
@@ -2674,7 +3643,61 @@ class DaemonApp:
                 "archived_hidden": hidden,
             },
         )
-        return rendered, rendered_ids
+        return _RecallSeen(
+            rendered=rendered,
+            ids=rendered_ids,
+            records=tuple(records) if rendered else (),
+            relevance=relevance,
+        )
+
+    def _recall_deadline_now(self, semantic_configured: bool) -> float:
+        """The bound the next recall gets: configured, or derived (t23)."""
+        pinned = _finite_or_none(self._config.recall_deadline)
+        if pinned is not None:
+            return pinned
+        semantic = semantic_configured and self._config.recall_mode == RECALL_MODE_SEMANTIC
+        with self._lock:
+            active = self._active_records
+        return derive_recall_deadline(active, semantic=semantic)
+
+    def _observe_store(self, before: Optional[tuple[int, int]], result: Any) -> None:
+        """Learn the active store size from the recall that just ran. Never raises.
+
+        No store scan: the size is read from memory's own semantic counters —
+        one query embed and one ``cached_hits + uncached_skipped`` bump per
+        scored recall, the number of active records it enumerated. A sample is
+        taken only when THIS recall scored (mode ``semantic``) and exactly one
+        embed happened in its window; a concurrent recall's counts are not read
+        as a size. A missed deadline forgets the size, so the next recall gets
+        the cap and measures again instead of being censored by a stale count.
+        """
+        # Nothing here can raise: _probe and _semantic_view never do, and the
+        # degradations are the ones _recall_once already iterated.
+        if any(
+            getattr(d, "code", "") == MEMORY_DEADLINE_EXCEEDED
+            for d in getattr(result, "degradations", ()) or ()
+        ):
+            with self._lock:
+                self._active_records = None
+            return
+        if before is None or getattr(result, "mode", None) != RECALL_MODE_SEMANTIC:
+            return
+        _, after = _semantic_view(_probe(self._memory))
+        if after is None or after[0] - before[0] != 1:
+            return
+        active = after[1] - before[1]
+        if active < 0:
+            return
+        with self._lock:
+            self._active_records = active
+            previous, self._store_level = self._store_level, _store_level(active)
+            level = self._store_level
+        for crossed in range(previous + 1, level + 1):
+            ceiling = (RECALL_COMFORTABLE_RECORDS, RECALL_P90_CEILING_RECORDS)[crossed - 1]
+            self._record(
+                APP_RECALL_STORE_LARGE,
+                f"active store {active} records, past the measured {ceiling}",
+            )
 
     def _recall_once(self, query: str, mode: str, deadline: float) -> Any:
         """One bounded call into memory. Counts and folds; never raises."""
@@ -2701,7 +3724,7 @@ class DaemonApp:
             self._fold("memory", degradation)
         return result
 
-    def _recall_blind_fallback(self, text: str, started: float) -> list[Any]:
+    def _recall_blind_fallback(self, text: str, started: float, deadline: float) -> list[Any]:
         """The lexical index cannot see this utterance. Say so, then try again.
 
         eidetic's keyword/BM25 tokeniser is ``[a-z0-9]+``
@@ -2725,7 +3748,7 @@ class DaemonApp:
             once=True,
         )
         for word in _fallback_terms(text):
-            remaining = self._config.recall_deadline - (self._clock() - started)
+            remaining = deadline - (self._clock() - started)
             if remaining <= 0:
                 break
             result = self._recall_once(word, MEMORY_MODE_EXACT, remaining)
@@ -2976,10 +3999,19 @@ class DaemonApp:
         """Classify ONE server event. Runs on the ears thread; never blocks on a turn."""
         try:
             if isinstance(event, wire.TranscriptionCompleted):
+                with self._lock:
+                    self._floor_taken = False
                 self.submit_transcript(event.text)
             elif isinstance(event, wire.SpeechStarted):
+                # Who holds the floor, for a follow-up nobody asked for. Cleared
+                # by speech_stopped or the transcription; a stuck flag only ever
+                # silences follow-ups, never a reply (see _floor_held).
+                with self._lock:
+                    self._floor_taken = True
                 self._barge_in()
             elif isinstance(event, wire.SpeechStopped):
+                with self._lock:
+                    self._floor_taken = False
                 # The start of t21's measurement, taken where it happens.
                 at_ms = getattr(event, "at_ms", None)
                 with self._lock:
@@ -3201,12 +4233,15 @@ class DaemonApp:
     # ── the dashboard ────────────────────────────────────────────────────
 
     def controls(self) -> server_module.Controls:
-        """The four control callables the dashboard server binds to."""
+        """The control callables the dashboard server binds to, chat page included."""
         return server_module.Controls(
             start_voice=self._control_start_voice,
             stop_voice=self._control_stop_voice,
             set_mute=self._control_set_mute,
             status=self.status,
+            chat=self._control_chat,
+            speak=self._control_speak,
+            clip=self._control_clip,
         )
 
     def _control_start_voice(self) -> dict[str, Any]:
@@ -3312,6 +4347,23 @@ class DaemonApp:
             return False
         return True
 
+    def _ingest_status(self) -> Optional[dict[str, Any]]:
+        """The drain's own status (the inbox counts first) plus its worker's."""
+        if self._drain is None:
+            return None
+        probed = _probe(self._drain) or {"unavailable": True}
+        thread = self._drain_thread
+        with self._lock:
+            worker = {
+                "running": bool(thread is not None and thread.is_alive()),
+                "kicks": self._drain_kicks,
+                "passes": self._drain_passes,
+                "failures": self._drain_failures,
+                "budget_s": drain_budget_for(self._config.poll_interval_s),
+                "last_report": self._drain_last_report,
+            }
+        return {**probed, "worker": worker}
+
     def _log(self, event: str, **fields: Any) -> None:
         """One operational-log line. Never carries transcript text."""
         try:
@@ -3364,6 +4416,9 @@ class DaemonApp:
             publish_errors = self._publish_errors
             ledger_errors = self._ledger_errors
             session = self._session
+        semantic_status = _probe(self._memory)
+        with self._lock:
+            active_records, store_level = self._active_records, self._store_level
         return {
             "running": self._started and not self._closed,
             "closed": self._closed,
@@ -3432,9 +4487,21 @@ class DaemonApp:
                 "lexical_fallback_hits": self._recall_fallback_hits,
                 "archived_hidden_total": self._recall_archived_hidden,
                 "last_rendered_ids": list(self._recall_last_ids),
-                "deadline_s": self._config.recall_deadline,
+                # The bound the NEXT recall gets (t23): derived from the store
+                # the last semantic recall scored, unless configured. The turn's
+                # wait for memory is the head start, under recall_events.
+                "deadline_s": self._recall_deadline_now(_semantic_view(semantic_status)[0]),
+                "deadline_derived": _finite_or_none(self._config.recall_deadline) is None,
+                "deadline_cap_s": RECALL_DEADLINE_CAP_S,
+                "active_records": active_records,
+                "store_warning": RECALL_STORE_WARNINGS.get(store_level),
                 "configured_mode": self._config.recall_mode,
                 "semantic": _semantic_available(self._memory),
+                # The embedder IN EFFECT, by role name (t12): configured,
+                # online at its last real call, and why not. None for a
+                # memory with no semantic surface at all.
+                "embedder": (semantic_status or {}).get("embedder"),
+                "semantic_recall": semantic_status,
             },
             "memory": {
                 **_memory_status(self._memory),
@@ -3455,6 +4522,21 @@ class DaemonApp:
                 "summary_skip_reason": self._summary_skip_reason,
             },
             "session": _session_status(session),
+            "recall_events": {
+                "voice": self._recall_events.status(),
+                "text": self._text_recall.status(),
+            },
+            "text_turns": {
+                "run": self._text_turns_run,
+                "follow_ups_published": self._text_follow_ups,
+                "busy": self._text_busy,
+                "degradations": len(self._text_turns.degradations),
+            },
+            "ingest": self._ingest_status(),
+            # The mode only. The team domain, the audience and the allow-listed
+            # emails are configuration a dashboard viewer has no business reading.
+            "access": {"mode": self._config.access_mode},
+            "speech_to_speech": {"role": self._config.s2s_role or None, "enabled": False},
             "clock": {"zone": CLOCK_ZONE_NAME, "zone_available": CLOCK_ZONE_AVAILABLE},
             "ears": _probe(self._ears),
             "voice": _probe(self._voice),
@@ -3497,8 +4579,13 @@ def _compose_prompt(
     recalled: str,
     tool_prompt: str = "",
     clock: str = "",
+    continuation: str = "",
 ) -> str:
     """The system prompt for ONE turn: base, clock, tools, the window, then recall.
+
+    *continuation* (t16) is set only for a remainder, restart or follow-up
+    completion: fixed instruction text plus what Gwen already said. Empty —
+    every first reply — leaves the prompt byte-identical to before.
 
     Recall enters here and nowhere else — :func:`embodiment.memory.render_recalled`
     has already attributed and fenced it as data. It never enters the user text,
@@ -3522,9 +4609,225 @@ def _compose_prompt(
             content = str(message.get("content", ""))
             lines.append(f"{role}: {content}")
         parts.append("\n".join(lines))
+    if continuation:
+        parts.append(continuation)
     if recalled:
         parts.append(recalled)
     return "\n\n".join(parts)
+
+
+def _no_playback() -> None:
+    """A typed turn's ``stop_playback``: there is no speaker to stop."""
+
+
+def _nobody_holds_the_page() -> bool:
+    """A typed turn's ``floor_held``: nobody can talk over a chat page."""
+    return False
+
+
+def _whole_message(text: str) -> list[str]:
+    """A typed turn's ``split``: the whole message is ONE unit, so a late memory
+    is one later chat message, never a reply spliced sentence by sentence."""
+    return [text] if isinstance(text, str) and text.strip() else []
+
+
+def _continuation(request: CompletionRequest) -> str:
+    """The prompt section a non-first completion carries: what was said, and why."""
+    instruction = {
+        PURPOSE_REMAINDER: REMAINDER_INSTRUCTION,
+        PURPOSE_RESTART: RESTART_INSTRUCTION,
+        PURPOSE_FOLLOW_UP: FOLLOW_UP_INSTRUCTION,
+    }.get(request.purpose, "")
+    if not instruction and not request.spoken:
+        return ""
+    lines = [SPOKEN_HEADER, *(f"- {sentence}" for sentence in request.spoken)]
+    if instruction:
+        lines.append(instruction)
+    return "\n".join(lines)
+
+
+def _replay_after_tool_round(first_text: str, request: CompletionRequest) -> str:
+    """A turn that already took a tool round is never regenerated.
+
+    The tool's effect is done (a record written or archived) and the reply is
+    the confirmation that licenses it; running the turn again would run the
+    tool again. So a memory that lands afterwards gets the SAME words: the
+    whole reply before anything was spoken, the unspoken rest of it mid-reply,
+    and nothing for a restart (the reply stands). BackgroundRecall still counts
+    the arrival — and a "regeneration" that changed no word.
+    """
+    if request.purpose == PURPOSE_REPLY:
+        return first_text
+    if request.purpose == PURPOSE_REMAINDER:
+        return " ".join(split_sentences(first_text)[len(request.spoken) :])
+    return ""
+
+
+def _fell_back(result: TurnResult) -> bool:
+    """True when the turn path produced nothing of its own (never-silent fallback)."""
+    return result.spoken == FALLBACK_TEXT and result.degraded
+
+
+def _finite_or_none(value: object) -> Optional[float]:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    number = float(value)
+    return number if math.isfinite(number) else None
+
+
+@dataclass(frozen=True)
+class _TypedReply:
+    """What :meth:`DaemonApp._run_text_turn` hands :class:`TextTurns`."""
+
+    spoken: str
+    turn_serial: Optional[int] = None
+
+
+class _LockedSession:
+    """The session as :class:`TextTurns` sees it: every write behind the conversation.
+
+    :class:`TextTurns` already holds the conversation (re-entrant) when it
+    writes, so these acquires are immediate; the bound is the backstop that
+    keeps a write from ever waiting unbounded if that invariant breaks. A
+    write that cannot get the conversation raises, which :class:`TextTurns`
+    records as a session failure.
+    """
+
+    def __init__(self, session: Any, lock: Any, timeout: float) -> None:
+        self._session = session
+        self._lock = lock
+        self._timeout = timeout
+
+    def _write(self, call: Callable[[], Any]) -> Any:
+        if not self._lock.acquire(timeout=self._timeout):
+            raise TimeoutError("the conversation was busy")
+        try:
+            return call()
+        finally:
+            self._lock.release()
+
+    def add_user(self, text: str) -> Any:
+        return self._write(lambda: self._session.add_user(text))
+
+    def add_assistant(self, text: str, metadata: Any = None) -> Any:
+        return self._write(lambda: self._session.add_assistant(text, metadata=metadata))
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._session, name)
+
+
+def _timestamp_seconds(value: object) -> Optional[int]:
+    """A recording timestamp (``ss``, ``mm:ss`` or ``hh:mm:ss``) as whole seconds.
+
+    The chat page treats a source as a RECORDING when ``start`` is a number,
+    so a pocket timestamp is converted here; anything else is ``None`` — an
+    absent position, never an invented ``0``.
+    """
+    if not isinstance(value, str) or not value:
+        return None
+    parts = value.split(":")
+    if len(parts) > 3 or not all(part.isascii() and part.isdigit() for part in parts):
+        return None
+    seconds = 0
+    for part in parts:
+        seconds = seconds * 60 + int(part)
+    return seconds
+
+
+def chat_source(record: Any) -> dict[str, Any]:
+    """One recalled record as the chat page's source shape. Never raises.
+
+    Provenance goes through :func:`embodiment.memory.recalled_provenance` — the
+    same neutralising funnel as the prompt's header, so the page and the model
+    read one sanitised value. The text goes through memory's one sanitiser and
+    is capped; the page renders all of it with ``textContent`` and marks it
+    untrusted. A room record (Gwen's own, no provenance) is ``source: room``.
+    """
+    try:
+        provenance = memory_module.recalled_provenance(record)
+        text = record.get("text") if isinstance(record, Mapping) else ""
+        # memory's one sanitiser, through its public delegate.
+        clean = memory_module.neutralise_source_text(text, SOURCE_TEXT_MAX_CHARS)
+    except Exception:  # noqa: BLE001  # a hostile record costs its source, never the turn
+        provenance, clean = None, ""
+    out: dict[str, Any] = {
+        "source": "room",
+        "title": "",
+        "date": "",
+        "start": None,
+        "end": None,
+        "section": "",
+        "link": "",
+        "text": clean,
+    }
+    if provenance is None:
+        return out
+    out.update(
+        source=provenance["source"],
+        title=provenance["title"],
+        date=provenance["date"],
+        section=provenance["section"],
+        link=provenance["link"],
+    )
+    if provenance["source"] == "pocket":
+        out["start"] = _timestamp_seconds(provenance["start"])
+        out["end"] = _timestamp_seconds(provenance["end"])
+    return out
+
+
+def drain_budget_for(poll_interval_s: object) -> float:
+    """One drain pass's budget: :func:`drain.budget_for` of the heartbeat, floored.
+
+    The floor is two of the drain's own minimum record budgets. Without it a
+    fast heartbeat (a 0.01 s poll gives 0.005 s) is a budget in which no record
+    can ever START — a drain that runs every tick and applies nothing, with
+    every counter looking healthy (CLAUDE.md lesson 3). The floor costs the
+    heartbeat nothing: the pass runs on the drain worker, not in ``pump``.
+    """
+    try:
+        interval = float(poll_interval_s)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        interval = AppConfig.poll_interval_s
+    return max(drain_module.budget_for(interval), 2 * drain_module.MIN_RECORD_BUDGET_S)
+
+
+def access_mode_of(verifier: object) -> str:
+    """``off`` / ``on`` / ``incomplete`` for what :func:`verifier_from_env` returned."""
+    if verifier is None:
+        return ACCESS_MODE_OFF
+    if isinstance(verifier, access_module.AccessVerifier):
+        return ACCESS_MODE_ON
+    return ACCESS_MODE_INCOMPLETE
+
+
+def recall_mode_from_env(value: Optional[str]) -> tuple[str, bool]:
+    """``(mode, known)``: the configured recall mode, semantic unless told keyword."""
+    raw = (value or "").strip().lower()
+    if not raw:
+        return RECALL_MODE_SEMANTIC, True
+    if raw in RECALL_MODES:
+        return raw, True
+    return RECALL_MODE_SEMANTIC, False
+
+
+def _semantic_view(status: Optional[dict[str, Any]]) -> tuple[bool, Optional[tuple[int, int]]]:
+    """From ``RoomMemory.status()``: (semantic configured, (query embeds, candidates)).
+
+    *candidates* is ``cached_hits + uncached_skipped`` — every active record a
+    scored recall enumerated. The pair is ``None`` when the counters are absent
+    or not counts. Never raises.
+    """
+    if not isinstance(status, dict):
+        return False, None
+    embedder = status.get("embedder")
+    configured = isinstance(embedder, dict) and embedder.get("configured") is True
+    counters = status.get("semantic")
+    if not isinstance(counters, dict):
+        return configured, None
+    values = [counters.get(k) for k in ("query_embeds", "cached_hits", "uncached_skipped")]
+    if not all(isinstance(v, int) and not isinstance(v, bool) for v in values):
+        return configured, None
+    return configured, (values[0], values[1] + values[2])
 
 
 def _probe(subject: Any) -> Optional[dict[str, Any]]:
@@ -3930,6 +5233,31 @@ def _session_status(session: Any) -> Optional[dict[str, Any]]:
         return {"unavailable": True}
 
 
+#: The vector cache's directory under the state dir. 0700, its file 0600 (t4).
+VECTOR_DIRNAME = "vectors"
+
+
+def _private_vector_cache(state_dir: Any, early: list[tuple[str, str, str]]) -> Any:
+    """The 0700 vector-cache dir under the state dir, or ``None`` (recorded).
+
+    ``None`` — no state dir, or one that cannot hold a private directory —
+    leaves semantic recall unconfigured: every semantic recall then demotes to
+    keyword with a recorded degradation, rather than caching vectors somewhere
+    nobody pinned (the cwd).
+    """
+    if state_dir is None:
+        early.append((APP_BOOTSTRAP_DEGRADED, "vector cache: no state dir", APP_SOURCE))
+        return None
+    directory = Path(state_dir) / VECTOR_DIRNAME
+    try:
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        os.chmod(directory, 0o700)
+    except OSError as exc:
+        early.append((APP_BOOTSTRAP_DEGRADED, f"vector cache: {_describe(exc)}", APP_SOURCE))
+        return None
+    return memory_module.vector_cache_for(directory)
+
+
 def main() -> DaemonApp:
     """Build the daemon from the environment. Zero arguments; never raises.
 
@@ -3953,6 +5281,35 @@ def main() -> DaemonApp:
     if secret.code:
         state.ledger.append(secret.code, _safe_reason_text(secret.detail))
     bus = Bus(redact=tuple(s for s in (realtime.api_key, secret.secret) if s))
+
+    # Records that arrive before the app exists (an incomplete Access env is
+    # recorded by verifier_from_env itself, at build time) wait here and are
+    # replayed through the app's ONE recording path once it does.
+    early: list[tuple[str, str, str]] = []
+    built: list["DaemonApp"] = []
+
+    def sink(source: str) -> Callable[[str, str], None]:
+        def record(code: str, reason: str) -> None:
+            if built:
+                built[0]._record(code, reason, source=source)
+            else:
+                early.append((code, reason, source))
+
+        return record
+
+    # The Access verifier (t3, t7): all-or-nothing team domain + audience, plus
+    # the operator's email allow-list (EMBODIMENT_ACCESS_EMAILS). None when the
+    # env is unset, and then the guard is byte-identical to before.
+    verifier = access_module.verifier_from_env(on_degrade=sink("http"))
+    recall_mode, known_mode = recall_mode_from_env(os.environ.get(ENV_RECALL_MODE))
+    if not known_mode:
+        early.append(
+            (
+                APP_RECALL_MODE_UNKNOWN,
+                f"{ENV_RECALL_MODE} is not one of {', '.join(RECALL_MODES)}; kept semantic",
+                APP_SOURCE,
+            )
+        )
     config = AppConfig(
         gateway_url=realtime.gateway_url,
         api_key=realtime.api_key,
@@ -3965,10 +5322,33 @@ def main() -> DaemonApp:
         bind_public=_env_flag(os.environ.get(ENV_BIND_PUBLIC)),
         allowed_hosts=parse_allowed_hosts(os.environ.get(ENV_ALLOWED_HOSTS)),
         public_hostname=(os.environ.get(ENV_PUBLIC_HOSTNAME) or "").strip().lower() or None,
+        recall_mode=recall_mode,
+        access_mode=access_mode_of(verifier),
+        s2s_role=(os.environ.get(ENV_S2S_ROLE) or "").strip() or None,
     )
 
-    data_dir = Path(state.dir) / "memory" if state.dir is not None else Path(".")
-    memory = RoomMemory(data_dir, scope=config.memory_scope, added_by=config.added_by)
+    base_dir = Path(state.dir) if state.dir is not None else Path(".")
+    data_dir = base_dir / "memory"
+    # Semantic recall (t12): the gemma2-embed role BY NAME, its vectors cached
+    # 0700/0600 under the state dir (never committed, never beside the store's
+    # public half), and the ingest scope read alongside gwen's own (t5).
+    embedder = vectors.EmbedderClient(config.gateway_url, config.api_key, model=vectors.EMBED_ROLE)
+    vector_cache = _private_vector_cache(state.dir, early)
+    memory = RoomMemory(
+        data_dir,
+        scope=config.memory_scope,
+        added_by=config.added_by,
+        ingest_scope=memory_module.INGEST_SCOPE,
+        semantic=SemanticRecall(
+            embedder=embedder,
+            vector_cache=vector_cache,
+            similarity_threshold=config.similarity_threshold,
+        ),
+    )
+    # The drain is the inbox's single writer. Spool degradations reach the
+    # ledger through the drain's own forwarding — spool.on_degradation stays
+    # unset, or each would be recorded twice.
+    drain = drain_module.Drain(Spool.for_state_dir(state.dir), memory, record=sink("ingest"))
     tools = ToolRegistry()
 
     def seam(messages: list[dict[str, Any]], tools: Any = None) -> ModelResponse:
@@ -4033,7 +5413,11 @@ def main() -> DaemonApp:
         # The bus already redacts these on its way out; this is the other
         # direction — what the GATEWAY sends back.
         redact=tuple(s for s in (realtime.api_key, secret.secret) if s),
+        lanes=AppLanes(drain=drain, embedder=embedder, vector_cache=vector_cache),
     )
+    built.append(app)
+    for code, reason, source in early:
+        app._record(code, reason, source=source)
     try:
         app._server = server_module.DashboardServer(
             config=server_module.ServerConfig(
@@ -4060,6 +5444,8 @@ def main() -> DaemonApp:
                     ),
                     public_hostname=config.public_hostname,
                 ),
+                assertion_verifier=verifier,
+                on_degrade=sink("http"),
             ),
             bus=bus,
             controls=app.controls(),
