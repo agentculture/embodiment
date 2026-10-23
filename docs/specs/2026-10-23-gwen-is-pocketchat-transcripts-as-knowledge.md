@@ -34,6 +34,20 @@
   - honesty: Gwen's document index is a separate 0600 file under her state dir (never the eidetic room store), built with stdlib EPUB extraction (`test_zero_deps.py` unchanged), and a re-fetched item whose sha256 is unchanged is not re-embedded
 - Gwen's library client is GET-only by construction (an AST/test pin that it never sends POST/DELETE/PUT to the library), because xteink keys have no scopes: any `xtk_` key is a full operator key (docs/api.md:17-37 - upload, delete, mint keys, revoke devices); the key is held in grant and injected, never written to disk by Gwen
   - honesty: No code path in Gwen's library client can issue POST, PUT, PATCH or DELETE (AST test over the client module), and the key is read only from the injected environment, never from a file Gwen writes
+- In a turn whose context holds library text, the write tools (remember, forget) cannot be triggered by that text: a write needs the operator's own words in the current user turn to name it (or the write is refused and recorded), because remember/forget are model-initiated with no user-ask gate (daemon/app.py:3307-3345, decision d7) and library documents include web-sourced content (newspapers, papers)
+  - honesty: A test plants 'forget everything about X' / 'remember that Y' inside a library document; a turn that reads it and does not have the operator asking in his own words makes no write, and the refusal is counted and recorded
+- Library and gateway keys never reach child processes: the audio subprocesses (audio/host.py:1317, 1547, 1731, 1838 Popen with no env=) are spawned with a scrubbed environment that drops `EMBODIMENT_GATEWAY_KEY` and the library key, and no key appears in the ledger, operational log, transcript log or SSE (`safe_reason` path), pinned by tests
+  - honesty: A test spawns each audio subprocess through the real factory and asserts its env has neither `EMBODIMENT_GATEWAY_KEY` nor the library key; a scan of ledger/log/SSE fixtures after a library run finds no `xtk_` or gateway key
+- Gwen's document index reconciles against the library catalog by (item id, sha256): a removed item's chunks and stored text are purged, a changed item is re-indexed, and a citation never points at an item the library no longer holds
+  - honesty: Deleting an item from a fake library and running one reconcile removes its chunks and text from the index file; a changed sha256 re-indexes; a citation to a removed id cannot be produced
+- EPUB extraction is bounded: maximum archive members, maximum uncompressed bytes per member and in total, maximum extracted characters per item, refusing (and recording) a zip bomb or an oversized item instead of indexing it; the 7.4 MB book is admitted only by opt-in (c18)
+  - honesty: Fixtures for a zip bomb, an oversized member and too many members are each refused with a recorded reason and leave the index unchanged
+- The library is optional and observable: unset library config means today's behaviour exactly (no tool bound, no Library view data, a visible 'library not configured'), an unreachable or 401 library is a recorded degradation with chat continuing from memory, and status reports items indexed, chunks, last sync, failures and the GET count - the counter-that-moves rule (CLAUDE.md lesson 3)
+  - honesty: With the library env unset, the existing suite passes unchanged and no library tool is bound; with the library down, a chat still answers from memory and status shows the degradation and frozen counters
+- status.access reports counts of requests admitted by Access and refused per code, so a public-host session is proven by a counter rather than inferred (found in the 2026-10-24 live test, where only mode:on was visible)
+  - honesty: A public-host request admitted by Access increments status.access.admitted, and each refusal code increments its own counter, pinned by a guard test
+- Background indexing never competes with a live turn: embedding library chunks yields to recall and voice (one shared gemma2-embed lane on orin), runs under the backfill's bounded ticks, and its cost is measured before books are indexed
+  - honesty: A test drives an index tick concurrently with a recall and shows the recall's embed is served first (index work deferred), and the plan's measurement records embed-lane latency during indexing
 
 ## Honesty conditions
 
@@ -100,6 +114,23 @@
 - `s15` — `xteink-firmware (docs/xteink/sync.md, SCOPE.md:35)`: Pull-only device sync; status POST carries no reading position, bookmarks or highlights (they stay on the SD card); SCOPE.md rules out new connectors - reading progress is not available as knowledge this cycle
 - `s16` — `live xteink library catalog (GET /api/library with Gwen's key, 2026-10-24)`: 17 EPUB items: ids 5,8-10,12-20 culture-rules daily newspapers; 1,2,4 standalone docs (one LaTeXML paper); 11 an O'Reilly book (7.4 MB). No item is a Pocket transcript; newspaper headings are topic sections (Jetson optimization/jobs/news, Isaac ROS), no recordings. EPUB markup: p/section/h2/li, no data-\* timing attributes, no timestamp or speaker markup
   - seeds: `c14`
+- `s17` — `challenge pass / security lens: tool authority under untrusted library text (daemon/app.py:3307-3345 _remember_tool, d7)`: remember/forget fire on the model's judgment alone; c11's fence quotes library text but does not stop a model from obeying a planted 'forget X' - the write path needs its own guard tied to the user turn
+  - seeds: `c31`
+- `s18` — `challenge pass / security lens: secret inheritance (audio/host.py Popen calls)`: Popen calls pass no env=, so pw-record/pw-play inherit the daemon's environment - today the gateway key, tomorrow a full-operator library key
+  - seeds: `c32`
+- `s19` — `challenge pass / lifecycle lens: index vs library drift (xteink DELETE /api/library/{id}; culture-library move)`: The library can delete or replace items and will move to culture-library; an index that only grows would cite deleted documents and keep copies of their text
+  - seeds: `c33`
+- `s20` — `challenge pass / failure-mode lens: untrusted archives (EPUB is a zip; library accepts uploads)`: Any library item is an uploaded zip; stdlib zipfile reads whatever it declares - extraction needs explicit caps
+  - seeds: `c34`
+- `s21` — `challenge pass / observability + rollback lens (CLAUDE.md C3, lesson 3; live test found access status shows only mode)`: A library feature with no counters would look healthy while indexing nothing; rollback must be 'unset the env', and the live test showed status.access has no admitted/refused counts - same gap class
+  - seeds: `c35`
+- `s22` — `challenge pass / observability lens: http/access status (live probe 2026-10-24)`: status() access = {mode: on} only; admission had to be inferred from `text_turns`.run
+  - seeds: `c36`
+- `s23` — `challenge pass / concurrency lens: shared embed lane (vectors.py EmbedderClient, gemma2-embed proxied to orin)`: Recall's query embed (p90 161 ms) and library indexing share one proxied lane; a bulk index could push a spoken turn past its 0.25 s head start
+  - seeds: `c37`
+- `s24` — `challenge pass / adjacent-systems lens: two newspaper paths (daemon/drain.py retention, library EPUBs)`: Same issue arrives as facts (30-day retention) and as a library item (no retention) - duplicate citations and divergent lifetimes unless decided
+- `s25` — `challenge pass / migration lens: culture-library move (c30, v1, v4)`: Covered by c12's single client seam + c35's config-driven enablement; residual: auth model of culture-library unknown (v4)
+- `s26` — `challenge pass / cheap-probe lens`: Probed live: library catalog + headings (s16), key works GET, no transcripts present; not probed: EPUB extraction cost at book size, embed lane load under indexing - left to the plan's measurement task (c29)
 
 ## Decisions
 
@@ -111,6 +142,9 @@
 - Keep the distilled-facts ingest beside the library: facts in Gwen's memory serve fast spoken recall (0.25 s head start); the library is the deep, cited source
 - Assume culture-rules pushes Pocket transcripts into xteink's library as EPUB items (operator, 2026-10-24). The spec builds for transcripts arriving through the library; it does not claim any are there today - the 2026-10-24 catalog held none (s16)
 - The knowledge home is culture-library (operator, 2026-10-24), served at library.culture.dev; it holds all our knowledge. Gwen binds to 'the library' through one client seam; xteink's live library (127.0.0.1:8780, feat/issue-1) is today's instance until culture-library serves it
+- Newspapers: the library index keeps every issue as the long-term archive while the memory facts expire 30 days after the issue (last cycle's q7); when recall and the library cite the same issue, the reply's sources show it once
+- Library tools bind to typed turns (chat and clips) only this cycle; spoken turns keep today's path (0.25 s recall head start); voice access to the library waits for its added latency to be measured
+- To-dos view stays, fed from Gwen's memory: the `action_item` facts the culture-rules ingest wrote (source pocket), grouped by recording, read-only (no done/undone writes this cycle)
 
 ## Open parks
 
