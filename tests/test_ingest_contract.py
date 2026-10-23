@@ -170,3 +170,150 @@ def test_inputs_that_would_collide_after_mapping_are_rejected():
     # 'a.b' and 'a:b' would both become 'a.b' were '.' allowed in a wire segment.
     assert c.stored_id("pocket:a.b:fact:1") is None
     assert c.stored_id("pocket:a:fact:1") != c.stored_id("pocket:b:fact:1")
+
+
+def _long(n):
+    return "x" * n
+
+
+_REG = c.REGISTRY_HINT
+_FIX = "fix the record and resend the whole batch"
+_ID_P = "id is not a valid pocket:<rec>:<kind>:<n> wire id"
+_META_P = "metadata.{} is required for pocket and must be a non-empty string"
+
+
+def _meta(**over):
+    meta = dict(pocket()["metadata"])
+    meta.update(over)
+    return meta
+
+
+@pytest.mark.parametrize(
+    "batch, line, message, remediation",
+    [
+        (["[1]"], 1, "line 1: a record must be a JSON object", _FIX),
+        (lines(pocket(metadata=None)), 1, "line 1: metadata must be an object", _FIX),
+        (
+            lines(pocket(metadata=_meta(source="slack"))),
+            1,
+            "line 1: metadata.source is not in the ingest registry",
+            _REG,
+        ),
+        (
+            lines(pocket(1), paper(1)),
+            2,
+            "line 2: a batch carries one source; saw 'newspaper' after 'pocket'",
+            _FIX,
+        ),
+        (lines(pocket(id="pocket:a:fact:x")), 1, "line 1: " + _ID_P, _FIX),
+        (lines(pocket(id=5)), 1, "line 1: " + _ID_P, _FIX),
+        (
+            lines(pocket(id="newspaper:a:item:1")),
+            1,
+            "line 1: id prefix does not match source pocket",
+            _FIX,
+        ),
+        (
+            lines(pocket(type="item")),
+            1,
+            "line 1: type is not allowed for pocket (allowed: action_item, fact, summary)",
+            _FIX,
+        ),
+        (lines(pocket(text="  ")), 1, "line 1: text must be a non-empty string", _FIX),
+        (lines(pocket(text=7)), 1, "line 1: text must be a non-empty string", _FIX),
+        (
+            lines(pocket(text=_long(1001))),
+            1,
+            "line 1: text is over the 1000-character cap for pocket",
+            _FIX,
+        ),
+        (lines(pocket(metadata=_meta(title=None))), 1, "line 1: " + _META_P.format("title"), _FIX),
+        (lines(pocket(metadata=_meta(date=" "))), 1, "line 1: " + _META_P.format("date"), _FIX),
+        (lines(pocket(metadata=_meta(date=3))), 1, "line 1: " + _META_P.format("date"), _FIX),
+        (
+            lines(pocket(metadata=_meta(timestamp=""))),
+            1,
+            "line 1: " + _META_P.format("timestamp"),
+            _FIX,
+        ),
+        (
+            lines(pocket(metadata=_meta(title=_long(301)))),
+            1,
+            "line 1: metadata.title is over 300 characters",
+            _FIX,
+        ),
+        (
+            lines(pocket(supersedes="nope")),
+            1,
+            "line 1: supersedes is not a valid wire id of the same source",
+            _FIX,
+        ),
+        (
+            lines(pocket(supersedes="newspaper:a:item:1")),
+            1,
+            "line 1: supersedes is not a valid wire id of the same source",
+            _FIX,
+        ),
+        (
+            lines(pocket(supersedes=5)),
+            1,
+            "line 1: supersedes is not a valid wire id of the same source",
+            _FIX,
+        ),
+        (
+            lines(pocket(1), pocket(1)),
+            2,
+            "line 2: duplicate id (first seen on line 1)",
+            _FIX,
+        ),
+        (["", "{bad"], 2, "line 2: line is not valid JSON", _FIX),
+        ([b"x"], 1, "line 1: a line must be text", _FIX),
+        ([], 0, "the batch holds no records", _FIX),
+        (["", " "], 0, "the batch holds no records", _FIX),
+    ],
+)
+def test_refusal_code_message_remediation_and_line_are_pinned(batch, line, message, remediation):
+    r = c.validate_batch(batch)
+    assert isinstance(r, c.Refusal)
+    assert r.line == line
+    assert r.error.code == 1
+    assert r.error.message == message
+    assert r.error.remediation == remediation
+
+
+def test_unreadable_batch_and_cap_messages_are_pinned():
+    r = c.validate_batch(5)
+    assert (r.line, r.error.message) == (0, "the batch could not be read")
+    cap = c.REGISTRY["pocket"].max_records
+    over = c.validate_batch(lines(*[pocket(i) for i in range(1, cap + 2)]))
+    assert over.error.message == f"line {cap + 1}: batch is over the {cap}-record cap for pocket"
+
+
+def test_accepted_records_are_pinned_exactly():
+    meta = _meta(timestamp="t1")
+    rec = pocket(2, metadata=meta, supersedes="pocket:rec1:fact:1")
+    r = c.validate_batch(lines(rec, pocket(3)), created="2026-02-03")
+    assert isinstance(r, c.Batch) and r.source == "pocket"
+    stamp = {
+        "visibility": "private",
+        "scope": c.INGEST_SCOPE,
+        "added_by": c.INGEST_ADDED_BY,
+        "created": "2026-02-03",
+    }
+    assert r.records[0] == {
+        "id": "pocket.rec1.fact.2",
+        "text": rec["text"],
+        "type": "fact",
+        "metadata": {
+            "source": "pocket",
+            "wire_id": "pocket:rec1:fact:2",
+            "recording_id": "rec1",
+            "title": "Synthetic standup",
+            "date": "2026-01-02",
+            "timestamp": "t1",
+        },
+        "supersedes": "pocket.rec1.fact.1",
+        **stamp,
+    }
+    assert "supersedes" not in r.records[1]
+    assert "timestamp" not in r.records[1]["metadata"]
