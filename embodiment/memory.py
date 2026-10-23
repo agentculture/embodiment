@@ -280,7 +280,13 @@ __all__ = [
     "CODE_STORE_SCAN_CAPPED",
     "MAX_TIGHTEN_ENTRIES",
     "CODE_CLOSED",
+    "CODE_INGEST_COLLAPSED",
+    "CODE_INGEST_NOT_ATTEMPTED",
+    "INGEST_SCOPE",
+    "INGEST_VISIBILITY",
     "AbandonedDrain",
+    "IngestResult",
+    "IngestForgetResult",
     "CloseReport",
     "RememberResult",
     "ForgetResult",
@@ -339,6 +345,16 @@ _SCOPE_VISIBILITIES = ("private", "public")
 
 #: Its atomic-write temp sibling suffix (``<scope>__<vis>.jsonl.tmp``).
 _SCOPE_TMP_SUFFIX = ".tmp"
+
+#: The one shared private scope every external source lands in. Pinned equal to
+#: ``embodiment.ingest.contract.INGEST_SCOPE`` by a test (that module imports
+#: this one, so the constant cannot be imported here without a cycle).
+INGEST_SCOPE = "gwen-ingest"
+INGEST_VISIBILITY = "private"
+
+#: Which ``metadata`` key names a source's unit of forgetting: a recording for
+#: pocket, an issue for newspaper. Pinned against the contract registry by a test.
+_SOURCE_ID_KEYS = {"pocket": "recording_id", "newspaper": "issue_date"}
 
 #: Seconds :meth:`RoomMemory.close` will wait for in-flight *writes*. Bounded
 #: well below eidetic's 10 s embedder timeout on purpose: a shutdown that can
@@ -485,6 +501,12 @@ CODE_STORE_NOT_REGULAR = "memory-store-not-a-file"
 CODE_STORE_SCAN_CAPPED = "memory-store-scan-capped"
 #: The memory layer was closed; no further work is submitted.
 CODE_CLOSED = "memory-closed"
+#: An ingested record's text hash matched an existing record in the ingest scope.
+#: The files backend would delete the older record silently; this layer reports
+#: it instead (see :meth:`RoomMemory.ingest_records`).
+CODE_INGEST_COLLAPSED = "memory-ingest-collapsed"
+#: An ingest batch stopped early; the records it names were not written.
+CODE_INGEST_NOT_ATTEMPTED = "memory-ingest-not-attempted"
 #: The human-readable half of :data:`CODE_CLOSED`, in every refusal that names it.
 _CLOSED_REASON = "this memory layer is closed"
 
@@ -586,6 +608,74 @@ class RecallResult:
             "ok": self.ok,
             "records": list(self.records),
             "mode": self.mode,
+            "degradations": [d.to_dict() for d in self.degradations],
+        }
+
+
+@dataclass(frozen=True)
+class IngestResult:
+    """Result of one :meth:`RoomMemory.ingest_records`. Ids only, never text.
+
+    ``ok`` means every record is accounted for: written, or collapsed (reported,
+    and either kept out or replacing a record it superseded). Anything in
+    ``failed`` or ``not_attempted`` means the batch is NOT done and a caller
+    should leave it queued: every write is an idempotent upsert by id, so a
+    retry converges.
+    """
+
+    ok: bool
+    written: tuple[str, ...] = ()
+    #: ``(record_id, existing_id)``: a record whose text hash matched an existing
+    #: record. Not written, unless the existing record is the one it supersedes.
+    collapsed: tuple[tuple[str, str], ...] = ()
+    #: Ids whose lifecycle was flipped because a written record superseded them.
+    superseded: tuple[str, ...] = ()
+    failed: tuple[tuple[str, str], ...] = ()  # (record_id, code)
+    not_attempted: tuple[str, ...] = ()
+    degradations: tuple[Degradation, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ok": self.ok,
+            "written": list(self.written),
+            "collapsed": [list(pair) for pair in self.collapsed],
+            "superseded": list(self.superseded),
+            "failed": [list(pair) for pair in self.failed],
+            "not_attempted": list(self.not_attempted),
+            "degradations": [d.to_dict() for d in self.degradations],
+        }
+
+
+@dataclass(frozen=True)
+class IngestForgetResult:
+    """Result of :meth:`RoomMemory.forget_source` or :meth:`RoomMemory.forget_ids`.
+
+    ``matched`` counts the records the enumeration selected (``forget_ids``: the
+    ids asked for). ``archived`` were flipped now; ``already_archived`` and
+    ``not_found`` are facts about the store, not errors; ``failed`` is
+    ``(record_id, code)``. ``ok`` is true when nothing failed.
+    """
+
+    ok: bool
+    source: Optional[str] = None
+    source_id: Optional[str] = None
+    matched: int = 0
+    archived: tuple[str, ...] = ()
+    already_archived: tuple[str, ...] = ()
+    not_found: tuple[str, ...] = ()
+    failed: tuple[tuple[str, str], ...] = ()
+    degradations: tuple[Degradation, ...] = ()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "ok": self.ok,
+            "source": self.source,
+            "source_id": self.source_id,
+            "matched": self.matched,
+            "archived": list(self.archived),
+            "already_archived": list(self.already_archived),
+            "not_found": list(self.not_found),
+            "failed": [list(pair) for pair in self.failed],
             "degradations": [d.to_dict() for d in self.degradations],
         }
 
@@ -759,6 +849,33 @@ def default_embed_probe() -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _enumerate_scope(
+    *, data_dir: Any, scope: str, visibility: str, backend: str
+) -> list[dict[str, Any]]:
+    """Every stored record of one scope and visibility, as dicts. Raises on failure.
+
+    ``continuity`` has no enumeration verb (``archive`` walks ``store.all()``
+    privately), and forgetting by source must not depend on a ranker's opinion
+    of a query, so this walks ``store.all()`` the same way, under the same pin.
+    The caller (a worker) turns a raise into a recorded degradation.
+    """
+    anchor = continuity._usable_anchor(data_dir)
+    if anchor is None:
+        raise ValueError("no usable storage anchor")
+    if continuity._EIDETIC_IMPORT_ERROR is not None:
+        raise RuntimeError("eidetic is not importable")
+    with continuity._pinned_store(anchor):
+        store = continuity._eidetic_get_backend(backend)
+        found = []
+        for candidate in store.all():
+            where = getattr(candidate, "scope", None)
+            if getattr(where, "name", None) == scope and getattr(where, "visibility", None) == (
+                visibility
+            ):
+                found.append(candidate.to_dict())
+        return found
+
+
 class RoomMemory:
     """Private, pinned, deadline-bounded memory for a daemon that hears a room.
 
@@ -780,6 +897,8 @@ class RoomMemory:
         remember_fn: Optional[Callable[..., Any]] = None,
         recall_fn: Optional[Callable[..., Any]] = None,
         archive_fn: Optional[Callable[..., Any]] = None,
+        list_fn: Optional[Callable[..., Any]] = None,
+        ingest_scope: Optional[str] = None,
         embed_probe: Optional[EmbedProbe] = None,
         max_abandoned: int = MAX_ABANDONED,
         max_workers: int = DEFAULT_MAX_WORKERS,
@@ -800,6 +919,11 @@ class RoomMemory:
         self._remember_fn = remember_fn or continuity.remember
         self._recall_fn = recall_fn or continuity.recall
         self._archive_fn = archive_fn or continuity.archive
+        self._list_fn = list_fn or _enumerate_scope
+        #: When set, :meth:`recall` also reads this one scope (private), inside
+        #: the same deadline, and no other. Opt-in so a room that never ingests
+        #: reads exactly what it always read.
+        self._ingest_scope = ingest_scope
         self._embed_probe = embed_probe or default_embed_probe
 
         # Threads absorb hung calls; they do not prevent them. A hung eidetic
@@ -890,7 +1014,7 @@ class RoomMemory:
         except OSError as exc:
             self._record_permission_failure("could not make the store directory private", exc)
 
-    def _scope_paths(self) -> tuple[Path, ...]:
+    def _scope_paths(self, scope: Optional[str] = None) -> tuple[Path, ...]:
         r"""The files an operation in THIS scope could have created.
 
         Derived the way ``data_refinery.store.backends.files`` derives them —
@@ -903,7 +1027,7 @@ class RoomMemory:
         Four paths, whatever the store holds: this is the O(1) that keeps
         tightening off the spoken-turn path's growth curve.
         """
-        safe = self._scope.replace("/", "_").replace("\\", "_")
+        safe = (scope if scope is not None else self._scope).replace("/", "_").replace("\\", "_")
         names: list[str] = []
         for visibility in _SCOPE_VISIBILITIES:
             base = f"{safe}__{visibility}.jsonl"
@@ -911,7 +1035,7 @@ class RoomMemory:
             names.append(base + _SCOPE_TMP_SUFFIX)
         return tuple(self._data_dir / name for name in names)
 
-    def _tighten_scope(self) -> None:
+    def _tighten_scope(self, scope: Optional[str] = None) -> None:
         """Tighten exactly what this operation could have created. Never raises.
 
         Called after every confirmed store operation, and **constant cost**.
@@ -928,7 +1052,7 @@ class RoomMemory:
         if dir_fd is None:
             return
         try:
-            for path in self._scope_paths():
+            for path in self._scope_paths(scope):
                 self._tighten_entry(dir_fd, path.name)
         finally:
             self._close_store(dir_fd)
@@ -1570,6 +1694,464 @@ class RoomMemory:
             "added_by": added_by if added_by is not None else self._added_by,
         }
 
+    # -- ingest: the write side of the second scope ----------------------------
+
+    def _run_job(
+        self, work: Callable[[], Any], identifier: str, deadline: float, *, verb: str, code: str
+    ) -> tuple[str, Any, Optional[Degradation]]:
+        """``(status, value, degradation)`` for one bounded executor job.
+
+        *status* is ``ok``, ``refused`` (saturated or closed: nothing ran),
+        ``deferred`` (still running; a later failure lands on the abandoned
+        ledger under *code*) or ``error`` (the worker raised). Never raises.
+        """
+        future, refusal = self._submit(work, record_id=identifier)
+        if future is None:
+            why = refusal or CODE_CLOSED
+            return (
+                "refused",
+                why,
+                _degradation(
+                    verb,
+                    why,
+                    f"{verb} of {safe_label(identifier)} was NOT done: "
+                    + (
+                        "every in-flight memory slot is occupied"
+                        if refusal == CODE_SATURATED
+                        else _CLOSED_REASON
+                    ),
+                ),
+            )
+        try:
+            return "ok", future.result(timeout=max(0.0, float(deadline))), None
+        except FutureTimeoutError:
+            self._reap_write(future, identifier, deadline, verb=verb, code=code)
+            return (
+                "deferred",
+                CODE_REMEMBER_DEFERRED,
+                _degradation(
+                    verb,
+                    CODE_REMEMBER_DEFERRED,
+                    f"{verb} of {safe_label(identifier)} did not confirm within {deadline}s and "
+                    "is still running in the background; a failure will be recorded on the "
+                    "abandoned ledger",
+                ),
+            )
+        except Exception as exc:  # noqa: BLE001  # a store failure never reaches the host
+            failure = _failure_code(exc)
+            return "error", failure, _degradation(verb, failure, f"the {verb} seam failed", exc)
+
+    def _prepare_ingest(
+        self, raw: Any, moment: datetime
+    ) -> Union[tuple[dict[str, Any], Optional[str]], str]:
+        """``(eidetic record, supersedes)`` or a fixed reason string. Never raises.
+
+        Scope, visibility and lifecycle are NEVER taken from the record: the
+        ingest scope is this layer's to name, whatever the file said.
+        """
+        if not isinstance(raw, Mapping):
+            return "a record must be a mapping"
+        identifier = _usable_id(raw.get("id"))
+        if identifier is None:
+            return "unusable record id"
+        text = raw.get("text")
+        if not isinstance(text, str) or not text.strip():
+            return "text must be a non-empty string"
+        record_type = raw.get("type")
+        if not isinstance(record_type, str) or not record_type.strip():
+            return "type must be a non-empty string"
+        metadata = raw.get("metadata")
+        if metadata is not None and not isinstance(metadata, Mapping):
+            return "metadata must be a mapping"
+        record: dict[str, Any] = {
+            "id": identifier,
+            "text": text,
+            "type": record_type,
+            "created": raw.get("created") or moment.isoformat(),
+            "metadata": dict(metadata) if metadata else {},
+            "added_by": raw.get("added_by") or self._added_by,
+        }
+        supersedes = raw.get("supersedes")
+        if supersedes is not None:
+            replaced = _usable_id(supersedes)
+            if replaced is None:
+                return "unusable supersedes id"
+            record["supersedes"] = replaced
+            return record, replaced
+        return record, None
+
+    def ingest_records(
+        self,
+        records: Iterable[Any],
+        *,
+        deadline: float = DEFAULT_WRITE_DEADLINE,
+        now: Optional[datetime] = None,
+    ) -> IngestResult:
+        """Write stamped ingest records into the private ingest scope, in order.
+
+        Each record is ONE executor job holding ``continuity._STORE_LOCK`` once:
+        it enumerates the scope, detects a text-hash collision, writes the record,
+        and — when the record carries ``supersedes`` — flips the superseded
+        record's lifecycle before the job returns. A recall after the batch is
+        reported done therefore never returns the superseded record, and nothing
+        relies on a later ``eidetic sweep``. *deadline* bounds each record's wait.
+
+        **Collapse.** data-refinery's files backend deletes an older record whose
+        text hash matches a new id. That is detected BEFORE the write: the new
+        record is not written, the older one is left alone, and the pair is
+        reported in :attr:`IngestResult.collapsed` with a recorded degradation.
+        The one exception is a record whose hash matches the very record it
+        supersedes — that write goes ahead (the backend replaces the superseded
+        record, which is the intent) and is reported in both lists.
+
+        A refused or deferred record stops the batch; the rest come back as
+        ``not_attempted``. Every write is an idempotent upsert, so a caller retries
+        the whole batch. Never raises.
+        """
+        moment = now if now is not None else datetime.now(timezone.utc)
+        written: list[str] = []
+        collapsed: list[tuple[str, str]] = []
+        superseded: list[str] = []
+        failed: list[tuple[str, str]] = []
+        degradations: list[Degradation] = []
+        try:
+            items = list(records)
+        except Exception as exc:  # noqa: BLE001  # an unreadable batch is a degradation
+            return IngestResult(
+                ok=False,
+                degradations=(
+                    _degradation(
+                        "ingest", continuity.CODE_INVALID_RECORD, "the batch was unreadable", exc
+                    ),
+                ),
+            )
+        halted_at: Optional[int] = None
+        for position, raw in enumerate(items):
+            prepared = self._prepare_ingest(raw, moment)
+            if isinstance(prepared, str):
+                shown = raw.get("id") if isinstance(raw, Mapping) else None
+                label = _usable_id(shown) or "(unusable id)"
+                failed.append((label, continuity.CODE_INVALID_RECORD))
+                degradations.append(
+                    _degradation("ingest", continuity.CODE_INVALID_RECORD, prepared)
+                )
+                continue
+            record, replaced = prepared
+            identifier = str(record["id"])
+            status, value, degradation = self._run_job(
+                lambda record=record, replaced=replaced: self._ingest_one(record, replaced),
+                identifier,
+                deadline,
+                verb="ingest",
+                code=CODE_ABANDONED_REMEMBER,
+            )
+            if status != "ok":
+                failed.append((identifier, str(value)))
+                if degradation is not None:
+                    degradations.append(degradation)
+                if status in ("refused", "deferred"):
+                    halted_at = position + 1
+                    break
+                continue
+            kind, detail, flipped = value
+            if kind == "written":
+                written.append(identifier)
+            elif kind == "collapsed":
+                collapsed.append((identifier, str(detail)))
+                degradations.append(
+                    _degradation(
+                        "ingest",
+                        CODE_INGEST_COLLAPSED,
+                        f"record {safe_label(identifier)} has the same text as "
+                        f"{safe_label(str(detail))}; it was not written",
+                    )
+                )
+            elif kind == "replaced":
+                written.append(identifier)
+                collapsed.append((identifier, str(detail)))
+                superseded.append(str(detail))
+                degradations.append(
+                    _degradation(
+                        "ingest",
+                        CODE_INGEST_COLLAPSED,
+                        f"record {safe_label(identifier)} has the same text as "
+                        f"{safe_label(str(detail))}, which it supersedes; it replaced it",
+                    )
+                )
+            else:  # "failed": the seam refused the write or the supersede flip
+                failed.append((identifier, str(detail.code if detail else CODE_CLOSED)))
+                if detail is not None:
+                    degradations.append(detail)
+                continue
+            if flipped:
+                superseded.append(flipped)
+        not_attempted: tuple[str, ...] = ()
+        if halted_at is not None:
+            rest = []
+            for raw in items[halted_at:]:
+                shown = _usable_id(raw.get("id")) if isinstance(raw, Mapping) else None
+                rest.append(shown or "(unusable id)")
+            not_attempted = tuple(rest)
+            if rest:
+                degradations.append(
+                    _degradation(
+                        "ingest",
+                        CODE_INGEST_NOT_ATTEMPTED,
+                        f"the batch stopped early; {len(rest)} record(s) were not written",
+                    )
+                )
+        return IngestResult(
+            ok=not failed and not not_attempted,
+            written=tuple(written),
+            collapsed=tuple(collapsed),
+            superseded=tuple(superseded),
+            failed=tuple(failed),
+            not_attempted=not_attempted,
+            degradations=tuple(degradations),
+        )
+
+    def _ingest_one(
+        self, record: dict[str, Any], replaced: Optional[str]
+    ) -> tuple[str, Any, Optional[str]]:
+        """The worker: ``(kind, detail, flipped_id)`` under ONE store-lock hold.
+
+        *kind* is ``written``, ``collapsed`` (detail: the existing id),
+        ``replaced`` (detail: the superseded id the backend replaced) or
+        ``failed`` (detail: a Degradation).
+        """
+        refusal = self._root_refusal()
+        if refusal is not None:
+            return "failed", refusal, None
+        digest = hashlib.sha256(str(record["text"]).encode("utf-8")).hexdigest()
+        with continuity._STORE_LOCK:
+            existing = self._list_fn(
+                data_dir=self._data_dir,
+                scope=INGEST_SCOPE,
+                visibility=INGEST_VISIBILITY,
+                backend=self._backend,
+            )
+            clash = next(
+                (
+                    str(item.get("id"))
+                    for item in existing
+                    if item.get("hash") == digest and item.get("id") != record["id"]
+                ),
+                None,
+            )
+            if clash is not None and clash != replaced:
+                return "collapsed", clash, None
+            outcome = self._remember_fn(
+                record,
+                data_dir=self._data_dir,
+                scope=INGEST_SCOPE,
+                visibility=INGEST_VISIBILITY,
+                added_by=record.get("added_by"),
+                backend=self._backend,
+            )
+            if not getattr(outcome, "ok", False):
+                return "failed", self._safe_degradation(getattr(outcome, "degradation", None)), None
+            flipped: Optional[str] = None
+            if replaced is not None and replaced != record["id"] and clash is None:
+                flip = self._archive_fn(
+                    replaced,
+                    data_dir=self._data_dir,
+                    scope=INGEST_SCOPE,
+                    visibility=INGEST_VISIBILITY,
+                    backend=self._backend,
+                )
+                if getattr(flip, "ok", False):
+                    flipped = replaced
+                else:
+                    seam = self._safe_degradation(getattr(flip, "degradation", None))
+                    # An unknown or already-hidden superseded record is a fact, not a fault.
+                    if getattr(seam, "code", None) not in (
+                        continuity.CODE_RECORD_NOT_FOUND,
+                        continuity.CODE_ALREADY_ARCHIVED,
+                    ):
+                        return "failed", seam, None
+            self._tighten_scope(INGEST_SCOPE)
+        if clash is not None:
+            return "replaced", clash, None
+        return "written", None, flipped
+
+    def forget_source(
+        self,
+        source: str,
+        source_id: str,
+        *,
+        deadline: float = DEFAULT_WRITE_DEADLINE,
+    ) -> IngestForgetResult:
+        """Archive every ingest record of one source unit (a recording, an issue).
+
+        Matches ``metadata.source == source`` and the source's id key (see
+        :data:`_SOURCE_ID_KEYS`) equal to *source_id*, by ENUMERATING the ingest
+        scope — never by ranked recall, which would miss records the query does
+        not favour. Only the ingest scope is read or touched. Archives, never
+        deletes. *deadline* bounds each step (the enumeration, then each archive).
+        Never raises.
+        """
+        key = _SOURCE_ID_KEYS.get(source) if isinstance(source, str) else None
+        if key is None or not isinstance(source_id, str) or not source_id.strip():
+            return IngestForgetResult(
+                ok=False,
+                degradations=(
+                    _degradation(
+                        "forget",
+                        continuity.CODE_INVALID_RECORD,
+                        "forget_source needs a registered source and a non-empty source id",
+                    ),
+                ),
+            )
+        shown = safe_label(source)
+
+        def enumerate_scope() -> list[dict[str, Any]]:
+            refusal = self._root_refusal()
+            if refusal is not None:
+                raise RuntimeError("the store root is refused")
+            with continuity._STORE_LOCK:
+                return list(
+                    self._list_fn(
+                        data_dir=self._data_dir,
+                        scope=INGEST_SCOPE,
+                        visibility=INGEST_VISIBILITY,
+                        backend=self._backend,
+                    )
+                )
+
+        status, value, degradation = self._run_job(
+            enumerate_scope,
+            f"{shown}-enumerate",
+            deadline,
+            verb="forget",
+            code=CODE_ABANDONED_FORGET,
+        )
+        if status != "ok":
+            return IngestForgetResult(
+                ok=False,
+                source=source,
+                degradations=(degradation,) if degradation is not None else (),
+            )
+        todo: list[str] = []
+        already: list[str] = []
+        for item in value:
+            meta = item.get("metadata") if isinstance(item, Mapping) else None
+            if not isinstance(meta, Mapping):
+                continue
+            if meta.get("source") != source or meta.get(key) != source_id:
+                continue
+            if item.get("lifecycle") == continuity.LIFECYCLE_ARCHIVED:
+                already.append(str(item.get("id")))
+            else:
+                todo.append(str(item.get("id")))
+        outcome = self._archive_ids(todo, deadline)
+        return IngestForgetResult(
+            ok=not outcome.failed,
+            source=source,
+            source_id=source_id,
+            matched=len(todo) + len(already),
+            archived=outcome.archived,
+            already_archived=tuple(already) + outcome.already_archived,
+            not_found=outcome.not_found,
+            failed=outcome.failed,
+            degradations=outcome.degradations,
+        )
+
+    def forget_ids(
+        self, record_ids: Iterable[Any], *, deadline: float = DEFAULT_WRITE_DEADLINE
+    ) -> IngestForgetResult:
+        """Archive exact ids in the ingest scope (the surplus a re-distil leaves).
+
+        An id in any other scope is simply not found there. Never raises.
+        """
+        try:
+            wanted = list(record_ids)
+        except Exception as exc:  # noqa: BLE001  # an unreadable list is a degradation
+            return IngestForgetResult(
+                ok=False,
+                degradations=(
+                    _degradation("forget", continuity.CODE_INVALID_RECORD, "unreadable ids", exc),
+                ),
+            )
+        usable: list[str] = []
+        invalid: list[tuple[str, str]] = []
+        for value in wanted:
+            identifier = _usable_id(value)
+            if identifier is None:
+                invalid.append(("(unusable id)", continuity.CODE_INVALID_RECORD))
+            elif identifier not in usable:
+                usable.append(identifier)
+        outcome = self._archive_ids(usable, deadline)
+        return IngestForgetResult(
+            ok=not outcome.failed and not invalid,
+            matched=len(wanted),
+            archived=outcome.archived,
+            already_archived=outcome.already_archived,
+            not_found=outcome.not_found,
+            failed=tuple(invalid) + outcome.failed,
+            degradations=outcome.degradations
+            + tuple(
+                _degradation("forget", continuity.CODE_INVALID_RECORD, "unusable record id")
+                for _ in invalid
+            ),
+        )
+
+    def _archive_ids(self, identifiers: Sequence[str], deadline: float) -> IngestForgetResult:
+        """Archive each id in the ingest scope, one job (one lock hold) apiece."""
+        archived: list[str] = []
+        already: list[str] = []
+        missing: list[str] = []
+        failed: list[tuple[str, str]] = []
+        degradations: list[Degradation] = []
+        for position, identifier in enumerate(identifiers):
+
+            def work(identifier: str = identifier) -> Any:
+                refusal = self._root_refusal()
+                if refusal is not None:
+                    return continuity.ArchiveOutcome(ok=False, record_id=None, degradation=refusal)
+                outcome = self._archive_fn(
+                    identifier,
+                    data_dir=self._data_dir,
+                    scope=INGEST_SCOPE,
+                    visibility=INGEST_VISIBILITY,
+                    backend=self._backend,
+                )
+                self._tighten_scope(INGEST_SCOPE)
+                return outcome
+
+            status, value, degradation = self._run_job(
+                work, identifier, deadline, verb="forget", code=CODE_ABANDONED_FORGET
+            )
+            if status != "ok":
+                failed.append((identifier, str(value)))
+                if degradation is not None:
+                    degradations.append(degradation)
+                if status in ("refused", "deferred"):
+                    for later in identifiers[position + 1 :]:
+                        failed.append((later, str(value)))
+                    break
+                continue
+            if getattr(value, "ok", False):
+                archived.append(identifier)
+                continue
+            seam = self._safe_degradation(getattr(value, "degradation", None))
+            code = getattr(seam, "code", None)
+            if code == continuity.CODE_ALREADY_ARCHIVED:
+                already.append(identifier)
+            elif code == continuity.CODE_RECORD_NOT_FOUND:
+                missing.append(identifier)
+            else:
+                failed.append((identifier, str(code or CODE_CLOSED)))
+                if seam is not None:
+                    degradations.append(seam)
+        return IngestForgetResult(
+            ok=not failed,
+            archived=tuple(archived),
+            already_archived=tuple(already),
+            not_found=tuple(missing),
+            failed=tuple(failed),
+            degradations=tuple(degradations),
+        )
+
     # -- forgetting ---------------------------------------------------------
 
     def forget(
@@ -1601,6 +2183,10 @@ class RoomMemory:
         failure lands as :data:`CODE_ABANDONED_FORGET`. Never raises.
         """
         identifier = _usable_id(record_id)
+        if identifier is not None and self._scope == INGEST_SCOPE:
+            # The model-facing forget must never reach recordings; forget_ids is
+            # the operator's path to the ingest scope.
+            identifier = None
         if identifier is None:
             return ForgetResult(
                 ok=False,
@@ -1817,7 +2403,60 @@ class RoomMemory:
             # Recall is not read-only: eidetic reinforces every hit, which
             # rewrites the file and resets its mode exactly as a write does.
             self._tighten_scope()
+        if self._ingest_scope is not None:
+            outcome = self._merge_ingest(outcome, query, effective, top_k, reinforce, degradations)
         return resolved, outcome, degradations
+
+    def _merge_ingest(
+        self,
+        outcome: Any,
+        query: str,
+        mode: str,
+        top_k: int,
+        reinforce: bool,
+        degradations: list[Degradation],
+    ) -> Any:
+        """Add the ingest scope's hits to *outcome* — same job, same deadline.
+
+        Exactly one more scope (private), read by the same worker the caller is
+        already bounding. A failure there costs the ingest hits and is recorded;
+        it never costs the room's own.
+        """
+        try:
+            extra = self._recall_fn(
+                query,
+                data_dir=self._data_dir,
+                scope=self._ingest_scope,
+                visibility=INGEST_VISIBILITY,
+                top_k=top_k,
+                mode=mode,
+                reinforce=reinforce,
+                backend=self._backend,
+            )
+        except Exception as exc:  # noqa: BLE001  # the ingest scope never costs the room's hits
+            degradations.append(
+                _degradation("recall", _failure_code(exc), "the ingest-scope recall failed", exc)
+            )
+            return outcome
+        if reinforce:
+            self._tighten_scope(self._ingest_scope)
+        seam = self._safe_degradation(getattr(extra, "degradation", None))
+        if seam is not None:
+            degradations.append(seam)
+        merged = list(getattr(outcome, "records", []) or []) + list(
+            getattr(extra, "records", []) or []
+        )
+
+        def rank(record: Any) -> float:
+            score = record.get("score") if isinstance(record, Mapping) else None
+            return float(score) if isinstance(score, (int, float)) else 0.0
+
+        merged.sort(key=rank, reverse=True)
+        return continuity.RecallOutcome(
+            ok=bool(getattr(outcome, "ok", False)),
+            records=merged[: max(0, int(top_k))],
+            degradation=getattr(outcome, "degradation", None),
+        )
 
     def _probe(self) -> tuple[bool, Degradation]:
         """``(online, degradation_if_not)`` — eidetic's silent fallback, observed.
