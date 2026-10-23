@@ -124,6 +124,7 @@ __all__ = [
     "CONTROL_BUSY_CODE",
     "DEFAULT_CONTROL_TIMEOUT_S",
     "DEFAULT_CONTROL_WORKERS",
+    "DEFAULT_TEXT_WORKERS",
     "CHAT_RECALL_S",
     "CHAT_COMPLETION_S",
     "CHAT_MAX_COMPLETIONS",
@@ -139,6 +140,7 @@ __all__ = [
     "TEXT_REFUSED_CODE",
     "STREAM_EXPIRED_REASON",
     "MAX_CONTROL_INFLIGHT",
+    "MAX_TEXT_INFLIGHT",
     "BAD_REQUEST_CODE",
     "BODY_TOO_LARGE_CODE",
     "TOO_MANY_STREAMS_CODE",
@@ -206,6 +208,19 @@ DEFAULT_CONTROL_WORKERS = 4
 #: would accumulate one leaked task per retry. A **judgement call**, sized at
 #: twice the worker count.
 MAX_CONTROL_INFLIGHT = 8
+
+#: Threads available to the text routes (``/api/chat``, ``/api/speak``,
+#: ``/api/clip``) — a pool of their OWN. One typed turn may hold a worker for
+#: the chat bound (~65 s) and a clip for longer, so on the control pool four of
+#: them would queue the privacy mute past its 5 s bound (review round d6). A
+#: **judgement call**, the same headroom as the control pool: typed turns
+#: serialise on the daemon's conversation anyway.
+DEFAULT_TEXT_WORKERS = 4
+
+#: How many text calls may be outstanding — running plus abandoned — before new
+#: ones are refused with :data:`CONTROL_BUSY_CODE`. Same reasoning and the same
+#: twice-the-workers sizing as :data:`MAX_CONTROL_INFLIGHT`, counted apart from it.
+MAX_TEXT_INFLIGHT = 8
 
 # ── the text-and-clip routes (task t10): each clock named for what it bounds ──
 
@@ -494,6 +509,8 @@ class ServerConfig:
     max_body_bytes: int = DEFAULT_MAX_BODY_BYTES
     control_timeout_s: float = DEFAULT_CONTROL_TIMEOUT_S
     control_workers: int = DEFAULT_CONTROL_WORKERS
+    #: Workers of the text routes' own pool (chat, speak, clip).
+    text_workers: int = DEFAULT_TEXT_WORKERS
     chat_timeout_s: float = DEFAULT_CHAT_TIMEOUT_S
     speak_timeout_s: float = DEFAULT_SPEAK_TIMEOUT_S
     clip_timeout_s: float = DEFAULT_CLIP_TIMEOUT_S
@@ -548,6 +565,20 @@ class _Counters:
     events_dropped_for_secret: int = 0
     controls_timed_out: int = 0
     controls_refused_busy: int = 0
+
+
+@dataclass
+class _Lane:
+    """One bounded pool and its outstanding count (guarded by the server's lock).
+
+    Two exist: ``control`` (start, stop, mute, status) and ``text`` (chat, speak,
+    clip). Apart, so a slow typed turn can never queue the privacy mute.
+    """
+
+    name: str
+    pool: ThreadPoolExecutor
+    max_inflight: int
+    inflight: int = 0
 
 
 class _HttpServer(ThreadingHTTPServer):
@@ -799,25 +830,62 @@ class _Handler(BaseHTTPRequestHandler):
         self._invoke(route, callable_)
 
     def _read_bounded(self, length: int, deadline_s: float) -> Optional[bytes]:
-        """*length* bytes inside a TOTAL deadline. ``None`` (answered) when it is not met."""
+        """*length* bytes inside a TOTAL deadline. ``None`` (answered) when it is not met.
+
+        The deadline is enforced on every read, not between them: ``rfile.read(n)``
+        blocks until *n* bytes arrive, so a client dripping one byte under the socket
+        timeout could hold one 64 KiB read for hours (review round d6). Each read is
+        a single ``read1`` (at most one ``recv``) under a socket timeout of the time
+        left, and the connection's own timeout is restored afterwards.
+        """
         end = time.monotonic() + deadline_s
         chunks: list[bytes] = []
         remaining = length
-        while remaining > 0:
-            if time.monotonic() >= end:
-                self._app._degrade(BAD_REQUEST_CODE, "an upload was not received in time")
-                self.close_connection = True
-                self._send_error(408, BAD_REQUEST_CODE, "the upload took too long")
-                return None
-            chunk = self.rfile.read(min(_CLIP_CHUNK_BYTES, remaining))
-            if not chunk:
-                self._app._degrade(BAD_REQUEST_CODE, "an upload ended before its Content-Length")
-                self.close_connection = True
-                self._send_error(400, BAD_REQUEST_CODE, "the upload was cut short")
-                return None
-            chunks.append(chunk)
-            remaining -= len(chunk)
+        restore = self._socket_timeout()
+        try:
+            while remaining > 0:
+                chunk = self._read_chunk(min(_CLIP_CHUNK_BYTES, remaining), end)
+                if chunk is None:
+                    return self._refuse_slow_upload()
+                if not chunk:
+                    self._app._degrade(
+                        BAD_REQUEST_CODE, "an upload ended before its Content-Length"
+                    )
+                    self.close_connection = True
+                    self._send_error(400, BAD_REQUEST_CODE, "the upload was cut short")
+                    return None
+                chunks.append(chunk)
+                remaining -= len(chunk)
+        finally:
+            self._set_socket_timeout(restore)
         return b"".join(chunks)
+
+    def _read_chunk(self, size: int, end: float) -> Optional[bytes]:
+        """Up to *size* bytes from ONE read, or ``None`` when the deadline passed first."""
+        left = end - time.monotonic()
+        if left <= 0:
+            return None
+        self._set_socket_timeout(left)
+        read = getattr(self.rfile, "read1", self.rfile.read)
+        try:
+            return read(size)
+        except TimeoutError:
+            return None
+
+    def _refuse_slow_upload(self) -> None:
+        self._app._degrade(BAD_REQUEST_CODE, "an upload was not received in time")
+        self.close_connection = True
+        self._send_error(408, BAD_REQUEST_CODE, "the upload took too long")
+        return None
+
+    def _socket_timeout(self) -> Optional[float]:
+        gettimeout = getattr(self.connection, "gettimeout", None)
+        return gettimeout() if callable(gettimeout) else None
+
+    def _set_socket_timeout(self, value: Optional[float]) -> None:
+        settimeout = getattr(self.connection, "settimeout", None)
+        if callable(settimeout):
+            settimeout(value)
 
     def _text_route(self, route: str) -> None:
         app = self._app
@@ -831,14 +899,14 @@ class _Handler(BaseHTTPRequestHandler):
             )
             if body is None:
                 return
-            outcome = app.call_control(
+            outcome = app.call_text(
                 "api.clip",
                 controls.clip,
                 body,
                 _declared_duration(self.headers.get("X-Clip-Duration-S")),
                 timeout_s=config.clip_timeout_s,
             )
-            self._answer_text(outcome, ("transcript", "reply"))
+            self._answer_text(outcome, ("transcript", "reply"), serial=True)
             return
         body = self._read_body(limit=config.text_body_max_bytes)
         if body is None:
@@ -850,12 +918,12 @@ class _Handler(BaseHTTPRequestHandler):
             return
         value = payload.get(key)
         if route == CHAT_ROUTE:
-            outcome = app.call_control(
+            outcome = app.call_text(
                 "api.chat", controls.chat, value, timeout_s=config.chat_timeout_s
             )
-            self._answer_text(outcome, ("reply",), chat=True)
+            self._answer_text(outcome, ("reply",), serial=True, sources=True)
             return
-        outcome = app.call_control(
+        outcome = app.call_text(
             "api.speak", controls.speak, value, timeout_s=config.speak_timeout_s
         )
         self._answer_speak(outcome)
@@ -881,8 +949,15 @@ class _Handler(BaseHTTPRequestHandler):
         return True
 
     def _answer_text(
-        self, outcome: ControlOutcome, fields: tuple[str, ...], *, chat: bool = False
+        self,
+        outcome: ControlOutcome,
+        fields: tuple[str, ...],
+        *,
+        serial: bool = False,
+        sources: bool = False,
     ) -> None:
+        """A text route's 200. ``serial`` adds ``turn_serial`` (int or null; chat and
+        clip both run a typed turn), ``sources`` the chat's cited records."""
         if self._text_refusal(outcome) or self._layer_refusal(outcome.result):
             return
         result = outcome.result
@@ -890,11 +965,13 @@ class _Handler(BaseHTTPRequestHandler):
         for name in fields:
             value = result.get(name, "")
             reply[name] = value if isinstance(value, str) else ""
-        if chat:
-            sources = result.get("sources")
-            reply["sources"] = sources if isinstance(sources, list) else []
-            serial = result.get("turn_serial")
-            reply["turn_serial"] = serial if isinstance(serial, int) else None
+        if sources:
+            cited = result.get("sources")
+            reply["sources"] = cited if isinstance(cited, list) else []
+        if serial:
+            number = result.get("turn_serial")
+            usable = isinstance(number, int) and not isinstance(number, bool)
+            reply["turn_serial"] = number if usable else None
         self._send_json(200, reply)
 
     def _answer_speak(self, outcome: ControlOutcome) -> None:
@@ -1016,7 +1093,32 @@ class _Handler(BaseHTTPRequestHandler):
     def _pump(self, subscription: Any, expires_at: Optional[float] = None) -> None:
         """Write events until the client goes, the server stops, it breaks, or its token expires."""
         app = self._app
-        config = app.config
+        self._open_stream_response()
+        if not self._write(": stream open\n\n"):
+            return
+        last_write: Optional[float] = time.monotonic()
+        while last_write is not None and not app.stopping:
+            last_write = self._pump_once(subscription, expires_at, last_write)
+
+    def _pump_once(
+        self, subscription: Any, expires_at: Optional[float], last_write: float
+    ) -> Optional[float]:
+        """One wait and what it brought. The new last-write time, or ``None`` to stop."""
+        wait_s = self._stream_wait(expires_at)
+        if wait_s is None:
+            return None
+        event = subscription.get(timeout=wait_s)
+        now = time.monotonic()
+        if event is None:
+            if now - last_write < self._app.config.keepalive_s:
+                return last_write
+            return now if self._write(": keepalive\n\n") else None
+        written = self._emit(event)
+        if written is False:
+            return None
+        return now if written else last_write
+
+    def _open_stream_response(self) -> None:
         self.send_response(200)
         self.send_header("Content-Type", "text/event-stream")
         self.send_header("Cache-Control", "no-store")
@@ -1025,40 +1127,35 @@ class _Handler(BaseHTTPRequestHandler):
         self.send_header("X-Content-Type-Options", "nosniff")
         self.end_headers()
         self.close_connection = True
-        if not self._write(": stream open\n\n"):
-            return
-        last_write = time.monotonic()
-        while not app.stopping:
-            wait_s = config.stream_poll_s
-            if expires_at is not None:
-                left = expires_at - config.wall_clock()
-                if left <= 0:
-                    app._count_stream_expired()
-                    self._write(f": {STREAM_EXPIRED_REASON}\n\n")
-                    return
-                wait_s = min(wait_s, max(0.01, left))
-            event = subscription.get(timeout=wait_s)
-            now = time.monotonic()
-            if event is None:
-                if now - last_write < config.keepalive_s:
-                    continue
-                if not self._write(": keepalive\n\n"):
-                    return
-                last_write = now
-                continue
-            payload = event.to_json()
-            if any(form in payload for form in app.redaction_forms):
-                app._count_secret_drop()
-                app._degrade(
-                    SECRET_IN_STREAM_CODE,
-                    "an event carrying a configured secret was dropped from the stream",
-                )
-                continue
-            frame = f"event: {_safe_token(event.kind)}\nid: {int(event.seq)}\ndata: {payload}\n\n"
-            if not self._write(frame):
-                return
-            app._count_event()
-            last_write = now
+
+    def _stream_wait(self, expires_at: Optional[float]) -> Optional[float]:
+        """How long the next ``get`` may wait; ``None`` once the token expired (said so)."""
+        config = self._app.config
+        if expires_at is None:
+            return config.stream_poll_s
+        left = expires_at - config.wall_clock()
+        if left <= 0:
+            self._app._count_stream_expired()
+            self._write(f": {STREAM_EXPIRED_REASON}\n\n")
+            return None
+        return min(config.stream_poll_s, max(0.01, left))
+
+    def _emit(self, event: Any) -> Optional[bool]:
+        """Write one event: ``True`` written, ``None`` dropped (a secret), ``False`` gone."""
+        app = self._app
+        payload = event.to_json()
+        if any(form in payload for form in app.redaction_forms):
+            app._count_secret_drop()
+            app._degrade(
+                SECRET_IN_STREAM_CODE,
+                "an event carrying a configured secret was dropped from the stream",
+            )
+            return None
+        frame = f"event: {_safe_token(event.kind)}\nid: {int(event.seq)}\ndata: {payload}\n\n"
+        if not self._write(frame):
+            return False
+        app._count_event()
+        return True
 
     def _write(self, text: str) -> bool:
         """``True`` when the client took it. A disconnect is normal, not a fault."""
@@ -1263,11 +1360,24 @@ class DashboardServer:
         #: blocking one costs an abandoned pool task rather than a pinned
         #: connection. Bounded by ``control_workers`` and, for the abandoned
         #: ones, by :data:`MAX_CONTROL_INFLIGHT`.
-        self._controls_pool = ThreadPoolExecutor(
-            max_workers=max(1, int(config.control_workers)),
-            thread_name_prefix="embodiment-control",
+        self._control_lane = _Lane(
+            "control",
+            ThreadPoolExecutor(
+                max_workers=max(1, int(config.control_workers)),
+                thread_name_prefix="embodiment-control",
+            ),
+            MAX_CONTROL_INFLIGHT,
         )
-        self._controls_inflight = 0
+        #: The text routes' own pool (review round d6): a typed turn holds a
+        #: worker for up to the chat bound, which must never be the mute's wait.
+        self._text_lane = _Lane(
+            "text",
+            ThreadPoolExecutor(
+                max_workers=max(1, int(config.text_workers)),
+                thread_name_prefix="embodiment-text",
+            ),
+            MAX_TEXT_INFLIGHT,
+        )
 
         self._stopping = threading.Event()
         self._closed = False
@@ -1366,18 +1476,9 @@ class DashboardServer:
                 )
 
         with self._lock:
-            unfinished = self._controls_inflight
-        try:
-            # Never ``wait=True``: an abandoned control would hold shutdown for
-            # as long as it likes, which is the defect this whole seam exists
-            # to close. Queued-but-unstarted calls are cancelled; a running one
-            # keeps its daemon thread and dies with the process.
-            self._controls_pool.shutdown(wait=False, cancel_futures=True)
-        except Exception as exc:  # noqa: BLE001  # a pool that will not close is recorded
-            self._degrade(
-                "http-control-pool-close-failed",
-                f"the control pool would not close: {describe_exception(exc)}",
-            )
+            unfinished = self._control_lane.inflight + self._text_lane.inflight
+        for lane in (self._control_lane, self._text_lane):
+            self._close_lane(lane)
 
         stopped = self._stop_accept_loop(httpd, thread, deadline, started)
         return ServerCloseReport(
@@ -1387,6 +1488,19 @@ class DashboardServer:
             elapsed_s=time.monotonic() - started,
             controls_unfinished=unfinished,
         )
+
+    def _close_lane(self, lane: _Lane) -> None:
+        try:
+            # Never ``wait=True``: an abandoned control would hold shutdown for
+            # as long as it likes, which is the defect this whole seam exists
+            # to close. Queued-but-unstarted calls are cancelled; a running one
+            # keeps its daemon thread and dies with the process.
+            lane.pool.shutdown(wait=False, cancel_futures=True)
+        except Exception as exc:  # noqa: BLE001  # a pool that will not close is recorded
+            self._degrade(
+                "http-control-pool-close-failed",
+                f"the {lane.name} pool would not close: {describe_exception(exc)}",
+            )
 
     def _stop_accept_loop(
         self,
@@ -1433,13 +1547,13 @@ class DashboardServer:
         """Run *action* under :attr:`ServerConfig.control_timeout_s`. Never raises.
 
         The contract ``Controls`` states — "none of them may block" — is
-        enforced here rather than trusted. The callable runs on
-        :attr:`_controls_pool`; the caller waits the deadline and then answers
-        without it. An overrunning callable is **abandoned, not cancelled**:
-        Python cannot kill a running thread, so it keeps its pool slot until
-        it returns on its own, which is exactly why the outstanding count is
-        bounded and why exhausting it is its own recorded refusal rather than
-        a slow leak nobody sees.
+        enforced here rather than trusted. The callable runs on the control
+        pool; the caller waits the deadline and then answers without it. An
+        overrunning callable is **abandoned, not cancelled**: Python cannot
+        kill a running thread, so it keeps its pool slot until it returns on
+        its own, which is exactly why the outstanding count is bounded and why
+        exhausting it is its own recorded refusal rather than a slow leak
+        nobody sees.
 
         Four refusals, each naming the fault a host would look for:
         :data:`CONTROL_UNBOUND_CODE` (t15 has not bound it),
@@ -1447,6 +1561,31 @@ class DashboardServer:
         :data:`CONTROL_TIMEOUT_CODE` (it did not answer in time) and
         :data:`CONTROL_FAILED_CODE` (it raised).
         """
+        return self._call_on(self._control_lane, label, action, args, timeout_s)
+
+    def call_text(
+        self,
+        label: str,
+        action: Optional[Callable[..., Any]],
+        *args: Any,
+        timeout_s: Optional[float] = None,
+    ) -> ControlOutcome:
+        """:meth:`call_control` for the text routes, on their OWN bounded pool.
+
+        Same four refusals with the same codes and shapes; only the pool and its
+        outstanding bound (:data:`MAX_TEXT_INFLIGHT`) differ, so a saturated
+        text pool answers busy without costing the mute or stop a worker.
+        """
+        return self._call_on(self._text_lane, label, action, args, timeout_s)
+
+    def _call_on(
+        self,
+        lane: _Lane,
+        label: str,
+        action: Optional[Callable[..., Any]],
+        args: tuple[Any, ...],
+        timeout_s: Optional[float],
+    ) -> ControlOutcome:
         if action is None:
             self._degrade(CONTROL_UNBOUND_CODE, f"{_safe_token(label)} is not bound")
             return ControlOutcome(
@@ -1456,17 +1595,10 @@ class DashboardServer:
                 code=CONTROL_UNBOUND_CODE,
                 message="this control is not bound to a running daemon yet",
             )
-
-        with self._lock:
-            accepted = self._controls_inflight < MAX_CONTROL_INFLIGHT
-            if accepted:
-                self._controls_inflight += 1
-            else:
-                self._counters.controls_refused_busy += 1
-        if not accepted:
+        if not self._admit(lane):
             self._degrade(
                 CONTROL_BUSY_CODE,
-                f"{MAX_CONTROL_INFLIGHT} control calls are already outstanding; "
+                f"{lane.max_inflight} {lane.name} calls are already outstanding; "
                 "an earlier one has not returned",
             )
             return ControlOutcome(
@@ -1478,10 +1610,10 @@ class DashboardServer:
             )
 
         try:
-            future: Future[Any] = self._controls_pool.submit(action, *args)
+            future: Future[Any] = lane.pool.submit(action, *args)
         except RuntimeError as exc:
             # The pool is shut down: this arrives during teardown.
-            self._release_control()
+            self._release(lane)
             self._degrade(
                 CONTROL_FAILED_CODE,
                 f"{_safe_token(label)} could not be started: {describe_exception(exc)}",
@@ -1493,8 +1625,17 @@ class DashboardServer:
                 code=CONTROL_FAILED_CODE,
                 message="the server is shutting down",
             )
-        future.add_done_callback(lambda _future: self._release_control())
+        future.add_done_callback(lambda _future: self._release(lane))
         return self._await_control(label, future, timeout_s)
+
+    def _admit(self, lane: _Lane) -> bool:
+        """Take one outstanding slot on *lane*, or count the busy refusal."""
+        with self._lock:
+            if lane.inflight < lane.max_inflight:
+                lane.inflight += 1
+                return True
+            self._counters.controls_refused_busy += 1
+            return False
 
     def _await_control(
         self, label: str, future: "Future[Any]", timeout_s: Optional[float] = None
@@ -1546,10 +1687,10 @@ class DashboardServer:
             message="",
         )
 
-    def _release_control(self) -> None:
-        """One outstanding control finished — on time or long after."""
+    def _release(self, lane: _Lane) -> None:
+        """One outstanding call on *lane* finished — on time or long after."""
         with self._lock:
-            self._controls_inflight = max(0, self._controls_inflight - 1)
+            lane.inflight = max(0, lane.inflight - 1)
 
     # ── bookkeeping ──────────────────────────────────────────────────────────
 
@@ -1634,7 +1775,8 @@ class DashboardServer:
             dropped = self.degradations_dropped
             hook_errors = self.hook_errors
             streams_open = self._streams_open
-            controls_inflight = self._controls_inflight
+            controls_inflight = self._control_lane.inflight
+            text_inflight = self._text_lane.inflight
         return {
             "bind": self.config.bind,
             "port": self.port,
@@ -1645,6 +1787,7 @@ class DashboardServer:
             "max_streams": int(self.config.max_streams),
             "streams_open": streams_open,
             "controls_inflight": controls_inflight,
+            "text_inflight": text_inflight,
             "control_timeout_s": float(self.config.control_timeout_s),
             "closed": self._closed,
             "stopping": self._stopping.is_set(),

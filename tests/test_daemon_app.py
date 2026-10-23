@@ -5739,6 +5739,121 @@ class TestTextTurns:
         assert answer["http_status"] == 400
         assert answer["code"]
 
+    def _hold_the_conversation(self, h: Harness) -> tuple[threading.Event, threading.Thread]:
+        """A voice turn's stand-in: another thread holds the conversation until released."""
+        held, release = threading.Event(), threading.Event()
+
+        def voice_turn() -> None:
+            with h.app._conversation:
+                held.set()
+                release.wait(10)
+
+        holder = threading.Thread(target=voice_turn, daemon=True)
+        holder.start()
+        assert held.wait(5)
+        return release, holder
+
+    def test_a_busy_conversation_is_a_retryable_503_that_writes_nothing(self, harness: Any) -> None:
+        h, _ = self._build(harness, config=AppConfig(poll_interval_s=0.01, completion_deadline=0.2))
+        first = h.app.controls().chat("FIRST-TYPED-MARKER")
+        assert first["ok"] is True, first
+        before = list(h.app._session.messages())
+        release, holder = self._hold_the_conversation(h)
+        try:
+            started = time.monotonic()
+            answer = h.app.controls().chat("BUSY-TYPED-MARKER")
+            elapsed = time.monotonic() - started
+        finally:
+            release.set()
+            holder.join(5)
+
+        assert answer["ok"] is False
+        assert answer["code"] == app_module.APP_TEXT_TURN_BUSY
+        assert answer["http_status"] == 503
+        assert answer["turn_serial"] is None
+        assert elapsed < 2.0, f"the typed turn waited {elapsed:.2f}s past its bound"
+        assert h.app._session.messages() == before, "a dangling user turn was left"
+        logs = b"".join(
+            p.read_bytes() for p in (Path(h.state.dir) / "sessions").iterdir() if p.is_file()
+        )
+        assert "FIRST-TYPED-MARKER".encode() in logs, "the log check would see nothing"
+        assert "BUSY-TYPED-MARKER".encode() not in logs
+        assert all("BUSY-TYPED-MARKER" not in str(e.data) for e in h.events("transcript"))
+        codes = h.ledger_codes()
+        assert app_module.APP_TEXT_TURN_BUSY in codes
+        assert "text-turn-failed" not in codes
+        assert h.app.status()["text_turns"]["busy"] == 1
+
+    def test_the_busy_code_is_the_text_layers(self) -> None:
+        from embodiment.daemon import text_turns
+
+        assert text_turns.TEXT_TURN_BUSY == app_module.APP_TEXT_TURN_BUSY
+
+    def test_the_typed_turn_takes_the_conversation_bounded_before_the_user_turn(
+        self, harness: Any
+    ) -> None:
+        h, _ = self._build(harness, config=AppConfig(poll_interval_s=0.01, completion_deadline=0.2))
+        h.app.controls().chat("warm up")
+        log: list[Any] = []
+
+        class RecordingLock:
+            def __init__(self) -> None:
+                self._inner = threading.RLock()
+
+            def acquire(self, blocking: bool = True, timeout: float = -1) -> bool:
+                log.append(("acquire", timeout))
+                return self._inner.acquire(blocking, timeout)
+
+            def release(self) -> None:
+                log.append("release")
+                self._inner.release()
+
+            def __enter__(self) -> bool:
+                return self.acquire()
+
+            def __exit__(self, *exc: Any) -> None:
+                self.release()
+
+        h.app._conversation = RecordingLock()  # type: ignore[assignment]
+        session = h.app._session
+        real_add_user, real_add_assistant = session.add_user, session.add_assistant
+        session.add_user = lambda text: (log.append("user"), real_add_user(text))[1]
+        session.add_assistant = lambda text, metadata=None: (
+            log.append("assistant"),
+            real_add_assistant(text, metadata=metadata),
+        )[1]
+
+        assert h.app.controls().chat("second")["ok"] is True
+        first = log[0]
+        assert first[0] == "acquire" and 0 < first[1] <= 0.2 + 1e-9, log
+        assert log.index("user") > 0 and log[-1] == "release", log
+        # Held without a gap from the first acquire to the last release: a voice
+        # turn can never slip in between the user turn and the assistant turn.
+        depth = 0
+        for index, entry in enumerate(log):
+            depth += -1 if entry == "release" else (1 if isinstance(entry, tuple) else 0)
+            if index < len(log) - 1:
+                assert depth >= 1, log
+        assert depth == 0, log
+
+    def test_a_clip_answers_with_its_turns_serial(self, harness: Any) -> None:
+        import wave
+
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as handle:
+            handle.setnchannels(1)
+            handle.setsampwidth(2)
+            handle.setframerate(24000)
+            handle.writeframes(b"\x00\x00" * 2400)
+        h, _ = self._build(harness)
+        chat = h.app.controls().chat("מה עם הלוטרות?")
+        answer = h.app.controls().clip(buf.getvalue(), None)
+        assert answer["ok"] is True, answer
+        assert isinstance(answer["turn_serial"], int)
+        assert answer["turn_serial"] == chat["turn_serial"] + 1
+        refused = h.app.controls().clip(b"not audio", None)
+        assert refused["ok"] is False and refused["turn_serial"] is None
+
     def test_status_reports_the_s2s_role_by_name_only(self, harness: Any) -> None:
         h, _ = self._build(harness, config=AppConfig(poll_interval_s=0.01, s2s_role="s2s"))
         assert h.app.status()["speech_to_speech"] == {"role": "s2s", "enabled": False}

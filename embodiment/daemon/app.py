@@ -1683,6 +1683,8 @@ class DaemonApp:
             ),
             record=lambda code, reason: self._record(code, reason, source="text"),
             clock=self._clock,
+            hold_conversation=self._hold_conversation,
+            release_conversation=self._release_conversation,
         )
 
         self._drain_kick = threading.Event()
@@ -2923,27 +2925,44 @@ class DaemonApp:
     def _locked_session(self) -> Any:
         """The session :class:`TextTurns` writes to, behind the conversation lock."""
         session = self._ensure_session()
-        return None if session is None else _LockedSession(session, self._conversation)
+        if session is None:
+            return None
+        return _LockedSession(session, self._conversation, self._conversation_bound())
 
-    def _run_text_turn(self, message: str) -> str:
+    def _conversation_bound(self) -> float:
+        """How long a typed turn waits for the conversation: one completion deadline."""
+        return max(0.05, self._config.completion_deadline)
+
+    def _hold_conversation(self) -> bool:
+        """``hold_conversation`` for :class:`TextTurns`: the conversation, BOUNDED.
+
+        Taken before the typed turn writes its user turn and held until its
+        assistant turn is written, so a typed turn neither races a voice turn's
+        session writes nor blocks a worker past the bound. ``False`` is busy:
+        :class:`TextTurns` records :data:`APP_TEXT_TURN_BUSY` (the same code) and
+        answers a retryable 503 having written nothing.
+        """
+        if self._conversation.acquire(timeout=self._conversation_bound()):
+            return True
+        with self._lock:
+            self._text_busy += 1
+        return False
+
+    def _release_conversation(self) -> None:
+        self._conversation.release()
+
+    def _run_text_turn(self, message: str) -> "_TypedReply":
         """``run_text_turn`` for :class:`TextTurns`: recall + senses, NO speaker.
 
         It never adds to the session — :class:`TextTurns` does ``add_user``
         before and ``add_assistant`` after, so a typed turn joins the same
-        session and transcript log as a spoken one (c58). It waits for the
-        conversation at most one completion deadline, so a typed turn cannot
-        race a voice turn's session writes; past that it answers nothing
-        (recorded) and the route says why.
+        session and transcript log as a spoken one (c58). It runs inside the
+        conversation :meth:`_hold_conversation` took; the reply carries the
+        typed turn's serial so a clip can answer with it.
         """
-        if not self._conversation.acquire(timeout=max(0.05, self._config.completion_deadline)):
-            with self._lock:
-                self._text_busy += 1
-            self._record(APP_TEXT_TURN_BUSY, "a voice turn held the conversation", source="text")
-            return ""
-        try:
-            return self._run_text_turn_locked(message)
-        finally:
-            self._conversation.release()
+        reply = self._run_text_turn_locked(message)
+        turn = getattr(self._tls, "text_turn", None)
+        return _TypedReply(spoken=reply, turn_serial=turn.serial if turn is not None else None)
 
     def _run_text_turn_locked(self, message: str) -> str:
         with self._lock:
@@ -3086,6 +3105,7 @@ class DaemonApp:
             "ok": result.ok,
             "transcript": result.transcript,
             "reply": result.reply,
+            "turn_serial": result.turn_serial if result.ok else None,
             "code": result.code,
             "http_status": result.http_status,
         }
@@ -4655,20 +4675,42 @@ def _finite_or_none(value: object) -> Optional[float]:
     return number if math.isfinite(number) else None
 
 
-class _LockedSession:
-    """The session as :class:`TextTurns` sees it: every write behind the conversation."""
+@dataclass(frozen=True)
+class _TypedReply:
+    """What :meth:`DaemonApp._run_text_turn` hands :class:`TextTurns`."""
 
-    def __init__(self, session: Any, lock: Any) -> None:
+    spoken: str
+    turn_serial: Optional[int] = None
+
+
+class _LockedSession:
+    """The session as :class:`TextTurns` sees it: every write behind the conversation.
+
+    :class:`TextTurns` already holds the conversation (re-entrant) when it
+    writes, so these acquires are immediate; the bound is the backstop that
+    keeps a write from ever waiting unbounded if that invariant breaks. A
+    write that cannot get the conversation raises, which :class:`TextTurns`
+    records as a session failure.
+    """
+
+    def __init__(self, session: Any, lock: Any, timeout: float) -> None:
         self._session = session
         self._lock = lock
+        self._timeout = timeout
+
+    def _write(self, call: Callable[[], Any]) -> Any:
+        if not self._lock.acquire(timeout=self._timeout):
+            raise TimeoutError("the conversation was busy")
+        try:
+            return call()
+        finally:
+            self._lock.release()
 
     def add_user(self, text: str) -> Any:
-        with self._lock:
-            return self._session.add_user(text)
+        return self._write(lambda: self._session.add_user(text))
 
     def add_assistant(self, text: str, metadata: Any = None) -> Any:
-        with self._lock:
-            return self._session.add_assistant(text, metadata=metadata)
+        return self._write(lambda: self._session.add_assistant(text, metadata=metadata))
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._session, name)
