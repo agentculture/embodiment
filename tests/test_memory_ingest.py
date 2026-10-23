@@ -111,7 +111,9 @@ def test_both_scopes_are_read_inside_one_deadline(tmp_path) -> None:
         gate.wait(timeout=5)
         return continuity.RecallOutcome(ok=True, records=[], degradation=None)
 
-    r = mem.RoomMemory(tmp_path / "s", recall_fn=slow_recall, ingest_scope=mem.INGEST_SCOPE)
+    r = mem.RoomMemory(
+        tmp_path / "s", ingest_scope=mem.INGEST_SCOPE, seams=mem.MemorySeams(recall_fn=slow_recall)
+    )
     result = r.recall("x", deadline=0.05, mode="keyword")
     assert not result.ok
     assert result.degradations[0].code == mem.CODE_DEADLINE_EXCEEDED
@@ -126,7 +128,12 @@ def test_recall_asks_exactly_the_two_scopes(tmp_path) -> None:
         seen.append((kw["scope"], kw["visibility"]))
         return continuity.RecallOutcome(ok=True, records=[], degradation=None)
 
-    r = mem.RoomMemory(tmp_path / "s", scope="gwen", recall_fn=spy, ingest_scope=mem.INGEST_SCOPE)
+    r = mem.RoomMemory(
+        tmp_path / "s",
+        scope="gwen",
+        ingest_scope=mem.INGEST_SCOPE,
+        seams=mem.MemorySeams(recall_fn=spy),
+    )
     r.recall("x", deadline=5.0, mode="keyword")
     r.close()
     assert seen == [("gwen", "private"), (mem.INGEST_SCOPE, "private")]
@@ -140,7 +147,9 @@ def test_a_failing_ingest_read_costs_only_the_ingest_hits(tmp_path) -> None:
             ok=True, records=[{"id": "g", "text": "t"}], degradation=None
         )
 
-    r = mem.RoomMemory(tmp_path / "s", recall_fn=fn, ingest_scope=mem.INGEST_SCOPE)
+    r = mem.RoomMemory(
+        tmp_path / "s", ingest_scope=mem.INGEST_SCOPE, seams=mem.MemorySeams(recall_fn=fn)
+    )
     result = r.recall("x", deadline=5.0, mode="keyword")
     r.close()
     assert [x["id"] for x in result.records] == ["g"]
@@ -214,7 +223,7 @@ def test_a_failed_supersede_flip_is_reported_not_swallowed(tmp_path) -> None:
             degradation=continuity.Degradation("eidetic", "archive", "subsystem-error", "no"),
         )
 
-    r = mem.RoomMemory(tmp_path / "s", archive_fn=broken_archive)
+    r = mem.RoomMemory(tmp_path / "s", seams=mem.MemorySeams(archive_fn=broken_archive))
     assert r.ingest_records(_batch(("r1", "fact", 1, "lemur old"))).ok
     result = r.ingest_records(_batch(("r1", "fact", 2, "lemur new", "pocket:r1:fact:1")))
     r.close()
@@ -286,7 +295,7 @@ def test_the_store_seam_raising_degrades(tmp_path) -> None:
     def boom(*a, **kw):
         raise RuntimeError("secret heard line")
 
-    r = mem.RoomMemory(tmp_path / "s", remember_fn=boom)
+    r = mem.RoomMemory(tmp_path / "s", seams=mem.MemorySeams(remember_fn=boom))
     result = r.ingest_records(_batch(("r1", "fact", 1, "kiwi")))
     r.close()
     assert not result.ok and result.failed
@@ -375,7 +384,9 @@ def test_forget_source_keeps_one_total_deadline_and_resumes(tmp_path) -> None:
     """d6: the deadline bounds the whole forget, not each step (1 + matched steps)."""
     store = _SlowStore(n=40, step=0.03)
     room = mem.RoomMemory(
-        tmp_path / "s", list_fn=store.list_fn, archive_fn=store.archive_fn, max_inflight=64
+        tmp_path / "s",
+        max_inflight=64,
+        seams=mem.MemorySeams(list_fn=store.list_fn, archive_fn=store.archive_fn),
     )
     try:
         started = time.monotonic()
@@ -400,7 +411,10 @@ def test_forget_source_keeps_one_total_deadline_and_resumes(tmp_path) -> None:
 
 def test_forget_source_with_room_left_is_unchanged(tmp_path) -> None:
     store = _SlowStore(n=5, step=0.0)
-    room = mem.RoomMemory(tmp_path / "s", list_fn=store.list_fn, archive_fn=store.archive_fn)
+    room = mem.RoomMemory(
+        tmp_path / "s",
+        seams=mem.MemorySeams(list_fn=store.list_fn, archive_fn=store.archive_fn),
+    )
     try:
         result = room.forget_source("pocket", "slow", deadline=5.0)
     finally:
@@ -464,7 +478,7 @@ def test_forget_never_raises_on_a_broken_list_seam(tmp_path) -> None:
     def boom(**kw):
         raise OSError("disk gone")
 
-    r = mem.RoomMemory(tmp_path / "s", list_fn=boom)
+    r = mem.RoomMemory(tmp_path / "s", seams=mem.MemorySeams(list_fn=boom))
     result = r.forget_source("pocket", "rec1")
     r.close()
     assert not result.ok and result.degradations

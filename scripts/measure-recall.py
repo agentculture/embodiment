@@ -59,7 +59,7 @@ from embodiment.daemon.app import (
     _lexical_can_index,
     http_complete,
 )
-from embodiment.memory import PRIVATE, RoomMemory, vector_cache_for
+from embodiment.memory import PRIVATE, RoomMemory, SemanticRecall, vector_cache_for
 from embodiment.vectors import EmbedderClient
 from embodiment.voice import VoiceConfig, http_synthesize
 
@@ -179,9 +179,11 @@ def make_room(
         directory,
         scope=SCOPE,
         added_by=SCOPE,
-        embedder=embedder,
-        vector_cache=vector_cache_for(directory, embed_model),
-        similarity_threshold=threshold,
+        semantic=SemanticRecall(
+            embedder=embedder,
+            vector_cache=vector_cache_for(directory, embed_model),
+            similarity_threshold=threshold,
+        ),
     )
     return room, embedder
 
