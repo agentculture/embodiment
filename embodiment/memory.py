@@ -263,6 +263,8 @@ __all__ = [
     "HEADER_PLACEHOLDER",
     "HEADER_FIELD_LIMIT",
     "HEADER_PATTERN",
+    "PROVENANCE_KEYS",
+    "recalled_provenance",
     "STRIPPED_CATEGORIES",
     "CODE_DEADLINE_EXCEEDED",
     "CODE_EMBEDDER_OFFLINE",
@@ -2695,7 +2697,12 @@ def _neutralise(value: Any) -> str:
     return _CLOSE_RUN.sub(NEUTRALISED_CLOSE, cleaned)
 
 
-def _label(value: Any, charset: frozenset[str], fallback: str) -> str:
+def _label(
+    value: Any,
+    charset: Optional[frozenset[str]],
+    fallback: str,
+    limit: int = HEADER_FIELD_LIMIT,
+) -> str:
     """One header field: neutralised, restricted to *charset*, capped.
 
     Restriction rather than escaping, because a header field is an *opaque
@@ -2704,14 +2711,24 @@ def _label(value: Any, charset: frozenset[str], fallback: str) -> str:
     here is to make a header line read as something it is not. Anything outside
     the set becomes :data:`HEADER_PLACEHOLDER` — visible, so a mangled label
     looks mangled instead of looking like a shorter legitimate one.
+
+    ``charset=None`` is for provenance *data* that is free text (a title, a
+    section, a link): still neutralised, whitespace of every kind collapsed to
+    one space so it stays on one line, and capped at *limit* — but not
+    restricted, because a Hebrew title is legitimate. Such a field is only ever
+    rendered on a :data:`QUOTE`-prefixed line, never in the header.
     """
     cleaned = _neutralise(value).strip()
+    if charset is None:
+        cleaned = " ".join(cleaned.split())
     if not cleaned:
         return fallback
+    if charset is None:
+        return cleaned[:limit]
     restricted = "".join(
         character if character in charset else HEADER_PLACEHOLDER for character in cleaned
     )
-    return restricted[:HEADER_FIELD_LIMIT]
+    return restricted[:limit]
 
 
 def _quoted(text: Any, max_chars: int) -> list[str]:
@@ -2730,6 +2747,65 @@ def _quoted(text: Any, max_chars: int) -> list[str]:
         body = body[:max_chars] + " …[truncated]"
     lines = body.splitlines() or [""]
     return [f"{QUOTE}{line}" for line in lines]
+
+
+#: Longest title / section / link a provenance line carries.
+PROVENANCE_TEXT_LIMIT = 160
+
+#: The provenance keys :func:`recalled_provenance` returns, in render order.
+PROVENANCE_KEYS = ("source", "title", "date", "start", "end", "section", "link")
+
+#: ``metadata.source`` values that carry provenance, and which metadata key
+#: feeds each structured field. Anything else (room-scope records) has none.
+_PROVENANCE_FIELDS: dict[str, dict[str, str]] = {
+    "pocket": {"title": "title", "date": "date", "start": "timestamp"},
+    "newspaper": {"date": "issue_date", "section": "section", "link": "url"},
+}
+
+
+def recalled_provenance(record: Any) -> Optional[dict[str, str]]:
+    """The neutralised provenance of an ingest record, or ``None``.
+
+    Pure, and the same funnel as the header: every value passes through
+    :func:`_label` (so :func:`_neutralise`). ``None`` for a room-scope record,
+    a non-mapping, or a source outside the registry. Keys are
+    :data:`PROVENANCE_KEYS`; a field the source does not have is ``""``.
+    Never raises. ``end`` is always ``""`` today (the contract carries one
+    timestamp); it is reserved so a caller's shape does not change later.
+    """
+    if not isinstance(record, Mapping):
+        return None
+    meta = record.get("metadata")
+    if not isinstance(meta, Mapping):
+        return None
+    source = _label(meta.get("source"), HEADER_LABEL_CHARSET, "")
+    mapping = _PROVENANCE_FIELDS.get(source)
+    if mapping is None:
+        return None
+    out = dict.fromkeys(PROVENANCE_KEYS, "")
+    out["source"] = source
+    for key, meta_key in mapping.items():
+        raw = meta.get(meta_key)
+        if key in ("date", "start"):
+            out[key] = _label(raw, HEADER_TIMESTAMP_CHARSET, "")
+        else:
+            out[key] = _label(raw, None, "", PROVENANCE_TEXT_LIMIT)
+    return out
+
+
+def _provenance_line(provenance: Mapping[str, str]) -> str:
+    """One :data:`QUOTE`-prefixed data line; absent fields are left out."""
+    if provenance["source"] == "pocket":
+        parts = [("from", "pocket recording")]
+        parts += [(k, provenance[k]) for k in ("title", "date")]
+        parts.append(("at", provenance["start"]))
+    else:
+        parts = [("from", "newspaper")]
+        parts += [
+            (label, provenance[k])
+            for label, k in (("issue-date", "date"), ("section", "section"), ("link", "link"))
+        ]
+    return QUOTE + " | ".join(f"{k}: {v}" for k, v in parts if v)
 
 
 def render_recalled(
@@ -2768,6 +2844,9 @@ def render_recalled(
         writer = _label(record.get("added_by"), HEADER_LABEL_CHARSET, "unattributed")
         created = _label(record.get("created"), HEADER_TIMESTAMP_CHARSET, "unknown")
         lines.append(f"[{index}] id={identifier} written-by={writer} recorded={created}")
+        provenance = recalled_provenance(record)
+        if provenance is not None:
+            lines.append(_provenance_line(provenance))
         lines.extend(_quoted(record.get("text"), cap))
     lines.append(END_MARK)
     return "\n".join(lines)
