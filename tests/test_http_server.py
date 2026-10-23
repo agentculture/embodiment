@@ -1887,3 +1887,236 @@ class TestAnAccessAdmittedStreamEndsAtTokenExpiry:
         finally:
             built.server.shutdown(2.0)
             bus.close(1.0)
+
+
+# ── d6 review round: the text routes have their own pool, and a clip read is bounded ──
+
+
+def _raw_clip_request(port: int, length: int) -> socket.socket:
+    """Open a clip upload that declares *length* bytes and has sent none of them yet."""
+    sock = socket.create_connection(("127.0.0.1", port), timeout=5)
+    head = "\r\n".join(
+        [
+            "POST /api/clip HTTP/1.1",
+            f"Host: 127.0.0.1:{port}",
+            f"Authorization: Bearer {MARKER_SECRET}",
+            "Content-Type: audio/wav",
+            f"Content-Length: {length}",
+            "",
+            "",
+        ]
+    )
+    sock.sendall(head.encode())
+    return sock
+
+
+class TestTheTextRoutesDoNotStarveTheMute:
+    """A typed turn can hold a worker for a minute; the privacy mute must not wait on it."""
+
+    def test_a_mute_answers_inside_its_bound_while_the_text_pool_is_saturated(self) -> None:
+        release = threading.Event()
+        entered: list[int] = []
+        lock = threading.Lock()
+
+        def slow_chat(message: Any) -> dict[str, Any]:
+            with lock:
+                entered.append(1)
+            release.wait(30)
+            return {"ok": True, "reply": "late"}
+
+        built = build(
+            controls=s.Controls(chat=slow_chat, set_mute=lambda muted: {"muted": muted}),
+            control_timeout_s=1.0,
+            chat_timeout_s=8.0,
+        )
+        senders = [
+            threading.Thread(
+                target=lambda: _swallow(lambda: post_json(built, "/api/chat", {"message": "x"})),
+                daemon=True,
+            )
+            for _ in range(s.DEFAULT_TEXT_WORKERS + 2)
+        ]
+        try:
+            for sender in senders:
+                sender.start()
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline and len(entered) < s.DEFAULT_TEXT_WORKERS:
+                time.sleep(0.02)
+            assert len(entered) == s.DEFAULT_TEXT_WORKERS, "the text pool never saturated"
+
+            started = time.monotonic()
+            status, body = post_json(built, "/api/mic/mute", {"muted": True})
+            elapsed = time.monotonic() - started
+            assert status == 200, body
+            assert json.loads(body)["result"] == {"muted": True}
+            assert elapsed < 1.0, f"the mute waited {elapsed:.2f}s behind typed turns"
+            assert built.server.status()["controls_inflight"] == 0
+            assert built.server.status()["text_inflight"] >= s.DEFAULT_TEXT_WORKERS
+        finally:
+            release.set()
+            built.server.shutdown(2.0)
+
+    def test_exhausting_the_text_pool_is_the_busy_refusal_and_leaves_controls_free(self) -> None:
+        release = threading.Event()
+        built = build(
+            controls=s.Controls(
+                chat=lambda m: (release.wait(60), {})[1],
+                stop_voice=lambda: {"state": "stopped"},
+            ),
+            chat_timeout_s=0.2,
+            text_workers=1,
+        )
+        try:
+            codes = []
+            for _ in range(s.MAX_TEXT_INFLIGHT + 2):
+                status, body = post_json(built, "/api/chat", {"message": "x"})
+                assert status == 503
+                codes.append(json.loads(body)["code"])
+            assert codes[-1] == s.CONTROL_BUSY_CODE
+            assert s.CONTROL_TIMEOUT_CODE in codes
+            assert built.server.status()["text_inflight"] == s.MAX_TEXT_INFLIGHT
+            status, body = built.request("POST", "/api/voice/stop", hdrs=built.headers())
+            assert status == 200, body
+        finally:
+            release.set()
+            built.server.shutdown(2.0)
+
+    def test_speak_and_clip_run_on_the_text_pool_too(self) -> None:
+        release = threading.Event()
+        built = build(
+            controls=s.Controls(
+                speak=lambda t: (release.wait(60), {})[1],
+                clip=lambda a, d: (release.wait(60), {})[1],
+            ),
+            speak_timeout_s=0.2,
+            clip_timeout_s=0.2,
+        )
+        try:
+            post_json(built, "/api/speak", {"text": "x"})
+            built.request(
+                "POST", "/api/clip", body=b"RIFFxxxx", hdrs=built.headers(Content_Type="audio/wav")
+            )
+            http_status = built.server.status()
+            assert http_status["text_inflight"] == 2
+            assert http_status["controls_inflight"] == 0
+        finally:
+            release.set()
+            built.server.shutdown(2.0)
+
+    def test_shutdown_counts_an_abandoned_text_call(self) -> None:
+        release = threading.Event()
+        built = build()
+        try:
+            outcome = built.server.call_text(
+                "api.chat", lambda: (release.wait(60), {})[1], timeout_s=0.1
+            )
+            assert outcome.code == s.CONTROL_TIMEOUT_CODE
+            report = built.server.shutdown(2.0)
+            assert report.controls_unfinished == 1
+        finally:
+            release.set()
+            built.server.shutdown(2.0)
+
+
+class TestTheClipReadDeadlineIsEnforcedPerRead:
+    """``rfile.read(n)`` blocks until *n* bytes: a slow drip must not outlive the deadline."""
+
+    def test_a_slow_drip_upload_is_cut_off_at_the_deadline(self) -> None:
+        calls: list[Any] = []
+        built = build(
+            controls=s.Controls(clip=lambda a, d: calls.append(a) or {"ok": True}),
+            clip_read_deadline_s=0.6,
+        )
+        stop = threading.Event()
+        sock = _raw_clip_request(built.port, 100_000)
+
+        def drip() -> None:
+            while not stop.is_set():
+                try:
+                    sock.sendall(b"x")
+                except OSError:
+                    return
+                stop.wait(0.05)
+
+        dripper = threading.Thread(target=drip, daemon=True)
+        try:
+            started = time.monotonic()
+            dripper.start()
+            sock.settimeout(4.0)
+            reply = sock.recv(4096).decode("utf-8", "replace")
+            elapsed = time.monotonic() - started
+            assert reply.startswith("HTTP/1.1 408"), reply[:80]
+            assert elapsed < 2.0, f"the drip held the read for {elapsed:.2f}s"
+            assert calls == []
+        finally:
+            stop.set()
+            sock.close()
+            built.server.shutdown(2.0)
+
+    def test_a_silent_upload_is_cut_off_at_the_deadline_not_the_socket_timeout(self) -> None:
+        built = build(controls=s.Controls(clip=lambda a, d: {"ok": True}), clip_read_deadline_s=0.5)
+        sock = _raw_clip_request(built.port, 1000)
+        try:
+            started = time.monotonic()
+            sock.settimeout(4.0)
+            reply = sock.recv(4096).decode("utf-8", "replace")
+            assert reply.startswith("HTTP/1.1 408"), reply[:80]
+            assert time.monotonic() - started < 2.0
+            assert s.BAD_REQUEST_CODE in built.server.status()["degradation_counts"]
+        finally:
+            sock.close()
+            built.server.shutdown(2.0)
+
+    def test_a_whole_upload_in_pieces_is_still_read_whole(self) -> None:
+        seen: list[bytes] = []
+        built = build(
+            controls=s.Controls(clip=lambda a, d: seen.append(a) or {"ok": True}),
+            clip_read_deadline_s=3.0,
+        )
+        data = b"RIFF" + b"y" * 200_000
+        sock = _raw_clip_request(built.port, len(data))
+        try:
+            for start in range(0, len(data), 50_000):
+                sock.sendall(data[start : start + 50_000])
+                time.sleep(0.02)
+            sock.settimeout(4.0)
+            reply = sock.recv(4096).decode("utf-8", "replace")
+            assert reply.startswith("HTTP/1.1 200"), reply[:80]
+            assert seen == [data]
+        finally:
+            sock.close()
+            built.server.shutdown(2.0)
+
+
+def _swallow(call: Any) -> None:
+    try:
+        call()
+    except Exception:  # noqa: BLE001 - a background sender in a test
+        pass
+
+
+class TestTheClipResponseCarriesItsTurnSerial:
+    def test_a_successful_clip_carries_the_serial_of_its_turn(self) -> None:
+        reply = {"ok": True, "transcript": "t", "reply": "r", "turn_serial": 12}
+        built = build(controls=s.Controls(clip=lambda a, d: reply))
+        try:
+            status, body = built.request(
+                "POST", "/api/clip", body=b"abc", hdrs=built.headers(Content_Type="audio/wav")
+            )
+            assert status == 200
+            assert json.loads(body)["turn_serial"] == 12
+        finally:
+            built.server.shutdown(2.0)
+
+    def test_a_clip_with_no_usable_serial_carries_null(self) -> None:
+        reply = {"ok": True, "transcript": "t", "reply": "r", "turn_serial": "12"}
+        built = build(controls=s.Controls(clip=lambda a, d: reply))
+        try:
+            status, body = built.request(
+                "POST", "/api/clip", body=b"abc", hdrs=built.headers(Content_Type="audio/wav")
+            )
+            assert status == 200
+            payload = json.loads(body)
+            assert "turn_serial" in payload and payload["turn_serial"] is None
+        finally:
+            built.server.shutdown(2.0)
