@@ -377,8 +377,12 @@ class TestIngestIsAppliedAndRecalled:
         # ...and the same provenance reached the prompt, as quoted data (c-render funnel).
         prompt = echoing_complete.prompts[-1]
         assert mem.BEGIN_MARK in prompt
-        assert POCKET_TITLE in prompt and POCKET_DATE in prompt and "01:05" in prompt
-        assert "2026-10-01" in prompt and "city" in prompt and NEWS_LINK in prompt
+        assert POCKET_TITLE in prompt
+        assert POCKET_DATE in prompt
+        assert "01:05" in prompt
+        assert "2026-10-01" in prompt
+        assert "city" in prompt
+        assert NEWS_LINK in prompt
         assert len(rig.endpoint.played) == played, "a typed turn never reaches the speaker"
 
     def test_recall_is_semantic_through_the_named_role_and_embeds_only_the_query(
@@ -386,14 +390,14 @@ class TestIngestIsAppliedAndRecalled:
     ) -> None:
         seed_both(rig)
         assert set(rig.transport.models) == {vectors.EMBED_ROLE} == {"gemma2-embed"}
-        assert (
-            rig.cache.get(OTTER) is not None and rig.cache.get(BRIDGE) is not None
-        ), "the drain fills the vector cache when it writes"
+        assert rig.cache.get(OTTER) is not None, "the drain fills the vector cache when it writes"
+        assert rig.cache.get(BRIDGE) is not None, "the drain fills the vector cache when it writes"
 
         before = len(rig.transport.inputs)
         answer = rig.app.controls().chat(QUESTION)
 
-        assert answer["ok"] is True and len(answer["sources"]) == 2
+        assert answer["ok"] is True
+        assert len(answer["sources"]) == 2
         assert rig.transport.inputs[before:] == [QUESTION], "a recall embeds exactly the query"
         recall = rig.app.status()["recall"]
         assert recall["embedder"]["role"] == "gemma2-embed"
@@ -413,7 +417,8 @@ class TestTalkByVoiceAndByText:
         rig.app.run_turn(QUESTION)
 
         replies = [e.data["text"] for e in rig.events("reply")]
-        assert replies and "otter survey moved to thursday" in replies[0]
+        assert replies
+        assert "otter survey moved to thursday" in replies[0]
         assert rig.endpoint.played, "the voice turn was spoken through the host endpoint"
         assert POCKET_TITLE in echoing_complete.prompts[-1]
         assert NEWS_LINK in echoing_complete.prompts[-1]
@@ -631,7 +636,8 @@ class TestForgetLeavesNoCopy:
         archived = {r["text"] for r in everything if r.get("lifecycle") == "archived"}
         live = {r["text"] for r in everything if r.get("lifecycle") != "archived"}
         assert archived == {gone_text, kept_text}
-        assert len(live) == 1 and f"{POCKET_SENTINEL}-other" in next(iter(live))
+        assert len(live) == 1
+        assert f"{POCKET_SENTINEL}-other" in next(iter(live))
 
         # 2. The vector cache dropped the forgotten entries and kept the survivor's.
         fresh = mem.vector_cache_for(rig.cache_dir)
@@ -711,7 +717,8 @@ class TestTheVectorIsFilledByTheWrite:
 class TestWhatIsNotClaimed:
     def test_the_module_docstring_states_what_cannot_be_proven_synthetically(self) -> None:
         doc = __doc__ or ""
-        assert "pocketchat can retire" in doc and "NOT provable" in doc
+        assert "pocketchat can retire" in doc
+        assert "NOT provable" in doc
         assert "Cloudflare edge" in doc
         for clause in range(1, 9):
             assert f"\n{clause}. " in doc, f"clause {clause} is not mapped"

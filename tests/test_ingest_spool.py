@@ -25,7 +25,8 @@ def _snapshot(path):
 
 def test_enqueue_modes_and_sortable_name(spool):
     res = spool.enqueue("ingest", REC)
-    assert res.ok and res.batch_id
+    assert res.ok
+    assert res.batch_id
     assert stat.S_IMODE(spool.inbox.stat().st_mode) == 0o700
     files = list(spool.inbox.iterdir())
     assert [f.name for f in files] == [res.batch_id + ".json"]
@@ -47,7 +48,8 @@ def test_refused_batch_leaves_inbox_identical(spool, kind, records):
     assert spool.enqueue("ingest", REC).ok
     before = _snapshot(spool.inbox)
     res = spool.enqueue(kind, records)
-    assert not res.ok and res.reason
+    assert not res.ok
+    assert res.reason
     assert _snapshot(spool.inbox) == before
     assert spool.degradations
 
@@ -79,8 +81,10 @@ def test_mark_done_keeps_only_a_receipt(spool):
     assert "synthetic" not in raw
     data = json.loads(raw)
     assert data["batch_id"] == batch.batch_id
-    assert data["record_ids"] == ["r1", "r2"] and data["count"] == 2
-    assert len(data["hashes"]) == 2 and all(len(h) == 64 for h in data["hashes"])
+    assert data["record_ids"] == ["r1", "r2"]
+    assert data["count"] == 2
+    assert len(data["hashes"]) == 2
+    assert all(len(h) == 64 for h in data["hashes"])
     assert stat.S_IMODE(receipts[0].stat().st_mode) == 0o600
 
 
@@ -91,7 +95,8 @@ def test_mark_failed_keeps_reason_and_purges_after_seven_days(spool):
     assert spool.pending() == []
     reason = json.loads((spool.failed_dir / f"{batch.batch_id}.json").read_text("utf-8"))
     assert reason["reason"] == "store unavailable second line"
-    assert reason["record_ids"] == ["r1", "r2"] and reason["count"] == 2
+    assert reason["record_ids"] == ["r1", "r2"]
+    assert reason["count"] == 2
     assert spool.status().failed == 1
     assert spool.purge_failed() == 0
     old = time.time() - FAILED_RETENTION_S - 10
@@ -151,7 +156,8 @@ def test_no_file_keeps_record_text_after_failure(spool):
     spool.enqueue("ingest", [{"id": "s3", "text": sentinel}])
     spool.mark_done(spool.pending()[0])
     files = [p for p in spool.root.rglob("*") if p.is_file()]
-    assert files and not list(spool.inbox.iterdir())
+    assert files
+    assert not list(spool.inbox.iterdir())
     assert all(sentinel.encode() not in p.read_bytes() for p in files)
 
 

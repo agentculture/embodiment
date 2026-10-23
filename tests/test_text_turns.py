@@ -65,14 +65,16 @@ class TestTypedTurn:
         endpoint = FakeEndpoint()
         tt, _ = make()
         result = tt.handle_text("hello")
-        assert result.ok and result.reply == "reply:hello"
+        assert result.ok
+        assert result.reply == "reply:hello"
         assert endpoint.played == 0
         assert not hasattr(tt, "play")
 
     def test_module_never_imports_voice_playback(self):
         tree = ast.parse(Path(T.__file__).read_text())
         calls = [n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)]
-        assert "play" not in calls and "stop_playback" not in calls
+        assert "play" not in calls
+        assert "stop_playback" not in calls
 
     def test_joins_the_session_in_order(self):
         session = FakeSession()
@@ -97,7 +99,8 @@ class TestTypedTurn:
 
         tt, rec = make(run_text_turn=boom)
         result = tt.handle_text("hi")
-        assert not result.ok and result.code == T.TEXT_TURN_FAILED
+        assert not result.ok
+        assert result.code == T.TEXT_TURN_FAILED
         assert all("secret speech" not in r for _, r in rec)
 
     def test_session_failure_is_recorded_and_turn_still_runs(self):
@@ -120,7 +123,8 @@ class TestTypedTurn:
     def test_refusals(self, bad, status):
         tt, _ = make()
         r = tt.handle_text(bad)
-        assert not r.ok and r.http_status == status
+        assert not r.ok
+        assert r.http_status == status
 
     def test_over_long_text_refused_413(self):
         tt, _ = make()
@@ -143,9 +147,12 @@ class TestSpeakMessage:
         )
         tt, _ = make(tts=lambda s, cfg: PCM)
         r = tt.speak_message("One. Two.")
-        assert r.ok and r.sentences == 2 and r.content_type == "audio/wav"
+        assert r.ok
+        assert r.sentences == 2
+        assert r.content_type == "audio/wav"
         with wave.open(io.BytesIO(r.audio)) as w:
-            assert w.getframerate() == 24000 and w.getnframes() == 2 * 2400
+            assert w.getframerate() == 24000
+            assert w.getnframes() == 2 * 2400
         assert opened == []
 
     def test_no_playback_endpoint_involved(self):
@@ -160,7 +167,9 @@ class TestSpeakMessage:
 
         tt, rec = make(tts=boom)
         r = tt.speak_message("hi")
-        assert not r.ok and r.http_status == 502 and rec[0][0] == T.SPEAK_TTS_FAILED
+        assert not r.ok
+        assert r.http_status == 502
+        assert rec[0][0] == T.SPEAK_TTS_FAILED
 
     def test_partial_failure_returns_audio_so_far(self):
         calls = []
@@ -173,7 +182,9 @@ class TestSpeakMessage:
 
         tt, rec = make(tts=tts)
         r = tt.speak_message("One. Two. Three.")
-        assert r.ok and r.truncated and r.sentences == 1
+        assert r.ok
+        assert r.truncated
+        assert r.sentences == 1
         assert any(c == T.SPEAK_TRUNCATED for c, _ in rec)
 
     def test_non_bytes_tts_is_malformed(self):
@@ -184,7 +195,9 @@ class TestSpeakMessage:
         big = b"\x00\x00" * (T.MAX_SPEAK_AUDIO_BYTES // 2)
         tt, _ = make(tts=lambda s, c: big)
         r = tt.speak_message("One. Two.")
-        assert r.ok and r.truncated and len(r.audio) <= T.MAX_SPEAK_AUDIO_BYTES + 64
+        assert r.ok
+        assert r.truncated
+        assert len(r.audio) <= T.MAX_SPEAK_AUDIO_BYTES + 64
 
     def test_deadline_stops_synthesis(self):
         now = [0.0]
@@ -195,7 +208,9 @@ class TestSpeakMessage:
 
         tt, _ = make(tts=tts, clock=lambda: now[0])
         r = tt.speak_message("One. Two. Three.")
-        assert r.ok and r.truncated and r.sentences == 1
+        assert r.ok
+        assert r.truncated
+        assert r.sentences == 1
 
     @pytest.mark.parametrize("bad", [None, 3, "  "])
     def test_refuses_non_text(self, bad):
@@ -209,7 +224,9 @@ class TestClip:
         session = FakeSession()
         tt, _ = make(session=session, stt=lambda a, f, c: seen.append((len(a), f, c)) or " שלום ")
         r = tt.handle_clip(make_wav(1.0))
-        assert r.ok and r.transcript == "שלום" and r.reply == "reply:שלום"
+        assert r.ok
+        assert r.transcript == "שלום"
+        assert r.reply == "reply:שלום"
         assert seen[0][1:] == ("clip.wav", "audio/wav")
         assert session.calls[0] == ("user", "שלום")
         assert r.duration_s == pytest.approx(1.0)
@@ -219,21 +236,26 @@ class TestClip:
         cfg = TextTurnsConfig(max_clip_bytes=100)
         tt, _ = make(config=cfg, stt=lambda *a: called.append(a) or "x")
         r = tt.handle_clip(make_wav(1.0))
-        assert r.http_status == 413 and r.code == T.REFUSED_CLIP_TOO_BIG and not called
+        assert r.http_status == 413
+        assert r.code == T.REFUSED_CLIP_TOO_BIG
+        assert not called
 
     def test_over_duration_cap_refused_before_stt(self):
         called = []
         cfg = TextTurnsConfig(max_clip_seconds=2.0)
         tt, _ = make(config=cfg, stt=lambda *a: called.append(a) or "x")
         r = tt.handle_clip(make_wav(3.0))
-        assert r.http_status == 413 and r.code == T.REFUSED_CLIP_TOO_LONG and not called
+        assert r.http_status == 413
+        assert r.code == T.REFUSED_CLIP_TOO_LONG
+        assert not called
 
     def test_ogg_opus_duration_read_and_capped(self):
         called = []
         cfg = TextTurnsConfig(max_clip_seconds=10.0)
         tt, _ = make(config=cfg, stt=lambda *a: called.append(a) or "x")
         assert T.probe_clip(make_ogg_opus(5.0)).duration_s == pytest.approx(5.0)
-        assert tt.handle_clip(make_ogg_opus(30.0)).http_status == 413 and not called
+        assert tt.handle_clip(make_ogg_opus(30.0)).http_status == 413
+        assert not called
 
     def test_declared_duration_can_only_refuse_more(self):
         called = []
@@ -246,7 +268,8 @@ class TestClip:
     def test_webm_duration_unknown_but_accepted_under_byte_cap(self):
         tt, _ = make(stt=lambda *a: "hi")
         r = tt.handle_clip(b"\x1a\x45\xdf\xa3" + b"\x00" * 64)
-        assert r.ok and r.duration_s is None
+        assert r.ok
+        assert r.duration_s is None
 
     def test_unknown_and_corrupt_refused(self):
         tt, _ = make(stt=lambda *a: "x")
@@ -265,7 +288,8 @@ class TestClip:
         assert tt2.handle_clip(make_wav(0.5)).code == T.CLIP_EMPTY_TRANSCRIPT
         tt3, _ = make(stt=lambda *a: 7)
         assert tt3.handle_clip(make_wav(0.5)).code == T.CLIP_STT_MALFORMED
-        assert rec and rec2
+        assert rec
+        assert rec2
 
     def test_no_audio_byte_reaches_state_dir(self, tmp_path, monkeypatch):
         monkeypatch.chdir(tmp_path)
@@ -318,12 +342,15 @@ class TestHttpTranscribe:
         cfg = TextTurnsConfig(gateway_url="http://gw:1/", api_key="k", stt_model="stt")
         out = T.http_transcribe(b"AUDIO", "clip.wav", "audio/wav", cfg, opener=op)
         req, timeout = op.requests[0]
-        assert out == "שלום" and timeout == cfg.stt_deadline
+        assert out == "שלום"
+        assert timeout == cfg.stt_deadline
         assert req.full_url == "http://gw:1/v1/audio/transcriptions"
         assert req.get_header("Authorization") == "Bearer k"
         assert req.get_header("Content-type").startswith("multipart/form-data; boundary=")
-        assert b'filename="clip.wav"' in req.data and b"AUDIO" in req.data
-        assert b'name="model"' in req.data and b'name="language"' in req.data
+        assert b'filename="clip.wav"' in req.data
+        assert b"AUDIO" in req.data
+        assert b'name="model"' in req.data
+        assert b'name="language"' in req.data
 
     def test_bad_scheme_and_bad_body_raise(self):
         ftp, cfg, bad_body = (
@@ -391,7 +418,9 @@ class TestTheClipClocksAreMeasured:
         called = []
         tt, _ = make(stt=lambda *a: called.append(a) or "x")
         r = tt.handle_clip(make_wav(61.0))
-        assert r.http_status == 413 and r.code == T.REFUSED_CLIP_TOO_LONG and not called
+        assert r.http_status == 413
+        assert r.code == T.REFUSED_CLIP_TOO_LONG
+        assert not called
 
     def test_the_dashboard_recorder_stops_at_the_same_cap(self):
         source = (
@@ -458,7 +487,8 @@ class TestTheConversationIsHeldBeforeTheUserTurn:
         assert not result.ok
         assert result.code == T.TEXT_TURN_BUSY == "app-text-turn-busy"
         assert result.http_status == 503
-        assert session.calls == [] and ran == []
+        assert session.calls == []
+        assert ran == []
         assert gate.log == ["hold"], "released a conversation it never held"
         assert all(code != T.TEXT_TURN_FAILED for code, _ in rec)
 
@@ -488,7 +518,8 @@ class TestTheConversationIsHeldBeforeTheUserTurn:
             release_conversation=lambda: None,
         )
         result = tt.handle_clip(make_wav(1.0))
-        assert result.code == T.TEXT_TURN_BUSY and result.http_status == 503
+        assert result.code == T.TEXT_TURN_BUSY
+        assert result.http_status == 503
         assert result.transcript == "words"
 
 
@@ -498,7 +529,8 @@ class TestSpeakHasTheTextCap:
         tt, _ = make(tts=lambda s, c: calls.append(s) or PCM)
         result = tt.speak_message("a. " * (T.MAX_TEXT_CHARS // 3 + 1))
         assert not result.ok
-        assert result.code == T.REFUSED_TEXT_TOO_LONG and result.http_status == 413
+        assert result.code == T.REFUSED_TEXT_TOO_LONG
+        assert result.http_status == 413
         assert calls == []
 
     def test_a_message_at_the_cap_is_spoken(self):
@@ -514,7 +546,8 @@ class TestAClipCarriesItsTurnSerial:
 
         tt, _ = make(stt=lambda a, f, c: "words", run_text_turn=lambda t: Reply())
         result = tt.handle_clip(make_wav(1.0))
-        assert result.ok and result.turn_serial == 9
+        assert result.ok
+        assert result.turn_serial == 9
         assert tt.handle_text("hi").turn_serial == 9
 
     def test_a_plain_string_reply_has_no_serial(self):

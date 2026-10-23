@@ -53,36 +53,48 @@ def lines(*recs):
 def test_registry_holds_exactly_pocket_and_newspaper():
     assert set(c.REGISTRY) == {"pocket", "newspaper"}
     for spec in c.REGISTRY.values():
-        assert spec.types and spec.required and spec.id_prefix == spec.name
-        assert spec.max_text_chars > 0 and spec.max_records > 0
+        assert spec.types
+        assert spec.required
+        assert spec.id_prefix == spec.name
+        assert spec.max_text_chars > 0
+        assert spec.max_records > 0
 
 
 def test_unknown_source_refused_with_clierror_naming_registry():
     err = c.source_refusal("slack")
-    assert isinstance(err, CliError) and err.code == 1
-    assert "registry" in err.message and "pocket" in err.remediation
+    assert isinstance(err, CliError)
+    assert err.code == 1
+    assert "registry" in err.message
+    assert "pocket" in err.remediation
     assert c.source_refusal("pocket") is None
     assert c.source_refusal(None) is not None
     r = c.validate_batch(lines(pocket(metadata={"source": "slack"})))
-    assert isinstance(r, c.Refusal) and r.line == 1
-    assert isinstance(r.error, CliError) and "registry" in r.error.message
+    assert isinstance(r, c.Refusal)
+    assert r.line == 1
+    assert isinstance(r.error, CliError)
+    assert "registry" in r.error.message
     assert "pocket" in r.error.remediation
 
 
 def test_valid_batches_are_returned_whole():
     r = c.validate_batch(lines(pocket(1), pocket(2)))
-    assert isinstance(r, c.Batch) and r.source == "pocket" and len(r.records) == 2
+    assert isinstance(r, c.Batch)
+    assert r.source == "pocket"
+    assert len(r.records) == 2
     n = c.validate_batch(lines(paper(1)), created="2026-01-02")
-    assert isinstance(n, c.Batch) and n.records[0]["created"] == "2026-01-02"
+    assert isinstance(n, c.Batch)
+    assert n.records[0]["created"] == "2026-01-02"
 
 
 def test_one_bad_line_refuses_everything_with_first_failing_line():
     batch = lines(pocket(1), pocket(2), pocket(3, type="bogus"), pocket(4, text=""))
     r = c.validate_batch(batch)
-    assert isinstance(r, c.Refusal) and r.line == 3
+    assert isinstance(r, c.Refusal)
+    assert r.line == 3
     # blank lines count toward the line number
     r = c.validate_batch([json.dumps(pocket(1)), "", "{not json"])
-    assert isinstance(r, c.Refusal) and r.line == 3
+    assert isinstance(r, c.Refusal)
+    assert r.line == 3
 
 
 @pytest.mark.parametrize(
@@ -110,17 +122,21 @@ def test_non_object_and_non_text_lines_degrade_not_raise():
 
 def test_mixed_sources_and_duplicates_refused():
     r = c.validate_batch(lines(pocket(1), paper(1)))
-    assert isinstance(r, c.Refusal) and r.line == 2
+    assert isinstance(r, c.Refusal)
+    assert r.line == 2
     r = c.validate_batch(lines(pocket(1), pocket(1)))
-    assert isinstance(r, c.Refusal) and r.line == 2
+    assert isinstance(r, c.Refusal)
+    assert r.line == 2
 
 
 def test_batch_cap_is_exact_cap_plus_one_refused():
     cap = c.REGISTRY["pocket"].max_records
     ok = c.validate_batch(lines(*[pocket(i) for i in range(1, cap + 1)]))
-    assert isinstance(ok, c.Batch) and len(ok.records) == cap
+    assert isinstance(ok, c.Batch)
+    assert len(ok.records) == cap
     over = c.validate_batch(lines(*[pocket(i) for i in range(1, cap + 2)]))
-    assert isinstance(over, c.Refusal) and over.line == cap + 1
+    assert isinstance(over, c.Refusal)
+    assert over.line == cap + 1
 
 
 def test_stamping_overrides_whatever_the_input_says():
@@ -141,10 +157,12 @@ def test_wire_id_maps_into_header_charset_and_is_stable():
     wire = "pocket:rec1:fact:3"
     sid = c.stored_id(wire)
     assert sid == "pocket.rec1.fact.3"
-    assert set(sid) <= HEADER_LABEL_CHARSET and len(sid) <= HEADER_FIELD_LIMIT
+    assert set(sid) <= HEADER_LABEL_CHARSET
+    assert len(sid) <= HEADER_FIELD_LIMIT
     assert c.stored_id(wire) == sid
     rec = c.validate_batch(lines(pocket(3))).records[0]
-    assert rec["id"] == sid and rec["metadata"]["wire_id"] == wire
+    assert rec["id"] == sid
+    assert rec["metadata"]["wire_id"] == wire
 
 
 @pytest.mark.parametrize(
@@ -293,7 +311,8 @@ def test_accepted_records_are_pinned_exactly():
     meta = _meta(timestamp="t1")
     rec = pocket(2, metadata=meta, supersedes="pocket:rec1:fact:1")
     r = c.validate_batch(lines(rec, pocket(3)), created="2026-02-03")
-    assert isinstance(r, c.Batch) and r.source == "pocket"
+    assert isinstance(r, c.Batch)
+    assert r.source == "pocket"
     stamp = {
         "visibility": "private",
         "scope": c.INGEST_SCOPE,

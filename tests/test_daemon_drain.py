@@ -195,7 +195,8 @@ def test_batches_apply_in_enqueue_order_and_move_to_done_exactly_once(
 
     report = d.drain_once(5.0)
 
-    assert len(report.batches_done) == 4 and not report.batches_failed
+    assert len(report.batches_done) == 4
+    assert not report.batches_failed
     life = _lifecycle(room)
     assert all(life[f"pocket.r1.fact.{i}"] == "archived" for i in range(3))
     assert life["pocket.r2.fact.0"] == "active"
@@ -208,7 +209,8 @@ def test_batches_apply_in_enqueue_order_and_move_to_done_exactly_once(
     assert not any("otters" in p.read_text("utf-8") for p in spool.done_dir.iterdir())
 
     again = d.drain_once(5.0)
-    assert again.batches_done == () and again.records_applied == 0
+    assert again.batches_done == ()
+    assert again.records_applied == 0
     assert spool.status().done == 4
     assert rec.calls == []
 
@@ -265,7 +267,8 @@ def test_a_recall_mid_drain_meets_its_deadline(
     result = room.recall("otters", deadline=mem.DEFAULT_DEADLINE, mode="keyword")
     seen.append(time.monotonic() - t0)
     worker.join(5.0)
-    assert result.ok and result.degradations == ()
+    assert result.ok
+    assert result.degradations == ()
     assert seen[0] < mem.DEFAULT_DEADLINE
 
 
@@ -303,7 +306,8 @@ def test_killed_between_records_rerun_completes_idempotently(
     with pytest.raises(_Killed):
         drain.drain_once(5.0)
     assert len(_stored(room)) == 3
-    assert spool.status().pending == 1 and spool.status().done == 0
+    assert spool.status().pending == 1
+    assert spool.status().done == 0
 
     monkeypatch.setattr(room, "ingest_records", real)
     restarted = _drain(spool, room, clock, rec)  # a new process: no cursor survives
@@ -341,7 +345,8 @@ def test_a_batch_bigger_than_the_budget_carries_its_cursor(
             break
     # 0.25 s fits three starts (0.25, 0.17, 0.09 remaining; 0.01 is too little).
     assert passes == [3, 3, 1]
-    assert len(calls) == 7 and len(set(calls)) == 7  # nothing re-applied across passes
+    assert len(calls) == 7
+    assert len(set(calls)) == 7  # nothing re-applied across passes
     assert spool.status().done == 1
     assert rec.calls == []
 
@@ -368,7 +373,8 @@ def test_a_hung_store_never_holds_a_pass_past_its_budget(
         report = d.drain_once(0.2)
         elapsed = time.monotonic() - t0
         assert elapsed < 0.2 + 0.1
-        assert report.stalled and not report.batches_done
+        assert report.stalled
+        assert not report.batches_done
         assert rec.codes() == [dr.APP_INGEST_RECORD_DEFERRED]
         assert spool.status().pending == 1
         assert d.status()["stalled"] is True
@@ -422,7 +428,8 @@ def test_a_transient_failure_is_recorded_once_and_backs_off(
         assert retries == [2.0, 4.0, 8.0, 16.0, 32.0]
         # Order holds: nothing of the second batch was written while the head stalled.
         assert _stored(room) == {}
-        assert spool.status().pending == 2 and spool.status().failed == 0
+        assert spool.status().pending == 2
+        assert spool.status().failed == 0
 
         broken["on"] = False
         report = d.drain_once(5.0)
@@ -458,11 +465,13 @@ def test_an_invalid_record_fails_its_batch_but_the_rest_is_applied(
     assert spool.enqueue("ingest", _pocket("r2", 1)).ok
     report = _drain(spool, room, clock, rec).drain_once(5.0)
 
-    assert len(report.batches_failed) == 3 and len(report.batches_done) == 1
+    assert len(report.batches_failed) == 3
+    assert len(report.batches_done) == 1
     assert set(_stored(room)) == {"pocket.r1.fact.0", "pocket.r1.fact.2", "pocket.r2.fact.0"}
     failed = {p.name: json.loads(p.read_text("utf-8")) for p in sorted(spool.failed_dir.iterdir())}
     first = failed[f"{report.batches_failed[0]}.json"]
-    assert "pocket.r1.fact.1" in first["reason"] and "refused" in first["reason"]
+    assert "pocket.r1.fact.1" in first["reason"]
+    assert "refused" in first["reason"]
     assert all("otters" not in json.dumps(body) for body in failed.values())
     codes = rec.codes()
     assert codes.count(dr.APP_INGEST_RECORD_REFUSED) == 3
@@ -738,7 +747,8 @@ def test_status_reports_the_inbox_and_the_counters(
     d = _drain(spool, room, clock, rec)
     assert spool.enqueue("ingest", _pocket("r1", 2)).ok
     before = d.status()
-    assert before["inbox"]["pending"] == 1 and before["last_pass_at"] is None
+    assert before["inbox"]["pending"] == 1
+    assert before["last_pass_at"] is None
     d.drain_once(5.0)
     after = d.status()
     assert after["inbox"] == {
@@ -747,8 +757,10 @@ def test_status_reports_the_inbox_and_the_counters(
         "failed": 0,
         "oldest_pending_age_s": None,
     }
-    assert after["batches_done"] == 1 and after["records_written"] == 2
-    assert after["stalled"] is False and after["stall_code"] is None
+    assert after["batches_done"] == 1
+    assert after["records_written"] == 2
+    assert after["stalled"] is False
+    assert after["stall_code"] is None
     assert after["retention"]["days"] == dr.RETENTION_DAYS
     json.dumps(after)  # serialisable for the daemon's status()
 

@@ -96,11 +96,13 @@ def test_embed_posts_role_named_model_and_one_request():
     tr = FakeTransport()
     client = EmbedderClient("http://gw:8001/", api_key="k", transport=tr)
     res = client.embed("שלום")
-    assert res.vector == [0.1, 0.2] and res.online
+    assert res.vector == [0.1, 0.2]
+    assert res.online
     assert len(tr.calls) == 1
     url, headers, payload, _ = tr.calls[0]
     assert url == "http://gw:8001/v1/embeddings"
-    assert payload["model"] == "gemma2-embed" and payload["input"] == "שלום"
+    assert payload["model"] == "gemma2-embed"
+    assert payload["input"] == "שלום"
     assert headers["Authorization"] == "Bearer k"
     assert "prompt_name" not in payload
 
@@ -111,17 +113,21 @@ def test_prompt_names_are_validated():
     client.embed("q", prompt="Retrieval-query")
     assert tr.calls[0][2]["prompt_name"] == "Retrieval-query"
     res = client.embed("q", prompt="Query")  # the lane refuses this; never sent
-    assert res.vector is None and len(tr.calls) == 1
+    assert res.vector is None
+    assert len(tr.calls) == 1
 
 
 def test_unreachable_is_offline_with_reason_not_raised():
     tr = FakeTransport(error=OSError("connection refused"))
     client = EmbedderClient("http://gw", api_key="secretkey", transport=tr)
     res = client.embed("x")
-    assert res.vector is None and not res.online and res.reason
+    assert res.vector is None
+    assert not res.online
+    assert res.reason
     assert "secretkey" not in res.reason
     assert client.state()["online"] is False
-    assert client.transitions and client.transitions[-1][0] == "offline"
+    assert client.transitions
+    assert client.transitions[-1][0] == "offline"
 
 
 @pytest.mark.parametrize(
@@ -130,7 +136,8 @@ def test_unreachable_is_offline_with_reason_not_raised():
 def test_malformed_reply_is_offline(reply):
     client = EmbedderClient("http://gw", transport=FakeTransport(reply=reply))
     res = client.embed("x")
-    assert res.vector is None and res.reason
+    assert res.vector is None
+    assert res.reason
 
 
 def test_state_comes_from_last_real_call_and_transitions_recorded():
@@ -159,7 +166,8 @@ def test_reprobe_is_bounded_and_only_when_stale():
     now[0] += 31
     tr.error = None
     assert client.maybe_reprobe() is True  # stale + offline -> probe
-    assert len(tr.calls) == 2 and client.state()["online"] is True
+    assert len(tr.calls) == 2
+    assert client.state()["online"] is True
     assert client.maybe_reprobe() is False  # fresh again, and online
 
 
@@ -256,7 +264,9 @@ def test_default_transport_refuses_a_302_and_never_resends_the_key(monkeypatch):
     monkeypatch.setattr(vectors, "_REDIRECT_REFUSING_OPENER", _opener(handler))
     client = EmbedderClient("http://gw:8001", api_key="secretkey")
     res = client.embed("x")
-    assert res.vector is None and not res.online and res.reason
+    assert res.vector is None
+    assert not res.online
+    assert res.reason
     assert "secretkey" not in res.reason
     assert len(handler.requests) == 1, "no second request follows the Location header"
     assert handler.requests[0][0] == "http://gw:8001/v1/embeddings"
@@ -273,7 +283,9 @@ def test_default_transport_refuses_an_oversized_body(monkeypatch):
     monkeypatch.setattr(vectors, "_REDIRECT_REFUSING_OPENER", _opener(handler))
     client = EmbedderClient("http://gw", api_key="k")
     res = client.embed("x")
-    assert res.vector is None and not res.online and res.reason
+    assert res.vector is None
+    assert not res.online
+    assert res.reason
     assert client.state()["online"] is False
 
 
@@ -284,4 +296,5 @@ def test_default_transport_accepts_a_realistic_embedding(monkeypatch):
     handler = _Handler(200, body=body)
     monkeypatch.setattr(vectors, "_REDIRECT_REFUSING_OPENER", _opener(handler))
     res = EmbedderClient("http://gw", api_key="k").embed("x")
-    assert res.online and len(res.vector) == 768
+    assert res.online
+    assert len(res.vector) == 768

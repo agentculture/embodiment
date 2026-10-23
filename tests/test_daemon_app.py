@@ -5744,7 +5744,8 @@ class TestTextTurns:
         assert pocket["date"] == "2026-09-30"
         assert pocket["text"] == POCKET_TEXT
         assert news["source"] == "newspaper"
-        assert news["start"] is None and news["end"] is None
+        assert news["start"] is None
+        assert news["end"] is None
         assert news["date"] == "2026-10-01"
         assert news["link"] == "https://example.invalid/bridge"
         assert len(endpoint.played) == played_before, "a typed turn reached the speaker"
@@ -5771,7 +5772,8 @@ class TestTextTurns:
         )
         played = len(endpoint.played)
         answer = h.app.controls().chat("מה עם הלוטרות?")
-        assert answer["ok"] is True and answer["sources"] == []
+        assert answer["ok"] is True
+        assert answer["sources"] == []
         h.clear()
 
         held.land()
@@ -5903,8 +5905,10 @@ class TestTextTurns:
 
         assert h.app.controls().chat("second")["ok"] is True
         first = log[0]
-        assert first[0] == "acquire" and 0 < first[1] <= 0.2 + 1e-9, log
-        assert log.index("user") > 0 and log[-1] == "release", log
+        assert first[0] == "acquire", log
+        assert 0 < first[1] <= 0.2 + 1e-9, log
+        assert log.index("user") > 0, log
+        assert log[-1] == "release", log
         # Held without a gap from the first acquire to the last release: a voice
         # turn can never slip in between the user turn and the assistant turn.
         depth = 0
@@ -5930,7 +5934,8 @@ class TestTextTurns:
         assert isinstance(answer["turn_serial"], int)
         assert answer["turn_serial"] == chat["turn_serial"] + 1
         refused = h.app.controls().clip(b"not audio", None)
-        assert refused["ok"] is False and refused["turn_serial"] is None
+        assert refused["ok"] is False
+        assert refused["turn_serial"] is None
 
     def test_status_reports_the_s2s_role_by_name_only(self, harness: Any) -> None:
         h, _ = self._build(harness, config=AppConfig(poll_interval_s=0.01, s2s_role="s2s"))
@@ -6017,7 +6022,8 @@ class TestTheDrainWorker:
         order.clear()
         report = h.app.close(deadline=2.0)
         assert order[0] == "summary", order
-        assert "drain" in order and "memory" in order, order
+        assert "drain" in order, order
+        assert "memory" in order, order
         assert order.index("drain") < order.index("backfill") < order.index("memory"), order
         assert report.drain_stopped is True
         assert memory.backfill_started == 1
@@ -6449,7 +6455,8 @@ class TestTheRecallBoundIsDerived:
         h.app.run_turn(SPEECH)
         assert memory.deadlines == [0.7, 0.7]
         recall = h.app.status()["recall"]
-        assert recall["deadline_s"] == 0.7 and recall["deadline_derived"] is False
+        assert recall["deadline_s"] == 0.7
+        assert recall["deadline_derived"] is False
 
     def test_keyword_mode_recalls_under_todays_bound(self, harness: Any) -> None:
         from embodiment import memory as memory_module
@@ -6518,14 +6525,18 @@ class TestTheRecallBoundIsDerived:
             h.app.run_turn(SPEECH)
         assert h.ledger_codes().count(code) == 1
         warning = h.app.status()["recall"]["store_warning"]
-        assert warning and "400" in warning and "measured" in warning
+        assert warning
+        assert "400" in warning
+        assert "measured" in warning
 
         memory.active = 700
         for _ in range(3):
             h.app.run_turn(SPEECH)
         assert h.ledger_codes().count(code) == 2
         warning = h.app.status()["recall"]["store_warning"]
-        assert warning and "600" in warning and "p90" in warning
+        assert warning
+        assert "600" in warning
+        assert "p90" in warning
 
         memory.active = 24
         h.app.run_turn(SPEECH)
@@ -6538,4 +6549,5 @@ class TestTheRecallBoundIsDerived:
         for text in app_module.RECALL_STORE_WARNINGS.values():
             lowered = text.lower()
             assert "one rig" in lowered
-            assert "will fail" not in lowered and "always" not in lowered
+            assert "will fail" not in lowered
+            assert "always" not in lowered
