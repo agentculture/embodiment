@@ -133,6 +133,7 @@ __all__ = [
     "DEFAULT_CLIP_TIMEOUT_S",
     "TEXT_BODY_MAX_BYTES",
     "CLIP_READ_DEADLINE_S",
+    "CLIP_UPLINK_FLOOR_BYTES_PER_S",
     "ACCESS_STREAM_MAX_S",
     "LENGTH_REQUIRED_CODE",
     "TEXT_REFUSED_CODE",
@@ -208,14 +209,19 @@ MAX_CONTROL_INFLIGHT = 8
 
 # ── the text-and-clip routes (task t10): each clock named for what it bounds ──
 
-#: Bounds the recall inside one chat turn. Mirrors ``embodiment.memory.DEFAULT_DEADLINE``
-#: (0.25 s; a test pins the equality) - copied, not imported, so this module does not
-#: load the memory layer.
+#: How long one chat turn waits for its recall before the first completion: the head
+#: start (``recall_events.DEFAULT_HEAD_START_S``), which mirrors
+#: ``embodiment.memory.DEFAULT_DEADLINE`` (0.25 s; a test pins the equality) - copied,
+#: not imported, so this module does not load the memory layer. The recall itself runs
+#: alongside the completion under the daemon's derived bound (t23,
+#: ``daemon.app.derive_recall_deadline``, capped under one completion), so it adds
+#: nothing serial past this.
 CHAT_RECALL_S = 0.25
 
-#: Bounds ONE ``senses`` completion. A **judgement call**, unmeasured until t21: a
-#: spoken-length reply from the 26B-A4B speaker is seconds; 30 s is the point past which
-#: the operator has stopped waiting, not a prediction of the typical case.
+#: Bounds ONE ``senses`` completion. A **judgement call** on where the operator has
+#: stopped waiting, now checked against a measurement: whole-completion time at
+#: ``max_tokens`` 200 was median 3983 ms, p90 4337, max 5085 (n = 30, lapse l5 in
+#: ``docs/live-test-results/2026-10-23-recall-gemma2.md``), so 30 s does not censor it.
 CHAT_COMPLETION_S = 30.0
 
 #: How many completions one chat request may cost: the turn's reply, plus the second one
@@ -243,10 +249,14 @@ DEFAULT_CLIP_TIMEOUT_S = STT_DEADLINE_S + DEFAULT_CHAT_TIMEOUT_S + CONTROL_SLACK
 #: turn a 4000-character CJK message into a 413 instead of the text layer's own refusal.
 TEXT_BODY_MAX_BYTES = MAX_TEXT_CHARS * 4 + 1024
 
+#: The slowest uplink a clip upload is sized for: a phone on a poor day. A
+#: **judgement call**, in bytes per second.
+CLIP_UPLINK_FLOOR_BYTES_PER_S = 140_000
+
 #: Bounds reading a clip body off the socket, in total. The per-recv socket timeout
-#: (30 s) alone lets a client trickle ``MAX_CLIP_BYTES`` for hours. 120 s is
-#: 16 MiB at ~140 KB/s - a phone uplink on a poor day. A **judgement call**.
-CLIP_READ_DEADLINE_S = 120.0
+#: (30 s) alone lets a client trickle ``MAX_CLIP_BYTES`` for hours. Derived: the byte
+#: cap at the uplink floor (11 585 536 B / 140 KB/s = ~82.8 s; it was 120 s for 16 MiB).
+CLIP_READ_DEADLINE_S = MAX_CLIP_BYTES / CLIP_UPLINK_FLOOR_BYTES_PER_S
 
 #: How long an Access-admitted stream may stay open when the verifier reported no
 #: ``exp``. Conservative by choice: an assertion of unknown lifetime is not trusted to

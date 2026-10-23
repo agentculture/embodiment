@@ -1558,6 +1558,14 @@ class TestTheBoundsAreDerivedNotPicked:
         assert s.DEFAULT_SPEAK_TIMEOUT_S > tt.SPEAK_DEADLINE_S
         assert s.DEFAULT_CLIP_TIMEOUT_S > tt.STT_DEADLINE_S + s.DEFAULT_CHAT_TIMEOUT_S
 
+    def test_the_clip_read_deadline_follows_the_byte_cap(self) -> None:
+        from embodiment.daemon import text_turns as tt
+
+        assert s.CLIP_READ_DEADLINE_S == pytest.approx(
+            tt.MAX_CLIP_BYTES / s.CLIP_UPLINK_FLOOR_BYTES_PER_S
+        )
+        assert s.ServerConfig().clip_read_deadline_s == s.CLIP_READ_DEADLINE_S
+
     def test_the_text_body_bound_fits_the_longest_message_at_four_bytes_a_character(self) -> None:
         from embodiment.daemon import text_turns as tt
 

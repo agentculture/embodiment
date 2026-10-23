@@ -11,15 +11,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 Cloudflare-Access-protected hostname as well as by voice on the rig, and she
 can remember facts a producer (Pocket recordings, culture-rules' daily
 newspaper) enqueues through an embodiment-owned verb. Accepted on **one rig**;
-its value is **unmeasured**. Still unmeasured, stated with the same weight as
-what shipped: recall hit rate and latency, keyword versus semantic (t18's
-`docs/live-test-results/<date>-recall-gemma2.md` is forthcoming, and this entry
-quotes no number from it); the similarity threshold `0.78` (**uncalibrated**);
-the follow-up window (off by default); the `stt` transcription speed behind the
-40 s clip deadline; the 30 s completion bound behind the chat timeout;
-whether the `stt` lane accepts the browser's MediaRecorder webm/mp4 output, and
-the duration cap for those containers; and the load on the `gemma2-embed`
-host (orin). The rig was re-probed on 2026-10-23 (roles resolve by name; re-probe
+its value is **unmeasured**. Recall was measured once on this rig by t18
+(`docs/live-test-results/2026-10-23-recall-gemma2.md`, aggregates only,
+model-written queries) and t23 applied it (see Changed). Still unmeasured,
+stated with the same weight as what shipped: precision against a realistic
+distractor pool; the follow-up window (off by default); whether the `stt` lane
+accepts the browser's MediaRecorder webm/mp4 output, and the duration cap for
+those containers; and the load on the `gemma2-embed` host (orin). The rig was re-probed on 2026-10-23 (roles resolve by name; re-probe
 before relying): `senses` and `worker` ready but proxied, `gemma2-embed`
 (`google/embeddinggemma-2`) ready and proxied, `stt` and `tts` ready and local,
 `cortex` not ready.
@@ -37,7 +35,7 @@ before relying): `senses` and `worker` ready but proxied, `gemma2-embed`
   refused. Configured by `EMBODIMENT_ACCESS_TEAM_DOMAIN`, `EMBODIMENT_ACCESS_AUD`
   and `EMBODIMENT_ACCESS_EMAILS`, all three or none.
 - **Semantic recall** through the `gemma2-embed` role over a 0600 vector cache,
-  with a similarity threshold (`0.78`, uncalibrated), a backfill, and a
+  with a similarity threshold (`0.715`, provisional — see Changed), a backfill, and a
   one-flag rollback to keyword recall (`EMBODIMENT_RECALL_MODE=keyword`).
   Every recalled fact is cited by its source; background recall arrives as
   events, with a follow-up that is off by default.
@@ -55,6 +53,28 @@ before relying): `senses` and `worker` ready but proxied, `gemma2-embed`
   Recall is semantic by default; the keyword mode and Hebrew exact-substring
   fallback remain the rollback.
 - `CLAUDE.md`'s rig table and code map describe the shipped state.
+- **t23 (deviation d5, operator-approved), acting on t18's measurement**
+  (`docs/live-test-results/2026-10-23-recall-gemma2.md`):
+  - The similarity threshold drops from `0.78` to `0.715`: hit@5 39/48
+    (reworded 15/24) with 2/44 false positives, against 27/48 (reworded 3/24)
+    and 0/44. **Provisional** (`SIMILARITY_THRESHOLD_CALIBRATED` stays False):
+    small n, chosen in-sample, one held-out fold at 2/22 (9%), easy negatives.
+  - Background recall (voice and typed) gets its own bound, derived per recall
+    from the active store the last semantic recall scored:
+    `derive_recall_deadline` = embed p90 0.1611 s + 0.13 ms per record + 0.15 s
+    slack, floored at 0.25 s and capped at 3 s (unknown store: the cap). The
+    0.25 s is now only the head start a spoken turn waits; keyword recall keeps
+    0.25 s. `status()["recall"]` reports `deadline_s`, `deadline_derived`,
+    `deadline_cap_s`, `active_records` and `store_warning`, and
+    `app-recall-store-large` is recorded once per crossing of ~400 and ~600
+    active records.
+  - Clips are capped at 60 s (was 300 s); the `stt` clock is
+    10 + 60 × 0.614 = 46.84 s from the measured max transcription speed (was an
+    assumed 10× real time, lapse l3); the byte cap is one minute of 48 kHz
+    16-bit stereo WAV plus 64 KiB (11 585 536 B, was 16 MiB); the clip read
+    deadline follows it (~82.8 s at the 140 KB/s uplink floor, was 120 s). The
+    dashboard recorder stops itself at 59 s.
+  - The 30 s completion bound stays: `senses` measured max 5.1 s (n = 30).
 
 ### Fixed
 

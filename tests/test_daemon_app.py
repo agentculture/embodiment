@@ -6080,3 +6080,269 @@ class TestAccessAndMain:
             assert controls.clip is not None
         finally:
             application.close(deadline=2.0)
+
+
+# ── t23: the recall bound is derived from the store it scores ─────────────────
+
+#: The published measurement (docs/live-test-results/2026-10-23-recall-gemma2.md),
+#: copied here as the evidence the derivation is checked against. Volume table:
+#: active records -> (p90 ms, max ms), n = 92 or 184 calls per size.
+_MEASURED_VOLUME = {
+    25: (166.3, 177.3),
+    200: (195.2, 229.3),
+    400: (221.9, 246.8),
+    600: (239.7, 281.8),
+    800: (287.6, 950.8),
+    1000: (312.5, 420.0),
+}
+#: The one call the doc itself attributes to the lane, not the scoring.
+_MEASURED_OUTLIER = (800, 950.8)
+#: The real 24-record store: semantic recall max 241.4 ms (n = 276).
+_MEASURED_24_MAX_MS = 241.4
+#: senses whole-completion median, max_tokens 200 (n = 30).
+_MEASURED_SENSES_MEDIAN_S = 3.983
+
+
+class FakeCountingMemory(FakeSemanticMemory):
+    """A semantic memory whose status carries RoomMemory's real counter shape.
+
+    Every semantic recall counts one query embed and *active* scored
+    candidates, exactly as ``RoomMemory._semantic_recall`` does, so the daemon
+    can read the store size the last recall enumerated. The deadline each
+    recall was handed is kept.
+    """
+
+    def __init__(self, active: int, *, configured: bool = True, **kwargs: Any) -> None:
+        super().__init__([_pocket_record()], **kwargs)
+        self.active = active
+        self.configured = configured
+        self.deadlines: list[float] = []
+        self.counters = {"recalls": 0, "query_embeds": 0, "cached_hits": 0, "uncached_skipped": 0}
+        self.exceed_next = False
+
+    def recall(self, query: str, *, mode: str = "keyword", **kwargs: Any) -> Any:
+        from embodiment.memory import CODE_DEADLINE_EXCEEDED, RecallResult, _degradation
+
+        self.deadlines.append(kwargs.get("deadline"))
+        if mode == "semantic" and self.configured:
+            self.counters["recalls"] += 1
+            self.counters["query_embeds"] += 1
+            if self.exceed_next:
+                self.exceed_next = False
+                return RecallResult(
+                    ok=False,
+                    records=[],
+                    mode=None,
+                    degradations=(
+                        _degradation("recall", CODE_DEADLINE_EXCEEDED, "synthetic deadline"),
+                    ),
+                )
+            self.counters["cached_hits"] += self.active - 1
+            self.counters["uncached_skipped"] += 1
+        return super().recall(query, mode=mode, **kwargs)
+
+    def status(self) -> dict[str, Any]:
+        out = super().status()
+        out["embedder"] = dict(out["embedder"], configured=self.configured)
+        out["semantic"] = dict(self.counters)
+        return out
+
+
+class TestTheRecallBoundIsDerived:
+    """t23 (d5 amendment): 0.25 s is the head start only; the recall gets its own bound."""
+
+    @staticmethod
+    def derive(*args: Any, **kwargs: Any) -> float:
+        return app_module.derive_recall_deadline(*args, **kwargs)
+
+    def test_the_constants_are_the_published_measurement(self) -> None:
+        assert app_module.RECALL_EMBED_P90_S == pytest.approx(0.1611)
+        assert app_module.RECALL_SCORE_S_PER_RECORD == pytest.approx((286.4 - 156.4) / 1000 / 1000)
+        assert app_module.RECALL_COMFORTABLE_RECORDS == 400
+        assert app_module.RECALL_P90_CEILING_RECORDS == 600
+        assert app_module.RECALL_RESULTS_DOC.endswith("2026-10-23-recall-gemma2.md")
+        assert (Path(__file__).resolve().parent.parent / app_module.RECALL_RESULTS_DOC).is_file()
+
+    def test_it_is_the_embed_plus_the_scoring_plus_the_slack(self) -> None:
+        n = 24
+        expected = (
+            app_module.RECALL_EMBED_P90_S
+            + n * app_module.RECALL_SCORE_S_PER_RECORD
+            + app_module.RECALL_SLACK_S
+        )
+        assert self.derive(n) == pytest.approx(expected)
+        assert self.derive(n) > 0.25, "semantic recall must get more than the head start"
+
+    def test_it_grows_with_the_store_and_stops_at_the_cap(self) -> None:
+        sizes = [0, 24, 400, 600, 1000, 5000, 10**6]
+        bounds = [self.derive(n) for n in sizes]
+        assert bounds == sorted(bounds)
+        assert self.derive(10**6) == app_module.RECALL_DEADLINE_CAP_S
+
+    def test_it_covers_every_measured_call_but_the_lane_outlier(self) -> None:
+        assert self.derive(24) * 1000 > _MEASURED_24_MAX_MS
+        for size, (p90, worst) in _MEASURED_VOLUME.items():
+            assert self.derive(size) * 1000 > p90, size
+            if (size, worst) != _MEASURED_OUTLIER:
+                assert self.derive(size) * 1000 > worst, size
+
+    def test_an_unknown_store_is_not_censored_by_a_guess(self) -> None:
+        # Lesson 1: with no observed size, the bound is the cap, never an assumed size.
+        assert self.derive(None) == app_module.RECALL_DEADLINE_CAP_S
+        assert self.derive(-3) == app_module.RECALL_DEADLINE_CAP_S
+
+    def test_keyword_keeps_todays_bound(self) -> None:
+        from embodiment import memory
+
+        for n in (None, 0, 24, 10**6):
+            assert self.derive(n, semantic=False) == memory.DEFAULT_DEADLINE
+        assert self.derive(0) >= memory.DEFAULT_DEADLINE
+
+    def test_the_cap_fits_inside_one_completion(self) -> None:
+        from embodiment.http import server
+
+        cap = app_module.RECALL_DEADLINE_CAP_S
+        # A recall that lands after the first completion can only take the late
+        # path, so a longer bound buys the reply nothing; and the chat route's
+        # bound counts the recall alongside a completion, never after it.
+        assert cap < _MEASURED_SENSES_MEDIAN_S
+        assert cap <= server.CHAT_COMPLETION_S
+        # The cap is only reached far beyond the measured range (1000 records).
+        reach = (
+            cap - app_module.RECALL_EMBED_P90_S - app_module.RECALL_SLACK_S
+        ) / app_module.RECALL_SCORE_S_PER_RECORD
+        assert reach > 10 * max(_MEASURED_VOLUME)
+
+    def test_the_head_start_is_still_the_old_deadline(self) -> None:
+        from embodiment import memory
+        from embodiment.daemon.recall_events import DEFAULT_HEAD_START_S
+
+        assert DEFAULT_HEAD_START_S == memory.DEFAULT_DEADLINE == 0.25
+        assert AppConfig().recall_deadline is None, "the default recall bound is derived"
+
+    def test_a_voice_turn_learns_the_store_and_uses_the_derived_bound(self, harness: Any) -> None:
+        memory = FakeCountingMemory(24)
+        h = _t16_harness(harness, memory=memory)
+        h.app.attach_ear("host", FakeEndpoint())
+
+        h.app.run_turn(SPEECH)
+        h.app.run_turn(SPEECH)
+
+        assert memory.deadlines[0] == app_module.RECALL_DEADLINE_CAP_S
+        assert memory.deadlines[1] == pytest.approx(self.derive(24))
+        recall = h.app.status()["recall"]
+        assert recall["active_records"] == 24
+        assert recall["deadline_s"] == pytest.approx(self.derive(24))
+        assert recall["deadline_derived"] is True
+        assert recall["store_warning"] is None
+
+    def test_a_typed_turn_uses_the_derived_bound_too(self, harness: Any) -> None:
+        memory = FakeCountingMemory(200)
+        h, _ = TestTextTurns()._build(harness, memory=memory)
+
+        h.app.controls().chat("מה עם הלוטרות?")
+        h.app.controls().chat("ומה עוד?")
+
+        assert memory.deadlines[-1] == pytest.approx(self.derive(200))
+        assert 0.25 not in memory.deadlines
+
+    def test_an_explicit_bound_still_wins(self, harness: Any) -> None:
+        memory = FakeCountingMemory(24)
+        h = _t16_harness(
+            harness, memory=memory, config=AppConfig(poll_interval_s=0.01, recall_deadline=0.7)
+        )
+        h.app.attach_ear("host", FakeEndpoint())
+        h.app.run_turn(SPEECH)
+        h.app.run_turn(SPEECH)
+        assert memory.deadlines == [0.7, 0.7]
+        recall = h.app.status()["recall"]
+        assert recall["deadline_s"] == 0.7 and recall["deadline_derived"] is False
+
+    def test_keyword_mode_recalls_under_todays_bound(self, harness: Any) -> None:
+        from embodiment import memory as memory_module
+
+        memory = FakeCountingMemory(24, mode="lexical")
+        h = _t16_harness(
+            harness,
+            memory=memory,
+            config=AppConfig(poll_interval_s=0.01, recall_mode=app_module.RECALL_MODE_KEYWORD),
+        )
+        h.app.attach_ear("host", FakeEndpoint())
+        h.app.run_turn(SPEECH)
+        assert memory.deadlines[0] == memory_module.DEFAULT_DEADLINE
+        assert h.app.status()["recall"]["deadline_s"] == memory_module.DEFAULT_DEADLINE
+
+    def test_a_store_with_no_semantic_surface_keeps_todays_bound(self, harness: Any) -> None:
+        from embodiment import memory as memory_module
+
+        memory = FakeCountingMemory(24, configured=False)
+        h = _t16_harness(harness, memory=memory)
+        h.app.attach_ear("host", FakeEndpoint())
+        h.app.run_turn(SPEECH)
+        assert memory.deadlines[0] == memory_module.DEFAULT_DEADLINE
+
+    def test_a_missed_deadline_forgets_the_size_so_the_next_recall_is_not_censored(
+        self, harness: Any
+    ) -> None:
+        memory = FakeCountingMemory(24)
+        h = _t16_harness(harness, memory=memory)
+        h.app.attach_ear("host", FakeEndpoint())
+        h.app.run_turn(SPEECH)
+        h.app.run_turn(SPEECH)
+        assert h.app.status()["recall"]["active_records"] == 24
+        memory.exceed_next = True
+        h.app.run_turn(SPEECH)
+        assert h.app.status()["recall"]["active_records"] is None
+        h.app.run_turn(SPEECH)
+        assert memory.deadlines[-1] == app_module.RECALL_DEADLINE_CAP_S
+
+    def test_concurrent_counts_are_not_read_as_a_size(self, harness: Any) -> None:
+        memory = FakeCountingMemory(24)
+        original = memory.recall
+
+        def doubled(query: str, **kwargs: Any) -> Any:
+            # Another recall's embed landed inside this one's window.
+            memory.counters["query_embeds"] += 1
+            return original(query, **kwargs)
+
+        memory.recall = doubled  # type: ignore[method-assign]
+        h = _t16_harness(harness, memory=memory)
+        h.app.attach_ear("host", FakeEndpoint())
+        h.app.run_turn(SPEECH)
+        assert h.app.status()["recall"]["active_records"] is None
+
+    def test_the_store_warning_is_recorded_once_per_crossing(self, harness: Any) -> None:
+        memory = FakeCountingMemory(24)
+        h = _t16_harness(harness, memory=memory)
+        h.app.attach_ear("host", FakeEndpoint())
+        code = app_module.APP_RECALL_STORE_LARGE
+
+        h.app.run_turn(SPEECH)
+        assert code not in h.ledger_codes()
+
+        memory.active = 450
+        for _ in range(3):
+            h.app.run_turn(SPEECH)
+        assert h.ledger_codes().count(code) == 1
+        warning = h.app.status()["recall"]["store_warning"]
+        assert warning and "400" in warning and "measured" in warning
+
+        memory.active = 700
+        for _ in range(3):
+            h.app.run_turn(SPEECH)
+        assert h.ledger_codes().count(code) == 2
+        warning = h.app.status()["recall"]["store_warning"]
+        assert warning and "600" in warning and "p90" in warning
+
+        memory.active = 24
+        h.app.run_turn(SPEECH)
+        assert h.app.status()["recall"]["store_warning"] is None
+        memory.active = 450
+        h.app.run_turn(SPEECH)
+        assert h.ledger_codes().count(code) == 3, "a fresh crossing records again"
+
+    def test_the_warning_wording_does_not_overclaim(self) -> None:
+        for text in app_module.RECALL_STORE_WARNINGS.values():
+            lowered = text.lower()
+            assert "one rig" in lowered
+            assert "will fail" not in lowered and "always" not in lowered

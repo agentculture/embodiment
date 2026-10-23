@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { AudioControls, SpeakButton } from "./AudioControls";
+import { AudioControls, MAX_CLIP_SECONDS, RECORD_LIMIT_MS, SpeakButton } from "./AudioControls";
 
 const resp = (status: number, body: unknown, extra: Partial<Response> = {}) =>
   ({ ok: status < 400, status, json: async () => body, blob: async () => new Blob(["RIFFxxxx"], { type: "audio/wav" }), ...extra }) as Response;
@@ -95,6 +95,30 @@ describe("AudioControls record", () => {
     const init = fetchFn.mock.calls[0][1];
     expect((init?.headers as Record<string, string>)["Content-Type"]).toBe("audio/webm;codecs=opus");
     expect(stopTrack).toHaveBeenCalled();
+  });
+  it("stops by itself before the server's clip cap, so a forgotten recording still lands", async () => {
+    const { stopTrack } = stubRecorder();
+    const held: Array<() => void> = [];
+    const cleared: unknown[] = [];
+    const realSet = globalThis.setTimeout;
+    const realClear = globalThis.clearTimeout;
+    vi.stubGlobal("setTimeout", ((fn: () => void, ms?: number) => {
+      if (ms === RECORD_LIMIT_MS) { held.push(fn); return 4242 as unknown as ReturnType<typeof setTimeout>; }
+      return realSet(fn, ms);
+    }) as typeof setTimeout);
+    vi.stubGlobal("clearTimeout", ((id?: ReturnType<typeof setTimeout>) => { cleared.push(id); realClear(id); }) as typeof clearTimeout);
+    const fetchFn = vi.fn(async (_u: RequestInfo | URL, _i?: RequestInit) => resp(200, { ok: true, transcript: "t", reply: "r" }));
+    const onReply = vi.fn();
+    render(<AudioControls secret="k" onReply={onReply} clientOptions={{ fetchFn }} />);
+    await userEvent.click(screen.getByRole("button", { name: /record/i }));
+    await screen.findByRole("button", { name: /stop/i });
+    expect(MAX_CLIP_SECONDS).toBe(60);
+    expect(RECORD_LIMIT_MS).toBeLessThan(MAX_CLIP_SECONDS * 1000);
+    expect(held).toHaveLength(1);
+    act(() => held[0]());
+    await waitFor(() => expect(onReply).toHaveBeenCalledWith({ transcript: "t", reply: "r" }));
+    expect(stopTrack).toHaveBeenCalled();
+    expect(cleared).toContain(4242);
   });
   it("alerts when the microphone is denied or unavailable", async () => {
     Object.defineProperty(navigator, "mediaDevices", { value: { getUserMedia: async () => { throw new Error("denied"); } }, configurable: true });

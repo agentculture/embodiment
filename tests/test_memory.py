@@ -3084,9 +3084,18 @@ class TestSemanticRecallOverCachedVectors:
         assert [r["id"] for r in a.records] == ["gwen-a"]
         assert [r["id"] for r in b.records] == ["gwen-a", "gwen-b"]
 
-    def test_the_default_threshold_sits_between_the_measured_pairs(self) -> None:
-        # Measured 2026-10-23, n=1 pair: unrelated ceiling 0.715, related floor 0.891.
-        assert 0.715 < mem.DEFAULT_SIMILARITY_THRESHOLD < 0.891
+    def test_the_default_threshold_is_the_published_calibration(self) -> None:
+        # docs/live-test-results/2026-10-23-recall-gemma2.md, threshold sweep:
+        # (threshold, hit@5 of 48 labelled, false positives of 44 unrelated).
+        sweep = {0.70: (40, 7), 0.715: (39, 2), 0.72: (34, 1), 0.78: (27, 0)}
+        chosen = mem.DEFAULT_SIMILARITY_THRESHOLD
+        assert chosen == 0.715
+        # The selection rule the doc states: the highest hit@5 with false
+        # positives at most 5% of the 44 unrelated queries.
+        allowed = [t for t, (_, fp) in sweep.items() if fp / 44 <= 0.05]
+        assert chosen == max(allowed, key=lambda t: (sweep[t][0], -t))
+        assert sweep[chosen][0] > sweep[0.78][0], "the old default turned away paraphrases"
+        # Provisional: n is small, chosen in-sample, and one held-out fold was 2/22 (9%).
         assert mem.SIMILARITY_THRESHOLD_CALIBRATED is False
 
     def test_top_k_applies_after_the_threshold(self, tmp_path: Path) -> None:

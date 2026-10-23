@@ -35,18 +35,42 @@ Known from the integration runs, not yet measured:
   (`EMBODIMENT_RECALL_MODE=keyword`); eidetic's keyword tokeniser is ASCII-only,
   so on that rollback Hebrew recall runs on an exact-substring fallback
   (deviation `d5`). The dashboard shows the recall mode actually in effect.
-  **No hit rate or latency is claimed for either mode:** the keyword-versus-semantic
-  measurement is forthcoming in `docs/live-test-results/<date>-recall-gemma2.md`
-  and this README quotes nothing from it.
-- The similarity threshold (`0.78`) is **uncalibrated**.
+
+Measured once, on this rig, in
+[`docs/live-test-results/2026-10-23-recall-gemma2.md`](docs/live-test-results/2026-10-23-recall-gemma2.md)
+(aggregates only; one person's store of 24 records; queries written by a model,
+not spoken by a person — none of it is a measurement of real use):
+
+- **Recall, keyword versus semantic.** Close queries hit@5 18/24 keyword versus
+  24/24 semantic; reworded queries 1/24 keyword versus 15/24 semantic at the
+  shipped threshold (n = 24 each).
+- **The similarity threshold is `0.715`, and provisional.** It was chosen on the
+  data it was scored on, for the highest hit@5 with at most 5% false positives:
+  hit@5 39/48, false positives 2/44 (n = 48 labelled, 44 unrelated). One
+  held-out fold reached 2/22 (9%), and the unrelated queries were easy
+  negatives, so that rate is a floor. Precision against a realistic distractor
+  pool (newspaper text) is not measured.
+- **The recall bound is derived from the store it scores**: the query embed's
+  p90 (161 ms, n = 30) plus 0.13 ms per active record plus 0.15 s, capped at
+  3 s. A spoken turn still waits at most 0.25 s for memory before answering.
+  Status warns past about 400 active records (the largest store measured with
+  no recall over 0.25 s) and past about 600 (where p90 crossed it).
+- **Clips are capped at 60 s**, and the 46.8 s `stt` clock is derived from the
+  measured transcription speed: at most 0.614 s per audio second (n = 28
+  synthetic clips of 1 to 8.8 s; speed only, not accuracy, so a 60 s clip is an
+  extrapolation). A `senses` completion took 4.0 s median and 5.1 s at most
+  (n = 30), well inside the 30 s completion bound.
+
+Still not measured:
+
 - The follow-up window for a late recall is off by default and unmeasured.
-- The `stt` transcription speed behind the 40 s clip deadline, the 30 s
-  completion bound behind the chat timeout, whether the `stt` lane accepts the
-  browser's MediaRecorder webm/mp4 output (and the duration cap for those
-  containers), and the load on the `gemma2-embed` host (orin) are all unmeasured.
-- The rig was re-probed on 2026-10-23: `senses`, `worker` and `gemma2-embed` are
-  ready but proxied; `stt` and `tts` are ready and local. Roles resolve by name;
-  re-probe before relying on this.
+- Whether the `stt` lane accepts the browser's MediaRecorder webm/mp4 output
+  (and the duration cap for those containers), and the load on the
+  `gemma2-embed` host (orin).
+
+The rig was re-probed on 2026-10-23: `senses`, `worker` and `gemma2-embed` are
+ready but proxied; `stt` and `tts` are ready and local. Roles resolve by name;
+re-probe before relying on this.
 
 Everything that used to live here — the strategist tier, the configuration
 lane, the muse, drones, the example hosts and the old live-test results — is

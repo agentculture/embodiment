@@ -213,7 +213,7 @@ the ``gemma2-embed`` role named explicitly (``embodiment.vectors``):
   and counted (``status()["semantic"]["uncached_skipped"]``); the bounded
   background backfill (:meth:`RoomMemory.start_backfill`) embeds it.
 * **Nothing relevant means nothing returned.** Candidates under the similarity
-  threshold (:data:`DEFAULT_SIMILARITY_THRESHOLD`, uncalibrated) are dropped;
+  threshold (:data:`DEFAULT_SIMILARITY_THRESHOLD`, provisionally calibrated) are dropped;
   :attr:`RecallResult.relevance` carries the best similarity scored either way.
 * **Keyword is the rollback.** ``keyword`` never touches the embedder; a missing,
   offline or failing embedder demotes ``semantic`` to the keyword path with one
@@ -443,13 +443,16 @@ SEMANTIC_MODE = "semantic"
 QUERY_PROMPT = PROMPT_NAMES[0]
 DOCUMENT_PROMPT = PROMPT_NAMES[1]
 
-#: Minimum cosine similarity a candidate needs to be returned. **UNCALIBRATED.**
-#: Chosen conservatively from ONE measured pair per side (2026-10-23): above the
-#: unrelated ceiling seen with or without prompts (0.663 / 0.715) and below the
-#: related floor with prompts (0.891) — roughly the midpoint of the prompted
-#: pair. Plan task t18 calibrates it on a labelled set and publishes its n;
-#: until then this number is a guess with a stated basis, not a measurement.
-DEFAULT_SIMILARITY_THRESHOLD = 0.78
+#: Minimum cosine similarity a candidate needs to be returned. **PROVISIONALLY
+#: CALIBRATED** (t18, applied by t23; ``docs/live-test-results/2026-10-23-recall-gemma2.md``):
+#: the highest hit@5 with at most 5% false positives on unrelated queries. At 0.715,
+#: hit@5 39/48 (reworded 15/24) and false positives 2/44 (4.5%); the old 0.78 gave
+#: hit@5 27/48 (reworded 3/24) and 0/44. Provisional because n is small, the value
+#: was chosen on the data it was scored on, and the two-fold cross-check held out
+#: 2/22 and 1/22 false positives (one fold 9%, over the 5% target). The unrelated
+#: queries were easy negatives, so the false-positive rate is a floor, not a
+#: ceiling; the curve has a cliff between 0.70 and 0.72.
+DEFAULT_SIMILARITY_THRESHOLD = 0.715
 SIMILARITY_THRESHOLD_CALIBRATED = False
 
 #: Records embedded per backfill tick. Bounds the load one tick puts on the

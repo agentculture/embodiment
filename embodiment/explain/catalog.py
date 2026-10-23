@@ -65,11 +65,13 @@ absence, never an implication:
 
 Shipped in 0.17.0 and so no longer listed above: Cloudflare Access verification
 (a valid assertion replaces the install secret on the public Host only) and
-semantic recall through the `gemma2-embed` role. Still unmeasured: recall hit
-rate and latency, keyword versus semantic (forthcoming in
-`docs/live-test-results/<date>-recall-gemma2.md`); the `0.78` similarity
-threshold (uncalibrated); the follow-up window; clip transcription speed and
-MediaRecorder webm/mp4 acceptance.
+semantic recall through the `gemma2-embed` role. Measured once on one rig
+(`docs/live-test-results/2026-10-23-recall-gemma2.md`, model-written queries):
+the similarity threshold is `0.715`, provisional (hit@5 39/48, false positives
+2/44, chosen in-sample); the recall bound is derived from the active store,
+capped at 3 s; clips are capped at 60 s with an `stt` clock from the measured
+speed. Still unmeasured: precision against realistic distractors, the
+follow-up window, and MediaRecorder webm/mp4 acceptance.
 
 Hebrew only in v1. One active ear at a time. The realtime session never crosses
 machines: the gateway's `stt` lane must be local.

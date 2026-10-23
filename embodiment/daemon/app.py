@@ -209,6 +209,16 @@ __all__ = [
     "BARGE_IN_STOP_BOUND_S",
     "APP_RECALL_FAILED",
     "APP_RECALL_LEXICAL_BLIND",
+    "APP_RECALL_STORE_LARGE",
+    "RECALL_RESULTS_DOC",
+    "RECALL_EMBED_P90_S",
+    "RECALL_SCORE_S_PER_RECORD",
+    "RECALL_SLACK_S",
+    "RECALL_DEADLINE_CAP_S",
+    "RECALL_COMFORTABLE_RECORDS",
+    "RECALL_P90_CEILING_RECORDS",
+    "RECALL_STORE_WARNINGS",
+    "derive_recall_deadline",
     "ENDPOINT_PLAYBACK_QUIET",
     "APP_CLOSED",
     "APP_EARS_STREAM_ENDED",
@@ -708,6 +718,109 @@ APP_RECALL_FAILED = "app-recall-failed"
 #: search over it can only ever return nothing. See
 #: :meth:`DaemonApp._recall_blind_fallback`.
 APP_RECALL_LEXICAL_BLIND = "app-recall-lexical-blind"
+#: The active store the last semantic recall scored grew past a measured
+#: ceiling (:data:`RECALL_COMFORTABLE_RECORDS`, then
+#: :data:`RECALL_P90_CEILING_RECORDS`). Recorded once per upward crossing, never
+#: per recall; the reason carries the ceiling and the count, nothing else.
+APP_RECALL_STORE_LARGE = "app-recall-store-large"
+
+# ── the recall bound (t23): derived from the quantity it bounds ───────────────
+#
+# 0.25 s used to bound EVERY recall. Since t16 the spoken turn no longer waits
+# on recall — it waits the head start (``recall_events.DEFAULT_HEAD_START_S``,
+# still 0.25 s) and the recall runs in the background — so the 0.25 s bound on
+# the recall itself had become a clock sized against the wrong quantity
+# (lesson 1): at 600 active records it abandoned 6.5% of semantic recalls, at
+# 800 every one. The recall now gets its own bound, derived from what a
+# semantic recall measurably costs: one query embed plus a scoring pass that is
+# linear in the active store. Every number below is from this file:
+
+#: The published measurement every constant in this block cites.
+RECALL_RESULTS_DOC = "docs/live-test-results/2026-10-23-recall-gemma2.md"
+
+#: Seconds. The query embed alone, p90: 161.1 ms (median 156.4, max 163.7,
+#: n = 30). A network quantity (the proxied ``gemma2-embed`` lane), independent
+#: of the store.
+RECALL_EMBED_P90_S = 0.1611
+
+#: Seconds per active record. Scoring is linear in the store: median latency at
+#: 1000 records (286.4 ms) minus the median embed (156.4 ms), over 1000 records
+#: = 0.13 ms (enumeration about a fifth of it, the pure-Python cosine the rest).
+#: An uncached record costs only its enumeration; it is counted at full cost.
+RECALL_SCORE_S_PER_RECORD = (0.2864 - 0.1564) / 1000
+
+#: Seconds above the model for the lane's tail. Covers every measured call's max
+#: over embed-p90-plus-scoring: the largest excess is 129 ms (1000 records, max
+#: 420.0 ms) — except ONE 950.8 ms call at 800 records that the doc attributes to
+#: lane jitter (1 of 1104 calls). A **judgement call** on that margin.
+RECALL_SLACK_S = 0.15
+
+#: Seconds. The most any one recall may take, whatever the store. A recall that
+#: lands after the first completion can no longer go into the reply — only the
+#: late path (a follow-up, OFF by default, or dropped) — so a longer bound buys
+#: the reply nothing: the cap sits under the measured ``senses`` completion
+#: (median 3.983 s, n = 30). The chat route's bound (``server.DEFAULT_CHAT_TIMEOUT_S``)
+#: runs the recall alongside a completion, never after it, so the cap adds nothing
+#: serial to a typed turn. The formula only reaches it beyond ~20 000 active
+#: records, twenty times the largest store measured. An operator-suggested value.
+RECALL_DEADLINE_CAP_S = 3.0
+
+#: Active records. The largest store measured with no call over 0.25 s (400:
+#: max 246.8 ms, 0 of 184) — "comfortable" in the doc's own word.
+RECALL_COMFORTABLE_RECORDS = 400
+#: Active records. Past this the measured p90 crosses 0.25 s (600: p90 239.7 ms
+#: with 12 of 184 calls over; 800: p90 287.6 ms, every call over).
+RECALL_P90_CEILING_RECORDS = 600
+
+#: The status warning per level (1 = past comfortable, 2 = past the p90
+#: ceiling). Counts and ceilings only; one rig, one lane — never a forecast.
+RECALL_STORE_WARNINGS = {
+    1: (
+        "active store past ~400 records, the largest size measured with no recall "
+        "over 0.25 s (one rig); recall latency rises with the store and the derived "
+        "deadline grows with it"
+    ),
+    2: (
+        "active store past ~600 records, where recall p90 measured over 0.25 s "
+        "(one rig); recalls take longer and a slow embed lane lowers this ceiling"
+    ),
+}
+
+
+def derive_recall_deadline(active_records: Optional[int], *, semantic: bool = True) -> float:
+    """The bound on ONE background recall, in seconds, from the store it scores.
+
+    ``semantic``: :data:`RECALL_EMBED_P90_S` + *active_records* ×
+    :data:`RECALL_SCORE_S_PER_RECORD` + :data:`RECALL_SLACK_S`, clamped to
+    [:data:`~embodiment.memory.DEFAULT_DEADLINE`, :data:`RECALL_DEADLINE_CAP_S`].
+    An UNKNOWN size (``None``, negative, not a number) gives the cap: no size has
+    been observed, and a guessed one would censor the recall that could tell us.
+
+    Keyword (``semantic=False``): :data:`~embodiment.memory.DEFAULT_DEADLINE`,
+    today's bound — no embed, and the keyword arm measured 3.3 ms at worst
+    (n = 144), two orders under it. Pure; never raises.
+    """
+    floor = float(memory_module.DEFAULT_DEADLINE)
+    if not semantic:
+        return floor
+    if isinstance(active_records, bool) or not isinstance(active_records, (int, float)):
+        return RECALL_DEADLINE_CAP_S
+    if not math.isfinite(active_records) or active_records < 0:
+        return RECALL_DEADLINE_CAP_S
+    raw = RECALL_EMBED_P90_S + float(active_records) * RECALL_SCORE_S_PER_RECORD + RECALL_SLACK_S
+    return min(RECALL_DEADLINE_CAP_S, max(floor, raw))
+
+
+def _store_level(active_records: Optional[int]) -> int:
+    """0 below the comfortable ceiling, 1 past it, 2 past the p90 ceiling."""
+    if active_records is None:
+        return 0
+    if active_records > RECALL_P90_CEILING_RECORDS:
+        return 2
+    if active_records > RECALL_COMFORTABLE_RECORDS:
+        return 1
+    return 0
+
 
 #: :mod:`embodiment.memory`'s own code for a recall that ran out of time, and
 #: its exact-match mode. Imported rather than written out — unlike the host
@@ -811,9 +924,13 @@ class AppConfig:
     language: str = wire.LANGUAGE
     #: ``True``: a second ear displaces the first. ``False``: it is refused.
     preempt_ear: bool = True
-    #: The recall clock, derived from the quantity it bounds: how long a spoken
-    #: turn may wait for memory before answering without it.
-    recall_deadline: float = 0.25
+    #: The bound on one background recall (voice and typed). ``None``, the
+    #: default, DERIVES it per recall from the store the last semantic recall
+    #: scored (:func:`derive_recall_deadline`, t23). A number pins it — tests,
+    #: or an operator overriding the derivation. How long a spoken turn WAITS
+    #: for memory is a different clock: the head start,
+    #: ``RecallEventsConfig.head_start_s`` (0.25 s).
+    recall_deadline: Optional[float] = None
     recall_top_k: int = 5
     #: :data:`RECALL_MODE_SEMANTIC` (the shipped mode) or
     #: :data:`RECALL_MODE_KEYWORD` (the one-flag rollback). The mode actually
@@ -821,9 +938,9 @@ class AppConfig:
     #: ``status()["recall"]["mode"]`` reports, never this value.
     recall_mode: str = RECALL_MODE_SEMANTIC
     #: The minimum cosine similarity semantic recall returns (c52). Passed to
-    #: :class:`~embodiment.memory.RoomMemory` by :func:`main`. **Uncalibrated**
-    #: (``memory.SIMILARITY_THRESHOLD_CALIBRATED`` is False): plan task t18
-    #: calibrates it on a labelled set.
+    #: :class:`~embodiment.memory.RoomMemory` by :func:`main`. **Provisionally
+    #: calibrated** by t18 (0.715; ``memory.SIMILARITY_THRESHOLD_CALIBRATED`` stays
+    #: False — small n, in-sample; see :data:`RECALL_RESULTS_DOC`).
     similarity_threshold: float = memory_module.DEFAULT_SIMILARITY_THRESHOLD
     #: The memory follow-up gates (t13, c60). Both ``None`` = follow-ups OFF:
     #: every late recall is dropped and counted. They are derived later from
@@ -1472,6 +1589,10 @@ class DaemonApp:
         self._recall_archived_hidden = 0
         self._recall_last_ids: tuple[str, ...] = ()
         self._recall_calls = 0
+        #: The active records the last semantic recall scored (t23), or None
+        #: when unknown: never observed, or forgotten after a missed deadline.
+        self._active_records: Optional[int] = None
+        self._store_level = 0
         self._degradation_counts: dict[str, int] = {}
         self._publish_errors = 0
         self._ledger_errors = 0
@@ -3324,7 +3445,7 @@ class DaemonApp:
                 # would then mean "you said it slightly differently".
                 wanted,
                 mode=MEMORY_MODE_EXACT,
-                deadline=self._config.recall_deadline,
+                deadline=self._recall_deadline_now(semantic_configured=False),
                 top_k=FORGET_TEXT_TOP_K,
             )
         except Exception as exc:  # noqa: BLE001  # memory is a seam; a turn never dies on it
@@ -3453,7 +3574,10 @@ class DaemonApp:
         are what tell those two apart.
         """
         started = self._clock()
-        result = self._recall_once(text, self._config.recall_mode, self._config.recall_deadline)
+        configured, before = _semantic_view(_probe(self._memory))
+        deadline = self._recall_deadline_now(configured)
+        result = self._recall_once(text, self._config.recall_mode, deadline)
+        self._observe_store(before, result)
         records = self._records_of(result)
         semantic = getattr(result, "mode", None) == memory_module.RECALL_MODE_SEMANTIC
         relevance = _finite_or_none(getattr(result, "relevance", None)) if semantic else None
@@ -3468,7 +3592,7 @@ class DaemonApp:
         # recall that ACTUALLY ran was lexical — keyword by configuration, or a
         # semantic request the store demoted (embedder down: still blind).
         if not records and not semantic and not _lexical_can_index(text):
-            records = self._recall_blind_fallback(text, started)
+            records = self._recall_blind_fallback(text, started, deadline)
 
         # Belt over braces (d8). ``continuity.recall`` applies eidetic's
         # lifecycle filter, verified by test — but a forgotten fact that comes
@@ -3506,6 +3630,55 @@ class DaemonApp:
             relevance=relevance,
         )
 
+    def _recall_deadline_now(self, semantic_configured: bool) -> float:
+        """The bound the next recall gets: configured, or derived (t23)."""
+        pinned = _finite_or_none(self._config.recall_deadline)
+        if pinned is not None:
+            return pinned
+        semantic = semantic_configured and self._config.recall_mode == RECALL_MODE_SEMANTIC
+        with self._lock:
+            active = self._active_records
+        return derive_recall_deadline(active, semantic=semantic)
+
+    def _observe_store(self, before: Optional[tuple[int, int]], result: Any) -> None:
+        """Learn the active store size from the recall that just ran. Never raises.
+
+        No store scan: the size is read from memory's own semantic counters —
+        one query embed and one ``cached_hits + uncached_skipped`` bump per
+        scored recall, the number of active records it enumerated. A sample is
+        taken only when THIS recall scored (mode ``semantic``) and exactly one
+        embed happened in its window; a concurrent recall's counts are not read
+        as a size. A missed deadline forgets the size, so the next recall gets
+        the cap and measures again instead of being censored by a stale count.
+        """
+        # Nothing here can raise: _probe and _semantic_view never do, and the
+        # degradations are the ones _recall_once already iterated.
+        if any(
+            getattr(d, "code", "") == MEMORY_DEADLINE_EXCEEDED
+            for d in getattr(result, "degradations", ()) or ()
+        ):
+            with self._lock:
+                self._active_records = None
+            return
+        if before is None or getattr(result, "mode", None) != RECALL_MODE_SEMANTIC:
+            return
+        _, after = _semantic_view(_probe(self._memory))
+        if after is None or after[0] - before[0] != 1:
+            return
+        active = after[1] - before[1]
+        if active < 0:
+            return
+        with self._lock:
+            self._active_records = active
+            previous, self._store_level = self._store_level, _store_level(active)
+            level = self._store_level
+        for crossed in range(previous + 1, level + 1):
+            ceiling = (RECALL_COMFORTABLE_RECORDS, RECALL_P90_CEILING_RECORDS)[crossed - 1]
+            self._record(
+                APP_RECALL_STORE_LARGE,
+                f"active store {active} records, past the measured {ceiling}",
+            )
+
     def _recall_once(self, query: str, mode: str, deadline: float) -> Any:
         """One bounded call into memory. Counts and folds; never raises."""
         try:
@@ -3531,7 +3704,7 @@ class DaemonApp:
             self._fold("memory", degradation)
         return result
 
-    def _recall_blind_fallback(self, text: str, started: float) -> list[Any]:
+    def _recall_blind_fallback(self, text: str, started: float, deadline: float) -> list[Any]:
         """The lexical index cannot see this utterance. Say so, then try again.
 
         eidetic's keyword/BM25 tokeniser is ``[a-z0-9]+``
@@ -3555,7 +3728,7 @@ class DaemonApp:
             once=True,
         )
         for word in _fallback_terms(text):
-            remaining = self._config.recall_deadline - (self._clock() - started)
+            remaining = deadline - (self._clock() - started)
             if remaining <= 0:
                 break
             result = self._recall_once(word, MEMORY_MODE_EXACT, remaining)
@@ -4224,6 +4397,8 @@ class DaemonApp:
             ledger_errors = self._ledger_errors
             session = self._session
         semantic_status = _probe(self._memory)
+        with self._lock:
+            active_records, store_level = self._active_records, self._store_level
         return {
             "running": self._started and not self._closed,
             "closed": self._closed,
@@ -4292,7 +4467,14 @@ class DaemonApp:
                 "lexical_fallback_hits": self._recall_fallback_hits,
                 "archived_hidden_total": self._recall_archived_hidden,
                 "last_rendered_ids": list(self._recall_last_ids),
-                "deadline_s": self._config.recall_deadline,
+                # The bound the NEXT recall gets (t23): derived from the store
+                # the last semantic recall scored, unless configured. The turn's
+                # wait for memory is the head start, under recall_events.
+                "deadline_s": self._recall_deadline_now(_semantic_view(semantic_status)[0]),
+                "deadline_derived": _finite_or_none(self._config.recall_deadline) is None,
+                "deadline_cap_s": RECALL_DEADLINE_CAP_S,
+                "active_records": active_records,
+                "store_warning": RECALL_STORE_WARNINGS.get(store_level),
                 "configured_mode": self._config.recall_mode,
                 "semantic": _semantic_available(self._memory),
                 # The embedder IN EFFECT, by role name (t12): configured,
@@ -4584,6 +4766,26 @@ def recall_mode_from_env(value: Optional[str]) -> tuple[str, bool]:
     if raw in RECALL_MODES:
         return raw, True
     return RECALL_MODE_SEMANTIC, False
+
+
+def _semantic_view(status: Optional[dict[str, Any]]) -> tuple[bool, Optional[tuple[int, int]]]:
+    """From ``RoomMemory.status()``: (semantic configured, (query embeds, candidates)).
+
+    *candidates* is ``cached_hits + uncached_skipped`` — every active record a
+    scored recall enumerated. The pair is ``None`` when the counters are absent
+    or not counts. Never raises.
+    """
+    if not isinstance(status, dict):
+        return False, None
+    embedder = status.get("embedder")
+    configured = isinstance(embedder, dict) and embedder.get("configured") is True
+    counters = status.get("semantic")
+    if not isinstance(counters, dict):
+        return configured, None
+    values = [counters.get(k) for k in ("query_embeds", "cached_hits", "uncached_skipped")]
+    if not all(isinstance(v, int) and not isinstance(v, bool) for v in values):
+        return configured, None
+    return configured, (values[0], values[1] + values[2])
 
 
 def _probe(subject: Any) -> Optional[dict[str, Any]]:
