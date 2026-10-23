@@ -247,9 +247,12 @@ operator's decisions, recorded in the spec:
   written to disk; transcripts go to a private, size-bounded per-session log.
 - **Loopback is not authentication.** A Cloudflare tunnel delivers remote
   requests from `cloudflared` on 127.0.0.1. Every state-changing request — and
-  the event stream, which carries the transcript — needs the install secret, a
-  Host and Origin allow-list, and a valid Access assertion when the Host is the
-  public hostname.
+  the event stream, which carries the transcript — needs a Host and Origin
+  allow-list **and** the install secret. The one exception is the public Host
+  (the one configured with `--public-hostname` / `EMBODIMENT_PUBLIC_HOSTNAME`)
+  with the Access env set: there a valid Cloudflare Access assertion for an
+  allow-listed email replaces the secret. With the Access env unset, no Host
+  is public.
 - **Recalled memory is untrusted data.** The public eidetic pool is writable by
   every agent on this host. Recall enters the prompt at one point, quoted and
   attributed (`KNOWLEDGE_ATTRIBUTION`), never as instructions.

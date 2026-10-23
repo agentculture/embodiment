@@ -2,7 +2,6 @@ import { useEffect, useRef, useState } from "react";
 import type { EventEnvelope } from "../api/events";
 import {
   formatMmSs,
-  isPublicHost,
   parseSources,
   sendChat,
   type ChatClientOptions,
@@ -11,12 +10,10 @@ import {
 import { AudioControls, SpeakButton, type ClipReply } from "./AudioControls";
 
 export interface ChatProps {
-  /** Install secret the page already holds; ignored on the public Host. */
+  /** Install secret the page already holds; sent whenever present (Access replaces it on the public Host). */
   secret?: string;
   /** Reply events from the event stream (kind "reply"). */
   replyEvents?: EventEnvelope<"transcript" | "reply">[];
-  /** Test seam: override the location hostname. */
-  hostname?: string;
   clientOptions?: ChatClientOptions;
   /** Speech-to-speech role the gateway advertises, if any (daemon must expose it). */
   s2sRole?: string;
@@ -81,9 +78,7 @@ function Sources({ sources }: { sources: ChatSource[] }) {
   );
 }
 
-export function Chat({ secret = "", replyEvents = [], hostname, clientOptions, s2sRole }: ChatProps) {
-  const host = hostname ?? (typeof window !== "undefined" ? window.location.hostname : "");
-  const publicHost = isPublicHost(host);
+export function Chat({ secret = "", replyEvents = [], clientOptions, s2sRole }: ChatProps) {
   const [draft, setDraft] = useState("");
   const [messages, setMessages] = useState<Message[]>([]);
   const [degraded, setDegraded] = useState<string | null>(null);
@@ -121,7 +116,7 @@ export function Chat({ secret = "", replyEvents = [], hostname, clientOptions, s
     setBusy(true);
     baselineSeq.current = replyEvents.reduce((mx, e) => Math.max(mx, e.seq), 0);
     setMessages((m) => [...m, { key: `u-${m.length}`, role: "user", text, sources: [] }]);
-    const outcome = await sendChat(text, publicHost ? "" : secret, clientOptions);
+    const outcome = await sendChat(text, secret, clientOptions);
     if (outcome.ok) {
       setDegraded(null);
       if (outcome.value.turnSerial !== null) typedSerials.current.add(outcome.value.turnSerial);
@@ -136,10 +131,12 @@ export function Chat({ secret = "", replyEvents = [], hostname, clientOptions, s
     setBusy(false);
   }
 
-  const wireSecret = publicHost ? "" : secret;
-
-  function onClipReply({ transcript, reply }: ClipReply) {
+  function onClipReply({ transcript, reply, turnSerial }: ClipReply) {
     setDegraded(null);
+    if (baselineSeq.current === null) {
+      baselineSeq.current = replyEvents.reduce((mx, e) => Math.max(mx, e.seq), 0);
+    }
+    if (turnSerial != null) typedSerials.current.add(turnSerial);
     setMessages((m) => [
       ...m,
       { key: `u-${m.length}`, role: "user", text: transcript, sources: [] },
@@ -148,7 +145,7 @@ export function Chat({ secret = "", replyEvents = [], hostname, clientOptions, s
   }
 
   return (
-    <div className="chat" data-public-host={publicHost ? "true" : "false"}>
+    <div className="chat">
       <div className="chat__log">
         {messages.map((m) => (
           <div key={m.key} className="chat__message" data-role={m.role} data-follow-up={m.followUp ? "true" : undefined}>
@@ -157,7 +154,7 @@ export function Chat({ secret = "", replyEvents = [], hostname, clientOptions, s
               {m.text}
             </p>
             {m.role === "assistant" && (
-              <SpeakButton text={m.text} secret={wireSecret} clientOptions={clientOptions} />
+              <SpeakButton text={m.text} secret={secret} clientOptions={clientOptions} />
             )}
             <Sources sources={m.sources} />
           </div>
@@ -180,7 +177,7 @@ export function Chat({ secret = "", replyEvents = [], hostname, clientOptions, s
           Send
         </button>
       </form>
-      <AudioControls secret={wireSecret} onReply={onClipReply} clientOptions={clientOptions} s2sRole={s2sRole} />
+      <AudioControls secret={secret} onReply={onClipReply} clientOptions={clientOptions} s2sRole={s2sRole} />
     </div>
   );
 }

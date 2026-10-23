@@ -55,7 +55,7 @@ describe("AudioControls upload", () => {
     render(<AudioControls secret="" onReply={onReply} clientOptions={{ fetchFn }} />);
     const file = new File(["abc"], "clip.ogg", { type: "audio/ogg" });
     await userEvent.upload(screen.getByLabelText(/upload audio/i), file);
-    await waitFor(() => expect(onReply).toHaveBeenCalledWith({ transcript: "heard", reply: "answer" }));
+    await waitFor(() => expect(onReply).toHaveBeenCalledWith({ transcript: "heard", reply: "answer", turnSerial: null }));
     expect(fetchFn.mock.calls[0][0]).toBe("/api/clip");
     expect(fetchFn.mock.calls[0][1]?.body).toBe(file);
     expect((fetchFn.mock.calls[0][1]?.headers as Record<string, string>)["Content-Type"]).toBe("audio/ogg");
@@ -91,7 +91,7 @@ describe("AudioControls record", () => {
     render(<AudioControls secret="k" onReply={onReply} clientOptions={{ fetchFn }} />);
     await userEvent.click(screen.getByRole("button", { name: /record/i }));
     await userEvent.click(await screen.findByRole("button", { name: /stop/i }));
-    await waitFor(() => expect(onReply).toHaveBeenCalledWith({ transcript: "t", reply: "r" }));
+    await waitFor(() => expect(onReply).toHaveBeenCalledWith({ transcript: "t", reply: "r", turnSerial: null }));
     const init = fetchFn.mock.calls[0][1];
     expect((init?.headers as Record<string, string>)["Content-Type"]).toBe("audio/webm;codecs=opus");
     expect(stopTrack).toHaveBeenCalled();
@@ -116,7 +116,7 @@ describe("AudioControls record", () => {
     expect(RECORD_LIMIT_MS).toBeLessThan(MAX_CLIP_SECONDS * 1000);
     expect(held).toHaveLength(1);
     act(() => held[0]());
-    await waitFor(() => expect(onReply).toHaveBeenCalledWith({ transcript: "t", reply: "r" }));
+    await waitFor(() => expect(onReply).toHaveBeenCalledWith({ transcript: "t", reply: "r", turnSerial: null }));
     expect(stopTrack).toHaveBeenCalled();
     expect(cleared).toContain(4242);
   });

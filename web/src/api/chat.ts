@@ -4,8 +4,9 @@
 // Never throws: every failure is returned as a tagged result carrying only a
 // fixed code, so the caller can render and record the degradation (C3).
 // The install secret rides in `Authorization: Bearer` exactly like
-// api/control.ts -- and is omitted entirely when none is supplied (the
-// public Host is admitted by Access, not by a secret the page holds).
+// api/control.ts -- and is omitted entirely when none is held. It is sent
+// whenever held, whatever the Host: on the public Host the daemon admits a
+// valid Access assertion instead, and a held secret there is harmless.
 
 export interface ChatSource {
   source: string;
@@ -111,16 +112,4 @@ export async function sendChat(
       turnSerial: num(result.turn_serial),
     },
   };
-}
-
-/** True when the page was loaded from a public DNS name -- not loopback, not
- *  an IP literal, not a tailnet/mDNS/single-label name. On such a Host the
- *  request is admitted by Cloudflare Access, so the page never asks for the
- *  install secret. */
-export function isPublicHost(hostname: string): boolean {
-  const h = hostname.toLowerCase().replace(/\.$/, "");
-  if (!h || h === "localhost" || h.includes(":")) return false;
-  if (/^\d{1,3}(\.\d{1,3}){3}$/.test(h)) return false;
-  if (h.endsWith(".ts.net") || h.endsWith(".local") || h.endsWith(".localhost")) return false;
-  return h.includes(".");
 }

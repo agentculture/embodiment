@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { formatMmSs, isPublicHost, sendChat } from "./chat";
+import { formatMmSs, sendChat } from "./chat";
 import { readdirSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 
@@ -34,12 +34,8 @@ describe("chat client", () => {
     expect(await sendChat("m", "", { fetchFn: fakeFetch(401, { error: { code: "refused", message: "secret" } }) })).toEqual({ ok: false, code: "refused" });
     expect(await sendChat("m", "", { fetchFn: fakeFetch(200, { nope: 1 }) })).toEqual({ ok: false, code: "unparseable-response" });
   });
-  it("formats mm:ss and detects public hosts", () => {
+  it("formats mm:ss", () => {
     expect(formatMmSs(65)).toBe("01:05");
-    expect(isPublicHost("gwen.example.dev")).toBe(true);
-    for (const h of ["localhost", "127.0.0.1", "100.64.0.1", "box.tail1234.ts.net", "spark", "::1"]) {
-      expect(isPublicHost(h)).toBe(false);
-    }
   });
   it("no HTML-injection sinks anywhere under web/src", () => {
     const hits: string[] = [];
