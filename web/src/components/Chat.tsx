@@ -30,19 +30,35 @@ interface Message {
   followUp?: boolean;
 }
 
-/** Provenance as plain text: recording (title, date, mm:ss) or issue (date, section, link). */
+/**
+ * Provenance as plain text, branching on the daemon's `source` (never on the
+ * shape of `start`): "pocket" is a recording, "newspaper" an issue, "room"
+ * Gwen's own memory; anything else gets a neutral label.
+ */
 function provenance(s: ChatSource): string {
   const parts: string[] = [];
-  if (s.start !== null) {
-    if (s.title) parts.push(s.title);
-    if (s.date) parts.push(s.date);
-    const range = [formatMmSs(s.start), formatMmSs(s.end)].filter(Boolean).join("-");
-    if (range) parts.push(range);
-  } else {
-    if (s.date) parts.push(s.date);
-    if (s.section) parts.push(s.section);
-    if (s.link) parts.push(s.link);
-    if (parts.length === 0 && s.title) parts.push(s.title);
+  switch (s.source) {
+    case "pocket": {
+      if (s.title) parts.push(s.title);
+      if (s.date) parts.push(s.date);
+      const range = [formatMmSs(s.start), formatMmSs(s.end)].filter(Boolean).join("-");
+      if (range) parts.push(range);
+      break;
+    }
+    case "newspaper":
+      if (s.date) parts.push(s.date);
+      if (s.section) parts.push(s.section);
+      if (s.link) parts.push(s.link);
+      if (parts.length === 0 && s.title) parts.push(s.title);
+      break;
+    case "room":
+      parts.push("Gwen's memory");
+      if (s.date) parts.push(s.date);
+      break;
+    default:
+      parts.push("source");
+      if (s.title) parts.push(s.title);
+      if (s.date) parts.push(s.date);
   }
   return parts.join(" | ");
 }

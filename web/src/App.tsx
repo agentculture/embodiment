@@ -193,7 +193,11 @@ export default function App({
 
       <section className="panel">
         <h2 className="panel__title">Chat</h2>
-        <Chat secret={appliedSecret} replyEvents={stream.transcript} />
+        <Chat
+          secret={appliedSecret}
+          replyEvents={stream.transcript}
+          s2sRole={stream.s2sRole ?? undefined}
+        />
       </section>
 
       <section className="panel">
