@@ -340,6 +340,11 @@ def harness(tmp_path: Path, request: pytest.FixtureRequest) -> Any:
         synthesize = overrides.pop("synthesize", None) or (lambda sentence, config: b"\x00\x00")
         complete = overrides.pop("complete", None) or make_complete()
         endpoints = overrides.pop("endpoints", None)
+        # t16: recall runs in the BACKGROUND. The harness lands it synchronously
+        # by default — before the first sentence, so a test reads the recall
+        # counters as soon as run_turn returns; a test about timing passes its
+        # own spawner (see TestTheVoiceTurnDoesNotWaitOnRecall).
+        lanes = overrides.pop("lanes", None) or app_module.AppLanes(recall_spawn=_sync_spawn)
 
         def endpoint_factory() -> Any:
             if endpoints is None:
@@ -370,6 +375,7 @@ def harness(tmp_path: Path, request: pytest.FixtureRequest) -> Any:
             # Frozen by default so "the prompt is byte-identical between runs"
             # is a statement about the prompt, not about the minute hand (d8).
             now=overrides.pop("now", None) or (lambda: FROZEN_NOW),
+            lanes=lanes,
             **overrides,
         )
         built.append(app)
@@ -2761,11 +2767,15 @@ class TestTurnInstrumentation:
 
         monkeypatch.setattr(app_module, "run_one_turn", exploding)
 
-        assert h.app.run_turn(SPEECH).spoken == ""
+        # t16: the reply runs inside BackgroundRecall, whose reply keeps the
+        # never-silent rule — the fault is recorded and the fallback is spoken.
+        assert h.app.run_turn(SPEECH).spoken == turn_module.FALLBACK_TEXT
 
         t = h.app.status()["turns"]["recent"][-1]
         assert t["failed"] is True
-        assert t["first_audio_at"] is None
+        assert t["reply_text_at"] is None, "no completion ever came back"
+        assert "recall-events-complete-failed" in h.ledger_codes()
+        assert h.app.status()["turns"]["failed"] == 1
 
     def test_no_word_of_what_was_said_enters_a_timing(self, harness: Any, tmp_path: Path) -> None:
         """The marker scan, extended to the new fields."""
@@ -3264,8 +3274,11 @@ class TestReviewQuestions:
         h = harness()
         h.app.attach_ear("host", FakeEndpoint())
         h.app.run_turn(SPEECH)
+        # Semantic was ASKED for (the t16 default); this store has no embedder,
+        # so it demoted, and the mode reported is the one that actually ran.
         assert h.app.status()["recall"]["mode"] == "lexical"
-        assert h.app.status()["recall"]["configured_mode"] == "keyword"
+        assert h.app.status()["recall"]["configured_mode"] == "semantic"
+        assert "embedder-offline" in h.ledger_codes(), "the demotion must be recorded"
 
     def test_q8_status_holds_up_when_memory_answers_nothing(self, harness: Any) -> None:
         """A memory with none of the counters: reported unknown, never crashed."""
@@ -5271,3 +5284,797 @@ class TestForgetByTheFactsOwnWords:
         assert set(schema["properties"]) == {"record_id", "fact"}
         assert schema["required"] == []
         assert "fact" in app_module.REMEMBER_TOOL_PROMPT
+
+
+# ── t16 (gwen-remembers-recordings): drain, background recall, text turns, Access ──
+#
+# Synthetic data only: every record below is invented here. No gateway is dialled
+# (every tts/stt/model/embedder seam is a fake) and no real store is read.
+
+
+def _sync_spawn(job: Any) -> None:
+    """Run a recall job on the caller's thread: it lands before the first sentence."""
+    job()
+
+
+class HeldSpawn:
+    """Hold every recall job until the test says when it lands."""
+
+    def __init__(self) -> None:
+        self.jobs: list[Any] = []
+
+    def __call__(self, job: Any) -> None:
+        self.jobs.append(job)
+
+    def land(self) -> None:
+        jobs, self.jobs = self.jobs, []
+        for job in jobs:
+            job()
+
+
+class ScriptedComplete:
+    """A model seam that answers from a script and keeps every system prompt."""
+
+    def __init__(self, *replies: str) -> None:
+        self.replies = list(replies) or [REPLY]
+        self.prompts: list[str] = []
+
+    def __call__(self, messages: list[dict[str, Any]], tools: Any = None) -> ModelResponse:
+        system = messages[0]["content"] if messages and messages[0]["role"] == "system" else ""
+        self.prompts.append(system)
+        reply = self.replies[min(len(self.prompts) - 1, len(self.replies) - 1)]
+        return ModelResponse(content=reply, prompt_tokens=3, completion_tokens=4)
+
+
+POCKET_TEXT = "synthetic: the otter survey moved to thursday"
+NEWS_TEXT = "synthetic: the harbour bridge closes for repairs"
+
+
+def _pocket_record(i: int = 0, timestamp: str = "01:05") -> dict[str, Any]:
+    return {
+        "id": f"pocket.rec{i}.fact.{i}",
+        "text": POCKET_TEXT,
+        "added_by": "culture-rules",
+        "created": "2026-10-01",
+        "metadata": {
+            "source": "pocket",
+            "recording_id": f"rec{i}",
+            "title": "synthetic standup",
+            "date": "2026-09-30",
+            "timestamp": timestamp,
+        },
+    }
+
+
+def _news_record() -> dict[str, Any]:
+    return {
+        "id": "newspaper.2026-10-01.item.0",
+        "text": NEWS_TEXT,
+        "added_by": "culture-rules",
+        "created": "2026-10-01",
+        "metadata": {
+            "source": "newspaper",
+            "issue_date": "2026-10-01",
+            "section": "city",
+            "url": "https://example.invalid/bridge",
+        },
+    }
+
+
+class FakeSemanticMemory:
+    """A RoomMemory stand-in whose recall says which mode was in effect.
+
+    ``mode`` is what the "store" reports back (``semantic`` or a demotion to
+    ``lexical``); ``relevance`` the best similarity it scored. Every call is kept
+    so a test can see whether the d5 exact-substring fallback ran.
+    """
+
+    store_permission_failures = 0
+    store_symlinks_skipped = 0
+    store_non_files_skipped = 0
+    store_root_is_symlink = False
+    pending = 0
+    abandoned_dropped = 0
+    scope = "gwen"
+    data_dir = "/dev/null"
+
+    def __init__(
+        self,
+        records: Optional[list[dict[str, Any]]] = None,
+        *,
+        mode: str = "semantic",
+        relevance: Optional[float] = 0.9,
+        gate: Optional[threading.Event] = None,
+    ) -> None:
+        self.records = list(records or [])
+        self.mode = mode
+        self.relevance = relevance
+        self.gate = gate
+        self.calls: list[tuple[str, str]] = []
+        self.last_recall_mode: Optional[str] = None
+        self.backfill_started = 0
+        self.backfill_stopped = 0
+        self.order: list[str] = []
+        self.remembered: list[str] = []
+
+    def recall(self, query: str, *, mode: str = "keyword", **kwargs: Any) -> Any:
+        from embodiment.memory import RecallResult
+
+        self.calls.append((query, mode))
+        if self.gate is not None:
+            self.gate.wait(10.0)
+        if mode == "exact":
+            return RecallResult(ok=True, records=[], mode="lexical")
+        self.last_recall_mode = self.mode
+        semantic = self.mode == "semantic"
+        return RecallResult(
+            ok=True,
+            records=[dict(r) for r in self.records],
+            mode=self.mode,
+            relevance=self.relevance if semantic else None,
+            threshold=0.5 if semantic else None,
+        )
+
+    def remember(self, text: str, **kwargs: Any) -> Any:
+        self.remembered.append(text)
+        return SimpleNamespace(ok=True, record_id=f"r{len(self.remembered)}", degradation=None)
+
+    def status(self) -> dict[str, Any]:
+        return {
+            "last_recall_mode": self.last_recall_mode,
+            "embedder": {"role": "gemma2-embed", "configured": True, "online": True, "reason": ""},
+            "similarity_threshold": 0.5,
+        }
+
+    def start_backfill(self, **kwargs: Any) -> bool:
+        self.backfill_started += 1
+        return True
+
+    def stop_backfill(self, deadline: float = 1.0) -> bool:
+        self.backfill_stopped += 1
+        self.order.append("backfill")
+        return True
+
+    def close(self, deadline: float = 1.0) -> Any:
+        self.order.append("memory")
+        return SimpleNamespace(degradations=(), unconfirmed=())
+
+
+def _t16_harness(harness: Any, **overrides: Any) -> Harness:
+    """A harness whose recall lands before the first sentence unless told otherwise."""
+    overrides.setdefault("lanes", app_module.AppLanes(recall_spawn=_sync_spawn))
+    return harness(**overrides)
+
+
+class TestTheVoiceTurnDoesNotWaitOnRecall:
+    """Criterion 3: the reply starts without memory; recall arrives as an event."""
+
+    def test_a_reply_is_spoken_while_the_recall_is_still_blocked(self, harness: Any) -> None:
+        gate = threading.Event()
+        memory = FakeSemanticMemory([_pocket_record()], gate=gate)
+        endpoint = FakeEndpoint()
+        h = harness(
+            memory=memory,
+            endpoints=lambda: endpoint,
+            lanes=app_module.AppLanes(),  # the real thread spawner
+            config=AppConfig(poll_interval_s=0.01, recall_deadline=5.0),
+        )
+        h.app.attach_ear("host", endpoint)
+        done: list[Any] = []
+        worker = threading.Thread(target=lambda: done.append(h.app.run_turn(SPEECH)), daemon=True)
+        try:
+            worker.start()
+            worker.join(timeout=5.0)
+            assert done, "the voice turn waited on a recall that had not answered"
+            assert done[0].spoken == REPLY
+            assert endpoint.played, "nothing was spoken while recall was pending"
+            assert h.app.status()["recall_events"]["voice"]["pending"] == 1
+        finally:
+            gate.set()
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            if h.app.status()["recall_events"]["voice"]["arrivals"]["dropped"] == 1:
+                break
+            time.sleep(0.01)
+        events = h.app.status()["recall_events"]["voice"]
+        assert events["arrivals"]["dropped"] == 1
+        # Follow-ups are OFF by default (no calibrated threshold): counted, not spoken.
+        assert events["dropped_reasons"] == {"no-threshold": 1}
+
+    def test_a_recall_that_lands_first_reaches_the_reply_prompt(self, harness: Any) -> None:
+        complete = ScriptedComplete(REPLY)
+        h = _t16_harness(harness, memory=FakeSemanticMemory([_pocket_record()]), complete=complete)
+        h.app.attach_ear("host", FakeEndpoint())
+
+        result = h.app.run_turn(SPEECH)
+
+        assert result.spoken == REPLY
+        assert len(complete.prompts) == 2
+        assert POCKET_TEXT not in complete.prompts[0], "the first completion waited on memory"
+        assert POCKET_TEXT in complete.prompts[1]
+        arrivals = h.app.status()["recall_events"]["voice"]["arrivals"]
+        assert arrivals["before_first_sentence"] == 1
+        timing = h.app.status()["turns"]["recent"][-1]
+        assert timing["rendered_ids"] == ["pocket.rec0.fact.0"]
+
+    def test_an_empty_recall_costs_no_second_completion(self, harness: Any) -> None:
+        complete = ScriptedComplete(REPLY)
+        h = _t16_harness(harness, memory=FakeSemanticMemory([]), complete=complete)
+        h.app.attach_ear("host", FakeEndpoint())
+        h.app.run_turn(SPEECH)
+        assert len(complete.prompts) == 1
+        assert h.app.status()["recall_events"]["voice"]["dropped_reasons"] == {"empty": 1}
+
+    def test_a_recall_landing_mid_reply_regenerates_only_the_remainder(self, harness: Any) -> None:
+        held = HeldSpawn()
+        first = "משפט ראשון. משפט שני. משפט שלישי."
+        complete = ScriptedComplete(first, "המשך עם הזיכרון.")
+        landed: list[bool] = []
+
+        def synthesize(sentence: str, config: Any) -> bytes:
+            if not landed:
+                landed.append(True)
+                held.land()  # the memory arrives while sentence 1 is being voiced
+            return b"\x00\x00"
+
+        h = harness(
+            memory=FakeSemanticMemory([_pocket_record()]),
+            complete=complete,
+            synthesize=synthesize,
+            lanes=app_module.AppLanes(recall_spawn=held),
+        )
+        h.app.attach_ear("host", FakeEndpoint())
+        h.clear()
+
+        result = h.app.run_turn(SPEECH)
+
+        replies = [e.data["text"] for e in h.events("reply")]
+        assert replies == ["משפט ראשון.", "המשך עם הזיכרון."]
+        assert len(complete.prompts) == 2
+        assert POCKET_TEXT in complete.prompts[1]
+        assert "משפט ראשון." in complete.prompts[1], "the remainder never saw what was said"
+        assert result.spoken == "משפט ראשון. המשך עם הזיכרון."
+        events = h.app.status()["recall_events"]["voice"]
+        assert events["arrivals"]["during_reply"] == 1
+        assert events["sentences_dropped"] == 2
+
+    def test_a_late_recall_becomes_one_follow_up_when_the_gates_are_set(self, harness: Any) -> None:
+        held = HeldSpawn()
+        complete = ScriptedComplete(REPLY, "ועוד דבר מהזיכרון.")
+        h = harness(
+            memory=FakeSemanticMemory([_pocket_record()], relevance=0.9),
+            complete=complete,
+            lanes=app_module.AppLanes(recall_spawn=held),
+            config=AppConfig(
+                poll_interval_s=0.01, follow_up_threshold=0.5, follow_up_window_s=30.0
+            ),
+        )
+        endpoint = FakeEndpoint()
+        h.app.attach_ear("host", endpoint)
+        h.app.run_turn(SPEECH)
+        h.clear()
+
+        held.land()  # after the reply, off the turn thread's critical path
+
+        assert [e.data["text"] for e in h.events("reply")] == ["ועוד דבר מהזיכרון."]
+        assert h.app.status()["recall_events"]["voice"]["arrivals"]["follow_up"] == 1
+
+    def test_a_late_recall_while_the_operator_holds_the_floor_is_dropped(
+        self, harness: Any
+    ) -> None:
+        held = HeldSpawn()
+        h = harness(
+            memory=FakeSemanticMemory([_pocket_record()], relevance=0.9),
+            complete=ScriptedComplete(REPLY, "לא אמור להישמע."),
+            lanes=app_module.AppLanes(recall_spawn=held),
+            config=AppConfig(
+                poll_interval_s=0.01, follow_up_threshold=0.5, follow_up_window_s=30.0
+            ),
+        )
+        h.app.attach_ear("host", FakeEndpoint())
+        h.app.run_turn(SPEECH)
+        h.app._on_event(wire.SpeechStarted())
+        h.clear()
+
+        held.land()
+
+        assert h.events("reply") == []
+        events = h.app.status()["recall_events"]["voice"]
+        assert events["dropped_reasons"].get("floor-held") == 1
+
+
+class TestTheD5FallbackUnderSemanticRecall:
+    """d5's exact-substring fallback exists because KEYWORD recall is blind to Hebrew.
+
+    Semantic recall is not blind: zero hits there means nothing cleared the
+    similarity threshold (c52), and an exact-substring rescue would render the
+    very unrelated memories the threshold exists to keep out. So the fallback
+    fires only when the recall that actually ran was lexical.
+    """
+
+    QUESTION = "איפה נמצא המפתח?"
+
+    def test_a_semantic_recall_with_no_hits_does_not_fall_back(self, harness: Any) -> None:
+        memory = FakeSemanticMemory([], mode="semantic", relevance=0.2)
+        h = _t16_harness(harness, memory=memory)
+        h.app.attach_ear("host", FakeEndpoint())
+        h.app.run_turn(self.QUESTION)
+        assert [mode for _, mode in memory.calls] == ["semantic"]
+        assert app_module.APP_RECALL_LEXICAL_BLIND not in h.ledger_codes()
+
+    def test_a_recall_demoted_to_keyword_still_falls_back(self, harness: Any) -> None:
+        memory = FakeSemanticMemory([], mode="lexical", relevance=None)
+        h = _t16_harness(harness, memory=memory)
+        h.app.attach_ear("host", FakeEndpoint())
+        h.app.run_turn(self.QUESTION)
+        assert [mode for _, mode in memory.calls][:2] == ["semantic", "exact"]
+        assert app_module.APP_RECALL_LEXICAL_BLIND in h.ledger_codes()
+
+    def test_semantic_is_the_default_and_keyword_the_one_flag_rollback(self) -> None:
+        assert AppConfig().recall_mode == "semantic"
+        assert set(app_module.RECALL_MODES) == {"semantic", "keyword"}
+
+
+class FakeTts:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def __call__(self, sentence: str, config: Any) -> bytes:
+        self.calls.append(sentence)
+        return b"\x01\x00" * 240
+
+
+class TestTextTurns:
+    """The chat page's three controls, bound to the daemon (t10 + t14)."""
+
+    def _build(self, harness: Any, memory: Any = None, **overrides: Any) -> tuple[Harness, Any]:
+        endpoint = FakeEndpoint()
+        overrides.setdefault(
+            "lanes",
+            app_module.AppLanes(
+                recall_spawn=_sync_spawn,
+                tts=FakeTts(),
+                stt=lambda audio, filename, content_type: "מה עם הלוטרות?",
+            ),
+        )
+        h = harness(
+            memory=memory or FakeSemanticMemory([_pocket_record(), _news_record()]),
+            endpoints=lambda: endpoint,
+            **overrides,
+        )
+        h.app.attach_ear("host", endpoint)
+        return h, endpoint
+
+    def test_a_typed_turn_answers_as_text_with_cited_sources_and_no_audio(
+        self, harness: Any
+    ) -> None:
+        h, endpoint = self._build(harness)
+        played_before = len(endpoint.played)
+        h.clear()
+
+        answer = h.app.controls().chat("מה עם הלוטרות?")
+
+        assert answer["ok"] is True, answer
+        assert answer["reply"] == REPLY
+        assert isinstance(answer["turn_serial"], int)
+        pocket, news = answer["sources"]
+        assert pocket["source"] == "pocket"
+        assert pocket["start"] == 65, "a recording's timestamp is seconds for the page"
+        assert pocket["title"] == "synthetic standup"
+        assert pocket["date"] == "2026-09-30"
+        assert pocket["text"] == POCKET_TEXT
+        assert news["source"] == "newspaper"
+        assert news["start"] is None and news["end"] is None
+        assert news["date"] == "2026-10-01"
+        assert news["link"] == "https://example.invalid/bridge"
+        assert len(endpoint.played) == played_before, "a typed turn reached the speaker"
+        # The typed answer is never a turn_serial'd reply event (the page has it already).
+        assert all("turn_serial" not in e.data for e in h.events("reply"))
+
+    def test_a_typed_turn_joins_the_session(self, harness: Any) -> None:
+        h, _ = self._build(harness)
+        h.app.controls().chat("מה עם הלוטרות?")
+        roles = [m["role"] for m in h.app._session.messages()]
+        assert roles[-2:] == ["user", "assistant"]
+
+    def test_a_late_typed_recall_arrives_on_the_stream_never_the_speaker(
+        self, harness: Any
+    ) -> None:
+        held = HeldSpawn()
+        h, endpoint = self._build(
+            harness,
+            complete=ScriptedComplete(REPLY, "ועוד מהזיכרון."),
+            lanes=app_module.AppLanes(recall_spawn=held, tts=FakeTts()),
+            config=AppConfig(
+                poll_interval_s=0.01, follow_up_threshold=0.5, follow_up_window_s=30.0
+            ),
+        )
+        played = len(endpoint.played)
+        answer = h.app.controls().chat("מה עם הלוטרות?")
+        assert answer["ok"] is True and answer["sources"] == []
+        h.clear()
+
+        held.land()
+
+        follow = [e.data for e in h.events("reply")]
+        assert len(follow) == 1, follow
+        assert follow[0]["turn_serial"] == answer["turn_serial"]
+        assert follow[0]["text"] == "ועוד מהזיכרון."
+        assert follow[0]["sources"][0]["source"] == "pocket"
+        assert len(endpoint.played) == played, "a typed follow-up reached the speaker"
+        assert h.app.status()["recall_events"]["text"]["arrivals"]["follow_up"] == 1
+
+    def test_the_speak_control_returns_audio_and_plays_nothing(self, harness: Any) -> None:
+        h, endpoint = self._build(harness)
+        played = len(endpoint.played)
+        spoken = h.app.controls().speak("שלום.")
+        assert spoken["ok"] is True, spoken
+        assert spoken["content_type"] == "audio/wav"
+        assert spoken["audio"][:4] == b"RIFF"
+        assert len(endpoint.played) == played
+
+    def test_the_clip_control_transcribes_and_runs_a_typed_turn(self, harness: Any) -> None:
+        import wave
+
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as handle:
+            handle.setnchannels(1)
+            handle.setsampwidth(2)
+            handle.setframerate(24000)
+            handle.writeframes(b"\x00\x00" * 2400)
+        h, endpoint = self._build(harness)
+        played = len(endpoint.played)
+        answer = h.app.controls().clip(buf.getvalue(), None)
+        assert answer["ok"] is True, answer
+        assert answer["transcript"] == "מה עם הלוטרות?"
+        assert answer["reply"] == REPLY
+        assert len(endpoint.played) == played
+
+    def test_a_refused_chat_carries_the_layers_code_and_status(self, harness: Any) -> None:
+        h, _ = self._build(harness)
+        answer = h.app.controls().chat("   ")
+        assert answer["ok"] is False
+        assert answer["http_status"] == 400
+        assert answer["code"]
+
+    def test_status_reports_the_s2s_role_by_name_only(self, harness: Any) -> None:
+        h, _ = self._build(harness, config=AppConfig(poll_interval_s=0.01, s2s_role="s2s"))
+        assert h.app.status()["speech_to_speech"] == {"role": "s2s", "enabled": False}
+        assert harness().app.status()["speech_to_speech"] == {"role": None, "enabled": False}
+
+
+class BlockingDrain:
+    """A drain whose pass blocks until released, to prove pump never waits on it."""
+
+    def __init__(self) -> None:
+        self.release = threading.Event()
+        self.budgets: list[float] = []
+        self.order: Optional[list[str]] = None
+
+    def drain_once(self, budget: float) -> Any:
+        self.budgets.append(budget)
+        if self.order is not None:
+            self.order.append("drain")
+        self.release.wait(5.0)
+        return SimpleNamespace(batches_done=(), batches_failed=(), records_applied=0)
+
+    def status(self) -> dict[str, Any]:
+        return {"inbox": {"pending": 3, "done": 1, "failed": 0, "oldest_pending_age_s": 2.0}}
+
+
+class TestTheDrainWorker:
+    """Criterion 2: pump() drains within a budget, off the pump thread (risk r7)."""
+
+    def test_pump_schedules_a_pass_and_never_waits_on_it(self, harness: Any) -> None:
+        drain = BlockingDrain()
+        h = harness(lanes=app_module.AppLanes(recall_spawn=_sync_spawn, drain=drain))
+        h.app.start()
+        try:
+            started = time.monotonic()
+            h.app.pump()
+            assert time.monotonic() - started < 0.5, "pump waited on the drain"
+            deadline = time.monotonic() + 5.0
+            while not drain.budgets and time.monotonic() < deadline:
+                time.sleep(0.01)
+            assert drain.budgets, "the worker never ran a pass"
+            from embodiment.daemon import drain as drain_module
+
+            assert drain.budgets[0] == pytest.approx(app_module.drain_budget_for(0.01))
+            # A 0.01 s heartbeat's half-share (0.005 s) could never START a record.
+            assert drain.budgets[0] >= 2 * drain_module.MIN_RECORD_BUDGET_S
+            assert app_module.drain_budget_for(0.5) == drain_module.budget_for(0.5)
+        finally:
+            drain.release.set()
+
+    def test_status_reports_the_inbox(self, harness: Any) -> None:
+        drain = BlockingDrain()
+        drain.release.set()
+        h = harness(lanes=app_module.AppLanes(recall_spawn=_sync_spawn, drain=drain))
+        ingest = h.app.status()["ingest"]
+        assert ingest["inbox"]["pending"] == 3
+        assert "worker" in ingest
+
+    def test_no_drain_reports_none(self, harness: Any) -> None:
+        assert harness().app.status()["ingest"] is None
+
+    def test_close_gives_the_drain_a_share_before_memory_and_keeps_the_summary_first(
+        self, harness: Any
+    ) -> None:
+        drain = BlockingDrain()
+        drain.release.set()
+        memory = FakeSemanticMemory([])
+        order = memory.order
+        drain.order = order
+        summaries: list[str] = []
+
+        def summarise(messages: list[dict[str, Any]]) -> str:
+            order.append("summary")
+            summaries.append("x")
+            return "סיכום."
+
+        h = harness(
+            memory=memory,
+            summarise=summarise,
+            lanes=app_module.AppLanes(recall_spawn=_sync_spawn, drain=drain),
+        )
+        h.app.start()
+        h.app.run_turn(SPEECH)
+        order.clear()
+        report = h.app.close(deadline=2.0)
+        assert order[0] == "summary", order
+        assert "drain" in order and "memory" in order, order
+        assert order.index("drain") < order.index("backfill") < order.index("memory"), order
+        assert report.drain_stopped is True
+        assert memory.backfill_started == 1
+
+    def test_embedder_and_cache_degradations_reach_the_ledger(self, harness: Any) -> None:
+        embedder = SimpleNamespace(transitions=[("offline", "URLError")])
+        cache = SimpleNamespace(degradations=["vector cache not persisted: OSError"])
+        h = harness(
+            lanes=app_module.AppLanes(
+                recall_spawn=_sync_spawn, embedder=embedder, vector_cache=cache
+            )
+        )
+        h.app.start()
+        h.app.pump()
+        deadline = time.monotonic() + 5.0
+        while time.monotonic() < deadline:
+            codes = h.ledger_codes()
+            if "embedder-offline" in codes and app_module.APP_VECTOR_CACHE_DEGRADED in codes:
+                break
+            time.sleep(0.01)
+        codes = h.ledger_codes()
+        assert "embedder-offline" in codes
+        assert app_module.APP_VECTOR_CACHE_DEGRADED in codes
+        h.app.pump()
+        time.sleep(0.1)
+        assert h.ledger_codes().count("embedder-offline") == 1, "a transition is recorded once"
+
+
+@pytest.mark.skipif(
+    not __import__("embodiment.continuity", fromlist=["x"]).eidetic_available(),
+    reason="eidetic is not installed",
+)
+class TestTheDrainAgainstARealStore:
+    """c44 / h5: CLI enqueues interleaved with daemon remember calls lose nothing."""
+
+    @pytest.fixture(autouse=True)
+    def _home(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+        home = tmp_path / "home"
+        home.mkdir()
+        monkeypatch.setenv("HOME", str(home))
+
+    def _batch_file(self, tmp_path: Path, n: int, start: int) -> Path:
+        path = tmp_path / f"batch-{start}.ndjson"
+        lines = [
+            json.dumps(
+                {
+                    "id": f"pocket:synrec{i}:fact:{i}",
+                    "type": "fact",
+                    "text": f"synthetic interleaved fact number {i} about herons",
+                    "metadata": {
+                        "source": "pocket",
+                        "recording_id": f"synrec{i}",
+                        "title": "synthetic title",
+                        "date": "2026-08-30",
+                    },
+                }
+            )
+            for i in range(start, start + n)
+        ]
+        path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return path
+
+    def test_interleaved_ingest_and_remember_writes_lose_no_record(
+        self, harness: Any, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from embodiment import cli
+        from embodiment import memory as mem
+        from embodiment.daemon.drain import Drain
+        from embodiment.ingest.spool import Spool
+
+        state_dir = tmp_path / "daemon-state"
+        state = DaemonState(state_dir)
+        room = RoomMemory(
+            tmp_path / "store", scope="gwen", added_by="gwen", ingest_scope=mem.INGEST_SCOPE
+        )
+        drain = Drain(Spool.for_state_dir(state_dir), room)
+        h = harness(
+            state=state,
+            memory=room,
+            lanes=app_module.AppLanes(recall_spawn=_sync_spawn, drain=drain),
+        )
+        h.app.start()
+
+        per_batch, batches = 5, 10
+        for b in range(batches):
+            path = self._batch_file(tmp_path, per_batch, b * per_batch)
+            assert (
+                cli.main(
+                    [
+                        "memory",
+                        "ingest",
+                        "--file",
+                        str(path),
+                        "--state-dir",
+                        str(state_dir),
+                        "--apply",
+                        "--json",
+                    ]
+                )
+                == 0
+            )
+            for k in range(per_batch):
+                n = b * per_batch + k
+                assert h.app._remember_tool(fact=f"synthetic remembered note {n}").startswith("ok")
+            h.app.pump()
+        capsys.readouterr()
+
+        deadline = time.monotonic() + 30.0
+        while time.monotonic() < deadline:
+            h.app.pump()
+            if h.app.status()["ingest"]["inbox"]["pending"] == 0:
+                break
+            time.sleep(0.05)
+        assert h.app.status()["ingest"]["inbox"]["pending"] == 0
+        h.app.close(deadline=3.0)
+
+        ingested = mem._enumerate_scope(
+            data_dir=room.data_dir, scope=mem.INGEST_SCOPE, visibility="private", backend="files"
+        )
+        remembered = mem._enumerate_scope(
+            data_dir=room.data_dir, scope="gwen", visibility="private", backend="files"
+        )
+        notes = [r for r in remembered if "synthetic remembered note" in str(r.get("text"))]
+        assert len(ingested) == per_batch * batches
+        assert len(notes) == per_batch * batches
+
+
+class TestAccessAndMain:
+    """Criterion 3: main() reads the Access env (pair + email allow-list) into the guard."""
+
+    def _main(self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, **env: str) -> Any:
+        from embodiment.http import access
+
+        monkeypatch.setenv("EMBODIMENT_STATE_DIR", str(tmp_path / "state"))
+        for name in access.ACCESS_ENV:
+            monkeypatch.delenv(name, raising=False)
+        for name in (app_module.ENV_RECALL_MODE, app_module.ENV_S2S_ROLE):
+            monkeypatch.delenv(name, raising=False)
+        for name, value in env.items():
+            monkeypatch.setenv(name, value)
+        monkeypatch.setattr(app_module.server_module, "DashboardServer", _RecordingServer)
+        return app_module.main()
+
+    def test_access_unset_is_off_and_the_guard_is_unchanged(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        application = self._main(tmp_path, monkeypatch)
+        try:
+            guard = _RecordingServer.captured["guard"]
+            assert guard._access_replaces_secret is False
+            assert application.status()["access"] == {"mode": "off"}
+        finally:
+            application.close(deadline=2.0)
+
+    def test_the_full_access_env_injects_the_verifier(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from embodiment.http import access
+
+        application = self._main(
+            tmp_path,
+            monkeypatch,
+            EMBODIMENT_ACCESS_TEAM_DOMAIN="synthetic-team.cloudflareaccess.com",
+            EMBODIMENT_ACCESS_AUD="synthetic-aud",
+            EMBODIMENT_ACCESS_EMAILS="operator@example.invalid",
+        )
+        try:
+            guard = _RecordingServer.captured["guard"]
+            assert isinstance(guard._verifier, access.AccessVerifier)
+            assert guard._on_degrade is not None
+            status = application.status()
+            assert status["access"] == {"mode": "on"}
+            blob = json.dumps(status, ensure_ascii=False)
+            for secretish in ("synthetic-team", "synthetic-aud", "operator@example.invalid"):
+                assert secretish not in blob, secretish
+        finally:
+            application.close(deadline=2.0)
+
+    def test_a_partial_access_env_is_incomplete_and_recorded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from embodiment.http import access
+
+        application = self._main(
+            tmp_path, monkeypatch, EMBODIMENT_ACCESS_TEAM_DOMAIN="synthetic-team"
+        )
+        try:
+            assert application.status()["access"] == {"mode": "incomplete"}
+            codes = [r.code for r in application._state.ledger.read_all()]
+            assert access.CONFIG_INCOMPLETE_CODE in codes
+        finally:
+            application.close(deadline=2.0)
+
+    def test_main_builds_semantic_recall_over_the_ingest_scope(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from embodiment import memory as mem
+        from embodiment import vectors
+
+        application = self._main(tmp_path, monkeypatch)
+        try:
+            assert application._config.recall_mode == "semantic"
+            memory = application._memory
+            assert memory._ingest_scope == mem.INGEST_SCOPE
+            assert isinstance(memory._embedder, vectors.EmbedderClient)
+            assert memory._embedder.model == vectors.EMBED_ROLE
+            assert memory._vector_cache is not None
+            cache_dir = Path(memory._vector_cache.path).parent
+            assert stat.S_IMODE(cache_dir.stat().st_mode) == 0o700
+            recall = application.status()["recall"]
+            assert recall["embedder"]["role"] == vectors.EMBED_ROLE
+            assert application.status()["ingest"]["inbox"]["pending"] == 0
+        finally:
+            application.close(deadline=2.0)
+
+    def test_the_keyword_rollback_is_one_variable(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        application = self._main(tmp_path, monkeypatch, EMBODIMENT_RECALL_MODE="keyword")
+        try:
+            assert application._config.recall_mode == "keyword"
+        finally:
+            application.close(deadline=2.0)
+
+    def test_an_unknown_recall_mode_keeps_semantic_and_is_recorded(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        application = self._main(tmp_path, monkeypatch, EMBODIMENT_RECALL_MODE="hybrid")
+        try:
+            assert application._config.recall_mode == "semantic"
+            codes = [r.code for r in application._state.ledger.read_all()]
+            assert app_module.APP_RECALL_MODE_UNKNOWN in codes
+        finally:
+            application.close(deadline=2.0)
+
+    def test_main_reads_the_s2s_role_by_name(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        application = self._main(tmp_path, monkeypatch, EMBODIMENT_S2S_ROLE="speech2speech")
+        try:
+            assert application.status()["speech_to_speech"]["role"] == "speech2speech"
+        finally:
+            application.close(deadline=2.0)
+
+    def test_main_binds_every_chat_control(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        application = self._main(tmp_path, monkeypatch)
+        try:
+            controls = _RecordingServer.captured["controls"]
+            assert controls.chat is not None
+            assert controls.speak is not None
+            assert controls.clip is not None
+        finally:
+            application.close(deadline=2.0)
