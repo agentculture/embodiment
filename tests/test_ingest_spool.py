@@ -153,3 +153,23 @@ def test_no_file_keeps_record_text_after_failure(spool):
     files = [p for p in spool.root.rglob("*") if p.is_file()]
     assert files and not list(spool.inbox.iterdir())
     assert all(sentinel.encode() not in p.read_bytes() for p in files)
+
+
+def test_pending_names_lists_in_order_without_opening_a_batch(spool, monkeypatch):
+    ids = [spool.enqueue("ingest", [{"id": f"x{i}"}]).batch_id for i in range(4)]
+    monkeypatch.setattr(
+        type(spool.inbox),
+        "read_text",
+        lambda *a, **k: pytest.fail("pending_names must not read a batch"),
+    )
+    assert [n[: -len(".json")] for n in spool.pending_names()] == ids
+
+
+def test_load_returns_one_batch_and_fails_a_malformed_one(spool):
+    ids = [spool.enqueue("ingest", [{"id": f"x{i}"}]).batch_id for i in range(2)]
+    first, second = spool.pending_names()
+    assert spool.load(first).batch_id == ids[0]
+    (spool.inbox / second).write_text("{not json", "utf-8")
+    assert spool.load(second) is None
+    assert spool.status().failed == 1
+    assert [n[: -len(".json")] for n in spool.pending_names()] == [ids[0]]
