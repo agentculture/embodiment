@@ -29,6 +29,11 @@ Seams (all injected; defaults talk to the gateway named by the config)
 - ``stt(audio, filename, content_type) -> transcript str``.
 - ``record(code, reason)`` — the daemon's degradation sink (C3). Every
   degradation here is also kept on :attr:`TextTurns.degradations`.
+- ``hold_conversation() -> bool`` / ``release_conversation()`` — the daemon's
+  conversation, taken with a bound BEFORE the user turn is written and held
+  until the assistant turn is. ``False`` is busy: a retryable 503
+  (:data:`TEXT_TURN_BUSY`), recorded, and NOTHING written to the session.
+  Both ``None`` runs ungated.
 
 Results, not exceptions
 ------------------------
@@ -87,6 +92,7 @@ __all__ = [
     "STT_SECONDS_PER_AUDIO_SECOND",
     "SPEAK_DEADLINE_S",
     "TEXT_TURN_FAILED",
+    "TEXT_TURN_BUSY",
     "TEXT_TURN_NO_SESSION",
     "TEXT_TURN_SESSION_FAILED",
     "SPEAK_NO_TTS",
@@ -173,6 +179,11 @@ STT_DEADLINE_S = 10.0 + MAX_CLIP_SECONDS * STT_SECONDS_PER_AUDIO_SECOND
 SPEAK_DEADLINE_S = 60.0
 
 TEXT_TURN_FAILED = "text-turn-failed"
+#: The conversation was not free within its bound (a voice turn held it): a
+#: retryable 503 with nothing written. The daemon's own code
+#: (``daemon.app.APP_TEXT_TURN_BUSY``, pinned equal by a test), so the page and
+#: the ledger name the same thing.
+TEXT_TURN_BUSY = "app-text-turn-busy"
 TEXT_TURN_NO_SESSION = "text-turn-no-session"
 TEXT_TURN_SESSION_FAILED = "text-turn-session-failed"
 SPEAK_NO_TTS = "speak-no-tts"
@@ -224,6 +235,8 @@ class TextTurnResult:
     reply: str = ""
     code: str = ""
     http_status: int = 200
+    #: The serial ``run_text_turn``'s result carried (``.turn_serial``), if any.
+    turn_serial: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -260,6 +273,8 @@ class ClipResult:
     duration_s: Optional[float] = None
     code: str = ""
     http_status: int = 200
+    #: The serial of the typed turn the transcript ran as; ``None`` when none ran.
+    turn_serial: Optional[int] = None
 
 
 SttFn = Callable[[bytes, str, str], str]
@@ -320,6 +335,12 @@ def probe_clip(data: bytes) -> ClipProbe:
     except Exception:  # noqa: BLE001  # a probe must not be the thing that raises
         return ClipProbe("unknown", "", "", None, unreadable=True)
     return ClipProbe("unknown", "", "", None)
+
+
+def _turn_serial(result: object) -> Optional[int]:
+    """The ``turn_serial`` a turn's result carried, when it is a real int."""
+    serial = getattr(result, "turn_serial", None)
+    return serial if isinstance(serial, int) and not isinstance(serial, bool) else None
 
 
 def pcm_to_wav(pcm: bytes, sample_rate: int = SAMPLE_RATE_HZ) -> bytes:
@@ -414,8 +435,12 @@ class TextTurns:
         config: Optional[TextTurnsConfig] = None,
         record: Optional[Callable[[str, str], None]] = None,
         clock: Callable[[], float] = time.monotonic,
+        hold_conversation: Optional[Callable[[], bool]] = None,
+        release_conversation: Optional[Callable[[], None]] = None,
     ) -> None:
         self._run_text_turn = run_text_turn
+        self._hold_conversation = hold_conversation
+        self._release_conversation = release_conversation
         self._session = session
         self._config = config or TextTurnsConfig()
         self._tts = tts if tts is not None else http_synthesize
@@ -467,7 +492,17 @@ class TextTurns:
             return TextTurnResult(False, code=REFUSED_EMPTY, http_status=400)
         if len(message) > self._config.max_text_chars:
             return TextTurnResult(False, code=REFUSED_TEXT_TOO_LONG, http_status=413)
+        hold = self._hold_conversation
+        if hold is not None and not hold():
+            self._record(TEXT_TURN_BUSY, "the conversation was busy; nothing was written")
+            return TextTurnResult(False, code=TEXT_TURN_BUSY, http_status=503)
+        try:
+            return self._turn_in_conversation(message)
+        finally:
+            if hold is not None and self._release_conversation is not None:
+                self._release_conversation()
 
+    def _turn_in_conversation(self, message: str) -> TextTurnResult:
         session = self._current_session()
         if session is None:
             self._record(TEXT_TURN_NO_SESSION, "typed turn ran without a session")
@@ -486,7 +521,7 @@ class TextTurns:
 
         if session is not None:
             self._session_call(lambda: session.add_assistant(reply))
-        return TextTurnResult(True, reply=reply)
+        return TextTurnResult(True, reply=reply, turn_serial=_turn_serial(result))
 
     def _session_call(self, call: Callable[[], Any]) -> None:
         try:
@@ -507,45 +542,57 @@ class TextTurns:
     def _speak_message(self, text: object) -> SpeakResult:
         if not isinstance(text, str):
             return SpeakResult(False, code=REFUSED_NOT_TEXT, http_status=400)
+        if len(text.strip()) > self._config.max_text_chars:
+            return SpeakResult(False, code=REFUSED_TEXT_TOO_LONG, http_status=413)
         sentences = split_sentences(text)
         if not sentences:
             return SpeakResult(False, code=REFUSED_EMPTY, http_status=400)
-        voice_config = self._config.voice_config()
-        started = self._clock()
-        pcm = bytearray()
-        used = 0
-        truncated = False
-        for sentence in sentences:
-            if self._clock() - started > self._config.speak_deadline:
-                truncated = True
-                break
-            try:
-                chunk = self._tts(sentence, voice_config)
-            except Exception as exc:  # noqa: BLE001
-                self._record(SPEAK_TTS_FAILED, safe_reason.describe_exception(exc))
-                if not pcm:
-                    return SpeakResult(False, code=SPEAK_TTS_FAILED, http_status=502)
-                truncated = True
-                break
-            if not isinstance(chunk, (bytes, bytearray)) or not chunk:
-                self._record(SPEAK_TTS_FAILED, "tts returned no audio bytes")
-                if not pcm:
-                    return SpeakResult(False, code=SPEAK_TTS_FAILED, http_status=502)
-                truncated = True
-                break
-            room = MAX_SPEAK_AUDIO_BYTES - len(pcm)
-            if len(chunk) > room:
-                pcm += bytes(chunk[: room - room % BYTES_PER_SAMPLE])
-                truncated = True
-                break
-            pcm += chunk
-            used += 1
+        synthesised = self._synthesise(sentences)
+        if synthesised is None:
+            return SpeakResult(False, code=SPEAK_TTS_FAILED, http_status=502)
+        pcm, used, truncated = synthesised
         if not pcm:
             self._record(SPEAK_NO_AUDIO, "no sentence produced audio")
             return SpeakResult(False, code=SPEAK_NO_AUDIO, http_status=502)
         if truncated:
             self._record(SPEAK_TRUNCATED, f"spoke {used} of {len(sentences)} sentences")
         return SpeakResult(True, audio=pcm_to_wav(bytes(pcm)), sentences=used, truncated=truncated)
+
+    def _synthesise(self, sentences: list[str]) -> Optional[tuple[bytearray, int, bool]]:
+        """``(pcm, sentences used, truncated)``; ``None`` when the FIRST synthesis failed.
+
+        Stops at the speak deadline, at the audio cap, or at a failed sentence
+        once there is audio to return (truncated, never an error).
+        """
+        voice_config = self._config.voice_config()
+        started = self._clock()
+        pcm = bytearray()
+        used = 0
+        for sentence in sentences:
+            if self._clock() - started > self._config.speak_deadline:
+                return pcm, used, True
+            chunk = self._synthesise_one(sentence, voice_config)
+            if chunk is None:
+                return (pcm, used, True) if pcm else None
+            room = MAX_SPEAK_AUDIO_BYTES - len(pcm)
+            if len(chunk) > room:
+                pcm += bytes(chunk[: room - room % BYTES_PER_SAMPLE])
+                return pcm, used, True
+            pcm += chunk
+            used += 1
+        return pcm, used, False
+
+    def _synthesise_one(self, sentence: str, voice_config: VoiceConfig) -> Optional[bytes]:
+        """One sentence's pcm, or ``None`` (recorded) when the tts lane gave none."""
+        try:
+            chunk = self._tts(sentence, voice_config)
+        except Exception as exc:  # noqa: BLE001
+            self._record(SPEAK_TTS_FAILED, safe_reason.describe_exception(exc))
+            return None
+        if not isinstance(chunk, (bytes, bytearray)) or not chunk:
+            self._record(SPEAK_TTS_FAILED, "tts returned no audio bytes")
+            return None
+        return bytes(chunk)
 
     # -- clips ---------------------------------------------------------------
 
@@ -605,4 +652,5 @@ class TextTurns:
             duration_s=duration,
             code=turn.code,
             http_status=turn.http_status,
+            turn_serial=turn.turn_serial,
         )

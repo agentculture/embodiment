@@ -394,3 +394,129 @@ class TestTheClipClocksAreMeasured:
             Path(__file__).resolve().parent.parent / "web/src/components/AudioControls.tsx"
         ).read_text(encoding="utf-8")
         assert f"MAX_CLIP_SECONDS = {int(T.MAX_CLIP_SECONDS)};" in source
+
+
+# ── d6 review round ─────────────────────────────────────────────────────────
+
+
+class Gate:
+    """A conversation gate that admits or refuses, and records the order of calls."""
+
+    def __init__(self, admit=True, log=None):
+        self.admit = admit
+        self.log = log if log is not None else []
+
+    def hold(self):
+        self.log.append("hold")
+        return self.admit
+
+    def release(self):
+        self.log.append("release")
+
+
+class LoggingSession(FakeSession):
+    def __init__(self, log):
+        super().__init__()
+        self.log = log
+
+    def add_user(self, text):
+        self.log.append("user")
+        super().add_user(text)
+
+    def add_assistant(self, text, metadata=None):
+        self.log.append("assistant")
+        super().add_assistant(text, metadata)
+
+
+class TestTheConversationIsHeldBeforeTheUserTurn:
+    def test_the_gate_is_taken_before_add_user_and_released_after_add_assistant(self):
+        log = []
+        gate = Gate(log=log)
+        tt, _ = make(
+            session=LoggingSession(log),
+            hold_conversation=gate.hold,
+            release_conversation=gate.release,
+        )
+        assert tt.handle_text("hi").ok
+        assert log == ["hold", "user", "assistant", "release"]
+
+    def test_a_busy_conversation_is_a_503_with_no_user_turn_and_no_failure(self):
+        session = FakeSession()
+        ran = []
+        gate = Gate(admit=False)
+        tt, rec = make(
+            session=session,
+            run_text_turn=lambda t: ran.append(t) or "reply",
+            hold_conversation=gate.hold,
+            release_conversation=gate.release,
+        )
+        result = tt.handle_text("hi")
+        assert not result.ok
+        assert result.code == T.TEXT_TURN_BUSY == "app-text-turn-busy"
+        assert result.http_status == 503
+        assert session.calls == [] and ran == []
+        assert gate.log == ["hold"], "released a conversation it never held"
+        assert all(code != T.TEXT_TURN_FAILED for code, _ in rec)
+
+    def test_the_gate_is_released_when_the_turn_raises(self):
+        gate = Gate()
+
+        def boom(text):
+            raise RuntimeError("x")
+
+        tt, _ = make(
+            run_text_turn=boom, hold_conversation=gate.hold, release_conversation=gate.release
+        )
+        assert tt.handle_text("hi").code == T.TEXT_TURN_FAILED
+        assert gate.log == ["hold", "release"]
+
+    def test_a_raising_gate_degrades_never_raises(self):
+        def hold():
+            raise RuntimeError("lock")
+
+        tt, rec = make(hold_conversation=hold, release_conversation=lambda: None)
+        assert tt.handle_text("hi").code == T.TEXT_TURN_FAILED
+
+    def test_a_busy_clip_keeps_its_transcript_and_the_busy_code(self):
+        tt, _ = make(
+            stt=lambda a, f, c: "words",
+            hold_conversation=lambda: False,
+            release_conversation=lambda: None,
+        )
+        result = tt.handle_clip(make_wav(1.0))
+        assert result.code == T.TEXT_TURN_BUSY and result.http_status == 503
+        assert result.transcript == "words"
+
+
+class TestSpeakHasTheTextCap:
+    def test_an_over_long_message_is_refused_413_before_tts(self):
+        calls = []
+        tt, _ = make(tts=lambda s, c: calls.append(s) or PCM)
+        result = tt.speak_message("a. " * (T.MAX_TEXT_CHARS // 3 + 1))
+        assert not result.ok
+        assert result.code == T.REFUSED_TEXT_TOO_LONG and result.http_status == 413
+        assert calls == []
+
+    def test_a_message_at_the_cap_is_spoken(self):
+        tt, _ = make(tts=lambda s, c: PCM)
+        assert tt.speak_message("a" * T.MAX_TEXT_CHARS).ok
+
+
+class TestAClipCarriesItsTurnSerial:
+    def test_a_successful_clip_carries_the_serial_the_turn_reported(self):
+        class Reply:
+            spoken = "answer"
+            turn_serial = 9
+
+        tt, _ = make(stt=lambda a, f, c: "words", run_text_turn=lambda t: Reply())
+        result = tt.handle_clip(make_wav(1.0))
+        assert result.ok and result.turn_serial == 9
+        assert tt.handle_text("hi").turn_serial == 9
+
+    def test_a_plain_string_reply_has_no_serial(self):
+        tt, _ = make(stt=lambda a, f, c: "words")
+        assert tt.handle_clip(make_wav(1.0)).turn_serial is None
+
+    def test_a_refused_clip_carries_none(self):
+        tt, _ = make(stt=lambda a, f, c: "words")
+        assert tt.handle_clip(b"not audio at all").turn_serial is None
