@@ -106,6 +106,8 @@ machines: the gateway's `stt` lane must be local.
 - `embodiment status` — report the daemon's state, truthfully.
 - `embodiment tunnel` — print the cultureflare/cloudflared commands for
   remote access (dry-run only; no `--apply`).
+- `embodiment memory` — `ingest`, `forget`, `overview`: enqueue facts for the
+  daemon to remember or forget (dry run unless `--apply`).
 
 The lifecycle verbs are the daemon's, not the loop's: no verb drives
 `embodiment.loop` directly — the daemon (`embodiment/daemon/app.py`, the
@@ -202,6 +204,45 @@ itself (distinct from the global `overview`, which describes the agent).
     embodiment cli overview --json
 """
 
+
+_MEMORY = """\
+# embodiment memory
+
+Noun group for the producer-facing memory verbs. They only **enqueue** into the
+daemon's ingest inbox; the daemon is the single writer of the store. Both write
+verbs are a dry run unless `--apply`, and every command takes `--json`.
+
+## Usage
+
+    embodiment memory ingest --file /abs/batch.ndjson [--apply] [--state-dir DIR] [--json]
+    embodiment memory ingest --status [--state-dir DIR] [--json]
+    embodiment memory forget --source pocket --source-id <recording-id> [--apply]
+    embodiment memory forget --id pocket:<rec>:fact:<n> [--apply]
+    embodiment memory overview [--json]
+
+## Record contract (one JSON object per line)
+
+    {"id": "pocket:<rec>:<kind>:<n>", "text": "...", "type": "fact",
+     "metadata": {"source": "pocket", "recording_id": "...", "title": "...", "date": "..."}}
+
+Sources: `pocket` (types fact, summary, action_item) and `newspaper` (type
+item; metadata issue_date, section, url). A batch holds one source. The verb
+stamps visibility, scope, `added_by` and `created`; the file cannot choose them.
+
+## Output (`--json`)
+
+`ingest` and `forget` print `{applied, source|target, records, enqueue, daemon}`:
+`enqueue` is `null` on a dry run, else `{ok, batch_id}`. `daemon` is the daemon's
+liveness (`running|stopped|dead (unclean)|state unavailable|unknown`), reported
+apart from the enqueue result: queued while stopped is normal. `ingest --status`
+prints `{spool: {pending, done, failed, oldest_pending_age_s}, daemon, degradations}`.
+
+## Exit codes
+
+`0` success (including a dry run); `1` a refused batch or bad arguments (stderr
+`error:` then `hint:`, or the JSON error with `--json`); `2` an unreadable file or
+an inbox that could not be written.
+"""
 
 _START = """\
 # embodiment start
@@ -389,6 +430,10 @@ ENTRIES: dict[tuple[str, ...], str] = {
     ("doctor",): _DOCTOR,
     ("cli",): _CLI,
     ("cli", "overview"): _CLI,
+    ("memory",): _MEMORY,
+    ("memory", "ingest"): _MEMORY,
+    ("memory", "forget"): _MEMORY,
+    ("memory", "overview"): _MEMORY,
     ("start",): _START,
     ("stop",): _STOP,
     ("status",): _STATUS,
