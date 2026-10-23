@@ -5,7 +5,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-10-22T21:59:19Z",
-  "updated": "2026-10-22T22:03:28Z",
+  "updated": "2026-10-23T05:41:01Z",
   "targets": [
     {
       "id": "c1",
@@ -1288,6 +1288,30 @@
       "text": "memory.py is touched by t5, t9 and t12 in sequence; the chain is deliberate (one file) and lengthens the critical path",
       "kind": "unknown_nonblocking",
       "task_id": "t12",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r7",
+      "text": "forget_source's deadline is per step, so on a slow-but-not-hung store one call takes up to (1+N) x deadline and a drain pass overruns its 0.25 s budget; Spool.pending() parses every inbox batch per pass, so a large backlog overruns too. Mitigation in t16: run drain_once off the pump thread (its own worker), so the heartbeat never waits on it; a total deadline in memory.forget_source and a head-only spool listing are follow-ups",
+      "kind": "unknown_nonblocking",
+      "task_id": "t16",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r8",
+      "text": "the newspaper retention ledger (<spool>/newspaper-retention.json) is the only index of issue dates; if it is lost or malformed, issues already in the store are never aged out (recorded as app-ingest-ledger, not rebuilt) until a public ingest-scope enumeration exists",
+      "kind": "follow_up",
+      "task_id": "t11",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r9",
+      "text": "forget archives a record and drops its vector, but a private per-session transcript log (sessions/*.jsonl, 0600, size-bounded) that quoted the fact keeps that sentence; operator chose to document it and redact logs on forget in a follow-up",
+      "kind": "follow_up",
+      "task_id": "t5",
       "resolved": false,
       "resolution": ""
     }

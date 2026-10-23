@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-10-22T21:30:02Z",
-  "updated": "2026-10-22T21:57:51Z",
+  "updated": "2026-10-23T04:47:10Z",
   "claims": [
     {
       "id": "c1",
@@ -1948,6 +1948,65 @@
       ],
       "origin": "llm",
       "status": "approved"
+    },
+    {
+      "id": "l3",
+      "code": "assumption-for-measurement",
+      "what": "t14's STT_DEADLINE_S (40 s) is derived from an assumed 10x-realtime stt speed, not a measured transcription-time distribution on the rig's stt lane",
+      "skipped_check": "time /v1/audio/transcriptions on a clip of known length",
+      "refs": [
+        "t14",
+        "embodiment/daemon/text_turns.py"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l4",
+      "code": "grader-unverified",
+      "what": "t9's new provenance tests (TestIngestProvenanceIsRenderedAsQuotedData) were written after the implementation and never observed failing against code lacking it; only the changed one-sanitiser AST pin was seen failing first",
+      "skipped_check": "run the new tests against the pre-t9 render_recalled and see them fail",
+      "refs": [
+        "t9",
+        "tests/test_memory.py"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l5",
+      "code": "assumption-for-measurement",
+      "what": "t10's CHAT_COMPLETION_S = 30 s (one senses completion) is a judgement call with no measured completion-latency distribution behind it; DEFAULT_CHAT_TIMEOUT_S 65.25 and DEFAULT_CLIP_TIMEOUT_S 110.25 are derived from it",
+      "skipped_check": "measure senses completion latency (p50/p99) for a chat turn on the rig",
+      "refs": [
+        "t10",
+        "embodiment/http/server.py"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l6",
+      "code": "grader-unverified",
+      "what": "t11's drain.py was written before its tests (29 tests added after); the tests were not observed failing against an absent implementation",
+      "skipped_check": "write tests first and see them fail",
+      "refs": [
+        "t11",
+        "tests/test_daemon_drain.py"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l7",
+      "code": "control-absent",
+      "what": "t12 saw one full-suite failure without capturing the test name and took no clean-tree baseline; main agent then measured: pre-t12 base 10/10 green, t12 under concurrent load 8/10 (test_audio_host, test_cli_lifecycle round-trip), t12 quiet 10/10 green - load-sensitive, not caused by t12",
+      "skipped_check": "capture -rf failure names and baseline the clean tree before rerunning",
+      "refs": [
+        "t12"
+      ],
+      "origin": "llm",
+      "status": "proposed"
     }
   ],
   "obligations": []
