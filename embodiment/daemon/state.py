@@ -579,6 +579,10 @@ def _ensure_private_dir(path: Path) -> Optional[str]:
     return None
 
 
+# Public alias: the ingest spool reuses this helper instead of copying it.
+ensure_private_dir = _ensure_private_dir
+
+
 def _secure_fallback_dir(path: Path) -> tuple[bool, Optional[str]]:
     """Validate and secure a candidate fallback directory. Never raises.
 
@@ -718,6 +722,10 @@ def _atomic_write_bytes(path: Path, data: bytes) -> None:
         except OSError:
             pass  # narrow except; best-effort cleanup of our own temp file
         raise
+
+
+# Public alias: the ingest spool reuses this writer instead of copying it.
+atomic_write_bytes = _atomic_write_bytes
 
 
 def _trim_to_low_water(combined: bytes, low_water_bytes: int) -> tuple[bytes, int, int]:
