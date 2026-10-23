@@ -21,6 +21,7 @@ Three criteria, and where each is proved:
 
 from __future__ import annotations
 
+import dataclasses
 import http.client
 import json
 import socket
@@ -135,6 +136,8 @@ def build(
     max_body_bytes: int = s.DEFAULT_MAX_BODY_BYTES,
     control_timeout_s: float = s.DEFAULT_CONTROL_TIMEOUT_S,
     control_workers: int = s.DEFAULT_CONTROL_WORKERS,
+    assertion_verifier: Any = None,
+    **config_overrides: Any,
 ) -> Harness:
     port = free_port()
     guard = g.Guard(
@@ -142,19 +145,23 @@ def build(
             install_secret=MARKER_SECRET,
             allowed_origins=frozenset({f"http://127.0.0.1:{port}"}),
             public_hostname=public_hostname,
-        )
+        ),
+        assertion_verifier=assertion_verifier,
     )
     config = s.ServerConfig(
-        bind="127.0.0.1",
-        port=port,
-        dist_dir=dist_dir,
-        redact=redact,
-        max_streams=max_streams,
-        max_body_bytes=max_body_bytes,
-        control_timeout_s=control_timeout_s,
-        control_workers=control_workers,
-        stream_poll_s=0.05,
-        keepalive_s=0.2,
+        **{
+            "bind": "127.0.0.1",
+            "port": port,
+            "dist_dir": dist_dir,
+            "redact": redact,
+            "max_streams": max_streams,
+            "max_body_bytes": max_body_bytes,
+            "control_timeout_s": control_timeout_s,
+            "control_workers": control_workers,
+            "stream_poll_s": 0.05,
+            "keepalive_s": 0.2,
+            **config_overrides,
+        }
     )
     server = s.DashboardServer(
         config=config, guard=guard, bus=bus, controls=controls or s.Controls()
@@ -1350,3 +1357,525 @@ class TestARefusedPostWithAnUnreadBody:
         status = harness.server.status()
         assert status["requests_refused"] == 1
         assert status["requests_served"] == 1
+
+
+# ── task t10: chat, speak, clip, and the stream's end at token expiry ────────
+
+SYNTHETIC_REPLY = "SYNTHETIC-REPLY-4471"
+PUBLIC_HOST = "gwen.example.org"
+
+
+@dataclasses.dataclass(frozen=True)
+class _Asserted(g.AssertionResult):
+    """What an Access verifier reports: the guard reads ``expires_at`` defensively."""
+
+    expires_at: Optional[float] = None
+
+
+def post_json(h: Harness, path: str, payload: Any, **hdr: Optional[str]) -> tuple[int, bytes]:
+    headers = h.headers(Content_Type="application/json", **hdr)
+    return h.request("POST", path, body=json.dumps(payload).encode(), hdrs=headers)
+
+
+class TestChatRoute:
+    def test_a_chat_turn_answers_the_web_clients_contract(self) -> None:
+        seen: list[Any] = []
+        source = {"source": "s", "title": "t", "date": "d", "start": 0, "end": 1, "text": "x"}
+
+        def chat(message: Any) -> dict[str, Any]:
+            seen.append(message)
+            return {
+                "ok": True,
+                "reply": SYNTHETIC_REPLY,
+                "sources": [source],
+                "turn_serial": 7,
+                "code": "",
+                "http_status": 200,
+            }
+
+        built = build(controls=s.Controls(chat=chat))
+        try:
+            status, body = post_json(built, "/api/chat", {"message": "synthetic question"})
+            payload = json.loads(body)
+            assert status == 200
+            assert seen == ["synthetic question"]
+            assert payload["reply"] == SYNTHETIC_REPLY
+            assert payload["sources"] == [source]
+            assert payload["turn_serial"] == 7
+        finally:
+            built.server.shutdown(2.0)
+
+    def test_the_text_layers_refusal_keeps_its_code_and_status(self) -> None:
+        refusal = {"ok": False, "code": "refused-empty", "http_status": 422}
+        built = build(controls=s.Controls(chat=lambda message: refusal))
+        try:
+            status, body = post_json(built, "/api/chat", {"message": ""})
+            assert status == 422
+            assert json.loads(body)["code"] == "refused-empty"
+            assert s.TEXT_REFUSED_CODE in built.server.status()["degradation_counts"]
+        finally:
+            built.server.shutdown(2.0)
+
+    def test_an_unbound_chat_is_a_recorded_503(self) -> None:
+        built = build()
+        try:
+            status, body = post_json(built, "/api/chat", {"message": "hi"})
+            assert status == 503
+            assert json.loads(body)["code"] == s.CONTROL_UNBOUND_CODE
+        finally:
+            built.server.shutdown(2.0)
+
+    def test_a_body_that_is_not_a_json_object_is_a_400(self) -> None:
+        built = build(controls=s.Controls(chat=lambda m: {"ok": True}))
+        try:
+            status, body = built.request(
+                "POST", "/api/chat", body=b"[1]", hdrs=built.headers(Content_Type="x/y")
+            )
+            assert status == 400
+            assert json.loads(body)["code"] == s.BAD_REQUEST_CODE
+        finally:
+            built.server.shutdown(2.0)
+
+    def test_a_chat_body_over_the_text_bound_is_413_before_the_callable(self) -> None:
+        calls: list[Any] = []
+        built = build(controls=s.Controls(chat=lambda m: calls.append(m) or {"ok": True}))
+        try:
+            big = b'{"message": "' + b"x" * s.TEXT_BODY_MAX_BYTES + b'"}'
+            status, _ = built.request("POST", "/api/chat", body=big, hdrs=built.headers())
+            assert status == 413
+            assert calls == []
+        finally:
+            built.server.shutdown(2.0)
+
+    def test_the_text_bound_admits_a_full_length_message_of_wide_characters(self) -> None:
+        text = "\u4e2d" * 4000  # 3 bytes each in UTF-8
+        built = build(controls=s.Controls(chat=lambda m: {"ok": True, "reply": "r"}))
+        try:
+            body = json.dumps({"message": text}, ensure_ascii=False).encode("utf-8")
+            assert len(body) <= s.TEXT_BODY_MAX_BYTES
+            status, _ = built.request("POST", "/api/chat", body=body, hdrs=built.headers())
+            assert status == 200
+        finally:
+            built.server.shutdown(2.0)
+
+    def test_chat_is_guarded_like_every_control(self) -> None:
+        built = build(controls=s.Controls(chat=lambda m: {"ok": True}))
+        try:
+            status, _ = post_json(built, "/api/chat", {"message": "x"}, Authorization=None)
+            assert status == 401
+            status, _ = post_json(
+                built, "/api/chat", {"message": "x"}, Origin="https://evil.example"
+            )
+            assert status == 403
+        finally:
+            built.server.shutdown(2.0)
+
+
+class TestSlowTextCallablesAnswerInsideTheirOwnBound:
+    def test_a_slow_chat_is_a_503_inside_the_chat_bound_not_the_control_bound(self) -> None:
+        release = threading.Event()
+        built = build(
+            controls=s.Controls(chat=lambda m: (release.wait(30), {})[1]),
+            control_timeout_s=30.0,
+            chat_timeout_s=0.4,
+        )
+        try:
+            started = time.monotonic()
+            status, body = post_json(built, "/api/chat", {"message": "x"})
+            assert status == 503
+            assert json.loads(body)["code"] == s.CONTROL_TIMEOUT_CODE
+            assert time.monotonic() - started < 3.0
+        finally:
+            release.set()
+            built.server.shutdown(2.0)
+
+    def test_chat_is_not_cut_short_by_the_short_control_bound(self) -> None:
+        def slowish(message: Any) -> dict[str, Any]:
+            time.sleep(0.5)
+            return {"ok": True, "reply": "late but whole"}
+
+        built = build(controls=s.Controls(chat=slowish), control_timeout_s=0.1, chat_timeout_s=5.0)
+        try:
+            status, body = post_json(built, "/api/chat", {"message": "x"})
+            assert status == 200
+            assert json.loads(body)["reply"] == "late but whole"
+        finally:
+            built.server.shutdown(2.0)
+
+    def test_a_slow_speak_and_a_slow_clip_are_503s_inside_their_bounds(self) -> None:
+        release = threading.Event()
+        built = build(
+            controls=s.Controls(
+                speak=lambda t: (release.wait(30), {})[1],
+                clip=lambda a, d: (release.wait(30), {})[1],
+            ),
+            speak_timeout_s=0.3,
+            clip_timeout_s=0.3,
+        )
+        try:
+            started = time.monotonic()
+            status, _ = post_json(built, "/api/speak", {"text": "x"})
+            assert status == 503
+            status, _ = built.request(
+                "POST", "/api/clip", body=b"RIFFxxxx", hdrs=built.headers(Content_Type="audio/wav")
+            )
+            assert status == 503
+            assert time.monotonic() - started < 4.0
+        finally:
+            release.set()
+            built.server.shutdown(2.0)
+
+    def test_a_raising_chat_is_a_recorded_500_not_a_traceback(self) -> None:
+        def boom(message: Any) -> dict[str, Any]:
+            raise RuntimeError("SYNTHETIC-INTERNALS")
+
+        built = build(controls=s.Controls(chat=boom))
+        try:
+            status, body = post_json(built, "/api/chat", {"message": "x"})
+            assert status == 500
+            assert b"SYNTHETIC-INTERNALS" not in body
+            assert s.CONTROL_FAILED_CODE in built.server.status()["degradation_counts"]
+        finally:
+            built.server.shutdown(2.0)
+
+
+class TestTheBoundsAreDerivedNotPicked:
+    def test_chat_covers_recall_plus_every_completion(self) -> None:
+        assert (
+            s.DEFAULT_CHAT_TIMEOUT_S
+            > s.CHAT_RECALL_S + s.CHAT_MAX_COMPLETIONS * s.CHAT_COMPLETION_S
+        )
+        assert s.DEFAULT_CHAT_TIMEOUT_S > s.DEFAULT_CONTROL_TIMEOUT_S
+
+    def test_recall_mirrors_the_memory_layers_deadline(self) -> None:
+        from embodiment import memory
+
+        assert s.CHAT_RECALL_S == memory.DEFAULT_DEADLINE
+
+    def test_speak_and_clip_cover_the_text_layers_own_deadlines(self) -> None:
+        from embodiment.daemon import text_turns as tt
+
+        assert s.DEFAULT_SPEAK_TIMEOUT_S > tt.SPEAK_DEADLINE_S
+        assert s.DEFAULT_CLIP_TIMEOUT_S > tt.STT_DEADLINE_S + s.DEFAULT_CHAT_TIMEOUT_S
+
+    def test_the_text_body_bound_fits_the_longest_message_at_four_bytes_a_character(self) -> None:
+        from embodiment.daemon import text_turns as tt
+
+        assert s.TEXT_BODY_MAX_BYTES >= tt.MAX_TEXT_CHARS * 4
+
+
+class TestSpeakRoute:
+    def test_speak_returns_a_non_empty_wav_body(self) -> None:
+        wav = b"RIFF\x00\x00\x00\x00WAVEsynthetic"
+        seen: list[Any] = []
+
+        def speak(text: Any) -> dict[str, Any]:
+            seen.append(text)
+            return {"ok": True, "audio": wav, "content_type": "audio/wav"}
+
+        built = build(controls=s.Controls(speak=speak))
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", built.port, timeout=5)
+            conn.request(
+                "POST",
+                "/api/speak",
+                body=json.dumps({"text": "synthetic line"}).encode(),
+                headers=built.headers(Content_Type="application/json"),
+            )
+            response = conn.getresponse()
+            data = response.read()
+            conn.close()
+            assert response.status == 200
+            assert response.getheader("Content-Type") == "audio/wav"
+            assert data == wav
+            assert seen == ["synthetic line"]
+        finally:
+            built.server.shutdown(2.0)
+
+    def test_speak_with_no_audio_is_a_json_error_not_an_empty_200(self) -> None:
+        built = build(controls=s.Controls(speak=lambda t: {"ok": True, "audio": b""}))
+        try:
+            status, body = post_json(built, "/api/speak", {"text": "x"})
+            assert status == 502
+            assert json.loads(body)["code"] == "speak-no-audio"
+        finally:
+            built.server.shutdown(2.0)
+
+    def test_a_speak_refusal_keeps_its_status(self) -> None:
+        refusal = {"ok": False, "code": "speak-no-tts", "http_status": 503}
+        built = build(controls=s.Controls(speak=lambda t: refusal))
+        try:
+            status, body = post_json(built, "/api/speak", {"text": "x"})
+            assert status == 503
+            assert json.loads(body)["code"] == "speak-no-tts"
+        finally:
+            built.server.shutdown(2.0)
+
+    def test_an_unbound_speak_is_503(self) -> None:
+        built = build()
+        try:
+            status, _ = post_json(built, "/api/speak", {"text": "x"})
+            assert status == 503
+        finally:
+            built.server.shutdown(2.0)
+
+
+class TestClipRoute:
+    def clip_headers(self, h: Harness, **extra: Optional[str]) -> dict[str, str]:
+        return h.headers(Content_Type="audio/webm;codecs=opus", **extra)
+
+    def test_a_clip_reaches_the_callable_with_its_bytes_and_declared_duration(self) -> None:
+        seen: list[tuple[bytes, Optional[float]]] = []
+
+        def clip(audio: bytes, declared: Optional[float]) -> dict[str, Any]:
+            seen.append((audio, declared))
+            return {"ok": True, "transcript": "synthetic words", "reply": SYNTHETIC_REPLY}
+
+        built = build(controls=s.Controls(clip=clip))
+        try:
+            data = b"\x1aE\xdf\xa3" + b"synthetic" * 100
+            status, body = built.request(
+                "POST",
+                "/api/clip",
+                body=data,
+                hdrs=self.clip_headers(built, X_Clip_Duration_S="2.5"),
+            )
+            payload = json.loads(body)
+            assert status == 200
+            assert seen == [(data, 2.5)]
+            assert payload["transcript"] == "synthetic words"
+            assert payload["reply"] == SYNTHETIC_REPLY
+            assert payload["ok"] is True
+        finally:
+            built.server.shutdown(2.0)
+
+    @pytest.mark.parametrize("raw", ["soon", "nan", "inf", "-3", ""])
+    def test_an_unusable_duration_header_is_ignored(self, raw: str) -> None:
+        seen: list[Optional[float]] = []
+        built = build(controls=s.Controls(clip=lambda a, d: seen.append(d) or {"ok": True}))
+        try:
+            status, _ = built.request(
+                "POST",
+                "/api/clip",
+                body=b"abc",
+                hdrs=self.clip_headers(built, X_Clip_Duration_S=raw),
+            )
+            assert status == 200
+            assert seen == [None]
+        finally:
+            built.server.shutdown(2.0)
+
+    def test_a_clip_over_its_byte_cap_is_413_before_any_callable_runs(self) -> None:
+        calls: list[Any] = []
+        built = build(
+            controls=s.Controls(clip=lambda a, d: calls.append(a) or {"ok": True}),
+            clip_max_bytes=1024,
+        )
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", built.port, timeout=5)
+            # Declare far more than the cap and send none of it: the refusal must not wait.
+            conn.putrequest("POST", "/api/clip")
+            for name, value in self.clip_headers(built, Content_Length="999999").items():
+                conn.putheader(name, value)
+            conn.endheaders()
+            response = conn.getresponse()
+            assert response.status == 413
+            assert json.loads(response.read())["code"] == s.BODY_TOO_LARGE_CODE
+            conn.close()
+            assert calls == []
+        finally:
+            built.server.shutdown(2.0)
+
+    def test_the_default_cap_is_the_text_layers_byte_cap(self) -> None:
+        from embodiment.daemon import text_turns as tt
+
+        assert s.ServerConfig().clip_max_bytes == tt.MAX_CLIP_BYTES
+
+    def test_a_clip_with_no_content_length_is_411_before_the_callable(self) -> None:
+        calls: list[Any] = []
+        built = build(controls=s.Controls(clip=lambda a, d: calls.append(a) or {"ok": True}))
+        try:
+            sock = socket.create_connection(("127.0.0.1", built.port), timeout=5)
+            head = "\r\n".join(
+                [
+                    "POST /api/clip HTTP/1.1",
+                    f"Host: 127.0.0.1:{built.port}",
+                    f"Authorization: Bearer {MARKER_SECRET}",
+                    "Transfer-Encoding: chunked",
+                    "",
+                    "3\r\nabc\r\n0\r\n\r\n",
+                ]
+            )
+            sock.sendall(head.encode())
+            raw = b""
+            while chunk := sock.recv(4096):
+                raw += chunk
+            reply = raw.decode("utf-8", "replace")
+            sock.close()
+            assert reply.startswith("HTTP/1.1 411")
+            assert s.LENGTH_REQUIRED_CODE in reply
+            assert calls == []
+        finally:
+            built.server.shutdown(2.0)
+
+    def test_a_truncated_upload_is_a_400_not_a_hang(self) -> None:
+        calls: list[Any] = []
+        built = build(controls=s.Controls(clip=lambda a, d: calls.append(a) or {"ok": True}))
+        try:
+            sock = socket.create_connection(("127.0.0.1", built.port), timeout=5)
+            head = "\r\n".join(
+                [
+                    "POST /api/clip HTTP/1.1",
+                    f"Host: 127.0.0.1:{built.port}",
+                    f"Authorization: Bearer {MARKER_SECRET}",
+                    "Content-Length: 100",
+                    "",
+                    "only-ten-b",
+                ]
+            )
+            sock.sendall(head.encode())
+            sock.shutdown(socket.SHUT_WR)
+            reply = sock.recv(4096).decode("utf-8", "replace")
+            sock.close()
+            assert reply.startswith("HTTP/1.1 400")
+            assert calls == []
+        finally:
+            built.server.shutdown(2.0)
+
+    def test_a_clip_refusal_from_the_text_layer_keeps_its_status(self) -> None:
+        refusal = {"ok": False, "code": "refused-clip-unsupported", "http_status": 415}
+        built = build(controls=s.Controls(clip=lambda a, d: refusal))
+        try:
+            status, body = built.request(
+                "POST", "/api/clip", body=b"abc", hdrs=self.clip_headers(built)
+            )
+            assert status == 415
+            assert json.loads(body)["code"] == "refused-clip-unsupported"
+        finally:
+            built.server.shutdown(2.0)
+
+    def test_an_unguarded_clip_is_refused_before_reading(self) -> None:
+        calls: list[Any] = []
+        built = build(controls=s.Controls(clip=lambda a, d: calls.append(a) or {"ok": True}))
+        try:
+            status, _ = built.request(
+                "POST", "/api/clip", body=b"abc", hdrs=self.clip_headers(built, Authorization=None)
+            )
+            assert status == 401
+            assert calls == []
+        finally:
+            built.server.shutdown(2.0)
+
+
+class TestAReplyEventPassesTheStreamProjection:
+    def test_a_reply_with_a_turn_serial_streams_and_a_secret_in_it_is_dropped(self) -> None:
+        bus = Bus()
+        built = build(bus=bus)
+        try:
+            conn, response = built.open_stream()
+            assert response.status == 200
+            bus.publish("reply", {"text": SYNTHETIC_REPLY, "turn_serial": 3})
+            bus.publish("reply", {"text": f"leak {MARKER_SECRET}", "turn_serial": 4})
+            seen = read_until(response, SYNTHETIC_REPLY, seconds=3.0)
+            assert "event: reply" in seen
+            assert MARKER_SECRET not in read_stream(response, seconds=0.5) + seen
+            conn.close()
+        finally:
+            built.server.shutdown(2.0)
+            bus.close(1.0)
+
+
+class TestAnAccessAdmittedStreamEndsAtTokenExpiry:
+    def access_stream(
+        self, built: Harness
+    ) -> tuple[http.client.HTTPConnection, http.client.HTTPResponse]:
+        return built.open_stream(
+            hdrs=built.headers(Host=PUBLIC_HOST, Cf_Access_Jwt_Assertion="SYNTHETIC-TOKEN")
+        )
+
+    def test_the_stream_closes_within_one_heartbeat_after_exp(self) -> None:
+        bus = Bus()
+        exp = time.time() + 1.0
+        verifier = lambda token: _Asserted(valid=True, expires_at=exp)  # noqa: E731
+        built = build(
+            bus=bus, public_hostname=PUBLIC_HOST, assertion_verifier=verifier, keepalive_s=0.2
+        )
+        try:
+            conn, response = self.access_stream(built)
+            assert response.status == 200
+            read_until(response, ": stream open", seconds=2.0)
+            # read to EOF; the server must end the stream on its own
+            rest = read_until(response, "NEVER-APPEARS", seconds=5.0)
+            ended_at = time.time()
+            assert s.STREAM_EXPIRED_REASON in rest
+            assert response.fp.readline() == b""  # type: ignore[union-attr]
+            assert ended_at - exp < built.server.config.keepalive_s + 0.5
+            assert built.server.status()["streams_expired"] == 1
+            conn.close()
+        finally:
+            built.server.shutdown(2.0)
+            bus.close(1.0)
+
+    def test_an_already_expired_assertion_ends_the_stream_at_once(self) -> None:
+        bus = Bus()
+        verifier = lambda token: _Asserted(valid=True, expires_at=time.time() - 5)  # noqa: E731
+        built = build(bus=bus, public_hostname=PUBLIC_HOST, assertion_verifier=verifier)
+        try:
+            conn, response = self.access_stream(built)
+            body = read_until(response, "NEVER-APPEARS", seconds=3.0)
+            assert s.STREAM_EXPIRED_REASON in body
+            conn.close()
+        finally:
+            built.server.shutdown(2.0)
+            bus.close(1.0)
+
+    def test_without_an_exp_the_stream_closes_at_the_conservative_cap(self) -> None:
+        bus = Bus()
+        verifier = lambda token: _Asserted(valid=True)  # noqa: E731
+        built = build(
+            bus=bus,
+            public_hostname=PUBLIC_HOST,
+            assertion_verifier=verifier,
+            access_stream_max_s=0.6,
+        )
+        try:
+            conn, response = self.access_stream(built)
+            started = time.monotonic()
+            body = read_until(response, "NEVER-APPEARS", seconds=5.0)
+            assert s.STREAM_EXPIRED_REASON in body
+            assert time.monotonic() - started < 3.0
+            conn.close()
+        finally:
+            built.server.shutdown(2.0)
+            bus.close(1.0)
+
+    def test_a_secret_admitted_stream_has_no_expiry(self) -> None:
+        bus = Bus()
+        built = build(bus=bus, access_stream_max_s=0.2)
+        try:
+            conn, response = built.open_stream()
+            body = read_stream(response, seconds=1.0)
+            assert s.STREAM_EXPIRED_REASON not in body
+            assert built.server.status()["streams_expired"] == 0
+            conn.close()
+        finally:
+            built.server.shutdown(2.0)
+            bus.close(1.0)
+
+    def test_an_expired_stream_frees_its_slot(self) -> None:
+        bus = Bus()
+        verifier = lambda token: _Asserted(valid=True, expires_at=time.time() + 0.3)  # noqa: E731
+        built = build(
+            bus=bus, public_hostname=PUBLIC_HOST, assertion_verifier=verifier, max_streams=1
+        )
+        try:
+            conn, response = self.access_stream(built)
+            read_until(response, "NEVER-APPEARS", seconds=3.0)
+            conn.close()
+            deadline = time.monotonic() + 2.0
+            while time.monotonic() < deadline and built.server.status()["streams_open"]:
+                time.sleep(0.05)
+            assert built.server.status()["streams_open"] == 0
+        finally:
+            built.server.shutdown(2.0)
+            bus.close(1.0)

@@ -87,6 +87,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import math
 import os
 import threading
 import time
@@ -99,6 +100,12 @@ from typing import Any, Callable, Optional
 from urllib.parse import unquote
 
 from embodiment.cli._errors import EXIT_ENV_ERROR, EXIT_USER_ERROR, CliError
+from embodiment.daemon.text_turns import (
+    MAX_CLIP_BYTES,
+    MAX_TEXT_CHARS,
+    SPEAK_DEADLINE_S,
+    STT_DEADLINE_S,
+)
 from embodiment.http import guard as guard_module
 from embodiment.safe_reason import describe_exception
 
@@ -117,6 +124,19 @@ __all__ = [
     "CONTROL_BUSY_CODE",
     "DEFAULT_CONTROL_TIMEOUT_S",
     "DEFAULT_CONTROL_WORKERS",
+    "CHAT_RECALL_S",
+    "CHAT_COMPLETION_S",
+    "CHAT_MAX_COMPLETIONS",
+    "CONTROL_SLACK_S",
+    "DEFAULT_CHAT_TIMEOUT_S",
+    "DEFAULT_SPEAK_TIMEOUT_S",
+    "DEFAULT_CLIP_TIMEOUT_S",
+    "TEXT_BODY_MAX_BYTES",
+    "CLIP_READ_DEADLINE_S",
+    "ACCESS_STREAM_MAX_S",
+    "LENGTH_REQUIRED_CODE",
+    "TEXT_REFUSED_CODE",
+    "STREAM_EXPIRED_REASON",
     "MAX_CONTROL_INFLIGHT",
     "BAD_REQUEST_CODE",
     "BODY_TOO_LARGE_CODE",
@@ -185,6 +205,65 @@ DEFAULT_CONTROL_WORKERS = 4
 #: would accumulate one leaked task per retry. A **judgement call**, sized at
 #: twice the worker count.
 MAX_CONTROL_INFLIGHT = 8
+
+# ── the text-and-clip routes (task t10): each clock named for what it bounds ──
+
+#: Bounds the recall inside one chat turn. Mirrors ``embodiment.memory.DEFAULT_DEADLINE``
+#: (0.25 s; a test pins the equality) - copied, not imported, so this module does not
+#: load the memory layer.
+CHAT_RECALL_S = 0.25
+
+#: Bounds ONE ``senses`` completion. A **judgement call**, unmeasured until t21: a
+#: spoken-length reply from the 26B-A4B speaker is seconds; 30 s is the point past which
+#: the operator has stopped waiting, not a prediction of the typical case.
+CHAT_COMPLETION_S = 30.0
+
+#: How many completions one chat request may cost: the turn's reply, plus the second one
+#: t13 may add (a follow-up on a source). Sized for the larger.
+CHAT_MAX_COMPLETIONS = 2
+
+#: Added to every derived bound below: queueing on the control pool and the response
+#: write. A **judgement call**.
+CONTROL_SLACK_S = 5.0
+
+#: Bounds ``/api/chat``: the recall, then every completion it may cost, then the slack
+#: (0.25 + 2 * 30 + 5). The default 5 s control bound would 503 every real chat turn.
+DEFAULT_CHAT_TIMEOUT_S = CHAT_RECALL_S + CHAT_MAX_COMPLETIONS * CHAT_COMPLETION_S + CONTROL_SLACK_S
+
+#: Bounds ``/api/speak``: ``text_turns.speak_message`` stops synthesising at
+#: ``SPEAK_DEADLINE_S`` and returns what it has; the request waits that plus the slack.
+DEFAULT_SPEAK_TIMEOUT_S = SPEAK_DEADLINE_S + CONTROL_SLACK_S
+
+#: Bounds ``/api/clip``: transcription (``STT_DEADLINE_S``), then the typed turn the
+#: transcript runs as (the chat bound), then the slack.
+DEFAULT_CLIP_TIMEOUT_S = STT_DEADLINE_S + DEFAULT_CHAT_TIMEOUT_S + CONTROL_SLACK_S
+
+#: Bounds a JSON text body (chat, speak). ``MAX_TEXT_CHARS`` characters at the UTF-8
+#: worst case of 4 bytes each, plus 1 KiB of JSON framing. The generic 8 KiB bound would
+#: turn a 4000-character CJK message into a 413 instead of the text layer's own refusal.
+TEXT_BODY_MAX_BYTES = MAX_TEXT_CHARS * 4 + 1024
+
+#: Bounds reading a clip body off the socket, in total. The per-recv socket timeout
+#: (30 s) alone lets a client trickle ``MAX_CLIP_BYTES`` for hours. 120 s is
+#: 16 MiB at ~140 KB/s - a phone uplink on a poor day. A **judgement call**.
+CLIP_READ_DEADLINE_S = 120.0
+
+#: How long an Access-admitted stream may stay open when the verifier reported no
+#: ``exp``. Conservative by choice: an assertion of unknown lifetime is not trusted to
+#: outlive a few minutes; the cost of closing early is one reconnect, which presents a
+#: fresh assertion. A **judgement call**.
+ACCESS_STREAM_MAX_S = 300.0
+
+#: Largest chunk read from a clip body at a time.
+_CLIP_CHUNK_BYTES = 64 * 1024
+
+#: ``Content-Length`` was absent (or the body is chunked) on a route that must know the
+#: size before reading.
+LENGTH_REQUIRED_CODE = "http-length-required"
+#: A text/clip route answered a refusal from the text layer (the layer recorded why).
+TEXT_REFUSED_CODE = "http-text-route-refused"
+#: Why a stream ended at its assertion's expiry (a frame comment, not a fault).
+STREAM_EXPIRED_REASON = "session-expired"
 
 #: Distinct degradation codes kept with their first occurrence. Same bound and
 #: same reasoning as :mod:`embodiment.bus`: generous for this module's own
@@ -272,7 +351,11 @@ _MAX_PATH_CHARS = 2048
 #: with the dashboard (task t17), which connects to exactly this path.
 STREAM_ROUTE = "/api/events"
 
-_CONTROL_ROUTES = ("/api/voice/start", "/api/voice/stop", "/api/mic/mute")
+CHAT_ROUTE = "/api/chat"
+SPEAK_ROUTE = "/api/speak"
+CLIP_ROUTE = "/api/clip"
+_TEXT_ROUTES = (CHAT_ROUTE, SPEAK_ROUTE, CLIP_ROUTE)
+_CONTROL_ROUTES = ("/api/voice/start", "/api/voice/stop", "/api/mic/mute") + _TEXT_ROUTES
 
 
 def default_dist_dir() -> Path:
@@ -369,6 +452,18 @@ class Controls:
     stop_voice: Optional[Callable[[], dict[str, Any]]] = None
     set_mute: Optional[Callable[[bool], dict[str, Any]]] = None
     status: Optional[Callable[[], dict[str, Any]]] = None
+    #: ``chat(message) -> {"ok", "reply", "sources", "turn_serial", "code", "http_status"}``.
+    #: ``message`` is the JSON value of ``"message"`` as received (any type; the text layer
+    #: refuses a non-string). Runs under :attr:`ServerConfig.chat_timeout_s`.
+    chat: Optional[Callable[[Any], dict[str, Any]]] = None
+    #: ``speak(text) -> {"ok", "audio": bytes, "content_type", "code", "http_status"}``.
+    #: Runs under :attr:`ServerConfig.speak_timeout_s`.
+    speak: Optional[Callable[[Any], dict[str, Any]]] = None
+    #: ``clip(audio, declared_duration_s) -> {"ok", "transcript", "reply", "code",
+    #: "http_status"}``. ``declared_duration_s`` is ``None`` unless the client sent a
+    #: finite, non-negative ``X-Clip-Duration-S``. Runs under
+    #: :attr:`ServerConfig.clip_timeout_s`; the body is already inside ``MAX_CLIP_BYTES``.
+    clip: Optional[Callable[[bytes, Optional[float]], dict[str, Any]]] = None
 
 
 @dataclass(frozen=True)
@@ -389,6 +484,15 @@ class ServerConfig:
     max_body_bytes: int = DEFAULT_MAX_BODY_BYTES
     control_timeout_s: float = DEFAULT_CONTROL_TIMEOUT_S
     control_workers: int = DEFAULT_CONTROL_WORKERS
+    chat_timeout_s: float = DEFAULT_CHAT_TIMEOUT_S
+    speak_timeout_s: float = DEFAULT_SPEAK_TIMEOUT_S
+    clip_timeout_s: float = DEFAULT_CLIP_TIMEOUT_S
+    text_body_max_bytes: int = TEXT_BODY_MAX_BYTES
+    clip_max_bytes: int = MAX_CLIP_BYTES
+    clip_read_deadline_s: float = CLIP_READ_DEADLINE_S
+    access_stream_max_s: float = ACCESS_STREAM_MAX_S
+    #: Epoch seconds. Injectable so a test can move the clock instead of waiting on it.
+    wall_clock: Callable[[], float] = time.time
     stream_poll_s: float = DEFAULT_STREAM_POLL_S
     keepalive_s: float = DEFAULT_KEEPALIVE_S
     socket_timeout_s: float = DEFAULT_SOCKET_TIMEOUT_S
@@ -429,6 +533,7 @@ class _Counters:
     streams_refused: int = 0
     streams_disconnected: int = 0
     streams_timed_out: int = 0
+    streams_expired: int = 0
     events_streamed: int = 0
     events_dropped_for_secret: int = 0
     controls_timed_out: int = 0
@@ -507,7 +612,7 @@ class _Handler(BaseHTTPRequestHandler):
                 self._refuse_unread(decision.status, decision.code, decision.reason)
                 return
             app._count_request()
-            self._route(method)
+            self._route(method, decision)
         except Exception as exc:  # noqa: BLE001  # a handler that raises kills a thread silently
             app._degrade(
                 "http-request-failed",
@@ -515,13 +620,13 @@ class _Handler(BaseHTTPRequestHandler):
             )
             self._safe_error(500, "http-request-failed", "the request could not be answered")
 
-    def _route(self, method: str) -> None:
+    def _route(self, method: str, decision: Any = None) -> None:
         route = self.path.split("?", 1)[0].split("#", 1)[0]
         if route == STREAM_ROUTE:
             if method != "GET":
                 self._refuse_unread(405, "http-method-not-allowed", "the stream is GET only")
                 return
-            self._stream()
+            self._stream(decision)
             return
         if route == "/api/status":
             if method not in ("GET", "HEAD"):
@@ -533,7 +638,10 @@ class _Handler(BaseHTTPRequestHandler):
             if method != "POST":
                 self._refuse_unread(405, "http-method-not-allowed", "this control is POST only")
                 return
-            self._control(route)
+            if route in _TEXT_ROUTES:
+                self._text_route(route)
+            else:
+                self._control(route)
             return
         if route.startswith("/api/"):
             self._refuse_unread(404, "http-unknown-route", "no such API route")
@@ -588,7 +696,8 @@ class _Handler(BaseHTTPRequestHandler):
         self._send(status, body, _JSON_CONTENT_TYPE, head=head)
 
     def _send_error(self, status: int, code: str, message: str) -> None:
-        self._send_json(status, {"error": {"code": code, "message": message}})
+        """``error.code`` and, for the web client's contract, ``code`` at the top too."""
+        self._send_json(status, {"code": code, "error": {"code": code, "message": message}})
 
     def _refuse_unread(self, status: int, code: str, message: str) -> None:
         """An error answered BEFORE the request body was read.
@@ -615,8 +724,27 @@ class _Handler(BaseHTTPRequestHandler):
 
     # ── the control API ──────────────────────────────────────────────────────
 
-    def _read_body(self) -> Optional[bytes]:
-        """The body, or ``None`` when it was refused (the answer is already sent)."""
+    def _read_body(
+        self,
+        *,
+        limit: Optional[int] = None,
+        require_length: bool = False,
+        read_deadline_s: Optional[float] = None,
+    ) -> Optional[bytes]:
+        """The body, or ``None`` when it was refused (the answer is already sent).
+
+        ``limit`` overrides the generic bound; ``require_length`` refuses a request with no
+        ``Content-Length`` (or a chunked one) with 411 before reading; ``read_deadline_s``
+        bounds the whole read, not each ``recv``.
+        """
+        limit = self._app.config.max_body_bytes if limit is None else limit
+        if require_length and (
+            self.headers.get("Content-Length") is None
+            or self.headers.get("Transfer-Encoding") is not None
+        ):
+            self._app._degrade(LENGTH_REQUIRED_CODE, "an upload carried no usable Content-Length")
+            self._refuse_unread(411, LENGTH_REQUIRED_CODE, "a Content-Length is required")
+            return None
         raw_length = self.headers.get("Content-Length", "0") or "0"
         try:
             length = int(str(raw_length).strip())
@@ -624,16 +752,17 @@ class _Handler(BaseHTTPRequestHandler):
             self._app._degrade(BAD_REQUEST_CODE, "a request carried an unparseable Content-Length")
             self._refuse_unread(400, BAD_REQUEST_CODE, "Content-Length is not a number")
             return None
-        if length < 0 or length > self._app.config.max_body_bytes:
+        if length < 0 or length > limit:
             self._app._degrade(
-                BODY_TOO_LARGE_CODE,
-                f"a request body exceeded the {self._app.config.max_body_bytes}-byte bound",
+                BODY_TOO_LARGE_CODE, f"a request body exceeded the {limit}-byte bound"
             )
             self.close_connection = True
             self._send_error(413, BODY_TOO_LARGE_CODE, "the request body is too large")
             return None
         try:
-            return self.rfile.read(length) if length else b""
+            if read_deadline_s is None:
+                return self.rfile.read(length) if length else b""
+            return self._read_bounded(length, read_deadline_s)
         except OSError as exc:
             self._app._degrade(
                 BAD_REQUEST_CODE, f"a request body could not be read: {describe_exception(exc)}"
@@ -658,6 +787,117 @@ class _Handler(BaseHTTPRequestHandler):
             return
         callable_ = controls.start_voice if route.endswith("start") else controls.stop_voice
         self._invoke(route, callable_)
+
+    def _read_bounded(self, length: int, deadline_s: float) -> Optional[bytes]:
+        """*length* bytes inside a TOTAL deadline. ``None`` (answered) when it is not met."""
+        end = time.monotonic() + deadline_s
+        chunks: list[bytes] = []
+        remaining = length
+        while remaining > 0:
+            if time.monotonic() >= end:
+                self._app._degrade(BAD_REQUEST_CODE, "an upload was not received in time")
+                self.close_connection = True
+                self._send_error(408, BAD_REQUEST_CODE, "the upload took too long")
+                return None
+            chunk = self.rfile.read(min(_CLIP_CHUNK_BYTES, remaining))
+            if not chunk:
+                self._app._degrade(BAD_REQUEST_CODE, "an upload ended before its Content-Length")
+                self.close_connection = True
+                self._send_error(400, BAD_REQUEST_CODE, "the upload was cut short")
+                return None
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        return b"".join(chunks)
+
+    def _text_route(self, route: str) -> None:
+        app = self._app
+        config = app.config
+        controls = app.controls
+        if route == CLIP_ROUTE:
+            body = self._read_body(
+                limit=config.clip_max_bytes,
+                require_length=True,
+                read_deadline_s=config.clip_read_deadline_s,
+            )
+            if body is None:
+                return
+            outcome = app.call_control(
+                "api.clip",
+                controls.clip,
+                body,
+                _declared_duration(self.headers.get("X-Clip-Duration-S")),
+                timeout_s=config.clip_timeout_s,
+            )
+            self._answer_text(outcome, ("transcript", "reply"))
+            return
+        body = self._read_body(limit=config.text_body_max_bytes)
+        if body is None:
+            return
+        key = "message" if route == CHAT_ROUTE else "text"
+        payload = _parse_object(body)
+        if payload is None:
+            self._send_error(400, BAD_REQUEST_CODE, f'the body must be {{"{key}": ...}}')
+            return
+        value = payload.get(key)
+        if route == CHAT_ROUTE:
+            outcome = app.call_control(
+                "api.chat", controls.chat, value, timeout_s=config.chat_timeout_s
+            )
+            self._answer_text(outcome, ("reply",), chat=True)
+            return
+        outcome = app.call_control(
+            "api.speak", controls.speak, value, timeout_s=config.speak_timeout_s
+        )
+        self._answer_speak(outcome)
+
+    def _text_refusal(self, outcome: ControlOutcome) -> bool:
+        """Answer a transport-level failure (unbound, slow, raised). ``True`` if answered."""
+        if outcome.ok:
+            return False
+        self._send_error(outcome.status, outcome.code, outcome.message)
+        return True
+
+    def _layer_refusal(self, result: dict[str, Any]) -> bool:
+        """Answer ``ok`` not true from the text layer with its own code and status."""
+        if result.get("ok") is True:
+            return False
+        code = result.get("code")
+        code = _safe_token(code) if isinstance(code, str) and code else TEXT_REFUSED_CODE
+        status = result.get("http_status")
+        if not isinstance(status, int) or isinstance(status, bool) or not 400 <= status <= 599:
+            status = 502
+        self._app._degrade(TEXT_REFUSED_CODE, f"a text route answered {status} ({code})")
+        self._send_error(status, code, "the request was refused")
+        return True
+
+    def _answer_text(
+        self, outcome: ControlOutcome, fields: tuple[str, ...], *, chat: bool = False
+    ) -> None:
+        if self._text_refusal(outcome) or self._layer_refusal(outcome.result):
+            return
+        result = outcome.result
+        reply: dict[str, Any] = {"ok": True, "code": ""}
+        for name in fields:
+            value = result.get(name, "")
+            reply[name] = value if isinstance(value, str) else ""
+        if chat:
+            sources = result.get("sources")
+            reply["sources"] = sources if isinstance(sources, list) else []
+            serial = result.get("turn_serial")
+            reply["turn_serial"] = serial if isinstance(serial, int) else None
+        self._send_json(200, reply)
+
+    def _answer_speak(self, outcome: ControlOutcome) -> None:
+        if self._text_refusal(outcome) or self._layer_refusal(outcome.result):
+            return
+        audio = outcome.result.get("audio")
+        if not isinstance(audio, (bytes, bytearray)) or not audio:
+            self._app._degrade(TEXT_REFUSED_CODE, "a speak route had no audio to send")
+            self._send_error(502, "speak-no-audio", "no audio was produced")
+            return
+        kind = outcome.result.get("content_type")
+        kind = kind if isinstance(kind, str) and kind.startswith("audio/") else "audio/wav"
+        self._send(200, bytes(audio), _safe_header_value(kind))
 
     def _invoke(self, route: str, action: Optional[Callable[..., Any]], *args: Any) -> None:
         label = route.replace("/", ".").strip(".")
@@ -711,7 +951,7 @@ class _Handler(BaseHTTPRequestHandler):
 
     # ── the stream ───────────────────────────────────────────────────────────
 
-    def _stream(self) -> None:
+    def _stream(self, decision: Any = None) -> None:
         app = self._app
         bus = app.bus
         if bus is None:
@@ -732,7 +972,7 @@ class _Handler(BaseHTTPRequestHandler):
         try:
             subscription = bus.subscribe(include_speech=app.config.include_speech)
             app._track(subscription)
-            self._pump(subscription)
+            self._pump(subscription, self._expiry(decision))
         except Exception as exc:  # noqa: BLE001  # a dead stream must not kill the daemon
             app._degrade(STREAM_FAILED_CODE, f"a stream ended: {describe_exception(exc)}")
         finally:
@@ -748,8 +988,23 @@ class _Handler(BaseHTTPRequestHandler):
             app._release_stream()
             self.close_connection = True
 
-    def _pump(self, subscription: Any) -> None:
-        """Write events until the client goes, the server stops, or it breaks."""
+    def _expiry(self, decision: Any) -> Optional[float]:
+        """When this stream must end (epoch seconds), or ``None`` for "never".
+
+        A secret-admitted stream does not expire. An Access-admitted one ends when the
+        assertion's ``exp`` passes - or, when the verifier reported none, after
+        :attr:`ServerConfig.access_stream_max_s` (the conservative choice).
+        """
+        if getattr(decision, "admitted_by", "") != guard_module.ADMITTED_BY_ACCESS:
+            return None
+        config = self._app.config
+        exp = getattr(decision, "expires_at", None)
+        if isinstance(exp, (int, float)) and math.isfinite(exp):
+            return float(exp)
+        return config.wall_clock() + config.access_stream_max_s
+
+    def _pump(self, subscription: Any, expires_at: Optional[float] = None) -> None:
+        """Write events until the client goes, the server stops, it breaks, or its token expires."""
         app = self._app
         config = app.config
         self.send_response(200)
@@ -764,7 +1019,15 @@ class _Handler(BaseHTTPRequestHandler):
             return
         last_write = time.monotonic()
         while not app.stopping:
-            event = subscription.get(timeout=config.stream_poll_s)
+            wait_s = config.stream_poll_s
+            if expires_at is not None:
+                left = expires_at - config.wall_clock()
+                if left <= 0:
+                    app._count_stream_expired()
+                    self._write(f": {STREAM_EXPIRED_REASON}\n\n")
+                    return
+                wait_s = min(wait_s, max(0.01, left))
+            event = subscription.get(timeout=wait_s)
             now = time.monotonic()
             if event is None:
                 if now - last_write < config.keepalive_s:
@@ -873,6 +1136,29 @@ def _safe_token(kind: object) -> str:
         "".join(character for character in text if character.isalnum() or character in "._-")[:40]
         or "event"
     )
+
+
+def _parse_object(body: bytes) -> Optional[dict[str, Any]]:
+    """A JSON object, or ``None`` ("refuse this")."""
+    try:
+        payload = json.loads(body.decode("utf-8"))
+    except ValueError:
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
+def _declared_duration(raw: Optional[str]) -> Optional[float]:
+    """``X-Clip-Duration-S`` as a finite, non-negative float; anything else is ``None``."""
+    try:
+        value = float(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) and value >= 0 else None
+
+
+def _safe_header_value(value: str) -> str:
+    """A content type with no control characters (it came from a callable)."""
+    return "".join(ch for ch in value if ch.isprintable())[:100] or "audio/wav"
 
 
 def _parse_muted(body: bytes) -> Optional[bool]:
@@ -1128,7 +1414,11 @@ class DashboardServer:
     # ── controls, on a deadline the caller does not have to trust ────────────
 
     def call_control(
-        self, label: str, action: Optional[Callable[..., Any]], *args: Any
+        self,
+        label: str,
+        action: Optional[Callable[..., Any]],
+        *args: Any,
+        timeout_s: Optional[float] = None,
     ) -> ControlOutcome:
         """Run *action* under :attr:`ServerConfig.control_timeout_s`. Never raises.
 
@@ -1194,9 +1484,11 @@ class DashboardServer:
                 message="the server is shutting down",
             )
         future.add_done_callback(lambda _future: self._release_control())
-        return self._await_control(label, future)
+        return self._await_control(label, future, timeout_s)
 
-    def _await_control(self, label: str, future: "Future[Any]") -> ControlOutcome:
+    def _await_control(
+        self, label: str, future: "Future[Any]", timeout_s: Optional[float] = None
+    ) -> ControlOutcome:
         """Wait the deadline, then answer with or without the callable.
 
         ``wait()`` rather than ``future.result(timeout=…)`` deliberately: in
@@ -1205,7 +1497,9 @@ class DashboardServer:
         the daemon) would be reported as a control that never answered. Asking
         whether the future is done separates the two.
         """
-        deadline = max(0.0, float(self.config.control_timeout_s))
+        deadline = max(
+            0.0, float(self.config.control_timeout_s if timeout_s is None else timeout_s)
+        )
         done, _pending = wait([future], timeout=deadline)
         if not done:
             with self._lock:
@@ -1284,6 +1578,10 @@ class DashboardServer:
     def _count_disconnect(self) -> None:
         with self._lock:
             self._counters.streams_disconnected += 1
+
+    def _count_stream_expired(self) -> None:
+        with self._lock:
+            self._counters.streams_expired += 1
 
     def _count_stream_timeout(self) -> None:
         with self._lock:
