@@ -102,6 +102,10 @@ before relying): `senses` and `worker` ready but proxied, `gemma2-embed`
     under it, behaviour unchanged; Sonar's four new-code reliability findings
     are cleared.
   - `CLAUDE.md`'s loopback rule states the q1 boundary the guard enforces.
+  - SonarCloud's remaining new-code smells are cleared (union type hints,
+    named constants for repeated literals, one call per `pytest.raises`), and
+    `RoomMemory` takes its test seams as one `MemorySeams` and its
+    semantic-recall settings as one `SemanticRecall` (20 parameters -> 11).
 
 ## [0.16.0] - 2026-09-22
 
