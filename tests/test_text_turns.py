@@ -345,3 +345,52 @@ class TestHttpTranscribe:
 
     def test_key_not_in_repr(self):
         assert "secret" not in repr(TextTurnsConfig(api_key="secret"))
+
+
+def _wav(seconds: float, *, rate: int, channels: int) -> bytes:
+    out = io.BytesIO()
+    with wave.open(out, "wb") as w:
+        w.setnchannels(channels)
+        w.setsampwidth(2)
+        w.setframerate(rate)
+        w.writeframes(b"\x00\x00" * channels * int(seconds * rate))
+    return out.getvalue()
+
+
+class TestTheClipClocksAreMeasured:
+    """t23: the clip cap and the stt clock, from the measurement (lapse l3)."""
+
+    def test_a_clip_is_at_most_a_minute(self):
+        assert T.MAX_CLIP_SECONDS == 60.0
+        assert TextTurnsConfig().max_clip_seconds == 60.0
+
+    def test_the_stt_factor_is_the_measured_max_not_an_assumption(self):
+        # docs/live-test-results/2026-10-23-recall-gemma2.md, lapse l3: seconds of
+        # transcription per second of audio, median 0.314, p90 0.497, max 0.614 (n=28).
+        assert T.STT_SECONDS_PER_AUDIO_SECOND == 0.614
+        assert not hasattr(T, "_STT_ASSUMED_REALTIME_FACTOR")
+        assert T.STT_DEADLINE_S == pytest.approx(10.0 + 60.0 * 0.614)
+        assert TextTurnsConfig().stt_deadline == T.STT_DEADLINE_S
+
+    def test_the_byte_cap_is_one_uncompressed_minute_and_no_more(self):
+        # The heaviest uncompressed upload sized for: 48 kHz, 16-bit, stereo.
+        minute = _wav(T.MAX_CLIP_SECONDS, rate=48000, channels=2)
+        assert len(minute) <= T.MAX_CLIP_BYTES
+        assert T.MAX_CLIP_BYTES < 12 * 1000 * 1000, "sized for 60 s, not the old 300 s"
+        assert T.MAX_CLIP_BYTES - len(minute) <= 64 * 1024
+
+    def test_a_full_minute_at_the_heaviest_rate_is_accepted(self):
+        tt, _ = make(stt=lambda *a: "hi")
+        assert tt.handle_clip(_wav(60.0, rate=48000, channels=2)).ok
+
+    def test_a_minute_and_a_bit_is_refused_by_duration(self):
+        called = []
+        tt, _ = make(stt=lambda *a: called.append(a) or "x")
+        r = tt.handle_clip(make_wav(61.0))
+        assert r.http_status == 413 and r.code == T.REFUSED_CLIP_TOO_LONG and not called
+
+    def test_the_dashboard_recorder_stops_at_the_same_cap(self):
+        source = (
+            Path(__file__).resolve().parent.parent / "web/src/components/AudioControls.tsx"
+        ).read_text(encoding="utf-8")
+        assert f"MAX_CLIP_SECONDS = {int(T.MAX_CLIP_SECONDS)};" in source

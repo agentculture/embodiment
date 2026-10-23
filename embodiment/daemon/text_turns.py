@@ -83,6 +83,7 @@ __all__ = [
     "MAX_TRANSCRIPT_BYTES",
     "MAX_SPEAK_AUDIO_BYTES",
     "STT_DEADLINE_S",
+    "STT_SECONDS_PER_AUDIO_SECOND",
     "SPEAK_DEADLINE_S",
     "TEXT_TURN_FAILED",
     "TEXT_TURN_NO_SESSION",
@@ -113,16 +114,34 @@ TRANSCRIPTION_ROUTE = "/v1/audio/transcriptions"
 #: this package already treats as sane; bounds prompt size against a paste.
 MAX_TEXT_CHARS = 4000
 
-#: Bounds an uploaded clip's duration, in seconds. A **judgement call**: five
-#: minutes covers a spoken question or a short memo; it bounds stt latency
-#: (see :data:`STT_DEADLINE_S`) and the memory one clip may hold.
-MAX_CLIP_SECONDS = 300.0
+#: Bounds an uploaded clip's duration, in seconds. A **judgement call** on what a
+#: clip is for — a spoken question or a short memo, not a recording session —
+#: cut from 300 s to 60 s by t23 once the stt clock behind it was measured: it
+#: bounds stt latency (see :data:`STT_DEADLINE_S`) and the memory one clip may
+#: hold. The dashboard's recorder stops itself under it (``MAX_CLIP_SECONDS`` in
+#: ``web/src/components/AudioControls.tsx``, pinned equal by a test).
+MAX_CLIP_SECONDS = 60.0
+
+#: The heaviest UNCOMPRESSED audio a client may upload, in bytes per second:
+#: 48 kHz, 16-bit, stereo (a phone or desktop WAV at its native rate). The
+#: gateway's own pcm16 mono 24 kHz is a quarter of it; compressed containers
+#: (WebM/Opus, Ogg/Opus, MP4) are two orders smaller — 60 s of Opus is a few
+#: hundred KB.
+_HEAVIEST_UNCOMPRESSED_BYTES_PER_S = 48_000 * 2 * 2
+
+#: Room for a WAV header and its optional chunks (``LIST``, ``fact``) beyond the
+#: samples. The canonical header is 44 bytes; 64 KiB is generous for metadata
+#: and still under 1% of the cap.
+_CONTAINER_HEADROOM_BYTES = 64 * 1024
 
 #: Bounds an uploaded clip's size in bytes, and is the ONLY bound for a
-#: container whose duration cannot be read (WebM/MP4). Sized from
-#: :data:`MAX_CLIP_SECONDS` at pcm16 mono 24 kHz (the heaviest format the
-#: gateway speaks): 300 s * 48000 B/s = 14.4 MB, rounded up to 16 MiB.
-MAX_CLIP_BYTES = 16 * 1024 * 1024
+#: container whose duration cannot be read (WebM/MP4). Sized to hold
+#: :data:`MAX_CLIP_SECONDS` of the heaviest uncompressed upload and no more:
+#: 60 s * 192 000 B/s = 11.52 MB, plus the header headroom (11 585 536 B). The
+#: old 16 MiB was sized for 300 s of pcm16 mono 24 kHz.
+MAX_CLIP_BYTES = int(MAX_CLIP_SECONDS * _HEAVIEST_UNCOMPRESSED_BYTES_PER_S) + (
+    _CONTAINER_HEADROOM_BYTES
+)
 
 #: Bounds the stt response body read. A transcript of :data:`MAX_CLIP_SECONDS`
 #: of speech is far under this (a few KB); it only stops a hostile gateway.
@@ -132,14 +151,20 @@ MAX_TRANSCRIPT_BYTES = 256 * 1024
 #: (5.76 MB). A **judgement call** — a chat message read aloud is seconds.
 MAX_SPEAK_AUDIO_BYTES = 120 * SAMPLE_RATE_HZ * BYTES_PER_SAMPLE
 
-#: A **judgement call** on how much faster than real time the stt lane runs
-#: (unmeasured until t21); it only sizes :data:`STT_DEADLINE_S`.
-_STT_ASSUMED_REALTIME_FACTOR = 10.0
+#: Seconds of transcription per second of audio on the local ``stt`` lane
+#: (``ivrit-ai/whisper-large-v3-turbo``), MEASURED: the max of n = 28 synthetic
+#: Hebrew clips of 1-8.8 s (median 0.314, p90 0.497, max 0.614), lapse l3 in
+#: ``docs/live-test-results/2026-10-23-recall-gemma2.md``. The max, not the
+#: median, because this sizes a deadline. Speed only, synthetic speech, clips
+#: far shorter than the cap: a 60 s clip at this rate is an extrapolation.
+#: Replaced ``_STT_ASSUMED_REALTIME_FACTOR = 10.0`` (an assumption, lapse l3).
+STT_SECONDS_PER_AUDIO_SECOND = 0.614
 
 #: Bounds the whole transcription call, connect to last body byte. Derived from
-#: the quantity it bounds (lesson 1): the longest accepted clip at the assumed
-#: speed, plus 10 s for connect and model queueing.
-STT_DEADLINE_S = 10.0 + MAX_CLIP_SECONDS / _STT_ASSUMED_REALTIME_FACTOR
+#: the quantity it bounds (lesson 1): the longest accepted clip at the measured
+#: worst speed, plus 10 s for connect and model queueing (a **judgement call**):
+#: 10 + 60 * 0.614 = 46.84 s.
+STT_DEADLINE_S = 10.0 + MAX_CLIP_SECONDS * STT_SECONDS_PER_AUDIO_SECOND
 
 #: Bounds one whole ``speak_message`` (every sentence's synthesis together).
 #: A **judgement call**: a message of a few sentences at the voice's ~seconds

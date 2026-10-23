@@ -1,6 +1,21 @@
 import { useRef, useState } from "react";
 import { postClip, speakMessage, type AudioClientOptions } from "../api/audio";
 
+/**
+ * The longest clip the daemon accepts, in seconds. Mirrors
+ * `embodiment.daemon.text_turns.MAX_CLIP_SECONDS` (a Python test pins the two
+ * equal): the stt clock behind it is derived from the measured transcription
+ * speed (docs/live-test-results/2026-10-23-recall-gemma2.md).
+ */
+export const MAX_CLIP_SECONDS = 60;
+
+/**
+ * When a recording stops by itself. One second under the cap, so the
+ * recorder's own stop latency cannot push the declared duration past the
+ * daemon's refusal and lose a forgotten recording.
+ */
+export const RECORD_LIMIT_MS = (MAX_CLIP_SECONDS - 1) * 1000;
+
 export interface ClipReply {
   transcript: string;
   reply: string;
@@ -72,6 +87,7 @@ export function AudioControls({ secret, onReply, clientOptions, s2sRole }: Audio
   const [error, setError] = useState<string | null>(null);
   const recorder = useRef<MediaRecorder | null>(null);
   const startedAt = useRef(0);
+  const limit = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   async function send(clip: Blob, durationS?: number) {
     setBusy(true);
@@ -113,6 +129,10 @@ export function AudioControls({ secret, onReply, clientOptions, s2sRole }: Audio
         if (ev.data && ev.data.size > 0) chunks.push(ev.data);
       };
       rec.onstop = () => {
+        if (limit.current !== null) {
+          clearTimeout(limit.current);
+          limit.current = null;
+        }
         stream.getTracks().forEach((t) => t.stop());
         recorder.current = null;
         setRecording(false);
@@ -122,6 +142,7 @@ export function AudioControls({ secret, onReply, clientOptions, s2sRole }: Audio
       recorder.current = rec;
       startedAt.current = Date.now();
       rec.start();
+      limit.current = setTimeout(stopRecording, RECORD_LIMIT_MS);
       setRecording(true);
     } catch {
       stream.getTracks().forEach((t) => t.stop());

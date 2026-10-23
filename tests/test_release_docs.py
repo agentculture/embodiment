@@ -53,11 +53,15 @@ SHIPPED_NOT_LISTED = ("cloudflare access", "semantic recall", "phone voice")
 
 #: Still unmeasured at this release; the README status must say so, by name.
 STILL_UNMEASURED = (
-    "uncalibrated",
+    "provisional",
     "follow-up window",
     "webm",
     "recall-gemma2",
 )
+
+#: t18's published recall measurement (t23 acted on it). The README Status
+#: cites it by name and quotes the numbers it changed, with their n.
+RECALL_RESULTS_FILE = "docs/live-test-results/2026-10-23-recall-gemma2.md"
 
 #: The two tools the daemon binds (``d7`` remember, ``d8`` forget). Both
 #: surfaces must name both, in the same ``## Not yet`` section that used to
@@ -158,7 +162,21 @@ def test_readme_status_names_what_is_still_unmeasured(readme: str) -> None:
     assert not missing, f"README Status does not say these are unmeasured: {missing}"
 
 
-def test_readme_status_cites_no_recall_numbers(readme: str) -> None:
-    # t18 measures recall; until its file lands the README quotes no hit rate.
-    status = _section(readme, "Status").lower()
-    assert "hit rate" in status and "forthcoming" in status
+def test_readme_status_cites_the_recall_measurement_it_quotes(readme: str) -> None:
+    # t18's file landed; t23 applied it. Every recall number the README quotes
+    # comes with the file it came from and stays marked provisional.
+    status = _section(readme, "Status")
+    assert RECALL_RESULTS_FILE in status
+    assert "0.715" in status and "n = " in status
+    lowered = status.lower()
+    assert "uncalibrated" not in lowered, "the threshold is calibrated, provisionally"
+    assert "forthcoming" not in lowered, "the recall measurement is published"
+    assert "40 s clip deadline" not in lowered, "the stt clock is measured now"
+
+
+@pytest.mark.parametrize("surface", ["readme", "explain_root"])
+def test_no_surface_still_calls_the_old_threshold_the_default(
+    surface: str, request: pytest.FixtureRequest
+) -> None:
+    text = request.getfixturevalue(surface)
+    assert "`0.78`" not in text and "<date>-recall-gemma2" not in text

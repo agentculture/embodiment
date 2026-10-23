@@ -42,13 +42,20 @@ on the public Host, the one configured with `--public-hostname` /
 unset, no Host is public; the three `EMBODIMENT_ACCESS_*` names are set
 together or not at all) and semantic recall (`gemma2-embed` over a 0600 vector
 cache; `EMBODIMENT_RECALL_MODE=keyword` is the rollback, and the d5
-exact-substring fallback still serves Hebrew there). **Still unmeasured, and
-not claimed:** recall hit rate and latency, keyword versus semantic
-(`docs/live-test-results/<date>-recall-gemma2.md` is forthcoming); the `0.78`
-similarity threshold (uncalibrated); the follow-up window (off by default); the
-`stt` speed behind the 40 s clip deadline; the 30 s completion bound behind the
-chat timeout; whether `stt` accepts MediaRecorder webm/mp4, and its duration
-cap; load on orin. `tests/test_release_docs.py` pins the boundary and the
+exact-substring fallback still serves Hebrew there). **Measured once, on this
+rig** (`docs/live-test-results/2026-10-23-recall-gemma2.md`, aggregates only,
+model-written queries) **and applied by t23:** the similarity threshold is
+`0.715`, **provisional** (hit@5 39/48, false positives 2/44, chosen in-sample;
+one held-out fold 2/22 = 9%; easy negatives, so a floor); the recall bound is
+derived per recall from the active store (embed p90 161 ms + 0.13 ms/record +
+0.15 s, capped at 3 s — `daemon/app.py:derive_recall_deadline`), while a spoken
+turn still waits only the 0.25 s head start; status warns past ~400 and ~600
+active records; clips are capped at 60 s with a 46.8 s `stt` clock from the
+measured max 0.614 s per audio second (n = 28, synthetic, speed only); the 30 s
+completion bound stays (measured `senses` max 5.1 s, n = 30, so it does not
+censor). **Still unmeasured, and not claimed:** precision against a realistic
+distractor pool; the follow-up window (off by default); whether `stt` accepts
+MediaRecorder webm/mp4, and its duration cap; load on orin. `tests/test_release_docs.py` pins the boundary and the
 not-yet list against the README and the `explain` root.
 
 - **Spec:** `docs/specs/2026-09-21-realtime-embodiment-app.md` — 50 claims, 33
