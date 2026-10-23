@@ -359,7 +359,7 @@ def test_a_hung_store_never_holds_a_pass_past_its_budget(
         tmp_path / "store",
         scope="gwen",
         ingest_scope=mem.INGEST_SCOPE,
-        remember_fn=hung_remember,
+        seams=mem.MemorySeams(remember_fn=hung_remember),
     )
     try:
         assert spool.enqueue("ingest", _pocket("r1", 3)).ok
@@ -403,7 +403,10 @@ def test_a_transient_failure_is_recorded_once_and_backs_off(
         return continuity.remember(record, **kw)
 
     room = mem.RoomMemory(
-        tmp_path / "store", scope="gwen", ingest_scope=mem.INGEST_SCOPE, remember_fn=flaky
+        tmp_path / "store",
+        scope="gwen",
+        ingest_scope=mem.INGEST_SCOPE,
+        seams=mem.MemorySeams(remember_fn=flaky),
     )
     try:
         assert spool.enqueue("ingest", _pocket("r1", 2)).ok
@@ -666,7 +669,10 @@ def test_a_failed_retention_archive_is_recorded_and_retried(
         return continuity.archive(record_id, **kw)
 
     room = mem.RoomMemory(
-        tmp_path / "store", scope="gwen", ingest_scope=mem.INGEST_SCOPE, archive_fn=flaky_archive
+        tmp_path / "store",
+        scope="gwen",
+        ingest_scope=mem.INGEST_SCOPE,
+        seams=mem.MemorySeams(archive_fn=flaky_archive),
     )
     try:
         d = _drain(spool, room, clock, rec)
@@ -770,7 +776,10 @@ def test_a_clock_stepped_backwards_does_not_stretch_a_backoff(
         return continuity.remember(record, **kw)
 
     room = mem.RoomMemory(
-        tmp_path / "store", scope="gwen", ingest_scope=mem.INGEST_SCOPE, remember_fn=flaky
+        tmp_path / "store",
+        scope="gwen",
+        ingest_scope=mem.INGEST_SCOPE,
+        seams=mem.MemorySeams(remember_fn=flaky),
     )
     try:
         assert spool.enqueue("ingest", _pocket("r1", 1)).ok

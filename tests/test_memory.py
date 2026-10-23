@@ -358,7 +358,9 @@ class TestTheStoreLockCannotStallATurn:
     def test_a_remember_is_not_blocked_by_an_abandoned_recall(self, tmp_path: Path) -> None:
         """The measured defect: 0.10 s recall, then a 5.90 s ``remember``."""
         release, entered = threading.Event(), threading.Event()
-        room = mem.RoomMemory(tmp_path / "store", recall_fn=self._hung(release, entered))
+        room = mem.RoomMemory(
+            tmp_path / "store", seams=mem.MemorySeams(recall_fn=self._hung(release, entered))
+        )
         try:
             assert room.recall("anything", deadline=0.05).ok is False
             assert entered.wait(timeout=_PROMPT_SECONDS), "the hung recall never took the lock"
@@ -378,7 +380,9 @@ class TestTheStoreLockCannotStallATurn:
 
     def test_a_second_recall_is_not_blocked_by_an_abandoned_one(self, tmp_path: Path) -> None:
         release, entered = threading.Event(), threading.Event()
-        room = mem.RoomMemory(tmp_path / "store", recall_fn=self._hung(release, entered))
+        room = mem.RoomMemory(
+            tmp_path / "store", seams=mem.MemorySeams(recall_fn=self._hung(release, entered))
+        )
         try:
             assert room.recall("first", deadline=0.05).ok is False
             assert entered.wait(timeout=_PROMPT_SECONDS)
@@ -408,7 +412,9 @@ class TestTheStoreLockCannotStallATurn:
         """
         release, entered = threading.Event(), threading.Event()
         room = mem.RoomMemory(
-            contained["store"], scope="room", recall_fn=self._hung(release, entered)
+            contained["store"],
+            scope="room",
+            seams=mem.MemorySeams(recall_fn=self._hung(release, entered)),
         )
         try:
             assert room.recall("anything", deadline=0.05).ok is False
@@ -439,7 +445,7 @@ class TestTheStoreLockCannotStallATurn:
             release.wait(timeout=30)
             raise OSError("the store is gone")
 
-        room = mem.RoomMemory(tmp_path / "store", remember_fn=failing_write)
+        room = mem.RoomMemory(tmp_path / "store", seams=mem.MemorySeams(remember_fn=failing_write))
         try:
             result = room.remember("a fact", deadline=0.05)
             assert result.degradation is not None
@@ -487,7 +493,9 @@ class TestSaturation:
             release.wait(timeout=30)
             return _outcome()
 
-        room = mem.RoomMemory(tmp_path / "store", recall_fn=hang, max_workers=1, max_inflight=2)
+        room = mem.RoomMemory(
+            tmp_path / "store", max_workers=1, max_inflight=2, seams=mem.MemorySeams(recall_fn=hang)
+        )
         try:
             # Fill every in-flight slot.
             for _ in range(2):
@@ -515,7 +523,9 @@ class TestSaturation:
             release.wait(timeout=30)
             return _outcome()
 
-        room = mem.RoomMemory(tmp_path / "store", recall_fn=hang, max_workers=1, max_inflight=1)
+        room = mem.RoomMemory(
+            tmp_path / "store", max_workers=1, max_inflight=1, seams=mem.MemorySeams(recall_fn=hang)
+        )
         try:
             assert room.recall("fill", deadline=0.05).ok is False
             result = room.remember("a fact nobody will store", deadline=0.05)
@@ -532,7 +542,9 @@ class TestSaturation:
 
     def test_slots_are_returned_when_work_completes(self, tmp_path: Path) -> None:
         room = mem.RoomMemory(
-            tmp_path / "store", recall_fn=lambda *a, **k: _outcome(), max_inflight=1
+            tmp_path / "store",
+            max_inflight=1,
+            seams=mem.MemorySeams(recall_fn=lambda *a, **k: _outcome()),
         )
         try:
             assert room.recall("one", deadline=10.0).ok is True
@@ -581,7 +593,9 @@ class TestCloseAccountsForWhatIsUnfinished:
     def test_close_names_the_writes_it_could_not_confirm(self, tmp_path: Path) -> None:
         """The headline requirement: unfinished work is named, not merely counted."""
         release, entered = threading.Event(), threading.Event()
-        room = mem.RoomMemory(tmp_path / "store", remember_fn=self._held(release, entered))
+        room = mem.RoomMemory(
+            tmp_path / "store", seams=mem.MemorySeams(remember_fn=self._held(release, entered))
+        )
         try:
             deferred = room.remember("a heard line", deadline=0.05)
             assert deferred.degradation is not None
@@ -604,7 +618,9 @@ class TestCloseAccountsForWhatIsUnfinished:
 
     def test_close_waits_for_a_write_that_can_finish(self, tmp_path: Path) -> None:
         release, entered = threading.Event(), threading.Event()
-        room = mem.RoomMemory(tmp_path / "store", remember_fn=self._held(release, entered))
+        room = mem.RoomMemory(
+            tmp_path / "store", seams=mem.MemorySeams(remember_fn=self._held(release, entered))
+        )
         try:
             deferred = room.remember("a heard line", deadline=0.05)
             assert entered.wait(timeout=_PROMPT_SECONDS)
@@ -627,7 +643,7 @@ class TestCloseAccountsForWhatIsUnfinished:
             release.wait(timeout=30)
             raise OSError("the store is gone")
 
-        room = mem.RoomMemory(tmp_path / "store", remember_fn=failing)
+        room = mem.RoomMemory(tmp_path / "store", seams=mem.MemorySeams(remember_fn=failing))
         try:
             deferred = room.remember("a heard line", deadline=0.05)
             release.set()
@@ -649,7 +665,7 @@ class TestCloseAccountsForWhatIsUnfinished:
             release.wait(timeout=30)
             return _outcome()
 
-        room = mem.RoomMemory(tmp_path / "store", recall_fn=hang)
+        room = mem.RoomMemory(tmp_path / "store", seams=mem.MemorySeams(recall_fn=hang))
         try:
             assert room.recall("anything", deadline=0.05).ok is False
             assert entered.wait(timeout=_PROMPT_SECONDS)
@@ -666,7 +682,9 @@ class TestCloseAccountsForWhatIsUnfinished:
             release.set()
 
     def test_close_stops_accepting_new_work_immediately(self, tmp_path: Path) -> None:
-        room = mem.RoomMemory(tmp_path / "store", recall_fn=lambda *a, **k: _outcome())
+        room = mem.RoomMemory(
+            tmp_path / "store", seams=mem.MemorySeams(recall_fn=lambda *a, **k: _outcome())
+        )
         room.close()
 
         assert [d.code for d in room.recall("anything").degradations] == [mem.CODE_CLOSED]
@@ -694,7 +712,9 @@ class TestCloseAccountsForWhatIsUnfinished:
         """Room conversation never leaves the store through a report or a log."""
         release, entered = threading.Event(), threading.Event()
         secret = "the private thing that was said aloud"
-        room = mem.RoomMemory(tmp_path / "store", remember_fn=self._held(release, entered))
+        room = mem.RoomMemory(
+            tmp_path / "store", seams=mem.MemorySeams(remember_fn=self._held(release, entered))
+        )
         try:
             room.remember(secret, deadline=0.05)
             assert entered.wait(timeout=_PROMPT_SECONDS)
@@ -712,7 +732,9 @@ class TestCloseAccountsForWhatIsUnfinished:
     def test_a_deferred_write_is_also_recorded_on_the_ledger_at_close(self, tmp_path: Path) -> None:
         """A host that only drains the ledger still learns about it."""
         release, entered = threading.Event(), threading.Event()
-        room = mem.RoomMemory(tmp_path / "store", remember_fn=self._held(release, entered))
+        room = mem.RoomMemory(
+            tmp_path / "store", seams=mem.MemorySeams(remember_fn=self._held(release, entered))
+        )
         try:
             room.remember("a heard line", deadline=0.05)
             assert entered.wait(timeout=_PROMPT_SECONDS)
@@ -863,7 +885,9 @@ class TestTheReapingGap:
                 release.wait(timeout=30)
                 raise OSError("late failure")
 
-            room = mem.RoomMemory(tmp_path / f"store-{attempt}", remember_fn=failing)
+            room = mem.RoomMemory(
+                tmp_path / f"store-{attempt}", seams=mem.MemorySeams(remember_fn=failing)
+            )
             try:
                 # Release at the same moment the deadline expires, so the future
                 # may resolve on either side of the reaper being attached.
@@ -910,7 +934,10 @@ class TestAClosedLayerIsDistinguishableFromABrokenOne:
         def broken(*args: Any, **kwargs: Any) -> Any:
             raise BrokenExecutor("the pool died")
 
-        room = mem.RoomMemory(tmp_path / "store", remember_fn=broken, recall_fn=broken)
+        room = mem.RoomMemory(
+            tmp_path / "store",
+            seams=mem.MemorySeams(remember_fn=broken, recall_fn=broken),
+        )
         try:
             written = room.remember("a heard line", deadline=_PROMPT_SECONDS)
             read = room.recall("anything", deadline=_PROMPT_SECONDS)
@@ -925,7 +952,7 @@ class TestAClosedLayerIsDistinguishableFromABrokenOne:
         def boom(*args: Any, **kwargs: Any) -> Any:
             raise ValueError("disk is full")
 
-        room = mem.RoomMemory(tmp_path / "store", remember_fn=boom)
+        room = mem.RoomMemory(tmp_path / "store", seams=mem.MemorySeams(remember_fn=boom))
         try:
             result = room.remember("a heard line", deadline=_PROMPT_SECONDS)
             assert result.degradation is not None
@@ -945,7 +972,7 @@ class TestTheDeadline:
     ) -> None:
         """Criterion 2, the whole of it."""
         blocking = _Blocking()
-        room = mem.RoomMemory(tmp_path / "store", recall_fn=blocking)
+        room = mem.RoomMemory(tmp_path / "store", seams=mem.MemorySeams(recall_fn=blocking))
         try:
             started = time.monotonic()
             result = room.recall("anything", deadline=0.01)
@@ -963,7 +990,7 @@ class TestTheDeadline:
     def test_a_missed_deadline_reports_no_mode(self, tmp_path: Path) -> None:
         """A call that never completed used no mode; ``None`` is the honest answer."""
         blocking = _Blocking()
-        room = mem.RoomMemory(tmp_path / "store", recall_fn=blocking)
+        room = mem.RoomMemory(tmp_path / "store", seams=mem.MemorySeams(recall_fn=blocking))
         try:
             result = room.recall("anything", deadline=0.01)
             assert result.mode is None
@@ -975,7 +1002,7 @@ class TestTheDeadline:
     def test_the_abandoned_workers_exception_does_not_leak(self, tmp_path: Path) -> None:
         """The worker outlives its deadline and then raises. Nothing propagates."""
         blocking = _Blocking(raises=RuntimeError("the embedder died late"))
-        room = mem.RoomMemory(tmp_path / "store", recall_fn=blocking)
+        room = mem.RoomMemory(tmp_path / "store", seams=mem.MemorySeams(recall_fn=blocking))
         try:
             assert room.recall("anything", deadline=0.01).ok is False
             blocking.release.set()
@@ -1001,7 +1028,7 @@ class TestTheDeadline:
                 return blocking(query, **kwargs)
             return _outcome([_record("later is fine")])
 
-        room = mem.RoomMemory(tmp_path / "store", recall_fn=recall_fn)
+        room = mem.RoomMemory(tmp_path / "store", seams=mem.MemorySeams(recall_fn=recall_fn))
         try:
             assert room.recall("slow", deadline=0.01).ok is False
             later = room.recall("fast", deadline=10.0)
@@ -1015,7 +1042,7 @@ class TestTheDeadline:
         def boom(*args: Any, **kwargs: Any) -> Any:
             raise ValueError("store is gone")
 
-        room = mem.RoomMemory(tmp_path / "store", recall_fn=boom)
+        room = mem.RoomMemory(tmp_path / "store", seams=mem.MemorySeams(recall_fn=boom))
         try:
             result = room.recall("anything", deadline=10.0)
         finally:
@@ -1033,7 +1060,9 @@ class TestTheDeadline:
         assert mem.DEFAULT_MODE not in mem.SEMANTIC_MODES
 
     def test_recall_after_close_degrades_rather_than_raising(self, tmp_path: Path) -> None:
-        room = mem.RoomMemory(tmp_path / "store", recall_fn=lambda *a, **k: _outcome())
+        room = mem.RoomMemory(
+            tmp_path / "store", seams=mem.MemorySeams(recall_fn=lambda *a, **k: _outcome())
+        )
         room.close()
         result = room.recall("anything", deadline=10.0)
         assert result.ok is False
@@ -1048,7 +1077,9 @@ class TestTheDeadline:
         executor = ThreadPoolExecutor(max_workers=1)
         try:
             room = mem.RoomMemory(
-                tmp_path / "store", executor=executor, recall_fn=lambda *a, **k: _outcome()
+                tmp_path / "store",
+                executor=executor,
+                seams=mem.MemorySeams(recall_fn=lambda *a, **k: _outcome()),
             )
             assert room.recall("anything", deadline=10.0).ok is True
             room.close()
@@ -1165,7 +1196,9 @@ class TestTheLedgerCountsWhatItDrops:
     def test_a_real_abandoned_recall_increments_the_count(self, tmp_path: Path) -> None:
         """Not just the helper: the production append path counts too."""
         blocking = _Blocking(raises=RuntimeError("late"))
-        room = mem.RoomMemory(tmp_path / "store", recall_fn=blocking, max_abandoned=1)
+        room = mem.RoomMemory(
+            tmp_path / "store", max_abandoned=1, seams=mem.MemorySeams(recall_fn=blocking)
+        )
         try:
             assert room.recall("anything", deadline=0.01).ok is False
             self._fill(room, 1)
@@ -1680,7 +1713,11 @@ class TestTheReportedRecallMode:
         def dead_embedder() -> bool:
             raise OSError("connection refused")
 
-        room = mem.RoomMemory(tmp_path / "store", recall_fn=recall_fn, embed_probe=dead_embedder)
+        room = mem.RoomMemory(
+            tmp_path / "store",
+            seams=mem.MemorySeams(recall_fn=recall_fn),
+            semantic=mem.SemanticRecall(embed_probe=dead_embedder),
+        )
         try:
             result = room.recall("anything", mode="hybrid", deadline=10.0)
         finally:
@@ -1694,8 +1731,8 @@ class TestTheReportedRecallMode:
     def test_the_silent_fallback_is_recorded(self, tmp_path: Path) -> None:
         room = mem.RoomMemory(
             tmp_path / "store",
-            recall_fn=lambda *a, **k: _outcome(),
-            embed_probe=lambda: False,
+            seams=mem.MemorySeams(recall_fn=lambda *a, **k: _outcome()),
+            semantic=mem.SemanticRecall(embed_probe=lambda: False),
         )
         try:
             result = room.recall("anything", mode="approximate", deadline=10.0)
@@ -1712,7 +1749,11 @@ class TestTheReportedRecallMode:
             seen.append(kwargs["mode"])
             return _outcome()
 
-        room = mem.RoomMemory(tmp_path / "store", recall_fn=recall_fn, embed_probe=lambda: True)
+        room = mem.RoomMemory(
+            tmp_path / "store",
+            seams=mem.MemorySeams(recall_fn=recall_fn),
+            semantic=mem.SemanticRecall(embed_probe=lambda: True),
+        )
         try:
             result = room.recall("anything", mode="hybrid", deadline=10.0)
         finally:
@@ -1730,7 +1771,9 @@ class TestTheReportedRecallMode:
             return True
 
         room = mem.RoomMemory(
-            tmp_path / "store", recall_fn=lambda *a, **k: _outcome(), embed_probe=probe
+            tmp_path / "store",
+            seams=mem.MemorySeams(recall_fn=lambda *a, **k: _outcome()),
+            semantic=mem.SemanticRecall(embed_probe=probe),
         )
         try:
             result = room.recall("anything", deadline=10.0)
@@ -1808,7 +1851,10 @@ class TestNoSpeechReachesAMemoryRecord:
 
     def test_a_store_that_echoes_the_record_leaks_nothing(self, tmp_path: Path) -> None:
         store = self._exploding_store()
-        room = mem.RoomMemory(tmp_path / "store", remember_fn=store, recall_fn=store)
+        room = mem.RoomMemory(
+            tmp_path / "store",
+            seams=mem.MemorySeams(remember_fn=store, recall_fn=store),
+        )
         written = room.remember(MARKER, deadline=_PROMPT_SECONDS)
         read = room.recall(MARKER, deadline=_PROMPT_SECONDS)
 
@@ -1816,7 +1862,7 @@ class TestNoSpeechReachesAMemoryRecord:
 
     def test_the_store_failure_is_still_named(self, tmp_path: Path) -> None:
         store = self._exploding_store()
-        room = mem.RoomMemory(tmp_path / "store", remember_fn=store)
+        room = mem.RoomMemory(tmp_path / "store", seams=mem.MemorySeams(remember_fn=store))
         try:
             written = room.remember(MARKER, deadline=_PROMPT_SECONDS)
             assert written.degradation is not None
@@ -1829,7 +1875,10 @@ class TestNoSpeechReachesAMemoryRecord:
         def store(*args: Any, **kwargs: Any) -> Any:
             raise hostile_exception(MARKER)
 
-        room = mem.RoomMemory(tmp_path / "store", remember_fn=store, recall_fn=store)
+        room = mem.RoomMemory(
+            tmp_path / "store",
+            seams=mem.MemorySeams(remember_fn=store, recall_fn=store),
+        )
         written = room.remember(MARKER, deadline=_PROMPT_SECONDS)
         read = room.recall(MARKER, deadline=_PROMPT_SECONDS)
         assert_no_speech(MARKER, *self._surfaces(room, written, read))
@@ -1842,7 +1891,7 @@ class TestNoSpeechReachesAMemoryRecord:
             release.wait(timeout=30)
             raise OSError(f"late failure on {args} {kwargs}")
 
-        room = mem.RoomMemory(tmp_path / "store", remember_fn=store)
+        room = mem.RoomMemory(tmp_path / "store", seams=mem.MemorySeams(remember_fn=store))
         try:
             written = room.remember(MARKER, deadline=0.01)
             release.set()
@@ -1878,7 +1927,7 @@ class TestNoSpeechReachesAMemoryRecord:
                 ok=False, record_id="r", degradation=leaking, raw=None
             )
 
-        room = mem.RoomMemory(tmp_path / "store", remember_fn=store)
+        room = mem.RoomMemory(tmp_path / "store", seams=mem.MemorySeams(remember_fn=store))
         try:
             written = room.remember(MARKER, deadline=_PROMPT_SECONDS)
             assert written.degradation is not None
@@ -1900,7 +1949,7 @@ class TestNoSpeechReachesAMemoryRecord:
         def store(*args: Any, **kwargs: Any) -> Any:
             return mem.continuity.RecallOutcome(ok=True, records=[], degradation=leaking)
 
-        room = mem.RoomMemory(tmp_path / "store", recall_fn=store)
+        room = mem.RoomMemory(tmp_path / "store", seams=mem.MemorySeams(recall_fn=store))
         try:
             read = room.recall("q", deadline=_PROMPT_SECONDS)
             assert [d.code for d in read.degradations] == ["some-future-code"]
@@ -1924,7 +1973,7 @@ class TestNoSpeechReachesAMemoryRecord:
     ) -> None:
         monkeypatch.setenv(UNSAFE_ENV, "1")
         store = self._exploding_store()
-        room = mem.RoomMemory(tmp_path / "store", remember_fn=store)
+        room = mem.RoomMemory(tmp_path / "store", seams=mem.MemorySeams(remember_fn=store))
         try:
             written = room.remember(MARKER, deadline=_PROMPT_SECONDS)
             assert_speech_present(MARKER, written)
@@ -2676,7 +2725,7 @@ class TestARecordIdNeverReachesAReasonRaw:
             release.wait(timeout=30)
             return mem.continuity.RememberOutcome(ok=True, record_id="r", degradation=None)
 
-        room = mem.RoomMemory(tmp_path / "store", remember_fn=slow)
+        room = mem.RoomMemory(tmp_path / "store", seams=mem.MemorySeams(remember_fn=slow))
         try:
             result = room.remember("a heard line", record_id=f"<<< {MARKER} >>>", deadline=0.01)
             assert result.degradation is not None
@@ -2696,7 +2745,7 @@ class TestARecordIdNeverReachesAReasonRaw:
             release.wait(timeout=30)
             return mem.continuity.RememberOutcome(ok=True, record_id="r", degradation=None)
 
-        room = mem.RoomMemory(tmp_path / "store", remember_fn=held)
+        room = mem.RoomMemory(tmp_path / "store", seams=mem.MemorySeams(remember_fn=held))
         try:
             room.remember("a heard line", record_id=f"<<<{MARKER}", deadline=0.02)
             assert entered.wait(timeout=_PROMPT_SECONDS)
@@ -2713,7 +2762,7 @@ class TestARecordIdNeverReachesAReasonRaw:
             release.wait(timeout=30)
             raise OSError("late")
 
-        room = mem.RoomMemory(tmp_path / "store", remember_fn=failing)
+        room = mem.RoomMemory(tmp_path / "store", seams=mem.MemorySeams(remember_fn=failing))
         try:
             room.remember("a heard line", record_id="<<<bad id", deadline=0.01)
             release.set()
@@ -2734,7 +2783,7 @@ class TestARecordIdNeverReachesAReasonRaw:
             release.wait(timeout=30)
             raise OSError("late failure")
 
-        room = mem.RoomMemory(tmp_path / "store", remember_fn=failing)
+        room = mem.RoomMemory(tmp_path / "store", seams=mem.MemorySeams(remember_fn=failing))
         try:
             room.remember("a heard line", deadline=0.01)
             release.set()
@@ -2779,7 +2828,9 @@ class TestForget:
     TEXT = "probe text for forget"
 
     def _room(self, tmp_path: Path) -> mem.RoomMemory:
-        return mem.RoomMemory(tmp_path / "store", scope="gwen", embed_probe=lambda: False)
+        return mem.RoomMemory(
+            tmp_path / "store", scope="gwen", semantic=mem.SemanticRecall(embed_probe=lambda: False)
+        )
 
     def _remembered(self, room: mem.RoomMemory) -> str:
         result = room.remember(self.TEXT, deadline=5.0)
@@ -2865,7 +2916,10 @@ class TestForget:
             raise AssertionError("the seam must not be reached")
 
         room = mem.RoomMemory(
-            tmp_path / "store", scope="gwen", embed_probe=lambda: False, archive_fn=archive_fn
+            tmp_path / "store",
+            scope="gwen",
+            seams=mem.MemorySeams(archive_fn=archive_fn),
+            semantic=mem.SemanticRecall(embed_probe=lambda: False),
         )
         result = room.forget(bad, deadline=5.0)  # type: ignore[arg-type]
         assert not result.ok
@@ -2881,7 +2935,10 @@ class TestForget:
             raise RuntimeError("store exploded on " + record_id)
 
         room = mem.RoomMemory(
-            tmp_path / "store", scope="gwen", embed_probe=lambda: False, archive_fn=archive_fn
+            tmp_path / "store",
+            scope="gwen",
+            seams=mem.MemorySeams(archive_fn=archive_fn),
+            semantic=mem.SemanticRecall(embed_probe=lambda: False),
         )
         result = room.forget("gwen-abc", deadline=5.0)
         assert not result.ok
@@ -2893,7 +2950,10 @@ class TestForget:
     def test_a_forget_that_misses_its_deadline_is_deferred_and_reaped(self, tmp_path: Path) -> None:
         blocking = _Blocking(raises=RuntimeError("late"))
         room = mem.RoomMemory(
-            tmp_path / "store", scope="gwen", embed_probe=lambda: False, archive_fn=blocking
+            tmp_path / "store",
+            scope="gwen",
+            seams=mem.MemorySeams(archive_fn=blocking),
+            semantic=mem.SemanticRecall(embed_probe=lambda: False),
         )
         result = room.forget("gwen-abc", deadline=0.05)
         assert not result.ok
@@ -2991,6 +3051,8 @@ def _semantic_room(
     cached: dict[str, list[float]] | None = None,
     recall_fn: Any = None,
     probe: Any = None,
+    similarity_threshold: float = mem.DEFAULT_SIMILARITY_THRESHOLD,
+    clock: Any = None,
     **kwargs: Any,
 ) -> tuple[mem.RoomMemory, Any]:
     cache = mem.vector_cache_for(tmp_path / "vectors")
@@ -2999,12 +3061,18 @@ def _semantic_room(
     room = mem.RoomMemory(
         tmp_path / "store",
         scope="gwen",
-        list_fn=_Lister(pools),
-        recall_fn=recall_fn or (lambda *a, **k: _outcome()),
-        embed_probe=probe or (lambda: True),
-        embedder=embedder,
-        vector_cache=cache,
-        reinforce_fn=lambda **k: None,
+        seams=mem.MemorySeams(
+            list_fn=_Lister(pools),
+            recall_fn=recall_fn or (lambda *a, **k: _outcome()),
+            reinforce_fn=lambda **k: None,
+            clock=clock,
+        ),
+        semantic=mem.SemanticRecall(
+            embed_probe=probe or (lambda: True),
+            embedder=embedder,
+            vector_cache=cache,
+            similarity_threshold=similarity_threshold,
+        ),
         **kwargs,
     )
     return room, cache
@@ -3190,11 +3258,10 @@ class TestSemanticRecallOverCachedVectors:
         room = mem.RoomMemory(
             tmp_path / "store",
             scope="gwen",
-            list_fn=_Lister(_POOL),
-            embedder=embedder,
-            vector_cache=cache,
-            similarity_threshold=0.5,
-            reinforce_fn=lambda **k: seen.append(k),
+            seams=mem.MemorySeams(list_fn=_Lister(_POOL), reinforce_fn=lambda **k: seen.append(k)),
+            semantic=mem.SemanticRecall(
+                embedder=embedder, vector_cache=cache, similarity_threshold=0.5
+            ),
         )
         try:
             room.recall("which fact", mode=mem.SEMANTIC_MODE, deadline=5.0)
@@ -3235,10 +3302,8 @@ class TestSemanticRecallOverCachedVectors:
         room = mem.RoomMemory(
             tmp_path / "store",
             scope="gwen",
-            list_fn=_Lister(_POOL),
-            recall_fn=lambda *a, **k: _outcome(),
-            embedder=embedder,
-            vector_cache=cache,
+            seams=mem.MemorySeams(list_fn=_Lister(_POOL), recall_fn=lambda *a, **k: _outcome()),
+            semantic=mem.SemanticRecall(embedder=embedder, vector_cache=cache),
         )
         try:
             result = room.recall("which fact", mode=mem.SEMANTIC_MODE, deadline=5.0)
@@ -3299,7 +3364,7 @@ class TestSemanticRecallDemotesToKeyword:
         seen: list[str] = []
         room = mem.RoomMemory(
             tmp_path / "store",
-            recall_fn=lambda q, **k: seen.append(k["mode"]) or _outcome(),
+            seams=mem.MemorySeams(recall_fn=lambda q, **k: seen.append(k["mode"]) or _outcome()),
         )
         try:
             result = room.recall("anything", mode=mem.SEMANTIC_MODE, deadline=5.0)
@@ -3510,13 +3575,15 @@ class TestAWriteWakesTheBackfill:
             tmp_path / "store",
             scope="gwen",
             ingest_scope=mem.INGEST_SCOPE,
-            list_fn=_Lister(pools),
-            remember_fn=writer,
-            recall_fn=lambda *a, **k: _outcome(),
-            embed_probe=lambda: True,
-            embedder=embedder,
-            vector_cache=cache,
-            reinforce_fn=lambda **k: None,
+            seams=mem.MemorySeams(
+                list_fn=_Lister(pools),
+                remember_fn=writer,
+                recall_fn=lambda *a, **k: _outcome(),
+                reinforce_fn=lambda **k: None,
+            ),
+            semantic=mem.SemanticRecall(
+                embed_probe=lambda: True, embedder=embedder, vector_cache=cache
+            ),
         )
         return room, cache, embedded_by
 
@@ -3668,11 +3735,12 @@ class TestForgettingDropsTheVector:
         room = mem.RoomMemory(
             tmp_path / "store",
             scope="gwen",
-            archive_fn=lambda rid, **k: mem.continuity.ArchiveOutcome(
-                ok=True, record_id=rid, degradation=None
+            seams=mem.MemorySeams(
+                archive_fn=lambda rid, **k: mem.continuity.ArchiveOutcome(
+                    ok=True, record_id=rid, degradation=None
+                )
             ),
-            embedder=_FakeEmbedder(),
-            vector_cache=cache,
+            semantic=mem.SemanticRecall(embedder=_FakeEmbedder(), vector_cache=cache),
         )
         try:
             assert room.forget("gwen-a", deadline=5.0).ok
@@ -3690,11 +3758,12 @@ class TestForgettingDropsTheVector:
             tmp_path / "store",
             scope="gwen",
             ingest_scope=mem.INGEST_SCOPE,
-            archive_fn=lambda rid, **k: mem.continuity.ArchiveOutcome(
-                ok=True, record_id=rid, degradation=None
+            seams=mem.MemorySeams(
+                archive_fn=lambda rid, **k: mem.continuity.ArchiveOutcome(
+                    ok=True, record_id=rid, degradation=None
+                )
             ),
-            embedder=_FakeEmbedder(),
-            vector_cache=cache,
+            semantic=mem.SemanticRecall(embedder=_FakeEmbedder(), vector_cache=cache),
         )
         try:
             assert room.forget_ids(["ing-1"], deadline=5.0).ok
@@ -3709,18 +3778,19 @@ class TestForgettingDropsTheVector:
         room = mem.RoomMemory(
             tmp_path / "store",
             scope="gwen",
-            archive_fn=lambda rid, **k: mem.continuity.ArchiveOutcome(
-                ok=False,
-                record_id=None,
-                degradation=mem.continuity.Degradation(
-                    subsystem="eidetic",
-                    stage="archive",
-                    code=mem.continuity.CODE_RECORD_NOT_FOUND,
-                    reason="not found",
-                ),
+            seams=mem.MemorySeams(
+                archive_fn=lambda rid, **k: mem.continuity.ArchiveOutcome(
+                    ok=False,
+                    record_id=None,
+                    degradation=mem.continuity.Degradation(
+                        subsystem="eidetic",
+                        stage="archive",
+                        code=mem.continuity.CODE_RECORD_NOT_FOUND,
+                        reason="not found",
+                    ),
+                )
             ),
-            embedder=_FakeEmbedder(),
-            vector_cache=cache,
+            semantic=mem.SemanticRecall(embedder=_FakeEmbedder(), vector_cache=cache),
         )
         try:
             assert not room.forget("gwen-a", deadline=5.0).ok
@@ -3739,9 +3809,11 @@ class TestSemanticRecallAgainstARealStore:
         room = mem.RoomMemory(
             tmp_path / "store",
             scope="gwen",
-            embedder=embedder,
-            vector_cache=mem.vector_cache_for(tmp_path / "vectors"),
-            similarity_threshold=0.5,
+            semantic=mem.SemanticRecall(
+                embedder=embedder,
+                vector_cache=mem.vector_cache_for(tmp_path / "vectors"),
+                similarity_threshold=0.5,
+            ),
         )
         try:
             assert room.remember("the spare key is in the blue drawer", deadline=5.0).ok
@@ -3755,3 +3827,48 @@ class TestSemanticRecallAgainstARealStore:
         assert result.ok, result.degradations
         assert [r["text"] for r in result.records] == ["the spare key is in the blue drawer"]
         assert again.records and again.records[0]["recall_count"] == 1, "reinforced once"
+
+
+class TestConstructorParameterObjects:
+    """S107: ``RoomMemory.__init__`` takes its seams and semantic settings as two
+    parameter objects, so the signature stays within Sonar's 13-parameter bound."""
+
+    def test_init_has_at_most_thirteen_parameters(self) -> None:
+        import inspect
+
+        params = [p for p in inspect.signature(mem.RoomMemory.__init__).parameters if p != "self"]
+        assert len(params) <= 13, params
+
+    def test_seams_object_reaches_the_write(self, tmp_path: Path) -> None:
+        calls: list[Any] = []
+
+        def fake_remember(*args: Any, **kwargs: Any) -> Any:
+            calls.append((args, kwargs))
+            return None
+
+        room = mem.RoomMemory(tmp_path / "store", seams=mem.MemorySeams(remember_fn=fake_remember))
+        try:
+            room.remember("a fact")
+        finally:
+            room.close()
+        assert calls, "the injected remember_fn was never called"
+
+    def test_semantic_object_sets_threshold_and_embedder(self, tmp_path: Path) -> None:
+        sentinel = object()
+        room = mem.RoomMemory(
+            tmp_path / "store",
+            semantic=mem.SemanticRecall(embedder=sentinel, similarity_threshold=0.42),
+        )
+        try:
+            assert room._embedder is sentinel
+            assert room._threshold == pytest.approx(0.42)
+        finally:
+            room.close()
+
+    def test_defaults_without_objects(self, tmp_path: Path) -> None:
+        room = mem.RoomMemory(tmp_path / "store")
+        try:
+            assert room._embedder is None
+            assert room._threshold == pytest.approx(mem.DEFAULT_SIMILARITY_THRESHOLD)
+        finally:
+            room.close()

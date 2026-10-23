@@ -41,7 +41,7 @@ from embodiment.contract import ModelResponse, ToolCall
 from embodiment.daemon import app as app_module
 from embodiment.daemon.app import AppConfig, AppFactories, DaemonApp
 from embodiment.daemon.state import DaemonState
-from embodiment.memory import RoomMemory
+from embodiment.memory import MemorySeams, RoomMemory, SemanticRecall
 from embodiment.realtime import wire
 from embodiment.voice import Voice, VoiceConfig
 
@@ -331,11 +331,13 @@ def harness(tmp_path: Path, request: pytest.FixtureRequest) -> Any:
         memory = overrides.pop("memory", None) or RoomMemory(
             tmp_path / f"memory{index}",
             scope="gwen",
-            recall_fn=recall_fn,
-            remember_fn=lambda text, **kwargs: SimpleNamespace(
-                ok=True, record_id="r1", degradation=None
+            seams=MemorySeams(
+                recall_fn=recall_fn,
+                remember_fn=lambda text, **kwargs: SimpleNamespace(
+                    ok=True, record_id="r1", degradation=None
+                ),
             ),
-            embed_probe=lambda: False,
+            semantic=SemanticRecall(embed_probe=lambda: False),
         )
         synthesize = overrides.pop("synthesize", None) or (lambda sentence, config: b"\x00\x00")
         complete = overrides.pop("complete", None) or make_complete()
@@ -1355,7 +1357,12 @@ class TestTheMemoryLane:
     def _real_memory_harness(self, harness: Any, tmp_path: Path, **over: Any) -> Any:
         """A harness whose memory is a real RoomMemory on a real private store."""
         data_dir = tmp_path / f"store{len(list(tmp_path.glob('store*')))}"
-        memory = RoomMemory(data_dir, scope="gwen", added_by="gwen", embed_probe=lambda: False)
+        memory = RoomMemory(
+            data_dir,
+            scope="gwen",
+            added_by="gwen",
+            semantic=SemanticRecall(embed_probe=lambda: False),
+        )
         return harness(memory=memory, **over), data_dir
 
     def test_a_spoken_ask_lands_a_record_in_the_private_store(
@@ -1560,7 +1567,12 @@ class TestRecallReachesThePrompt:
     def _stocked_store(self, tmp_path: Path) -> Path:
         """The shape of the live store: one ask record and two summaries."""
         data_dir = tmp_path / "store"
-        memory = RoomMemory(data_dir, scope="gwen", added_by="gwen", embed_probe=lambda: False)
+        memory = RoomMemory(
+            data_dir,
+            scope="gwen",
+            added_by="gwen",
+            semantic=SemanticRecall(embed_probe=lambda: False),
+        )
         memory.remember(self.ASK, visibility="private", record_type="explicit-ask", deadline=5.0)
         for summary in self.SUMMARIES:
             memory.remember(
@@ -1574,7 +1586,12 @@ class TestRecallReachesThePrompt:
     ) -> None:
         """The live miss, reproduced end to end: ask, restart, then ask about it."""
         data_dir = self._stocked_store(tmp_path)
-        memory = RoomMemory(data_dir, scope="gwen", added_by="gwen", embed_probe=lambda: False)
+        memory = RoomMemory(
+            data_dir,
+            scope="gwen",
+            added_by="gwen",
+            semantic=SemanticRecall(embed_probe=lambda: False),
+        )
         complete = make_complete()
         h = harness(memory=memory, complete=complete)
         h.app.attach_ear("host", FakeEndpoint())
@@ -1596,7 +1613,12 @@ class TestRecallReachesThePrompt:
     def test_the_recall_counters_can_show_a_zero(self, harness: Any, tmp_path: Path) -> None:
         """The counters have to be able to FAIL, or they prove nothing."""
         data_dir = tmp_path / "empty-store"
-        memory = RoomMemory(data_dir, scope="gwen", added_by="gwen", embed_probe=lambda: False)
+        memory = RoomMemory(
+            data_dir,
+            scope="gwen",
+            added_by="gwen",
+            semantic=SemanticRecall(embed_probe=lambda: False),
+        )
         h = harness(memory=memory)
         h.app.attach_ear("host", FakeEndpoint())
         h.clear()
@@ -1613,7 +1635,12 @@ class TestRecallReachesThePrompt:
 
     def test_every_turn_publishes_its_recall_counts(self, harness: Any, tmp_path: Path) -> None:
         data_dir = self._stocked_store(tmp_path)
-        memory = RoomMemory(data_dir, scope="gwen", added_by="gwen", embed_probe=lambda: False)
+        memory = RoomMemory(
+            data_dir,
+            scope="gwen",
+            added_by="gwen",
+            semantic=SemanticRecall(embed_probe=lambda: False),
+        )
         h = harness(memory=memory)
         h.app.attach_ear("host", FakeEndpoint())
         h.clear()
@@ -1633,7 +1660,12 @@ class TestRecallReachesThePrompt:
     def test_the_blind_index_is_named_never_silent(self, harness: Any, tmp_path: Path) -> None:
         """The cause: a keyword search whose tokeniser cannot see the script."""
         data_dir = self._stocked_store(tmp_path)
-        memory = RoomMemory(data_dir, scope="gwen", added_by="gwen", embed_probe=lambda: False)
+        memory = RoomMemory(
+            data_dir,
+            scope="gwen",
+            added_by="gwen",
+            semantic=SemanticRecall(embed_probe=lambda: False),
+        )
         h = harness(memory=memory)
         h.app.attach_ear("host", FakeEndpoint())
 
@@ -1655,7 +1687,12 @@ class TestRecallReachesThePrompt:
 
     def test_an_ascii_question_needs_no_fallback(self, harness: Any, tmp_path: Path) -> None:
         data_dir = tmp_path / "latin-store"
-        memory = RoomMemory(data_dir, scope="gwen", added_by="gwen", embed_probe=lambda: False)
+        memory = RoomMemory(
+            data_dir,
+            scope="gwen",
+            added_by="gwen",
+            semantic=SemanticRecall(embed_probe=lambda: False),
+        )
         memory.remember("the key is in the blue drawer", visibility="private", deadline=5.0)
         h = harness(memory=memory)
         h.app.attach_ear("host", FakeEndpoint())
@@ -1850,7 +1887,10 @@ class TestTheRememberTool:
 
     def _store(self, tmp_path: Path) -> RoomMemory:
         return RoomMemory(
-            tmp_path / "store", scope="gwen", added_by="gwen", embed_probe=lambda: False
+            tmp_path / "store",
+            scope="gwen",
+            added_by="gwen",
+            semantic=SemanticRecall(embed_probe=lambda: False),
         )
 
     def test_a_model_tool_call_writes_the_record_and_is_counted(
@@ -2093,7 +2133,10 @@ class TestTheForgetTool:
 
     def _store(self, tmp_path: Path) -> tuple[RoomMemory, str]:
         memory = RoomMemory(
-            tmp_path / "store", scope="gwen", added_by="gwen", embed_probe=lambda: False
+            tmp_path / "store",
+            scope="gwen",
+            added_by="gwen",
+            semantic=SemanticRecall(embed_probe=lambda: False),
         )
         written = memory.remember(
             self.FACT, visibility="private", record_type="explicit-ask", deadline=5.0
@@ -2378,7 +2421,10 @@ class TestAToolStepIsAlwaysAnswered:
 
     def _store(self, tmp_path: Path) -> RoomMemory:
         return RoomMemory(
-            tmp_path / "store", scope="gwen", added_by="gwen", embed_probe=lambda: False
+            tmp_path / "store",
+            scope="gwen",
+            added_by="gwen",
+            semantic=SemanticRecall(embed_probe=lambda: False),
         )
 
     @staticmethod
@@ -2594,7 +2640,12 @@ class TestTurnInstrumentation:
 
     def _timed_harness(self, harness: Any, tmp_path: Path, **over: Any) -> Any:
         data_dir = tmp_path / "store"
-        memory = RoomMemory(data_dir, scope="gwen", added_by="gwen", embed_probe=lambda: False)
+        memory = RoomMemory(
+            data_dir,
+            scope="gwen",
+            added_by="gwen",
+            semantic=SemanticRecall(embed_probe=lambda: False),
+        )
         remembered = memory.remember(
             "המפתח נמצא במגירה הכחולה",
             visibility="private",
@@ -2721,7 +2772,12 @@ class TestTurnInstrumentation:
         self, harness: Any, tmp_path: Path
     ) -> None:
         data_dir = tmp_path / "empty"
-        memory = RoomMemory(data_dir, scope="gwen", added_by="gwen", embed_probe=lambda: False)
+        memory = RoomMemory(
+            data_dir,
+            scope="gwen",
+            added_by="gwen",
+            semantic=SemanticRecall(embed_probe=lambda: False),
+        )
         h = harness(memory=memory)
         h.app.attach_ear("host", FakeEndpoint())
         h.app.run_turn(SPEECH)
@@ -2823,7 +2879,10 @@ class TestTheGatewayIsNotTrustedWithItsOwnKey:
         self, harness: Any, tmp_path: Path, reply: str, **over: Any
     ) -> Any:
         memory = RoomMemory(
-            tmp_path / "store", scope="gwen", added_by="gwen", embed_probe=lambda: False
+            tmp_path / "store",
+            scope="gwen",
+            added_by="gwen",
+            semantic=SemanticRecall(embed_probe=lambda: False),
         )
 
         def leaky(messages: list[dict[str, Any]], tools: Any = None) -> ModelResponse:
@@ -2894,7 +2953,12 @@ class TestTheGatewayIsNotTrustedWithItsOwnKey:
     ) -> None:
         """Session.close writes what the summariser returns straight to disk."""
         data_dir = tmp_path / "store"
-        memory = RoomMemory(data_dir, scope="gwen", added_by="gwen", embed_probe=lambda: False)
+        memory = RoomMemory(
+            data_dir,
+            scope="gwen",
+            added_by="gwen",
+            semantic=SemanticRecall(embed_probe=lambda: False),
+        )
         h = harness(
             memory=memory,
             config=AppConfig(poll_interval_s=0.01, api_key=self.KEY),
@@ -2922,7 +2986,10 @@ class TestTheGatewayIsNotTrustedWithItsOwnKey:
         """A key with a quote arrives escaped; a raw filter would never see it."""
         awkward = 'KEY-with"a-quote\\and-a-backslash'
         memory = RoomMemory(
-            tmp_path / "store", scope="gwen", added_by="gwen", embed_probe=lambda: False
+            tmp_path / "store",
+            scope="gwen",
+            added_by="gwen",
+            semantic=SemanticRecall(embed_probe=lambda: False),
         )
         escaped = json.dumps(awkward)[1:-1]
         assert escaped != awkward, "this test needs a key JSON has to escape"
@@ -3670,7 +3737,7 @@ from embodiment.bus import Bus
 from embodiment.contract import ModelResponse, ToolCall
 from embodiment.daemon.app import AppConfig, AppFactories, DaemonApp
 from embodiment.daemon.state import DaemonState
-from embodiment.memory import RoomMemory
+from embodiment.memory import MemorySeams, RoomMemory, SemanticRecall
 
 
 class Ears:
@@ -3708,9 +3775,11 @@ bus = Bus()
 memory = RoomMemory(
     root + "/memory",
     scope="gwen",
-    recall_fn=lambda q, **k: SimpleNamespace(ok=True, records=[], degradation=None),
-    remember_fn=lambda t, **k: SimpleNamespace(ok=True, record_id="r", degradation=None),
-    embed_probe=lambda: False,
+    seams=MemorySeams(
+        recall_fn=lambda q, **k: SimpleNamespace(ok=True, records=[], degradation=None),
+        remember_fn=lambda t, **k: SimpleNamespace(ok=True, record_id="r", degradation=None),
+    ),
+    semantic=SemanticRecall(embed_probe=lambda: False),
 )
 app = DaemonApp(
     config=AppConfig(poll_interval_s=0.01, shutdown_deadline=2.0),
@@ -4647,7 +4716,10 @@ class TestOneShutdownClock:
 
         runner_deadline = 2.0
         memory = SlowCloseMemory(
-            tmp_path / "store", scope="gwen", added_by="gwen", embed_probe=lambda: False
+            tmp_path / "store",
+            scope="gwen",
+            added_by="gwen",
+            semantic=SemanticRecall(embed_probe=lambda: False),
         )
         h = harness(
             memory=memory,
@@ -5102,7 +5174,10 @@ class TestMissedAskCarriesNoSpeech:
         # the detector knows, so Session.add_user returns None.
         utterance = f"I might remember {marker} someday"
         memory = RoomMemory(
-            tmp_path / "store", scope="gwen", added_by="gwen", embed_probe=lambda: False
+            tmp_path / "store",
+            scope="gwen",
+            added_by="gwen",
+            semantic=SemanticRecall(embed_probe=lambda: False),
         )
         h = harness(memory=memory)
         h.app.attach_ear("host", FakeEndpoint())
@@ -5199,7 +5274,10 @@ class TestForgetByTheFactsOwnWords:
 
     def _memory(self, tmp_path: Path) -> RoomMemory:
         return RoomMemory(
-            tmp_path / "store", scope="gwen", added_by="gwen", embed_probe=lambda: False
+            tmp_path / "store",
+            scope="gwen",
+            added_by="gwen",
+            semantic=SemanticRecall(embed_probe=lambda: False),
         )
 
     def _store(self, memory: RoomMemory, *facts: str) -> None:
