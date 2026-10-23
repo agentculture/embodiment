@@ -8,6 +8,7 @@ import {
   type ChatClientOptions,
   type ChatSource,
 } from "../api/chat";
+import { AudioControls, SpeakButton, type ClipReply } from "./AudioControls";
 
 export interface ChatProps {
   /** Install secret the page already holds; ignored on the public Host. */
@@ -17,6 +18,8 @@ export interface ChatProps {
   /** Test seam: override the location hostname. */
   hostname?: string;
   clientOptions?: ChatClientOptions;
+  /** Speech-to-speech role the gateway advertises, if any (daemon must expose it). */
+  s2sRole?: string;
 }
 
 interface Message {
@@ -62,7 +65,7 @@ function Sources({ sources }: { sources: ChatSource[] }) {
   );
 }
 
-export function Chat({ secret = "", replyEvents = [], hostname, clientOptions }: ChatProps) {
+export function Chat({ secret = "", replyEvents = [], hostname, clientOptions, s2sRole }: ChatProps) {
   const host = hostname ?? (typeof window !== "undefined" ? window.location.hostname : "");
   const publicHost = isPublicHost(host);
   const [draft, setDraft] = useState("");
@@ -117,6 +120,17 @@ export function Chat({ secret = "", replyEvents = [], hostname, clientOptions }:
     setBusy(false);
   }
 
+  const wireSecret = publicHost ? "" : secret;
+
+  function onClipReply({ transcript, reply }: ClipReply) {
+    setDegraded(null);
+    setMessages((m) => [
+      ...m,
+      { key: `u-${m.length}`, role: "user", text: transcript, sources: [] },
+      { key: `a-${m.length + 1}`, role: "assistant", text: reply, sources: [] },
+    ]);
+  }
+
   return (
     <div className="chat" data-public-host={publicHost ? "true" : "false"}>
       <div className="chat__log">
@@ -126,6 +140,9 @@ export function Chat({ secret = "", replyEvents = [], hostname, clientOptions }:
               <strong>{m.role}: </strong>
               {m.text}
             </p>
+            {m.role === "assistant" && (
+              <SpeakButton text={m.text} secret={wireSecret} clientOptions={clientOptions} />
+            )}
             <Sources sources={m.sources} />
           </div>
         ))}
@@ -147,6 +164,7 @@ export function Chat({ secret = "", replyEvents = [], hostname, clientOptions }:
           Send
         </button>
       </form>
+      <AudioControls secret={wireSecret} onReply={onClipReply} clientOptions={clientOptions} s2sRole={s2sRole} />
     </div>
   );
 }
