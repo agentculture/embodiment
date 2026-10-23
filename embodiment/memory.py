@@ -1017,9 +1017,37 @@ def _elapsed() -> float:
     """Seconds on a clock that does not jump with wall time (``times(2)`` on Linux).
 
     ``os`` rather than ``time`` because this module's import roots are pinned
-    by a contract test; the only reader is the backfill's per-tick budget.
+    by a contract test. Two readers: the backfill's per-tick budget (through
+    the injectable ``clock``), and the one total deadline of a forget
+    (:func:`_deadline_at`), which bounds real waits and so reads this directly.
     """
     return float(os.times().elapsed)
+
+
+def _deadline_at(deadline: Any) -> float:
+    """The :func:`_elapsed` instant *deadline* seconds from now (a bad value is now)."""
+    try:
+        budget = max(0.0, float(deadline))
+    except (TypeError, ValueError):
+        budget = 0.0
+    return _elapsed() + budget
+
+
+def _left(until: float) -> float:
+    """Seconds remaining before *until*, never negative."""
+    return max(0.0, until - _elapsed())
+
+
+def _hash_clash(existing: Iterable[Any], digest: str, record_id: Any) -> Optional[str]:
+    """The id of another stored record whose text hash is *digest*, if any."""
+    return next(
+        (
+            str(item.get("id"))
+            for item in existing
+            if item.get("hash") == digest and item.get("id") != record_id
+        ),
+        None,
+    )
 
 
 def _spawn_daemon_thread(fn: Callable[[], None]) -> None:
@@ -1060,6 +1088,150 @@ def _enumerate_scope(
             ):
                 found.append(candidate.to_dict())
         return found
+
+
+def _shown_id(raw: Any) -> str:
+    """A record's usable id for a report, or a fixed placeholder. Never raises."""
+    shown = _usable_id(raw.get("id")) if isinstance(raw, Mapping) else None
+    return shown or "(unusable id)"
+
+
+def _select_source(
+    rows: Iterable[Any], source: str, key: str, source_id: str
+) -> tuple[list[str], list[str]]:
+    """``(to archive, already archived)``: the ids of one source unit among *rows*."""
+    todo: list[str] = []
+    already: list[str] = []
+    for item in rows:
+        meta = item.get("metadata") if isinstance(item, Mapping) else None
+        if not isinstance(meta, Mapping):
+            continue
+        if meta.get("source") != source or meta.get(key) != source_id:
+            continue
+        if item.get("lifecycle") == continuity.LIFECYCLE_ARCHIVED:
+            already.append(str(item.get("id")))
+        else:
+            todo.append(str(item.get("id")))
+    return todo, already
+
+
+@dataclass
+class _IngestTally:
+    """The running outcome of one :meth:`RoomMemory.ingest_records` batch."""
+
+    written: list[str] = field(default_factory=list)
+    collapsed: list[tuple[str, str]] = field(default_factory=list)
+    superseded: list[str] = field(default_factory=list)
+    failed: list[tuple[str, str]] = field(default_factory=list)
+    degradations: list[Degradation] = field(default_factory=list)
+
+    def invalid(self, raw: Any, reason: str) -> None:
+        self.failed.append((_shown_id(raw), continuity.CODE_INVALID_RECORD))
+        self.degradations.append(_degradation("ingest", continuity.CODE_INVALID_RECORD, reason))
+
+    def job_failed(self, identifier: str, value: Any, degradation: Optional[Degradation]) -> None:
+        self.failed.append((identifier, str(value)))
+        if degradation is not None:
+            self.degradations.append(degradation)
+
+    def collapse(self, identifier: str, detail: str, *, replaced: bool) -> None:
+        self.collapsed.append((identifier, detail))
+        tail = (
+            f"{safe_label(detail)}, which it supersedes; it replaced it"
+            if replaced
+            else f"{safe_label(detail)}; it was not written"
+        )
+        self.degradations.append(
+            _degradation(
+                "ingest",
+                CODE_INGEST_COLLAPSED,
+                f"record {safe_label(identifier)} has the same text as {tail}",
+            )
+        )
+
+    def outcome(self, identifier: str, value: Any) -> None:
+        """Fold one worker answer ``(kind, detail, flipped)`` (see ``_ingest_one``)."""
+        kind, detail, flipped = value
+        if kind == "written":
+            self.written.append(identifier)
+        elif kind == "collapsed":
+            self.collapse(identifier, str(detail), replaced=False)
+        elif kind == "replaced":
+            self.written.append(identifier)
+            self.collapse(identifier, str(detail), replaced=True)
+            self.superseded.append(str(detail))
+        else:  # "failed": the seam refused the write or the supersede flip
+            self.job_failed(identifier, detail.code if detail else CODE_CLOSED, detail)
+            return
+        if flipped:
+            self.superseded.append(flipped)
+
+    def result(self, not_attempted: tuple[str, ...]) -> IngestResult:
+        if not_attempted:
+            self.degradations.append(
+                _degradation(
+                    "ingest",
+                    CODE_INGEST_NOT_ATTEMPTED,
+                    f"the batch stopped early; {len(not_attempted)} record(s) were not written",
+                )
+            )
+        return IngestResult(
+            ok=not self.failed and not not_attempted,
+            written=tuple(self.written),
+            collapsed=tuple(self.collapsed),
+            superseded=tuple(self.superseded),
+            failed=tuple(self.failed),
+            not_attempted=not_attempted,
+            degradations=tuple(self.degradations),
+        )
+
+
+@dataclass
+class _ArchiveTally:
+    """The running outcome of one :meth:`RoomMemory._archive_ids` pass."""
+
+    archived: list[str] = field(default_factory=list)
+    already: list[str] = field(default_factory=list)
+    missing: list[str] = field(default_factory=list)
+    failed: list[tuple[str, str]] = field(default_factory=list)
+    degradations: list[Degradation] = field(default_factory=list)
+
+    def fail(self, identifiers: Iterable[str], code: str) -> None:
+        self.failed.extend((identifier, code) for identifier in identifiers)
+
+    def seam_answer(self, identifier: str, seam: Optional[Degradation]) -> None:
+        """Sort a refused archive: a fact about the store, or a failure."""
+        code = getattr(seam, "code", None)
+        if code == continuity.CODE_ALREADY_ARCHIVED:
+            self.already.append(identifier)
+        elif code == continuity.CODE_RECORD_NOT_FOUND:
+            self.missing.append(identifier)
+        else:
+            self.fail([identifier], str(code or CODE_CLOSED))
+            if seam is not None:
+                self.degradations.append(seam)
+
+    def out_of_time(self, identifiers: Sequence[str]) -> None:
+        """The one deadline ran out: the rest were not attempted (a retry resumes)."""
+        self.fail(identifiers, CODE_INGEST_NOT_ATTEMPTED)
+        self.degradations.append(
+            _degradation(
+                "forget",
+                CODE_INGEST_NOT_ATTEMPTED,
+                f"the forget deadline ran out; {len(identifiers)} record(s) were not "
+                "archived and a retry continues from them",
+            )
+        )
+
+    def result(self) -> IngestForgetResult:
+        return IngestForgetResult(
+            ok=not self.failed,
+            archived=tuple(self.archived),
+            already_archived=tuple(self.already),
+            not_found=tuple(self.missing),
+            failed=tuple(self.failed),
+            degradations=tuple(self.degradations),
+        )
 
 
 class RoomMemory:
@@ -2040,11 +2212,6 @@ class RoomMemory:
         the whole batch. Never raises.
         """
         moment = now if now is not None else datetime.now(timezone.utc)
-        written: list[str] = []
-        collapsed: list[tuple[str, str]] = []
-        superseded: list[str] = []
-        failed: list[tuple[str, str]] = []
-        degradations: list[Degradation] = []
         try:
             items = list(records)
         except Exception as exc:  # noqa: BLE001  # an unreadable batch is a degradation
@@ -2056,16 +2223,12 @@ class RoomMemory:
                     ),
                 ),
             )
+        tally = _IngestTally()
         halted_at: Optional[int] = None
         for position, raw in enumerate(items):
             prepared = self._prepare_ingest(raw, moment)
             if isinstance(prepared, str):
-                shown = raw.get("id") if isinstance(raw, Mapping) else None
-                label = _usable_id(shown) or "(unusable id)"
-                failed.append((label, continuity.CODE_INVALID_RECORD))
-                degradations.append(
-                    _degradation("ingest", continuity.CODE_INVALID_RECORD, prepared)
-                )
+                tally.invalid(raw, prepared)
                 continue
             record, replaced = prepared
             identifier = str(record["id"])
@@ -2076,70 +2239,15 @@ class RoomMemory:
                 verb="ingest",
                 code=CODE_ABANDONED_REMEMBER,
             )
-            if status != "ok":
-                failed.append((identifier, str(value)))
-                if degradation is not None:
-                    degradations.append(degradation)
-                if status in ("refused", "deferred"):
-                    halted_at = position + 1
-                    break
+            if status == "ok":
+                tally.outcome(identifier, value)
                 continue
-            kind, detail, flipped = value
-            if kind == "written":
-                written.append(identifier)
-            elif kind == "collapsed":
-                collapsed.append((identifier, str(detail)))
-                degradations.append(
-                    _degradation(
-                        "ingest",
-                        CODE_INGEST_COLLAPSED,
-                        f"record {safe_label(identifier)} has the same text as "
-                        f"{safe_label(str(detail))}; it was not written",
-                    )
-                )
-            elif kind == "replaced":
-                written.append(identifier)
-                collapsed.append((identifier, str(detail)))
-                superseded.append(str(detail))
-                degradations.append(
-                    _degradation(
-                        "ingest",
-                        CODE_INGEST_COLLAPSED,
-                        f"record {safe_label(identifier)} has the same text as "
-                        f"{safe_label(str(detail))}, which it supersedes; it replaced it",
-                    )
-                )
-            else:  # "failed": the seam refused the write or the supersede flip
-                failed.append((identifier, str(detail.code if detail else CODE_CLOSED)))
-                if detail is not None:
-                    degradations.append(detail)
-                continue
-            if flipped:
-                superseded.append(flipped)
-        not_attempted: tuple[str, ...] = ()
-        if halted_at is not None:
-            rest = []
-            for raw in items[halted_at:]:
-                shown = _usable_id(raw.get("id")) if isinstance(raw, Mapping) else None
-                rest.append(shown or "(unusable id)")
-            not_attempted = tuple(rest)
-            if rest:
-                degradations.append(
-                    _degradation(
-                        "ingest",
-                        CODE_INGEST_NOT_ATTEMPTED,
-                        f"the batch stopped early; {len(rest)} record(s) were not written",
-                    )
-                )
-        return IngestResult(
-            ok=not failed and not not_attempted,
-            written=tuple(written),
-            collapsed=tuple(collapsed),
-            superseded=tuple(superseded),
-            failed=tuple(failed),
-            not_attempted=not_attempted,
-            degradations=tuple(degradations),
-        )
+            tally.job_failed(identifier, value, degradation)
+            if status in ("refused", "deferred"):
+                halted_at = position + 1
+                break
+        rest = items[halted_at:] if halted_at is not None else []
+        return tally.result(tuple(_shown_id(raw) for raw in rest))
 
     def _ingest_one(
         self, record: dict[str, Any], replaced: Optional[str]
@@ -2161,14 +2269,7 @@ class RoomMemory:
                 visibility=INGEST_VISIBILITY,
                 backend=self._backend,
             )
-            clash = next(
-                (
-                    str(item.get("id"))
-                    for item in existing
-                    if item.get("hash") == digest and item.get("id") != record["id"]
-                ),
-                None,
-            )
+            clash = _hash_clash(existing, digest, record["id"])
             if clash is not None and clash != replaced:
                 return "collapsed", clash, None
             outcome = self._remember_fn(
@@ -2183,28 +2284,37 @@ class RoomMemory:
                 return "failed", self._safe_degradation(getattr(outcome, "degradation", None)), None
             flipped: Optional[str] = None
             if replaced is not None and replaced != record["id"] and clash is None:
-                flip = self._archive_fn(
-                    replaced,
-                    data_dir=self._data_dir,
-                    scope=INGEST_SCOPE,
-                    visibility=INGEST_VISIBILITY,
-                    backend=self._backend,
-                )
-                if getattr(flip, "ok", False):
-                    flipped = replaced
-                else:
-                    seam = self._safe_degradation(getattr(flip, "degradation", None))
-                    # An unknown or already-hidden superseded record is a fact, not a fault.
-                    if getattr(seam, "code", None) not in (
-                        continuity.CODE_RECORD_NOT_FOUND,
-                        continuity.CODE_ALREADY_ARCHIVED,
-                    ):
-                        return "failed", seam, None
+                flipped, seam = self._flip_superseded(replaced)
+                if seam is not None:
+                    return "failed", seam, None
             self._tighten_scope(INGEST_SCOPE)
         self._wake_backfill()
         if clash is not None:
             return "replaced", clash, None
         return "written", None, flipped
+
+    def _flip_superseded(self, replaced: str) -> tuple[Optional[str], Optional[Degradation]]:
+        """Archive the record *replaced* names: ``(flipped id, failure)``. Lock held by caller.
+
+        An unknown or already-hidden superseded record is a fact, not a fault:
+        ``(None, None)``.
+        """
+        flip = self._archive_fn(
+            replaced,
+            data_dir=self._data_dir,
+            scope=INGEST_SCOPE,
+            visibility=INGEST_VISIBILITY,
+            backend=self._backend,
+        )
+        if getattr(flip, "ok", False):
+            return replaced, None
+        seam = self._safe_degradation(getattr(flip, "degradation", None))
+        if getattr(seam, "code", None) in (
+            continuity.CODE_RECORD_NOT_FOUND,
+            continuity.CODE_ALREADY_ARCHIVED,
+        ):
+            return None, None
+        return None, seam
 
     def forget_source(
         self,
@@ -2219,8 +2329,13 @@ class RoomMemory:
         :data:`_SOURCE_ID_KEYS`) equal to *source_id*, by ENUMERATING the ingest
         scope — never by ranked recall, which would miss records the query does
         not favour. Only the ingest scope is read or touched. Archives, never
-        deletes. *deadline* bounds each step (the enumeration, then each archive).
-        Never raises.
+        deletes. Never raises.
+
+        *deadline* bounds the WHOLE call, not each step: the enumeration and then
+        each archive waits at most what remains of it. When it runs out, the ids
+        not reached are reported in ``failed`` as :data:`CODE_INGEST_NOT_ATTEMPTED`
+        (``ok`` is false), so a caller retries; the retry re-enumerates, finds the
+        done ones ``already_archived`` and continues from the rest.
         """
         key = _SOURCE_ID_KEYS.get(source) if isinstance(source, str) else None
         if key is None or not isinstance(source_id, str) or not source_id.strip():
@@ -2234,26 +2349,11 @@ class RoomMemory:
                     ),
                 ),
             )
-        shown = safe_label(source)
-
-        def enumerate_scope() -> list[dict[str, Any]]:
-            refusal = self._root_refusal()
-            if refusal is not None:
-                raise RuntimeError("the store root is refused")
-            with continuity._STORE_LOCK:
-                return list(
-                    self._list_fn(
-                        data_dir=self._data_dir,
-                        scope=INGEST_SCOPE,
-                        visibility=INGEST_VISIBILITY,
-                        backend=self._backend,
-                    )
-                )
-
+        until = _deadline_at(deadline)
         status, value, degradation = self._run_job(
-            enumerate_scope,
-            f"{shown}-enumerate",
-            deadline,
+            self._enumerate_ingest,
+            f"{safe_label(source)}-enumerate",
+            _left(until),
             verb="forget",
             code=CODE_ABANDONED_FORGET,
         )
@@ -2263,19 +2363,8 @@ class RoomMemory:
                 source=source,
                 degradations=(degradation,) if degradation is not None else (),
             )
-        todo: list[str] = []
-        already: list[str] = []
-        for item in value:
-            meta = item.get("metadata") if isinstance(item, Mapping) else None
-            if not isinstance(meta, Mapping):
-                continue
-            if meta.get("source") != source or meta.get(key) != source_id:
-                continue
-            if item.get("lifecycle") == continuity.LIFECYCLE_ARCHIVED:
-                already.append(str(item.get("id")))
-            else:
-                todo.append(str(item.get("id")))
-        outcome = self._archive_ids(todo, deadline)
+        todo, already = _select_source(value, source, key, source_id)
+        outcome = self._archive_ids(todo, until)
         return IngestForgetResult(
             ok=not outcome.failed,
             source=source,
@@ -2288,12 +2377,27 @@ class RoomMemory:
             degradations=outcome.degradations,
         )
 
+    def _enumerate_ingest(self) -> list[dict[str, Any]]:
+        """The worker: every record of the ingest scope, under the store lock. Raises."""
+        if self._root_refusal() is not None:
+            raise RuntimeError("the store root is refused")
+        with continuity._STORE_LOCK:
+            return list(
+                self._list_fn(
+                    data_dir=self._data_dir,
+                    scope=INGEST_SCOPE,
+                    visibility=INGEST_VISIBILITY,
+                    backend=self._backend,
+                )
+            )
+
     def forget_ids(
         self, record_ids: Iterable[Any], *, deadline: float = DEFAULT_WRITE_DEADLINE
     ) -> IngestForgetResult:
         """Archive exact ids in the ingest scope (the surplus a re-distil leaves).
 
-        An id in any other scope is simply not found there. Never raises.
+        An id in any other scope is simply not found there. *deadline* bounds
+        the whole call, as in :meth:`forget_source`. Never raises.
         """
         try:
             wanted = list(record_ids)
@@ -2312,7 +2416,7 @@ class RoomMemory:
                 invalid.append(("(unusable id)", continuity.CODE_INVALID_RECORD))
             elif identifier not in usable:
                 usable.append(identifier)
-        outcome = self._archive_ids(usable, deadline)
+        outcome = self._archive_ids(usable, _deadline_at(deadline))
         return IngestForgetResult(
             ok=not outcome.failed and not invalid,
             matched=len(wanted),
@@ -2327,63 +2431,56 @@ class RoomMemory:
             ),
         )
 
-    def _archive_ids(self, identifiers: Sequence[str], deadline: float) -> IngestForgetResult:
-        """Archive each id in the ingest scope, one job (one lock hold) apiece."""
-        archived: list[str] = []
-        already: list[str] = []
-        missing: list[str] = []
-        failed: list[tuple[str, str]] = []
-        degradations: list[Degradation] = []
+    def _archive_ids(self, identifiers: Sequence[str], until: float) -> IngestForgetResult:
+        """Archive each id in the ingest scope, one job (one lock hold) apiece.
+
+        *until* is the one deadline (on :func:`_elapsed`) for the whole pass:
+        each job waits at most what remains, and once nothing remains the rest
+        are reported not attempted.
+        """
+        tally = _ArchiveTally()
         for position, identifier in enumerate(identifiers):
-
-            def work(identifier: str = identifier) -> Any:
-                refusal = self._root_refusal()
-                if refusal is not None:
-                    return continuity.ArchiveOutcome(ok=False, record_id=None, degradation=refusal)
-                outcome = self._archive_fn(
-                    identifier,
-                    data_dir=self._data_dir,
-                    scope=INGEST_SCOPE,
-                    visibility=INGEST_VISIBILITY,
-                    backend=self._backend,
-                )
-                self._tighten_scope(INGEST_SCOPE)
-                self._drop_vector_after_archive(identifier, outcome)
-                return outcome
-
+            left = _left(until)
+            if left <= 0:
+                tally.out_of_time(identifiers[position:])
+                break
             status, value, degradation = self._run_job(
-                work, identifier, deadline, verb="forget", code=CODE_ABANDONED_FORGET
+                lambda identifier=identifier: self._archive_one(identifier),
+                identifier,
+                left,
+                verb="forget",
+                code=CODE_ABANDONED_FORGET,
             )
             if status != "ok":
-                failed.append((identifier, str(value)))
+                tally.fail([identifier], str(value))
                 if degradation is not None:
-                    degradations.append(degradation)
+                    tally.degradations.append(degradation)
                 if status in ("refused", "deferred"):
-                    for later in identifiers[position + 1 :]:
-                        failed.append((later, str(value)))
+                    tally.fail(identifiers[position + 1 :], str(value))
                     break
-                continue
-            if getattr(value, "ok", False):
-                archived.append(identifier)
-                continue
-            seam = self._safe_degradation(getattr(value, "degradation", None))
-            code = getattr(seam, "code", None)
-            if code == continuity.CODE_ALREADY_ARCHIVED:
-                already.append(identifier)
-            elif code == continuity.CODE_RECORD_NOT_FOUND:
-                missing.append(identifier)
+            elif getattr(value, "ok", False):
+                tally.archived.append(identifier)
             else:
-                failed.append((identifier, str(code or CODE_CLOSED)))
-                if seam is not None:
-                    degradations.append(seam)
-        return IngestForgetResult(
-            ok=not failed,
-            archived=tuple(archived),
-            already_archived=tuple(already),
-            not_found=tuple(missing),
-            failed=tuple(failed),
-            degradations=tuple(degradations),
+                tally.seam_answer(
+                    identifier, self._safe_degradation(getattr(value, "degradation", None))
+                )
+        return tally.result()
+
+    def _archive_one(self, identifier: str) -> Any:
+        """The worker: archive one ingest record and drop its cached vector."""
+        refusal = self._root_refusal()
+        if refusal is not None:
+            return continuity.ArchiveOutcome(ok=False, record_id=None, degradation=refusal)
+        outcome = self._archive_fn(
+            identifier,
+            data_dir=self._data_dir,
+            scope=INGEST_SCOPE,
+            visibility=INGEST_VISIBILITY,
+            backend=self._backend,
         )
+        self._tighten_scope(INGEST_SCOPE)
+        self._drop_vector_after_archive(identifier, outcome)
+        return outcome
 
     # -- forgetting ---------------------------------------------------------
 
@@ -2840,6 +2937,26 @@ class RoomMemory:
         candidate without a cached vector is skipped and counted — never
         embedded here; the backfill embeds it off the recall path.
         """
+        vector = self._embed_query(query, degradations)
+        if vector is None:
+            return None
+        try:
+            candidates = self._enumerate_active(self._candidate_pools(visibility))
+        except Exception as exc:  # noqa: BLE001  # a store failure is a degradation
+            return _SemanticOutcome(
+                ok=False,
+                records=[],
+                degradation=_degradation(
+                    "recall", _failure_code(exc), "enumerating recall candidates failed", exc
+                ),
+            )
+
+        hits, relevance = self._score_candidates(vector, candidates, top_k)
+        degradation = self._reinforce_hits(hits, visibility) if reinforce and hits else None
+        return _SemanticOutcome(ok=True, records=hits, degradation=degradation, relevance=relevance)
+
+    def _embed_query(self, query: str, degradations: list[Degradation]) -> Optional[list[float]]:
+        """The query's vector from ONE embed, or ``None`` with the demotion recorded."""
         if not self._semantic_ready:
             self._demote(degradations, "no embedder or vector cache is configured")
             return None
@@ -2859,18 +2976,12 @@ class RoomMemory:
             self._reprobe()
             self._demote(degradations, "the embedder did not answer the query embed")
             return None
+        return vector
 
-        try:
-            candidates = self._enumerate_active(self._candidate_pools(visibility))
-        except Exception as exc:  # noqa: BLE001  # a store failure is a degradation
-            return _SemanticOutcome(
-                ok=False,
-                records=[],
-                degradation=_degradation(
-                    "recall", _failure_code(exc), "enumerating recall candidates failed", exc
-                ),
-            )
-
+    def _score_candidates(
+        self, vector: list[float], candidates: Sequence[dict[str, Any]], top_k: int
+    ) -> tuple[list[dict[str, Any]], Optional[float]]:
+        """``(hits at or above the threshold, best first; best similarity scored)``."""
         scored: list[tuple[float, dict[str, Any]]] = []
         uncached = 0
         for record in candidates:
@@ -2892,25 +3003,28 @@ class RoomMemory:
             self._semantic["uncached_skipped"] += uncached
             self._semantic["below_threshold"] += len(scored) - len(kept)
             self._semantic["returned"] += len(hits)
+        return hits, relevance
 
-        degradation = None
-        if reinforce and hits:
-            try:
-                self._reinforce_fn(
-                    data_dir=self._data_dir,
-                    backend=self._backend,
-                    ids=[record["id"] for record in hits],
-                )
-                for scope in dict.fromkeys(s for s, _ in self._candidate_pools(visibility)):
-                    self._tighten_scope(scope)
-            except Exception as exc:  # noqa: BLE001  # a read survives a failed write-back
-                degradation = _degradation(
-                    "recall",
-                    continuity.CODE_REINFORCE_FAILED,
-                    "reinforcing semantic hits failed",
-                    exc,
-                )
-        return _SemanticOutcome(ok=True, records=hits, degradation=degradation, relevance=relevance)
+    def _reinforce_hits(
+        self, hits: Sequence[dict[str, Any]], visibility: str
+    ) -> Optional[Degradation]:
+        """Write back the semantic hits' recall; a failure is returned, never raised."""
+        try:
+            self._reinforce_fn(
+                data_dir=self._data_dir,
+                backend=self._backend,
+                ids=[record["id"] for record in hits],
+            )
+            for scope in dict.fromkeys(s for s, _ in self._candidate_pools(visibility)):
+                self._tighten_scope(scope)
+        except Exception as exc:  # noqa: BLE001  # a read survives a failed write-back
+            return _degradation(
+                "recall",
+                continuity.CODE_REINFORCE_FAILED,
+                "reinforcing semantic hits failed",
+                exc,
+            )
+        return None
 
     # -- the background backfill (t12) ---------------------------------------
 
@@ -2939,29 +3053,8 @@ class RoomMemory:
             self._note_backfill_offline()
             return report
         try:
-            candidates = self._enumerate_active(self._candidate_pools(PRIVATE))
-            todo: list[dict[str, Any]] = []
-            texts: set[str] = set()
-            for record in candidates:
-                text = record["text"]
-                if text in texts or self._vector_cache.get(text) is not None:
-                    continue
-                texts.add(text)
-                todo.append(record)
-            started = self._clock()
-            for record in todo[: max(0, int(max_records))]:
-                if self._backfill_stop.is_set() and self._backfill_running:
-                    break
-                if self._clock() - started >= budget:
-                    break
-                result = self._embedder.embed(record["text"], prompt=DOCUMENT_PROMPT)
-                vector = getattr(result, "vector", None)
-                if not getattr(result, "online", False) or not vector:
-                    report["offline"] = True
-                    self._note_backfill_offline()
-                    break
-                self._vector_cache.put(record["text"], vector, record_id=record["id"])
-                report["embedded"] += 1
+            todo = self._backfill_todo()
+            self._backfill_embed(todo[: max(0, int(max_records))], budget, report)
             if not report["offline"]:
                 self._backfill_offline = False
             report["remaining"] = len(todo) - report["embedded"]
@@ -2978,6 +3071,47 @@ class RoomMemory:
             if report["offline"]:
                 self._backfill["offline_ticks"] += 1
         return report
+
+    def _backfill_todo(self) -> list[dict[str, Any]]:
+        """Active records with no cached vector, one per distinct text. Raises on failure."""
+        todo: list[dict[str, Any]] = []
+        texts: set[str] = set()
+        for record in self._enumerate_active(self._candidate_pools(PRIVATE)):
+            text = record["text"]
+            if text in texts or self._vector_cache.get(text) is not None:
+                continue
+            texts.add(text)
+            todo.append(record)
+        return todo
+
+    def _backfill_embed(
+        self, records: Sequence[dict[str, Any]], budget: float, report: dict[str, Any]
+    ) -> None:
+        """Embed *records* within *budget*; the cache file is written ONCE, at the end.
+
+        Saving per vector rewrote the whole cache file each time (O(N^2) bytes
+        for a backfill of N). The vectors gathered so far are saved even when
+        the tick stops early or an embed raises.
+        """
+        batch: list[tuple[str, list[float], Optional[str]]] = []
+        started = self._clock()
+        try:
+            for record in records:
+                if self._backfill_stop.is_set() and self._backfill_running:
+                    break
+                if self._clock() - started >= budget:
+                    break
+                result = self._embedder.embed(record["text"], prompt=DOCUMENT_PROMPT)
+                vector = getattr(result, "vector", None)
+                if not getattr(result, "online", False) or not vector:
+                    report["offline"] = True
+                    self._note_backfill_offline()
+                    break
+                batch.append((record["text"], vector, record["id"]))
+                report["embedded"] += 1
+        finally:
+            if batch:
+                self._vector_cache.put_many(batch)
 
     def _wake_backfill(self) -> None:
         """Ask the running backfill for a tick now (a write changed a record's text).
