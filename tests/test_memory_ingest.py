@@ -327,7 +327,9 @@ def test_forget_source_enumerates_rather_than_ranking(room) -> None:
     # Many records, query-unfriendly text: a ranked top-k recall could not see them all.
     specs = [("big", "fact", i, f"word{i} zzz") for i in range(60)]
     assert room.ingest_records(_batch(*specs[:60])).ok
-    result = room.forget_source("pocket", "big")
+    # A generous total deadline: this pins enumeration, not speed (d6 made the
+    # deadline one total, so a loaded suite could otherwise end it partial).
+    result = room.forget_source("pocket", "big", deadline=30.0)
     assert result.matched == 60 and len(result.archived) == 60
 
 
