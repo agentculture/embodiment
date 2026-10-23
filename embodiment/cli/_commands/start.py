@@ -180,9 +180,11 @@ def register(sub: argparse._SubParsersAction) -> None:
         metavar="HOSTNAME",
         help=(
             "The one Host the guard treats as public (a Cloudflare tunnel hostname). "
-            "Requests for it must carry a Cloudflare Access assertion, and the shipped "
-            "verifier refuses every one (http-access-verifier-missing) until an RS256 "
-            "dependency is approved. Unset, no Host is public and nothing is asked."
+            "With the three EMBODIMENT_ACCESS_TEAM_DOMAIN, EMBODIMENT_ACCESS_AUD and "
+            "EMBODIMENT_ACCESS_EMAILS names set (all or none), the shipped RS256 verifier "
+            "admits a valid Cloudflare Access assertion for an allow-listed email in "
+            "place of the install secret on this Host only. Unset, no Host is public "
+            "and nothing is asked."
         ),
     )
     p.add_argument("--json", action="store_true", help="Emit structured JSON.")

@@ -355,3 +355,18 @@ class TestEndToEndThroughTheCli:
                     os.kill(pid, signal.SIGKILL)
                 except OSError:
                     pass  # nosec B110 - the daemon is already gone, which is the happy path
+
+
+def test_start_help_describes_the_shipped_access_verifier(capsys: pytest.CaptureFixture) -> None:
+    """t5/h23: --public-hostname help must not claim the verifier refuses everything."""
+    with pytest.raises(SystemExit):
+        _build_parser().parse_args(["start", "--help"])
+    text = " ".join(capsys.readouterr().out.split())
+    assert "refuses every one" not in text
+    assert "http-access-verifier-missing" not in text
+    for name in (
+        "EMBODIMENT_ACCESS_TEAM_DOMAIN",
+        "EMBODIMENT_ACCESS_AUD",
+        "EMBODIMENT_ACCESS_EMAILS",
+    ):
+        assert name in text
