@@ -98,3 +98,87 @@ describe("Chat", () => {
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("network-error"));
   });
 });
+
+describe("Chat (pocketchat port: thread, citations, composer)", () => {
+  const LIB = { source: "library", title: "Standup", date: "2026-03-04", start: null, end: null, section: "", link: "", text: "quoted words", item_id: "item-1", anchor: "a-7" };
+  const NOID = { source: "pocket", title: "Old rec", date: "2026-01-01", start: 3, end: 9, section: "", link: "", text: "no id quote" };
+
+  it("turns [n] markers into cite buttons that open the citation", async () => {
+    const fetchFn = fetchOk({ reply: "We shipped [1] and maybe [2] but not [9].", sources: [LIB, NOID] });
+    const onOpenCitation = vi.fn();
+    render(<Chat clientOptions={{ fetchFn }} onOpenCitation={onOpenCitation} />);
+    await send("q");
+    const cite1 = await screen.findByRole("button", { name: /Open source 1: Standup/ });
+    expect(cite1).toHaveTextContent("1");
+    await userEvent.click(cite1);
+    expect(onOpenCitation).toHaveBeenCalledWith("item-1", "a-7");
+    // a source without item_id: marker is a cite, but opening is a no-op
+    await userEvent.click(screen.getByRole("button", { name: /Open source 2: Old rec/ }));
+    expect(onOpenCitation).toHaveBeenCalledTimes(1);
+    // an unknown marker stays plain text
+    expect(screen.getByText(/but not \[9\]/)).toBeInTheDocument();
+  });
+
+  it("clicking a source in the list opens it; the quote is a dir=auto text node", async () => {
+    const fetchFn = fetchOk({ reply: "see [1]", sources: [LIB] });
+    const onOpenCitation = vi.fn();
+    render(<Chat clientOptions={{ fetchFn }} onOpenCitation={onOpenCitation} />);
+    await send("q");
+    const quote = await screen.findByText("quoted words");
+    expect(quote).toHaveAttribute("dir", "auto");
+    await userEvent.click(quote);
+    expect(onOpenCitation).toHaveBeenCalledWith("item-1", "a-7");
+    expect(screen.getByText(/Standup \| 2026-03-04/)).toHaveAttribute("dir", "auto");
+  });
+
+  it("question text carries dir=auto and markup stays text", async () => {
+    const fetchFn = fetchOk({ reply: "r", sources: [] });
+    const { container } = render(<Chat clientOptions={{ fetchFn }} />);
+    await send("שלום <i>x</i>");
+    expect(await screen.findByText(/שלום <i>x<\/i>/)).toHaveAttribute("dir", "auto");
+    expect(container.querySelector("i")).toBeNull();
+  });
+
+  it("Enter sends, Shift+Enter inserts a newline", async () => {
+    const fetchFn = fetchOk({ reply: "ok", sources: [] });
+    render(<Chat clientOptions={{ fetchFn }} />);
+    const box = screen.getByLabelText("message");
+    await userEvent.type(box, "line1{Shift>}{Enter}{/Shift}line2");
+    expect(fetchFn).not.toHaveBeenCalled();
+    expect((box as HTMLTextAreaElement).value).toBe("line1\nline2");
+    await userEvent.type(box, "{Enter}");
+    await screen.findByText(/ok/);
+    expect(JSON.parse(String(fetchFn.mock.calls[0][1]?.body)).message).toBe("line1\nline2");
+    expect((box as HTMLTextAreaElement).value).toBe("");
+  });
+
+  it("the composer holds the input and the audio controls", () => {
+    render(<Chat />);
+    const composer = screen.getByRole("form", { name: "composer" });
+    expect(composer).toContainElement(screen.getByLabelText("message"));
+    expect(composer).toContainElement(screen.getByRole("button", { name: "Record" }));
+    expect(composer).toContainElement(screen.getByLabelText(/upload audio/i));
+    expect(composer).toContainElement(screen.getByRole("button", { name: "Speech-to-speech" }));
+    expect(screen.getByRole("button", { name: "Speech-to-speech" })).toBeDisabled();
+  });
+
+  function mockMotion(reduce: boolean) {
+    vi.stubGlobal("matchMedia", (q: string) => ({ matches: reduce && q.includes("reduce"), media: q, addEventListener() {}, removeEventListener() {} }));
+  }
+
+  it("reveals the answer word by word unless prefers-reduced-motion", async () => {
+    mockMotion(false);
+    const fetchFn = fetchOk({ reply: "one two three", sources: [] });
+    const { container, unmount } = render(<Chat clientOptions={{ fetchFn }} />);
+    await send("q");
+    await screen.findByText("three");
+    expect(container.querySelectorAll(".chat__word")).toHaveLength(3);
+    unmount();
+    mockMotion(true);
+    const r2 = render(<Chat clientOptions={{ fetchFn }} />);
+    await send("q");
+    await screen.findByText(/one two three/);
+    expect(r2.container.querySelectorAll(".chat__word")).toHaveLength(0);
+    vi.unstubAllGlobals();
+  });
+});
