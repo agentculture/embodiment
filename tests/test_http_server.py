@@ -2370,3 +2370,20 @@ class TestLibraryClocks:
             assert json.loads(body)["code"] == s.CONTROL_TIMEOUT_CODE
         finally:
             built.server.shutdown(2.0)
+
+
+def test_server_status_carries_the_guards_access_counters(tmp_path):
+    """t5's counters reach the server snapshot (and so the daemon's /api/status)."""
+    from embodiment.http import server as srv
+
+    class _Guard:
+        def status(self):
+            return {"access": {"mode": "access", "admitted": 3, "refused_by_code": {"x": 1}}}
+
+    class _Broken:
+        def status(self):
+            raise RuntimeError("boom")
+
+    assert srv._guard_status(_Guard())["access"]["admitted"] == 3
+    assert srv._guard_status(_Broken()) == {}
+    assert srv._guard_status(object()) == {}

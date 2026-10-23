@@ -434,6 +434,18 @@ _TEXT_ROUTES = (CHAT_ROUTE, SPEAK_ROUTE, CLIP_ROUTE)
 _CONTROL_ROUTES = ("/api/voice/start", "/api/voice/stop", "/api/mic/mute") + _TEXT_ROUTES
 
 
+def _guard_status(guard: Any) -> dict[str, Any]:
+    """The guard's own status (Access counters), or nothing for a guard without one."""
+    status = getattr(guard, "status", None)
+    if not callable(status):
+        return {}
+    try:
+        value = status()
+    except Exception:  # noqa: BLE001  # a status read never fails the snapshot
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
 def default_dist_dir() -> Path:
     """Where the built dashboard is, in whichever layout this package is in.
 
@@ -1979,4 +1991,6 @@ class DashboardServer:
             "degradations_dropped": dropped,
             "hook_errors": hook_errors,
             **counters,
+            # The guard's Access counters (t5): admitted, refused per code.
+            **_guard_status(self.guard),
         }
