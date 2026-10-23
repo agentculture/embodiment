@@ -89,14 +89,15 @@ def test_mark_failed_keeps_reason_and_purges_after_seven_days(spool):
     batch = spool.pending()[0]
     assert spool.mark_failed(batch, "store unavailable\nsecond line")
     assert spool.pending() == []
-    reason = json.loads((spool.failed_dir / f"{batch.batch_id}.reason.json").read_text("utf-8"))
+    reason = json.loads((spool.failed_dir / f"{batch.batch_id}.json").read_text("utf-8"))
     assert reason["reason"] == "store unavailable second line"
+    assert reason["record_ids"] == ["r1", "r2"] and reason["count"] == 2
     assert spool.status().failed == 1
     assert spool.purge_failed() == 0
     old = time.time() - FAILED_RETENTION_S - 10
     for p in spool.failed_dir.iterdir():
         os.utime(p, (old, old))
-    assert spool.purge_failed() == 2
+    assert spool.purge_failed() == 1
     assert spool.status().failed == 0
 
 
@@ -138,3 +139,17 @@ def test_degradation_callback_is_invoked_and_never_raises(tmp_path):
     assert not sp.enqueue("bad", REC).ok
     assert seen == ["spool-batch-refused"]
     assert ("spool-sink-failed", "RuntimeError") in sp.degradations
+
+
+def test_no_file_keeps_record_text_after_failure(spool):
+    sentinel = "SENTINEL-synthetic-9f3a"
+    spool.enqueue("ingest", [{"id": "s1", "text": sentinel}])
+    spool.mark_failed(spool.pending()[0], "boom")
+    spool.enqueue("ingest", [{"id": "s2", "text": sentinel}])
+    next(spool.inbox.iterdir()).write_text("{" + sentinel)  # malformed path
+    spool.pending()
+    spool.enqueue("ingest", [{"id": "s3", "text": sentinel}])
+    spool.mark_done(spool.pending()[0])
+    files = [p for p in spool.root.rglob("*") if p.is_file()]
+    assert files and not list(spool.inbox.iterdir())
+    assert all(sentinel.encode() not in p.read_bytes() for p in files)

@@ -4,7 +4,7 @@ Layout under ``<state dir>/ingest/``::
 
     inbox/    pending batches, one 0600 file each, sortable by name (0700 dir)
     done/     receipts only: batch id, record ids, counts, hashes - never text
-    failed/   the refused batch plus a safe reason; purged after 7 days
+    failed/   a safe reason plus the receipt fields, no records; purged after 7 days
 
 Batches are opaque lists of already-validated record dicts plus a kind
 (``ingest`` or ``forget``). Forget requests share the one queue, so ordering
@@ -170,10 +170,7 @@ class Spool:
         """Replace the batch with a receipt (ids, counts, hashes) - never record text."""
         receipt = {
             "batch_id": batch.batch_id,
-            "kind": batch.kind,
-            "record_ids": [i for i in (_record_id(r) for r in batch.records) if i is not None],
-            "count": len(batch.records),
-            "hashes": [_record_hash(r) for r in batch.records],
+            **_receipt_fields(batch),
             "completed_at": time.time(),
         }
         if not self._ensure(self.done_dir):
@@ -188,19 +185,27 @@ class Spool:
         return True
 
     def mark_failed(self, batch: Batch, reason: str) -> bool:
-        return self._move_failed(batch.path, batch.batch_id, reason)
+        """Keep only the safe reason plus the receipt fields; the records are dropped."""
+        return self._move_failed(batch.path, batch.batch_id, reason, batch)
 
-    def _move_failed(self, path: Path, batch_id: str, reason: str) -> bool:
+    def _move_failed(
+        self, path: Path, batch_id: str, reason: str, batch: Optional[Batch] = None
+    ) -> bool:
         safe = "".join(c if c.isprintable() else " " for c in str(reason))[:_REASON_MAX_CHARS]
         if not self._ensure(self.failed_dir):
             return False
+        body: dict[str, Any] = {"batch_id": batch_id, "reason": safe, "failed_at": time.time()}
+        if batch is not None:
+            body.update(_receipt_fields(batch))
+        else:
+            m = _BATCH_NAME_RE.match(path.name)
+            body["kind"] = m.group(3) if m else None
         try:
-            body = {"batch_id": batch_id, "reason": safe, "failed_at": time.time()}
             atomic_write_bytes(
-                self.failed_dir / f"{batch_id}.reason.json",
+                self.failed_dir / f"{batch_id}.json",
                 json.dumps(body, ensure_ascii=False, sort_keys=True).encode("utf-8"),
             )
-            os.replace(path, self.failed_dir / f"{batch_id}.json")
+            os.remove(path)
         except OSError as exc:
             self._degrade("spool-mark-failed-failed", type(exc).__name__)
             return False
@@ -241,9 +246,18 @@ class Spool:
         return SpoolStatus(
             pending=len(names),
             done=_count(self.done_dir, lambda n: n.endswith(".json")),
-            failed=_count(self.failed_dir, lambda n: n.endswith(".json") and ".reason." not in n),
+            failed=_count(self.failed_dir, lambda n: n.endswith(".json")),
             oldest_pending_age_s=None if oldest is None else max(0.0, oldest),
         )
+
+
+def _receipt_fields(batch: Batch) -> dict[str, Any]:
+    return {
+        "kind": batch.kind,
+        "record_ids": [i for i in (_record_id(r) for r in batch.records) if i is not None],
+        "count": len(batch.records),
+        "hashes": [_record_hash(r) for r in batch.records],
+    }
 
 
 def _count(directory: Path, keep: Callable[[str], bool]) -> int:
