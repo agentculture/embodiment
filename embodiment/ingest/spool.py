@@ -142,29 +142,34 @@ class Spool:
 
     # ── consume ──────────────────────────────────────────────────────────
 
-    def _pending_names(self) -> list[str]:
+    def pending_names(self) -> list[str]:
+        """Batch file names in enqueue order. Lists the inbox; opens nothing."""
         try:
             names = os.listdir(self.inbox)
         except OSError:
             return []
         return sorted(n for n in names if _BATCH_NAME_RE.match(n))
 
+    _pending_names = pending_names
+
+    def load(self, name: str) -> Optional[Batch]:
+        """Read one named batch. Unreadable or malformed: moved to failed/, ``None``."""
+        path = self.inbox / name
+        batch_id = name[: -len(".json")]
+        try:
+            data = json.loads(path.read_text("utf-8"))
+            kind, records = data["kind"], data["records"]
+            if _refusal(kind, records) is not None:
+                raise ValueError("shape")
+        except (OSError, ValueError, KeyError, TypeError):
+            self._move_failed(path, batch_id, "batch file unreadable or malformed")
+            return None
+        return Batch(batch_id, kind, records, path)
+
     def pending(self) -> list[Batch]:
         """Batches in enqueue order. An unreadable batch is moved to failed/."""
-        out: list[Batch] = []
-        for name in self._pending_names():
-            path = self.inbox / name
-            batch_id = name[: -len(".json")]
-            try:
-                data = json.loads(path.read_text("utf-8"))
-                kind, records = data["kind"], data["records"]
-                if _refusal(kind, records) is not None:
-                    raise ValueError("shape")
-            except (OSError, ValueError, KeyError, TypeError):
-                self._move_failed(path, batch_id, "batch file unreadable or malformed")
-                continue
-            out.append(Batch(batch_id, kind, records, path))
-        return out
+        loaded = (self.load(name) for name in self.pending_names())
+        return [batch for batch in loaded if batch is not None]
 
     def mark_done(self, batch: Batch) -> bool:
         """Replace the batch with a receipt (ids, counts, hashes) - never record text."""

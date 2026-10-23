@@ -293,25 +293,7 @@ class Drain:
         if 0.0 < self._retry_at - now <= MAX_RETRY_BACKOFF_S:
             stalled = True
         else:
-            batches = self._spool.pending()
-            self._forward_spool()
-            live = {b.batch_id for b in batches}
-            for stale in [k for k in self._cursor if k not in live]:
-                self._cursor.pop(stale, None)
-                self._refused.pop(stale, None)
-            for batch in batches:
-                outcome, count = self._apply(batch, budget)
-                applied += count
-                if outcome == "done":
-                    done.append(batch.batch_id)
-                elif outcome == "failed":
-                    failed.append(batch.batch_id)
-                elif outcome == "stalled":
-                    stalled = True
-                    break
-                else:  # "budget"
-                    exhausted = True
-                    break
+            applied, stalled, exhausted = self._apply_batches(budget, done, failed)
         archived: tuple[str, ...] = ()
         if not stalled and not exhausted:
             archived, exhausted = self._retention(budget)
@@ -323,6 +305,38 @@ class Drain:
             budget_exhausted=exhausted,
             retention_archived=archived,
         )
+
+    def _apply_batches(
+        self, budget: _Pass, done: list[str], failed: list[str]
+    ) -> tuple[int, bool, bool]:
+        """Apply the inbox head-first. ``(records applied, stalled, budget exhausted)``.
+
+        Only names are listed up front; each batch is read just before it is applied and
+        only while budget remains, so a deep inbox costs a pass one parse, not all of them.
+        """
+        names = self._spool.pending_names()
+        live = {n[: -len(".json")] for n in names}
+        for stale in [k for k in self._cursor if k not in live]:
+            self._cursor.pop(stale, None)
+            self._refused.pop(stale, None)
+        applied = 0
+        for name in names:
+            if not budget.can_start():
+                self._forward_spool()
+                return applied, False, True
+            batch = self._spool.load(name)
+            self._forward_spool()
+            if batch is None:  # unreadable: the spool moved it to failed/ and recorded it
+                continue
+            outcome, count = self._apply(batch, budget)
+            applied += count
+            if outcome == "done":
+                done.append(batch.batch_id)
+            elif outcome == "failed":
+                failed.append(batch.batch_id)
+            else:  # "stalled" or "budget"
+                return applied, outcome == "stalled", outcome == "budget"
+        return applied, False, False
 
     def _apply(self, batch: Batch, budget: _Pass) -> tuple[str, int]:
         """``(outcome, records applied)``; outcome is done/failed/stalled/budget."""
@@ -492,26 +506,32 @@ class Drain:
         added = False
         for raw in records:
             meta = raw.get("metadata") if isinstance(raw, Mapping) else None
-            if not isinstance(meta, Mapping) or meta.get("source") != "newspaper":
-                continue
-            issue = meta.get("issue_date")
-            if not isinstance(issue, str) or _parse_date(issue) is None:
-                shown = _label(issue)
-                if shown not in self._undated:
-                    self._undated.add(shown)
-                    self._record(
-                        APP_INGEST_RETENTION_UNDATED,
-                        f"newspaper issue_date {shown} is not YYYY-MM-DD; "
-                        "its items will not be archived by retention",
-                    )
-                continue
-            if issue not in self._ledger:
-                self._ledger.add(issue)
-                added = True
-                if self._expired(issue):
-                    self._retention_due_at = 0.0  # already past retention: check now
+            if isinstance(meta, Mapping) and meta.get("source") == "newspaper":
+                added = self._track_issue(meta.get("issue_date")) or added
         if added:
             self._save_ledger()
+
+    def _track_issue(self, issue: Any) -> bool:
+        """Ledger one newspaper issue_date; ``True`` when it was newly added."""
+        if not isinstance(issue, str) or _parse_date(issue) is None:
+            self._note_undated(_label(issue))
+            return False
+        if self._ledger is None or issue in self._ledger:
+            return False
+        self._ledger.add(issue)
+        if self._expired(issue):
+            self._retention_due_at = 0.0  # already past retention: check now
+        return True
+
+    def _note_undated(self, shown: str) -> None:
+        if shown in self._undated:
+            return
+        self._undated.add(shown)
+        self._record(
+            APP_INGEST_RETENTION_UNDATED,
+            f"newspaper issue_date {shown} is not YYYY-MM-DD; "
+            "its items will not be archived by retention",
+        )
 
     def _expired(self, issue: str) -> bool:
         day = _parse_date(issue)
@@ -531,24 +551,11 @@ class Drain:
         for issue in expired:
             if not budget.can_start():
                 return tuple(archived), True  # still due: the next pass continues
-            deadline = min(self._record_deadline, budget.remaining())
-            result = self._memory.forget_source("newspaper", issue, deadline=deadline)
-            if not result.ok:
-                code = result.failed[0][1] if result.failed else _first_code(result.degradations)
-                self._record(
-                    APP_INGEST_RETENTION_FAILED,
-                    f"newspaper issue {issue} not archived ({code}); "
-                    f"retried in {RETENTION_RETRY_S:.0f}s",
-                )
-                self._retention_due_at = now + RETENTION_RETRY_S
+            if not self._archive_issue(issue, budget, now):
                 if archived:
                     self._save_ledger()
                 return tuple(archived), False
-            if self._ledger is not None:
-                self._ledger.discard(issue)
             archived.append(issue)
-            self._counts["forgets_archived"] += len(result.archived)
-            self._counts["retention_archived_issues"] += 1
         if archived:
             self._save_ledger()
         self._spool.purge_failed(now)
@@ -556,6 +563,25 @@ class Drain:
         self._last_retention_at = now
         self._retention_due_at = now + self._retention_interval
         return tuple(archived), False
+
+    def _archive_issue(self, issue: str, budget: _Pass, now: float) -> bool:
+        """Archive one expired issue; ``False`` (retry scheduled) when it did not work."""
+        deadline = min(self._record_deadline, budget.remaining())
+        result = self._memory.forget_source("newspaper", issue, deadline=deadline)
+        if not result.ok:
+            code = result.failed[0][1] if result.failed else _first_code(result.degradations)
+            self._record(
+                APP_INGEST_RETENTION_FAILED,
+                f"newspaper issue {issue} not archived ({code}); "
+                f"retried in {RETENTION_RETRY_S:.0f}s",
+            )
+            self._retention_due_at = now + RETENTION_RETRY_S
+            return False
+        if self._ledger is not None:
+            self._ledger.discard(issue)
+        self._counts["forgets_archived"] += len(result.archived)
+        self._counts["retention_archived_issues"] += 1
+        return True
 
     # ── status ───────────────────────────────────────────────────────────
 

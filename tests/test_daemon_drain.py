@@ -780,3 +780,38 @@ def test_a_clock_stepped_backwards_does_not_stretch_a_backoff(
         assert len(d.drain_once(5.0).batches_done) == 1
     finally:
         room.close()
+
+
+def test_a_pass_parses_only_the_batches_it_applies(
+    spool: Spool, room: mem.RoomMemory, clock: Clock, rec: Recorder, monkeypatch
+) -> None:
+    ids = [spool.enqueue("ingest", _pocket(f"r{i}", 3)).batch_id for i in range(20)]
+    loaded: list[str] = []
+    real_load = spool.load
+
+    def spy(name: str):
+        loaded.append(name)
+        return real_load(name)
+
+    monkeypatch.setattr(spool, "load", spy)
+    monkeypatch.setattr(
+        spool, "pending", lambda: pytest.fail("a drain pass must not parse the whole inbox")
+    )
+    fake = {"t": 0.0}
+    real = room.ingest_records
+
+    def costly(records, **kw):
+        fake["t"] += 0.08
+        return real(records, **kw)
+
+    monkeypatch.setattr(room, "ingest_records", costly)
+    d = _drain(spool, room, clock, rec, monotonic=lambda: fake["t"])
+    report = d.drain_once(0.25)  # three record starts: exactly the head batch
+    assert report.batches_done == (ids[0],)
+    assert report.budget_exhausted
+    assert [n[: -len(".json")] for n in loaded] == [ids[0]]
+    # Later passes continue in enqueue order, one batch each.
+    for expected in ids[1:4]:
+        fake["t"] = 0.0
+        assert d.drain_once(0.25).batches_done == (expected,)
+    assert [n[: -len(".json")] for n in loaded] == ids[:4]
