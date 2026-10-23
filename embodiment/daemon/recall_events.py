@@ -73,6 +73,34 @@ A recall with no relevance score (keyword mode reports none) never clears a
 threshold, so in keyword mode a late memory is dropped rather than spoken on
 an unscored guess.
 
+The head start, and why its default is the old recall deadline
+---------------------------------------------------------------
+Keyword recall lands in milliseconds and a completion takes 0.25–2.35 s
+(measured, n=3), so a turn that asked for its first completion the instant it
+spawned the recall threw that completion away on every memory hit and waited
+for a second one: first audio behind two completions back to back. The old
+synchronous path cost at most one bounded recall plus one completion.
+
+So :meth:`BackgroundRecall.run_turn` waits up to
+:attr:`RecallEventsConfig.head_start_s` for the recall to land **before** it
+asks for the first completion. The wait is a :class:`threading.Event` the
+recall job sets — it returns the moment the recall lands (or fails), never
+polls, and never sleeps past its bound. A memory that lands in time goes into
+the first and only ``reply`` completion and counts as
+:data:`LANDED_BEFORE_FIRST_SENTENCE` (and as a ``head_start_hits``); an empty
+or failed recall ends the wait and is dropped as before; one that misses the
+head start takes exactly t13's remainder / follow-up / dropped paths. If the
+floor is taken while the turn waits, a memory that landed is **not** taken up
+front: the turn proceeds as t13's floor-held reply (nothing spoken over the
+operator) and the memory goes the late path.
+
+The default is :data:`DEFAULT_HEAD_START_S`, mirrored from
+:data:`embodiment.memory.DEFAULT_DEADLINE` (a test pins the equality) — lesson
+1 of ``CLAUDE.md``: the head start bounds *how long a spoken turn may wait for
+memory*, which is precisely the quantity that deadline bounded on the old
+synchronous path, so it is derived from it rather than guessed. ``0`` or
+``None`` turns it off and restores t13's behaviour exactly.
+
 Stop-and-restart
 ----------------
 Reserved for a memory the already-spoken text is inconsistent with (``c61``).
@@ -155,6 +183,7 @@ __all__ = [
     "RECALL_EVENTS_RESTARTED",
     "RECALL_EVENTS_CLOSED",
     "DEFAULT_MAX_SAMPLES",
+    "DEFAULT_HEAD_START_S",
     "Recalled",
     "CompletionRequest",
     "RecallEventsConfig",
@@ -180,8 +209,9 @@ _LANDINGS = (
 
 # ── what a completion request is for ─────────────────────────────────────
 
-#: The reply. ``memory`` is empty on the first completion and set when the
-#: memory landed before the first sentence was spoken.
+#: The reply. ``memory`` is set when the memory landed inside the head start
+#: (the first and only completion) or before the first sentence was spoken (a
+#: regeneration); otherwise it is empty.
 PURPOSE_REPLY = "reply"
 #: The not-yet-spoken remainder, given the memory and what was already said.
 PURPOSE_REMAINDER = "remainder"
@@ -222,6 +252,12 @@ RECALL_EVENTS_CLOSED = "recall-events-closed"
 #: memory bound for a long-running daemon, not a measurement window.
 DEFAULT_MAX_SAMPLES = 256
 
+#: Seconds a turn waits for recall before its first completion. Mirrors
+#: :data:`embodiment.memory.DEFAULT_DEADLINE` (pinned equal by a test, not
+#: imported, to keep this module's import footprint to safe_reason/turn/voice):
+#: the old synchronous path's bound on how long a spoken turn waits for memory.
+DEFAULT_HEAD_START_S = 0.25
+
 #: Bound on the dedup keys :class:`Unprompted` remembers.
 _MAX_KEYS = 1024
 
@@ -254,7 +290,7 @@ class CompletionRequest:
     """One call to the injected ``complete`` seam. It returns the text to speak.
 
     *query* is the user's words verbatim; *memory* the rendered recall (empty
-    on the first completion); *spoken* the sentences already handed to the
+    unless it landed in time); *spoken* the sentences already handed to the
     voice, in order — the context a remainder, restart or follow-up builds on.
     """
 
@@ -271,12 +307,16 @@ class RecallEventsConfig:
     *follow_up_window_s* is seconds from the reply's end to the arrival, to be
     derived from the measured arrival distribution (plan ``t18``), never
     guessed. *follow_up_threshold* is the calibrated ``c52`` threshold; an
-    arrival clears it at ``relevance >= threshold``.
+    arrival clears it at ``relevance >= threshold``. *head_start_s* is how long
+    a turn waits for recall before its first completion (see the module
+    docstring); ``0``, ``None`` or anything not a positive finite number turns
+    it off.
     """
 
     follow_up_window_s: Optional[float] = None
     follow_up_threshold: Optional[float] = None
     max_samples: int = DEFAULT_MAX_SAMPLES
+    head_start_s: Optional[float] = DEFAULT_HEAD_START_S
 
 
 @dataclass(frozen=True)
@@ -337,6 +377,8 @@ class _Turn:
     pending: Optional[_Arrival] = None
     classified: bool = False
     spoken: list[str] = field(default_factory=list)
+    #: Set by the recall job once its arrival is stored or handed on (or failed).
+    landed: threading.Event = field(default_factory=threading.Event)
 
 
 # ── helpers ──────────────────────────────────────────────────────────────
@@ -628,6 +670,10 @@ class BackgroundRecall:
         self._regenerations = 0
         self._restarts = 0
         self._sentences_dropped = 0
+        head_start = _finite(self._config.head_start_s)
+        self._head_start = head_start if head_start is not None and head_start > 0 else 0.0
+        self._head_start_waits = 0
+        self._head_start_hits = 0
         self._arrival_n = 0
         self._samples: deque[dict[str, Any]] = deque(maxlen=max(1, int(self._config.max_samples)))
         self._degradations: dict[str, int] = {}
@@ -670,6 +716,9 @@ class BackgroundRecall:
                 "arrival_samples": [dict(sample) for sample in self._samples],
                 "follow_up_window_s": self._config.follow_up_window_s,
                 "follow_up_threshold": self._config.follow_up_threshold,
+                "head_start_s": self._head_start,
+                "head_start_waits": self._head_start_waits,
+                "head_start_hits": self._head_start_hits,
                 "degradations": dict(self._degradations),
                 "record_sink_failures": self._sink_failures,
             }
@@ -715,16 +764,49 @@ class BackgroundRecall:
         text = query if isinstance(query, str) else ""
         turn = _Turn(turn_id=turn_id, query=text, started_at=self._now())
         try:
+            head = None
             if text.strip():
                 self._start_recall(turn)
-            return self._reply(turn)
+                head = self._wait_head_start(turn)
+            return self._reply(turn, head)
         finally:
             late = self._finish(turn)
             if late is not None:
                 self._late(turn, late)
 
-    def _reply(self, turn: _Turn) -> ReplyOutcome:
-        first = self._complete_text(CompletionRequest(PURPOSE_REPLY, turn.query))
+    def _wait_head_start(self, turn: _Turn) -> Optional[_Arrival]:
+        """Wait up to the head start for the recall; claim it if usable. ``None`` otherwise.
+
+        Skipped entirely when the head start is off (t13 exactly) or the recall
+        was already classified (a raising spawn). A failed or empty recall sets
+        the event too, so it ends the wait; :meth:`_take` then drops it. A floor
+        held after the wait leaves the arrival pending: the reply below sees
+        the floor and stops before speaking, and :meth:`_finish` hands the
+        arrival to the late path, as t13 does for a floor-held reply.
+        """
+        if self._head_start <= 0:
+            return None
+        with self._lock:
+            if turn.classified:
+                return None
+            self._head_start_waits += 1
+        turn.landed.wait(self._head_start)
+        if self._unprompted.floor_held():
+            return None
+        arrival, _landed = self._take(turn)
+        if arrival is not None:
+            with self._lock:
+                self._head_start_hits += 1
+        return arrival
+
+    def _reply(self, turn: _Turn, head: Optional[_Arrival] = None) -> ReplyOutcome:
+        first = None
+        if head is not None:
+            first = self._complete_text(
+                CompletionRequest(PURPOSE_REPLY, turn.query, head.recalled.rendered)
+            )
+        if first is None:  # no head-start memory, or its completion failed: plain reply
+            first = self._complete_text(CompletionRequest(PURPOSE_REPLY, turn.query))
         if first is None:
             first = FALLBACK_TEXT  # the reply keeps the never-silent rule
         remaining = self._split(first) or [FALLBACK_TEXT]
@@ -866,6 +948,8 @@ class BackgroundRecall:
             self._late(turn, arrival)
         except Exception as exc:  # noqa: BLE001  # last resort for the thread
             self._record(RECALL_EVENTS_SEAM_FAILED, safe_reason.describe_exception(exc))
+        finally:
+            turn.landed.set()  # ends a head-start wait: landed, failed or handed on
 
     def _take(self, turn: _Turn) -> tuple[Optional[_Arrival], str]:
         """At a sentence boundary: claim a pending arrival and classify it, once."""
