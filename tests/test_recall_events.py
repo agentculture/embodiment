@@ -16,11 +16,13 @@ from __future__ import annotations
 import ast
 import sys
 import threading
+import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
 import pytest
 
+from embodiment import memory
 from embodiment.daemon import recall_events as re_mod
 from embodiment.daemon.recall_events import (
     DROP_ALREADY_SPOKEN,
@@ -121,6 +123,8 @@ class Harness:
         window: Optional[float] = WINDOW_S,
         threshold: Optional[float] = THRESHOLD,
         contradicts: Optional[Callable[[str, tuple[str, ...]], bool]] = None,
+        head_start: Optional[float] = 0.0,
+        spawn: Optional[Callable[[Callable[[], None]], None]] = None,
     ) -> None:
         self.clock = FakeClock()
         self.spawn = ManualSpawn()
@@ -141,7 +145,11 @@ class Harness:
         self.on_speak: dict[int, Callable[[], None]] = {}
         self.speak_count = 0
         self.stops = 0
-        self.config = RecallEventsConfig(follow_up_window_s=window, follow_up_threshold=threshold)
+        # head_start=0 by default: the t13 tests below pin t13's behaviour exactly,
+        # with no head start. The head-start tests opt in.
+        self.config = RecallEventsConfig(
+            follow_up_window_s=window, follow_up_threshold=threshold, head_start_s=head_start
+        )
         self.app = BackgroundRecall(
             recall=self.recall,
             complete=self.complete,
@@ -152,7 +160,7 @@ class Harness:
             config=self.config,
             contradicts=contradicts,
             record=lambda code, reason: self.records.append((code, reason)),
-            spawn=self.spawn,
+            spawn=spawn if spawn is not None else self.spawn,
         )
 
     # seams
@@ -616,7 +624,7 @@ class TestArrivalCounters:
             stop_playback=h.stop_playback,
             floor_held=lambda: h.floor,
             clock=h.clock,
-            config=RecallEventsConfig(max_samples=3),
+            config=RecallEventsConfig(max_samples=3, head_start_s=0),
             spawn=h.spawn,
         )
         for _ in range(5):
@@ -883,7 +891,9 @@ class TestThreaded:
             stop_playback=lambda: None,
             floor_held=lambda: False,
             clock=clock,
-            config=RecallEventsConfig(follow_up_window_s=WINDOW_S, follow_up_threshold=0.5),
+            config=RecallEventsConfig(
+                follow_up_window_s=WINDOW_S, follow_up_threshold=0.5, head_start_s=0
+            ),
         )
         app.run_turn("q")
         assert spoken == ["Hello there."]  # the turn did not wait on recall
@@ -892,6 +902,225 @@ class TestThreaded:
         assert app.wait(timeout=5.0) is True
         assert spoken == ["Hello there.", FOLLOW_UP]
         assert app.status()["arrivals"][LANDED_FOLLOW_UP] == 1
+
+
+# ── the head start: wait up to head_start_s for recall before the reply ─
+
+
+class ImmediateSpawn:
+    """Runs the recall job at spawn time: the recall lands inside the head start."""
+
+    def __init__(self, before: Optional[Callable[[], None]] = None) -> None:
+        self.before = before
+        self.ran = 0
+
+    def __call__(self, job: Callable[[], None]) -> None:
+        if self.before is not None:
+            self.before()
+        self.ran += 1
+        job()
+
+
+def _timed(fn: Callable[[], Any]) -> tuple[Any, float]:
+    started = time.monotonic()
+    result = fn()
+    return result, time.monotonic() - started
+
+
+class TestHeadStart:
+    def test_the_default_head_start_is_the_old_recall_deadline(self) -> None:
+        """Lesson 1: the head start bounds how long a turn may wait for memory,
+        which is exactly what memory.DEFAULT_DEADLINE bounded on the old path."""
+        assert RecallEventsConfig().head_start_s == memory.DEFAULT_DEADLINE
+        assert re_mod.DEFAULT_HEAD_START_S == memory.DEFAULT_DEADLINE
+
+    def test_a_recall_inside_the_head_start_feeds_the_only_completion(self) -> None:
+        spawn = ImmediateSpawn()
+        h = Harness(head_start=5.0, spawn=spawn)
+        outcome, elapsed = _timed(lambda: h.app.run_turn("where is the key?"))
+
+        assert len(h.requests) == 1  # no regeneration: one completion, with memory
+        first = h.requests[0]
+        assert first.purpose == PURPOSE_REPLY
+        assert first.memory == MEMORY and first.spoken == ()
+        assert first.query == "where is the key?"
+        assert h.spoken == ["Remembered one.", "Remembered two."]
+        assert outcome.regenerated is False and outcome.sentences_dropped == 0
+        _assert_exactly_one(h, LANDED_BEFORE_FIRST_SENTENCE)
+        status = h.app.status()
+        assert status["regenerations"] == 0 and status["sentences_dropped"] == 0
+        assert status["head_start_hits"] == 1
+        assert status["head_start_s"] == 5.0
+        assert elapsed < 2.0  # returned as soon as the recall landed, not after 5 s
+
+    def test_the_recall_runs_before_the_completion_is_asked_for(self) -> None:
+        h = Harness(head_start=5.0, spawn=ImmediateSpawn())
+        h.app.run_turn("q")
+        kinds = [kind for kind, _ in h.log]
+        assert kinds.index("recall") < kinds.index("complete")
+
+    def test_a_recall_missing_the_head_start_behaves_exactly_as_t13(self) -> None:
+        h = Harness(head_start=0.05)
+        h.on_speak[1] = h.spawn.land  # lands after sentence 1, long after the head start
+        outcome, elapsed = _timed(lambda: h.app.run_turn("q"))
+
+        assert elapsed >= 0.04  # it did wait, bounded
+        assert h.requests[0].memory == ""
+        assert h.requests[1].purpose == PURPOSE_REMAINDER
+        assert h.spoken == ["First one.", "Second two.", "Second three."]
+        assert outcome.regenerated is True
+        _assert_exactly_one(h, LANDED_DURING_REPLY)
+        assert h.app.status()["head_start_hits"] == 0
+
+    def test_a_recall_landing_during_the_first_completion_after_a_miss_regenerates(
+        self,
+    ) -> None:
+        h = Harness(head_start=0.02)
+        h.on_complete[1] = h.spawn.land
+        h.app.run_turn("q")
+        assert [r.purpose for r in h.requests] == [PURPOSE_REPLY, PURPOSE_REPLY]
+        assert h.requests[0].memory == "" and h.requests[1].memory == MEMORY
+        _assert_exactly_one(h, LANDED_BEFORE_FIRST_SENTENCE)
+        assert h.app.status()["head_start_hits"] == 0
+
+    def test_a_late_recall_after_a_missed_head_start_still_follows_up(self) -> None:
+        h = Harness(head_start=0.02)
+        h.app.run_turn("q")
+        h.spawn.land()
+        assert h.spoken[-1] == FOLLOW_UP
+        _assert_exactly_one(h, LANDED_FOLLOW_UP)
+
+    @pytest.mark.parametrize("off", [0, 0.0, None, -1.0, float("nan"), True, "0.25"])
+    def test_a_zero_or_absent_head_start_never_waits_and_is_t13(self, off: Any) -> None:
+        h = Harness(head_start=off, spawn=ImmediateSpawn())
+        # With no head start the recall that already landed is only taken at the first
+        # sentence boundary, after the first completion: t13's regeneration, unchanged.
+        h.app.run_turn("q")
+        assert [r.memory for r in h.requests] == ["", MEMORY]
+        assert h.app.status()["regenerations"] == 1
+        assert h.app.status()["head_start_hits"] == 0
+
+    def test_with_no_head_start_a_held_recall_does_not_block_the_reply(self) -> None:
+        h = Harness(head_start=0)
+        _, elapsed = _timed(lambda: h.app.run_turn("q"))
+        assert elapsed < 1.0
+        assert h.spoken == ["First one.", "First two.", "First three."]
+
+    @pytest.mark.parametrize(
+        ("recalled", "reason"),
+        [
+            (Recalled(rendered="", relevance=None), DROP_EMPTY),
+            (OSError("synthetic store fault"), DROP_RECALL_FAILED),
+        ],
+        ids=["empty", "failed"],
+    )
+    def test_an_empty_or_failed_recall_ends_the_wait_and_is_dropped(
+        self, recalled: Any, reason: str
+    ) -> None:
+        h = Harness(head_start=5.0, recalled=recalled, spawn=ImmediateSpawn())
+        outcome, elapsed = _timed(lambda: h.app.run_turn("q"))
+        assert elapsed < 2.0  # the failure ended the wait
+        assert len(h.requests) == 1 and h.requests[0].memory == ""
+        assert outcome.spoken == ("First one.", "First two.", "First three.")
+        _assert_exactly_one(h, LANDED_DROPPED)
+        assert h.dropped_reasons() == {reason: 1}
+        assert h.app.status()["head_start_hits"] == 0
+
+    def test_a_raising_spawn_does_not_wait_out_the_head_start(self) -> None:
+        def spawn(job: Callable[[], None]) -> None:
+            raise RuntimeError("synthetic: can't start new thread")
+
+        h = Harness(head_start=5.0, spawn=spawn)
+        outcome, elapsed = _timed(lambda: h.app.run_turn("q"))
+        assert elapsed < 2.0
+        assert outcome.spoken == ("First one.", "First two.", "First three.")
+        assert h.dropped_reasons() == {DROP_RECALL_FAILED: 1}
+
+    def test_a_blank_query_starts_no_recall_and_does_not_wait(self) -> None:
+        h = Harness(head_start=5.0)
+        _, elapsed = _timed(lambda: h.app.run_turn("   "))
+        assert elapsed < 2.0 and h.spawn.jobs == []
+
+    def test_a_failed_memory_completion_degrades_to_a_plain_reply(self) -> None:
+        h = Harness(head_start=5.0, spawn=ImmediateSpawn())
+        original = h.complete
+
+        def complete(request: CompletionRequest) -> str:
+            if request.memory:
+                h.requests.append(request)
+                raise RuntimeError("synthetic gateway fault with words")
+            return original(request)
+
+        h.app._complete = complete  # type: ignore[attr-defined]
+        outcome = h.app.run_turn("q")
+        assert [r.memory for r in h.requests] == [MEMORY, ""]
+        assert outcome.spoken == ("First one.", "First two.", "First three.")
+        assert [code for code, _ in h.records] == [RECALL_EVENTS_COMPLETE_FAILED]
+        assert "words" not in h.records[0][1]
+
+    def test_the_floor_taken_during_the_head_start_is_a_floor_held_reply(self) -> None:
+        """Taken while the turn waited, with the memory landing too: t13's floor-held
+        path — nothing spoken over the operator, the memory goes the late path."""
+        h = Harness(head_start=5.0)
+        h.app._spawn = ImmediateSpawn(  # type: ignore[attr-defined]
+            before=lambda: setattr(h, "floor", True)
+        )
+        outcome = h.app.run_turn("q")
+        assert h.spoken == []
+        assert outcome.interrupted is True and outcome.spoken == ()
+        assert all(r.memory == "" for r in h.requests)
+        _assert_exactly_one(h, LANDED_DROPPED)
+        assert h.dropped_reasons() == {DROP_FLOOR_HELD: 1}
+        assert h.app.status()["head_start_hits"] == 0
+
+    def test_the_floor_taken_during_a_missed_head_start_speaks_nothing(self) -> None:
+        h = Harness(head_start=0.02)
+        h.app._spawn = lambda job: (  # type: ignore[attr-defined]
+            h.spawn.jobs.append(job),
+            setattr(h, "floor", True),
+        )
+        outcome = h.app.run_turn("q")
+        assert h.spoken == [] and outcome.interrupted is True
+        h.spawn.land()  # late, and the floor is still held
+        assert h.spoken == []
+        assert h.dropped_reasons() == {DROP_FLOOR_HELD: 1}
+
+    def test_status_reports_head_start_counts_across_turns(self) -> None:
+        h = Harness(head_start=0.02)
+        h.app.run_turn("missed")  # the held job never lands inside the head start
+        h.app._spawn = ImmediateSpawn()  # type: ignore[attr-defined]
+        h.app.run_turn("hit")
+        status = h.app.status()
+        assert status["head_start_s"] == 0.02
+        assert status["head_start_waits"] == 2
+        assert status["head_start_hits"] == 1
+        import json
+
+        json.dumps(status)
+
+    def test_the_real_threaded_spawner_lands_inside_the_default_head_start(self) -> None:
+        spoken: list[str] = []
+        requests: list[CompletionRequest] = []
+
+        def complete(request: CompletionRequest) -> str:
+            requests.append(request)
+            return "With memory." if request.memory else "Without memory."
+
+        app = BackgroundRecall(
+            recall=lambda query: Recalled(rendered=MEMORY, relevance=None),
+            complete=complete,
+            speak=spoken.append,
+            stop_playback=lambda: None,
+            floor_held=lambda: False,
+            clock=FakeClock(),
+            config=RecallEventsConfig(),  # the daemon's default head start
+        )
+        app.run_turn("q")
+        assert app.wait(timeout=5.0) is True
+        assert spoken == ["With memory."]
+        assert len(requests) == 1
+        assert app.status()["head_start_hits"] == 1
+        assert app.status()["regenerations"] == 0
 
 
 # ── no new dependency ────────────────────────────────────────────────────
