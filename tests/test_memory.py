@@ -56,6 +56,7 @@ import pytest
 from embodiment import memory as mem
 from embodiment.safe_reason import UNSAFE_ENV
 from embodiment.senses_text import KNOWLEDGE_ATTRIBUTION
+from embodiment.vectors import EmbedResult
 from tests.test_safe_reason import (
     MARKER,
     assert_no_speech,
@@ -2898,3 +2899,627 @@ class TestForget:
         result = room.forget(record_id, deadline=1.0)
         assert not result.ok
         assert result.code == mem.CODE_CLOSED
+
+
+# ── semantic recall over cached vectors (t12) ────────────────────────────────
+#
+# Synthetic data only. Vectors are tiny and hand-chosen so every cosine below is
+# known exactly; nothing here reaches a gateway — the embedder is a fake that
+# records every request it is asked to make.
+
+
+_Q = [1.0, 0.0, 0.0]
+_NEAR = [0.95, 0.31, 0.0]  # cos to _Q ~ 0.95
+_MID = [0.6, 0.8, 0.0]  # cos to _Q = 0.6
+_FAR = [0.0, 1.0, 0.0]  # cos to _Q = 0.0
+
+
+class _FakeEmbedder:
+    """Answers from a text -> vector table; records every request as (text, prompt)."""
+
+    def __init__(
+        self,
+        table: dict[str, list[float]] | None = None,
+        *,
+        online: bool | None = None,
+        down: bool = False,
+        block: threading.Event | None = None,
+    ) -> None:
+        self.table = dict(table or {})
+        self.calls: list[tuple[str, str | None]] = []
+        self.reprobes = 0
+        self.model = "gemma2-embed"
+        self._online = online
+        self.down = down
+        self.block = block
+
+    def embed(self, text: str, prompt: str | None = None) -> EmbedResult:
+        self.calls.append((text, prompt))
+        if self.block is not None:
+            self.block.wait(timeout=30)
+        if self.down:
+            self._online = False
+            return EmbedResult(None, False, "connection refused")
+        self._online = True
+        return EmbedResult(list(self.table.get(text, _FAR)), True)
+
+    def state(self) -> dict[str, Any]:
+        return {"online": self._online, "reason": "", "model": self.model}
+
+    def maybe_reprobe(self) -> bool:
+        self.reprobes += 1
+        return True
+
+
+def _rec(rid: str, text: str, **extra: Any) -> dict[str, Any]:
+    base = {"id": rid, "text": text, "type": "observation", "lifecycle": "active"}
+    base.update(extra)
+    return base
+
+
+class _Lister:
+    """A list_fn seam: records keyed by (scope, visibility)."""
+
+    def __init__(self, pools: dict[tuple[str, str], list[dict[str, Any]]]) -> None:
+        self.pools = pools
+        self.calls: list[tuple[str, str]] = []
+
+    def __call__(self, *, data_dir: Any, scope: str, visibility: str, backend: str) -> list:
+        self.calls.append((scope, visibility))
+        return [dict(r) for r in self.pools.get((scope, visibility), [])]
+
+
+def _semantic_room(
+    tmp_path: Path,
+    pools: dict[tuple[str, str], list[dict[str, Any]]],
+    embedder: Any,
+    *,
+    cached: dict[str, list[float]] | None = None,
+    recall_fn: Any = None,
+    probe: Any = None,
+    **kwargs: Any,
+) -> tuple[mem.RoomMemory, Any]:
+    cache = mem.vector_cache_for(tmp_path / "vectors")
+    for text, vector in (cached or {}).items():
+        cache.put(text, vector)
+    room = mem.RoomMemory(
+        tmp_path / "store",
+        scope="gwen",
+        list_fn=_Lister(pools),
+        recall_fn=recall_fn or (lambda *a, **k: _outcome()),
+        embed_probe=probe or (lambda: True),
+        embedder=embedder,
+        vector_cache=cache,
+        reinforce_fn=lambda **k: None,
+        **kwargs,
+    )
+    return room, cache
+
+
+_POOL = {
+    ("gwen", "private"): [_rec("gwen-a", "alpha fact"), _rec("gwen-b", "beta fact")],
+    ("gwen", "public"): [_rec("gwen-c", "gamma fact")],
+}
+_CACHED = {"alpha fact": _NEAR, "beta fact": _MID, "gamma fact": _FAR}
+
+
+class TestSemanticRecallOverCachedVectors:
+    """Criteria 2-3: one embed, no probe, and a threshold that can return nothing."""
+
+    def test_every_candidate_cached_makes_exactly_one_embed_and_no_probe(
+        self, tmp_path: Path
+    ) -> None:
+        probes: list[int] = []
+        lexical: list[Any] = []
+        embedder = _FakeEmbedder({"which fact": _Q})
+        room, _ = _semantic_room(
+            tmp_path,
+            _POOL,
+            embedder,
+            cached=_CACHED,
+            probe=lambda: probes.append(1) or True,
+            recall_fn=lambda *a, **k: lexical.append(k) or _outcome(),
+            similarity_threshold=0.5,
+        )
+        try:
+            result = room.recall("which fact", mode=mem.SEMANTIC_MODE, deadline=5.0)
+        finally:
+            room.close()
+
+        assert embedder.calls == [("which fact", mem.QUERY_PROMPT)]
+        assert probes == []
+        assert lexical == [], "the semantic path must not also run eidetic's recall"
+        assert result.ok and result.mode == mem.RECALL_MODE_SEMANTIC
+        assert [r["id"] for r in result.records] == ["gwen-a", "gwen-b"]
+        assert result.records[0]["score"] == pytest.approx(0.95, abs=0.01)
+        assert result.relevance == pytest.approx(0.95, abs=0.01)
+        assert result.threshold == 0.5
+        assert result.degradations == ()
+
+    def test_a_query_below_the_threshold_returns_zero_records(self, tmp_path: Path) -> None:
+        embedder = _FakeEmbedder({"unrelated": [0.0, 0.0, 1.0]})
+        room, _ = _semantic_room(
+            tmp_path, _POOL, embedder, cached=_CACHED, similarity_threshold=0.5
+        )
+        try:
+            result = room.recall("unrelated", mode=mem.SEMANTIC_MODE, deadline=5.0)
+            status = room.status()
+        finally:
+            room.close()
+
+        assert result.ok and result.mode == mem.RECALL_MODE_SEMANTIC
+        assert result.records == []
+        assert result.relevance is not None and result.relevance < 0.5
+        assert status["semantic"]["below_threshold"] == 3
+        assert status["semantic"]["returned"] == 0
+
+    def test_the_threshold_is_a_config_value(self, tmp_path: Path) -> None:
+        embedder = _FakeEmbedder({"which fact": _Q})
+        strict, _ = _semantic_room(
+            tmp_path / "a", _POOL, embedder, cached=_CACHED, similarity_threshold=0.9
+        )
+        loose, _ = _semantic_room(
+            tmp_path / "b", _POOL, embedder, cached=_CACHED, similarity_threshold=0.5
+        )
+        try:
+            a = strict.recall("which fact", mode=mem.SEMANTIC_MODE, deadline=5.0)
+            b = loose.recall("which fact", mode=mem.SEMANTIC_MODE, deadline=5.0)
+        finally:
+            strict.close()
+            loose.close()
+        assert [r["id"] for r in a.records] == ["gwen-a"]
+        assert [r["id"] for r in b.records] == ["gwen-a", "gwen-b"]
+
+    def test_the_default_threshold_sits_between_the_measured_pairs(self) -> None:
+        # Measured 2026-10-23, n=1 pair: unrelated ceiling 0.715, related floor 0.891.
+        assert 0.715 < mem.DEFAULT_SIMILARITY_THRESHOLD < 0.891
+        assert mem.SIMILARITY_THRESHOLD_CALIBRATED is False
+
+    def test_top_k_applies_after_the_threshold(self, tmp_path: Path) -> None:
+        embedder = _FakeEmbedder({"which fact": _Q})
+        room, _ = _semantic_room(
+            tmp_path, _POOL, embedder, cached=_CACHED, similarity_threshold=-1.0
+        )
+        try:
+            result = room.recall("which fact", mode=mem.SEMANTIC_MODE, top_k=2, deadline=5.0)
+        finally:
+            room.close()
+        assert [r["id"] for r in result.records] == ["gwen-a", "gwen-b"]
+
+    def test_an_uncached_candidate_is_skipped_and_counted_never_embedded(
+        self, tmp_path: Path
+    ) -> None:
+        embedder = _FakeEmbedder({"which fact": _Q})
+        room, _ = _semantic_room(
+            tmp_path,
+            _POOL,
+            embedder,
+            cached={"alpha fact": _NEAR},
+            similarity_threshold=0.5,
+        )
+        try:
+            result = room.recall("which fact", mode=mem.SEMANTIC_MODE, deadline=5.0)
+            status = room.status()
+        finally:
+            room.close()
+        assert embedder.calls == [("which fact", mem.QUERY_PROMPT)]
+        assert [r["id"] for r in result.records] == ["gwen-a"]
+        assert status["semantic"]["uncached_skipped"] == 2
+        assert status["semantic"]["cached_hits"] == 1
+
+    def test_archived_and_shadowed_candidates_are_never_scored(self, tmp_path: Path) -> None:
+        pools = {
+            ("gwen", "private"): [
+                _rec("gwen-a", "alpha fact", lifecycle="archived"),
+                _rec("gwen-b", "beta fact", lifecycle="shadowed"),
+                _rec("gwen-c", "gamma fact"),
+            ]
+        }
+        embedder = _FakeEmbedder({"q": [0.0, 1.0, 0.0]})
+        room, _ = _semantic_room(
+            tmp_path, pools, embedder, cached=_CACHED, similarity_threshold=-1.0
+        )
+        try:
+            result = room.recall("q", mode=mem.SEMANTIC_MODE, deadline=5.0)
+        finally:
+            room.close()
+        assert [r["id"] for r in result.records] == ["gwen-c"]
+
+    def test_a_public_query_never_sees_private_candidates(self, tmp_path: Path) -> None:
+        embedder = _FakeEmbedder({"which fact": _Q})
+        room, _ = _semantic_room(
+            tmp_path, _POOL, embedder, cached=_CACHED, similarity_threshold=-1.0
+        )
+        try:
+            result = room.recall(
+                "which fact", mode=mem.SEMANTIC_MODE, visibility=mem.PUBLIC, deadline=5.0
+            )
+        finally:
+            room.close()
+        assert [r["id"] for r in result.records] == ["gwen-c"]
+
+    def test_the_ingest_scope_is_scored_in_the_same_pool(self, tmp_path: Path) -> None:
+        pools = dict(_POOL)
+        pools[(mem.INGEST_SCOPE, mem.INGEST_VISIBILITY)] = [_rec("ing-1", "recorded fact")]
+        embedder = _FakeEmbedder({"which fact": _Q})
+        cached = dict(_CACHED, **{"recorded fact": [0.99, 0.1, 0.0]})
+        room, _ = _semantic_room(
+            tmp_path,
+            pools,
+            embedder,
+            cached=cached,
+            similarity_threshold=0.5,
+            ingest_scope=mem.INGEST_SCOPE,
+        )
+        try:
+            result = room.recall("which fact", mode=mem.SEMANTIC_MODE, deadline=5.0)
+        finally:
+            room.close()
+        assert [r["id"] for r in result.records] == ["ing-1", "gwen-a", "gwen-b"]
+        assert embedder.calls == [("which fact", mem.QUERY_PROMPT)]
+
+    def test_hits_are_reinforced_like_a_keyword_recall(self, tmp_path: Path) -> None:
+        seen: list[dict[str, Any]] = []
+        embedder = _FakeEmbedder({"which fact": _Q})
+        cache = mem.vector_cache_for(tmp_path / "vectors")
+        for text, vector in _CACHED.items():
+            cache.put(text, vector)
+        room = mem.RoomMemory(
+            tmp_path / "store",
+            scope="gwen",
+            list_fn=_Lister(_POOL),
+            embedder=embedder,
+            vector_cache=cache,
+            similarity_threshold=0.5,
+            reinforce_fn=lambda **k: seen.append(k),
+        )
+        try:
+            room.recall("which fact", mode=mem.SEMANTIC_MODE, deadline=5.0)
+            room.recall("which fact", mode=mem.SEMANTIC_MODE, reinforce=False, deadline=5.0)
+        finally:
+            room.close()
+        assert len(seen) == 1
+        assert sorted(seen[0]["ids"]) == ["gwen-a", "gwen-b"]
+
+    def test_a_semantic_recall_is_bounded_by_its_own_deadline(self, tmp_path: Path) -> None:
+        gate = threading.Event()
+        embedder = _FakeEmbedder({"which fact": _Q}, block=gate)
+        room, _ = _semantic_room(tmp_path, _POOL, embedder, cached=_CACHED)
+        try:
+            started = time.monotonic()
+            result = room.recall("which fact", mode=mem.SEMANTIC_MODE, deadline=0.05)
+            elapsed = time.monotonic() - started
+        finally:
+            gate.set()
+            room.close()
+        assert elapsed < _PROMPT_SECONDS
+        assert result.mode is None and result.records == []
+        assert [d.code for d in result.degradations] == [mem.CODE_DEADLINE_EXCEEDED]
+
+    def test_the_cache_tag_names_the_document_prompt(self, tmp_path: Path) -> None:
+        cache = mem.vector_cache_for(tmp_path)
+        assert "gemma2-embed" in cache.model
+        assert mem.DOCUMENT_PROMPT in cache.model
+        assert mem.QUERY_PROMPT == "Retrieval-query"
+        assert mem.DOCUMENT_PROMPT == "Retrieval-document"
+
+    def test_a_cache_for_another_prompt_is_refused_and_recorded(self, tmp_path: Path) -> None:
+        from embodiment.vectors import VectorCache
+
+        cache = VectorCache(tmp_path / "vectors", model="gemma2-embed")
+        cache.put("alpha fact", _NEAR)
+        embedder = _FakeEmbedder({"which fact": _Q})
+        room = mem.RoomMemory(
+            tmp_path / "store",
+            scope="gwen",
+            list_fn=_Lister(_POOL),
+            recall_fn=lambda *a, **k: _outcome(),
+            embedder=embedder,
+            vector_cache=cache,
+        )
+        try:
+            result = room.recall("which fact", mode=mem.SEMANTIC_MODE, deadline=5.0)
+        finally:
+            room.close()
+        assert result.mode == mem.RECALL_MODE_LEXICAL
+        assert mem.CODE_VECTOR_CACHE_MISMATCH in [d.code for d in room.abandoned]
+        assert embedder.calls == []
+
+
+class TestSemanticRecallDemotesToKeyword:
+    """Criterion 5: keyword is the rollback, and an unreachable embedder demotes, loudly."""
+
+    def test_an_unreachable_embedder_demotes_with_a_recorded_degradation(
+        self, tmp_path: Path
+    ) -> None:
+        seen: list[str] = []
+        embedder = _FakeEmbedder(down=True)
+        room, _ = _semantic_room(
+            tmp_path,
+            _POOL,
+            embedder,
+            cached=_CACHED,
+            recall_fn=lambda q, **k: seen.append(k["mode"]) or _outcome([_record("kw")]),
+        )
+        try:
+            result = room.recall("which fact", mode=mem.SEMANTIC_MODE, deadline=5.0)
+            status = room.status()
+        finally:
+            room.close()
+        assert seen == [mem.FAST_MODE]
+        assert result.mode == mem.RECALL_MODE_LEXICAL
+        assert [d.code for d in result.degradations] == [mem.CODE_EMBEDDER_OFFLINE]
+        assert result.relevance is None
+        assert len(embedder.calls) == 1
+        assert status["embedder"]["role"] == "gemma2-embed"
+        assert status["embedder"]["online"] is False
+        assert status["semantic"]["demotions"] == 1
+        assert status["last_recall_mode"] == mem.RECALL_MODE_LEXICAL
+
+    def test_a_known_offline_embedder_is_not_called_and_a_reprobe_is_asked(
+        self, tmp_path: Path
+    ) -> None:
+        embedder = _FakeEmbedder(online=False)
+        room, _ = _semantic_room(tmp_path, _POOL, embedder, cached=_CACHED)
+        try:
+            result = room.recall("which fact", mode=mem.SEMANTIC_MODE, deadline=5.0)
+        finally:
+            room.close()
+        assert embedder.calls == []
+        assert embedder.reprobes == 1
+        assert result.mode == mem.RECALL_MODE_LEXICAL
+        assert [d.code for d in result.degradations] == [mem.CODE_EMBEDDER_OFFLINE]
+
+    def test_semantic_without_an_embedder_demotes_with_a_recorded_degradation(
+        self, tmp_path: Path
+    ) -> None:
+        seen: list[str] = []
+        room = mem.RoomMemory(
+            tmp_path / "store",
+            recall_fn=lambda q, **k: seen.append(k["mode"]) or _outcome(),
+        )
+        try:
+            result = room.recall("anything", mode=mem.SEMANTIC_MODE, deadline=5.0)
+            status = room.status()
+        finally:
+            room.close()
+        assert seen == [mem.FAST_MODE]
+        assert result.mode == mem.RECALL_MODE_LEXICAL
+        assert [d.code for d in result.degradations] == [mem.CODE_EMBEDDER_OFFLINE]
+        assert status["embedder"]["configured"] is False
+        assert status["embedder"]["role"] == "gemma2-embed"
+
+    def test_keyword_mode_never_touches_the_embedder(self, tmp_path: Path) -> None:
+        seen: list[str] = []
+        embedder = _FakeEmbedder({"which fact": _Q})
+        room, _ = _semantic_room(
+            tmp_path,
+            _POOL,
+            embedder,
+            cached=_CACHED,
+            recall_fn=lambda q, **k: seen.append(k["mode"]) or _outcome([_record("kw")]),
+        )
+        try:
+            result = room.recall("which fact", deadline=5.0)
+        finally:
+            room.close()
+        assert embedder.calls == []
+        assert seen == [mem.FAST_MODE]
+        assert result.mode == mem.RECALL_MODE_LEXICAL
+        assert result.relevance is None
+        assert [r["text"] for r in result.records] == ["kw"]
+
+
+class TestTheBackgroundBackfill:
+    """Criterion 4: bounded, background, at start; the recall path never embeds a candidate."""
+
+    def _pools(self) -> dict[tuple[str, str], list[dict[str, Any]]]:
+        return {
+            ("gwen", "private"): [_rec(f"gwen-{i}", f"room fact {i}") for i in range(4)],
+            ("gwen", "public"): [_rec("gwen-p", "public fact")],
+            (mem.INGEST_SCOPE, mem.INGEST_VISIBILITY): [
+                _rec("ing-0", "recorded fact 0"),
+                _rec("ing-x", "archived fact", lifecycle="archived"),
+            ],
+        }
+
+    def test_a_tick_is_bounded_and_ticks_cover_every_uncached_record(self, tmp_path: Path) -> None:
+        embedder = _FakeEmbedder()
+        room, cache = _semantic_room(
+            tmp_path, self._pools(), embedder, ingest_scope=mem.INGEST_SCOPE
+        )
+        try:
+            first = room.backfill_tick(max_records=2)
+            assert first["embedded"] == 2
+            assert first["remaining"] == 4
+            while room.backfill_tick(max_records=2)["remaining"]:
+                pass
+            status = room.status()
+        finally:
+            room.close()
+        texts = [f"room fact {i}" for i in range(4)] + ["public fact", "recorded fact 0"]
+        assert all(cache.get(t) is not None for t in texts)
+        assert cache.get("archived fact") is None, "an archived record needs no vector"
+        assert {p for _, p in embedder.calls} == {mem.DOCUMENT_PROMPT}
+        assert len(embedder.calls) == 6, "each record is embedded exactly once"
+        assert status["backfill"]["embedded"] == 6
+        assert status["backfill"]["remaining"] == 0
+
+    def test_a_tick_stops_at_its_time_budget(self, tmp_path: Path) -> None:
+        now = [0.0]
+
+        class _Slow(_FakeEmbedder):
+            def embed(self, text: str, prompt: str | None = None) -> EmbedResult:
+                now[0] += 1.0
+                return super().embed(text, prompt)
+
+        embedder = _Slow()
+        room, _ = _semantic_room(
+            tmp_path, self._pools(), embedder, ingest_scope=mem.INGEST_SCOPE, clock=lambda: now[0]
+        )
+        try:
+            report = room.backfill_tick(max_records=100, budget=2.5)
+        finally:
+            room.close()
+        assert report["embedded"] == 3
+
+    def test_backfill_runs_in_the_background_at_start_and_a_recall_never_waits(
+        self, tmp_path: Path
+    ) -> None:
+        embedder = _FakeEmbedder({"room fact 1": _Q})
+        room, cache = _semantic_room(
+            tmp_path,
+            self._pools(),
+            embedder,
+            ingest_scope=mem.INGEST_SCOPE,
+            similarity_threshold=0.5,
+        )
+        try:
+            assert room.start_backfill(busy_interval=0.001, idle_interval=0.05) is True
+            assert room.start_backfill() is False, "one backfill at a time"
+            limit = time.monotonic() + _PROMPT_SECONDS
+            while room.status()["backfill"]["remaining"] != 0 and time.monotonic() < limit:
+                time.sleep(0.005)
+            assert room.status()["backfill"]["remaining"] == 0
+            assert room.status()["backfill"]["running"] is True
+            before = len(embedder.calls)
+            result = room.recall("room fact 1", mode=mem.SEMANTIC_MODE, deadline=5.0)
+            assert len(embedder.calls) - before == 1, "the recall embedded only its query"
+            assert embedder.calls[-1] == ("room fact 1", mem.QUERY_PROMPT)
+            assert [r["id"] for r in result.records] == ["gwen-1"]
+            assert room.stop_backfill(deadline=2.0) is True
+            assert room.status()["backfill"]["running"] is False
+        finally:
+            room.close()
+        assert cache.get("recorded fact 0") is not None
+
+    def test_an_offline_embedder_stops_the_tick_and_is_recorded_once(self, tmp_path: Path) -> None:
+        embedder = _FakeEmbedder(down=True)
+        room, _ = _semantic_room(tmp_path, self._pools(), embedder)
+        try:
+            first = room.backfill_tick()
+            second = room.backfill_tick()
+        finally:
+            room.close()
+        assert first["embedded"] == 0 and first["offline"] is True
+        assert len(embedder.calls) == 1, "the first failure ends the tick"
+        assert second["offline"] is True and embedder.reprobes >= 1
+        assert len(embedder.calls) == 1, "a known-offline embedder is not called again"
+        codes = [d.code for d in room.abandoned]
+        assert codes.count(mem.CODE_BACKFILL_OFFLINE) == 1
+
+    def test_a_tick_without_an_embedder_is_a_no_op(self, tmp_path: Path) -> None:
+        room = mem.RoomMemory(tmp_path / "store")
+        try:
+            assert room.backfill_tick()["embedded"] == 0
+            assert room.start_backfill() is False
+        finally:
+            room.close()
+
+    def test_close_stops_a_running_backfill(self, tmp_path: Path) -> None:
+        embedder = _FakeEmbedder()
+        room, _ = _semantic_room(tmp_path, self._pools(), embedder)
+        assert room.start_backfill(busy_interval=0.001, idle_interval=0.01)
+        room.close(deadline=2.0)
+        limit = time.monotonic() + _PROMPT_SECONDS
+        while room.status()["backfill"]["running"] and time.monotonic() < limit:
+            time.sleep(0.005)
+        assert room.status()["backfill"]["running"] is False
+
+
+class TestForgettingDropsTheVector:
+    """Spec: the vector cache drops an entry when its record is archived."""
+
+    def test_forget_drops_the_records_vector(self, tmp_path: Path) -> None:
+        cache = mem.vector_cache_for(tmp_path / "vectors")
+        cache.put("alpha fact", _NEAR, record_id="gwen-a")
+        room = mem.RoomMemory(
+            tmp_path / "store",
+            scope="gwen",
+            archive_fn=lambda rid, **k: mem.continuity.ArchiveOutcome(
+                ok=True, record_id=rid, degradation=None
+            ),
+            embedder=_FakeEmbedder(),
+            vector_cache=cache,
+        )
+        try:
+            assert room.forget("gwen-a", deadline=5.0).ok
+            status = room.status()
+        finally:
+            room.close()
+        assert cache.get("alpha fact") is None
+        assert status["vector_cache"]["dropped"] == 1
+
+    def test_forget_ids_drops_the_ingest_records_vector(self, tmp_path: Path) -> None:
+        cache = mem.vector_cache_for(tmp_path / "vectors")
+        cache.put("recorded fact", _NEAR, record_id="ing-1")
+        cache.put("kept fact", _MID, record_id="ing-2")
+        room = mem.RoomMemory(
+            tmp_path / "store",
+            scope="gwen",
+            ingest_scope=mem.INGEST_SCOPE,
+            archive_fn=lambda rid, **k: mem.continuity.ArchiveOutcome(
+                ok=True, record_id=rid, degradation=None
+            ),
+            embedder=_FakeEmbedder(),
+            vector_cache=cache,
+        )
+        try:
+            assert room.forget_ids(["ing-1"], deadline=5.0).ok
+        finally:
+            room.close()
+        assert cache.get("recorded fact") is None
+        assert cache.get("kept fact") is not None
+
+    def test_a_failed_archive_keeps_the_vector(self, tmp_path: Path) -> None:
+        cache = mem.vector_cache_for(tmp_path / "vectors")
+        cache.put("alpha fact", _NEAR, record_id="gwen-a")
+        room = mem.RoomMemory(
+            tmp_path / "store",
+            scope="gwen",
+            archive_fn=lambda rid, **k: mem.continuity.ArchiveOutcome(
+                ok=False,
+                record_id=None,
+                degradation=mem.continuity.Degradation(
+                    subsystem="eidetic",
+                    stage="archive",
+                    code=mem.continuity.CODE_RECORD_NOT_FOUND,
+                    reason="not found",
+                ),
+            ),
+            embedder=_FakeEmbedder(),
+            vector_cache=cache,
+        )
+        try:
+            assert not room.forget("gwen-a", deadline=5.0).ok
+        finally:
+            room.close()
+        assert cache.get("alpha fact") is not None
+
+
+class TestSemanticRecallAgainstARealStore:
+    """The default seams end to end: real continuity, real eidetic, a fake embedder."""
+
+    def test_remember_backfill_then_recall_semantically(self, tmp_path: Path) -> None:
+        embedder = _FakeEmbedder(
+            {"the spare key is in the blue drawer": _NEAR, "where is the key": _Q}
+        )
+        room = mem.RoomMemory(
+            tmp_path / "store",
+            scope="gwen",
+            embedder=embedder,
+            vector_cache=mem.vector_cache_for(tmp_path / "vectors"),
+            similarity_threshold=0.5,
+        )
+        try:
+            assert room.remember("the spare key is in the blue drawer", deadline=5.0).ok
+            assert room.remember("the meeting moved to thursday", deadline=5.0).ok
+            _settle(room)
+            assert room.backfill_tick()["remaining"] == 0
+            result = room.recall("where is the key", mode=mem.SEMANTIC_MODE, deadline=5.0)
+            again = room.recall("where is the key", mode=mem.SEMANTIC_MODE, deadline=5.0)
+        finally:
+            room.close()
+        assert result.ok, result.degradations
+        assert [r["text"] for r in result.records] == ["the spare key is in the blue drawer"]
+        assert again.records and again.records[0]["recall_count"] == 1, "reinforced once"
