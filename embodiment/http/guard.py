@@ -47,6 +47,39 @@ guard never consults the peer address at all. What it checks instead:
 6. **A Cloudflare Access assertion**, required when — and only when — the
    request's ``Host`` is the configured public hostname.
 
+On the public Host, Access REPLACES the install secret (task ``t7``)
+--------------------------------------------------------------------
+Operator decision q1. When an Access verifier is injected (``assertion_verifier``
+— :func:`embodiment.http.access.verifier_from_env` builds it), a request whose
+``Host`` is the public hostname is admitted by a valid ``Cf-Access-Jwt-Assertion``
+**instead of** the install secret, which is then not consulted at all. Every
+other Host — loopback, a LAN name — still needs the secret, whatever assertion
+it carries: an assertion off the public Host did not come through Cloudflare.
+
+The CSRF rule (5) extends to the assertion: Cloudflare injects it into *any*
+request carrying the ``CF_Authorization`` cookie, a cross-site one included, so
+it is as ambient as a cookie. An Access-admitted request must also carry an
+allow-listed ``Origin`` or ``Sec-Fetch-Site: same-origin``
+(:data:`REFUSED_ACCESS_WITHOUT_ORIGIN_CODE`, 403) — unless it is not admitted by
+the JWT *alone*: the correct install secret as an ``Authorization: Bearer``
+header vouches too, for the same reason it needs no ``Origin`` under rule 5 (a
+cross-site page cannot set that header). The ``embodiment_secret`` cookie does
+not vouch: it is as ambient as the assertion. The assertion is still required
+either way. That check runs before the verifier, so a cross-site page cannot
+make the daemon fetch the JWKS.
+
+An Access JWKS that cannot be fetched is infrastructure, not a bad token: the
+request is refused **503** with :data:`ACCESS_UNAVAILABLE_CODE`, recorded once
+per outage (each transition into it, C3) and counted per request in
+:attr:`Guard.access_unavailable`. An identity refusal (a service token, a person
+off the allow-list) is 403; every other Access refusal is 401. An admitted
+decision says how (:attr:`GuardDecision.admitted_by`), and for Access, who
+(``identity``, kept out of ``repr`` and :meth:`GuardDecision.to_dict`) and until
+when (``expires_at``) — the host closes a stream when that passes.
+
+With no verifier injected (the Access env unset) none of this applies and the
+guard is exactly the pre-``t7`` one: the secret first, then the refusing default.
+
 What is guarded: every state-changing method, every ``/api/`` route, and
 ``/api/events``. Static assets are not: the dashboard has to load before it can
 present a credential, and it ships no secrets (proved in
@@ -87,7 +120,7 @@ import secrets
 import stat
 import time
 import unicodedata
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Mapping, Optional, Sequence, Union
 
@@ -114,6 +147,10 @@ __all__ = [
     "REFUSED_COOKIE_WITHOUT_ORIGIN_CODE",
     "REFUSED_ACCESS_MISSING_CODE",
     "REFUSED_ACCESS_VERIFIER_FAILED_CODE",
+    "REFUSED_ACCESS_WITHOUT_ORIGIN_CODE",
+    "ACCESS_UNAVAILABLE_CODE",
+    "ADMITTED_BY_SECRET",
+    "ADMITTED_BY_ACCESS",
     "REFUSED_DUPLICATE_HEADER_CODE",
     "REFUSED_MALFORMED_HEADER_CODE",
     "ACCESS_VERIFIER_MISSING_CODE",
@@ -233,6 +270,16 @@ REFUSED_ACCESS_MISSING_CODE = "http-refused-access-missing"
 #: The injected verifier raised, or returned something that is not an
 #: :class:`AssertionResult`. Fail closed.
 REFUSED_ACCESS_VERIFIER_FAILED_CODE = "http-refused-access-verifier-failed"
+#: An Access assertion arrived on the public Host with neither an allow-listed
+#: ``Origin`` nor ``Sec-Fetch-Site: same-origin`` — the CSRF refusal for the
+#: assertion path. Cloudflare injects the assertion into any request carrying
+#: its cookie, cross-site ones included.
+REFUSED_ACCESS_WITHOUT_ORIGIN_CODE = "http-refused-access-without-origin"
+#: The Access signing keys could not be fetched, so nothing can be verified:
+#: 503, not 401. The SAME literal as :data:`embodiment.http.access.UNAVAILABLE_CODE`
+#: (pinned by a test) — ``access`` imports this module, so this module cannot
+#: import it back at module scope.
+ACCESS_UNAVAILABLE_CODE = "http-access-unavailable"
 #: A sensitive header appeared twice with different values (smuggling).
 REFUSED_DUPLICATE_HEADER_CODE = "http-refused-duplicate-header"
 #: A guarded header carried a control or format character.
@@ -265,6 +312,13 @@ _REASONS: dict[str, str] = {
     ),
     REFUSED_ACCESS_MISSING_CODE: ("the public hostname requires a Cf-Access-Jwt-Assertion header"),
     REFUSED_ACCESS_VERIFIER_FAILED_CODE: "the Access assertion verifier failed",
+    REFUSED_ACCESS_WITHOUT_ORIGIN_CODE: (
+        "an Access assertion arrived with neither an allow-listed Origin nor "
+        "Sec-Fetch-Site: same-origin"
+    ),
+    ACCESS_UNAVAILABLE_CODE: (
+        "the Access signing keys could not be fetched, so nothing can be verified"
+    ),
     REFUSED_DUPLICATE_HEADER_CODE: "a guarded header was sent more than once",
     REFUSED_MALFORMED_HEADER_CODE: "a guarded header carried a control character",
     ACCESS_VERIFIER_MISSING_CODE: (
@@ -288,6 +342,28 @@ _MAX_HEADER_CHARS = 2048
 #: KiB, and refusing it as malformed would refuse the operator rather than an
 #: attacker. Still bounded, and still control-character-free.
 _MAX_COOKIE_CHARS = 16384
+
+#: ``Cf-Access-Jwt-Assertion`` alone, and **deliberately the verifier's own token
+#: cap** (:data:`embodiment.http.access._MAX_TOKEN_CHARS`, pinned equal by a
+#: test). A Cloudflare assertion is ~1 KiB, but it carries the identity's
+#: claims and an IdP with many groups pushes it past the 2 KiB above — refusing
+#: that as "malformed" would refuse the operator, not an attacker. Matching the
+#: verifier means the guard never refuses a token the verifier would accept,
+#: and anything longer is refused here, unread, before any base64 decode.
+_MAX_ASSERTION_CHARS = 16384
+
+#: Per-header caps; every other guarded header gets :data:`_MAX_HEADER_CHARS`.
+_HEADER_CAPS = {"cookie": _MAX_COOKIE_CHARS, ACCESS_ASSERTION_HEADER: _MAX_ASSERTION_CHARS}
+
+#: Access refusals that are about WHO, not whether the token is genuine: a
+#: service token, a person off the allow-list. 403 rather than 401. The same
+#: literals as :mod:`embodiment.http.access` (pinned by a test).
+_ACCESS_FORBIDDEN_CODES = frozenset({"http-access-service-token", "http-access-email-not-allowed"})
+
+#: :attr:`GuardDecision.admitted_by` for a request the install secret admitted.
+ADMITTED_BY_SECRET = "install-secret"  # nosec B105 - a label, not a secret
+#: :attr:`GuardDecision.admitted_by` for a request an Access assertion admitted.
+ADMITTED_BY_ACCESS = "access"
 
 HeaderSource = Union[Mapping[str, str], Sequence[tuple[str, str]], Any]
 
@@ -335,13 +411,23 @@ class GuardConfig:
 
 @dataclass(frozen=True)
 class GuardDecision:
-    """One verdict. ``code`` is empty only when the request was allowed."""
+    """One verdict. ``code`` is empty only when the request was allowed.
+
+    ``admitted_by`` is :data:`ADMITTED_BY_SECRET` or :data:`ADMITTED_BY_ACCESS`
+    on a guarded admission, empty otherwise. ``identity`` (the Access email) and
+    ``expires_at`` (the assertion's ``exp``, epoch seconds) are set only on an
+    Access admission whose verifier reported them; ``identity`` stays out of
+    ``repr`` and :meth:`to_dict`, so a logged decision does not log a person.
+    """
 
     allowed: bool
     guarded: bool
     status: int
     code: str
     reason: str
+    admitted_by: str = ""
+    identity: str = field(default="", repr=False)
+    expires_at: Optional[float] = None
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -353,7 +439,9 @@ class GuardDecision:
         }
 
 
-_ALLOWED = GuardDecision(allowed=True, guarded=True, status=200, code="", reason="")
+_ALLOWED = GuardDecision(
+    allowed=True, guarded=True, status=200, code="", reason="", admitted_by=ADMITTED_BY_SECRET
+)
 _ALLOWED_UNGUARDED = GuardDecision(allowed=True, guarded=False, status=200, code="", reason="")
 
 
@@ -410,8 +498,7 @@ def _has_forbidden_character(value: str) -> bool:
 
 def _is_clean(name: str, value: str) -> bool:
     """A header value with no control/format character and a sane length."""
-    cap = _MAX_COOKIE_CHARS if name == "cookie" else _MAX_HEADER_CHARS
-    if len(value) > cap:
+    if len(value) > _HEADER_CAPS.get(name, _MAX_HEADER_CHARS):
         return False
     return not _has_forbidden_character(value)
 
@@ -462,6 +549,11 @@ class Guard:
     ) -> None:
         self._config = config
         self._verifier: AssertionVerifier = assertion_verifier or refusing_assertion_verifier
+        #: Only an INJECTED verifier lets an assertion replace the secret. With
+        #: none (the Access env unset) the guard is byte-identical to pre-t7.
+        self._access_replaces_secret = assertion_verifier is not None
+        #: Edge state for recording an Access outage once per transition (C3).
+        self._access_down = False
         self._on_degrade = on_degrade
         self._secret = config.install_secret or ""
         hosts = set(config.allowed_hosts or frozenset())
@@ -475,6 +567,8 @@ class Guard:
         )
         #: Counted so a host can see a broken hook rather than infer it.
         self.hook_errors = 0
+        #: Requests refused 503 because the Access keys were unavailable.
+        self.access_unavailable = 0
 
     @property
     def config(self) -> GuardConfig:
@@ -530,18 +624,27 @@ class Guard:
         if origin and origin.rstrip("/").lower() not in self._allowed_origins:
             return self._refuse(REFUSED_ORIGIN_CODE, 403)
 
+        # The header NAME is matched case-insensitively, as every header here
+        # is; the VALUE is matched exactly. ``Sec-Fetch-Site`` carries a
+        # lowercase token a browser generates, never something a human types,
+        # so accepting ``SAME-ORIGIN`` could only ever widen the rule for a
+        # client that is not a browser. Found by attacking the round-2 rule:
+        # case-folding the value let that through.
+        same_origin = sensitive.get(SEC_FETCH_SITE_HEADER, "").strip() == SAME_ORIGIN_SITE
+
+        if self._access_replaces_secret and self._public_hostname and host == self._public_hostname:
+            return self._check_access(
+                sensitive.get(ACCESS_ASSERTION_HEADER, "").strip(),
+                vouched=bool(origin)
+                or same_origin
+                or self._bearer_matches(sensitive.get("authorization", "")),
+            )
+
         secret_decision = self._check_secret(
             sensitive.get("authorization", ""),
             sensitive.get("cookie", ""),
             origin_present=bool(origin),
-            # The header NAME is matched case-insensitively, as every header
-            # here is; the VALUE is matched exactly. ``Sec-Fetch-Site`` carries
-            # a lowercase token a browser generates, never something a human
-            # types, so accepting ``SAME-ORIGIN`` could only ever widen the
-            # rule for a client that is not a browser. Found by attacking the
-            # round-2 rule: case-folding the value let that through.
-            same_origin_metadata=sensitive.get(SEC_FETCH_SITE_HEADER, "").strip()
-            == SAME_ORIGIN_SITE,
+            same_origin_metadata=same_origin,
         )
         if secret_decision is not None:
             return secret_decision
@@ -568,6 +671,27 @@ class Guard:
         if any(not _is_clean(name, next(iter(values))) for name, values in seen.items()):
             return self._refuse(REFUSED_MALFORMED_HEADER_CODE, 400)
         return {name: next(iter(values)) for name, values in seen.items()}
+
+    def _matches_secret(self, candidate: str) -> bool:
+        """Constant-time comparison against the install secret.
+
+        Bytes, not str: ``compare_digest`` on two ``str`` raises ``TypeError``
+        when either side is non-ASCII, and check()'s catch-all would then log an
+        ordinary wrong password as a malformed-header degradation — or, with a
+        non-ASCII secret, refuse the secret's own holder on every request
+        (finding 9).
+        """
+        return bool(self._secret and candidate) and hmac.compare_digest(
+            candidate.encode("utf-8", "surrogateescape"),
+            self._secret.encode("utf-8", "surrogateescape"),
+        )
+
+    def _bearer_matches(self, authorization: str) -> bool:
+        """Whether ``Authorization: Bearer <secret>`` carries the install secret."""
+        scheme, _, presented = authorization.partition(" ")
+        if scheme.strip().lower() != AUTHORIZATION_SCHEME:
+            return False
+        return self._matches_secret(presented.strip())
 
     def _check_secret(
         self,
@@ -596,20 +720,36 @@ class Guard:
         for candidate, is_cookie in ((bearer, False), (from_cookie, True)):
             if not candidate:
                 continue
-            # Bytes, not str: ``compare_digest`` on two ``str`` raises
-            # ``TypeError`` when either side is non-ASCII, and check()'s
-            # catch-all would then log an ordinary wrong password as a
-            # malformed-header degradation — or, with a non-ASCII secret,
-            # refuse the secret's own holder on every request (finding 9).
-            if not hmac.compare_digest(
-                candidate.encode("utf-8", "surrogateescape"),
-                self._secret.encode("utf-8", "surrogateescape"),
-            ):
+            if not self._matches_secret(candidate):
                 continue
             if is_cookie and not (origin_present or same_origin_metadata):
                 return self._refuse(REFUSED_COOKIE_WITHOUT_ORIGIN_CODE, 403)
             return None
         return self._refuse(REFUSED_SECRET_CODE, 401)
+
+    def _check_access(self, token: str, *, vouched: bool) -> GuardDecision:
+        """The public Host with Access configured: the assertion IS the credential.
+
+        The install secret is not required. Order: a missing assertion (401),
+        then the CSRF rule — ``vouched`` is an allow-listed ``Origin`` (already
+        checked by the caller, so only its presence arrives),
+        ``Sec-Fetch-Site: same-origin``, or the correct secret as a bearer
+        header (so not the JWT alone) — and only then the verifier, so a
+        request nothing vouched for never triggers a JWKS fetch.
+        """
+        if not token:
+            return self._refuse(REFUSED_ACCESS_MISSING_CODE, 401)
+        if not vouched:
+            return self._refuse(REFUSED_ACCESS_WITHOUT_ORIGIN_CODE, 403)
+        return self._check_assertion(token)
+
+    def _access_unavailable(self) -> GuardDecision:
+        """503: the keys are unreachable. Recorded on the transition into it."""
+        self.access_unavailable += 1
+        if not self._access_down:
+            self._access_down = True
+            self._degrade(ACCESS_UNAVAILABLE_CODE, _REASONS[ACCESS_UNAVAILABLE_CODE])
+        return self._refuse(ACCESS_UNAVAILABLE_CODE, 503)
 
     def _check_assertion(self, token: str) -> GuardDecision:
         if not token:
@@ -626,18 +766,65 @@ class Guard:
                 "the Access assertion verifier returned a non-AssertionResult value",
             )
             return self._refuse(REFUSED_ACCESS_VERIFIER_FAILED_CODE, 401)
-        if result.valid:
-            return _ALLOWED
         code = result.code or ACCESS_VERIFIER_MISSING_CODE
+        if not result.valid and (
+            getattr(result, "unavailable", False) is True or code == ACCESS_UNAVAILABLE_CODE
+        ):
+            return self._access_unavailable()
+        # Any other answer means the keys were reachable: the next outage is a
+        # new transition and is recorded again.
+        self._access_down = False
+        if result.valid:
+            return _admitted_by_access(result)
         if code == ACCESS_VERIFIER_MISSING_CODE:
             self._degrade(code, _REASONS[ACCESS_VERIFIER_MISSING_CODE])
         return GuardDecision(
             allowed=False,
             guarded=True,
-            status=401,
+            status=403 if code in _ACCESS_FORBIDDEN_CODES else 401,
             code=code,
-            reason=_REASONS.get(code, "the Access assertion was refused"),
+            reason=_REASONS.get(code) or _access_reason(code),
         )
+
+
+def _admitted_by_access(result: AssertionResult) -> GuardDecision:
+    """An Access admission, carrying who and until when when the verifier said.
+
+    Read defensively: a verifier is injected code, so an ``email`` that is not a
+    string or an ``expires_at`` that is not a number is dropped, never raised.
+    """
+    email = getattr(result, "email", "")
+    expires = getattr(result, "expires_at", None)
+    return GuardDecision(
+        allowed=True,
+        guarded=True,
+        status=200,
+        code="",
+        reason="",
+        admitted_by=ADMITTED_BY_ACCESS,
+        identity=email if isinstance(email, str) else "",
+        expires_at=(
+            float(expires)
+            if isinstance(expires, (int, float)) and not isinstance(expires, bool)
+            else None
+        ),
+    )
+
+
+def _access_reason(code: str) -> str:
+    """The fixed reason :mod:`embodiment.http.access` gives *code*, else a generic one.
+
+    Never the verifier's own ``reason``: a verifier is injected code and its
+    text may carry request bytes. Imported here, not at module scope, because
+    ``access`` imports this module.
+    """
+    try:
+        from embodiment.http.access import REASONS  # pylint: disable=import-outside-toplevel
+    except Exception as exc:  # noqa: BLE001  # no access module: the generic reason
+        del exc
+        return "the Access assertion was refused"
+    reason = REASONS.get(code)
+    return reason if isinstance(reason, str) else "the Access assertion was refused"
 
 
 # ── the install secret on disk ───────────────────────────────────────────────
