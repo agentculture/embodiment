@@ -1,0 +1,30 @@
+/* library.css - library list and reader; logical properties only.
+   Reader layout cites pocketsync/web/static/app.css (reader panel). */
+.library { display: grid; gap: 1rem; }
+.library-day h3 { margin-block: 0.5rem; font-size: var(--ac-type-meta, 0.75rem); color: var(--ink-soft); }
+.library-day ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.25rem; }
+.library-item { display: flex; justify-content: space-between; inline-size: 100%; padding-block: 0.5rem; padding-inline: 0.75rem; text-align: start; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--ink); }
+.library-kind { color: var(--ink-soft); font-size: var(--ac-type-meta, 0.75rem); }
+.library-error { color: var(--ink); }
+.chips { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.chip { padding-block: 0.25rem; padding-inline: 0.75rem; border: 1px solid var(--line); border-radius: 999px; background: var(--surface); color: var(--ink); }
+.chip[aria-pressed="true"] { background: var(--accent-strong); color: var(--on-accent); }
+
+/* Below 861px the reader is a full-screen sheet. */
+.reader { position: fixed; inset: 0; z-index: 20; display: flex; flex-direction: column; background: var(--surface); color: var(--ink); }
+.reader-head { padding: 1rem; border-block-end: 1px solid var(--line); }
+.reader-close { float: inline-end; }
+.reader-body { overflow-y: auto; padding: 1rem; flex: 1; }
+.transcript { list-style: none; margin: 0; padding: 0; }
+.seg { padding-block: 0.5rem; padding-inline: 0.5rem; border-inline-start: 3px solid transparent; }
+.seg.cited { border-inline-start-color: var(--accent); background: var(--line-soft); }
+.seg-speaker { font-weight: 600; font-size: var(--ac-type-meta, 0.75rem); }
+.seg-text { margin: 0; }
+.tape { position: relative; block-size: 1.5rem; margin-block: 0.5rem; border-radius: 6px; background: var(--line-soft); cursor: pointer; }
+.turnmark { position: absolute; inset-block: 0; background: var(--line); }
+.turnmark.hit { background: var(--accent); }
+
+/* At 861px and up it is a side panel. */
+@media (min-width: 861px) {
+  .reader { inset-block: 0; inset-inline-start: auto; inline-size: min(28rem, 40vw); border-inline-start: 1px solid var(--line); box-shadow: var(--shadow-lift); }
+}
