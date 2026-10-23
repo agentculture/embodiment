@@ -267,3 +267,39 @@ def test_ast_guard_fails_when_a_write_method_is_planted():
     assert _violations('x = "DELETE"')
     assert _violations("Request(u, method=m)")
     assert _violations("urlopen(u, data=b'x')")
+
+
+def test_every_request_is_counted_as_a_get():
+    """LibrarySync.status() and the live run read `gets` (c28): it counts each request."""
+
+    class _Resp:
+        status = 200
+
+        def __init__(self, body):
+            self._body = body
+
+        def read(self, n=-1):
+            body, self._body = self._body, b""
+            return body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    class _Opener:
+        def __init__(self):
+            self.methods = []
+
+        def open(self, request, timeout=None):
+            self.methods.append(request.get_method())
+            return _Resp(b'{"items": []}' if "file" not in request.full_url else b"x")
+
+    opener = _Opener()
+    c = lib.LibraryClient("http://127.0.0.1:8780", "k", opener=opener)
+    assert c.gets == 0
+    c.list_items()
+    c.fetch_file(1)
+    assert c.gets == 2
+    assert opener.methods == ["GET", "GET"]

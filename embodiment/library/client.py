@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import json
 import socket
+import threading
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -140,12 +141,18 @@ class LibraryClient:
         self._key = key
         self._deadline = deadline
         self._opener = opener if opener is not None else _REDIRECT_REFUSING_OPENER
+        #: Requests issued (every one a GET by construction - the AST test pins it);
+        #: read by LibrarySync.status() and the live acceptance run (c28).
+        self.gets = 0
+        self._count_lock = threading.Lock()
 
     def __repr__(self) -> str:
         return f"LibraryClient(base_url={self._base!r})"
 
     def _get(self, path: str, *, max_bytes: int, read_deadline: float) -> bytes:
         headers = {"Authorization": f"Bearer {self._key}"} if self._key else {}
+        with self._count_lock:
+            self.gets += 1
         request = urllib.request.Request(  # nosec B310 - scheme checked in __init__
             f"{self._base}{path}", headers=headers, method="GET"
         )
