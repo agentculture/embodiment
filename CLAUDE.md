@@ -363,7 +363,7 @@ web/                    the dashboard (Vite/React/TS): live waveform, transcript
                         the wheel (t19)
 scripts/dual-review.sh  the local review harness: 35B worker drafts, 27B cortex
                         verifies cited lines; one review at a time (kept deliverable)
-tests/                  3822 tests
+tests/                  3885 tests
 .claude/skills/         19 skills, all vendored (cite-don't-import)
 docs/skill-sources.md   provenance ledger + re-sync procedure
 docs/live-test-results/ only senses-grounding{.md,-probe.py}: the measured

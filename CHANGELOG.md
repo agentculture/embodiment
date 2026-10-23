@@ -80,6 +80,28 @@ before relying): `senses` and `worker` ready but proxied, `gemma2-embed`
 
 - Documentation that said the Access verifier always refuses and that the
   embedder is down.
+- **Review round (deviation d6, operator-approved)** from a `/code-review` of
+  this PR and SonarCloud's critical findings:
+  - Chat, speak and clip run on their own bounded pool, so a slow typed turn
+    can no longer queue the mute or voice-stop behind it.
+  - A typed turn holds the conversation with a bound from before its user turn
+    to after its reply; a busy conversation answers a retryable 503
+    `app-text-turn-busy` and writes nothing (was a 500 and a dangling user turn).
+  - The clip upload's total read deadline is enforced per read (`read1()` under
+    the time left), so a slow-drip client is cut off at the deadline.
+  - `/api/speak` applies `MAX_TEXT_CHARS`; the clip reply carries its
+    `turn_serial`, and the chat page sends the install secret whenever it holds
+    one (the hostname-shape guess is gone).
+  - The embedder refuses redirects and caps its response body (voice's
+    hardened opener); the vector cache saves once per backfill tick, not once
+    per vector.
+  - `forget_source` honours one total deadline and reports the rest as not
+    attempted, which the drain retries; each drain pass parses only the
+    batches it applies.
+  - Every function SonarCloud rated above cognitive complexity 15 is split
+    under it, behaviour unchanged; Sonar's four new-code reliability findings
+    are cleared.
+  - `CLAUDE.md`'s loopback rule states the q1 boundary the guard enforces.
 
 ## [0.16.0] - 2026-09-22
 
