@@ -3441,6 +3441,178 @@ class TestTheBackgroundBackfill:
         assert room.status()["backfill"]["running"] is False
 
 
+class TestAWriteWakesTheBackfill:
+    """Deviation d4: a write that changes a record's text wakes the backfill at once.
+
+    The backfill thread runs at a 30 s idle interval throughout, so a vector that
+    appears within the bounded wait can only have come from the wake-up. The embed
+    is always the backfill's, never the write's.
+    """
+
+    IDLE = 30.0
+
+    def _room(self, tmp_path: Path, embedder: Any) -> tuple[mem.RoomMemory, Any, list]:
+        pools: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        embedded_by: list[str] = []
+
+        def writer(record: Any, *, data_dir: Any, scope: str, visibility: str, **_: Any) -> Any:
+            pools.setdefault((scope, visibility), []).append(dict(record))
+            return mem.continuity.RememberOutcome(ok=True, record_id=record["id"], degradation=None)
+
+        cache = mem.vector_cache_for(tmp_path / "vectors")
+        room = mem.RoomMemory(
+            tmp_path / "store",
+            scope="gwen",
+            ingest_scope=mem.INGEST_SCOPE,
+            list_fn=_Lister(pools),
+            remember_fn=writer,
+            recall_fn=lambda *a, **k: _outcome(),
+            embed_probe=lambda: True,
+            embedder=embedder,
+            vector_cache=cache,
+            reinforce_fn=lambda **k: None,
+        )
+        return room, cache, embedded_by
+
+    @staticmethod
+    def _until(predicate: Any, timeout: float = _PROMPT_SECONDS) -> bool:
+        limit = time.monotonic() + timeout
+        while not predicate() and time.monotonic() < limit:
+            time.sleep(0.005)
+        return bool(predicate())
+
+    def _started(self, tmp_path: Path, embedder: Any) -> tuple[mem.RoomMemory, Any]:
+        room, cache, _ = self._room(tmp_path, embedder)
+        assert room.start_backfill(idle_interval=self.IDLE, busy_interval=0.001)
+        assert self._until(lambda: room.status()["backfill"]["ticks"] >= 1)
+        return room, cache
+
+    def test_a_remember_is_cached_within_a_busy_tick_not_the_idle_wait(
+        self, tmp_path: Path
+    ) -> None:
+        embedder = _FakeEmbedder()
+        room, cache = self._started(tmp_path, embedder)
+        try:
+            assert room.remember("a freshly remembered otter fact", deadline=5.0).ok
+            assert self._until(lambda: cache.get("a freshly remembered otter fact") is not None)
+            status = room.status()["backfill"]
+        finally:
+            room.close()
+        assert status["write_wakes"] == 1
+
+    def test_ingested_records_are_cached_within_a_busy_tick_not_the_idle_wait(
+        self, tmp_path: Path
+    ) -> None:
+        embedder = _FakeEmbedder()
+        room, cache = self._started(tmp_path, embedder)
+        try:
+            batch = [{"id": "ing-1", "text": "an ingested heron fact", "type": "fact"}]
+            assert room.ingest_records(batch, deadline=5.0).written == ("ing-1",)
+            assert self._until(lambda: cache.get("an ingested heron fact") is not None)
+        finally:
+            room.close()
+
+    def test_the_write_does_not_embed_on_the_writers_thread(self, tmp_path: Path) -> None:
+        threads: list[str] = []
+
+        class _Spy(_FakeEmbedder):
+            def embed(self, text: str, prompt: str | None = None) -> EmbedResult:
+                threads.append(threading.current_thread().name)
+                return super().embed(text, prompt)
+
+        room, cache = self._started(tmp_path, _Spy())
+        try:
+            room.remember("a spied otter fact", deadline=5.0)
+            assert self._until(lambda: cache.get("a spied otter fact") is not None)
+        finally:
+            room.close()
+        assert threads and threading.current_thread().name not in threads
+
+    def test_a_write_during_a_running_tick_causes_another_tick_right_after(
+        self, tmp_path: Path
+    ) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+
+        class _Gated(_FakeEmbedder):
+            def embed(self, text: str, prompt: str | None = None) -> EmbedResult:
+                if text == "first gated fact":
+                    entered.set()
+                    release.wait(timeout=5.0)
+                return super().embed(text, prompt)
+
+        room, cache, _ = self._room(tmp_path, _Gated())
+        try:
+            assert room.remember("first gated fact", deadline=5.0).ok  # before any backfill
+            assert room.start_backfill(idle_interval=self.IDLE, busy_interval=0.001)
+            assert entered.wait(timeout=_PROMPT_SECONDS), "the first tick is mid-embed"
+            assert room.remember("second gated fact", deadline=5.0).ok
+            release.set()
+            assert self._until(lambda: cache.get("second gated fact") is not None)
+        finally:
+            release.set()
+            room.close()
+
+    def test_status_counts_wakes_and_keeps_the_existing_fields(self, tmp_path: Path) -> None:
+        room, _ = self._started(tmp_path, _FakeEmbedder())
+        try:
+            before = room.status()["backfill"]
+            room.remember("counted fact one", deadline=5.0)
+            room.remember("counted fact two", deadline=5.0)
+            after = room.status()["backfill"]
+        finally:
+            room.close()
+        assert before["write_wakes"] == 0 and after["write_wakes"] == 2
+        for key in ("ticks", "embedded", "failed", "remaining", "offline_ticks", "running"):
+            assert key in after
+
+    def test_a_write_wakes_but_never_stops_the_backfill(self, tmp_path: Path) -> None:
+        room, _ = self._started(tmp_path, _FakeEmbedder())
+        try:
+            ticks = room.status()["backfill"]["ticks"]
+            room.remember("still running fact", deadline=5.0)
+            assert self._until(lambda: room.status()["backfill"]["ticks"] > ticks)
+            assert room.status()["backfill"]["running"] is True
+        finally:
+            room.close()
+
+    def test_without_a_running_backfill_a_write_is_exactly_as_before(self, tmp_path: Path) -> None:
+        embedder = _FakeEmbedder()
+        room, cache, _ = self._room(tmp_path, embedder)
+        try:
+            assert room.remember("quiet fact", deadline=5.0).ok
+            status = room.status()["backfill"]
+        finally:
+            room.close()
+        assert status["write_wakes"] == 0 and status["ticks"] == 0
+        assert embedder.calls == [] and cache.get("quiet fact") is None
+
+    def test_with_no_embedder_a_write_is_exactly_as_before(self, tmp_path: Path) -> None:
+        room = mem.RoomMemory(tmp_path / "store")
+        try:
+            assert room.start_backfill() is False
+            room._wake_backfill()  # must not raise
+            assert room.status()["backfill"]["write_wakes"] == 0
+        finally:
+            room.close()
+
+    def test_waking_never_raises_even_when_the_event_is_broken(self, tmp_path: Path) -> None:
+        room, _ = self._started(tmp_path, _FakeEmbedder())
+
+        class _Broken:
+            def set(self) -> None:
+                raise RuntimeError("boom")
+
+        try:
+            real = room._backfill_wake
+            room._backfill_wake = _Broken()  # type: ignore[assignment]
+            room._wake_backfill()
+            room._backfill_wake = real
+            assert mem.CODE_BACKFILL_FAILED in [d.code for d in room.abandoned]
+        finally:
+            room.close()
+
+
 class TestForgettingDropsTheVector:
     """Spec: the vector cache drops an entry when its record is archived."""
 

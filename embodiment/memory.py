@@ -1139,10 +1139,14 @@ class RoomMemory:
             "failed": 0,
             "remaining": None,
             "offline_ticks": 0,
+            "write_wakes": 0,
         }
         self._backfill_offline = False
         self._backfill_running = False
         self._backfill_stop = threading.Event()
+        # Set by a write that changed a record's text; the loop clears it BEFORE
+        # each tick, so a write landing mid-tick leaves it set (no lost wake-up).
+        self._backfill_wake = threading.Event()
         self._backfill_done = threading.Event()
         self._backfill_done.set()
         self._vectors_dropped = 0
@@ -1716,6 +1720,8 @@ class RoomMemory:
             # Inside the worker, so the chmod is inside the caller's deadline
             # and a slow filesystem cannot stall the turn on this either.
             self._tighten_scope()
+            if getattr(outcome, "ok", False):
+                self._wake_backfill()
             return outcome
 
         future, refusal = self._submit(write, record_id=identifier)
@@ -2192,6 +2198,7 @@ class RoomMemory:
                     ):
                         return "failed", seam, None
             self._tighten_scope(INGEST_SCOPE)
+        self._wake_backfill()
         if clash is not None:
             return "replaced", clash, None
         return "written", None, flipped
@@ -2969,6 +2976,25 @@ class RoomMemory:
                 self._backfill["offline_ticks"] += 1
         return report
 
+    def _wake_backfill(self) -> None:
+        """Ask the running backfill for a tick now (a write changed a record's text).
+
+        Cheap and never raises; a no-op with no backfill running. The embed
+        happens in the backfill thread, never in the write.
+        """
+        try:
+            with self._lock:
+                if not self._backfill_running or self._closed:
+                    return
+                self._backfill["write_wakes"] += 1
+            self._backfill_wake.set()
+        except Exception as exc:  # noqa: BLE001  # best-effort; recorded, the idle tick still comes
+            self._record_abandoned(
+                _degradation(
+                    "backfill", CODE_BACKFILL_FAILED, "a write could not wake the backfill", exc
+                )
+            )
+
     def _note_backfill_offline(self) -> None:
         """Record the backfill's embedder going offline once per transition (C3)."""
         with self._lock:
@@ -3008,9 +3034,14 @@ class RoomMemory:
         def loop() -> None:
             try:
                 while not self._backfill_stop.is_set() and not self._closed:
+                    # Cleared before the tick: a write during it sets it again.
+                    self._backfill_wake.clear()
                     report = self.backfill_tick(max_records=max_records, budget=budget)
                     busy = bool(report.get("remaining")) and not report.get("offline")
-                    self._backfill_stop.wait(busy_interval if busy else idle_interval)
+                    if self._backfill_wake.is_set():
+                        continue
+                    # Stop and wake share one wait: stop sets both, a write only wakes.
+                    self._backfill_wake.wait(busy_interval if busy else idle_interval)
             finally:
                 with self._lock:
                     self._backfill_running = False
@@ -3031,6 +3062,7 @@ class RoomMemory:
     def stop_backfill(self, deadline: float = 1.0) -> bool:
         """Ask the backfill to stop; ``True`` once it has (within *deadline*)."""
         self._backfill_stop.set()
+        self._backfill_wake.set()
         return self._backfill_done.wait(timeout=max(0.0, float(deadline)))
 
     def _drop_vector_after_archive(self, identifier: str, outcome: Any) -> None:
@@ -3176,6 +3208,7 @@ class RoomMemory:
             reads = list(self._reads)
         # The backfill exits at its next check; never waited for here.
         self._backfill_stop.set()
+        self._backfill_wake.set()
 
         landed, unconfirmed, failed = self._settle_writes(writes, deadline)
 
