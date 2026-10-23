@@ -118,6 +118,7 @@ import hmac
 import os
 import secrets
 import stat
+import threading
 import time
 import unicodedata
 from dataclasses import dataclass, field
@@ -569,6 +570,38 @@ class Guard:
         self.hook_errors = 0
         #: Requests refused 503 because the Access keys were unavailable.
         self.access_unavailable = 0
+        #: Access decisions on the public Host: admitted, and refused per code.
+        #: Counters only - no token, no email, no request bytes (C3, t5).
+        self._counter_lock = threading.Lock()
+        self._access_admitted = 0
+        self._access_refused: dict[str, int] = {}
+
+    def status(self) -> dict[str, Any]:
+        """Access counters for the host's status: mode, admitted, refused per code.
+
+        ``mode`` is ``access`` when an assertion verifier is wired (the Access
+        env is set) and ``off`` otherwise. A server merging this into its own
+        status reads ``guard.status()``; the dict holds no secret.
+        """
+        with self._counter_lock:
+            refused = dict(self._access_refused)
+            admitted = self._access_admitted
+        return {
+            "access": {
+                "mode": "access" if self._access_replaces_secret else "off",
+                "admitted": admitted,
+                "refused_by_code": refused,
+            }
+        }
+
+    def _count_access(self, decision: GuardDecision) -> GuardDecision:
+        with self._counter_lock:
+            if decision.allowed:
+                self._access_admitted += 1
+            else:
+                code = decision.code or "refused"
+                self._access_refused[code] = self._access_refused.get(code, 0) + 1
+        return decision
 
     @property
     def config(self) -> GuardConfig:
@@ -633,11 +666,13 @@ class Guard:
         same_origin = sensitive.get(SEC_FETCH_SITE_HEADER, "").strip() == SAME_ORIGIN_SITE
 
         if self._access_replaces_secret and self._public_hostname and host == self._public_hostname:
-            return self._check_access(
-                sensitive.get(ACCESS_ASSERTION_HEADER, "").strip(),
-                vouched=bool(origin)
-                or same_origin
-                or self._bearer_matches(sensitive.get("authorization", "")),
+            return self._count_access(
+                self._check_access(
+                    sensitive.get(ACCESS_ASSERTION_HEADER, "").strip(),
+                    vouched=bool(origin)
+                    or same_origin
+                    or self._bearer_matches(sensitive.get("authorization", "")),
+                )
             )
 
         secret_decision = self._check_secret(
