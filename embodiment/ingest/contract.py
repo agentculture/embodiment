@@ -138,44 +138,69 @@ def _refuse(line: int, reason: str) -> Refusal:
     )
 
 
-def _check_record(raw: object, source: Optional[str]) -> Union[tuple, str]:
-    """Return (source_name, stamped_record) or a reason string. Never raises."""
+def _check_source(raw: object, source: Optional[str]) -> Union[tuple, str]:
+    """Return (metadata, source_name) or a reason string. Never raises."""
     if not isinstance(raw, dict):
         return "a record must be a JSON object"
     meta = raw.get("metadata")
     if not isinstance(meta, dict):
         return "metadata must be an object"
     name = meta.get("source")
-    err = source_refusal(name)
-    if err is not None:
+    if source_refusal(name) is not None:
         return "metadata.source is not in the ingest registry"
     if source is not None and name != source:
         return f"a batch carries one source; saw {name!r} after {source!r}"
-    spec = REGISTRY[name]
-    wire = raw.get("id")
-    sid = stored_id(wire)
+    return meta, name
+
+
+def _check_body(raw: dict, spec: Source) -> Union[tuple, str]:
+    """Return (stored_id, type, text) or a reason string: the id, type and text checks."""
+    sid = stored_id(raw.get("id"))
     if sid is None:
         return f"id is not a valid {spec.id_prefix}:<rec>:<kind>:<n> wire id"
-    if wire.split(WIRE_SEPARATOR)[0] != spec.id_prefix:
-        return f"id prefix does not match source {name}"
+    if raw["id"].split(WIRE_SEPARATOR)[0] != spec.id_prefix:
+        return f"id prefix does not match source {spec.name}"
     typ = raw.get("type")
     if typ not in spec.types:
-        return f"type is not allowed for {name} (allowed: {', '.join(sorted(spec.types))})"
+        return f"type is not allowed for {spec.name} (allowed: {', '.join(sorted(spec.types))})"
     text = raw.get("text")
     if not isinstance(text, str) or not text.strip():
         return "text must be a non-empty string"
     if len(text) > spec.max_text_chars:
-        return f"text is over the {spec.max_text_chars}-character cap for {name}"
-    kept = {"source": name, "wire_id": wire}
+        return f"text is over the {spec.max_text_chars}-character cap for {spec.name}"
+    return sid, typ, text
+
+
+def _check_metadata(meta: dict, spec: Source) -> Union[dict, str]:
+    """Return the kept provenance fields, or a reason string for the first bad one."""
+    kept: dict = {}
     for key in spec.required + spec.optional:
         val = meta.get(key)
         if val is None and key in spec.optional:
             continue
         if not isinstance(val, str) or not val.strip():
-            return f"metadata.{key} is required for {name} and must be a non-empty string"
+            return f"metadata.{key} is required for {spec.name} and must be a non-empty string"
         if len(val) > MAX_METADATA_CHARS:
             return f"metadata.{key} is over {MAX_METADATA_CHARS} characters"
         kept[key] = val
+    return kept
+
+
+def _check_record(raw: object, source: Optional[str]) -> Union[tuple, str]:
+    """Return (source_name, stamped_record) or a reason string. Never raises."""
+    head = _check_source(raw, source)
+    if isinstance(head, str):
+        return head
+    meta, name = head
+    spec = REGISTRY[name]
+    body = _check_body(raw, spec)
+    if isinstance(body, str):
+        return body
+    sid, typ, text = body
+    fields = _check_metadata(meta, spec)
+    if isinstance(fields, str):
+        return fields
+    kept = {"source": name, "wire_id": raw["id"], **fields}
     record = {"id": sid, "text": text, "type": typ, "metadata": kept}
     sup = raw.get("supersedes")
     if sup is not None:
@@ -184,6 +209,26 @@ def _check_record(raw: object, source: Optional[str]) -> Union[tuple, str]:
             return "supersedes is not a valid wire id of the same source"
         record["supersedes"] = ssid
     return name, record
+
+
+def _parse_line(number: int, line: object) -> Union[object, Refusal]:
+    """The decoded JSON value of one line, or the Refusal for a line that is not usable."""
+    if not isinstance(line, str):
+        return _refuse(number, "a line must be text")
+    try:
+        return json.loads(line)
+    except (ValueError, RecursionError):
+        return _refuse(number, "line is not valid JSON")
+
+
+def _admission_reason(record: dict, source: str, count: int, seen: dict) -> Optional[str]:
+    """Why this checked record cannot join the batch (cap, duplicate id), else None."""
+    cap = REGISTRY[source].max_records
+    if count + 1 > cap:
+        return f"batch is over the {cap}-record cap for {source}"
+    if record["id"] in seen:
+        return f"duplicate id (first seen on line {seen[record['id']]})"
+    return None
 
 
 def validate_batch(lines: Iterable[str], *, created: Optional[str] = None) -> Union[Batch, Refusal]:
@@ -202,23 +247,18 @@ def validate_batch(lines: Iterable[str], *, created: Optional[str] = None) -> Un
     records: list = []
     seen: dict = {}
     for number, line in enumerate(items, start=1):
-        if not isinstance(line, str):
-            return _refuse(number, "a line must be text")
-        if not line.strip():
+        if isinstance(line, str) and not line.strip():
             continue
-        try:
-            raw = json.loads(line)
-        except (ValueError, RecursionError):
-            return _refuse(number, "line is not valid JSON")
+        raw = _parse_line(number, line)
+        if isinstance(raw, Refusal):
+            return raw
         checked = _check_record(raw, source)
         if isinstance(checked, str):
             return _refuse(number, checked)
         source, record = checked
-        if len(records) + 1 > REGISTRY[source].max_records:
-            cap = REGISTRY[source].max_records
-            return _refuse(number, f"batch is over the {cap}-record cap for {source}")
-        if record["id"] in seen:
-            return _refuse(number, f"duplicate id (first seen on line {seen[record['id']]})")
+        reason = _admission_reason(record, source, len(records), seen)
+        if reason is not None:
+            return _refuse(number, reason)
         seen[record["id"]] = number
         record["visibility"] = INGEST_VISIBILITY
         record["scope"] = INGEST_SCOPE
