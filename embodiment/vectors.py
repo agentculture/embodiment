@@ -270,7 +270,7 @@ class EmbedderClient:
             ):
                 raise ValueError("embedding is not a numeric list")
             vector = [float(x) for x in vec]
-        except Exception as exc:  # noqa: BLE001 - degrade, never raise; reason is scrubbed
+        except Exception as exc:  # noqa: BLE001  # degrade, never raise; reason is scrubbed
             reason = _reason(safe_reason.describe_exception(exc))
             self._record(False, reason)
             return EmbedResult(None, False, reason)
@@ -295,7 +295,7 @@ class EmbedderClient:
 
         try:
             self._spawn(run)
-        except Exception:  # noqa: BLE001 - a thread that cannot start is a skipped probe
+        except Exception:  # noqa: BLE001  # a thread that cannot start is a skipped probe
             with self._lock:
                 self._probing = False
             return False

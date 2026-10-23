@@ -389,9 +389,11 @@ def _coerce_recalled(value: object) -> Recalled:
     if isinstance(value, Recalled):
         rendered = value.rendered if isinstance(value.rendered, str) else ""
         relevance = value.relevance
-        if isinstance(relevance, bool) or not isinstance(relevance, (int, float)):
-            relevance = None
-        elif not math.isfinite(float(relevance)):
+        if (
+            isinstance(relevance, bool)
+            or not isinstance(relevance, (int, float))
+            or not math.isfinite(float(relevance))
+        ):
             relevance = None
         count = value.count if isinstance(value.count, int) else 0
         return Recalled(
@@ -665,7 +667,7 @@ class BackgroundRecall:
         self._latest_turn = 0
         self._replying = 0
         self._pending = 0
-        self._landed = {name: 0 for name in _LANDINGS}
+        self._landed = dict.fromkeys(_LANDINGS, 0)
         self._dropped_reasons: dict[str, int] = {}
         self._regenerations = 0
         self._restarts = 0

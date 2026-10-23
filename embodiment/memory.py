@@ -976,6 +976,10 @@ def vector_cache_for(directory: _StrPath, model: str = EMBED_ROLE) -> VectorCach
     return VectorCache(directory, model=vector_model_tag(model))
 
 
+#: Why a call was refused when the in-flight bound is full.
+_SATURATED_REASON = "every in-flight memory slot is occupied"
+
+
 def _cosine(left: Sequence[float], right: Sequence[float]) -> Optional[float]:
     """Cosine similarity, or ``None`` when the vectors cannot be compared."""
     if len(left) != len(right) or not left:
@@ -1909,11 +1913,7 @@ class RoomMemory:
                     "remember",
                     refusal or CODE_CLOSED,
                     f"record {safe_label(identifier)} was NOT written: "
-                    + (
-                        "every in-flight memory slot is occupied"
-                        if refusal == CODE_SATURATED
-                        else _CLOSED_REASON
-                    ),
+                    + (_SATURATED_REASON if refusal == CODE_SATURATED else _CLOSED_REASON),
                 ),
             )
 
@@ -2118,11 +2118,7 @@ class RoomMemory:
                     verb,
                     why,
                     f"{verb} of {safe_label(identifier)} was NOT done: "
-                    + (
-                        "every in-flight memory slot is occupied"
-                        if refusal == CODE_SATURATED
-                        else _CLOSED_REASON
-                    ),
+                    + (_SATURATED_REASON if refusal == CODE_SATURATED else _CLOSED_REASON),
                 ),
             )
         try:
@@ -2146,7 +2142,7 @@ class RoomMemory:
 
     def _prepare_ingest(
         self, raw: Any, moment: datetime
-    ) -> Union[tuple[dict[str, Any], Optional[str]], str]:
+    ) -> tuple[dict[str, Any], str | None] | str:
         """``(eidetic record, supersedes)`` or a fixed reason string. Never raises.
 
         Scope, visibility and lifecycle are NEVER taken from the record: the
@@ -2559,11 +2555,7 @@ class RoomMemory:
                     "forget",
                     code,
                     f"record {safe_label(identifier)} was NOT archived: "
-                    + (
-                        "every in-flight memory slot is occupied"
-                        if refusal == CODE_SATURATED
-                        else _CLOSED_REASON
-                    ),
+                    + (_SATURATED_REASON if refusal == CODE_SATURATED else _CLOSED_REASON),
                 ),
             )
 

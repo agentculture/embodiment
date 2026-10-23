@@ -36,6 +36,8 @@ SPOOL_DIRNAME = "ingest"
 INBOX_DIRNAME = "inbox"
 DONE_DIRNAME = "done"
 FAILED_DIRNAME = "failed"
+#: Every batch file, in any of the three directories, ends in this.
+BATCH_SUFFIX = ".json"
 
 # failed/ entries older than this are purged (the spool keeps no second copy of memory text).
 FAILED_RETENTION_S = 7 * 24 * 3600
@@ -131,14 +133,14 @@ class Spool:
             return EnqueueResult(False, reason="inbox unavailable")
         with _SEQ_LOCK:
             seq = next(_SEQ) % 1_000_000
-        name = f"{time.time_ns():020d}-{seq:06d}-{kind}-{os.urandom(4).hex()}.json"
+        name = f"{time.time_ns():020d}-{seq:06d}-{kind}-{os.urandom(4).hex()}{BATCH_SUFFIX}"
         try:
             atomic_write_bytes(self.inbox / name, payload)
         except OSError as exc:
             reason = f"could not write batch: {type(exc).__name__}"
             self._degrade("spool-enqueue-failed", reason)
             return EnqueueResult(False, reason=reason)
-        return EnqueueResult(True, batch_id=name[: -len(".json")])
+        return EnqueueResult(True, batch_id=name[: -len(BATCH_SUFFIX)])
 
     # ── consume ──────────────────────────────────────────────────────────
 
@@ -155,7 +157,7 @@ class Spool:
     def load(self, name: str) -> Optional[Batch]:
         """Read one named batch. Unreadable or malformed: moved to failed/, ``None``."""
         path = self.inbox / name
-        batch_id = name[: -len(".json")]
+        batch_id = name[: -len(BATCH_SUFFIX)]
         try:
             data = json.loads(path.read_text("utf-8"))
             kind, records = data["kind"], data["records"]
@@ -182,7 +184,7 @@ class Spool:
             return False
         try:
             data = json.dumps(receipt, ensure_ascii=False, sort_keys=True).encode("utf-8")
-            atomic_write_bytes(self.done_dir / f"{batch.batch_id}.json", data)
+            atomic_write_bytes(self.done_dir / f"{batch.batch_id}{BATCH_SUFFIX}", data)
             os.remove(batch.path)
         except OSError as exc:
             self._degrade("spool-mark-done-failed", type(exc).__name__)
@@ -207,7 +209,7 @@ class Spool:
             body["kind"] = m.group(3) if m else None
         try:
             atomic_write_bytes(
-                self.failed_dir / f"{batch_id}.json",
+                self.failed_dir / f"{batch_id}{BATCH_SUFFIX}",
                 json.dumps(body, ensure_ascii=False, sort_keys=True).encode("utf-8"),
             )
             os.remove(path)
@@ -250,8 +252,8 @@ class Spool:
             oldest = age if oldest is None else max(oldest, age)
         return SpoolStatus(
             pending=len(names),
-            done=_count(self.done_dir, lambda n: n.endswith(".json")),
-            failed=_count(self.failed_dir, lambda n: n.endswith(".json")),
+            done=_count(self.done_dir, lambda n: n.endswith(BATCH_SUFFIX)),
+            failed=_count(self.failed_dir, lambda n: n.endswith(BATCH_SUFFIX)),
             oldest_pending_age_s=None if oldest is None else max(0.0, oldest),
         )
 

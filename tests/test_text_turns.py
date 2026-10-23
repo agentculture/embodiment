@@ -326,17 +326,21 @@ class TestHttpTranscribe:
         assert b'name="model"' in req.data and b'name="language"' in req.data
 
     def test_bad_scheme_and_bad_body_raise(self):
+        ftp, cfg, bad_body = (
+            TextTurnsConfig(gateway_url="ftp://x"),
+            TextTurnsConfig(),
+            _Opener(b'{"nope":1}'),
+        )
         with pytest.raises(ValueError):
-            T.http_transcribe(b"a", "c.wav", "audio/wav", TextTurnsConfig(gateway_url="ftp://x"))
+            T.http_transcribe(b"a", "c.wav", "audio/wav", ftp)
         with pytest.raises(ValueError):
-            T.http_transcribe(
-                b"a", "c.wav", "audio/wav", TextTurnsConfig(), opener=_Opener(b'{"nope":1}')
-            )
+            T.http_transcribe(b"a", "c.wav", "audio/wav", cfg, opener=bad_body)
 
     def test_oversize_response_raises(self):
         body = b"x" * (T.MAX_TRANSCRIPT_BYTES + 10)
+        cfg, opener = TextTurnsConfig(), _Opener(body)
         with pytest.raises(ValueError):
-            T.http_transcribe(b"a", "c.wav", "audio/wav", TextTurnsConfig(), opener=_Opener(body))
+            T.http_transcribe(b"a", "c.wav", "audio/wav", cfg, opener=opener)
 
     def test_default_stt_used_when_not_injected(self, monkeypatch):
         monkeypatch.setattr(T, "http_transcribe", lambda *a, **k: "via-default")

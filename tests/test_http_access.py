@@ -305,10 +305,11 @@ def test_sso_identity_needs_a_subject():
 
 
 def test_an_empty_allow_list_is_refused_at_construction():
+    empty, blank = frozenset(), frozenset({" ", ""})
     with pytest.raises(a.AccessConfigError):
-        verifier(emails=frozenset())
+        verifier(emails=empty)
     with pytest.raises(a.AccessConfigError):
-        verifier(emails=frozenset({" ", ""}))
+        verifier(emails=blank)
 
 
 # ── JWKS cache: refetch window, rotation, unreachable ────────────────────────

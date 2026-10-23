@@ -299,8 +299,9 @@ def test_killed_between_records_rerun_completes_idempotently(
         return real(batch, **kw)
 
     monkeypatch.setattr(room, "ingest_records", dies_after_three)
+    drain = _drain(spool, room, clock, rec)
     with pytest.raises(_Killed):
-        _drain(spool, room, clock, rec).drain_once(5.0)
+        drain.drain_once(5.0)
     assert len(_stored(room)) == 3
     assert spool.status().pending == 1 and spool.status().done == 0
 

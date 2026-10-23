@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass
-from typing import Iterable, Optional, Union
+from typing import Iterable, Optional
 
 from embodiment.cli._errors import EXIT_USER_ERROR, CliError
 from embodiment.memory import HEADER_FIELD_LIMIT, HEADER_LABEL_CHARSET
@@ -138,10 +138,8 @@ def _refuse(line: int, reason: str) -> Refusal:
     )
 
 
-def _check_source(raw: object, source: Optional[str]) -> Union[tuple, str]:
+def _check_source(raw: dict, source: str | None) -> tuple | str:
     """Return (metadata, source_name) or a reason string. Never raises."""
-    if not isinstance(raw, dict):
-        return "a record must be a JSON object"
     meta = raw.get("metadata")
     if not isinstance(meta, dict):
         return "metadata must be an object"
@@ -153,7 +151,7 @@ def _check_source(raw: object, source: Optional[str]) -> Union[tuple, str]:
     return meta, name
 
 
-def _check_body(raw: dict, spec: Source) -> Union[tuple, str]:
+def _check_body(raw: dict, spec: Source) -> tuple | str:
     """Return (stored_id, type, text) or a reason string: the id, type and text checks."""
     sid = stored_id(raw.get("id"))
     if sid is None:
@@ -171,7 +169,7 @@ def _check_body(raw: dict, spec: Source) -> Union[tuple, str]:
     return sid, typ, text
 
 
-def _check_metadata(meta: dict, spec: Source) -> Union[dict, str]:
+def _check_metadata(meta: dict, spec: Source) -> dict | str:
     """Return the kept provenance fields, or a reason string for the first bad one."""
     kept: dict = {}
     for key in spec.required + spec.optional:
@@ -186,8 +184,10 @@ def _check_metadata(meta: dict, spec: Source) -> Union[dict, str]:
     return kept
 
 
-def _check_record(raw: object, source: Optional[str]) -> Union[tuple, str]:
+def _check_record(raw: object, source: str | None) -> tuple | str:
     """Return (source_name, stamped_record) or a reason string. Never raises."""
+    if not isinstance(raw, dict):
+        return "a record must be a JSON object"
     head = _check_source(raw, source)
     if isinstance(head, str):
         return head
@@ -211,7 +211,7 @@ def _check_record(raw: object, source: Optional[str]) -> Union[tuple, str]:
     return name, record
 
 
-def _parse_line(number: int, line: object) -> Union[object, Refusal]:
+def _parse_line(number: int, line: object) -> object | Refusal:
     """The decoded JSON value of one line, or the Refusal for a line that is not usable."""
     if not isinstance(line, str):
         return _refuse(number, "a line must be text")
@@ -231,7 +231,7 @@ def _admission_reason(record: dict, source: str, count: int, seen: dict) -> Opti
     return None
 
 
-def validate_batch(lines: Iterable[str], *, created: Optional[str] = None) -> Union[Batch, Refusal]:
+def validate_batch(lines: Iterable[str], *, created: str | None = None) -> Batch | Refusal:
     """Validate every NDJSON line before returning anything.
 
     Whole batch or one refusal naming the first failing line (1-based, blank
@@ -241,7 +241,7 @@ def validate_batch(lines: Iterable[str], *, created: Optional[str] = None) -> Un
     """
     try:
         items = list(lines)
-    except Exception:  # noqa: BLE001 - degrade, never raise
+    except Exception:  # noqa: BLE001  # degrade, never raise
         return _refuse(0, "the batch could not be read")
     source: Optional[str] = None
     records: list = []

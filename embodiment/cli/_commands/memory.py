@@ -28,6 +28,7 @@ from embodiment.ingest.spool import Spool
 
 #: A batch is at most 400 records x ~1 KiB; refuse to slurp anything far past that.
 MAX_FILE_BYTES = 4 * 1024 * 1024
+_JSON_HELP = "Emit structured JSON."
 
 _MEMORY_VERBS = [
     "memory ingest --file <ndjson> [--apply] — validate and enqueue a batch (dry run default)",
@@ -58,7 +59,7 @@ def _daemon(state_dir: Optional[str]) -> dict[str, Any]:
 
         report = lifecycle.status(state_dir=state_dir)
         return {"state": report.state, "pid": report.pid, "state_dir": report.state_dir}
-    except Exception as exc:  # noqa: BLE001 - liveness is a report, never a failure
+    except Exception as exc:  # noqa: BLE001  # liveness is a report, never a failure
         return {"state": "unknown", "error": type(exc).__name__}
 
 
@@ -211,12 +212,12 @@ def cmd_memory_overview(args: argparse.Namespace) -> int:
 def _common(p: argparse.ArgumentParser) -> None:
     p.add_argument("--apply", action="store_true", help="Enqueue for real (default: dry run).")
     p.add_argument("--state-dir", default=None, help="Daemon state directory (absolute path).")
-    p.add_argument("--json", action="store_true", help="Emit structured JSON.")
+    p.add_argument("--json", action="store_true", help=_JSON_HELP)
 
 
 def register(sub: argparse._SubParsersAction) -> None:
     p = sub.add_parser("memory", help="Enqueue facts for Gwen to remember or forget.")
-    p.add_argument("--json", action="store_true", help="Emit structured JSON.")
+    p.add_argument("--json", action="store_true", help=_JSON_HELP)
     p.set_defaults(func=cmd_memory_overview, json=False)
     # Propagate the structured-error parser class (see cli/_commands/cli.py).
     noun = p.add_subparsers(dest="memory_command", parser_class=type(p))
@@ -235,5 +236,5 @@ def register(sub: argparse._SubParsersAction) -> None:
     fg.set_defaults(func=cmd_memory_forget)
 
     ov = noun.add_parser("overview", help="Describe the memory verbs.")
-    ov.add_argument("--json", action="store_true", help="Emit structured JSON.")
+    ov.add_argument("--json", action="store_true", help=_JSON_HELP)
     ov.set_defaults(func=cmd_memory_overview)
