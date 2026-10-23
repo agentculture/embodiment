@@ -186,7 +186,9 @@ absence, not an implication.
 
 - **Other tools.** The daemon binds exactly two tools, both over Gwen's own
   private memory: `remember` (d7) and `forget` (d8, which archives a record
-  in place and never deletes a byte). Nothing else — no shell, no files, no
+  in place and never deletes a byte, and drops its vector; it does not redact
+  past conversation transcript logs, which are private, 0600 and size-bounded and
+  may have quoted the memory — a follow-up). Nothing else — no shell, no files, no
   Qwen Code. Gwen cannot act on anything outside her own memory.
 - **Vision.** The session is audio-only; `senses` does not advertise image
   understanding on this rig.

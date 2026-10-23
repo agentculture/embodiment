@@ -337,7 +337,7 @@ def seed_both(rig: Rig) -> int:
     assert rig.pending() == 2, "both batches must be waiting before the daemon is pumped"
     intervals = rig.drain_intervals_until(lambda: rig.pending() == 0)
     # Applied is not yet recallable by meaning: the vector arrives with the running
-    # backfill (see TestTheVectorIsFilledByTheWrite for the gap this exposes).
+    # backfill (a write also wakes it: TestTheVectorIsFilledByTheWrite).
     rig.wait_vectors(OTTER, BRIDGE)
     return intervals
 
@@ -665,13 +665,12 @@ class TestForgetLeavesNoCopy:
 class TestTheVectorIsFilledByTheWrite:
     """The spec: vectors are "filled when the drain writes and when remember writes".
 
-    What is shipped: only the background backfill (``RoomMemory.backfill_tick``,
-    30 s idle cadence by default) caches a vector; ``ingest_records`` and the
-    remember path never do. Until the next tick a freshly drained or remembered
-    record is skipped by semantic recall (``uncached_skipped``) — a fact the
-    operator was just told was applied is invisible to recall for up to the
-    backfill's idle interval. Recorded as strict xfails, not fixed here (this
-    module owns tests only).
+    The approved contract (deviation d4, "wake backfill on write"): a write that
+    creates or changes a record's text wakes the running backfill, which embeds
+    in its own thread; the write itself never embeds. The fixture below runs the
+    REAL backfill at its DEFAULT 30 s idle interval, so a vector arriving within
+    a couple of seconds proves no idle wait happened (the first tick ran at start
+    and found nothing; only the write's wake-up can have caused the next one).
     """
 
     @pytest.fixture
@@ -683,24 +682,27 @@ class TestTheVectorIsFilledByTheWrite:
         yield built
         built.close()
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="ingest_records never caches the record's vector; only the backfill tick does",
-    )
+    @staticmethod
+    def _wait_for_vector(rig: Rig, text: str, timeout: float = 2.0) -> None:
+        limit = time.monotonic() + timeout
+        while rig.cache.get(text) is None and time.monotonic() < limit:
+            time.sleep(0.01)
+        assert rig.cache.get(text) is not None, "no vector within the bounded wait"
+
     def test_a_drained_record_has_its_vector_before_any_backfill_tick(self, slow_rig: Rig) -> None:
+        assert slow_rig.memory.status()["backfill"]["running"] is True
         slow_rig.ingest([pocket(1, OTTER)], "pocket-batch")
         slow_rig.drain_intervals_until(lambda: slow_rig.pending() == 0)
-        assert slow_rig.cache.get(OTTER) is not None
+        self._wait_for_vector(slow_rig, OTTER)
+        assert slow_rig.memory.status()["backfill"]["write_wakes"] >= 1
 
-    @pytest.mark.xfail(
-        strict=True,
-        reason="the remember path never caches the record's vector; only the backfill tick does",
-    )
     def test_a_remembered_record_has_its_vector_before_any_backfill_tick(
         self, slow_rig: Rig
     ) -> None:
+        assert slow_rig.memory.status()["backfill"]["running"] is True
         assert slow_rig.app._remember_tool(fact="synthetic remembered otter note").startswith("ok")
-        assert slow_rig.cache.get("synthetic remembered otter note") is not None
+        self._wait_for_vector(slow_rig, "synthetic remembered otter note")
+        assert slow_rig.memory.status()["backfill"]["write_wakes"] >= 1
 
 
 # ── what is not claimed ───────────────────────────────────────────────────────
