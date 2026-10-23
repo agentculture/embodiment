@@ -3431,6 +3431,43 @@ class TestTheBackgroundBackfill:
         codes = [d.code for d in room.abandoned]
         assert codes.count(mem.CODE_BACKFILL_OFFLINE) == 1
 
+    def test_a_tick_writes_the_cache_file_once(self, tmp_path: Path) -> None:
+        """d6: a backfill of N records saves once per tick, not once per vector."""
+        pools = {("gwen", "private"): [_rec(f"gwen-{i}", f"fact number {i}") for i in range(40)]}
+        room, cache = _semantic_room(tmp_path, pools, _FakeEmbedder())
+        saves: list[int] = []
+        real_save = cache._save
+        cache._save = lambda: saves.append(1) or real_save()  # type: ignore[method-assign]
+        try:
+            report = room.backfill_tick(max_records=100)
+        finally:
+            room.close()
+        assert report["embedded"] == 40
+        assert len(saves) == 1
+        assert stat.S_IMODE(os.stat(cache.path).st_mode) == 0o600
+        reread = mem.vector_cache_for(tmp_path / "vectors")
+        assert reread.degradations == []
+        assert all(reread.get(f"fact number {i}") is not None for i in range(40))
+        assert reread.drop("gwen-3") == 1
+
+    def test_a_tick_cut_short_by_the_embedder_still_saves_what_it_embedded(
+        self, tmp_path: Path
+    ) -> None:
+        class _DiesAfterTwo(_FakeEmbedder):
+            def embed(self, text: str, prompt: str | None = None) -> EmbedResult:
+                if len(self.calls) >= 2:
+                    self.down = True
+                return super().embed(text, prompt)
+
+        room, cache = _semantic_room(tmp_path, self._pools(), _DiesAfterTwo())
+        try:
+            report = room.backfill_tick(max_records=100)
+        finally:
+            room.close()
+        assert report["embedded"] == 2 and report["offline"] is True
+        reread = mem.vector_cache_for(tmp_path / "vectors")
+        assert sum(reread.get(f"room fact {i}") is not None for i in range(4)) == 2
+
     def test_a_tick_without_an_embedder_is_a_no_op(self, tmp_path: Path) -> None:
         room = mem.RoomMemory(tmp_path / "store")
         try:

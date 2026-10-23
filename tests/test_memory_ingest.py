@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from pathlib import Path
 from typing import Any
 
@@ -342,6 +343,67 @@ def test_forget_source_never_touches_the_room_scope(room) -> None:
     _thirty(room)
     room.forget_source("pocket", "rec1")
     assert _stored(room, "gwen")["gwen-keep"]["lifecycle"] == "active"
+
+
+class _SlowStore:
+    """list_fn + archive_fn seams where every step costs *step* seconds of wall time."""
+
+    def __init__(self, n: int, step: float) -> None:
+        self.step = step
+        self.rows = {
+            f"pocket.slow.fact.{i}": {
+                "id": f"pocket.slow.fact.{i}",
+                "lifecycle": "active",
+                "metadata": {"source": "pocket", "recording_id": "slow"},
+            }
+            for i in range(n)
+        }
+
+    def list_fn(self, **_kw: Any) -> list[dict[str, Any]]:
+        time.sleep(self.step)
+        return [dict(r) for r in self.rows.values()]
+
+    def archive_fn(self, identifier: str, **_kw: Any) -> Any:
+        time.sleep(self.step)
+        self.rows[identifier]["lifecycle"] = continuity.LIFECYCLE_ARCHIVED
+        return continuity.ArchiveOutcome(ok=True, record_id=identifier, degradation=None)
+
+
+def test_forget_source_keeps_one_total_deadline_and_resumes(tmp_path) -> None:
+    """d6: the deadline bounds the whole forget, not each step (1 + matched steps)."""
+    store = _SlowStore(n=40, step=0.03)
+    room = mem.RoomMemory(
+        tmp_path / "s", list_fn=store.list_fn, archive_fn=store.archive_fn, max_inflight=64
+    )
+    try:
+        started = time.monotonic()
+        first = room.forget_source("pocket", "slow", deadline=0.3)
+        elapsed = time.monotonic() - started
+        assert elapsed < 0.3 + 0.15, f"forget_source ran {elapsed:.2f}s against a 0.3s deadline"
+        assert not first.ok and first.matched == 40
+        assert 0 < len(first.archived) < 40
+        assert first.failed, "the ids it did not reach are reported, so the caller retries"
+        reached = set(first.archived) | {rid for rid, _ in first.failed}
+        assert reached == set(store.rows)
+        codes = {code for _, code in first.failed}
+        assert codes <= {mem.CODE_INGEST_NOT_ATTEMPTED, mem.CODE_REMEMBER_DEFERRED}
+        time.sleep(0.1)  # let a step deferred past the deadline land
+        again = room.forget_source("pocket", "slow", deadline=10.0)
+        assert again.ok and again.matched == 40
+        assert len(again.archived) + len(again.already_archived) == 40
+        assert all(r["lifecycle"] == "archived" for r in store.rows.values())
+    finally:
+        room.close()
+
+
+def test_forget_source_with_room_left_is_unchanged(tmp_path) -> None:
+    store = _SlowStore(n=5, step=0.0)
+    room = mem.RoomMemory(tmp_path / "s", list_fn=store.list_fn, archive_fn=store.archive_fn)
+    try:
+        result = room.forget_source("pocket", "slow", deadline=5.0)
+    finally:
+        room.close()
+    assert result.ok and len(result.archived) == 5 and result.failed == ()
 
 
 def test_forget_source_matches_the_issue_key_for_newspaper(room) -> None:
