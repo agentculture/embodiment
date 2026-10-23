@@ -2117,6 +2117,7 @@ class TestTheClipResponseCarriesItsTurnSerial:
             )
             assert status == 200
             payload = json.loads(body)
-            assert "turn_serial" in payload and payload["turn_serial"] is None
+            assert "turn_serial" in payload
+            assert payload["turn_serial"] is None
         finally:
             built.server.shutdown(2.0)

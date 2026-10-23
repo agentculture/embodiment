@@ -167,7 +167,8 @@ def test_readme_status_cites_the_recall_measurement_it_quotes(readme: str) -> No
     # comes with the file it came from and stays marked provisional.
     status = _section(readme, "Status")
     assert RECALL_RESULTS_FILE in status
-    assert "0.715" in status and "n = " in status
+    assert "0.715" in status
+    assert "n = " in status
     lowered = status.lower()
     assert "uncalibrated" not in lowered, "the threshold is calibrated, provisionally"
     assert "forthcoming" not in lowered, "the recall measurement is published"
@@ -179,4 +180,5 @@ def test_no_surface_still_calls_the_old_threshold_the_default(
     surface: str, request: pytest.FixtureRequest
 ) -> None:
     text = request.getfixturevalue(surface)
-    assert "`0.78`" not in text and "<date>-recall-gemma2" not in text
+    assert "`0.78`" not in text
+    assert "<date>-recall-gemma2" not in text

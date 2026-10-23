@@ -55,7 +55,9 @@ def test_ingest_is_dry_run_without_apply(tmp_path, capsys) -> None:
     )
     assert rc == 0
     data = json.loads(out)
-    assert data["applied"] is False and data["records"] == 2 and data["source"] == "pocket"
+    assert data["applied"] is False
+    assert data["records"] == 2
+    assert data["source"] == "pocket"
     assert data["enqueue"] is None
     assert _inbox(state) == []
     assert "state" in data["daemon"]
@@ -70,12 +72,14 @@ def test_ingest_apply_enqueues_and_stamps(tmp_path, capsys) -> None:
     )
     assert rc == 0
     data = json.loads(out)
-    assert data["applied"] is True and data["enqueue"]["ok"] is True
+    assert data["applied"] is True
+    assert data["enqueue"]["ok"] is True
     assert data["enqueue"]["batch_id"]
     files = _inbox(state)
     assert len(files) == 1
     body = json.loads(files[0].read_text(encoding="utf-8"))
-    assert body["kind"] == "ingest" and len(body["records"]) == 2
+    assert body["kind"] == "ingest"
+    assert len(body["records"]) == 2
     assert body["records"][0]["added_by"] == "culture-rules"
     assert body["records"][0]["visibility"] == "private"
 
@@ -88,8 +92,11 @@ def test_ingest_refusal_exits_1_with_error_and_hint(tmp_path, capsys) -> None:
     rc, out, err = _run(
         ["memory", "ingest", "--file", str(f), "--apply", "--state-dir", str(state)], capsys
     )
-    assert rc == 1 and out == ""
-    assert err.startswith("error: ") and "hint: " in err and "line 2" in err
+    assert rc == 1
+    assert out == ""
+    assert err.startswith("error: ")
+    assert "hint: " in err
+    assert "line 2" in err
     assert _inbox(state) == []
 
 
@@ -97,18 +104,21 @@ def test_ingest_refusal_json_goes_to_stderr(tmp_path, capsys) -> None:
     f = tmp_path / "b.ndjson"
     f.write_text("not json\n", encoding="utf-8")
     rc, out, err = _run(["memory", "ingest", "--file", str(f), "--json"], capsys)
-    assert rc == 1 and out == ""
+    assert rc == 1
+    assert out == ""
     assert json.loads(err)["remediation"]
 
 
 def test_ingest_missing_file_is_env_error(tmp_path, capsys) -> None:
     rc, out, err = _run(["memory", "ingest", "--file", str(tmp_path / "absent")], capsys)
-    assert rc == 2 and "hint: " in err
+    assert rc == 2
+    assert "hint: " in err
 
 
 def test_ingest_requires_file_or_status(capsys) -> None:
     rc, out, err = _run(["memory", "ingest"], capsys)
-    assert rc == 1 and "hint: " in err
+    assert rc == 1
+    assert "hint: " in err
 
 
 def test_ingest_status_reports_spool_and_daemon_separately(tmp_path, capsys) -> None:
@@ -126,7 +136,9 @@ def test_ingest_status_reports_spool_and_daemon_separately(tmp_path, capsys) -> 
 
 def test_ingest_status_text(tmp_path, capsys) -> None:
     rc, out, _ = _run(["memory", "ingest", "--status", "--state-dir", str(tmp_path / "s")], capsys)
-    assert rc == 0 and "pending" in out and "daemon" in out
+    assert rc == 0
+    assert "pending" in out
+    assert "daemon" in out
 
 
 def test_forget_by_source_and_source_id(tmp_path, capsys) -> None:
@@ -158,7 +170,9 @@ def test_forget_by_id_and_dry_run(tmp_path, capsys) -> None:
         ["memory", "forget", "--id", "pocket:r1:fact:3", "--state-dir", str(state), "--json"],
         capsys,
     )
-    assert rc == 0 and json.loads(out)["applied"] is False and _inbox(state) == []
+    assert rc == 0
+    assert json.loads(out)["applied"] is False
+    assert _inbox(state) == []
     rc, _, _ = _run(
         ["memory", "forget", "--id", "pocket:r1:fact:3", "--apply", "--state-dir", str(state)],
         capsys,
@@ -180,7 +194,9 @@ def test_forget_by_id_and_dry_run(tmp_path, capsys) -> None:
 )
 def test_forget_bad_arguments_exit_1_with_hint(argv, capsys) -> None:
     rc, out, err = _run(argv, capsys)
-    assert rc == 1 and out == "" and "hint: " in err
+    assert rc == 1
+    assert out == ""
+    assert "hint: " in err
 
 
 def test_enqueue_failure_is_reported_not_raised(tmp_path, capsys) -> None:
@@ -191,7 +207,9 @@ def test_enqueue_failure_is_reported_not_raised(tmp_path, capsys) -> None:
         ["memory", "ingest", "--file", str(f), "--apply", "--state-dir", str(blocker / "s")],
         capsys,
     )
-    assert rc == 2 and "hint: " in err and "Traceback" not in err
+    assert rc == 2
+    assert "hint: " in err
+    assert "Traceback" not in err
 
 
 def test_memory_overview(capsys) -> None:
@@ -200,9 +218,11 @@ def test_memory_overview(capsys) -> None:
     data = json.loads(out)
     assert data["subject"] == "embodiment memory"
     text = json.dumps(data)
-    assert "ingest" in text and "forget" in text
+    assert "ingest" in text
+    assert "forget" in text
     rc, out, _ = _run(["memory"], capsys)
-    assert rc == 0 and "memory" in out
+    assert rc == 0
+    assert "memory" in out
 
 
 def test_global_overview_lists_memory(capsys) -> None:

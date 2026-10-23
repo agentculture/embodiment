@@ -152,7 +152,8 @@ def test_a_failing_ingest_read_costs_only_the_ingest_hits(tmp_path) -> None:
 
 def test_ingest_writes_private_into_the_ingest_scope(room, tmp_path) -> None:
     result = room.ingest_records(_batch(("r1", "fact", 1, "narwhal fact")))
-    assert result.ok and result.written == ("pocket.r1.fact.1",)
+    assert result.ok
+    assert result.written == ("pocket.r1.fact.1",)
     rows = _stored(room)
     row = rows["pocket.r1.fact.1"]
     assert row["scope"] == {"name": mem.INGEST_SCOPE, "visibility": "private"}
@@ -187,7 +188,9 @@ def test_one_record_is_one_executor_job(tmp_path) -> None:
         )
     )
     r.close()
-    assert result.ok and len(result.written) == 3 and len(holds) == 3
+    assert result.ok
+    assert len(result.written) == 3
+    assert len(holds) == 3
 
 
 def test_a_supersede_flips_the_old_record_before_returning(room) -> None:
@@ -195,14 +198,16 @@ def test_a_supersede_flips_the_old_record_before_returning(room) -> None:
     result = room.ingest_records(
         _batch(("r1", "fact", 2, "quokka lives in the new place", "pocket:r1:fact:1"))
     )
-    assert result.ok and result.superseded == ("pocket.r1.fact.1",)
+    assert result.ok
+    assert result.superseded == ("pocket.r1.fact.1",)
     assert _stored(room)["pocket.r1.fact.1"]["lifecycle"] != "active"
     assert _recall_ids(room, "quokka") == ["pocket.r1.fact.2"]
 
 
 def test_superseding_an_unknown_record_is_not_a_failure(room) -> None:
     result = room.ingest_records(_batch(("r1", "fact", 2, "gecko fact", "pocket:r1:fact:1")))
-    assert result.ok and result.superseded == ()
+    assert result.ok
+    assert result.superseded == ()
     assert _stored(room)["pocket.r1.fact.2"]["supersedes"] == "pocket.r1.fact.1"
 
 
@@ -218,7 +223,9 @@ def test_a_failed_supersede_flip_is_reported_not_swallowed(tmp_path) -> None:
     assert r.ingest_records(_batch(("r1", "fact", 1, "lemur old"))).ok
     result = r.ingest_records(_batch(("r1", "fact", 2, "lemur new", "pocket:r1:fact:1")))
     r.close()
-    assert not result.ok and result.failed and result.degradations
+    assert not result.ok
+    assert result.failed
+    assert result.degradations
 
 
 # -- criterion 5: collapse ---------------------------------------------------------------
@@ -244,7 +251,8 @@ def test_a_collision_inside_one_batch_is_reported(room) -> None:
 def test_a_collision_with_the_superseded_record_replaces_it_and_says_so(room) -> None:
     assert room.ingest_records(_batch(("r1", "fact", 1, "same sentence"))).ok
     result = room.ingest_records(_batch(("r1", "fact", 2, "same sentence", "pocket:r1:fact:1")))
-    assert result.ok and result.written == ("pocket.r1.fact.2",)
+    assert result.ok
+    assert result.written == ("pocket.r1.fact.2",)
     assert result.collapsed == (("pocket.r1.fact.2", "pocket.r1.fact.1"),)
     assert set(_stored(room)) == {"pocket.r1.fact.2"}
 
@@ -253,7 +261,9 @@ def test_re_ingesting_the_same_id_is_idempotent_not_a_collapse(room) -> None:
     batch = _batch(("r1", "fact", 1, "same again"))
     assert room.ingest_records(batch).ok
     again = room.ingest_records(batch)
-    assert again.ok and again.collapsed == () and len(_stored(room)) == 1
+    assert again.ok
+    assert again.collapsed == ()
+    assert len(_stored(room)) == 1
 
 
 # -- bad input, saturation, degrade-never-raise --------------------------------------------
@@ -261,7 +271,9 @@ def test_re_ingesting_the_same_id_is_idempotent_not_a_collapse(room) -> None:
 
 def test_unusable_records_are_failed_not_raised(room) -> None:
     result = room.ingest_records([{"id": "x y", "text": "t", "type": "fact"}, "nope", None])
-    assert not result.ok and len(result.failed) == 3 and result.degradations
+    assert not result.ok
+    assert len(result.failed) == 3
+    assert result.degradations
 
 
 def test_a_saturated_layer_stops_the_batch_and_names_the_rest(tmp_path) -> None:
@@ -270,7 +282,8 @@ def test_a_saturated_layer_stops_the_batch_and_names_the_rest(tmp_path) -> None:
     result = r.ingest_records(_batch(("r1", "fact", 1, "a one"), ("r1", "fact", 2, "a two")))
     r._inflight = 0
     r.close()
-    assert not result.ok and result.written == ()
+    assert not result.ok
+    assert result.written == ()
     assert result.not_attempted == ("pocket.r1.fact.2",)
     assert any(d.code == mem.CODE_SATURATED for d in result.degradations)
 
@@ -279,7 +292,8 @@ def test_a_closed_layer_refuses_visibly(tmp_path) -> None:
     r = mem.RoomMemory(tmp_path / "s")
     r.close()
     result = r.ingest_records(_batch(("r1", "fact", 1, "late")))
-    assert not result.ok and result.degradations[0].code == mem.CODE_CLOSED
+    assert not result.ok
+    assert result.degradations[0].code == mem.CODE_CLOSED
 
 
 def test_the_store_seam_raising_degrades(tmp_path) -> None:
@@ -289,7 +303,8 @@ def test_the_store_seam_raising_degrades(tmp_path) -> None:
     r = mem.RoomMemory(tmp_path / "s", remember_fn=boom)
     result = r.ingest_records(_batch(("r1", "fact", 1, "kiwi")))
     r.close()
-    assert not result.ok and result.failed
+    assert not result.ok
+    assert result.failed
     assert "secret heard line" not in json.dumps(result.to_dict())
 
 
@@ -312,15 +327,16 @@ def _thirty(room) -> None:
 def test_forget_source_archives_exactly_one_recording(room) -> None:
     _thirty(room)
     result = room.forget_source("pocket", "rec1")
-    assert result.ok and result.matched == 10 and len(result.archived) == 10
+    assert result.ok
+    assert result.matched == 10
+    assert len(result.archived) == 10
     rows = _stored(room)
     states = {rid: row["lifecycle"] for rid, row in rows.items()}
     archived = [rid for rid, st in states.items() if st == "archived"]
     assert sorted(archived) == sorted(f"pocket.rec1.fact.{n}" for n in range(10))
     assert sum(1 for st in states.values() if st != "archived") == 20
-    assert _recall_ids(room, "distinct") and all(
-        "rec1" not in i for i in _recall_ids(room, "distinct")
-    )
+    assert _recall_ids(room, "distinct")
+    assert all("rec1" not in i for i in _recall_ids(room, "distinct"))
 
 
 def test_forget_source_enumerates_rather_than_ranking(room) -> None:
@@ -330,14 +346,17 @@ def test_forget_source_enumerates_rather_than_ranking(room) -> None:
     # A generous total deadline: this pins enumeration, not speed (d6 made the
     # deadline one total, so a loaded suite could otherwise end it partial).
     result = room.forget_source("pocket", "big", deadline=30.0)
-    assert result.matched == 60 and len(result.archived) == 60
+    assert result.matched == 60
+    assert len(result.archived) == 60
 
 
 def test_forget_source_is_idempotent_and_reports_the_already_archived(room) -> None:
     _thirty(room)
     room.forget_source("pocket", "rec0")
     again = room.forget_source("pocket", "rec0")
-    assert again.ok and again.archived == () and len(again.already_archived) == 10
+    assert again.ok
+    assert again.archived == ()
+    assert len(again.already_archived) == 10
 
 
 def test_forget_source_never_touches_the_room_scope(room) -> None:
@@ -382,7 +401,8 @@ def test_forget_source_keeps_one_total_deadline_and_resumes(tmp_path) -> None:
         first = room.forget_source("pocket", "slow", deadline=0.3)
         elapsed = time.monotonic() - started
         assert elapsed < 0.3 + 0.15, f"forget_source ran {elapsed:.2f}s against a 0.3s deadline"
-        assert not first.ok and first.matched == 40
+        assert not first.ok
+        assert first.matched == 40
         assert 0 < len(first.archived) < 40
         assert first.failed, "the ids it did not reach are reported, so the caller retries"
         reached = set(first.archived) | {rid for rid, _ in first.failed}
@@ -391,7 +411,8 @@ def test_forget_source_keeps_one_total_deadline_and_resumes(tmp_path) -> None:
         assert codes <= {mem.CODE_INGEST_NOT_ATTEMPTED, mem.CODE_REMEMBER_DEFERRED}
         time.sleep(0.1)  # let a step deferred past the deadline land
         again = room.forget_source("pocket", "slow", deadline=10.0)
-        assert again.ok and again.matched == 40
+        assert again.ok
+        assert again.matched == 40
         assert len(again.archived) + len(again.already_archived) == 40
         assert all(r["lifecycle"] == "archived" for r in store.rows.values())
     finally:
@@ -405,7 +426,9 @@ def test_forget_source_with_room_left_is_unchanged(tmp_path) -> None:
         result = room.forget_source("pocket", "slow", deadline=5.0)
     finally:
         room.close()
-    assert result.ok and len(result.archived) == 5 and result.failed == ()
+    assert result.ok
+    assert len(result.archived) == 5
+    assert result.failed == ()
 
 
 def test_forget_source_matches_the_issue_key_for_newspaper(room) -> None:
@@ -436,7 +459,8 @@ def test_forget_source_rejects_an_unregistered_source(room) -> None:
     _thirty(room)
     for bad in (("diary", "rec1"), ("pocket", ""), (None, "rec1"), ("pocket", None)):
         result = room.forget_source(*bad)  # type: ignore[arg-type]
-        assert not result.ok and result.degradations
+        assert not result.ok
+        assert result.degradations
     assert all(r["lifecycle"] != "archived" for r in _stored(room).values())
 
 
@@ -451,13 +475,15 @@ def test_forget_ids_archives_exact_ids_only(room) -> None:
 def test_forget_ids_cannot_reach_another_scope(room) -> None:
     room.remember("room memory", record_id="gwen-keep")
     result = room.forget_ids(["gwen-keep"])
-    assert result.not_found == ("gwen-keep",) and result.archived == ()
+    assert result.not_found == ("gwen-keep",)
+    assert result.archived == ()
     assert _stored(room, "gwen")["gwen-keep"]["lifecycle"] == "active"
 
 
 def test_forget_ids_flags_unusable_ids(room) -> None:
     result = room.forget_ids(["bad id!", 7])
-    assert not result.ok and len(result.failed) == 2
+    assert not result.ok
+    assert len(result.failed) == 2
 
 
 def test_forget_never_raises_on_a_broken_list_seam(tmp_path) -> None:
@@ -467,7 +493,8 @@ def test_forget_never_raises_on_a_broken_list_seam(tmp_path) -> None:
     r = mem.RoomMemory(tmp_path / "s", list_fn=boom)
     result = r.forget_source("pocket", "rec1")
     r.close()
-    assert not result.ok and result.degradations
+    assert not result.ok
+    assert result.degradations
 
 
 # -- criterion 5b: the forget tool's id path cannot reach the ingest scope --------------------
@@ -485,5 +512,6 @@ def test_a_room_pinned_to_the_ingest_scope_refuses_the_forget_tool(tmp_path) -> 
     assert r.ingest_records(_batch(("r1", "fact", 1, "ibex fact"))).ok
     result = r.forget("pocket.r1.fact.1")
     r.close()
-    assert not result.ok and result.code == continuity.CODE_INVALID_RECORD
+    assert not result.ok
+    assert result.code == continuity.CODE_INVALID_RECORD
     assert _stored(r)["pocket.r1.fact.1"]["lifecycle"] == "active"

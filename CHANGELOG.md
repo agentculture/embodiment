@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.1] - 2026-10-23
+
+### Changed
+
+- Tests: every composite assertion (`assert a and b`, SonarCloud
+  `python:S9073`) is split into one assertion per condition, so a failure
+  names the condition that failed. 174 statements across 15 test files: 173
+  rewritten mechanically from the AST (operands and messages copied verbatim),
+  one by hand. Behaviour unchanged.
+
 ## [0.17.0] - 2026-10-23
 
 **Gwen remembers recordings.** The operator can talk with Gwen by text at a

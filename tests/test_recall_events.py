@@ -224,20 +224,24 @@ class TestRemainderRegeneration:
 
         assert h.spoken == ["First one.", "Second two.", "Second three."]
         # The first completion's unspoken sentences are dropped, never spliced.
-        assert "First two." not in h.spoken and "First three." not in h.spoken
+        assert "First two." not in h.spoken
+        assert "First three." not in h.spoken
         second = h.requests[1]
         assert second.purpose == PURPOSE_REMAINDER
         assert second.memory == MEMORY
         assert second.spoken == ("First one.",)
         assert second.query == "where is the key?"
-        assert h.requests[0].memory == "" and h.requests[0].spoken == ()
+        assert h.requests[0].memory == ""
+        assert h.requests[0].spoken == ()
         assert isinstance(outcome, ReplyOutcome)
-        assert outcome.regenerated is True and outcome.restarted is False
+        assert outcome.regenerated is True
+        assert outcome.restarted is False
         assert outcome.sentences_dropped == 2
         assert outcome.spoken == ("First one.", "Second two.", "Second three.")
         _assert_exactly_one(h, LANDED_DURING_REPLY)
         status = h.app.status()
-        assert status["regenerations"] == 1 and status["sentences_dropped"] == 2
+        assert status["regenerations"] == 1
+        assert status["sentences_dropped"] == 2
         assert h.stops == 0  # a remainder is not a restart; nothing is stopped
 
     def test_generation_starts_without_waiting_for_memory(self) -> None:
@@ -256,7 +260,8 @@ class TestRemainderRegeneration:
 
         second = h.requests[1]
         assert second.purpose == PURPOSE_REPLY
-        assert second.memory == MEMORY and second.spoken == ()
+        assert second.memory == MEMORY
+        assert second.spoken == ()
         assert h.spoken == ["Remembered one.", "Remembered two."]
         assert outcome.sentences_dropped == 3
         _assert_exactly_one(h, LANDED_BEFORE_FIRST_SENTENCE)
@@ -512,14 +517,16 @@ class TestRestart:
         h = Harness(contradicts=lambda m, s: calls.append(1) or True)
         h.on_complete[1] = h.spawn.land
         h.app.run_turn("q")
-        assert calls == [] and h.stops == 0
+        assert calls == []
+        assert h.stops == 0
         _assert_exactly_one(h, LANDED_BEFORE_FIRST_SENTENCE)
 
     def test_without_a_contradicts_seam_there_is_never_a_restart(self) -> None:
         h = Harness()
         h.on_speak[1] = h.spawn.land
         h.app.run_turn("q")
-        assert h.stops == 0 and h.app.status()["restarts"] == 0
+        assert h.stops == 0
+        assert h.app.status()["restarts"] == 0
 
     def test_a_raising_contradicts_seam_is_recorded_and_means_no_restart(self) -> None:
         def contradicts(memory: str, spoken: tuple[str, ...]) -> bool:
@@ -672,7 +679,8 @@ class TestUnpromptedSeam:
             UnpromptedEvent(source="job", key="job-1", text="The job is done. It passed.")
         )
         assert isinstance(outcome, UnpromptedOutcome)
-        assert outcome.spoken is True and outcome.sentences_spoken == 2
+        assert outcome.spoken is True
+        assert outcome.sentences_spoken == 2
         assert spoken == ["The job is done.", "It passed."]
         assert seam.status()["spoken"] == 1
 
@@ -700,7 +708,8 @@ class TestUnpromptedSeam:
     def test_a_dropped_follow_up_never_fires_the_never_silent_rule(self, composed: str) -> None:
         seam, spoken, _ = _unprompted()
         outcome = seam.offer(UnpromptedEvent(source="job", key="k", compose=lambda: composed))
-        assert outcome.spoken is False and outcome.reason == DROP_UNSPEAKABLE
+        assert outcome.spoken is False
+        assert outcome.reason == DROP_UNSPEAKABLE
         assert spoken == []  # no FALLBACK_TEXT, no audio at all
 
     def test_a_raising_composer_is_recorded_and_silent(self) -> None:
@@ -709,14 +718,17 @@ class TestUnpromptedSeam:
 
         seam, spoken, state = _unprompted()
         outcome = seam.offer(UnpromptedEvent(source="job", key="k", compose=compose))
-        assert outcome.reason == DROP_COMPOSE_FAILED and spoken == []
-        assert len(state["records"]) == 1 and "words" not in state["records"][0][1]
+        assert outcome.reason == DROP_COMPOSE_FAILED
+        assert spoken == []
+        assert len(state["records"]) == 1
+        assert "words" not in state["records"][0][1]
 
     def test_at_most_one_utterance_per_key(self) -> None:
         seam, spoken, _ = _unprompted()
         assert seam.offer(UnpromptedEvent(source="s", key="k", text="One.")).spoken
         second = seam.offer(UnpromptedEvent(source="s", key="k", text="Two."))
-        assert second.spoken is False and second.reason == DROP_ALREADY_SPOKEN
+        assert second.spoken is False
+        assert second.reason == DROP_ALREADY_SPOKEN
         assert spoken == ["One."]
 
     def test_the_floor_and_the_window_gate_every_caller(self) -> None:
@@ -750,13 +762,15 @@ class TestUnpromptedSeam:
             return "Something."
 
         outcome = seam.offer(UnpromptedEvent(source="s", key="k", compose=compose))
-        assert outcome.reason == DROP_FLOOR_HELD and spoken == []
+        assert outcome.reason == DROP_FLOOR_HELD
+        assert spoken == []
 
     @pytest.mark.parametrize("bad", [None, "text", 42, object()])
     def test_a_malformed_event_is_dropped_never_raised(self, bad: Any) -> None:
         seam, spoken, _ = _unprompted()
         outcome = seam.offer(bad)
-        assert outcome.spoken is False and outcome.reason == DROP_MALFORMED
+        assert outcome.spoken is False
+        assert outcome.reason == DROP_MALFORMED
         assert spoken == []
 
     def test_a_raising_floor_seam_counts_as_held(self) -> None:
@@ -767,7 +781,8 @@ class TestUnpromptedSeam:
         assert seam.offer(UnpromptedEvent(source="s", key="k", text="x.")).reason == (
             DROP_FLOOR_HELD
         )
-        assert spoken == [] and state["records"]
+        assert spoken == []
+        assert state["records"]
 
     def test_a_raising_speak_is_recorded_and_returned(self) -> None:
         def speak(sentence: str) -> None:
@@ -783,7 +798,8 @@ class TestUnpromptedSeam:
         seam.offer(UnpromptedEvent(source="ג'וב <b>", key="k", text="x."))
         allowed = set(LABEL_CHARSET) | {LABEL_PLACEHOLDER}
         sources = list(seam.status()["by_source"])
-        assert len(sources) == 1 and set(sources[0]) <= allowed
+        assert len(sources) == 1
+        assert set(sources[0]) <= allowed
 
 
 # ── degrade, never raise (C3) ────────────────────────────────────────────
@@ -848,7 +864,8 @@ class TestNeverRaises:
         h = Harness()
         h.app.close()
         outcome = h.app.run_turn("q")
-        assert outcome.spoken == () and h.log == []
+        assert outcome.spoken == ()
+        assert h.log == []
         assert h.records
 
     def test_a_raising_record_sink_is_counted_not_raised(self) -> None:
@@ -942,13 +959,16 @@ class TestHeadStart:
         assert len(h.requests) == 1  # no regeneration: one completion, with memory
         first = h.requests[0]
         assert first.purpose == PURPOSE_REPLY
-        assert first.memory == MEMORY and first.spoken == ()
+        assert first.memory == MEMORY
+        assert first.spoken == ()
         assert first.query == "where is the key?"
         assert h.spoken == ["Remembered one.", "Remembered two."]
-        assert outcome.regenerated is False and outcome.sentences_dropped == 0
+        assert outcome.regenerated is False
+        assert outcome.sentences_dropped == 0
         _assert_exactly_one(h, LANDED_BEFORE_FIRST_SENTENCE)
         status = h.app.status()
-        assert status["regenerations"] == 0 and status["sentences_dropped"] == 0
+        assert status["regenerations"] == 0
+        assert status["sentences_dropped"] == 0
         assert status["head_start_hits"] == 1
         assert status["head_start_s"] == 5.0
         assert elapsed < 2.0  # returned as soon as the recall landed, not after 5 s
@@ -979,7 +999,8 @@ class TestHeadStart:
         h.on_complete[1] = h.spawn.land
         h.app.run_turn("q")
         assert [r.purpose for r in h.requests] == [PURPOSE_REPLY, PURPOSE_REPLY]
-        assert h.requests[0].memory == "" and h.requests[1].memory == MEMORY
+        assert h.requests[0].memory == ""
+        assert h.requests[1].memory == MEMORY
         _assert_exactly_one(h, LANDED_BEFORE_FIRST_SENTENCE)
         assert h.app.status()["head_start_hits"] == 0
 
@@ -1020,7 +1041,8 @@ class TestHeadStart:
         h = Harness(head_start=5.0, recalled=recalled, spawn=ImmediateSpawn())
         outcome, elapsed = _timed(lambda: h.app.run_turn("q"))
         assert elapsed < 2.0  # the failure ended the wait
-        assert len(h.requests) == 1 and h.requests[0].memory == ""
+        assert len(h.requests) == 1
+        assert h.requests[0].memory == ""
         assert outcome.spoken == ("First one.", "First two.", "First three.")
         _assert_exactly_one(h, LANDED_DROPPED)
         assert h.dropped_reasons() == {reason: 1}
@@ -1039,7 +1061,8 @@ class TestHeadStart:
     def test_a_blank_query_starts_no_recall_and_does_not_wait(self) -> None:
         h = Harness(head_start=5.0)
         _, elapsed = _timed(lambda: h.app.run_turn("   "))
-        assert elapsed < 2.0 and h.spawn.jobs == []
+        assert elapsed < 2.0
+        assert h.spawn.jobs == []
 
     def test_a_failed_memory_completion_degrades_to_a_plain_reply(self) -> None:
         h = Harness(head_start=5.0, spawn=ImmediateSpawn())
@@ -1067,7 +1090,8 @@ class TestHeadStart:
         )
         outcome = h.app.run_turn("q")
         assert h.spoken == []
-        assert outcome.interrupted is True and outcome.spoken == ()
+        assert outcome.interrupted is True
+        assert outcome.spoken == ()
         assert all(r.memory == "" for r in h.requests)
         _assert_exactly_one(h, LANDED_DROPPED)
         assert h.dropped_reasons() == {DROP_FLOOR_HELD: 1}
@@ -1080,7 +1104,8 @@ class TestHeadStart:
             setattr(h, "floor", True),
         )
         outcome = h.app.run_turn("q")
-        assert h.spoken == [] and outcome.interrupted is True
+        assert h.spoken == []
+        assert outcome.interrupted is True
         h.spawn.land()  # late, and the floor is still held
         assert h.spoken == []
         assert h.dropped_reasons() == {DROP_FLOOR_HELD: 1}

@@ -185,7 +185,8 @@ def test_the_verifier_is_an_assertion_verifier_the_guard_admits():
     assert ok.allowed
     forged = token(pair=keypair("kid-1", seed=999))
     bad = guard.check("GET", "/api/status", {**base, "Cf-Access-Jwt-Assertion": forged})
-    assert not bad.allowed and bad.code == a.BAD_SIGNATURE_CODE
+    assert not bad.allowed
+    assert bad.code == a.BAD_SIGNATURE_CODE
 
 
 def test_audience_may_be_a_single_string():
@@ -271,7 +272,8 @@ def test_reason_never_carries_token_material_or_the_email():
     result = refused(verifier(), tok)
     for part in tok.split("."):
         assert part not in result.reason
-    assert "intruder" not in result.reason and "intruder" not in repr(result)
+    assert "intruder" not in result.reason
+    assert "intruder" not in repr(result)
     assert result.reason == a.REASONS[result.code]
 
 
@@ -376,7 +378,8 @@ def test_jwks_unreachable_is_unavailable_distinct_from_a_refusal_and_negative_ca
     assert len(calls) == 1  # negative cache: no fetch per request
     # Recorded once, per failed fetch, and the exception's message never rides along.
     assert [c for c, _ in recorded] == [a.UNAVAILABLE_CODE]
-    assert "MARKER" not in recorded[0][1] and "OSError" in recorded[0][1]
+    assert "MARKER" not in recorded[0][1]
+    assert "OSError" in recorded[0][1]
     assert v.jwks_failures == 1
     # An ordinary refusal is NOT unavailable: the guard can tell 503 from 401.
     assert refused(verifier(), token(claims(exp=NOW - 1))).unavailable is False
@@ -535,7 +538,8 @@ def test_verifier_from_env_partial_degrades_to_a_recorded_refusal(missing):
     assert (result.valid, result.code) == (False, a.CONFIG_INCOMPLETE_CODE)
     assert [c for c, _ in recorded] == [a.CONFIG_INCOMPLETE_CODE]
     assert missing in recorded[0][1]  # names the variable, never a value
-    assert AUD not in recorded[0][1] and TEAM not in recorded[0][1]
+    assert AUD not in recorded[0][1]
+    assert TEAM not in recorded[0][1]
 
 
 def test_access_module_is_stdlib_only():
