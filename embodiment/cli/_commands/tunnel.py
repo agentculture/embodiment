@@ -58,10 +58,12 @@ from dataclasses import dataclass
 from typing import Optional
 
 from embodiment.cli._output import emit_result
+from embodiment.http.access import ACCESS_ENV
 from embodiment.http.server import DEFAULT_PORT
 
 __all__ = [
     "DEFAULT_HOSTNAME",
+    "PUBLIC_HOSTNAME_ENV",
     "TUNNEL_NAME_PLACEHOLDER",
     "TunnelPlan",
     "build_plan",
@@ -71,7 +73,11 @@ __all__ = [
 
 #: Default public hostname documented throughout this repo's docs. A
 #: **judgement call**: any real deployment overrides it with ``--hostname``.
-DEFAULT_HOSTNAME = "agent.culture.dev"
+DEFAULT_HOSTNAME = "gwen.culture.dev"
+
+#: The env var that names the public Host to the daemon (the guard applies the
+#: Access rule to that Host and no other). Name only; this verb never reads it.
+PUBLIC_HOSTNAME_ENV = "EMBODIMENT_PUBLIC_HOSTNAME"
 
 #: Printed in place of the tunnel name when ``--tunnel-name`` is not given.
 #: ``cultureflare remote-login setup`` derives the tunnel name itself from
@@ -175,6 +181,8 @@ class TunnelPlan:
             "tunnel_name": self.tunnel_name,
             "setup_command": list(self.setup_command),
             "run_command": list(self.run_command),
+            "access_env": list(ACCESS_ENV),
+            "public_hostname_env": PUBLIC_HOSTNAME_ENV,
         }
 
 
@@ -243,13 +251,20 @@ def _render(plan: TunnelPlan) -> str:
         )
     lines += [
         "",
+        "3) tell the daemon who Access admits. Set these three TOGETHER in the daemon's",
+        "   environment (names only - this verb has no values and prints none; the team",
+        "   domain and the AUD tag come from the Access app step 1 creates, the third is",
+        "   your own email allow-list):",
+        *(f"     {name}" for name in ACCESS_ENV),
+        f"   and name the public Host: {PUBLIC_HOSTNAME_ENV}={plan.hostname}",
+        "   (or embodiment start --public-hostname). Partly set, Access refuses every",
+        "   request and records it; none set, the public Host is refused outright.",
+        "",
         f"Cloudflare Access protects only the public hostname ({plan.hostname}); it "
-        "never gates loopback names. The daemon's own guard "
-        "(embodiment/http/guard.py) separately requires the install secret on every "
-        "guarded request, Access or not. See README.md's 'Remote access' section for "
-        "how the daemon validates the Cf-Access-Jwt-Assertion header and how a "
-        "non-browser endpoint (a robot relay) authenticates with an Access service "
-        "token instead of a browser session.",
+        "never gates loopback names. On that Host a valid Cf-Access-Jwt-Assertion "
+        "REPLACES the install secret; every other Host still needs the secret "
+        "(embodiment/http/guard.py). See README.md's 'Remote access' section for "
+        "the verifier, the allow-list, and why a service token is refused.",
     ]
     return "\n".join(lines)
 
@@ -314,7 +329,11 @@ def register(sub: argparse._SubParsersAction) -> None:
     p.add_argument(
         "--with-service-token",
         action="store_true",
-        help="Also print --with-service-token, for a non-browser endpoint (e.g. a robot relay).",
+        help=(
+            "Also print --with-service-token for cultureflare. NOTE: the daemon refuses "
+            "service-token assertions on the public Host (Gwen's public surface is for "
+            "a person), so this does not admit a non-browser client."
+        ),
     )
     p.add_argument("--json", action="store_true", help="Emit structured JSON.")
     p.set_defaults(func=cmd_tunnel)

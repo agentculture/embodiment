@@ -56,15 +56,20 @@ absence, never an implication:
   no files, no Qwen Code.
 - **Vision** — the session is audio-only.
 - **A face** — the dashboard's centrepiece is a waveform.
-- **Phone voice** — the phone is control and text; the `BrowserEar` client and
-  the inbound `/v1/realtime` endpoint exist and are not wired into the daemon.
+- **Live realtime voice and speech-to-speech** — the phone is control, text and
+  uploaded or recorded clips; the speech-to-speech button is present and
+  disabled; the `BrowserEar` client and the inbound `/v1/realtime` endpoint
+  exist and are not wired into the daemon.
 - **A robot relay** — the same unwired seam.
-- **Cloudflare Access verification** — the guard requires the assertion on a
-  public Host and refuses every one until an RS256 dependency is approved; a
-  recorded state, never a silent hole.
-- **Semantic recall** — the rig's embedder is down, so recall is lexical, with
-  an exact-substring fallback for Hebrew.
 - **A measured value claim** — see Status.
+
+Shipped in 0.17.0 and so no longer listed above: Cloudflare Access verification
+(a valid assertion replaces the install secret on the public Host only) and
+semantic recall through the `gemma2-embed` role. Still unmeasured: recall hit
+rate and latency, keyword versus semantic (forthcoming in
+`docs/live-test-results/<date>-recall-gemma2.md`); the `0.78` similarity
+threshold (uncalibrated); the follow-up window; clip transcription speed and
+MediaRecorder webm/mp4 acceptance.
 
 Hebrew only in v1. One active ear at a time. The realtime session never crosses
 machines: the gateway's `stt` lane must be local.
@@ -397,11 +402,14 @@ runs either one. Dry-run only: there is no `--apply` flag here at all (unlike
    and says to read the real name off step 1's own output.
 
 Cloudflare Access protects only the public hostname; it never gates loopback
-names. The daemon's own guard (`embodiment/http/guard.py`) separately
-requires the install secret on every guarded request, Access or not. See
-`README.md`'s "Remote access" section for how the daemon validates the
-`Cf-Access-Jwt-Assertion` header and how a non-browser endpoint authenticates
-with an Access service token instead of a browser session.
+names. The default hostname is `gwen.culture.dev`. After the two commands the verb
+prints the Access environment variable names the daemon needs —
+`EMBODIMENT_ACCESS_TEAM_DOMAIN`, `EMBODIMENT_ACCESS_AUD`,
+`EMBODIMENT_ACCESS_EMAILS`, set together, plus `EMBODIMENT_PUBLIC_HOSTNAME` —
+names only, never values. On the public Host a valid `Cf-Access-Jwt-Assertion`
+replaces the install secret (`embodiment/http/guard.py`); every other Host
+still needs the secret. Service tokens are refused. See `README.md`'s "Remote
+access" section.
 
 A printed command is only honest if pasting it does what it says. `--hostname`
 (RFC-1123 labels), `--allow` (exactly one `@`, no whitespace) and
