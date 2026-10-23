@@ -56,3 +56,17 @@ describe("chat client", () => {
     expect(hits).toEqual([]);
   });
 });
+
+describe("parseSources library shape", () => {
+  it("keeps item_id and anchor when present and leaves them undefined otherwise", async () => {
+    const { parseSources } = await import("./chat");
+    const [a, b] = parseSources([
+      { source: "library", title: "t", text: "x", item_id: "i1", anchor: "a1" },
+      { source: "pocket", title: "t", text: "x" },
+    ]);
+    expect(a.item_id).toBe("i1");
+    expect(a.anchor).toBe("a1");
+    expect(b.item_id).toBeUndefined();
+    expect(b.anchor).toBeUndefined();
+  });
+});

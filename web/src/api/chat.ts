@@ -1,3 +1,6 @@
+// Provenance: the citation/source shape ported from pocketsync/web/static/app.js
+// (lines 336-432: ask, renderAnswer, sourceList) and pocketsync/web/static/index.html
+// (the #thread / #composer markup). Text only; no HTML sinks.
 // api/chat.ts
 //
 // Client for POST /api/chat {message} -> {reply, sources:[...]} (plan t8).
@@ -18,6 +21,10 @@ export interface ChatSource {
   section: string;
   link: string;
   text: string;
+  /** Library citation target; absent on the legacy daemon shapes. */
+  item_id?: string;
+  /** Where inside the item to land; opaque to this client. */
+  anchor?: unknown;
 }
 
 export interface ChatReply {
@@ -45,7 +52,10 @@ export function parseSources(raw: unknown): ChatSource[] {
   for (const item of raw) {
     if (!item || typeof item !== "object") continue;
     const o = item as Record<string, unknown>;
+    const itemId = str(o.item_id);
     out.push({
+      ...(itemId ? { item_id: itemId } : {}),
+      ...(o.anchor !== undefined && o.anchor !== null ? { anchor: o.anchor } : {}),
       source: str(o.source),
       title: str(o.title),
       date: str(o.date),
