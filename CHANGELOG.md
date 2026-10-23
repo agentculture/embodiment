@@ -5,6 +5,62 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.17.0] - 2026-10-23
+
+**Gwen remembers recordings.** The operator can talk with Gwen by text at a
+Cloudflare-Access-protected hostname as well as by voice on the rig, and she
+can remember facts a producer (Pocket recordings, culture-rules' daily
+newspaper) enqueues through an embodiment-owned verb. Accepted on **one rig**;
+its value is **unmeasured**. Still unmeasured, stated with the same weight as
+what shipped: recall hit rate and latency, keyword versus semantic (t18's
+`docs/live-test-results/<date>-recall-gemma2.md` is forthcoming, and this entry
+quotes no number from it); the similarity threshold `0.78` (**uncalibrated**);
+the follow-up window (off by default); the `stt` transcription speed behind the
+40 s clip deadline; the 30 s completion bound behind the chat timeout;
+whether the `stt` lane accepts the browser's MediaRecorder webm/mp4 output, and
+the duration cap for those containers; and the load on the `gemma2-embed`
+host (orin). The rig was re-probed on 2026-10-23 (roles resolve by name; re-probe
+before relying): `senses` and `worker` ready but proxied, `gemma2-embed`
+(`google/embeddinggemma-2`) ready and proxied, `stt` and `tts` ready and local,
+`cortex` not ready.
+
+### Added
+
+- **Memory ingest** (`embodiment memory ingest | forget | overview`): a
+  validated, charset-safe contract, an atomic spool, and a daemon-side single
+  writer (`daemon/drain.py`). Dry run unless `--apply`; the verbs only enqueue.
+  Newspaper issues are archived together 30 days after the issue date.
+- **Cloudflare Access verification** (`http/access.py`, stdlib RS256 via `pow`,
+  no new dependency): on the public Host a valid `Cf-Access-Jwt-Assertion`
+  replaces the install secret, gated by an operator email allow-list, with a
+  CSRF rule and a 503 when the JWKS is unreachable. Service tokens are
+  refused. Configured by `EMBODIMENT_ACCESS_TEAM_DOMAIN`, `EMBODIMENT_ACCESS_AUD`
+  and `EMBODIMENT_ACCESS_EMAILS`, all three or none.
+- **Semantic recall** through the `gemma2-embed` role over a 0600 vector cache,
+  with a similarity threshold (`0.78`, uncalibrated), a backfill, and a
+  one-flag rollback to keyword recall (`EMBODIMENT_RECALL_MODE=keyword`).
+  Every recalled fact is cited by its source; background recall arrives as
+  events, with a follow-up that is off by default.
+- **Text turns and clips**: `/api/chat`, `/api/speak` and `/api/clip`, and a
+  dashboard chat view with cited sources, a speak button, record/upload, and a
+  speech-to-speech control that is present and disabled.
+
+### Changed
+
+- `embodiment tunnel` defaults to `gwen.culture.dev`, prints the Access env
+  names (`EMBODIMENT_ACCESS_*`, and `EMBODIMENT_PUBLIC_HOSTNAME`) and no values,
+  and still runs nothing.
+- The not-yet list drops Cloudflare Access and semantic recall (both shipped)
+  and narrows "phone voice" to live realtime voice and speech-to-speech.
+  Recall is semantic by default; the keyword mode and Hebrew exact-substring
+  fallback remain the rollback.
+- `CLAUDE.md`'s rig table and code map describe the shipped state.
+
+### Fixed
+
+- Documentation that said the Access verifier always refuses and that the
+  embedder is down.
+
 ## [0.16.0] - 2026-09-22
 
 **The first daemon release.** Gwen listens, answers in Hebrew, remembers what

@@ -30,9 +30,23 @@ Known from the integration runs, not yet measured:
   live turns did not show it). Pause, then speak.
 - Hardware echo cancellation (`aec_mode=aec`) is declared and relied on; t21
   checks that Gwen never transcribes her own voice.
-- The embedder on the rig is down, so recall is lexical; and eidetic's keyword
-  tokeniser is ASCII-only, so Hebrew recall runs on an exact-substring fallback
+- Recall is semantic by default (the `gemma2-embed` role, `google/embeddinggemma-2`,
+  over a private vector cache) with a one-flag rollback to keyword recall
+  (`EMBODIMENT_RECALL_MODE=keyword`); eidetic's keyword tokeniser is ASCII-only,
+  so on that rollback Hebrew recall runs on an exact-substring fallback
   (deviation `d5`). The dashboard shows the recall mode actually in effect.
+  **No hit rate or latency is claimed for either mode:** the keyword-versus-semantic
+  measurement is forthcoming in `docs/live-test-results/<date>-recall-gemma2.md`
+  and this README quotes nothing from it.
+- The similarity threshold (`0.78`) is **uncalibrated**.
+- The follow-up window for a late recall is off by default and unmeasured.
+- The `stt` transcription speed behind the 40 s clip deadline, the 30 s
+  completion bound behind the chat timeout, whether the `stt` lane accepts the
+  browser's MediaRecorder webm/mp4 output (and the duration cap for those
+  containers), and the load on the `gemma2-embed` host (orin) are all unmeasured.
+- The rig was re-probed on 2026-10-23: `senses`, `worker` and `gemma2-embed` are
+  ready but proxied; `stt` and `tts` are ready and local. Roles resolve by name;
+  re-probe before relying on this.
 
 Everything that used to live here — the strategist tier, the configuration
 lane, the muse, drones, the example hosts and the old live-test results — is
@@ -86,6 +100,9 @@ loop. It does not drive hardware and nothing here claims a body.
   as it is recorded. It streams events with `fetch` and sends the secret in
   the `Authorization` header, so it works from a phone over TLS as well as on
   localhost.
+- **Text and clips**: a chat view on the dashboard (`/api/chat`) with every
+  recalled fact cited by source, a speak button (`/api/speak`), and
+  record/upload of a clip transcribed by `stt` (`/api/clip`).
 - **`embodiment tunnel`** prints the `cultureflare` / `cloudflared` commands
   for remote access and never runs them.
 - **Degrade, never raise.** A dead gateway, no audio device, a mid-session
@@ -175,22 +192,14 @@ absence, not an implication.
   understanding on this rig.
 - **A face.** The dashboard's centrepiece is a waveform; a speech-driven face
   is later.
-- **Phone voice.** The phone is control and text. There is no browser
-  microphone in v1 — the `BrowserEar` client and the inbound `/v1/realtime`
+- **Live realtime voice and speech-to-speech.** The phone is control, text, and
+  uploaded or recorded clips (transcribed by `stt`); there is no live voice from
+  the browser. The dashboard's speech-to-speech button is present and
+  **disabled**. The `BrowserEar` client and the inbound `/v1/realtime`
   endpoint (`audio/remote.py`) exist and are tested, and are **not wired** into
   the daemon.
 - **A robot relay.** Same seam, same status: a Reachy Mini speaking the lobes
   wire into that endpoint is a future, separate implementation.
-- **Cloudflare Access verification.** The guard *requires* the assertion on
-  the public Host — the one named by `embodiment start --public-hostname` or
-  `EMBODIMENT_PUBLIC_HOSTNAME`; with neither set, no Host is public and no
-  assertion is asked for — and then **refuses every one**, because verifying
-  its RS256 signature needs a dependency that is not yet approved. That
-  refusal is a recorded state (`http-access-verifier-missing`), never a
-  silent hole, and it means the dashboard is not reachable through a public
-  hostname today.
-- **Semantic recall.** The embedder is down on the rig; recall is lexical, and
-  Hebrew recall runs on the exact-substring fallback above.
 - **Reconnection.** A dropped realtime session is recorded and the daemon
   keeps running deaf until restarted.
 - **A measured value claim.** See Status.
@@ -210,7 +219,9 @@ embodiment tunnel --hostname gwen.example.org --allow me@example.com
 embodiment tunnel --with-service-token
 ```
 
-It prints two commands and runs neither:
+The default hostname is `gwen.culture.dev`. It prints two commands and runs
+neither, then the Access environment variable names the daemon needs (names
+only, never values):
 
 1. `cultureflare remote-login setup --hostname <h> --service
    http://127.0.0.1:<port> [--allow <email>]... [--with-service-token]
@@ -242,36 +253,54 @@ named by `--hostname`. It never gates loopback names (`localhost`,
 nothing for Access to intercept. Loopback is not authentication, so the
 daemon does not rely on Access alone either (see below).
 
-**How the daemon validates the assertion.** `embodiment/http/guard.py`
-requires the `Cf-Access-Jwt-Assertion` header on every guarded request whose
-`Host` is the configured public hostname, and only on those — a loopback
-request is never asked for one. The hostname must be configured for the
-rule to apply at all: `embodiment start --public-hostname <name>` (or
+**How the daemon validates the assertion.** `embodiment/http/access.py`
+verifies the `Cf-Access-Jwt-Assertion` JWT with the standard library (RS256 is
+one modular exponentiation, so no new dependency): the `kid` must name a key in
+the team JWKS, the signature must verify, `iss` must be the team domain, `aud`
+must contain the application's AUD tag, the token must be inside `nbf`..`exp`,
+and the person must be on the operator's email allow-list. The guard applies it
+to every guarded request whose `Host` is the configured public hostname, and
+only those. Configure it with three environment variables, set **together or
+not at all** (names only here; the values come from the Access app):
+
+- `EMBODIMENT_ACCESS_TEAM_DOMAIN`
+- `EMBODIMENT_ACCESS_AUD`
+- `EMBODIMENT_ACCESS_EMAILS`
+
+and name the public Host with `embodiment start --public-hostname <name>` (or
 `EMBODIMENT_PUBLIC_HOSTNAME`); a daemon started without it treats no Host as
-public, and `status()["http"]["public_hostname_configured"]` says which. Verifying that header's RS256 signature
-against Cloudflare's JWKS needs an RSA primitive the standard library does
-not have, and this package takes no new dependency for it (dependencies are
-human-gated; see below). So the shipped verifier
-(`refusing_assertion_verifier`) **always refuses** and records
-`http-access-verifier-missing`: absence of real verification is a
-host-visible, recorded state, never a silent hole. An operator who wants
-Access enforced injects their own verifier through `GuardConfig`'s
-`assertion_verifier` seam; a verifier that raises is itself treated as a
-refusal (`http-refused-access-verifier-failed`) — fail closed, never fail
-open.
+public, and `status()["http"]["public_hostname_configured"]` says which. With
+the Access env unset the guard is unchanged and refuses every assertion
+(`http-access-verifier-missing`); a partial set refuses every assertion and
+records it (`http-access-config-incomplete`). An unreachable JWKS is
+infrastructure, not a bad token: the request is refused with 503 and the
+outage is recorded once. Every refusal has a fixed reason that carries no token
+or email.
 
-Access is additive, not a replacement: whether or not a request carries a
-valid Access assertion, the daemon's own install secret
-(`Authorization: Bearer <secret>` or the `embodiment_secret` cookie) is still
-required on every guarded route. A request that passes Access but has no
-install secret is refused with `http-refused-secret`.
+**On the public Host a valid assertion replaces the install secret**, so the
+operator reaches the dashboard and chat at `gwen.culture.dev` by signing in with
+Cloudflare. Every other Host (loopback, a tailnet name) still needs the install
+secret, whatever assertion it carries — an assertion off the public Host did not
+come through Cloudflare. Because Cloudflare attaches the assertion to any request
+carrying the `CF_Authorization` cookie, an Access-admitted request must also carry
+an allow-listed `Origin` or `Sec-Fetch-Site: same-origin` (a CSRF rule); the event
+stream is closed when the assertion expires. This is verified against synthetic
+tokens in tests; a live pass through Cloudflare is the operator's, and is not
+claimed here.
 
-**Non-browser endpoints** (a future robot relay, a script) cannot complete
-Cloudflare's browser login, so `--with-service-token` has
-`cultureflare remote-login setup` mint an Access **service token** instead. A
-service-token client presents it as two headers — `CF-Access-Client-Id` and
-`CF-Access-Client-Secret` — in place of the interactive Access login; it still
-needs the daemon's own install secret on top, same as a browser client.
+**Service tokens are refused.** Gwen's public surface is for a person: a valid
+assertion that names a service token (no person) is refused
+(`http-access-service-token`), as is a person who is not on the allow-list
+(`http-access-email-not-allowed`). `--with-service-token` still prints the
+`cultureflare` flag, but it does not admit a non-browser client here; a robot
+relay is a future, separate seam.
+
+**Memory ingest.** Producers (Pocket recordings, culture-rules' daily newspaper)
+enqueue facts with `embodiment memory ingest --file <ndjson> [--apply]` and
+`embodiment memory forget`. The verbs validate and enqueue only, and are a dry run
+unless `--apply`; the daemon is the single writer of the store. A newspaper issue
+is archived together 30 days after its issue date. Recalled facts are cited by
+their source in the chat view.
 
 ## Inbound realtime endpoint — a browser-shaped, robot-shaped seam
 

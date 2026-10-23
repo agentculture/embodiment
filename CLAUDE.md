@@ -30,13 +30,25 @@ embody` layer shares this package's name — say so wherever the name appears);
 one rig; Hebrew only; one active ear; the session never crosses machines;
 value unmeasured. **Not yet:** tools beyond memory (the daemon binds exactly
 two, `remember` and `forget`; the registry is otherwise empty by design),
-vision, a face, phone voice (the phone is control + text), a robot relay
-(t14's inbound endpoint and t18's `BrowserEar` exist, unwired), Cloudflare
-Access verification (the guard refuses the public Host — the one configured
-with `--public-hostname` / `EMBODIMENT_PUBLIC_HOSTNAME`; unset, no Host is
-public — until an RS256 dependency is approved), semantic recall (the embedder is down; recall is
-lexical, with an exact-substring fallback for Hebrew — deviation `d5`), and a
-measured value claim. `tests/test_release_docs.py` pins the boundary and the
+vision, a face, live realtime voice from the phone and speech-to-speech (the
+phone is control, text, and uploaded or recorded clips; the speech-to-speech
+button is present and disabled), a robot relay (t14's inbound endpoint and
+t18's `BrowserEar` exist, unwired), and a measured value claim.
+
+**Shipped on the `feat/gwen-remembers-recordings` branch (0.17.0), no longer
+"not yet":** Cloudflare Access verification (`http/access.py`, stdlib RS256 —
+on the public Host, the one configured with `--public-hostname` /
+`EMBODIMENT_PUBLIC_HOSTNAME`, a valid assertion replaces the install secret;
+unset, no Host is public; the three `EMBODIMENT_ACCESS_*` names are set
+together or not at all) and semantic recall (`gemma2-embed` over a 0600 vector
+cache; `EMBODIMENT_RECALL_MODE=keyword` is the rollback, and the d5
+exact-substring fallback still serves Hebrew there). **Still unmeasured, and
+not claimed:** recall hit rate and latency, keyword versus semantic
+(`docs/live-test-results/<date>-recall-gemma2.md` is forthcoming); the `0.78`
+similarity threshold (uncalibrated); the follow-up window (off by default); the
+`stt` speed behind the 40 s clip deadline; the 30 s completion bound behind the
+chat timeout; whether `stt` accepts MediaRecorder webm/mp4, and its duration
+cap; load on orin. `tests/test_release_docs.py` pins the boundary and the
 not-yet list against the README and the `explain` root.
 
 - **Spec:** `docs/specs/2026-09-21-realtime-embodiment-app.md` — 50 claims, 33
@@ -134,18 +146,19 @@ Gwen is one prompt-visible teammate. The name came from **G**emma + Q**wen**,
 and it stays: the speaker is a Gemma, and a later stage gives Gwen a tool that
 operates Qwen Code through the `worker` role.
 
-The rig, **as the gateway reported it on 2026-09-21** (`GET /capabilities`).
+The rig, **as the gateway reported it on 2026-10-23** (`GET /capabilities`).
 Roles resolve **by name**, never by parsing model names, and this table drifts
 — re-probe before relying on it:
 
 | Role | Model | State | Gwen uses it for |
 |------|-------|-------|------------------|
-| `senses` | `nvidia/Gemma-4-26B-A4B-NVFP4` | feasible, ready | **the speaker** — generates every spoken reply |
-| `stt` | `ivrit-ai/whisper-large-v3-turbo` | feasible, ready, advertises `realtime_vad_session` | ears (Hebrew) |
-| `tts` | `notmax123/BlueTTS2.5-onnx` | feasible, ready | voice (Hebrew) |
-| `worker` | `nvidia/Qwen3.6-35B-A3B-NVFP4` | ready, not feasible here | later: Qwen Code, behind a tool |
-| `embedder` | `Qwen/Qwen3-Embedding-0.6B` | **not ready** | semantic recall — so recall is lexical-only today |
-| `cortex` | `unsloth/Qwen3.8-27B-NVFP4` | not feasible | not used by the base |
+| `senses` | `nvidia/Gemma-4-26B-A4B-NVFP4` | ready, proxied (served from thor; 3 tiny completions 2.35 s cold / 0.25 s warm, n=3, not a distribution) | **the speaker** — generates every spoken reply |
+| `stt` | `ivrit-ai/whisper-large-v3-turbo` | ready, local, advertises `realtime_vad_session` | ears (Hebrew); also clip transcription |
+| `tts` | `notmax123/BlueTTS2.5-onnx` | ready, local | voice (Hebrew) |
+| `worker` | `nvidia/Qwen3.6-35B-A3B-NVFP4` | ready, proxied | later: Qwen Code, behind a tool |
+| `gemma2-embed` | `google/embeddinggemma-2` | ready, proxied (orin) | **the embedder Gwen uses** — semantic recall, by role name |
+| `embedder` | `Qwen/Qwen3-Embedding-0.6B` | ready, proxied | not used |
+| `cortex` | — | not ready | not used by the base |
 
 Gwen **listens and speaks Hebrew** in v1, matching the deployed audio lane.
 `senses` does not advertise image understanding on this rig, so a later vision
@@ -217,8 +230,8 @@ operator's decisions, recorded in the spec:
   claim, and the worst outcome is an app that *appears* attentive and is not.
   Every degradation records a transition; nothing degrades silently. Known
   trap: eidetic falls back to lexical recall **silently** when the embedder is
-  down — which is this rig's state today — so the daemon must report the recall
-  mode actually in effect.
+  down, so the daemon must report the recall mode actually in effect (semantic,
+  or keyword by rollback or by degradation) rather than the one it was asked for.
 - **The verbatim invariant.** `ContextPacket.original` comes from the caller's
   input **verbatim, never from model output**, and intake **never raises**.
 - **Privacy of the room.** `continuity.py` pins `DEFAULT_VISIBILITY = "public"`
@@ -304,7 +317,8 @@ embodiment/
   realtime/wire.py      the lobes /v1/realtime wire, typed
   realtime/client.py    RealtimeEars: ears-only client (never response.create), bounded
   http/guard.py         install secret + Host/Origin allow-list + Access assertion seam
-                        (refusing by default); the secret file, 0600, race-free
+                        (refusing unless the Access env is set, then Access replaces the
+                        secret on the public Host only); the secret file, 0600, race-free
   http/server.py        loopback (or --bind-public) HTTP: static dashboard, SSE
                         projection with a last-ditch redact, control API under a deadline
   daemon/state.py       state dir (0700), bounded log, crash-durable degradation ledger,
@@ -315,11 +329,23 @@ embodiment/
                         pre-set from raw argv so parse-time errors honour --json
   cli/_errors.py        CliError{code,message,remediation} + exit-code policy
   cli/_output.py        emit_result / emit_error / emit_diagnostic
-  cli/_commands/        whoami, learn, explain, overview, doctor, cli, start, status, stop, tunnel
+  cli/_commands/        whoami, learn, explain, overview, doctor, cli, start, status, stop, tunnel, memory
   daemon/app.py         the daemon: one ear, the ears session, session + memory + voice, the
                         HTTP surface, close(deadline) with derived shares; degrade, never raise
   voice.py              Voice.speak: sentences -> /v1/audio/speech -> endpoint, paced features
-  cli/_commands/tunnel  prints the cultureflare/cloudflared commands; never runs them
+  cli/_commands/tunnel  prints the cultureflare/cloudflared commands (default host
+                        gwen.culture.dev) and the Access env names; never runs them
+  cli/_commands/memory  ingest | forget | overview: validate and ENQUEUE only; dry run
+                        unless --apply; the daemon is the single writer
+  ingest/contract.py    source registry, whole-batch validation, charset-safe stored ids
+  ingest/spool.py       atomic enqueue, ordered inbox, receipts-only done/, failed/ keeps
+                        reasons and receipt fields never records
+  http/access.py        stdlib RS256 Cloudflare Access verifier + operator email allow-list;
+                        EMBODIMENT_ACCESS_{TEAM_DOMAIN,AUD,EMAILS} all-or-nothing
+  vectors.py            0600 vector cache + the gemma2-embed client
+  daemon/drain.py       the single writer for the spool; newspaper issues archived 30 days on
+  daemon/recall_events.py  background recall arrival events; follow-up off by default
+  daemon/text_turns.py  typed turns, speak-a-message, clip transcription
   explain/              catalog.py: markdown keyed by command-path tuples
 web/                    the dashboard (Vite/React/TS): live waveform, transcript,
                         degradations; fetch-streamed SSE with the secret in the
@@ -327,7 +353,7 @@ web/                    the dashboard (Vite/React/TS): live waveform, transcript
                         the wheel (t19)
 scripts/dual-review.sh  the local review harness: 35B worker drafts, 27B cortex
                         verifies cited lines; one review at a time (kept deliverable)
-tests/                  3085 tests
+tests/                  3749 tests
 .claude/skills/         19 skills, all vendored (cite-don't-import)
 docs/skill-sources.md   provenance ledger + re-sync procedure
 docs/live-test-results/ only senses-grounding{.md,-probe.py}: the measured
@@ -339,7 +365,11 @@ Also merged: `voice.py` (t12: sentence-by-sentence TTS, barge-in owned by the
 daemon, a bounded body read, redirects refused), `cli/_commands/tunnel.py`
 (t20: prints the provisioning commands, runs nothing), the packaging hook
 (t19), the oscilloscope and BrowserEar (t18), and **`daemon/app.py` — the
-daemon (t15)**. `turn.py`'s truncation proxy and `is_speakable` stay
+daemon (t15)**. The gwen-remembers-recordings branch (0.17.0) adds, under the
+same rules: `ingest/` (contract + spool), `cli/_commands/memory.py`,
+`http/access.py`, `vectors.py`, `daemon/drain.py`, `daemon/recall_events.py`,
+`daemon/text_turns.py`, the guard's Access path, the `/api/chat`, `/api/speak`
+and `/api/clip` routes, and the dashboard chat view. `turn.py`'s truncation proxy and `is_speakable` stay
 unmeasured against the real synthesiser until plan task `t21`.
 
 `start`, `status` and `stop` are the only verbs that touch a process; nothing
