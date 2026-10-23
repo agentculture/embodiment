@@ -982,7 +982,7 @@ def _cosine(left: Sequence[float], right: Sequence[float]) -> Optional[float]:
         return None
     dot = sum(a * b for a, b in zip(left, right))
     norm = (sum(a * a for a in left) * sum(b * b for b in right)) ** 0.5
-    if norm == 0.0:
+    if norm <= 0.0:
         return None
     return dot / norm
 

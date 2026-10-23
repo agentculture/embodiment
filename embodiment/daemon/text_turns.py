@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import io
 import json
+import math
 import struct
 import time
 import urllib.request
@@ -575,7 +576,7 @@ class TextTurns:
         duration = probe.duration_s
         # A caller-declared duration is untrusted and can only refuse MORE.
         if isinstance(declared, (int, float)) and not isinstance(declared, bool):
-            if declared == declared and declared > cfg.max_clip_seconds:  # NaN-safe
+            if not math.isnan(declared) and declared > cfg.max_clip_seconds:
                 return ClipResult(False, code=REFUSED_CLIP_TOO_LONG, http_status=413)
         if duration is not None and duration > cfg.max_clip_seconds:
             return ClipResult(

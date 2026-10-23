@@ -2834,7 +2834,7 @@ class DaemonApp:
         self._safely(lambda: said.append(voice.speak(sentence)), APP_TURN_FAILED, "speak")
         if turn is not None:
             turn.voiced = True
-            at = getattr(said[0], "first_play_at", None) if said else None
+            at = next((getattr(r, "first_play_at", None) for r in said), None)
             if turn.first_play_at is None and at is not None:
                 turn.first_play_at = at
             if self._is_superseded(turn.serial):
