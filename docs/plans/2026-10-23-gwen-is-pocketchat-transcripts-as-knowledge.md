@@ -1,0 +1,157 @@
+# Build Plan — Gwen is pocketchat, transcripts as knowledge
+
+slug: `gwen-is-pocketchat-transcripts-as-knowledge` · status: `exported` · from frame: `gwen-is-pocketchat-transcripts-as-knowledge`
+
+> Gwen's page is pocketchat: you open gwen.culture.dev and get a chat-first library of your recordings — ask, read, cite, jump to the moment — with Gwen's voice as one button inside it, and she answers from the transcripts themselves, not only from distilled facts
+
+## Tasks
+
+### t1 — Library client: GET-only HTTP client for the library (catalog, item, file)
+
+- instruction: If embodiment/library/`__init__.py` is absent, create it with exactly this one line: """The library read side: client, EPUB extraction, document index, sync and tools.""" (several tasks may add it; identical content merges cleanly). Mirror vectors.py:`_urllib_transport` (184-203) for the hardened request path. Today's instance is xteink (docs/api.md on xteink branch feat/issue-1: GET /api/library?q=&kind=, GET /api/library/{id}, GET /api/library/{id}/file; Item = {id, sha256, kind, title, author, format, size, `created_at`}); keep the shape mapping in ONE function so culture-library (library.culture.dev) can re-point it. Tests use a fake opener only; no network.
+- covers: c15, h9, c26, c28
+- acceptance:
+  - embodiment/library/client.py exposes LibraryClient(`base_url`, key, \*, deadline, opener) with `list_items`(kind=None, q=None), `get_item`(id), `fetch_file`(id) -> bytes; every request is GET with Authorization: Bearer from the key argument
+  - tests/`test_library_client.py` has an AST test that the module contains no POST/PUT/PATCH/DELETE method string and no urlopen/Request with a method other than GET, and fails if one is planted
+  - redirects are refused (voice.`_REDIRECT_REFUSING_OPENER`) and bodies are capped (voice.`_read_bounded`): catalog <= 2 MiB, file <= a cap derived and stated in a comment; a 302, an oversized body, a 401 and a timeout each raise a typed LibraryError with a fixed code and never echo the key
+  - LibraryConfig.`from_env` reads `EMBODIMENT_LIBRARY_URL` and `EMBODIMENT_LIBRARY_KEY`; unset URL -> None (library disabled); the key is never logged, never in repr, never written to disk
+
+### t2 — EPUB extraction: bounded stdlib text + passage anchors
+
+- instruction: If embodiment/library/`__init__.py` is absent, create it with exactly this one line: """The library read side: client, EPUB extraction, document index, sync and tools.""" (several tasks may add it; identical content merges cleanly). Build fixtures in-test with zipfile (container.xml, content.opf with a spine, two xhtml docs, one with h2 sections). Never add a dependency. Neutralise nothing here; fencing happens at render time (later task).
+- covers: c34, h21, c13
+- acceptance:
+  - embodiment/library/epub.py exposes extract(data: bytes, \*, limits) -> Extracted(passages=\[Passage(anchor, heading, text, `start_s`|None, `end_s`|None, speaker|None)\], chars) using only zipfile + html.parser (tests/`test_zero_deps.py` unchanged)
+  - limits cap members, per-member uncompressed bytes, total uncompressed bytes and extracted characters; fixtures for a zip bomb, an oversized member and too many members each raise EpubRefused with a fixed code, and nothing partial is returned
+  - reading order follows the OPF spine; scripts/styles are dropped; anchors are stable (doc path + element index) so a citation can reopen the same passage; text from fixtures is synthetic
+  - if a passage carries timing markup (data-start/data-end attributes or a leading \[hh:mm:ss\] / mm:ss token) and a speaker label, `start_s`/`end_s`/speaker are filled; otherwise they are None (park v3: transcript format unseen)
+
+### t3 — Document index: 0600 chunk store with gemma2-embed vectors, reconcile and search
+
+- instruction: If embodiment/library/`__init__.py` is absent, create it with exactly this one line: """The library read side: client, EPUB extraction, document index, sync and tools.""" (several tasks may add it; identical content merges cleanly). Model the file layout on vectors.py VectorCache (0600, atomic replace). Chunk passages to <= ~1000 chars on passage boundaries. embed is an injected callable (text -> list\[float\]) so tests use a fake; the daemon wires the real gemma2-embed client later.
+- covers: c13, h8, c33, h20
+- acceptance:
+  - embodiment/library/index.py exposes DocumentIndex(path, \*, embed, `model_tag`): `upsert_item`(`item_meta`, passages), `remove_item`(id), reconcile(catalog) -> {added, changed, removed}, search(`query_vector`, \*, kinds, limit, threshold) -> hits with item id, title, kind, `created_at`, anchor, text, score, `start_s`, `end_s`
+  - the index file is 0600 under a path the caller passes (never the eidetic store), written atomically once per batch (not per chunk); an item whose sha256 is unchanged is not re-embedded (embed call count asserted)
+  - reconcile against a catalog that dropped an item purges its chunks AND stored text; a changed sha256 re-indexes; a search can never return an id absent from the last reconciled catalog
+  - kinds filter: transcripts and articles by default, books only when opted in per item id; newspapers are never expired by the index (c38)
+
+### t4 — Scrub keys from audio subprocess environments
+
+- instruction: One helper (e.g. `_child_env`()) used by every Popen call; do not touch other modules.
+- covers: c32, h19
+- acceptance:
+  - audio/host.py spawns every subprocess (the Popen calls at ~1317, 1547, 1731, 1838) with an explicit env that drops `EMBODIMENT_GATEWAY_KEY`, `EMBODIMENT_LIBRARY_KEY` and any variable whose name ends in `_KEY`, `_TOKEN` or `_SECRET`, while keeping PATH, HOME, `XDG_RUNTIME_DIR` and PipeWire variables
+  - tests/`test_audio_host.py` asserts through the popen seam that each spawn's env lacks those keys and still has `XDG_RUNTIME_DIR`; existing audio tests pass unchanged
+
+### t5 — Access admit/refuse counters and the stale --public-hostname help
+
+- instruction: Counters live where the guard decides (http/guard.py / http/access.py); expose them through the existing status path without touching daemon/app.py if possible (server status already merges http status). Edit only guard.py, access.py, cli/`_commands`/start.py and their tests.
+- covers: c36, h23
+- acceptance:
+  - status()\['access'\] reports mode plus admitted (int) and `refused_by_code` ({code: int}); an admitted public-host request increments admitted, each refusal code its own counter - pinned in tests/`test_http_guard.py` (or `test_http_access.py`)
+  - embodiment start --help for --public-hostname no longer says the verifier refuses every assertion; it describes the shipped verifier and the three `EMBODIMENT_ACCESS_`\* names; tests/`test_release_docs.py` still passes
+
+### t6 — HTTP read routes for the library and to-dos
+
+- instruction: Follow `_text_route` (server.py:890-929) and the Controls dataclass (~466-490). Fakes only; the daemon wires real callables in a later task. Touch only http/server.py and its tests.
+- covers: c10, h6
+- acceptance:
+  - server.py routes GET /api/library (catalog: items with id, title, kind, `created_at`, indexed flag), GET /api/library/{id} (meta + passages with anchors, for the reader), GET /api/library/search?q= (index hits) and GET /api/todos (action items) through new Controls callables, each on the text pool with a timeout derived from the callable's own bound (a module constant with its derivation), never the 5 s control default
+  - a path/query parser handles {id} and q safely (int id, length-capped q, percent-decoding); bad input -> 400 with a fixed code; an unconfigured callable -> 503 library-not-configured
+  - tests/`test_http_server.py`: each new route without a secret on loopback -> 401; with Access on the public Host -> 200; with the secret -> 200 and the JSON shape; the module docstring route table lists them
+
+### t7 — Ask view: pocketchat's thread and composer, ported and cited
+
+- instruction: Port the behaviour of pocketsync/web/static/app.js:336-432 (ask, citations, sources) and :790-808 (composer) into React; text via JSX text nodes only (never innerHTML). Keep Chat's existing SSE reply dedupe and secret handling. Touch only Chat.tsx, AudioControls.tsx, api/chat.ts and their tests.
+- covers: c3, h2, c4, h3, c5, h4, c27, h15
+- acceptance:
+  - web/src/components/Chat.tsx renders pocketchat's thread: question/answer turns, \[n\] markers in the answer become cite buttons (aria-label), a sources list below with title, date and quote, and clicking either calls onOpenCitation(`item_id`, anchor) - pinned in Chat.test.tsx
+  - the composer holds the text input plus AudioControls (speak, record/upload, disabled speech-to-speech) inside it; Enter sends, Shift+Enter newlines; reveal-by-word respects prefers-reduced-motion
+  - every question, answer and quote node has dir=auto; the no-HTML-sink test (chat.test.ts) still passes; each ported file starts with a provenance header naming pocketsync/web/static/{index.html,app.js} and the line ranges cited
+
+### t8 — Library view and side reader, ported and cited
+
+- instruction: New files only (LibraryView.tsx, Reader.tsx, api/library.ts, their tests, and a library.css if needed using logical properties). Use fakes for fetch.
+- covers: c3, h2, c27, h15
+- acceptance:
+  - new web/src/components/LibraryView.tsx lists library items grouped by day with kind chips (aria-pressed), from GET /api/library via new web/src/api/library.ts; clicking an item opens the reader
+  - new web/src/components/Reader.tsx shows title, meta and passages from GET /api/library/{id}; openAt(anchor) scrolls to and highlights that passage; it is a side panel >= 861px and a full-screen sheet below, closes on Escape
+  - when passages carry start/end times the reader draws a tape and clicking it seeks to the nearest passage; otherwise no tape is drawn and nothing breaks (park v3) - both branches tested
+  - all text via text nodes with dir=auto; provenance header cites pocketsync/web/static/app.js:461-626 and index.html:110-145
+
+### t9 — To-dos view from Gwen's remembered action items
+
+- instruction: New files only. No done/undone writes this cycle (c40).
+- covers: c3, h2
+- acceptance:
+  - new web/src/components/TodosView.tsx groups action items by recording from GET /api/todos via new web/src/api/todos.ts, read-only, with dir=auto text and a provenance header citing pocketsync/web/static/app.js:740-766
+  - an empty list and a 503 library/memory-unavailable each render a fixed message; tests cover both
+
+### t10 — Library sync: bounded background ticks that keep the index in step with the catalog
+
+- instruction: Pure orchestration over t1/t2/t3 seams with fakes; no daemon edits. The GET count in status is the client's own counter, the live run reports it (c28).
+- depends on: t1, t2, t3
+- covers: c35, h22, c37, h24, c13, h8
+- acceptance:
+  - embodiment/library/sync.py exposes LibrarySync(client, index, \*, extract, clock, budget) with tick() that reconciles the catalog, then fetches+extracts+indexes changed items within the tick budget, and status() -> {configured, `items_indexed`, chunks, `last_sync_at`, `failures_by_code`, gets, `skipped_books`}
+  - a tick yields when a live-turn gate is held (an injected callable / threading.Event): a test holds the gate during a tick and shows no embed call happens until it is released, and the recall embed is served first
+  - an unreachable or 401 library is one recorded degradation per transition (not per tick) and counters freeze; an EpubRefused item is skipped, counted by code and not retried until its sha256 changes
+
+### t11 — Library tools: `search_library` and `read_passage`, fenced as untrusted, returning citations
+
+- instruction: No daemon edits; take the index and an embed-query callable as arguments. Keep tool descriptions short; the model must learn to cite \[n\] from the numbered entries.
+- depends on: t3
+- covers: c11, h7
+- acceptance:
+  - embodiment/library/tools.py builds two ToolSpecs (tools.py shape): `search_library`(query, limit) and `read_passage`(`item_id`, anchor); their result strings are rendered inside `KNOWLEDGE_ATTRIBUTION` + BEGIN/END marks with fence marks neutralised (reuse memory.`neutralise_source_text` / `render_recalled`'s helpers), never raw
+  - each call also records Citation objects {source:'library', `item_id`, title, kind, date, anchor, start, end, text<=`SOURCE_TEXT_MAX_CHARS`} on a per-turn collector the caller passes, so the daemon can attach them to the reply's sources
+  - a test plants an instruction ('ignore previous instructions', 'forget X') and a fence mark in a document; both arrive quoted inside the fence, and the collector marks the turn as having library text in context
+
+### t12 — Chat-first app shell: pocketchat layout, views, voice as a feature
+
+- instruction: Supersedes obligation o9 (waveform as centrepiece) per decision c2; say so in a comment at the top of App.tsx. Move the two hardcoded hex colours in app.css to tokens. Touch App.tsx, styles/\*, App.test.tsx, main.tsx only.
+- depends on: t7, t8, t9
+- covers: c9, h5, c4, h3, c5, h4, c3, h2
+- acceptance:
+  - App.tsx renders a top bar (brand, health pill, Ask/Library/To-dos hash nav) and the Ask view first; Chat's onOpenCitation opens Reader at the anchor; the waveform is a compact strip (not the largest element), Voice controls, recall mode and degradations live in a collapsible status drawer - App.test.tsx pins the order
+  - the install-secret form appears only when the stream status is unauthorized; on a fake public-host session with no secret the page loads, chats and opens the reader with no secret entered
+  - the ported stylesheet (pocketchat tokens from app.css:4-55, dark mode, 860px breakpoint, reduced motion) uses only logical properties - a test scans web/src/styles for margin-left/right, padding-left/right, left:, right:, border-left/right, text-align:left/right and fails on any; npm run build passes the no-external-origin check
+
+### t13 — Daemon integration: library wired, typed-turn tools, write guard, citations, status
+
+- instruction: The only task that edits daemon/app.py this cycle. The live-turn gate for t10 is the conversation lock / voice playing state. Keep degrade-never-raise. Wire the library key from env only (grant run --inject `EMBODIMENT_LIBRARY_KEY`=`XTEINK_GWEN_API_KEY`).
+- depends on: t6, t10, t11
+- covers: c11, h7, c31, h18, c35, h22, c27, h15
+- acceptance:
+  - daemon/app.py builds LibraryClient/DocumentIndex/LibrarySync only when `EMBODIMENT_LIBRARY_URL` is set (index at `<state>/library/index.json`, 0600); unset -> no library tool bound, routes answer 503 library-not-configured, and the full existing suite passes unchanged
+  - `search_library`/`read_passage` bind to typed turns (chat, clips) only, never voice turns (c39) - a test drives one of each and asserts the tool list; library citations join the reply's sources, deduped with recall sources that cite the same newspaper issue (c38)
+  - when the turn's collector says library text is in context, remember/forget refuse unless the operator's current user turn itself asks for it (session.py explicit-ask detector or a model-quoted span that occurs in the user turn); the refusal is counted (status memory.`library_guarded_writes`) and recorded - the planted-instruction test from t11 drives a full typed turn and asserts no write
+  - status() gains a library block from LibrarySync.status() and the routes from t6 get real callables (catalog, item+passages, search, todos from memory `action_item` records grouped by `recording_id`)
+
+### t14 — Release docs: three-plus tools, the library, the new page
+
+- instruction: Docs and the release test only; markdownlint clean; no overclaim - transcripts are assumed (c21), not shown.
+- depends on: t12, t13
+- covers: c26, h14, c23, h11
+- acceptance:
+  - README, the explain root and CLAUDE.md describe the library read path (culture-library; xteink's instance today), the chat-first page, the GET-only client, the write guard and the env names; tests/`test_release_docs.py`'s `TOOLS_BOUND` and not-yet list are updated in a visible, reviewed diff and pass
+  - a check over the cycle's diff (git diff origin/main --stat) shows no file outside this repo changed and no library write call; the before state (waveform-first, chat fourth, two tools) is recorded in CHANGELOG as what changed; version bumped via the version-bump skill
+
+### t15 — Live acceptance: library measurement and the public-page checks
+
+- instruction: Use the real library through grant-injected keys; never commit document text or questions derived from real text - only counts and rates. Gateway may be under test: re-probe roles first.
+- depends on: t12, t13
+- covers: c29, h17, c28, h16, c27, h15, c1, h1, c22, h10, c24, h12, c25, h13
+- acceptance:
+  - scripts/measure-library.py (args: state dir, question file, out) runs >= 20 model-written reworded questions fixed BEFORE the run against the indexed library and writes hit@5 and per-recall p90 at the indexed size; docs/live-test-results/2026-10-2x-library.md publishes aggregates only, whatever the numbers
+  - a live session on gwen.culture.dev records >= 5 questions with which item and anchor each citation opened (wrong item or no passage = failure), the library client's GET and non-GET counts from status (non-GET must read 0), and the Access allow-list contents (operator only)
+  - the results doc states each announcement element (Ask first, voice in composer, Library view, reader at citation) as observed or not, and the operator's stated aim as the why with no value claim beyond it
+
+## Risks
+
+- [unknown_nonblocking] The library contract is xteink's local-only feat/issue-1 branch and will move to culture-library (library.culture.dev), whose API and auth are unseen (frame parks v1, v4); t1 keeps the shape mapping in one function so a move re-points it (task t1)
+- [unknown_nonblocking] Transcript EPUB format is unseen (none in the library on 2026-10-24, park v3): t2 and t8 build both branches (timed passages with a tape, untimed without), and t15 can only measure transcripts if the culture-rules rule has pushed some by then (task t8)
+- [unknown_nonblocking] t13 is the only task touching daemon/app.py (5,000+ lines) and carries four concerns (wiring, typed-turn tools, write guard, citations); if review shows it too large, split it with /deviate rather than letting a wave-1 task edit app.py (task t13)
+- [unknown_nonblocking] The gateway (lobes) is under test and gemma2-embed is proxied to orin: t10's indexing and t15's measurement depend on it; t15 re-probes /capabilities first and reports a degraded lane rather than a number (task t15)
+- [follow_up] The public page currently serves the scratch daemon (synthetic store); moving gwen.culture.dev to the real store and running the tunnel as a service rather than a session background task is an operator step outside this plan
