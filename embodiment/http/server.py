@@ -14,6 +14,10 @@ route                   guarded   what it is
 ``POST /api/voice/start``  **yes**   start listening
 ``POST /api/voice/stop``   **yes**   stop listening
 ``POST /api/mic/mute``     **yes**   ``{"muted": true|false}``
+``GET /api/library``       **yes**   the catalog: ``{"items": [...]}``
+``GET /api/library/{id}``  **yes**   ``{"item": {...}, "passages": [...]}``
+``GET /api/library/search?q=``  **yes**  ``{"hits": [...]}``
+``GET /api/todos``         **yes**   ``{"groups": [...]}``
 ======================  ========  ==================================
 
 Static assets are unguarded because the dashboard must load before it can
@@ -141,6 +145,11 @@ __all__ = [
     "STREAM_EXPIRED_REASON",
     "MAX_CONTROL_INFLIGHT",
     "MAX_TEXT_INFLIGHT",
+    "LIBRARY_ROUTE",
+    "LIBRARY_SEARCH_ROUTE",
+    "TODOS_ROUTE",
+    "LIBRARY_NOT_CONFIGURED_CODE",
+    "MEMORY_UNAVAILABLE_CODE",
     "BAD_REQUEST_CODE",
     "BODY_TOO_LARGE_CODE",
     "TOO_MANY_STREAMS_CODE",
@@ -272,6 +281,48 @@ CLIP_UPLINK_FLOOR_BYTES_PER_S = 140_000
 #: (30 s) alone lets a client trickle ``MAX_CLIP_BYTES`` for hours. Derived: the byte
 #: cap at the uplink floor (11 585 536 B / 140 KB/s = ~82.8 s; it was 120 s for 16 MiB).
 CLIP_READ_DEADLINE_S = MAX_CLIP_BYTES / CLIP_UPLINK_FLOOR_BYTES_PER_S
+
+# ── the library and to-do read routes (task t6): each clock named for what it bounds ──
+
+#: Bounds ONE library catalog or reader read: a local, indexed read. A **judgement
+#: call** on where a page load has stopped being a page load.
+LIBRARY_READ_BOUND_S = 2.0
+
+#: Bounds ONE library search: it embeds the query (gemma2-embed) and scans the index.
+#: Derived from the recall cap in ``daemon.app.derive_recall_deadline`` (embed p90 161 ms
+#: + 0.13 ms/record + 0.15 s, capped at 3 s) - copied, not imported, so this module does
+#: not load the daemon.
+LIBRARY_SEARCH_BOUND_S = 3.0
+
+#: Bounds ONE to-do read: a scan of the private store's action items; sized to the search.
+TODOS_READ_BOUND_S = 3.0
+
+#: The request waits the callable's own bound plus the slack, never the 5 s control default.
+DEFAULT_LIBRARY_TIMEOUT_S = LIBRARY_READ_BOUND_S + CONTROL_SLACK_S
+DEFAULT_LIBRARY_SEARCH_TIMEOUT_S = LIBRARY_SEARCH_BOUND_S + CONTROL_SLACK_S
+DEFAULT_TODOS_TIMEOUT_S = TODOS_READ_BOUND_S + CONTROL_SLACK_S
+
+#: Longest search query accepted, in characters. A **judgement call**: a spoken-length
+#: question, far under what an embedder takes.
+LIBRARY_QUERY_MAX_CHARS = 200
+
+#: Longest item id accepted, in digits (a SQLite-sized integer fits in 18).
+LIBRARY_ID_MAX_DIGITS = 12
+
+#: The library has no callable bound (or the daemon has no library).
+LIBRARY_NOT_CONFIGURED_CODE = "library-not-configured"
+#: The to-do callable is not bound.
+MEMORY_UNAVAILABLE_CODE = "memory-unavailable"
+#: A library path or query was malformed.
+LIBRARY_BAD_REQUEST_CODE = "library-bad-request"
+#: No library item has that id.
+LIBRARY_NOT_FOUND_CODE = "library-item-not-found"
+#: A callable answered a shape the contract does not allow.
+LIBRARY_BAD_SHAPE_CODE = "library-bad-shape"
+
+LIBRARY_ROUTE = "/api/library"
+LIBRARY_SEARCH_ROUTE = "/api/library/search"
+TODOS_ROUTE = "/api/todos"
 
 #: How long an Access-admitted stream may stay open when the verifier reported no
 #: ``exp``. Conservative by choice: an assertion of unknown lifetime is not trusted to
@@ -489,6 +540,15 @@ class Controls:
     #: finite, non-negative ``X-Clip-Duration-S``. Runs under
     #: :attr:`ServerConfig.clip_timeout_s`; the body is already inside ``MAX_CLIP_BYTES``.
     clip: Optional[Callable[[bytes, Optional[float]], dict[str, Any]]] = None
+    #: ``library_list() -> {"items": [{id, title, kind, created_at, indexed}]}``.
+    library_list: Optional[Callable[[], dict[str, Any]]] = None
+    #: ``library_get(item_id) -> {"item": {...}, "passages": [...]}``; an empty dict or
+    #: ``None`` means no such item (404).
+    library_get: Optional[Callable[[int], Optional[dict[str, Any]]]] = None
+    #: ``library_search(q) -> {"hits": [...]}``. ``q`` is decoded and length-capped.
+    library_search: Optional[Callable[[str], dict[str, Any]]] = None
+    #: ``todos() -> {"groups": [{recording_id, title, date, items}]}``.
+    todos: Optional[Callable[[], dict[str, Any]]] = None
 
 
 @dataclass(frozen=True)
@@ -514,6 +574,9 @@ class ServerConfig:
     chat_timeout_s: float = DEFAULT_CHAT_TIMEOUT_S
     speak_timeout_s: float = DEFAULT_SPEAK_TIMEOUT_S
     clip_timeout_s: float = DEFAULT_CLIP_TIMEOUT_S
+    library_timeout_s: float = DEFAULT_LIBRARY_TIMEOUT_S
+    library_search_timeout_s: float = DEFAULT_LIBRARY_SEARCH_TIMEOUT_S
+    todos_timeout_s: float = DEFAULT_TODOS_TIMEOUT_S
     text_body_max_bytes: int = TEXT_BODY_MAX_BYTES
     clip_max_bytes: int = MAX_CLIP_BYTES
     clip_read_deadline_s: float = CLIP_READ_DEADLINE_S
@@ -674,6 +737,9 @@ class _Handler(BaseHTTPRequestHandler):
                 self._refuse_unread(405, "http-method-not-allowed", "status is GET only")
                 return
             self._status(head=method == "HEAD")
+            return
+        if _is_library_route(route):
+            self._library_route(route, method)
             return
         if route in _CONTROL_ROUTES:
             if method != "POST":
@@ -886,6 +952,91 @@ class _Handler(BaseHTTPRequestHandler):
         settimeout = getattr(self.connection, "settimeout", None)
         if callable(settimeout):
             settimeout(value)
+
+    # ── library and to-dos (task t6) ─────────────────────────────────────────
+
+    def _library_route(self, route: str, method: str) -> None:
+        if method != "GET":
+            self._refuse_unread(405, "http-method-not-allowed", "this route is GET only")
+            return
+        app = self._app
+        config = app.config
+        controls = app.controls
+        if route == TODOS_ROUTE:
+            self._read_route(
+                "api.todos",
+                controls.todos,
+                (),
+                config.todos_timeout_s,
+                "groups",
+                MEMORY_UNAVAILABLE_CODE,
+            )
+            return
+        if route == LIBRARY_ROUTE:
+            self._read_route(
+                "api.library", controls.library_list, (), config.library_timeout_s, "items"
+            )
+            return
+        if route == LIBRARY_SEARCH_ROUTE:
+            query = _parse_query(self.path)
+            if query is None:
+                self._send_error(400, LIBRARY_BAD_REQUEST_CODE, "q must be 1-200 characters")
+                return
+            self._read_route(
+                "api.library.search",
+                controls.library_search,
+                (query,),
+                config.library_search_timeout_s,
+                "hits",
+            )
+            return
+        item_id = _parse_item_id(route[len(LIBRARY_ROUTE) + 1 :])
+        if item_id is None:
+            self._send_error(400, LIBRARY_BAD_REQUEST_CODE, "the item id must be an integer")
+            return
+        self._read_route(
+            "api.library.item",
+            controls.library_get,
+            (item_id,),
+            config.library_timeout_s,
+            "passages",
+            item=True,
+        )
+
+    def _read_route(
+        self,
+        label: str,
+        action: Optional[Callable[..., Any]],
+        args: tuple[Any, ...],
+        timeout_s: float,
+        list_key: str,
+        missing_code: str = LIBRARY_NOT_CONFIGURED_CODE,
+        *,
+        item: bool = False,
+    ) -> None:
+        """One GET read on the text pool: pass through what the callable returned,
+        after checking it has the contract's shape."""
+        app = self._app
+        if action is None:
+            app._degrade(missing_code, f"{label} is not configured")
+            self._send_error(503, missing_code, "this is not configured on this daemon")
+            return
+        outcome = app.call_text(label, action, *args, timeout_s=timeout_s)
+        if not outcome.ok:
+            self._send_error(outcome.status, outcome.code, outcome.message)
+            return
+        result = outcome.result
+        if item and not result:
+            self._send_error(404, LIBRARY_NOT_FOUND_CODE, "no such library item")
+            return
+        valid = isinstance(result, dict) and isinstance(result.get(list_key), list)
+        if valid and item:
+            valid = isinstance(result.get("item"), dict)
+        if not valid:
+            app._degrade(LIBRARY_BAD_SHAPE_CODE, f"{_safe_token(label)} answered a bad shape")
+            self._send_error(502, LIBRARY_BAD_SHAPE_CODE, "the answer was malformed")
+            return
+        self._send_json(200, result)
 
     def _text_route(self, route: str) -> None:
         app = self._app
@@ -1228,6 +1379,38 @@ class ControlOutcome:
     status: int
     code: str
     message: str
+
+
+def _is_library_route(route: str) -> bool:
+    return route in (LIBRARY_ROUTE, TODOS_ROUTE) or route.startswith(LIBRARY_ROUTE + "/")
+
+
+def _parse_item_id(segment: str) -> Optional[int]:
+    """``{id}`` from a library path: percent-decoded, ASCII digits only, length-capped."""
+    try:
+        text = unquote(segment, errors="strict") if segment.isascii() else ""
+    except UnicodeDecodeError:
+        return None
+    if not text.isascii() or not text.isdigit() or len(text) > LIBRARY_ID_MAX_DIGITS:
+        return None
+    return int(text)
+
+
+def _parse_query(path: str) -> Optional[str]:
+    """``q`` from the request path's query string, or ``None`` when absent, empty,
+    repeated, undecodable or over :data:`LIBRARY_QUERY_MAX_CHARS`."""
+    _route, _sep, rest = path.partition("?")
+    rest = rest.split("#", 1)[0]
+    values = [pair[2:] for pair in rest.split("&") if pair.startswith("q=")]
+    if len(values) != 1 or len(values[0]) > LIBRARY_QUERY_MAX_CHARS * 12:
+        return None
+    try:
+        text = unquote(values[0].replace("+", " "), errors="strict").strip()
+    except UnicodeDecodeError:
+        return None
+    if not text or len(text) > LIBRARY_QUERY_MAX_CHARS or not text.isprintable():
+        return None
+    return text
 
 
 def _safe_token(kind: object) -> str:
