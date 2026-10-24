@@ -2,7 +2,7 @@
   "plan_slug": "gwen-is-pocketchat-transcripts-as-knowledge",
   "schema_version": 2,
   "created": "2026-10-24T04:42:23Z",
-  "updated": "2026-10-24T16:42:25Z",
+  "updated": "2026-10-24T19:10:19Z",
   "deviations": [
     {
       "id": "d1",
@@ -150,6 +150,51 @@
       "status": "approved",
       "classification": "acceptable",
       "seq": 12
+    },
+    {
+      "id": "d13",
+      "what": "New conversation (POST /api/conversation/new and a history-pane button; the live session is swapped under the conversation lock, summarised in the background and settled at once), a prompt line saying when the conversation last spoke and how long ago, search_library date (YYYY-MM-DD) and kind filters with a below-threshold answer for a named day, and xteink's native newspaper kind searched by default (PR #101, 0.19.0)",
+      "task_ref": "t13",
+      "reason": "Operator, 2026-10-24, after using the page: 'No new conversation'; 'I expected it to search. Does Gwen know dates and how long was it since last message?' Found while checking: the index never searched the native newspaper kind",
+      "affects": [
+        "t11",
+        "t12"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 13
+    },
+    {
+      "id": "d14",
+      "what": "Gwen reads a whole library item (read_item) and one web page that item links to (fetch_source): only a link the item's stored passages list, http(s), public addresses only with the connection pinned to the checked address and every redirect re-checked, GET, 2 MB / 15 s, fenced as untrusted and arming the write guard; EPUB extraction keeps passage links and the document index stores them (version 4, re-index); the page opens a fetched source in a new tab. Gwen's first reach outside the rig (PR #102, 0.20.0)",
+      "task_ref": "t11",
+      "reason": "Operator, 2026-10-24: 'I want gwen to be able to summarize the newsletter for me, and even pull from sources of the articles and summarize that'; asked which pages she may fetch, chose 'Only links in the library'",
+      "affects": [
+        "t2",
+        "t3",
+        "t13",
+        "c11"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "needs-follow-up",
+      "seq": 14
+    },
+    {
+      "id": "d15",
+      "what": "Gwen's library is culture-library (127.0.0.1:8796, xteink-compatible API, with its own key for Gwen held in grant) instead of xteink's instance; a full re-index follows because item ids change. Not done yet: waits on the operator minting the key",
+      "task_ref": "t13",
+      "reason": "Operator, 2026-10-24: 'culture rules repoints to library now'; the spec already names culture-library the knowledge home (c30); xteink's library lost its newspapers the same day",
+      "affects": [
+        "t1",
+        "t10",
+        "c30"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "needs-follow-up",
+      "seq": 15
     }
   ],
   "evidence": [],
