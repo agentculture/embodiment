@@ -2404,6 +2404,32 @@ class RoomMemory:
             degradations=outcome.degradations,
         )
 
+    def list_ingest(self, *, deadline: float, record_type: Optional[str] = None) -> RecallResult:
+        """Every ACTIVE ingest record (of *record_type*, when given), by enumeration.
+
+        A read for a view that must show all of a kind - the to-dos page lists every
+        ``action_item`` - so it never goes through a ranker that could drop one.
+        *deadline* bounds the wait (the caller's own read bound; there is no default
+        because an enumeration's cost is the store's size); ``mode`` is ``None``
+        because nothing ranked. No ingest scope configured is an empty, ok listing. Never raises.
+        """
+        if self._ingest_scope is None:
+            return RecallResult(ok=True, records=[], mode=None)
+        pools = [(self._ingest_scope, INGEST_VISIBILITY)]
+        status, value, degradation = self._run_job(
+            lambda: self._enumerate_active(pools),
+            "ingest-list",
+            deadline,
+            verb="recall",
+            code=CODE_ABANDONED_RECALL,
+        )
+        if status != "ok":
+            return RecallResult(
+                ok=False, records=[], mode=None, degradations=tuple(d for d in (degradation,) if d)
+            )
+        records = [r for r in value if record_type is None or r.get("type") == record_type]
+        return RecallResult(ok=True, records=records, mode=None)
+
     def _enumerate_ingest(self) -> list[dict[str, Any]]:
         """The worker: every record of the ingest scope, under the store lock. Raises."""
         if self._root_refusal() is not None:
