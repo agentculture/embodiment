@@ -11,10 +11,21 @@
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import type { MouseEvent } from "react";
 import { fetchItem, type LibraryClientOptions, type LibraryDocument, type Passage } from "../api/library";
+import { dayLabel, kindInfo } from "../api/kinds";
 import "../styles/library.css";
 
 export interface ReaderHandle {
   openAt: (anchor: string) => void;
+  /** Fetch the item again (a failed open, or a re-click on the open item). */
+  reload: () => void;
+}
+
+/** What a failed open says; "not found" mid re-index means "not ready yet". */
+function failureText(code: string): string {
+  if (code === "library-item-not-found") {
+    return "This item is not ready to read yet: Gwen is still indexing it. Try again in a moment.";
+  }
+  return `This item could not be opened (${code}).`;
 }
 
 export interface ReaderProps {
@@ -22,6 +33,8 @@ export interface ReaderProps {
   secret?: string;
   /** Passage anchor to scroll to and highlight once loaded. */
   anchor?: string;
+  /** "side" beside the conversation (default), "page" as the main pane of the library. */
+  variant?: "side" | "page";
   clientOptions?: LibraryClientOptions;
   onClose: () => void;
 }
@@ -43,12 +56,13 @@ function passageAt(passages: Passage[], at: number): Passage | undefined {
 }
 
 export const Reader = forwardRef<ReaderHandle, ReaderProps>(function Reader(
-  { id, secret = "", anchor, clientOptions, onClose },
+  { id, secret = "", anchor, clientOptions, onClose, variant = "side" },
   ref,
 ) {
   const [doc, setDoc] = useState<LibraryDocument | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [cited, setCited] = useState<string | null>(anchor ?? null);
+  const [attempt, setAttempt] = useState(0);
   const nodes = useRef(new Map<string, HTMLLIElement>());
 
   useEffect(() => {
@@ -64,7 +78,7 @@ export const Reader = forwardRef<ReaderHandle, ReaderProps>(function Reader(
       live = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id, secret]);
+  }, [id, secret, attempt]);
 
   useEffect(() => {
     if (anchor) setCited(anchor);
@@ -83,7 +97,11 @@ export const Reader = forwardRef<ReaderHandle, ReaderProps>(function Reader(
     nodes.current.get(cited)?.scrollIntoView?.({ block: "center", behavior: "smooth" });
   }, [cited, doc]);
 
-  useImperativeHandle(ref, () => ({ openAt: (a: string) => setCited(a) }), []);
+  useImperativeHandle(
+    ref,
+    () => ({ openAt: (a: string) => setCited(a), reload: () => setAttempt((n) => n + 1) }),
+    [],
+  );
 
   const seek = useCallback(
     (event: MouseEvent<HTMLDivElement>) => {
@@ -99,16 +117,42 @@ export const Reader = forwardRef<ReaderHandle, ReaderProps>(function Reader(
 
   const total = doc ? totalSeconds(doc.passages) : 0;
   const timed = doc ? doc.passages.filter(isTimed) : [];
-  const meta = doc ? [doc.item.kind, doc.item.author, doc.item.createdAt.slice(0, 10)].filter(Boolean).join(" | ") : "";
+  const kind = doc ? kindInfo(doc.item.kind) : null;
+  const when = doc ? dayLabel(doc.item.createdAt) : "";
+  const citedIndex = doc && cited ? doc.passages.findIndex((p) => p.anchor === cited) : -1;
 
   return (
-    <aside className="reader" aria-label="Reader">
+    <aside className={`reader reader--${variant}`} aria-label="Reader">
       <div className="reader-head">
-        <button type="button" className="reader-close" aria-label="Close" onClick={onClose}>
-          x
+        <div className="reader-meta">
+          {kind && (
+            <span className="kind-badge" style={{ ["--kind" as string]: kind.color }}>
+              {kind.one}
+            </span>
+          )}
+          {when && <span>{when}</span>}
+          {doc?.item.author && <span dir="auto">from {doc.item.author}</span>}
+          {citedIndex >= 0 && doc && (
+            <span>
+              passage {citedIndex + 1} of {doc.passages.length}
+            </span>
+          )}
+        </div>
+        <button type="button" className="reader-close icon-btn" aria-label="Close" onClick={onClose}>
+          <svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true">
+            <path d="M6 6l12 12M18 6 6 18" />
+          </svg>
         </button>
-        <h2 dir="auto" className="reader-title">{doc ? doc.item.title : "Loading"}</h2>
-        {meta && <p dir="auto" className="reader-meta">{meta}</p>}
+        <h2 dir="auto" className="reader-title">
+          {doc ? doc.item.title : error ? "Not available" : "Opening"}
+        </h2>
+        {doc && doc.passages.length > 1 && (
+          <div className="reader-map" aria-hidden="true">
+            {doc.passages.map((p) => (
+              <span key={p.anchor} className={p.anchor === cited ? "hit" : undefined} />
+            ))}
+          </div>
+        )}
         {timed.length > 0 && total > 0 && (
           <div className="tape" title="Jump to a moment" onClick={seek}>
             {timed.map((p) => (
@@ -125,7 +169,14 @@ export const Reader = forwardRef<ReaderHandle, ReaderProps>(function Reader(
         )}
       </div>
       <div className="reader-body">
-        {error && <p className="library-error" role="alert">reader unavailable: {error}</p>}
+        {error && (
+          <div className="library-error" role="alert">
+            <p>{failureText(error)}</p>
+            <button type="button" className="pill-btn" onClick={() => setAttempt((n) => n + 1)}>
+              Try again
+            </button>
+          </div>
+        )}
         <ol className="transcript">
           {doc?.passages.map((p) => (
             <li
@@ -138,7 +189,7 @@ export const Reader = forwardRef<ReaderHandle, ReaderProps>(function Reader(
               }}
             >
               {p.speaker && <span dir="auto" className="seg-speaker">{p.speaker}</span>}
-              {p.heading && <h4 dir="auto">{p.heading}</h4>}
+              {p.heading && <h3 dir="auto" className="seg-heading">{p.heading}</h3>}
               <p dir="auto" className="seg-text">{p.text}</p>
             </li>
           ))}

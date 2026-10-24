@@ -14,6 +14,8 @@
 export interface ChatSource {
   source: string;
   title: string;
+  /** Library item kind (transcript, newspaper, ...); "" on the legacy shapes. */
+  kind: string;
   date: string;
   /** seconds into a recording; null for an issue source. */
   start: number | null;
@@ -42,6 +44,8 @@ export interface ChatClientOptions {
   fetchFn?: typeof fetch;
 }
 
+import { displayKind } from "./kinds";
+
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
 const num = (v: unknown): number | null =>
   typeof v === "number" && Number.isFinite(v) ? v : null;
@@ -59,6 +63,7 @@ export function parseSources(raw: unknown): ChatSource[] {
       ...(o.anchor !== undefined && o.anchor !== null ? { anchor: o.anchor } : {}),
       source: str(o.source),
       title: str(o.title),
+      kind: o.kind === undefined ? "" : displayKind(str(o.kind), str(o.title)),
       date: str(o.date),
       start: num(o.start),
       end: num(o.end),

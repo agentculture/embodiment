@@ -135,17 +135,25 @@ describe("AudioControls record", () => {
   });
 });
 
-describe("speech-to-speech button", () => {
-  it("is disabled with its reason shown while no role is advertised", () => {
-    render(<AudioControls secret="" onReply={vi.fn()} />);
-    const btn = screen.getByRole("button", { name: /speech-to-speech/i });
-    expect(btn).toBeDisabled();
-    expect(screen.getByText(/no speech-to-speech role is advertised/i)).toBeInTheDocument();
+describe("dock layout (operator, 2026-10-24)", () => {
+  it("puts the Live slot and Upload beside the input box; the box holds the mic and the typed half", () => {
+    const { container } = render(
+      <AudioControls secret="" onReply={vi.fn()} live={<button type="button">Live voice</button>}>
+        <textarea aria-label="message" />
+      </AudioControls>,
+    );
+    const box = container.querySelector(".dock") as HTMLElement;
+    const side = container.querySelector(".dock-side") as HTMLElement;
+    expect(box).toContainElement(screen.getByRole("button", { name: "Record" }));
+    expect(box).toContainElement(screen.getByLabelText("message"));
+    expect(side).toContainElement(screen.getByRole("button", { name: "Live voice" }));
+    expect(side).toContainElement(screen.getByLabelText(/upload audio/i));
+    expect(box).not.toContainElement(screen.getByLabelText(/upload audio/i));
   });
-  it("stays disabled even with a role: turning it on is not in this cycle", () => {
+
+  it("no longer carries a disabled speech-to-speech button (Live is the speech path)", () => {
     render(<AudioControls secret="" onReply={vi.fn()} s2sRole="s2s-demo" />);
-    expect(screen.getByRole("button", { name: /speech-to-speech/i })).toBeDisabled();
-    expect(screen.getByText(/s2s-demo/)).toHaveAttribute("dir", "auto");
-    expect(screen.getByText(/not enabled in this release/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /speech-to-speech/i })).toBeNull();
   });
 });
+

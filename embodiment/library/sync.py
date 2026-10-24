@@ -128,7 +128,14 @@ class LibrarySync:
     # -- the tick ---------------------------------------------------------
 
     def tick(self) -> dict:
-        out = {"indexed": 0, "added": 0, "changed": 0, "removed": 0, "yielded": False}
+        out = {
+            "indexed": 0,
+            "added": 0,
+            "changed": 0,
+            "removed": 0,
+            "yielded": False,
+            "remaining": 0,
+        }
         if self._client is None:
             return out
         start = self._clock()
@@ -168,11 +175,13 @@ class LibrarySync:
     def _work(self, todo: list, deadline: float, out: dict) -> None:
         self._unwanted = sum(1 for meta in todo if not self._index.wants(meta))
         with self._index.batch():
-            for meta in todo:
+            for done, meta in enumerate(todo):
                 if self._clock() >= deadline:
+                    out["remaining"] = self._wanted_left(todo[done:])
                     break
                 if not self._wait_gate(deadline):
                     out["yielded"] = True
+                    out["remaining"] = self._wanted_left(todo[done:])
                     break
                 if not self._index.wants(meta) or self._skipped.get(str(meta.id)) == meta.sha256:
                     continue
@@ -180,6 +189,14 @@ class LibrarySync:
                 if result is None:
                     break
                 out["indexed"] += int(result)
+
+    def _wanted_left(self, metas: list) -> int:
+        """Items a cut-short tick left for the next one (wanted, not known-skipped)."""
+        return sum(
+            1
+            for meta in metas
+            if self._index.wants(meta) and self._skipped.get(str(meta.id)) != meta.sha256
+        )
 
     def _one(self, meta: Any) -> Optional[bool]:
         """Index one item: True indexed, False skipped, None stop the tick."""

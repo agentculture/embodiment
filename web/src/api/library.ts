@@ -42,6 +42,8 @@ export interface LibraryClientOptions {
   fetchFn?: typeof fetch;
 }
 
+import { displayKind } from "./kinds";
+
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
 const num = (v: unknown): number | null =>
   typeof v === "number" && Number.isFinite(v) ? v : null;
@@ -87,7 +89,7 @@ function parseItems(body: Record<string, unknown>): LibraryItem[] | null {
     out.push({
       id: str(o.id),
       title: str(o.title),
-      kind: str(o.kind),
+      kind: displayKind(str(o.kind), str(o.title)),
       createdAt: str(o.created_at),
       indexed: o.indexed === true,
     });
@@ -115,7 +117,7 @@ function parseDocument(body: Record<string, unknown>): LibraryDocument | null {
     item: {
       id: str(item.id),
       title: str(item.title),
-      kind: str(item.kind),
+      kind: displayKind(str(item.kind), str(item.title)),
       author: str(item.author),
       createdAt: str(item.created_at),
     },
@@ -136,4 +138,44 @@ export function fetchItem(
   options: LibraryClientOptions = {},
 ): Promise<LibraryOutcome<LibraryDocument>> {
   return getJson(`/library/${encodeURIComponent(id)}`, secret, options, parseDocument);
+}
+
+export interface SearchHit {
+  itemId: string;
+  title: string;
+  kind: string;
+  createdAt: string;
+  anchor: string;
+  heading: string;
+  text: string;
+}
+
+function parseHits(body: Record<string, unknown>): SearchHit[] | null {
+  if (!Array.isArray(body.hits)) return null;
+  const out: SearchHit[] = [];
+  for (const raw of body.hits) {
+    const o = rec(raw);
+    if (!o) continue;
+    const id = typeof o.item_id === "number" && Number.isFinite(o.item_id) ? String(o.item_id) : str(o.item_id);
+    if (!id) continue;
+    out.push({
+      itemId: id,
+      title: str(o.title),
+      kind: displayKind(str(o.kind), str(o.title)),
+      createdAt: str(o.created_at),
+      anchor: str(o.anchor),
+      heading: str(o.heading),
+      text: str(o.text),
+    });
+  }
+  return out;
+}
+
+/** GET /api/library/search?q= : passages by meaning, best first. */
+export function searchLibrary(
+  q: string,
+  secret: string,
+  options: LibraryClientOptions = {},
+): Promise<LibraryOutcome<SearchHit[]>> {
+  return getJson(`/library/search?q=${encodeURIComponent(q)}`, secret, options, parseHits);
 }

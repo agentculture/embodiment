@@ -139,7 +139,7 @@ from collections import OrderedDict, deque
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone, tzinfo
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping, Optional
+from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
 from embodiment import memory as memory_module
 from embodiment import safe_reason, vectors
@@ -468,6 +468,38 @@ LIBRARY_TOOL_PROMPT = (
     "קראי לכלי search_library, וצטטי כל קטע שבו השתמשת כ־[n]. "
     "אל תמציאי מידע שאינו בקטעים שהכלי החזיר."
 )
+
+#: At most this many of the previous answer's sources are named to the next turn.
+PREVIOUS_SOURCES_SHOWN = 8
+
+
+def previous_sources_line(sources: Sequence[Mapping[str, Any]]) -> str:
+    """The prompt line naming the sources the page showed with the previous answer.
+
+    The page numbers a reply's sources 1..n, and the operator refers to them that
+    way ("item 1", "the second one"); the model never saw that list, only its own
+    tool results, which do not carry into the next turn (live, 2026-10-24: "Item 1"
+    got "what do you mean by item one?"). Titles are library data, already
+    neutralised and capped by the citation collector, and quoted here as data.
+    """
+    shown = [s for s in sources if isinstance(s, Mapping)][:PREVIOUS_SOURCES_SHOWN]
+    if not shown:
+        return ""
+    parts = []
+    for n, src in enumerate(shown, 1):
+        title = str(src.get("title") or src.get("source") or "source").replace('"', "'")
+        where = ""
+        if src.get("item_id"):
+            where = f" (item_id={src.get('item_id')}, anchor={src.get('anchor')})"
+        elif src.get("source") == "room":
+            where = " (Gwen's memory)"
+        parts.append(f'[{n}] "{title}"{where}')
+    return (
+        "המקורות שהוצגו למשתמש עם התשובה הקודמת שלך, לפי המספרים שהוא רואה "
+        "(כש«פריט 1» או «המקור השני» — זה הם; קראי אותם עם read_passage או search_library): "
+        + "; ".join(parts)
+    )
+
 
 REMEMBER_TOOL_PROMPT = (
     "כשהמשתמש מבקש ממך לזכור, לשמור, לרשום או לא לשכוח משהו — בכל ניסוח, "
@@ -926,6 +958,11 @@ LIBRARY_SYNC_INTERVAL_S = 300.0
 #: no turn (every chunk embed yields to the live-turn gate); a stop does not wait
 #: on it either — closing ends the tick at the next chunk.
 LIBRARY_TICK_BUDGET_S = 60.0
+#: Seconds between ticks while a tick left work behind (a first sync, a re-index):
+#: the next bounded tick runs soon instead of an interval later. Each tick still has
+#: its budget and still yields to live turns. Measured 2026-10-24: a full re-index of
+#: 51 items took one item-budget per 300 s tick (15 items each), about 15 minutes.
+LIBRARY_CATCH_UP_S = 5.0
 #: Hits one search route returns: the library tools' own cap.
 LIBRARY_SEARCH_LIMIT = library_tools.MAX_LIMIT
 #: The memory type the to-dos view lists, written by the culture-rules ingest.
@@ -1594,6 +1631,22 @@ class _TextTurn:
     #: This turn's library citations (t13), or ``None`` with no library. Built
     #: per turn, so the tools it backs number ``[n]`` from 1 for this reply only.
     collector: Optional[Any] = None
+    #: The sources the page showed with the previous typed answer, in page order.
+    previous_sources: tuple[Any, ...] = ()
+
+
+def _previous_page_sources(turn: Optional[Any]) -> tuple[Any, ...]:
+    """The sources the page showed with *turn*'s answer, in page order; () if none.
+
+    The same list the chat route returns (``_typed_sources``: library citations
+    first, then recalled memory), so "item 1" means what the operator saw as 1.
+    """
+    if turn is None:
+        return ()
+    try:
+        return tuple(_typed_sources(turn))
+    except Exception:  # noqa: BLE001  # a broken record names nothing, never raises
+        return ()
 
 
 @dataclass(frozen=True)
@@ -3170,6 +3223,8 @@ class DaemonApp:
             self._text_turns_run += 1
             serial = self._text_serial
             session = self._session
+            last = self._text_turns_recent[-1] if self._text_turns_recent else None
+        previous = _previous_page_sources(last)
         turn = _TextTurn(
             serial=serial,
             thread=threading.get_ident(),
@@ -3177,6 +3232,7 @@ class DaemonApp:
             window=self._window(session),
             clock=self._clock_line(),
             collector=library_tools.CitationCollector() if self._library is not None else None,
+            previous_sources=previous,
         )
         self._tls.text_turn = turn
         with self._lock:
@@ -3328,7 +3384,12 @@ class DaemonApp:
         base = REMEMBER_TOOL_PROMPT if self._config.remember_tool else ""
         if collector is None or self._library is None or self._seam is None:
             return base
-        return f"{base}\n{LIBRARY_TOOL_PROMPT}" if base else LIBRARY_TOOL_PROMPT
+        library = LIBRARY_TOOL_PROMPT
+        turn = self._text_turn_here()
+        previous = previous_sources_line(turn.previous_sources) if turn is not None else ""
+        if previous:
+            library = f"{library}\n{previous}"
+        return f"{base}\n{library}" if base else library
 
     def _counted(self, spec: Any) -> Any:
         """*spec* with its fn counting calls by tool name (d1: a counter that moves)."""
@@ -3422,16 +3483,22 @@ class DaemonApp:
         """One tick now, then one per interval, until the daemon closes."""
         lane = self._library
         while lane is not None and not lane.stop.is_set():
-            self._library_tick()
-            lane.stop.wait(max(0.01, float(lane.interval_s)))
+            backlog = self._library_tick()
+            wait = LIBRARY_CATCH_UP_S if backlog else float(lane.interval_s)
+            lane.stop.wait(max(0.01, min(wait, float(lane.interval_s))))
 
-    def _library_tick(self) -> None:
-        """ONE bounded sync tick plus the forwarding of what it recorded. Never raises."""
+    def _library_tick(self) -> bool:
+        """ONE bounded sync tick plus the forwarding of what it recorded. Never raises.
+
+        Returns True when the tick left wanted items behind (the worker then comes
+        back soon), False otherwise, including on a failed tick.
+        """
         lane = self._library
         if lane is None:
-            return
+            return False
+        backlog = False
         try:
-            lane.sync.tick()
+            out = lane.sync.tick()
         except Exception as exc:  # noqa: BLE001  # the sync promises not to; count anyway
             with self._lock:
                 self._library_tick_failures += 1
@@ -3439,9 +3506,12 @@ class DaemonApp:
         else:
             with self._lock:
                 self._library_ticks += 1
+            remaining = out.get("remaining") if isinstance(out, Mapping) else None
+            backlog = isinstance(remaining, int) and remaining > 0
         if not lane.stop.is_set():
             # A tick a stop cut short abandoned its chunk on purpose: not a fault.
             self._forward_library_degradations(lane)
+        return backlog
 
     def _forward_library_degradations(self, lane: LibraryLane) -> None:
         """The sync's transitions and the index's faults, each recorded once."""

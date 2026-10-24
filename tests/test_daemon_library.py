@@ -577,7 +577,7 @@ class TestStatusAndRoutes:
         library = _library()
         h = _build(harness, tmp_path, library=library)
         library.list_error = "library_unreachable"
-        h.app._library_tick()
+        assert h.app._library_tick() is False, "a down library is no backlog: wait the interval"
         h.app._library_tick()
         block = h.app.status()["library"]
         assert block["failures_by_code"] == {"library_unreachable": 1}
@@ -955,3 +955,75 @@ class TestDeviationD1:
         calls = h.app.status()["library"]["tool_calls"]
         assert calls["search_library"] == 1
         assert calls["read_passage"] == 0
+
+
+class TestTheNextTurnKnowsThePagesSourceNumbers:
+    """Live 2026-10-24: after an answer listing five sources, "Item 1" got "what do you
+    mean by item one?" -- the page numbers sources 1..n, the model never saw that list.
+    The next typed turn now names them in the same order."""
+
+    def test_the_line_names_sources_in_page_order_and_is_empty_without_any(self):
+        from embodiment.daemon import app as A
+
+        assert A.previous_sources_line([]) == ""
+        line = A.previous_sources_line(
+            [
+                {"title": "Daily newspaper 2026-10-24", "item_id": "54", "anchor": "s01#3"},
+                {"title": 'a "quoted" title', "item_id": "7", "anchor": "x"},
+            ]
+        )
+        assert '[1] "Daily newspaper 2026-10-24" (item_id=54, anchor=s01#3)' in line
+        assert "[2] \"a 'quoted' title\"" in line
+        assert "read_passage" in line
+
+    def test_a_second_typed_turn_is_told_the_first_answers_sources(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        script = ToolScript(_call("search_library", query="golf"), ModelResponse(content=REPLY))
+        h = _build(harness, tmp_path, complete=script)
+        first = h.app.controls().chat("golf?")
+        assert first["ok"] is True, first
+        assert first["sources"], "the first answer cited something"
+        h.app.controls().chat("Item 1")
+        system = script.prompts[-1][0]["content"]
+
+        # numbered as the page numbered them: the chat route's own source list
+        title = first["sources"][0]["title"]
+        assert f'[1] "{title}"' in system
+
+    def test_the_first_typed_turn_names_no_previous_sources(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        script = ToolScript()
+        h = _build(harness, tmp_path, complete=script)
+        h.app.controls().chat("golf?")
+        assert "התשובה הקודמת" not in script.prompts[-1][0]["content"]
+
+
+class TestARebuildCatchesUp:
+    """Live 2026-10-24: re-indexing 51 items ran one 60 s tick per 300 s interval
+    (15 items a tick, about 15 minutes). A tick that leaves work behind now brings
+    the next tick back after LIBRARY_CATCH_UP_S; an idle or failed one waits the
+    interval."""
+
+    def test_the_worker_waits_the_catch_up_after_a_backlog_and_the_interval_otherwise(
+        self, harness: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        h = _build(harness, tmp_path)
+        lane = h.app._library
+        backlogs = iter([True, False])
+        waits: list[float] = []
+
+        def tick() -> bool:
+            return next(backlogs)
+
+        def wait(seconds: float) -> bool:
+            waits.append(seconds)
+            if len(waits) == 2:
+                lane.stop.set()
+            return lane.stop.is_set()
+
+        monkeypatch.setattr(h.app, "_library_tick", tick)
+        monkeypatch.setattr(lane.stop, "wait", wait)
+        h.app._library_worker()
+        assert waits == [app_module.LIBRARY_CATCH_UP_S, float(lane.interval_s)]

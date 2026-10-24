@@ -40,8 +40,10 @@ describe("Chat", () => {
     const fetchFn = fetchOk({ reply: "r", sources: [pocket] });
     render(<Chat clientOptions={{ fetchFn }} />);
     await send("q");
-    const label = await screen.findByText(/untrusted source/);
-    expect(label.textContent).toBe("[untrusted source] Weekly sync | 2026-10-01");
+    // The untrusted marker is its own (screen-reader) text node, ahead of the label,
+    // so it never decides the label's bidi direction.
+    expect(await screen.findByText("[untrusted source]")).toHaveClass("sr-only");
+    expect(screen.getByText("Weekly sync | 2026-10-01")).toHaveAttribute("dir", "auto");
   });
 
   it("a room source renders its own label, and an unknown source a neutral one", async () => {
@@ -50,8 +52,9 @@ describe("Chat", () => {
     const fetchFn = fetchOk({ reply: "r", sources: [room, odd] });
     render(<Chat clientOptions={{ fetchFn }} />);
     await send("q");
-    expect(await screen.findByText("[untrusted source] Gwen's memory | 2026-10-02")).toBeInTheDocument();
-    expect(screen.getByText("[untrusted source] source | x")).toBeInTheDocument();
+    expect(await screen.findByText("Gwen's memory | 2026-10-02")).toBeInTheDocument();
+    expect(screen.getByText("source | x")).toBeInTheDocument();
+    expect(screen.getAllByText("[untrusted source]")).toHaveLength(2);
   });
 
   it("shows a memory follow-up from the event stream as a second message", async () => {
@@ -103,6 +106,35 @@ describe("Chat (pocketchat port: thread, citations, composer)", () => {
   const LIB = { source: "library", title: "Standup", date: "2026-03-04", start: null, end: null, section: "", link: "", text: "quoted words", item_id: "item-1", anchor: "a-7" };
   const NOID = { source: "pocket", title: "Old rec", date: "2026-01-01", start: 3, end: 9, section: "", link: "", text: "no id quote" };
 
+  it("splits a merged [2, 3] into two working cite buttons (operator feedback 2026-10-24)", async () => {
+    const LIB2 = { ...LIB, title: "Garden", item_id: "item-2", anchor: "a-2" };
+    const LIB3 = { ...LIB, title: "Warehouse", item_id: "item-3", anchor: "a-3" };
+    const fetchFn = fetchOk({ reply: "Both [1], and more [2, 3].", sources: [LIB, LIB2, LIB3] });
+    const onOpenCitation = vi.fn();
+    render(<Chat clientOptions={{ fetchFn }} onOpenCitation={onOpenCitation} />);
+    await send("q");
+    await userEvent.click(await screen.findByRole("button", { name: /Open source 2: Garden/ }));
+    await userEvent.click(screen.getByRole("button", { name: /Open source 3: Warehouse/ }));
+    expect(onOpenCitation.mock.calls).toEqual([["item-2", "a-2"], ["item-3", "a-3"]]);
+    expect(screen.queryByText(/\[2, 3\]/)).toBeNull();
+  });
+
+  it("Speak sends the answer without its citation markers", async () => {
+    const calls: string[] = [];
+    const fetchFn = vi.fn(async (u: RequestInfo | URL, i?: RequestInit) => {
+      if (String(u).endsWith("/speak")) {
+        calls.push(String(i?.body));
+        return { ok: false, status: 503, json: async () => ({ error: { code: "x" } }) } as Response;
+      }
+      return { ok: true, status: 200, json: async () => ({ reply: "It is there [1], twice [2, 3].", sources: [LIB] }) } as Response;
+    });
+    render(<Chat clientOptions={{ fetchFn }} />);
+    await send("q");
+    await userEvent.click(await screen.findByRole("button", { name: /speak this message/i }));
+    await waitFor(() => expect(calls).toHaveLength(1));
+    expect(JSON.parse(calls[0]).text).toBe("It is there, twice.");
+  });
+
   it("turns [n] markers into cite buttons that open the citation", async () => {
     const fetchFn = fetchOk({ reply: "We shipped [1] and maybe [2] but not [9].", sources: [LIB, NOID] });
     const onOpenCitation = vi.fn();
@@ -128,7 +160,8 @@ describe("Chat (pocketchat port: thread, citations, composer)", () => {
     expect(quote).toHaveAttribute("dir", "auto");
     await userEvent.click(quote);
     expect(onOpenCitation).toHaveBeenCalledWith("item-1", "a-7");
-    expect(screen.getByText(/Standup \| 2026-03-04/)).toHaveAttribute("dir", "auto");
+    // A library source is labelled by its title; the kind badge carries the rest.
+    expect(screen.getByText("Standup", { selector: ".source-label" })).toHaveAttribute("dir", "auto");
   });
 
   it("question text carries dir=auto and markup stays text", async () => {
@@ -158,8 +191,8 @@ describe("Chat (pocketchat port: thread, citations, composer)", () => {
     expect(composer).toContainElement(screen.getByLabelText("message"));
     expect(composer).toContainElement(screen.getByRole("button", { name: "Record" }));
     expect(composer).toContainElement(screen.getByLabelText(/upload audio/i));
-    expect(composer).toContainElement(screen.getByRole("button", { name: "Speech-to-speech" }));
-    expect(screen.getByRole("button", { name: "Speech-to-speech" })).toBeDisabled();
+    // Upload sits beside the input box, not in it
+    expect(composer.querySelector(".dock")).not.toContainElement(screen.getByLabelText(/upload audio/i));
   });
 
   function mockMotion(reduce: boolean) {

@@ -40,6 +40,12 @@ class FakeEmbed:
     def __init__(self):
         self.calls = []
 
+    @property
+    def content(self):
+        """The content-view embeds: one per chunk (the context view starts with the
+        item's title, "Item <id>" in these tests, and is counted apart)."""
+        return [c for c in self.calls if not c.startswith("Item ")]
+
     def __call__(self, text):
         self.calls.append(text)
         words = text.lower().split()
@@ -144,7 +150,7 @@ def test_chunks_join_passages_up_to_the_cap_on_passage_boundaries(tmp_path):
     idx.reconcile([_meta("1")])
     passages = [P(f"d#{i}", "H", ("alpha " * 60).strip()) for i in range(10)]  # 359 chars each
     idx.upsert_item(_meta("1"), passages)
-    assert len(embed.calls) == 5  # two passages fit (719 + sep), a third would not
+    assert len(embed.content) == 5  # two passages fit (719 + sep), a third would not
     assert all(len(t) <= MAX_CHUNK_CHARS + 50 for t in embed.calls)
     hits = idx.search(_vec("alpha"), kinds=None, limit=20, threshold=0.0)
     assert sorted(h.anchor for h in hits) == ["d#0", "d#2", "d#4", "d#6", "d#8"]
@@ -155,7 +161,7 @@ def test_a_heading_change_starts_a_new_chunk(tmp_path):
     idx = _index(tmp_path, embed)
     idx.reconcile([_meta("1")])
     idx.upsert_item(_meta("1"), [P("d#0", "Jetson", "alpha"), P("d#1", "Isaac", "bravo")])
-    assert len(embed.calls) == 2
+    assert len(embed.content) == 2
 
 
 def test_an_oversized_passage_is_split_without_exceeding_the_cap(tmp_path):
@@ -163,7 +169,7 @@ def test_an_oversized_passage_is_split_without_exceeding_the_cap(tmp_path):
     idx = _index(tmp_path, embed)
     idx.reconcile([_meta("1")])
     idx.upsert_item(_meta("1"), [P("d#0", None, ("alpha " * 500).strip())])
-    assert len(embed.calls) >= 3
+    assert len(embed.content) >= 3
     hits = idx.search(_vec("alpha"), kinds=None, limit=20, threshold=0.0)
     assert {h.anchor for h in hits} == {"d#0"}
     assert all(len(h.text) <= MAX_CHUNK_CHARS for h in hits)
@@ -217,7 +223,7 @@ def test_one_atomic_write_per_upsert_not_per_chunk(tmp_path, monkeypatch):
     idx.reconcile([_meta("1")])
     replaces.clear()
     idx.upsert_item(_meta("1"), [P(f"d#{i}", f"H{i}", "alpha") for i in range(6)])
-    assert len(embed.calls) == 6
+    assert len(embed.content) == 6
     assert len(replaces) == 1
 
 
@@ -240,12 +246,12 @@ def test_unchanged_sha256_is_not_re_embedded_even_across_a_restart(tmp_path):
     idx.reconcile([_meta("1")])
     passages = [P("a#0", None, "alpha"), P("a#1", "H2", "bravo")]
     assert idx.upsert_item(_meta("1"), passages) == 2
-    assert len(embed.calls) == 2
+    assert len(embed.content) == 2
     assert idx.upsert_item(_meta("1"), passages) == 0
-    assert len(embed.calls) == 2
+    assert len(embed.content) == 2
     again = _index(tmp_path, embed)
     assert again.upsert_item(_meta("1"), passages) == 0
-    assert len(embed.calls) == 2
+    assert len(embed.content) == 2
     assert again.reconcile([_meta("1")]) == {"added": [], "changed": [], "removed": []}
     assert len(again.search(_vec("alpha"), kinds=None, limit=5, threshold=0.5)) == 1
 
@@ -343,9 +349,9 @@ def test_a_changed_sha256_re_indexes(tmp_path):
     # stale text is gone at once, so nothing can cite the old version
     assert "oldword" not in idx.path.read_text(encoding="utf-8")
     assert idx.search(_vec("alpha"), kinds=None, limit=5, threshold=0.0) == []
-    before = len(embed.calls)
+    before = len(embed.content)
     assert idx.upsert_item(_meta("1", sha="s2"), [P("a#0", None, "bravo newword")]) == 1
-    assert len(embed.calls) == before + 1
+    assert len(embed.content) == before + 1
     (hit,) = idx.search(_vec("bravo"), kinds=None, limit=5, threshold=0.0)
     assert "newword" in hit.text
 
@@ -356,7 +362,7 @@ def test_upserting_a_changed_sha_directly_re_embeds(tmp_path):
     idx.reconcile([_meta("1", sha="s2")])
     idx.upsert_item(_meta("1"), [P("a#0", None, "alpha")])
     assert idx.upsert_item(_meta("1", sha="s2"), [P("a#0", None, "bravo")]) == 1
-    assert len(embed.calls) == 2
+    assert len(embed.content) == 2
 
 
 def test_search_never_returns_an_id_absent_from_the_last_reconciled_catalog(tmp_path):
@@ -391,9 +397,9 @@ def test_reconcile_refreshes_metadata_of_unchanged_items_without_embedding(tmp_p
     idx = _index(tmp_path, embed)
     idx.reconcile([_meta("1")])
     idx.upsert_item(_meta("1"), [P("a#0", None, "alpha")])
-    before = len(embed.calls)
+    before = len(embed.content)
     idx.reconcile([_meta("1", title="Renamed")])
-    assert len(embed.calls) == before
+    assert len(embed.content) == before
     (hit,) = idx.search(_vec("alpha"), kinds=None, limit=5, threshold=0.0)
     assert hit.title == "Renamed"
 
@@ -441,12 +447,12 @@ def test_default_kinds_are_transcripts_and_articles():
 def test_a_book_not_opted_in_is_refused_without_embedding(tmp_path):
     embed = FakeEmbed()
     idx, book = _three_kinds(tmp_path, embed=embed)
-    before = len(embed.calls)
+    before = len(embed.content)
     assert idx.wants(book) is False
     with pytest.raises(IndexRefused) as err:
         idx.upsert_item(book, [P("x#0", None, "alpha")])
     assert err.value.code == "book_not_opted_in"
-    assert len(embed.calls) == before
+    assert len(embed.content) == before
     ids = {h.item_id for h in idx.search(_vec("alpha"), kinds=("book",), limit=9, threshold=0.0)}
     assert ids == set()
 
@@ -504,3 +510,82 @@ def test_a_query_vector_of_the_wrong_size_matches_nothing(tmp_path):
     idx.upsert_item(_meta("1"), [P("a#0", None, "alpha")])
     assert idx.search([1.0, 0.0], kinds=None, limit=5, threshold=-1.0) == []
     assert idx.search([], kinds=None, limit=5, threshold=-1.0) == []
+
+
+# -- 2026-10-24 live finding: mastheads out-ranked the news -------------------
+#
+# Every daily paper opens with a masthead passage ("Daily newspaper" / the date,
+# 10 characters). A question naming the paper matched those mastheads, so the
+# model got five dates and no articles. Chunks now carry their item's title in
+# the embedding, and fragments under MIN_CHUNK_CHARS are not searched.
+
+
+def _paper(idx, item_id, day_word, body_word):
+    meta = _meta(item_id, title=f"Daily newspaper {day_word}")
+    idx.upsert_item(
+        meta,
+        [
+            P(f"{item_id}#1", "Daily newspaper", day_word),  # the masthead: tiny
+            P(f"{item_id}#3", "Jetson optimization", (f"{body_word} " * 20).strip()),
+        ],
+    )
+
+
+def test_a_masthead_is_kept_for_reading_but_never_searched(tmp_path):
+    idx = _index(tmp_path)
+    idx.reconcile([_meta("1"), _meta("2")])
+    _paper(idx, "1", "golf", "alpha")
+    _paper(idx, "2", "hotel", "bravo")
+    hits = idx.search(_vec("golf"), kinds=None, limit=10, threshold=0.0)
+    assert hits, "a question naming the paper finds something"
+    assert all(len(h.text) >= index_mod.MIN_CHUNK_CHARS for h in hits)
+    assert idx.read_passage("1", "1#1") is not None  # still readable in the reader
+
+
+def test_a_question_naming_the_item_finds_that_items_content(tmp_path):
+    idx = _index(tmp_path)
+    idx.reconcile([_meta("1"), _meta("2")])
+    _paper(idx, "1", "golf", "alpha")
+    _paper(idx, "2", "hotel", "bravo")
+    best = idx.search(_vec("golf"), kinds=None, limit=1, threshold=0.0)[0]
+    assert (best.item_id, best.anchor) == ("1", "1#3")  # the article, via the title
+
+
+def test_every_chunk_is_embedded_as_content_and_in_its_items_context(tmp_path):
+    embed = FakeEmbed()
+    idx = _index(tmp_path, embed)
+    idx.reconcile([_meta("1")])
+    _paper(idx, "1", "golf", "alpha")
+    content = [c for c in embed.calls if not c.startswith("Daily newspaper golf\n")]
+    context = [c for c in embed.calls if c.startswith("Daily newspaper golf\n")]
+    assert len(content) == len(context) == 1  # the masthead is not embedded at all
+    assert context[0].endswith(content[0])
+
+
+def test_a_content_question_scores_as_well_as_before_the_title_view(tmp_path):
+    # Version 2 embedded the title view alone and lost content questions under the
+    # threshold (measured live); the content view keeps their score whole.
+    idx = _index(tmp_path)
+    idx.reconcile([_meta("1")])
+    idx.upsert_item(
+        _meta("1", title="golf hotel charlie delta echo"),
+        [P("d#0", None, ("alpha " * 20).strip())],
+    )
+    [hit] = idx.search(_vec("alpha"), kinds=None, limit=5, threshold=0.0)
+    assert hit.score > 0.99
+
+
+def test_an_item_with_only_short_passages_is_still_searchable(tmp_path):
+    idx = _index(tmp_path)
+    idx.reconcile([_meta("1")])
+    idx.upsert_item(_meta("1"), [P("d#0", None, "alpha")])
+    assert [h.anchor for h in idx.search(_vec("alpha"), kinds=None, limit=5)] == ["d#0"]
+
+
+def test_an_index_built_at_an_older_version_re_indexes(tmp_path):
+    path = tmp_path / "library" / "index.json"
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"version": 1, "model_tag": "m1", "catalog": ["1"], "items": {}}))
+    idx = _index(tmp_path)
+    assert index_mod.INDEX_VERSION == 3
+    assert any("re-indexing" in d for d in idx.degradations)

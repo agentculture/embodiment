@@ -61,13 +61,16 @@ not spoken by a person — none of it is a measurement of real use):
   extrapolation). A `senses` completion took 4.0 s median and 5.1 s at most
   (n = 30), well inside the 30 s completion bound.
 
-**The library read path (0.18.0) is built and its value is unmeasured.** Its
-retrieval measurement (hit@5 and per-recall p90 over at least 20 model-written
-questions against the indexed library) is **pending**: no number in this repo
-describes library recall yet. The library similarity threshold reuses memory's
-`0.715` and is **provisional and not calibrated on library text**. Transcripts
-are **assumed** to arrive (decision c21); none were in the library on
-2026-10-24.
+**The library read path (0.18.0) is built; its retrieval was measured once on
+this rig, and its value is unmeasured.** In
+`docs/live-test-results/2026-10-24-library.md` (aggregates only, model-written
+questions, through the daemon's own search route, 50 indexed items): hit@5 was
+19 of 32 and 17 of 28 on two question sets, with 0 of 10 off-topic false
+positives in each run and a search p90 of 0.21 s. Transcripts alone scored 6 of
+11 (index version 1). Most misses are the threshold returning nothing: the
+library similarity threshold reuses memory's `0.715` and is **provisional and
+not calibrated on library text**. Transcripts reach the library through
+culture-rules (decision c21): 33 Pocket transcripts were there on 2026-10-24.
 
 Still not measured:
 
@@ -128,14 +131,19 @@ loop. It does not drive hardware and nothing here claims a body.
   stream. The install secret is required on every guarded request and on the
   stream, because the stream carries the transcript.
 - **The dashboard** (React / Vite / TypeScript, shipped inside the wheel) is
-  chat-first, after pocketchat's anatomy (cited, not imported): **Ask** is the
-  first view, with a pinned composer holding the voice controls (mic, speak,
-  record/upload, and the disabled speech-to-speech button); a **Library** view
-  of the library's items grouped by day; a **To-dos** view fed from Gwen's
-  memory; a side **reader** that opens at a cited passage; and a status drawer
-  with the degradations. The waveform is a compact strip, no longer the
-  centrepiece. Before this release the page was waveform-first with chat
-  fourth. It streams events with `fetch` and sends the secret in the
+  chat-first, the library with the chat inside it: culture-library's look and shell around
+  pocketchat's thread (both cited, not imported). **Ask** is a three-pane
+  workspace: the library list on the left, the conversation in the middle with
+  numbered citations and a Speak button per answer (markers are never read
+  aloud), and the answers' sources on the right, which open the cited passage
+  in place. Both side panes toggle, leave a rail when closed, and become
+  drawers on a phone. Below the thread, the box holds the mic (record and send
+  a question) and the text; beside it sit **Live** (the room microphone's
+  realtime voice) and Upload. **Library** is the shelf and the items as cards,
+  **To-dos** is fed from Gwen's memory, **Stats** shows the library and the
+  usage counters since Gwen started, and a status drawer keeps the room voice
+  controls and the degradations. Before 0.18.0 the page was waveform-first
+  with chat fourth. It streams events with `fetch` and sends the secret in the
   `Authorization` header, so it works from a phone over TLS as well as on
   localhost; the install-secret form shows only when the stream is
   unauthorized, and on the Access-protected public host no secret is entered.
@@ -210,8 +218,8 @@ grant run --inject EMBODIMENT_GATEWAY_KEY=LOBES_GATEWAY_API_KEY \
 **The dashboard** is at `http://127.0.0.1:8823`. It asks for the install
 secret; paste the contents of `<state dir>/install-secret`, where the
 state directory is `$EMBODIMENT_STATE_DIR`, else `$XDG_STATE_HOME/embodiment`,
-else `~/.local/state/embodiment`. The daemon creates that file (0600) on first
-start.
+else `.local/state/embodiment` under your home directory (the XDG default). The
+daemon creates that file (0600) on first start.
 
 **From another device on your tailnet**, bind off loopback and name the host
 a browser will send:
@@ -261,19 +269,14 @@ absence, not an implication.
   keep today's path. Nothing else — no shell, no files, no Qwen Code, and no
   tool that writes to the library. Gwen cannot act on anything outside her own
   memory and her read of the library.
-- **Transcripts in the library.** Gwen reads the library, and the design
-  assumes culture-rules pushes Pocket transcripts into it as EPUB items
-  (decision c21). That is **assumed, not shown**: the catalog held
-  none on 2026-10-24 (13 newspaper issues, 3 documents, 1 book). Until
-  transcripts arrive, Gwen's library answers cite newspapers and documents.
 - **Vision.** The session is audio-only; `senses` does not advertise image
   understanding on this rig.
 - **A face.** The waveform is a compact strip beside the chat; a
   speech-driven face is later.
 - **Live realtime voice and speech-to-speech.** The phone is control, text, and
   uploaded or recorded clips (transcribed by `stt`); there is no live voice from
-  the browser. The dashboard's speech-to-speech button is present and
-  **disabled**. The `BrowserEar` client and the inbound `/v1/realtime`
+  the browser. The dashboard's **Live** button turns on the rig's room
+  microphone, not the phone's, and no speech-to-speech role is used. The `BrowserEar` client and the inbound `/v1/realtime`
   endpoint (`audio/remote.py`) exist and are tested, and are **not wired** into
   the daemon.
 - **A robot relay.** Same seam, same status: a Reachy Mini speaking the lobes

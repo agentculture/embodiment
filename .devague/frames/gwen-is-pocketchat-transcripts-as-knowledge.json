@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-10-23T21:45:45Z",
-  "updated": "2026-10-24T00:11:51Z",
+  "updated": "2026-10-24T06:27:49Z",
   "claims": [
     {
       "id": "c1",
@@ -1024,6 +1024,28 @@
       "skipped_check": "check against the live library catalog",
       "refs": [
         "t13"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l11",
+      "code": "control-absent",
+      "what": "Wave tasks t2/t10/t13 tested the extract seam only with fakes; the daemon's real default extractor was never called as the sync calls it, so a TypeError on every item reached the live run",
+      "skipped_check": "a test that calls the daemon's default extractor through the sync seam",
+      "refs": [
+        "t13"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l12",
+      "code": "assumption-for-measurement",
+      "what": "Put document index version 2 live and reported the search fix as working from one question, before re-running the t15 question sets; the re-measurement then showed hit@5 down (19 to 16 of 32, 17 to 11 of 28). Replaced by version 3, measured equal to version 1.",
+      "skipped_check": "re-run scripts/measure-library.py on both sets before calling the index change a fix",
+      "refs": [
+        "d3"
       ],
       "origin": "llm",
       "status": "proposed"

@@ -45,12 +45,17 @@ NOT_YET = (
     "speech-to-speech",
     "robot relay",
     "value",
-    "transcripts in the library",
 )
 
 #: Shipped on this branch (Access verifier, semantic recall) and so dropped from
 #: the not-yet list: no item of that section may be headed by either again.
-SHIPPED_NOT_LISTED = ("cloudflare access", "semantic recall", "phone voice")
+SHIPPED_NOT_LISTED = (
+    "cloudflare access",
+    "semantic recall",
+    "phone voice",
+    # 33 transcripts were in the library on 2026-10-24 and retrieval was measured.
+    "transcripts in the library",
+)
 
 #: Still unmeasured at this release; the README status must say so, by name.
 STILL_UNMEASURED = (
@@ -207,15 +212,17 @@ def test_surface_describes_the_library_read_path(
 
 
 @pytest.mark.parametrize("surface", ["readme", "explain_root"])
-def test_surface_does_not_overclaim_transcripts(
+def test_surface_points_at_the_library_measurement(
     surface: str, request: pytest.FixtureRequest
 ) -> None:
-    section = _section(request.getfixturevalue(surface), "Not yet").lower()
-    assert "assumed" in section
-    assert "2026-10-24" in section
+    text = request.getfixturevalue(surface)
+    assert "2026-10-24-library.md" in text
+    assert "33" in text  # the transcripts that reached the library that day
 
 
-def test_readme_status_says_library_measurement_is_pending(readme: str) -> None:
+def test_readme_status_reports_library_retrieval_as_measured_once(readme: str) -> None:
     status = _section(readme, "Status").lower()
-    assert "pending" in status
+    assert "measured once" in status
+    assert "19 of 32" in status
     assert "not calibrated on library text" in status
+    assert "value is unmeasured" in status

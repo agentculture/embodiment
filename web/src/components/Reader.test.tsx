@@ -77,12 +77,30 @@ describe("Reader", () => {
     expect(await screen.findByText(/network-error/)).toBeInTheDocument();
   });
 
-  it("layout: side panel >= 861px, full-screen sheet below; logical properties; provenance cited", () => {
+  it("layout: a pane beside the thread (a drawer at 860px and below) or the library page; logical properties; provenance cited", () => {
     const css = readFileSync("src/styles/library.css", "utf8");
-    expect(css).toMatch(/@media \(min-width: 861px\)/);
+    expect(css).toMatch(/\.reader--page\s*\{/);
+    expect(css).toMatch(/@media \(max-width: 860px\)/);
     expect(css).not.toMatch(/\b(margin|padding)-(left|right)\b|(^|[\s{;])(left|right):/m);
     const src = readFileSync("src/components/Reader.tsx", "utf8").slice(0, 1200);
     expect(src).toContain("pocketsync/web/static/app.js:461-626");
     expect(src).toContain("index.html:110-145");
+  });
+});
+
+describe("Reader recovers from a failed open (live 2026-10-24, mid re-index)", () => {
+  it("says the item is not ready yet, and Try again fetches it once it is", async () => {
+    let ready = false;
+    const fetchFn = vi.fn(async () =>
+      ready
+        ? ({ ok: true, status: 200, json: async () => ({ item: { id: "54", title: "Daily newspaper", kind: "article", created_at: "" }, passages: [{ anchor: "p1", heading: "", text: "the news", start_s: null, end_s: null, speaker: "" }] }) } as Response)
+        : ({ ok: false, status: 404, json: async () => ({ error: { code: "library-item-not-found" } }) } as Response),
+    );
+    render(<Reader id="54" onClose={() => {}} clientOptions={{ fetchFn }} />);
+    expect(await screen.findByText(/still indexing it/)).toBeInTheDocument();
+    ready = true;
+    fireEvent.click(screen.getByRole("button", { name: "Try again" }));
+    expect(await screen.findByText("the news")).toBeInTheDocument();
+    expect(fetchFn).toHaveBeenCalledTimes(2);
   });
 });

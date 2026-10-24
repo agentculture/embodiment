@@ -65,12 +65,19 @@ a GET-only client; `search_library` and `read_passage` on typed turns only), the
 write guard (`library_guarded_writes`, `app-library-guarded-write`: no
 `remember`/`forget` in a turn holding library text unless the operator's words name
 it), the audio subprocess env scrub, `status.access` admitted/refused counters,
-`/api/library*` and `/api/todos`, clip answers with sources, and the chat-first
-page (Ask, Library, To-dos, side reader, waveform a strip; it was waveform-first
-with chat fourth). **Transcripts are assumed (c21), not shown: none were in the
-library on 2026-10-24, and the retrieval measurement (t15) is pending.** The
-library threshold is memory's 0.715, provisional and uncalibrated for library
-text.
+`/api/library*` and `/api/todos`, clip answers with sources, and the page: chat-first
+inside the library's look (Ask = library list | conversation with a voice dock |
+the answers' sources and the reader, side panes toggleable, drawers on a phone;
+Library, To-dos, Stats; Live = the rig's room mic, not the phone's). It was
+waveform-first with chat fourth. **Transcripts arrived** (33 on 2026-10-24) and
+retrieval was **measured once** (t15, `docs/live-test-results/2026-10-24-library.md`:
+hit@5 19/32 and 17/28, 0/10 false positives, search p90 0.21 s). The document index
+is at version 3: each chunk scores the better of a content vector and a vector in
+its item's context (title), and fragments under 60 characters are not searched; the
+title-only version 2 measured worse and never shipped. The library threshold is
+memory's 0.715, provisional and uncalibrated for library text. **gwen.culture.dev
+needs its own Cloudflare never-cache rule** (the culture.dev zone caches everything,
+overriding `no-store`); it has one since 2026-10-24.
 
 - **Spec:** `docs/specs/2026-09-21-realtime-embodiment-app.md` — 50 claims, 33
   honesty conditions, after a rigorous `/challenge` pass.

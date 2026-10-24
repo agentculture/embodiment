@@ -144,8 +144,10 @@ def test_budget_stops_and_resumes_next_tick(tmp_path):
     client.fetch_file = slow
     first = sync.tick()
     assert first["indexed"] == 2  # 3s, 6s >= 5s budget: stops before the third
+    assert first["remaining"] == 1  # the worker comes back soon for it
     second = sync.tick()
     assert second["indexed"] == 1
+    assert second["remaining"] == 0
     assert sync.status()["items_indexed"] == 3
 
 
@@ -176,7 +178,9 @@ def test_gate_held_means_no_embed_until_released_and_recall_first(tmp_path):
     t.join(5)
     assert not t.is_alive()
     assert order == [["recall query"]]
-    assert embed.calls[0] == "recall query" and len(embed.calls) == 2
+    # the recall embeds first; then the item's one chunk, as content and in context
+    assert embed.calls[0] == "recall query"
+    assert len(embed.calls) == 3
     assert real is not None
 
 

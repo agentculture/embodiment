@@ -256,3 +256,6 @@ docs/live-test-results/scopebench-config-raw/
 web/node_modules/
 web/dist/
 web/node_modules/.tmp/
+
+# Playwright MCP screenshots and snapshots (local review only)
+.playwright-mcp/

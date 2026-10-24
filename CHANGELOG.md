@@ -7,12 +7,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [0.18.0] - 2026-10-24
 
-**Gwen is pocketchat: the library as knowledge.** Gwen's page is chat-first and
-she can read a library and cite it. Accepted on **one rig**; its value is
-**unmeasured**, and the library retrieval measurement (t15, hit@5 and per-recall
-p90) is **pending**: no number is claimed. **Transcripts are assumed** to reach
-the library through culture-rules (decision c21); the catalog held none on
-2026-10-24 (13 newspaper issues, 3 documents, 1 book).
+**Gwen is pocketchat: the library as knowledge.** Gwen's page is the library with
+the chat inside it, and she can read a library and cite it. Accepted on **one
+rig**; its value is **unmeasured**. Library retrieval was measured once (t15,
+`docs/live-test-results/2026-10-24-library.md`, aggregates only): hit@5 19 of 32
+and 17 of 28 on two model-written question sets, 0 of 10 off-topic false
+positives, search p90 0.21 s at 50 items. Transcripts reach the library through
+culture-rules (decision c21): 33 were there on 2026-10-24.
 
 ### Added
 
@@ -32,14 +33,44 @@ the library through culture-rules (decision c21); the catalog held none on
 - `status.access` admitted and refused-by-code counters in one block.
 - The library similarity threshold reuses `0.715`, provisional and not
   calibrated on library text.
+- The page's **Stats** view: library tiles, status rows (each an icon and a
+  label) and three charts with a Table view, from `GET /api/library` and
+  `GET /api/status`. Usage counts start when Gwen starts; no history is kept.
+- The next typed turn is told the previous answer's sources by the numbers the
+  page showed, so "item 1" means source 1 (live, 2026-10-24: it got "what do you
+  mean by item one?").
 
 ### Changed
 
 - **Before:** the page was waveform-first with chat the fourth panel, and the
   daemon bound two tools (`remember`, `forget`). **After:** the page is
-  chat-first (Ask, Library, To-dos, a side reader, the waveform a compact
-  strip, a status drawer) and typed turns can also use `search_library` and
-  `read_passage`.
+  chat-first inside culture-library's look: Ask is the library list, the
+  conversation with a voice dock (the mic in the box; Live and Upload beside
+  it) and the answers' sources with the reader, both side panes toggleable and
+  drawers on a phone; then Library, To-dos and Stats. Typed turns can also use
+  `search_library` and `read_passage`.
+- Citations: `[2, 3]`, `[2][3]` and `[2-3]` each become separate links, and
+  Speak sends the answer without its markers (operator feedback 2026-10-24).
+- Hebrew answers lay out right to left: a hidden "assistant: " label inside the
+  `dir="auto"` element had made them left to right.
+- The room log shows spoken turns only; typed turns (`typed: true`) were shown
+  twice.
+- The disabled speech-to-speech button is gone: Live (the room microphone) is
+  the speech path, and an advertised speech-to-speech role is reported on it.
+- **Document index version 3** (re-indexes once on start): each chunk carries a
+  content vector and a vector in its item's context (title + heading + text)
+  and scores the better; fragments under 60 characters (newspaper mastheads)
+  are not searched. Live, the mastheads out-ranked every article for a
+  question naming the paper. A title-only version 2 was measured worse (hit@5
+  16 of 32 and 11 of 28) and never shipped.
+- While a sync tick leaves items behind, the next tick runs after 5 s instead
+  of 300 s (a re-index of 50 items: about 15 minutes before, about 15 s now).
+- The reader retries a failed open (Try again, or opening the item again), and
+  says an item still being indexed is not ready yet.
+- On a phone (checked at the iPhone 13 mini's 375 px): the app follows the
+  visual viewport, so the dock stays above the keyboard and the page no longer
+  slides away; the header is one row; the pane toggles float over the thread;
+  the dock is compact, with a one-line placeholder; Stats tiles go two by two.
 - The audio subprocesses are spawned with a scrubbed environment that drops
   the gateway and library keys.
 - README, the `explain` root and `CLAUDE.md` describe the above;

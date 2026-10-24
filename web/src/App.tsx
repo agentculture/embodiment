@@ -1,20 +1,29 @@
-// t12 (plan gwen-is-pocketchat-transcripts-as-knowledge): this shell SUPERSEDES
-// obligation o9 ("the waveform is the centrepiece") per decision c2 -- the page
-// is chat-first now. Layout ported, cited not imported, from pocketchat's shell
-// (pocketsync/web/static/index.html:13-35 top bar + hash views, :36-108 the
-// three views, :110-145 the side reader): a top bar with brand, health pill and
-// Ask/Library/To-dos hash nav; the Ask view first, its composer carrying the
-// voice-as-a-feature buttons (Chat + AudioControls); the waveform reduced to a
-// compact strip under the bar; voice controls, recall mode and degradations in
-// a collapsible status drawer; the install-secret form only while the stream
-// is refused (on the public Host, Access carries the credential instead).
-import { useCallback, useEffect, useRef, useState } from "react";
+// The page, redesigned 2026-10-24 on the operator's word ("the library
+// experience plus the chat experience, closer to option C, within the library
+// experience"; wide and phone; a toggleable left pane and a toggleable right
+// pane of sources; a speech button and a realtime speech button).
+//
+// Shell: culture-library's top bar (brand, pill tabs, search, actions;
+// culture_library/web/static/index.html:19-45). Ask: a three-pane workspace,
+// the library list (left, toggleable), pocketchat's thread with option C's
+// voice dock (centre; pocketsync/web/static/index.html:36-108), and the
+// conversation's sources with the reader in place (right, toggleable;
+// index.html:110-145). On phones both panes are drawers over the thread.
+// Library: culture-library's home (intro + shelf + cards) and its reader view.
+// Stats: culture-library's "Site state". The status drawer keeps the room
+// voice controls, recall mode and degradations; the install-secret form shows
+// only while the stream is refused (on the public Host, Access carries it).
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ConnectionStatus } from "./components/ConnectionStatus";
 import { VoiceControls } from "./components/VoiceControls";
 import { Transcript } from "./components/Transcript";
 import { Chat } from "./components/Chat";
-import { LibraryView } from "./components/LibraryView";
+import { LibraryHome } from "./components/LibraryHome";
+import { LibraryPane } from "./components/LibraryPane";
 import { Reader, type ReaderHandle } from "./components/Reader";
+import { SourcesPane, type AnswerSources } from "./components/SourcesPane";
+import { StatsView } from "./components/StatsView";
+import { Shelf } from "./components/Shelf";
 import { TodosView } from "./components/TodosView";
 import { DegradationsLog } from "./components/DegradationsLog";
 import { RecallModeIndicator } from "./components/RecallModeIndicator";
@@ -23,6 +32,9 @@ import { Waveform, type WaveformProps } from "./components/Waveform";
 import { useEventStream, type UseEventStreamOptions } from "./hooks/useEventStream";
 import { parseControlOutcome, setMicMute, startVoice, stopVoice } from "./api/control";
 import { loadInstallSecretFromSession, saveInstallSecretToSession } from "./api/secret";
+import { fetchLibrary, searchLibrary, type LibraryItem, type SearchHit } from "./api/library";
+import type { ChatSource } from "./api/chat";
+import { itemDay, kindInfo, shortTitle } from "./api/kinds";
 
 export interface AppProps {
   /** Test seam: override the SSE endpoint's URL and connector. */
@@ -30,12 +42,7 @@ export interface AppProps {
   eventStreamOptions?: UseEventStreamOptions;
   /** Test seam (task t18): override the oscilloscope's canvas context
    *  factory / animation-frame scheduler / clock / listener-analyser
-   *  source -- jsdom has no canvas, so an end-to-end App test that needs to
-   *  observe the waveform go live has to inject these, the same way
-   *  `eventStreamOptions` already lets a test inject the SSE seam. Left
-   *  undefined in production, where `Waveform`'s own defaults
-   *  (`canvas.getContext("2d")`, `window.requestAnimationFrame`,
-   *  `Date.now`, no analyser) apply. */
+   *  source -- jsdom has no canvas. Left undefined in production. */
   waveformOptions?: Pick<
     WaveformProps,
     | "contextFactory"
@@ -51,12 +58,13 @@ export interface AppProps {
 
 const DEFAULT_EVENTS_URL = "/api/events";
 
-type View = "ask" | "library" | "todos";
+type View = "ask" | "library" | "todos" | "stats";
 
 const VIEWS: { id: View; label: string }[] = [
   { id: "ask", label: "Ask" },
   { id: "library", label: "Library" },
   { id: "todos", label: "To-dos" },
+  { id: "stats", label: "Stats" },
 ];
 
 /** The view a location hash names; anything else (or none) is Ask. */
@@ -76,6 +84,22 @@ function anchorString(anchor: unknown): string | undefined {
   return undefined;
 }
 
+function wide(min: number): boolean {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
+  return window.matchMedia(`(min-width: ${min}px)`).matches;
+}
+
+type Theme = "light" | "dark" | null;
+
+function loadTheme(): Theme {
+  try {
+    const t = window.localStorage.getItem("gwen-theme");
+    return t === "light" || t === "dark" ? t : null;
+  } catch {
+    return null;
+  }
+}
+
 interface Citation {
   itemId: string;
   anchor?: string;
@@ -89,32 +113,28 @@ const ACTION_LABEL: Record<ControlAction, string> = {
   mute: "mic mute",
 };
 
+function Icon({ d, size = 18 }: { d: string; size?: number }) {
+  return (
+    <svg viewBox="0 0 24 24" width={size} height={size} aria-hidden="true">
+      <path d={d} />
+    </svg>
+  );
+}
+
+const ICON_PANE = "M4 5h16v14H4zM9.5 5v14";
+const ICON_SOURCES = "M4 5h16v14H4zM14.5 5v14";
+
 export default function App({
   eventsUrl = DEFAULT_EVENTS_URL,
   eventStreamOptions,
   waveformOptions,
 }: AppProps) {
-  // `secret` is the live-typed value, bound to the input. It is NEVER used
-  // as a credential directly (round 5 fix) -- only `applySecret` reads it,
-  // at the moment "Apply" is submitted.
+  // `secret` is the live-typed value; only `applySecret` makes it the
+  // credential (`appliedSecret`), so typing never reconnects the stream.
   const [secret, setSecret] = useState(() => loadInstallSecretFromSession());
-  // `appliedSecret` is the ONE credential this dashboard ever sends,
-  // whether to the stream or to a control POST. It is deliberately NOT the
-  // same as `secret`: reconnecting the stream (or authenticating a click)
-  // on every keystroke would be wasteful and would spam t16's guard. It
-  // changes only via `applySecret` (the "Apply" button), and initializes
-  // from sessionStorage directly -- so the FIRST `useEventStream` call
-  // already carries a restored secret, with no separate mount-effect /
-  // extra reconnect cycle needed.
   const [appliedSecret, setAppliedSecret] = useState(() => loadInstallSecretFromSession());
-  // An explicit escape hatch alongside `appliedSecret` itself already being
-  // a reconnect trigger -- re-applying the IDENTICAL secret value still
-  // forces a reconnect (e.g. after the guard was reconfigured server-side).
   const [reconnectVersion, setReconnectVersion] = useState(0);
-  // The most recent control POST's refusal, if any -- cleared on the next
-  // successful one. Never carries anything but the refusal CODE (never the
-  // secret, never the daemon's free-text `message`) -- api/control.ts's
-  // parseControlOutcome already enforces that boundary.
+  // The most recent control POST's refusal CODE, cleared on the next success.
   const [controlRefusal, setControlRefusal] = useState<{ action: ControlAction; code: string } | null>(
     null,
   );
@@ -136,10 +156,6 @@ export default function App({
       const outcome = await parseControlOutcome(response);
       if (outcome.ok) {
         setControlRefusal(null);
-        // 200 -> refresh from a fresh GET /api/status (brief's own ask):
-        // the daemon also publishes a live mic/state event for the same
-        // change, but this gives the operator an immediate, definitive
-        // read rather than depending on that arriving too.
         await stream.refreshStatus();
       } else {
         setControlRefusal({ action, code: outcome.code });
@@ -148,15 +164,8 @@ export default function App({
     [stream],
   );
 
-  // Round 5 correction: the daemon never publishes a "voice-on" status
-  // token (verified against embodiment/daemon/app.py's real `_publish`
-  // calls) -- voiceOn/micHot come from the `mic` event's real shape
-  // (`{hot, ear}`, embodiment/daemon/app.py's `_publish_mic`), seeded on
-  // connect from GET /api/status and kept current by every live `mic`
-  // event the daemon actually sends on every ear attach/detach/mute.
-  // `ear` is a NAME string ("host"/"browser"/"null") when attached, JSON
-  // `null` when not -- `!== null` is the right test, not string truthiness
-  // (the ear literally named "null" is still attached).
+  // voiceOn/micHot come from the `mic` event ({hot, ear}); `ear` is a name
+  // string when attached and JSON null when not.
   const voiceOn = stream.mic ? stream.mic.data.ear !== null : false;
   const micHot = stream.mic ? Boolean(stream.mic.data.hot) : null;
 
@@ -167,70 +176,270 @@ export default function App({
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
-  const [drawerOpen, setDrawerOpen] = useState(false);
+  // iOS Safari keeps the layout viewport when the keyboard opens and shrinks only
+  // the visual one, so a 100dvh page slides up and the dock hides behind the
+  // keyboard (operator's phone, 2026-10-24). The app follows the visual viewport:
+  // its height and top come from it, so the dock rides above the keyboard.
+  useEffect(() => {
+    const vv = typeof window !== "undefined" ? window.visualViewport : null;
+    if (!vv) return;
+    const root = document.documentElement;
+    const sync = () => {
+      root.style.setProperty("--app-h", `${Math.round(vv.height)}px`);
+      root.style.setProperty("--app-top", `${Math.round(vv.offsetTop)}px`);
+    };
+    sync();
+    vv.addEventListener("resize", sync);
+    vv.addEventListener("scroll", sync);
+    return () => {
+      vv.removeEventListener("resize", sync);
+      vv.removeEventListener("scroll", sync);
+    };
+  }, []);
 
-  // The reader a citation opened (pocketchat openCitation -> openReader,
-  // app.js:364-432, 461). A second citation into the item already open moves
-  // it in place through the reader's own openAt, without a refetch.
+  // A phone gets the short placeholder, so it fits on one line.
+  const [narrow, setNarrow] = useState(() => !wide(520));
+  useEffect(() => {
+    if (typeof window === "undefined" || typeof window.matchMedia !== "function") return;
+    const mq = window.matchMedia("(min-width: 520px)");
+    const on = () => setNarrow(!mq.matches);
+    mq.addEventListener?.("change", on);
+    return () => mq.removeEventListener?.("change", on);
+  }, []);
+
+  const [theme, setTheme] = useState<Theme>(loadTheme);
+  useEffect(() => {
+    const root = document.documentElement;
+    if (theme) root.setAttribute("data-theme", theme);
+    else root.removeAttribute("data-theme");
+  }, [theme]);
+  const toggleTheme = () => {
+    const dark = theme ? theme === "dark" : window.matchMedia?.("(prefers-color-scheme: dark)").matches;
+    const next: Theme = dark ? "light" : "dark";
+    setTheme(next);
+    try {
+      window.localStorage.setItem("gwen-theme", next);
+    } catch {
+      // a blocked store only loses the remembered theme
+    }
+  };
+
+  const [drawerOpen, setDrawerOpen] = useState(false);
+  const [leftOpen, setLeftOpen] = useState(() => wide(1280));
+  const [rightOpen, setRightOpen] = useState(false);
+
+  // The library, fetched once and shared by the list, the shelf, the cards and Stats.
+  const [items, setItems] = useState<LibraryItem[]>([]);
+  const [libraryError, setLibraryError] = useState<string | null>(null);
+  useEffect(() => {
+    let live = true;
+    void fetchLibrary(appliedSecret).then((r) => {
+      if (!live) return;
+      if (r.ok) {
+        setItems(r.value);
+        setLibraryError(null);
+      } else setLibraryError(r.code);
+    });
+    return () => {
+      live = false;
+    };
+  }, [appliedSecret, reconnectVersion]);
+
+  // Header search: titles filter as you type; Enter searches passages by meaning.
+  const [query, setQuery] = useState("");
+  const [hits, setHits] = useState<SearchHit[] | null>(null);
+  const [searching, setSearching] = useState(false);
+  const runSearch = async () => {
+    const q = query.trim();
+    if (!q) return;
+    setSearching(true);
+    const r = await searchLibrary(q, appliedSecret);
+    setHits(r.ok ? r.value : []);
+    setSearching(false);
+  };
+
+  // The conversation's sources (right pane) and the reader a citation opened.
+  const [answers, setAnswers] = useState<AnswerSources[]>([]);
+  const onAnswer = useCallback((question: string, sources: ChatSource[]) => {
+    setAnswers((a) => [...a, { key: `s-${a.length}`, question, sources }]);
+    if (sources.length > 0 && wide(1100)) setRightOpen(true);
+  }, []);
+  const citedIds = useMemo(
+    () => new Set(answers.flatMap((a) => a.sources.map((s) => s.item_id ?? "")).filter(Boolean)),
+    [answers],
+  );
+
   const [citation, setCitation] = useState<Citation | null>(null);
   const readerRef = useRef<ReaderHandle>(null);
   const openCitation = useCallback(
     (itemId: string, rawAnchor: unknown) => {
       const anchor = anchorString(rawAnchor);
-      if (citation && citation.itemId === itemId && anchor) readerRef.current?.openAt(anchor);
+      if (citation && citation.itemId === itemId) {
+        // The same item again: move to the passage, and fetch again in case the
+        // first open failed (an item not yet re-indexed, live 2026-10-24).
+        if (anchor) readerRef.current?.openAt(anchor);
+        readerRef.current?.reload();
+      }
       setCitation({ itemId, anchor });
+      setRightOpen(true);
+      if (!wide(1280)) setLeftOpen(false);
     },
     [citation],
   );
-  const closeReader = useCallback(() => setCitation(null), []);
+  const closeRight = useCallback(() => {
+    setRightOpen(false);
+    setCitation(null);
+  }, []);
+
+  // The Library tab's own reader (culture-library's reader view).
+  const [libOpen, setLibOpen] = useState<string | null>(null);
+  const openInLibrary = (id: string) => {
+    setLibOpen(id);
+    window.location.hash = "#library";
+    setView("library");
+  };
+
+  const go = (v: View) => {
+    setView(v);
+    if (v !== "library") setLibOpen(null);
+  };
 
   const unauthorized = stream.status === "unauthorized";
+  const sourceCount = answers.reduce((n, a) => n + a.sources.length, 0);
+
+  // Realtime voice sits beside the input box, not in it. The level strip stays
+  // mounted (the waveform keeps its live/idle state) but is drawn as the Live
+  // button's breathing ring, not as a trace in the box.
+  const live = (
+    <div className="live-wrap" data-on={voiceOn ? "true" : undefined}>
+      <button
+        type="button"
+        className="live"
+        aria-pressed={voiceOn}
+        data-hot={micHot ? "true" : undefined}
+        aria-label={voiceOn ? "End live voice" : "Live voice"}
+        aria-describedby="live-note"
+        title={voiceOn ? "End live voice with Gwen" : "Talk with Gwen live through the room microphone"}
+        onClick={() =>
+          void (voiceOn
+            ? runControl("stop", () => stopVoice(appliedSecret))
+            : runControl("start", () => startVoice(appliedSecret)))
+        }
+      >
+        <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+          <path d="M4 10v4M8 7v10M12 4v16M16 7v10M20 10v4" />
+        </svg>
+      </button>
+      <span id="live-note" className="sr-only">
+        {voiceOn ? (micHot ? "Listening through the room microphone." : "Muted.") : "Off."}{" "}
+        {stream.s2sRole
+          ? `The gateway advertises a speech-to-speech role (${stream.s2sRole}); this page does not use it yet.`
+          : "No speech-to-speech role is advertised by the gateway."}
+      </span>
+      <section className="strip" aria-label="Waveform" data-on={voiceOn ? "true" : undefined}>
+        <h2 className="sr-only">Waveform</h2>
+        <Waveform features={stream.features} {...waveformOptions} />
+      </section>
+    </div>
+  );
+
+  const recentTranscripts = [...items]
+    .filter((i) => i.kind === "transcript")
+    .sort((a, b) => (itemDay(a.createdAt, a.title) < itemDay(b.createdAt, b.title) ? 1 : -1))
+    .slice(0, 3);
+
+  const emptyState = (ask: (q: string) => void) => (
+    <div className="welcome">
+      <h1>What would you like to know?</h1>
+      <p>
+        Gwen answers from your recordings, the daily paper and your documents, and shows the passage behind every
+        claim.
+      </p>
+      <div className="suggestions">
+        {[
+          "What did I commit to this week?",
+          "What was in today's newspaper?",
+          ...recentTranscripts.slice(0, 2).map((t) => `Summarize the ${shortTitle(t.title)} recording`),
+        ].map((q) => (
+          <button key={q} type="button" className="suggestion" dir="auto" onClick={() => ask(q)}>
+            {q}
+          </button>
+        ))}
+      </div>
+      {items.length > 0 && <Shelf items={items} onOpen={(id) => openCitation(id, undefined)} max={60} />}
+    </div>
+  );
 
   return (
-    <div className="app">
+    <div className="app" data-view={view}>
       <a className="skip" href="#main">
         Skip to content
       </a>
-      <header className="bar">
-        <a className="brand" href="#ask" onClick={() => setView("ask")}>
-          <svg className="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
-            <rect x="2" y="10" width="20" height="4" rx="2" />
-            <rect x="9" y="10" width="6" height="4" className="brand-mark-hit" />
+      <header className="top">
+        <a className="brand" href="#ask" onClick={() => go("ask")} aria-label="Gwen home">
+          <svg width="28" height="28" viewBox="0 0 28 28" aria-hidden="true" className="brand-mark">
+            <rect x="3" y="7" width="5" height="17" rx="2" fill="var(--k-transcript)" />
+            <rect x="10" y="3" width="5" height="21" rx="2" fill="var(--accent)" />
+            <rect x="17" y="9" width="5" height="15" rx="2" fill="var(--k-newspaper)" transform="rotate(-8 19.5 16)" />
           </svg>
           <span>Gwen</span>
         </a>
-        <nav className="views" aria-label="Views">
+        <nav className="tabs" aria-label="Views">
           {VIEWS.map((v) => (
-            <a
-              key={v.id}
-              href={`#${v.id}`}
-              aria-current={view === v.id ? "page" : undefined}
-              onClick={() => setView(v.id)}
-            >
+            <a key={v.id} href={`#${v.id}`} aria-current={view === v.id ? "page" : undefined} onClick={() => go(v.id)}>
               {v.label}
             </a>
           ))}
         </nav>
-        <span className="health">
-          <ConnectionStatus status={stream.status} />
-        </span>
-        <button
-          type="button"
-          className="drawer-toggle"
-          aria-expanded={drawerOpen}
-          aria-controls="status-drawer"
-          onClick={() => setDrawerOpen((o) => !o)}
+        <form
+          className="search"
+          role="search"
+          onSubmit={(e) => {
+            e.preventDefault();
+            go("ask");
+            window.location.hash = "#ask";
+            setLeftOpen(true);
+            void runSearch();
+          }}
         >
-          Status
-        </button>
+          <Icon d="M10.5 17a6.5 6.5 0 1 1 0-13 6.5 6.5 0 0 1 0 13zM15.5 15.5 20 20" size={16} />
+          <label className="sr-only" htmlFor="lib-search">
+            Search your library
+          </label>
+          <input
+            id="lib-search"
+            type="search"
+            dir="auto"
+            autoComplete="off"
+            placeholder="Search your library: titles, or press Enter to search passages"
+            value={query}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              setHits(null);
+              if (e.target.value && view === "ask") setLeftOpen(true);
+            }}
+          />
+        </form>
+        <div className="actions">
+          <span className="health">
+            <ConnectionStatus status={stream.status} />
+          </span>
+          <button
+            type="button"
+            className="pill-btn drawer-toggle"
+            aria-label="Status"
+            aria-expanded={drawerOpen}
+            aria-controls="status-drawer"
+            onClick={() => setDrawerOpen((o) => !o)}
+          >
+            <span className="mic-state" data-hot={micHot ? "true" : undefined} aria-hidden="true" />
+            <span className="lbl">Status</span>
+          </button>
+          <button type="button" className="icon-btn" aria-label="Switch colour theme" onClick={toggleTheme}>
+            <Icon d="M12 3a9 9 0 1 0 9 9 7 7 0 0 1-9-9z" />
+          </button>
+        </div>
       </header>
-
-      {/* Decision c2 supersedes obligation o9: the waveform is a compact
-          strip under the bar -- still live, never the largest element. */}
-      <section className="strip" aria-label="Waveform">
-        <h2 className="sr-only">Waveform</h2>
-        <Waveform features={stream.features} {...waveformOptions} />
-      </section>
 
       {unauthorized && (
         <form
@@ -240,9 +449,7 @@ export default function App({
             applySecret(secret);
           }}
         >
-          <p className="secret-form__lead">
-            The daemon refused this page. Enter the install secret to connect.
-          </p>
+          <p className="secret-form__lead">This page is not signed in. Enter the install secret to connect.</p>
           <label>
             install secret{" "}
             <input
@@ -253,64 +460,198 @@ export default function App({
               autoComplete="off"
             />
           </label>
-          <button type="submit">Apply</button>
+          <button type="submit" className="btn primary">
+            Apply
+          </button>
         </form>
       )}
 
       <main id="main" className="main" tabIndex={-1}>
-        <section className="view view--ask" data-view="ask" aria-label="Ask" hidden={view !== "ask"}>
-          <section className="thread thread--voice" aria-labelledby="voice-thread-title">
-            <h2 className="sr-only" id="voice-thread-title">
-              Transcript
-            </h2>
-            <Transcript entries={stream.transcript} />
-          </section>
-          <Chat
-            secret={appliedSecret}
-            replyEvents={stream.transcript}
-            s2sRole={stream.s2sRole ?? undefined}
-            onOpenCitation={openCitation}
+        <section
+          className="view view--ask workspace"
+          data-view="ask"
+          aria-label="Ask"
+          hidden={view !== "ask"}
+          data-left={leftOpen ? "open" : undefined}
+          data-right={rightOpen ? "open" : undefined}
+        >
+          {!leftOpen && (
+            <button
+              type="button"
+              className="rail rail--left"
+              aria-label="Show the library list"
+              title="Show the library list"
+              onClick={() => setLeftOpen(true)}
+            >
+              <Icon d={ICON_PANE} size={18} />
+              <span className="rail-label">Library</span>
+              <span className="rail-count">{items.length}</span>
+            </button>
+          )}
+          <div className="ws-left" aria-hidden={!leftOpen || undefined}>
+            <LibraryPane
+              items={items}
+              error={libraryError}
+              openId={citation?.itemId ?? null}
+              citedIds={citedIds}
+              query={query}
+              hits={hits}
+              searching={searching}
+              onOpen={(id, anchor) => openCitation(id, anchor)}
+              onClose={() => setLeftOpen(false)}
+              onQuery={(q) => {
+                setQuery(q);
+                setHits(null);
+              }}
+              onSearch={() => void runSearch()}
+            />
+          </div>
+          <button
+            type="button"
+            className="scrim"
+            aria-label="Close panels"
+            tabIndex={-1}
+            onClick={() => {
+              setLeftOpen(false);
+              closeRight();
+            }}
           />
+          <div className="ws-center">
+            <div className="ws-bar">
+              <button
+                type="button"
+                className="pill-btn"
+                aria-pressed={leftOpen}
+                aria-label={leftOpen ? "Hide the library list" : "Show the library list"}
+                onClick={() => setLeftOpen((o) => !o)}
+              >
+                <Icon d={ICON_PANE} size={16} />
+                <span className="lbl">Library</span>
+              </button>
+              <span className="ws-sp" />
+              <button
+                type="button"
+                className="pill-btn"
+                aria-pressed={rightOpen}
+                aria-label={rightOpen ? "Hide sources" : "Show sources"}
+                onClick={() => (rightOpen ? closeRight() : setRightOpen(true))}
+              >
+                <span className="lbl">Sources</span>
+                {sourceCount > 0 && <span className="count">{sourceCount}</span>}
+                <Icon d={ICON_SOURCES} size={16} />
+              </button>
+            </div>
+            <section className="thread thread--voice" aria-labelledby="voice-thread-title">
+              <h2 className="sr-only" id="voice-thread-title">
+                Transcript
+              </h2>
+              <Transcript entries={stream.transcript} />
+            </section>
+            <Chat
+              secret={appliedSecret}
+              replyEvents={stream.transcript}
+              s2sRole={stream.s2sRole ?? undefined}
+              onOpenCitation={openCitation}
+              onAnswer={onAnswer}
+              emptyState={emptyState}
+              live={live}
+              placeholder={narrow ? "Ask Gwen" : undefined}
+            />
+          </div>
+          {!rightOpen && (
+            <button
+              type="button"
+              className="rail rail--right"
+              aria-label="Show sources"
+              title="Show sources"
+              onClick={() => setRightOpen(true)}
+            >
+              <Icon d={ICON_SOURCES} size={18} />
+              <span className="rail-label">Sources</span>
+              {sourceCount > 0 && <span className="rail-count rail-count--on">{sourceCount}</span>}
+            </button>
+          )}
+          <div className="ws-right" aria-hidden={!rightOpen || undefined}>
+            {rightOpen && (
+              <SourcesPane
+                answers={answers}
+                open={citation}
+                secret={appliedSecret}
+                readerRef={readerRef}
+                onOpen={openCitation}
+                onBack={() => setCitation(null)}
+                onClose={closeRight}
+              />
+            )}
+          </div>
         </section>
-        {view === "library" && (
-          <section className="view" data-view="library">
-            <h1 className="view__title">Library</h1>
-            <LibraryView secret={appliedSecret} />
+
+        {view === "library" &&
+          (libOpen ? (
+            <section className="view view--read" data-view="library" aria-label="Library">
+              <div className="read-split">
+                <div className="read-pane">
+                  <LibraryPane items={items} error={libraryError} openId={libOpen} onOpen={(id) => setLibOpen(id)} />
+                </div>
+                <div className="read-main">
+                  <div className="read-tools">
+                    <button type="button" className="pill-btn" onClick={() => setLibOpen(null)}>
+                      <Icon d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z" size={16} />
+                      All cards
+                    </button>
+                    <span className="ws-sp" />
+                    <span className="read-kind">
+                      {kindInfo(items.find((i) => i.id === libOpen)?.kind ?? "").one}
+                    </span>
+                  </div>
+                  <Reader id={libOpen} secret={appliedSecret} variant="page" onClose={() => setLibOpen(null)} />
+                </div>
+              </div>
+            </section>
+          ) : (
+            <section className="view view--home" data-view="library" aria-label="Library">
+              <LibraryHome
+                items={items}
+                error={libraryError}
+                onOpen={openInLibrary}
+                onAsk={() => {
+                  window.location.hash = "#ask";
+                  go("ask");
+                }}
+              />
+            </section>
+          ))}
+        {view === "todos" && (
+          <section className="view view--page" data-view="todos">
+            <h1 className="view__title">To-dos</h1>
+            <p className="view__lede">Action items Gwen found in your recordings.</p>
+            <TodosView secret={appliedSecret} />
           </section>
         )}
-        {view === "todos" && (
-          <section className="view" data-view="todos">
-            <h1 className="view__title">To-dos</h1>
-            <TodosView secret={appliedSecret} />
+        {view === "stats" && (
+          <section className="view view--page" data-view="stats">
+            <StatsView items={items} secret={appliedSecret} />
           </section>
         )}
       </main>
 
-      {citation && (
-        <Reader
-          ref={readerRef}
-          id={citation.itemId}
-          anchor={citation.anchor}
-          secret={appliedSecret}
-          onClose={closeReader}
-        />
-      )}
-
+      <div className="sheet-scrim" hidden={!drawerOpen} onClick={() => setDrawerOpen(false)} />
       <section id="status-drawer" className="drawer" aria-label="Status" hidden={!drawerOpen}>
+        <div className="drawer__head">
+          <h2>Status</h2>
+          <button type="button" className="icon-btn" aria-label="Close status" onClick={() => setDrawerOpen(false)}>
+            <Icon d="M6 6l12 12M18 6 6 18" />
+          </button>
+        </div>
         <section className="drawer__section">
-          <h2 className="drawer__title">Voice</h2>
+          <h3 className="drawer__title">Room voice</h3>
+          <p className="drawer__note">Gwen listens through the room microphone on the rig, not this device.</p>
           <VoiceControls
             voiceOn={voiceOn}
             micHot={micHot}
             onStart={() => void runControl("start", () => startVoice(appliedSecret))}
             onStop={() => void runControl("stop", () => stopVoice(appliedSecret))}
-            // Round 6 fix: `hot` means "capturing, NOT muted" (daemon's
-            // `_publish_mic`: `hot = ear is not None and not self._muted()`).
-            // To TOGGLE, the new `muted` value must equal the CURRENT `hot`
-            // value -- hot=true (unmuted) -> mute it (muted=true); hot=false
-            // (muted) -> unmute it (muted=false). The button is disabled
-            // when `micHot` is null (see VoiceControls.tsx), so that case
-            // never reaches here -- `Boolean(micHot)` is safe without an `??`.
+            // `hot` means capturing and NOT muted, so the new `muted` value is the current `hot`.
             onToggleMute={() => void runControl("mute", () => setMicMute(appliedSecret, Boolean(micHot)))}
           />
           {controlRefusal && (
@@ -320,7 +661,7 @@ export default function App({
           )}
         </section>
         <section className="drawer__section">
-          <h2 className="drawer__title">Recall</h2>
+          <h3 className="drawer__title">Recall</h3>
           <div className="indicator-row">
             <RemoteViewers clients={stream.clients} />
             <RecallModeIndicator
@@ -331,7 +672,7 @@ export default function App({
           </div>
         </section>
         <section className="drawer__section">
-          <h2 className="drawer__title">Degradations</h2>
+          <h3 className="drawer__title">Degradations</h3>
           <DegradationsLog entries={stream.degradations} />
         </section>
       </section>

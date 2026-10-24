@@ -46,11 +46,23 @@ from typing import Any, Callable, Optional, Protocol
 
 from embodiment import safe_reason
 
-INDEX_VERSION = 1
+#: 3 (2026-10-24): each chunk carries two vectors, its content (heading + text, as in
+#: version 1) and its content in its item's context (title + heading + text), and
+#: scores the better of the two; fragments under MIN_CHUNK_CHARS are not searched.
+#: Version 2 used the title-context vector alone and was measured worse on content
+#: questions (hit@5 19 -> 16 and 17 -> 11 on the t15 sets, the misses being empty
+#: results under the threshold), so it never shipped. An older index re-indexes.
+INDEX_VERSION = 3
 #: A chunk's text is at most this many characters (passages are joined, not cut,
 #: unless one passage alone is longer; then it is split on whitespace).
 MAX_CHUNK_CHARS = 1000
 CHUNK_SEPARATOR = "\n\n"
+#: A chunk shorter than this is a masthead, a date line or a stray heading: it is kept
+#: for reading but not searched, unless the item has nothing longer. Measured live on
+#: 2026-10-24: every daily paper opens with "Daily newspaper" / "2026-10-24" (10
+#: characters), and those mastheads out-ranked every article for a question naming
+#: the paper, so the model was handed five dates and no news.
+MIN_CHUNK_CHARS = 60
 BOOK_KIND = "book"
 #: Searched when the caller names no kinds. xteink labels newspapers and documents
 #: ``article``; transcripts arrive as ``article`` EPUBs or as ``transcript``.
@@ -185,12 +197,21 @@ def _chunks(passages: list[dict]) -> list[dict]:
                 "end_s": passage["end_s"],
             }
             chunks.append(current)
-    return chunks
+    substantial = [c for c in chunks if len(c["text"]) >= MIN_CHUNK_CHARS]
+    return substantial or chunks
 
 
-def _embed_text(chunk: dict) -> str:
-    heading = chunk.get("heading")
-    return f"{heading}\n{chunk['text']}" if heading else chunk["text"]
+def _embed_text(chunk: dict, title: Any = None) -> str:
+    """The text a chunk is embedded as: its heading and text, after *title* if given.
+
+    Without a title this is the content view (what the passage says). With its
+    item's title it is the context view, which carries what the passage alone does
+    not say (which paper, which day, which recording), so a question naming the
+    item finds its content.
+    """
+    lines = [str(x) for x in (title, chunk.get("heading")) if x]
+    lines.append(chunk["text"])
+    return "\n".join(lines)
 
 
 def _numeric_vector(value: Any) -> Optional[list[float]]:
@@ -332,9 +353,9 @@ class DocumentIndex:
             return True
         return _item_id(item_meta) in self.book_ids
 
-    def _embed_chunk(self, chunk: dict) -> list[float]:
+    def _embed_chunk(self, chunk: dict, title: Any = None) -> list[float]:
         try:
-            value = self._embed(_embed_text(chunk))
+            value = self._embed(_embed_text(chunk, title))
         except Exception as exc:  # noqa: BLE001  # an embedder failure is a typed refusal
             raise IndexRefused("embed_failed", _reason(safe_reason.describe_exception(exc)))
         vector = _numeric_vector(value)
@@ -357,8 +378,11 @@ class DocumentIndex:
                 return 0
         stored = [_passage(p) for p in passages]
         chunks = _chunks(stored)
+        title = _meta(item_meta).get("title")
         for chunk in chunks:
             chunk["vec"] = self._embed_chunk(chunk)
+            if title:
+                chunk["tvec"] = self._embed_chunk(chunk, title)
         with self._lock:
             self._items[item_id] = {
                 "sha256": sha,
@@ -469,7 +493,8 @@ class DocumentIndex:
         meta = item["meta"]
         hits = []
         for chunk in item["chunks"]:
-            score = _cosine(query, query_norm, chunk.get("vec"))
+            views = (_cosine(query, query_norm, chunk.get(key)) for key in ("vec", "tvec"))
+            score = max((v for v in views if v is not None), default=None)
             if score is None or score < threshold:
                 continue
             hits.append(

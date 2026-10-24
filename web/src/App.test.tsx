@@ -266,8 +266,8 @@ describe("App — every state from the committed event fixtures", () => {
     await act(async () => {
       FakeSSEConnection.latest().open();
     });
-    expect(screen.getByText("s2s-role-x")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Speech-to-speech" })).toBeDisabled();
+    // the advertised role is reported on the Live control, which does not use it yet
+    expect(screen.getByRole("button", { name: "Live voice" })).toHaveAccessibleDescription(/s2s-role-x.*does not use it yet/);
   });
 
   it("a live memory degradation still wins over the configured-mode fallback", async () => {
@@ -346,7 +346,7 @@ describe("App — every state from the committed event fixtures", () => {
     expect(toggle).toHaveAttribute("aria-expanded", "true");
     expect(drawer).not.toHaveAttribute("hidden");
     const inDrawer = within(drawer as HTMLElement);
-    expect(inDrawer.getByRole("heading", { name: "Voice" })).toBeInTheDocument();
+    expect(inDrawer.getByRole("heading", { name: "Room voice" })).toBeInTheDocument();
     expect(inDrawer.getByRole("button", { name: "Start voice" })).toBeInTheDocument();
     expect(inDrawer.getByText(/recall: unknown/)).toBeInTheDocument();
     expect(inDrawer.getByRole("heading", { name: "Degradations" })).toBeInTheDocument();
@@ -574,8 +574,11 @@ describe("App — every state from the committed event fixtures", () => {
         await act(async () => {
           fireEvent.click(screen.getByRole("button", { name: "Mute mic" }));
         });
-        const [, init] = fetchFn.mock.calls[0];
-        expect(JSON.parse((init as RequestInit).body as string)).toEqual({ muted: true });
+        // The page also GETs the library on mount; pick the mute POST by URL.
+        const call = fetchFn.mock.calls.find(([url]) => String(url).endsWith("/mic/mute"));
+        expect(call).toBeDefined();
+        const [, init] = call as [RequestInfo | URL, RequestInit];
+        expect(JSON.parse(init.body as string)).toEqual({ muted: true });
       } finally {
         globalThis.fetch = originalFetch;
       }
@@ -693,8 +696,8 @@ describe("App — every state from the committed event fixtures", () => {
   });
 
   // t12 AC1 (decision c2 supersedes obligation o9): the top bar carries
-  // brand, health pill and the Ask/Library/To-dos nav; the Ask view is the
-  // first view; the waveform is a compact strip, never the hero.
+  // brand, health pill and the Ask/Library/To-dos/Stats nav; the Ask view is
+  // the first view; the waveform is a compact strip, never the hero.
   it("pins the chat-first order: top bar (brand, health, nav), then the Ask view, waveform a strip", () => {
     renderApp(undefined, { drawer: false });
     const bar = screen.getByRole("banner");
@@ -702,8 +705,8 @@ describe("App — every state from the committed event fixtures", () => {
     const health = within(bar).getByRole("status");
     const nav = within(bar).getByRole("navigation", { name: "Views" });
     const links = within(nav).getAllByRole("link");
-    expect(links.map((a) => a.textContent)).toEqual(["Ask", "Library", "To-dos"]);
-    expect(links.map((a) => a.getAttribute("href"))).toEqual(["#ask", "#library", "#todos"]);
+    expect(links.map((a) => a.textContent)).toEqual(["Ask", "Library", "To-dos", "Stats"]);
+    expect(links.map((a) => a.getAttribute("href"))).toEqual(["#ask", "#library", "#todos", "#stats"]);
     expect(brand.getAttribute("href")).toBe("#ask");
     expect(health).toHaveAttribute("data-status", "connecting");
 
@@ -717,13 +720,18 @@ describe("App — every state from the committed event fixtures", () => {
     // the composer (with voice-as-a-feature buttons) lives in the Ask view
     const ask = views[0] as HTMLElement;
     expect(within(ask).getByRole("form", { name: "composer" })).toBeInTheDocument();
-    expect(within(ask).getByRole("button", { name: "Speech-to-speech" })).toBeInTheDocument();
 
-    // the waveform is a compact strip outside main, never inside the views
+    // realtime voice is its own control beside the input box (operator,
+    // 2026-10-24); the level strip stays mounted with it, never a hero panel
     const canvas = document.querySelector("canvas.waveform") as HTMLElement;
     expect(canvas).not.toBeNull();
-    expect(main.contains(canvas)).toBe(false);
     expect(canvas.closest(".strip")).not.toBeNull();
+    const liveButton = within(ask).getByRole("button", { name: "Live voice" });
+    const composer = within(ask).getByRole("form", { name: "composer" });
+    // beside the input box, not inside it
+    expect((composer.querySelector(".dock") as HTMLElement).contains(liveButton)).toBe(false);
+    expect(liveButton.closest(".live-wrap")?.contains(canvas)).toBe(true);
+    expect(within(composer).getByRole("button", { name: "Record" })).toBeInTheDocument();
     // the old full-width centrepiece panel is gone
     expect(document.querySelector(".panel--waveform")).toBeNull();
   });
