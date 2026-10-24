@@ -74,3 +74,24 @@ describe("TodosView checking (d16)", () => {
     expect(box).not.toBeChecked();
   });
 });
+
+describe("TodosView after Gwen marks one (review of PR #103)", () => {
+  it("reloads when the refresh key changes, showing Gwen's mark", async () => {
+    let done = false;
+    const fetchFn = vi.fn(async () =>
+      ({
+        ok: true,
+        status: 200,
+        json: async () => ({
+          groups: [{ recording_id: "r1", title: "Standup", date: "", items: [{ id: "t1", text: "call Dana", created: "", done, done_by: done ? "gwen" : null }] }],
+        }),
+      }) as Response,
+    );
+    const { rerender } = render(<TodosView clientOptions={{ fetchFn }} refreshKey={0} />);
+    expect(await screen.findByRole("checkbox", { name: "call Dana" })).not.toBeChecked();
+    done = true;
+    rerender(<TodosView clientOptions={{ fetchFn }} refreshKey={1} />);
+    await waitFor(() => expect(screen.getByRole("checkbox", { name: "call Dana" })).toBeChecked());
+    expect(screen.getByText("marked by Gwen")).toBeInTheDocument();
+  });
+});

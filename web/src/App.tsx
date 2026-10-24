@@ -721,7 +721,7 @@ export default function App({
           <section className="view view--page" data-view="todos">
             <h1 className="view__title">To-dos</h1>
             <p className="view__lede">Action items Gwen found in your recordings.</p>
-            <TodosView secret={appliedSecret} />
+            <TodosView secret={appliedSecret} refreshKey={stream.todo?.seq ?? 0} />
           </section>
         )}
         {view === "stats" && (

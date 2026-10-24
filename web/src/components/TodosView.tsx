@@ -15,6 +15,8 @@ export interface TodosViewProps {
   /** Install secret the page already holds; sent only when present. */
   secret?: string;
   clientOptions?: TodosClientOptions;
+  /** Changes when a to-do was marked elsewhere (Gwen, in chat): the list reloads. */
+  refreshKey?: number;
 }
 
 type State =
@@ -23,7 +25,7 @@ type State =
   | { kind: "unavailable" }
   | { kind: "error" };
 
-export function TodosView({ secret = "", clientOptions }: TodosViewProps) {
+export function TodosView({ secret = "", clientOptions, refreshKey = 0 }: TodosViewProps) {
   const [state, setState] = useState<State>({ kind: "loading" });
   const [failed, setFailed] = useState<string | null>(null);
 
@@ -52,7 +54,7 @@ export function TodosView({ secret = "", clientOptions }: TodosViewProps) {
       live = false;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [secret]);
+  }, [secret, refreshKey]);
 
   return (
     <section className="todos" aria-label="to-dos">

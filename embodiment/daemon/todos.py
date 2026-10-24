@@ -54,7 +54,12 @@ class TodoStates:
         if self._states is None:
             try:
                 data = json.loads(self._path.read_text(encoding="utf-8"))
+            except (FileNotFoundError, NotADirectoryError):
+                data = {}  # nothing saved yet
             except (OSError, ValueError):
+                # Unreadable: kept aside, never overwritten by the next save (review of
+                # PR #103), so every earlier mark can still be recovered by hand.
+                self._set_aside()
                 data = {}
             self._states = {
                 k: v
@@ -62,6 +67,12 @@ class TodoStates:
                 if valid_todo_id(k) and isinstance(v, dict) and isinstance(v.get("done"), bool)
             }
         return self._states
+
+    def _set_aside(self) -> None:
+        try:
+            os.replace(self._path, self._path.with_name(f"{self._path.name}.unreadable"))
+        except OSError:
+            self.save_failures += 1  # the next save will not land over it either way
 
     def get(self, todo_id: str) -> dict[str, Any]:
         """``{"done", "at", "by"}`` for *todo_id*; a never-marked one is open."""
@@ -116,27 +127,18 @@ NOT_ASKED = (
 )
 UNKNOWN_TODO = "No to-do has that id."
 NOT_SAVED = "The to-do could not be marked (the state could not be saved)."
-#: The operator's own words must carry one of these for set_todo_done to run: a to-do
-#: text, or a transcript, saying "mark this done" is never enough (the write guard's
-#: rule, c31, applied to this write).
-ASK_STEMS = (
-    "done",
-    "check",
-    "mark",
-    "tick",
-    "complete",
-    "finish",
-    "reopen",
-    "undo",
-    "סיימ",
-    "בוצע",
-    "עשיתי",
-    "סמנ",
-    "סמן",
-    "גמר",
-    "טופל",
-    "מחדש",
-    "בטל",
+#: set_todo_done runs only when the operator's own words in the turn ASK to mark a
+#: to-do -- a marking verb, or a first-person "I did it" -- never because a to-do or a
+#: transcript says "mark this done" (the write guard's rule, c31, applied to this
+#: write). A bare stem was too loose: "what haven't I done yet?" and "check my todos"
+#: authorised writes (review of PR #103). A question never counts.
+_MARK_ASKS = (
+    re.compile(r"\b(?:mark|tick|check\s+off|cross\s+off|uncheck|unmark|reopen)\b", re.I),
+    re.compile(r"\bi(?:'ve|\s+have)?\s+(?:done|finished|completed|did)\b", re.I),
+    re.compile(r"\b(?:it'?s|that'?s|is)\s+(?:done|finished|complete)\b", re.I),
+    re.compile(r"(?:^|\s)(?:ת?סמני|ת?סמן|סמנו|בטלי|בטל)(?:\s|$)"),
+    re.compile(r"(?:^|\s)(?:עשיתי|סיימתי|גמרתי|ביצעתי)(?:\s|$)"),
+    re.compile(r"(?:^|\s)(?:בוצע|טופל|נעשה)(?:\s|$)"),
 )
 
 
@@ -159,8 +161,10 @@ _SET_DESCRIPTION = (
 
 
 def user_asks_to_mark(words: Any) -> bool:
-    text = str(words or "").casefold()
-    return any(stem in text for stem in ASK_STEMS)
+    text = " ".join(str(words or "").split())
+    if not text or text.rstrip().endswith("?"):
+        return False
+    return any(pattern.search(text) for pattern in _MARK_ASKS)
 
 
 def _matches(item: dict, status: Any, day: Any, words: Any) -> bool:

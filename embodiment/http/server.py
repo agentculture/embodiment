@@ -1046,8 +1046,10 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_error(outcome.status, outcome.code, outcome.message)
             return
         result = outcome.result or {}
-        if result.get("todo") is None:
-            self._send_error(404, "todo-unknown", "no such to-do")
+        refused = _TODO_REFUSALS.get(result.get("code") or "")
+        if refused is not None or result.get("todo") is None:
+            status, code, message = refused or _TODO_REFUSALS["todo-unknown"]
+            self._send_error(status, code, message)
             return
         self._send_json(200, {"ok": True, "result": result})
 
@@ -1523,6 +1525,15 @@ class ControlOutcome:
     status: int
     code: str
     message: str
+
+
+#: How a refused mark is answered (review of PR #103): a save that failed is not a
+#: success the page could keep showing, and a malformed id is the caller's error.
+_TODO_REFUSALS: dict[str, tuple[int, str, str]] = {
+    "todo-unknown": (404, "todo-unknown", "no such to-do"),
+    "todo-bad-request": (400, "todo-bad-request", "not a to-do id"),
+    "todo-not-saved": (503, "todo-not-saved", "the to-do's state could not be saved"),
+}
 
 
 def _is_library_route(route: str) -> bool:

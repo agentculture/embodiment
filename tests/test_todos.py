@@ -114,11 +114,33 @@ def test_bad_arguments_are_a_declared_fault():
     ("words", "asks"),
     [
         ("mark the dentist one done", True),
+        ("I've done the plumber call", True),
+        ("I did the shopping", True),
+        ("that's done", True),
+        ("reopen the milk one", True),
         ("סמני שהתקשרתי לדנה", True),
+        ("עשיתי את הקניות", True),
         ("בוצע", True),
+        # questions and requests to look never permit a mark (review of PR #103)
+        ("what haven't I done yet?", False),
+        ("check my todos", False),
         ("what's still open from Tuesday?", False),
         ("מה נשאר לי לעשות?", False),
+        ("מה עשיתי היום?", False),
+        ("is the dentist one complete?", False),
+        ("", False),
     ],
 )
 def test_what_counts_as_asking_to_mark(words, asks):
     assert t.user_asks_to_mark(words) is asks
+
+
+def test_an_unreadable_state_file_is_set_aside_not_overwritten(tmp_path):
+    """Review of PR #103: the next save used to land over it, losing every mark."""
+    path = tmp_path / "s.json"
+    path.write_text('{"a": {"done": true, "at": 1, "by": "operator"')  # cut off
+    states = t.TodoStates(path)
+    assert states.get("a")["done"] is False
+    assert states.set("b", True, t.BY_OPERATOR) is not None
+    kept = tmp_path / "s.json.unreadable"
+    assert kept.read_text().startswith('{"a": {"done": true')

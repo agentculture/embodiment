@@ -2577,3 +2577,20 @@ def test_a_busy_new_conversation_is_a_409_so_the_page_does_not_reset() -> None:
         assert s.CONVERSATION_BUSY_CODE in body.decode()
     finally:
         built.server.shutdown(2.0)
+
+
+@pytest.mark.parametrize(
+    ("code", "status"),
+    [("todo-not-saved", 503), ("todo-bad-request", 400), ("todo-unknown", 404)],
+)
+def test_a_refused_mark_is_never_a_200(code: str, status: int) -> None:
+    """Review of PR #103: a save that failed was answered 200, and the page kept the tick."""
+    built = build(controls=s.Controls(todo_set=lambda i, d: {"todo": {"id": i}, "code": code}))
+    try:
+        got, body = built.request(
+            "POST", s.TODOS_ROUTE + "/t1", body=b'{"done": true}', hdrs=built.headers()
+        )
+        assert got == status
+        assert code in body.decode()
+    finally:
+        built.server.shutdown(2.0)
