@@ -152,7 +152,12 @@ loop. It does not drive hardware and nothing here claims a body.
   (record and send a question) and the text; beside it sit **Live** (the room
   microphone's
   realtime voice) and Upload. **Library** is the shelf and the items as cards,
-  **To-dos** is fed from Gwen's memory, **Stats** shows the library and the
+  **To-dos** is fed from Gwen's memory (culture-rules writes each recording's action
+  items) and is checkable: the done state is Gwen's, kept by the daemon (`POST
+  /api/todos/{id}`), and each change is published as a `todo` event carrying the
+  whole to-do so culture-rules can file the list in the library; Gwen answers about
+  them with `list_todos` and marks one with `set_todo_done` only when your own words
+  ask (d16). **Stats** shows the library and the
   usage counters since Gwen started, and a status drawer keeps the room voice
   controls and the degradations. Before 0.18.0 the page was waveform-first
   with chat fourth. It streams events with `fetch` and sends the secret in the
@@ -287,7 +292,8 @@ absence, not an implication.
   size-bounded and may have quoted the memory — a follow-up), and, on **typed
   turns only** (chat and clips) and only when a library is configured, two
   read-only library tools: `search_library` and `read_passage`. Also on typed
-  turns, `search_conversations` searches Gwen's own earlier conversations (d8).
+  turns, `search_conversations` searches Gwen's own earlier conversations (d8),
+  and `list_todos` / `set_todo_done` read and mark the to-dos (d16).
   They are indexed in her private index once each has been quiet for 30 minutes,
   every turn labelled with who said it and how it arrived, her own replies
   marked as not a source of fact; the live conversation is never searched.

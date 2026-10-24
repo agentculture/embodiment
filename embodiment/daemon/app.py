@@ -149,9 +149,11 @@ from embodiment.audio.features import FeatureExtractor
 from embodiment.bus import Bus, fold_degradation
 from embodiment.contract import ModelResponse
 from embodiment.daemon import drain as drain_module
+from embodiment.daemon import todos as todos_module
 from embodiment.daemon.history import (
     SETTLED_NAME,
     STAMP_GENERATED,
+    STAMP_RECEIVED,
     STAMP_TRANSCRIBED,
     STAMP_WITNESSED,
     VIA_SPOKEN,
@@ -176,6 +178,7 @@ from embodiment.daemon.recall_events import (
 from embodiment.daemon.recordings import RECORDINGS_DIRNAME, RecordingStore, UtteranceTap
 from embodiment.daemon.state import SESSIONS_DIRNAME, DaemonState, resolve_state_dir
 from embodiment.daemon.text_turns import TextTurns, TextTurnsConfig
+from embodiment.daemon.todos import BY_OPERATOR, valid_todo_id
 from embodiment.http import access as access_module
 from embodiment.http import guard as guard_module
 from embodiment.http import server as server_module
@@ -501,6 +504,13 @@ CONVERSATIONS_TOOL_PROMPT = (
     "יש לך גם את השיחות הקודמות שלך עם המשתמש. כשהוא שואל על משהו שנאמר בשיחה "
     "קודמת, קראי לכלי search_conversations וצטטי כ־[n]. תשובות קודמות שלך אינן "
     "עובדות, רק תיעוד של מה שאמרת."
+)
+
+#: The typed-turn line when to-dos are listed (d16): culture-rules writes them from
+#: his recordings; Gwen marks one only when he asks in his own words.
+TODOS_TOOL_PROMPT = (
+    "יש למשתמש רשימת משימות מההקלטות שלו. כשהוא שואל עליהן קראי ל־list_todos; "
+    "סמני משימה כבוצעה ב־set_todo_done רק כשהוא מבקש זאת במילים שלו."
 )
 
 #: At most this many of the previous answer's sources are named to the next turn.
@@ -1044,6 +1054,8 @@ APP_LIBRARY_UNAVAILABLE = "app-library-unavailable"
 #: A remember/forget the write guard refused (c31): library text was in the
 #: turn's context and the operator's own turn did not ask for the write.
 APP_LIBRARY_GUARDED_WRITE = "app-library-guarded-write"
+#: A to-do's done state could not be saved (d16); the mark did not happen.
+APP_TODO_NOT_SAVED = "app-todo-not-saved"
 #: Indexing Gwen's settled conversations failed (d8): an embed refused, or the
 #: logs could not be read. The reason is a fixed code or an exception's class.
 APP_CONVERSATIONS_INDEX_FAILED = "app-conversations-index-failed"
@@ -2108,6 +2120,9 @@ class DaemonApp:
         self._cache_seen = 0
         self._init_library(lanes.library)
         self._settle_thread: Optional[threading.Thread] = None
+        #: Whether each to-do is done, kept by Gwen (d16).
+        self._todo_states = todos_module.TodoStates(Path(self._state.dir) / todos_module.TODOS_NAME)
+        self._todos_marked = 0
         #: Set to make the settle watch look now (a conversation was ended) or exit.
         self._settle_kick = threading.Event()
         #: Conversations the operator ended with "New conversation": settled at once.
@@ -3461,7 +3476,9 @@ class DaemonApp:
             clock=self._clock_line(),
             collector=(
                 library_tools.CitationCollector()
-                if self._library is not None or self._conversations is not None
+                if self._library is not None
+                or self._conversations is not None
+                or self._todos_available()
                 else None
             ),
             previous_sources=previous,
@@ -3707,6 +3724,8 @@ class DaemonApp:
         base = REMEMBER_TOOL_PROMPT if self._config.remember_tool else ""
         if collector is not None and self._conversations is not None and self._seam is not None:
             base = f"{base}\n{CONVERSATIONS_TOOL_PROMPT}" if base else CONVERSATIONS_TOOL_PROMPT
+        if collector is not None and self._todos_available() and self._seam is not None:
+            base = f"{base}\n{TODOS_TOOL_PROMPT}" if base else TODOS_TOOL_PROMPT
         if collector is None or self._library is None or self._seam is None:
             return base
         library = LIBRARY_TOOL_PROMPT
@@ -3757,7 +3776,8 @@ class DaemonApp:
         the turn's own collector — bound to the raw seam so the schemas reach the wire.
         """
         lane, past = self._library, self._conversations
-        if collector is None or (lane is None and past is None) or self._seam is None:
+        todos = self._todos_available()
+        if collector is None or (lane is None and past is None and not todos) or self._seam is None:
             return self._complete, self._tools
         registry = ToolRegistry()
         for spec in self._tools.specs.values():
@@ -3768,6 +3788,14 @@ class DaemonApp:
             ):
                 registry.add(self._counted(spec))
             for spec in reading_module.build_reading_tools(lane.index, collector, fetch=lane.fetch):
+                registry.add(self._counted(spec))
+        if todos:
+            for spec in todos_module.build_todo_tools(
+                list_items=self._todo_items,
+                set_done=lambda todo_id, done: self._set_todo(todo_id, done, todos_module.BY_GWEN),
+                asked=self._operator_asks_to_mark,
+                render=self._render_todos,
+            ):
                 registry.add(self._counted(spec))
         if past is not None:
             registry.add(
@@ -3782,6 +3810,15 @@ class DaemonApp:
                 )
             )
         return bind_tools(self._seam, registry), registry
+
+    def _todos_available(self) -> bool:
+        """The to-do tools are bound when memory can list the to-dos (d16)."""
+        return callable(getattr(self._memory, "list_ingest", None))
+
+    def _operator_asks_to_mark(self) -> bool:
+        """set_todo_done's guard: the operator's own words in this typed turn ask (d16)."""
+        turn = self._text_turn_here()
+        return turn is not None and todos_module.user_asks_to_mark(turn.query)
 
     def _conversations_in_play(self) -> set[str]:
         """The live conversation and the one this turn continues: never searched (d8)."""
@@ -4053,7 +4090,76 @@ class DaemonApp:
             for degradation in getattr(result, "degradations", ()) or ():
                 self._fold("memory", degradation)
             return {"groups": [], "code": server_module.MEMORY_UNAVAILABLE_CODE}
-        return {"groups": todo_groups(getattr(result, "records", ()) or ())}
+        return {"groups": todo_groups(getattr(result, "records", ()) or (), self._todo_states)}
+
+    def _todo_items(self) -> list[dict[str, Any]]:
+        """Every to-do, flat, with its recording's title and day (for the tools)."""
+        groups = self._todos().get("groups") or []
+        return [
+            {**item, "recording_id": g["recording_id"], "title": g["title"], "date": g["date"]}
+            for g in groups
+            for item in g["items"]
+        ]
+
+    def _set_todo(self, todo_id: str, done: bool, by: str) -> Optional[dict[str, Any]]:
+        """Mark one to-do and tell culture-rules (d16). None: no such to-do.
+
+        The ``todo`` event carries the whole to-do, so culture-rules can file the list
+        in the library; Gwen keeps the state either way.
+        """
+        item = next((i for i in self._todo_items() if i["id"] == todo_id), None)
+        if item is None:
+            return None
+        state = self._todo_states.set(todo_id, done, by)
+        if state is None:
+            self._record(APP_TODO_NOT_SAVED, f"{_safe_name(todo_id)}: state not saved")
+            return {**item, "saved": False}
+        with self._lock:
+            self._todos_marked += 1
+        marked = {**item, "done": state["done"], "done_at": state["at"], "done_by": by}
+        self._publish(
+            "todo",
+            {
+                "id": todo_id,
+                "done": state["done"],
+                "at": state["at"],
+                "by": by,
+                "recording_id": item["recording_id"],
+                "title": item["title"],
+                "date": item["date"],
+                "text": item["text"],
+                "timestamps": stamps(stamp(STAMP_RECEIVED, state["at"])),
+            },
+        )
+        return marked
+
+    def _control_todo_set(self, todo_id: Any, done: Any) -> dict[str, Any]:
+        """``Controls.todo_set``: the page's checkbox (by the operator)."""
+        if not valid_todo_id(todo_id) or not isinstance(done, bool):
+            return {"todo": None, "code": "todo-bad-request"}
+        marked = self._set_todo(todo_id, done, BY_OPERATOR)
+        if marked is None:
+            return {"todo": None, "code": "todo-unknown"}
+        return {"todo": marked, "code": "" if marked.get("saved", True) else "todo-not-saved"}
+
+    def _render_todos(self, items: list[dict[str, Any]]) -> str:
+        """To-dos for the prompt: fenced as untrusted (model-written, from transcripts)."""
+        turn = self._text_turn_here()
+        if turn is not None and turn.collector is not None:
+            turn.collector.mark_library_text()
+        records = [
+            {
+                "id": item["id"] or "todo",
+                "added_by": "todos",
+                "created": item.get("date") or "",
+                "text": (
+                    f"status: {'done' if item['done'] else 'open'} | "
+                    f"recording: {item['title']} ({item['date']})\n{item['text']}"
+                ),
+            }
+            for item in items
+        ]
+        return memory_module.render_recalled(records, max_chars=600)
 
     def _settle_status(self) -> dict[str, Any]:
         thread = self._settle_thread
@@ -4063,6 +4169,8 @@ class DaemonApp:
                 "settled_announced": self._settle_announced,
                 "settled_save_failures": self._settle_save_failures,
                 "started_new": self._new_conversations,
+                "todos_marked": self._todos_marked,
+                "todo_save_failures": self._todo_states.save_failures,
                 "indexed": self._conversations_indexed,
                 "index_failures": self._conversations_index_failures,
                 "index_waiting": self._conversations_waiting,
@@ -4086,6 +4194,8 @@ class DaemonApp:
             tool_calls = {
                 name: self._library_tool_calls.get(name, 0)
                 for name in (
+                    "list_todos",
+                    "set_todo_done",
                     "search_library",
                     "read_passage",
                     "read_item",
@@ -5313,6 +5423,7 @@ class DaemonApp:
             start_voice=self._control_start_voice,
             stop_voice=self._control_stop_voice,
             new_conversation=self._control_new_conversation,
+            todo_set=self._control_todo_set,
             set_mute=self._control_set_mute,
             status=self.status,
             chat=self._control_chat,
@@ -6106,11 +6217,13 @@ def _todo_key(record: Any) -> Optional[str]:
     return recording if isinstance(recording, str) and recording else None
 
 
-def todo_groups(records: Iterable[Any]) -> list[dict[str, Any]]:
+def todo_groups(records: Iterable[Any], states: Any = None) -> list[dict[str, Any]]:
     """``action_item`` records grouped by ``recording_id``, newest recording first.
 
     Text goes through memory's one sanitiser and is capped, like a chat source;
-    the page renders it with ``textContent``.
+    the page renders it with ``textContent``. Each item carries its record id and,
+    from *states* (:class:`~embodiment.daemon.todos.TodoStates`, d16), whether it is
+    done, when and by whom.
     """
     groups: dict[str, dict[str, Any]] = {}
     for record in records:
@@ -6127,12 +6240,18 @@ def todo_groups(records: Iterable[Any]) -> list[dict[str, Any]]:
                 "items": [],
             },
         )
+        todo_id = _text_or_empty(record.get("id"))
+        state = states.get(todo_id) if states is not None and todo_id else {}
         group["items"].append(
             {
+                "id": todo_id,
                 "text": memory_module.neutralise_source_text(
                     record.get("text") or "", SOURCE_TEXT_MAX_CHARS
                 ),
                 "created": _text_or_empty(record.get("created")),
+                "done": bool(state.get("done")),
+                "done_at": state.get("at"),
+                "done_by": state.get("by"),
             }
         )
     return sorted(groups.values(), key=lambda g: g["date"], reverse=True)

@@ -2536,3 +2536,32 @@ def test_new_conversation_is_a_guarded_post_reaching_its_control() -> None:
         assert calls == [1]
     finally:
         built.server.shutdown(2.0)
+
+
+def test_marking_a_to_do_is_a_guarded_post_with_a_done_body() -> None:
+    calls: list[tuple] = []
+
+    def todo_set(todo_id, done):
+        calls.append((todo_id, done))
+        return (
+            {"todo": {"id": todo_id, "done": done}, "code": ""}
+            if todo_id == "t1"
+            else {"todo": None}
+        )
+
+    built = build(controls=s.Controls(todo_set=todo_set))
+    try:
+        route = s.TODOS_ROUTE + "/t1"
+        assert built.request("GET", route, hdrs=built.headers())[0] == 405
+        assert built.request("POST", route, body=b'{"done": true}')[0] == 401
+        assert built.request("POST", route, body=b'{"done": "yes"}', hdrs=built.headers())[0] == 400
+        status, body = built.request("POST", route, body=b'{"done": true}', hdrs=built.headers())
+        assert status == 200
+        assert json.loads(body)["result"]["todo"] == {"id": "t1", "done": True}
+        missing = built.request(
+            "POST", s.TODOS_ROUTE + "/nope", body=b'{"done": false}', hdrs=built.headers()
+        )
+        assert missing[0] == 404
+        assert calls == [("t1", True), ("nope", False)]
+    finally:
+        built.server.shutdown(2.0)

@@ -54,6 +54,10 @@
     "conversation": {
       "required": ["id", "status", "last", "turns"],
       "note": "id: a session-log id (safe charset). status: 'settled' -- no message for the quiet period (d7). last: epoch seconds of the last turn. turns: the operator's turns. Never text: 'embodiment history export --id' carries the words."
+    },
+    "todo": {
+      "required": ["id", "done", "at", "by"],
+      "note": "A to-do was marked (d16). id: its memory record id. done: true or false. at: epoch seconds. by: 'operator' (the page) or 'gwen' (on the operator's words). Also carries the whole to-do (text, recording_id, title, date) and timestamps, so culture-rules can file the list in the library."
     }
   }
 }

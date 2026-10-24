@@ -21,6 +21,7 @@ export const EVENT_KINDS = [
   "clients",
   "heartbeat",
   "conversation",
+  "todo",
 ] as const;
 
 export type EventKind = (typeof EVENT_KINDS)[number];
