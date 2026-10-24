@@ -99,7 +99,7 @@ Resolve = Callable[[str, int], list[str]]
 def _resolve(host: str, port: int) -> list[str]:
     try:
         infos = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
-    except (socket.gaierror, UnicodeError, OSError):
+    except (UnicodeError, OSError):  # gaierror is an OSError
         raise WebRefused(CODE_UNREACHABLE) from None
     return sorted({info[4][0] for info in infos})
 
@@ -168,11 +168,21 @@ def _open_first(addresses: tuple[str, ...], port: int, timeout: Optional[float])
     raise last or OSError("no address")
 
 
+def _verifying_context() -> ssl.SSLContext:
+    """TLS that verifies the server: the system CAs, the certificate required, and its
+    name checked against the host (the connection is to a pinned address, never to an
+    unverified name)."""
+    context = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+    context.check_hostname = True
+    context.verify_mode = ssl.CERT_REQUIRED
+    return context
+
+
 class _PinnedHTTPS(http.client.HTTPSConnection):
     """An HTTPS connection to a checked address, verifying the certificate for the host."""
 
     def __init__(self, host: str, port: int, addresses: tuple[str, ...], timeout: float) -> None:
-        super().__init__(host, port, timeout=timeout, context=ssl.create_default_context())
+        super().__init__(host, port, timeout=timeout, context=_verifying_context())
         self._addresses = addresses
 
     def connect(self) -> None:
@@ -271,9 +281,9 @@ def _request(target: _Target, end: float, connect: Connect) -> tuple[int, dict, 
         return response.status, headers, _read_body(response, end)
     except WebRefused:
         raise
-    except (socket.timeout, TimeoutError):
+    except TimeoutError:  # socket.timeout is TimeoutError
         raise WebRefused(CODE_TIMEOUT) from None
-    except (OSError, http.client.HTTPException, ssl.SSLError):
+    except (OSError, http.client.HTTPException):  # ssl.SSLError is an OSError
         raise WebRefused(CODE_UNREACHABLE) from None
     finally:
         conn.close()

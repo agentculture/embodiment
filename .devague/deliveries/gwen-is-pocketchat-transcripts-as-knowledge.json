@@ -212,7 +212,1118 @@
       "seq": 16
     }
   ],
-  "evidence": [],
-  "deltas": [],
+  "evidence": [
+    {
+      "id": "e1",
+      "obligation_ref": "o1",
+      "test_ref": "web:src/components/Chat.test.tsx > posts a message; reply and sources render as dir=auto text nodes with provenance, fenced untrusted",
+      "behavior_text": "reply and source text render as dir=auto text nodes",
+      "contract_text": "The port adds what pocketchat lacks for Gwen: Hebrew/RTL (pocketchat has no dir=auto and no logical CSS properties; text-align:left, border-left throughout app.css) - dir=auto on question, answer, transcript segments and quotes, and logical properties so the layout mirrors",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 13
+    },
+    {
+      "id": "e2",
+      "obligation_ref": "o1",
+      "test_ref": "web:src/App.test.tsx > renders a Hebrew transcript event with dir=\"auto\" and the text verbatim",
+      "behavior_text": "a Hebrew transcript renders dir=auto, verbatim",
+      "contract_text": "The port adds what pocketchat lacks for Gwen: Hebrew/RTL (pocketchat has no dir=auto and no logical CSS properties; text-align:left, border-left throughout app.css) - dir=auto on question, answer, transcript segments and quotes, and logical properties so the layout mirrors",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 14
+    },
+    {
+      "id": "e3",
+      "obligation_ref": "o2",
+      "test_ref": "web:src/App.test.tsx > pins the chat-first order: top bar (brand",
+      "behavior_text": "the top bar, then the conversation, in chat-first order",
+      "contract_text": "Gwen's dashboard becomes chat-first: App.tsx (web/src/App.tsx:122-201) today puts the Waveform first as 'the centrepiece (operator decision, obligation o9)' and Chat fourth; the port makes the Ask view primary with a pinned composer, the waveform a compact strip or drawer, the install-secret form shown only on an unauthorized state, and the separate Transcript panel merged into the thread",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 15
+    },
+    {
+      "id": "e4",
+      "obligation_ref": "o3",
+      "test_ref": "tests/test_http_server.py::TestLibraryRoutes::test_each_route_without_a_secret_on_loopback_is_401",
+      "behavior_text": "every library route is 401 without the secret on loopback",
+      "contract_text": "New read routes on Gwen's HTTP surface (library list, document/transcript read, search) are GET routes under /api/ that inherit guard.py's rules unchanged (secret or Access on the public Host, Host/Origin allow-list) and run on the text pool with their own derived timeout, not the 5 s control default; server.py has no path/query parser today, so the port adds one",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 16
+    },
+    {
+      "id": "e5",
+      "obligation_ref": "o3",
+      "test_ref": "tests/test_http_server.py::TestLibraryRoutes::test_each_route_with_access_on_the_public_host_is_200",
+      "behavior_text": "every library route is 200 with a valid Access assertion on the public host",
+      "contract_text": "New read routes on Gwen's HTTP surface (library list, document/transcript read, search) are GET routes under /api/ that inherit guard.py's rules unchanged (secret or Access on the public Host, Host/Origin allow-list) and run on the text pool with their own derived timeout, not the 5 s control default; server.py has no path/query parser today, so the port adds one",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 17
+    },
+    {
+      "id": "e6",
+      "obligation_ref": "o3",
+      "test_ref": "tests/test_http_server.py::TestLibraryRoutes::test_post_is_405",
+      "behavior_text": "a POST to a library route is 405",
+      "contract_text": "New read routes on Gwen's HTTP surface (library list, document/transcript read, search) are GET routes under /api/ that inherit guard.py's rules unchanged (secret or Access on the public Host, Host/Origin allow-list) and run on the text pool with their own derived timeout, not the 5 s control default; server.py has no path/query parser today, so the port adds one",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 18
+    },
+    {
+      "id": "e7",
+      "obligation_ref": "o4",
+      "test_ref": "tests/test_daemon_library.py::TestTypedTurnsOnly::test_a_clip_turn_sees_the_library_tools",
+      "behavior_text": "a clip turn is shown the library tools",
+      "contract_text": "Library knowledge reaches Gwen as READ tools beside remember/forget (tools.py ToolSpec; daemon binds at app.py:1465-1498; typed and voice turns share the tools, max_steps 8), whose results are wrapped in the same KNOWLEDGE_ATTRIBUTION fence as recall (tool output is plain str today and bypasses render_recalled) and whose citations get a new path into the chat's sources (chat_source is fed only from recall records today, app.py:4737-4768)",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 19
+    },
+    {
+      "id": "e8",
+      "obligation_ref": "o4",
+      "test_ref": "tests/test_daemon_library.py::TestDeviationD1::test_library_tool_calls_are_counted_by_name",
+      "behavior_text": "library tool calls are counted by name",
+      "contract_text": "Library knowledge reaches Gwen as READ tools beside remember/forget (tools.py ToolSpec; daemon binds at app.py:1465-1498; typed and voice turns share the tools, max_steps 8), whose results are wrapped in the same KNOWLEDGE_ATTRIBUTION fence as recall (tool output is plain str today and bypasses render_recalled) and whose citations get a new path into the chat's sources (chat_source is fed only from recall records today, app.py:4737-4768)",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 20
+    },
+    {
+      "id": "e9",
+      "obligation_ref": "o5",
+      "test_ref": "tests/test_library_epub.py::test_spine_order_and_shape",
+      "behavior_text": "passages come in spine order with the expected shape",
+      "contract_text": "Gwen reads item text herself: fetches GET /api/library/{id}/file and extracts EPUB text with the stdlib (zipfile + html.parser - no new dependency, test_zero_deps.py), chunks it, and embeds chunks with gemma2-embed into her own 0600 document index; the library's q stays a metadata filter, never the content search",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 21
+    },
+    {
+      "id": "e10",
+      "obligation_ref": "o5",
+      "test_ref": "tests/test_library_epub.py::test_anchors_stable_and_unique",
+      "behavior_text": "anchors are stable and unique",
+      "contract_text": "Gwen reads item text herself: fetches GET /api/library/{id}/file and extracts EPUB text with the stdlib (zipfile + html.parser - no new dependency, test_zero_deps.py), chunks it, and embeds chunks with gemma2-embed into her own 0600 document index; the library's q stays a metadata filter, never the content search",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 22
+    },
+    {
+      "id": "e11",
+      "obligation_ref": "o6",
+      "test_ref": "tests/test_library_client.py::test_module_is_get_only",
+      "behavior_text": "the AST pin finds no non-GET method in the client module",
+      "contract_text": "Gwen's library client is GET-only by construction (an AST/test pin that it never sends POST/DELETE/PUT to the library), because xteink keys have no scopes: any xtk_ key is a full operator key (docs/api.md:17-37 - upload, delete, mint keys, revoke devices); the key is held in grant and injected, never written to disk by Gwen",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 23
+    },
+    {
+      "id": "e12",
+      "obligation_ref": "o6",
+      "test_ref": "tests/test_library_client.py::test_ast_guard_fails_when_a_write_method_is_planted",
+      "behavior_text": "the AST pin fails when a write method is planted",
+      "contract_text": "Gwen's library client is GET-only by construction (an AST/test pin that it never sends POST/DELETE/PUT to the library), because xteink keys have no scopes: any xtk_ key is a full operator key (docs/api.md:17-37 - upload, delete, mint keys, revoke devices); the key is held in grant and injected, never written to disk by Gwen",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 24
+    },
+    {
+      "id": "e13",
+      "obligation_ref": "o7",
+      "test_ref": "tests/test_library_client.py::test_every_request_is_counted_as_a_get",
+      "behavior_text": "every request the client sends is counted as a GET",
+      "contract_text": "Gwen's library client sends 0 non-GET requests to xteink - pinned by an AST/test check and confirmed in a live run's request log",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 25
+    },
+    {
+      "id": "e14",
+      "obligation_ref": "o8",
+      "test_ref": "web:src/App.test.tsx > loads, chats and opens the reader at the cited passage with no secret entered",
+      "behavior_text": "clicking [1] opens the reader on the item at the cited anchor",
+      "contract_text": "On gwen.culture.dev, 100% of answers that use a library item carry at least one [n] citation whose click opens the reader on that item at the cited passage (pinned by test and checked live on >= 5 questions)",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 26
+    },
+    {
+      "id": "e15",
+      "obligation_ref": "o8",
+      "test_ref": "web:src/api/citations.test.ts > splits a merged group into one cite per source",
+      "behavior_text": "[2, 3] becomes two citations",
+      "contract_text": "On gwen.culture.dev, 100% of answers that use a library item carry at least one [n] citation whose click opens the reader on that item at the cited passage (pinned by test and checked live on >= 5 questions)",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 27
+    },
+    {
+      "id": "e16",
+      "obligation_ref": "o9",
+      "test_ref": "tests/test_daemon_library.py::TestTheWriteGuard::test_a_planted_instruction_in_a_full_typed_turn_writes_nothing",
+      "behavior_text": "a planted instruction in library text writes nothing",
+      "contract_text": "In a turn whose context holds library text, the write tools (remember, forget) cannot be triggered by that text: a write needs the operator's own words in the current user turn to name it (or the write is refused and recorded), because remember/forget are model-initiated with no user-ask gate (daemon/app.py:3307-3345, decision d7) and library documents include web-sourced content (newspapers, papers)",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 28
+    },
+    {
+      "id": "e17",
+      "obligation_ref": "o9",
+      "test_ref": "tests/test_daemon_library.py::TestTheWriteGuard::test_the_operators_own_ask_still_writes",
+      "behavior_text": "the operator's own remember still writes",
+      "contract_text": "In a turn whose context holds library text, the write tools (remember, forget) cannot be triggered by that text: a write needs the operator's own words in the current user turn to name it (or the write is refused and recorded), because remember/forget are model-initiated with no user-ask gate (daemon/app.py:3307-3345, decision d7) and library documents include web-sourced content (newspapers, papers)",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 29
+    },
+    {
+      "id": "e18",
+      "obligation_ref": "o10",
+      "test_ref": "tests/test_audio_host.py::test_every_spawn_gets_an_env_without_keys_but_with_the_runtime_dir",
+      "behavior_text": "every spawn gets an env without keys",
+      "contract_text": "Library and gateway keys never reach child processes: the audio subprocesses (audio/host.py:1317, 1547, 1731, 1838 Popen with no env=) are spawned with a scrubbed environment that drops EMBODIMENT_GATEWAY_KEY and the library key, and no key appears in the ledger, operational log, transcript log or SSE (safe_reason path), pinned by tests",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 30
+    },
+    {
+      "id": "e19",
+      "obligation_ref": "o10",
+      "test_ref": "tests/test_audio_host.py::test_child_env_drops_by_suffix_and_keeps_the_rest",
+      "behavior_text": "the child env drops key-shaped names and keeps the rest",
+      "contract_text": "Library and gateway keys never reach child processes: the audio subprocesses (audio/host.py:1317, 1547, 1731, 1838 Popen with no env=) are spawned with a scrubbed environment that drops EMBODIMENT_GATEWAY_KEY and the library key, and no key appears in the ledger, operational log, transcript log or SSE (safe_reason path), pinned by tests",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 31
+    },
+    {
+      "id": "e20",
+      "obligation_ref": "o11",
+      "test_ref": "tests/test_library_index.py::test_reconcile_reports_added_changed_removed",
+      "behavior_text": "reconcile reports added, changed, removed",
+      "contract_text": "Gwen's document index reconciles against the library catalog by (item id, sha256): a removed item's chunks and stored text are purged, a changed item is re-indexed, and a citation never points at an item the library no longer holds",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 32
+    },
+    {
+      "id": "e21",
+      "obligation_ref": "o11",
+      "test_ref": "tests/test_library_index.py::test_a_dropped_item_loses_its_chunks_and_its_stored_text",
+      "behavior_text": "a dropped item loses its chunks and stored text",
+      "contract_text": "Gwen's document index reconciles against the library catalog by (item id, sha256): a removed item's chunks and stored text are purged, a changed item is re-indexed, and a citation never points at an item the library no longer holds",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 33
+    },
+    {
+      "id": "e22",
+      "obligation_ref": "o11",
+      "test_ref": "tests/test_library_index.py::test_a_changed_sha256_re_indexes",
+      "behavior_text": "a changed sha256 re-indexes",
+      "contract_text": "Gwen's document index reconciles against the library catalog by (item id, sha256): a removed item's chunks and stored text are purged, a changed item is re-indexed, and a citation never points at an item the library no longer holds",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 34
+    },
+    {
+      "id": "e23",
+      "obligation_ref": "o11",
+      "test_ref": "tests/test_library_index.py::test_search_never_returns_an_id_absent_from_the_last_reconciled_catalog",
+      "behavior_text": "search never returns an id outside the catalog",
+      "contract_text": "Gwen's document index reconciles against the library catalog by (item id, sha256): a removed item's chunks and stored text are purged, a changed item is re-indexed, and a citation never points at an item the library no longer holds",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 35
+    },
+    {
+      "id": "e24",
+      "obligation_ref": "o12",
+      "test_ref": "tests/test_library_epub.py::test_too_many_members",
+      "behavior_text": "too many members is refused",
+      "contract_text": "EPUB extraction is bounded: maximum archive members, maximum uncompressed bytes per member and in total, maximum extracted characters per item, refusing (and recording) a zip bomb or an oversized item instead of indexing it; the 7.4 MB book is admitted only by opt-in (c18)",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 36
+    },
+    {
+      "id": "e25",
+      "obligation_ref": "o12",
+      "test_ref": "tests/test_library_epub.py::test_oversized_member",
+      "behavior_text": "an oversized member is refused",
+      "contract_text": "EPUB extraction is bounded: maximum archive members, maximum uncompressed bytes per member and in total, maximum extracted characters per item, refusing (and recording) a zip bomb or an oversized item instead of indexing it; the 7.4 MB book is admitted only by opt-in (c18)",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 37
+    },
+    {
+      "id": "e26",
+      "obligation_ref": "o12",
+      "test_ref": "tests/test_library_epub.py::test_zip_bomb_total",
+      "behavior_text": "a zip bomb's total is refused",
+      "contract_text": "EPUB extraction is bounded: maximum archive members, maximum uncompressed bytes per member and in total, maximum extracted characters per item, refusing (and recording) a zip bomb or an oversized item instead of indexing it; the 7.4 MB book is admitted only by opt-in (c18)",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 38
+    },
+    {
+      "id": "e27",
+      "obligation_ref": "o12",
+      "test_ref": "tests/test_library_epub.py::test_char_cap",
+      "behavior_text": "extracted characters are capped",
+      "contract_text": "EPUB extraction is bounded: maximum archive members, maximum uncompressed bytes per member and in total, maximum extracted characters per item, refusing (and recording) a zip bomb or an oversized item instead of indexing it; the 7.4 MB book is admitted only by opt-in (c18)",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 39
+    },
+    {
+      "id": "e28",
+      "obligation_ref": "o13",
+      "test_ref": "tests/test_daemon_library.py::TestUnsetIsToday::test_no_lane_binds_no_library_tool_and_routes_are_unbound",
+      "behavior_text": "no lane binds no tool and leaves routes unbound",
+      "contract_text": "The library is optional and observable: unset library config means today's behaviour exactly (no tool bound, no Library view data, a visible 'library not configured'), an unreachable or 401 library is a recorded degradation with chat continuing from memory, and status reports items indexed, chunks, last sync, failures and the GET count - the counter-that-moves rule (CLAUDE.md lesson 3)",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 40
+    },
+    {
+      "id": "e29",
+      "obligation_ref": "o13",
+      "test_ref": "tests/test_daemon_library.py::TestStatusAndRoutes::test_a_down_library_is_recorded_and_chat_goes_on",
+      "behavior_text": "a down library is recorded and chat still answers",
+      "contract_text": "The library is optional and observable: unset library config means today's behaviour exactly (no tool bound, no Library view data, a visible 'library not configured'), an unreachable or 401 library is a recorded degradation with chat continuing from memory, and status reports items indexed, chunks, last sync, failures and the GET count - the counter-that-moves rule (CLAUDE.md lesson 3)",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 41
+    },
+    {
+      "id": "e30",
+      "obligation_ref": "o14",
+      "test_ref": "tests/test_http_guard.py::TestAccessCounters::test_an_admitted_public_host_request_increments_admitted",
+      "behavior_text": "an admitted public-host request increments admitted",
+      "contract_text": "status.access reports counts of requests admitted by Access and refused per code, so a public-host session is proven by a counter rather than inferred (found in the 2026-10-24 live test, where only mode:on was visible)",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 42
+    },
+    {
+      "id": "e31",
+      "obligation_ref": "o14",
+      "test_ref": "tests/test_http_server.py::test_server_status_carries_the_guards_access_counters",
+      "behavior_text": "server status carries the guard's counters",
+      "contract_text": "status.access reports counts of requests admitted by Access and refused per code, so a public-host session is proven by a counter rather than inferred (found in the 2026-10-24 live test, where only mode:on was visible)",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 43
+    },
+    {
+      "id": "e32",
+      "obligation_ref": "o15",
+      "test_ref": "tests/test_daemon_library.py::TestTheSyncThread::test_a_chunk_embed_waits_for_the_live_turn",
+      "behavior_text": "a chunk embed waits while a live turn holds the gate",
+      "contract_text": "Background indexing never competes with a live turn: embedding library chunks yields to recall and voice (one shared gemma2-embed lane on orin), runs under the backfill's bounded ticks, and its cost is measured before books are indexed",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 44
+    },
+    {
+      "id": "e33",
+      "obligation_ref": "o15",
+      "test_ref": "tests/test_library_sync.py::test_gate_held_means_no_embed_until_released_and_recall_first",
+      "behavior_text": "no embed while the gate is held",
+      "contract_text": "Background indexing never competes with a live turn: embedding library chunks yields to recall and voice (one shared gemma2-embed lane on orin), runs under the backfill's bounded ticks, and its cost is measured before books are indexed",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 45
+    },
+    {
+      "id": "e34",
+      "obligation_ref": "o16",
+      "test_ref": "tests/test_daemon_library.py::TestTypedTurnsOnly::test_a_voice_turn_never_sees_a_library_tool_and_a_typed_turn_does",
+      "behavior_text": "a voice turn never sees a library tool; a typed turn does",
+      "contract_text": "Library tools bind to typed turns (chat and clips) only this cycle; spoken turns keep today's path (0.25 s recall head start); voice access to the library waits for its added latency to be measured",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 46
+    },
+    {
+      "id": "e35",
+      "obligation_ref": "o17",
+      "test_ref": "tests/test_daemon_library.py::TestStatusAndRoutes::test_todos_group_action_items_by_recording",
+      "behavior_text": "action items are grouped by recording",
+      "contract_text": "To-dos view stays, fed from Gwen's memory: the action_item facts the culture-rules ingest wrote (source pocket), grouped by recording, read-only (no done/undone writes this cycle)",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 47
+    },
+    {
+      "id": "e36",
+      "obligation_ref": "o17",
+      "test_ref": "tests/test_daemon_library.py::TestStatusAndRoutes::test_todos_from_a_real_store",
+      "behavior_text": "to-dos read from a real store",
+      "contract_text": "To-dos view stays, fed from Gwen's memory: the action_item facts the culture-rules ingest wrote (source pocket), grouped by recording, read-only (no done/undone writes this cycle)",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 48
+    },
+    {
+      "id": "e37",
+      "obligation_ref": "o18",
+      "test_ref": "tests/test_daemon_library.py::TestPastConversations::test_a_settled_conversation_is_indexed_and_found_but_never_the_live_one",
+      "behavior_text": "a settled conversation is indexed in Gwen's own index and found; the live one is excluded",
+      "contract_text": "Gwen never writes to the library: no POST/PUT/DELETE, no key minting, no device or queue calls; culture-library, xteink, ebooks-cli, culture-rules, pocketsync and the firmware are not changed by this cycle - asks to them are drafted for the operator's go-ahead",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 49
+    },
+    {
+      "id": "e38",
+      "obligation_ref": "o18",
+      "test_ref": "tests/test_library_conversations.py::test_the_conversation_the_turn_is_in_is_never_searched",
+      "behavior_text": "the conversation a turn is in is never searched",
+      "contract_text": "Gwen never writes to the library: no POST/PUT/DELETE, no key minting, no device or queue calls; culture-library, xteink, ebooks-cli, culture-rules, pocketsync and the firmware are not changed by this cycle - asks to them are drafted for the operator's go-ahead",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 50
+    },
+    {
+      "id": "e39",
+      "obligation_ref": "o19",
+      "test_ref": "web:src/components/AudioControls.test.tsx > puts the Live slot and Upload beside the input box; the box holds the mic and the typed half",
+      "behavior_text": "Live and Upload sit beside the box; the mic is in it",
+      "contract_text": "Realtime voice becomes a feature inside the Ask view (mic / speak-this / record-or-upload / speech-to-speech buttons at the composer), not the page's hero; pocketchat has no voice UI at all, so these controls are Gwen's additions to the cited page",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 51
+    },
+    {
+      "id": "e40",
+      "obligation_ref": "o19",
+      "test_ref": "tests/test_daemon_app.py::TestLiveIsOptIn::test_live_on_off_and_on_again",
+      "behavior_text": "Live opens, closes and reopens the room ear",
+      "contract_text": "Realtime voice becomes a feature inside the Ask view (mic / speak-this / record-or-upload / speech-to-speech buttons at the composer), not the page's hero; pocketchat has no voice UI at all, so these controls are Gwen's additions to the cited page",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 52
+    },
+    {
+      "id": "e41",
+      "obligation_ref": "o4",
+      "test_ref": "tests/test_daemon_library.py::TestDeviationD1::test_a_typed_library_turn_carries_the_line_and_a_voice_turn_does_not",
+      "behavior_text": "d1: typed library turns carry a prompt line telling Gwen to search the library; tool calls counted by name",
+      "contract_text": "Library knowledge reaches Gwen as READ tools beside remember/forget (tools.py ToolSpec; daemon binds at app.py:1465-1498; typed and voice turns share the tools, max_steps 8), whose results are wrapped in the same KNOWLEDGE_ATTRIBUTION fence as recall (tool output is plain str today and bypasses render_recalled) and whose citations get a new path into the chat's sources (chat_source is fed only from recall records today, app.py:4737-4768)",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 53
+    },
+    {
+      "id": "e42",
+      "obligation_ref": "o11",
+      "test_ref": "tests/test_library_index.py::test_every_chunk_is_embedded_as_content_and_in_its_items_context",
+      "behavior_text": "d3: document index v3 (content and title-context vectors, better of the two; fragments under 60 chars not searched); the next typed turn is told the previous answer's sources by page number",
+      "contract_text": "Gwen's document index reconciles against the library catalog by (item id, sha256): a removed item's chunks and stored text are purged, a changed item is re-indexed, and a citation never points at an item the library no longer holds",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 54
+    },
+    {
+      "id": "e43",
+      "obligation_ref": "o11",
+      "test_ref": "tests/test_library_index.py::test_a_masthead_is_kept_for_reading_but_never_searched",
+      "behavior_text": "d3: document index v3 (content and title-context vectors, better of the two; fragments under 60 chars not searched); the next typed turn is told the previous answer's sources by page number",
+      "contract_text": "Gwen's document index reconciles against the library catalog by (item id, sha256): a removed item's chunks and stored text are purged, a changed item is re-indexed, and a citation never points at an item the library no longer holds",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 55
+    },
+    {
+      "id": "e44",
+      "obligation_ref": "o11",
+      "test_ref": "tests/test_daemon_library.py::TestTheNextTurnKnowsThePagesSourceNumbers::test_a_second_typed_turn_is_told_the_first_answers_sources",
+      "behavior_text": "d3: document index v3 (content and title-context vectors, better of the two; fragments under 60 chars not searched); the next typed turn is told the previous answer's sources by page number",
+      "contract_text": "Gwen's document index reconciles against the library catalog by (item id, sha256): a removed item's chunks and stored text are purged, a changed item is re-indexed, and a citation never points at an item the library no longer holds",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 56
+    },
+    {
+      "id": "e45",
+      "obligation_ref": "o3",
+      "test_ref": "tests/test_http_server.py::TestLibraryRoutes::test_an_unknown_conversation_is_404_and_post_is_405",
+      "behavior_text": "d4: GET /api/conversations and /api/conversations/{id}, guarded and read-only; history pane on the left",
+      "contract_text": "New read routes on Gwen's HTTP surface (library list, document/transcript read, search) are GET routes under /api/ that inherit guard.py's rules unchanged (secret or Access on the public Host, Host/Origin allow-list) and run on the text pool with their own derived timeout, not the 5 s control default; server.py has no path/query parser today, so the port adds one",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 57
+    },
+    {
+      "id": "e46",
+      "obligation_ref": "o19",
+      "test_ref": "tests/test_daemon_app.py::TestLiveIsOptIn::test_the_default_daemon_starts_with_no_ear_and_says_so",
+      "behavior_text": "d6: live voice is off by default; the Live button opts in and out; start --listen restores the hot mic",
+      "contract_text": "Realtime voice becomes a feature inside the Ask view (mic / speak-this / record-or-upload / speech-to-speech buttons at the composer), not the page's hero; pocketchat has no voice UI at all, so these controls are Gwen's additions to the cited page",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 58
+    },
+    {
+      "id": "e47",
+      "obligation_ref": "o18",
+      "test_ref": "tests/test_daemon_library.py::TestPastConversations::test_the_tool_and_its_line_come_with_the_lane_only",
+      "behavior_text": "d8: Gwen indexes her settled conversations in her own index and searches them with search_conversations; no culture-rules",
+      "contract_text": "Gwen never writes to the library: no POST/PUT/DELETE, no key minting, no device or queue calls; culture-library, xteink, ebooks-cli, culture-rules, pocketsync and the firmware are not changed by this cycle - asks to them are drafted for the operator's go-ahead",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 59
+    },
+    {
+      "id": "e48",
+      "obligation_ref": "o18",
+      "test_ref": "web:src/App.test.tsx > a cited past conversation opens in the middle to be continued",
+      "behavior_text": "d8: Gwen indexes her settled conversations in her own index and searches them with search_conversations; no culture-rules",
+      "contract_text": "Gwen never writes to the library: no POST/PUT/DELETE, no key minting, no device or queue calls; culture-library, xteink, ebooks-cli, culture-rules, pocketsync and the firmware are not changed by this cycle - asks to them are drafted for the operator's go-ahead",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran on main at 83e0d60 by scratchpad validate98/run.py (named tests; the repo has no behavioral marker or folder)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:41:06+00:00",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 60
+    },
+    {
+      "id": "e49",
+      "obligation_ref": "o7",
+      "test_ref": "docs/live-test-results/2026-10-24-library.md#library-client-requests",
+      "behavior_text": "the live run's status.library.gets counted 18 requests; non-GET requests are 0 by construction, and no separate live counter of non-GET requests exists",
+      "contract_text": "Gwen's library client sends 0 non-GET requests to xteink - pinned by an AST/test check and confirmed in a live run's request log",
+      "evidence_type": "observation",
+      "strength": "coverage",
+      "strength_basis": "a live counter of all requests, not of non-GET ones; the zero rests on the AST pin, not on a live measurement",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:42:19",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 61
+    },
+    {
+      "id": "e50",
+      "obligation_ref": "o20",
+      "test_ref": "docs/live-test-results/2026-10-24-library.md",
+      "behavior_text": "publishes hit@1/hit@5, false positives and search p50/p90/max for two question sets (32 and 28 model-written questions, 10 off-topic) at 50 items, for index versions 1, 2 and 3",
+      "contract_text": "A measurement over >= 20 model-written reworded questions against the indexed library is published (hit@5 and the per-recall p90 latency at the indexed size) in docs/live-test-results/, aggregates only, whatever the numbers are",
+      "evidence_type": "observation",
+      "strength": "coverage",
+      "strength_basis": "the published document is the claim's own deliverable; numbers are a single run on one rig, n as stated",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-24T17:42:19",
+        "commit": "83e0d60522fc1a3d53dce9ee85520a996ab131f8"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 62
+    }
+  ],
+  "deltas": [
+    {
+      "id": "b1",
+      "kind": "added",
+      "behavior_text": "typed library turns carry a prompt line telling Gwen to search the library; tool calls counted by name",
+      "caused_by": [
+        "d1"
+      ],
+      "evidence_refs": [
+        "e41"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false
+    },
+    {
+      "id": "b2",
+      "kind": "amended",
+      "behavior_text": "the page is chat-first inside culture-library's look; speech-to-speech button replaced by Live",
+      "caused_by": [
+        "d2"
+      ],
+      "evidence_refs": [
+        "e3"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false
+    },
+    {
+      "id": "b3",
+      "kind": "amended",
+      "behavior_text": "document index v3 (content and title-context vectors, better of the two; fragments under 60 chars not searched); the next typed turn is told the previous answer's sources by page number",
+      "caused_by": [
+        "d3"
+      ],
+      "evidence_refs": [
+        "e42",
+        "e43",
+        "e44"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false
+    },
+    {
+      "id": "b4",
+      "kind": "added",
+      "behavior_text": "GET /api/conversations and /api/conversations/{id}, guarded and read-only; history pane on the left",
+      "caused_by": [
+        "d4"
+      ],
+      "evidence_refs": [
+        "e45"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false
+    },
+    {
+      "id": "b5",
+      "kind": "added",
+      "behavior_text": "an earlier conversation is continued in place: its turns are the window and new turns go to its log. Tests that ran: tests/test_daemon_history.py::test_a_continued_turn_sees_the_old_turns_and_writes_to_their_log (pass). No claim in this frame to file them under",
+      "caused_by": [
+        "d5"
+      ],
+      "evidence_refs": [],
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false
+    },
+    {
+      "id": "b6",
+      "kind": "amended",
+      "behavior_text": "live voice is off by default; the Live button opts in and out; start --listen restores the hot mic",
+      "caused_by": [
+        "d6"
+      ],
+      "evidence_refs": [
+        "e46"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false
+    },
+    {
+      "id": "b7",
+      "kind": "added",
+      "behavior_text": "every turn records how it arrived (via) and the export explains what each tag is worth. Tests that ran: tests/test_daemon_app.py::TestTextTurns::test_each_user_turn_records_how_it_arrived (pass), tests/test_history.py::test_turns_carry_how_they_arrived (pass). No claim in this frame to file them under",
+      "caused_by": [
+        "d7"
+      ],
+      "evidence_refs": [],
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false
+    },
+    {
+      "id": "b8",
+      "kind": "added",
+      "behavior_text": "Gwen indexes her settled conversations in her own index and searches them with search_conversations; no culture-rules",
+      "caused_by": [
+        "d8"
+      ],
+      "evidence_refs": [
+        "e47",
+        "e48"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false
+    },
+    {
+      "id": "b9",
+      "kind": "amended",
+      "behavior_text": "only Gwen's conversation event stays in-process; transcripts, replies and features still reach the broker. Tests that ran: tests/test_bus.py::test_only_gwens_own_conversation_event_is_local_only (pass). No claim in this frame to file them under",
+      "caused_by": [
+        "d9"
+      ],
+      "evidence_refs": [],
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false
+    },
+    {
+      "id": "b10",
+      "kind": "added",
+      "behavior_text": "every page clip is kept as it arrived, before transcription, and linked from its turn. Tests that ran: tests/test_text_turns.py::TestClip::test_the_clip_is_kept_before_stt_and_linked_from_its_turn (pass), tests/test_recordings.py::test_a_full_store_refuses_and_says_so_and_deletes_nothing (pass). No claim in this frame to file them under",
+      "caused_by": [
+        "d10"
+      ],
+      "evidence_refs": [],
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false
+    },
+    {
+      "id": "b11",
+      "kind": "added",
+      "behavior_text": "each room-mic utterance is cut by stream time, kept like a recording, and linked from its spoken turn. Tests that ran: tests/test_daemon_app.py::TestTextTurns::test_room_speech_is_kept_like_a_recording_and_linked_with_its_times (pass), tests/test_recordings.py::test_an_utterance_is_cut_by_stream_time_with_its_witnessed_time (pass). No claim in this frame to file them under",
+      "caused_by": [
+        "d11"
+      ],
+      "evidence_refs": [],
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false
+    },
+    {
+      "id": "b12",
+      "kind": "added",
+      "behavior_text": "every turn and recording carries typed timestamps (created, recorded, witnessed, received, transcribed, generated). Tests that ran: tests/test_daemon_app.py::TestTextTurns::test_every_turn_carries_typed_timestamps (pass). No claim in this frame to file them under",
+      "caused_by": [
+        "d12"
+      ],
+      "evidence_refs": [],
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false
+    }
+  ],
   "supersessions": []
 }
