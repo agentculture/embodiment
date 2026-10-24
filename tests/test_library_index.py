@@ -625,3 +625,23 @@ def test_an_index_built_at_an_older_version_re_indexes(tmp_path):
     idx = _index(tmp_path)
     assert index_mod.INDEX_VERSION == 3
     assert any("re-indexing" in d for d in idx.degradations)
+
+
+def test_has_item_matches_item_without_copying(tmp_path):
+    """Review of PR #98 (2026-10-24): the catalog route tested existence with item()."""
+    idx = _index(tmp_path)
+    idx.upsert_item(_meta("1"), [P("a#0", None, "alpha")])
+    assert idx.has_item("1") is False, "not citable before a reconcile, like item()"
+    idx.reconcile([_meta("1"), _meta("2")])
+    assert idx.has_item(1) is True and idx.has_item("2") is False
+    assert idx.has_item("1") == (idx.item("1") is not None)
+
+
+def test_indexed_items_lists_metadata_only_for_citable_items(tmp_path):
+    idx = _index(tmp_path)
+    idx.reconcile([_meta("1"), _meta("2")])
+    idx.upsert_item(_meta("1", title="One"), [P("a#0", None, "alpha secretword")])
+    idx.upsert_item(_meta("77"), [P("a#0", None, "alpha")])  # never in the catalog
+    (entry,) = _index(tmp_path).indexed_items()
+    assert entry["id"] == "1" and entry["title"] == "One" and entry["kind"] == "article"
+    assert "passages" not in entry and "secretword" not in json.dumps(entry)

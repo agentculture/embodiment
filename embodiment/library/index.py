@@ -540,6 +540,30 @@ class DocumentIndex:
                 "passages": [dict(p) for p in item["passages"]],
             }
 
+    def has_item(self, item_id: Any) -> bool:
+        """True when :meth:`item` would return the item — without copying a passage.
+
+        Review of PR #98 (2026-10-24): the catalog route tested existence with
+        :meth:`item`, a copy of every passage under the lock, once per catalog entry.
+        """
+        key = str(item_id)
+        with self._lock:
+            return key in self._items and self._citable(key)
+
+    def indexed_items(self) -> list[dict]:
+        """Every citable item's id and metadata (no passages, no chunks), index order.
+
+        What the catalog route serves when the daemon has not listed the library since
+        it started (review of PR #98, 2026-10-24): the persisted index is the last
+        catalog it knows.
+        """
+        with self._lock:
+            return [
+                {"id": key, **item["meta"]}
+                for key, item in self._items.items()
+                if self._citable(key)
+            ]
+
     def read_passage(self, item_id: Any, anchor: str) -> Optional[dict]:
         """One stored passage by anchor, or None if the item or anchor is not citable."""
         item = self.item(item_id)

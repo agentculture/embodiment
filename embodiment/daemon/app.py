@@ -3621,6 +3621,11 @@ class DaemonApp:
         if lane is None:
             return {"items": []}
         catalog = getattr(lane.client, "items", None) or ()
+        if not catalog:
+            # Not listed since this daemon started (a restart, the library down):
+            # the persisted index is the last catalog known, every entry indexed.
+            # Review of PR #98, 2026-10-24: this answered no items until a good tick.
+            return {"items": [_indexed_entry(meta) for meta in _indexed_items(lane.index)]}
         return {"items": [_catalog_entry(item, lane.index) for item in catalog]}
 
     def _library_get(self, item_id: int) -> Optional[dict[str, Any]]:
@@ -5499,7 +5504,25 @@ def _catalog_entry(item: Any, index: Any) -> dict[str, Any]:
         "title": _text_or_empty(getattr(item, "title", "")),
         "kind": _text_or_empty(getattr(item, "kind", "")),
         "created_at": _text_or_empty(getattr(item, "created_at", "")),
-        "indexed": index.item(item_id) is not None,
+        "indexed": bool(index.has_item(item_id)),
+    }
+
+
+def _indexed_items(index: Any) -> list[Any]:
+    try:
+        return list(index.indexed_items())
+    except Exception:  # noqa: BLE001  # an index fault lists nothing, never raises
+        return []
+
+
+def _indexed_entry(meta: Mapping[str, Any]) -> dict[str, Any]:
+    """One persisted index item as the catalog route's entry (it is indexed)."""
+    return {
+        "id": str(meta.get("id", "")),
+        "title": _text_or_empty(meta.get("title")),
+        "kind": _text_or_empty(meta.get("kind")),
+        "created_at": _text_or_empty(meta.get("created_at")),
+        "indexed": True,
     }
 
 

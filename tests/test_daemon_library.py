@@ -1213,6 +1213,55 @@ class TestALibraryOnlyRoundIsAToolRound:
         assert any(r.startswith("library:") for r in reasons), reasons
 
 
+class TestTheCatalogRouteAfterARestart:
+    """Review of PR #98 (2026-10-24): the catalog lived only in memory, filled by a
+    successful list_items, so after a restart with an index on disk /api/library
+    answered no items until the first good tick."""
+
+    def test_a_restart_with_the_library_down_serves_the_indexed_items(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        before = _lane(tmp_path, _library())
+        before.sync.tick()  # the previous daemon's index, on disk
+        down = _library()
+        down.list_error = "library_unreachable"
+        h = _build(harness, tmp_path, library=down)
+        items = h.app.controls().library_list()["items"]
+        by_id = {i["id"]: i for i in items}
+        assert set(by_id) == {"13", "9"}
+        assert by_id["9"] == {
+            "id": "9",
+            "title": "Standup",
+            "kind": "transcript",
+            "created_at": "2026-10-20T08:00:00Z",
+            "indexed": True,
+        }
+
+    def test_a_fresh_install_with_the_library_down_lists_nothing(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        down = _library()
+        down.list_error = "library_unreachable"
+        h = _build(harness, tmp_path, library=down)
+        assert h.app.controls().library_list() == {"items": []}
+
+
+class TestTheCatalogEntryDoesNotCopyPassages:
+    """Review of PR #98 (2026-10-24): each catalog entry called index.item() - a deep
+    copy of every passage under the index lock - only to test existence."""
+
+    def test_the_entry_asks_has_item_and_never_item(self) -> None:
+        class OnlyHasItem:
+            def has_item(self, item_id: Any) -> bool:
+                return str(item_id) == "9"
+
+            def item(self, item_id: Any) -> Any:
+                raise AssertionError("item() copies every passage")
+
+        assert app_module._catalog_entry(TRANSCRIPT, OnlyHasItem())["indexed"] is True
+        assert app_module._catalog_entry(NEWSPAPER, OnlyHasItem())["indexed"] is False
+
+
 class TestARebuildCatchesUp:
     """Live 2026-10-24: re-indexing 51 items ran one 60 s tick per 300 s interval
     (15 items a tick, about 15 minutes). A tick that leaves work behind now brings
