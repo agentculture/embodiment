@@ -28,7 +28,7 @@ describe("postClip", () => {
     const fetchFn = vi.fn(async (_u: RequestInfo | URL, _i?: RequestInit) => resp(200, { ok: true, transcript: "t", reply: "r", code: "" }));
     const blob = new Blob(["abc"], { type: "audio/webm;codecs=opus" });
     const out = await postClip(blob, "k", { fetchFn }, 3.5);
-    expect(out).toEqual({ ok: true, transcript: "t", reply: "r", turnSerial: null });
+    expect(out).toEqual({ ok: true, transcript: "t", reply: "r", turnSerial: null, sources: [] });
     const [url, init] = fetchFn.mock.calls[0];
     expect(url).toBe("/api/clip");
     expect(init?.body).toBe(blob);
@@ -59,5 +59,16 @@ describe("postClip", () => {
   });
   it("an ok body without a reply string is unparseable", async () => {
     expect(await postClip(new Blob(["a"]), "", { fetchFn: async () => resp(200, { ok: true }) })).toEqual({ ok: false, code: "unparseable-response", status: 200 });
+  });
+});
+
+describe("postClip sources", () => {
+  it("parses the clip answer's cited sources like chat's", async () => {
+    const src = { source: "library", item_id: 9, anchor: "a#1", title: "T", date: "2026-10-20", text: "q" };
+    const fetchFn = vi.fn(async (_u: RequestInfo | URL, _i?: RequestInit) =>
+      new Response(JSON.stringify({ ok: true, transcript: "t", reply: "r [1]", turn_serial: 2, sources: [src] }), { status: 200 }));
+    const out = await postClip(new Blob(["a"], { type: "audio/wav" }), "", { fetchFn });
+    expect(out.ok && out.sources.length).toBe(1);
+    expect(out.ok && out.sources[0].item_id).toBe("9");
   });
 });

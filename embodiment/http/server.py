@@ -1069,7 +1069,7 @@ class _Handler(BaseHTTPRequestHandler):
                 _declared_duration(self.headers.get("X-Clip-Duration-S")),
                 timeout_s=config.clip_timeout_s,
             )
-            self._answer_text(outcome, ("transcript", "reply"), serial=True)
+            self._answer_text(outcome, ("transcript", "reply"), serial=True, sources=True)
             return
         body = self._read_body(limit=config.text_body_max_bytes)
         if body is None:

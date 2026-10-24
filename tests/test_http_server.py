@@ -2122,6 +2122,26 @@ class TestTheClipResponseCarriesItsTurnSerial:
         finally:
             built.server.shutdown(2.0)
 
+    def test_a_clip_forwards_its_cited_sources(self) -> None:
+        """A clip answer from the library carries its citations, like chat (c27)."""
+        src = {"source": "library", "item_id": 9, "anchor": "a#1", "title": "T", "text": "q"}
+        reply = {
+            "ok": True,
+            "transcript": "t",
+            "reply": "r [1]",
+            "turn_serial": 3,
+            "sources": [src],
+        }
+        built = build(controls=s.Controls(clip=lambda a, d: reply))
+        try:
+            status, body = built.request(
+                "POST", "/api/clip", body=b"abc", hdrs=built.headers(Content_Type="audio/wav")
+            )
+            assert status == 200
+            assert json.loads(body)["sources"] == [src]
+        finally:
+            built.server.shutdown(2.0)
+
 
 # ── task t6: the library and to-do read routes ───────────────────────────────
 

@@ -8,6 +8,8 @@
 // (413/415/400/422/502) is surfaced instead. The secret rides as a bearer
 // and is omitted when empty (public Host).
 
+import { parseSources, type ChatSource } from "./chat";
+
 export interface AudioClientOptions {
   basePath?: string;
   fetchFn?: typeof fetch;
@@ -15,7 +17,7 @@ export interface AudioClientOptions {
 
 export type SpeakOutcome = { ok: true; blob: Blob } | { ok: false; code: string };
 export type ClipOutcome =
-  | { ok: true; transcript: string; reply: string; turnSerial: number | null }
+  | { ok: true; transcript: string; reply: string; turnSerial: number | null; sources: ChatSource[] }
   | { ok: false; code: string; status: number };
 
 function authHeaders(secret: string, base: Record<string, string>): Record<string, string> {
@@ -102,5 +104,6 @@ export async function postClip(
     transcript: typeof o.transcript === "string" ? o.transcript : "",
     reply: o.reply,
     turnSerial: typeof o.turn_serial === "number" ? o.turn_serial : null,
+    sources: parseSources(o.sources),
   };
 }

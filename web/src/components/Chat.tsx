@@ -226,7 +226,7 @@ export function Chat({ secret = "", replyEvents = [], clientOptions, s2sRole, on
     setBusy(false);
   }
 
-  function onClipReply({ transcript, reply, turnSerial }: ClipReply) {
+  function onClipReply({ transcript, reply, turnSerial, sources }: ClipReply) {
     setDegraded(null);
     if (baselineSeq.current === null) {
       baselineSeq.current = replyEvents.reduce((mx, e) => Math.max(mx, e.seq), 0);
@@ -235,7 +235,7 @@ export function Chat({ secret = "", replyEvents = [], clientOptions, s2sRole, on
     setMessages((m) => [
       ...m,
       { key: `u-${m.length}`, role: "user", text: transcript, sources: [] },
-      { key: `a-${m.length + 1}`, role: "assistant", text: reply, sources: [] },
+      { key: `a-${m.length + 1}`, role: "assistant", text: reply, sources: sources ?? [] },
     ]);
   }
 

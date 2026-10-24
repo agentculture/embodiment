@@ -52,7 +52,8 @@ export function parseSources(raw: unknown): ChatSource[] {
   for (const item of raw) {
     if (!item || typeof item !== "object") continue;
     const o = item as Record<string, unknown>;
-    const itemId = str(o.item_id);
+    // Library ids may arrive as numbers (xteink's are ints) or strings; keep both.
+    const itemId = typeof o.item_id === "number" && Number.isFinite(o.item_id) ? String(o.item_id) : str(o.item_id);
     out.push({
       ...(itemId ? { item_id: itemId } : {}),
       ...(o.anchor !== undefined && o.anchor !== null ? { anchor: o.anchor } : {}),

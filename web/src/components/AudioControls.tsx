@@ -1,6 +1,7 @@
 // Provenance: the composer's speak / record / upload controls sit inside the form as in
 // pocketsync/web/static/index.html (#composer) and app.js:790-808 (composer wiring).
 // The recording and speech-to-speech logic is embodiment's own, not ported.
+import type { ChatSource } from "../api/chat";
 import { useRef, useState } from "react";
 import { postClip, speakMessage, type AudioClientOptions } from "../api/audio";
 
@@ -24,6 +25,8 @@ export interface ClipReply {
   reply: string;
   /** Serial of the turn the clip started, when the daemon reports one. */
   turnSerial?: number | null;
+  /** The clip answer's cited sources, as chat's (library citations open the reader). */
+  sources?: ChatSource[];
 }
 
 /** Plays /api/speak audio for one message. Failures show as role=alert. */
@@ -99,7 +102,7 @@ export function AudioControls({ secret, onReply, clientOptions, s2sRole }: Audio
     const out = await postClip(clip, secret, clientOptions, durationS);
     if (out.ok) {
       setError(null);
-      onReply({ transcript: out.transcript, reply: out.reply, turnSerial: out.turnSerial });
+      onReply({ transcript: out.transcript, reply: out.reply, turnSerial: out.turnSerial, sources: out.sources });
     } else {
       setError(out.code);
     }
