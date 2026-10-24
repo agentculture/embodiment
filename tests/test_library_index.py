@@ -92,7 +92,8 @@ def test_search_returns_hits_with_every_named_field(tmp_path):
     assert hit.created_at == "2026-10-20T08:00:00Z"
     assert hit.anchor == "ch1.xhtml#p0"
     assert "alpha alpha bravo" in hit.text
-    assert hit.start_s == 12.0 and hit.end_s == 19.5
+    assert hit.start_s == 12.0
+    assert hit.end_s == 19.5
     assert 0.0 < hit.score <= 1.0
 
 
@@ -125,7 +126,9 @@ def test_passage_duck_typing_accepts_mappings_too(tmp_path):
     idx.reconcile([_meta("1")])
     idx.upsert_item(_meta("1"), [{"anchor": "a#0", "heading": None, "text": "alpha"}])
     (hit,) = idx.search(_vec("alpha"), kinds=None, limit=5, threshold=0.0)
-    assert hit.anchor == "a#0" and hit.start_s is None and hit.end_s is None
+    assert hit.anchor == "a#0"
+    assert hit.start_s is None
+    assert hit.end_s is None
 
 
 def test_read_passage_and_item_return_stored_text(tmp_path):
@@ -133,7 +136,8 @@ def test_read_passage_and_item_return_stored_text(tmp_path):
     idx.reconcile([_meta("1")])
     idx.upsert_item(_meta("1"), [P("a#0", "H", "alpha"), P("a#1", "H", "bravo", 3.0, 4.0, "Gwen")])
     passage = idx.read_passage("1", "a#1")
-    assert passage["text"] == "bravo" and passage["speaker"] == "Gwen"
+    assert passage["text"] == "bravo"
+    assert passage["speaker"] == "Gwen"
     assert idx.read_passage("1", "nope") is None
     assert idx.read_passage("404", "a#0") is None
     item = idx.item("1")
@@ -202,7 +206,8 @@ def test_index_file_is_0600_under_the_callers_path(tmp_path):
     idx.reconcile([_meta("1")])
     idx.upsert_item(_meta("1"), [P("a#0", None, "alpha")])
     path = tmp_path / "library" / "index.json"
-    assert idx.path == path and path.exists()
+    assert idx.path == path
+    assert path.exists()
     assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert not [p for p in path.parent.iterdir() if p.name.endswith(".tmp")]
 
@@ -272,7 +277,8 @@ def test_a_corrupt_file_degrades_to_empty_without_raising(tmp_path):
     path.parent.mkdir(parents=True)
     path.write_text("{not json", encoding="utf-8")
     idx = DocumentIndex(path, embed=FakeEmbed(), model_tag="m1")
-    assert idx.degradations and "unreadable" in idx.degradations[0]
+    assert idx.degradations
+    assert "unreadable" in idx.degradations[0]
     assert idx.search(_vec("alpha"), kinds=None, limit=5, threshold=0.0) == []
 
 
@@ -333,9 +339,11 @@ def test_a_dropped_item_loses_its_chunks_and_its_stored_text(tmp_path):
     assert "zuluword" in idx.path.read_text(encoding="utf-8")
     idx.reconcile([_meta("2")])
     on_disk = idx.path.read_text(encoding="utf-8")
-    assert "zuluword" not in on_disk and "Secret heading" not in on_disk
+    assert "zuluword" not in on_disk
+    assert "Secret heading" not in on_disk
     assert "1" not in json.loads(on_disk)["items"]
-    assert idx.item("1") is None and idx.read_passage("1", "a#0") is None
+    assert idx.item("1") is None
+    assert idx.read_passage("1", "a#0") is None
     reloaded = _index(tmp_path)
     assert reloaded.item("1") is None
 
@@ -522,7 +530,8 @@ def test_newspapers_are_never_expired_by_the_index(tmp_path):
         idx.reconcile([old])
     reloaded = _index(tmp_path)
     (hit,) = reloaded.search(_vec("alpha"), kinds=None, limit=5, threshold=0.0)
-    assert hit.item_id == "5" and hit.created_at == "2019-01-01T06:00:00Z"
+    assert hit.item_id == "5"
+    assert hit.created_at == "2019-01-01T06:00:00Z"
 
 
 def test_the_index_has_no_clock_so_nothing_can_expire_by_age():
@@ -633,7 +642,8 @@ def test_has_item_matches_item_without_copying(tmp_path):
     idx.upsert_item(_meta("1"), [P("a#0", None, "alpha")])
     assert idx.has_item("1") is False, "not citable before a reconcile, like item()"
     idx.reconcile([_meta("1"), _meta("2")])
-    assert idx.has_item(1) is True and idx.has_item("2") is False
+    assert idx.has_item(1) is True
+    assert idx.has_item("2") is False
     assert idx.has_item("1") == (idx.item("1") is not None)
 
 
@@ -643,5 +653,8 @@ def test_indexed_items_lists_metadata_only_for_citable_items(tmp_path):
     idx.upsert_item(_meta("1", title="One"), [P("a#0", None, "alpha secretword")])
     idx.upsert_item(_meta("77"), [P("a#0", None, "alpha")])  # never in the catalog
     (entry,) = _index(tmp_path).indexed_items()
-    assert entry["id"] == "1" and entry["title"] == "One" and entry["kind"] == "article"
-    assert "passages" not in entry and "secretword" not in json.dumps(entry)
+    assert entry["id"] == "1"
+    assert entry["title"] == "One"
+    assert entry["kind"] == "article"
+    assert "passages" not in entry
+    assert "secretword" not in json.dumps(entry)

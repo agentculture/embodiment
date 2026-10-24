@@ -99,10 +99,13 @@ def test_tick_indexes_added_and_status_shape(tmp_path):
         "skipped_refused",
     }
     assert st["configured"] is True
-    assert st["items_indexed"] == 2 and st["chunks"] == 2
+    assert st["items_indexed"] == 2
+    assert st["chunks"] == 2
     assert st["last_sync_at"] == 100.0
     assert st["gets"] == client.gets == 3
-    assert st["failures_by_code"] == {} and st["skipped_books"] == 0 and st["skipped_refused"] == 0
+    assert st["failures_by_code"] == {}
+    assert st["skipped_books"] == 0
+    assert st["skipped_refused"] == 0
 
 
 def test_second_tick_unchanged_fetches_nothing(tmp_path):
@@ -129,7 +132,8 @@ def test_removed_item_is_purged(tmp_path):
     sync.tick()
     client.items = [item(2)]
     sync.tick()
-    assert index.item(1) is None and index.item(2) is not None
+    assert index.item(1) is None
+    assert index.item(2) is not None
 
 
 def test_budget_stops_and_resumes_next_tick(tmp_path):
@@ -156,7 +160,8 @@ def test_unopted_book_is_not_fetched(tmp_path):
     sync.tick()
     assert client.fetched == []
     st = sync.status()
-    assert st["skipped_books"] == 1 and st["skipped_refused"] == 0
+    assert st["skipped_books"] == 1
+    assert st["skipped_refused"] == 0
 
 
 def test_gate_held_means_no_embed_until_released_and_recall_first(tmp_path):
@@ -194,7 +199,8 @@ def test_gate_held_past_budget_yields_without_work(tmp_path):
         tmp_path, [item(1)], clock=clock, gate=lambda: True, sleep=tick_sleep, budget=3.0
     )
     out = sync.tick()
-    assert embed.calls == [] and client.fetched == []
+    assert embed.calls == []
+    assert client.fetched == []
     assert out["yielded"] is True
 
 

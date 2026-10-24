@@ -559,9 +559,11 @@ def test_a_listing_still_running_is_joined_not_started_again(tmp_path) -> None:
     )
     try:
         first = r.list_ingest(record_type="action_item", deadline=0.05)
-        assert not first.ok and first.degradations
+        assert not first.ok
+        assert first.degradations
         second = r.list_ingest(record_type="action_item", deadline=0.05)
-        assert not second.ok and second.degradations
+        assert not second.ok
+        assert second.degradations
         assert lister.calls == 1, "a second enumeration ran beside the abandoned one"
 
         joined: list[Any] = []
@@ -572,12 +574,14 @@ def test_a_listing_still_running_is_joined_not_started_again(tmp_path) -> None:
         time.sleep(0.05)
         lister.release.set()
         waiter.join(5.0)
-        assert joined and joined[0].ok
+        assert joined
+        assert joined[0].ok
         assert [x["id"] for x in joined[0].records] == ["pocket.r1.action.0"]
         assert lister.calls == 1, "the joiner got the running listing's result"
 
         fresh = r.list_ingest(record_type=None, deadline=5.0)
-        assert fresh.ok and len(fresh.records) == 2
+        assert fresh.ok
+        assert len(fresh.records) == 2
         assert lister.calls == 2, "a finished listing is not cached: the next load re-reads"
     finally:
         lister.release.set()

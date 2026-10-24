@@ -2420,7 +2420,8 @@ class TestLibraryClocks:
         try:
             status, _ = built.request("GET", "/api/library", hdrs=built.headers())
             assert status == 200
-            assert names and "text" in names[0].lower()
+            assert names
+            assert "text" in names[0].lower()
         finally:
             built.server.shutdown(2.0)
 
