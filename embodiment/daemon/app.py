@@ -3823,17 +3823,26 @@ class DaemonApp:
             self._record(APP_SHUTDOWN_INCOMPLETE, f"backfill: {_describe(exc)}")
             return False
 
-    def _tool_counts(self) -> tuple[int, int, int, int]:
-        """The four memory-tool counters, as one snapshot to difference against."""
+    def _tool_counts(self) -> tuple[int, int, int, int, int]:
+        """The tool counters, as one snapshot to difference against.
+
+        ``[0]`` is every tool call, the library's included: a completion where only
+        ``search_library``/``read_passage`` ran is a tool round too (review of PR
+        #98, 2026-10-24: counting memory tools only let a late recall re-run a
+        searched turn and left a bare "ok" after a search unanswered). ``[4]`` is
+        the library's share, so the answer can name the tool that ran.
+        """
         with self._lock:
+            library = sum(self._library_tool_calls.values())
             return (
-                self._remember_tool_calls + self._forget_tool_calls,
+                self._remember_tool_calls + self._forget_tool_calls + library,
                 self._remember_tool_written,
                 self._forget_tool_written,
                 self._remember_tool_refused + self._forget_tool_refused,
+                library,
             )
 
-    def _answer_tool_step(self, spoken: str, before: tuple[int, int, int, int]) -> str:
+    def _answer_tool_step(self, spoken: str, before: tuple[int, ...]) -> str:
         """Keep d7's promise that a tool round is never silent.
 
         The turn just called a tool. If the model's answer to the tool result
@@ -3854,6 +3863,8 @@ class DaemonApp:
             tool, replacement = REMEMBER_TOOL_NAME, TOOL_CONFIRMATION[REMEMBER_TOOL_NAME]
         elif after[2] > before[2]:
             tool, replacement = FORGET_TOOL_NAME, TOOL_CONFIRMATION[FORGET_TOOL_NAME]
+        elif after[0] - before[0] == after[4] - before[4]:
+            tool, replacement = "library", FALLBACK_TEXT  # only library tools ran
         else:
             tool, replacement = "none", FALLBACK_TEXT
         with self._lock:

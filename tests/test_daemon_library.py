@@ -236,6 +236,7 @@ def _build(
     library: Optional[FakeLibrary] = None,
     lane: Any = "default",
     tick: bool = True,
+    spawn: Any = _sync_spawn,
 ) -> Any:
     if lane == "default":
         lane = _lane(tmp_path, library)
@@ -245,7 +246,7 @@ def _build(
         complete=complete or ToolScript(),
         endpoints=lambda: endpoint,
         lanes=app_module.AppLanes(
-            recall_spawn=_sync_spawn,
+            recall_spawn=spawn,
             tts=FakeTts(),
             stt=lambda audio, filename, content_type: "golf?",
             library=lane,
@@ -1171,6 +1172,45 @@ def _wav() -> bytes:
         handle.setframerate(24000)
         handle.writeframes(b"\x00\x00" * 2400)
     return buf.getvalue()
+
+
+class TestALibraryOnlyRoundIsAToolRound:
+    """Review of PR #98 (2026-10-24): the tool-round flag counted only remember and
+    forget, so a completion where only search_library/read_passage ran was "not a
+    tool round": a late recall re-ran the whole turn (a second search, a replaced
+    answer) and a bare "ok" after a search reached the page unanswered."""
+
+    def test_a_recall_landing_after_a_search_does_not_rerun_the_turn(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        from tests.test_daemon_app import HeldSpawn
+
+        held = HeldSpawn()
+
+        class LandsDuringTheSearch(ByTurn):
+            def __call__(self, messages: list[dict[str, Any]], tools: Any = None) -> Any:
+                if len(self.prompts) == 0:
+                    held.land()  # the memory arrives while the first completion runs
+                return super().__call__(messages, tools)
+
+        model = LandsDuringTheSearch({"golf?": _call("search_library", query="golf")})
+        h = _build(harness, tmp_path, complete=model, library=_door_library(), spawn=held)
+        answer = h.app.controls().chat("golf?")
+        assert answer["ok"] is True, answer
+        assert answer["reply"] == REPLY
+        assert h.app.status()["library"]["tool_calls"]["search_library"] == 1
+        assert [s["title"] for s in answer["sources"] if s["source"] == "library"] == [DOOR_TITLE]
+
+    def test_a_bare_ok_after_a_search_gets_the_hebrew_fallback(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        model = ByTurn({"golf?": _call("search_library", query="golf")}, reply="ok")
+        h = _build(harness, tmp_path, complete=model, library=_door_library())
+        answer = h.app.controls().chat("golf?")
+        assert answer["reply"] == app_module.FALLBACK_TEXT
+        assert app_module.APP_TOOL_REPLY_UNSPOKEN in h.ledger_codes()
+        reasons = [r.detail for r in h.state.ledger.read_all()]
+        assert any(r.startswith("library:") for r in reasons), reasons
 
 
 class TestARebuildCatchesUp:
