@@ -46,7 +46,7 @@ from __future__ import annotations
 
 import re
 import threading
-from dataclasses import asdict, dataclass, replace
+from dataclasses import asdict, dataclass
 from typing import Any, Callable, Optional
 
 from embodiment import memory
@@ -251,7 +251,7 @@ def _hit_citation(hit: Any) -> Citation:
 
 def replace_source(citation: Citation, source: str) -> Citation:
     """*citation* from another source (a past conversation's, d8); fields unchanged."""
-    return replace(citation, source=source)
+    return Citation(**{**asdict(citation), "source": source})
 
 
 def citation_record(citation: Citation) -> dict[str, Any]:

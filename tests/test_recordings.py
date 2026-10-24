@@ -62,7 +62,8 @@ def test_a_full_store_refuses_and_says_so_and_deletes_nothing(tmp_path):
     store, seen = _store(tmp_path, max_bytes=150)
     kept = store.save(AUDIO, extension="ogg", content_type="audio/ogg", via="recorded")
     refused = store.save(AUDIO + b"x", extension="ogg", content_type="audio/ogg", via="recorded")
-    assert kept is not None and refused is None
+    assert kept is not None
+    assert refused is None
     assert (tmp_path / "recordings" / kept["file"]).is_file(), "an older recording was removed"
     assert [c for c, _ in seen] == [RECORDING_STORE_FULL]
     assert store.status()["refused_full"] == 1
@@ -149,7 +150,8 @@ def test_reset_starts_a_new_clock():
     tap.reset(16000)
     tap.feed(b"\x00\x00" * 16000)
     tap.reset(24000)
-    assert tap.rate == 24000 and tap.cut(0, 100) is None
+    assert tap.rate == 24000
+    assert tap.cut(0, 100) is None
 
 
 def test_saved_recordings_carry_typed_timestamps(tmp_path):

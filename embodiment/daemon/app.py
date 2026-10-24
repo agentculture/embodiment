@@ -1051,8 +1051,10 @@ _FORGET_STEMS: tuple[str, ...] = ("שכח", "forget")
 #: don't / dont / don’t / do not + forget*; Hebrew: (ו|ש)אל or (ו|ש)לא + any word
 #: carrying the stem (אל תשכח, אל תשכחי, אל תשכחו, שלא תשכחי). Applied to the
 #: casefolded, whitespace-collapsed turn. Biased to refusing, like the guard.
-_NEGATED_FORGET = re.compile(
-    r"\b(?:don['\u2019]?t|do not)\s+forget\w*|(?<!\w)[וש]?(?:אל|לא)\s+\w*שכח\w*"
+#: Two patterns applied in turn (English, then Hebrew), each simple enough to read.
+_NEGATED_FORGET: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\b(?:don['\u2019]?t|do not)\s+forget\w*"),
+    re.compile(r"(?<!\w)[וש]?(?:אל|לא)\s+\w*שכח\w*"),
 )
 
 #: The prompt section for a remainder, restart or follow-up completion: what
@@ -5822,7 +5824,9 @@ def user_turn_asks(user_text: object, tool: str, span: object) -> bool:
     if tool == FORGET_TOOL_NAME:
         stems = _FORGET_STEMS
         # "don't forget X" / "אל תשכחי X" asks to KEEP X: never a forget ask.
-        said_for_stems = _NEGATED_FORGET.sub(" ", said)
+        said_for_stems = said
+        for negated in _NEGATED_FORGET:
+            said_for_stems = negated.sub(" ", said_for_stems)
     else:
         stems, said_for_stems = _ASK_STEMS, said
     if not any(stem in said_for_stems for stem in stems):

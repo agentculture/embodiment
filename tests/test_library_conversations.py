@@ -68,7 +68,8 @@ def _index(tmp_path: Path) -> DocumentIndex:
 def test_each_turn_is_labelled_with_who_said_it_and_how(store):
     found = store.conversation("shed")
     meta, passages = conv.conversation_item(found["conversation"], found["turns"])
-    assert meta["kind"] == "conversation" and meta["id"] == "shed"
+    assert meta["kind"] == "conversation"
+    assert meta["id"] == "shed"
     assert meta["title"].startswith("Conversation 1970-01-01: where did I leave")
     assert passages[0]["text"].startswith("[the operator, spoken (an AI transcription)] ")
     assert passages[1]["text"].startswith("[Gwen, her own earlier reply (not a source of fact)] ")
@@ -112,10 +113,12 @@ def test_search_finds_the_right_conversation_fenced_and_labelled(store, tmp_path
     spec, search = _search(index, collector)
     assert spec.name == "search_conversations"
     out = search(query="where is the shed key", limit=1)
-    assert "id=shed" in out and "written-by=conversations" in out
+    assert "id=shed" in out
+    assert "written-by=conversations" in out
     assert "not a source of fact" in out
     (source,) = collector.sources()
-    assert source["source"] == "conversation" and source["item_id"] == "shed"
+    assert source["source"] == "conversation"
+    assert source["item_id"] == "shed"
     assert collector.library_text_in_context, "a quoted past ask must arm the write guard"
 
 

@@ -5969,7 +5969,8 @@ class TestTextTurns:
         assert h.app._settle_tick(ledger, announced, now + SETTLE_AFTER_S + 2) == 0
         (event,) = h.events("conversation")
         assert set(event.data) == {"id", "status", "last", "turns"}
-        assert event.data["status"] == "settled" and event.data["turns"] == 1
+        assert event.data["status"] == "settled"
+        assert event.data["turns"] == 1
         assert "לוטרות" not in json.dumps(event.data, ensure_ascii=False)
         assert ledger.load() == {event.data["id"]: event.data["last"]}
         assert h.app.status()["conversations"]["settled_announced"] == 1
