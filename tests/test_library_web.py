@@ -219,3 +219,9 @@ def test_ipv4_is_tried_first_and_a_dead_address_falls_through(monkeypatch):
     monkeypatch.setattr(web.socket, "create_connection", connect)
     assert web._open_first(target.addresses, 443, 1.0) == "sock"
     assert tried == ["93.184.216.34", "2606:4700::1"]
+
+
+def test_https_verifies_the_certificate_and_the_host_name():
+    context = web._verifying_context()
+    assert context.verify_mode == web.ssl.CERT_REQUIRED
+    assert context.check_hostname is True

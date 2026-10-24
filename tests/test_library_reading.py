@@ -51,7 +51,8 @@ def test_read_item_returns_every_passage_fenced_with_its_links(index):
     read, _, collector = _tools(index)
     out = read.fn(item_id="5")
     assert out.count("id=5") == 2
-    assert mem.BEGIN_MARK in out and mem.END_MARK in out
+    assert mem.BEGIN_MARK in out
+    assert mem.END_MARK in out
     assert "links: NVIDIA blog <https://example.org/thor>" in out
     assert [c.anchor for c in collector.citations] == ["s1#0", "s1#1"]
     assert collector.library_text_in_context
@@ -80,7 +81,8 @@ def test_fetch_source_reads_a_linked_page_as_a_web_citation(index):
     _, fetch_spec, collector = _tools(index, fetch)
     out = fetch_spec.fn(item_id="5", url="https://example.org/thor")
     assert seen == ["https://example.org/thor"]
-    assert "The full article text." in out and "url: https://example.org/thor" in out
+    assert "The full article text." in out
+    assert "url: https://example.org/thor" in out
     (source,) = collector.sources()
     assert (source["source"], source["link"], source["item_id"]) == (
         "web",
@@ -126,7 +128,8 @@ def test_without_a_fetcher_the_tool_says_so(index):
 def test_search_hits_show_their_links_too(index):
     search, _ = lt.build_library_tools(index, _embed, lt.CitationCollector())
     out = search.fn(query="Jetson", limit=1)
-    assert "links: " in out and "https://example.org/" in out
+    assert "links: " in out
+    assert "https://example.org/" in out
 
 
 def test_long_links_are_listed_whole_or_not_at_all(tmp_path):
