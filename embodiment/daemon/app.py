@@ -151,11 +151,16 @@ from embodiment.contract import ModelResponse
 from embodiment.daemon import drain as drain_module
 from embodiment.daemon.history import (
     SETTLED_NAME,
+    STAMP_GENERATED,
+    STAMP_TRANSCRIBED,
+    STAMP_WITNESSED,
     VIA_SPOKEN,
     ConversationHistory,
     SettledLedger,
     clip_via,
     settled,
+    stamp,
+    stamps,
 )
 from embodiment.daemon.lifecycle import DEFAULT_SHUTDOWN_DEADLINE, ENV_SHUTDOWN_DEADLINE
 from embodiment.daemon.recall_events import (
@@ -168,7 +173,7 @@ from embodiment.daemon.recall_events import (
     Recalled,
     RecallEventsConfig,
 )
-from embodiment.daemon.recordings import RECORDINGS_DIRNAME, RecordingStore
+from embodiment.daemon.recordings import RECORDINGS_DIRNAME, RecordingStore, UtteranceTap
 from embodiment.daemon.state import SESSIONS_DIRNAME, DaemonState, resolve_state_dir
 from embodiment.daemon.text_turns import TextTurns, TextTurnsConfig
 from embodiment.http import access as access_module
@@ -1262,6 +1267,14 @@ class _Heard:
     eos_wall: Optional[float] = None
     eos_at_ms: Optional[int] = None
     transcript_at: Optional[float] = None
+    #: The kept recording of this utterance (d11), and its typed times (d12).
+    recording: Optional[dict] = None
+    witnessed: Optional[float] = None
+    transcribed: Optional[float] = None
+
+
+#: Onsets and kept utterances waiting for their stop or transcript, by item id.
+_UTTERANCES_HELD = 16
 
 
 @dataclass(eq=False)
@@ -2015,6 +2028,10 @@ class DaemonApp:
             split=_whole_message,
         )
         #: Every clip the page sends, kept as it arrived (d10); private, bounded.
+        #: The room ear's sent audio, so each utterance is kept like a clip (d11).
+        self._tap = UtteranceTap()
+        self._utterance_starts: dict[str, int] = {}
+        self._utterance_kept: dict[str, Any] = {}
         self._recordings = RecordingStore(
             Path(self._state.dir) / RECORDINGS_DIRNAME,
             on_degrade=lambda code, reason: self._record(code, reason, source="recordings"),
@@ -2788,6 +2805,8 @@ class DaemonApp:
                 else:
                     with self._lock:
                         self._frames_forwarded += 1
+                    # Only what the server got: the tap's offsets are its clock (d11).
+                    self._tap.feed(pcm)
             self._publish_features("in", self._features_in, pcm)
 
         return on_frame
@@ -2922,7 +2941,7 @@ class DaemonApp:
 
     # ── the turn ─────────────────────────────────────────────────────────
 
-    def submit_transcript(self, text: object) -> bool:
+    def submit_transcript(self, text: object, kept: Optional[dict] = None) -> bool:
         """Queue one heard utterance for the turn thread. Never blocks, never raises.
 
         This is where what the EAR delivered is counted, and where an empty
@@ -2948,6 +2967,9 @@ class DaemonApp:
             eos_wall=eos[1] if eos else None,
             eos_at_ms=eos[2] if eos else None,
             transcript_at=self._clock(),
+            recording=(kept or {}).get("recording"),
+            witnessed=(kept or {}).get("witnessed"),
+            transcribed=time.time(),
         )
         try:
             self._turn_queue.put_nowait(heard)
@@ -3027,6 +3049,7 @@ class DaemonApp:
             eos_at_ms=heard.eos_at_ms,
             transcript_at=heard.transcript_at,
         )
+        self._tls.heard = heard
         try:
             return self._run_turn(text, serial, timing)
         except Exception as exc:  # noqa: BLE001  # a turn fault must not kill the daemon
@@ -3036,6 +3059,7 @@ class DaemonApp:
             self._note_timing(replace(timing, failed=True).derived())
             return TurnResult(spoken="")
         finally:
+            self._tls.heard = None
             with self._lock:
                 self._turns_in_flight -= 1
 
@@ -3113,7 +3137,13 @@ class DaemonApp:
         # and its measurement in one place rather than two files to join.
         if session is not None:
             self._safely(
-                lambda: session.add_assistant(result.spoken, metadata=timing.to_dict()),
+                lambda: session.add_assistant(
+                    result.spoken,
+                    metadata={
+                        **timing.to_dict(),
+                        "timestamps": stamps(stamp(STAMP_GENERATED, time.time())),
+                    },
+                ),
                 APP_TURN_FAILED,
                 "add_assistant",
             )
@@ -3535,17 +3565,22 @@ class DaemonApp:
         declared_duration_s: Optional[float],
         conversation: Optional[str] = None,
         origin: Optional[str] = None,
+        client_at: Optional[float] = None,
     ) -> dict[str, Any]:
         """``Controls.clip``: transcribe in memory, then answer as a typed turn (in the
         earlier *conversation* it continues, when one is named). *origin* is the page's
-        word for the clip — ``recorded`` on its mic or ``uploaded`` as a file (d7)."""
+        word for the clip — ``recorded`` on its mic or ``uploaded`` as a file (d7) — and
+        *client_at* the page's own claim of when it was recorded, or the file's date (d12)."""
         self._tls.text_turn = None
         refused = self._enter_conversation(conversation)
         if refused is not None:
             return {**refused, "transcript": ""}
         try:
             result = self._text_turns.handle_clip(
-                audio, declared_duration_s=declared_duration_s, via=clip_via(origin)
+                audio,
+                declared_duration_s=declared_duration_s,
+                via=clip_via(origin),
+                client_at=client_at,
             )
         finally:
             self._tls.conversation_session = None
@@ -4428,6 +4463,19 @@ class DaemonApp:
             self._record(APP_CLOCK_FAILED, _describe(exc), once=True)
             return ""
 
+    def _spoken_metadata(self) -> dict[str, Any]:
+        """A spoken turn's log fields: how it arrived, its recording, its times (d7, d11, d12)."""
+        heard = getattr(self._tls, "heard", None)
+        meta: dict[str, Any] = {"via": VIA_SPOKEN}
+        if heard is None:
+            return meta
+        if heard.recording:
+            meta["recording"] = heard.recording
+        meta["timestamps"] = stamps(
+            stamp(STAMP_WITNESSED, heard.witnessed), stamp(STAMP_TRANSCRIBED, heard.transcribed)
+        )
+        return meta
+
     def _note_ask(self, session: Any, text: str) -> None:
         """Add the user turn and COUNT what the explicit-ask path did with it.
 
@@ -4439,7 +4487,7 @@ class DaemonApp:
         detected at all. These counters are that view.
         """
         try:
-            outcome = session.add_user(text, metadata={"via": VIA_SPOKEN})
+            outcome = session.add_user(text, metadata=self._spoken_metadata())
         except Exception as exc:  # noqa: BLE001  # the session is a seam
             self._record(APP_TURN_FAILED, f"add_user: {_describe(exc)}")
             return
@@ -4798,6 +4846,7 @@ class DaemonApp:
             self._record(APP_EARS_UNAVAILABLE, f"factory: {_describe(exc)}")
             return
         self._ears_rate = rate
+        self._tap.reset(rate)  # a new session's stream time starts at zero (d11)
         self._ears_sessions += 1
         session = _EarsSession(client=self._ears, rate=rate)
         self._publish(
@@ -4910,17 +4959,20 @@ class DaemonApp:
             if isinstance(event, wire.TranscriptionCompleted):
                 with self._lock:
                     self._floor_taken = False
-                self.submit_transcript(event.text)
+                    kept = self._utterance_kept.pop(event.item_id, None)
+                self.submit_transcript(event.text, kept=kept)
             elif isinstance(event, wire.SpeechStarted):
                 # Who holds the floor, for a follow-up nobody asked for. Cleared
                 # by speech_stopped or the transcription; a stuck flag only ever
                 # silences follow-ups, never a reply (see _floor_held).
                 with self._lock:
                     self._floor_taken = True
+                    self._note_utterance_start(event)
                 self._barge_in()
             elif isinstance(event, wire.SpeechStopped):
                 with self._lock:
                     self._floor_taken = False
+                self._keep_utterance(event)
                 # The start of t21's measurement, taken where it happens.
                 at_ms = getattr(event, "at_ms", None)
                 with self._lock:
@@ -4939,6 +4991,42 @@ class DaemonApp:
                 self._record(APP_EARS_STREAM_ENDED, "the server closed the session")
         except Exception as exc:  # noqa: BLE001  # one bad event never ends the stream
             self._record(APP_EARS_THREAD_FAILED, _describe(exc))
+
+    # ── the room's utterances, kept like clips (deviation d11) ───────────────
+
+    def _note_utterance_start(self, event: Any) -> None:
+        """Under the lock: remember an onset's stream time by item id (bounded)."""
+        at_ms = getattr(event, "at_ms", None)
+        if isinstance(at_ms, int):
+            self._utterance_starts[event.item_id] = at_ms
+            while len(self._utterance_starts) > _UTTERANCES_HELD:
+                self._utterance_starts.pop(next(iter(self._utterance_starts)))
+
+    def _keep_utterance(self, event: Any) -> None:
+        """Cut the utterance from the tap and keep it; link it for its transcript.
+
+        Operator, 2026-10-24: "room microphone - confirmed. We keep that as well as
+        if sent as recording." Never raises: a cut that is not held (a stop with no
+        onset, audio already trimmed) keeps nothing, and the turn runs as before.
+        """
+        with self._lock:
+            start = self._utterance_starts.pop(event.item_id, None)
+        cut = self._tap.cut(start, getattr(event, "at_ms", None))
+        if cut is None:
+            return
+        wav, witnessed, duration = cut
+        ref = self._recordings.save(
+            wav,
+            extension="wav",
+            content_type="audio/wav",
+            via=VIA_SPOKEN,
+            duration_s=duration,
+            timestamps=stamps(stamp(STAMP_WITNESSED, witnessed)),
+        )
+        with self._lock:
+            self._utterance_kept[event.item_id] = {"recording": ref, "witnessed": witnessed}
+            while len(self._utterance_kept) > _UTTERANCES_HELD:
+                self._utterance_kept.pop(next(iter(self._utterance_kept)))
 
     def _barge_in(self) -> None:
         """Speech onset while we are talking: stop our own speaker. We own barge-in.

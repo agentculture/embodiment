@@ -25,8 +25,8 @@ Three surfaces, and why they are three and not one
   degrade-never-raise seam in this package (see :mod:`embodiment.events`).
 * :class:`TranscriptLog` — the private, size-bounded, per-session transcript
   log the spec's retention rule calls for (``CLAUDE.md``: transcripts go to a
-  private, size-bounded per-session log; the room mic's audio is never written,
-  and page clips are kept only by :mod:`embodiment.daemon.recordings`, d10).
+  private, size-bounded per-session log; audio -- page clips and room utterances
+  -- is kept only by :mod:`embodiment.daemon.recordings`, d10/d11).
   :meth:`DaemonState.open_transcript` is the "session API" a caller
   reaches for one: a session's spoken turns land in their own bounded file
   under ``<state dir>/sessions/``, never in :class:`OperationalLog`.

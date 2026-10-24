@@ -75,6 +75,7 @@ export async function postClip(
   durationS?: number,
   conversation?: string,
   origin?: ClipOrigin,
+  clientAtMs?: number,
 ): Promise<ClipOutcome> {
   if (clip.size === 0) return { ok: false, code: "empty-clip", status: 0 };
   const fetchFn = options.fetchFn ?? fetch;
@@ -85,6 +86,11 @@ export async function postClip(
   // How the page got the audio (deviation d7): the session log keeps it, and the
   // export tells a reader a recording from an uploaded file.
   if (origin) headers["X-Clip-Origin"] = origin;
+  // When it was recorded, or the uploaded file's own date (d12): the browser's
+  // clock, so the daemon stamps it as the client's claim.
+  if (clientAtMs !== undefined && Number.isFinite(clientAtMs) && clientAtMs > 0) {
+    headers["X-Clip-At"] = String(Math.round(clientAtMs));
+  }
   if (durationS !== undefined && Number.isFinite(durationS) && durationS >= 0) {
     headers["X-Clip-Duration-S"] = String(durationS);
   }

@@ -100,5 +100,8 @@ describe("postClip origin (deviation d7)", () => {
     await postClip(clip, "", { fetchFn }, 2, undefined, "recorded");
     expect(seen[0]["X-Clip-Origin"]).toBeUndefined();
     expect(seen[1]["X-Clip-Origin"]).toBe("recorded");
+    expect(seen[1]["X-Clip-At"]).toBeUndefined();
+    await postClip(clip, "", { fetchFn }, 2, undefined, "uploaded", 1792800000123.4);
+    expect(seen[2]["X-Clip-At"]).toBe("1792800000123");
   });
 });

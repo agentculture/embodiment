@@ -17,9 +17,11 @@ outside :data:`_ID_CHARS` is refused, so a request can never name a path.
 from __future__ import annotations
 
 import json
+import math
 import os
 import string
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
 
@@ -71,6 +73,70 @@ EVIDENCE = {
 _USER_VIAS = frozenset({VIA_TYPED, VIA_SPOKEN, VIA_RECORDED, VIA_UPLOADED, VIA_CLIP})
 #: The words the page may send for a clip (``X-Clip-Origin``).
 _CLIP_ORIGINS = frozenset({VIA_RECORDED, VIA_UPLOADED})
+
+#: Typed timestamps (d12, operator: "everything must be timestamp, and timestamp
+#: needs type"), the vocabulary asked of events-cli (events-cli#15). ``by`` names
+#: who asserts a time that is not the daemon's own clock (``client``: a claim).
+STAMP_CREATED = "created"
+STAMP_RECORDED = "recorded"
+STAMP_WITNESSED = "witnessed"
+STAMP_RECEIVED = "received"
+STAMP_TRANSCRIBED = "transcribed"
+STAMP_GENERATED = "generated"
+STAMP_TYPES = frozenset(
+    {
+        STAMP_CREATED,
+        STAMP_RECORDED,
+        STAMP_WITNESSED,
+        STAMP_RECEIVED,
+        STAMP_TRANSCRIBED,
+        STAMP_GENERATED,
+    }
+)
+_STAMP_BY = frozenset({"client"})
+
+
+def rfc3339(at: float) -> str:
+    """Epoch seconds as an RFC 3339 UTC instant, to the millisecond."""
+    instant = datetime.fromtimestamp(float(at), tz=timezone.utc)
+    return instant.isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def stamp(kind: str, at: Any, by: Optional[str] = None) -> Optional[dict[str, str]]:
+    """One typed timestamp, or None when *at* is not a usable time."""
+    if kind not in STAMP_TYPES or isinstance(at, bool) or not isinstance(at, (int, float)):
+        return None
+    if not math.isfinite(at) or at <= 0:
+        return None
+    out = {"type": kind, "at": rfc3339(at)}
+    if by in _STAMP_BY:
+        out["by"] = by
+    return out
+
+
+def stamps(*pairs: Optional[dict[str, str]]) -> list[dict[str, str]]:
+    """The usable stamps, in order."""
+    return [p for p in pairs if p]
+
+
+def _stamps(value: Any) -> list[dict[str, str]]:
+    """A logged turn's timestamps, keeping only well-formed ones."""
+    if not isinstance(value, list):
+        return []
+    out = []
+    for item in value:
+        if (
+            isinstance(item, dict)
+            and item.get("type") in STAMP_TYPES
+            and isinstance(item.get("at"), str)
+            and len(item["at"]) <= 40
+        ):
+            kept = {"type": item["type"], "at": item["at"]}
+            if item.get("by") in _STAMP_BY:
+                kept["by"] = item["by"]
+            out.append(kept)
+    return out
+
 
 #: A conversation is SETTLED when nothing has been said in it for this long (d7):
 #: then it is announced once, and announced again only after it is continued.
@@ -148,6 +214,7 @@ def _turns(path: Path) -> list[dict[str, Any]]:
                 "ts": float(ts) if isinstance(ts, (int, float)) else None,
                 "via": _via(row),
                 "recording": _recording(row.get("recording")),
+                "timestamps": _stamps(row.get("timestamps")),
             }
         )
     return turns

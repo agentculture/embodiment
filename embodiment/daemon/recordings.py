@@ -1,10 +1,12 @@
-"""The recording store: every audio clip the page sends, kept as it arrived (d10).
+"""The recording store: page clips and room utterances, kept as they arrived (d10, d11).
 
 Operator, 2026-10-24: "we also save the recording as well for now" -- after "a
-recording is truth (that it happened, not its content)". Until then raw audio was
-never written to disk; this module is now the ONE place that writes it, and only
-for clips (recorded on the page's mic, or uploaded). The room microphone's live
-stream is still never written. Archiving to S3 is a tracked follow-up.
+recording is truth (that it happened, not its content)" -- and then "room
+microphone - confirmed. We keep that as well as if sent as recording." Until then
+raw audio was never written to disk; this module is now the ONE place that writes
+it: page clips (recorded on the page's mic, or uploaded) and each utterance the
+room ear hears, cut by :class:`UtteranceTap` (the silence between utterances is
+never written). Archiving to S3 is #99.
 
 Layout, under ``<state dir>/recordings/`` (0700): ``<sha256>.<ext>`` holds the
 bytes exactly as received and ``<sha256>.json`` what is known about them (bytes,
@@ -30,6 +32,8 @@ import threading
 import time
 from pathlib import Path
 from typing import Any, Callable, Optional
+
+from embodiment.daemon import history
 
 RECORDINGS_DIRNAME = "recordings"
 #: The store's total cap. A judgement, not a measurement: about 2 GiB holds some
@@ -110,8 +114,13 @@ class RecordingStore:
         content_type: Any,
         via: str,
         duration_s: Optional[float] = None,
+        timestamps: Optional[list] = None,
     ) -> Optional[dict[str, Any]]:
-        """Keep *data*; return the reference a turn links to, or None if not kept."""
+        """Keep *data*; return the reference a turn links to, or None if not kept.
+
+        *timestamps* are the typed times known about the audio (d12): when it was
+        recorded or witnessed, and by whose clock; the store adds ``received``.
+        """
         if not isinstance(data, (bytes, bytearray)) or not data:
             return None
         data = bytes(data)
@@ -123,10 +132,15 @@ class RecordingStore:
             "file": f"{digest}.{_extension(extension)}",
         }
         with self._lock:
-            return self._save_locked(data, ref, via, duration_s)
+            return self._save_locked(data, ref, via, duration_s, list(timestamps or ()))
 
     def _save_locked(
-        self, data: bytes, ref: dict[str, Any], via: str, duration_s: Optional[float]
+        self,
+        data: bytes,
+        ref: dict[str, Any],
+        via: str,
+        duration_s: Optional[float],
+        timestamps: list,
     ) -> Optional[dict[str, Any]]:
         audio = self._root / ref["file"]
         if audio.is_file():
@@ -136,11 +150,13 @@ class RecordingStore:
             self.refused_full += 1
             self._degrade(RECORDING_STORE_FULL, f"{len(data)} bytes over the store's cap")
             return None
+        received = self._clock()
         meta = {
             **ref,
             "via": via,
-            "received_at": self._clock(),
+            "received_at": received,
             "duration_s": duration_s if isinstance(duration_s, (int, float)) else None,
+            "timestamps": [*timestamps, *history.stamps(history.stamp("received", received))],
         }
         try:
             self._root.mkdir(parents=True, exist_ok=True)
@@ -166,3 +182,90 @@ class RecordingStore:
                 "bytes": self._total(),
                 "max_bytes": self._max_bytes,
             }
+
+
+#: How much of the room ear's audio is held to cut utterances from (d11). Longer
+#: than lobes' force-commit on a stream that never falls silent, so a whole turn
+#: is always still there when its speech_stopped arrives.
+TAP_SECONDS = 90.0
+#: Kept before an onset and after a stop: the VAD's boundaries are 32 ms-quantised
+#: and its onset lags the first phoneme (the gateway's segmenter can drop the first
+#: word after a silence; this keeps it in the recording either way).
+TAP_PREROLL_MS = 300
+TAP_POSTROLL_MS = 200
+
+
+def wav_bytes(pcm: bytes, rate: int) -> bytes:
+    """*pcm* (16-bit mono little-endian) as a WAV file, in memory."""
+    import io
+    import wave
+
+    out = io.BytesIO()
+    with wave.open(out, "wb") as handle:
+        handle.setnchannels(1)
+        handle.setsampwidth(2)
+        handle.setframerate(int(rate))
+        handle.writeframes(pcm)
+    return out.getvalue()
+
+
+class UtteranceTap:
+    """The room ear's sent audio, held briefly, cut by stream time (d11). Never raises.
+
+    The realtime wire reports an utterance's onset and end as ``at_ms``, audio-stream
+    time: milliseconds of audio the server has received this session. The tap is fed
+    exactly the frames the ears client accepted, in order, so a byte offset here is
+    that clock, and an utterance is cut out with arithmetic, not guesswork. A frame
+    the client refused is not fed (the server never got it), so the two clocks stay
+    one. ``reset`` starts a new session's clock.
+    """
+
+    def __init__(self, *, max_seconds: float = TAP_SECONDS, clock: Callable[[], float] = time.time):
+        self._max_seconds = max_seconds
+        self._clock = clock
+        self._lock = threading.Lock()
+        self.reset(0)
+
+    def reset(self, rate: int) -> None:
+        with self._lock:
+            self._rate = int(rate)
+            self._buffer = bytearray()
+            self._dropped = 0  # bytes trimmed from the front, this session
+            self._t0: Optional[float] = None  # wall time of the session's first byte
+
+    @property
+    def rate(self) -> int:
+        return self._rate
+
+    def feed(self, pcm: bytes) -> None:
+        if not pcm or self._rate <= 0:
+            return
+        with self._lock:
+            if self._t0 is None:
+                self._t0 = self._clock()
+            self._buffer += pcm
+            cap = int(self._max_seconds * self._rate) * 2
+            extra = len(self._buffer) - cap
+            if extra > 0:
+                extra += extra % 2
+                del self._buffer[:extra]
+                self._dropped += extra
+
+    def _offset(self, at_ms: int) -> int:
+        offset = int(at_ms * self._rate / 1000) * 2
+        return offset - self._dropped
+
+    def cut(self, start_ms: Any, stop_ms: Any) -> Optional[tuple[bytes, float, float]]:
+        """``(wav, witnessed_at, duration_s)`` for the utterance, or None if not held."""
+        if not all(isinstance(v, int) and not isinstance(v, bool) for v in (start_ms, stop_ms)):
+            return None
+        if stop_ms <= start_ms or self._rate <= 0:
+            return None
+        with self._lock:
+            lo = max(0, self._offset(max(0, start_ms - TAP_PREROLL_MS)))
+            hi = min(len(self._buffer), self._offset(stop_ms + TAP_POSTROLL_MS))
+            if self._t0 is None or hi <= lo or self._offset(start_ms) < 0:
+                return None
+            pcm = bytes(self._buffer[lo:hi])
+            witnessed = self._t0 + start_ms / 1000.0
+        return wav_bytes(pcm, self._rate), witnessed, len(pcm) / 2 / self._rate

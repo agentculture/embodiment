@@ -76,8 +76,20 @@ culture-rules (decision c21): 33 were there on 2026-10-24.
 - **Clips are kept** (deviation d10, operator: "a recording is truth"): every clip
   the page sends is saved as it arrived, before transcription, under
   `<state>/recordings/` (0600, named by sha256, capped at 2 GiB, refusing past the
-  cap and never deleting), and its turn links it. The room mic's live audio is
-  still not written. S3 archiving is #99.
+  cap and never deleting), and its turn links it. S3 archiving is #99.
+- **Room speech is kept too** (deviation d11, operator: "we keep that as well as if
+  sent as recording"): each utterance the room ear hears is cut from a bounded tap
+  of the audio the server received, by the wire's own stream time (onset to stop,
+  with a short pre- and post-roll), saved as a WAV in the same store, and linked
+  from its spoken turn. The silence between utterances is not written.
+- **Everything carries typed timestamps** (deviation d12): each session-log turn
+  and each kept recording lists `{type, at, by?}`, with `type` one of `created`,
+  `recorded`, `witnessed`, `received`, `transcribed`, `generated` (the vocabulary
+  asked of events-cli in events-cli#15). The page sends `X-Clip-At`, the time a
+  clip was recorded or an uploaded file's own date, stamped `by: client`.
+- **Content marks asked upstream:** events-cli#15 (visibility, origin, fidelity
+  and typed timestamps on the envelope) and culture-rules#90 (store, test and
+  propagate them).
 - **Every turn says how it arrived** (d7): the session log keeps `via` on the
   operator's turns (`typed`, `spoken`, `recorded`, `uploaded`, `clip`; the page
   sends `X-Clip-Origin` for a clip) and the export adds `generated` for Gwen's

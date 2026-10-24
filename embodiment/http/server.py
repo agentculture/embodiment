@@ -336,6 +336,8 @@ CONVERSATION_NOT_FOUND_CODE = "conversation-not-found"
 CONVERSATION_HEADER = "X-Conversation"
 #: The page's word for a clip: ``recorded`` (its mic) or ``uploaded`` (a file); d7.
 CLIP_ORIGIN_HEADER = "X-Clip-Origin"
+#: The page's claim of when the clip was recorded (or the file's date), epoch ms; d12.
+CLIP_AT_HEADER = "X-Clip-At"
 HISTORY_NOT_CONFIGURED_CODE = "history-not-configured"
 
 #: How long an Access-admitted stream may stay open when the verifier reported no
@@ -1520,16 +1522,26 @@ def _parse_object(body: bytes) -> Optional[dict[str, Any]]:
 
 def _clip_extras(headers: Any) -> tuple[Any, ...]:
     """The clip callable's arguments after the body: the declared duration, then —
-    only when sent — the conversation it continues (d5) and the clip's origin (d7).
-    The daemon checks the origin word; anything unknown is logged as ``clip``."""
-    extras: tuple[Any, ...] = (_declared_duration(headers.get("X-Clip-Duration-S")),)
-    conversation = headers.get(CONVERSATION_HEADER) or None
-    origin = headers.get(CLIP_ORIGIN_HEADER) or None
-    if conversation or origin:
-        extras += (conversation,)
-    if origin:
-        extras += (origin,)
-    return extras
+    only when sent — the conversation it continues (d5), the clip's origin (d7) and
+    the page's time for it (d12, epoch seconds). Trailing ones that were not sent are
+    left off. The daemon checks the origin word; anything unknown is logged ``clip``."""
+    tail = [
+        headers.get(CONVERSATION_HEADER) or None,
+        headers.get(CLIP_ORIGIN_HEADER) or None,
+        _clip_at(headers.get(CLIP_AT_HEADER)),
+    ]
+    while tail and tail[-1] is None:
+        tail.pop()
+    return (_declared_duration(headers.get("X-Clip-Duration-S")), *tail)
+
+
+def _clip_at(raw: Any) -> Optional[float]:
+    """``X-Clip-At`` (epoch milliseconds) as epoch seconds, or None if unusable."""
+    try:
+        value = float(raw) / 1000.0
+    except (TypeError, ValueError):
+        return None
+    return value if math.isfinite(value) and value > 0 else None
 
 
 def _declared_duration(raw: Optional[str]) -> Optional[float]:

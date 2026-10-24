@@ -1664,6 +1664,8 @@ class TestClipRoute:
             ({"X_Conversation": "c1"}, ("c1",)),
             ({"X_Clip_Origin": "recorded"}, (None, "recorded")),
             ({"X_Conversation": "c1", "X_Clip_Origin": "uploaded"}, ("c1", "uploaded")),
+            ({"X_Clip_At": "1792800000123"}, (None, None, 1792800000.123)),
+            ({"X_Clip_At": "soon"}, ()),
         ],
     )
     def test_the_conversation_and_origin_headers_reach_the_callable(

@@ -154,3 +154,32 @@ def test_the_settled_ledger_round_trips_privately(tmp_path):
 def test_an_unreadable_ledger_means_announce_again(tmp_path):
     (tmp_path / "s.json").write_text("not json")
     assert h.SettledLedger(tmp_path / "s.json").load() == {}
+
+
+# ── d12: typed timestamps ────────────────────────────────────────────────────
+
+
+def test_a_stamp_is_typed_and_rfc3339():
+    assert h.stamp("recorded", 1792800000.5, by="client") == {
+        "type": "recorded",
+        "at": "2026-10-24T00:00:00.500Z",
+        "by": "client",
+    }
+    assert h.stamp("received", 1.0) == {"type": "received", "at": "1970-01-01T00:00:01.000Z"}
+
+
+def test_a_bad_stamp_is_dropped():
+    assert h.stamp("whenever", 1.0) is None
+    assert h.stamp("received", None) is None
+    assert h.stamp("received", float("nan")) is None
+    assert h.stamp("received", True) is None
+    assert "by" not in h.stamp("received", 1.0, by="someone")
+    assert h.stamps(None, h.stamp("received", 1.0)) == [h.stamp("received", 1.0)]
+
+
+def test_logged_timestamps_are_read_back_and_filtered(tmp_path):
+    good = {"type": "witnessed", "at": "2026-10-24T08:00:00.000Z"}
+    rows = [{**_turn("user", "x", 1.0), "timestamps": [good, {"type": "bogus", "at": "x"}, 3]}]
+    _log(tmp_path, "c", rows, 1)
+    (turn,) = ConversationHistory(tmp_path).conversation("c")["turns"]
+    assert turn["timestamps"] == [good]

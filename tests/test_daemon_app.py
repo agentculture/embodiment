@@ -5909,6 +5909,45 @@ class TestTextTurns:
         conversation = h.app._history().conversation(h.app._current_session_log().stem)
         assert conversation["turns"][0]["recording"]["sha256"] == row["recording"]["sha256"]
 
+    def test_room_speech_is_kept_like_a_recording_and_linked_with_its_times(
+        self, harness: Any
+    ) -> None:
+        """d11 + d12: an utterance is cut by stream time, kept, and linked from its turn."""
+        h, _ = self._build(harness)
+        h.app._tap.reset(16000)
+        for _ in range(20):
+            h.app._tap.feed(b"\x01\x00" * 1600)
+        h.app._on_event(wire.SpeechStarted(item_id="u1", at_ms=200))
+        h.app._on_event(wire.SpeechStopped(item_id="u1", at_ms=1200))
+        h.app._on_event(wire.TranscriptionCompleted(item_id="u1", text=SPEECH))
+        h.app._run_heard(h.app._turn_queue.get_nowait())
+        (row,) = [r for r in self._logged(h) if r["role"] == "user"]
+        assert row["via"] == "spoken"
+        kept = Path(h.state.dir) / "recordings" / row["recording"]["file"]
+        assert kept.read_bytes()[:4] == b"RIFF"
+        assert [t["type"] for t in row["timestamps"]] == ["witnessed", "transcribed"]
+        meta = json.loads(kept.with_suffix(".json").read_text())
+        assert meta["via"] == "spoken"
+        assert [t["type"] for t in meta["timestamps"]] == ["witnessed", "received"]
+
+    def test_every_turn_carries_typed_timestamps(self, harness: Any) -> None:
+        h, _ = self._build(harness)
+        h.app.controls().chat("מה עם הלוטרות?")
+        h.app.controls().clip(self._wav(), None, None, "recorded", 1792800000.0)
+        rows = self._logged(h)
+        kinds = [(r["role"], [t["type"] for t in r.get("timestamps", [])]) for r in rows]
+        assert kinds == [
+            ("user", ["received"]),
+            ("assistant", ["generated"]),
+            ("user", ["recorded", "received", "transcribed"]),
+            ("assistant", ["generated"]),
+        ]
+        assert rows[2]["timestamps"][0] == {
+            "type": "recorded",
+            "at": "2026-10-24T00:00:00.000Z",
+            "by": "client",
+        }
+
     def test_a_spoken_turn_records_it_was_spoken(self, harness: Any) -> None:
         h, _ = self._build(harness)
         h.app.run_turn(SPEECH)

@@ -189,13 +189,17 @@ loop. It does not drive hardware and nothing here claims a body.
   visible in `status`, on the dashboard and in a crash-durable ledger, and the
   daemon keeps running. Nothing degrades silently.
 
-Retention: the room microphone's live audio is never written to disk. Every clip
-the page sends (recorded on its mic or uploaded) is kept as it arrived (d10),
-before it is transcribed, under `recordings/` in the state directory: 0600 files
-named by their sha256, in a 0700 directory, capped at 2 GiB. A clip past the cap is
-refused and recorded, and nothing is deleted to make room. Archiving to S3 is
-tracked in #99. Transcripts go to a private, size-bounded, per-session log (0600)
-under the state directory (0700), and each turn says how it arrived (d7).
+Retention: recordings are kept. Every clip the page sends (recorded on its mic or
+uploaded) is kept as it arrived, before it is transcribed (d10), and so is every
+utterance the room microphone hears, from speech onset to its end, as a WAV
+(d11); the silence between utterances is not written. They live under
+`recordings/` in the state directory: 0600 files named by their sha256, in a 0700
+directory, capped at 2 GiB. A recording past the cap is refused and recorded, and
+nothing is deleted to make room. Archiving to S3 is tracked in #99. Transcripts go
+to a private, size-bounded, per-session log (0600) under the state directory
+(0700). Each turn says how it arrived (d7), links its recording, and carries typed
+timestamps (d12): `created`, `recorded`, `witnessed`, `received`, `transcribed`,
+`generated`, with the page's own times marked `by: client`.
 
 ## How to run
 

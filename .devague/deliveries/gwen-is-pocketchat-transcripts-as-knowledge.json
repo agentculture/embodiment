@@ -2,7 +2,7 @@
   "plan_slug": "gwen-is-pocketchat-transcripts-as-knowledge",
   "schema_version": 2,
   "created": "2026-10-24T04:42:23Z",
-  "updated": "2026-10-24T16:09:53Z",
+  "updated": "2026-10-24T16:42:25Z",
   "deviations": [
     {
       "id": "d1",
@@ -128,6 +128,28 @@
       "status": "approved",
       "classification": "needs-follow-up",
       "seq": 10
+    },
+    {
+      "id": "d11",
+      "what": "Room microphone speech is kept like a sent recording (extends d10): each utterance the room ear hears (speech_started to speech_stopped, with a short pre-roll) is written to the same recording store as a WAV of the captured PCM, and linked from its spoken turn in the session log; same cap, refuse-never-delete; silence between utterances is not written",
+      "task_ref": "t13",
+      "reason": "Operator, 2026-10-24: 'room microphone - confirmed. We keep that as well as if sent as recording.'",
+      "affects": [],
+      "origin": "user",
+      "status": "approved",
+      "classification": "needs-follow-up",
+      "seq": 11
+    },
+    {
+      "id": "d12",
+      "what": "Everything carries typed timestamps: each session-log turn and each kept recording records a list of {type, at, by?} with type from created, recorded, witnessed, received, transcribed, generated (the events-cli#15 vocabulary); the page sends the time a clip was recorded (or an uploaded file's own time) as a client claim; history export carries them",
+      "task_ref": "t13",
+      "reason": "Operator, 2026-10-24: 'Ideally, we add timestamp at record time, too. everything must be timestamp, and timestamp needs type (Creation, record, witness, etc.)'",
+      "affects": [],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 12
     }
   ],
   "evidence": [],

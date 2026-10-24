@@ -73,6 +73,7 @@ from typing import Any, Callable, Optional
 
 from embodiment import safe_reason
 from embodiment.audio.features import SAMPLE_RATE_HZ
+from embodiment.daemon import history
 from embodiment.voice import (
     _REDIRECT_REFUSING_OPENER,
     BYTES_PER_SAMPLE,
@@ -424,6 +425,13 @@ def http_transcribe(
 # ── the handlers ────────────────────────────────────────────────────────────
 
 
+def _client_stamp(via: str, client_at: object) -> Optional[dict]:
+    """The page's own time for a clip (d12): an upload's file date is when it was
+    ``created``; anything else is when it was ``recorded``. Always ``by: client``."""
+    kind = history.STAMP_CREATED if via == history.VIA_UPLOADED else history.STAMP_RECORDED
+    return history.stamp(kind, client_at, by="client")
+
+
 class TextTurns:
     """Typed turns, per-message speech and clip transcription. Never raises."""
 
@@ -482,22 +490,34 @@ class TextTurns:
     # -- typed turns ---------------------------------------------------------
 
     def handle_text(
-        self, text: object, *, via: str = "typed", recording: Optional[dict] = None
+        self,
+        text: object,
+        *,
+        via: str = "typed",
+        recording: Optional[dict] = None,
+        timestamps: Optional[list] = None,
     ) -> TextTurnResult:
         """Run one typed message as a turn in the current session; reply as text.
 
         *via* is written beside the user turn in the session log: how it arrived
         (``typed``, or a clip's ``recorded`` / ``uploaded`` / ``clip``; d7), and
-        *recording* the kept clip it was transcribed from (d10).
+        *recording* the kept clip it was transcribed from (d10). *timestamps* are
+        its typed times (d12); a typed message without them is stamped ``received``.
         """
+        if timestamps is None:
+            timestamps = history.stamps(history.stamp(history.STAMP_RECEIVED, time.time()))
         try:
-            return self._handle_text(text, via, recording)
+            return self._handle_text(text, via, recording, timestamps)
         except Exception as exc:  # noqa: BLE001  # degrade, never raise
             self._record(TEXT_TURN_FAILED, safe_reason.describe_exception(exc))
             return TextTurnResult(False, code=TEXT_TURN_FAILED, http_status=500)
 
     def _handle_text(
-        self, text: object, via: str = "typed", recording: Optional[dict] = None
+        self,
+        text: object,
+        via: str = "typed",
+        recording: Optional[dict] = None,
+        timestamps: Optional[list] = None,
     ) -> TextTurnResult:
         if not isinstance(text, str):
             return TextTurnResult(False, code=REFUSED_NOT_TEXT, http_status=400)
@@ -511,19 +531,23 @@ class TextTurns:
             self._record(TEXT_TURN_BUSY, "the conversation was busy; nothing was written")
             return TextTurnResult(False, code=TEXT_TURN_BUSY, http_status=503)
         try:
-            return self._turn_in_conversation(message, via, recording)
+            return self._turn_in_conversation(message, via, recording, timestamps or [])
         finally:
             if hold is not None and self._release_conversation is not None:
                 self._release_conversation()
 
     def _turn_in_conversation(
-        self, message: str, via: str = "typed", recording: Optional[dict] = None
+        self,
+        message: str,
+        via: str = "typed",
+        recording: Optional[dict] = None,
+        timestamps: Optional[list] = None,
     ) -> TextTurnResult:
         session = self._current_session()
         if session is None:
             self._record(TEXT_TURN_NO_SESSION, "typed turn ran without a session")
         else:
-            metadata: dict[str, Any] = {"via": via}
+            metadata: dict[str, Any] = {"via": via, "timestamps": list(timestamps or [])}
             if recording:
                 metadata["recording"] = recording
             self._session_call(lambda: session.add_user(message, metadata=metadata))
@@ -539,7 +563,10 @@ class TextTurns:
             return TextTurnResult(False, code=TEXT_TURN_FAILED, http_status=500)
 
         if session is not None:
-            self._session_call(lambda: session.add_assistant(reply))
+            generated = history.stamps(history.stamp(history.STAMP_GENERATED, time.time()))
+            self._session_call(
+                lambda: session.add_assistant(reply, metadata={"timestamps": generated})
+            )
         return TextTurnResult(True, reply=reply, turn_serial=_turn_serial(result))
 
     def _session_call(self, call: Callable[[], Any]) -> None:
@@ -616,7 +643,12 @@ class TextTurns:
     # -- clips ---------------------------------------------------------------
 
     def handle_clip(
-        self, audio: object, *, declared_duration_s: object = None, via: str = "clip"
+        self,
+        audio: object,
+        *,
+        declared_duration_s: object = None,
+        via: str = "clip",
+        client_at: object = None,
     ) -> ClipResult:
         """Transcribe a clip in memory and run the transcript as a typed turn.
 
@@ -624,12 +656,14 @@ class TextTurns:
         is never written anywhere; it is dropped when this call returns.
         """
         try:
-            return self._handle_clip(audio, declared_duration_s, via)
+            return self._handle_clip(audio, declared_duration_s, via, client_at)
         except Exception as exc:  # noqa: BLE001
             self._record(CLIP_STT_FAILED, safe_reason.describe_exception(exc))
             return ClipResult(False, code=CLIP_STT_FAILED, http_status=502)
 
-    def _keep(self, data: bytes, probe: Any, via: str, duration: Any) -> Optional[dict]:
+    def _keep(
+        self, data: bytes, probe: Any, via: str, duration: Any, timestamps: list
+    ) -> Optional[dict]:
         store = self._recordings
         if store is None:
             return None
@@ -640,12 +674,16 @@ class TextTurns:
                 content_type=probe.content_type,
                 via=via,
                 duration_s=duration,
+                timestamps=timestamps,
             )
         except Exception as exc:  # noqa: BLE001  # the store is a seam; the turn still runs
             self._record(CLIP_STT_FAILED, f"recording: {safe_reason.describe_exception(exc)}")
             return None
 
-    def _handle_clip(self, audio: object, declared: object, via: str = "clip") -> ClipResult:
+    def _handle_clip(
+        self, audio: object, declared: object, via: str = "clip", client_at: object = None
+    ) -> ClipResult:
+        received = time.time()
         if not isinstance(audio, (bytes, bytearray)) or not audio:
             return ClipResult(False, code=REFUSED_EMPTY, http_status=400)
         cfg = self._config
@@ -669,7 +707,10 @@ class TextTurns:
 
         # Kept BEFORE transcription (d10): that it was sent is the fact a recording
         # proves, whether or not the words come back.
-        recording = self._keep(data, probe, via, duration)
+        # The page's own time is a claim (``by: client``): when a recording was made,
+        # or an uploaded file's own date (d12).
+        claimed = _client_stamp(via, client_at)
+        recording = self._keep(data, probe, via, duration, history.stamps(claimed))
         try:
             transcript = self._stt(data, f"clip.{probe.extension}", probe.content_type)
         except Exception as exc:  # noqa: BLE001
@@ -684,7 +725,16 @@ class TextTurns:
             return ClipResult(
                 False, duration_s=duration, code=CLIP_EMPTY_TRANSCRIPT, http_status=422
             )
-        turn = self.handle_text(transcript, via=via, recording=recording)
+        turn = self.handle_text(
+            transcript,
+            via=via,
+            recording=recording,
+            timestamps=history.stamps(
+                claimed,
+                history.stamp(history.STAMP_RECEIVED, received),
+                history.stamp(history.STAMP_TRANSCRIBED, time.time()),
+            ),
+        )
         return ClipResult(
             turn.ok,
             transcript=transcript,

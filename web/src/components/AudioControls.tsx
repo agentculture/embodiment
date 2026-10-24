@@ -108,9 +108,9 @@ export function AudioControls({ secret, onReply, clientOptions, live, conversati
   const startedAt = useRef(0);
   const limit = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  async function send(clip: Blob, origin: ClipOrigin, durationS?: number) {
+  async function send(clip: Blob, origin: ClipOrigin, atMs: number, durationS?: number) {
     setBusy(true);
-    const out = await postClip(clip, secret, clientOptions, durationS, conversation, origin);
+    const out = await postClip(clip, secret, clientOptions, durationS, conversation, origin, atMs);
     if (out.ok) {
       setError(null);
       onReply({ transcript: out.transcript, reply: out.reply, turnSerial: out.turnSerial, sources: out.sources });
@@ -125,7 +125,7 @@ export function AudioControls({ secret, onReply, clientOptions, live, conversati
     e.target.value = "";
     if (!file) return;
     setError(null);
-    await send(file, "uploaded");
+    await send(file, "uploaded", file.lastModified);
   }
 
   async function startRecording() {
@@ -156,7 +156,7 @@ export function AudioControls({ secret, onReply, clientOptions, live, conversati
         recorder.current = null;
         setRecording(false);
         const seconds = (Date.now() - startedAt.current) / 1000;
-        void send(new Blob(chunks, { type: rec.mimeType || chunks[0]?.type || "" }), "recorded", seconds);
+        void send(new Blob(chunks, { type: rec.mimeType || chunks[0]?.type || "" }), "recorded", startedAt.current, seconds);
       };
       recorder.current = rec;
       startedAt.current = Date.now();

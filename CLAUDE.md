@@ -270,12 +270,15 @@ operator's decisions, recorded in the spec:
   input **verbatim, never from model output**, and intake **never raises**.
 - **Privacy of the room.** `continuity.py` pins `DEFAULT_VISIBILITY = "public"`
   and this repo commits `.eidetic/memory/`. Anything the daemon writes must
-  default to the **private** store under a pinned data dir. The room mic's live
-  audio is never written to disk. **Clips are kept (d10, operator, 2026-10-24: "a
-  recording is truth"):** `daemon/recordings.py` is the ONE writer of audio, for
-  page clips only, before transcription, 0600 under `<state>/recordings/`, capped,
-  refusing (never deleting) past the cap; S3 archive is #99. Transcripts go to a
-  private, size-bounded per-session log, every turn tagged `via` (d7).
+  default to the **private** store under a pinned data dir. **Recordings are kept
+  (d10, d11; operator, 2026-10-24: "a recording is truth"):** `daemon/recordings.py`
+  is the ONE writer of audio — every page clip before transcription, and every
+  room-mic utterance (speech_started to speech_stopped, cut from a bounded tap by
+  stream time; silence between utterances is not written) — 0600 under
+  `<state>/recordings/`, capped, refusing (never deleting) past the cap; S3 archive
+  is #99. Transcripts go to a private, size-bounded per-session log, every turn
+  tagged `via` (d7) and with typed timestamps (d12: created, recorded, witnessed,
+  received, transcribed, generated; the page's times marked `by: client`).
 - **Loopback is not authentication.** A Cloudflare tunnel delivers remote
   requests from `cloudflared` on 127.0.0.1. Every state-changing request — and
   the event stream, which carries the transcript — needs a Host and Origin
