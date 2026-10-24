@@ -154,6 +154,10 @@ class Citation:
     start: Optional[float]
     end: Optional[float]
     text: str
+    #: The web address of a fetched source (d: newsletter sources), else "".
+    link: str = ""
+    #: ``[text, url]`` links the passage carries, so the model can follow them.
+    links: tuple = ()
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -224,6 +228,18 @@ def _seconds(value: Any) -> Optional[float]:
     return float(value)
 
 
+def _clean_links(value: Any) -> tuple:
+    out = []
+    for pair in value or ():
+        try:
+            text, url = pair
+        except (TypeError, ValueError):
+            continue
+        if isinstance(url, str) and url.lower().startswith(("http://", "https://")):
+            out.append((_clean(text, FIELD_MAX_CHARS), url[:2048]))
+    return tuple(out[:20])
+
+
 def _citation(meta: dict[str, Any], passage: dict[str, Any]) -> Citation:
     return Citation(
         source=LIBRARY_SOURCE,
@@ -235,6 +251,7 @@ def _citation(meta: dict[str, Any], passage: dict[str, Any]) -> Citation:
         start=_seconds(passage.get("start_s")),
         end=_seconds(passage.get("end_s")),
         text=memory.neutralise_source_text(passage.get("text") or "", SOURCE_TEXT_MAX_CHARS),
+        links=_clean_links(passage.get("links")),
     )
 
 
@@ -250,6 +267,7 @@ def _hit_citation(hit: Any) -> Citation:
         "start_s": getattr(hit, "start_s", None),
         "end_s": getattr(hit, "end_s", None),
         "text": getattr(hit, "text", None),
+        "links": getattr(hit, "links", ()),
     }
     return _citation(meta, passage)
 
@@ -257,6 +275,24 @@ def _hit_citation(hit: Any) -> Citation:
 def replace_source(citation: Citation, source: str) -> Citation:
     """*citation* from another source (a past conversation's, d8); fields unchanged."""
     return Citation(**{**asdict(citation), "source": source})
+
+
+#: The links line's own budget, beyond the passage text's: whole links only, never a
+#: URL cut mid-string -- a cut URL is not one the item lists, so fetch_source would
+#: refuse it (review of PR #102). A link that does not fit is left out, not shortened.
+LINKS_MAX_CHARS = 700
+
+
+def _links_line(links: tuple) -> str:
+    out: list[str] = []
+    used = 0
+    for text, url in links:
+        entry = f"{text or 'link'} <{url}>"
+        if used + len(entry) + 2 > LINKS_MAX_CHARS:
+            continue
+        out.append(entry)
+        used += len(entry) + 2
+    return "; ".join(out)
 
 
 def citation_record(citation: Citation) -> dict[str, Any]:
@@ -275,20 +311,29 @@ def citation_record(citation: Citation) -> dict[str, Any]:
     if citation.start is not None:
         parts.append(("at", f"{citation.start:g}s"))
     provenance = " | ".join(f"{k}: {v}" for k, v in parts if v)
+    if citation.link:
+        provenance = (
+            f"{provenance} | url: {citation.link}" if provenance else f"url: {citation.link}"
+        )
+    body = citation.text
+    listed = _links_line(citation.links)
+    if listed:
+        body = f"{body}\nlinks: {listed}"
     return {
-        "id": citation.item_id,
+        "id": citation.item_id or "web",
         "added_by": CONVERSATION_WRITER if conversation else LIBRARY_WRITER,
         "created": citation.date,
-        "text": f"{provenance}\n{citation.text}",
+        "text": f"{provenance}\n{body}",
     }
 
 
-def _render(collector: CitationCollector, citations: list[Citation]) -> str:
+def _render(
+    collector: CitationCollector, citations: list[Citation], max_chars: int = BODY_MAX_CHARS
+) -> str:
     """The fenced tool result, each entry numbered by its collector position."""
     numbers = [collector.add(c) for c in citations]
-    rendered = memory.render_recalled(
-        [citation_record(c) for c in citations], max_chars=BODY_MAX_CHARS
-    )
+    budget = max_chars + LINKS_MAX_CHARS + len("\nlinks: ")
+    rendered = memory.render_recalled([citation_record(c) for c in citations], max_chars=budget)
 
     def renumber(match: re.Match[str]) -> str:
         return f"[{numbers[int(match.group(1)) - 1]}] id="

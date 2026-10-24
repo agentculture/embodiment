@@ -74,7 +74,15 @@ RECALL_RESULTS_FILE = "docs/live-test-results/2026-10-23-recall-gemma2.md"
 #: configured (gwen-is-pocketchat t11/t13), and ``search_conversations`` over her
 #: own settled conversations (deviation d8). Both surfaces must name all five, in
 #: the same ``## Not yet`` section that used to say the registry was empty.
-TOOLS_BOUND = ("remember", "forget", "search_library", "read_passage", "search_conversations")
+TOOLS_BOUND = (
+    "remember",
+    "forget",
+    "search_library",
+    "read_passage",
+    "read_item",
+    "fetch_source",
+    "search_conversations",
+)
 
 #: The library cycle's names, which README and the explain root must both carry.
 LIBRARY_TERMS = (

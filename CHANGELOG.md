@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.20.0] - 2026-10-24
+
+### Added
+
+- Gwen can summarize a whole library item: `read_item` returns its passages in order, each a citation, bounded (40 passages, 16,000 characters), saying what it left out
+- Gwen can read an article's source: `fetch_source(item_id, url)` reads one web page, and only a link that library item lists (operator, 2026-10-24: only links in the library). `embodiment/library/web.py`: http(s) only, no credentials, public addresses only (every resolved address checked, the connection pinned to the checked one, every redirect re-checked, at most 3), GET only, 2 MB and 15 s, HTML to text with the stdlib; the text is fenced like library text and arms the write guard
+- EPUB extraction keeps each passage's http(s) links (newspaper bullets link their sources); the document index stores them (version 4, so existing items re-index) and search results show them
+- The page links a fetched source out, in a new tab, never into the reader
+
 ## [0.19.0] - 2026-10-24
 
 ### Added

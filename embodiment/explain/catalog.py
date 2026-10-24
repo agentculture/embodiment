@@ -72,8 +72,10 @@ absence, never an implication:
 - **Other tools** — the daemon binds `remember` and `forget` (archive in place,
   never delete), and, on typed turns only and only with a library configured,
   two read-only library tools: `search_library` and `read_passage`; and
-  `search_conversations` over her own settled past conversations (d8). No
-  shell, no files, no Qwen Code, nothing that writes to the library.
+  `search_conversations` over her own settled past conversations (d8);
+  `read_item` (a whole item) and `fetch_source` (one public web page, and only a
+  link that library item lists). No shell, no files, no Qwen Code, nothing
+  that writes to the library.
 - **Vision** — the session is audio-only.
 - **A face** — the waveform is a compact strip beside the chat.
 - **Live realtime voice and speech-to-speech** — the phone is control, text and

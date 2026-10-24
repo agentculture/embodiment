@@ -25,6 +25,8 @@ export const KINDS: KindInfo[] = [
   // Gwen's own past conversations (deviation d8): cited from her index, opened in
   // the history pane, never library items.
   { id: "conversation", one: "Conversation", many: "Conversations", color: "var(--k-conversation)" },
+  // A web page an item links to, read by fetch_source (operator, 2026-10-24).
+  { id: "web", one: "Web page", many: "Web pages", color: "var(--k-other)" },
 ];
 
 const OTHER: KindInfo = { id: "other", one: "Item", many: "Other", color: "var(--k-other)" };

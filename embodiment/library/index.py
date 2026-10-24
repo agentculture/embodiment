@@ -52,7 +52,9 @@ from embodiment import safe_reason
 #: Version 2 used the title-context vector alone and was measured worse on content
 #: questions (hit@5 19 -> 16 and 17 -> 11 on the t15 sets, the misses being empty
 #: results under the threshold), so it never shipped. An older index re-indexes.
-INDEX_VERSION = 3
+#: 4 (2026-10-24): passages and chunks keep their http(s) links, so a newspaper
+#: bullet's source can be followed; an index built before re-indexes to pick them up.
+INDEX_VERSION = 4
 #: A chunk's text is at most this many characters (passages are joined, not cut,
 #: unless one passage alone is longer; then it is split on whitespace).
 MAX_CHUNK_CHARS = 1000
@@ -70,7 +72,9 @@ BOOK_KIND = "book"
 #: searched until it was named here (found live: "today's newspaper" found nothing).
 DEFAULT_KINDS = ("transcript", "article", "newspaper")
 MAX_REASON_CHARS = 200
-_PASSAGE_FIELDS = ("anchor", "heading", "text", "start_s", "end_s", "speaker")
+_PASSAGE_FIELDS = ("anchor", "heading", "text", "start_s", "end_s", "speaker", "links")
+#: Links kept on one chunk (the union of its passages' links, first seen first).
+MAX_CHUNK_LINKS = 20
 _META_FIELDS = ("title", "kind", "created_at", "author")
 
 Embed = Callable[[str], Any]
@@ -108,6 +112,26 @@ class Hit:
     start_s: Optional[float]
     end_s: Optional[float]
     heading: Optional[str] = None
+    #: ``[text, url]`` pairs of the chunk's links (version 4).
+    links: tuple = ()
+
+
+def _links(value: Any) -> list[list[str]]:
+    """A passage's links as ``[text, url]`` pairs: http(s) URLs only, deduplicated."""
+    out: list[list[str]] = []
+    seen: set[str] = set()
+    for pair in value or ():
+        try:
+            text, url = pair
+        except (TypeError, ValueError):
+            continue
+        if not isinstance(url, str) or not url.lower().startswith(("http://", "https://")):
+            continue
+        if url in seen:
+            continue
+        seen.add(url)
+        out.append([str(text or "")[:300], url[:2048]])
+    return out
 
 
 def _reason(value: object) -> str:
@@ -145,6 +169,7 @@ def _passage(obj: Any) -> dict:
     record = {name: _field(obj, name) for name in _PASSAGE_FIELDS}
     record["anchor"] = str(record["anchor"] or "")
     record["text"] = str(record["text"] or "")
+    record["links"] = _links(record["links"])
     return record
 
 
@@ -177,6 +202,14 @@ def _fits(chunk: Optional[dict], heading: Any, piece: str) -> bool:
     return len(chunk["text"]) + len(CHUNK_SEPARATOR) + len(piece) <= MAX_CHUNK_CHARS
 
 
+def _add_links(chunk: dict, passage: dict) -> None:
+    known = {url for _, url in chunk["links"]}
+    for text, url in passage.get("links") or ():
+        if url not in known and len(chunk["links"]) < MAX_CHUNK_LINKS:
+            chunk["links"].append([text, url])
+            known.add(url)
+
+
 def _chunks(passages: list[dict]) -> list[dict]:
     """Join passages in order, on passage boundaries, up to the cap; a heading starts anew."""
     chunks: list[dict] = []
@@ -190,6 +223,7 @@ def _chunks(passages: list[dict]) -> list[dict]:
                 current["text"] += CHUNK_SEPARATOR + piece  # type: ignore[index]
                 if passage["end_s"] is not None:
                     current["end_s"] = passage["end_s"]  # type: ignore[index]
+                _add_links(current, passage)  # type: ignore[arg-type]
                 continue
             current = {
                 "anchor": passage["anchor"],
@@ -197,7 +231,9 @@ def _chunks(passages: list[dict]) -> list[dict]:
                 "text": piece,
                 "start_s": passage["start_s"],
                 "end_s": passage["end_s"],
+                "links": [],
             }
+            _add_links(current, passage)
             chunks.append(current)
     substantial = [c for c in chunks if len(c["text"]) >= MIN_CHUNK_CHARS]
     return substantial or chunks
@@ -528,6 +564,7 @@ class DocumentIndex:
                     start_s=chunk.get("start_s"),
                     end_s=chunk.get("end_s"),
                     heading=chunk.get("heading"),
+                    links=tuple(tuple(pair) for pair in chunk.get("links") or ()),
                 )
             )
         return hits
@@ -545,6 +582,15 @@ class DocumentIndex:
                 **item["meta"],
                 "passages": [dict(p) for p in item["passages"]],
             }
+
+    def links_of(self, item_id: Any) -> set[str]:
+        """Every link URL a citable item's passages carry (what Gwen may fetch)."""
+        key = str(item_id)
+        with self._lock:
+            item = self._items.get(key)
+            if item is None or not self._citable(key):
+                return set()
+            return {url for p in item["passages"] for _, url in p.get("links") or ()}
 
     def has_item(self, item_id: Any) -> bool:
         """True when :meth:`item` would return the item — without copying a passage.

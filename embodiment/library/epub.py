@@ -33,6 +33,11 @@ _BLOCKS = frozenset({"p", "div", "li", "blockquote", "pre", "td", "dd", "dt"}) |
 _TOKEN_BRACKETED = re.compile(r"^\s*\[(\d{1,2}:\d{2}(?::\d{2})?)\]\s+")
 _TOKEN_BARE = re.compile(r"^\s*(\d{1,2}:\d{2}(?::\d{2})?)\s+")
 _LABEL = re.compile(r"^([^\W\d_][\w .'-]{0,40}?):\s+")
+#: Links kept per passage, and the longest URL kept: a newspaper bullet links its
+#: source (culture-rules' renderer requires it), so Gwen can follow it (2026-10-24).
+MAX_LINKS = 20
+MAX_LINK_URL = 2048
+MAX_LINK_TEXT = 300
 
 
 class EpubRefused(Exception):
@@ -59,6 +64,8 @@ class Passage:
     start_s: float | None = None
     end_s: float | None = None
     speaker: str | None = None
+    #: ``(text, url)`` for each http(s) link in the passage, in order, capped.
+    links: tuple[tuple[str, str], ...] = ()
 
 
 @dataclass(frozen=True)
@@ -131,17 +138,28 @@ class _Doc(HTMLParser):
     def __init__(self, path: str) -> None:
         super().__init__(convert_charrefs=True)
         self._path = path
-        self.items: list[tuple[str, str, str, dict]] = []  # anchor, heading, text, attrs
+        self.items: list[tuple[str, str, str, dict, tuple]] = (
+            []
+        )  # anchor, heading, text, attrs, links
         self._heading = ""
         self._index = -1
         self._skip = 0
         self._buf: list[str] = []
         self._cur: tuple[int, dict] | None = None
         self._in_heading = False
+        self._links: list[tuple[str, str]] = []
+        self._open_link: tuple[str, int] | None = None  # url, buffer index at <a>
+        self._wrapped: int | None = None  # the passage an open link wrapped
 
     def _flush(self) -> None:
         text = " ".join("".join(self._buf).split())
         self._buf = []
+        links, self._links = tuple(self._links), []
+        # A link still open spans into the next block (an <a> wrapping a <p>): carry
+        # it, restarting at that block's text (review of PR #102).
+        if self._open_link is not None:
+            self._open_link = (self._open_link[0], 0)
+            self._wrapped = len(self.items)  # the passage below, if one is emitted
         cur, self._cur = self._cur, None
         if cur is None or not text:
             return
@@ -149,9 +167,14 @@ class _Doc(HTMLParser):
             self._heading = text
             self._in_heading = False
             return
-        self.items.append((f"{self._path}#{cur[0]}", self._heading, text, cur[1]))
+        self.items.append((f"{self._path}#{cur[0]}", self._heading, text, cur[1], links))
 
     def handle_starttag(self, tag, attrs):
+        if tag == "a" and not self._skip:
+            href = (dict(attrs).get("href") or "").strip()
+            if _web_url(href):
+                self._open_link = (href, len(self._buf))
+            return
         if tag in _SKIP:
             self._skip += 1
         elif tag in _BLOCKS and not self._skip:
@@ -161,10 +184,33 @@ class _Doc(HTMLParser):
             self._in_heading = tag in _HEADINGS
 
     def handle_endtag(self, tag):
+        if tag == "a":
+            opened, self._open_link = self._open_link, None
+            wrapped, self._wrapped = self._wrapped, None
+            if opened is None:
+                return
+            text = " ".join("".join(self._buf[opened[1] :]).split())[:MAX_LINK_TEXT]
+            if not text and wrapped is not None and wrapped < len(self.items):
+                self._attach(wrapped, opened[0])
+            elif len(self._links) < MAX_LINKS:
+                self._links.append((text, opened[0]))
+            return
         if tag in _SKIP:
             self._skip = max(0, self._skip - 1)
         elif tag in _BLOCKS and not self._skip:
             self._flush()
+
+    def _attach(self, index: int, url: str) -> None:
+        """Give an already-emitted passage the link that wrapped it."""
+        anchor, heading, text, attrs, links = self.items[index]
+        if len(links) < MAX_LINKS:
+            self.items[index] = (
+                anchor,
+                heading,
+                text,
+                attrs,
+                (*links, (text[:MAX_LINK_TEXT], url)),
+            )
 
     def handle_data(self, data):
         if not self._skip and self._cur is not None:
@@ -173,6 +219,14 @@ class _Doc(HTMLParser):
     def close(self):
         super().close()
         self._flush()
+
+
+def _web_url(href: str) -> bool:
+    return (
+        href.lower().startswith(("http://", "https://"))
+        and len(href) <= MAX_LINK_URL
+        and not any(c.isspace() for c in href)
+    )
 
 
 def _timing(text: str, attrs: dict) -> tuple[str, float | None, float | None, str | None]:
@@ -238,10 +292,10 @@ def extract(data: bytes, *, limits: Optional[Limits] = None) -> Extracted:
             doc = _Doc(path)
             doc.feed(reader.read(path))
             doc.close()
-            for anchor, heading, text, attrs in doc.items:
+            for anchor, heading, text, attrs, links in doc.items:
                 body, start, end, speaker = _timing(text, attrs)
                 chars += len(body)
                 if chars > limits.max_chars:
                     raise EpubRefused("too_many_chars")
-                passages.append(Passage(anchor, heading, body, start, end, speaker))
+                passages.append(Passage(anchor, heading, body, start, end, speaker, links))
     return Extracted(passages=passages, chars=chars)

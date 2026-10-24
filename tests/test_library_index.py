@@ -639,9 +639,9 @@ def test_an_item_with_only_short_passages_is_still_searchable(tmp_path):
 def test_an_index_built_at_an_older_version_re_indexes(tmp_path):
     path = tmp_path / "library" / "index.json"
     path.parent.mkdir(parents=True)
-    path.write_text(json.dumps({"version": 1, "model_tag": "m1", "catalog": ["1"], "items": {}}))
+    path.write_text(json.dumps({"version": 3, "model_tag": "m1", "catalog": ["1"], "items": {}}))
     idx = _index(tmp_path)
-    assert index_mod.INDEX_VERSION == 3
+    assert index_mod.INDEX_VERSION == 4, "version 4 keeps links"
     assert any("re-indexing" in d for d in idx.degradations)
 
 
@@ -685,6 +685,33 @@ def test_item_kind_reads_an_issue_filed_as_an_article_as_a_newspaper():
     assert item_kind({"kind": "article", "title": "Daily newspaper 2026-10-23"}) == "newspaper"
     assert item_kind({"kind": "article", "title": "עיתון יומי"}) == "newspaper"
     assert item_kind({"kind": "Transcript", "title": "2026-10-24 kettle"}) == "transcript"
+
+
+def test_passages_and_chunks_keep_their_links_and_hits_carry_them(tmp_path):
+    idx = _index(tmp_path)
+    meta = {"id": "1", "sha256": "s", "kind": "article", "title": "Daily newspaper 2026-10-24"}
+    idx.reconcile([meta])
+    idx.upsert_item(
+        meta,
+        [
+            {
+                "anchor": "a",
+                "heading": "News",
+                "text": "alpha alpha story one",
+                "links": [("one", "https://example.org/1"), ("bad", "javascript:x")],
+            },
+            {
+                "anchor": "b",
+                "heading": "News",
+                "text": "bravo story two",
+                "links": [("two", "https://example.org/2"), ("again", "https://example.org/1")],
+            },
+        ],
+    )
+    assert idx.links_of("1") == {"https://example.org/1", "https://example.org/2"}
+    assert idx.links_of("missing") == set()
+    (hit,) = idx.search(FakeEmbed()("alpha"), limit=1)
+    assert [url for _, url in hit.links] == ["https://example.org/1", "https://example.org/2"]
 
 
 def test_a_utc_timestamp_is_dated_by_the_operators_local_day():

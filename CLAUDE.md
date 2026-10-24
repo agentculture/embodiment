@@ -30,8 +30,10 @@ embody` layer shares this package's name — say so wherever the name appears);
 one rig; Hebrew only; one active ear; the session never crosses machines;
 value unmeasured. **Not yet:** tools beyond memory and the read-only library (the daemon binds
 `remember` and `forget`, plus `search_library` and `read_passage` on typed turns
-when a library is configured, and `search_conversations` over Gwen's own settled
-conversations (d8); the registry is otherwise empty by design),
+when a library is configured, `read_item` and `fetch_source` (one public web page,
+only a link a library item lists: Gwen's first reach outside the rig), and
+`search_conversations` over Gwen's own settled conversations (d8); the registry is
+otherwise empty by design),
 vision, a face, live realtime voice from the phone and speech-to-speech (the
 phone is control, text, and uploaded or recorded clips; the speech-to-speech
 button is present and disabled), a robot relay (t14's inbound endpoint and
@@ -350,6 +352,9 @@ embodiment/
     epub.py             stdlib EPUB text extraction under member/size/char caps
     index.py            DocumentIndex: separate 0600 file, reconcile by (id, sha256)
     sync.py             LibrarySync: bounded ticks that yield to live turns
+    reading.py          read_item (a whole item) + fetch_source (only a link the item lists)
+    web.py              the fetch: http(s), public addresses only (pinned connect, redirects
+                        re-checked), GET, 2 MB / 15 s; no other module reaches the web
     conversations.py    Gwen's own past conversations (d8): settled ones indexed in a
                         separate 0600 index, labelled by `via`; search_conversations
     tools.py            search_library + read_passage, built per turn with a

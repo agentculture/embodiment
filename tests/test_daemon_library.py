@@ -44,7 +44,8 @@ from tests.test_daemon_app import (
 harness = base.harness
 
 VOCAB = ("alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel")
-LIBRARY_TOOLS = {"search_library", "read_passage"}
+#: With the newsletter tools (operator, 2026-10-24): a whole item, and its linked sources.
+LIBRARY_TOOLS = {"search_library", "read_passage", "read_item", "fetch_source"}
 MEMORY_TOOLS = {"remember", "forget"}
 
 #: A planted instruction inside a library document (h18).
