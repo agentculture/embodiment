@@ -447,7 +447,16 @@ CHAT_ROUTE = "/api/chat"
 SPEAK_ROUTE = "/api/speak"
 CLIP_ROUTE = "/api/clip"
 _TEXT_ROUTES = (CHAT_ROUTE, SPEAK_ROUTE, CLIP_ROUTE)
-_CONTROL_ROUTES = ("/api/voice/start", "/api/voice/stop", "/api/mic/mute") + _TEXT_ROUTES
+#: End the live conversation and start a new one (operator, 2026-10-24).
+NEW_CONVERSATION_ROUTE = "/api/conversation/new"
+#: A turn held the conversation for the whole wait: nothing was ended.
+CONVERSATION_BUSY_CODE = "conversation-busy"
+_CONTROL_ROUTES = (
+    "/api/voice/start",
+    "/api/voice/stop",
+    "/api/mic/mute",
+    NEW_CONVERSATION_ROUTE,
+) + _TEXT_ROUTES
 
 
 def _guard_status(guard: Any) -> dict[str, Any]:
@@ -553,6 +562,8 @@ class Controls:
     """
 
     start_voice: Optional[Callable[[], dict[str, Any]]] = None
+    #: ``new_conversation() -> {"started", "ended"}``: end the live conversation.
+    new_conversation: Optional[Callable[[], dict[str, Any]]] = None
     stop_voice: Optional[Callable[[], dict[str, Any]]] = None
     set_mute: Optional[Callable[[bool], dict[str, Any]]] = None
     status: Optional[Callable[[], dict[str, Any]]] = None
@@ -927,8 +938,25 @@ class _Handler(BaseHTTPRequestHandler):
                 return
             self._invoke(route, controls.set_mute, muted)
             return
+        if route == NEW_CONVERSATION_ROUTE:
+            self._new_conversation()
+            return
         callable_ = controls.start_voice if route.endswith("start") else controls.stop_voice
         self._invoke(route, callable_)
+
+    def _new_conversation(self) -> None:
+        """A busy refusal is a 409, not a 200: the page must not reset on it."""
+        outcome = self._app.call_control(
+            "api.conversation.new", self._app.controls.new_conversation
+        )
+        if not outcome.ok:
+            self._send_error(outcome.status, outcome.code, outcome.message)
+            return
+        result = outcome.result or {}
+        if result.get("started") is False:
+            self._send_error(409, CONVERSATION_BUSY_CODE, "a turn is in flight; try again")
+            return
+        self._send_json(200, {"ok": True, "result": result})
 
     def _read_bounded(self, length: int, deadline_s: float) -> Optional[bytes]:
         """*length* bytes inside a TOTAL deadline. ``None`` (answered) when it is not met.

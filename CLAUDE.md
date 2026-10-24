@@ -67,7 +67,8 @@ write guard (`library_guarded_writes`, `app-library-guarded-write`: no
 `remember`/`forget` in a turn holding library text unless the operator's words name
 it), the audio subprocess env scrub, `status.access` admitted/refused counters,
 `/api/library*` and `/api/todos`, clip answers with sources, and the page: chat-first
-inside the library's look (Ask = conversations from the session logs via
+inside the library's look (Ask = conversations from the session logs, a New
+conversation button (`POST /api/conversation/new`) that ends the live one, via
 `/api/conversations`, continued in place: chat's `"conversation"` / clip's
 `X-Conversation` reopen one as a `Session` with `Session.restore` (d5) | conversation with a voice dock | library and the answers'
 sources with the reader; side panes toggleable, drawers on a phone;

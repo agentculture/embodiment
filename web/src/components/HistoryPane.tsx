@@ -18,6 +18,10 @@ export interface HistoryPaneProps {
   refreshKey?: number;
   onOpen: (conversation: ConversationSummary | null) => void;
   onClose?: () => void;
+  /** End the live conversation and start a new one. */
+  onNew?: () => void;
+  /** Why the last New conversation was refused, shown under the button. */
+  newError?: string | null;
 }
 
 function timeOf(ts: number | null): string {
@@ -29,7 +33,7 @@ function dayOf(ts: number | null): string {
   return ts === null ? "" : new Date(ts * 1000).toISOString().slice(0, 10);
 }
 
-export function HistoryPane({ secret = "", clientOptions, openId, refreshKey = 0, onOpen, onClose }: HistoryPaneProps) {
+export function HistoryPane({ secret = "", clientOptions, openId, refreshKey = 0, onOpen, onClose, onNew, newError }: HistoryPaneProps) {
   const [items, setItems] = useState<ConversationSummary[]>([]);
   const [error, setError] = useState<string | null>(null);
 
@@ -65,6 +69,19 @@ export function HistoryPane({ secret = "", clientOptions, openId, refreshKey = 0
         )}
       </div>
       <div className="rows">
+        {onNew && (
+          <button type="button" className="pill-btn conv-new" onClick={onNew}>
+            <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+              <path d="M12 5v14M5 12h14" />
+            </svg>
+            New conversation
+          </button>
+        )}
+        {onNew && newError && (
+          <p className="library-error" role="alert">
+            A new conversation could not be started ({newError}). Try again.
+          </p>
+        )}
         <button
           type="button"
           className="row conv conv--now"

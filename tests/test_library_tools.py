@@ -99,7 +99,7 @@ class TestTheSpecs:
         assert isinstance(read, ToolSpec)
         assert search.name == "search_library"
         assert read.name == "read_passage"
-        assert set(search.parameters["properties"]) == {"query", "limit"}
+        assert set(search.parameters["properties"]) == {"query", "limit", "date", "kind"}
         assert search.parameters["required"] == ["query"]
         assert set(read.parameters["properties"]) == {"item_id", "anchor"}
         assert read.parameters["required"] == ["item_id", "anchor"]
@@ -432,3 +432,62 @@ class TestPlantedInstructions:
         assert not collector.library_text_in_context
         assert collector.citations == ()
         assert collector.sources() == []
+
+
+# -- one day, one kind (operator, 2026-10-24: "what's on our newsletter today?") -----
+
+
+@pytest.fixture
+def papers(tmp_path):
+    idx = DocumentIndex(tmp_path / "p.json", embed=_embed, model_tag="m1")
+    metas = [
+        _meta("1", title="Daily newspaper 2026-10-23", created_at="2026-10-23T06:00:00Z"),
+        _meta("2", kind="newspaper", title="Morning issue", created_at="2026-10-24T06:00:00Z"),
+        _meta("3", kind="transcript", title="2026-10-24 kettle"),
+    ]
+    idx.reconcile(metas)
+    idx.upsert_item(metas[0], [P("a", None, "alpha bravo yesterday news")])
+    idx.upsert_item(metas[1], [P("b", None, "hotel hotel today news")])
+    idx.upsert_item(metas[2], [P("c", None, "alpha kettle")])
+    return idx
+
+
+def test_a_date_and_kind_narrow_to_that_days_newspaper(papers):
+    search, _, collector = _tools(papers, threshold=0.0)
+    search.fn(query="alpha news", date="2026-10-24", kind="newspaper")
+    assert [s["item_id"] for s in collector.sources()] == ["2"]
+
+
+def test_an_issue_filed_as_an_article_counts_as_a_newspaper(papers):
+    search, _, collector = _tools(papers, threshold=0.0)
+    search.fn(query="alpha", date="2026-10-23", kind="newspaper")
+    assert [s["item_id"] for s in collector.sources()] == ["1"]
+
+
+def test_a_named_day_answers_even_under_the_threshold(papers):
+    """Nothing clears 0.99, but the day was named, so its passages still come back."""
+    search, _, collector = _tools(papers, threshold=0.99)
+    assert search.fn(query="echo foxtrot", date="2026-10-24", kind="newspaper") != lt.NO_MATCHES
+    assert [s["item_id"] for s in collector.sources()] == ["2"]
+    assert search.fn(query="echo foxtrot") == lt.NO_MATCHES, "without a day, the floor holds"
+
+
+@pytest.mark.parametrize(
+    "bad", [{"date": "today"}, {"date": "2026-13"}, {"kind": "poem"}, {"date": 5}]
+)
+def test_a_bad_date_or_kind_is_a_declared_fault(papers, bad):
+    search, _, _ = _tools(papers)
+    with pytest.raises(lt.LibraryToolError):
+        search.fn(query="alpha", **bad)
+
+
+def test_native_newspapers_are_searched_by_default(papers):
+    search, _, collector = _tools(papers, threshold=0.0)
+    search.fn(query="hotel today", limit=1)
+    assert [s["item_id"] for s in collector.sources()] == ["2"]
+
+
+def test_a_kind_alone_keeps_the_similarity_floor(papers):
+    """Review of PR #101: only a named DAY answers under the threshold."""
+    search, _, _ = _tools(papers, threshold=0.99)
+    assert search.fn(query="echo foxtrot", kind="newspaper") == lt.NO_MATCHES

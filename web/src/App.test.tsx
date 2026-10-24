@@ -951,6 +951,84 @@ describe("App — a public-host session with no secret (Access), end to end", ()
     expect(screen.queryByRole("complementary", { name: "Reader" })).toBeNull();
   });
 
+  it("New conversation posts to the daemon and empties the thread", async () => {
+    const posted: string[] = [];
+    globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = String(url);
+      if (init?.method === "POST") posted.push(u);
+      if (u.endsWith("/api/chat")) {
+        return new Response(JSON.stringify({ reply: "first answer", sources: [], turn_serial: 1 }), { status: 200 });
+      }
+      if (u.endsWith("/api/conversation/new")) {
+        return new Response(JSON.stringify({ ok: true, result: { started: true, ended: "s1" } }), { status: 200 });
+      }
+      if (u.endsWith("/api/conversations")) return new Response(JSON.stringify({ conversations: [] }), { status: 200 });
+      return new Response(JSON.stringify({ error: { code: "not-found" } }), { status: 404 });
+    }) as typeof fetch;
+    const source = renderApp(undefined, { drawer: false });
+    act(() => source.open());
+    fireEvent.change(screen.getByLabelText("message"), { target: { value: "hello" } });
+    await act(async () => {
+      fireEvent.submit(screen.getByRole("form", { name: "composer" }));
+    });
+    expect(await screen.findByText("first answer")).toBeInTheDocument();
+    await act(async () => {
+      fireEvent.click(screen.getAllByRole("button", { name: "New conversation", hidden: true })[0]);
+    });
+    expect(posted).toContain("/api/conversation/new");
+    expect(screen.queryByText("first answer")).toBeNull();
+  });
+
+  it("after New conversation the voice transcript shows only what came after it", async () => {
+    globalThis.fetch = (async (url: RequestInfo | URL) => {
+      const u = String(url);
+      if (u.endsWith("/api/conversation/new")) {
+        return new Response(JSON.stringify({ ok: true, result: { started: true, ended: "s1" } }), { status: 200 });
+      }
+      if (u.endsWith("/api/conversations")) return new Response(JSON.stringify({ conversations: [] }), { status: 200 });
+      return new Response(JSON.stringify({ error: { code: "not-found" } }), { status: 404 });
+    }) as typeof fetch;
+    const source = renderApp(undefined, { drawer: false });
+    act(() => {
+      source.open();
+      source.emit("transcript", envelope("transcript", { role: "user", text: "before the reset" }, 1));
+    });
+    expect(screen.getAllByText("before the reset").length).toBeGreaterThan(0);
+    await act(async () => {
+      fireEvent.click(screen.getAllByRole("button", { name: "New conversation", hidden: true })[0]);
+    });
+    act(() => {
+      source.emit("transcript", envelope("transcript", { role: "user", text: "after the reset" }, 2));
+    });
+    expect(screen.getAllByText("after the reset").length).toBeGreaterThan(0);
+    expect(screen.queryByText("before the reset")).toBeNull();
+  });
+
+  it("a busy New conversation leaves the thread as it was", async () => {
+    globalThis.fetch = (async (url: RequestInfo | URL) => {
+      const u = String(url);
+      if (u.endsWith("/api/chat")) {
+        return new Response(JSON.stringify({ reply: "kept answer", sources: [], turn_serial: 1 }), { status: 200 });
+      }
+      if (u.endsWith("/api/conversation/new")) {
+        return new Response(JSON.stringify({ error: { code: "conversation-busy" } }), { status: 409 });
+      }
+      if (u.endsWith("/api/conversations")) return new Response(JSON.stringify({ conversations: [] }), { status: 200 });
+      return new Response(JSON.stringify({ error: { code: "not-found" } }), { status: 404 });
+    }) as typeof fetch;
+    const source = renderApp(undefined, { drawer: false });
+    act(() => source.open());
+    fireEvent.change(screen.getByLabelText("message"), { target: { value: "hello" } });
+    await act(async () => {
+      fireEvent.submit(screen.getByRole("form", { name: "composer" }));
+    });
+    expect(await screen.findByText("kept answer")).toBeInTheDocument();
+    await act(async () => {
+      fireEvent.click(screen.getAllByRole("button", { name: "New conversation", hidden: true })[0]);
+    });
+    expect(screen.getByText("kept answer")).toBeInTheDocument();
+  });
+
   it("a second citation to the open item moves the reader to the new anchor; Close dismisses it", async () => {
     globalThis.fetch = (async (url: RequestInfo | URL) => {
       const u = String(url);

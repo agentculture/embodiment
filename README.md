@@ -137,7 +137,8 @@ loop. It does not drive hardware and nothing here claims a body.
   pocketchat's thread (both cited, not imported). **Ask** is a three-pane
   workspace: your conversations on the left (the live one and the earlier ones,
   read from Gwen's own session logs through `GET /api/conversations`; an
-  earlier one can be continued as if it never stopped: its turns are Gwen's
+  earlier one can be continued as if it never stopped (and **New conversation**
+  ends the live one and starts afresh): its turns are Gwen's
   context and new turns are added to its log, while the room's voice session is
   untouched; once a conversation has been quiet for 30 minutes Gwen indexes it
   herself and can search it later, every turn tagged with how it arrived:

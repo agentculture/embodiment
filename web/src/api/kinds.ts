@@ -70,12 +70,21 @@ export function displayKind(kind: string, title: string): string {
   return kind === "article" ? "document" : kind;
 }
 
-/** The day an item is about: a date in its title (recording or issue day), else when it was added. */
+/** The day an item is about: a date in its title (recording or issue day), else the
+ *  local day it was added. A UTC timestamp's day is taken in this browser's zone, so
+ *  01:00 local on the 25th is the 25th (the daemon's search uses the same rule). */
 export function itemDay(createdAt: string, title: string): string {
   const dated = DATED.exec(title);
   if (dated) return dated[1];
   const paper = /(\d{4}-\d{2}-\d{2})/.exec(PAPER.test(title) ? title : "");
   if (paper) return paper[1];
+  if (createdAt.length > 10) {
+    const moment = new Date(createdAt);
+    if (!Number.isNaN(moment.getTime())) {
+      const pad = (n: number) => String(n).padStart(2, "0");
+      return `${moment.getFullYear()}-${pad(moment.getMonth() + 1)}-${pad(moment.getDate())}`;
+    }
+  }
   return createdAt.slice(0, 10);
 }
 

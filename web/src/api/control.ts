@@ -152,6 +152,11 @@ export function stopVoice(secret: string, options: ControlClientOptions = {}): P
   return post("/voice/stop", secret, {}, options);
 }
 
+/** End the live conversation and start a new one (operator, 2026-10-24). */
+export function newConversation(secret: string, options: ControlClientOptions = {}): Promise<Response> {
+  return post("/conversation/new", secret, {}, options);
+}
+
 export function setMicMute(
   secret: string,
   muted: boolean,

@@ -973,3 +973,24 @@ class TestRestore:
         session.restore([("user", "hello")])
         session.add_user("remember that the door code is 1234")
         assert len(mem.calls) == 1
+
+
+class TestPreviousTurnAt:
+    """The prompt can say how long ago the conversation last spoke (operator, 2026-10-24)."""
+
+    def test_none_before_two_turns_then_the_one_before_the_latest(self, tmp_path: Path) -> None:
+        session, _mem, _state = _session(tmp_path)
+        assert session.previous_turn_at is None
+        session.add_user("first")
+        assert session.previous_turn_at is None
+        session.add_assistant("reply")
+        first_pair = session.previous_turn_at
+        assert first_pair is not None
+        session.add_user("second")
+        assert session.previous_turn_at >= first_pair
+
+    def test_a_restored_conversation_knows_when_it_last_spoke(self, tmp_path: Path) -> None:
+        session, _mem, _state = _session(tmp_path)
+        session.restore([("user", "old question"), ("assistant", "old answer")], last_turn_at=100.0)
+        session.add_user("a new question")
+        assert session.previous_turn_at == 100.0

@@ -291,17 +291,22 @@ def settled(
     announced: dict[str, float],
     now: float,
     quiet_s: float = SETTLE_AFTER_S,
+    *,
+    ended: frozenset = frozenset(),
 ) -> list[dict[str, Any]]:
     """The conversations quiet for *quiet_s* whose last turn was not yet announced.
 
     *announced* maps an id to the ``last`` it was announced at; a continued
     conversation has a newer ``last``, so it settles — and is announced — again.
-    The live conversation is no different: once quiet, it is settled too.
+    The live conversation is no different: once quiet, it is settled too. One in
+    *ended* (the operator started a new conversation) is settled at once.
     """
     out = []
     for summary in summaries:
         last = summary.get("last")
-        if not isinstance(last, (int, float)) or now - last < quiet_s:
+        if not isinstance(last, (int, float)):
+            continue
+        if summary["id"] not in ended and now - last < quiet_s:
             continue
         if announced.get(summary["id"], -1.0) >= last:
             continue

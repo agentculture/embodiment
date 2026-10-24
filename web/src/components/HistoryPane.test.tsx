@@ -25,6 +25,26 @@ describe("HistoryPane", () => {
     expect(screen.queryByText("golf?")).toBeNull(); // the live one is "Now", not repeated
   });
 
+  it("offers New conversation when the page can start one", async () => {
+    const onNew = vi.fn();
+    render(<HistoryPane openId={null} onOpen={() => {}} onNew={onNew} clientOptions={{ fetchFn: ok(LIST) }} />);
+    await userEvent.click(await screen.findByRole("button", { name: "New conversation" }));
+    expect(onNew).toHaveBeenCalledTimes(1);
+  });
+
+  it("says so under the button when a new conversation was refused", async () => {
+    render(
+      <HistoryPane openId={null} onOpen={() => {}} onNew={() => {}} newError="http-unknown-route" clientOptions={{ fetchFn: ok(LIST) }} />,
+    );
+    expect(await screen.findByRole("alert")).toHaveTextContent("could not be started (http-unknown-route)");
+  });
+
+  it("shows no New conversation button without a handler", async () => {
+    render(<HistoryPane openId={null} onOpen={() => {}} clientOptions={{ fetchFn: ok(LIST) }} />);
+    await screen.findByText("מה במחסן?");
+    expect(screen.queryByRole("button", { name: "New conversation" })).toBeNull();
+  });
+
   it("opens a past conversation, and Now goes back", async () => {
     const onOpen = vi.fn();
     render(<HistoryPane openId="old" onOpen={onOpen} clientOptions={{ fetchFn: ok(LIST) }} />);

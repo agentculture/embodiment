@@ -64,9 +64,11 @@ CHUNK_SEPARATOR = "\n\n"
 #: the paper, so the model was handed five dates and no news.
 MIN_CHUNK_CHARS = 60
 BOOK_KIND = "book"
-#: Searched when the caller names no kinds. xteink labels newspapers and documents
-#: ``article``; transcripts arrive as ``article`` EPUBs or as ``transcript``.
-DEFAULT_KINDS = ("transcript", "article")
+#: Searched when the caller names no kinds. xteink labelled newspapers and documents
+#: ``article``; transcripts arrive as ``article`` EPUBs or as ``transcript``; since
+#: 2026-10-24 xteink also has a native ``newspaper`` kind, which was indexed but never
+#: searched until it was named here (found live: "today's newspaper" found nothing).
+DEFAULT_KINDS = ("transcript", "article", "newspaper")
 MAX_REASON_CHARS = 200
 _PASSAGE_FIELDS = ("anchor", "heading", "text", "start_s", "end_s", "speaker")
 _META_FIELDS = ("title", "kind", "created_at", "author")
@@ -468,13 +470,15 @@ class DocumentIndex:
         kinds: Optional[Iterable[str]] = None,
         limit: int = 5,
         threshold: float = 0.0,
+        where: Optional[Callable[[dict], bool]] = None,
     ) -> list[Hit]:
         """Chunks by cosine similarity, best first, ``score >= threshold``, at most *limit*.
 
         *kinds* defaults to :data:`DEFAULT_KINDS` (plus ``book`` when any book is
         opted in). Whatever *kinds* says, a book is returned only if its item id
         is in ``book_ids``, and any item only if the last reconciled catalog
-        names it.
+        names it. *where*, given an item's metadata, narrows the items further
+        (a day, a reader's kind).
         """
         query = _numeric_vector(query_vector)
         if query is None or limit <= 0:
@@ -486,8 +490,10 @@ class DocumentIndex:
         hits: list[Hit] = []
         with self._lock:
             for item_id, item in self._items.items():
-                if self._citable(item_id) and self._kind_allowed(
-                    item_id, item["meta"]["kind"], allowed
+                if (
+                    self._citable(item_id)
+                    and self._kind_allowed(item_id, item["meta"]["kind"], allowed)
+                    and (where is None or where(item["meta"]))
                 ):
                     hits.extend(self._score_item(item_id, item, query, query_norm, threshold))
         hits.sort(key=lambda h: h.score, reverse=True)

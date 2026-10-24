@@ -33,7 +33,7 @@ import { RecallModeIndicator } from "./components/RecallModeIndicator";
 import { RemoteViewers } from "./components/RemoteViewers";
 import { Waveform, type WaveformProps } from "./components/Waveform";
 import { useEventStream, type UseEventStreamOptions } from "./hooks/useEventStream";
-import { parseControlOutcome, setMicMute, startVoice, stopVoice } from "./api/control";
+import { newConversation, parseControlOutcome, setMicMute, startVoice, stopVoice } from "./api/control";
 import { loadInstallSecretFromSession, saveInstallSecretToSession } from "./api/secret";
 import { fetchLibrary, searchLibrary, type LibraryItem, type SearchHit } from "./api/library";
 import type { ChatSource } from "./api/chat";
@@ -110,12 +110,13 @@ interface Citation {
   anchor?: string;
 }
 
-type ControlAction = "start" | "stop" | "mute";
+type ControlAction = "start" | "stop" | "mute" | "new";
 
 const ACTION_LABEL: Record<ControlAction, string> = {
   start: "start voice",
   stop: "stop voice",
   mute: "mic mute",
+  new: "new conversation",
 };
 
 function Icon({ d, size = 18 }: { d: string; size?: number }) {
@@ -157,7 +158,7 @@ export default function App({
   });
 
   const runControl = useCallback(
-    async (action: ControlAction, call: () => Promise<Response>) => {
+    async (action: ControlAction, call: () => Promise<Response>): Promise<boolean> => {
       const response = await call();
       const outcome = await parseControlOutcome(response);
       if (outcome.ok) {
@@ -166,6 +167,7 @@ export default function App({
       } else {
         setControlRefusal({ action, code: outcome.code });
       }
+      return outcome.ok;
     },
     [stream],
   );
@@ -237,6 +239,19 @@ export default function App({
   // An earlier conversation shown read-only in the middle; null is the live one.
   const [past, setPast] = useState<ConversationSummary | null>(null);
   const [historyKey, setHistoryKey] = useState(0);
+  // "New conversation" (operator, 2026-10-24): a fresh thread, and the voice
+  // transcript from this point on; the ended one is in the history pane.
+  const [liveKey, setLiveKey] = useState(0);
+  // The last voice-transcript entry before "New conversation", or null. An entry, not
+  // an index: the log is capped and drops from the front, so a fixed index would point
+  // past the end once it fills (review of PR #101). If the entry has been dropped, every
+  // entry left came after it.
+  const [transcriptMark, setTranscriptMark] = useState<object | null>(null);
+  const transcriptNow = useMemo(() => {
+    if (transcriptMark === null) return stream.transcript;
+    const at = stream.transcript.indexOf(transcriptMark as (typeof stream.transcript)[number]);
+    return at < 0 ? stream.transcript : stream.transcript.slice(at + 1);
+  }, [stream.transcript, transcriptMark]);
   // On a phone the panes are drawers over the thread: opening one closes the other.
   useEffect(() => {
     if (leftOpen && rightOpen && !wide(861)) setRightOpen(false);
@@ -540,6 +555,17 @@ export default function App({
                 if (!wide(861)) setLeftOpen(false);
               }}
               onClose={() => setLeftOpen(false)}
+              newError={controlRefusal?.action === "new" ? controlRefusal.code : null}
+              onNew={() =>
+                void runControl("new", () => newConversation(appliedSecret)).then((ok) => {
+                  if (!ok) return;
+                  setLiveKey((k) => k + 1);
+                  setTranscriptMark(stream.transcript[stream.transcript.length - 1] ?? null);
+                  setAnswers([]);
+                  setPast(null);
+                  setHistoryKey((k) => k + 1);
+                })
+              }
             />
           </div>
           <button
@@ -594,11 +620,12 @@ export default function App({
               <h2 className="sr-only" id="voice-thread-title">
                 Transcript
               </h2>
-              <Transcript entries={stream.transcript} />
+              <Transcript entries={transcriptNow} />
             </section>
             <Chat
+              key={liveKey}
               secret={appliedSecret}
-              replyEvents={stream.transcript}
+              replyEvents={transcriptNow}
               s2sRole={stream.s2sRole ?? undefined}
               onOpenCitation={openCitation}
               onAnswer={onAnswer}

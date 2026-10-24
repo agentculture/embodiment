@@ -42,6 +42,7 @@ from embodiment.contract import ModelResponse, ToolCall
 from embodiment.daemon import app as app_module
 from embodiment.daemon.app import AppConfig, AppFactories, DaemonApp
 from embodiment.daemon.state import DaemonState
+from embodiment.http import server as server_module
 from embodiment.memory import MemorySeams, RoomMemory, SemanticRecall
 from embodiment.realtime import wire
 from embodiment.voice import Voice, VoiceConfig
@@ -5948,6 +5949,82 @@ class TestTextTurns:
             "by": "client",
         }
 
+    def test_new_conversation_ends_the_live_one_and_settles_it_at_once(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        """Operator, 2026-10-24: there was no "new conversation"."""
+        from embodiment.daemon.history import SettledLedger
+
+        h, _ = self._build(harness)
+        h.app.controls().chat("מה עם הלוטרות?")
+        first = h.app._session.session_id
+        result = h.app.controls().new_conversation()
+        assert result == {"started": True, "ended": first}
+        assert h.app._session is None, "the next turn opens a new session"
+        h.app.controls().chat("ועכשיו שאלה חדשה")
+        assert h.app._session.session_id != first
+        # settled now, not after 30 minutes of quiet
+        assert h.app._settle_tick(SettledLedger(tmp_path / "s.json"), {}, time.time()) == 1
+        (event,) = h.events("conversation")
+        assert event.data["id"] == first
+        assert h.app.status()["conversations"]["started_new"] == 1
+
+    def test_new_conversation_waits_inside_the_control_deadline(self) -> None:
+        """Review of PR #101: a wait past the HTTP deadline would answer 'failed' and
+        then swap the session unseen."""
+        assert app_module.NEW_CONVERSATION_WAIT_S < server_module.DEFAULT_CONTROL_TIMEOUT_S
+
+    def test_a_busy_conversation_is_refused_and_nothing_ends(
+        self, harness: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        h, _ = self._build(harness)
+        h.app.controls().chat("מה עם הלוטרות?")
+        first = h.app._session.session_id
+        monkeypatch.setattr(app_module, "NEW_CONVERSATION_WAIT_S", 0.05)
+        results: list = []
+        h.app._conversation.acquire()
+        try:
+            held = threading.Thread(
+                target=lambda: results.append(h.app.controls().new_conversation())
+            )
+            held.start()
+            held.join(5)
+        finally:
+            h.app._conversation.release()
+        assert results == [{"started": False, "ended": None, "reason": "busy"}]
+        assert h.app._session.session_id == first
+
+    def test_an_ended_conversation_skips_the_quiet_period_only_once(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        from embodiment.daemon.history import SettledLedger
+
+        h, _ = self._build(harness)
+        h.app.controls().chat("מה עם הלוטרות?")
+        first = h.app._session.session_id
+        h.app.controls().new_conversation()
+        ledger, announced = SettledLedger(tmp_path / "s.json"), {}
+        assert h.app._settle_tick(ledger, announced, time.time()) == 1
+        assert first not in h.app._ended_conversations, "pruned once announced"
+
+    def test_close_waits_for_an_ended_conversations_summary(self, harness: Any) -> None:
+        h, _ = self._build(harness)
+        h.app.controls().chat("מה עם הלוטרות?")
+        h.app.controls().new_conversation()
+        h.app.close(deadline=5.0)
+        assert all(not t.is_alive() for t in h.app._session_closers)
+
+    def test_new_conversation_with_nothing_said_ends_nothing(self, harness: Any) -> None:
+        h, _ = self._build(harness)
+        assert h.app.controls().new_conversation() == {"started": True, "ended": None}
+
+    def test_the_prompt_says_when_the_conversation_last_spoke(self, harness: Any) -> None:
+        h, _ = self._build(harness)
+        assert app_module.SINCE_LINE_PREFIX not in h.app._clock_line()
+        h.app.controls().chat("מה עם הלוטרות?")
+        h.app._ensure_session().add_user("עוד שאלה")
+        assert app_module.SINCE_LINE_PREFIX in h.app._clock_line()
+
     def test_a_spoken_turn_records_it_was_spoken(self, harness: Any) -> None:
         h, _ = self._build(harness)
         h.app.run_turn(SPEECH)
@@ -6721,3 +6798,25 @@ class TestTheRecallBoundIsDerived:
             assert "one rig" in lowered
             assert "will fail" not in lowered
             assert "always" not in lowered
+
+
+@pytest.mark.parametrize(
+    ("seconds", "said"),
+    [
+        (20, "לפני פחות מדקה"),
+        (60, "לפני דקה"),
+        (600, "לפני 10 דקות"),
+        (3600, "לפני שעה"),
+        (7200, "לפני 2 שעות"),
+        (3 * 86400, "לפני 3 ימים"),
+    ],
+)
+def test_since_line_says_when_and_how_long_ago(seconds: int, said: str) -> None:
+    now = datetime(2026, 10, 24, 20, 0, tzinfo=timezone.utc)
+    line = app_module.since_line(now.timestamp() - seconds, now)
+    assert line.startswith(app_module.SINCE_LINE_PREFIX)
+    assert line.endswith(f"({said})")
+
+
+def test_since_line_is_empty_without_a_previous_message() -> None:
+    assert app_module.since_line(None, datetime(2026, 10, 24, tzinfo=timezone.utc)) == ""
