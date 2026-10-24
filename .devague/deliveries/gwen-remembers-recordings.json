@@ -2,7 +2,7 @@
   "plan_slug": "gwen-remembers-recordings",
   "schema_version": 2,
   "created": "2026-10-23T04:07:28Z",
-  "updated": "2026-10-23T06:13:47Z",
+  "updated": "2026-10-23T18:41:49Z",
   "deviations": [
     {
       "id": "d1",
@@ -82,6 +82,28 @@
       "status": "approved",
       "classification": "acceptable",
       "seq": 5
+    },
+    {
+      "id": "d6",
+      "what": "fix round on PR #95 from the user's /code-review (10 findings) plus Sonar's 11 critical S3776 cognitive-complexity findings, before merge: (A) text routes on their own pool so mute/stop never queue behind chat or clip; typed-turn lock bounded end to end with a retryable 503 app-text-turn-busy and no dangling user turn; clip read deadline enforced per read; MAX_TEXT_CHARS on /api/speak; (B) chat page sends the install secret whenever it holds one, clip serials join typedSerials, CLAUDE.md loopback rule restated for q1; (C) embedder refuses redirects and caps its body via voice's helpers, vector cache saves once per backfill tick, forget_source takes one total deadline, drain loads only the head batch; (D) every function Sonar rates above 15 refactored to <= 15 with behaviour unchanged. Composite-assertion splits (S9073) go on a stacked PR, not here",
+      "task_ref": "t16",
+      "reason": "review findings (3 verified by hand) and Sonar critical complexity; user: 'fixed approved, complexity is critical'",
+      "affects": [
+        "t10",
+        "t14",
+        "t8",
+        "t4",
+        "t5",
+        "t11",
+        "t12",
+        "t2",
+        "t1",
+        "t17"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 6
     }
   ],
   "evidence": [],

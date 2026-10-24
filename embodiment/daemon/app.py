@@ -149,6 +149,7 @@ from embodiment.audio.features import FeatureExtractor
 from embodiment.bus import Bus, fold_degradation
 from embodiment.contract import ModelResponse
 from embodiment.daemon import drain as drain_module
+from embodiment.daemon.history import ConversationHistory
 from embodiment.daemon.lifecycle import DEFAULT_SHUTDOWN_DEADLINE, ENV_SHUTDOWN_DEADLINE
 from embodiment.daemon.recall_events import (
     PURPOSE_FOLLOW_UP,
@@ -160,7 +161,6 @@ from embodiment.daemon.recall_events import (
     Recalled,
     RecallEventsConfig,
 )
-from embodiment.daemon.history import ConversationHistory
 from embodiment.daemon.state import SESSIONS_DIRNAME, DaemonState, resolve_state_dir
 from embodiment.daemon.text_turns import TextTurns, TextTurnsConfig
 from embodiment.http import access as access_module
