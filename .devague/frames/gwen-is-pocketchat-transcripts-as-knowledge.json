@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-10-23T21:45:45Z",
-  "updated": "2026-10-24T06:27:49Z",
+  "updated": "2026-10-24T18:29:28Z",
   "claims": [
     {
       "id": "c1",
@@ -927,7 +927,7 @@
         "t9"
       ],
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "l2",
@@ -938,7 +938,7 @@
         "t3"
       ],
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "l3",
@@ -949,7 +949,7 @@
         "t8"
       ],
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "l4",
@@ -960,7 +960,7 @@
         "t6"
       ],
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "l5",
@@ -971,7 +971,7 @@
         "t2"
       ],
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "l6",
@@ -982,7 +982,7 @@
         "t10"
       ],
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "l7",
@@ -993,7 +993,7 @@
         "t11"
       ],
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "l8",
@@ -1004,7 +1004,7 @@
         "t12"
       ],
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "l9",
@@ -1015,7 +1015,7 @@
         "t13"
       ],
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "l10",
@@ -1026,7 +1026,7 @@
         "t13"
       ],
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "l11",
@@ -1037,7 +1037,7 @@
         "t13"
       ],
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "l12",
@@ -1048,8 +1048,189 @@
         "d3"
       ],
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     }
   ],
-  "obligations": []
+  "obligations": [
+    {
+      "id": "o1",
+      "claim_id": "c4",
+      "seam": "the page's text rendering",
+      "behavior": "Hebrew answers and sources lay out by their own direction (dir=auto)",
+      "source_text": "The port adds what pocketchat lacks for Gwen: Hebrew/RTL (pocketchat has no dir=auto and no logical CSS properties; text-align:left, border-left throughout app.css) - dir=auto on question, answer, transcript segments and quotes, and logical properties so the layout mirrors",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o2",
+      "claim_id": "c9",
+      "seam": "the page's layout",
+      "behavior": "the page is chat-first: the conversation, not the waveform, is the centre",
+      "source_text": "Gwen's dashboard becomes chat-first: App.tsx (web/src/App.tsx:122-201) today puts the Waveform first as 'the centrepiece (operator decision, obligation o9)' and Chat fourth; the port makes the Ask view primary with a pinned composer, the waveform a compact strip or drawer, the install-secret form shown only on an unauthorized state, and the separate Transcript panel merged into the thread",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o3",
+      "claim_id": "c10",
+      "seam": "/api/library* routes",
+      "behavior": "library read routes are GETs that inherit the guard: refused without the secret on loopback, admitted by Access on the public host",
+      "source_text": "New read routes on Gwen's HTTP surface (library list, document/transcript read, search) are GET routes under /api/ that inherit guard.py's rules unchanged (secret or Access on the public Host, Host/Origin allow-list) and run on the text pool with their own derived timeout, not the 5 s control default; server.py has no path/query parser today, so the port adds one",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o4",
+      "claim_id": "c11",
+      "seam": "the typed turn's tool registry",
+      "behavior": "search_library and read_passage are bound beside remember/forget on typed turns",
+      "source_text": "Library knowledge reaches Gwen as READ tools beside remember/forget (tools.py ToolSpec; daemon binds at app.py:1465-1498; typed and voice turns share the tools, max_steps 8), whose results are wrapped in the same KNOWLEDGE_ATTRIBUTION fence as recall (tool output is plain str today and bypasses render_recalled) and whose citations get a new path into the chat's sources (chat_source is fed only from recall records today, app.py:4737-4768)",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o5",
+      "claim_id": "c13",
+      "seam": "EPUB extraction",
+      "behavior": "Gwen extracts EPUB text with the stdlib, in spine order, with stable anchors",
+      "source_text": "Gwen reads item text herself: fetches GET /api/library/{id}/file and extracts EPUB text with the stdlib (zipfile + html.parser - no new dependency, test_zero_deps.py), chunks it, and embeds chunks with gemma2-embed into her own 0600 document index; the library's q stays a metadata filter, never the content search",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o6",
+      "claim_id": "c15",
+      "seam": "the library client",
+      "behavior": "the client is GET-only by construction",
+      "source_text": "Gwen's library client is GET-only by construction (an AST/test pin that it never sends POST/DELETE/PUT to the library), because xteink keys have no scopes: any xtk_ key is a full operator key (docs/api.md:17-37 - upload, delete, mint keys, revoke devices); the key is held in grant and injected, never written to disk by Gwen",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o7",
+      "claim_id": "c28",
+      "seam": "the library client",
+      "behavior": "0 non-GET requests reach the library",
+      "source_text": "Gwen's library client sends 0 non-GET requests to xteink - pinned by an AST/test check and confirmed in a live run's request log",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o8",
+      "claim_id": "c27",
+      "seam": "citations on the page",
+      "behavior": "an answer's [n] opens the reader at the cited passage; merged groups split into one link per source",
+      "source_text": "On gwen.culture.dev, 100% of answers that use a library item carry at least one [n] citation whose click opens the reader on that item at the cited passage (pinned by test and checked live on >= 5 questions)",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o9",
+      "claim_id": "c31",
+      "seam": "the write guard",
+      "behavior": "library text in a turn cannot trigger remember/forget unless the operator's own words ask",
+      "source_text": "In a turn whose context holds library text, the write tools (remember, forget) cannot be triggered by that text: a write needs the operator's own words in the current user turn to name it (or the write is refused and recorded), because remember/forget are model-initiated with no user-ask gate (daemon/app.py:3307-3345, decision d7) and library documents include web-sourced content (newspapers, papers)",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o10",
+      "claim_id": "c32",
+      "seam": "audio subprocesses",
+      "behavior": "keys never reach child processes",
+      "source_text": "Library and gateway keys never reach child processes: the audio subprocesses (audio/host.py:1317, 1547, 1731, 1838 Popen with no env=) are spawned with a scrubbed environment that drops EMBODIMENT_GATEWAY_KEY and the library key, and no key appears in the ledger, operational log, transcript log or SSE (safe_reason path), pinned by tests",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o11",
+      "claim_id": "c33",
+      "seam": "the document index",
+      "behavior": "reconcile by (id, sha256): removed purged, changed re-indexed, search only answers for the catalog",
+      "source_text": "Gwen's document index reconciles against the library catalog by (item id, sha256): a removed item's chunks and stored text are purged, a changed item is re-indexed, and a citation never points at an item the library no longer holds",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o12",
+      "claim_id": "c34",
+      "seam": "EPUB extraction",
+      "behavior": "extraction is bounded: members, member size, total size, characters",
+      "source_text": "EPUB extraction is bounded: maximum archive members, maximum uncompressed bytes per member and in total, maximum extracted characters per item, refusing (and recording) a zip bomb or an oversized item instead of indexing it; the 7.4 MB book is admitted only by opt-in (c18)",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o13",
+      "claim_id": "c35",
+      "seam": "the library lane",
+      "behavior": "unset library = today's behaviour; a down library is recorded and chat goes on",
+      "source_text": "The library is optional and observable: unset library config means today's behaviour exactly (no tool bound, no Library view data, a visible 'library not configured'), an unreachable or 401 library is a recorded degradation with chat continuing from memory, and status reports items indexed, chunks, last sync, failures and the GET count - the counter-that-moves rule (CLAUDE.md lesson 3)",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o14",
+      "claim_id": "c36",
+      "seam": "status.access",
+      "behavior": "admitted and refused requests are counted",
+      "source_text": "status.access reports counts of requests admitted by Access and refused per code, so a public-host session is proven by a counter rather than inferred (found in the 2026-10-24 live test, where only mode:on was visible)",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o15",
+      "claim_id": "c37",
+      "seam": "library sync",
+      "behavior": "background indexing yields to a live turn",
+      "source_text": "Background indexing never competes with a live turn: embedding library chunks yields to recall and voice (one shared gemma2-embed lane on orin), runs under the backfill's bounded ticks, and its cost is measured before books are indexed",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o16",
+      "claim_id": "c39",
+      "seam": "turn kinds",
+      "behavior": "library tools on typed turns only; spoken turns keep today's path",
+      "source_text": "Library tools bind to typed turns (chat and clips) only this cycle; spoken turns keep today's path (0.25 s recall head start); voice access to the library waits for its added latency to be measured",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o17",
+      "claim_id": "c40",
+      "seam": "/api/todos",
+      "behavior": "To-dos come from memory's action items, grouped by recording, read-only",
+      "source_text": "To-dos view stays, fed from Gwen's memory: the action_item facts the culture-rules ingest wrote (source pocket), grouped by recording, read-only (no done/undone writes this cycle)",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o18",
+      "claim_id": "c26",
+      "seam": "Gwen's own conversations (d8)",
+      "behavior": "Gwen never writes to the library; her past conversations live in her own index",
+      "source_text": "Gwen never writes to the library: no POST/PUT/DELETE, no key minting, no device or queue calls; culture-library, xteink, ebooks-cli, culture-rules, pocketsync and the firmware are not changed by this cycle - asks to them are drafted for the operator's go-ahead",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o19",
+      "claim_id": "c5",
+      "seam": "the voice dock",
+      "behavior": "realtime voice is a feature of the Ask view, beside the composer",
+      "source_text": "Realtime voice becomes a feature inside the Ask view (mic / speak-this / record-or-upload / speech-to-speech buttons at the composer), not the page's hero; pocketchat has no voice UI at all, so these controls are Gwen's additions to the cited page",
+      "origin": "llm",
+      "status": "approved"
+    },
+    {
+      "id": "o20",
+      "claim_id": "c29",
+      "seam": "docs/live-test-results",
+      "behavior": "a measurement over >= 20 model-written reworded questions, hit@5 and per-recall p90 at the indexed size, is published",
+      "source_text": "A measurement over >= 20 model-written reworded questions against the indexed library is published (hit@5 and the per-recall p90 latency at the indexed size) in docs/live-test-results/, aggregates only, whatever the numbers are",
+      "origin": "llm",
+      "status": "approved"
+    }
+  ]
 }

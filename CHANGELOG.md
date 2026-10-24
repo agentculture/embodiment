@@ -26,6 +26,13 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - xteink's native `newspaper` kind is searched: the index searched only `transcript` and `article` by default, so a newspaper filed under the new kind was indexed and never found
 
+## [0.18.1] - 2026-10-24
+
+### Added
+
+- docs/deliveries/2026-10-23-gwen-is-pocketchat-transcripts-as-knowledge.md: the gwen-is-pocketchat delivery summary (run partial: t15 public-page checks not made; claims capped by lapses l1-l12, approved)
+- The validation records for PR #98: obligations o1-o20, evidence e1-e50 and deltas b1-b12, all approved by the operator; lapses l1-l12 approved
+
 ## [0.18.0] - 2026-10-24
 
 **Gwen is pocketchat: the library as knowledge.** Gwen's page is the library with

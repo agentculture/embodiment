@@ -5974,23 +5974,21 @@ class TestTextTurns:
         then swap the session unseen."""
         assert app_module.NEW_CONVERSATION_WAIT_S < server_module.DEFAULT_CONTROL_TIMEOUT_S
 
-    def test_a_busy_conversation_is_refused_and_nothing_ends(self, harness: Any) -> None:
+    def test_a_busy_conversation_is_refused_and_nothing_ends(
+        self, harness: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         h, _ = self._build(harness)
         h.app.controls().chat("מה עם הלוטרות?")
         first = h.app._session.session_id
+        monkeypatch.setattr(app_module, "NEW_CONVERSATION_WAIT_S", 0.05)
+        results: list = []
         h.app._conversation.acquire()
         try:
-            original = app_module.NEW_CONVERSATION_WAIT_S
-            app_module.NEW_CONVERSATION_WAIT_S = 0.05
-            try:
-                held = threading.Thread(
-                    target=lambda: results.append(h.app.controls().new_conversation())
-                )
-                results: list = []
-                held.start()
-                held.join(5)
-            finally:
-                app_module.NEW_CONVERSATION_WAIT_S = original
+            held = threading.Thread(
+                target=lambda: results.append(h.app.controls().new_conversation())
+            )
+            held.start()
+            held.join(5)
         finally:
             h.app._conversation.release()
         assert results == [{"started": False, "ended": None, "reason": "busy"}]

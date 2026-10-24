@@ -939,12 +939,12 @@ class _Handler(BaseHTTPRequestHandler):
             self._invoke(route, controls.set_mute, muted)
             return
         if route == NEW_CONVERSATION_ROUTE:
-            self._new_conversation(route)
+            self._new_conversation()
             return
         callable_ = controls.start_voice if route.endswith("start") else controls.stop_voice
         self._invoke(route, callable_)
 
-    def _new_conversation(self, route: str) -> None:
+    def _new_conversation(self) -> None:
         """A busy refusal is a 409, not a 200: the page must not reset on it."""
         outcome = self._app.call_control(
             "api.conversation.new", self._app.controls.new_conversation
