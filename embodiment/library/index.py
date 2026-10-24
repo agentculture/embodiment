@@ -70,7 +70,10 @@ BOOK_KIND = "book"
 #: ``article``; transcripts arrive as ``article`` EPUBs or as ``transcript``; since
 #: 2026-10-24 xteink also has a native ``newspaper`` kind, which was indexed but never
 #: searched until it was named here (found live: "today's newspaper" found nothing).
-DEFAULT_KINDS = ("transcript", "article", "newspaper")
+#: culture-library (d15) files everything that is not a book or an issue as
+#: ``document``, transcripts included: 36 documents, none searched, found live on
+#: 2026-10-24 after the repoint.
+DEFAULT_KINDS = ("transcript", "article", "newspaper", "document")
 MAX_REASON_CHARS = 200
 _PASSAGE_FIELDS = ("anchor", "heading", "text", "start_s", "end_s", "speaker", "links")
 #: Links kept on one chunk (the union of its passages' links, first seen first).

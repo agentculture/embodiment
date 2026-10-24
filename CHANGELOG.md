@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.21.1] - 2026-10-24
+
+### Fixed
+
+- Gwen searches culture-library's documents (d15): culture-library files every item that is not a book or a newspaper issue as `document`, transcripts included, and search only covered `transcript`, `article` and `newspaper`, so after the repoint 36 documents were indexed but never found. `document` joins the default and the allowed search kinds; a dated `article` or `document` (`YYYY-MM-DD <topic>`) counts as a transcript for the `kind` filter, and the page shows it as one.
+
 ## [0.21.0] - 2026-10-24
 
 ### Added

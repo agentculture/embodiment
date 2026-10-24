@@ -63,7 +63,7 @@ MediaRecorder webm/mp4, and its duration cap; load on orin. `tests/test_release_
 not-yet list against the README and the `explain` root.
 
 **Shipped on the `feat/gwen-is-pocketchat` branch (0.18.0):** the library read path
-(`embodiment/library/`; culture-library, xteink's instance on 127.0.0.1:8780 today;
+(`embodiment/library/`; culture-library, on 127.0.0.1:8796 since 2026-10-24 (d15; xteink's instance on 8780 before);
 a GET-only client; `search_library` and `read_passage` on typed turns only), the
 write guard (`library_guarded_writes`, `app-library-guarded-write`: no
 `remember`/`forget` in a turn holding library text unless the operator's words name
