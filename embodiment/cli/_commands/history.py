@@ -1,20 +1,16 @@
 """``embodiment history`` — Gwen's past conversations, read-only: ``export``.
 
-Deviation d5 (operator, 2026-10-24): conversations are to be "indexed via
-culture-rules to the library". Gwen never writes to the library (c26), so this
-verb only READS the per-session logs the daemon writes and prints them; culture-
-rules runs it, renders each conversation as a private library item and pushes it.
+It only READS the per-session logs the daemon writes, and prints them. It was
+added for deviation d5 (culture-rules exporting conversations to the library).
+Deviation d8 (operator, 2026-10-24) made conversations Gwen's own: the daemon
+indexes each one in-process once it is quiet, and nothing outside it consumes this
+verb today. It stays as a read-only view: ``--id`` names one conversation,
+``--settled-for`` keeps those quiet for long enough, ``--since`` keeps one run
+incremental, and every turn carries ``via`` (d7) with the ``evidence`` map saying
+what each tag is worth: typed words are verbatim, audio is an AI transcription,
+Gwen's replies are generated.
 
-Deviation d7 (operator, 2026-10-24) sets WHEN: a conversation is exported once it
-has gone quiet. The daemon publishes a ``conversation`` event (``status:
-settled``, id only) 30 minutes after the last message, and culture-rules answers
-it with ``export --id <id>``; ``--settled-for`` serves a scheduled run instead,
-and ``--since`` keeps one incremental. d7 also tags every turn with how it
-arrived (``via``) and the export carries what each tag is worth as evidence
-(``evidence``): typed words are verbatim, audio is an AI transcription, Gwen's
-replies are generated.
-
-Built to run under culture-rules' runner, like ``embodiment memory``: no stdin, a
+Built to run unattended, like ``embodiment memory``: no stdin, a
 throwaway cwd, an env of only ``PATH`` and ``LANG`` — so the state directory is a
 flag. The JSON carries conversation text (it is the export); the plain-text form
 lists titles and counts only.
@@ -51,9 +47,7 @@ def _history_sections() -> list[dict[str, object]]:
             "title": "Conventions",
             "items": [
                 "read-only: the verb never writes the state dir, the store or the library",
-                "culture-rules turns each conversation into a private library item (d5)",
-                "a conversation is exported once quiet: the daemon's 'conversation' event,"
-                " then 'export --id' (d7)",
+                "conversations are Gwen's own: the daemon indexes each once quiet (d8)",
                 "every command supports --json; the JSON carries the conversation text",
             ],
         },

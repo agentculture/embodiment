@@ -2,7 +2,7 @@
   "plan_slug": "gwen-is-pocketchat-transcripts-as-knowledge",
   "schema_version": 2,
   "created": "2026-10-24T04:42:23Z",
-  "updated": "2026-10-24T15:28:45Z",
+  "updated": "2026-10-24T16:09:53Z",
   "deviations": [
     {
       "id": "d1",
@@ -95,6 +95,39 @@
       "status": "approved",
       "classification": "acceptable",
       "seq": 7
+    },
+    {
+      "id": "d8",
+      "what": "Conversations are internal to Gwen, not routed through culture-rules (amends d5 part 2 and d7 part 1): Gwen indexes her own past conversations in her own private index and searches and cites them on typed turns beside the library; the library is not written (c26 stands); each turn keeps its via tag and evidence value in the index and in what she cites; the settle watch (a conversation quiet for 30 min) is the trigger that indexes it, in-process; the conversation event stays in-process; 'history export' stays as a read-only verb with no culture-rules consumer. Also: speech (transcript, reply), audio features and the conversation event never leave the process for the MQTT broker",
+      "task_ref": "t13",
+      "reason": "Operator, 2026-10-24: 'Embodiment stays with audio local, so we transcript against lobes or realtime-api against lobes. Confirmed. It's not right to work via culture rules - culture rules intended for between processes, and this internal to embodiment/gwen'",
+      "affects": [],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 8
+    },
+    {
+      "id": "d9",
+      "what": "Corrects d8's broker clause: transcripts, replies and audio features DO go to the MQTT broker as before; only Gwen's own conversation event stays in-process. Withholding is not the answer; content crossing processes is to be MARKED (private/public; human, code or AI input), a standard asked of events-cli (the envelope) and culture-rules (stores and honours the mark)",
+      "task_ref": "t13",
+      "reason": "Operator, 2026-10-24: 'I don't have privacy problem because it's all internal. But we need a way to mark content on culture-rules (private, public, human input, code input, AI input, etc.)'",
+      "affects": [],
+      "origin": "user",
+      "status": "approved",
+      "classification": "needs-follow-up",
+      "seq": 9
+    },
+    {
+      "id": "d10",
+      "what": "Recordings are saved (supersedes 'raw audio is never written to disk' for clips): every audio clip the page sends (recorded on its mic or uploaded) is kept as it arrived, in a private recording store under the state dir (0700 dir, 0600 files, named by sha256, bounded by a byte cap that refuses and records rather than deleting), saved before transcription so it is kept even when transcription fails, and linked from its turn in the session log (sha256, bytes, content type). The room microphone's live stream is still not written. For now: archiving to S3 is a tracked follow-up issue",
+      "task_ref": "t13",
+      "reason": "Operator, 2026-10-24: 'we also save the recording as well for now. Open issue for archive to s3' (after 'A recording is truth (that it happened, not its content)')",
+      "affects": [],
+      "origin": "user",
+      "status": "approved",
+      "classification": "needs-follow-up",
+      "seq": 10
     }
   ],
   "evidence": [],

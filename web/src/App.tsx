@@ -304,6 +304,14 @@ export default function App({
   const readerRef = useRef<ReaderHandle>(null);
   const openCitation = useCallback(
     (itemId: string, rawAnchor: unknown) => {
+      // A past conversation Gwen cited (d8) opens in the middle, where it can be
+      // continued; everything else opens the library reader on the right.
+      const cited = answers.flatMap((a) => a.sources).find((s) => s.item_id === itemId);
+      if (cited?.source === "conversation") {
+        setPast({ id: itemId, title: cited.title, started: null, last: null, turns: 0, current: false });
+        if (!wide(1280)) setRightOpen(false);
+        return;
+      }
       const anchor = anchorString(rawAnchor);
       if (citation && citation.itemId === itemId) {
         // The same item again: move to the passage, and fetch again in case the
@@ -315,7 +323,7 @@ export default function App({
       setRightOpen(true);
       if (!wide(1280)) setLeftOpen(false);
     },
-    [citation],
+    [citation, answers],
   );
   const closeRight = useCallback(() => {
     setRightOpen(false);

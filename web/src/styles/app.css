@@ -41,6 +41,7 @@
   --k-transcript: #eda100;
   --k-repo: #e87ba4;
   --k-diary: #008300;
+  --k-conversation: #7a4fc9;
   --k-other: #8a8f86;
   --shadow: 0 1px 2px rgba(18, 48, 31, 0.06), 0 10px 28px rgba(18, 48, 31, 0.07);
   --shadow-lift: 0 2px 6px rgba(18, 48, 31, 0.08), 0 22px 48px -12px rgba(18, 48, 31, 0.22);
@@ -104,6 +105,7 @@
     --k-book: #199e70;
     --k-transcript: #c98500;
     --k-repo: #d55181;
+    --k-conversation: #a98bea;
     --k-other: #8fa0b8;
     --shadow: 0 1px 2px rgba(5, 12, 24, 0.3), 0 10px 28px rgba(5, 12, 24, 0.28);
     --shadow-lift: 0 2px 6px rgba(5, 12, 24, 0.35), 0 22px 48px -12px rgba(5, 12, 24, 0.6);
@@ -135,6 +137,7 @@
   --k-book: #199e70;
   --k-transcript: #c98500;
   --k-repo: #d55181;
+  --k-conversation: #a98bea;
   --k-other: #8fa0b8;
   --shadow: 0 1px 2px rgba(5, 12, 24, 0.3), 0 10px 28px rgba(5, 12, 24, 0.28);
   --shadow-lift: 0 2px 6px rgba(5, 12, 24, 0.35), 0 22px 48px -12px rgba(5, 12, 24, 0.6);

@@ -46,7 +46,7 @@ from __future__ import annotations
 
 import re
 import threading
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from typing import Any, Callable, Optional
 
 from embodiment import memory
@@ -57,6 +57,7 @@ __all__ = [
     "CITE_HINT",
     "CODE_BAD_ARGUMENTS",
     "CODE_EMBED_FAILED",
+    "CONVERSATION_SOURCE",
     "CODES",
     "Citation",
     "CitationCollector",
@@ -71,6 +72,7 @@ __all__ = [
     "SOURCE_TEXT_MAX_CHARS",
     "build_library_tools",
     "citation_record",
+    "replace_source",
 ]
 
 SEARCH_TOOL = "search_library"
@@ -80,6 +82,10 @@ READ_TOOL = "read_passage"
 LIBRARY_SOURCE = "library"
 #: The ``written-by`` the fence header names for a library entry.
 LIBRARY_WRITER = "library"
+#: ``Citation.source`` for a hit in Gwen's own past conversations (d8), and the
+#: ``written-by`` its fence header names.
+CONVERSATION_SOURCE = "conversation"
+CONVERSATION_WRITER = "conversations"
 
 #: Cap on a citation's text - the same cap the daemon puts on a recalled source.
 SOURCE_TEXT_MAX_CHARS = memory.DEFAULT_MAX_CHARS
@@ -243,14 +249,20 @@ def _hit_citation(hit: Any) -> Citation:
     return _citation(meta, passage)
 
 
+def replace_source(citation: Citation, source: str) -> Citation:
+    """*citation* from another source (a past conversation's, d8); fields unchanged."""
+    return replace(citation, source=source)
+
+
 def citation_record(citation: Citation) -> dict[str, Any]:
     """*citation* as the record shape :func:`embodiment.memory.render_recalled` renders.
 
     The provenance line and the passage both go in ``text``, so both are quoted
     body lines; only the id, the writer and the date reach the restricted header.
     """
+    conversation = citation.source == CONVERSATION_SOURCE
     parts = [
-        ("library", citation.kind),
+        ("conversation" if conversation else "library", citation.kind),
         ("title", citation.title),
         ("date", citation.date),
         ("anchor", citation.anchor),
@@ -260,7 +272,7 @@ def citation_record(citation: Citation) -> dict[str, Any]:
     provenance = " | ".join(f"{k}: {v}" for k, v in parts if v)
     return {
         "id": citation.item_id,
-        "added_by": LIBRARY_WRITER,
+        "added_by": CONVERSATION_WRITER if conversation else LIBRARY_WRITER,
         "created": citation.date,
         "text": f"{provenance}\n{citation.text}",
     }

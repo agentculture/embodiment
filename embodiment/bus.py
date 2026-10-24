@@ -266,6 +266,7 @@ __all__ = [
     "SCHEMA_VERSION",
     "EVENT_KINDS",
     "SPEECH_KINDS",
+    "LOCAL_ONLY_KINDS",
     "HEARTBEAT_INTERVAL_S",
     "DEFAULT_MAX_EVENT_BYTES",
     "DEFAULT_SUBSCRIBER_QUEUE_SIZE",
@@ -315,6 +316,14 @@ EVENT_KINDS: frozenset[str] = frozenset(
 #: subscription by default (round 2, defect 6b) — pass
 #: ``Bus.subscribe(include_speech=True)`` or an explicit ``kinds=`` to get them.
 SPEECH_KINDS: frozenset[str] = frozenset({"transcript", "reply"})
+
+#: Kinds that never leave this process for the broker. Only ``conversation``:
+#: conversations are Gwen's own business (deviation d8), so nothing outside the
+#: daemon consumes that event. Speech and features DO go to the broker: the
+#: operator's word (2026-10-24) is that it is all internal, and what is needed is a
+#: way to MARK content as it crosses processes (private/public; human, code or AI
+#: input), not to withhold it -- that mark is asked of events-cli and culture-rules.
+LOCAL_ONLY_KINDS: frozenset[str] = frozenset({"conversation"})
 
 #: Fixed heartbeat interval, in seconds. A **judgement call**, not a measured
 #: value: 15s is short enough that a dashboard viewer sees the daemon is alive
@@ -1222,6 +1231,8 @@ class Bus:
     # ── internals: MQTT fan-out (round 2: async, off the caller's thread) ──
 
     def _enqueue_broker(self, event: Event) -> None:
+        if event.kind in LOCAL_ONLY_KINDS:
+            return
         with self._broker_lock:
             disabled = self._broker_disabled
         if disabled:

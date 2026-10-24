@@ -237,6 +237,7 @@ def _build(
     lane: Any = "default",
     tick: bool = True,
     spawn: Any = _sync_spawn,
+    conversations: Any = None,
 ) -> Any:
     if lane == "default":
         lane = _lane(tmp_path, library)
@@ -250,6 +251,7 @@ def _build(
             tts=FakeTts(),
             stt=lambda audio, filename, content_type: "golf?",
             library=lane,
+            conversations=conversations,
         ),
     )
     if lane is not None:
@@ -1339,3 +1341,74 @@ class TestARebuildCatchesUp:
 
         monkeypatch.setattr(lane.sync, "tick", broken)
         assert h.app._library_tick() is False
+
+
+# ── d8: Gwen's own past conversations ──────────────────────────────────────────
+
+
+def _conversation_lane(tmp_path: Path) -> Any:
+    from embodiment.library.index import DocumentIndex
+
+    def embed(text: str) -> list[float]:
+        vec = [0.0] * 32
+        for word in text.lower().split():
+            vec[sum(map(ord, word.strip("[]().,?!"))) % 32] += 1.0
+        norm = sum(x * x for x in vec) ** 0.5 or 1.0
+        return [x / norm for x in vec]
+
+    index = DocumentIndex(tmp_path / "conversations-index.json", embed=embed, model_tag="t")
+    return app_module.ConversationLane(index=index, embed_query=embed, threshold=0.0)
+
+
+class TestPastConversations:
+    def test_the_tool_and_its_line_come_with_the_lane_only(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        script = ToolScript()
+        h = _build(
+            harness,
+            tmp_path,
+            complete=script,
+            lane=None,
+            conversations=_conversation_lane(tmp_path),
+        )
+        assert h.app.controls().chat("מה שאלתי בפעם הקודמת?")["ok"] is True
+        assert "search_conversations" in script.tool_names[-1]
+        system = " ".join(m["content"] for m in script.prompts[-1] if m["role"] == "system")
+        assert app_module.CONVERSATIONS_TOOL_PROMPT in system
+
+    def test_without_the_lane_the_prompt_is_unchanged(self, harness: Any, tmp_path: Path) -> None:
+        script = ToolScript()
+        h = _build(harness, tmp_path, complete=script, lane=None)
+        h.app.controls().chat("מה שאלתי בפעם הקודמת?")
+        system = " ".join(m["content"] for m in script.prompts[-1] if m["role"] == "system")
+        assert app_module.CONVERSATIONS_TOOL_PROMPT not in system
+        assert script.tool_names[-1] == MEMORY_TOOLS
+
+    def test_a_settled_conversation_is_indexed_and_found_but_never_the_live_one(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        from embodiment.daemon.history import SETTLE_AFTER_S, SettledLedger
+        from embodiment.library import conversations as conv
+        from embodiment.library.tools import CitationCollector
+
+        lane = _conversation_lane(tmp_path)
+        h = _build(harness, tmp_path, lane=None, conversations=lane)
+        h.app.controls().chat("where did I leave the blue shed key")
+        live = h.app._session.session_id
+        ledger = SettledLedger(tmp_path / "settled.json")
+        assert h.app._settle_tick(ledger, {}, time.time() + SETTLE_AFTER_S + 1) == 1
+        assert [i["id"] for i in lane.index.indexed_items()] == [live]
+        assert h.app.status()["conversations"]["indexed"] == 1
+
+        tool = conv.build_conversation_tool(
+            lane.index, lane.embed_query, CitationCollector(), exclude=lambda: ()
+        )
+        assert f"id={live}" in tool.fn(query="blue shed key")
+        assert h.app._conversations_in_play() == {live}, "the live one is excluded"
+
+
+def test_a_conversation_citation_keeps_its_source_on_the_page() -> None:
+    page = app_module.library_chat_source({"source": "conversation", "item_id": "c1"})
+    assert page["source"] == "conversation"
+    assert app_module.library_chat_source({"source": "weird"})["source"] == "library"

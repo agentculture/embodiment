@@ -5898,6 +5898,17 @@ class TestTextTurns:
         vias = [row.get("via") for row in self._logged(h) if row["role"] == "user"]
         assert vias == ["typed", "recorded", "uploaded", "clip", "clip"]
 
+    def test_a_clip_is_kept_in_the_state_dir_and_its_turn_links_it(self, harness: Any) -> None:
+        """d10: the daemon keeps every clip; the history read shows the link."""
+        h, _ = self._build(harness)
+        h.app.controls().clip(self._wav(), None, None, "recorded")
+        (row,) = [r for r in self._logged(h) if r["role"] == "user"]
+        kept = Path(h.state.dir) / "recordings" / row["recording"]["file"]
+        assert kept.read_bytes() == self._wav()
+        assert h.app.status()["recordings"]["saved"] == 1
+        conversation = h.app._history().conversation(h.app._current_session_log().stem)
+        assert conversation["turns"][0]["recording"]["sha256"] == row["recording"]["sha256"]
+
     def test_a_spoken_turn_records_it_was_spoken(self, harness: Any) -> None:
         h, _ = self._build(harness)
         h.app.run_turn(SPEECH)

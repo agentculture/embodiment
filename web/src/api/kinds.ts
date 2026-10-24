@@ -22,6 +22,9 @@ export const KINDS: KindInfo[] = [
   { id: "transcript", one: "Transcript", many: "Transcripts", color: "var(--k-transcript)" },
   { id: "spec", one: "Spec or plan", many: "Specs and plans", color: "var(--k-repo)" },
   { id: "diary", one: "Diary", many: "Diary", color: "var(--k-diary)" },
+  // Gwen's own past conversations (deviation d8): cited from her index, opened in
+  // the history pane, never library items.
+  { id: "conversation", one: "Conversation", many: "Conversations", color: "var(--k-conversation)" },
 ];
 
 const OTHER: KindInfo = { id: "other", one: "Item", many: "Other", color: "var(--k-other)" };

@@ -28,6 +28,7 @@ from embodiment.bus import (
     DEGRADED_SECRET_REDACTED,
     EVENT_KINDS,
     HEARTBEAT_INTERVAL_S,
+    LOCAL_ONLY_KINDS,
     SCHEMA_VERSION,
     SPEECH_KINDS,
     Bus,
@@ -374,7 +375,8 @@ class TestExceptionTextNeverLeaked:
                 pass
 
         bus = Bus(client=EchoClient())
-        bus.publish("transcript", {"role": "user", "text": self.MARK})
+        # A broker-bound kind (speech never reaches the broker since 2026-10-24).
+        bus.publish("turn", {"phase": self.MARK, "step_count": 0})
         assert _wait_until(lambda: bus.degradation_counts.get(DEGRADED_BROKER_UNAVAILABLE, 0) >= 1)
         for d in bus.degradations:
             assert self.MARK not in d.reason
@@ -449,16 +451,7 @@ class TestAsyncBrokerFanOut:
         bus = Bus(client=client)
         start = time.monotonic()
         for _ in range(4):
-            bus.publish(
-                "features",
-                {
-                    "direction": "in",
-                    "env": "AA",
-                    "level_db": 0,
-                    "noise_floor_db": 0,
-                    "zero_crossing_hz": None,
-                },
-            )
+            bus.publish("heartbeat", {})
         elapsed = time.monotonic() - start
         assert elapsed < 0.3, f"publish() blocked on the broker: {elapsed:.3f}s"
         # eventually the slow worker does deliver all 4 to the broker
@@ -1373,10 +1366,33 @@ def test_envelope_ids_differ_between_two_runs_of_the_same_source():
     for _ in range(2):
         bus, client = _bus_with_ok_client()
         try:
-            bus.publish("conversation", {"id": "c", "status": "settled", "last": 1.0, "turns": 1})
+            bus.publish("heartbeat", {})
             assert _wait_until(lambda: client.published), "nothing reached the broker client"
         finally:
             bus.close(deadline=1.0)
         ids.append(client.published[0][0].id)
     assert ids[0] != ids[1]
     assert all(i.startswith("evt-bus-") for i in ids)
+
+
+# ── what stays in-process (deviation d8) ─────────────────────────────────────
+
+
+@pytest.mark.parametrize("kind", sorted(LOCAL_ONLY_KINDS))
+def test_local_only_kinds_reach_subscribers_but_never_the_broker(kind):
+    fixture = json.loads((FIXTURES_DIR / f"{kind}.json").read_text())
+    bus, client = _bus_with_ok_client()
+    sub = bus.subscribe(kinds={kind})
+    try:
+        assert bus.publish(kind, fixture["data"]) is not None
+        bus.publish("heartbeat", {})  # a broker-bound kind after it, to wait on
+        assert _wait_until(lambda: client.published)
+        assert [e.type for e, _ in client.published] == ["embodiment.bus.heartbeat"]
+        assert [e.kind for e in sub.drain()] == [kind]
+    finally:
+        bus.close(deadline=1.0)
+
+
+def test_only_gwens_own_conversation_event_is_local_only():
+    """d8 keeps ``conversation`` in-process; speech and features still reach the broker."""
+    assert LOCAL_ONLY_KINDS == {"conversation"}

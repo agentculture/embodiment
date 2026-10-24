@@ -51,9 +51,11 @@ duration is UNKNOWN and the hard bound is :data:`MAX_CLIP_BYTES` alone (plus a
 caller-declared duration, which can only refuse MORE). That is a real weakness,
 stated in the result (``duration_s=None``) and not hidden.
 
-Privacy: raw audio is never written to disk (CLAUDE.md). The clip lives in a
-``bytes`` object for the length of one call; this module imports no
-``tempfile`` and opens no file, and a test pins both.
+Privacy: this module never writes audio itself. The clip lives in a ``bytes``
+object for the length of one call; this module imports no ``tempfile`` and opens
+no file, and a test pins both. Since d10 the clip is handed, before
+transcription, to the injected recording store (:mod:`embodiment.daemon.recordings`),
+the one place audio is written.
 """
 
 from __future__ import annotations
@@ -437,8 +439,11 @@ class TextTurns:
         clock: Callable[[], float] = time.monotonic,
         hold_conversation: Optional[Callable[[], bool]] = None,
         release_conversation: Optional[Callable[[], None]] = None,
+        recordings: Any = None,
     ) -> None:
         self._run_text_turn = run_text_turn
+        #: Where a clip is kept before it is transcribed (d10); None keeps nothing.
+        self._recordings = recordings
         self._hold_conversation = hold_conversation
         self._release_conversation = release_conversation
         self._session = session
@@ -476,19 +481,24 @@ class TextTurns:
 
     # -- typed turns ---------------------------------------------------------
 
-    def handle_text(self, text: object, *, via: str = "typed") -> TextTurnResult:
+    def handle_text(
+        self, text: object, *, via: str = "typed", recording: Optional[dict] = None
+    ) -> TextTurnResult:
         """Run one typed message as a turn in the current session; reply as text.
 
         *via* is written beside the user turn in the session log: how it arrived
-        (``typed``, or a clip's ``recorded`` / ``uploaded`` / ``clip``; d7).
+        (``typed``, or a clip's ``recorded`` / ``uploaded`` / ``clip``; d7), and
+        *recording* the kept clip it was transcribed from (d10).
         """
         try:
-            return self._handle_text(text, via)
+            return self._handle_text(text, via, recording)
         except Exception as exc:  # noqa: BLE001  # degrade, never raise
             self._record(TEXT_TURN_FAILED, safe_reason.describe_exception(exc))
             return TextTurnResult(False, code=TEXT_TURN_FAILED, http_status=500)
 
-    def _handle_text(self, text: object, via: str = "typed") -> TextTurnResult:
+    def _handle_text(
+        self, text: object, via: str = "typed", recording: Optional[dict] = None
+    ) -> TextTurnResult:
         if not isinstance(text, str):
             return TextTurnResult(False, code=REFUSED_NOT_TEXT, http_status=400)
         message = text.strip()
@@ -501,17 +511,22 @@ class TextTurns:
             self._record(TEXT_TURN_BUSY, "the conversation was busy; nothing was written")
             return TextTurnResult(False, code=TEXT_TURN_BUSY, http_status=503)
         try:
-            return self._turn_in_conversation(message, via)
+            return self._turn_in_conversation(message, via, recording)
         finally:
             if hold is not None and self._release_conversation is not None:
                 self._release_conversation()
 
-    def _turn_in_conversation(self, message: str, via: str = "typed") -> TextTurnResult:
+    def _turn_in_conversation(
+        self, message: str, via: str = "typed", recording: Optional[dict] = None
+    ) -> TextTurnResult:
         session = self._current_session()
         if session is None:
             self._record(TEXT_TURN_NO_SESSION, "typed turn ran without a session")
         else:
-            self._session_call(lambda: session.add_user(message, metadata={"via": via}))
+            metadata: dict[str, Any] = {"via": via}
+            if recording:
+                metadata["recording"] = recording
+            self._session_call(lambda: session.add_user(message, metadata=metadata))
 
         try:
             result = self._run_text_turn(message)
@@ -614,6 +629,22 @@ class TextTurns:
             self._record(CLIP_STT_FAILED, safe_reason.describe_exception(exc))
             return ClipResult(False, code=CLIP_STT_FAILED, http_status=502)
 
+    def _keep(self, data: bytes, probe: Any, via: str, duration: Any) -> Optional[dict]:
+        store = self._recordings
+        if store is None:
+            return None
+        try:
+            return store.save(
+                data,
+                extension=probe.extension,
+                content_type=probe.content_type,
+                via=via,
+                duration_s=duration,
+            )
+        except Exception as exc:  # noqa: BLE001  # the store is a seam; the turn still runs
+            self._record(CLIP_STT_FAILED, f"recording: {safe_reason.describe_exception(exc)}")
+            return None
+
     def _handle_clip(self, audio: object, declared: object, via: str = "clip") -> ClipResult:
         if not isinstance(audio, (bytes, bytearray)) or not audio:
             return ClipResult(False, code=REFUSED_EMPTY, http_status=400)
@@ -636,6 +667,9 @@ class TextTurns:
                 False, duration_s=duration, code=REFUSED_CLIP_TOO_LONG, http_status=413
             )
 
+        # Kept BEFORE transcription (d10): that it was sent is the fact a recording
+        # proves, whether or not the words come back.
+        recording = self._keep(data, probe, via, duration)
         try:
             transcript = self._stt(data, f"clip.{probe.extension}", probe.content_type)
         except Exception as exc:  # noqa: BLE001
@@ -650,7 +684,7 @@ class TextTurns:
             return ClipResult(
                 False, duration_s=duration, code=CLIP_EMPTY_TRANSCRIPT, http_status=422
             )
-        turn = self.handle_text(transcript, via=via)
+        turn = self.handle_text(transcript, via=via, recording=recording)
         return ClipResult(
             turn.ok,
             transcript=transcript,

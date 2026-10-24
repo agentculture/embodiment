@@ -61,17 +61,31 @@ culture-rules (decision c21): 33 were there on 2026-10-24.
   `embodiment start --listen` (`EMBODIMENT_LISTEN_ON_START=1`) keeps the hot mic
   on start.
 
-- **Conversations are exported once they go quiet** (deviation d7, operator,
-  amending d5's schedule): 30 minutes after a conversation's last message the
-  daemon publishes one `conversation` event (`status: settled`; id, last, turns,
-  never text) on its events-cli bus, remembered across restarts in
-  `conversations-settled.json`; culture-rules answers it with
-  `embodiment history export --id <id> --json`. A continued conversation settles
-  again. `--settled-for` serves a scheduled run instead.
+- **Gwen searches her own past conversations** (deviations d7 and d8, operator):
+  30 minutes after a conversation's last message the daemon announces it in-process
+  (a `conversation` event: id, last, turns; never text; remembered across restarts
+  in `conversations-settled.json`) and indexes it in Gwen's private conversation
+  index (`conversations-index.json`, separate from the library's), one chunk per
+  exchange, every turn labelled with who said it and how it arrived. On typed turns
+  `search_conversations` finds them, fenced like library text, arming the write
+  guard, and never searching the conversation the turn is in. A cited past
+  conversation opens in the middle, ready to continue. A continued conversation
+  leaves the index until it settles again. Nothing goes through culture-rules: the
+  conversations are Gwen's own. `history export` stays a read-only view, with
+  `--id` and `--settled-for`.
+- **Clips are kept** (deviation d10, operator: "a recording is truth"): every clip
+  the page sends is saved as it arrived, before transcription, under
+  `<state>/recordings/` (0600, named by sha256, capped at 2 GiB, refusing past the
+  cap and never deleting), and its turn links it. The room mic's live audio is
+  still not written. S3 archiving is #99.
 - **Every turn says how it arrived** (d7): the session log keeps `via` on the
   operator's turns (`typed`, `spoken`, `recorded`, `uploaded`, `clip`; the page
   sends `X-Clip-Origin` for a clip) and the export adds `generated` for Gwen's
   and an `evidence` map of what each tag is worth.
+- **Gwen's `conversation` event never leaves the process** (d8/d9): the bus keeps
+  it off the broker (`LOCAL_ONLY_KINDS`). Transcripts, replies and audio levels still
+  reach the broker; the operator's word is that it is all internal, and what is
+  needed is a way to mark content crossing processes, not to withhold it.
 - **Bus envelope ids no longer repeat across runs**: they were the source and the
   event's `seq`, which restarts at 1 every run, so a consumer keying events by id
   (culture-rules keeps one envelope per id) would have dropped a new run's events

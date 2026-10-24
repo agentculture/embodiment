@@ -40,6 +40,7 @@ class FakeSession:
 
     def add_user(self, text, metadata=None):
         self.calls.append(("user", text))
+        self.user_metadata = metadata
 
     def add_assistant(self, text, metadata=None):
         self.calls.append(("assistant", text))
@@ -230,6 +231,45 @@ class TestClip:
         assert seen[0][1:] == ("clip.wav", "audio/wav")
         assert session.calls[0] == ("user", "שלום")
         assert r.duration_s == pytest.approx(1.0)
+
+    def test_the_clip_is_kept_before_stt_and_linked_from_its_turn(self, tmp_path):
+        """d10: kept first, so a recording exists even if the words never come back."""
+        from embodiment.daemon.recordings import RecordingStore
+
+        store = RecordingStore(tmp_path / "rec")
+        order = []
+        session = FakeSession()
+        tt, _ = make(
+            session=session,
+            recordings=store,
+            stt=lambda a, f, c: order.append(store.saved) or "שלום",
+        )
+        r = tt.handle_clip(make_wav(1.0), via="recorded")
+        assert r.ok
+        assert order == [1], "the clip was not kept before transcription"
+        link = session.user_metadata["recording"]
+        assert session.user_metadata["via"] == "recorded"
+        assert (tmp_path / "rec" / link["file"]).read_bytes() == make_wav(1.0)
+
+    def test_a_clip_whose_transcription_fails_is_still_kept(self, tmp_path):
+        from embodiment.daemon.recordings import RecordingStore
+
+        store = RecordingStore(tmp_path / "rec")
+
+        def broken(*a):
+            raise ConnectionError("stt down")
+
+        tt, _ = make(recordings=store, stt=broken)
+        assert not tt.handle_clip(make_wav(1.0)).ok
+        assert store.saved == 1
+
+    def test_a_refused_clip_is_not_kept(self, tmp_path):
+        from embodiment.daemon.recordings import RecordingStore
+
+        store = RecordingStore(tmp_path / "rec")
+        tt, _ = make(recordings=store, config=TextTurnsConfig(max_clip_bytes=100))
+        assert tt.handle_clip(make_wav(1.0)).http_status == 413
+        assert store.saved == 0
 
     def test_over_byte_cap_refused_before_stt(self):
         called = []

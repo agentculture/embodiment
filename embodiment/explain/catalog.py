@@ -71,8 +71,9 @@ absence, never an implication:
 
 - **Other tools** — the daemon binds `remember` and `forget` (archive in place,
   never delete), and, on typed turns only and only with a library configured,
-  two read-only library tools: `search_library` and `read_passage`. No shell,
-  no files, no Qwen Code, nothing that writes to the library.
+  two read-only library tools: `search_library` and `read_passage`; and
+  `search_conversations` over her own settled past conversations (d8). No
+  shell, no files, no Qwen Code, nothing that writes to the library.
 - **Vision** — the session is audio-only.
 - **A face** — the waveform is a compact strip beside the chat.
 - **Live realtime voice and speech-to-speech** — the phone is control, text and
@@ -236,14 +237,12 @@ _HISTORY = """\
 
 Read-only access to Gwen's past conversations, from the per-session logs the
 daemon writes. It never writes the state directory, the memory store or the
-library. culture-rules turns each conversation into a private library item
-(deviation d5), so Gwen can search and cite them.
+library.
 
-When (deviation d7): once a conversation has been quiet for 30 minutes the daemon
-publishes one `conversation` event on its events-cli bus (`status: settled`, the
-id, the last turn's time and the turn count, never text), and culture-rules
-answers it with `export --id <id>`. A continued conversation settles again and
-updates the same item.
+Conversations are Gwen's own (deviation d8): once one has been quiet for 30
+minutes the daemon indexes it in her private conversation index, and she searches
+it with `search_conversations` on typed turns. Nothing outside the daemon is
+involved; this verb is a read-only view of the same logs.
 
 ## Usage
 

@@ -54,11 +54,13 @@ EVIDENCE = {
     ),
     VIA_RECORDED: (
         "transcribed: the operator recorded it on the page; that it was said is a fact,"
-        " the words are an AI transcription"
+        " the words are an AI transcription; the audio itself is kept when the turn"
+        " names a recording"
     ),
     VIA_UPLOADED: (
         "transcribed: an uploaded audio file; that the file was given is a fact, who"
-        " speaks in it is not known, the words are an AI transcription"
+        " speaks in it is not known, the words are an AI transcription; the file itself"
+        " is kept when the turn names a recording"
     ),
     VIA_CLIP: "transcribed: an audio clip; the words are an AI transcription",
     VIA_GENERATED: (
@@ -91,6 +93,25 @@ def _via(row: dict[str, Any]) -> str:
         return VIA_GENERATED
     via = row.get("via")
     return via if via in _USER_VIAS else VIA_UNKNOWN
+
+
+_SHA256_CHARS = frozenset("0123456789abcdef")
+
+
+def _recording(value: Any) -> Optional[dict[str, Any]]:
+    """A turn's kept clip (d10): its sha256, size and type, or None."""
+    if not isinstance(value, dict):
+        return None
+    digest = value.get("sha256")
+    if not (isinstance(digest, str) and len(digest) == 64 and set(digest) <= _SHA256_CHARS):
+        return None
+    size = value.get("bytes")
+    ctype = value.get("content_type")
+    return {
+        "sha256": digest,
+        "bytes": size if isinstance(size, int) and not isinstance(size, bool) else None,
+        "content_type": ctype if isinstance(ctype, str) else None,
+    }
 
 
 def _valid_id(conversation_id: Any) -> bool:
@@ -126,6 +147,7 @@ def _turns(path: Path) -> list[dict[str, Any]]:
                 "text": text,
                 "ts": float(ts) if isinstance(ts, (int, float)) else None,
                 "via": _via(row),
+                "recording": _recording(row.get("recording")),
             }
         )
     return turns

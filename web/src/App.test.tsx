@@ -919,6 +919,38 @@ describe("App — a public-host session with no secret (Access), end to end", ()
     expect(screen.queryByLabelText("install secret")).toBeNull();
   });
 
+  it("a cited past conversation opens in the middle to be continued, not in the reader (d8)", async () => {
+    globalThis.fetch = (async (url: RequestInfo | URL) => {
+      const u = String(url);
+      if (u.endsWith("/api/chat")) {
+        const past = { ...LIB_SOURCE, source: "conversation", kind: "conversation", item_id: "conv-7", title: "Conversation 2026-10-20: tomatoes" };
+        return new Response(JSON.stringify({ reply: "You asked about it [1].", sources: [past], turn_serial: 1 }), { status: 200 });
+      }
+      if (u.endsWith("/api/conversations/conv-7")) {
+        return new Response(
+          JSON.stringify({
+            conversation: { id: "conv-7", title: "tomatoes", started: 1, last: 2, turns: 1, current: false },
+            turns: [{ role: "user", text: "how often to water tomatoes", ts: 1, via: "typed" }],
+          }),
+          { status: 200 },
+        );
+      }
+      return new Response(JSON.stringify({ error: { code: "not-found" } }), { status: 404 });
+    }) as typeof fetch;
+    const source = renderApp(undefined, { drawer: false });
+    act(() => source.open());
+    fireEvent.change(screen.getByLabelText("message"), { target: { value: "what did I ask last week?" } });
+    await act(async () => {
+      fireEvent.submit(screen.getByRole("form", { name: "composer" }));
+    });
+    await act(async () => {
+      fireEvent.click(await screen.findByRole("button", { name: /Open source 1/ }));
+    });
+    expect(await screen.findByText("how often to water tomatoes")).toBeInTheDocument();
+    expect(screen.getByText(/Continuing an earlier conversation/)).toBeInTheDocument();
+    expect(screen.queryByRole("complementary", { name: "Reader" })).toBeNull();
+  });
+
   it("a second citation to the open item moves the reader to the new anchor; Close dismisses it", async () => {
     globalThis.fetch = (async (url: RequestInfo | URL) => {
       const u = String(url);

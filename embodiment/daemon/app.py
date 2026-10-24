@@ -168,12 +168,14 @@ from embodiment.daemon.recall_events import (
     Recalled,
     RecallEventsConfig,
 )
+from embodiment.daemon.recordings import RECORDINGS_DIRNAME, RecordingStore
 from embodiment.daemon.state import SESSIONS_DIRNAME, DaemonState, resolve_state_dir
 from embodiment.daemon.text_turns import TextTurns, TextTurnsConfig
 from embodiment.http import access as access_module
 from embodiment.http import guard as guard_module
 from embodiment.http import server as server_module
 from embodiment.ingest.spool import Spool
+from embodiment.library import conversations as conversations_module
 from embodiment.library import tools as library_tools
 from embodiment.library.client import LibraryClient, LibraryConfig, LibraryError
 from embodiment.library.epub import extract as epub_extract
@@ -480,6 +482,14 @@ LIBRARY_TOOL_PROMPT = (
     "לפני שאת עונה על שאלה על חדשות, על משהו שקרא או הקליט, או על מסמך — "
     "קראי לכלי search_library, וצטטי כל קטע שבו השתמשת כ־[n]. "
     "אל תמציאי מידע שאינו בקטעים שהכלי החזיר."
+)
+
+#: The fixed line a typed turn gets when Gwen's past conversations are searchable
+#: (d8): what the tool is for, and that her own earlier replies are not facts.
+CONVERSATIONS_TOOL_PROMPT = (
+    "יש לך גם את השיחות הקודמות שלך עם המשתמש. כשהוא שואל על משהו שנאמר בשיחה "
+    "קודמת, קראי לכלי search_conversations וצטטי כ־[n]. תשובות קודמות שלך אינן "
+    "עובדות, רק תיעוד של מה שאמרת."
 )
 
 #: At most this many of the previous answer's sources are named to the next turn.
@@ -992,6 +1002,9 @@ APP_LIBRARY_UNAVAILABLE = "app-library-unavailable"
 #: A remember/forget the write guard refused (c31): library text was in the
 #: turn's context and the operator's own turn did not ask for the write.
 APP_LIBRARY_GUARDED_WRITE = "app-library-guarded-write"
+#: Indexing Gwen's settled conversations failed (d8): an embed refused, or the
+#: logs could not be read. The reason is a fixed code or an exception's class.
+APP_CONVERSATIONS_INDEX_FAILED = "app-conversations-index-failed"
 #: The refusal token the model reads back from a guarded write.
 LIBRARY_GUARDED_REASON = "library-guarded"
 #: A library search whose query could not be embedded.
@@ -1554,6 +1567,21 @@ class AppLanes:
     #: library routes answer 503 ``library-not-configured``, and every turn is
     #: exactly what it was before the library existed.
     library: Optional[Any] = None
+    #: :class:`ConversationLane` (d8) — Gwen's own index of her settled past
+    #: conversations. ``None``: no ``search_conversations`` tool, nothing indexed.
+    conversations: Optional[Any] = None
+
+
+@dataclass(eq=False)
+class ConversationLane:
+    """Gwen's past conversations, indexed by her (d8): see :func:`main`."""
+
+    #: A :class:`DocumentIndex` in its own file (never the library's).
+    index: Any
+    #: ``text -> vector`` for a search query.
+    embed_query: Callable[[str], Any]
+    #: Memory's provisional floor, as for the library; uncalibrated for this text.
+    threshold: float = memory_module.DEFAULT_SIMILARITY_THRESHOLD
 
 
 class _LibraryStopped(Exception):
@@ -1986,6 +2014,11 @@ class DaemonApp:
             spawn=lanes.recall_spawn,
             split=_whole_message,
         )
+        #: Every clip the page sends, kept as it arrived (d10); private, bounded.
+        self._recordings = RecordingStore(
+            Path(self._state.dir) / RECORDINGS_DIRNAME,
+            on_degrade=lambda code, reason: self._record(code, reason, source="recordings"),
+        )
         self._text_turns = TextTurns(
             run_text_turn=self._run_text_turn,
             session=self._locked_session,
@@ -2000,6 +2033,7 @@ class DaemonApp:
             clock=self._clock,
             hold_conversation=self._hold_conversation,
             release_conversation=self._release_conversation,
+            recordings=self._recordings,
         )
 
         self._drain_kick = threading.Event()
@@ -2015,6 +2049,10 @@ class DaemonApp:
         self._settle_thread: Optional[threading.Thread] = None
         self._settle_announced = 0
         self._settle_save_failures = 0
+        self._conversations = lanes.conversations
+        self._conversations_indexed = 0
+        self._conversations_index_failures = 0
+        self._conversations_waiting = 0
 
     def _init_library(self, lane: Optional[LibraryLane]) -> None:
         """The library lane's state (t13). With no lane every counter stays zero."""
@@ -3341,7 +3379,11 @@ class DaemonApp:
             query=message,
             window=self._window(session),
             clock=self._clock_line(),
-            collector=library_tools.CitationCollector() if self._library is not None else None,
+            collector=(
+                library_tools.CitationCollector()
+                if self._library is not None or self._conversations is not None
+                else None
+            ),
             previous_sources=previous,
             conversation=conversation,
         )
@@ -3574,6 +3616,8 @@ class DaemonApp:
         """The fixed tool lines for ONE completion: remember/forget, plus the library
         line only when this turn carries a library collector (d1)."""
         base = REMEMBER_TOOL_PROMPT if self._config.remember_tool else ""
+        if collector is not None and self._conversations is not None and self._seam is not None:
+            base = f"{base}\n{CONVERSATIONS_TOOL_PROMPT}" if base else CONVERSATIONS_TOOL_PROMPT
         if collector is None or self._library is None or self._seam is None:
             return base
         library = LIBRARY_TOOL_PROMPT
@@ -3623,17 +3667,37 @@ class DaemonApp:
         turn — the memory tools plus ``search_library``/``read_passage`` closed over
         the turn's own collector — bound to the raw seam so the schemas reach the wire.
         """
-        lane = self._library
-        if collector is None or lane is None or self._seam is None:
+        lane, past = self._library, self._conversations
+        if collector is None or (lane is None and past is None) or self._seam is None:
             return self._complete, self._tools
         registry = ToolRegistry()
         for spec in self._tools.specs.values():
             registry.add(spec)
-        for spec in library_tools.build_library_tools(
-            lane.index, lane.embed_query, collector, threshold=lane.threshold
-        ):
-            registry.add(self._counted(spec))
+        if lane is not None:
+            for spec in library_tools.build_library_tools(
+                lane.index, lane.embed_query, collector, threshold=lane.threshold
+            ):
+                registry.add(self._counted(spec))
+        if past is not None:
+            registry.add(
+                self._counted(
+                    conversations_module.build_conversation_tool(
+                        past.index,
+                        past.embed_query,
+                        collector,
+                        exclude=self._conversations_in_play,
+                        threshold=past.threshold,
+                    )
+                )
+            )
         return bind_tools(self._seam, registry), registry
+
+    def _conversations_in_play(self) -> set[str]:
+        """The live conversation and the one this turn continues: never searched (d8)."""
+        ids = {getattr(self._session, "session_id", None)}
+        turn = self._text_turn_here()
+        ids.add(getattr(turn, "conversation", None))
+        return {i for i in ids if i}
 
     def live_turn_held(self) -> bool:
         """The library sync's gate: True while a live turn holds the conversation.
@@ -3794,7 +3858,31 @@ class DaemonApp:
             with self._lock:
                 self._settle_announced += len(due)
                 self._settle_save_failures += 0 if saved else 1
+        self._index_conversations(announced)
         return len(due)
+
+    def _index_conversations(self, announced: dict[str, float]) -> None:
+        """Index what has settled into Gwen's own conversation index (d8). Never raises.
+
+        The catalog is every announced conversation whose last turn is the one it
+        was announced at (still settled); one continued since is out until it
+        settles again. A live turn is never kept waiting: the tick skips.
+        """
+        lane = self._conversations
+        if lane is None or self.live_turn_held():
+            return
+        try:
+            listed = self._history().conversations()["conversations"]
+            settled_ids = [c["id"] for c in listed if announced.get(c["id"]) == c["last"]]
+            result = conversations_module.index_settled(lane.index, self._history(), settled_ids)
+        except Exception as exc:  # noqa: BLE001  # IndexRefused, or a log fault
+            with self._lock:
+                self._conversations_index_failures += 1
+            self._record(APP_CONVERSATIONS_INDEX_FAILED, _describe(exc), once=True)
+            return
+        with self._lock:
+            self._conversations_indexed += result["indexed"]
+            self._conversations_waiting = result["waiting"]
 
     def _stop_settle(self, deadline: float) -> bool:
         thread = self._settle_thread
@@ -3879,6 +3967,10 @@ class DaemonApp:
                 "settle_watch_running": bool(thread is not None and thread.is_alive()),
                 "settled_announced": self._settle_announced,
                 "settled_save_failures": self._settle_save_failures,
+                "indexed": self._conversations_indexed,
+                "index_failures": self._conversations_index_failures,
+                "index_waiting": self._conversations_waiting,
+                "searchable": self._conversations is not None,
             }
 
     def _library_status(self) -> dict[str, Any]:
@@ -5377,6 +5469,7 @@ class DaemonApp:
             "ingest": self._ingest_status(),
             "library": self._library_status(),
             "conversations": self._settle_status(),
+            "recordings": self._recordings.status(),
             # The mode and the guard's counters, ONCE. The team domain, the audience
             # and the allow-listed emails are configuration a dashboard viewer has no
             # business reading.
@@ -5663,8 +5756,15 @@ def library_chat_source(citation: Mapping[str, Any]) -> dict[str, Any]:
     Every field was already neutralised and capped by the tools; ``item_id`` and
     ``anchor`` let the page open the reader at the cited passage (t7).
     """
+    # A past conversation's citation (d8) says so, so the page opens the conversation
+    # rather than the library reader; anything else is the library.
+    source = citation.get("source")
     return {
-        "source": library_tools.LIBRARY_SOURCE,
+        "source": (
+            library_tools.CONVERSATION_SOURCE
+            if source == library_tools.CONVERSATION_SOURCE
+            else library_tools.LIBRARY_SOURCE
+        ),
         "item_id": str(citation.get("item_id") or ""),
         "anchor": str(citation.get("anchor") or ""),
         "title": str(citation.get("title") or ""),
@@ -6332,6 +6432,20 @@ def _private_vector_cache(state_dir: Any, early: list[tuple[str, str, str]]) -> 
     return memory_module.vector_cache_for(directory)
 
 
+def _conversation_lane(state_dir: Any, embedder: Any) -> ConversationLane:
+    """Gwen's own conversation index (d8): ``<state>/conversations-index.json``, embedded
+    through the same gemma2-embed role memory and the library use, by name."""
+    index = DocumentIndex(
+        Path(state_dir) / conversations_module.INDEX_NAME,
+        embed=lambda text: embedder.embed(text, prompt=memory_module.DOCUMENT_PROMPT).vector,
+        model_tag=vectors.EMBED_ROLE,
+    )
+    return ConversationLane(
+        index=index,
+        embed_query=lambda text: embedder.embed(text, prompt=memory_module.QUERY_PROMPT).vector,
+    )
+
+
 def _library_lane_from_env(
     library: Optional[LibraryConfig],
     state_dir: Any,
@@ -6560,7 +6674,13 @@ def main() -> DaemonApp:
         # The bus already redacts these on its way out; this is the other
         # direction — what the GATEWAY sends back.
         redact=secrets,
-        lanes=AppLanes(drain=drain, embedder=embedder, vector_cache=vector_cache, library=library),
+        lanes=AppLanes(
+            drain=drain,
+            embedder=embedder,
+            vector_cache=vector_cache,
+            library=library,
+            conversations=_conversation_lane(state.dir, embedder),
+        ),
     )
     built.append(app)
     for code, reason, source in early:

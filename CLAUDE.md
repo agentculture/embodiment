@@ -30,7 +30,8 @@ embody` layer shares this package's name — say so wherever the name appears);
 one rig; Hebrew only; one active ear; the session never crosses machines;
 value unmeasured. **Not yet:** tools beyond memory and the read-only library (the daemon binds
 `remember` and `forget`, plus `search_library` and `read_passage` on typed turns
-when a library is configured; the registry is otherwise empty by design),
+when a library is configured, and `search_conversations` over Gwen's own settled
+conversations (d8); the registry is otherwise empty by design),
 vision, a face, live realtime voice from the phone and speech-to-speech (the
 phone is control, text, and uploaded or recorded clips; the speech-to-speech
 button is present and disabled), a robot relay (t14's inbound endpoint and
@@ -269,8 +270,12 @@ operator's decisions, recorded in the spec:
   input **verbatim, never from model output**, and intake **never raises**.
 - **Privacy of the room.** `continuity.py` pins `DEFAULT_VISIBILITY = "public"`
   and this repo commits `.eidetic/memory/`. Anything the daemon writes must
-  default to the **private** store under a pinned data dir. Raw audio is never
-  written to disk; transcripts go to a private, size-bounded per-session log.
+  default to the **private** store under a pinned data dir. The room mic's live
+  audio is never written to disk. **Clips are kept (d10, operator, 2026-10-24: "a
+  recording is truth"):** `daemon/recordings.py` is the ONE writer of audio, for
+  page clips only, before transcription, 0600 under `<state>/recordings/`, capped,
+  refusing (never deleting) past the cap; S3 archive is #99. Transcripts go to a
+  private, size-bounded per-session log, every turn tagged `via` (d7).
 - **Loopback is not authentication.** A Cloudflare tunnel delivers remote
   requests from `cloudflared` on 127.0.0.1. Every state-changing request — and
   the event stream, which carries the transcript — needs a Host and Origin
@@ -341,6 +346,8 @@ embodiment/
     epub.py             stdlib EPUB text extraction under member/size/char caps
     index.py            DocumentIndex: separate 0600 file, reconcile by (id, sha256)
     sync.py             LibrarySync: bounded ticks that yield to live turns
+    conversations.py    Gwen's own past conversations (d8): settled ones indexed in a
+                        separate 0600 index, labelled by `via`; search_conversations
     tools.py            search_library + read_passage, built per turn with a
                         CitationCollector; results fenced as untrusted
   memory.py             RoomMemory over continuity: private, pinned, deadline-bounded;
@@ -378,12 +385,14 @@ embodiment/
   daemon/app.py         the daemon: one ear, the ears session, session + memory + voice, the
                         HTTP surface, close(deadline) with derived shares; degrade, never raise
   voice.py              Voice.speak: sentences -> /v1/audio/speech -> endpoint, paced features
-  daemon/history.py     the history pane: reads the session logs, bounded, never writes
+  daemon/history.py     the history pane: reads the session logs, bounded; the `via` tags and
+                        what each is worth (d7); when a conversation has settled
+  daemon/recordings.py  the ONE writer of audio: page clips kept as they arrived (d10)
   cli/_commands/tunnel  prints the cultureflare/cloudflared commands (default host
                         gwen.culture.dev) and the Access env names; never runs them
-  cli/_commands/history `history export`: past conversations as JSON, read-only; culture-rules
-                        pulls it into the library as private items (d5), on the daemon's
-                        `conversation` settled event, each turn tagged `via` (d7)
+  cli/_commands/history `history export`: past conversations as JSON, read-only, each turn
+                        tagged `via` (d7); no culture-rules consumer: conversations are
+                        Gwen's own and indexed in-process (d8)
   cli/_commands/memory  ingest | forget | overview: validate and ENQUEUE only; dry run
                         unless --apply; the daemon is the single writer
   ingest/contract.py    source registry, whole-batch validation, charset-safe stored ids
