@@ -548,6 +548,19 @@ class TestUserTurnAsks:
             ("forget it", "forget", "otters", False),
             ("what does it say?", "remember", "the vault code is 1234", False),
             ("forget that", "forget", "", False),
+            # review of PR #98 (2026-10-24): every negated forget asks to KEEP the fact
+            ("don't forget that the milk is gone", "forget", "the milk is gone", False),
+            ("dont forget that the milk is gone", "forget", "the milk is gone", False),
+            ("don\u2019t forget that the milk is gone", "forget", "the milk is gone", False),
+            ("Do not forget that the milk is gone", "forget", "the milk is gone", False),
+            ("do  not forget that the milk is gone", "forget", "the milk is gone", False),
+            ("אל תשכחי שהחלב נגמר", "forget", "שהחלב נגמר", False),
+            ("אל תשכח שהחלב נגמר", "forget", "שהחלב נגמר", False),
+            ("אל תשכחו שהחלב נגמר", "forget", "שהחלב נגמר", False),
+            ("ואל תשכחי שהחלב נגמר", "forget", "שהחלב נגמר", False),
+            # a negated forget does not hide a real one beside it
+            ("don't forget the milk, but forget the otters", "forget", "the otters", True),
+            ("אל תשכחי את החלב, ותשכחי את הלוטרות", "forget", "את הלוטרות", True),
         ],
     )
     def test_the_table(self, user: str, tool: str, span: str, expected: bool) -> None:

@@ -970,6 +970,16 @@ TODO_RECORD_TYPE = "action_item"
 TODO_SOURCE = "pocket"
 #: The forget stems the write guard looks for in the operator's own turn.
 _FORGET_STEMS: tuple[str, ...] = ("שכח", "forget")
+#: A NEGATED forget asks to KEEP the fact, so it is removed before the stems are
+#: matched. Review of PR #98 (2026-10-24): only "don't forget"/"dont forget" were
+#: removed, so "אל תשכחי X" (still carrying the stem שכח), "don’t forget X" (curly
+#: apostrophe) and "do not forget X" all counted as asking to forget X. English:
+#: don't / dont / don’t / do not + forget*; Hebrew: (ו|ש)אל or (ו|ש)לא + any word
+#: carrying the stem (אל תשכח, אל תשכחי, אל תשכחו, שלא תשכחי). Applied to the
+#: casefolded, whitespace-collapsed turn. Biased to refusing, like the guard.
+_NEGATED_FORGET = re.compile(
+    r"\b(?:don['\u2019]?t|do not)\s+forget\w*" r"|(?<!\w)[וש]?(?:אל|לא)\s+\w*שכח\w*"
+)
 
 #: The prompt section for a remainder, restart or follow-up completion: what
 #: Gwen already said in this reply. Her own earlier words, in the system
@@ -5323,8 +5333,8 @@ def user_turn_asks(user_text: object, tool: str, span: object) -> bool:
     said = _normalised_fact(user_text).casefold()
     if tool == FORGET_TOOL_NAME:
         stems = _FORGET_STEMS
-        # "don't forget X" asks to KEEP X: never a forget ask.
-        said_for_stems = said.replace("don't forget", "").replace("dont forget", "")
+        # "don't forget X" / "אל תשכחי X" asks to KEEP X: never a forget ask.
+        said_for_stems = _NEGATED_FORGET.sub(" ", said)
     else:
         stems, said_for_stems = _ASK_STEMS, said
     if not any(stem in said_for_stems for stem in stems):
