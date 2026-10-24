@@ -277,6 +277,24 @@ def replace_source(citation: Citation, source: str) -> Citation:
     return Citation(**{**asdict(citation), "source": source})
 
 
+#: The links line's own budget, beyond the passage text's: whole links only, never a
+#: URL cut mid-string -- a cut URL is not one the item lists, so fetch_source would
+#: refuse it (review of PR #102). A link that does not fit is left out, not shortened.
+LINKS_MAX_CHARS = 700
+
+
+def _links_line(links: tuple) -> str:
+    out: list[str] = []
+    used = 0
+    for text, url in links:
+        entry = f"{text or 'link'} <{url}>"
+        if used + len(entry) + 2 > LINKS_MAX_CHARS:
+            continue
+        out.append(entry)
+        used += len(entry) + 2
+    return "; ".join(out)
+
+
 def citation_record(citation: Citation) -> dict[str, Any]:
     """*citation* as the record shape :func:`embodiment.memory.render_recalled` renders.
 
@@ -298,8 +316,8 @@ def citation_record(citation: Citation) -> dict[str, Any]:
             f"{provenance} | url: {citation.link}" if provenance else f"url: {citation.link}"
         )
     body = citation.text
-    if citation.links:
-        listed = "; ".join(f"{text or 'link'} <{url}>" for text, url in citation.links)
+    listed = _links_line(citation.links)
+    if listed:
         body = f"{body}\nlinks: {listed}"
     return {
         "id": citation.item_id or "web",
@@ -314,7 +332,8 @@ def _render(
 ) -> str:
     """The fenced tool result, each entry numbered by its collector position."""
     numbers = [collector.add(c) for c in citations]
-    rendered = memory.render_recalled([citation_record(c) for c in citations], max_chars=max_chars)
+    budget = max_chars + LINKS_MAX_CHARS + len("\nlinks: ")
+    rendered = memory.render_recalled([citation_record(c) for c in citations], max_chars=budget)
 
     def renumber(match: re.Match[str]) -> str:
         return f"[{numbers[int(match.group(1)) - 1]}] id="

@@ -129,7 +129,9 @@ class _Target:
     host: str
     port: int
     path: str
-    address: str
+    #: Every checked address, IPv4 first: a rig without IPv6 routing still reaches a
+    #: dual-stack site (review of PR #102). Only these are ever connected to.
+    addresses: tuple[str, ...]
 
 
 def check_url(url: Any, resolve: Resolve = _resolve) -> _Target:
@@ -151,28 +153,40 @@ def check_url(url: Any, resolve: Resolve = _resolve) -> _Target:
     path = parts.path or "/"
     if parts.query:
         path = f"{path}?{parts.query}"
-    return _Target(parts.scheme, parts.hostname, port, path, addresses[0])
+    ordered = tuple(sorted(addresses, key=lambda a: (":" in a, a)))
+    return _Target(parts.scheme, parts.hostname, port, path, ordered)
+
+
+def _open_first(addresses: tuple[str, ...], port: int, timeout: Optional[float]) -> socket.socket:
+    """A socket to the first checked address that answers; the last error otherwise."""
+    last: Optional[OSError] = None
+    for address in addresses:
+        try:
+            return socket.create_connection((address, port), timeout)
+        except OSError as exc:
+            last = exc
+    raise last or OSError("no address")
 
 
 class _PinnedHTTPS(http.client.HTTPSConnection):
     """An HTTPS connection to a checked address, verifying the certificate for the host."""
 
-    def __init__(self, host: str, port: int, address: str, timeout: float) -> None:
+    def __init__(self, host: str, port: int, addresses: tuple[str, ...], timeout: float) -> None:
         super().__init__(host, port, timeout=timeout, context=ssl.create_default_context())
-        self._address = address
+        self._addresses = addresses
 
     def connect(self) -> None:
-        sock = socket.create_connection((self._address, self.port), self.timeout)
+        sock = _open_first(self._addresses, self.port, self.timeout)
         self.sock = self._context.wrap_socket(sock, server_hostname=self.host)
 
 
 class _PinnedHTTP(http.client.HTTPConnection):
-    def __init__(self, host: str, port: int, address: str, timeout: float) -> None:
+    def __init__(self, host: str, port: int, addresses: tuple[str, ...], timeout: float) -> None:
         super().__init__(host, port, timeout=timeout)
-        self._address = address
+        self._addresses = addresses
 
     def connect(self) -> None:
-        self.sock = socket.create_connection((self._address, self.port), self.timeout)
+        self.sock = _open_first(self._addresses, self.port, self.timeout)
 
 
 Connect = Callable[[_Target, float], Any]
@@ -180,7 +194,7 @@ Connect = Callable[[_Target, float], Any]
 
 def _connect(target: _Target, timeout: float) -> Any:
     cls = _PinnedHTTPS if target.scheme == "https" else _PinnedHTTP
-    return cls(target.host, target.port, target.address, timeout)
+    return cls(target.host, target.port, target.addresses, timeout)
 
 
 class _Text(HTMLParser):

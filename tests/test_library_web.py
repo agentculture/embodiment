@@ -33,7 +33,7 @@ class FakeConn:
 
     def request(self, method, path, headers=None):
         self._seen.append(
-            (method, self._target.scheme, self._target.host, path, self._target.address)
+            (method, self._target.scheme, self._target.host, path, self._target.addresses[0])
         )
 
     def getresponse(self):
@@ -198,7 +198,24 @@ def test_the_connection_goes_to_the_checked_address_not_a_second_lookup():
         return ["93.184.216.34"] if len(calls) == 1 else ["127.0.0.1"]
 
     target = web.check_url("https://example.org/a", resolve)
-    assert target.address == "93.184.216.34"
+    assert target.addresses == ("93.184.216.34",)
     assert isinstance(web._connect(target, 1.0), web._PinnedHTTPS)
-    assert web._connect(target, 1.0)._address == "93.184.216.34"
+    assert web._connect(target, 1.0)._addresses == ("93.184.216.34",)
     assert calls == ["example.org"]
+
+
+def test_ipv4_is_tried_first_and_a_dead_address_falls_through(monkeypatch):
+    """Review of PR #102: a rig without IPv6 routing still reaches a dual-stack site."""
+    target = web.check_url("https://example.org/", lambda h, p: ["2606:4700::1", "93.184.216.34"])
+    assert target.addresses == ("93.184.216.34", "2606:4700::1")
+    tried = []
+
+    def connect(addr, timeout):
+        tried.append(addr[0])
+        if addr[0] == "93.184.216.34":
+            raise OSError("unreachable")
+        return "sock"
+
+    monkeypatch.setattr(web.socket, "create_connection", connect)
+    assert web._open_first(target.addresses, 443, 1.0) == "sock"
+    assert tried == ["93.184.216.34", "2606:4700::1"]
