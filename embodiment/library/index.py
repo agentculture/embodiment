@@ -404,9 +404,18 @@ class DocumentIndex:
     def reconcile(self, catalog: Iterable[Any]) -> dict[str, list[str]]:
         """Bring the index in step with the library's catalog by (item id, sha256).
 
-        Dropped items are purged; changed items are purged and reported for
-        re-indexing; unchanged items get the catalog's metadata. The catalog's ids
-        become the only ids search may return.
+        Dropped items are purged; changed items are reported for re-indexing and
+        KEPT, old passages and old metadata together, until :meth:`upsert_item`
+        replaces them whole; unchanged items get the catalog's metadata. The
+        catalog's ids become the only ids search may return.
+
+        Review of PR #98 (2026-10-24): a changed item used to be purged here, at
+        once, while its re-index runs in later bounded sync ticks that can stop
+        (``embed_failed``, the live-turn gate) — so a re-uploaded document vanished
+        from search and the reader until a tick got to it. A kept item still
+        differs by sha256, so every reconcile reports it ``changed`` again and the
+        sync retries it; the library still holds the id, so a citation of the old
+        version never names an item the library dropped.
         """
         entries: dict[str, Any] = {}
         for entry in catalog:
@@ -421,17 +430,21 @@ class DocumentIndex:
                 if i in self._items and self._items[i]["sha256"] != _field(entry, "sha256")
             ]
             added = [i for i in entries if i not in self._items]
-            for item_id in removed + changed:
+            for item_id in removed:
                 del self._items[item_id]
-            refreshed = self._refresh_meta(entries)
+            refreshed = self._refresh_meta(entries, frozenset(changed))
             if removed or changed or refreshed or self._catalog != set(entries):
                 self._catalog = set(entries)
                 self._commit()
         return {"added": added, "changed": changed, "removed": removed}
 
-    def _refresh_meta(self, entries: dict[str, Any]) -> bool:
+    def _refresh_meta(self, entries: dict[str, Any], changed: frozenset) -> bool:
+        """Catalog metadata onto unchanged items; a changed one keeps the metadata
+        its stored passages were indexed with until it is replaced."""
         touched = False
         for item_id, item in self._items.items():
+            if item_id in changed:
+                continue
             meta = _meta(entries[item_id])
             if item["meta"] != meta:
                 item["meta"] = meta
