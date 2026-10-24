@@ -5,7 +5,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-10-23T23:04:04Z",
-  "updated": "2026-10-23T23:16:44Z",
+  "updated": "2026-10-24T00:11:51Z",
   "targets": [
     {
       "id": "c1",
@@ -703,6 +703,38 @@
       "text": "The public page currently serves the scratch daemon (synthetic store); moving gwen.culture.dev to the real store and running the tunnel as a service rather than a session background task is an operator step outside this plan",
       "kind": "follow_up",
       "task_id": null,
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r6",
+      "text": "Library search has no calibrated similarity threshold: t11 defaults to 0.0 (always returns up to limit hits); t13 wires the 0.715 recall threshold as PROVISIONAL and uncalibrated for library text (it was measured on memory records), and t15's measurement reports hit@5 and false positives at it so the operator can set it",
+      "kind": "unknown_nonblocking",
+      "task_id": "t13",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r7",
+      "text": "Write-guard residual: when the operator's explicit-ask detector matches in a library turn, remember accepts any fact, so a planted 'remember Y' riding beside a real ask could be written",
+      "kind": "unknown_nonblocking",
+      "task_id": "t13",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r8",
+      "text": "Indirect injection is not guarded: library text paraphrased into an earlier reply returns through the session window, and c31 checks only the current turn's context",
+      "kind": "unknown_nonblocking",
+      "task_id": "t13",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r9",
+      "text": "No system-prompt line steers the model to call search_library; whether it uses the library unprompted is unmeasured - t15 counts tool calls per question",
+      "kind": "unknown_nonblocking",
+      "task_id": "t15",
       "resolved": false,
       "resolution": ""
     }

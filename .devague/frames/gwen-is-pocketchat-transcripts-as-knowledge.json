@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-10-23T21:45:45Z",
-  "updated": "2026-10-23T22:58:01Z",
+  "updated": "2026-10-24T00:11:51Z",
   "claims": [
     {
       "id": "c1",
@@ -917,6 +917,117 @@
       "seeds": []
     }
   ],
-  "lapses": [],
+  "lapses": [
+    {
+      "id": "l1",
+      "code": "grader-unverified",
+      "what": "t9 (To-dos view) tests were written in the same step as the implementation and never seen failing first; the acceptance tests pass but were not proven able to fail",
+      "skipped_check": "test-first: watch each acceptance test fail before implementing",
+      "refs": [
+        "t9"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l2",
+      "code": "grader-unverified",
+      "what": "t3 (document index) tests were only seen failing at collection (module absent), never individually against a broken rule; no mutation check that each test can fail",
+      "skipped_check": "per-test red before green",
+      "refs": [
+        "t3"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l3",
+      "code": "grader-unverified",
+      "what": "t8 (Library view + reader) tests were run only after the implementation was written in the same step; never seen failing first",
+      "skipped_check": "test-first red before green",
+      "refs": [
+        "t8"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l4",
+      "code": "grader-unverified",
+      "what": "t6 (library/to-dos routes) implementation was written before its tests; tests never seen failing first (they did catch one real defect, %FF -> 500)",
+      "skipped_check": "test-first red before green",
+      "refs": [
+        "t6"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l5",
+      "code": "grader-unverified",
+      "what": "t2 (EPUB extraction) tests written first but never run red; first run already green",
+      "skipped_check": "test-first red before green",
+      "refs": [
+        "t2"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l6",
+      "code": "grader-unverified",
+      "what": "t10 (library sync) tests only seen failing at collection (module absent), not per test",
+      "skipped_check": "per-test red before green",
+      "refs": [
+        "t10"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l7",
+      "code": "grader-unverified",
+      "what": "t11 (library tools) tests seen failing only at collection (module absent), not per test",
+      "skipped_check": "per-test red before green",
+      "refs": [
+        "t11"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l8",
+      "code": "assumption-for-measurement",
+      "what": "t12 (app shell) proves 'the waveform is not the largest element' (h4) by a CSS height pin under jsdom, not by measured layout; no real-browser check",
+      "skipped_check": "measured layout in a real browser",
+      "refs": [
+        "t12"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l9",
+      "code": "grader-unverified",
+      "what": "t13: two tests (gate held while the speaker plays; unusable URL builds no lane) were written after the implementation and never seen red",
+      "skipped_check": "test-first red",
+      "refs": [
+        "t13"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l10",
+      "code": "assumption-for-measurement",
+      "what": "t13: c38 newspaper dedupe identifies an issue by kind 'newspaper' or a title containing newspaper/\u05e2\u05d9\u05ea\u05d5\u05df and takes the date from the title, unverified against the live catalog",
+      "skipped_check": "check against the live library catalog",
+      "refs": [
+        "t13"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    }
+  ],
   "obligations": []
 }
