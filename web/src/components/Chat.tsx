@@ -184,7 +184,7 @@ function Answer({
   let words = 0;
   return (
     <>
-      {splitCitations(text).map((part, i) => {
+      {splitCitations(text, sources.length).map((part, i) => {
         if (part.kind === "cite") {
           const src = sources[part.n - 1];
           if (!src) return `[${part.n}]`;
@@ -330,7 +330,7 @@ export function Chat({
                 <Answer text={m.text} sources={m.sources} reveal={!!m.reveal} onOpen={onOpenCitation} />
               </p>
               <div className="answer-tools">
-                <SpeakButton text={stripCitations(m.text)} secret={secret} clientOptions={clientOptions} />
+                <SpeakButton text={stripCitations(m.text, m.sources.length)} secret={secret} clientOptions={clientOptions} />
                 {m.sources.length > 0 && (
                   <span className="answer-count">
                     {m.sources.length === 1 ? "1 source" : `${m.sources.length} sources`}

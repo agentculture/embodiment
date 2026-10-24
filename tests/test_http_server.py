@@ -2196,10 +2196,23 @@ def _lib_controls(seen: Optional[list[Any]] = None) -> s.Controls:
         library_get=get,
         library_search=search,
         todos=lambda: {"groups": [TODO_GROUP]},
+        conversations=lambda: {"conversations": [CONVERSATION]},
+        conversation=lambda cid: (
+            {"conversation": CONVERSATION, "turns": [TURN]} if cid == "abc" else None
+        ),
     )
 
 
-LIB_PATHS = ("/api/library", "/api/library/3", "/api/library/search?q=hello", "/api/todos")
+CONVERSATION = {"id": "abc", "title": "hello", "started": 1.0, "last": 2.0, "turns": 1}
+TURN = {"role": "user", "text": "hello", "ts": 1.0}
+LIB_PATHS = (
+    "/api/library",
+    "/api/library/3",
+    "/api/library/search?q=hello",
+    "/api/todos",
+    "/api/conversations",
+    "/api/conversations/abc",
+)
 
 
 class TestLibraryRoutes:
@@ -2241,12 +2254,44 @@ class TestLibraryRoutes:
             }
             assert body["/api/library/search?q=hello"] == {"hits": [LIB_HIT]}
             assert body["/api/todos"] == {"groups": [TODO_GROUP]}
+            assert body["/api/conversations"] == {"conversations": [CONVERSATION]}
+            assert body["/api/conversations/abc"] == {"conversation": CONVERSATION, "turns": [TURN]}
+        finally:
+            built.server.shutdown(2.0)
+
+    def test_an_unknown_conversation_is_404_and_post_is_405(self) -> None:
+        built = build(controls=_lib_controls())
+        try:
+            status, body = built.request("GET", "/api/conversations/nope", hdrs=built.headers())
+            assert status == 404
+            assert b"conversation-not-found" in body
+            status, _ = built.request(
+                "POST", "/api/conversations", body=b"{}", hdrs=built.headers()
+            )
+            assert status == 405
+        finally:
+            built.server.shutdown(2.0)
+
+    def test_history_unbound_is_503(self) -> None:
+        built = build(controls=s.Controls())
+        try:
+            for path in ("/api/conversations", "/api/conversations/abc"):
+                status, body = built.request("GET", path, hdrs=built.headers())
+                assert status == 503, path
+                assert b"history-not-configured" in body
         finally:
             built.server.shutdown(2.0)
 
     def test_the_module_docstring_lists_the_routes(self) -> None:
         doc = s.__doc__ or ""
-        for route in ("/api/library", "/api/library/{id}", "/api/library/search", "/api/todos"):
+        for route in (
+            "/api/library",
+            "/api/library/{id}",
+            "/api/library/search",
+            "/api/todos",
+            "/api/conversations",
+            "/api/conversations/{id}",
+        ):
             assert route in doc
 
     def test_post_is_405(self) -> None:

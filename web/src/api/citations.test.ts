@@ -73,3 +73,22 @@ describe("xteink titles carry the kind and the day (live library, 2026-10-24)", 
     expect(shortTitle("The Port of Least Resistance")).toBe("The Port of Least Resistance");
   });
 });
+
+describe("only real source numbers are citations (review of PR #98)", () => {
+  it("leaves a bracketed date or list as text, shown and spoken", () => {
+    expect(splitCitations("העיתון [2026-10-24] ו[3, 4]", 2)).toEqual([
+      { kind: "text", text: "העיתון [2026-10-24] ו[3, 4]" },
+    ]);
+    expect(stripCitations("the issue [2026-10-24] says so [1].", 2)).toBe("the issue [2026-10-24] says so.");
+  });
+
+  it("a group naming any missing source stays whole as text", () => {
+    expect(cites2("x [1, 7] y [2]")).toEqual([2]);
+  });
+});
+
+function cites2(text: string): number[] {
+  return splitCitations(text, 2)
+    .filter((p) => p.kind === "cite")
+    .map((p) => (p.kind === "cite" ? p.n : 0));
+}

@@ -210,3 +210,42 @@
   @keyframes rise { from { transform: scaleY(0); } }
   .shelf .spine { animation: rise 600ms var(--spring) both; transform-origin: 50% 100%; }
 }
+
+/* ---------- conversations (left) ---------- */
+
+.history .rows { padding-block-start: 0.5rem; }
+.conv--now { margin-block-end: 0.25rem; font-weight: 700; }
+.conv-dot { inline-size: 9px; block-size: 9px; border-radius: 50%; background: var(--cobalt); }
+.conv .row-title { white-space: nowrap; }
+
+/* ---------- library and sources (right) ---------- */
+
+.side-tabs { display: flex; gap: 4px; background: var(--well); padding: 3px; border-radius: 999px; flex: 1; min-inline-size: 0; }
+.side-tab {
+  flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 0.4rem;
+  border: 0; background: transparent; color: var(--quiet); border-radius: 999px;
+  padding-block: 0.35rem; padding-inline: 0.75rem; font-weight: 700; font-size: 0.875rem;
+}
+.side-tab[aria-selected="true"] { background: var(--sheet); color: var(--ink); box-shadow: var(--shadow); }
+.side-tab-count {
+  display: inline-grid; place-items: center; min-inline-size: 1.3rem; block-size: 1.3rem; padding-inline: 0.3rem;
+  border-radius: 999px; background: var(--cobalt); color: var(--on-cobalt); font-size: 0.7rem; font-weight: 800;
+}
+.side-library { flex: 1; min-block-size: 0; display: flex; flex-direction: column; }
+.side-library .pane-head { display: none; }
+.side-library .pane-search { display: block; padding-block-start: 0.75rem; }
+
+/* ---------- an earlier conversation, read-only in the middle ---------- */
+
+.past { inline-size: min(100%, var(--measure)); margin-inline: auto; padding-inline: 1.25rem; }
+.past-bar {
+  position: sticky; inset-block-start: 0; z-index: 3; display: flex; align-items: center; gap: 0.75rem;
+  padding-block: 0.75rem; background: linear-gradient(to bottom, var(--paper) 75%, transparent);
+}
+.past-note { flex: 1; color: var(--muted); font-size: var(--step--1); font-weight: 700; }
+.past .past-thread { inline-size: 100%; padding-inline: 0; }
+.live-conversation { display: contents; }
+.live-conversation[hidden] { display: none !important; }
+.conv:not(.conv--now) { grid-template-columns: minmax(0, 1fr) auto; }
+.conv .row-title { text-overflow: ellipsis; }
+.history .rows { overflow-x: hidden; }

@@ -32,24 +32,38 @@ export function groupNumbers(group: string): number[] {
   return out;
 }
 
+/**
+ * The numbers a bracketed group cites, or null when it is not a citation: a group
+ * counts only when every number names one of the *sources* (1..sources). Review of
+ * PR #98: "[2026-10-24]" or "[3, 4]" in an answer about a date or a list is text,
+ * so it is shown and spoken, never turned into links to nothing.
+ */
+function citedNumbers(group: string, sources: number): number[] | null {
+  const numbers = groupNumbers(group);
+  if (numbers.length === 0) return null;
+  return numbers.every((n) => n >= 1 && n <= sources) ? numbers : null;
+}
+
 /** Text and citation markers, in order; adjacent groups ("[2][3]") become separate cites. */
-export function splitCitations(text: string): CitationPart[] {
+export function splitCitations(text: string, sources: number = Number.MAX_SAFE_INTEGER): CitationPart[] {
   const parts: CitationPart[] = [];
   let last = 0;
   for (const m of text.matchAll(GROUP)) {
+    const numbers = citedNumbers(m[0], sources);
+    if (numbers === null) continue;
     const at = m.index ?? 0;
     if (at > last) parts.push({ kind: "text", text: text.slice(last, at) });
-    for (const n of groupNumbers(m[0])) parts.push({ kind: "cite", n });
+    for (const n of numbers) parts.push({ kind: "cite", n });
     last = at + m[0].length;
   }
   if (last < text.length) parts.push({ kind: "text", text: text.slice(last) });
   return parts;
 }
 
-/** The text with every citation marker removed, for speech (TTS must not read "[2, 3]"). */
-export function stripCitations(text: string): string {
+/** The text with its citation markers removed, for speech (TTS must not read "[2, 3]"). */
+export function stripCitations(text: string, sources: number = Number.MAX_SAFE_INTEGER): string {
   return text
-    .replace(GROUP, "")
+    .replace(GROUP, (group) => (citedNumbers(group, sources) === null ? group : ""))
     .replace(/[ \t]+([.,;:!?،])/g, "$1")
     .replace(/[ \t]{2,}/g, " ")
     .trim();

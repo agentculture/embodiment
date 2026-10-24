@@ -18,6 +18,8 @@ route                   guarded   what it is
 ``GET /api/library/{id}``  **yes**   ``{"item": {...}, "passages": [...]}``
 ``GET /api/library/search?q=``  **yes**  ``{"hits": [...]}``
 ``GET /api/todos``         **yes**   ``{"groups": [...]}``
+``GET /api/conversations``      **yes**  past conversations: ``{"conversations": [...]}``
+``GET /api/conversations/{id}`` **yes**  ``{"conversation": {...}, "turns": [...]}``
 ======================  ========  ==================================
 
 Static assets are unguarded because the dashboard must load before it can
@@ -146,6 +148,8 @@ __all__ = [
     "MAX_CONTROL_INFLIGHT",
     "MAX_TEXT_INFLIGHT",
     "LIBRARY_ROUTE",
+    "CONVERSATIONS_ROUTE",
+    "CONVERSATION_NOT_FOUND_CODE",
     "LIBRARY_SEARCH_ROUTE",
     "TODOS_ROUTE",
     "LIBRARY_NOT_CONFIGURED_CODE",
@@ -323,6 +327,10 @@ LIBRARY_BAD_SHAPE_CODE = "library-bad-shape"
 LIBRARY_ROUTE = "/api/library"
 LIBRARY_SEARCH_ROUTE = "/api/library/search"
 TODOS_ROUTE = "/api/todos"
+#: The history pane (operator, 2026-10-24): read-only, from the session logs.
+CONVERSATIONS_ROUTE = "/api/conversations"
+CONVERSATION_NOT_FOUND_CODE = "conversation-not-found"
+HISTORY_NOT_CONFIGURED_CODE = "history-not-configured"
 
 #: How long an Access-admitted stream may stay open when the verifier reported no
 #: ``exp``. Conservative by choice: an assertion of unknown lifetime is not trusted to
@@ -561,6 +569,10 @@ class Controls:
     library_search: Optional[Callable[[str], dict[str, Any]]] = None
     #: ``todos() -> {"groups": [{recording_id, title, date, items}]}``.
     todos: Optional[Callable[[], dict[str, Any]]] = None
+    #: ``conversations() -> {"conversations": [{id, title, started, last, turns, current}]}``.
+    conversations: Optional[Callable[[], dict[str, Any]]] = None
+    #: ``conversation(id) -> {"conversation": {...}, "turns": [...]}``; ``None`` is a 404.
+    conversation: Optional[Callable[[str], Optional[dict[str, Any]]]] = None
 
 
 @dataclass(frozen=True)
@@ -974,6 +986,9 @@ class _Handler(BaseHTTPRequestHandler):
         app = self._app
         config = app.config
         controls = app.controls
+        if route == CONVERSATIONS_ROUTE or route.startswith(CONVERSATIONS_ROUTE + "/"):
+            self._history_route(route)
+            return
         if route == TODOS_ROUTE:
             self._read_route(
                 "api.todos",
@@ -1014,6 +1029,43 @@ class _Handler(BaseHTTPRequestHandler):
             "passages",
             item=True,
         )
+
+    def _history_route(self, route: str) -> None:
+        """The history pane's two reads, on the text pool under the library deadline."""
+        app = self._app
+        controls = app.controls
+        timeout_s = app.config.library_timeout_s
+        if route == CONVERSATIONS_ROUTE:
+            self._read_route(
+                "api.conversations",
+                controls.conversations,
+                (),
+                timeout_s,
+                "conversations",
+                HISTORY_NOT_CONFIGURED_CODE,
+            )
+            return
+        conversation_id = route[len(CONVERSATIONS_ROUTE) + 1 :]
+        action = controls.conversation
+        if action is None:
+            app._degrade(HISTORY_NOT_CONFIGURED_CODE, "api.conversation is not configured")
+            self._send_error(
+                503, HISTORY_NOT_CONFIGURED_CODE, "this is not configured on this daemon"
+            )
+            return
+        outcome = app.call_text("api.conversation", action, conversation_id, timeout_s=timeout_s)
+        if not outcome.ok:
+            self._send_error(outcome.status, outcome.code, outcome.message)
+            return
+        result = outcome.result
+        if not result:
+            self._send_error(404, CONVERSATION_NOT_FOUND_CODE, "no such conversation")
+            return
+        if not (isinstance(result, dict) and isinstance(result.get("turns"), list)):
+            app._degrade(LIBRARY_BAD_SHAPE_CODE, "api.conversation answered a bad shape")
+            self._send_error(502, LIBRARY_BAD_SHAPE_CODE, "the answer was malformed")
+            return
+        self._send_json(200, result)
 
     def _read_route(
         self,
@@ -1394,7 +1446,10 @@ class ControlOutcome:
 
 
 def _is_library_route(route: str) -> bool:
-    return route in (LIBRARY_ROUTE, TODOS_ROUTE) or route.startswith(LIBRARY_ROUTE + "/")
+    """The guarded GET-only reads: the library, the to-dos and the history."""
+    if route in (LIBRARY_ROUTE, TODOS_ROUTE, CONVERSATIONS_ROUTE):
+        return True
+    return route.startswith(LIBRARY_ROUTE + "/") or route.startswith(CONVERSATIONS_ROUTE + "/")
 
 
 def _parse_item_id(segment: str) -> Optional[int]:

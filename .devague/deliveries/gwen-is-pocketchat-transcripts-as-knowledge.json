@@ -2,7 +2,7 @@
   "plan_slug": "gwen-is-pocketchat-transcripts-as-knowledge",
   "schema_version": 2,
   "created": "2026-10-24T04:42:23Z",
-  "updated": "2026-10-24T06:27:43Z",
+  "updated": "2026-10-24T06:51:51Z",
   "deviations": [
     {
       "id": "d1",
@@ -45,6 +45,19 @@
       "status": "proposed",
       "classification": "needs-follow-up",
       "seq": 3
+    },
+    {
+      "id": "d4",
+      "what": "Conversation history added: GET /api/conversations and /api/conversations/{id} (guarded, read-only, from the session logs, bounded) and a left history pane on Ask; the library list and the sources moved to a right pane with two tabs; an earlier conversation opens read-only",
+      "task_ref": "t12",
+      "reason": "operator, 2026-10-24: 'What about chat history? It should be on the left pane, and library and resources on the right.'",
+      "affects": [
+        "t6"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 4
     }
   ],
   "evidence": [],

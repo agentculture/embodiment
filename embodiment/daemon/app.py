@@ -160,7 +160,8 @@ from embodiment.daemon.recall_events import (
     Recalled,
     RecallEventsConfig,
 )
-from embodiment.daemon.state import DaemonState, resolve_state_dir
+from embodiment.daemon.history import ConversationHistory
+from embodiment.daemon.state import SESSIONS_DIRNAME, DaemonState, resolve_state_dir
 from embodiment.daemon.text_turns import TextTurns, TextTurnsConfig
 from embodiment.http import access as access_module
 from embodiment.http import guard as guard_module
@@ -4766,7 +4767,24 @@ class DaemonApp:
             library_search=self._library_search if self._library is not None else None,
             # From memory, library or not; a memory with no listing answers 503.
             todos=self._todos if callable(getattr(self._memory, "list_ingest", None)) else None,
+            # The history pane: the session logs, read only (operator, 2026-10-24).
+            conversations=self._history().conversations,
+            conversation=self._history().conversation,
         )
+
+    def _history(self) -> ConversationHistory:
+        """The past conversations, read from this state dir's session logs."""
+        return ConversationHistory(
+            Path(self._state.dir) / SESSIONS_DIRNAME, current=self._current_session_log
+        )
+
+    def _current_session_log(self) -> Optional[Path]:
+        """The live session's log path, so the history pane can mark it; None without one."""
+        with self._lock:
+            session = self._session
+        log = getattr(session, "transcript", None)
+        path = getattr(log, "_path", None)  # the bounded log keeps its path private
+        return Path(path) if path else None
 
     def _control_start_voice(self) -> dict[str, Any]:
         if self._ear_name is not None:

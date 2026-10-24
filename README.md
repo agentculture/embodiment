@@ -133,12 +133,15 @@ loop. It does not drive hardware and nothing here claims a body.
 - **The dashboard** (React / Vite / TypeScript, shipped inside the wheel) is
   chat-first, the library with the chat inside it: culture-library's look and shell around
   pocketchat's thread (both cited, not imported). **Ask** is a three-pane
-  workspace: the library list on the left, the conversation in the middle with
-  numbered citations and a Speak button per answer (markers are never read
-  aloud), and the answers' sources on the right, which open the cited passage
-  in place. Both side panes toggle, leave a rail when closed, and become
-  drawers on a phone. Below the thread, the box holds the mic (record and send
-  a question) and the text; beside it sit **Live** (the room microphone's
+  workspace: your conversations on the left (the live one and the earlier ones,
+  read from Gwen's own session logs through `GET /api/conversations`; an
+  earlier one opens read-only), the conversation in the middle with numbered
+  citations and a Speak button per answer (markers are never read aloud), and
+  on the right the **Library** list and the answers' **Sources**, which open
+  the cited passage in place. Both side panes toggle, leave a rail when closed,
+  and become drawers on a phone. Below the thread, the box holds the mic
+  (record and send a question) and the text; beside it sit **Live** (the room
+  microphone's
   realtime voice) and Upload. **Library** is the shelf and the items as cards,
   **To-dos** is fed from Gwen's memory, **Stats** shows the library and the
   usage counters since Gwen started, and a status drawer keeps the room voice

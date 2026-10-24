@@ -33,6 +33,12 @@ culture-rules (decision c21): 33 were there on 2026-10-24.
 - `status.access` admitted and refused-by-code counters in one block.
 - The library similarity threshold reuses `0.715`, provisional and not
   calibrated on library text.
+- **Conversation history:** `GET /api/conversations` and
+  `/api/conversations/{id}` (guarded, read-only) list and read Gwen's session
+  logs; on the page they are the left pane, newest first, and an earlier
+  conversation opens read-only. Citations in old answers show as numbers (the
+  logs keep text, not sources). The library list and the sources moved to the
+  right pane, as two tabs.
 - The page's **Stats** view: library tiles, status rows (each an icon and a
   label) and three charts with a Table view, from `GET /api/library` and
   `GET /api/status`. Usage counts start when Gwen starts; no history is kept.

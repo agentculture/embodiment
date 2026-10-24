@@ -126,7 +126,7 @@ describe("Chat (pocketchat port: thread, citations, composer)", () => {
         calls.push(String(i?.body));
         return { ok: false, status: 503, json: async () => ({ error: { code: "x" } }) } as Response;
       }
-      return { ok: true, status: 200, json: async () => ({ reply: "It is there [1], twice [2, 3].", sources: [LIB] }) } as Response;
+      return { ok: true, status: 200, json: async () => ({ reply: "It is there [1], twice [2, 3].", sources: [LIB, LIB, LIB] }) } as Response;
     });
     render(<Chat clientOptions={{ fetchFn }} />);
     await send("q");

@@ -21,7 +21,10 @@ import { Chat } from "./components/Chat";
 import { LibraryHome } from "./components/LibraryHome";
 import { LibraryPane } from "./components/LibraryPane";
 import { Reader, type ReaderHandle } from "./components/Reader";
-import { SourcesPane, type AnswerSources } from "./components/SourcesPane";
+import { SourcesPane, type AnswerSources, type SideTab } from "./components/SourcesPane";
+import { HistoryPane } from "./components/HistoryPane";
+import { PastConversation } from "./components/PastConversation";
+import type { ConversationSummary } from "./api/history";
 import { StatsView } from "./components/StatsView";
 import { Shelf } from "./components/Shelf";
 import { TodosView } from "./components/TodosView";
@@ -57,6 +60,8 @@ export interface AppProps {
 }
 
 const DEFAULT_EVENTS_URL = "/api/events";
+/** Milliseconds before asking for an empty or failed library again. */
+const LIBRARY_RETRY_MS = 10_000;
 
 type View = "ask" | "library" | "todos" | "stats";
 
@@ -121,8 +126,9 @@ function Icon({ d, size = 18 }: { d: string; size?: number }) {
   );
 }
 
-const ICON_PANE = "M4 5h16v14H4zM9.5 5v14";
-const ICON_SOURCES = "M4 5h16v14H4zM14.5 5v14";
+// The left pane is the conversations; the right pane is the library and the sources.
+const ICON_HISTORY = "M12 7v5l3 2M3.5 12a8.5 8.5 0 1 0 2.5-6M3 4v4h4";
+const ICON_SIDE = "M4 5h16v14H4zM14.5 5v14";
 
 export default function App({
   eventsUrl = DEFAULT_EVENTS_URL,
@@ -226,11 +232,27 @@ export default function App({
 
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [leftOpen, setLeftOpen] = useState(() => wide(1280));
-  const [rightOpen, setRightOpen] = useState(false);
+  const [rightOpen, setRightOpen] = useState(() => wide(1280));
+  const [sideTab, setSideTab] = useState<SideTab>("library");
+  // An earlier conversation shown read-only in the middle; null is the live one.
+  const [past, setPast] = useState<ConversationSummary | null>(null);
+  const [historyKey, setHistoryKey] = useState(0);
+  // On a phone the panes are drawers over the thread: opening one closes the other.
+  useEffect(() => {
+    if (leftOpen && rightOpen && !wide(861)) setRightOpen(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [leftOpen]);
+  useEffect(() => {
+    if (leftOpen && rightOpen && !wide(861)) setLeftOpen(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rightOpen]);
 
-  // The library, fetched once and shared by the list, the shelf, the cards and Stats.
+  // The library, shared by the list, the shelf, the cards and Stats. Asked again
+  // while it comes back empty or fails (review of PR #98: after a daemon restart
+  // the first answer can be empty, and a page that asked once stayed empty).
   const [items, setItems] = useState<LibraryItem[]>([]);
   const [libraryError, setLibraryError] = useState<string | null>(null);
+  const [libraryTry, setLibraryTry] = useState(0);
   useEffect(() => {
     let live = true;
     void fetchLibrary(appliedSecret).then((r) => {
@@ -243,7 +265,12 @@ export default function App({
     return () => {
       live = false;
     };
-  }, [appliedSecret, reconnectVersion]);
+  }, [appliedSecret, reconnectVersion, libraryTry]);
+  useEffect(() => {
+    if (items.length > 0 && !libraryError) return;
+    const timer = setTimeout(() => setLibraryTry((n) => n + 1), LIBRARY_RETRY_MS);
+    return () => clearTimeout(timer);
+  }, [items.length, libraryError, libraryTry]);
 
   // Header search: titles filter as you type; Enter searches passages by meaning.
   const [query, setQuery] = useState("");
@@ -262,7 +289,11 @@ export default function App({
   const [answers, setAnswers] = useState<AnswerSources[]>([]);
   const onAnswer = useCallback((question: string, sources: ChatSource[]) => {
     setAnswers((a) => [...a, { key: `s-${a.length}`, question, sources }]);
-    if (sources.length > 0 && wide(1100)) setRightOpen(true);
+    setHistoryKey((k) => k + 1);
+    if (sources.length > 0) {
+      setSideTab("sources");
+      if (wide(1100)) setRightOpen(true);
+    }
   }, []);
   const citedIds = useMemo(
     () => new Set(answers.flatMap((a) => a.sources.map((s) => s.item_id ?? "")).filter(Boolean)),
@@ -398,7 +429,8 @@ export default function App({
             e.preventDefault();
             go("ask");
             window.location.hash = "#ask";
-            setLeftOpen(true);
+            setSideTab("library");
+            setRightOpen(true);
             void runSearch();
           }}
         >
@@ -416,7 +448,10 @@ export default function App({
             onChange={(e) => {
               setQuery(e.target.value);
               setHits(null);
-              if (e.target.value && view === "ask") setLeftOpen(true);
+              if (e.target.value && view === "ask") {
+                setSideTab("library");
+                setRightOpen(true);
+              }
             }}
           />
         </form>
@@ -479,31 +514,24 @@ export default function App({
             <button
               type="button"
               className="rail rail--left"
-              aria-label="Show the library list"
-              title="Show the library list"
+              aria-label="Show conversations"
+              title="Show conversations"
               onClick={() => setLeftOpen(true)}
             >
-              <Icon d={ICON_PANE} size={18} />
-              <span className="rail-label">Library</span>
-              <span className="rail-count">{items.length}</span>
+              <Icon d={ICON_HISTORY} size={18} />
+              <span className="rail-label">Conversations</span>
             </button>
           )}
           <div className="ws-left" aria-hidden={!leftOpen || undefined}>
-            <LibraryPane
-              items={items}
-              error={libraryError}
-              openId={citation?.itemId ?? null}
-              citedIds={citedIds}
-              query={query}
-              hits={hits}
-              searching={searching}
-              onOpen={(id, anchor) => openCitation(id, anchor)}
-              onClose={() => setLeftOpen(false)}
-              onQuery={(q) => {
-                setQuery(q);
-                setHits(null);
+            <HistoryPane
+              secret={appliedSecret}
+              openId={past ? past.id : null}
+              refreshKey={historyKey}
+              onOpen={(c) => {
+                setPast(c && !c.current ? c : null);
+                if (!wide(861)) setLeftOpen(false);
               }}
-              onSearch={() => void runSearch()}
+              onClose={() => setLeftOpen(false)}
             />
           </div>
           <button
@@ -522,25 +550,29 @@ export default function App({
                 type="button"
                 className="pill-btn"
                 aria-pressed={leftOpen}
-                aria-label={leftOpen ? "Hide the library list" : "Show the library list"}
+                aria-label={leftOpen ? "Hide conversations" : "Show conversations"}
                 onClick={() => setLeftOpen((o) => !o)}
               >
-                <Icon d={ICON_PANE} size={16} />
-                <span className="lbl">Library</span>
+                <Icon d={ICON_HISTORY} size={16} />
+                <span className="lbl">Conversations</span>
               </button>
               <span className="ws-sp" />
               <button
                 type="button"
                 className="pill-btn"
                 aria-pressed={rightOpen}
-                aria-label={rightOpen ? "Hide sources" : "Show sources"}
+                aria-label={rightOpen ? "Hide library and sources" : "Show library and sources"}
                 onClick={() => (rightOpen ? closeRight() : setRightOpen(true))}
               >
-                <span className="lbl">Sources</span>
+                <span className="lbl">Library and sources</span>
                 {sourceCount > 0 && <span className="count">{sourceCount}</span>}
-                <Icon d={ICON_SOURCES} size={16} />
+                <Icon d={ICON_SIDE} size={16} />
               </button>
             </div>
+            {past && (
+              <PastConversation conversation={past} secret={appliedSecret} onBack={() => setPast(null)} />
+            )}
+            <div className="live-conversation" hidden={past !== null}>
             <section className="thread thread--voice" aria-labelledby="voice-thread-title">
               <h2 className="sr-only" id="voice-thread-title">
                 Transcript
@@ -557,17 +589,18 @@ export default function App({
               live={live}
               placeholder={narrow ? "Ask Gwen" : undefined}
             />
+            </div>
           </div>
           {!rightOpen && (
             <button
               type="button"
               className="rail rail--right"
-              aria-label="Show sources"
-              title="Show sources"
+              aria-label="Show library and sources"
+              title="Show library and sources"
               onClick={() => setRightOpen(true)}
             >
-              <Icon d={ICON_SOURCES} size={18} />
-              <span className="rail-label">Sources</span>
+              <Icon d={ICON_SIDE} size={18} />
+              <span className="rail-label">Library and sources</span>
               {sourceCount > 0 && <span className="rail-count rail-count--on">{sourceCount}</span>}
             </button>
           )}
@@ -576,11 +609,30 @@ export default function App({
               <SourcesPane
                 answers={answers}
                 open={citation}
+                tab={sideTab}
+                onTab={setSideTab}
                 secret={appliedSecret}
                 readerRef={readerRef}
                 onOpen={openCitation}
                 onBack={() => setCitation(null)}
                 onClose={closeRight}
+                library={
+                  <LibraryPane
+                    items={items}
+                    error={libraryError}
+                    openId={citation?.itemId ?? null}
+                    citedIds={citedIds}
+                    query={query}
+                    hits={hits}
+                    searching={searching}
+                    onOpen={(id, anchor) => openCitation(id, anchor)}
+                    onQuery={(q) => {
+                      setQuery(q);
+                      setHits(null);
+                    }}
+                    onSearch={() => void runSearch()}
+                  />
+                }
               />
             )}
           </div>

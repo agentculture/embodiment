@@ -37,9 +37,10 @@ so, and the redesign makes no value claim either until it has a measurement.
 
 ## The library and the page
 
-The dashboard is chat-first, the library with the chat inside it (Ask: the library list,
-the conversation and its sources, both side panes toggleable; Library, To-dos,
-Stats; before 0.18.0 it was waveform-first with chat fourth). Transcripts reach
+The dashboard is chat-first, the library with the chat inside it (Ask: your
+conversations on the left, read from the session logs; the conversation; the
+library and the answers' sources on the right; both side panes toggleable;
+Library, To-dos, Stats; before 0.18.0 it was waveform-first with chat fourth). Transcripts reach
 the library through culture-rules (33 on 2026-10-24), and retrieval was
 measured once: `docs/live-test-results/2026-10-24-library.md`. Gwen reads a
 library — culture-library, with xteink's instance as today's — through a
