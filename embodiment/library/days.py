@@ -14,6 +14,12 @@ from typing import Any, Mapping
 NEWSPAPER_KIND = "newspaper"
 _NEWSPAPER_WORDS = ("newspaper", "עיתון")
 _ISO_DAY = re.compile(r"(\d{4}-\d{2}-\d{2})")
+TRANSCRIPT_KIND = "transcript"
+#: Wire kinds that say only "some text": xteink's ``article``, culture-library's
+#: ``document``. The title then tells what the item is.
+_GENERIC_KINDS = ("article", "document")
+#: culture-rules titles a transcript "YYYY-MM-DD <topic>" (the page's ``DATED``).
+_DATED_TITLE = re.compile(r"^\d{4}-\d{2}-\d{2}\s+\S")
 
 
 def _local_zone() -> Any:
@@ -53,9 +59,12 @@ def item_day(meta: Mapping[str, Any]) -> str:
 
 
 def item_kind(meta: Mapping[str, Any]) -> str:
-    """The kind a reader would call it: ``newspaper`` for an issue filed as an article."""
+    """The kind a reader would call it: ``newspaper`` for an issue filed as an article,
+    ``transcript`` for a dated article or document (the page's ``displayKind`` rule)."""
     kind = str(meta.get("kind") or "").lower()
     title = str(meta.get("title") or "").lower()
     if kind == NEWSPAPER_KIND or any(word in title for word in _NEWSPAPER_WORDS):
         return NEWSPAPER_KIND
+    if kind in _GENERIC_KINDS and _DATED_TITLE.match(title.strip()):
+        return TRANSCRIPT_KIND
     return kind

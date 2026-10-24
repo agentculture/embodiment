@@ -59,6 +59,9 @@ describe("xteink titles carry the kind and the day (live library, 2026-10-24)", 
     expect(displayKind("article", "2026-10-15 warehouse")).toBe("transcript");
     expect(displayKind("article", "ai-souls-article.md")).toBe("document");
     expect(displayKind("book", "2026-10-15 warehouse")).toBe("book");
+    expect(displayKind("document", "2026-10-24 warehouse")).toBe("transcript");
+    expect(displayKind("document", "Daily newspaper 2026-10-24")).toBe("newspaper");
+    expect(displayKind("document", "ai-souls-article.md")).toBe("document");
   });
 
   it("dates an item by its title, else by when it was added", () => {
