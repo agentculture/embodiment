@@ -112,10 +112,9 @@ CITE_HINT = "\nCite a library passage you rely on as [n], using its number above
 _HEADER_NUMBER = re.compile(r"^\[(\d+)\] id=", re.MULTILINE)
 
 _SEARCH_DESCRIPTION = (
-    "Search the user's library - his documents, daily newspapers and recording "
-    "transcripts - by meaning. Call it BEFORE answering any question about the news, "
-    "something he read or recorded, or a document. Returns numbered quoted passages; "
-    "cite each one you use as [n]."
+    "Search the user's library (documents, daily newspapers, recording transcripts) "
+    "by meaning. Call it BEFORE answering about news or anything he read or recorded. "
+    "Cite each passage used as [n]."
 )
 _READ_DESCRIPTION = (
     "Read one library passage by item_id and anchor from a search result. "
