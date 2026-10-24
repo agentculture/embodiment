@@ -138,3 +138,32 @@ def test_extract_is_the_one_argument_seam_the_daemon_hands_the_sync():
 
     default = inspect.signature(daemon_app.build_library_lane).parameters["extract"].default
     assert default(basic()).passages  # the daemon's own default, called as sync calls it
+
+
+def test_a_passage_keeps_its_web_links_in_order():
+    """A newspaper bullet links its source (2026-10-24): Gwen must be able to follow it."""
+    doc = (
+        "<html><body><ul><li>Thor ships "
+        '<a href="https://example.org/thor">NVIDIA blog</a> and '
+        '<a href="mailto:x@y">mail</a> <a href="javascript:x">js</a> '
+        '<a href="https://example.org/two">second</a></li>'
+        "<li>No links here</li></ul></body></html>"
+    )
+    out = extract(basic(**{"OEBPS/one.xhtml": doc}))
+    first, second = out.passages[0], out.passages[1]
+    assert first.links == (
+        ("NVIDIA blog", "https://example.org/thor"),
+        ("second", "https://example.org/two"),
+    )
+    assert first.text.startswith("Thor ships NVIDIA blog and")
+    assert second.links == ()
+
+
+def test_links_per_passage_are_capped():
+    from embodiment.library import epub
+
+    many = "".join(
+        f'<a href="https://example.org/{i}">l{i}</a> ' for i in range(epub.MAX_LINKS + 5)
+    )
+    out = extract(basic(**{"OEBPS/one.xhtml": f"<html><body><p>{many}</p></body></html>"}))
+    assert len(out.passages[0].links) == epub.MAX_LINKS

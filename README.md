@@ -291,9 +291,16 @@ absence, not an implication.
   They are indexed in her private index once each has been quiet for 30 minutes,
   every turn labelled with who said it and how it arrived, her own replies
   marked as not a source of fact; the live conversation is never searched.
-  Spoken turns keep today's path. Nothing else — no shell, no files, no Qwen
-  Code, and no tool that writes to the library. Gwen cannot act on anything
-  outside her own memory, her own conversations and her read of the library.
+  To summarize a whole item (the day's newspaper), `read_item` reads it in
+  order; to follow an article's source, `fetch_source` reads one web page —
+  **only a link that library item lists** (the operator's choice), over http or
+  https to a public address (private, loopback and link-local refused, the
+  connection pinned to the checked address, every redirect re-checked), GET
+  only, at most 2 MB and 15 s, the text fenced as untrusted like library text.
+  This is Gwen's first reach outside the rig. Spoken turns keep today's path.
+  Nothing else — no shell, no files, no Qwen Code, and no tool that writes to
+  the library. Gwen cannot act on anything outside her own memory, her own
+  conversations and her read of the library and the pages it links.
 - **Vision.** The session is audio-only; `senses` does not advertise image
   understanding on this rig.
 - **A face.** The waveform is a compact strip beside the chat; a

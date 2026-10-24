@@ -33,6 +33,11 @@ export interface SourcesPaneProps {
   onClose: () => void;
 }
 
+/** A page fetch_source read: it opens in a new tab, not in the reader. */
+function isWeb(s: ChatSource): boolean {
+  return s.source === "web" && /^https?:\/\//i.test(s.link || "");
+}
+
 const TAB_LABEL: Record<SideTab, string> = { sources: "Sources", library: "Library" };
 
 function SourceList({ answers, onOpen }: Pick<SourcesPaneProps, "answers" | "onOpen">) {
@@ -60,8 +65,12 @@ function SourceList({ answers, onOpen }: Pick<SourcesPaneProps, "answers" | "onO
                     <button
                       type="button"
                       className="side-src"
-                      disabled={!s.item_id}
-                      onClick={() => s.item_id && onOpen(s.item_id, s.anchor)}
+                      disabled={!s.item_id && !isWeb(s)}
+                      onClick={() =>
+                        isWeb(s)
+                          ? window.open(s.link, "_blank", "noopener,noreferrer")
+                          : s.item_id && onOpen(s.item_id, s.anchor)
+                      }
                     >
                       <span className="side-n">{i + 1}</span>
                       <span className="side-title">

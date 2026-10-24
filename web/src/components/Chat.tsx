@@ -74,8 +74,14 @@ function provenance(s: ChatSource): string {
       if (parts.length === 0 && s.title) parts.push(s.title);
       break;
     case "library":
+    case "conversation":
       // The kind badge and the date sit beside it; mixing a date into a Hebrew title garbles the bidi.
       parts.push(s.title || "library");
+      break;
+    case "web":
+      // A page an item links to, read by fetch_source: its title, then where it is.
+      parts.push(s.title || "web page");
+      if (webLink(s)) parts.push(new URL(webLink(s) as string).host);
       break;
     case "room":
       parts.push("Gwen's memory");
@@ -102,7 +108,17 @@ function sourceKind(s: ChatSource): { label: string; color: string } {
 
 type OpenCitation = (itemId: string, anchor: unknown) => void;
 
+/** A fetched source's own address (http/https only), or null. */
+function webLink(s: ChatSource): string | null {
+  return s.source === "web" && /^https?:\/\//i.test(s.link || "") ? s.link : null;
+}
+
 function openSource(s: ChatSource, onOpen?: OpenCitation) {
+  const link = webLink(s);
+  if (link) {
+    window.open(link, "_blank", "noopener,noreferrer");
+    return;
+  }
   if (s.item_id && onOpen) onOpen(s.item_id, s.anchor);
 }
 
@@ -133,7 +149,11 @@ function Sources({ sources, onOpen }: { sources: ChatSource[]; onOpen?: OpenCita
         );
         return (
           <li key={i} className="source" data-untrusted="true">
-            {s.item_id ? (
+            {webLink(s) ? (
+              <a className="source-open" href={webLink(s) as string} target="_blank" rel="noopener noreferrer">
+                {body}
+              </a>
+            ) : s.item_id ? (
               <button type="button" className="source-open" onClick={() => openSource(s, onOpen)}>
                 {body}
               </button>

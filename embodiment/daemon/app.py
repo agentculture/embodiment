@@ -181,7 +181,9 @@ from embodiment.http import guard as guard_module
 from embodiment.http import server as server_module
 from embodiment.ingest.spool import Spool
 from embodiment.library import conversations as conversations_module
+from embodiment.library import reading as reading_module
 from embodiment.library import tools as library_tools
+from embodiment.library import web as web_module
 from embodiment.library.client import LibraryClient, LibraryConfig, LibraryError
 from embodiment.library.epub import extract as epub_extract
 from embodiment.library.index import DocumentIndex
@@ -488,6 +490,8 @@ LIBRARY_TOOL_PROMPT = (
     "קראי לכלי search_library, וצטטי כל קטע שבו השתמשת כ־[n]. "
     "לשאלה על יום מסוים (העיתון של היום, ההקלטות של אתמול) העבירי date בתבנית "
     "YYYY-MM-DD לפי השעה עכשיו, ו־kind (newspaper, transcript). "
+    "כדי לסכם פריט שלם (למשל את העיתון) קראי לכלי read_item; כדי לקרוא את המקור של "
+    "כתבה, קראי ל־fetch_source עם קישור מרשימת ה־links של אותו פריט. "
     "אל תמציאי מידע שאינו בקטעים שהכלי החזיר."
 )
 
@@ -1681,6 +1685,9 @@ class LibraryLane:
     #: library text** (plan risk r6) — status says so.
     threshold: float = memory_module.DEFAULT_SIMILARITY_THRESHOLD
     interval_s: float = LIBRARY_SYNC_INTERVAL_S
+    #: ``url -> Page`` for ``fetch_source`` (:func:`embodiment.library.web.fetch_page`);
+    #: ``None``: the tool answers that fetching is not configured.
+    fetch: Optional[Callable[[str], Any]] = None
 
 
 def build_library_lane(
@@ -1692,6 +1699,7 @@ def build_library_lane(
     gate: Callable[[], bool],
     extract: Callable[[bytes], Any] = epub_extract,
     threshold: float = memory_module.DEFAULT_SIMILARITY_THRESHOLD,
+    fetch: Optional[Callable[[str], Any]] = None,
 ) -> LibraryLane:
     """The client, the index and the sync, wired as t10 asks.
 
@@ -1731,6 +1739,7 @@ def build_library_lane(
         embed_query=embed_query,
         stop=stop,
         threshold=threshold,
+        fetch=fetch,
     )
 
 
@@ -3758,6 +3767,8 @@ class DaemonApp:
                 lane.index, lane.embed_query, collector, threshold=lane.threshold
             ):
                 registry.add(self._counted(spec))
+            for spec in reading_module.build_reading_tools(lane.index, collector, fetch=lane.fetch):
+                registry.add(self._counted(spec))
         if past is not None:
             registry.add(
                 self._counted(
@@ -4074,7 +4085,13 @@ class DaemonApp:
             }
             tool_calls = {
                 name: self._library_tool_calls.get(name, 0)
-                for name in ("search_library", "read_passage")
+                for name in (
+                    "search_library",
+                    "read_passage",
+                    "read_item",
+                    "fetch_source",
+                    "search_conversations",
+                )
             }
         return {
             **probed,
@@ -5945,10 +5962,11 @@ def library_chat_source(citation: Mapping[str, Any]) -> dict[str, Any]:
     # A past conversation's citation (d8) says so, so the page opens the conversation
     # rather than the library reader; anything else is the library.
     source = citation.get("source")
+    link = str(citation.get("link") or "")
     return {
         "source": (
-            library_tools.CONVERSATION_SOURCE
-            if source == library_tools.CONVERSATION_SOURCE
+            source
+            if source in (library_tools.CONVERSATION_SOURCE, reading_module.WEB_SOURCE)
             else library_tools.LIBRARY_SOURCE
         ),
         "item_id": str(citation.get("item_id") or ""),
@@ -5959,7 +5977,8 @@ def library_chat_source(citation: Mapping[str, Any]) -> dict[str, Any]:
         "start": citation.get("start"),
         "end": citation.get("end"),
         "section": "",
-        "link": "",
+        # A fetched source's address, for the page to link out to; http(s) only.
+        "link": link if link.lower().startswith(("http://", "https://")) else "",
         "text": str(citation.get("text") or ""),
     }
 
@@ -6660,6 +6679,9 @@ def _library_lane_from_env(
             ).vector,
             embed_query=lambda text: embedder.embed(text, prompt=memory_module.QUERY_PROMPT).vector,
             gate=gate,
+            # Only links a library item lists (operator, 2026-10-24); the tool checks
+            # that before this is called, and web.fetch_page allows public hosts only.
+            fetch=web_module.fetch_page,
         )
     except (LibraryError, ValueError) as exc:
         early.append((APP_LIBRARY_UNAVAILABLE, f"library: {_describe(exc)}", APP_SOURCE))

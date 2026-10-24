@@ -281,6 +281,8 @@ class TestCitations:
             "start": 12.0,
             "end": top.end_s,
             "text": first.text,
+            "link": "",
+            "links": (),
         }
         assert "alpha alpha bravo" in first.text
 
@@ -298,6 +300,8 @@ class TestCitations:
             "start": None,
             "end": None,
             "text": "golf",
+            "link": "",
+            "links": (),
         }
 
     def test_citation_text_is_capped_and_neutralised(self, tmp_path):
