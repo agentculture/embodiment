@@ -1289,3 +1289,28 @@ class TestARebuildCatchesUp:
         monkeypatch.setattr(lane.stop, "wait", wait)
         h.app._library_worker()
         assert waits == [app_module.LIBRARY_CATCH_UP_S, float(lane.interval_s)]
+
+    def test_a_tick_that_yielded_at_its_first_gate_comes_back_after_the_catch_up(
+        self, harness: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Review of PR #98 (2026-10-24): a tick that gave up waiting for a live turn
+        before it listed anything reports remaining=0, so it slept the full interval."""
+        h = _build(harness, tmp_path)
+        lane = h.app._library
+        yielded = {"indexed": 0, "added": 0, "changed": 0, "removed": 0}
+        monkeypatch.setattr(lane.sync, "tick", lambda: {**yielded, "yielded": True, "remaining": 0})
+        assert h.app._library_tick() is True
+
+    def test_an_idle_or_failed_tick_still_waits_the_interval(
+        self, harness: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        h = _build(harness, tmp_path)
+        lane = h.app._library
+        monkeypatch.setattr(lane.sync, "tick", lambda: {"yielded": False, "remaining": 0})
+        assert h.app._library_tick() is False
+
+        def broken() -> Any:
+            raise RuntimeError("sync bug")
+
+        monkeypatch.setattr(lane.sync, "tick", broken)
+        assert h.app._library_tick() is False

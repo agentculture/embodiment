@@ -3563,8 +3563,11 @@ class DaemonApp:
     def _library_tick(self) -> bool:
         """ONE bounded sync tick plus the forwarding of what it recorded. Never raises.
 
-        Returns True when the tick left wanted items behind (the worker then comes
-        back soon), False otherwise, including on a failed tick.
+        Returns True when the tick left wanted items behind, or yielded to a live
+        turn (the worker then comes back soon), False otherwise, including on a
+        failed tick or a down library. A tick that yields at its FIRST gate has
+        listed nothing, so it reports ``remaining == 0``; it is still unfinished
+        work (review of PR #98, 2026-10-24: it slept the full interval).
         """
         lane = self._library
         if lane is None:
@@ -3579,8 +3582,7 @@ class DaemonApp:
         else:
             with self._lock:
                 self._library_ticks += 1
-            remaining = out.get("remaining") if isinstance(out, Mapping) else None
-            backlog = isinstance(remaining, int) and remaining > 0
+            backlog = _tick_left_work(out)
         if not lane.stop.is_set():
             # A tick a stop cut short abandoned its chunk on purpose: not a fault.
             self._forward_library_degradations(lane)
@@ -5506,6 +5508,14 @@ def _catalog_entry(item: Any, index: Any) -> dict[str, Any]:
         "created_at": _text_or_empty(getattr(item, "created_at", "")),
         "indexed": bool(index.has_item(item_id)),
     }
+
+
+def _tick_left_work(out: Any) -> bool:
+    """A sync tick's result: did it stop with work left (a backlog, or a yield)?"""
+    if not isinstance(out, Mapping):
+        return False
+    remaining = out.get("remaining")
+    return out.get("yielded") is True or (isinstance(remaining, int) and remaining > 0)
 
 
 def _indexed_items(index: Any) -> list[Any]:
