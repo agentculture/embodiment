@@ -2538,6 +2538,35 @@ def test_new_conversation_is_a_guarded_post_reaching_its_control() -> None:
         built.server.shutdown(2.0)
 
 
+def test_marking_a_to_do_is_a_guarded_post_with_a_done_body() -> None:
+    calls: list[tuple] = []
+
+    def todo_set(todo_id, done):
+        calls.append((todo_id, done))
+        return (
+            {"todo": {"id": todo_id, "done": done}, "code": ""}
+            if todo_id == "t1"
+            else {"todo": None}
+        )
+
+    built = build(controls=s.Controls(todo_set=todo_set))
+    try:
+        route = s.TODOS_ROUTE + "/t1"
+        assert built.request("GET", route, hdrs=built.headers())[0] == 405
+        assert built.request("POST", route, body=b'{"done": true}')[0] == 401
+        assert built.request("POST", route, body=b'{"done": "yes"}', hdrs=built.headers())[0] == 400
+        status, body = built.request("POST", route, body=b'{"done": true}', hdrs=built.headers())
+        assert status == 200
+        assert json.loads(body)["result"]["todo"] == {"id": "t1", "done": True}
+        missing = built.request(
+            "POST", s.TODOS_ROUTE + "/nope", body=b'{"done": false}', hdrs=built.headers()
+        )
+        assert missing[0] == 404
+        assert calls == [("t1", True), ("nope", False)]
+    finally:
+        built.server.shutdown(2.0)
+
+
 def test_a_busy_new_conversation_is_a_409_so_the_page_does_not_reset() -> None:
     built = build(controls=s.Controls(new_conversation=lambda: {"started": False, "ended": None}))
     try:
@@ -2546,5 +2575,22 @@ def test_a_busy_new_conversation_is_a_409_so_the_page_does_not_reset() -> None:
         )
         assert status == 409
         assert s.CONVERSATION_BUSY_CODE in body.decode()
+    finally:
+        built.server.shutdown(2.0)
+
+
+@pytest.mark.parametrize(
+    ("code", "status"),
+    [("todo-not-saved", 503), ("todo-bad-request", 400), ("todo-unknown", 404)],
+)
+def test_a_refused_mark_is_never_a_200(code: str, status: int) -> None:
+    """Review of PR #103: a save that failed was answered 200, and the page kept the tick."""
+    built = build(controls=s.Controls(todo_set=lambda i, d: {"todo": {"id": i}, "code": code}))
+    try:
+        got, body = built.request(
+            "POST", s.TODOS_ROUTE + "/t1", body=b'{"done": true}', hdrs=built.headers()
+        )
+        assert got == status
+        assert code in body.decode()
     finally:
         built.server.shutdown(2.0)

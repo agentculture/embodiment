@@ -2,7 +2,7 @@
   "plan_slug": "gwen-is-pocketchat-transcripts-as-knowledge",
   "schema_version": 2,
   "created": "2026-10-24T04:42:23Z",
-  "updated": "2026-10-24T19:10:19Z",
+  "updated": "2026-10-24T19:15:01Z",
   "deviations": [
     {
       "id": "d1",
@@ -195,6 +195,21 @@
       "status": "approved",
       "classification": "needs-follow-up",
       "seq": 15
+    },
+    {
+      "id": "d16",
+      "what": "To-dos become checkable: culture-rules keeps generating action items from transcripts (its workflow, into Gwen's memory via embodiment memory ingest); Gwen keeps the done state in her own private store (open/done, when, by whom: the operator on the page, or Gwen on the operator's own words through set_todo_done under the write guard); list_todos lets her answer about them; every change is published as a todo event carrying the whole to-do so culture-rules can file it in the library, and a read-only 'embodiment todos export' verb serves a backfill",
+      "task_ref": "t9",
+      "reason": "Operator, 2026-10-24: 'I'd like Gwen to generate todos from transcripts, so I can check them, or ask gwen to check them (or ask about them)'; 'We can generate it as culture-rules workflow'; 'Done at Gwen, and event / document sent to culture-rules to library'",
+      "affects": [
+        "t6",
+        "t13",
+        "c40"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 16
     }
   ],
   "evidence": [

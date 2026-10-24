@@ -32,8 +32,8 @@ value unmeasured. **Not yet:** tools beyond memory and the read-only library (th
 `remember` and `forget`, plus `search_library` and `read_passage` on typed turns
 when a library is configured, `read_item` and `fetch_source` (one public web page,
 only a link a library item lists: Gwen's first reach outside the rig), and
-`search_conversations` over Gwen's own settled conversations (d8); the registry is
-otherwise empty by design),
+`search_conversations` over Gwen's own settled conversations (d8), `list_todos` and
+`set_todo_done` (d16); the registry is otherwise empty by design),
 vision, a face, live realtime voice from the phone and speech-to-speech (the
 phone is control, text, and uploaded or recorded clips; the speech-to-speech
 button is present and disabled), a robot relay (t14's inbound endpoint and
@@ -74,7 +74,10 @@ conversation button (`POST /api/conversation/new`) that ends the live one, via
 `/api/conversations`, continued in place: chat's `"conversation"` / clip's
 `X-Conversation` reopen one as a `Session` with `Session.restore` (d5) | conversation with a voice dock | library and the answers'
 sources with the reader; side panes toggleable, drawers on a phone;
-Library, To-dos, Stats; Live = the rig's room mic, not the phone's). It was
+Library, To-dos (checkable since d16: done state at Gwen, `POST /api/todos/{id}`, a
+`todo` bus event per change for culture-rules; `list_todos` / `set_todo_done`, the
+second only on the operator's own words), Stats; Live = the rig's room mic, not the
+phone's). It was
 waveform-first with chat fourth. **Transcripts arrived** (33 on 2026-10-24) and
 retrieval was **measured once** (t15, `docs/live-test-results/2026-10-24-library.md`:
 hit@5 19/32 and 17/28, 0/10 false positives, search p90 0.21 s). The document index
@@ -397,6 +400,7 @@ embodiment/
   daemon/history.py     the history pane: reads the session logs, bounded; the `via` tags and
                         what each is worth (d7); when a conversation has settled
   daemon/recordings.py  the ONE writer of audio: page clips kept as they arrived (d10)
+  daemon/todos.py       to-dos' done state (Gwen's, 0600) + list_todos / set_todo_done (d16)
   cli/_commands/tunnel  prints the cultureflare/cloudflared commands (default host
                         gwen.culture.dev) and the Access env names; never runs them
   cli/_commands/history `history export`: past conversations as JSON, read-only, each turn

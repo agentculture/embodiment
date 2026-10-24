@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.21.0] - 2026-10-24
+
+### Added
+
+- Checkable to-dos (deviation d16): culture-rules keeps writing each recording's action items into Gwen's memory; the done state is Gwen's (`daemon/todos.py`, 0600, open/done, when, by the operator or by Gwen). The To-dos view has checkboxes (`POST /api/todos/{id}` with `{done}`, guarded; a refused mark is undone and said). Every change publishes a `todo` bus event carrying the whole to-do (text, recording, title, day, done, by, timestamps) so culture-rules can file the list in the library
+- `list_todos` (open/done, a recording day, words) and `set_todo_done` on typed turns; the second runs only when the operator's own words in that turn ask to mark (the write guard's rule, c31), and to-do text reaches the prompt fenced as untrusted
+
 ## [0.20.0] - 2026-10-24
 
 ### Added

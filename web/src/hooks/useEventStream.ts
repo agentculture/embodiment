@@ -29,6 +29,7 @@ import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from "r
 import {
   type ClientsData,
   type ConversationData,
+  type EventEnvelopeData,
   type DegradationData,
   type EventEnvelope,
   type EventKind,
@@ -65,6 +66,8 @@ export interface EventStreamSnapshot {
   clients: EventEnvelope<"clients"> | null;
   /** The last conversation that settled (d7), or null before the first. */
   conversation: EventEnvelope<"conversation"> | null;
+  /** The last to-do that was marked (d16), or null before the first. */
+  todo: EventEnvelope<"todo"> | null;
   /** transcript + reply, merged into one speech log in arrival order. */
   transcript: EventEnvelope<"transcript" | "reply">[];
   degradations: EventEnvelope<"degradation">[];
@@ -111,6 +114,7 @@ interface DataState {
   clients: EventEnvelope<"clients"> | null;
   /** The last conversation that settled (d7), or null before the first. */
   conversation: EventEnvelope<"conversation"> | null;
+  todo: EventEnvelope<"todo"> | null;
   transcript: EventEnvelope<"transcript" | "reply">[];
   degradations: EventEnvelope<"degradation">[];
   droppedFrames: number;
@@ -126,6 +130,7 @@ const INITIAL_DATA: DataState = {
   features: null,
   clients: null,
   conversation: null,
+  todo: null,
   transcript: [],
   degradations: [],
   droppedFrames: 0,
@@ -141,6 +146,7 @@ type Action =
   | { type: "features"; envelope: EventEnvelope<"features">; data: FeaturesData }
   | { type: "clients"; envelope: EventEnvelope<"clients">; data: ClientsData }
   | { type: "conversation"; envelope: EventEnvelope<"conversation">; data: ConversationData }
+  | { type: "todo"; envelope: EventEnvelope<"todo">; data: EventEnvelopeData }
   | { type: "speech"; envelope: EventEnvelope<"transcript" | "reply">; data: TranscriptData | ReplyData }
   | { type: "degradation"; envelope: EventEnvelope<"degradation">; data: DegradationData }
   | { type: "dropped" }
@@ -160,6 +166,8 @@ function reducer(prev: DataState, action: Action): DataState {
       return { ...prev, clients: action.envelope };
     case "conversation":
       return { ...prev, conversation: action.envelope };
+    case "todo":
+      return { ...prev, todo: action.envelope };
     case "speech": {
       const next = [...prev.transcript, action.envelope];
       const overflow = next.length - TRANSCRIPT_LOG_LIMIT;
@@ -361,6 +369,9 @@ export function useEventStream(
             data: envelope.data as ClientsData,
           });
           break;
+        case "todo":
+          dispatch({ type: "todo", envelope: envelope as EventEnvelope<"todo">, data: envelope.data });
+          break;
         case "conversation":
           dispatch({
             type: "conversation",
@@ -442,6 +453,7 @@ export function useEventStream(
     features: data.features,
     clients: data.clients,
     conversation: data.conversation,
+    todo: data.todo,
     transcript: data.transcript,
     degradations: data.degradations,
     lastHeartbeatAtMs,

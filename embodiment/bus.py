@@ -308,6 +308,7 @@ EVENT_KINDS: frozenset[str] = frozenset(
         "clients",
         "heartbeat",
         "conversation",
+        "todo",
     }
 )
 
@@ -431,6 +432,7 @@ _REQUIRED_DATA_FIELDS: dict[str, tuple[str, ...]] = {
     "clients": ("count", "remote"),
     "heartbeat": (),
     "conversation": ("id", "status", "last", "turns"),
+    "todo": ("id", "done", "at", "by"),
 }
 
 #: Kinds dropped FIRST under queue back-pressure — a subscriber's own queue

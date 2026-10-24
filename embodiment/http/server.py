@@ -20,6 +20,7 @@ route                   guarded   what it is
 ``GET /api/library/{id}``  **yes**   ``{"item": {...}, "passages": [...]}``
 ``GET /api/library/search?q=``  **yes**  ``{"hits": [...]}``
 ``GET /api/todos``         **yes**   ``{"groups": [...]}``
+``POST /api/todos/{id}``   **yes**   ``{"done": true|false}``: mark one to-do (d16)
 ``GET /api/conversations``      **yes**  past conversations: ``{"conversations": [...]}``
 ``GET /api/conversations/{id}`` **yes**  ``{"conversation": {...}, "turns": [...]}``
 ======================  ========  ==================================
@@ -591,6 +592,9 @@ class Controls:
     library_search: Optional[Callable[[str], dict[str, Any]]] = None
     #: ``todos() -> {"groups": [{recording_id, title, date, items}]}``.
     todos: Optional[Callable[[], dict[str, Any]]] = None
+    #: ``todo_set(todo_id, done) -> {"todo": {...} | None, "code"}``: the page's checkbox
+    #: (d16); ``POST /api/todos/{id}`` with ``{"done": true|false}``.
+    todo_set: Optional[Callable[[str, bool], dict[str, Any]]] = None
     #: ``conversations() -> {"conversations": [{id, title, started, last, turns, current}]}``.
     conversations: Optional[Callable[[], dict[str, Any]]] = None
     #: ``conversation(id) -> {"conversation": {...}, "turns": [...]}``; ``None`` is a 404.
@@ -1018,7 +1022,41 @@ class _Handler(BaseHTTPRequestHandler):
 
     # ── library and to-dos (task t6) ─────────────────────────────────────────
 
+    def _todo_set_route(self, route: str, method: str) -> None:
+        """``POST /api/todos/{id}`` ``{"done": bool}``: mark one to-do (d16)."""
+        if method != "POST":
+            self._refuse_unread(405, "http-method-not-allowed", "marking a to-do is POST only")
+            return
+        try:
+            todo_id = unquote(route[len(TODOS_ROUTE) + 1 :], errors="strict")
+        except UnicodeDecodeError:
+            todo_id = ""
+        body = self._read_body()
+        if body is None:
+            return
+        payload = _parse_object(body)
+        done = payload.get("done") if payload is not None else None
+        if not todo_id or "/" in todo_id or not isinstance(done, bool):
+            self._send_error(400, BAD_REQUEST_CODE, 'the body must be {"done": true|false}')
+            return
+        outcome = self._app.call_control(
+            "api.todos.set", self._app.controls.todo_set, todo_id, done
+        )
+        if not outcome.ok:
+            self._send_error(outcome.status, outcome.code, outcome.message)
+            return
+        result = outcome.result or {}
+        refused = _TODO_REFUSALS.get(result.get("code") or "")
+        if refused is not None or result.get("todo") is None:
+            status, code, message = refused or _TODO_REFUSALS["todo-unknown"]
+            self._send_error(status, code, message)
+            return
+        self._send_json(200, {"ok": True, "result": result})
+
     def _library_route(self, route: str, method: str) -> None:
+        if route.startswith(TODOS_ROUTE + "/"):  # the one POST here: marking a to-do (d16)
+            self._todo_set_route(route, method)
+            return
         if method != "GET":
             self._refuse_unread(405, "http-method-not-allowed", "this route is GET only")
             return
@@ -1489,11 +1527,20 @@ class ControlOutcome:
     message: str
 
 
+#: How a refused mark is answered (review of PR #103): a save that failed is not a
+#: success the page could keep showing, and a malformed id is the caller's error.
+_TODO_REFUSALS: dict[str, tuple[int, str, str]] = {
+    "todo-unknown": (404, "todo-unknown", "no such to-do"),
+    "todo-bad-request": (400, "todo-bad-request", "not a to-do id"),
+    "todo-not-saved": (503, "todo-not-saved", "the to-do's state could not be saved"),
+}
+
+
 def _is_library_route(route: str) -> bool:
-    """The guarded GET-only reads: the library, the to-dos and the history."""
+    """The guarded reads (the library, the to-dos, the history), and marking a to-do."""
     if route in (LIBRARY_ROUTE, TODOS_ROUTE, CONVERSATIONS_ROUTE):
         return True
-    return route.startswith(LIBRARY_ROUTE + "/") or route.startswith(CONVERSATIONS_ROUTE + "/")
+    return route.startswith((LIBRARY_ROUTE + "/", CONVERSATIONS_ROUTE + "/", TODOS_ROUTE + "/"))
 
 
 def _parse_item_id(segment: str) -> Optional[int]:

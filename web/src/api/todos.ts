@@ -1,14 +1,19 @@
 // api/todos.ts
 //
-// Client for GET /api/todos -> {groups:[{recording_id,title,date,items:[{text,created}]}]}
-// (plan t9, route from t6). Read-only: no done/undone writes this cycle.
+// Client for GET /api/todos -> {groups:[{recording_id,title,date,items:[{id,text,created,done,...}]}]}
+// (plan t9, route from t6), and POST /api/todos/{id} {done} to mark one (d16: the done
+// state is Gwen's; culture-rules still writes the to-dos).
 // Never throws: a failure is a tagged result carrying a fixed code and the
 // HTTP status. The install secret rides in `Authorization: Bearer` only when
 // held, exactly like api/chat.ts.
 
 export interface TodoItem {
+  id: string;
   text: string;
   created: string;
+  done: boolean;
+  /** "operator" (this page) or "gwen" (asked in chat), when marked. */
+  doneBy: string;
 }
 
 export interface TodoGroup {
@@ -34,7 +39,9 @@ function parseItems(raw: unknown): TodoItem[] {
   if (!Array.isArray(raw)) return [];
   const out: TodoItem[] = [];
   for (const it of raw) {
-    if (isObj(it) && typeof it.text === "string") out.push({ text: it.text, created: str(it.created) });
+    if (isObj(it) && typeof it.text === "string") {
+      out.push({ id: str(it.id), text: it.text, created: str(it.created), done: it.done === true, doneBy: str(it.done_by) });
+    }
   }
   return out;
 }
@@ -85,4 +92,35 @@ export async function fetchTodos(
     return { ok: false, status: response.status, code: "unparseable-response" };
   }
   return { ok: true, groups: parseGroups(body.groups) };
+}
+
+/** Mark one to-do done or open again. Never throws. */
+export async function setTodoDone(
+  id: string,
+  done: boolean,
+  secret: string,
+  options: TodosClientOptions = {},
+): Promise<{ ok: true } | { ok: false; status: number; code: string }> {
+  const fetchFn = options.fetchFn ?? fetch;
+  const basePath = options.basePath ?? "/api";
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (secret) headers.Authorization = `Bearer ${secret}`;
+  let response: Response;
+  try {
+    response = await fetchFn(`${basePath}/todos/${encodeURIComponent(id)}`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ done }),
+    });
+  } catch {
+    return { ok: false, status: 0, code: "network-error" };
+  }
+  if (response.ok) return { ok: true };
+  let body: unknown;
+  try {
+    body = await response.json();
+  } catch {
+    body = undefined;
+  }
+  return { ok: false, status: response.status, code: errorCode(body) };
 }

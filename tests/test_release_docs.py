@@ -82,6 +82,8 @@ TOOLS_BOUND = (
     "read_item",
     "fetch_source",
     "search_conversations",
+    "list_todos",
+    "set_todo_done",
 )
 
 #: The library cycle's names, which README and the explain root must both carry.
