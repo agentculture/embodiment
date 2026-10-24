@@ -165,7 +165,7 @@ class LibraryClient:
                 raw = _read_bounded(response, max_bytes=max_bytes, deadline_s=read_deadline)
         except LibraryError:
             raise
-        except Exception as exc:  # noqa: BLE001 - folded to a typed, key-free error
+        except Exception as exc:  # noqa: BLE001  # folded to a typed, key-free error
             raise _classify(exc) from None
         if len(raw) > max_bytes:
             raise LibraryError("library_oversize")

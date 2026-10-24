@@ -28,7 +28,10 @@ from urllib.parse import unquote
 _SKIP = frozenset({"script", "style", "head", "title"})
 _HEADINGS = frozenset({"h1", "h2", "h3", "h4", "h5", "h6"})
 _BLOCKS = frozenset({"p", "div", "li", "blockquote", "pre", "td", "dd", "dt"}) | _HEADINGS
-_TOKEN = re.compile(r"^\s*(?:\[(\d{1,2}:\d{2}(?::\d{2})?)\]|(\d{1,2}:\d{2}(?::\d{2})?))\s+")
+# A leading timestamp, bracketed or bare. Two patterns (tried in that order; they cannot
+# both match, a bare one cannot start with "[") keep each regex simple.
+_TOKEN_BRACKETED = re.compile(r"^\s*\[(\d{1,2}:\d{2}(?::\d{2})?)\]\s+")
+_TOKEN_BARE = re.compile(r"^\s*(\d{1,2}:\d{2}(?::\d{2})?)\s+")
 _LABEL = re.compile(r"^([^\W\d_][\w .'-]{0,40}?):\s+")
 
 
@@ -95,7 +98,7 @@ class _Reader:
         try:
             with self._zf.open(name) as fh:
                 raw = fh.read(cap + 1)
-        except (KeyError, zipfile.BadZipFile, RuntimeError, NotImplementedError, OSError):
+        except (KeyError, zipfile.BadZipFile, RuntimeError, OSError):
             raise EpubRefused("bad_epub") from None
         if len(raw) > cap:
             raise EpubRefused("member_too_large")
@@ -178,10 +181,10 @@ def _timing(text: str, attrs: dict) -> tuple[str, float | None, float | None, st
     end = _seconds(attrs["data-end"]) if attrs.get("data-end") else None
     speaker = (attrs.get("data-speaker") or "").strip() or None
     body = text
-    m = _TOKEN.match(body)
+    m = _TOKEN_BRACKETED.match(body) or _TOKEN_BARE.match(body)
     if m:
         if start is None:
-            start = _seconds(m.group(1) or m.group(2))
+            start = _seconds(m.group(1))
         body = body[m.end() :]
         label = None if speaker else _LABEL.match(body)
         if label:
