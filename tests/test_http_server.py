@@ -2452,3 +2452,38 @@ def test_server_status_carries_the_guards_access_counters(tmp_path):
     assert srv._guard_status(_Guard())["access"]["admitted"] == 3
     assert srv._guard_status(_Broken()) == {}
     assert srv._guard_status(object()) == {}
+
+
+class TestContinuingAConversation:
+    """Deviation d5: chat and clip carry the earlier conversation they continue."""
+
+    def test_chat_passes_the_conversation_only_when_the_body_names_one(self) -> None:
+        seen: list[tuple[Any, ...]] = []
+        built = build(
+            controls=s.Controls(chat=lambda *a: seen.append(a) or {"ok": True, "reply": "r"})
+        )
+        try:
+            for body in (
+                {"message": "hi"},
+                {"message": "hi", "conversation": "abc123"},
+                {"message": "hi", "conversation": ""},
+                {"message": "hi", "conversation": 7},
+            ):
+                status, _ = built.request(
+                    "POST", "/api/chat", body=json.dumps(body).encode(), hdrs=built.headers()
+                )
+                assert status == 200
+            assert seen == [("hi",), ("hi", "abc123"), ("hi",), ("hi",)]
+        finally:
+            built.server.shutdown(2.0)
+
+    def test_clip_passes_the_conversation_header(self) -> None:
+        seen: list[tuple[Any, ...]] = []
+        built = build(controls=s.Controls(clip=lambda *a: seen.append(a) or {"ok": True}))
+        try:
+            hdrs = TestClipRoute().clip_headers(built, X_Conversation="abc123")
+            status, _ = built.request("POST", "/api/clip", body=b"abc", hdrs=hdrs)
+            assert status == 200
+            assert seen[0][2] == "abc123"
+        finally:
+            built.server.shutdown(2.0)

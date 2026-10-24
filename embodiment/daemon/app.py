@@ -799,6 +799,11 @@ APP_BARGE_IN_STOP_TIMEOUT = "app-barge-in-stop-timeout"
 
 #: A recall, or the render of one, failed outright.
 APP_RECALL_FAILED = "app-recall-failed"
+#: A typed turn named an earlier conversation the history does not list (d5).
+APP_CONVERSATION_NOT_FOUND = "conversation-not-found"
+#: At most this many earlier conversations are kept open for continuing (d5); the
+#: least recently continued is dropped first and reopened from its log if needed.
+RESUMED_CONVERSATIONS = 8
 #: The lexical index cannot tokenise the utterance's script, so a keyword
 #: search over it can only ever return nothing. See
 #: :meth:`DaemonApp._recall_blind_fallback`.
@@ -1685,9 +1690,14 @@ class _TextTurn:
     #: page showed. Empty for a failed turn and for a clip (its route forwards no
     #: sources), which is what the page showed for them.
     shown_sources: tuple[Any, ...] = ()
+    #: The conversation this turn belongs to: an earlier one it continues (d5), or
+    #: ``None`` for the live session.
+    conversation: Optional[str] = None
 
 
-def _previous_page_sources(recent: Iterable[Any]) -> tuple[Any, ...]:
+def _previous_page_sources(
+    recent: Iterable[Any], conversation: Optional[str] = None
+) -> tuple[Any, ...]:
     """The newest numbered source list the page shows, in page order; () if none.
 
     That is the list of the newest typed turn whose answer the chat route returned
@@ -1699,6 +1709,8 @@ def _previous_page_sources(recent: Iterable[Any]) -> tuple[Any, ...]:
     recalled memory), so "item 1" means what the operator saw as 1.
     """
     for turn in reversed(list(recent)):
+        if getattr(turn, "conversation", None) != conversation:
+            continue  # "item 1" means the list of THIS conversation's last answer
         shown = getattr(turn, "shown_sources", ())
         if shown:
             return tuple(shown)
@@ -1913,6 +1925,8 @@ class DaemonApp:
         self._floor_taken = False
         self._recall_seen: "OrderedDict[str, _RecallSeen]" = OrderedDict()
         self._text_turns_recent: deque[_TextTurn] = deque(maxlen=_TEXT_TURN_MEMORY)
+        #: Earlier conversations reopened for continuing (d5), least recent first.
+        self._resumed: OrderedDict[str, Any] = OrderedDict()
         #: Gwen's typed replies built from library text, so a later typed turn whose
         #: window still carries one is guarded (review of PR #98, 2026-10-24).
         self._library_replies: deque[str] = deque(maxlen=_LIBRARY_REPLY_MEMORY)
@@ -3231,8 +3245,9 @@ class DaemonApp:
     # ── typed turns (t14 handlers, t10 routes) ───────────────────────────
 
     def _locked_session(self) -> Any:
-        """The session :class:`TextTurns` writes to, behind the conversation lock."""
-        session = self._ensure_session()
+        """The session :class:`TextTurns` writes to, behind the conversation lock: the
+        earlier conversation this turn continues (d5), else the live session."""
+        session = getattr(self._tls, "conversation_session", None) or self._ensure_session()
         if session is None:
             return None
         return _LockedSession(session, self._conversation, self._conversation_bound())
@@ -3281,8 +3296,10 @@ class DaemonApp:
             self._text_serial += 1
             self._text_turns_run += 1
             serial = self._text_serial
-            session = self._session
-            previous = _previous_page_sources(self._text_turns_recent)
+            resumed = getattr(self._tls, "conversation_session", None)
+            session = resumed or self._session
+            conversation = getattr(resumed, "session_id", None)
+            previous = _previous_page_sources(self._text_turns_recent, conversation)
         turn = _TextTurn(
             serial=serial,
             thread=threading.get_ident(),
@@ -3291,6 +3308,7 @@ class DaemonApp:
             clock=self._clock_line(),
             collector=library_tools.CitationCollector() if self._library is not None else None,
             previous_sources=previous,
+            conversation=conversation,
         )
         self._arm_library_guard(turn)
         self._tls.text_turn = turn
@@ -3396,10 +3414,20 @@ class DaemonApp:
             },
         )
 
-    def _control_chat(self, message: Any) -> dict[str, Any]:
-        """``Controls.chat``: one typed turn, its reply, its sources and its serial."""
+    def _control_chat(self, message: Any, conversation: Optional[str] = None) -> dict[str, Any]:
+        """``Controls.chat``: one typed turn, its reply, its sources and its serial.
+
+        With *conversation*, the turn continues that earlier conversation (d5): its
+        turns are the window and the new ones go to its log, as if it never stopped.
+        """
         self._tls.text_turn = None
-        result = self._text_turns.handle_text(message)
+        refused = self._enter_conversation(conversation)
+        if refused is not None:
+            return refused
+        try:
+            result = self._text_turns.handle_text(message)
+        finally:
+            self._tls.conversation_session = None
         turn = getattr(self._tls, "text_turn", None)
         sources = _typed_sources(turn) if (turn and result.ok) else []
         if turn is not None:
@@ -3424,10 +3452,19 @@ class DaemonApp:
             "http_status": result.http_status,
         }
 
-    def _control_clip(self, audio: Any, declared_duration_s: Optional[float]) -> dict[str, Any]:
-        """``Controls.clip``: transcribe in memory, then answer as a typed turn."""
+    def _control_clip(
+        self, audio: Any, declared_duration_s: Optional[float], conversation: Optional[str] = None
+    ) -> dict[str, Any]:
+        """``Controls.clip``: transcribe in memory, then answer as a typed turn (in the
+        earlier *conversation* it continues, when one is named)."""
         self._tls.text_turn = None
-        result = self._text_turns.handle_clip(audio, declared_duration_s=declared_duration_s)
+        refused = self._enter_conversation(conversation)
+        if refused is not None:
+            return {**refused, "transcript": ""}
+        try:
+            result = self._text_turns.handle_clip(audio, declared_duration_s=declared_duration_s)
+        finally:
+            self._tls.conversation_session = None
         turn = getattr(self._tls, "text_turn", None)
         return {
             "ok": result.ok,
@@ -3439,6 +3476,55 @@ class DaemonApp:
             "code": result.code,
             "http_status": result.http_status,
         }
+
+    # ── continuing an earlier conversation (deviation d5) ───────────────────
+
+    def _enter_conversation(self, conversation: Optional[str]) -> Optional[dict[str, Any]]:
+        """Route this thread's turn into *conversation*; a refusal dict if it can't be.
+
+        ``None`` or the live session's own id is the live session. Anything else must
+        be a conversation the history lists, reopened as a :class:`Session` on its own
+        log with its turns restored — the operator's "like we never stopped".
+        """
+        self._tls.conversation_session = None
+        if not conversation:
+            return None
+        live = self._current_session_log()
+        if live is not None and live.stem == conversation:
+            return None
+        session = self._resumed_session(conversation)
+        if session is None:
+            self._record(APP_CONVERSATION_NOT_FOUND, "no such earlier conversation")
+            return {
+                "ok": False,
+                "reply": "",
+                "sources": [],
+                "turn_serial": None,
+                "code": APP_CONVERSATION_NOT_FOUND,
+                "http_status": 404,
+            }
+        self._tls.conversation_session = session
+        return None
+
+    def _resumed_session(self, conversation: str) -> Optional[Any]:
+        """The reopened session for *conversation*, cached; None if it isn't listed."""
+        with self._lock:
+            cached = self._resumed.get(conversation)
+            if cached is not None:
+                self._resumed.move_to_end(conversation)
+                return cached
+        found = self._history().conversation(conversation)
+        if not found:
+            return None
+        session = Session(
+            self._state, self._memory, session_id=conversation, added_by=self._config.added_by
+        )
+        session.restore((t["role"], t["text"]) for t in found["turns"])
+        with self._lock:
+            self._resumed[conversation] = session
+            while len(self._resumed) > RESUMED_CONVERSATIONS:
+                self._resumed.popitem(last=False)
+        return session
 
     # ── the library lane (t13): typed-turn tools, the write guard, the routes ──
 

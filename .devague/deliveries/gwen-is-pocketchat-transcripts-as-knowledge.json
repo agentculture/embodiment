@@ -2,7 +2,7 @@
   "plan_slug": "gwen-is-pocketchat-transcripts-as-knowledge",
   "schema_version": 2,
   "created": "2026-10-24T04:42:23Z",
-  "updated": "2026-10-24T06:51:51Z",
+  "updated": "2026-10-24T07:11:20Z",
   "deviations": [
     {
       "id": "d1",
@@ -42,7 +42,7 @@
         "t13"
       ],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "classification": "needs-follow-up",
       "seq": 3
     },
@@ -58,6 +58,21 @@
       "status": "approved",
       "classification": "acceptable",
       "seq": 4
+    },
+    {
+      "id": "d5",
+      "what": "Past conversations can be continued and become library items: (1) the chat and clip routes accept an optional conversation id; a typed or recorded question in an earlier conversation uses that conversation's turns as its window and appends to its session log; the room's live voice session is untouched; the page shows an earlier conversation with a working input. (2) embodiment adds a read-only 'embodiment history export --json' verb; culture-rules runs it and pushes each conversation into the library as a private item (Gwen still never writes to the library, c26); Gwen indexes and cites them like any item",
+      "task_ref": "t13",
+      "reason": "operator, 2026-10-24: 'past conversations - I need to be able to continue them, not just read them. and they should be indexed via culture-rules to library'; chose per-message typed continuation and an embodiment export that culture-rules pulls",
+      "affects": [
+        "t6",
+        "t12",
+        "c26"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 5
     }
   ],
   "evidence": [],

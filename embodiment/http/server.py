@@ -14,6 +14,8 @@ route                   guarded   what it is
 ``POST /api/voice/start``  **yes**   start listening
 ``POST /api/voice/stop``   **yes**   stop listening
 ``POST /api/mic/mute``     **yes**   ``{"muted": true|false}``
+``POST /api/chat``         **yes**   ``{"message", "conversation"?}``: a typed turn; with a
+                                      conversation id it continues that conversation
 ``GET /api/library``       **yes**   the catalog: ``{"items": [...]}``
 ``GET /api/library/{id}``  **yes**   ``{"item": {...}, "passages": [...]}``
 ``GET /api/library/search?q=``  **yes**  ``{"hits": [...]}``
@@ -330,6 +332,8 @@ TODOS_ROUTE = "/api/todos"
 #: The history pane (operator, 2026-10-24): read-only, from the session logs.
 CONVERSATIONS_ROUTE = "/api/conversations"
 CONVERSATION_NOT_FOUND_CODE = "conversation-not-found"
+#: The clip route's way to name the conversation a recorded question continues.
+CONVERSATION_HEADER = "X-Conversation"
 HISTORY_NOT_CONFIGURED_CODE = "history-not-configured"
 
 #: How long an Access-admitted stream may stay open when the verifier reported no
@@ -550,8 +554,9 @@ class Controls:
     status: Optional[Callable[[], dict[str, Any]]] = None
     #: ``chat(message) -> {"ok", "reply", "sources", "turn_serial", "code", "http_status"}``.
     #: ``message`` is the JSON value of ``"message"`` as received (any type; the text layer
-    #: refuses a non-string). Runs under :attr:`ServerConfig.chat_timeout_s`.
-    chat: Optional[Callable[[Any], dict[str, Any]]] = None
+    #: refuses a non-string). Runs under :attr:`ServerConfig.chat_timeout_s`. A second
+    #: argument, only when the body names one, is the conversation id it continues.
+    chat: Optional[Callable[..., dict[str, Any]]] = None
     #: ``speak(text) -> {"ok", "audio": bytes, "content_type", "code", "http_status"}``.
     #: Runs under :attr:`ServerConfig.speak_timeout_s`.
     speak: Optional[Callable[[Any], dict[str, Any]]] = None
@@ -559,7 +564,8 @@ class Controls:
     #: "http_status"}``. ``declared_duration_s`` is ``None`` unless the client sent a
     #: finite, non-negative ``X-Clip-Duration-S``. Runs under
     #: :attr:`ServerConfig.clip_timeout_s`; the body is already inside ``MAX_CLIP_BYTES``.
-    clip: Optional[Callable[[bytes, Optional[float]], dict[str, Any]]] = None
+    #: A third argument, only when ``X-Conversation`` is sent, is the conversation id.
+    clip: Optional[Callable[..., dict[str, Any]]] = None
     #: ``library_list() -> {"items": [{id, title, kind, created_at, indexed}]}``.
     library_list: Optional[Callable[[], dict[str, Any]]] = None
     #: ``library_get(item_id) -> {"item": {...}, "passages": [...]}``; an empty dict or
@@ -1114,12 +1120,15 @@ class _Handler(BaseHTTPRequestHandler):
             )
             if body is None:
                 return
-            outcome = app.call_text(
-                "api.clip",
-                controls.clip,
+            args: tuple[Any, ...] = (
                 body,
                 _declared_duration(self.headers.get("X-Clip-Duration-S")),
-                timeout_s=config.clip_timeout_s,
+            )
+            conversation = self.headers.get(CONVERSATION_HEADER)
+            if conversation:  # continuing an earlier conversation (d5)
+                args += (conversation,)
+            outcome = app.call_text(
+                "api.clip", controls.clip, *args, timeout_s=config.clip_timeout_s
             )
             self._answer_text(outcome, ("transcript", "reply"), serial=True, sources=True)
             return
@@ -1133,8 +1142,16 @@ class _Handler(BaseHTTPRequestHandler):
             return
         value = payload.get(key)
         if route == CHAT_ROUTE:
+            # An optional "conversation" continues an earlier conversation (d5); without
+            # one the turn joins the live session, as before.
+            conversation = payload.get("conversation")
+            args = (
+                (value, conversation)
+                if isinstance(conversation, str) and conversation
+                else (value,)
+            )
             outcome = app.call_text(
-                "api.chat", controls.chat, value, timeout_s=config.chat_timeout_s
+                "api.chat", controls.chat, *args, timeout_s=config.chat_timeout_s
             )
             self._answer_text(outcome, ("reply",), serial=True, sources=True)
             return
