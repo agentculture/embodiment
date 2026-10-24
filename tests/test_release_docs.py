@@ -45,6 +45,7 @@ NOT_YET = (
     "speech-to-speech",
     "robot relay",
     "value",
+    "transcripts in the library",
 )
 
 #: Shipped on this branch (Access verifier, semantic recall) and so dropped from
@@ -63,10 +64,21 @@ STILL_UNMEASURED = (
 #: cites it by name and quotes the numbers it changed, with their n.
 RECALL_RESULTS_FILE = "docs/live-test-results/2026-10-23-recall-gemma2.md"
 
-#: The two tools the daemon binds (``d7`` remember, ``d8`` forget). Both
-#: surfaces must name both, in the same ``## Not yet`` section that used to
-#: say the registry was empty — the claim changed, and it changed on both.
-TOOLS_BOUND = ("remember", "forget")
+#: The tools the daemon binds: ``remember`` (``d7``) and ``forget`` (``d8``),
+#: plus ``search_library`` and ``read_passage`` on typed turns when a library is
+#: configured (gwen-is-pocketchat t11/t13). Both surfaces must name all four, in
+#: the same ``## Not yet`` section that used to say the registry was empty.
+TOOLS_BOUND = ("remember", "forget", "search_library", "read_passage")
+
+#: The library cycle's names, which README and the explain root must both carry.
+LIBRARY_TERMS = (
+    "culture-library",
+    "get-only",
+    "write guard",
+    "EMBODIMENT_LIBRARY_URL",
+    "EMBODIMENT_LIBRARY_KEY",
+    "chat-first",
+)
 
 #: Where t21 — the human acceptance run — publishes latency as measured.
 T21_RESULT_FILE = "docs/live-test-results/2026-09-22-t21-acceptance.md"
@@ -182,3 +194,28 @@ def test_no_surface_still_calls_the_old_threshold_the_default(
     text = request.getfixturevalue(surface)
     assert "`0.78`" not in text
     assert "<date>-recall-gemma2" not in text
+
+
+@pytest.mark.parametrize("surface", ["readme", "explain_root"])
+def test_surface_describes_the_library_read_path(
+    surface: str, request: pytest.FixtureRequest
+) -> None:
+    text = request.getfixturevalue(surface)
+    lowered = text.lower()
+    missing = [t for t in LIBRARY_TERMS if t.lower() not in lowered]
+    assert not missing, f"{surface} lacks {missing}"
+
+
+@pytest.mark.parametrize("surface", ["readme", "explain_root"])
+def test_surface_does_not_overclaim_transcripts(
+    surface: str, request: pytest.FixtureRequest
+) -> None:
+    section = _section(request.getfixturevalue(surface), "Not yet").lower()
+    assert "assumed" in section
+    assert "2026-10-24" in section
+
+
+def test_readme_status_says_library_measurement_is_pending(readme: str) -> None:
+    status = _section(readme, "Status").lower()
+    assert "pending" in status
+    assert "not calibrated on library text" in status

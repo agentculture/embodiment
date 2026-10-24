@@ -28,8 +28,9 @@ live truth; decisions live on embodiment#85.
 presence, not a body (`reachy-mini-cli` owns the robot and its own `agent
 embody` layer shares this package's name — say so wherever the name appears);
 one rig; Hebrew only; one active ear; the session never crosses machines;
-value unmeasured. **Not yet:** tools beyond memory (the daemon binds exactly
-two, `remember` and `forget`; the registry is otherwise empty by design),
+value unmeasured. **Not yet:** tools beyond memory and the read-only library (the daemon binds
+`remember` and `forget`, plus `search_library` and `read_passage` on typed turns
+when a library is configured; the registry is otherwise empty by design),
 vision, a face, live realtime voice from the phone and speech-to-speech (the
 phone is control, text, and uploaded or recorded clips; the speech-to-speech
 button is present and disabled), a robot relay (t14's inbound endpoint and
@@ -57,6 +58,19 @@ censor). **Still unmeasured, and not claimed:** precision against a realistic
 distractor pool; the follow-up window (off by default); whether `stt` accepts
 MediaRecorder webm/mp4, and its duration cap; load on orin. `tests/test_release_docs.py` pins the boundary and the
 not-yet list against the README and the `explain` root.
+
+**Shipped on the `feat/gwen-is-pocketchat` branch (0.18.0):** the library read path
+(`embodiment/library/`; culture-library, xteink's instance on 127.0.0.1:8780 today;
+a GET-only client; `search_library` and `read_passage` on typed turns only), the
+write guard (`library_guarded_writes`, `app-library-guarded-write`: no
+`remember`/`forget` in a turn holding library text unless the operator's words name
+it), the audio subprocess env scrub, `status.access` admitted/refused counters,
+`/api/library*` and `/api/todos`, clip answers with sources, and the chat-first
+page (Ask, Library, To-dos, side reader, waveform a strip; it was waveform-first
+with chat fourth). **Transcripts are assumed (c21), not shown: none were in the
+library on 2026-10-24, and the retrieval measurement (t15) is pending.** The
+library threshold is memory's 0.715, provisional and uncalibrated for library
+text.
 
 - **Spec:** `docs/specs/2026-09-21-realtime-embodiment-app.md` — 50 claims, 33
   honesty conditions, after a rigorous `/challenge` pass.
@@ -309,6 +323,14 @@ embodiment/
   turn.py               ONE spoken turn, driven through loop.run; never silent, never raises
   tools.py              ToolRegistry (empty by default; the daemon binds remember + forget)
                         + bind_tools; the additive tool seam
+  library/              the optional library read path (gwen-is-pocketchat, 0.18.0):
+    client.py           GET-only by construction (AST-pinned), `gets` counter, deadline,
+                        redirects refused; EMBODIMENT_LIBRARY_URL / _KEY from the env only
+    epub.py             stdlib EPUB text extraction under member/size/char caps
+    index.py            DocumentIndex: separate 0600 file, reconcile by (id, sha256)
+    sync.py             LibrarySync: bounded ticks that yield to live turns
+    tools.py            search_library + read_passage, built per turn with a
+                        CitationCollector; results fenced as untrusted
   memory.py             RoomMemory over continuity: private, pinned, deadline-bounded;
                         render_recalled is the ONE place recall enters a prompt
   session.py            the conversation: explicit-ask detector (Hebrew/English), the
