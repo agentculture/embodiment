@@ -55,6 +55,28 @@ culture-rules (decision c21): 33 were there on 2026-10-24.
 
 ### Changed
 
+- **Live voice is opt-in** (deviation d6, operator): the daemon starts with no
+  ear attached and says so (`mic` with `ear: null`); the page's Live button opens
+  the room mic, pressing it again closes it, and it can be reopened any time.
+  `embodiment start --listen` (`EMBODIMENT_LISTEN_ON_START=1`) keeps the hot mic
+  on start.
+
+- **Conversations are exported once they go quiet** (deviation d7, operator,
+  amending d5's schedule): 30 minutes after a conversation's last message the
+  daemon publishes one `conversation` event (`status: settled`; id, last, turns,
+  never text) on its events-cli bus, remembered across restarts in
+  `conversations-settled.json`; culture-rules answers it with
+  `embodiment history export --id <id> --json`. A continued conversation settles
+  again. `--settled-for` serves a scheduled run instead.
+- **Every turn says how it arrived** (d7): the session log keeps `via` on the
+  operator's turns (`typed`, `spoken`, `recorded`, `uploaded`, `clip`; the page
+  sends `X-Clip-Origin` for a clip) and the export adds `generated` for Gwen's
+  and an `evidence` map of what each tag is worth.
+- **Bus envelope ids no longer repeat across runs**: they were the source and the
+  event's `seq`, which restarts at 1 every run, so a consumer keying events by id
+  (culture-rules keeps one envelope per id) would have dropped a new run's events
+  as duplicates. Each run now adds a random token. Found live while checking d7.
+
 - **Before:** the page was waveform-first with chat the fourth panel, and the
   daemon bound two tools (`remember`, `forget`). **After:** the page is
   chat-first inside culture-library's look: Ask is the library list, the

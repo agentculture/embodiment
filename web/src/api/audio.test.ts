@@ -87,3 +87,18 @@ describe("postClip continuing a conversation (deviation d5)", () => {
     expect(seen[1]["X-Conversation"]).toBe("conv42");
   });
 });
+
+describe("postClip origin (deviation d7)", () => {
+  it("says how the page got the audio only when told", async () => {
+    const seen: Record<string, string>[] = [];
+    const fetchFn = vi.fn(async (_u: RequestInfo | URL, init?: RequestInit) => {
+      seen.push({ ...(init?.headers as Record<string, string>) });
+      return { ok: true, status: 200, json: async () => ({ transcript: "t", reply: "r" }) } as Response;
+    });
+    const clip = new Blob(["abc"], { type: "audio/ogg" });
+    await postClip(clip, "", { fetchFn });
+    await postClip(clip, "", { fetchFn }, 2, undefined, "recorded");
+    expect(seen[0]["X-Clip-Origin"]).toBeUndefined();
+    expect(seen[1]["X-Clip-Origin"]).toBe("recorded");
+  });
+});

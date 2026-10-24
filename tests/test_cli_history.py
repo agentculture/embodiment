@@ -64,3 +64,40 @@ def test_export_writes_nothing(state: Path, capsys) -> None:
     before = sorted((p.name, p.stat().st_mtime) for p in state.rglob("*"))
     main(["history", "export", "--json", "--state-dir", str(state)])
     assert sorted((p.name, p.stat().st_mtime) for p in state.rglob("*")) == before
+
+
+# ── d7: one conversation by id, a settled filter, and the tag meanings ───────
+
+
+def test_export_by_id_returns_just_that_one(state: Path, capsys) -> None:
+    assert main(["history", "export", "--json", "--id", "old", "--state-dir", str(state)]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert [c["id"] for c in out["conversations"]] == ["old"]
+    assert [t["via"] for t in out["conversations"][0]["turns"]] == ["unknown", "generated"]
+
+
+def test_export_of_an_unknown_id_is_a_user_error(state: Path, capsys) -> None:
+    assert main(["history", "export", "--json", "--id", "nope", "--state-dir", str(state)]) == 1
+    assert "nope" in capsys.readouterr().err
+
+
+def test_settled_for_keeps_only_quiet_conversations(state: Path) -> None:
+    from embodiment.cli._commands.history import export
+
+    out = export(str(state), None, settled_for=1800, now=500.0 + 1000)
+    assert [c["id"] for c in out["conversations"]] == []
+    out = export(str(state), None, settled_for=1800, now=500.0 + 1800)
+    assert [c["id"] for c in out["conversations"]] == ["new", "old"]
+
+
+def test_every_export_explains_its_tags(state: Path, capsys) -> None:
+    assert main(["history", "export", "--json", "--state-dir", str(state)]) == 0
+    evidence = json.loads(capsys.readouterr().out)["evidence"]
+    assert evidence["typed"].startswith("verbatim")
+    assert evidence["generated"].startswith("generated")
+
+
+def test_a_bad_settled_for_is_refused(state: Path, capsys) -> None:
+    code = main(["history", "export", "--settled-for", "soon", "--state-dir", str(state)])
+    assert code == 1
+    assert "--settled-for" in capsys.readouterr().err

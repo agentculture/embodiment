@@ -1,0 +1,13 @@
+{
+  "v": 1,
+  "kind": "conversation",
+  "ts": "2026-09-22T12:00:09.000Z",
+  "seq": 10,
+  "source": "app://embodiment",
+  "data": {
+    "id": "20261024T101500Z-3f2a",
+    "status": "settled",
+    "last": 1792836900.0,
+    "turns": 4
+  }
+}

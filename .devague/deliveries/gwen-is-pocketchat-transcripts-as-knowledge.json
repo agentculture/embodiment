@@ -2,7 +2,7 @@
   "plan_slug": "gwen-is-pocketchat-transcripts-as-knowledge",
   "schema_version": 2,
   "created": "2026-10-24T04:42:23Z",
-  "updated": "2026-10-24T07:11:20Z",
+  "updated": "2026-10-24T15:28:45Z",
   "deviations": [
     {
       "id": "d1",
@@ -73,6 +73,28 @@
       "status": "approved",
       "classification": "acceptable",
       "seq": 5
+    },
+    {
+      "id": "d6",
+      "what": "Live voice is off by default: the daemon starts with no ear attached (no hot mic on start); the page's Live button opts in and attaches the room ear, pressing it again turns it off, and it can be re-enabled any time. An explicit opt-in keeps the old hot-mic-on-start for the rig (flag/env). Supersedes the realtime spec's 'hot mic on start' decision for this daemon's default",
+      "task_ref": "t12",
+      "reason": "Operator, 2026-10-24: 'live conversation is off by default and I can click the button to opt in and start it. (Or close and turn it off and reenable later)'",
+      "affects": [],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 6
+    },
+    {
+      "id": "d7",
+      "what": "Conversation export amends deviation d5: (1) triggered when a conversation goes quiet, not on a schedule: the daemon publishes a conversation-settled event (id and times only, no text) on its events-cli bus 30 min after the last message, once per settled state; culture-rules triggers on it and runs 'embodiment history export --id <id> --json'; a continued conversation settles again and updates the same item, keyed by the conversation id; '--settled-for' gives a schedule fallback. (2) Gwen's answers are exported too, and every turn is tagged with how it arrived and what it is worth as evidence: typed (the operator's own words, verbatim), spoken / recorded / uploaded (an AI transcription of audio: that it was said is a fact, the words are the transcriber's), gwen (generated: a record that she said it, not that it is true); the library adds quality and coherence scoring later",
+      "task_ref": "t13",
+      "reason": "Operator, 2026-10-24: accepted export-when-quiet over a schedule ('Why on a schedule and not on event?'); 'Gwen's answers - yes, I may want to ask questions about it. But we tag each content and its value. Library will add quality/coherence of each content later. A recording is truth (that it happened, not its content). A transcript is less so, as AI was doing the translation'",
+      "affects": [],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 7
     }
   ],
   "evidence": [],

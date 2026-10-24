@@ -476,15 +476,19 @@ class TextTurns:
 
     # -- typed turns ---------------------------------------------------------
 
-    def handle_text(self, text: object) -> TextTurnResult:
-        """Run one typed message as a turn in the current session; reply as text."""
+    def handle_text(self, text: object, *, via: str = "typed") -> TextTurnResult:
+        """Run one typed message as a turn in the current session; reply as text.
+
+        *via* is written beside the user turn in the session log: how it arrived
+        (``typed``, or a clip's ``recorded`` / ``uploaded`` / ``clip``; d7).
+        """
         try:
-            return self._handle_text(text)
+            return self._handle_text(text, via)
         except Exception as exc:  # noqa: BLE001  # degrade, never raise
             self._record(TEXT_TURN_FAILED, safe_reason.describe_exception(exc))
             return TextTurnResult(False, code=TEXT_TURN_FAILED, http_status=500)
 
-    def _handle_text(self, text: object) -> TextTurnResult:
+    def _handle_text(self, text: object, via: str = "typed") -> TextTurnResult:
         if not isinstance(text, str):
             return TextTurnResult(False, code=REFUSED_NOT_TEXT, http_status=400)
         message = text.strip()
@@ -497,17 +501,17 @@ class TextTurns:
             self._record(TEXT_TURN_BUSY, "the conversation was busy; nothing was written")
             return TextTurnResult(False, code=TEXT_TURN_BUSY, http_status=503)
         try:
-            return self._turn_in_conversation(message)
+            return self._turn_in_conversation(message, via)
         finally:
             if hold is not None and self._release_conversation is not None:
                 self._release_conversation()
 
-    def _turn_in_conversation(self, message: str) -> TextTurnResult:
+    def _turn_in_conversation(self, message: str, via: str = "typed") -> TextTurnResult:
         session = self._current_session()
         if session is None:
             self._record(TEXT_TURN_NO_SESSION, "typed turn ran without a session")
         else:
-            self._session_call(lambda: session.add_user(message))
+            self._session_call(lambda: session.add_user(message, metadata={"via": via}))
 
         try:
             result = self._run_text_turn(message)
@@ -596,19 +600,21 @@ class TextTurns:
 
     # -- clips ---------------------------------------------------------------
 
-    def handle_clip(self, audio: object, *, declared_duration_s: object = None) -> ClipResult:
+    def handle_clip(
+        self, audio: object, *, declared_duration_s: object = None, via: str = "clip"
+    ) -> ClipResult:
         """Transcribe a clip in memory and run the transcript as a typed turn.
 
         Refusals (413/415/400) happen BEFORE any call to the stt lane. The clip
         is never written anywhere; it is dropped when this call returns.
         """
         try:
-            return self._handle_clip(audio, declared_duration_s)
+            return self._handle_clip(audio, declared_duration_s, via)
         except Exception as exc:  # noqa: BLE001
             self._record(CLIP_STT_FAILED, safe_reason.describe_exception(exc))
             return ClipResult(False, code=CLIP_STT_FAILED, http_status=502)
 
-    def _handle_clip(self, audio: object, declared: object) -> ClipResult:
+    def _handle_clip(self, audio: object, declared: object, via: str = "clip") -> ClipResult:
         if not isinstance(audio, (bytes, bytearray)) or not audio:
             return ClipResult(False, code=REFUSED_EMPTY, http_status=400)
         cfg = self._config
@@ -644,7 +650,7 @@ class TextTurns:
             return ClipResult(
                 False, duration_s=duration, code=CLIP_EMPTY_TRANSCRIPT, http_status=422
             )
-        turn = self.handle_text(transcript)
+        turn = self.handle_text(transcript, via=via)
         return ClipResult(
             turn.ok,
             transcript=transcript,

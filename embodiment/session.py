@@ -864,7 +864,9 @@ class Session:
 
     # -- the window -----------------------------------------------------------
 
-    def add_user(self, text: str) -> Optional[AskOutcome]:
+    def add_user(
+        self, text: str, metadata: Optional[Mapping[str, Any]] = None
+    ) -> Optional[AskOutcome]:
         """Add a user turn. Returns an :class:`AskOutcome` iff the ask detector fired.
 
         Writes through the transcript log unconditionally, enforces the
@@ -879,9 +881,12 @@ class Session:
         keeps "no code path writes audio bytes to disk" a structural fact
         rather than a runtime check: there is no parameter here, or anywhere
         in this module's public surface, that accepts ``bytes``.
+
+        *metadata* is written beside the turn in the transcript log only, as for
+        :meth:`add_assistant` — today, how the turn arrived (``via``, d7).
         """
         self._require_str(text)
-        self._append(ROLE_USER, text)
+        self._append(ROLE_USER, text, metadata=metadata)
         return self._check_ask(text)
 
     def add_assistant(self, text: str, metadata: Optional[Mapping[str, Any]] = None) -> None:

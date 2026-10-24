@@ -65,12 +65,16 @@ export async function speakMessage(
   }
 }
 
+/** Recorded on the page's mic, or an uploaded file (d7). */
+export type ClipOrigin = "recorded" | "uploaded";
+
 export async function postClip(
   clip: Blob,
   secret: string,
   options: AudioClientOptions = {},
   durationS?: number,
   conversation?: string,
+  origin?: ClipOrigin,
 ): Promise<ClipOutcome> {
   if (clip.size === 0) return { ok: false, code: "empty-clip", status: 0 };
   const fetchFn = options.fetchFn ?? fetch;
@@ -78,6 +82,9 @@ export async function postClip(
   if (clip.type) headers["Content-Type"] = clip.type;
   // Continuing an earlier conversation (deviation d5): the daemon answers in it.
   if (conversation) headers["X-Conversation"] = conversation;
+  // How the page got the audio (deviation d7): the session log keeps it, and the
+  // export tells a reader a recording from an uploaded file.
+  if (origin) headers["X-Clip-Origin"] = origin;
   if (durationS !== undefined && Number.isFinite(durationS) && durationS >= 0) {
     headers["X-Clip-Duration-S"] = String(durationS);
   }

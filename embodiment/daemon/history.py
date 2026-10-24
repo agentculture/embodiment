@@ -17,9 +17,11 @@ outside :data:`_ID_CHARS` is refused, so a request can never name a path.
 from __future__ import annotations
 
 import json
+import os
 import string
+import tempfile
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Iterable, Optional
 
 #: The newest this many session logs are listed.
 MAX_CONVERSATIONS = 60
@@ -30,8 +32,65 @@ TITLE_CHARS = 120
 #: Turn roles the page shows; anything else in a log is left out.
 ROLES = ("user", "assistant")
 
+#: How each turn arrived, and what it is worth as evidence (operator, 2026-10-24;
+#: deviation d7): "A recording is truth (that it happened, not its content). A
+#: transcript is less so, as AI was doing the translation." The session log keeps
+#: ``via`` on the operator's turns from d7 on; Gwen's turns are always generated.
+VIA_TYPED = "typed"
+VIA_SPOKEN = "spoken"
+VIA_RECORDED = "recorded"
+VIA_UPLOADED = "uploaded"
+VIA_CLIP = "clip"
+VIA_GENERATED = "generated"
+#: An operator turn logged before d7, when the log did not say how it arrived.
+VIA_UNKNOWN = "unknown"
+#: One line per tag, carried in every export so a reader (culture-rules, the
+#: library's later quality/coherence scoring) never has to guess what a tag means.
+EVIDENCE = {
+    VIA_TYPED: "verbatim: the operator's own words, as typed",
+    VIA_SPOKEN: (
+        "transcribed: the operator spoke to the room microphone; that it was said is a"
+        " fact, the words are an AI transcription"
+    ),
+    VIA_RECORDED: (
+        "transcribed: the operator recorded it on the page; that it was said is a fact,"
+        " the words are an AI transcription"
+    ),
+    VIA_UPLOADED: (
+        "transcribed: an uploaded audio file; that the file was given is a fact, who"
+        " speaks in it is not known, the words are an AI transcription"
+    ),
+    VIA_CLIP: "transcribed: an audio clip; the words are an AI transcription",
+    VIA_GENERATED: (
+        "generated: Gwen's reply; a record that she said it, not evidence that it is true"
+    ),
+    VIA_UNKNOWN: "unknown: logged before turns recorded how they arrived",
+}
+_USER_VIAS = frozenset({VIA_TYPED, VIA_SPOKEN, VIA_RECORDED, VIA_UPLOADED, VIA_CLIP})
+#: The words the page may send for a clip (``X-Clip-Origin``).
+_CLIP_ORIGINS = frozenset({VIA_RECORDED, VIA_UPLOADED})
+
+#: A conversation is SETTLED when nothing has been said in it for this long (d7):
+#: then it is announced once, and announced again only after it is continued.
+SETTLE_AFTER_S = 1800.0
+#: The file that remembers which settled states were announced (0600, beside the
+#: session logs' directory, never inside it so it is never listed as a conversation).
+SETTLED_NAME = "conversations-settled.json"
+
 _ID_CHARS = frozenset(string.ascii_letters + string.digits + "-_.")
 _MAX_ID_CHARS = 128
+
+
+def clip_via(origin: Any) -> str:
+    """The ``via`` tag for a clip the page names *origin*; anything else is ``clip``."""
+    return origin if isinstance(origin, str) and origin in _CLIP_ORIGINS else VIA_CLIP
+
+
+def _via(row: dict[str, Any]) -> str:
+    if row["role"] == "assistant":
+        return VIA_GENERATED
+    via = row.get("via")
+    return via if via in _USER_VIAS else VIA_UNKNOWN
 
 
 def _valid_id(conversation_id: Any) -> bool:
@@ -66,6 +125,7 @@ def _turns(path: Path) -> list[dict[str, Any]]:
                 "role": row["role"],
                 "text": text,
                 "ts": float(ts) if isinstance(ts, (int, float)) else None,
+                "via": _via(row),
             }
         )
     return turns
@@ -135,3 +195,69 @@ class ConversationHistory:
             "conversation": _summary(conversation_id, turns, conversation_id == self._current_id()),
             "turns": turns[-MAX_TURNS:],
         }
+
+
+def settled(
+    summaries: Iterable[dict[str, Any]],
+    announced: dict[str, float],
+    now: float,
+    quiet_s: float = SETTLE_AFTER_S,
+) -> list[dict[str, Any]]:
+    """The conversations quiet for *quiet_s* whose last turn was not yet announced.
+
+    *announced* maps an id to the ``last`` it was announced at; a continued
+    conversation has a newer ``last``, so it settles — and is announced — again.
+    The live conversation is no different: once quiet, it is settled too.
+    """
+    out = []
+    for summary in summaries:
+        last = summary.get("last")
+        if not isinstance(last, (int, float)) or now - last < quiet_s:
+            continue
+        if announced.get(summary["id"], -1.0) >= last:
+            continue
+        out.append(summary)
+    return out
+
+
+class SettledLedger:
+    """Which settled states were announced, kept across restarts. Never raises.
+
+    A lost or unreadable file means every settled conversation is announced once
+    more — harmless, because the export is keyed by the conversation id and the
+    library item is updated, not duplicated.
+    """
+
+    def __init__(self, path: Any) -> None:
+        self._path = Path(path)
+
+    def load(self) -> dict[str, float]:
+        try:
+            data = json.loads(self._path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        return {
+            k: float(v)
+            for k, v in data.items()
+            if _valid_id(k) and isinstance(v, (int, float)) and not isinstance(v, bool)
+        }
+
+    def save(self, announced: dict[str, float]) -> bool:
+        """Write atomically, 0600; keep only the newest :data:`MAX_CONVERSATIONS` x 4."""
+        keep = dict(sorted(announced.items(), key=lambda kv: kv[1])[-MAX_CONVERSATIONS * 4 :])
+        try:
+            self._path.parent.mkdir(parents=True, exist_ok=True)
+            fd, tmp = tempfile.mkstemp(dir=self._path.parent, prefix=".settled-")
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as fh:
+                    json.dump(keep, fh)
+                os.chmod(tmp, 0o600)
+                os.replace(tmp, self._path)
+            except OSError:
+                Path(tmp).unlink(missing_ok=True)
+                raise
+        except OSError:
+            return False
+        return True

@@ -223,9 +223,12 @@ operator's decisions, recorded in the spec:
 - **The daemon owns barge-in.** An ears-only session never receives
   `response.interrupted`, and lobes accepts `aec_mode` without acting on it. On
   `speech_started` during playback the daemon stops its own speaker.
-- **Hot mic on `start`**, always visible, always mutable, with mute enforced in
-  the capture path before encode — not in the UI. This *replaces* the old
-  opt-in-mic rule; the visibility and the mute are what it was traded for.
+- **Hot mic on `start`** was the decision, always visible, always mutable, with
+  mute enforced in the capture path before encode — not in the UI. **Superseded
+  for the default by d6 (operator, 2026-10-24):** live voice is OFF until the
+  page's Live button opts in (`/api/voice/start`), off again on `/api/voice/stop`,
+  and re-enabled at will; `embodiment start --listen` (`EMBODIMENT_LISTEN_ON_START=1`)
+  keeps the hot mic on start. Visibility and the capture-path mute still hold.
 - **Hardware echo cancellation**, on the operator's word, so the session
   declares `aec_mode=aec`. It is unmeasured until `t21`, which checks that Gwen
   never transcribes her own voice.
@@ -379,7 +382,8 @@ embodiment/
   cli/_commands/tunnel  prints the cultureflare/cloudflared commands (default host
                         gwen.culture.dev) and the Access env names; never runs them
   cli/_commands/history `history export`: past conversations as JSON, read-only; culture-rules
-                        pulls it into the library as private items (d5)
+                        pulls it into the library as private items (d5), on the daemon's
+                        `conversation` settled event, each turn tagged `via` (d7)
   cli/_commands/memory  ingest | forget | overview: validate and ENQUEUE only; dry run
                         unless --apply; the daemon is the single writer
   ingest/contract.py    source registry, whole-batch validation, charset-safe stored ids

@@ -334,6 +334,8 @@ CONVERSATIONS_ROUTE = "/api/conversations"
 CONVERSATION_NOT_FOUND_CODE = "conversation-not-found"
 #: The clip route's way to name the conversation a recorded question continues.
 CONVERSATION_HEADER = "X-Conversation"
+#: The page's word for a clip: ``recorded`` (its mic) or ``uploaded`` (a file); d7.
+CLIP_ORIGIN_HEADER = "X-Clip-Origin"
 HISTORY_NOT_CONFIGURED_CODE = "history-not-configured"
 
 #: How long an Access-admitted stream may stay open when the verifier reported no
@@ -564,7 +566,8 @@ class Controls:
     #: "http_status"}``. ``declared_duration_s`` is ``None`` unless the client sent a
     #: finite, non-negative ``X-Clip-Duration-S``. Runs under
     #: :attr:`ServerConfig.clip_timeout_s`; the body is already inside ``MAX_CLIP_BYTES``.
-    #: A third argument, only when ``X-Conversation`` is sent, is the conversation id.
+    #: A third argument, only when ``X-Conversation`` or ``X-Clip-Origin`` is sent, is
+    #: the conversation id (or ``None``); a fourth, only with ``X-Clip-Origin``, is it.
     clip: Optional[Callable[..., dict[str, Any]]] = None
     #: ``library_list() -> {"items": [{id, title, kind, created_at, indexed}]}``.
     library_list: Optional[Callable[[], dict[str, Any]]] = None
@@ -1120,13 +1123,7 @@ class _Handler(BaseHTTPRequestHandler):
             )
             if body is None:
                 return
-            args: tuple[Any, ...] = (
-                body,
-                _declared_duration(self.headers.get("X-Clip-Duration-S")),
-            )
-            conversation = self.headers.get(CONVERSATION_HEADER)
-            if conversation:  # continuing an earlier conversation (d5)
-                args += (conversation,)
+            args = (body, *_clip_extras(self.headers))
             outcome = app.call_text(
                 "api.clip", controls.clip, *args, timeout_s=config.clip_timeout_s
             )
@@ -1519,6 +1516,20 @@ def _parse_object(body: bytes) -> Optional[dict[str, Any]]:
     except ValueError:
         return None
     return payload if isinstance(payload, dict) else None
+
+
+def _clip_extras(headers: Any) -> tuple[Any, ...]:
+    """The clip callable's arguments after the body: the declared duration, then —
+    only when sent — the conversation it continues (d5) and the clip's origin (d7).
+    The daemon checks the origin word; anything unknown is logged as ``clip``."""
+    extras: tuple[Any, ...] = (_declared_duration(headers.get("X-Clip-Duration-S")),)
+    conversation = headers.get(CONVERSATION_HEADER) or None
+    origin = headers.get(CLIP_ORIGIN_HEADER) or None
+    if conversation or origin:
+        extras += (conversation,)
+    if origin:
+        extras += (origin,)
+    return extras
 
 
 def _declared_duration(raw: Optional[str]) -> Optional[float]:

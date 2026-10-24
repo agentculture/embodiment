@@ -24,7 +24,8 @@ that used to live here are archived in git history (tag
 ## Status, stated plainly
 
 **The daemon is built and runs, on one rig.** `embodiment start` launches it:
-hot mic through the host array, an ears-only session on lobes' `/v1/realtime`
+the host array's mic, opened by the page's Live button
+(off by default; `start --listen` opens it at start), an ears-only session on lobes' `/v1/realtime`
 (the daemon runs the turn and never sends `response.create`), a spoken reply
 through `POST /v1/audio/speech`, barge-in owned by the daemon, memory in a
 private store, and a dashboard behind the install secret.
@@ -235,19 +236,33 @@ _HISTORY = """\
 
 Read-only access to Gwen's past conversations, from the per-session logs the
 daemon writes. It never writes the state directory, the memory store or the
-library. culture-rules runs `export` on its schedule and turns each conversation
-into a private library item (deviation d5), so Gwen can search and cite them.
+library. culture-rules turns each conversation into a private library item
+(deviation d5), so Gwen can search and cite them.
+
+When (deviation d7): once a conversation has been quiet for 30 minutes the daemon
+publishes one `conversation` event on its events-cli bus (`status: settled`, the
+id, the last turn's time and the turn count, never text), and culture-rules
+answers it with `export --id <id>`. A continued conversation settles again and
+updates the same item.
 
 ## Usage
 
-    embodiment history export [--since <epoch-seconds>] [--state-dir DIR] [--json]
+    embodiment history export [--id ID] [--since <epoch-seconds>]
+        [--settled-for SECONDS] [--state-dir DIR] [--json]
     embodiment history overview [--json]
 
 ## Notes
 
-- `--json` carries each conversation's turns (`role`, `text`, `ts`); the plain
-  form lists ids, turn counts and titles only.
-- `--since` keeps only conversations whose last turn is newer, for incremental runs.
+- `--json` carries each conversation's turns (`role`, `text`, `ts`, `via`) and
+  an `evidence` map; the plain form lists ids, turn counts and titles only.
+- `via` says how a turn arrived and so what it is worth as evidence: `typed`
+  (the operator's own words, verbatim), `spoken` / `recorded` / `uploaded` /
+  `clip` (an AI transcription of audio: that it was said is a fact, the words
+  are the transcriber's), `generated` (Gwen's reply: a record that she said it,
+  not that it is true), `unknown` (logged before d7).
+- `--id` exports one conversation; an unknown id is a user error.
+- `--since` keeps only conversations whose last turn is newer, for incremental runs;
+  `--settled-for` keeps only those quiet for at least that long, for a scheduled run.
 - The page continues a conversation through `POST /api/chat` with a
   `"conversation"` id; this verb is for reading only.
 """

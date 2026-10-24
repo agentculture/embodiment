@@ -1657,6 +1657,32 @@ class TestClipRoute:
         finally:
             built.server.shutdown(2.0)
 
+    @pytest.mark.parametrize(
+        ("extra", "args"),
+        [
+            ({}, ()),
+            ({"X_Conversation": "c1"}, ("c1",)),
+            ({"X_Clip_Origin": "recorded"}, (None, "recorded")),
+            ({"X_Conversation": "c1", "X_Clip_Origin": "uploaded"}, ("c1", "uploaded")),
+        ],
+    )
+    def test_the_conversation_and_origin_headers_reach_the_callable(
+        self, extra: dict, args: tuple
+    ) -> None:
+        """d5 adds the conversation, d7 the clip's origin; neither is sent unasked."""
+        seen: list[tuple] = []
+        built = build(
+            controls=s.Controls(clip=lambda a, d, *rest: seen.append(rest) or {"ok": True})
+        )
+        try:
+            status, _ = built.request(
+                "POST", "/api/clip", body=b"abc", hdrs=self.clip_headers(built, **extra)
+            )
+            assert status == 200
+            assert seen == [args]
+        finally:
+            built.server.shutdown(2.0)
+
     @pytest.mark.parametrize("raw", ["soon", "nan", "inf", "-3", ""])
     def test_an_unusable_duration_header_is_ignored(self, raw: str) -> None:
         seen: list[Optional[float]] = []

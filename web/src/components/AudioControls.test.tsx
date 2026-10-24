@@ -59,6 +59,7 @@ describe("AudioControls upload", () => {
     expect(fetchFn.mock.calls[0][0]).toBe("/api/clip");
     expect(fetchFn.mock.calls[0][1]?.body).toBe(file);
     expect((fetchFn.mock.calls[0][1]?.headers as Record<string, string>)["Content-Type"]).toBe("audio/ogg");
+    expect((fetchFn.mock.calls[0][1]?.headers as Record<string, string>)["X-Clip-Origin"]).toBe("uploaded");
   });
   it("surfaces a 415 refusal as an alert and does not call onReply", async () => {
     const onReply = vi.fn();
@@ -94,6 +95,7 @@ describe("AudioControls record", () => {
     await waitFor(() => expect(onReply).toHaveBeenCalledWith({ transcript: "t", reply: "r", turnSerial: null, sources: [] }));
     const init = fetchFn.mock.calls[0][1];
     expect((init?.headers as Record<string, string>)["Content-Type"]).toBe("audio/webm;codecs=opus");
+    expect((init?.headers as Record<string, string>)["X-Clip-Origin"]).toBe("recorded");
     expect(stopTrack).toHaveBeenCalled();
   });
   it("stops by itself before the server's clip cap, so a forgotten recording still lands", async () => {

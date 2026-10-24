@@ -38,7 +38,7 @@ class FakeSession:
     def __init__(self):
         self.calls = []
 
-    def add_user(self, text):
+    def add_user(self, text, metadata=None):
         self.calls.append(("user", text))
 
     def add_assistant(self, text, metadata=None):
@@ -105,7 +105,7 @@ class TestTypedTurn:
 
     def test_session_failure_is_recorded_and_turn_still_runs(self):
         class Bad(FakeSession):
-            def add_user(self, text):
+            def add_user(self, text, metadata=None):
                 raise OSError("disk")
 
         tt, rec = make(session=Bad())
@@ -452,7 +452,7 @@ class LoggingSession(FakeSession):
         super().__init__()
         self.log = log
 
-    def add_user(self, text):
+    def add_user(self, text, metadata=None):
         self.log.append("user")
         super().add_user(text)
 

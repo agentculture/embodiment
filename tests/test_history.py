@@ -90,3 +90,67 @@ def test_a_missing_directory_is_an_empty_history(tmp_path):
     history = ConversationHistory(tmp_path / "none")
     assert history.conversations() == {"conversations": []}
     assert history.conversation("abc") is None
+
+
+# ── d7: how each turn arrived, and when a conversation has settled ───────────
+
+
+def test_turns_carry_how_they_arrived(tmp_path):
+    rows = [
+        {**_turn("user", "typed one", 1.0), "via": "typed"},
+        _turn("assistant", "an answer", 2.0),
+        {**_turn("user", "said aloud", 3.0), "via": "spoken"},
+        _turn("user", "from before d7", 4.0),
+        {**_turn("user", "forged tag", 5.0), "via": "gospel"},
+    ]
+    _log(tmp_path, "c", rows, 1)
+    turns = ConversationHistory(tmp_path).conversation("c")["turns"]
+    assert [t["via"] for t in turns] == ["typed", "generated", "spoken", "unknown", "unknown"]
+
+
+def test_every_tag_has_an_evidence_line():
+    vias = {h.VIA_TYPED, h.VIA_SPOKEN, h.VIA_RECORDED, h.VIA_UPLOADED, h.VIA_CLIP}
+    assert vias | {h.VIA_GENERATED, h.VIA_UNKNOWN} == set(h.EVIDENCE)
+    assert h.EVIDENCE[h.VIA_TYPED].startswith("verbatim")
+    assert h.EVIDENCE[h.VIA_GENERATED].startswith("generated")
+    assert all(h.EVIDENCE[v].startswith("transcribed") for v in vias - {h.VIA_TYPED})
+
+
+def test_clip_via_accepts_only_the_page_words():
+    assert h.clip_via("recorded") == "recorded"
+    assert h.clip_via("uploaded") == "uploaded"
+    assert h.clip_via("typed") == "clip"
+    assert h.clip_via(None) == "clip"
+
+
+def _summary(id_: str, last):
+    return {"id": id_, "last": last, "turns": 1}
+
+
+def test_settled_waits_for_the_quiet_period_and_announces_once():
+    quiet, fresh = _summary("quiet", 1000.0), _summary("fresh", 2500.0)
+    now = 1000.0 + h.SETTLE_AFTER_S
+    assert [s["id"] for s in h.settled([quiet, fresh], {}, now)] == ["quiet"]
+    assert h.settled([quiet], {"quiet": 1000.0}, now) == []
+
+
+def test_a_continued_conversation_settles_again():
+    continued = _summary("c", 5000.0)
+    assert h.settled([continued], {"c": 1000.0}, 5000.0 + h.SETTLE_AFTER_S) == [continued]
+
+
+def test_settled_skips_a_conversation_with_no_times():
+    assert h.settled([_summary("c", None)], {}, 1e12) == []
+
+
+def test_the_settled_ledger_round_trips_privately(tmp_path):
+    ledger = h.SettledLedger(tmp_path / "s.json")
+    assert ledger.load() == {}
+    assert ledger.save({"a": 1.0, "../x": 2.0}) is True
+    assert ledger.load() == {"a": 1.0}
+    assert (tmp_path / "s.json").stat().st_mode & 0o777 == 0o600
+
+
+def test_an_unreadable_ledger_means_announce_again(tmp_path):
+    (tmp_path / "s.json").write_text("not json")
+    assert h.SettledLedger(tmp_path / "s.json").load() == {}

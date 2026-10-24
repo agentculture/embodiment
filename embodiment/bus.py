@@ -251,6 +251,7 @@ that reports what it left unsent (lesson 6 — shutdown is a feature).
 from __future__ import annotations
 
 import json
+import secrets
 import threading
 import time
 import unicodedata
@@ -305,6 +306,7 @@ EVENT_KINDS: frozenset[str] = frozenset(
         "features",
         "clients",
         "heartbeat",
+        "conversation",
     }
 )
 
@@ -419,6 +421,7 @@ _REQUIRED_DATA_FIELDS: dict[str, tuple[str, ...]] = {
     "features": ("direction", "env", "level_db", "noise_floor_db", "zero_crossing_hz"),
     "clients": ("count", "remote"),
     "heartbeat": (),
+    "conversation": ("id", "status", "last", "turns"),
 }
 
 #: Kinds dropped FIRST under queue back-pressure — a subscriber's own queue
@@ -917,6 +920,11 @@ class Bus:
         on_degrade: Optional[Callable[[BusDegradation], None]] = None,
     ) -> None:
         self._source = source
+        #: Fresh per Bus (so per daemon run): ``seq`` restarts at 1 with every run,
+        #: and a consumer that keys events by id -- culture-rules stores one envelope
+        #: per id and drops a repeat as a duplicate -- would otherwise discard a new
+        #: run's events as copies of the last run's (found live, 2026-10-24, d7).
+        self._run_token = secrets.token_hex(6)
         self._redact: tuple[str, ...] = tuple(s for s in redact if s)
         self._max_event_bytes = max(1, int(max_event_bytes))
         self._subscriber_queue_size = max(1, int(subscriber_queue_size))
@@ -1297,7 +1305,7 @@ class Bus:
                 source=self._source,
                 data=event.to_dict(),
                 time=event.ts,
-                id=f"evt-bus-{self._source}-{event.seq}",
+                id=f"evt-bus-{self._source}-{self._run_token}-{event.seq}",
             )
             topic = type_to_topic(envelope.type)
             result = client.publish_event(envelope, topic)

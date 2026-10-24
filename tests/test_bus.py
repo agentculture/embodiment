@@ -1362,3 +1362,21 @@ def test_measured_cost_60hz_features_3_subscribers_10s(capsys):
     # Loose sanity bound only: this is a simulated-time test (no real sleeping),
     # so 600 in-process publishes must not take anywhere near a full second.
     assert elapsed < 2.0
+
+
+# ── envelope ids never repeat across runs (found live, 2026-10-24, d7) ───────
+
+
+def test_envelope_ids_differ_between_two_runs_of_the_same_source():
+    """seq restarts at 1 every run; culture-rules drops a repeated id as a duplicate."""
+    ids = []
+    for _ in range(2):
+        bus, client = _bus_with_ok_client()
+        try:
+            bus.publish("conversation", {"id": "c", "status": "settled", "last": 1.0, "turns": 1})
+            assert _wait_until(lambda: client.published), "nothing reached the broker client"
+        finally:
+            bus.close(deadline=1.0)
+        ids.append(client.published[0][0].id)
+    assert ids[0] != ids[1]
+    assert all(i.startswith("evt-bus-") for i in ids)

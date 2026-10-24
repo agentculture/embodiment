@@ -149,7 +149,14 @@ from embodiment.audio.features import FeatureExtractor
 from embodiment.bus import Bus, fold_degradation
 from embodiment.contract import ModelResponse
 from embodiment.daemon import drain as drain_module
-from embodiment.daemon.history import ConversationHistory
+from embodiment.daemon.history import (
+    SETTLED_NAME,
+    VIA_SPOKEN,
+    ConversationHistory,
+    SettledLedger,
+    clip_via,
+    settled,
+)
 from embodiment.daemon.lifecycle import DEFAULT_SHUTDOWN_DEADLINE, ENV_SHUTDOWN_DEADLINE
 from embodiment.daemon.recall_events import (
     PURPOSE_FOLLOW_UP,
@@ -402,6 +409,11 @@ ENV_RECALL_MODE = "EMBODIMENT_RECALL_MODE"
 #: Never inferred from a model name; unset means no such role is configured.
 #: Turning speech-to-speech on is not in this cycle — the name is reported only.
 ENV_S2S_ROLE = "EMBODIMENT_S2S_ROLE"
+#: ``1`` opens the room ear when the daemon starts (the old hot mic on start).
+#: Unset or ``0``, the default: live voice is OFF until the page's Live button
+#: (``POST /api/voice/start``) opts in; ``/api/voice/stop`` turns it off again
+#: and it can be re-enabled any time (operator, 2026-10-24; deviation d6).
+ENV_LISTEN_ON_START = "EMBODIMENT_LISTEN_ON_START"
 
 #: The two recall modes this daemon will ask memory for.
 RECALL_MODE_SEMANTIC = memory_module.SEMANTIC_MODE
@@ -1003,6 +1015,10 @@ LIBRARY_TICK_BUDGET_S = 60.0
 #: its budget and still yields to live turns. Measured 2026-10-24: a full re-index of
 #: 51 items took one item-budget per 300 s tick (15 items each), about 15 minutes.
 LIBRARY_CATCH_UP_S = 5.0
+#: How often the settle watch looks for conversations that have gone quiet (d7).
+#: Small beside the 30 min quiet period it serves, so an announcement is late by
+#: at most this much; each look reads the bounded session-log listing only.
+SETTLE_CHECK_S = 60.0
 #: Hits one search route returns: the library tools' own cap.
 LIBRARY_SEARCH_LIMIT = library_tools.MAX_LIMIT
 #: The memory type the to-dos view lists, written by the culture-rules ingest.
@@ -1117,6 +1133,10 @@ class AppConfig:
     memory_scope: str = "gwen"
     added_by: str = "gwen"
     session_summary_deadline: float = 5.0
+    #: Open the room ear in :meth:`DaemonApp.start`. ``False``, the default:
+    #: live voice is opt-in from the page's Live button (d6), so the daemon
+    #: comes up deaf, says so (``mic`` event, ``ear: None``), and serves text.
+    listen_on_start: bool = False
     #: Whether a browser/robot ear (:class:`~embodiment.audio.remote.RemoteEndpoint`)
     #: is started by the daemon. **Always False in v1**, by the operator's
     #: decision — the field exists so the dashboard has a stable contract to
@@ -1992,6 +2012,9 @@ class DaemonApp:
         self._embedder_seen = 0
         self._cache_seen = 0
         self._init_library(lanes.library)
+        self._settle_thread: Optional[threading.Thread] = None
+        self._settle_announced = 0
+        self._settle_save_failures = 0
 
     def _init_library(self, lane: Optional[LibraryLane]) -> None:
         """The library lane's state (t13). With no lane every counter stays zero."""
@@ -2131,19 +2154,29 @@ class DaemonApp:
     # ── lifecycle ────────────────────────────────────────────────────────
 
     def start(self) -> None:
-        """Bring the daemon up: the ear, the dashboard, the ears loop. Idempotent."""
+        """Bring the daemon up: the dashboard, the workers, and — only with
+        ``listen_on_start`` — the ear. Idempotent.
+
+        Live voice is opt-in (d6): without the flag no ear is attached and the
+        ``mic`` event says so, so the page's Live button reads Off; pressing it
+        is ``_control_start_voice``, which attaches the same default ear.
+        """
         with self._lock:
             if self._started or self._closed:
                 return
             self._started = True
         self._log("started", target="embodiment.daemon.app")
         self._publish("state", {"component": "daemon", "status": "starting"})
-        self._attach_default_ear()
+        if self._config.listen_on_start:
+            self._attach_default_ear()
+        else:
+            self._publish_mic()
         self._start_server()
         self._start_turn_thread()
         self._start_drain_worker()
         self._start_backfill()
         self._start_library_sync()
+        self._start_settle_watch()
         self._publish("state", {"component": "daemon", "status": "running"})
 
     def run(self, stop_event: threading.Event) -> int:
@@ -2244,7 +2277,9 @@ class DaemonApp:
         step(0.89, self._settle_recalls)
         voice_closed = step(0.92, self._close_voice)
         server_stopped = step(0.95, self._stop_server)
-        library_stopped = step(0.955, self._stop_library)
+        # The settle watch only reads logs and replaces one small file atomically,
+        # so it shares the library's slot rather than taking one of its own.
+        library_stopped = step(0.955, lambda d: self._stop_library(d) & self._stop_settle(d))
         # The drain's share sits BEFORE memory closes, so a batch the worker
         # was part-way through (or one enqueued just before the stop) gets one
         # last bounded pass while the store still takes writes; whatever does
@@ -3453,16 +3488,23 @@ class DaemonApp:
         }
 
     def _control_clip(
-        self, audio: Any, declared_duration_s: Optional[float], conversation: Optional[str] = None
+        self,
+        audio: Any,
+        declared_duration_s: Optional[float],
+        conversation: Optional[str] = None,
+        origin: Optional[str] = None,
     ) -> dict[str, Any]:
         """``Controls.clip``: transcribe in memory, then answer as a typed turn (in the
-        earlier *conversation* it continues, when one is named)."""
+        earlier *conversation* it continues, when one is named). *origin* is the page's
+        word for the clip — ``recorded`` on its mic or ``uploaded`` as a file (d7)."""
         self._tls.text_turn = None
         refused = self._enter_conversation(conversation)
         if refused is not None:
             return {**refused, "transcript": ""}
         try:
-            result = self._text_turns.handle_clip(audio, declared_duration_s=declared_duration_s)
+            result = self._text_turns.handle_clip(
+                audio, declared_duration_s=declared_duration_s, via=clip_via(origin)
+            )
         finally:
             self._tls.conversation_session = None
         turn = getattr(self._tls, "text_turn", None)
@@ -3702,6 +3744,65 @@ class DaemonApp:
         for problem in problems[seen_index:]:
             self._record(APP_LIBRARY_DEGRADED, f"document index: {problem}", source="library")
 
+    # ── settled conversations (deviation d7) ─────────────────────────────────
+
+    def _start_settle_watch(self) -> None:
+        """Announce each conversation once it has gone quiet. Never raises.
+
+        Operator, 2026-10-24: export a conversation when it goes quiet, not on a
+        schedule. Every :data:`SETTLE_CHECK_S` the watch lists the session logs and
+        publishes one ``conversation`` event (id, last, turns -- never text) per
+        conversation quiet for :data:`~embodiment.daemon.history.SETTLE_AFTER_S`
+        whose last turn was not yet announced. culture-rules triggers on it and runs
+        ``embodiment history export --id``; a continued conversation settles again.
+        """
+        thread = threading.Thread(target=self._settle_worker, name="embodiment-settle", daemon=True)
+        try:
+            thread.start()
+        except Exception as exc:  # noqa: BLE001  # no watch: nothing is announced, said aloud
+            self._record(APP_BOOTSTRAP_DEGRADED, f"settle watch: {_describe(exc)}")
+            return
+        self._settle_thread = thread
+
+    def _settle_worker(self) -> None:
+        ledger = SettledLedger(Path(self._state.dir) / SETTLED_NAME)
+        announced = ledger.load()
+        while not self._worker_stop.is_set():
+            self._settle_tick(ledger, announced, time.time())
+            self._worker_stop.wait(SETTLE_CHECK_S)
+
+    def _settle_tick(self, ledger: SettledLedger, announced: dict[str, float], now: float) -> int:
+        """One look: publish what settled, remember it. Returns how many. Never raises."""
+        try:
+            due = settled(self._history().conversations()["conversations"], announced, now)
+        except Exception as exc:  # noqa: BLE001  # a log listing must not end the watch
+            self._record(APP_TURN_FAILED, f"settle watch: {_describe(exc)}")
+            return 0
+        for summary in due:
+            self._publish(
+                "conversation",
+                {
+                    "id": summary["id"],
+                    "status": "settled",
+                    "last": summary["last"],
+                    "turns": summary["turns"],
+                },
+            )
+            announced[summary["id"]] = float(summary["last"])
+        if due:
+            saved = ledger.save(announced)
+            with self._lock:
+                self._settle_announced += len(due)
+                self._settle_save_failures += 0 if saved else 1
+        return len(due)
+
+    def _stop_settle(self, deadline: float) -> bool:
+        thread = self._settle_thread
+        if thread is None:
+            return True
+        thread.join(timeout=max(0.05, deadline))
+        return not thread.is_alive()
+
     def _stop_library(self, deadline: float) -> bool:
         """Stop the sync thread inside *deadline*. A fetch in flight is bounded by the
         client's own deadline, not this one, and is then reported unfinished."""
@@ -3770,6 +3871,15 @@ class DaemonApp:
                 self._fold("memory", degradation)
             return {"groups": [], "code": server_module.MEMORY_UNAVAILABLE_CODE}
         return {"groups": todo_groups(getattr(result, "records", ()) or ())}
+
+    def _settle_status(self) -> dict[str, Any]:
+        thread = self._settle_thread
+        with self._lock:
+            return {
+                "settle_watch_running": bool(thread is not None and thread.is_alive()),
+                "settled_announced": self._settle_announced,
+                "settled_save_failures": self._settle_save_failures,
+            }
 
     def _library_status(self) -> dict[str, Any]:
         lane = self._library
@@ -4237,7 +4347,7 @@ class DaemonApp:
         detected at all. These counters are that view.
         """
         try:
-            outcome = session.add_user(text)
+            outcome = session.add_user(text, metadata={"via": VIA_SPOKEN})
         except Exception as exc:  # noqa: BLE001  # the session is a seam
             self._record(APP_TURN_FAILED, f"add_user: {_describe(exc)}")
             return
@@ -5266,6 +5376,7 @@ class DaemonApp:
             },
             "ingest": self._ingest_status(),
             "library": self._library_status(),
+            "conversations": self._settle_status(),
             # The mode and the guard's counters, ONCE. The team domain, the audience
             # and the allow-listed emails are configuration a dashboard viewer has no
             # business reading.
@@ -5440,8 +5551,8 @@ class _LockedSession:
         finally:
             self._lock.release()
 
-    def add_user(self, text: str) -> Any:
-        return self._write(lambda: self._session.add_user(text))
+    def add_user(self, text: str, metadata: Any = None) -> Any:
+        return self._write(lambda: self._session.add_user(text, metadata=metadata))
 
     def add_assistant(self, text: str, metadata: Any = None) -> Any:
         return self._write(lambda: self._session.add_assistant(text, metadata=metadata))
@@ -6289,6 +6400,7 @@ def _config_from_env(realtime: RealtimeConfig, recall_mode: Any, verifier: Any) 
         recall_mode=recall_mode,
         access_mode=access_mode_of(verifier),
         s2s_role=(os.environ.get(ENV_S2S_ROLE) or "").strip() or None,
+        listen_on_start=_env_flag(os.environ.get(ENV_LISTEN_ON_START)),
     )
 
 

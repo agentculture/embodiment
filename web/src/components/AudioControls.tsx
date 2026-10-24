@@ -3,7 +3,7 @@
 // The recording and speech-to-speech logic is embodiment's own, not ported.
 import type { ChatSource } from "../api/chat";
 import { useRef, useState, type ReactNode } from "react";
-import { postClip, speakMessage, type AudioClientOptions } from "../api/audio";
+import { postClip, speakMessage, type AudioClientOptions, type ClipOrigin } from "../api/audio";
 
 /**
  * The longest clip the daemon accepts, in seconds. Mirrors
@@ -108,9 +108,9 @@ export function AudioControls({ secret, onReply, clientOptions, live, conversati
   const startedAt = useRef(0);
   const limit = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  async function send(clip: Blob, durationS?: number) {
+  async function send(clip: Blob, origin: ClipOrigin, durationS?: number) {
     setBusy(true);
-    const out = await postClip(clip, secret, clientOptions, durationS, conversation);
+    const out = await postClip(clip, secret, clientOptions, durationS, conversation, origin);
     if (out.ok) {
       setError(null);
       onReply({ transcript: out.transcript, reply: out.reply, turnSerial: out.turnSerial, sources: out.sources });
@@ -125,7 +125,7 @@ export function AudioControls({ secret, onReply, clientOptions, live, conversati
     e.target.value = "";
     if (!file) return;
     setError(null);
-    await send(file);
+    await send(file, "uploaded");
   }
 
   async function startRecording() {
@@ -156,7 +156,7 @@ export function AudioControls({ secret, onReply, clientOptions, live, conversati
         recorder.current = null;
         setRecording(false);
         const seconds = (Date.now() - startedAt.current) / 1000;
-        void send(new Blob(chunks, { type: rec.mimeType || chunks[0]?.type || "" }), seconds);
+        void send(new Blob(chunks, { type: rec.mimeType || chunks[0]?.type || "" }), "recorded", seconds);
       };
       recorder.current = rec;
       startedAt.current = Date.now();
