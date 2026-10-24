@@ -5948,6 +5948,37 @@ class TestTextTurns:
             "by": "client",
         }
 
+    def test_new_conversation_ends_the_live_one_and_settles_it_at_once(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        """Operator, 2026-10-24: there was no "new conversation"."""
+        from embodiment.daemon.history import SettledLedger
+
+        h, _ = self._build(harness)
+        h.app.controls().chat("מה עם הלוטרות?")
+        first = h.app._session.session_id
+        result = h.app.controls().new_conversation()
+        assert result == {"started": True, "ended": first}
+        assert h.app._session is None, "the next turn opens a new session"
+        h.app.controls().chat("ועכשיו שאלה חדשה")
+        assert h.app._session.session_id != first
+        # settled now, not after 30 minutes of quiet
+        assert h.app._settle_tick(SettledLedger(tmp_path / "s.json"), {}, time.time()) == 1
+        (event,) = h.events("conversation")
+        assert event.data["id"] == first
+        assert h.app.status()["conversations"]["started_new"] == 1
+
+    def test_new_conversation_with_nothing_said_ends_nothing(self, harness: Any) -> None:
+        h, _ = self._build(harness)
+        assert h.app.controls().new_conversation() == {"started": True, "ended": None}
+
+    def test_the_prompt_says_when_the_conversation_last_spoke(self, harness: Any) -> None:
+        h, _ = self._build(harness)
+        assert app_module.SINCE_LINE_PREFIX not in h.app._clock_line()
+        h.app.controls().chat("מה עם הלוטרות?")
+        h.app._ensure_session().add_user("עוד שאלה")
+        assert app_module.SINCE_LINE_PREFIX in h.app._clock_line()
+
     def test_a_spoken_turn_records_it_was_spoken(self, harness: Any) -> None:
         h, _ = self._build(harness)
         h.app.run_turn(SPEECH)
@@ -6721,3 +6752,25 @@ class TestTheRecallBoundIsDerived:
             assert "one rig" in lowered
             assert "will fail" not in lowered
             assert "always" not in lowered
+
+
+@pytest.mark.parametrize(
+    ("seconds", "said"),
+    [
+        (20, "לפני פחות מדקה"),
+        (60, "לפני דקה"),
+        (600, "לפני 10 דקות"),
+        (3600, "לפני שעה"),
+        (7200, "לפני 2 שעות"),
+        (3 * 86400, "לפני 3 ימים"),
+    ],
+)
+def test_since_line_says_when_and_how_long_ago(seconds: int, said: str) -> None:
+    now = datetime(2026, 10, 24, 20, 0, tzinfo=timezone.utc)
+    line = app_module.since_line(now.timestamp() - seconds, now)
+    assert line.startswith(app_module.SINCE_LINE_PREFIX)
+    assert line.endswith(f"({said})")
+
+
+def test_since_line_is_empty_without_a_previous_message() -> None:
+    assert app_module.since_line(None, datetime(2026, 10, 24, tzinfo=timezone.utc)) == ""

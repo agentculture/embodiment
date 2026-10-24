@@ -447,7 +447,14 @@ CHAT_ROUTE = "/api/chat"
 SPEAK_ROUTE = "/api/speak"
 CLIP_ROUTE = "/api/clip"
 _TEXT_ROUTES = (CHAT_ROUTE, SPEAK_ROUTE, CLIP_ROUTE)
-_CONTROL_ROUTES = ("/api/voice/start", "/api/voice/stop", "/api/mic/mute") + _TEXT_ROUTES
+#: End the live conversation and start a new one (operator, 2026-10-24).
+NEW_CONVERSATION_ROUTE = "/api/conversation/new"
+_CONTROL_ROUTES = (
+    "/api/voice/start",
+    "/api/voice/stop",
+    "/api/mic/mute",
+    NEW_CONVERSATION_ROUTE,
+) + _TEXT_ROUTES
 
 
 def _guard_status(guard: Any) -> dict[str, Any]:
@@ -553,6 +560,8 @@ class Controls:
     """
 
     start_voice: Optional[Callable[[], dict[str, Any]]] = None
+    #: ``new_conversation() -> {"started", "ended"}``: end the live conversation.
+    new_conversation: Optional[Callable[[], dict[str, Any]]] = None
     stop_voice: Optional[Callable[[], dict[str, Any]]] = None
     set_mute: Optional[Callable[[bool], dict[str, Any]]] = None
     status: Optional[Callable[[], dict[str, Any]]] = None
@@ -926,6 +935,9 @@ class _Handler(BaseHTTPRequestHandler):
                 )
                 return
             self._invoke(route, controls.set_mute, muted)
+            return
+        if route == NEW_CONVERSATION_ROUTE:
+            self._invoke(route, controls.new_conversation)
             return
         callable_ = controls.start_voice if route.endswith("start") else controls.stop_voice
         self._invoke(route, callable_)

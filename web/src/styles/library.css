@@ -215,6 +215,7 @@
 
 .history .rows { padding-block-start: 0.5rem; }
 .conv--now { margin-block-end: 0.25rem; font-weight: 700; }
+.conv-new { inline-size: 100%; justify-content: center; margin-block-end: 0.5rem; }
 .conv-dot { inline-size: 9px; block-size: 9px; border-radius: 50%; background: var(--cobalt); }
 .conv .row-title { white-space: nowrap; }
 

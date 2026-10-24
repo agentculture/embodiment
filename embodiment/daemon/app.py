@@ -486,6 +486,8 @@ LIBRARY_TOOL_PROMPT = (
     "יש לך ספרייה של המשתמש: מסמכים, עיתונים יומיים ותמלולי הקלטות. "
     "לפני שאת עונה על שאלה על חדשות, על משהו שקרא או הקליט, או על מסמך — "
     "קראי לכלי search_library, וצטטי כל קטע שבו השתמשת כ־[n]. "
+    "לשאלה על יום מסוים (העיתון של היום, ההקלטות של אתמול) העבירי date בתבנית "
+    "YYYY-MM-DD לפי השעה עכשיו, ו־kind (newspaper, transcript). "
     "אל תמציאי מידע שאינו בקטעים שהכלי החזיר."
 )
 
@@ -690,6 +692,37 @@ def clock_line(moment: datetime) -> str:
     local = moment.astimezone(CLOCK_ZONE) if moment.tzinfo is not None else moment
     day = HEBREW_DAYS[local.weekday()]
     return f"{CLOCK_LINE_PREFIX} {local.strftime('%Y-%m-%d %H:%M')} ({day})"
+
+
+#: The prompt line saying when the conversation last spoke before this turn.
+SINCE_LINE_PREFIX = "ההודעה הקודמת בשיחה הזו:"
+
+
+def _ago(seconds: float) -> str:
+    """A Hebrew "N minutes/hours/days ago", coarse on purpose."""
+    minutes = int(seconds // 60)
+    if minutes < 1:
+        return "לפני פחות מדקה"
+    if minutes < 60:
+        return f"לפני {minutes} דקות" if minutes > 1 else "לפני דקה"
+    hours = minutes // 60
+    if hours < 48:
+        return f"לפני {hours} שעות" if hours > 1 else "לפני שעה"
+    return f"לפני {hours // 24} ימים"
+
+
+def since_line(previous: Any, moment: datetime) -> str:
+    """When the previous message was, and how long ago; ``""`` without one."""
+    if isinstance(previous, bool) or not isinstance(previous, (int, float)):
+        return ""
+    then = datetime.fromtimestamp(float(previous), tz=CLOCK_ZONE)
+    now = (
+        moment.astimezone(CLOCK_ZONE)
+        if moment.tzinfo is not None
+        else moment.replace(tzinfo=CLOCK_ZONE)
+    )
+    elapsed = max(0.0, (now - then).total_seconds())
+    return f"{SINCE_LINE_PREFIX} {then.strftime('%Y-%m-%d %H:%M')} ({_ago(elapsed)})"
 
 
 def _now_local() -> datetime:
@@ -2066,6 +2099,11 @@ class DaemonApp:
         self._cache_seen = 0
         self._init_library(lanes.library)
         self._settle_thread: Optional[threading.Thread] = None
+        #: Set to make the settle watch look now (a conversation was ended) or exit.
+        self._settle_kick = threading.Event()
+        #: Conversations the operator ended with "New conversation": settled at once.
+        self._ended_conversations: dict[str, float] = {}
+        self._new_conversations = 0
         self._settle_announced = 0
         self._settle_save_failures = 0
         self._conversations = lanes.conversations
@@ -2308,6 +2346,7 @@ class DaemonApp:
         started = self._clock()
         budget = max(0.1, float(deadline))
         self._worker_stop.set()
+        self._settle_kick.set()  # the settle watch waits on its kick, not on the stop
         if self._library is not None:
             # Now, not at its step: the tick winds down (at its next chunk) while
             # the steps before it run, so its join below rarely waits at all.
@@ -3640,7 +3679,11 @@ class DaemonApp:
         session = Session(
             self._state, self._memory, session_id=conversation, added_by=self._config.added_by
         )
-        session.restore((t["role"], t["text"]) for t in found["turns"])
+        stamps_ = [t["ts"] for t in found["turns"] if isinstance(t.get("ts"), (int, float))]
+        session.restore(
+            ((t["role"], t["text"]) for t in found["turns"]),
+            last_turn_at=max(stamps_) if stamps_ else None,
+        )
         with self._lock:
             self._resumed[conversation] = session
             while len(self._resumed) > RESUMED_CONVERSATIONS:
@@ -3870,12 +3913,16 @@ class DaemonApp:
         announced = ledger.load()
         while not self._worker_stop.is_set():
             self._settle_tick(ledger, announced, time.time())
-            self._worker_stop.wait(SETTLE_CHECK_S)
+            self._settle_kick.wait(SETTLE_CHECK_S)
+            self._settle_kick.clear()
 
     def _settle_tick(self, ledger: SettledLedger, announced: dict[str, float], now: float) -> int:
         """One look: publish what settled, remember it. Returns how many. Never raises."""
         try:
-            due = settled(self._history().conversations()["conversations"], announced, now)
+            with self._lock:
+                ended = frozenset(self._ended_conversations)
+            listed = self._history().conversations()["conversations"]
+            due = settled(listed, announced, now, ended=ended)
         except Exception as exc:  # noqa: BLE001  # a log listing must not end the watch
             self._record(APP_TURN_FAILED, f"settle watch: {_describe(exc)}")
             return 0
@@ -4004,6 +4051,7 @@ class DaemonApp:
                 "settle_watch_running": bool(thread is not None and thread.is_alive()),
                 "settled_announced": self._settle_announced,
                 "settled_save_failures": self._settle_save_failures,
+                "started_new": self._new_conversations,
                 "indexed": self._conversations_indexed,
                 "index_failures": self._conversations_index_failures,
                 "index_waiting": self._conversations_waiting,
@@ -4458,12 +4506,23 @@ class DaemonApp:
         return f"refused: {reason}"
 
     def _clock_line(self) -> str:
-        """The prompt's clock line, or ``""`` — recorded — if the clock fails."""
+        """The prompt's clock line, or ``""`` — recorded — if the clock fails.
+
+        With a previous message in the conversation being answered (the live one, or
+        the one this turn continues), a second line says when it was and how long
+        ago (operator, 2026-10-24: "Does Gwen know dates and how long was it since
+        last message?").
+        """
         try:
-            return clock_line(self._now())
+            now = self._now()
+            line = clock_line(now)
         except Exception as exc:  # noqa: BLE001  # a turn never waits on a clock
             self._record(APP_CLOCK_FAILED, _describe(exc), once=True)
             return ""
+        session = getattr(self._tls, "conversation_session", None) or self._session
+        previous = getattr(session, "previous_turn_at", None)
+        since = since_line(previous, now)
+        return f"{line}\n{since}" if since else line
 
     def _spoken_metadata(self) -> dict[str, Any]:
         """A spoken turn's log fields: how it arrived, its recording, its times (d7, d11, d12)."""
@@ -5236,6 +5295,7 @@ class DaemonApp:
         return server_module.Controls(
             start_voice=self._control_start_voice,
             stop_voice=self._control_stop_voice,
+            new_conversation=self._control_new_conversation,
             set_mute=self._control_set_mute,
             status=self.status,
             chat=self._control_chat,
@@ -5275,6 +5335,37 @@ class DaemonApp:
     def _control_stop_voice(self) -> dict[str, Any]:
         handover = self.detach_ear()
         return {"ear": self._ear_name, "handover": handover.to_dict()}
+
+    def _control_new_conversation(self) -> dict[str, Any]:
+        """``Controls.new_conversation``: end the live conversation and start afresh.
+
+        Operator, 2026-10-24: there was no "new conversation". The live session is
+        swapped out under the conversation lock (so no typed or spoken turn is half
+        written into it), its summary is written in the background like a stop's,
+        and it is settled at once -- indexed for search_conversations now, not after
+        the 30-minute quiet period. The next turn opens a new session lazily.
+        """
+        if not self._conversation.acquire(timeout=self._conversation_bound()):
+            return {"started": False, "ended": None, "reason": "busy"}
+        try:
+            with self._lock:
+                old, self._session = self._session, None
+                self._new_conversations += 1
+        finally:
+            self._conversation.release()
+        ended = getattr(old, "session_id", None)
+        if old is not None:
+            with self._lock:
+                if ended:
+                    self._ended_conversations[ended] = time.time()
+            threading.Thread(
+                target=self._close_one_session,
+                args=(old, self._config.session_summary_deadline),
+                name="embodiment-session-close",
+                daemon=True,
+            ).start()
+        self._settle_kick.set()
+        return {"started": True, "ended": ended}
 
     def _control_set_mute(self, muted: bool) -> dict[str, Any]:
         return self.set_mute(muted)
@@ -5325,7 +5416,10 @@ class DaemonApp:
         (``session-summary-not-provided`` when no summariser was wired at all,
         which is what a daemon built without a senses seam will report).
         """
-        session = self._session
+        return self._close_one_session(self._session, deadline)
+
+    def _close_one_session(self, session: Any, deadline: float) -> bool:
+        """Close *session*, writing its summary inside *deadline*. Never raises."""
         if session is None:
             return True
         with self._lock:

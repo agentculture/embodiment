@@ -951,6 +951,34 @@ describe("App — a public-host session with no secret (Access), end to end", ()
     expect(screen.queryByRole("complementary", { name: "Reader" })).toBeNull();
   });
 
+  it("New conversation posts to the daemon and empties the thread", async () => {
+    const posted: string[] = [];
+    globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = String(url);
+      if (init?.method === "POST") posted.push(u);
+      if (u.endsWith("/api/chat")) {
+        return new Response(JSON.stringify({ reply: "first answer", sources: [], turn_serial: 1 }), { status: 200 });
+      }
+      if (u.endsWith("/api/conversation/new")) {
+        return new Response(JSON.stringify({ ok: true, result: { started: true, ended: "s1" } }), { status: 200 });
+      }
+      if (u.endsWith("/api/conversations")) return new Response(JSON.stringify({ conversations: [] }), { status: 200 });
+      return new Response(JSON.stringify({ error: { code: "not-found" } }), { status: 404 });
+    }) as typeof fetch;
+    const source = renderApp(undefined, { drawer: false });
+    act(() => source.open());
+    fireEvent.change(screen.getByLabelText("message"), { target: { value: "hello" } });
+    await act(async () => {
+      fireEvent.submit(screen.getByRole("form", { name: "composer" }));
+    });
+    expect(await screen.findByText("first answer")).toBeInTheDocument();
+    await act(async () => {
+      fireEvent.click(screen.getAllByRole("button", { name: "New conversation", hidden: true })[0]);
+    });
+    expect(posted).toContain("/api/conversation/new");
+    expect(screen.queryByText("first answer")).toBeNull();
+  });
+
   it("a second citation to the open item moves the reader to the new anchor; Close dismisses it", async () => {
     globalThis.fetch = (async (url: RequestInfo | URL) => {
       const u = String(url);

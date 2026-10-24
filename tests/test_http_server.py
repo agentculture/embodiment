@@ -2516,3 +2516,23 @@ class TestContinuingAConversation:
             assert seen[0][2] == "abc123"
         finally:
             built.server.shutdown(2.0)
+
+
+def test_new_conversation_is_a_guarded_post_reaching_its_control() -> None:
+    calls: list[int] = []
+    built = build(
+        controls=s.Controls(new_conversation=lambda: calls.append(1) or {"started": True})
+    )
+    try:
+        status, _ = built.request("GET", s.NEW_CONVERSATION_ROUTE, hdrs=built.headers())
+        assert status == 405
+        status, _ = built.request("POST", s.NEW_CONVERSATION_ROUTE, body=b"{}")
+        assert status == 401, "no secret, no new conversation"
+        status, body = built.request(
+            "POST", s.NEW_CONVERSATION_ROUTE, body=b"{}", hdrs=built.headers()
+        )
+        assert status == 200
+        assert json.loads(body)["result"] == {"started": True}
+        assert calls == [1]
+    finally:
+        built.server.shutdown(2.0)

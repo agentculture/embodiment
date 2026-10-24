@@ -218,6 +218,7 @@ import math
 import re
 import secrets
 import threading
+import time
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Callable, Iterable, Mapping, Optional
@@ -753,6 +754,10 @@ class Session:
         #: enforcement check. See the module docstring.
         self._window_total = 0
         self._turns_seen = 0
+        #: Wall times of the latest turn and the one before it, so a prompt can say
+        #: how long it has been since the previous message (operator, 2026-10-24).
+        self._last_turn_at: Optional[float] = None
+        self._previous_turn_at: Optional[float] = None
         self._records_written = 0
         self._degradations: list[SessionDegradation] = []
         self._degradation_seen_codes: set[str] = set()
@@ -905,7 +910,18 @@ class Session:
         self._require_str(text)
         self._append(ROLE_ASSISTANT, text, metadata=metadata)
 
-    def restore(self, turns: Iterable[tuple[str, str]]) -> int:
+    @property
+    def previous_turn_at(self) -> Optional[float]:
+        """When the message before the latest one was written (epoch seconds), or None.
+
+        Read while a turn is being answered -- its user turn is already the latest --
+        this is when the conversation last spoke before it.
+        """
+        return self._previous_turn_at
+
+    def restore(
+        self, turns: Iterable[tuple[str, str]], *, last_turn_at: Optional[float] = None
+    ) -> int:
         """Load earlier turns of THIS session into the window; return how many entered.
 
         For continuing a conversation from its log (operator, 2026-10-24: "it's like
@@ -914,7 +930,9 @@ class Session:
         holds them, under the same budget as any appended turn (oldest dropped
         first). Only user and assistant turns with text enter; anything else is
         skipped. Call it once, right after construction, before the first add.
+        *last_turn_at* is when the restored conversation last spoke.
         """
+        self._last_turn_at = last_turn_at
         entered = 0
         for role, text in turns:
             if role not in (ROLE_USER, ROLE_ASSISTANT) or not isinstance(text, str):
@@ -936,6 +954,7 @@ class Session:
 
     def _append(self, role: str, text: str, metadata: Optional[Mapping[str, Any]] = None) -> None:
         self.transcript.write(role, text, **dict(metadata or {}))
+        self._previous_turn_at, self._last_turn_at = self._last_turn_at, time.time()
         self._turns_seen += 1
         cost = self._turn_cost(role, text)
         if cost <= 0:

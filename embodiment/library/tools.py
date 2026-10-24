@@ -50,6 +50,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Callable, Optional
 
 from embodiment import memory
+from embodiment.library.index import item_day, item_kind
 from embodiment.tools import ToolSpec
 
 __all__ = [
@@ -118,10 +119,14 @@ CITE_HINT = "\nCite a library passage you rely on as [n], using its number above
 _HEADER_NUMBER = re.compile(r"^\[(\d+)\] id=", re.MULTILINE)
 
 _SEARCH_DESCRIPTION = (
-    "Search the user's library (documents, daily newspapers, recording transcripts) "
-    "by meaning. Call it BEFORE answering about news or anything he read or recorded. "
-    "Cite each passage used as [n]."
+    "Search the user's library (documents, daily newspapers, transcripts) by meaning. "
+    "Call it BEFORE answering about news or what he read or recorded. "
+    "For one day, pass date. Cite as [n]."
 )
+#: The kinds a model may name; a reader's kind (an issue filed as an article is a
+#: newspaper), not the library's raw label.
+SEARCH_KINDS = ("newspaper", "transcript", "article", "book")
+_DATE_ARG = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _READ_DESCRIPTION = (
     "Read one library passage by item_id and anchor from a search result. "
     "Returns a numbered quoted passage; cite it as [n]."
@@ -306,6 +311,35 @@ def _limit_arg(value: Any) -> int:
     return min(MAX_LIMIT, max(1, value))
 
 
+def _date_arg(value: Any) -> Optional[str]:
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str) or not _DATE_ARG.match(value.strip()):
+        raise LibraryToolError(CODE_BAD_ARGUMENTS)
+    return value.strip()
+
+
+def _kind_arg(value: Any) -> Optional[str]:
+    if value is None or value == "":
+        return None
+    if not isinstance(value, str) or value.strip().lower() not in SEARCH_KINDS:
+        raise LibraryToolError(CODE_BAD_ARGUMENTS)
+    return value.strip().lower()
+
+
+def _where(day: Optional[str], kind: Optional[str]) -> Optional[Callable[[dict], bool]]:
+    """An item filter for a named day and/or a reader's kind, or None for neither."""
+    if day is None and kind is None:
+        return None
+
+    def keep(meta: dict) -> bool:
+        if day is not None and item_day(meta) != day:
+            return False
+        return kind is None or item_kind(meta) == kind
+
+    return keep
+
+
 def _item_id_arg(value: Any) -> str:
     if isinstance(value, int) and not isinstance(value, bool):
         value = str(value)
@@ -330,16 +364,26 @@ class _LibraryTools:
         self._collector = collector
         self._threshold = threshold
 
-    def search_library(self, query: Any = None, limit: Any = DEFAULT_LIMIT) -> str:
+    def search_library(
+        self, query: Any = None, limit: Any = DEFAULT_LIMIT, date: Any = None, kind: Any = None
+    ) -> str:
         text = _text_arg(query, MAX_QUERY_CHARS)
         bounded = _limit_arg(limit)
+        where = _where(_date_arg(date), _kind_arg(kind))
         try:
             vector = self._embed_query(text)
         except Exception as exc:  # noqa: BLE001  # re-raised with a declared code
             raise LibraryToolError(CODE_EMBED_FAILED) from exc
         if vector is None:
             raise LibraryToolError(CODE_EMBED_FAILED)
-        hits = self._index.search(vector, kinds=None, limit=bounded, threshold=self._threshold)
+        if where is None:
+            hits = self._index.search(vector, kinds=None, limit=bounded, threshold=self._threshold)
+        else:
+            hits = self._index.search(
+                vector, kinds=None, limit=bounded, threshold=self._threshold, where=where
+            ) or self._index.search(vector, kinds=None, limit=bounded, where=where)
+            # One named day (or kind): its best passages even under the threshold, so
+            # "what is in today's paper" reads today's paper rather than nothing.
         if not hits:
             return NO_MATCHES
         return _render(self._collector, [_hit_citation(hit) for hit in hits])
@@ -379,6 +423,14 @@ def build_library_tools(
             "properties": {
                 "query": {"type": "string", "description": "What to look for."},
                 "limit": {"type": "integer", "minimum": 1, "maximum": MAX_LIMIT},
+                "date": {
+                    "type": "string",
+                    "description": (
+                        "Only items about this day, YYYY-MM-DD; for 'today' or 'yesterday' "
+                        "work it out from the current time you were given."
+                    ),
+                },
+                "kind": {"type": "string", "enum": list(SEARCH_KINDS)},
             },
             "required": ["query"],
             "additionalProperties": False,

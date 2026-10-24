@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.19.0] - 2026-10-24
+
+### Added
+
+- New conversation: `POST /api/conversation/new` (guarded) and a button in the history pane. The live session is swapped out under the conversation lock, its summary written in the background, and it is settled at once, so search_conversations finds it without waiting 30 minutes (operator, 2026-10-24: there was no new conversation); a refusal shows under the button, not only in the Status drawer
+- Gwen knows how long ago the conversation last spoke: a second prompt line beside the clock, `ההודעה הקודמת בשיחה הזו: <date time> (<how long ago>)`, for the live conversation and for one being continued (from its log)
+- `search_library` takes `date` (YYYY-MM-DD) and `kind` (newspaper, transcript, article, book); a named day answers with its best passages even under the similarity threshold, and the typed-turn prompt line tells Gwen to work the date out from the clock
+
+### Fixed
+
+- xteink's native `newspaper` kind is searched: the index searched only `transcript` and `article` by default, so a newspaper filed under the new kind was indexed and never found
+
 ## [0.18.0] - 2026-10-24
 
 **Gwen is pocketchat: the library as knowledge.** Gwen's page is the library with

@@ -491,8 +491,9 @@ def _three_kinds(tmp_path, **kw):
     return idx, metas[2]
 
 
-def test_default_kinds_are_transcripts_and_articles():
-    assert set(DEFAULT_KINDS) == {"transcript", "article"}
+def test_default_kinds_are_transcripts_articles_and_newspapers():
+    """xteink gained a native ``newspaper`` kind (2026-10-24); it must be searched."""
+    assert set(DEFAULT_KINDS) == {"transcript", "article", "newspaper"}
 
 
 def test_a_book_not_opted_in_is_refused_without_embedding(tmp_path):
@@ -666,3 +667,21 @@ def test_indexed_items_lists_metadata_only_for_citable_items(tmp_path):
     assert entry["kind"] == "article"
     assert "passages" not in entry
     assert "secretword" not in json.dumps(entry)
+
+
+def test_item_day_prefers_the_titles_date_then_created_at():
+    from embodiment.library.index import item_day
+
+    assert item_day({"title": "Daily newspaper 2026-10-23", "created_at": "2026-10-24T06:00"}) == (
+        "2026-10-23"
+    )
+    assert item_day({"title": "Morning", "created_at": "2026-10-24T06:00:00Z"}) == "2026-10-24"
+    assert item_day({"title": "Morning"}) == ""
+
+
+def test_item_kind_reads_an_issue_filed_as_an_article_as_a_newspaper():
+    from embodiment.library.index import item_kind
+
+    assert item_kind({"kind": "article", "title": "Daily newspaper 2026-10-23"}) == "newspaper"
+    assert item_kind({"kind": "article", "title": "עיתון יומי"}) == "newspaper"
+    assert item_kind({"kind": "Transcript", "title": "2026-10-24 kettle"}) == "transcript"
