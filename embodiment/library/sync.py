@@ -64,6 +64,8 @@ class LibrarySync:
         self._degraded: Optional[str] = None
         self._failures: dict[str, int] = {}
         self._skipped: dict[str, str] = {}
+        #: Catalog items the index does not want (books not opted in), last tick.
+        self._unwanted = 0
         self._last_sync_at: Optional[float] = None
         self._frozen_gets = 0
 
@@ -116,7 +118,8 @@ class LibrarySync:
             "last_sync_at": self._last_sync_at,
             "failures_by_code": dict(self._failures),
             "gets": self._frozen_gets if self._library_down() else self._gets(),
-            "skipped_books": len(self._skipped),
+            "skipped_books": self._unwanted,
+            "skipped_refused": len(self._skipped),
         }
 
     def _library_down(self) -> bool:
@@ -163,6 +166,7 @@ class LibrarySync:
             del self._skipped[gone]
 
     def _work(self, todo: list, deadline: float, out: dict) -> None:
+        self._unwanted = sum(1 for meta in todo if not self._index.wants(meta))
         with self._index.batch():
             for meta in todo:
                 if self._clock() >= deadline:

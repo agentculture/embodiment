@@ -96,12 +96,13 @@ def test_tick_indexes_added_and_status_shape(tmp_path):
         "failures_by_code",
         "gets",
         "skipped_books",
+        "skipped_refused",
     }
     assert st["configured"] is True
     assert st["items_indexed"] == 2 and st["chunks"] == 2
     assert st["last_sync_at"] == 100.0
     assert st["gets"] == client.gets == 3
-    assert st["failures_by_code"] == {} and st["skipped_books"] == 0
+    assert st["failures_by_code"] == {} and st["skipped_books"] == 0 and st["skipped_refused"] == 0
 
 
 def test_second_tick_unchanged_fetches_nothing(tmp_path):
@@ -152,6 +153,8 @@ def test_unopted_book_is_not_fetched(tmp_path):
     sync, client, *_ = make(tmp_path, [item(1, kind="book")])
     sync.tick()
     assert client.fetched == []
+    st = sync.status()
+    assert st["skipped_books"] == 1 and st["skipped_refused"] == 0
 
 
 def test_gate_held_means_no_embed_until_released_and_recall_first(tmp_path):
@@ -235,7 +238,7 @@ def test_epub_refused_skipped_counted_not_retried_until_sha_changes(tmp_path):
     assert len(calls) == 1
     st = sync.status()
     assert st["failures_by_code"] == {"bad_epub": 1}
-    assert st["skipped_books"] == 1
+    assert st["skipped_refused"] == 1
     client.items = [item(1, sha="new")]
     sync.tick()
     assert len(calls) == 2

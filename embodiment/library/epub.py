@@ -22,6 +22,7 @@ import zipfile
 from dataclasses import dataclass
 from html.parser import HTMLParser
 from io import BytesIO
+from typing import Optional
 from urllib.parse import unquote
 
 _SKIP = frozenset({"script", "style", "head", "title"})
@@ -209,8 +210,13 @@ def _spine_paths(reader: _Reader) -> list[str]:
     return paths
 
 
-def extract(data: bytes, *, limits: Limits) -> Extracted:
-    """Extract passages in spine order, or raise :class:`EpubRefused`."""
+def extract(data: bytes, *, limits: Optional[Limits] = None) -> Extracted:
+    """Extract passages in spine order, or raise :class:`EpubRefused`.
+
+    ``limits`` defaults to :class:`Limits` so the daemon can hand this function
+    to the sync as the one-argument ``extract(data)`` seam it calls.
+    """
+    limits = limits if limits is not None else Limits()
     try:
         zf = zipfile.ZipFile(BytesIO(data))
     except (zipfile.BadZipFile, OSError, ValueError):
