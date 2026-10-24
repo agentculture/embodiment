@@ -285,7 +285,8 @@ class TestUnsetIsToday:
         try:
             assert application._library is None
             controls = _RecordingServer.captured["controls"]
-            assert controls.library_list is None and controls.library_search is None
+            assert controls.library_list is None
+            assert controls.library_search is None
             assert not (tmp_path / "state" / "library").exists()
         finally:
             application.close(deadline=2.0)
@@ -405,13 +406,16 @@ class TestCitationsJoinTheSources:
         assert answer["ok"] is True, answer
         sources = answer["sources"]
         first, second, recalled = sources
-        assert first["source"] == "library" and first["item_id"] == "9"
+        assert first["source"] == "library"
+        assert first["item_id"] == "9"
         assert first["anchor"] == "t#0"
         assert first["title"] == "Standup"
         assert first["date"] == "2026-10-20T08:00:00Z"
-        assert first["start"] == 12.0 and first["end"] == 19.5
+        assert first["start"] == 12.0
+        assert first["end"] == 19.5
         assert first["text"] == "alpha alpha"
-        assert second["item_id"] == "13" and second["anchor"] == "s1#p0"
+        assert second["item_id"] == "13"
+        assert second["anchor"] == "s1#p0"
         assert recalled["source"] == "pocket"
         # the [n] the model was shown is the position on the page
         tool_results = [m["content"] for m in script.prompts[-1] if m.get("role") == "tool"]
@@ -478,12 +482,15 @@ class TestTheWriteGuard:
         assert memory.forgotten == []
         status = h.app.status()["memory"]
         assert status["library_guarded_writes"] == 2
-        assert status["remember_tool_written"] == 0 and status["forget_tool_written"] == 0
-        assert status["remember_tool_refused"] == 1 and status["forget_tool_refused"] == 1
+        assert status["remember_tool_written"] == 0
+        assert status["forget_tool_written"] == 0
+        assert status["remember_tool_refused"] == 1
+        assert status["forget_tool_refused"] == 1
         assert h.ledger_codes().count(app_module.APP_LIBRARY_GUARDED_WRITE) == 2
         # the reason names the tool, never the planted words
         blob = json.dumps([r.to_dict() for r in h.state.ledger.read_all()], ensure_ascii=False)
-        assert PLANTED_REMEMBER not in blob and "otters" not in blob
+        assert PLANTED_REMEMBER not in blob
+        assert "otters" not in blob
 
     def test_the_operators_own_ask_still_writes(self, harness: Any, tmp_path: Path) -> None:
         memory = GuardMemory()
@@ -694,7 +701,8 @@ class TestStatusAndRoutes:
         groups = h.app.controls().todos()["groups"]
         assert [g["recording_id"] for g in groups] == ["recB", "recA"]
         rec_a = groups[1]
-        assert rec_a["title"] == "title recA" and rec_a["date"] == "2026-09-21"
+        assert rec_a["title"] == "title recA"
+        assert rec_a["date"] == "2026-09-21"
         assert [i["text"] for i in rec_a["items"]] == ["call the vet", "send the deck"]
         assert rec_a["items"][0]["created"] == "2026-10-01"
 
@@ -772,7 +780,8 @@ class TestTheSyncThread:
         h = _build(harness, tmp_path, complete=Peek())
         assert h.app.live_turn_held() is False
         h.app.controls().chat("golf?")
-        assert seen and all(seen)
+        assert seen
+        assert all(seen)
         assert h.app.live_turn_held() is False
 
     def test_the_gate_is_held_while_the_speaker_plays(self, harness: Any, tmp_path: Path) -> None:
@@ -792,7 +801,8 @@ class TestTheSyncThread:
 
         h = _build(harness, tmp_path, complete=Peek())
         h.app.run_turn(SPEECH)
-        assert seen and all(seen)
+        assert seen
+        assert all(seen)
 
     def test_a_chunk_embed_waits_for_the_live_turn(self, harness: Any, tmp_path: Path) -> None:
         library = _library()
@@ -1081,7 +1091,8 @@ class TestThePreviousSourcesAreUntrusted:
         )
         h = _build(harness, tmp_path, complete=model, memory=memory, library=_door_library())
         first = h.app.controls().chat("golf?")
-        assert first["ok"] is True and first["sources"][0]["title"] == DOOR_TITLE
+        assert first["ok"] is True
+        assert first["sources"][0]["title"] == DOOR_TITLE
         h.app.controls().chat("ok, and then?")
         system = model.prompts[-1][0]["content"]
         line = system[system.index(app_module.PREVIOUS_SOURCES_HEADER) :]
@@ -1149,7 +1160,8 @@ class TestThePreviousSourcesAreTheLastShownList:
         model = ByTurn({"golf?": _call("search_library", query="golf")})
         h = _build(harness, tmp_path, complete=model, memory=GuardMemory(), library=_door_library())
         first = h.app.controls().chat("golf?")
-        assert first["ok"] is True and first["sources"]
+        assert first["ok"] is True
+        assert first["sources"]
         real = h.app._text_recall.run_turn
 
         def broken(message: str) -> Any:

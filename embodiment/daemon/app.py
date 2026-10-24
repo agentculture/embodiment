@@ -1018,7 +1018,7 @@ _FORGET_STEMS: tuple[str, ...] = ("שכח", "forget")
 #: carrying the stem (אל תשכח, אל תשכחי, אל תשכחו, שלא תשכחי). Applied to the
 #: casefolded, whitespace-collapsed turn. Biased to refusing, like the guard.
 _NEGATED_FORGET = re.compile(
-    r"\b(?:don['\u2019]?t|do not)\s+forget\w*" r"|(?<!\w)[וש]?(?:אל|לא)\s+\w*שכח\w*"
+    r"\b(?:don['\u2019]?t|do not)\s+forget\w*|(?<!\w)[וש]?(?:אל|לא)\s+\w*שכח\w*"
 )
 
 #: The prompt section for a remainder, restart or follow-up completion: what
@@ -6255,6 +6255,52 @@ def _library_lane_from_env(
         return None
 
 
+def _early_sink(
+    built: list["DaemonApp"], early: list[tuple[str, str, str]]
+) -> Callable[[str], Callable[[str, str], None]]:
+    """A ``source -> record`` factory: the app once built, else the ``early`` list."""
+
+    def sink(source: str) -> Callable[[str, str], None]:
+        def record(code: str, reason: str) -> None:
+            if built:
+                built[0]._record(code, reason, source=source)
+            else:
+                early.append((code, reason, source))
+
+        return record
+
+    return sink
+
+
+def _config_from_env(realtime: RealtimeConfig, recall_mode: Any, verifier: Any) -> AppConfig:
+    """The :class:`AppConfig` the environment asks for."""
+    return AppConfig(
+        gateway_url=realtime.gateway_url,
+        api_key=realtime.api_key,
+        # The runner's watchdog bound, exported by the lifecycle child; the
+        # close budget is derived strictly below it (one clock, finding 1).
+        shutdown_deadline=close_budget_for(
+            os.environ.get(ENV_SHUTDOWN_DEADLINE) or DEFAULT_SHUTDOWN_DEADLINE
+        ),
+        bind=os.environ.get(ENV_HTTP_BIND) or AppConfig.bind,
+        bind_public=_env_flag(os.environ.get(ENV_BIND_PUBLIC)),
+        allowed_hosts=parse_allowed_hosts(os.environ.get(ENV_ALLOWED_HOSTS)),
+        public_hostname=(os.environ.get(ENV_PUBLIC_HOSTNAME) or "").strip().lower() or None,
+        recall_mode=recall_mode,
+        access_mode=access_mode_of(verifier),
+        s2s_role=(os.environ.get(ENV_S2S_ROLE) or "").strip() or None,
+    )
+
+
+def _allowed_origins(config: AppConfig) -> frozenset:
+    """Loopback FIRST: a default install's own dashboard sends an Origin on every POST
+    (finding 2), then the operator's."""
+    public = (config.public_hostname,) if config.public_hostname else ()
+    return frozenset(
+        allowed_origins_for((*loopback_origin_hosts(config.port), *config.allowed_hosts, *public))
+    )
+
+
 def main() -> DaemonApp:
     """Build the daemon from the environment. Zero arguments; never raises.
 
@@ -6290,15 +6336,7 @@ def main() -> DaemonApp:
     # replayed through the app's ONE recording path once it does.
     early: list[tuple[str, str, str]] = []
     built: list["DaemonApp"] = []
-
-    def sink(source: str) -> Callable[[str, str], None]:
-        def record(code: str, reason: str) -> None:
-            if built:
-                built[0]._record(code, reason, source=source)
-            else:
-                early.append((code, reason, source))
-
-        return record
+    sink = _early_sink(built, early)
 
     # The Access verifier (t3, t7): all-or-nothing team domain + audience, plus
     # the operator's email allow-list (EMBODIMENT_ACCESS_EMAILS). None when the
@@ -6313,22 +6351,7 @@ def main() -> DaemonApp:
                 APP_SOURCE,
             )
         )
-    config = AppConfig(
-        gateway_url=realtime.gateway_url,
-        api_key=realtime.api_key,
-        # The runner's watchdog bound, exported by the lifecycle child; the
-        # close budget is derived strictly below it (one clock, finding 1).
-        shutdown_deadline=close_budget_for(
-            os.environ.get(ENV_SHUTDOWN_DEADLINE) or DEFAULT_SHUTDOWN_DEADLINE
-        ),
-        bind=os.environ.get(ENV_HTTP_BIND) or AppConfig.bind,
-        bind_public=_env_flag(os.environ.get(ENV_BIND_PUBLIC)),
-        allowed_hosts=parse_allowed_hosts(os.environ.get(ENV_ALLOWED_HOSTS)),
-        public_hostname=(os.environ.get(ENV_PUBLIC_HOSTNAME) or "").strip().lower() or None,
-        recall_mode=recall_mode,
-        access_mode=access_mode_of(verifier),
-        s2s_role=(os.environ.get(ENV_S2S_ROLE) or "").strip() or None,
-    )
+    config = _config_from_env(realtime, recall_mode, verifier)
 
     base_dir = Path(state.dir) if state.dir is not None else Path(".")
     data_dir = base_dir / "memory"
@@ -6443,17 +6466,7 @@ def main() -> DaemonApp:
                     install_secret=secret.secret,
                     allowed_hosts=guard_module.DEFAULT_ALLOWED_HOSTS
                     | frozenset(guard_host_of(host) for host in config.allowed_hosts),
-                    # Loopback FIRST: a default install's own dashboard sends
-                    # an Origin on every POST (finding 2), then the operator's.
-                    allowed_origins=frozenset(
-                        allowed_origins_for(
-                            (
-                                *loopback_origin_hosts(config.port),
-                                *config.allowed_hosts,
-                                *((config.public_hostname,) if config.public_hostname else ()),
-                            )
-                        )
-                    ),
+                    allowed_origins=_allowed_origins(config),
                     public_hostname=config.public_hostname,
                 ),
                 assertion_verifier=verifier,

@@ -95,7 +95,8 @@ def _fence_lines(rendered: str) -> tuple[list[str], list[str]]:
 class TestTheSpecs:
     def test_two_toolspecs_named_and_shaped(self, index):
         search, read, _ = _tools(index)
-        assert isinstance(search, ToolSpec) and isinstance(read, ToolSpec)
+        assert isinstance(search, ToolSpec)
+        assert isinstance(read, ToolSpec)
         assert search.name == "search_library"
         assert read.name == "read_passage"
         assert set(search.parameters["properties"]) == {"query", "limit"}
@@ -308,7 +309,8 @@ class TestCitations:
         read.fn(item_id="1", anchor="a#0")
         text = collector.citations[0].text
         assert len(text) <= SOURCE_CAP
-        assert "<<<" not in text and ">>>" not in text
+        assert "<<<" not in text
+        assert ">>>" not in text
 
     def test_n_in_the_result_is_the_position_in_the_collector(self, index):
         """The web Chat maps [n] to sources[n-1]: numbering continues across calls."""
@@ -398,8 +400,10 @@ class TestPlantedInstructions:
         for line in inside:
             assert line.startswith(mem.QUOTE) or mem.HEADER_PATTERN.fullmatch(line), line
         body = "\n".join(inside)
-        assert "<<<" not in body and ">>>" not in body
-        assert mem.NEUTRALISED_OPEN in body and mem.NEUTRALISED_CLOSE in body
+        assert "<<<" not in body
+        assert ">>>" not in body
+        assert mem.NEUTRALISED_OPEN in body
+        assert mem.NEUTRALISED_CLOSE in body
 
     def test_search_keeps_a_planted_instruction_and_fence_mark_quoted(self, hostile):
         search, _, collector = _tools(hostile)
@@ -418,7 +422,8 @@ class TestPlantedInstructions:
         search.fn(query="golf")
         cited = collector.citations[0].to_dict()
         for key in ("title", "kind", "date", "anchor", "text", "item_id"):
-            assert "<<<" not in cited[key] and ">>>" not in cited[key], key
+            assert "<<<" not in cited[key], key
+            assert ">>>" not in cited[key], key
         assert "\n" not in cited["title"]
         assert "ignore previous instructions" in cited["text"]
 

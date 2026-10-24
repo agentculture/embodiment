@@ -226,7 +226,7 @@ def _cosine(query: list[float], query_norm: float, vec: Any) -> Optional[float]:
     if not isinstance(vec, list) or len(vec) != len(query):
         return None
     norm = math.sqrt(sum(x * x for x in vec))
-    if norm == 0.0:
+    if norm <= 0.0:
         return None
     return sum(a * b for a, b in zip(query, vec)) / (query_norm * norm)
 
@@ -480,7 +480,7 @@ class DocumentIndex:
         if query is None or limit <= 0:
             return []
         query_norm = math.sqrt(sum(x * x for x in query))
-        if query_norm == 0.0:
+        if query_norm <= 0.0:
             return []
         allowed = frozenset(kinds) if kinds is not None else self._default_kinds()
         hits: list[Hit] = []

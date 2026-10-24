@@ -67,11 +67,15 @@ def test_list_items_get_with_bearer_and_query():
     op = FakeOpener(json.dumps({"items": [ITEM]}).encode())
     items = _client(op).list_items(kind="book", q="du ne")
     req = op.requests[0]
-    assert req.get_method() == "GET" and req.data is None
+    assert req.get_method() == "GET"
+    assert req.data is None
     assert req.get_header("Authorization") == f"Bearer {KEY}"
     assert req.full_url.startswith("http://lib.test:8780/api/library?")
-    assert "kind=book" in req.full_url and "q=du+ne" in req.full_url
-    assert items[0].title == "Dune" and items[0].id == 7 and items[0].format == "epub"
+    assert "kind=book" in req.full_url
+    assert "q=du+ne" in req.full_url
+    assert items[0].title == "Dune"
+    assert items[0].id == 7
+    assert items[0].format == "epub"
 
 
 def test_list_items_no_filters_has_no_query():
@@ -109,7 +113,8 @@ def _assert_error(call, code):
     with pytest.raises(LibraryError) as e:
         call()
     assert e.value.code == code
-    assert KEY not in str(e.value) and KEY not in repr(e.value)
+    assert KEY not in str(e.value)
+    assert KEY not in repr(e.value)
     assert e.value.code in str(e.value)
     return e.value
 
@@ -178,8 +183,9 @@ def test_unreachable_and_bad_json():
 
 
 def test_non_http_base_url_rejected():
+    opener = FakeOpener()
     with pytest.raises(LibraryError) as e:
-        LibraryClient("file:///etc", KEY, deadline=1.0, opener=FakeOpener())
+        LibraryClient("file:///etc", KEY, deadline=1.0, opener=opener)
     assert e.value.code == "library_bad_config"
 
 
@@ -194,7 +200,8 @@ def test_repr_never_carries_key():
     c = _client(FakeOpener())
     cfg = LibraryConfig(base_url="http://x", key=KEY)
     for obj in (c, cfg):
-        assert KEY not in repr(obj) and KEY not in str(obj)
+        assert KEY not in repr(obj)
+        assert KEY not in str(obj)
 
 
 def test_config_from_env():
@@ -203,9 +210,11 @@ def test_config_from_env():
     cfg = LibraryConfig.from_env(
         {"EMBODIMENT_LIBRARY_URL": "http://l:1", "EMBODIMENT_LIBRARY_KEY": KEY}
     )
-    assert cfg.base_url == "http://l:1" and cfg.key == KEY
+    assert cfg.base_url == "http://l:1"
+    assert cfg.key == KEY
     nokey = LibraryConfig.from_env({"EMBODIMENT_LIBRARY_URL": "http://l:1"})
-    assert nokey is not None and nokey.key == ""
+    assert nokey is not None
+    assert nokey.key == ""
 
 
 def test_key_never_written_to_disk_or_logged_by_module():

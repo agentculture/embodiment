@@ -359,8 +359,9 @@ class TestEndToEndThroughTheCli:
 
 def test_start_help_describes_the_shipped_access_verifier(capsys: pytest.CaptureFixture) -> None:
     """t5/h23: --public-hostname help must not claim the verifier refuses everything."""
+    parser = _build_parser()
     with pytest.raises(SystemExit):
-        _build_parser().parse_args(["start", "--help"])
+        parser.parse_args(["start", "--help"])
     text = " ".join(capsys.readouterr().out.split())
     assert "refuses every one" not in text
     assert "http-access-verifier-missing" not in text
