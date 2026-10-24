@@ -183,8 +183,9 @@ def test_unreachable_and_bad_json():
 
 
 def test_non_http_base_url_rejected():
+    opener = FakeOpener()
     with pytest.raises(LibraryError) as e:
-        LibraryClient("file:///etc", KEY, deadline=1.0, opener=FakeOpener())
+        LibraryClient("file:///etc", KEY, deadline=1.0, opener=opener)
     assert e.value.code == "library_bad_config"
 
 

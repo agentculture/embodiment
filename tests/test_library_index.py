@@ -213,10 +213,10 @@ def test_index_file_is_0600_under_the_callers_path(tmp_path):
 
 
 def test_index_refuses_a_path_inside_an_eidetic_store(tmp_path):
+    store_path = tmp_path / ".eidetic" / "memory" / "index.json"
+    embed = FakeEmbed()
     with pytest.raises(ValueError):
-        DocumentIndex(
-            tmp_path / ".eidetic" / "memory" / "index.json", embed=FakeEmbed(), model_tag="m"
-        )
+        DocumentIndex(store_path, embed=embed, model_tag="m")
 
 
 def test_one_atomic_write_per_upsert_not_per_chunk(tmp_path, monkeypatch):
@@ -293,8 +293,10 @@ def test_an_embed_failure_stores_nothing_partial_and_raises_a_typed_refusal(tmp_
 
     idx = _index(tmp_path, flaky)
     idx.reconcile([_meta("1")])
+    meta = _meta("1")
+    passages = [P("a#0", "A", "alpha"), P("a#1", "B", "bravo")]
     with pytest.raises(IndexRefused) as err:
-        idx.upsert_item(_meta("1"), [P("a#0", "A", "alpha"), P("a#1", "B", "bravo")])
+        idx.upsert_item(meta, passages)
     assert err.value.code == "embed_failed"
     assert idx.item("1") is None
     assert idx.reconcile([_meta("1")])["added"] == ["1"]
@@ -303,15 +305,18 @@ def test_an_embed_failure_stores_nothing_partial_and_raises_a_typed_refusal(tmp_
 def test_a_non_numeric_vector_is_an_embed_failure(tmp_path):
     idx = _index(tmp_path, lambda text: None)
     idx.reconcile([_meta("1")])
+    meta = _meta("1")
+    passages = [P("a#0", None, "alpha")]
     with pytest.raises(IndexRefused) as err:
-        idx.upsert_item(_meta("1"), [P("a#0", None, "alpha")])
+        idx.upsert_item(meta, passages)
     assert err.value.code == "embed_failed"
 
 
 def test_an_item_without_id_or_sha_is_refused(tmp_path):
     idx = _index(tmp_path)
+    passages = [P("a#0", None, "alpha")]
     with pytest.raises(IndexRefused) as err:
-        idx.upsert_item({"id": "1"}, [P("a#0", None, "alpha")])
+        idx.upsert_item({"id": "1"}, passages)
     assert err.value.code == "bad_item"
 
 
@@ -395,8 +400,10 @@ def test_a_changed_item_whose_re_embed_fails_keeps_the_old_version(tmp_path):
     idx.reconcile([_meta("1")])
     idx.upsert_item(_meta("1"), [P("a#0", None, "alpha oldword")])
     idx.reconcile([_meta("1", sha="s2")])
+    meta = _meta("1", sha="s2")
+    passages = [P("a#0", None, "bravo newword")]
     with pytest.raises(IndexRefused):
-        idx.upsert_item(_meta("1", sha="s2"), [P("a#0", None, "bravo newword")])
+        idx.upsert_item(meta, passages)
     assert idx.item("1")["passages"][0]["text"] == "alpha oldword"
 
 
@@ -493,8 +500,9 @@ def test_a_book_not_opted_in_is_refused_without_embedding(tmp_path):
     idx, book = _three_kinds(tmp_path, embed=embed)
     before = len(embed.content)
     assert idx.wants(book) is False
+    passages = [P("x#0", None, "alpha")]
     with pytest.raises(IndexRefused) as err:
-        idx.upsert_item(book, [P("x#0", None, "alpha")])
+        idx.upsert_item(book, passages)
     assert err.value.code == "book_not_opted_in"
     assert len(embed.content) == before
     ids = {h.item_id for h in idx.search(_vec("alpha"), kinds=("book",), limit=9, threshold=0.0)}
