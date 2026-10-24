@@ -1066,6 +1066,9 @@ LIBRARY_TICK_BUDGET_S = 60.0
 #: its budget and still yields to live turns. Measured 2026-10-24: a full re-index of
 #: 51 items took one item-budget per 300 s tick (15 items each), about 15 minutes.
 LIBRARY_CATCH_UP_S = 5.0
+#: How long "New conversation" waits for a turn in flight to finish: well inside the
+#: HTTP control lane's own deadline, so the page's answer is the real outcome.
+NEW_CONVERSATION_WAIT_S = 0.6 * server_module.DEFAULT_CONTROL_TIMEOUT_S
 #: How often the settle watch looks for conversations that have gone quiet (d7).
 #: Small beside the 30 min quiet period it serves, so an announcement is late by
 #: at most this much; each look reads the bounded session-log listing only.
@@ -2104,6 +2107,8 @@ class DaemonApp:
         #: Conversations the operator ended with "New conversation": settled at once.
         self._ended_conversations: dict[str, float] = {}
         self._new_conversations = 0
+        #: Summaries of ended conversations still being written; close() waits for them.
+        self._session_closers: list[threading.Thread] = []
         self._settle_announced = 0
         self._settle_save_failures = 0
         self._conversations = lanes.conversations
@@ -3938,6 +3943,11 @@ class DaemonApp:
             )
             announced[summary["id"]] = float(summary["last"])
         if due:
+            with self._lock:
+                # Ended skips the quiet period ONCE: a conversation continued later
+                # settles by the normal rule (review of PR #101).
+                for summary in due:
+                    self._ended_conversations.pop(summary["id"], None)
             saved = ledger.save(announced)
             with self._lock:
                 self._settle_announced += len(due)
@@ -5345,7 +5355,9 @@ class DaemonApp:
         and it is settled at once -- indexed for search_conversations now, not after
         the 30-minute quiet period. The next turn opens a new session lazily.
         """
-        if not self._conversation.acquire(timeout=self._conversation_bound()):
+        # Inside the HTTP control's own deadline (review of PR #101): a wait past it
+        # would answer "failed" to the page and then swap the session unseen.
+        if not self._conversation.acquire(timeout=NEW_CONVERSATION_WAIT_S):
             return {"started": False, "ended": None, "reason": "busy"}
         try:
             with self._lock:
@@ -5358,12 +5370,16 @@ class DaemonApp:
             with self._lock:
                 if ended:
                     self._ended_conversations[ended] = time.time()
-            threading.Thread(
+            closer = threading.Thread(
                 target=self._close_one_session,
                 args=(old, self._config.session_summary_deadline),
                 name="embodiment-session-close",
                 daemon=True,
-            ).start()
+            )
+            with self._lock:
+                self._session_closers = [t for t in self._session_closers if t.is_alive()]
+                self._session_closers.append(closer)
+            closer.start()
         self._settle_kick.set()
         return {"started": True, "ended": ended}
 
@@ -5416,7 +5432,14 @@ class DaemonApp:
         (``session-summary-not-provided`` when no summariser was wired at all,
         which is what a daemon built without a senses seam will report).
         """
-        return self._close_one_session(self._session, deadline)
+        # An ended conversation's summary may still be running: it finishes before
+        # memory closes, inside this step's share (review of PR #101).
+        end = time.monotonic() + max(0.05, deadline)
+        with self._lock:
+            closers = list(self._session_closers)
+        for closer in closers:
+            closer.join(timeout=max(0.0, end - time.monotonic()))
+        return self._close_one_session(self._session, max(0.05, end - time.monotonic()))
 
     def _close_one_session(self, session: Any, deadline: float) -> bool:
         """Close *session*, writing its summary inside *deadline*. Never raises."""
