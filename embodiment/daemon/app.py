@@ -130,6 +130,7 @@ import json
 import math
 import os
 import queue
+import re
 import threading
 import time
 import unicodedata
@@ -138,7 +139,7 @@ from collections import OrderedDict, deque
 from dataclasses import dataclass, field, replace
 from datetime import datetime, timezone, tzinfo
 from pathlib import Path
-from typing import Any, Callable, Iterable, Mapping, Optional
+from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
 from embodiment import memory as memory_module
 from embodiment import safe_reason, vectors
@@ -148,6 +149,19 @@ from embodiment.audio.features import FeatureExtractor
 from embodiment.bus import Bus, fold_degradation
 from embodiment.contract import ModelResponse
 from embodiment.daemon import drain as drain_module
+from embodiment.daemon.history import (
+    SETTLED_NAME,
+    STAMP_GENERATED,
+    STAMP_TRANSCRIBED,
+    STAMP_WITNESSED,
+    VIA_SPOKEN,
+    ConversationHistory,
+    SettledLedger,
+    clip_via,
+    settled,
+    stamp,
+    stamps,
+)
 from embodiment.daemon.lifecycle import DEFAULT_SHUTDOWN_DEADLINE, ENV_SHUTDOWN_DEADLINE
 from embodiment.daemon.recall_events import (
     PURPOSE_FOLLOW_UP,
@@ -159,18 +173,26 @@ from embodiment.daemon.recall_events import (
     Recalled,
     RecallEventsConfig,
 )
-from embodiment.daemon.state import DaemonState, resolve_state_dir
+from embodiment.daemon.recordings import RECORDINGS_DIRNAME, RecordingStore, UtteranceTap
+from embodiment.daemon.state import SESSIONS_DIRNAME, DaemonState, resolve_state_dir
 from embodiment.daemon.text_turns import TextTurns, TextTurnsConfig
 from embodiment.http import access as access_module
 from embodiment.http import guard as guard_module
 from embodiment.http import server as server_module
 from embodiment.ingest.spool import Spool
+from embodiment.library import conversations as conversations_module
+from embodiment.library import tools as library_tools
+from embodiment.library.client import LibraryClient, LibraryConfig, LibraryError
+from embodiment.library.epub import extract as epub_extract
+from embodiment.library.index import DocumentIndex
+from embodiment.library.sync import RECOVERED as LIBRARY_RECOVERED
+from embodiment.library.sync import LibrarySync
 from embodiment.memory import PRIVATE, RoomMemory, SemanticRecall, render_recalled
 from embodiment.perception import perceive
 from embodiment.realtime import wire
 from embodiment.realtime.client import RealtimeConfig, RealtimeEars
-from embodiment.session import ASK_RECORD_TYPE, Session
-from embodiment.tools import ToolRegistry, bind_tools
+from embodiment.session import ASK_RECORD_TYPE, Session, default_ask_detector
+from embodiment.tools import BOUND_REGISTRY_ATTR, ToolRegistry, bind_tools
 from embodiment.turn import FALLBACK_TEXT, SYSTEM_PROMPT, TurnConfig, TurnResult
 from embodiment.turn import turn as run_one_turn
 from embodiment.voice import BARGE_IN_BOUND_S, Voice, VoiceConfig, http_synthesize, split_sentences
@@ -394,6 +416,11 @@ ENV_RECALL_MODE = "EMBODIMENT_RECALL_MODE"
 #: Never inferred from a model name; unset means no such role is configured.
 #: Turning speech-to-speech on is not in this cycle — the name is reported only.
 ENV_S2S_ROLE = "EMBODIMENT_S2S_ROLE"
+#: ``1`` opens the room ear when the daemon starts (the old hot mic on start).
+#: Unset or ``0``, the default: live voice is OFF until the page's Live button
+#: (``POST /api/voice/start``) opts in; ``/api/voice/stop`` turns it off again
+#: and it can be re-enabled any time (operator, 2026-10-24; deviation d6).
+ENV_LISTEN_ON_START = "EMBODIMENT_LISTEN_ON_START"
 
 #: The two recall modes this daemon will ask memory for.
 RECALL_MODE_SEMANTIC = memory_module.SEMANTIC_MODE
@@ -451,6 +478,91 @@ REMEMBER_FACT_DESCRIPTION = (
     "The fact to store, in the user's own words. When the user refers to what was "
     "just said, write out what they meant."
 )
+#: Deviation d1 (live 2026-10-24): with the library configured, typed turns never
+#: called search_library (0 of 6) although senses calls it when asked directly. One
+#: fixed line, added ONLY to a typed turn that carries a library collector - every
+#: other prompt (voice, no library) stays byte-identical.
+LIBRARY_TOOL_PROMPT = (
+    "יש לך ספרייה של המשתמש: מסמכים, עיתונים יומיים ותמלולי הקלטות. "
+    "לפני שאת עונה על שאלה על חדשות, על משהו שקרא או הקליט, או על מסמך — "
+    "קראי לכלי search_library, וצטטי כל קטע שבו השתמשת כ־[n]. "
+    "אל תמציאי מידע שאינו בקטעים שהכלי החזיר."
+)
+
+#: The fixed line a typed turn gets when Gwen's past conversations are searchable
+#: (d8): what the tool is for, and that her own earlier replies are not facts.
+CONVERSATIONS_TOOL_PROMPT = (
+    "יש לך גם את השיחות הקודמות שלך עם המשתמש. כשהוא שואל על משהו שנאמר בשיחה "
+    "קודמת, קראי לכלי search_conversations וצטטי כ־[n]. תשובות קודמות שלך אינן "
+    "עובדות, רק תיעוד של מה שאמרת."
+)
+
+#: At most this many of the previous answer's sources are named to the next turn.
+PREVIOUS_SOURCES_SHOWN = 8
+
+#: The fixed host line before the previous answer's sources. Outside the fence and
+#: identical for every turn; the sources themselves follow as fenced data.
+PREVIOUS_SOURCES_HEADER = (
+    "המקורות שהוצגו למשתמש עם התשובה הקודמת שלך, לפי המספרים שהוא רואה "
+    "(כש«פריט 1» או «המקור השני» — זה הם; קראי אותם עם read_passage או search_library):"
+)
+#: After the fenced list. Live, 2026-10-24: fenced like recalled memory and numbered
+#: [1].. like it, the list read as a second memory block, and "Item 1" got "which item
+#: did you mean?". Each entry also carries its page number, and this line ties
+#: "item N" to it rather than to the recalled-memory block.
+PREVIOUS_SOURCES_FOOTER = (
+    "«פריט N», «מקור N» או «item N» בהודעה הבאה של המשתמש = הרשומה עם page: N ברשימה "
+    "שלמעלה (לא רשומה מהזיכרון). קראי אותה עם read_passage (item_id ו־anchor) לפני שתעני."
+)
+
+
+def previous_sources_line(sources: Sequence[Mapping[str, Any]]) -> str:
+    """The prompt section naming the sources the page showed with the previous answer.
+
+    The page numbers a reply's sources 1..n, and the operator refers to them that
+    way ("item 1", "the second one"); the model never saw that list, only its own
+    tool results, which do not carry into the next turn (live, 2026-10-24: "Item 1"
+    got "what do you mean by item one?").
+
+    Titles are library (or recalled) data, so they enter the prompt the way every
+    other library text does (review of PR #98, 2026-10-24: they were spliced into
+    the system prompt unfenced): through :func:`render_recalled`, attributed and
+    fenced, every field a quoted body line. ``render_recalled`` numbers its entries
+    from 1 in the order given, which is the page's order, so its ``[n]`` is the
+    page's ``n``. The caller arms the write guard whenever this section is present.
+    """
+    shown = [s for s in sources if isinstance(s, Mapping)][:PREVIOUS_SOURCES_SHOWN]
+    if not shown:
+        return ""
+    rendered = render_recalled([_shown_source_record(src, n) for n, src in enumerate(shown, 1)])
+    if not rendered:
+        return ""
+    return f"{PREVIOUS_SOURCES_HEADER}\n{rendered}\n{PREVIOUS_SOURCES_FOOTER}"
+
+
+def _shown_source_record(src: Mapping[str, Any], page: int) -> dict[str, Any]:
+    """One shown source as the record shape :func:`render_recalled` fences.
+
+    Only the item id (library) or the source kind, the writer and the date reach the
+    restricted header; the page number, the title and the anchor ``read_passage``
+    takes are body.
+    """
+    kind = str(src.get("source") or "source")
+    if src.get("item_id"):  # a library citation: the reader's target
+        kind = library_tools.LIBRARY_SOURCE
+    parts = [("page", str(page)), ("title", str(src.get("title") or kind))]
+    if kind == library_tools.LIBRARY_SOURCE:
+        parts.append(("anchor", str(src.get("anchor") or "")))
+    elif kind == "room":
+        parts.append(("from", "Gwen's memory"))
+    return {
+        "id": str(src.get("item_id") or kind),
+        "added_by": kind,
+        "created": str(src.get("date") or ""),
+        "text": " | ".join(f"{k}: {v}" for k, v in parts if v),
+    }
+
+
 REMEMBER_TOOL_PROMPT = (
     "כשהמשתמש מבקש ממך לזכור, לשמור, לרשום או לא לשכוח משהו — בכל ניסוח, "
     "כולל «תזכרי את כל זה» או «שמרי את מה שאמרתי» — עלייך לקרוא לכלי remember "
@@ -714,6 +826,11 @@ APP_BARGE_IN_STOP_TIMEOUT = "app-barge-in-stop-timeout"
 
 #: A recall, or the render of one, failed outright.
 APP_RECALL_FAILED = "app-recall-failed"
+#: A typed turn named an earlier conversation the history does not list (d5).
+APP_CONVERSATION_NOT_FOUND = "conversation-not-found"
+#: At most this many earlier conversations are kept open for continuing (d5); the
+#: least recently continued is dropped first and reopened from its log if needed.
+RESUMED_CONVERSATIONS = 8
 #: The lexical index cannot tokenise the utterance's script, so a keyword
 #: search over it can only ever return nothing. See
 #: :meth:`DaemonApp._recall_blind_fallback`.
@@ -879,6 +996,67 @@ APP_TEXT_TURN_BUSY = "app-text-turn-busy"
 #: A typed turn's late memory follow-up had no turn left to attach to.
 APP_TEXT_FOLLOW_UP_UNROUTED = "app-text-follow-up-unrouted"
 
+# ── the library lane (plan task t13) ──────────────────────────────────────────
+
+#: The library (or its sync, or the document index) degraded; the reason is a
+#: fixed code from the library modules, never library text or the key.
+APP_LIBRARY_DEGRADED = "app-library-degraded"
+#: The library is configured but could not be wired (bad URL, no state dir,
+#: a model seam that was bound before the daemon saw it).
+APP_LIBRARY_UNAVAILABLE = "app-library-unavailable"
+#: A remember/forget the write guard refused (c31): library text was in the
+#: turn's context and the operator's own turn did not ask for the write.
+APP_LIBRARY_GUARDED_WRITE = "app-library-guarded-write"
+#: Indexing Gwen's settled conversations failed (d8): an embed refused, or the
+#: logs could not be read. The reason is a fixed code or an exception's class.
+APP_CONVERSATIONS_INDEX_FAILED = "app-conversations-index-failed"
+#: The refusal token the model reads back from a guarded write.
+LIBRARY_GUARDED_REASON = "library-guarded"
+#: A library search whose query could not be embedded.
+LIBRARY_EMBED_FAILED_CODE = library_tools.CODE_EMBED_FAILED
+
+#: The document index: ``<state>/library/index.json`` (0700 dir, 0600 file — t3's
+#: ``DocumentIndex._save``). Never inside an eidetic store (the index refuses one).
+LIBRARY_DIRNAME = "library"
+LIBRARY_INDEX_NAME = "index.json"
+#: How often the catalog is listed again. A **judgement call**, not a measurement:
+#: one GET per interval keeps the index within five minutes of the library, and
+#: nothing waits on this clock (a page reads the index, never the library).
+LIBRARY_SYNC_INTERVAL_S = 300.0
+#: Bounds ONE sync tick's work before the thread checks its interval and stop
+#: again. A **judgement call**: it bounds no request (the client bounds those) and
+#: no turn (every chunk embed yields to the live-turn gate); a stop does not wait
+#: on it either — closing ends the tick at the next chunk.
+LIBRARY_TICK_BUDGET_S = 60.0
+#: Seconds between ticks while a tick left work behind (a first sync, a re-index):
+#: the next bounded tick runs soon instead of an interval later. Each tick still has
+#: its budget and still yields to live turns. Measured 2026-10-24: a full re-index of
+#: 51 items took one item-budget per 300 s tick (15 items each), about 15 minutes.
+LIBRARY_CATCH_UP_S = 5.0
+#: How often the settle watch looks for conversations that have gone quiet (d7).
+#: Small beside the 30 min quiet period it serves, so an announcement is late by
+#: at most this much; each look reads the bounded session-log listing only.
+SETTLE_CHECK_S = 60.0
+#: Hits one search route returns: the library tools' own cap.
+LIBRARY_SEARCH_LIMIT = library_tools.MAX_LIMIT
+#: The memory type the to-dos view lists, written by the culture-rules ingest.
+TODO_RECORD_TYPE = "action_item"
+TODO_SOURCE = "pocket"
+#: The forget stems the write guard looks for in the operator's own turn.
+_FORGET_STEMS: tuple[str, ...] = ("שכח", "forget")
+#: A NEGATED forget asks to KEEP the fact, so it is removed before the stems are
+#: matched. Review of PR #98 (2026-10-24): only "don't forget"/"dont forget" were
+#: removed, so "אל תשכחי X" (still carrying the stem שכח), "don’t forget X" (curly
+#: apostrophe) and "do not forget X" all counted as asking to forget X. English:
+#: don't / dont / don’t / do not + forget*; Hebrew: (ו|ש)אל or (ו|ש)לא + any word
+#: carrying the stem (אל תשכח, אל תשכחי, אל תשכחו, שלא תשכחי). Applied to the
+#: casefolded, whitespace-collapsed turn. Biased to refusing, like the guard.
+#: Two patterns applied in turn (English, then Hebrew), each simple enough to read.
+_NEGATED_FORGET: tuple[re.Pattern[str], ...] = (
+    re.compile(r"\b(?:don['\u2019]?t|do not)\s+forget\w*"),
+    re.compile(r"(?<!\w)[וש]?(?:אל|לא)\s+\w*שכח\w*"),
+)
+
 #: The prompt section for a remainder, restart or follow-up completion: what
 #: Gwen already said in this reply. Her own earlier words, in the system
 #: prompt, never in the user text (the verbatim invariant). Hebrew because she
@@ -903,6 +1081,9 @@ FOLLOW_UP_INSTRUCTION = (
 _RECALL_INDEX_SIZE = 16
 #: How many recent typed turns a late follow-up can still find.
 _TEXT_TURN_MEMORY = 16
+#: How many library-derived replies are remembered for the window check. A
+#: **judgement call**: a session window holds tens of turns, not hundreds.
+_LIBRARY_REPLY_MEMORY = 128
 #: The longest record text one chat source carries to the page.
 SOURCE_TEXT_MAX_CHARS = memory_module.DEFAULT_MAX_CHARS
 
@@ -972,6 +1153,10 @@ class AppConfig:
     memory_scope: str = "gwen"
     added_by: str = "gwen"
     session_summary_deadline: float = 5.0
+    #: Open the room ear in :meth:`DaemonApp.start`. ``False``, the default:
+    #: live voice is opt-in from the page's Live button (d6), so the daemon
+    #: comes up deaf, says so (``mic`` event, ``ear: None``), and serves text.
+    listen_on_start: bool = False
     #: Whether a browser/robot ear (:class:`~embodiment.audio.remote.RemoteEndpoint`)
     #: is started by the daemon. **Always False in v1**, by the operator's
     #: decision — the field exists so the dashboard has a stable contract to
@@ -1084,6 +1269,14 @@ class _Heard:
     eos_wall: Optional[float] = None
     eos_at_ms: Optional[int] = None
     transcript_at: Optional[float] = None
+    #: The kept recording of this utterance (d11), and its typed times (d12).
+    recording: Optional[dict] = None
+    witnessed: Optional[float] = None
+    transcribed: Optional[float] = None
+
+
+#: Onsets and kept utterances waiting for their stop or transcript, by item id.
+_UTTERANCES_HELD = 16
 
 
 @dataclass(eq=False)
@@ -1146,6 +1339,7 @@ class AppCloseReport:
     bus_closed: bool = True
     drain_stopped: bool = True
     backfill_stopped: bool = True
+    library_stopped: bool = True
     elapsed_s: float = 0.0
 
     def to_dict(self) -> dict[str, Any]:
@@ -1163,6 +1357,7 @@ class AppCloseReport:
             "bus_closed": self.bus_closed,
             "drain_stopped": self.drain_stopped,
             "backfill_stopped": self.backfill_stopped,
+            "library_stopped": self.library_stopped,
             "elapsed_s": round(self.elapsed_s, 3),
         }
 
@@ -1178,6 +1373,7 @@ class AppCloseReport:
             ("session", self.session_closed),
             ("drain", self.drain_stopped),
             ("backfill", self.backfill_stopped),
+            ("library", self.library_stopped),
             ("memory", self.memory_closed),
             ("bus", self.bus_closed),
         )
@@ -1381,6 +1577,128 @@ class AppLanes:
     #: ``None`` is a daemon thread per recall. Tests inject a holder or a
     #: synchronous call to choose the moment a recall lands.
     recall_spawn: Optional[Callable[[Callable[[], None]], object]] = None
+    #: :class:`LibraryLane` (t13) — the library client, document index and sync.
+    #: ``None`` (``EMBODIMENT_LIBRARY_URL`` unset): no library tool is bound, the
+    #: library routes answer 503 ``library-not-configured``, and every turn is
+    #: exactly what it was before the library existed.
+    library: Optional[Any] = None
+    #: :class:`ConversationLane` (d8) — Gwen's own index of her settled past
+    #: conversations. ``None``: no ``search_conversations`` tool, nothing indexed.
+    conversations: Optional[Any] = None
+
+
+@dataclass(eq=False)
+class ConversationLane:
+    """Gwen's past conversations, indexed by her (d8): see :func:`main`."""
+
+    #: A :class:`DocumentIndex` in its own file (never the library's).
+    index: Any
+    #: ``text -> vector`` for a search query.
+    embed_query: Callable[[str], Any]
+    #: Memory's provisional floor, as for the library; uncalibrated for this text.
+    threshold: float = memory_module.DEFAULT_SIMILARITY_THRESHOLD
+
+
+class _LibraryStopped(Exception):
+    """The daemon is closing: a chunk embed is abandoned, not failed."""
+
+
+class _RememberedCatalog:
+    """The library client as the sync sees it, keeping the last full catalog it listed.
+
+    The catalog route answers from this — a page load never reaches the library —
+    and ``gets`` stays the client's own counter (the c28 live check reads it).
+    """
+
+    def __init__(self, client: Any) -> None:
+        self._client = client
+        self.items: Optional[tuple[Any, ...]] = None
+
+    @property
+    def gets(self) -> int:
+        return int(getattr(self._client, "gets", 0) or 0)
+
+    def list_items(self, kind: Optional[str] = None, q: Optional[str] = None) -> list[Any]:
+        items = self._client.list_items(kind=kind, q=q)
+        if kind is None and q is None:
+            self.items = tuple(items)
+        return items
+
+    def get_item(self, item_id: Any) -> Any:
+        return self._client.get_item(item_id)
+
+    def fetch_file(self, item_id: Any) -> bytes:
+        return self._client.fetch_file(item_id)
+
+
+@dataclass(eq=False)
+class LibraryLane:
+    """The library, wired: see :func:`build_library_lane`. Built only when configured."""
+
+    client: Any
+    index: Any
+    sync: Any
+    #: ``text -> vector`` for a QUERY (a search tool call or the search route).
+    #: Never gated: it serves the live turn the gate protects.
+    embed_query: Callable[[str], Any]
+    #: Set when the daemon closes: the sync's clock reads past every deadline and
+    #: the next chunk embed is abandoned, so the tick ends at the next chunk.
+    stop: threading.Event
+    #: The library search floor: memory's provisional 0.715, **uncalibrated for
+    #: library text** (plan risk r6) — status says so.
+    threshold: float = memory_module.DEFAULT_SIMILARITY_THRESHOLD
+    interval_s: float = LIBRARY_SYNC_INTERVAL_S
+
+
+def build_library_lane(
+    client: Any,
+    index_path: Any,
+    *,
+    embed_document: Callable[[str], Any],
+    embed_query: Callable[[str], Any],
+    gate: Callable[[], bool],
+    extract: Callable[[bytes], Any] = epub_extract,
+    threshold: float = memory_module.DEFAULT_SIMILARITY_THRESHOLD,
+) -> LibraryLane:
+    """The client, the index and the sync, wired as t10 asks.
+
+    The index embeds every chunk through ``sync.gate_embed`` so a chunk waits
+    while *gate* (a live turn) is held — not only the gap between items. The two
+    are mutually referential (the sync needs the index, the index's embedder is
+    the sync's), so the index's embedder is bound one line later. Raises only what
+    :class:`DocumentIndex` raises for a path inside an eidetic store.
+    """
+    stop = threading.Event()
+    catalog = _RememberedCatalog(client)
+    gated: list[Callable[[str], Any]] = []
+    index = DocumentIndex(
+        index_path, embed=lambda text: gated[0](text), model_tag=vectors.EMBED_ROLE
+    )
+    sync = LibrarySync(
+        catalog,
+        index,
+        extract=extract,
+        clock=lambda: math.inf if stop.is_set() else time.time(),
+        budget=LIBRARY_TICK_BUDGET_S,
+        # Never held while stopping: a held gate would park the embed below
+        # instead of letting it abandon the chunk.
+        gate=lambda: not stop.is_set() and bool(gate()),
+    )
+
+    def embed(text: str) -> Any:
+        if stop.is_set():
+            raise _LibraryStopped()
+        return embed_document(text)
+
+    gated.append(sync.gate_embed(embed))
+    return LibraryLane(
+        client=catalog,
+        index=index,
+        sync=sync,
+        embed_query=embed_query,
+        stop=stop,
+        threshold=threshold,
+    )
 
 
 @dataclass(eq=False)
@@ -1426,6 +1744,40 @@ class _TextTurn:
     tool_round: bool = False
     records: tuple[Any, ...] = ()
     follow_up_records: tuple[Any, ...] = ()
+    #: This turn's library citations (t13), or ``None`` with no library. Built
+    #: per turn, so the tools it backs number ``[n]`` from 1 for this reply only.
+    collector: Optional[Any] = None
+    #: The sources the page showed with the previous typed answer, in page order.
+    previous_sources: tuple[Any, ...] = ()
+    #: The sources the chat route returned with THIS turn's ok answer — what the
+    #: page showed. Empty for a failed turn and for a clip (its route forwards no
+    #: sources), which is what the page showed for them.
+    shown_sources: tuple[Any, ...] = ()
+    #: The conversation this turn belongs to: an earlier one it continues (d5), or
+    #: ``None`` for the live session.
+    conversation: Optional[str] = None
+
+
+def _previous_page_sources(
+    recent: Iterable[Any], conversation: Optional[str] = None
+) -> tuple[Any, ...]:
+    """The newest numbered source list the page shows, in page order; () if none.
+
+    That is the list of the newest typed turn whose answer the chat route returned
+    ok WITH sources (review of PR #98, 2026-10-24: the newest turn was used whether
+    or not it succeeded, while the route shows sources only for an ok turn). A
+    failed turn shows nothing and an answer without sources shows no numbers, so
+    neither replaces the list the operator can still see and call "item 1". The
+    list is the route's own (``_typed_sources``: library citations first, then
+    recalled memory), so "item 1" means what the operator saw as 1.
+    """
+    for turn in reversed(list(recent)):
+        if getattr(turn, "conversation", None) != conversation:
+            continue  # "item 1" means the list of THIS conversation's last answer
+        shown = getattr(turn, "shown_sources", ())
+        if shown:
+            return tuple(shown)
+    return ()
 
 
 @dataclass(frozen=True)
@@ -1498,11 +1850,12 @@ class DaemonApp:
                 self._forget_tool,
                 description=FORGET_TOOL_DESCRIPTION,
             )
-        self._complete = (
-            complete
-            if getattr(complete, "__embodiment_bound_registry__", None) is self._tools
-            else bind_tools(_as_seam(complete), self._tools)
-        )
+        prebound = getattr(complete, BOUND_REGISTRY_ATTR, None) is self._tools
+        #: The schema-aware seam, kept so a typed turn can bind its OWN registry
+        #: (memory tools + that turn's library tools, t13). ``None`` when the
+        #: caller handed a callable already bound: its tools cannot be widened.
+        self._seam: Optional[Callable[..., Any]] = None if prebound else _as_seam(complete)
+        self._complete = complete if prebound else bind_tools(self._seam, self._tools)
         self._ears_factory = factories.ears
         self._ears: Any = None
         self._ears_rate: Optional[int] = None
@@ -1635,6 +1988,11 @@ class DaemonApp:
         self._floor_taken = False
         self._recall_seen: "OrderedDict[str, _RecallSeen]" = OrderedDict()
         self._text_turns_recent: deque[_TextTurn] = deque(maxlen=_TEXT_TURN_MEMORY)
+        #: Earlier conversations reopened for continuing (d5), least recent first.
+        self._resumed: OrderedDict[str, Any] = OrderedDict()
+        #: Gwen's typed replies built from library text, so a later typed turn whose
+        #: window still carries one is guarded (review of PR #98, 2026-10-24).
+        self._library_replies: deque[str] = deque(maxlen=_LIBRARY_REPLY_MEMORY)
         self._text_serial = 0
         self._text_turns_run = 0
         self._text_follow_ups = 0
@@ -1671,6 +2029,15 @@ class DaemonApp:
             spawn=lanes.recall_spawn,
             split=_whole_message,
         )
+        #: Every clip the page sends, kept as it arrived (d10); private, bounded.
+        #: The room ear's sent audio, so each utterance is kept like a clip (d11).
+        self._tap = UtteranceTap()
+        self._utterance_starts: dict[str, int] = {}
+        self._utterance_kept: dict[str, Any] = {}
+        self._recordings = RecordingStore(
+            Path(self._state.dir) / RECORDINGS_DIRNAME,
+            on_degrade=lambda code, reason: self._record(code, reason, source="recordings"),
+        )
         self._text_turns = TextTurns(
             run_text_turn=self._run_text_turn,
             session=self._locked_session,
@@ -1685,6 +2052,7 @@ class DaemonApp:
             clock=self._clock,
             hold_conversation=self._hold_conversation,
             release_conversation=self._release_conversation,
+            recordings=self._recordings,
         )
 
         self._drain_kick = threading.Event()
@@ -1696,6 +2064,30 @@ class DaemonApp:
         self._drain_last_report: Optional[dict[str, Any]] = None
         self._embedder_seen = 0
         self._cache_seen = 0
+        self._init_library(lanes.library)
+        self._settle_thread: Optional[threading.Thread] = None
+        self._settle_announced = 0
+        self._settle_save_failures = 0
+        self._conversations = lanes.conversations
+        self._conversations_indexed = 0
+        self._conversations_index_failures = 0
+        self._conversations_waiting = 0
+
+    def _init_library(self, lane: Optional[LibraryLane]) -> None:
+        """The library lane's state (t13). With no lane every counter stays zero."""
+        self._library = lane
+        self._library_thread: Optional[threading.Thread] = None
+        self._library_ticks = 0
+        self._library_tool_calls: dict[str, int] = {}
+        self._library_tick_failures = 0
+        self._library_seen = (0, 0)
+        self._library_guarded_writes = 0
+        self._typed_in_flight = 0
+        if lane is not None and self._seam is None:
+            self._record(
+                APP_LIBRARY_UNAVAILABLE,
+                "the model seam was bound before the daemon saw it; no library tool can be bound",
+            )
 
     # ── the ONE recording path ───────────────────────────────────────────
 
@@ -1819,18 +2211,29 @@ class DaemonApp:
     # ── lifecycle ────────────────────────────────────────────────────────
 
     def start(self) -> None:
-        """Bring the daemon up: the ear, the dashboard, the ears loop. Idempotent."""
+        """Bring the daemon up: the dashboard, the workers, and — only with
+        ``listen_on_start`` — the ear. Idempotent.
+
+        Live voice is opt-in (d6): without the flag no ear is attached and the
+        ``mic`` event says so, so the page's Live button reads Off; pressing it
+        is ``_control_start_voice``, which attaches the same default ear.
+        """
         with self._lock:
             if self._started or self._closed:
                 return
             self._started = True
         self._log("started", target="embodiment.daemon.app")
         self._publish("state", {"component": "daemon", "status": "starting"})
-        self._attach_default_ear()
+        if self._config.listen_on_start:
+            self._attach_default_ear()
+        else:
+            self._publish_mic()
         self._start_server()
         self._start_turn_thread()
         self._start_drain_worker()
         self._start_backfill()
+        self._start_library_sync()
+        self._start_settle_watch()
         self._publish("state", {"component": "daemon", "status": "running"})
 
     def run(self, stop_event: threading.Event) -> int:
@@ -1905,6 +2308,10 @@ class DaemonApp:
         started = self._clock()
         budget = max(0.1, float(deadline))
         self._worker_stop.set()
+        if self._library is not None:
+            # Now, not at its step: the tick winds down (at its next chunk) while
+            # the steps before it run, so its join below rarely waits at all.
+            self._library.stop.set()
 
         def step(fraction: float, call: Callable[[float], bool]) -> bool:
             """One shutdown step, under the slice of the budget it is allowed."""
@@ -1927,6 +2334,9 @@ class DaemonApp:
         step(0.89, self._settle_recalls)
         voice_closed = step(0.92, self._close_voice)
         server_stopped = step(0.95, self._stop_server)
+        # The settle watch only reads logs and replaces one small file atomically,
+        # so it shares the library's slot rather than taking one of its own.
+        library_stopped = step(0.955, lambda d: self._stop_library(d) & self._stop_settle(d))
         # The drain's share sits BEFORE memory closes, so a batch the worker
         # was part-way through (or one enqueued just before the stop) gets one
         # last bounded pass while the store still takes writes; whatever does
@@ -1952,6 +2362,7 @@ class DaemonApp:
             bus_closed=bus_closed,
             drain_stopped=drain_stopped,
             backfill_stopped=backfill_stopped,
+            library_stopped=library_stopped,
             elapsed_s=self._clock() - started,
         )
         with self._lock:
@@ -2396,6 +2807,8 @@ class DaemonApp:
                 else:
                     with self._lock:
                         self._frames_forwarded += 1
+                    # Only what the server got: the tap's offsets are its clock (d11).
+                    self._tap.feed(pcm)
             self._publish_features("in", self._features_in, pcm)
 
         return on_frame
@@ -2530,7 +2943,7 @@ class DaemonApp:
 
     # ── the turn ─────────────────────────────────────────────────────────
 
-    def submit_transcript(self, text: object) -> bool:
+    def submit_transcript(self, text: object, kept: Optional[dict] = None) -> bool:
         """Queue one heard utterance for the turn thread. Never blocks, never raises.
 
         This is where what the EAR delivered is counted, and where an empty
@@ -2556,6 +2969,9 @@ class DaemonApp:
             eos_wall=eos[1] if eos else None,
             eos_at_ms=eos[2] if eos else None,
             transcript_at=self._clock(),
+            recording=(kept or {}).get("recording"),
+            witnessed=(kept or {}).get("witnessed"),
+            transcribed=time.time(),
         )
         try:
             self._turn_queue.put_nowait(heard)
@@ -2635,6 +3051,7 @@ class DaemonApp:
             eos_at_ms=heard.eos_at_ms,
             transcript_at=heard.transcript_at,
         )
+        self._tls.heard = heard
         try:
             return self._run_turn(text, serial, timing)
         except Exception as exc:  # noqa: BLE001  # a turn fault must not kill the daemon
@@ -2644,6 +3061,7 @@ class DaemonApp:
             self._note_timing(replace(timing, failed=True).derived())
             return TurnResult(spoken="")
         finally:
+            self._tls.heard = None
             with self._lock:
                 self._turns_in_flight -= 1
 
@@ -2721,7 +3139,13 @@ class DaemonApp:
         # and its measurement in one place rather than two files to join.
         if session is not None:
             self._safely(
-                lambda: session.add_assistant(result.spoken, metadata=timing.to_dict()),
+                lambda: session.add_assistant(
+                    result.spoken,
+                    metadata={
+                        **timing.to_dict(),
+                        "timestamps": stamps(stamp(STAMP_GENERATED, time.time())),
+                    },
+                ),
                 APP_TURN_FAILED,
                 "add_assistant",
             )
@@ -2742,6 +3166,7 @@ class DaemonApp:
         memory: str,
         clock: str,
         continuation: str = "",
+        collector: Optional[Any] = None,
     ) -> tuple[TurnResult, bool]:
         """ONE completion through the turn path: (scrubbed result, whether a tool ran).
 
@@ -2750,21 +3175,23 @@ class DaemonApp:
         and the same tool-round answer, so no path speaks a secret or leaves a
         tool round silent. *memory* is :func:`render_recalled` output, the ONE
         place recall enters a prompt; *continuation* is fixed text plus Gwen's
-        own earlier sentences, never the user's words.
+        own earlier sentences, never the user's words. *collector* — a typed turn's
+        only (c39) — adds that turn's library tools to this completion.
         """
+        complete, tools = self._turn_tools(collector)
         config = TurnConfig(
             role=self._config.role,
             system_prompt=_compose_prompt(
                 self._config.system_prompt,
                 window,
                 memory,
-                tool_prompt=REMEMBER_TOOL_PROMPT if self._config.remember_tool else "",
+                tool_prompt=self._turn_tool_prompt(collector),
                 clock=clock,
                 continuation=continuation,
             ),
         )
         before = self._tool_counts()
-        result = run_one_turn(query, self._complete, tools=self._tools, config=config)
+        result = run_one_turn(query, complete, tools=tools, config=config)
         # Before the session, the transcript, the bus or the voice see it.
         spoken = self._answer_tool_step(self._scrub_reply(result.spoken), before)
         if spoken != result.spoken:
@@ -2923,8 +3350,9 @@ class DaemonApp:
     # ── typed turns (t14 handlers, t10 routes) ───────────────────────────
 
     def _locked_session(self) -> Any:
-        """The session :class:`TextTurns` writes to, behind the conversation lock."""
-        session = self._ensure_session()
+        """The session :class:`TextTurns` writes to, behind the conversation lock: the
+        earlier conversation this turn continues (d5), else the live session."""
+        session = getattr(self._tls, "conversation_session", None) or self._ensure_session()
         if session is None:
             return None
         return _LockedSession(session, self._conversation, self._conversation_bound())
@@ -2943,12 +3371,16 @@ class DaemonApp:
         answers a retryable 503 having written nothing.
         """
         if self._conversation.acquire(timeout=self._conversation_bound()):
+            with self._lock:
+                self._typed_in_flight += 1
             return True
         with self._lock:
             self._text_busy += 1
         return False
 
     def _release_conversation(self) -> None:
+        with self._lock:
+            self._typed_in_flight = max(0, self._typed_in_flight - 1)
         self._conversation.release()
 
     def _run_text_turn(self, message: str) -> "_TypedReply":
@@ -2969,14 +3401,25 @@ class DaemonApp:
             self._text_serial += 1
             self._text_turns_run += 1
             serial = self._text_serial
-            session = self._session
+            resumed = getattr(self._tls, "conversation_session", None)
+            session = resumed or self._session
+            conversation = getattr(resumed, "session_id", None)
+            previous = _previous_page_sources(self._text_turns_recent, conversation)
         turn = _TextTurn(
             serial=serial,
             thread=threading.get_ident(),
             query=message,
             window=self._window(session),
             clock=self._clock_line(),
+            collector=(
+                library_tools.CitationCollector()
+                if self._library is not None or self._conversations is not None
+                else None
+            ),
+            previous_sources=previous,
+            conversation=conversation,
         )
+        self._arm_library_guard(turn)
         self._tls.text_turn = turn
         with self._lock:
             self._text_turns_recent.append(turn)
@@ -2986,6 +3429,9 @@ class DaemonApp:
         finally:
             turn.replying = False
         reply = turn.final_text or turn.first_text or " ".join(outcome.spoken)
+        if turn.collector is not None and turn.collector.library_text_in_context and reply:
+            with self._lock:
+                self._library_replies.append(reply)
         # No turn_serial on this event: the page already has the answer from the
         # response, and Chat.tsx appends every serial'd reply as a NEW message.
         self._publish("reply", {"text": reply, "typed": True})
@@ -3008,7 +3454,12 @@ class DaemonApp:
         if not first and turn.tool_round:
             return _replay_after_tool_round(turn.first_text, request)
         result, tooled = self._complete_turn(
-            turn.query, turn.window, request.memory, turn.clock, _continuation(request)
+            turn.query,
+            turn.window,
+            request.memory,
+            turn.clock,
+            _continuation(request),
+            collector=turn.collector,
         )
         turn.tool_round = turn.tool_round or tooled
         if first:
@@ -3072,12 +3523,24 @@ class DaemonApp:
             },
         )
 
-    def _control_chat(self, message: Any) -> dict[str, Any]:
-        """``Controls.chat``: one typed turn, its reply, its sources and its serial."""
+    def _control_chat(self, message: Any, conversation: Optional[str] = None) -> dict[str, Any]:
+        """``Controls.chat``: one typed turn, its reply, its sources and its serial.
+
+        With *conversation*, the turn continues that earlier conversation (d5): its
+        turns are the window and the new ones go to its log, as if it never stopped.
+        """
         self._tls.text_turn = None
-        result = self._text_turns.handle_text(message)
+        refused = self._enter_conversation(conversation)
+        if refused is not None:
+            return refused
+        try:
+            result = self._text_turns.handle_text(message)
+        finally:
+            self._tls.conversation_session = None
         turn = getattr(self._tls, "text_turn", None)
-        sources = [chat_source(r) for r in turn.records] if (turn and result.ok) else []
+        sources = _typed_sources(turn) if (turn and result.ok) else []
+        if turn is not None:
+            turn.shown_sources = tuple(sources)
         return {
             "ok": result.ok,
             "reply": result.reply,
@@ -3098,16 +3561,483 @@ class DaemonApp:
             "http_status": result.http_status,
         }
 
-    def _control_clip(self, audio: Any, declared_duration_s: Optional[float]) -> dict[str, Any]:
-        """``Controls.clip``: transcribe in memory, then answer as a typed turn."""
-        result = self._text_turns.handle_clip(audio, declared_duration_s=declared_duration_s)
+    def _control_clip(
+        self,
+        audio: Any,
+        declared_duration_s: Optional[float],
+        conversation: Optional[str] = None,
+        origin: Optional[str] = None,
+        client_at: Optional[float] = None,
+    ) -> dict[str, Any]:
+        """``Controls.clip``: transcribe in memory, then answer as a typed turn (in the
+        earlier *conversation* it continues, when one is named). *origin* is the page's
+        word for the clip — ``recorded`` on its mic or ``uploaded`` as a file (d7) — and
+        *client_at* the page's own claim of when it was recorded, or the file's date (d12)."""
+        self._tls.text_turn = None
+        refused = self._enter_conversation(conversation)
+        if refused is not None:
+            return {**refused, "transcript": ""}
+        try:
+            result = self._text_turns.handle_clip(
+                audio,
+                declared_duration_s=declared_duration_s,
+                via=clip_via(origin),
+                client_at=client_at,
+            )
+        finally:
+            self._tls.conversation_session = None
+        turn = getattr(self._tls, "text_turn", None)
         return {
             "ok": result.ok,
             "transcript": result.transcript,
             "reply": result.reply,
+            # Carried for the page; the clip route forwards only transcript and reply today.
+            "sources": _typed_sources(turn) if (turn and result.ok) else [],
             "turn_serial": result.turn_serial if result.ok else None,
             "code": result.code,
             "http_status": result.http_status,
+        }
+
+    # ── continuing an earlier conversation (deviation d5) ───────────────────
+
+    def _enter_conversation(self, conversation: Optional[str]) -> Optional[dict[str, Any]]:
+        """Route this thread's turn into *conversation*; a refusal dict if it can't be.
+
+        ``None`` or the live session's own id is the live session. Anything else must
+        be a conversation the history lists, reopened as a :class:`Session` on its own
+        log with its turns restored — the operator's "like we never stopped".
+        """
+        self._tls.conversation_session = None
+        if not conversation:
+            return None
+        live = self._current_session_log()
+        if live is not None and live.stem == conversation:
+            return None
+        session = self._resumed_session(conversation)
+        if session is None:
+            self._record(APP_CONVERSATION_NOT_FOUND, "no such earlier conversation")
+            return {
+                "ok": False,
+                "reply": "",
+                "sources": [],
+                "turn_serial": None,
+                "code": APP_CONVERSATION_NOT_FOUND,
+                "http_status": 404,
+            }
+        self._tls.conversation_session = session
+        return None
+
+    def _resumed_session(self, conversation: str) -> Optional[Any]:
+        """The reopened session for *conversation*, cached; None if it isn't listed."""
+        with self._lock:
+            cached = self._resumed.get(conversation)
+            if cached is not None:
+                self._resumed.move_to_end(conversation)
+                return cached
+        found = self._history().conversation(conversation)
+        if not found:
+            return None
+        session = Session(
+            self._state, self._memory, session_id=conversation, added_by=self._config.added_by
+        )
+        session.restore((t["role"], t["text"]) for t in found["turns"])
+        with self._lock:
+            self._resumed[conversation] = session
+            while len(self._resumed) > RESUMED_CONVERSATIONS:
+                self._resumed.popitem(last=False)
+        return session
+
+    # ── the library lane (t13): typed-turn tools, the write guard, the routes ──
+
+    def _turn_tool_prompt(self, collector: Optional[Any]) -> str:
+        """The fixed tool lines for ONE completion: remember/forget, plus the library
+        line only when this turn carries a library collector (d1)."""
+        base = REMEMBER_TOOL_PROMPT if self._config.remember_tool else ""
+        if collector is not None and self._conversations is not None and self._seam is not None:
+            base = f"{base}\n{CONVERSATIONS_TOOL_PROMPT}" if base else CONVERSATIONS_TOOL_PROMPT
+        if collector is None or self._library is None or self._seam is None:
+            return base
+        library = LIBRARY_TOOL_PROMPT
+        turn = self._text_turn_here()
+        previous = previous_sources_line(turn.previous_sources) if turn is not None else ""
+        if previous:
+            library = f"{library}\n{previous}"
+        return f"{base}\n{library}" if base else library
+
+    def _arm_library_guard(self, turn: _TextTurn) -> None:
+        """Mark *turn*'s collector when library-derived text reaches its prompt
+        without a citation (review of PR #98, 2026-10-24).
+
+        Two ways: the previous answer's sources are named to it
+        (:func:`previous_sources_line`), or its window carries one of Gwen's
+        replies built from library text — a clip turn's, say, whose sources the
+        page never showed. Either way a remember/forget the operator's own words
+        do not ask for is refused, as in the turn that read the library.
+        """
+        collector = turn.collector
+        if collector is None:
+            return
+        with self._lock:
+            derived = set(self._library_replies)
+        in_window = any(
+            m.get("role") == "assistant" and m.get("content") in derived for m in turn.window
+        )
+        if turn.previous_sources or in_window:
+            collector.mark_library_text()
+
+    def _counted(self, spec: Any) -> Any:
+        """*spec* with its fn counting calls by tool name (d1: a counter that moves)."""
+        inner = spec.fn
+
+        def counted(*args: Any, **kwargs: Any) -> Any:
+            with self._lock:
+                self._library_tool_calls[spec.name] = self._library_tool_calls.get(spec.name, 0) + 1
+            return inner(*args, **kwargs)
+
+        return replace(spec, fn=counted)
+
+    def _turn_tools(self, collector: Optional[Any]) -> tuple[Callable[..., Any], ToolRegistry]:
+        """The completion seam and registry for ONE completion.
+
+        No collector (every voice turn, c39; every turn with no library): the shared
+        registry, exactly as before the library. With one, a registry built for this
+        turn — the memory tools plus ``search_library``/``read_passage`` closed over
+        the turn's own collector — bound to the raw seam so the schemas reach the wire.
+        """
+        lane, past = self._library, self._conversations
+        if collector is None or (lane is None and past is None) or self._seam is None:
+            return self._complete, self._tools
+        registry = ToolRegistry()
+        for spec in self._tools.specs.values():
+            registry.add(spec)
+        if lane is not None:
+            for spec in library_tools.build_library_tools(
+                lane.index, lane.embed_query, collector, threshold=lane.threshold
+            ):
+                registry.add(self._counted(spec))
+        if past is not None:
+            registry.add(
+                self._counted(
+                    conversations_module.build_conversation_tool(
+                        past.index,
+                        past.embed_query,
+                        collector,
+                        exclude=self._conversations_in_play,
+                        threshold=past.threshold,
+                    )
+                )
+            )
+        return bind_tools(self._seam, registry), registry
+
+    def _conversations_in_play(self) -> set[str]:
+        """The live conversation and the one this turn continues: never searched (d8)."""
+        ids = {getattr(self._session, "session_id", None)}
+        turn = self._text_turn_here()
+        ids.add(getattr(turn, "conversation", None))
+        return {i for i in ids if i}
+
+    def live_turn_held(self) -> bool:
+        """The library sync's gate: True while a live turn holds the conversation.
+
+        A voice turn in flight or queued, a typed turn holding the conversation, or
+        the speaker still playing. Never raises.
+        """
+        with self._lock:
+            if self._turns_in_flight > 0 or self._typed_in_flight > 0:
+                return True
+            if self._turn_queue.qsize() > 0:
+                return True
+            endpoint = self._ear_endpoint
+        try:
+            return bool(endpoint is not None and endpoint.playing)
+        except Exception:  # noqa: BLE001  # an endpoint fault is recorded on its own path
+            return False
+
+    def _library_guard(self, tool: str, *spans: str) -> bool:
+        """c31: True (refuse) when library text is in this turn's context and the
+        operator's own words in the current user turn do not ask for this write.
+
+        The span checked is the first non-blank of *spans* — the fact, else the id.
+
+        Only a typed turn carries a collector, so a voice turn is never guarded (it
+        has no library text). Counted and recorded with the tool's name only.
+        """
+        span = next((s.strip() for s in spans if s.strip()), "")
+        turn = self._text_turn_here()
+        collector = turn.collector if turn is not None else None
+        if not span or collector is None or not collector.library_text_in_context:
+            # No span: the tool's own checks refuse it (``bad-id``); not a guard case.
+            return False
+        if user_turn_asks(turn.query, tool, span):
+            return False
+        with self._lock:
+            self._library_guarded_writes += 1
+            guarded = self._library_guarded_writes
+        self._record(
+            APP_LIBRARY_GUARDED_WRITE,
+            f"{tool}: library text was in context and the user turn did not ask (#{guarded})",
+        )
+        return True
+
+    def _start_library_sync(self) -> None:
+        lane = self._library
+        if lane is None or lane.sync is None:
+            return
+        thread = threading.Thread(
+            target=self._library_worker, name="embodiment-library", daemon=True
+        )
+        try:
+            thread.start()
+        except Exception as exc:  # noqa: BLE001  # no sync: the index stays as it is, said aloud
+            self._record(APP_LIBRARY_UNAVAILABLE, f"sync worker: {_describe(exc)}")
+            return
+        self._library_thread = thread
+
+    def _library_worker(self) -> None:
+        """One tick now, then one per interval, until the daemon closes."""
+        lane = self._library
+        while lane is not None and not lane.stop.is_set():
+            backlog = self._library_tick()
+            wait = LIBRARY_CATCH_UP_S if backlog else float(lane.interval_s)
+            lane.stop.wait(max(0.01, min(wait, float(lane.interval_s))))
+
+    def _library_tick(self) -> bool:
+        """ONE bounded sync tick plus the forwarding of what it recorded. Never raises.
+
+        Returns True when the tick left wanted items behind, or yielded to a live
+        turn (the worker then comes back soon), False otherwise, including on a
+        failed tick or a down library. A tick that yields at its FIRST gate has
+        listed nothing, so it reports ``remaining == 0``; it is still unfinished
+        work (review of PR #98, 2026-10-24: it slept the full interval).
+        """
+        lane = self._library
+        if lane is None:
+            return False
+        backlog = False
+        try:
+            out = lane.sync.tick()
+        except Exception as exc:  # noqa: BLE001  # the sync promises not to; count anyway
+            with self._lock:
+                self._library_tick_failures += 1
+            self._record(APP_LIBRARY_DEGRADED, f"tick: {_describe(exc)}", source="library")
+        else:
+            with self._lock:
+                self._library_ticks += 1
+            backlog = _tick_left_work(out)
+        if not lane.stop.is_set():
+            # A tick a stop cut short abandoned its chunk on purpose: not a fault.
+            self._forward_library_degradations(lane)
+        return backlog
+
+    def _forward_library_degradations(self, lane: LibraryLane) -> None:
+        """The sync's transitions and the index's faults, each recorded once."""
+        transitions = list(getattr(lane.sync, "degradations", ()) or ())
+        problems = list(getattr(lane.index, "degradations", ()) or ())
+        with self._lock:
+            seen_sync, seen_index = self._library_seen
+            self._library_seen = (len(transitions), len(problems))
+        for code in transitions[seen_sync:]:
+            if code == LIBRARY_RECOVERED:
+                self._publish("state", {"component": "library", "status": "online"})
+            else:
+                reason = f"library sync: {safe_reason.safe_label(code)}"
+                self._record(APP_LIBRARY_DEGRADED, reason, source="library")
+        for problem in problems[seen_index:]:
+            self._record(APP_LIBRARY_DEGRADED, f"document index: {problem}", source="library")
+
+    # ── settled conversations (deviation d7) ─────────────────────────────────
+
+    def _start_settle_watch(self) -> None:
+        """Announce each conversation once it has gone quiet. Never raises.
+
+        Operator, 2026-10-24: export a conversation when it goes quiet, not on a
+        schedule. Every :data:`SETTLE_CHECK_S` the watch lists the session logs and
+        publishes one ``conversation`` event (id, last, turns -- never text) per
+        conversation quiet for :data:`~embodiment.daemon.history.SETTLE_AFTER_S`
+        whose last turn was not yet announced. culture-rules triggers on it and runs
+        ``embodiment history export --id``; a continued conversation settles again.
+        """
+        thread = threading.Thread(target=self._settle_worker, name="embodiment-settle", daemon=True)
+        try:
+            thread.start()
+        except Exception as exc:  # noqa: BLE001  # no watch: nothing is announced, said aloud
+            self._record(APP_BOOTSTRAP_DEGRADED, f"settle watch: {_describe(exc)}")
+            return
+        self._settle_thread = thread
+
+    def _settle_worker(self) -> None:
+        ledger = SettledLedger(Path(self._state.dir) / SETTLED_NAME)
+        announced = ledger.load()
+        while not self._worker_stop.is_set():
+            self._settle_tick(ledger, announced, time.time())
+            self._worker_stop.wait(SETTLE_CHECK_S)
+
+    def _settle_tick(self, ledger: SettledLedger, announced: dict[str, float], now: float) -> int:
+        """One look: publish what settled, remember it. Returns how many. Never raises."""
+        try:
+            due = settled(self._history().conversations()["conversations"], announced, now)
+        except Exception as exc:  # noqa: BLE001  # a log listing must not end the watch
+            self._record(APP_TURN_FAILED, f"settle watch: {_describe(exc)}")
+            return 0
+        for summary in due:
+            self._publish(
+                "conversation",
+                {
+                    "id": summary["id"],
+                    "status": "settled",
+                    "last": summary["last"],
+                    "turns": summary["turns"],
+                },
+            )
+            announced[summary["id"]] = float(summary["last"])
+        if due:
+            saved = ledger.save(announced)
+            with self._lock:
+                self._settle_announced += len(due)
+                self._settle_save_failures += 0 if saved else 1
+        self._index_conversations(announced)
+        return len(due)
+
+    def _index_conversations(self, announced: dict[str, float]) -> None:
+        """Index what has settled into Gwen's own conversation index (d8). Never raises.
+
+        The catalog is every announced conversation whose last turn is the one it
+        was announced at (still settled); one continued since is out until it
+        settles again. A live turn is never kept waiting: the tick skips.
+        """
+        lane = self._conversations
+        if lane is None or self.live_turn_held():
+            return
+        try:
+            listed = self._history().conversations()["conversations"]
+            settled_ids = [c["id"] for c in listed if announced.get(c["id"]) == c["last"]]
+            result = conversations_module.index_settled(lane.index, self._history(), settled_ids)
+        except Exception as exc:  # noqa: BLE001  # IndexRefused, or a log fault
+            with self._lock:
+                self._conversations_index_failures += 1
+            self._record(APP_CONVERSATIONS_INDEX_FAILED, _describe(exc), once=True)
+            return
+        with self._lock:
+            self._conversations_indexed += result["indexed"]
+            self._conversations_waiting = result["waiting"]
+
+    def _stop_settle(self, deadline: float) -> bool:
+        thread = self._settle_thread
+        if thread is None:
+            return True
+        thread.join(timeout=max(0.05, deadline))
+        return not thread.is_alive()
+
+    def _stop_library(self, deadline: float) -> bool:
+        """Stop the sync thread inside *deadline*. A fetch in flight is bounded by the
+        client's own deadline, not this one, and is then reported unfinished."""
+        lane = self._library
+        if lane is None:
+            return True
+        lane.stop.set()
+        thread = self._library_thread
+        if thread is None:
+            return True
+        thread.join(timeout=max(0.05, deadline))
+        return not thread.is_alive()
+
+    def _library_list(self) -> dict[str, Any]:
+        """``Controls.library_list``: the last catalog the sync listed, never a live GET."""
+        lane = self._library
+        if lane is None:
+            return {"items": []}
+        catalog = getattr(lane.client, "items", None) or ()
+        if not catalog:
+            # Not listed since this daemon started (a restart, the library down):
+            # the persisted index is the last catalog known, every entry indexed.
+            # Review of PR #98, 2026-10-24: this answered no items until a good tick.
+            return {"items": [_indexed_entry(meta) for meta in _indexed_items(lane.index)]}
+        return {"items": [_catalog_entry(item, lane.index) for item in catalog]}
+
+    def _library_get(self, item_id: int) -> Optional[dict[str, Any]]:
+        """``Controls.library_get``: one indexed, citable item for the reader, or None."""
+        lane = self._library
+        item = lane.index.item(str(item_id)) if lane is not None else None
+        if not item:
+            return None
+        return {
+            "item": {
+                "id": str(item.get("id", item_id)),
+                **{k: _text_or_empty(item.get(k)) for k in ("title", "kind", "author")},
+                "created_at": _text_or_empty(item.get("created_at")),
+            },
+            "passages": [_reader_passage(p) for p in item.get("passages") or ()],
+        }
+
+    def _library_search(self, query: str) -> dict[str, Any]:
+        """``Controls.library_search``: the query embedded (ungated), the index searched."""
+        lane = self._library
+        if lane is None:
+            return {"hits": []}
+        try:
+            vector = lane.embed_query(query)
+        except Exception as exc:  # noqa: BLE001  # an embedder fault degrades the search only
+            self._record(APP_LIBRARY_DEGRADED, f"search: {_describe(exc)}", once=True)
+            vector = None
+        if vector is None:
+            return {"hits": [], "code": LIBRARY_EMBED_FAILED_CODE}
+        hits = lane.index.search(
+            vector, kinds=None, limit=LIBRARY_SEARCH_LIMIT, threshold=lane.threshold
+        )
+        return {"hits": [_search_hit(hit) for hit in hits]}
+
+    def _todos(self) -> dict[str, Any]:
+        """``Controls.todos``: memory's ``action_item`` records, grouped by recording."""
+        result = self._memory.list_ingest(
+            record_type=TODO_RECORD_TYPE, deadline=server_module.TODOS_READ_BOUND_S
+        )
+        if not getattr(result, "ok", False):
+            for degradation in getattr(result, "degradations", ()) or ():
+                self._fold("memory", degradation)
+            return {"groups": [], "code": server_module.MEMORY_UNAVAILABLE_CODE}
+        return {"groups": todo_groups(getattr(result, "records", ()) or ())}
+
+    def _settle_status(self) -> dict[str, Any]:
+        thread = self._settle_thread
+        with self._lock:
+            return {
+                "settle_watch_running": bool(thread is not None and thread.is_alive()),
+                "settled_announced": self._settle_announced,
+                "settled_save_failures": self._settle_save_failures,
+                "indexed": self._conversations_indexed,
+                "index_failures": self._conversations_index_failures,
+                "index_waiting": self._conversations_waiting,
+                "searchable": self._conversations is not None,
+            }
+
+    def _library_status(self) -> dict[str, Any]:
+        lane = self._library
+        if lane is None:
+            return {"configured": False}
+        probed = _probe(lane.sync) or {"unavailable": True}
+        thread = self._library_thread
+        with self._lock:
+            worker = {
+                "running": bool(thread is not None and thread.is_alive()),
+                "ticks": self._library_ticks,
+                "tick_failures": self._library_tick_failures,
+                "interval_s": lane.interval_s,
+                "tick_budget_s": LIBRARY_TICK_BUDGET_S,
+            }
+            tool_calls = {
+                name: self._library_tool_calls.get(name, 0)
+                for name in ("search_library", "read_passage")
+            }
+        return {
+            **probed,
+            "configured": True,
+            "last_sync_at": _finite_or_none(probed.get("last_sync_at")),
+            # Memory's provisional threshold, applied to library text it was never
+            # measured on (plan risk r6): reported, so nobody reads it as calibrated.
+            "similarity_threshold": lane.threshold,
+            "threshold_calibrated": False,
+            "worker": worker,
+            "tool_calls": tool_calls,
         }
 
     # ── the drain worker and the memory lanes' own degradations ──────────
@@ -3237,17 +4167,26 @@ class DaemonApp:
             self._record(APP_SHUTDOWN_INCOMPLETE, f"backfill: {_describe(exc)}")
             return False
 
-    def _tool_counts(self) -> tuple[int, int, int, int]:
-        """The four memory-tool counters, as one snapshot to difference against."""
+    def _tool_counts(self) -> tuple[int, int, int, int, int]:
+        """The tool counters, as one snapshot to difference against.
+
+        ``[0]`` is every tool call, the library's included: a completion where only
+        ``search_library``/``read_passage`` ran is a tool round too (review of PR
+        #98, 2026-10-24: counting memory tools only let a late recall re-run a
+        searched turn and left a bare "ok" after a search unanswered). ``[4]`` is
+        the library's share, so the answer can name the tool that ran.
+        """
         with self._lock:
+            library = sum(self._library_tool_calls.values())
             return (
-                self._remember_tool_calls + self._forget_tool_calls,
+                self._remember_tool_calls + self._forget_tool_calls + library,
                 self._remember_tool_written,
                 self._forget_tool_written,
                 self._remember_tool_refused + self._forget_tool_refused,
+                library,
             )
 
-    def _answer_tool_step(self, spoken: str, before: tuple[int, int, int, int]) -> str:
+    def _answer_tool_step(self, spoken: str, before: tuple[int, ...]) -> str:
         """Keep d7's promise that a tool round is never silent.
 
         The turn just called a tool. If the model's answer to the tool result
@@ -3268,6 +4207,8 @@ class DaemonApp:
             tool, replacement = REMEMBER_TOOL_NAME, TOOL_CONFIRMATION[REMEMBER_TOOL_NAME]
         elif after[2] > before[2]:
             tool, replacement = FORGET_TOOL_NAME, TOOL_CONFIRMATION[FORGET_TOOL_NAME]
+        elif after[0] - before[0] == after[4] - before[4]:
+            tool, replacement = "library", FALLBACK_TEXT  # only library tools ran
         else:
             tool, replacement = "none", FALLBACK_TEXT
         with self._lock:
@@ -3333,6 +4274,8 @@ class DaemonApp:
             return self._refuse_remember("empty")
         if len(stripped) > REMEMBER_FACT_MAX_CHARS:
             return self._refuse_remember("too-long")
+        if self._library_guard(REMEMBER_TOOL_NAME, stripped):
+            return self._refuse_remember(LIBRARY_GUARDED_REASON, recorded=True)
         try:
             result = self._memory.remember(
                 stripped,
@@ -3405,6 +4348,9 @@ class DaemonApp:
             self._forget_tool_calls += 1
         if not isinstance(record_id, str) or not isinstance(fact, str):
             return self._refuse_forget("not-text")
+        # Before the d10 lookup: a guarded forget must not even read the store.
+        if self._library_guard(FORGET_TOOL_NAME, fact, record_id):
+            return self._refuse_forget(LIBRARY_GUARDED_REASON, recorded=True)
         stripped = record_id.strip()
         if not stripped and fact.strip():
             # Decision 20 (d10): no id to pass, because nothing was recalled.
@@ -3519,6 +4465,19 @@ class DaemonApp:
             self._record(APP_CLOCK_FAILED, _describe(exc), once=True)
             return ""
 
+    def _spoken_metadata(self) -> dict[str, Any]:
+        """A spoken turn's log fields: how it arrived, its recording, its times (d7, d11, d12)."""
+        heard = getattr(self._tls, "heard", None)
+        meta: dict[str, Any] = {"via": VIA_SPOKEN}
+        if heard is None:
+            return meta
+        if heard.recording:
+            meta["recording"] = heard.recording
+        meta["timestamps"] = stamps(
+            stamp(STAMP_WITNESSED, heard.witnessed), stamp(STAMP_TRANSCRIBED, heard.transcribed)
+        )
+        return meta
+
     def _note_ask(self, session: Any, text: str) -> None:
         """Add the user turn and COUNT what the explicit-ask path did with it.
 
@@ -3530,7 +4489,7 @@ class DaemonApp:
         detected at all. These counters are that view.
         """
         try:
-            outcome = session.add_user(text)
+            outcome = session.add_user(text, metadata=self._spoken_metadata())
         except Exception as exc:  # noqa: BLE001  # the session is a seam
             self._record(APP_TURN_FAILED, f"add_user: {_describe(exc)}")
             return
@@ -3889,6 +4848,7 @@ class DaemonApp:
             self._record(APP_EARS_UNAVAILABLE, f"factory: {_describe(exc)}")
             return
         self._ears_rate = rate
+        self._tap.reset(rate)  # a new session's stream time starts at zero (d11)
         self._ears_sessions += 1
         session = _EarsSession(client=self._ears, rate=rate)
         self._publish(
@@ -4001,17 +4961,20 @@ class DaemonApp:
             if isinstance(event, wire.TranscriptionCompleted):
                 with self._lock:
                     self._floor_taken = False
-                self.submit_transcript(event.text)
+                    kept = self._utterance_kept.pop(event.item_id, None)
+                self.submit_transcript(event.text, kept=kept)
             elif isinstance(event, wire.SpeechStarted):
                 # Who holds the floor, for a follow-up nobody asked for. Cleared
                 # by speech_stopped or the transcription; a stuck flag only ever
                 # silences follow-ups, never a reply (see _floor_held).
                 with self._lock:
                     self._floor_taken = True
+                    self._note_utterance_start(event)
                 self._barge_in()
             elif isinstance(event, wire.SpeechStopped):
                 with self._lock:
                     self._floor_taken = False
+                self._keep_utterance(event)
                 # The start of t21's measurement, taken where it happens.
                 at_ms = getattr(event, "at_ms", None)
                 with self._lock:
@@ -4030,6 +4993,42 @@ class DaemonApp:
                 self._record(APP_EARS_STREAM_ENDED, "the server closed the session")
         except Exception as exc:  # noqa: BLE001  # one bad event never ends the stream
             self._record(APP_EARS_THREAD_FAILED, _describe(exc))
+
+    # ── the room's utterances, kept like clips (deviation d11) ───────────────
+
+    def _note_utterance_start(self, event: Any) -> None:
+        """Under the lock: remember an onset's stream time by item id (bounded)."""
+        at_ms = getattr(event, "at_ms", None)
+        if isinstance(at_ms, int):
+            self._utterance_starts[event.item_id] = at_ms
+            while len(self._utterance_starts) > _UTTERANCES_HELD:
+                self._utterance_starts.pop(next(iter(self._utterance_starts)))
+
+    def _keep_utterance(self, event: Any) -> None:
+        """Cut the utterance from the tap and keep it; link it for its transcript.
+
+        Operator, 2026-10-24: "room microphone - confirmed. We keep that as well as
+        if sent as recording." Never raises: a cut that is not held (a stop with no
+        onset, audio already trimmed) keeps nothing, and the turn runs as before.
+        """
+        with self._lock:
+            start = self._utterance_starts.pop(event.item_id, None)
+        cut = self._tap.cut(start, getattr(event, "at_ms", None))
+        if cut is None:
+            return
+        wav, witnessed, duration = cut
+        ref = self._recordings.save(
+            wav,
+            extension="wav",
+            content_type="audio/wav",
+            via=VIA_SPOKEN,
+            duration_s=duration,
+            timestamps=stamps(stamp(STAMP_WITNESSED, witnessed)),
+        )
+        with self._lock:
+            self._utterance_kept[event.item_id] = {"recording": ref, "witnessed": witnessed}
+            while len(self._utterance_kept) > _UTTERANCES_HELD:
+                self._utterance_kept.pop(next(iter(self._utterance_kept)))
 
     def _barge_in(self) -> None:
         """Speech onset while we are talking: stop our own speaker. We own barge-in.
@@ -4242,7 +5241,30 @@ class DaemonApp:
             chat=self._control_chat,
             speak=self._control_speak,
             clip=self._control_clip,
+            # Unbound without a library: the routes answer 503 library-not-configured.
+            library_list=self._library_list if self._library is not None else None,
+            library_get=self._library_get if self._library is not None else None,
+            library_search=self._library_search if self._library is not None else None,
+            # From memory, library or not; a memory with no listing answers 503.
+            todos=self._todos if callable(getattr(self._memory, "list_ingest", None)) else None,
+            # The history pane: the session logs, read only (operator, 2026-10-24).
+            conversations=self._history().conversations,
+            conversation=self._history().conversation,
         )
+
+    def _history(self) -> ConversationHistory:
+        """The past conversations, read from this state dir's session logs."""
+        return ConversationHistory(
+            Path(self._state.dir) / SESSIONS_DIRNAME, current=self._current_session_log
+        )
+
+    def _current_session_log(self) -> Optional[Path]:
+        """The live session's log path, so the history pane can mark it; None without one."""
+        with self._lock:
+            session = self._session
+        log = getattr(session, "transcript", None)
+        path = getattr(log, "_path", None)  # the bounded log keeps its path private
+        return Path(path) if path else None
 
     def _control_start_voice(self) -> dict[str, Any]:
         if self._ear_name is not None:
@@ -4419,6 +5441,7 @@ class DaemonApp:
         semantic_status = _probe(self._memory)
         with self._lock:
             active_records, store_level = self._active_records, self._store_level
+        access, http = _access_status(self._config, _http_status(self._server, self._config))
         return {
             "running": self._started and not self._closed,
             "closed": self._closed,
@@ -4520,6 +5543,7 @@ class DaemonApp:
                 "summary_attempted": self._summary_attempted,
                 "summary_written": self._summary_written,
                 "summary_skip_reason": self._summary_skip_reason,
+                "library_guarded_writes": self._library_guarded_writes,
             },
             "session": _session_status(session),
             "recall_events": {
@@ -4533,14 +5557,18 @@ class DaemonApp:
                 "degradations": len(self._text_turns.degradations),
             },
             "ingest": self._ingest_status(),
-            # The mode only. The team domain, the audience and the allow-listed
-            # emails are configuration a dashboard viewer has no business reading.
-            "access": {"mode": self._config.access_mode},
+            "library": self._library_status(),
+            "conversations": self._settle_status(),
+            "recordings": self._recordings.status(),
+            # The mode and the guard's counters, ONCE. The team domain, the audience
+            # and the allow-listed emails are configuration a dashboard viewer has no
+            # business reading.
+            "access": access,
             "speech_to_speech": {"role": self._config.s2s_role or None, "enabled": False},
             "clock": {"zone": CLOCK_ZONE_NAME, "zone_available": CLOCK_ZONE_AVAILABLE},
             "ears": _probe(self._ears),
             "voice": _probe(self._voice),
-            "http": _http_status(self._server, self._config),
+            "http": http,
             "bus": {
                 "degradation_counts": dict(getattr(self._bus, "degradation_counts", {}) or {}),
                 "hook_errors": int(getattr(self._bus, "hook_errors", 0) or 0),
@@ -4706,8 +5734,8 @@ class _LockedSession:
         finally:
             self._lock.release()
 
-    def add_user(self, text: str) -> Any:
-        return self._write(lambda: self._session.add_user(text))
+    def add_user(self, text: str, metadata: Any = None) -> Any:
+        return self._write(lambda: self._session.add_user(text, metadata=metadata))
 
     def add_assistant(self, text: str, metadata: Any = None) -> Any:
         return self._write(lambda: self._session.add_assistant(text, metadata=metadata))
@@ -4773,6 +5801,244 @@ def chat_source(record: Any) -> dict[str, Any]:
         out["start"] = _timestamp_seconds(provenance["start"])
         out["end"] = _timestamp_seconds(provenance["end"])
     return out
+
+
+# ── the library lane's pure helpers (t13) ────────────────────────────────────
+
+
+def user_turn_asks(user_text: object, tool: str, span: object) -> bool:
+    """c31: does the operator's OWN current turn ask for this write?
+
+    ``remember``: the session's explicit-ask detector matches the turn
+    (:func:`embodiment.session.default_ask_detector`). Either tool: the turn
+    carries that tool's stem AND the span the model quoted — the fact, or the
+    record id — occurs in it (NFC, whitespace and case folded). The stem is what
+    makes it an ask: a turn that merely *mentions* "otters" does not ask to forget
+    them, whatever a library page said. Deliberately biased to refusing.
+    """
+    if not isinstance(user_text, str) or not user_text.strip():
+        return False
+    if tool == REMEMBER_TOOL_NAME and _detects_ask(user_text):
+        return True
+    said = _normalised_fact(user_text).casefold()
+    if tool == FORGET_TOOL_NAME:
+        stems = _FORGET_STEMS
+        # "don't forget X" / "אל תשכחי X" asks to KEEP X: never a forget ask.
+        said_for_stems = said
+        for negated in _NEGATED_FORGET:
+            said_for_stems = negated.sub(" ", said_for_stems)
+    else:
+        stems, said_for_stems = _ASK_STEMS, said
+    if not any(stem in said_for_stems for stem in stems):
+        return False
+    wanted = _normalised_fact(span).casefold()
+    return bool(wanted) and wanted in said
+
+
+def _detects_ask(text: str) -> bool:
+    try:
+        return default_ask_detector(text) is not None
+    except Exception:  # noqa: BLE001  # a detector fault is a "no", never a crash
+        return False
+
+
+def library_chat_source(citation: Mapping[str, Any]) -> dict[str, Any]:
+    """One library :class:`~embodiment.library.tools.Citation` as the chat page's source.
+
+    Every field was already neutralised and capped by the tools; ``item_id`` and
+    ``anchor`` let the page open the reader at the cited passage (t7).
+    """
+    # A past conversation's citation (d8) says so, so the page opens the conversation
+    # rather than the library reader; anything else is the library.
+    source = citation.get("source")
+    return {
+        "source": (
+            library_tools.CONVERSATION_SOURCE
+            if source == library_tools.CONVERSATION_SOURCE
+            else library_tools.LIBRARY_SOURCE
+        ),
+        "item_id": str(citation.get("item_id") or ""),
+        "anchor": str(citation.get("anchor") or ""),
+        "title": str(citation.get("title") or ""),
+        "date": str(citation.get("date") or ""),
+        "kind": str(citation.get("kind") or ""),
+        "start": citation.get("start"),
+        "end": citation.get("end"),
+        "section": "",
+        "link": "",
+        "text": str(citation.get("text") or ""),
+    }
+
+
+_ISO_DATE = re.compile(r"(\d{4}-\d{2}-\d{2})")
+_NEWSPAPER_WORDS = ("newspaper", "עיתון")
+
+
+def _library_issue(source: Mapping[str, Any]) -> Optional[str]:
+    """The newspaper issue date a library source cites, or None for any other item.
+
+    An **assumption from the catalog as seen on 2026-10-24**, not a contract: xteink
+    files culture-rules' issues as ``kind=article`` titled "Daily newspaper ...", so
+    an item is an issue when its kind is ``newspaper`` or its title names one; the
+    issue date is the title's ISO date, else the item's ``created_at`` date.
+    """
+    title = str(source.get("title") or "")
+    kind = str(source.get("kind") or "").lower()
+    if kind != "newspaper" and not any(w in title.lower() for w in _NEWSPAPER_WORDS):
+        return None
+    for text in (title, str(source.get("date") or "")):
+        found = _ISO_DATE.search(text)
+        if found:
+            return found.group(1)
+    return None
+
+
+def merge_sources(
+    library: list[dict[str, Any]], recalled: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
+    """The reply's sources: library citations first, in collector order — so the
+    ``[n]`` the model was shown is ``sources[n-1]`` — then recall. A recalled
+    newspaper item from an issue the library also cited is shown once (c38): the
+    library's copy stays, because it carries the reader target."""
+    issues = {issue for issue in (_library_issue(s) for s in library) if issue}
+    kept = [s for s in recalled if not (s.get("source") == "newspaper" and s.get("date") in issues)]
+    return [*library, *kept]
+
+
+def _typed_sources(turn: Any) -> list[dict[str, Any]]:
+    recalled = [chat_source(record) for record in turn.records]
+    collector = getattr(turn, "collector", None)
+    if collector is None:
+        return recalled
+    return merge_sources([library_chat_source(c) for c in collector.sources()], recalled)
+
+
+def _text_or_empty(value: object) -> str:
+    return value if isinstance(value, str) else ""
+
+
+def _catalog_entry(item: Any, index: Any) -> dict[str, Any]:
+    item_id = str(getattr(item, "id", ""))
+    return {
+        "id": item_id,
+        "title": _text_or_empty(getattr(item, "title", "")),
+        "kind": _text_or_empty(getattr(item, "kind", "")),
+        "created_at": _text_or_empty(getattr(item, "created_at", "")),
+        "indexed": bool(index.has_item(item_id)),
+    }
+
+
+def _tick_left_work(out: Any) -> bool:
+    """A sync tick's result: did it stop with work left (a backlog, or a yield)?"""
+    if not isinstance(out, Mapping):
+        return False
+    remaining = out.get("remaining")
+    return out.get("yielded") is True or (isinstance(remaining, int) and remaining > 0)
+
+
+def _indexed_items(index: Any) -> list[Any]:
+    try:
+        return list(index.indexed_items())
+    except Exception:  # noqa: BLE001  # an index fault lists nothing, never raises
+        return []
+
+
+def _indexed_entry(meta: Mapping[str, Any]) -> dict[str, Any]:
+    """One persisted index item as the catalog route's entry (it is indexed)."""
+    return {
+        "id": str(meta.get("id", "")),
+        "title": _text_or_empty(meta.get("title")),
+        "kind": _text_or_empty(meta.get("kind")),
+        "created_at": _text_or_empty(meta.get("created_at")),
+        "indexed": True,
+    }
+
+
+def _reader_passage(passage: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        "anchor": _text_or_empty(passage.get("anchor")),
+        "heading": _text_or_empty(passage.get("heading")),
+        "text": _text_or_empty(passage.get("text")),
+        "start_s": _finite_or_none(passage.get("start_s")),
+        "end_s": _finite_or_none(passage.get("end_s")),
+        "speaker": _text_or_empty(passage.get("speaker")),
+    }
+
+
+def _search_hit(hit: Any) -> dict[str, Any]:
+    return {
+        "item_id": str(getattr(hit, "item_id", "")),
+        "title": _text_or_empty(getattr(hit, "title", "")),
+        "kind": _text_or_empty(getattr(hit, "kind", "")),
+        "created_at": _text_or_empty(getattr(hit, "created_at", "")),
+        "anchor": _text_or_empty(getattr(hit, "anchor", "")),
+        "heading": _text_or_empty(getattr(hit, "heading", "")),
+        "text": _text_or_empty(getattr(hit, "text", "")),
+        "score": round(float(getattr(hit, "score", 0.0)), 4),
+        "start_s": _finite_or_none(getattr(hit, "start_s", None)),
+        "end_s": _finite_or_none(getattr(hit, "end_s", None)),
+    }
+
+
+def _todo_key(record: Any) -> Optional[str]:
+    """The recording a record is a to-do of, or None if it is not an active one."""
+    if not isinstance(record, Mapping) or record.get("type") != TODO_RECORD_TYPE:
+        return None
+    if record.get("lifecycle", "active") not in (None, "active"):
+        return None
+    meta = record.get("metadata")
+    if not isinstance(meta, Mapping) or meta.get("source") != TODO_SOURCE:
+        return None
+    recording = meta.get("recording_id")
+    return recording if isinstance(recording, str) and recording else None
+
+
+def todo_groups(records: Iterable[Any]) -> list[dict[str, Any]]:
+    """``action_item`` records grouped by ``recording_id``, newest recording first.
+
+    Text goes through memory's one sanitiser and is capped, like a chat source;
+    the page renders it with ``textContent``.
+    """
+    groups: dict[str, dict[str, Any]] = {}
+    for record in records:
+        recording = _todo_key(record)
+        if recording is None:
+            continue
+        meta = record["metadata"]
+        group = groups.setdefault(
+            recording,
+            {
+                "recording_id": recording,
+                "title": _text_or_empty(meta.get("title")),
+                "date": _text_or_empty(meta.get("date")),
+                "items": [],
+            },
+        )
+        group["items"].append(
+            {
+                "text": memory_module.neutralise_source_text(
+                    record.get("text") or "", SOURCE_TEXT_MAX_CHARS
+                ),
+                "created": _text_or_empty(record.get("created")),
+            }
+        )
+    return sorted(groups.values(), key=lambda g: g["date"], reverse=True)
+
+
+def _access_status(
+    config: AppConfig, http: Optional[dict[str, Any]]
+) -> tuple[dict[str, Any], Optional[dict[str, Any]]]:
+    """ONE access block: the daemon's mode plus the guard's counters (t5), lifted out
+    of the server's status so ``/api/status`` never carries two that disagree."""
+    access: dict[str, Any] = {"mode": config.access_mode}
+    if not http or not isinstance(http.get("access"), dict):
+        return access, http
+    http = dict(http)
+    counters = http.pop("access")
+    for key in ("admitted", "refused_by_code"):
+        if key in counters:
+            access[key] = counters[key]
+    return access, http
 
 
 def drain_budget_for(poll_interval_s: object) -> float:
@@ -5258,6 +6524,101 @@ def _private_vector_cache(state_dir: Any, early: list[tuple[str, str, str]]) -> 
     return memory_module.vector_cache_for(directory)
 
 
+def _conversation_lane(state_dir: Any, embedder: Any) -> ConversationLane:
+    """Gwen's own conversation index (d8): ``<state>/conversations-index.json``, embedded
+    through the same gemma2-embed role memory and the library use, by name."""
+    index = DocumentIndex(
+        Path(state_dir) / conversations_module.INDEX_NAME,
+        embed=lambda text: embedder.embed(text, prompt=memory_module.DOCUMENT_PROMPT).vector,
+        model_tag=vectors.EMBED_ROLE,
+    )
+    return ConversationLane(
+        index=index,
+        embed_query=lambda text: embedder.embed(text, prompt=memory_module.QUERY_PROMPT).vector,
+    )
+
+
+def _library_lane_from_env(
+    library: Optional[LibraryConfig],
+    state_dir: Any,
+    embedder: Any,
+    *,
+    gate: Callable[[], bool],
+    early: list[tuple[str, str, str]],
+) -> Optional[LibraryLane]:
+    """The library lane :func:`main` wires, or ``None``: unset, or unbuildable (recorded).
+
+    The index lives at ``<state>/library/index.json``; both embedders are the
+    gemma2-embed role memory already uses (one shared lane on orin), by name.
+    """
+    if library is None:
+        return None
+    if state_dir is None:
+        early.append((APP_LIBRARY_UNAVAILABLE, "library: no state dir for the index", APP_SOURCE))
+        return None
+    try:
+        client = LibraryClient(library.base_url, library.key)
+        return build_library_lane(
+            client,
+            Path(state_dir) / LIBRARY_DIRNAME / LIBRARY_INDEX_NAME,
+            embed_document=lambda text: embedder.embed(
+                text, prompt=memory_module.DOCUMENT_PROMPT
+            ).vector,
+            embed_query=lambda text: embedder.embed(text, prompt=memory_module.QUERY_PROMPT).vector,
+            gate=gate,
+        )
+    except (LibraryError, ValueError) as exc:
+        early.append((APP_LIBRARY_UNAVAILABLE, f"library: {_describe(exc)}", APP_SOURCE))
+        return None
+
+
+def _early_sink(
+    built: list["DaemonApp"], early: list[tuple[str, str, str]]
+) -> Callable[[str], Callable[[str, str], None]]:
+    """A ``source -> record`` factory: the app once built, else the ``early`` list."""
+
+    def sink(source: str) -> Callable[[str, str], None]:
+        def record(code: str, reason: str) -> None:
+            if built:
+                built[0]._record(code, reason, source=source)
+            else:
+                early.append((code, reason, source))
+
+        return record
+
+    return sink
+
+
+def _config_from_env(realtime: RealtimeConfig, recall_mode: Any, verifier: Any) -> AppConfig:
+    """The :class:`AppConfig` the environment asks for."""
+    return AppConfig(
+        gateway_url=realtime.gateway_url,
+        api_key=realtime.api_key,
+        # The runner's watchdog bound, exported by the lifecycle child; the
+        # close budget is derived strictly below it (one clock, finding 1).
+        shutdown_deadline=close_budget_for(
+            os.environ.get(ENV_SHUTDOWN_DEADLINE) or DEFAULT_SHUTDOWN_DEADLINE
+        ),
+        bind=os.environ.get(ENV_HTTP_BIND) or AppConfig.bind,
+        bind_public=_env_flag(os.environ.get(ENV_BIND_PUBLIC)),
+        allowed_hosts=parse_allowed_hosts(os.environ.get(ENV_ALLOWED_HOSTS)),
+        public_hostname=(os.environ.get(ENV_PUBLIC_HOSTNAME) or "").strip().lower() or None,
+        recall_mode=recall_mode,
+        access_mode=access_mode_of(verifier),
+        s2s_role=(os.environ.get(ENV_S2S_ROLE) or "").strip() or None,
+        listen_on_start=_env_flag(os.environ.get(ENV_LISTEN_ON_START)),
+    )
+
+
+def _allowed_origins(config: AppConfig) -> frozenset:
+    """Loopback FIRST: a default install's own dashboard sends an Origin on every POST
+    (finding 2), then the operator's."""
+    public = (config.public_hostname,) if config.public_hostname else ()
+    return frozenset(
+        allowed_origins_for((*loopback_origin_hosts(config.port), *config.allowed_hosts, *public))
+    )
+
+
 def main() -> DaemonApp:
     """Build the daemon from the environment. Zero arguments; never raises.
 
@@ -5280,22 +6641,20 @@ def main() -> DaemonApp:
     secret = guard_module.load_or_create_install_secret(state.dir)
     if secret.code:
         state.ledger.append(secret.code, _safe_reason_text(secret.detail))
-    bus = Bus(redact=tuple(s for s in (realtime.api_key, secret.secret) if s))
+    # The library (t13): from the env ONLY (``grant run --inject
+    # EMBODIMENT_LIBRARY_KEY=…``), never a file this daemon writes. Its key joins
+    # every redaction list beside the gateway key and the install secret.
+    library_config = LibraryConfig.from_env(os.environ)
+    library_key = library_config.key if library_config is not None else ""
+    secrets = tuple(s for s in (realtime.api_key, secret.secret, library_key) if s)
+    bus = Bus(redact=secrets)
 
     # Records that arrive before the app exists (an incomplete Access env is
     # recorded by verifier_from_env itself, at build time) wait here and are
     # replayed through the app's ONE recording path once it does.
     early: list[tuple[str, str, str]] = []
     built: list["DaemonApp"] = []
-
-    def sink(source: str) -> Callable[[str, str], None]:
-        def record(code: str, reason: str) -> None:
-            if built:
-                built[0]._record(code, reason, source=source)
-            else:
-                early.append((code, reason, source))
-
-        return record
+    sink = _early_sink(built, early)
 
     # The Access verifier (t3, t7): all-or-nothing team domain + audience, plus
     # the operator's email allow-list (EMBODIMENT_ACCESS_EMAILS). None when the
@@ -5310,22 +6669,7 @@ def main() -> DaemonApp:
                 APP_SOURCE,
             )
         )
-    config = AppConfig(
-        gateway_url=realtime.gateway_url,
-        api_key=realtime.api_key,
-        # The runner's watchdog bound, exported by the lifecycle child; the
-        # close budget is derived strictly below it (one clock, finding 1).
-        shutdown_deadline=close_budget_for(
-            os.environ.get(ENV_SHUTDOWN_DEADLINE) or DEFAULT_SHUTDOWN_DEADLINE
-        ),
-        bind=os.environ.get(ENV_HTTP_BIND) or AppConfig.bind,
-        bind_public=_env_flag(os.environ.get(ENV_BIND_PUBLIC)),
-        allowed_hosts=parse_allowed_hosts(os.environ.get(ENV_ALLOWED_HOSTS)),
-        public_hostname=(os.environ.get(ENV_PUBLIC_HOSTNAME) or "").strip().lower() or None,
-        recall_mode=recall_mode,
-        access_mode=access_mode_of(verifier),
-        s2s_role=(os.environ.get(ENV_S2S_ROLE) or "").strip() or None,
-    )
+    config = _config_from_env(realtime, recall_mode, verifier)
 
     base_dir = Path(state.dir) if state.dir is not None else Path(".")
     data_dir = base_dir / "memory"
@@ -5349,6 +6693,13 @@ def main() -> DaemonApp:
     # ledger through the drain's own forwarding — spool.on_degradation stays
     # unset, or each would be recorded twice.
     drain = drain_module.Drain(Spool.for_state_dir(state.dir), memory, record=sink("ingest"))
+    library = _library_lane_from_env(
+        library_config,
+        state.dir,
+        embedder,
+        gate=lambda: bool(built) and built[0].live_turn_held(),
+        early=early,
+    )
     tools = ToolRegistry()
 
     def seam(messages: list[dict[str, Any]], tools: Any = None) -> ModelResponse:
@@ -5394,7 +6745,9 @@ def main() -> DaemonApp:
         state=state,
         bus=bus,
         memory=memory,
-        complete=bind_tools(seam, tools),
+        # The RAW seam: the app binds it to ``tools`` itself, and a typed turn
+        # binds it again to its own registry (memory + library tools, t13).
+        complete=seam,
         tools=tools,
         # The client's own degradations (SESSION_DROPPED, AUDIO_DROPPED,
         # NOT_CONNECTED …) reach the ledger through this hook (finding 14);
@@ -5412,8 +6765,14 @@ def main() -> DaemonApp:
         summarise=summarise,
         # The bus already redacts these on its way out; this is the other
         # direction — what the GATEWAY sends back.
-        redact=tuple(s for s in (realtime.api_key, secret.secret) if s),
-        lanes=AppLanes(drain=drain, embedder=embedder, vector_cache=vector_cache),
+        redact=secrets,
+        lanes=AppLanes(
+            drain=drain,
+            embedder=embedder,
+            vector_cache=vector_cache,
+            library=library,
+            conversations=_conversation_lane(state.dir, embedder),
+        ),
     )
     built.append(app)
     for code, reason, source in early:
@@ -5424,24 +6783,14 @@ def main() -> DaemonApp:
                 bind=server_module.resolve_bind(config.bind, bind_public=config.bind_public),
                 port=config.port,
                 bind_public=config.bind_public,
-                redact=tuple(s for s in (config.api_key, secret.secret) if s),
+                redact=secrets,
             ),
             guard=guard_module.Guard(
                 guard_module.GuardConfig(
                     install_secret=secret.secret,
                     allowed_hosts=guard_module.DEFAULT_ALLOWED_HOSTS
                     | frozenset(guard_host_of(host) for host in config.allowed_hosts),
-                    # Loopback FIRST: a default install's own dashboard sends
-                    # an Origin on every POST (finding 2), then the operator's.
-                    allowed_origins=frozenset(
-                        allowed_origins_for(
-                            (
-                                *loopback_origin_hosts(config.port),
-                                *config.allowed_hosts,
-                                *((config.public_hostname,) if config.public_hostname else ()),
-                            )
-                        )
-                    ),
+                    allowed_origins=_allowed_origins(config),
                     public_hostname=config.public_hostname,
                 ),
                 assertion_verifier=verifier,

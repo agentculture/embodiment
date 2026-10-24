@@ -20,6 +20,7 @@ export const EVENT_KINDS = [
   "features",
   "clients",
   "heartbeat",
+  "conversation",
 ] as const;
 
 export type EventKind = (typeof EVENT_KINDS)[number];
@@ -111,6 +112,14 @@ export interface FeaturesData extends EventEnvelopeData {
 export interface ClientsData extends EventEnvelopeData {
   count: number;
   remote: number;
+}
+
+/** A conversation that has gone quiet (deviation d7): ids and times, never text. */
+export interface ConversationData extends EventEnvelopeData {
+  id: string;
+  status: "settled" | string;
+  last: number;
+  turns: number;
 }
 
 // heartbeat carries no required fields (schema.json: "required": []).

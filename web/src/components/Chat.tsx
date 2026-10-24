@@ -1,4 +1,10 @@
-import { useEffect, useRef, useState } from "react";
+// Provenance: ported from pocketsync/web/static/index.html (#thread, #composer) and
+// pocketsync/web/static/app.js:336-432 (ask, renderAnswer, sourceList, [n] cite markers,
+// revealWords at :189-212) and :790-808 (composer: Enter sends, Shift+Enter newline).
+// The composer is the voice dock of UI option C (2026-10-24): the mic is its one loud
+// control. Citation markers go through api/citations.ts, so "[2, 3]" is two links and
+// speech never reads a marker. All text is JSX text nodes; there is no HTML sink.
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { EventEnvelope } from "../api/events";
 import {
   formatMmSs,
@@ -7,6 +13,8 @@ import {
   type ChatClientOptions,
   type ChatSource,
 } from "../api/chat";
+import { splitCitations, stripCitations } from "../api/citations";
+import { kindInfo } from "../api/kinds";
 import { AudioControls, SpeakButton, type ClipReply } from "./AudioControls";
 
 export interface ChatProps {
@@ -15,8 +23,22 @@ export interface ChatProps {
   /** Reply events from the event stream (kind "reply"). */
   replyEvents?: EventEnvelope<"transcript" | "reply">[];
   clientOptions?: ChatClientOptions;
-  /** Speech-to-speech role the gateway advertises, if any (daemon must expose it). */
+  /** Speech-to-speech role the gateway advertises, if any; the page's Live control reports it. */
   s2sRole?: string;
+  /** Called with a library citation's item id and anchor; never called for a source without item_id. */
+  onOpenCitation?: (itemId: string, anchor: unknown) => void;
+  /** Shown while the thread is empty; `ask` sends a question as if typed. */
+  emptyState?: (ask: (question: string) => void) => ReactNode;
+  /** The realtime voice control, drawn beside the dock (not inside the input box). */
+  live?: ReactNode;
+  /** The text box's placeholder; a phone passes a shorter one. */
+  placeholder?: string;
+  /** The earlier conversation this chat continues (d5); questions go into it. */
+  conversation?: string;
+  /** That conversation's earlier turns, shown first (their sources were not kept). */
+  initialTurns?: { role: "user" | "assistant"; text: string }[];
+  /** Called once per answer with the question it answered and its sources. */
+  onAnswer?: (question: string, sources: ChatSource[]) => void;
 }
 
 interface Message {
@@ -25,12 +47,15 @@ interface Message {
   text: string;
   sources: ChatSource[];
   followUp?: boolean;
+  /** Reveal word by word (a fresh answer, motion allowed). */
+  reveal?: boolean;
 }
 
 /**
  * Provenance as plain text, branching on the daemon's `source` (never on the
  * shape of `start`): "pocket" is a recording, "newspaper" an issue, "room"
- * Gwen's own memory; anything else gets a neutral label.
+ * Gwen's own memory, "library" an item of the library; anything else gets a
+ * neutral label.
  */
 function provenance(s: ChatSource): string {
   const parts: string[] = [];
@@ -48,6 +73,10 @@ function provenance(s: ChatSource): string {
       if (s.link) parts.push(s.link);
       if (parts.length === 0 && s.title) parts.push(s.title);
       break;
+    case "library":
+      // The kind badge and the date sit beside it; mixing a date into a Hebrew title garbles the bidi.
+      parts.push(s.title || "library");
+      break;
     case "room":
       parts.push("Gwen's memory");
       if (s.date) parts.push(s.date);
@@ -60,32 +89,153 @@ function provenance(s: ChatSource): string {
   return parts.join(" | ");
 }
 
-function Sources({ sources }: { sources: ChatSource[] }) {
+function sourceKind(s: ChatSource): { label: string; color: string } {
+  if (s.kind) {
+    const k = kindInfo(s.kind);
+    return { label: k.one, color: k.color };
+  }
+  if (s.source === "room") return { label: "Memory", color: "var(--k-diary)" };
+  if (s.source === "newspaper") return { label: "Newspaper", color: "var(--k-newspaper)" };
+  if (s.source === "pocket") return { label: "Recording", color: "var(--k-transcript)" };
+  return { label: "Source", color: "var(--k-other)" };
+}
+
+type OpenCitation = (itemId: string, anchor: unknown) => void;
+
+function openSource(s: ChatSource, onOpen?: OpenCitation) {
+  if (s.item_id && onOpen) onOpen(s.item_id, s.anchor);
+}
+
+function Sources({ sources, onOpen }: { sources: ChatSource[]; onOpen?: OpenCitation }) {
   if (sources.length === 0) return null;
   return (
-    <ul className="chat__sources" aria-label="sources (untrusted)">
-      {sources.map((s, i) => (
-        <li key={i} className="chat__source" data-untrusted="true">
-          <span className="chat__source-label" dir="auto">
-            [untrusted source] {provenance(s)}
-          </span>
-          <blockquote className="chat__source-text" dir="auto">
-            {s.text}
-          </blockquote>
-        </li>
-      ))}
-    </ul>
+    <ol className="sources" aria-label="sources (untrusted)">
+      {sources.map((s, i) => {
+        const kind = sourceKind(s);
+        const body = (
+          <>
+            <span className="source-n" aria-hidden="true">
+              {i + 1}
+            </span>
+            <span className="source-head">
+              <span className="kind-badge" style={{ ["--kind" as string]: kind.color }}>
+                {kind.label}
+              </span>
+              <span className="sr-only">[untrusted source] </span>
+              <span className="source-label" dir="auto">
+                {provenance(s)}
+              </span>
+            </span>
+            <blockquote className="source-quote" dir="auto">
+              {s.text}
+            </blockquote>
+          </>
+        );
+        return (
+          <li key={i} className="source" data-untrusted="true">
+            {s.item_id ? (
+              <button type="button" className="source-open" onClick={() => openSource(s, onOpen)}>
+                {body}
+              </button>
+            ) : (
+              <div className="source-open">{body}</div>
+            )}
+          </li>
+        );
+      })}
+    </ol>
   );
 }
 
-export function Chat({ secret = "", replyEvents = [], clientOptions, s2sRole }: ChatProps) {
+function calmMotion(): boolean {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return true;
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+}
+
+/** Words as spans with a staggered delay (pocketchat revealWords); whitespace stays plain text. */
+function Words({ text, base }: { text: string; base: number }) {
+  const step = Math.min(28, 1400 / Math.max(1, text.split(/\s+/).length));
+  let n = base;
+  return (
+    <>
+      {text.split(/(\s+)/).map((part, i) => {
+        if (!part) return null;
+        if (/^\s+$/.test(part)) return part;
+        const delay = Math.round(n * step);
+        n += 1;
+        return (
+          <span key={i} className="chat__word" style={{ animationDelay: `${delay}ms` }}>
+            {part}
+          </span>
+        );
+      })}
+    </>
+  );
+}
+
+/** An answer with its citation markers as cite buttons; a marker naming no source stays text. */
+function Answer({
+  text,
+  sources,
+  reveal,
+  onOpen,
+}: {
+  text: string;
+  sources: ChatSource[];
+  reveal: boolean;
+  onOpen?: OpenCitation;
+}) {
+  let words = 0;
+  return (
+    <>
+      {splitCitations(text, sources.length).map((part, i) => {
+        if (part.kind === "cite") {
+          const src = sources[part.n - 1];
+          if (!src) return `[${part.n}]`;
+          return (
+            <button
+              key={i}
+              type="button"
+              className="cite"
+              aria-label={`Open source ${part.n}: ${src.title || "source"}`}
+              onClick={() => openSource(src, onOpen)}
+            >
+              {part.n}
+            </button>
+          );
+        }
+        if (!reveal) return part.text;
+        const node = <Words key={i} text={part.text} base={words} />;
+        words += part.text.split(/\s+/).filter(Boolean).length;
+        return node;
+      })}
+    </>
+  );
+}
+
+export function Chat({
+  secret = "",
+  replyEvents = [],
+  clientOptions,
+  onOpenCitation,
+  emptyState,
+  live,
+  onAnswer,
+  placeholder = "Ask about your library",
+  conversation,
+  initialTurns,
+}: ChatProps) {
   const [draft, setDraft] = useState("");
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<Message[]>(() =>
+    (initialTurns ?? []).map((t, i) => ({ key: `h-${i}`, role: t.role, text: t.text, sources: [] })),
+  );
   const [degraded, setDegraded] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [pending, setPending] = useState<string | null>(null);
   const baselineSeq = useRef<number | null>(null);
   const typedSerials = useRef<Set<number>>(new Set());
   const seen = useRef<Set<number>>(new Set());
+  const end = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (baselineSeq.current === null) return;
@@ -108,76 +258,145 @@ export function Chat({ secret = "", replyEvents = [], clientOptions, s2sRole }: 
     if (fresh.length) setMessages((m) => [...m, ...fresh]);
   }, [replyEvents]);
 
-  async function submit(event: React.FormEvent) {
-    event.preventDefault();
-    const text = draft.trim();
+  useEffect(() => {
+    end.current?.scrollIntoView?.({ block: "end", behavior: calmMotion() ? "auto" : "smooth" });
+  }, [messages.length, pending]);
+
+  async function ask(raw: string) {
+    const text = raw.trim();
     if (!text || busy) return;
     setDraft("");
     setBusy(true);
+    setPending(text);
     baselineSeq.current = replyEvents.reduce((mx, e) => Math.max(mx, e.seq), 0);
     setMessages((m) => [...m, { key: `u-${m.length}`, role: "user", text, sources: [] }]);
-    const outcome = await sendChat(text, secret, clientOptions);
+    const outcome = await sendChat(text, secret, clientOptions, conversation);
     if (outcome.ok) {
       setDegraded(null);
       if (outcome.value.turnSerial !== null) typedSerials.current.add(outcome.value.turnSerial);
+      onAnswer?.(text, outcome.value.sources);
       setMessages((m) => [
         ...m,
-        { key: `a-${m.length}`, role: "assistant", text: outcome.value.reply, sources: outcome.value.sources },
+        {
+          key: `a-${m.length}`,
+          role: "assistant",
+          text: outcome.value.reply,
+          sources: outcome.value.sources,
+          reveal: !calmMotion(),
+        },
       ]);
     } else {
       // Recorded, visible degradation (C3): a fixed code, never the response body.
       setDegraded(outcome.code);
     }
+    setPending(null);
     setBusy(false);
   }
 
-  function onClipReply({ transcript, reply, turnSerial }: ClipReply) {
+  function submit(event: React.FormEvent) {
+    event.preventDefault();
+    void ask(draft);
+  }
+
+  function onClipReply({ transcript, reply, turnSerial, sources }: ClipReply) {
     setDegraded(null);
     if (baselineSeq.current === null) {
       baselineSeq.current = replyEvents.reduce((mx, e) => Math.max(mx, e.seq), 0);
     }
     if (turnSerial != null) typedSerials.current.add(turnSerial);
+    onAnswer?.(transcript, sources ?? []);
     setMessages((m) => [
       ...m,
       { key: `u-${m.length}`, role: "user", text: transcript, sources: [] },
-      { key: `a-${m.length + 1}`, role: "assistant", text: reply, sources: [] },
+      { key: `a-${m.length + 1}`, role: "assistant", text: reply, sources: sources ?? [] },
     ]);
   }
 
+  const empty = messages.length === 0;
+
   return (
-    <div className="chat">
-      <div className="chat__log">
-        {messages.map((m) => (
-          <div key={m.key} className="chat__message" data-role={m.role} data-follow-up={m.followUp ? "true" : undefined}>
-            <p className="chat__text" dir="auto">
-              <strong>{m.role}: </strong>
-              {m.text}
-            </p>
-            {m.role === "assistant" && (
-              <SpeakButton text={m.text} secret={secret} clientOptions={clientOptions} />
-            )}
-            <Sources sources={m.sources} />
-          </div>
-        ))}
+    <div className="chat" data-empty={empty ? "true" : undefined}>
+      {empty && emptyState ? <div className="chat__empty">{emptyState((q) => void ask(q))}</div> : null}
+      <ol className="thread" aria-label="Conversation" aria-live="polite">
+        {messages.map((m) =>
+          m.role === "user" ? (
+            <li key={m.key} className="turn turn--q" data-role="user">
+              <span className="sr-only">user: </span>
+              <p className="question" dir="auto">
+                {m.text}
+              </p>
+            </li>
+          ) : (
+            <li
+              key={m.key}
+              className="turn turn--a"
+              data-role="assistant"
+              data-follow-up={m.followUp ? "true" : undefined}
+            >
+              <span className="sr-only">assistant: </span>
+              <p className="answer" dir="auto">
+                <Answer text={m.text} sources={m.sources} reveal={!!m.reveal} onOpen={onOpenCitation} />
+              </p>
+              <div className="answer-tools">
+                <SpeakButton text={stripCitations(m.text, m.sources.length)} secret={secret} clientOptions={clientOptions} />
+                {m.sources.length > 0 && (
+                  <span className="answer-count">
+                    {m.sources.length === 1 ? "1 source" : `${m.sources.length} sources`}
+                  </span>
+                )}
+              </div>
+              <Sources sources={m.sources} onOpen={onOpenCitation} />
+            </li>
+          ),
+        )}
+        {pending && (
+          <li className="turn turn--a turn--pending" aria-label="Gwen is answering">
+            <p className="answer answer--pending">Reading your library</p>
+          </li>
+        )}
+      </ol>
+      <div ref={end} />
+      <div className="dock-wrap">
+        {degraded && (
+          <p className="chat__degraded" role="alert">
+            Gwen could not answer ({degraded}). Try again in a moment.
+          </p>
+        )}
+        <form className="dock-line" aria-label="composer" onSubmit={submit}>
+          <AudioControls
+            secret={secret}
+            onReply={onClipReply}
+            clientOptions={clientOptions}
+            live={live}
+            conversation={conversation}
+          >
+            <label className="sr-only" htmlFor="ask-box">
+              Question
+            </label>
+            <textarea
+              id="ask-box"
+              className="dock__input"
+              dir="auto"
+              rows={1}
+              aria-label="message"
+              placeholder={placeholder}
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+                  e.preventDefault();
+                  e.currentTarget.form?.requestSubmit();
+                }
+              }}
+            />
+            <button type="submit" className="dock__send" disabled={busy || !draft.trim()} aria-label="Send">
+              <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+                <path d="M5 12h13M13 6l6 6-6 6" />
+              </svg>
+            </button>
+          </AudioControls>
+        </form>
       </div>
-      {degraded && (
-        <p className="chat__degraded" role="alert">
-          chat unavailable: {degraded}
-        </p>
-      )}
-      <form className="chat__form" onSubmit={submit}>
-        <input
-          type="text"
-          dir="auto"
-          aria-label="message"
-          value={draft}
-          onChange={(e) => setDraft(e.target.value)}
-        />
-        <button type="submit" disabled={busy}>
-          Send
-        </button>
-      </form>
-      <AudioControls secret={secret} onReply={onClipReply} clientOptions={clientOptions} s2sRole={s2sRole} />
     </div>
   );
 }

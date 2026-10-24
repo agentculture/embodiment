@@ -1376,6 +1376,9 @@ class RoomMemory:
         # record ID — never their text.
         self._writes: dict["Future[Any]", str] = {}
         self._reads: set["Future[Any]"] = set()
+        #: The ingest enumeration in flight, shared by every list_ingest caller
+        #: until it finishes (review of PR #98, 2026-10-24).
+        self._ingest_listing: Optional["Future[Any]"] = None
         self._closed = False
         # Reentrant: several append sites already hold this lock when they
         # record a degradation, and _record_abandoned takes it too.
@@ -2141,21 +2144,43 @@ class RoomMemory:
         """
         future, refusal = self._submit(work, record_id=identifier)
         if future is None:
-            why = refusal or CODE_CLOSED
-            return (
-                "refused",
+            return self._refused_job(refusal, identifier, verb)
+        return self._await_job(future, identifier, deadline, verb=verb, code=code)
+
+    @staticmethod
+    def _refused_job(
+        refusal: Optional[str], identifier: str, verb: str
+    ) -> tuple[str, Any, Optional[Degradation]]:
+        """:meth:`_run_job`'s answer when nothing was submitted (saturated or closed)."""
+        why = refusal or CODE_CLOSED
+        return (
+            "refused",
+            why,
+            _degradation(
+                verb,
                 why,
-                _degradation(
-                    verb,
-                    why,
-                    f"{verb} of {safe_label(identifier)} was NOT done: "
-                    + (_SATURATED_REASON if refusal == CODE_SATURATED else _CLOSED_REASON),
-                ),
-            )
+                f"{verb} of {safe_label(identifier)} was NOT done: "
+                + (_SATURATED_REASON if refusal == CODE_SATURATED else _CLOSED_REASON),
+            ),
+        )
+
+    def _await_job(
+        self,
+        future: "Future[Any]",
+        identifier: str,
+        deadline: float,
+        *,
+        verb: str,
+        code: str,
+        reap: bool = True,
+    ) -> tuple[str, Any, Optional[Degradation]]:
+        """Wait for a submitted job: :meth:`_run_job`'s statuses. *reap* False is a
+        caller that JOINED a job another caller already reaps on its own timeout."""
         try:
             return "ok", future.result(timeout=max(0.0, float(deadline))), None
         except FutureTimeoutError:
-            self._reap_write(future, identifier, deadline, verb=verb, code=code)
+            if reap:
+                self._reap_write(future, identifier, deadline, verb=verb, code=code)
             return (
                 "deferred",
                 CODE_REMEMBER_DEFERRED,
@@ -2402,6 +2427,56 @@ class RoomMemory:
             not_found=outcome.not_found,
             failed=outcome.failed,
             degradations=outcome.degradations,
+        )
+
+    def list_ingest(self, *, deadline: float, record_type: Optional[str] = None) -> RecallResult:
+        """Every ACTIVE ingest record (of *record_type*, when given), by enumeration.
+
+        A read for a view that must show all of a kind - the to-dos page lists every
+        ``action_item`` - so it never goes through a ranker that could drop one.
+        *deadline* bounds the wait (the caller's own read bound; there is no default
+        because an enumeration's cost is the store's size); ``mode`` is ``None``
+        because nothing ranked. No ingest scope configured is an empty, ok listing. Never raises.
+        """
+        if self._ingest_scope is None:
+            return RecallResult(ok=True, records=[], mode=None)
+        status, value, degradation = self._shared_ingest_listing(deadline)
+        if status != "ok":
+            return RecallResult(
+                ok=False, records=[], mode=None, degradations=tuple(d for d in (degradation,) if d)
+            )
+        records = [r for r in value if record_type is None or r.get("type") == record_type]
+        return RecallResult(ok=True, records=records, mode=None)
+
+    def _shared_ingest_listing(self, deadline: float) -> tuple[str, Any, Optional[Degradation]]:
+        """ONE ingest enumeration at a time: join the one still running, else start one.
+
+        Review of PR #98 (2026-10-24): an enumeration runs under the store lock and
+        holds an in-flight slot; one whose caller's deadline passed keeps running
+        (abandoned, reaped), and every later page load started another beside it -
+        stacking lock holders and slots against remember and recall. A caller now
+        waits, within its own deadline, on the listing already running. Nothing is
+        cached: a finished listing is never served again, so a to-do is never stale.
+        """
+        identifier = "ingest-list"
+        with self._lock:  # reentrant: _submit takes it too
+            running = self._ingest_listing
+            joined = running is not None and not running.done()
+            if not joined:
+                pools = [(self._ingest_scope, INGEST_VISIBILITY)]
+                running, refusal = self._submit(
+                    lambda: self._enumerate_active(pools), record_id=identifier
+                )
+                self._ingest_listing = running
+                if running is None:
+                    return self._refused_job(refusal, identifier, "recall")
+        return self._await_job(
+            running,
+            identifier,
+            deadline,
+            verb="recall",
+            code=CODE_ABANDONED_RECALL,
+            reap=not joined,
         )
 
     def _enumerate_ingest(self) -> list[dict[str, Any]]:

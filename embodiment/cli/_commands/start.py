@@ -99,6 +99,7 @@ def _http_env(args: argparse.Namespace) -> dict[str, str]:
     public = (getattr(args, "public_hostname", None) or "").strip()
     if public:
         env[daemon_app.ENV_PUBLIC_HOSTNAME] = public
+    env[daemon_app.ENV_LISTEN_ON_START] = "1" if getattr(args, "listen", False) else "0"
     return env
 
 
@@ -180,9 +181,19 @@ def register(sub: argparse._SubParsersAction) -> None:
         metavar="HOSTNAME",
         help=(
             "The one Host the guard treats as public (a Cloudflare tunnel hostname). "
-            "Requests for it must carry a Cloudflare Access assertion, and the shipped "
-            "verifier refuses every one (http-access-verifier-missing) until an RS256 "
-            "dependency is approved. Unset, no Host is public and nothing is asked."
+            "With the three EMBODIMENT_ACCESS_TEAM_DOMAIN, EMBODIMENT_ACCESS_AUD and "
+            "EMBODIMENT_ACCESS_EMAILS names set (all or none), the shipped RS256 verifier "
+            "admits a valid Cloudflare Access assertion for an allow-listed email in "
+            "place of the install secret on this Host only. Unset, no Host is public "
+            "and nothing is asked."
+        ),
+    )
+    p.add_argument(
+        "--listen",
+        action="store_true",
+        help=(
+            "Open the room microphone as the daemon starts. Without it live voice is "
+            "off until the page's Live button turns it on (and off again)."
         ),
     )
     p.add_argument("--json", action="store_true", help="Emit structured JSON.")

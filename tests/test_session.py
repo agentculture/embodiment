@@ -921,3 +921,55 @@ print("CLOSE_RETURNED", report.summary_skip_reason)
         )
         assert "CLOSE_RETURNED" in result.stdout, result.stdout + result.stderr
         assert result.returncode == 0, result.stdout + result.stderr
+
+
+# ── continuing a conversation from its log (2026-10-24, deviation d5) ─────────
+
+
+class TestRestore:
+    def test_restored_turns_enter_the_window_without_a_second_write(self, tmp_path: Path) -> None:
+        first, mem, state = _session(tmp_path, session_id="conv1")
+        first.add_user("what is in the warehouse?")
+        first.add_assistant("an old kettle")
+        log = state.dir / "sessions" / "conv1.jsonl"
+        size = log.stat().st_size
+        again = sess.Session(state, mem, session_id="conv1")
+        restored = again.restore(
+            [("user", "what is in the warehouse?"), ("assistant", "an old kettle")]
+        )
+        assert restored == 2
+        assert [m["content"] for m in again.messages()] == [
+            "what is in the warehouse?",
+            "an old kettle",
+        ]
+        assert log.stat().st_size == size
+
+    def test_a_new_turn_after_restore_appends_to_the_same_log(self, tmp_path: Path) -> None:
+        first, mem, state = _session(tmp_path, session_id="conv2")
+        first.add_user("one")
+        again = sess.Session(state, mem, session_id="conv2")
+        again.restore([("user", "one")])
+        again.add_user("two")
+        log = (state.dir / "sessions" / "conv2.jsonl").read_text().splitlines()
+        assert [json.loads(line)["text"] for line in log] == ["one", "two"]
+
+    def test_restore_keeps_the_budget_and_skips_other_roles(self, tmp_path: Path) -> None:
+        session, _mem, _state = _session(tmp_path, budget_tokens=40)
+        turns = [("user", f"question {i} " * 5) for i in range(30)] + [
+            ("system", "x"),
+            ("user", ""),
+        ]
+        assert session.restore(turns) >= 1
+        assert session.window_tokens() <= 40 or len(session.messages()) == 1
+        assert all(m["role"] == "user" for m in session.messages())
+
+    def test_an_ask_in_a_restored_turn_is_not_acted_on_again(self, tmp_path: Path) -> None:
+        session, mem, _state = _session(tmp_path)
+        session.restore([("user", "remember that the door code is 1234")])
+        assert mem.calls == []
+
+    def test_an_ask_after_restore_is_acted_on_like_any_turn(self, tmp_path: Path) -> None:
+        session, mem, _state = _session(tmp_path)
+        session.restore([("user", "hello")])
+        session.add_user("remember that the door code is 1234")
+        assert len(mem.calls) == 1

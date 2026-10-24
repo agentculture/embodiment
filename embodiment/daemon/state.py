@@ -24,9 +24,10 @@ Three surfaces, and why they are three and not one
   not by scanning strings for it, mirroring the shape of every other
   degrade-never-raise seam in this package (see :mod:`embodiment.events`).
 * :class:`TranscriptLog` — the private, size-bounded, per-session transcript
-  log the spec's retention rule calls for (``CLAUDE.md``: "raw audio is never
-  written to disk; transcripts go to a private, size-bounded per-session
-  log"). :meth:`DaemonState.open_transcript` is the "session API" a caller
+  log the spec's retention rule calls for (``CLAUDE.md``: transcripts go to a
+  private, size-bounded per-session log; audio -- page clips and room utterances
+  -- is kept only by :mod:`embodiment.daemon.recordings`, d10/d11).
+  :meth:`DaemonState.open_transcript` is the "session API" a caller
   reaches for one: a session's spoken turns land in their own bounded file
   under ``<state dir>/sessions/``, never in :class:`OperationalLog`.
   ``embodiment/session.py`` (plan task t11, not this one) is expected to

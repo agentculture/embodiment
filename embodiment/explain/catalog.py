@@ -24,7 +24,8 @@ that used to live here are archived in git history (tag
 ## Status, stated plainly
 
 **The daemon is built and runs, on one rig.** `embodiment start` launches it:
-hot mic through the host array, an ears-only session on lobes' `/v1/realtime`
+the host array's mic, opened by the page's Live button
+(off by default; `start --listen` opens it at start), an ears-only session on lobes' `/v1/realtime`
 (the daemon runs the turn and never sends `response.create`), a spoken reply
 through `POST /v1/audio/speech`, barge-in owned by the daemon, memory in a
 private store, and a dashboard behind the install secret.
@@ -34,6 +35,23 @@ acceptance run (plan task `t21`) publishes latency as measured, including if it
 is bad. The archived tiers (strategist, configuration lane, muse, drones) were
 each proven as mechanisms and never as value; their own published verdicts said
 so, and the redesign makes no value claim either until it has a measurement.
+
+## The library and the page
+
+The dashboard is chat-first, the library with the chat inside it (Ask: your
+conversations on the left, read from the session logs and continued in place; the
+library and the answers' sources on the right; both side panes toggleable;
+Library, To-dos, Stats; before 0.18.0 it was waveform-first with chat fourth). Transcripts reach
+the library through culture-rules (33 on 2026-10-24), and retrieval was
+measured once: `docs/live-test-results/2026-10-24-library.md`. Gwen reads a
+library — culture-library, with xteink's instance as today's — through a
+**GET-only** client configured by `EMBODIMENT_LIBRARY_URL` and
+`EMBODIMENT_LIBRARY_KEY` (injected with `grant run --inject
+EMBODIMENT_LIBRARY_KEY=XTEINK_GWEN_API_KEY`). She indexes item text into her
+own document index and cites passages. A **write guard** refuses `remember` and
+`forget` in a turn that holds library text unless the operator's own words name
+the write. Value is unmeasured; the library similarity threshold is `0.715`,
+provisional and uncalibrated for library text.
 
 ## Software presence, not a robot body
 
@@ -51,14 +69,16 @@ drawn from the name.
 None of this is in the first daemon release — each is a stated seam or a stated
 absence, never an implication:
 
-- **Other tools** — the daemon binds exactly two, both over Gwen's own private
-  memory: `remember` and `forget` (archive in place, never delete). No shell,
-  no files, no Qwen Code.
+- **Other tools** — the daemon binds `remember` and `forget` (archive in place,
+  never delete), and, on typed turns only and only with a library configured,
+  two read-only library tools: `search_library` and `read_passage`; and
+  `search_conversations` over her own settled past conversations (d8). No
+  shell, no files, no Qwen Code, nothing that writes to the library.
 - **Vision** — the session is audio-only.
-- **A face** — the dashboard's centrepiece is a waveform.
+- **A face** — the waveform is a compact strip beside the chat.
 - **Live realtime voice and speech-to-speech** — the phone is control, text and
-  uploaded or recorded clips; the speech-to-speech button is present and
-  disabled; the `BrowserEar` client and the inbound `/v1/realtime` endpoint
+  uploaded or recorded clips; the Live button uses the rig's room microphone,
+  not the phone's; the `BrowserEar` client and the inbound `/v1/realtime` endpoint
   exist and are not wired into the daemon.
 - **A robot relay** — the same unwired seam.
 - **A measured value claim** — see Status.
@@ -211,6 +231,40 @@ itself (distinct from the global `overview`, which describes the agent).
     embodiment cli overview --json
 """
 
+
+_HISTORY = """\
+# embodiment history
+
+Read-only access to Gwen's past conversations, from the per-session logs the
+daemon writes. It never writes the state directory, the memory store or the
+library.
+
+Conversations are Gwen's own (deviation d8): once one has been quiet for 30
+minutes the daemon indexes it in her private conversation index, and she searches
+it with `search_conversations` on typed turns. Nothing outside the daemon is
+involved; this verb is a read-only view of the same logs.
+
+## Usage
+
+    embodiment history export [--id ID] [--since <epoch-seconds>]
+        [--settled-for SECONDS] [--state-dir DIR] [--json]
+    embodiment history overview [--json]
+
+## Notes
+
+- `--json` carries each conversation's turns (`role`, `text`, `ts`, `via`) and
+  an `evidence` map; the plain form lists ids, turn counts and titles only.
+- `via` says how a turn arrived and so what it is worth as evidence: `typed`
+  (the operator's own words, verbatim), `spoken` / `recorded` / `uploaded` /
+  `clip` (an AI transcription of audio: that it was said is a fact, the words
+  are the transcriber's), `generated` (Gwen's reply: a record that she said it,
+  not that it is true), `unknown` (logged before d7).
+- `--id` exports one conversation; an unknown id is a user error.
+- `--since` keeps only conversations whose last turn is newer, for incremental runs;
+  `--settled-for` keeps only those quiet for at least that long, for a scheduled run.
+- The page continues a conversation through `POST /api/chat` with a
+  `"conversation"` id; this verb is for reading only.
+"""
 
 _MEMORY = """\
 # embodiment memory
@@ -440,6 +494,9 @@ ENTRIES: dict[tuple[str, ...], str] = {
     ("doctor",): _DOCTOR,
     ("cli",): _CLI,
     ("cli", "overview"): _CLI,
+    ("history",): _HISTORY,
+    ("history", "export"): _HISTORY,
+    ("history", "overview"): _HISTORY,
     ("memory",): _MEMORY,
     ("memory", "ingest"): _MEMORY,
     ("memory", "forget"): _MEMORY,

@@ -55,10 +55,13 @@ describe("AudioControls upload", () => {
     render(<AudioControls secret="" onReply={onReply} clientOptions={{ fetchFn }} />);
     const file = new File(["abc"], "clip.ogg", { type: "audio/ogg" });
     await userEvent.upload(screen.getByLabelText(/upload audio/i), file);
-    await waitFor(() => expect(onReply).toHaveBeenCalledWith({ transcript: "heard", reply: "answer", turnSerial: null }));
+    await waitFor(() => expect(onReply).toHaveBeenCalledWith({ transcript: "heard", reply: "answer", turnSerial: null, sources: [] }));
     expect(fetchFn.mock.calls[0][0]).toBe("/api/clip");
     expect(fetchFn.mock.calls[0][1]?.body).toBe(file);
     expect((fetchFn.mock.calls[0][1]?.headers as Record<string, string>)["Content-Type"]).toBe("audio/ogg");
+    expect((fetchFn.mock.calls[0][1]?.headers as Record<string, string>)["X-Clip-Origin"]).toBe("uploaded");
+    // d12: the file's own date travels as the client's claim
+    expect((fetchFn.mock.calls[0][1]?.headers as Record<string, string>)["X-Clip-At"]).toBe(String(file.lastModified));
   });
   it("surfaces a 415 refusal as an alert and does not call onReply", async () => {
     const onReply = vi.fn();
@@ -91,9 +94,11 @@ describe("AudioControls record", () => {
     render(<AudioControls secret="k" onReply={onReply} clientOptions={{ fetchFn }} />);
     await userEvent.click(screen.getByRole("button", { name: /record/i }));
     await userEvent.click(await screen.findByRole("button", { name: /stop/i }));
-    await waitFor(() => expect(onReply).toHaveBeenCalledWith({ transcript: "t", reply: "r", turnSerial: null }));
+    await waitFor(() => expect(onReply).toHaveBeenCalledWith({ transcript: "t", reply: "r", turnSerial: null, sources: [] }));
     const init = fetchFn.mock.calls[0][1];
     expect((init?.headers as Record<string, string>)["Content-Type"]).toBe("audio/webm;codecs=opus");
+    expect((init?.headers as Record<string, string>)["X-Clip-Origin"]).toBe("recorded");
+    expect(Number((init?.headers as Record<string, string>)["X-Clip-At"])).toBeGreaterThan(0);
     expect(stopTrack).toHaveBeenCalled();
   });
   it("stops by itself before the server's clip cap, so a forgotten recording still lands", async () => {
@@ -116,7 +121,7 @@ describe("AudioControls record", () => {
     expect(RECORD_LIMIT_MS).toBeLessThan(MAX_CLIP_SECONDS * 1000);
     expect(held).toHaveLength(1);
     act(() => held[0]());
-    await waitFor(() => expect(onReply).toHaveBeenCalledWith({ transcript: "t", reply: "r", turnSerial: null }));
+    await waitFor(() => expect(onReply).toHaveBeenCalledWith({ transcript: "t", reply: "r", turnSerial: null, sources: [] }));
     expect(stopTrack).toHaveBeenCalled();
     expect(cleared).toContain(4242);
   });
@@ -135,17 +140,25 @@ describe("AudioControls record", () => {
   });
 });
 
-describe("speech-to-speech button", () => {
-  it("is disabled with its reason shown while no role is advertised", () => {
-    render(<AudioControls secret="" onReply={vi.fn()} />);
-    const btn = screen.getByRole("button", { name: /speech-to-speech/i });
-    expect(btn).toBeDisabled();
-    expect(screen.getByText(/no speech-to-speech role is advertised/i)).toBeInTheDocument();
+describe("dock layout (operator, 2026-10-24)", () => {
+  it("puts the Live slot and Upload beside the input box; the box holds the mic and the typed half", () => {
+    const { container } = render(
+      <AudioControls secret="" onReply={vi.fn()} live={<button type="button">Live voice</button>}>
+        <textarea aria-label="message" />
+      </AudioControls>,
+    );
+    const box = container.querySelector(".dock") as HTMLElement;
+    const side = container.querySelector(".dock-side") as HTMLElement;
+    expect(box).toContainElement(screen.getByRole("button", { name: "Record" }));
+    expect(box).toContainElement(screen.getByLabelText("message"));
+    expect(side).toContainElement(screen.getByRole("button", { name: "Live voice" }));
+    expect(side).toContainElement(screen.getByLabelText(/upload audio/i));
+    expect(box).not.toContainElement(screen.getByLabelText(/upload audio/i));
   });
-  it("stays disabled even with a role: turning it on is not in this cycle", () => {
+
+  it("no longer carries a disabled speech-to-speech button (Live is the speech path)", () => {
     render(<AudioControls secret="" onReply={vi.fn()} s2sRole="s2s-demo" />);
-    expect(screen.getByRole("button", { name: /speech-to-speech/i })).toBeDisabled();
-    expect(screen.getByText(/s2s-demo/)).toHaveAttribute("dir", "auto");
-    expect(screen.getByText(/not enabled in this release/i)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /speech-to-speech/i })).toBeNull();
   });
 });
+

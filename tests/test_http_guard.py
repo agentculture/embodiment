@@ -1416,3 +1416,73 @@ class TestTheAssertionHeaderCap:
             "POST", "/api/voice/start", headers(Origin="http://" + "o" * g._MAX_HEADER_CHARS)
         )
         assert decision.code == g.REFUSED_MALFORMED_HEADER_CODE
+
+
+# ── t5: Access admit / refuse counters (c36, h23) ───────────────────────────
+
+
+class TestAccessCounters:
+    PUBLIC = "gwen.example.org"
+
+    def _guard(self, verdict: g.AssertionResult) -> g.Guard:
+        return make_guard(public_hostname=self.PUBLIC, assertion_verifier=lambda token: verdict)
+
+    def _call(self, guard: g.Guard, **extra: str) -> g.GuardDecision:
+        return guard.check(
+            "POST",
+            "/api/voice/start",
+            headers(Host=self.PUBLIC, **{"Cf-Access-Jwt-Assertion": MARKER_TOKEN}, **extra),
+        )
+
+    def test_status_reports_mode_and_zeroed_counters(self) -> None:
+        status = self._guard(g.AssertionResult(valid=True)).status()["access"]
+        assert status == {"mode": "access", "admitted": 0, "refused_by_code": {}}
+
+    def test_mode_is_off_without_an_injected_verifier(self) -> None:
+        status = make_guard(public_hostname=self.PUBLIC).status()["access"]
+        assert status["mode"] == "off"
+        assert status["admitted"] == 0
+
+    def test_an_admitted_public_host_request_increments_admitted(self) -> None:
+        guard = self._guard(g.AssertionResult(valid=True))
+        assert self._call(guard).allowed is True
+        assert self._call(guard).allowed is True
+        status = guard.status()["access"]
+        assert status["admitted"] == 2
+        assert status["refused_by_code"] == {}
+
+    def test_each_refusal_code_has_its_own_counter(self) -> None:
+        guard = self._guard(g.AssertionResult(valid=False, code="http-access-email-not-allowed"))
+        self._call(guard)
+        self._call(guard)
+        guard.check("POST", "/api/voice/start", headers(Host=self.PUBLIC))  # no assertion: missing
+        guard.check(
+            "POST",
+            "/api/voice/start",
+            {"Host": self.PUBLIC, "Cf-Access-Jwt-Assertion": MARKER_TOKEN},
+        )  # nothing vouches: without-origin
+        status = guard.status()["access"]
+        assert status["admitted"] == 0
+        assert status["refused_by_code"] == {
+            "http-access-email-not-allowed": 2,
+            g.REFUSED_ACCESS_MISSING_CODE: 1,
+            g.REFUSED_ACCESS_WITHOUT_ORIGIN_CODE: 1,
+        }
+
+    def test_an_outage_counts_under_its_own_code(self) -> None:
+        guard = self._guard(g.AssertionResult(valid=False, code=g.ACCESS_UNAVAILABLE_CODE))
+        self._call(guard)
+        assert guard.status()["access"]["refused_by_code"] == {g.ACCESS_UNAVAILABLE_CODE: 1}
+
+    def test_loopback_requests_are_not_counted(self) -> None:
+        guard = self._guard(g.AssertionResult(valid=True))
+        guard.check("POST", "/api/voice/start", headers())
+        assert guard.status()["access"]["admitted"] == 0
+
+    def test_status_is_json_safe_and_carries_no_token_or_email(self) -> None:
+        import json
+
+        guard = self._guard(g.AssertionResult(valid=True))
+        self._call(guard)
+        text = json.dumps(guard.status())
+        assert MARKER_TOKEN not in text

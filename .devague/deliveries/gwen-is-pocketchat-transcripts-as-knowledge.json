@@ -1,0 +1,158 @@
+{
+  "plan_slug": "gwen-is-pocketchat-transcripts-as-knowledge",
+  "schema_version": 2,
+  "created": "2026-10-24T04:42:23Z",
+  "updated": "2026-10-24T16:42:25Z",
+  "deviations": [
+    {
+      "id": "d1",
+      "what": "Live acceptance found Gwen never calls search_library in full typed turns (0 of 6, 0 citations) although senses calls it reliably when prompted directly; add (a) one system-prompt line on typed turns ONLY when a library is configured, naming the library and telling her to search it before answering questions about the operator's documents and newspapers (library unset keeps prompts byte-identical), (b) a sharper search_library description, (c) status counters of library tool calls by name; then re-run the 6-turn check and the public-page check",
+      "task_ref": "t15",
+      "reason": "measured live 2026-10-24: 0/6 typed turns used the library; direct senses probe 2/2 tool calls",
+      "affects": [
+        "t11",
+        "t13"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "needs-follow-up",
+      "seq": 1
+    },
+    {
+      "id": "d2",
+      "what": "Page redesigned after t7/t8/t12: chat-first inside culture-library's look; Ask = toggleable library list | conversation with a voice dock (mic in the box; Live and Upload beside it) | toggleable sources pane with the reader in place; drawers on a phone; Library home with shelf and cards; a Stats view from /api/library and /api/status; the disabled speech-to-speech button replaced by Live; citation groups split and markers stripped from speech",
+      "task_ref": "t12",
+      "reason": "operator, 2026-10-24: the options artifact was not good; wanted the library and pocketchat experience, closer to option C, within the library; toggleable panes; speech and realtime speech buttons; mobile and wide",
+      "affects": [
+        "t7",
+        "t8"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 2
+    },
+    {
+      "id": "d3",
+      "what": "Library search and turn fixes found live: document index version 3 (content vector plus a title-context vector, better of the two; fragments under 60 chars not searched), the next typed turn told the previous answer's sources by page number, a 5 s catch-up tick while a sync leaves items behind, and a reader retry",
+      "task_ref": "t11",
+      "reason": "live 2026-10-24: a question naming today's paper got five mastheads and no article; 'Item 1' was not understood; a re-index took about 15 minutes. Version 2 (title vector only) measured worse and was replaced by version 3, which matches version 1 on both t15 sets",
+      "affects": [
+        "t10",
+        "t13"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "needs-follow-up",
+      "seq": 3
+    },
+    {
+      "id": "d4",
+      "what": "Conversation history added: GET /api/conversations and /api/conversations/{id} (guarded, read-only, from the session logs, bounded) and a left history pane on Ask; the library list and the sources moved to a right pane with two tabs; an earlier conversation opens read-only",
+      "task_ref": "t12",
+      "reason": "operator, 2026-10-24: 'What about chat history? It should be on the left pane, and library and resources on the right.'",
+      "affects": [
+        "t6"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 4
+    },
+    {
+      "id": "d5",
+      "what": "Past conversations can be continued and become library items: (1) the chat and clip routes accept an optional conversation id; a typed or recorded question in an earlier conversation uses that conversation's turns as its window and appends to its session log; the room's live voice session is untouched; the page shows an earlier conversation with a working input. (2) embodiment adds a read-only 'embodiment history export --json' verb; culture-rules runs it and pushes each conversation into the library as a private item (Gwen still never writes to the library, c26); Gwen indexes and cites them like any item",
+      "task_ref": "t13",
+      "reason": "operator, 2026-10-24: 'past conversations - I need to be able to continue them, not just read them. and they should be indexed via culture-rules to library'; chose per-message typed continuation and an embodiment export that culture-rules pulls",
+      "affects": [
+        "t6",
+        "t12",
+        "c26"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 5
+    },
+    {
+      "id": "d6",
+      "what": "Live voice is off by default: the daemon starts with no ear attached (no hot mic on start); the page's Live button opts in and attaches the room ear, pressing it again turns it off, and it can be re-enabled any time. An explicit opt-in keeps the old hot-mic-on-start for the rig (flag/env). Supersedes the realtime spec's 'hot mic on start' decision for this daemon's default",
+      "task_ref": "t12",
+      "reason": "Operator, 2026-10-24: 'live conversation is off by default and I can click the button to opt in and start it. (Or close and turn it off and reenable later)'",
+      "affects": [],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 6
+    },
+    {
+      "id": "d7",
+      "what": "Conversation export amends deviation d5: (1) triggered when a conversation goes quiet, not on a schedule: the daemon publishes a conversation-settled event (id and times only, no text) on its events-cli bus 30 min after the last message, once per settled state; culture-rules triggers on it and runs 'embodiment history export --id <id> --json'; a continued conversation settles again and updates the same item, keyed by the conversation id; '--settled-for' gives a schedule fallback. (2) Gwen's answers are exported too, and every turn is tagged with how it arrived and what it is worth as evidence: typed (the operator's own words, verbatim), spoken / recorded / uploaded (an AI transcription of audio: that it was said is a fact, the words are the transcriber's), gwen (generated: a record that she said it, not that it is true); the library adds quality and coherence scoring later",
+      "task_ref": "t13",
+      "reason": "Operator, 2026-10-24: accepted export-when-quiet over a schedule ('Why on a schedule and not on event?'); 'Gwen's answers - yes, I may want to ask questions about it. But we tag each content and its value. Library will add quality/coherence of each content later. A recording is truth (that it happened, not its content). A transcript is less so, as AI was doing the translation'",
+      "affects": [],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 7
+    },
+    {
+      "id": "d8",
+      "what": "Conversations are internal to Gwen, not routed through culture-rules (amends d5 part 2 and d7 part 1): Gwen indexes her own past conversations in her own private index and searches and cites them on typed turns beside the library; the library is not written (c26 stands); each turn keeps its via tag and evidence value in the index and in what she cites; the settle watch (a conversation quiet for 30 min) is the trigger that indexes it, in-process; the conversation event stays in-process; 'history export' stays as a read-only verb with no culture-rules consumer. Also: speech (transcript, reply), audio features and the conversation event never leave the process for the MQTT broker",
+      "task_ref": "t13",
+      "reason": "Operator, 2026-10-24: 'Embodiment stays with audio local, so we transcript against lobes or realtime-api against lobes. Confirmed. It's not right to work via culture rules - culture rules intended for between processes, and this internal to embodiment/gwen'",
+      "affects": [],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 8
+    },
+    {
+      "id": "d9",
+      "what": "Corrects d8's broker clause: transcripts, replies and audio features DO go to the MQTT broker as before; only Gwen's own conversation event stays in-process. Withholding is not the answer; content crossing processes is to be MARKED (private/public; human, code or AI input), a standard asked of events-cli (the envelope) and culture-rules (stores and honours the mark)",
+      "task_ref": "t13",
+      "reason": "Operator, 2026-10-24: 'I don't have privacy problem because it's all internal. But we need a way to mark content on culture-rules (private, public, human input, code input, AI input, etc.)'",
+      "affects": [],
+      "origin": "user",
+      "status": "approved",
+      "classification": "needs-follow-up",
+      "seq": 9
+    },
+    {
+      "id": "d10",
+      "what": "Recordings are saved (supersedes 'raw audio is never written to disk' for clips): every audio clip the page sends (recorded on its mic or uploaded) is kept as it arrived, in a private recording store under the state dir (0700 dir, 0600 files, named by sha256, bounded by a byte cap that refuses and records rather than deleting), saved before transcription so it is kept even when transcription fails, and linked from its turn in the session log (sha256, bytes, content type). The room microphone's live stream is still not written. For now: archiving to S3 is a tracked follow-up issue",
+      "task_ref": "t13",
+      "reason": "Operator, 2026-10-24: 'we also save the recording as well for now. Open issue for archive to s3' (after 'A recording is truth (that it happened, not its content)')",
+      "affects": [],
+      "origin": "user",
+      "status": "approved",
+      "classification": "needs-follow-up",
+      "seq": 10
+    },
+    {
+      "id": "d11",
+      "what": "Room microphone speech is kept like a sent recording (extends d10): each utterance the room ear hears (speech_started to speech_stopped, with a short pre-roll) is written to the same recording store as a WAV of the captured PCM, and linked from its spoken turn in the session log; same cap, refuse-never-delete; silence between utterances is not written",
+      "task_ref": "t13",
+      "reason": "Operator, 2026-10-24: 'room microphone - confirmed. We keep that as well as if sent as recording.'",
+      "affects": [],
+      "origin": "user",
+      "status": "approved",
+      "classification": "needs-follow-up",
+      "seq": 11
+    },
+    {
+      "id": "d12",
+      "what": "Everything carries typed timestamps: each session-log turn and each kept recording records a list of {type, at, by?} with type from created, recorded, witnessed, received, transcribed, generated (the events-cli#15 vocabulary); the page sends the time a clip was recorded (or an uploaded file's own time) as a client claim; history export carries them",
+      "task_ref": "t13",
+      "reason": "Operator, 2026-10-24: 'Ideally, we add timestamp at record time, too. everything must be timestamp, and timestamp needs type (Creation, record, witness, etc.)'",
+      "affects": [],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 12
+    }
+  ],
+  "evidence": [],
+  "deltas": [],
+  "supersessions": []
+}

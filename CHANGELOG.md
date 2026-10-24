@@ -5,6 +5,139 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.0] - 2026-10-24
+
+**Gwen is pocketchat: the library as knowledge.** Gwen's page is the library with
+the chat inside it, and she can read a library and cite it. Accepted on **one
+rig**; its value is **unmeasured**. Library retrieval was measured once (t15,
+`docs/live-test-results/2026-10-24-library.md`, aggregates only): hit@5 19 of 32
+and 17 of 28 on two model-written question sets, 0 of 10 off-topic false
+positives, search p90 0.21 s at 50 items. Transcripts reach the library through
+culture-rules (decision c21): 33 were there on 2026-10-24.
+
+### Added
+
+- `embodiment/library/`: a GET-only library client with a `gets` counter
+  (culture-library; xteink's instance on 127.0.0.1:8780 today), stdlib EPUB
+  extraction under member/size/character caps, a 0600 document index
+  reconciled by (item id, sha256), a sync that yields to live turns, and two
+  read tools, `search_library` and `read_passage`, bound on typed turns only.
+  Configured by `EMBODIMENT_LIBRARY_URL` and `EMBODIMENT_LIBRARY_KEY`
+  (`grant run --inject EMBODIMENT_LIBRARY_KEY=XTEINK_GWEN_API_KEY`); unset
+  means no library tool and "library not configured".
+- The write guard: in a turn whose context holds library text, `remember` and
+  `forget` are refused unless the operator's own words name the write; counted
+  (`library_guarded_writes`) and recorded (`app-library-guarded-write`).
+- Routes `GET /api/library`, `/api/library/{id}`, `/api/library/search`,
+  `/api/todos`; clip answers carry their cited sources.
+- `status.access` admitted and refused-by-code counters in one block.
+- The library similarity threshold reuses `0.715`, provisional and not
+  calibrated on library text.
+- **Conversation history:** `GET /api/conversations` and
+  `/api/conversations/{id}` (guarded, read-only) list and read Gwen's session
+  logs; on the page they are the left pane, newest first. An earlier
+  conversation is **continued as if it never stopped** (d5): `POST /api/chat`
+  takes an optional `"conversation"` and the clip route an `X-Conversation`
+  header; the daemon reopens it as a `Session` on its own log
+  (`Session.restore`), so its turns are the window, "remember that" asks still
+  work, and new turns go to its log. Citations in its old answers show as
+  numbers (the logs keep text, not sources).
+- `embodiment history export [--since] [--json]`: past conversations with their
+  turns, read-only, for culture-rules to push into the library as private items
+  (d5; Gwen still never writes to the library). The library list and the sources moved to the
+  right pane, as two tabs.
+- The page's **Stats** view: library tiles, status rows (each an icon and a
+  label) and three charts with a Table view, from `GET /api/library` and
+  `GET /api/status`. Usage counts start when Gwen starts; no history is kept.
+- The next typed turn is told the previous answer's sources by the numbers the
+  page showed, so "item 1" means source 1 (live, 2026-10-24: it got "what do you
+  mean by item one?").
+
+### Changed
+
+- **Live voice is opt-in** (deviation d6, operator): the daemon starts with no
+  ear attached and says so (`mic` with `ear: null`); the page's Live button opens
+  the room mic, pressing it again closes it, and it can be reopened any time.
+  `embodiment start --listen` (`EMBODIMENT_LISTEN_ON_START=1`) keeps the hot mic
+  on start.
+
+- **Gwen searches her own past conversations** (deviations d7 and d8, operator):
+  30 minutes after a conversation's last message the daemon announces it in-process
+  (a `conversation` event: id, last, turns; never text; remembered across restarts
+  in `conversations-settled.json`) and indexes it in Gwen's private conversation
+  index (`conversations-index.json`, separate from the library's), one chunk per
+  exchange, every turn labelled with who said it and how it arrived. On typed turns
+  `search_conversations` finds them, fenced like library text, arming the write
+  guard, and never searching the conversation the turn is in. A cited past
+  conversation opens in the middle, ready to continue. A continued conversation
+  leaves the index until it settles again. Nothing goes through culture-rules: the
+  conversations are Gwen's own. `history export` stays a read-only view, with
+  `--id` and `--settled-for`.
+- **Clips are kept** (deviation d10, operator: "a recording is truth"): every clip
+  the page sends is saved as it arrived, before transcription, under
+  `<state>/recordings/` (0600, named by sha256, capped at 2 GiB, refusing past the
+  cap and never deleting), and its turn links it. S3 archiving is #99.
+- **Room speech is kept too** (deviation d11, operator: "we keep that as well as if
+  sent as recording"): each utterance the room ear hears is cut from a bounded tap
+  of the audio the server received, by the wire's own stream time (onset to stop,
+  with a short pre- and post-roll), saved as a WAV in the same store, and linked
+  from its spoken turn. The silence between utterances is not written.
+- **Everything carries typed timestamps** (deviation d12): each session-log turn
+  and each kept recording lists `{type, at, by?}`, with `type` one of `created`,
+  `recorded`, `witnessed`, `received`, `transcribed`, `generated` (the vocabulary
+  asked of events-cli in events-cli#15). The page sends `X-Clip-At`, the time a
+  clip was recorded or an uploaded file's own date, stamped `by: client`.
+- **Content marks asked upstream:** events-cli#15 (visibility, origin, fidelity
+  and typed timestamps on the envelope) and culture-rules#90 (store, test and
+  propagate them).
+- **Every turn says how it arrived** (d7): the session log keeps `via` on the
+  operator's turns (`typed`, `spoken`, `recorded`, `uploaded`, `clip`; the page
+  sends `X-Clip-Origin` for a clip) and the export adds `generated` for Gwen's
+  and an `evidence` map of what each tag is worth.
+- **Gwen's `conversation` event never leaves the process** (d8/d9): the bus keeps
+  it off the broker (`LOCAL_ONLY_KINDS`). Transcripts, replies and audio levels still
+  reach the broker; the operator's word is that it is all internal, and what is
+  needed is a way to mark content crossing processes, not to withhold it.
+- **Bus envelope ids no longer repeat across runs**: they were the source and the
+  event's `seq`, which restarts at 1 every run, so a consumer keying events by id
+  (culture-rules keeps one envelope per id) would have dropped a new run's events
+  as duplicates. Each run now adds a random token. Found live while checking d7.
+
+- **Before:** the page was waveform-first with chat the fourth panel, and the
+  daemon bound two tools (`remember`, `forget`). **After:** the page is
+  chat-first inside culture-library's look: Ask is the library list, the
+  conversation with a voice dock (the mic in the box; Live and Upload beside
+  it) and the answers' sources with the reader, both side panes toggleable and
+  drawers on a phone; then Library, To-dos and Stats. Typed turns can also use
+  `search_library` and `read_passage`.
+- Citations: `[2, 3]`, `[2][3]` and `[2-3]` each become separate links, and
+  Speak sends the answer without its markers (operator feedback 2026-10-24).
+- Hebrew answers lay out right to left: a hidden "assistant: " label inside the
+  `dir="auto"` element had made them left to right.
+- The room log shows spoken turns only; typed turns (`typed: true`) were shown
+  twice.
+- The disabled speech-to-speech button is gone: Live (the room microphone) is
+  the speech path, and an advertised speech-to-speech role is reported on it.
+- **Document index version 3** (re-indexes once on start): each chunk carries a
+  content vector and a vector in its item's context (title + heading + text)
+  and scores the better; fragments under 60 characters (newspaper mastheads)
+  are not searched. Live, the mastheads out-ranked every article for a
+  question naming the paper. A title-only version 2 was measured worse (hit@5
+  16 of 32 and 11 of 28) and never shipped.
+- While a sync tick leaves items behind, the next tick runs after 5 s instead
+  of 300 s (a re-index of 50 items: about 15 minutes before, about 15 s now).
+- The reader retries a failed open (Try again, or opening the item again), and
+  says an item still being indexed is not ready yet.
+- On a phone (checked at the iPhone 13 mini's 375 px): the app follows the
+  visual viewport, so the dock stays above the keyboard and the page no longer
+  slides away; the header is one row; the pane toggles float over the thread;
+  the dock is compact, with a one-line placeholder; Stats tiles go two by two.
+- The audio subprocesses are spawned with a scrubbed environment that drops
+  the gateway and library keys.
+- README, the `explain` root and `CLAUDE.md` describe the above;
+  `tests/test_release_docs.py` pins the four tools and the transcripts-assumed
+  boundary.
+
 ## [0.17.1] - 2026-10-23
 
 ### Changed

@@ -1,0 +1,743 @@
+{
+  "slug": "gwen-is-pocketchat-transcripts-as-knowledge",
+  "title": "Gwen is pocketchat, transcripts as knowledge",
+  "frame_slug": "gwen-is-pocketchat-transcripts-as-knowledge",
+  "schema_version": 5,
+  "status": "exported",
+  "created": "2026-10-23T23:04:04Z",
+  "updated": "2026-10-24T00:11:51Z",
+  "targets": [
+    {
+      "id": "c1",
+      "kind": "announcement",
+      "text": "Gwen's page is pocketchat: you open gwen.culture.dev and get a chat-first library of your recordings \u2014 ask, read, cite, jump to the moment \u2014 with Gwen's voice as one button inside it, and she answers from the transcripts themselves, not only from distilled facts",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h1",
+      "kind": "honesty",
+      "text": "Every user-visible claim in the announcement is true on gwen.culture.dev at ship time: chat-first page, library reading, cited answers from document text, voice as a button - nothing on the page is a placeholder for a library that is not wired",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c3",
+      "kind": "requirement",
+      "text": "The ported page keeps pocketchat's anatomy (pocketsync/web/static/index.html:13-145, app.js): an Ask view (thread, empty state with memory bars + 'recently recorded' + suggestions, composer with scope toggles), a Recordings view grouped by day with label chips, a To-dos view, and a side reader (sheet under 860px) that opens at the cited span when a [n] citation is clicked (openCitation -> openReader, app.js:364-432, 461, 594), with its tokens, prefers-color-scheme dark mode, reduced-motion and a11y conventions",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h2",
+      "kind": "honesty",
+      "text": "Each pocketchat region the port keeps (Ask, Library, To-dos or its replacement, reader) is rendered by a component with a test, and the cited source file:line in pocketsync is named in a provenance header in the ported file (cite-don't-import)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c4",
+      "kind": "requirement",
+      "text": "The port adds what pocketchat lacks for Gwen: Hebrew/RTL (pocketchat has no dir=auto and no logical CSS properties; text-align:left, border-left throughout app.css) - dir=auto on question, answer, transcript segments and quotes, and logical properties so the layout mirrors",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h3",
+      "kind": "honesty",
+      "text": "A Hebrew question, answer, transcript passage and quote each render with dir=auto, and the layout uses logical CSS properties (no physical left/right in the ported CSS), pinned by a test that scans the stylesheet",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c5",
+      "kind": "requirement",
+      "text": "Realtime voice becomes a feature inside the Ask view (mic / speak-this / record-or-upload / speech-to-speech buttons at the composer), not the page's hero; pocketchat has no voice UI at all, so these controls are Gwen's additions to the cited page",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h4",
+      "kind": "honesty",
+      "text": "The mic, speak, record/upload and speech-to-speech controls live in the Ask view's composer, the page's first view is Ask, and the waveform is not the largest element - pinned by an App test on render order",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c9",
+      "kind": "requirement",
+      "text": "Gwen's dashboard becomes chat-first: App.tsx (web/src/App.tsx:122-201) today puts the Waveform first as 'the centrepiece (operator decision, obligation o9)' and Chat fourth; the port makes the Ask view primary with a pinned composer, the waveform a compact strip or drawer, the install-secret form shown only on an unauthorized state, and the separate Transcript panel merged into the thread",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h5",
+      "kind": "honesty",
+      "text": "The install-secret form is shown only when the stream reports unauthorized, and on the public Access host the page works end to end with no secret ever entered",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c10",
+      "kind": "requirement",
+      "text": "New read routes on Gwen's HTTP surface (library list, document/transcript read, search) are GET routes under /api/ that inherit guard.py's rules unchanged (secret or Access on the public Host, Host/Origin allow-list) and run on the text pool with their own derived timeout, not the 5 s control default; server.py has no path/query parser today, so the port adds one",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h6",
+      "kind": "honesty",
+      "text": "Every new /api read route passes guard.check unchanged (a test hits each without a secret on loopback and gets 401, and with Access on the public Host gets 200), runs on the text pool, and has a timeout derived from the library client's own bound",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c11",
+      "kind": "requirement",
+      "text": "Library knowledge reaches Gwen as READ tools beside remember/forget (tools.py ToolSpec; daemon binds at app.py:1465-1498; typed and voice turns share the tools, max_steps 8), whose results are wrapped in the same KNOWLEDGE_ATTRIBUTION fence as recall (tool output is plain str today and bypasses render_recalled) and whose citations get a new path into the chat's sources (chat_source is fed only from recall records today, app.py:4737-4768)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h7",
+      "kind": "honesty",
+      "text": "A library tool result reaches the model only inside the KNOWLEDGE_ATTRIBUTION fence with fence marks neutralised (a test plants an instruction and a fence mark in a document and asserts both arrive quoted), and every cited passage appears in the reply's sources with item id, title, date and passage anchor",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c13",
+      "kind": "requirement",
+      "text": "Gwen reads item text herself: fetches GET /api/library/{id}/file and extracts EPUB text with the stdlib (zipfile + html.parser - no new dependency, test_zero_deps.py), chunks it, and embeds chunks with gemma2-embed into her own 0600 document index; the library's q stays a metadata filter, never the content search",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h8",
+      "kind": "honesty",
+      "text": "Gwen's document index is a separate 0600 file under her state dir (never the eidetic room store), built with stdlib EPUB extraction (test_zero_deps.py unchanged), and a re-fetched item whose sha256 is unchanged is not re-embedded",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c15",
+      "kind": "requirement",
+      "text": "Gwen's library client is GET-only by construction (an AST/test pin that it never sends POST/DELETE/PUT to the library), because xteink keys have no scopes: any xtk_ key is a full operator key (docs/api.md:17-37 - upload, delete, mint keys, revoke devices); the key is held in grant and injected, never written to disk by Gwen",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h9",
+      "kind": "honesty",
+      "text": "No code path in Gwen's library client can issue POST, PUT, PATCH or DELETE (AST test over the client module), and the key is read only from the injected environment, never from a file Gwen writes",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c22",
+      "kind": "audience",
+      "text": "The operator, on gwen.culture.dev from a phone or a laptop (Cloudflare Access, his email only), and on the LAN dashboard - one person reading and asking about his own library",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h10",
+      "kind": "honesty",
+      "text": "The Access allow-list for gwen.culture.dev names only the operator's email, and the dashboard is the same build on the LAN and the public host",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c23",
+      "kind": "before_state",
+      "text": "Gwen's page is a voice console: the waveform is the hero (App.tsx:127, obligation o9) and chat is the fourth panel; she knows only distilled facts sent through 'embodiment memory ingest', not documents; pocketchat is a separate site over pocketsync, and xteink's library (newspapers, documents, books, and transcripts per culture-rules) is readable by no agent",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h11",
+      "kind": "honesty",
+      "text": "The before state is checked against main at the start of the cycle: App.tsx waveform-first, chat fourth, no library client, tools bound = remember + forget",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c24",
+      "kind": "why_it_matters",
+      "text": "The operator wants one place to talk with what he has read and recorded; pocketchat already proved the experience (ask, read, cite, jump to the passage), and Gwen adds memory and a voice - but only if the page is chat-first and answers from the documents themselves, cited, rather than from summaries alone",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h12",
+      "kind": "honesty",
+      "text": "The why is the operator's stated aim (one place to talk with what he read and recorded); no value is claimed beyond it until measured",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c25",
+      "kind": "after_state",
+      "text": "Opening gwen.culture.dev shows pocketchat's experience as Gwen's page: an Ask view with a pinned composer (mic, speak, record/upload and the speech-to-speech button inside it), a Library view of the library's items (culture-library; xteink's instance today) grouped by day with kind chips, and a side reader; Gwen answers typed questions from the library with [n] citations that open the reader at the cited passage, alongside her own remembered facts",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h13",
+      "kind": "honesty",
+      "text": "On the deployed page each named element exists and works: Ask first, composer with voice controls, Library view listing real library items, side reader opening at a citation",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c26",
+      "kind": "boundary",
+      "text": "Gwen never writes to the library: no POST/PUT/DELETE, no key minting, no device or queue calls; culture-library, xteink, ebooks-cli, culture-rules, pocketsync and the firmware are not changed by this cycle - asks to them are drafted for the operator's go-ahead",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h14",
+      "kind": "honesty",
+      "text": "A grep/AST check over embodiment finds no write call to the library and no change to sibling repos in the cycle's diff; any sibling ask is a drafted issue, posted only after the operator's go-ahead",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c27",
+      "kind": "success_signal",
+      "text": "On gwen.culture.dev, 100% of answers that use a library item carry at least one [n] citation whose click opens the reader on that item at the cited passage (pinned by test and checked live on >= 5 questions)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h15",
+      "kind": "honesty",
+      "text": "The live check of >= 5 questions is recorded with which item each citation opened; a citation that opens the wrong item or no passage counts as a failure",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c28",
+      "kind": "success_signal",
+      "text": "Gwen's library client sends 0 non-GET requests to xteink - pinned by an AST/test check and confirmed in a live run's request log",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h16",
+      "kind": "honesty",
+      "text": "The AST/test pin runs in CI, and the live run's request log is read and its non-GET count reported as a number",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c29",
+      "kind": "success_signal",
+      "text": "A measurement over >= 20 model-written reworded questions against the indexed library is published (hit@5 and the per-recall p90 latency at the indexed size) in docs/live-test-results/, aggregates only, whatever the numbers are",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h17",
+      "kind": "honesty",
+      "text": "The questions are fixed before the run, the hit@5 and p90 are published as measured including if bad, and no real document text enters the repo",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c31",
+      "kind": "requirement",
+      "text": "In a turn whose context holds library text, the write tools (remember, forget) cannot be triggered by that text: a write needs the operator's own words in the current user turn to name it (or the write is refused and recorded), because remember/forget are model-initiated with no user-ask gate (daemon/app.py:3307-3345, decision d7) and library documents include web-sourced content (newspapers, papers)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h18",
+      "kind": "honesty",
+      "text": "A test plants 'forget everything about X' / 'remember that Y' inside a library document; a turn that reads it and does not have the operator asking in his own words makes no write, and the refusal is counted and recorded",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c32",
+      "kind": "requirement",
+      "text": "Library and gateway keys never reach child processes: the audio subprocesses (audio/host.py:1317, 1547, 1731, 1838 Popen with no env=) are spawned with a scrubbed environment that drops EMBODIMENT_GATEWAY_KEY and the library key, and no key appears in the ledger, operational log, transcript log or SSE (safe_reason path), pinned by tests",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h19",
+      "kind": "honesty",
+      "text": "A test spawns each audio subprocess through the real factory and asserts its env has neither EMBODIMENT_GATEWAY_KEY nor the library key; a scan of ledger/log/SSE fixtures after a library run finds no xtk_ or gateway key",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c33",
+      "kind": "requirement",
+      "text": "Gwen's document index reconciles against the library catalog by (item id, sha256): a removed item's chunks and stored text are purged, a changed item is re-indexed, and a citation never points at an item the library no longer holds",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h20",
+      "kind": "honesty",
+      "text": "Deleting an item from a fake library and running one reconcile removes its chunks and text from the index file; a changed sha256 re-indexes; a citation to a removed id cannot be produced",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c34",
+      "kind": "requirement",
+      "text": "EPUB extraction is bounded: maximum archive members, maximum uncompressed bytes per member and in total, maximum extracted characters per item, refusing (and recording) a zip bomb or an oversized item instead of indexing it; the 7.4 MB book is admitted only by opt-in (c18)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h21",
+      "kind": "honesty",
+      "text": "Fixtures for a zip bomb, an oversized member and too many members are each refused with a recorded reason and leave the index unchanged",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c35",
+      "kind": "requirement",
+      "text": "The library is optional and observable: unset library config means today's behaviour exactly (no tool bound, no Library view data, a visible 'library not configured'), an unreachable or 401 library is a recorded degradation with chat continuing from memory, and status reports items indexed, chunks, last sync, failures and the GET count - the counter-that-moves rule (CLAUDE.md lesson 3)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h22",
+      "kind": "honesty",
+      "text": "With the library env unset, the existing suite passes unchanged and no library tool is bound; with the library down, a chat still answers from memory and status shows the degradation and frozen counters",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c36",
+      "kind": "requirement",
+      "text": "status.access reports counts of requests admitted by Access and refused per code, so a public-host session is proven by a counter rather than inferred (found in the 2026-10-24 live test, where only mode:on was visible)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h23",
+      "kind": "honesty",
+      "text": "A public-host request admitted by Access increments status.access.admitted, and each refusal code increments its own counter, pinned by a guard test",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c37",
+      "kind": "requirement",
+      "text": "Background indexing never competes with a live turn: embedding library chunks yields to recall and voice (one shared gemma2-embed lane on orin), runs under the backfill's bounded ticks, and its cost is measured before books are indexed",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h24",
+      "kind": "honesty",
+      "text": "A test drives an index tick concurrently with a recall and shows the recall's embed is served first (index work deferred), and the plan's measurement records embed-lane latency during indexing",
+      "deferred": false,
+      "deferred_reason": ""
+    }
+  ],
+  "tasks": [
+    {
+      "id": "t1",
+      "summary": "Library client: GET-only HTTP client for the library (catalog, item, file)",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "embodiment/library/client.py exposes LibraryClient(base_url, key, *, deadline, opener) with list_items(kind=None, q=None), get_item(id), fetch_file(id) -> bytes; every request is GET with Authorization: Bearer from the key argument",
+        "tests/test_library_client.py has an AST test that the module contains no POST/PUT/PATCH/DELETE method string and no urlopen/Request with a method other than GET, and fails if one is planted",
+        "redirects are refused (voice._REDIRECT_REFUSING_OPENER) and bodies are capped (voice._read_bounded): catalog <= 2 MiB, file <= a cap derived and stated in a comment; a 302, an oversized body, a 401 and a timeout each raise a typed LibraryError with a fixed code and never echo the key",
+        "LibraryConfig.from_env reads EMBODIMENT_LIBRARY_URL and EMBODIMENT_LIBRARY_KEY; unset URL -> None (library disabled); the key is never logged, never in repr, never written to disk"
+      ],
+      "deps": [],
+      "covers": [
+        "c15",
+        "h9",
+        "c26",
+        "c28"
+      ],
+      "instruction": "If embodiment/library/__init__.py is absent, create it with exactly this one line: \"\"\"The library read side: client, EPUB extraction, document index, sync and tools.\"\"\" (several tasks may add it; identical content merges cleanly). Mirror vectors.py:_urllib_transport (184-203) for the hardened request path. Today's instance is xteink (docs/api.md on xteink branch feat/issue-1: GET /api/library?q=&kind=, GET /api/library/{id}, GET /api/library/{id}/file; Item = {id, sha256, kind, title, author, format, size, created_at}); keep the shape mapping in ONE function so culture-library (library.culture.dev) can re-point it. Tests use a fake opener only; no network."
+    },
+    {
+      "id": "t2",
+      "summary": "EPUB extraction: bounded stdlib text + passage anchors",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "embodiment/library/epub.py exposes extract(data: bytes, *, limits) -> Extracted(passages=[Passage(anchor, heading, text, start_s|None, end_s|None, speaker|None)], chars) using only zipfile + html.parser (tests/test_zero_deps.py unchanged)",
+        "limits cap members, per-member uncompressed bytes, total uncompressed bytes and extracted characters; fixtures for a zip bomb, an oversized member and too many members each raise EpubRefused with a fixed code, and nothing partial is returned",
+        "reading order follows the OPF spine; scripts/styles are dropped; anchors are stable (doc path + element index) so a citation can reopen the same passage; text from fixtures is synthetic",
+        "if a passage carries timing markup (data-start/data-end attributes or a leading [hh:mm:ss] / mm:ss token) and a speaker label, start_s/end_s/speaker are filled; otherwise they are None (park v3: transcript format unseen)"
+      ],
+      "deps": [],
+      "covers": [
+        "c34",
+        "h21",
+        "c13"
+      ],
+      "instruction": "If embodiment/library/__init__.py is absent, create it with exactly this one line: \"\"\"The library read side: client, EPUB extraction, document index, sync and tools.\"\"\" (several tasks may add it; identical content merges cleanly). Build fixtures in-test with zipfile (container.xml, content.opf with a spine, two xhtml docs, one with h2 sections). Never add a dependency. Neutralise nothing here; fencing happens at render time (later task)."
+    },
+    {
+      "id": "t3",
+      "summary": "Document index: 0600 chunk store with gemma2-embed vectors, reconcile and search",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "embodiment/library/index.py exposes DocumentIndex(path, *, embed, model_tag): upsert_item(item_meta, passages), remove_item(id), reconcile(catalog) -> {added, changed, removed}, search(query_vector, *, kinds, limit, threshold) -> hits with item id, title, kind, created_at, anchor, text, score, start_s, end_s",
+        "the index file is 0600 under a path the caller passes (never the eidetic store), written atomically once per batch (not per chunk); an item whose sha256 is unchanged is not re-embedded (embed call count asserted)",
+        "reconcile against a catalog that dropped an item purges its chunks AND stored text; a changed sha256 re-indexes; a search can never return an id absent from the last reconciled catalog",
+        "kinds filter: transcripts and articles by default, books only when opted in per item id; newspapers are never expired by the index (c38)"
+      ],
+      "deps": [],
+      "covers": [
+        "c13",
+        "h8",
+        "c33",
+        "h20"
+      ],
+      "instruction": "If embodiment/library/__init__.py is absent, create it with exactly this one line: \"\"\"The library read side: client, EPUB extraction, document index, sync and tools.\"\"\" (several tasks may add it; identical content merges cleanly). Model the file layout on vectors.py VectorCache (0600, atomic replace). Chunk passages to <= ~1000 chars on passage boundaries. embed is an injected callable (text -> list[float]) so tests use a fake; the daemon wires the real gemma2-embed client later."
+    },
+    {
+      "id": "t4",
+      "summary": "Scrub keys from audio subprocess environments",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "audio/host.py spawns every subprocess (the Popen calls at ~1317, 1547, 1731, 1838) with an explicit env that drops EMBODIMENT_GATEWAY_KEY, EMBODIMENT_LIBRARY_KEY and any variable whose name ends in _KEY, _TOKEN or _SECRET, while keeping PATH, HOME, XDG_RUNTIME_DIR and PipeWire variables",
+        "tests/test_audio_host.py asserts through the popen seam that each spawn's env lacks those keys and still has XDG_RUNTIME_DIR; existing audio tests pass unchanged"
+      ],
+      "deps": [],
+      "covers": [
+        "c32",
+        "h19"
+      ],
+      "instruction": "One helper (e.g. _child_env()) used by every Popen call; do not touch other modules."
+    },
+    {
+      "id": "t5",
+      "summary": "Access admit/refuse counters and the stale --public-hostname help",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "status()['access'] reports mode plus admitted (int) and refused_by_code ({code: int}); an admitted public-host request increments admitted, each refusal code its own counter - pinned in tests/test_http_guard.py (or test_http_access.py)",
+        "embodiment start --help for --public-hostname no longer says the verifier refuses every assertion; it describes the shipped verifier and the three EMBODIMENT_ACCESS_* names; tests/test_release_docs.py still passes"
+      ],
+      "deps": [],
+      "covers": [
+        "c36",
+        "h23"
+      ],
+      "instruction": "Counters live where the guard decides (http/guard.py / http/access.py); expose them through the existing status path without touching daemon/app.py if possible (server status already merges http status). Edit only guard.py, access.py, cli/_commands/start.py and their tests."
+    },
+    {
+      "id": "t6",
+      "summary": "HTTP read routes for the library and to-dos",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "server.py routes GET /api/library (catalog: items with id, title, kind, created_at, indexed flag), GET /api/library/{id} (meta + passages with anchors, for the reader), GET /api/library/search?q= (index hits) and GET /api/todos (action items) through new Controls callables, each on the text pool with a timeout derived from the callable's own bound (a module constant with its derivation), never the 5 s control default",
+        "a path/query parser handles {id} and q safely (int id, length-capped q, percent-decoding); bad input -> 400 with a fixed code; an unconfigured callable -> 503 library-not-configured",
+        "tests/test_http_server.py: each new route without a secret on loopback -> 401; with Access on the public Host -> 200; with the secret -> 200 and the JSON shape; the module docstring route table lists them"
+      ],
+      "deps": [],
+      "covers": [
+        "c10",
+        "h6"
+      ],
+      "instruction": "Follow _text_route (server.py:890-929) and the Controls dataclass (~466-490). Fakes only; the daemon wires real callables in a later task. Touch only http/server.py and its tests."
+    },
+    {
+      "id": "t7",
+      "summary": "Ask view: pocketchat's thread and composer, ported and cited",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "web/src/components/Chat.tsx renders pocketchat's thread: question/answer turns, [n] markers in the answer become cite buttons (aria-label), a sources list below with title, date and quote, and clicking either calls onOpenCitation(item_id, anchor) - pinned in Chat.test.tsx",
+        "the composer holds the text input plus AudioControls (speak, record/upload, disabled speech-to-speech) inside it; Enter sends, Shift+Enter newlines; reveal-by-word respects prefers-reduced-motion",
+        "every question, answer and quote node has dir=auto; the no-HTML-sink test (chat.test.ts) still passes; each ported file starts with a provenance header naming pocketsync/web/static/{index.html,app.js} and the line ranges cited"
+      ],
+      "deps": [],
+      "covers": [
+        "c3",
+        "h2",
+        "c4",
+        "h3",
+        "c5",
+        "h4",
+        "c27",
+        "h15"
+      ],
+      "instruction": "Port the behaviour of pocketsync/web/static/app.js:336-432 (ask, citations, sources) and :790-808 (composer) into React; text via JSX text nodes only (never innerHTML). Keep Chat's existing SSE reply dedupe and secret handling. Touch only Chat.tsx, AudioControls.tsx, api/chat.ts and their tests."
+    },
+    {
+      "id": "t8",
+      "summary": "Library view and side reader, ported and cited",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "new web/src/components/LibraryView.tsx lists library items grouped by day with kind chips (aria-pressed), from GET /api/library via new web/src/api/library.ts; clicking an item opens the reader",
+        "new web/src/components/Reader.tsx shows title, meta and passages from GET /api/library/{id}; openAt(anchor) scrolls to and highlights that passage; it is a side panel >= 861px and a full-screen sheet below, closes on Escape",
+        "when passages carry start/end times the reader draws a tape and clicking it seeks to the nearest passage; otherwise no tape is drawn and nothing breaks (park v3) - both branches tested",
+        "all text via text nodes with dir=auto; provenance header cites pocketsync/web/static/app.js:461-626 and index.html:110-145"
+      ],
+      "deps": [],
+      "covers": [
+        "c3",
+        "h2",
+        "c27",
+        "h15"
+      ],
+      "instruction": "New files only (LibraryView.tsx, Reader.tsx, api/library.ts, their tests, and a library.css if needed using logical properties). Use fakes for fetch."
+    },
+    {
+      "id": "t9",
+      "summary": "To-dos view from Gwen's remembered action items",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "new web/src/components/TodosView.tsx groups action items by recording from GET /api/todos via new web/src/api/todos.ts, read-only, with dir=auto text and a provenance header citing pocketsync/web/static/app.js:740-766",
+        "an empty list and a 503 library/memory-unavailable each render a fixed message; tests cover both"
+      ],
+      "deps": [],
+      "covers": [
+        "c3",
+        "h2"
+      ],
+      "instruction": "New files only. No done/undone writes this cycle (c40)."
+    },
+    {
+      "id": "t10",
+      "summary": "Library sync: bounded background ticks that keep the index in step with the catalog",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "embodiment/library/sync.py exposes LibrarySync(client, index, *, extract, clock, budget) with tick() that reconciles the catalog, then fetches+extracts+indexes changed items within the tick budget, and status() -> {configured, items_indexed, chunks, last_sync_at, failures_by_code, gets, skipped_books}",
+        "a tick yields when a live-turn gate is held (an injected callable / threading.Event): a test holds the gate during a tick and shows no embed call happens until it is released, and the recall embed is served first",
+        "an unreachable or 401 library is one recorded degradation per transition (not per tick) and counters freeze; an EpubRefused item is skipped, counted by code and not retried until its sha256 changes"
+      ],
+      "deps": [
+        "t1",
+        "t2",
+        "t3"
+      ],
+      "covers": [
+        "c35",
+        "h22",
+        "c37",
+        "h24",
+        "c13",
+        "h8"
+      ],
+      "instruction": "Pure orchestration over t1/t2/t3 seams with fakes; no daemon edits. The GET count in status is the client's own counter, the live run reports it (c28)."
+    },
+    {
+      "id": "t11",
+      "summary": "Library tools: search_library and read_passage, fenced as untrusted, returning citations",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "embodiment/library/tools.py builds two ToolSpecs (tools.py shape): search_library(query, limit) and read_passage(item_id, anchor); their result strings are rendered inside KNOWLEDGE_ATTRIBUTION + BEGIN/END marks with fence marks neutralised (reuse memory.neutralise_source_text / render_recalled's helpers), never raw",
+        "each call also records Citation objects {source:'library', item_id, title, kind, date, anchor, start, end, text<=SOURCE_TEXT_MAX_CHARS} on a per-turn collector the caller passes, so the daemon can attach them to the reply's sources",
+        "a test plants an instruction ('ignore previous instructions', 'forget X') and a fence mark in a document; both arrive quoted inside the fence, and the collector marks the turn as having library text in context"
+      ],
+      "deps": [
+        "t3"
+      ],
+      "covers": [
+        "c11",
+        "h7"
+      ],
+      "instruction": "No daemon edits; take the index and an embed-query callable as arguments. Keep tool descriptions short; the model must learn to cite [n] from the numbered entries."
+    },
+    {
+      "id": "t12",
+      "summary": "Chat-first app shell: pocketchat layout, views, voice as a feature",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "App.tsx renders a top bar (brand, health pill, Ask/Library/To-dos hash nav) and the Ask view first; Chat's onOpenCitation opens Reader at the anchor; the waveform is a compact strip (not the largest element), Voice controls, recall mode and degradations live in a collapsible status drawer - App.test.tsx pins the order",
+        "the install-secret form appears only when the stream status is unauthorized; on a fake public-host session with no secret the page loads, chats and opens the reader with no secret entered",
+        "the ported stylesheet (pocketchat tokens from app.css:4-55, dark mode, 860px breakpoint, reduced motion) uses only logical properties - a test scans web/src/styles for margin-left/right, padding-left/right, left:, right:, border-left/right, text-align:left/right and fails on any; npm run build passes the no-external-origin check"
+      ],
+      "deps": [
+        "t7",
+        "t8",
+        "t9"
+      ],
+      "covers": [
+        "c9",
+        "h5",
+        "c4",
+        "h3",
+        "c5",
+        "h4",
+        "c3",
+        "h2"
+      ],
+      "instruction": "Supersedes obligation o9 (waveform as centrepiece) per decision c2; say so in a comment at the top of App.tsx. Move the two hardcoded hex colours in app.css to tokens. Touch App.tsx, styles/*, App.test.tsx, main.tsx only."
+    },
+    {
+      "id": "t13",
+      "summary": "Daemon integration: library wired, typed-turn tools, write guard, citations, status",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "daemon/app.py builds LibraryClient/DocumentIndex/LibrarySync only when EMBODIMENT_LIBRARY_URL is set (index at `<state>/library/index.json`, 0600); unset -> no library tool bound, routes answer 503 library-not-configured, and the full existing suite passes unchanged",
+        "search_library/read_passage bind to typed turns (chat, clips) only, never voice turns (c39) - a test drives one of each and asserts the tool list; library citations join the reply's sources, deduped with recall sources that cite the same newspaper issue (c38)",
+        "when the turn's collector says library text is in context, remember/forget refuse unless the operator's current user turn itself asks for it (session.py explicit-ask detector or a model-quoted span that occurs in the user turn); the refusal is counted (status memory.library_guarded_writes) and recorded - the planted-instruction test from t11 drives a full typed turn and asserts no write",
+        "status() gains a library block from LibrarySync.status() and the routes from t6 get real callables (catalog, item+passages, search, todos from memory action_item records grouped by recording_id)"
+      ],
+      "deps": [
+        "t6",
+        "t10",
+        "t11"
+      ],
+      "covers": [
+        "c11",
+        "h7",
+        "c31",
+        "h18",
+        "c35",
+        "h22",
+        "c27",
+        "h15"
+      ],
+      "instruction": "The only task that edits daemon/app.py this cycle. The live-turn gate for t10 is the conversation lock / voice playing state. Keep degrade-never-raise. Wire the library key from env only (grant run --inject EMBODIMENT_LIBRARY_KEY=XTEINK_GWEN_API_KEY)."
+    },
+    {
+      "id": "t14",
+      "summary": "Release docs: three-plus tools, the library, the new page",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "README, the explain root and CLAUDE.md describe the library read path (culture-library; xteink's instance today), the chat-first page, the GET-only client, the write guard and the env names; tests/test_release_docs.py's TOOLS_BOUND and not-yet list are updated in a visible, reviewed diff and pass",
+        "a check over the cycle's diff (git diff origin/main --stat) shows no file outside this repo changed and no library write call; the before state (waveform-first, chat fourth, two tools) is recorded in CHANGELOG as what changed; version bumped via the version-bump skill"
+      ],
+      "deps": [
+        "t12",
+        "t13"
+      ],
+      "covers": [
+        "c26",
+        "h14",
+        "c23",
+        "h11"
+      ],
+      "instruction": "Docs and the release test only; markdownlint clean; no overclaim - transcripts are assumed (c21), not shown."
+    },
+    {
+      "id": "t15",
+      "summary": "Live acceptance: library measurement and the public-page checks",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "scripts/measure-library.py (args: state dir, question file, out) runs >= 20 model-written reworded questions fixed BEFORE the run against the indexed library and writes hit@5 and per-recall p90 at the indexed size; docs/live-test-results/2026-10-2x-library.md publishes aggregates only, whatever the numbers",
+        "a live session on gwen.culture.dev records >= 5 questions with which item and anchor each citation opened (wrong item or no passage = failure), the library client's GET and non-GET counts from status (non-GET must read 0), and the Access allow-list contents (operator only)",
+        "the results doc states each announcement element (Ask first, voice in composer, Library view, reader at citation) as observed or not, and the operator's stated aim as the why with no value claim beyond it"
+      ],
+      "deps": [
+        "t12",
+        "t13"
+      ],
+      "covers": [
+        "c29",
+        "h17",
+        "c28",
+        "h16",
+        "c27",
+        "h15",
+        "c1",
+        "h1",
+        "c22",
+        "h10",
+        "c24",
+        "h12",
+        "c25",
+        "h13"
+      ],
+      "instruction": "Use the real library through grant-injected keys; never commit document text or questions derived from real text - only counts and rates. Gateway may be under test: re-probe roles first."
+    }
+  ],
+  "risks": [
+    {
+      "id": "r1",
+      "text": "The library contract is xteink's local-only feat/issue-1 branch and will move to culture-library (library.culture.dev), whose API and auth are unseen (frame parks v1, v4); t1 keeps the shape mapping in one function so a move re-points it",
+      "kind": "unknown_nonblocking",
+      "task_id": "t1",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r2",
+      "text": "Transcript EPUB format is unseen (none in the library on 2026-10-24, park v3): t2 and t8 build both branches (timed passages with a tape, untimed without), and t15 can only measure transcripts if the culture-rules rule has pushed some by then",
+      "kind": "unknown_nonblocking",
+      "task_id": "t8",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r3",
+      "text": "t13 is the only task touching daemon/app.py (5,000+ lines) and carries four concerns (wiring, typed-turn tools, write guard, citations); if review shows it too large, split it with /deviate rather than letting a wave-1 task edit app.py",
+      "kind": "unknown_nonblocking",
+      "task_id": "t13",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r4",
+      "text": "The gateway (lobes) is under test and gemma2-embed is proxied to orin: t10's indexing and t15's measurement depend on it; t15 re-probes /capabilities first and reports a degraded lane rather than a number",
+      "kind": "unknown_nonblocking",
+      "task_id": "t15",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r5",
+      "text": "The public page currently serves the scratch daemon (synthetic store); moving gwen.culture.dev to the real store and running the tunnel as a service rather than a session background task is an operator step outside this plan",
+      "kind": "follow_up",
+      "task_id": null,
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r6",
+      "text": "Library search has no calibrated similarity threshold: t11 defaults to 0.0 (always returns up to limit hits); t13 wires the 0.715 recall threshold as PROVISIONAL and uncalibrated for library text (it was measured on memory records), and t15's measurement reports hit@5 and false positives at it so the operator can set it",
+      "kind": "unknown_nonblocking",
+      "task_id": "t13",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r7",
+      "text": "Write-guard residual: when the operator's explicit-ask detector matches in a library turn, remember accepts any fact, so a planted 'remember Y' riding beside a real ask could be written",
+      "kind": "unknown_nonblocking",
+      "task_id": "t13",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r8",
+      "text": "Indirect injection is not guarded: library text paraphrased into an earlier reply returns through the session window, and c31 checks only the current turn's context",
+      "kind": "unknown_nonblocking",
+      "task_id": "t13",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r9",
+      "text": "No system-prompt line steers the model to call search_library; whether it uses the library unprompted is unmeasured - t15 counts tool calls per question",
+      "kind": "unknown_nonblocking",
+      "task_id": "t15",
+      "resolved": false,
+      "resolution": ""
+    }
+  ],
+  "obligations": []
+}

@@ -1,5 +1,9 @@
-import { useRef, useState } from "react";
-import { postClip, speakMessage, type AudioClientOptions } from "../api/audio";
+// Provenance: the composer's speak / record / upload controls sit inside the form as in
+// pocketsync/web/static/index.html (#composer) and app.js:790-808 (composer wiring).
+// The recording and speech-to-speech logic is embodiment's own, not ported.
+import type { ChatSource } from "../api/chat";
+import { useRef, useState, type ReactNode } from "react";
+import { postClip, speakMessage, type AudioClientOptions, type ClipOrigin } from "../api/audio";
 
 /**
  * The longest clip the daemon accepts, in seconds. Mirrors
@@ -21,6 +25,8 @@ export interface ClipReply {
   reply: string;
   /** Serial of the turn the clip started, when the daemon reports one. */
   turnSerial?: number | null;
+  /** The clip answer's cited sources, as chat's (library citations open the reader). */
+  sources?: ChatSource[];
 }
 
 /** Plays /api/speak audio for one message. Failures show as role=alert. */
@@ -61,9 +67,14 @@ export function SpeakButton({
   }
 
   return (
-    <span className="chat__speak">
-      <button type="button" onClick={speak} disabled={busy} aria-label="Speak this message">
-        Speak
+    <span className="speak">
+      <button type="button" className="pill-btn" onClick={speak} disabled={busy} aria-label="Speak this message">
+        <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+          <path d="M11 5 6 9H3v6h3l5 4z" />
+          <path d="M15.5 8.5a5 5 0 0 1 0 7" />
+          <path d="M18.5 5.5a9 9 0 0 1 0 13" />
+        </svg>
+        {busy ? "Speaking" : "Speak"}
       </button>
       {error && (
         <span className="chat__degraded" role="alert">
@@ -81,9 +92,15 @@ export interface AudioControlsProps {
   clientOptions?: AudioClientOptions;
   /** Name of the speech-to-speech role the gateway advertises; undefined => none. */
   s2sRole?: string;
+  /** The realtime voice control, shown beside the input box before Upload. */
+  live?: ReactNode;
+  /** The earlier conversation a recorded or uploaded question continues (d5). */
+  conversation?: string;
+  /** The typed half of the box (text and Send), placed after the mic. */
+  children?: ReactNode;
 }
 
-export function AudioControls({ secret, onReply, clientOptions, s2sRole }: AudioControlsProps) {
+export function AudioControls({ secret, onReply, clientOptions, live, conversation, children }: AudioControlsProps) {
   const [recording, setRecording] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -91,12 +108,12 @@ export function AudioControls({ secret, onReply, clientOptions, s2sRole }: Audio
   const startedAt = useRef(0);
   const limit = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  async function send(clip: Blob, durationS?: number) {
+  async function send(clip: Blob, origin: ClipOrigin, atMs: number, durationS?: number) {
     setBusy(true);
-    const out = await postClip(clip, secret, clientOptions, durationS);
+    const out = await postClip(clip, secret, clientOptions, durationS, conversation, origin, atMs);
     if (out.ok) {
       setError(null);
-      onReply({ transcript: out.transcript, reply: out.reply, turnSerial: out.turnSerial });
+      onReply({ transcript: out.transcript, reply: out.reply, turnSerial: out.turnSerial, sources: out.sources });
     } else {
       setError(out.code);
     }
@@ -108,7 +125,7 @@ export function AudioControls({ secret, onReply, clientOptions, s2sRole }: Audio
     e.target.value = "";
     if (!file) return;
     setError(null);
-    await send(file);
+    await send(file, "uploaded", file.lastModified);
   }
 
   async function startRecording() {
@@ -139,7 +156,7 @@ export function AudioControls({ secret, onReply, clientOptions, s2sRole }: Audio
         recorder.current = null;
         setRecording(false);
         const seconds = (Date.now() - startedAt.current) / 1000;
-        void send(new Blob(chunks, { type: rec.mimeType || chunks[0]?.type || "" }), seconds);
+        void send(new Blob(chunks, { type: rec.mimeType || chunks[0]?.type || "" }), "recorded", startedAt.current, seconds);
       };
       recorder.current = rec;
       startedAt.current = Date.now();
@@ -161,38 +178,61 @@ export function AudioControls({ secret, onReply, clientOptions, s2sRole }: Audio
     }
   }
 
+  // Layout (operator, 2026-10-24): realtime voice and upload sit beside the input
+  // box; the box holds only the mic, the text and Send. The disabled
+  // speech-to-speech button is gone: the Live button (the sound-bars icon) is the
+  // speech path now, through the room microphone.
   return (
-    <div className="chat__audio">
-      {recording ? (
-        <button type="button" onClick={stopRecording}>
-          Stop recording
-        </button>
-      ) : (
-        <button type="button" onClick={startRecording} disabled={busy}>
-          Record
-        </button>
-      )}
-      <label>
-        Upload audio
-        <input type="file" accept="audio/*" onChange={onFile} disabled={busy || recording} />
-      </label>
-      <button type="button" disabled aria-describedby="chat-s2s-reason">
-        Speech-to-speech
-      </button>
-      <span id="chat-s2s-reason" className="chat__hint">
-        {s2sRole === undefined ? (
-          "no speech-to-speech role is advertised by the gateway"
-        ) : (
-          <>
-            role <span dir="auto">{s2sRole}</span> advertised; not enabled in this release
-          </>
-        )}
-      </span>
-      {error && (
-        <p className="chat__degraded" role="alert">
-          audio unavailable: {error}
-        </p>
-      )}
-    </div>
+    <>
+      <div className="dock-side">
+        {live}
+        <label className="side-btn" title="Upload a recording">
+          <span className="sr-only">Upload audio</span>
+          <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M17 8l-5-5-5 5M12 3v12" />
+          </svg>
+          <input
+            className="sr-only"
+            type="file"
+            accept="audio/*"
+            onChange={onFile}
+            disabled={busy || recording}
+          />
+        </label>
+      </div>
+      <div className="dock">
+        <div className="dock__row" data-recording={recording ? "true" : undefined}>
+          {recording ? (
+            <button type="button" className="mic mic--on" onClick={stopRecording} aria-label="Stop recording">
+              <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+                <rect x="7" y="7" width="10" height="10" rx="2" />
+              </svg>
+            </button>
+          ) : (
+            <button
+              type="button"
+              className="mic"
+              onClick={startRecording}
+              disabled={busy}
+              aria-label="Record"
+              title="Record a question (up to a minute)"
+            >
+              <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+                <rect x="9" y="2.5" width="6" height="12" rx="3" />
+                <path d="M5 10.5a7 7 0 0 0 14 0M12 17.5V21" />
+              </svg>
+            </button>
+          )}
+          {recording && <span className="dock__rec">Recording. Tap the square to send.</span>}
+          {busy && !recording && <span className="dock__rec">Transcribing</span>}
+          {children}
+          {error && (
+            <p className="chat__degraded dock__error" role="alert">
+              Audio did not go through ({error}).
+            </p>
+          )}
+        </div>
+      </div>
+    </>
   );
 }

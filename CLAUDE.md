@@ -28,8 +28,10 @@ live truth; decisions live on embodiment#85.
 presence, not a body (`reachy-mini-cli` owns the robot and its own `agent
 embody` layer shares this package's name — say so wherever the name appears);
 one rig; Hebrew only; one active ear; the session never crosses machines;
-value unmeasured. **Not yet:** tools beyond memory (the daemon binds exactly
-two, `remember` and `forget`; the registry is otherwise empty by design),
+value unmeasured. **Not yet:** tools beyond memory and the read-only library (the daemon binds
+`remember` and `forget`, plus `search_library` and `read_passage` on typed turns
+when a library is configured, and `search_conversations` over Gwen's own settled
+conversations (d8); the registry is otherwise empty by design),
 vision, a face, live realtime voice from the phone and speech-to-speech (the
 phone is control, text, and uploaded or recorded clips; the speech-to-speech
 button is present and disabled), a robot relay (t14's inbound endpoint and
@@ -57,6 +59,28 @@ censor). **Still unmeasured, and not claimed:** precision against a realistic
 distractor pool; the follow-up window (off by default); whether `stt` accepts
 MediaRecorder webm/mp4, and its duration cap; load on orin. `tests/test_release_docs.py` pins the boundary and the
 not-yet list against the README and the `explain` root.
+
+**Shipped on the `feat/gwen-is-pocketchat` branch (0.18.0):** the library read path
+(`embodiment/library/`; culture-library, xteink's instance on 127.0.0.1:8780 today;
+a GET-only client; `search_library` and `read_passage` on typed turns only), the
+write guard (`library_guarded_writes`, `app-library-guarded-write`: no
+`remember`/`forget` in a turn holding library text unless the operator's words name
+it), the audio subprocess env scrub, `status.access` admitted/refused counters,
+`/api/library*` and `/api/todos`, clip answers with sources, and the page: chat-first
+inside the library's look (Ask = conversations from the session logs via
+`/api/conversations`, continued in place: chat's `"conversation"` / clip's
+`X-Conversation` reopen one as a `Session` with `Session.restore` (d5) | conversation with a voice dock | library and the answers'
+sources with the reader; side panes toggleable, drawers on a phone;
+Library, To-dos, Stats; Live = the rig's room mic, not the phone's). It was
+waveform-first with chat fourth. **Transcripts arrived** (33 on 2026-10-24) and
+retrieval was **measured once** (t15, `docs/live-test-results/2026-10-24-library.md`:
+hit@5 19/32 and 17/28, 0/10 false positives, search p90 0.21 s). The document index
+is at version 3: each chunk scores the better of a content vector and a vector in
+its item's context (title), and fragments under 60 characters are not searched; the
+title-only version 2 measured worse and never shipped. The library threshold is
+memory's 0.715, provisional and uncalibrated for library text. **gwen.culture.dev
+needs its own Cloudflare never-cache rule** (the culture.dev zone caches everything,
+overriding `no-store`); it has one since 2026-10-24.
 
 - **Spec:** `docs/specs/2026-09-21-realtime-embodiment-app.md` — 50 claims, 33
   honesty conditions, after a rigorous `/challenge` pass.
@@ -200,9 +224,12 @@ operator's decisions, recorded in the spec:
 - **The daemon owns barge-in.** An ears-only session never receives
   `response.interrupted`, and lobes accepts `aec_mode` without acting on it. On
   `speech_started` during playback the daemon stops its own speaker.
-- **Hot mic on `start`**, always visible, always mutable, with mute enforced in
-  the capture path before encode — not in the UI. This *replaces* the old
-  opt-in-mic rule; the visibility and the mute are what it was traded for.
+- **Hot mic on `start`** was the decision, always visible, always mutable, with
+  mute enforced in the capture path before encode — not in the UI. **Superseded
+  for the default by d6 (operator, 2026-10-24):** live voice is OFF until the
+  page's Live button opts in (`/api/voice/start`), off again on `/api/voice/stop`,
+  and re-enabled at will; `embodiment start --listen` (`EMBODIMENT_LISTEN_ON_START=1`)
+  keeps the hot mic on start. Visibility and the capture-path mute still hold.
 - **Hardware echo cancellation**, on the operator's word, so the session
   declares `aec_mode=aec`. It is unmeasured until `t21`, which checks that Gwen
   never transcribes her own voice.
@@ -243,8 +270,15 @@ operator's decisions, recorded in the spec:
   input **verbatim, never from model output**, and intake **never raises**.
 - **Privacy of the room.** `continuity.py` pins `DEFAULT_VISIBILITY = "public"`
   and this repo commits `.eidetic/memory/`. Anything the daemon writes must
-  default to the **private** store under a pinned data dir. Raw audio is never
-  written to disk; transcripts go to a private, size-bounded per-session log.
+  default to the **private** store under a pinned data dir. **Recordings are kept
+  (d10, d11; operator, 2026-10-24: "a recording is truth"):** `daemon/recordings.py`
+  is the ONE writer of audio — every page clip before transcription, and every
+  room-mic utterance (speech_started to speech_stopped, cut from a bounded tap by
+  stream time; silence between utterances is not written) — 0600 under
+  `<state>/recordings/`, capped, refusing (never deleting) past the cap; S3 archive
+  is #99. Transcripts go to a private, size-bounded per-session log, every turn
+  tagged `via` (d7) and with typed timestamps (d12: created, recorded, witnessed,
+  received, transcribed, generated; the page's times marked `by: client`).
 - **Loopback is not authentication.** A Cloudflare tunnel delivers remote
   requests from `cloudflared` on 127.0.0.1. Every state-changing request — and
   the event stream, which carries the transcript — needs a Host and Origin
@@ -309,6 +343,16 @@ embodiment/
   turn.py               ONE spoken turn, driven through loop.run; never silent, never raises
   tools.py              ToolRegistry (empty by default; the daemon binds remember + forget)
                         + bind_tools; the additive tool seam
+  library/              the optional library read path (gwen-is-pocketchat, 0.18.0):
+    client.py           GET-only by construction (AST-pinned), `gets` counter, deadline,
+                        redirects refused; EMBODIMENT_LIBRARY_URL / _KEY from the env only
+    epub.py             stdlib EPUB text extraction under member/size/char caps
+    index.py            DocumentIndex: separate 0600 file, reconcile by (id, sha256)
+    sync.py             LibrarySync: bounded ticks that yield to live turns
+    conversations.py    Gwen's own past conversations (d8): settled ones indexed in a
+                        separate 0600 index, labelled by `via`; search_conversations
+    tools.py            search_library + read_passage, built per turn with a
+                        CitationCollector; results fenced as untrusted
   memory.py             RoomMemory over continuity: private, pinned, deadline-bounded;
                         render_recalled is the ONE place recall enters a prompt
   session.py            the conversation: explicit-ask detector (Hebrew/English), the
@@ -339,12 +383,19 @@ embodiment/
                         pre-set from raw argv so parse-time errors honour --json
   cli/_errors.py        CliError{code,message,remediation} + exit-code policy
   cli/_output.py        emit_result / emit_error / emit_diagnostic
-  cli/_commands/        whoami, learn, explain, overview, doctor, cli, start, status, stop, tunnel, memory
+  cli/_commands/        whoami, learn, explain, overview, doctor, cli, start, status, stop, tunnel, memory,
+                        history
   daemon/app.py         the daemon: one ear, the ears session, session + memory + voice, the
                         HTTP surface, close(deadline) with derived shares; degrade, never raise
   voice.py              Voice.speak: sentences -> /v1/audio/speech -> endpoint, paced features
+  daemon/history.py     the history pane: reads the session logs, bounded; the `via` tags and
+                        what each is worth (d7); when a conversation has settled
+  daemon/recordings.py  the ONE writer of audio: page clips kept as they arrived (d10)
   cli/_commands/tunnel  prints the cultureflare/cloudflared commands (default host
                         gwen.culture.dev) and the Access env names; never runs them
+  cli/_commands/history `history export`: past conversations as JSON, read-only, each turn
+                        tagged `via` (d7); no culture-rules consumer: conversations are
+                        Gwen's own and indexed in-process (d8)
   cli/_commands/memory  ingest | forget | overview: validate and ENQUEUE only; dry run
                         unless --apply; the daemon is the single writer
   ingest/contract.py    source registry, whole-batch validation, charset-safe stored ids

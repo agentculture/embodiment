@@ -319,7 +319,7 @@ describe("useEventStream", () => {
   // Brief's round-2 item #1: feed each of the 9 fixture FILES' raw text
   // (exactly the bytes on disk, not a re-serialized JS object) through
   // emitRaw, proving the hook parses the actual wire bytes correctly.
-  describe("every one of the 9 committed fixture files, fed as raw file text", () => {
+  describe("every one of the committed fixture files, fed as raw file text", () => {
     for (const kind of EVENT_KINDS) {
       it(`parses tests/fixtures/events/${kind}.json's raw file text correctly`, () => {
         const raw = readFileSync(join(FIXTURES_DIR, `${kind}.json`), "utf8");

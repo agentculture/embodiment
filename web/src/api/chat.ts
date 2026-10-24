@@ -1,3 +1,6 @@
+// Provenance: the citation/source shape ported from pocketsync/web/static/app.js
+// (lines 336-432: ask, renderAnswer, sourceList) and pocketsync/web/static/index.html
+// (the #thread / #composer markup). Text only; no HTML sinks.
 // api/chat.ts
 //
 // Client for POST /api/chat {message} -> {reply, sources:[...]} (plan t8).
@@ -11,6 +14,8 @@
 export interface ChatSource {
   source: string;
   title: string;
+  /** Library item kind (transcript, newspaper, ...); "" on the legacy shapes. */
+  kind: string;
   date: string;
   /** seconds into a recording; null for an issue source. */
   start: number | null;
@@ -18,6 +23,10 @@ export interface ChatSource {
   section: string;
   link: string;
   text: string;
+  /** Library citation target; absent on the legacy daemon shapes. */
+  item_id?: string;
+  /** Where inside the item to land; opaque to this client. */
+  anchor?: unknown;
 }
 
 export interface ChatReply {
@@ -35,6 +44,8 @@ export interface ChatClientOptions {
   fetchFn?: typeof fetch;
 }
 
+import { displayKind } from "./kinds";
+
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
 const num = (v: unknown): number | null =>
   typeof v === "number" && Number.isFinite(v) ? v : null;
@@ -45,9 +56,14 @@ export function parseSources(raw: unknown): ChatSource[] {
   for (const item of raw) {
     if (!item || typeof item !== "object") continue;
     const o = item as Record<string, unknown>;
+    // Library ids may arrive as numbers (xteink's are ints) or strings; keep both.
+    const itemId = typeof o.item_id === "number" && Number.isFinite(o.item_id) ? String(o.item_id) : str(o.item_id);
     out.push({
+      ...(itemId ? { item_id: itemId } : {}),
+      ...(o.anchor !== undefined && o.anchor !== null ? { anchor: o.anchor } : {}),
       source: str(o.source),
       title: str(o.title),
+      kind: o.kind === undefined ? "" : displayKind(str(o.kind), str(o.title)),
       date: str(o.date),
       start: num(o.start),
       end: num(o.end),
@@ -72,6 +88,7 @@ export async function sendChat(
   message: string,
   secret: string,
   options: ChatClientOptions = {},
+  conversation?: string,
 ): Promise<ChatOutcome> {
   const fetchFn = options.fetchFn ?? fetch;
   const basePath = options.basePath ?? "/api";
@@ -82,7 +99,8 @@ export async function sendChat(
     response = await fetchFn(`${basePath}/chat`, {
       method: "POST",
       headers,
-      body: JSON.stringify({ message }),
+      // With a conversation id the turn continues that earlier conversation (d5).
+      body: JSON.stringify(conversation ? { message, conversation } : { message }),
     });
   } catch {
     return { ok: false, code: "network-error" };

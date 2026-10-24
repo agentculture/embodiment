@@ -8,6 +8,8 @@
 // (413/415/400/422/502) is surfaced instead. The secret rides as a bearer
 // and is omitted when empty (public Host).
 
+import { parseSources, type ChatSource } from "./chat";
+
 export interface AudioClientOptions {
   basePath?: string;
   fetchFn?: typeof fetch;
@@ -15,7 +17,7 @@ export interface AudioClientOptions {
 
 export type SpeakOutcome = { ok: true; blob: Blob } | { ok: false; code: string };
 export type ClipOutcome =
-  | { ok: true; transcript: string; reply: string; turnSerial: number | null }
+  | { ok: true; transcript: string; reply: string; turnSerial: number | null; sources: ChatSource[] }
   | { ok: false; code: string; status: number };
 
 function authHeaders(secret: string, base: Record<string, string>): Record<string, string> {
@@ -63,16 +65,32 @@ export async function speakMessage(
   }
 }
 
+/** Recorded on the page's mic, or an uploaded file (d7). */
+export type ClipOrigin = "recorded" | "uploaded";
+
 export async function postClip(
   clip: Blob,
   secret: string,
   options: AudioClientOptions = {},
   durationS?: number,
+  conversation?: string,
+  origin?: ClipOrigin,
+  clientAtMs?: number,
 ): Promise<ClipOutcome> {
   if (clip.size === 0) return { ok: false, code: "empty-clip", status: 0 };
   const fetchFn = options.fetchFn ?? fetch;
   const headers: Record<string, string> = {};
   if (clip.type) headers["Content-Type"] = clip.type;
+  // Continuing an earlier conversation (deviation d5): the daemon answers in it.
+  if (conversation) headers["X-Conversation"] = conversation;
+  // How the page got the audio (deviation d7): the session log keeps it, and the
+  // export tells a reader a recording from an uploaded file.
+  if (origin) headers["X-Clip-Origin"] = origin;
+  // When it was recorded, or the uploaded file's own date (d12): the browser's
+  // clock, so the daemon stamps it as the client's claim.
+  if (clientAtMs !== undefined && Number.isFinite(clientAtMs) && clientAtMs > 0) {
+    headers["X-Clip-At"] = String(Math.round(clientAtMs));
+  }
   if (durationS !== undefined && Number.isFinite(durationS) && durationS >= 0) {
     headers["X-Clip-Duration-S"] = String(durationS);
   }
@@ -102,5 +120,6 @@ export async function postClip(
     transcript: typeof o.transcript === "string" ? o.transcript : "",
     reply: o.reply,
     turnSerial: typeof o.turn_serial === "number" ? o.turn_serial : null,
+    sources: parseSources(o.sources),
   };
 }

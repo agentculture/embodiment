@@ -2444,3 +2444,68 @@ def test_voice_trace_survives_a_reply_after_an_idle_gap():
     finally:
         voice.close(2.0)
         endpoint.close(2.0)
+
+
+# ---------------------------------------------------------------------------
+# gwenlib t4: no key reaches an audio child's environment
+# ---------------------------------------------------------------------------
+
+
+def test_every_spawn_gets_an_env_without_keys_but_with_the_runtime_dir(monkeypatch):
+    secrets = {
+        "EMBODIMENT_GATEWAY_KEY": "g",
+        "EMBODIMENT_LIBRARY_KEY": "l",
+        "SOME_API_KEY": "k",
+        "SOME_TOKEN": "t",
+        "SOME_SECRET": "s",
+    }
+    for name, value in secrets.items():
+        monkeypatch.setenv(name, value)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", "/run/user/1000")
+    monkeypatch.setenv("PIPEWIRE_RUNTIME_DIR", "/run/user/1000")
+    monkeypatch.setenv("HOME", "/home/someone")
+    seen: list[tuple[str, dict | None]] = []
+    inner = _make_popen(wpctl_output="Volume: 1.00\n")
+
+    def popen(argv, **kwargs):
+        seen.append((argv[0], kwargs.get("env")))
+        # the real child needs no env here; run the fake with the host's own
+        kwargs = {k: v for k, v in kwargs.items() if k != "env"}
+        return inner(argv, **kwargs)
+
+    endpoint = HostEndpoint(
+        which=_fake_which({"pw-record", "pw-play", "arecord", "aplay"}), popen=popen
+    )
+    endpoint.start_capture(lambda frame: None)
+    endpoint.play(_silence_frame(480))
+    _wait_until(lambda: endpoint.status()["playback_target_verified"] is not None)
+    endpoint.close(2.0)
+
+    binaries = {name for name, _ in seen}
+    assert {"pw-dump", "wpctl"} <= binaries
+    assert binaries & CAPTURE_BINARIES
+    assert binaries & PLAYBACK_BINARIES
+    for name, env in seen:
+        assert env is not None, name
+        for secret in secrets:
+            assert secret not in env, (name, secret)
+        assert env["XDG_RUNTIME_DIR"] == "/run/user/1000", name
+        assert env["PIPEWIRE_RUNTIME_DIR"] == "/run/user/1000", name
+        assert env["HOME"] == "/home/someone", name
+        assert "PATH" in env, name
+
+
+def test_child_env_drops_by_suffix_and_keeps_the_rest():
+    from embodiment.audio.host import _child_env
+
+    env = _child_env(
+        {
+            "PATH": "/bin",
+            "A_KEY": "1",
+            "B_TOKEN": "2",
+            "C_SECRET": "3",
+            "a_key": "4",
+            "KEYBOARD": "5",
+        }
+    )
+    assert env == {"PATH": "/bin", "KEYBOARD": "5"}

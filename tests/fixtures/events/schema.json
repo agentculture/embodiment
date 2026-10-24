@@ -50,6 +50,10 @@
     "heartbeat": {
       "required": [],
       "note": "emitted at a fixed interval (embodiment.bus.HEARTBEAT_INTERVAL_S). data is typically empty."
+    },
+    "conversation": {
+      "required": ["id", "status", "last", "turns"],
+      "note": "id: a session-log id (safe charset). status: 'settled' -- no message for the quiet period (d7). last: epoch seconds of the last turn. turns: the operator's turns. Never text: 'embodiment history export --id' carries the words."
     }
   }
 }

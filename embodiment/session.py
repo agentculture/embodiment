@@ -220,7 +220,7 @@ import secrets
 import threading
 from collections import deque
 from dataclasses import dataclass, field
-from typing import Any, Callable, Mapping, Optional
+from typing import Any, Callable, Iterable, Mapping, Optional
 
 from embodiment import continuity
 from embodiment.context import count_tokens_chars
@@ -864,7 +864,9 @@ class Session:
 
     # -- the window -----------------------------------------------------------
 
-    def add_user(self, text: str) -> Optional[AskOutcome]:
+    def add_user(
+        self, text: str, metadata: Optional[Mapping[str, Any]] = None
+    ) -> Optional[AskOutcome]:
         """Add a user turn. Returns an :class:`AskOutcome` iff the ask detector fired.
 
         Writes through the transcript log unconditionally, enforces the
@@ -879,9 +881,12 @@ class Session:
         keeps "no code path writes audio bytes to disk" a structural fact
         rather than a runtime check: there is no parameter here, or anywhere
         in this module's public surface, that accepts ``bytes``.
+
+        *metadata* is written beside the turn in the transcript log only, as for
+        :meth:`add_assistant` — today, how the turn arrived (``via``, d7).
         """
         self._require_str(text)
-        self._append(ROLE_USER, text)
+        self._append(ROLE_USER, text, metadata=metadata)
         return self._check_ask(text)
 
     def add_assistant(self, text: str, metadata: Optional[Mapping[str, Any]] = None) -> None:
@@ -899,6 +904,30 @@ class Session:
         """
         self._require_str(text)
         self._append(ROLE_ASSISTANT, text, metadata=metadata)
+
+    def restore(self, turns: Iterable[tuple[str, str]]) -> int:
+        """Load earlier turns of THIS session into the window; return how many entered.
+
+        For continuing a conversation from its log (operator, 2026-10-24: "it's like
+        we never stopped the conversation"): the turns are already in the transcript,
+        so nothing is written again and no ask is checked again — the window simply
+        holds them, under the same budget as any appended turn (oldest dropped
+        first). Only user and assistant turns with text enter; anything else is
+        skipped. Call it once, right after construction, before the first add.
+        """
+        entered = 0
+        for role, text in turns:
+            if role not in (ROLE_USER, ROLE_ASSISTANT) or not isinstance(text, str):
+                continue
+            cost = self._turn_cost(role, text)
+            if cost <= 0:
+                continue
+            self._turns.append(Turn(role=role, text=text))
+            self._costs.append(cost)
+            self._window_total += cost
+            entered += 1
+        self._enforce_budget()
+        return len(self._turns) if entered else 0
 
     @staticmethod
     def _require_str(text: Any) -> None:

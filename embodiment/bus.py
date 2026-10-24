@@ -251,6 +251,7 @@ that reports what it left unsent (lesson 6 — shutdown is a feature).
 from __future__ import annotations
 
 import json
+import secrets
 import threading
 import time
 import unicodedata
@@ -265,6 +266,7 @@ __all__ = [
     "SCHEMA_VERSION",
     "EVENT_KINDS",
     "SPEECH_KINDS",
+    "LOCAL_ONLY_KINDS",
     "HEARTBEAT_INTERVAL_S",
     "DEFAULT_MAX_EVENT_BYTES",
     "DEFAULT_SUBSCRIBER_QUEUE_SIZE",
@@ -305,6 +307,7 @@ EVENT_KINDS: frozenset[str] = frozenset(
         "features",
         "clients",
         "heartbeat",
+        "conversation",
     }
 )
 
@@ -313,6 +316,14 @@ EVENT_KINDS: frozenset[str] = frozenset(
 #: subscription by default (round 2, defect 6b) — pass
 #: ``Bus.subscribe(include_speech=True)`` or an explicit ``kinds=`` to get them.
 SPEECH_KINDS: frozenset[str] = frozenset({"transcript", "reply"})
+
+#: Kinds that never leave this process for the broker. Only ``conversation``:
+#: conversations are Gwen's own business (deviation d8), so nothing outside the
+#: daemon consumes that event. Speech and features DO go to the broker: the
+#: operator's word (2026-10-24) is that it is all internal, and what is needed is a
+#: way to MARK content as it crosses processes (private/public; human, code or AI
+#: input), not to withhold it -- that mark is asked of events-cli and culture-rules.
+LOCAL_ONLY_KINDS: frozenset[str] = frozenset({"conversation"})
 
 #: Fixed heartbeat interval, in seconds. A **judgement call**, not a measured
 #: value: 15s is short enough that a dashboard viewer sees the daemon is alive
@@ -419,6 +430,7 @@ _REQUIRED_DATA_FIELDS: dict[str, tuple[str, ...]] = {
     "features": ("direction", "env", "level_db", "noise_floor_db", "zero_crossing_hz"),
     "clients": ("count", "remote"),
     "heartbeat": (),
+    "conversation": ("id", "status", "last", "turns"),
 }
 
 #: Kinds dropped FIRST under queue back-pressure — a subscriber's own queue
@@ -917,6 +929,11 @@ class Bus:
         on_degrade: Optional[Callable[[BusDegradation], None]] = None,
     ) -> None:
         self._source = source
+        #: Fresh per Bus (so per daemon run): ``seq`` restarts at 1 with every run,
+        #: and a consumer that keys events by id -- culture-rules stores one envelope
+        #: per id and drops a repeat as a duplicate -- would otherwise discard a new
+        #: run's events as copies of the last run's (found live, 2026-10-24, d7).
+        self._run_token = secrets.token_hex(6)
         self._redact: tuple[str, ...] = tuple(s for s in redact if s)
         self._max_event_bytes = max(1, int(max_event_bytes))
         self._subscriber_queue_size = max(1, int(subscriber_queue_size))
@@ -1214,6 +1231,8 @@ class Bus:
     # ── internals: MQTT fan-out (round 2: async, off the caller's thread) ──
 
     def _enqueue_broker(self, event: Event) -> None:
+        if event.kind in LOCAL_ONLY_KINDS:
+            return
         with self._broker_lock:
             disabled = self._broker_disabled
         if disabled:
@@ -1297,7 +1316,7 @@ class Bus:
                 source=self._source,
                 data=event.to_dict(),
                 time=event.ts,
-                id=f"evt-bus-{self._source}-{event.seq}",
+                id=f"evt-bus-{self._source}-{self._run_token}-{event.seq}",
             )
             topic = type_to_topic(envelope.type)
             result = client.publish_event(envelope, topic)

@@ -1657,6 +1657,34 @@ class TestClipRoute:
         finally:
             built.server.shutdown(2.0)
 
+    @pytest.mark.parametrize(
+        ("extra", "args"),
+        [
+            ({}, ()),
+            ({"X_Conversation": "c1"}, ("c1",)),
+            ({"X_Clip_Origin": "recorded"}, (None, "recorded")),
+            ({"X_Conversation": "c1", "X_Clip_Origin": "uploaded"}, ("c1", "uploaded")),
+            ({"X_Clip_At": "1792800000123"}, (None, None, 1792800000.123)),
+            ({"X_Clip_At": "soon"}, ()),
+        ],
+    )
+    def test_the_conversation_and_origin_headers_reach_the_callable(
+        self, extra: dict, args: tuple
+    ) -> None:
+        """d5 adds the conversation, d7 the clip's origin; neither is sent unasked."""
+        seen: list[tuple] = []
+        built = build(
+            controls=s.Controls(clip=lambda a, d, *rest: seen.append(rest) or {"ok": True})
+        )
+        try:
+            status, _ = built.request(
+                "POST", "/api/clip", body=b"abc", hdrs=self.clip_headers(built, **extra)
+            )
+            assert status == 200
+            assert seen == [args]
+        finally:
+            built.server.shutdown(2.0)
+
     @pytest.mark.parametrize("raw", ["soon", "nan", "inf", "-3", ""])
     def test_an_unusable_duration_header_is_ignored(self, raw: str) -> None:
         seen: list[Optional[float]] = []
@@ -2119,5 +2147,372 @@ class TestTheClipResponseCarriesItsTurnSerial:
             payload = json.loads(body)
             assert "turn_serial" in payload
             assert payload["turn_serial"] is None
+        finally:
+            built.server.shutdown(2.0)
+
+    def test_a_clip_forwards_its_cited_sources(self) -> None:
+        """A clip answer from the library carries its citations, like chat (c27)."""
+        src = {"source": "library", "item_id": 9, "anchor": "a#1", "title": "T", "text": "q"}
+        reply = {
+            "ok": True,
+            "transcript": "t",
+            "reply": "r [1]",
+            "turn_serial": 3,
+            "sources": [src],
+        }
+        built = build(controls=s.Controls(clip=lambda a, d: reply))
+        try:
+            status, body = built.request(
+                "POST", "/api/clip", body=b"abc", hdrs=built.headers(Content_Type="audio/wav")
+            )
+            assert status == 200
+            assert json.loads(body)["sources"] == [src]
+        finally:
+            built.server.shutdown(2.0)
+
+
+# ── task t6: the library and to-do read routes ───────────────────────────────
+
+LIB_ITEM = {"id": 3, "title": "T", "kind": "recording", "created_at": "2026-10-01", "indexed": True}
+LIB_PASSAGE = {
+    "anchor": "p1",
+    "heading": "h",
+    "text": "x",
+    "start_s": 0.0,
+    "end_s": 1.5,
+    "speaker": None,
+}
+LIB_HIT = {
+    "item_id": 3,
+    "title": "T",
+    "kind": "recording",
+    "created_at": "2026-10-01",
+    "anchor": "p1",
+    "text": "x",
+    "score": 0.9,
+    "start_s": None,
+    "end_s": None,
+}
+TODO_GROUP = {
+    "recording_id": "r1",
+    "title": "T",
+    "date": "2026-10-01",
+    "items": [{"text": "call", "created": "2026-10-01"}],
+}
+
+
+def _lib_controls(seen: Optional[list[Any]] = None) -> s.Controls:
+    def note(*args: Any) -> None:
+        if seen is not None:
+            seen.append(args)
+
+    def get(item_id: int) -> Optional[dict[str, Any]]:
+        note("get", item_id)
+        if item_id == 3:
+            return {
+                "item": {**LIB_ITEM, "author": "a"},
+                "passages": [LIB_PASSAGE],
+            }
+        return None
+
+    def search(q: str) -> dict[str, Any]:
+        note("search", q)
+        return {"hits": [LIB_HIT]}
+
+    return s.Controls(
+        library_list=lambda: {"items": [LIB_ITEM]},
+        library_get=get,
+        library_search=search,
+        todos=lambda: {"groups": [TODO_GROUP]},
+        conversations=lambda: {"conversations": [CONVERSATION]},
+        conversation=lambda cid: (
+            {"conversation": CONVERSATION, "turns": [TURN]} if cid == "abc" else None
+        ),
+    )
+
+
+CONVERSATION = {"id": "abc", "title": "hello", "started": 1.0, "last": 2.0, "turns": 1}
+TURN = {"role": "user", "text": "hello", "ts": 1.0}
+LIB_PATHS = (
+    "/api/library",
+    "/api/library/3",
+    "/api/library/search?q=hello",
+    "/api/todos",
+    "/api/conversations",
+    "/api/conversations/abc",
+)
+
+
+class TestLibraryRoutes:
+    def test_each_route_without_a_secret_on_loopback_is_401(self) -> None:
+        built = build(controls=_lib_controls())
+        try:
+            for path in LIB_PATHS:
+                status, body = built.request("GET", path, hdrs=built.headers(Authorization=None))
+                assert status == 401, path
+                assert b"hello" not in body
+        finally:
+            built.server.shutdown(2.0)
+
+    def test_each_route_with_access_on_the_public_host_is_200(self) -> None:
+        verifier = lambda token: _Asserted(valid=True, expires_at=None)  # noqa: E731
+        built = build(
+            controls=_lib_controls(), public_hostname=PUBLIC_HOST, assertion_verifier=verifier
+        )
+        try:
+            hdrs = built.headers(
+                Host=PUBLIC_HOST, Authorization=None, Cf_Access_Jwt_Assertion="SYNTHETIC-TOKEN"
+            )
+            for path in LIB_PATHS:
+                status, _body = built.request("GET", path, hdrs=hdrs)
+                assert status == 200, path
+        finally:
+            built.server.shutdown(2.0)
+
+    def test_each_route_with_the_secret_answers_the_pinned_shape(self) -> None:
+        built = build(controls=_lib_controls())
+        try:
+            got = {p: built.request("GET", p, hdrs=built.headers()) for p in LIB_PATHS}
+            assert all(status == 200 for status, _ in got.values())
+            body = {p: json.loads(b) for p, (_, b) in got.items()}
+            assert body["/api/library"] == {"items": [LIB_ITEM]}
+            assert body["/api/library/3"] == {
+                "item": {**LIB_ITEM, "author": "a"},
+                "passages": [LIB_PASSAGE],
+            }
+            assert body["/api/library/search?q=hello"] == {"hits": [LIB_HIT]}
+            assert body["/api/todos"] == {"groups": [TODO_GROUP]}
+            assert body["/api/conversations"] == {"conversations": [CONVERSATION]}
+            assert body["/api/conversations/abc"] == {"conversation": CONVERSATION, "turns": [TURN]}
+        finally:
+            built.server.shutdown(2.0)
+
+    def test_an_unknown_conversation_is_404_and_post_is_405(self) -> None:
+        built = build(controls=_lib_controls())
+        try:
+            status, body = built.request("GET", "/api/conversations/nope", hdrs=built.headers())
+            assert status == 404
+            assert b"conversation-not-found" in body
+            status, _ = built.request(
+                "POST", "/api/conversations", body=b"{}", hdrs=built.headers()
+            )
+            assert status == 405
+        finally:
+            built.server.shutdown(2.0)
+
+    def test_history_unbound_is_503(self) -> None:
+        built = build(controls=s.Controls())
+        try:
+            for path in ("/api/conversations", "/api/conversations/abc"):
+                status, body = built.request("GET", path, hdrs=built.headers())
+                assert status == 503, path
+                assert b"history-not-configured" in body
+        finally:
+            built.server.shutdown(2.0)
+
+    def test_the_module_docstring_lists_the_routes(self) -> None:
+        doc = s.__doc__ or ""
+        for route in (
+            "/api/library",
+            "/api/library/{id}",
+            "/api/library/search",
+            "/api/todos",
+            "/api/conversations",
+            "/api/conversations/{id}",
+        ):
+            assert route in doc
+
+    def test_post_is_405(self) -> None:
+        built = build(controls=_lib_controls())
+        try:
+            status, _ = built.request("POST", "/api/library", body=b"{}", hdrs=built.headers())
+            assert status == 405
+        finally:
+            built.server.shutdown(2.0)
+
+
+class TestLibraryParsing:
+    def test_id_and_q_are_decoded_and_passed_as_int_and_str(self) -> None:
+        seen: list[Any] = []
+        built = build(controls=_lib_controls(seen))
+        try:
+            built.request("GET", "/api/library/%33", hdrs=built.headers())
+            built.request("GET", "/api/library/search?q=a%20b+%D7%A9", hdrs=built.headers())
+            assert seen == [("get", 3), ("search", "a b ש")]
+        finally:
+            built.server.shutdown(2.0)
+
+    @pytest.mark.parametrize(
+        "path",
+        [
+            "/api/library/abc",
+            "/api/library/-1",
+            "/api/library/1.5",
+            "/api/library/" + "9" * 40,
+            "/api/library/%FF",
+            "/api/library/search",
+            "/api/library/search?q=",
+            "/api/library/search?q=%20",
+            "/api/library/search?q=%FF",
+            "/api/library/search?q=a&q=b",
+            "/api/library/search?q=" + "a" * (s.LIBRARY_QUERY_MAX_CHARS + 1),
+            "/api/library/search?q=a%00b",
+        ],
+    )
+    def test_bad_input_is_400_with_a_fixed_code(self, path: str) -> None:
+        seen: list[Any] = []
+        built = build(controls=_lib_controls(seen))
+        try:
+            status, body = built.request("GET", path, hdrs=built.headers())
+            assert status == 400
+            assert json.loads(body)["code"] == s.LIBRARY_BAD_REQUEST_CODE
+            assert seen == []
+        finally:
+            built.server.shutdown(2.0)
+
+    def test_an_unknown_id_is_404(self) -> None:
+        built = build(controls=_lib_controls())
+        try:
+            status, body = built.request("GET", "/api/library/99", hdrs=built.headers())
+            assert status == 404
+            assert json.loads(body)["code"] == s.LIBRARY_NOT_FOUND_CODE
+        finally:
+            built.server.shutdown(2.0)
+
+    def test_the_longest_allowed_query_passes(self) -> None:
+        built = build(controls=_lib_controls())
+        try:
+            q = "a" * s.LIBRARY_QUERY_MAX_CHARS
+            status, _ = built.request("GET", f"/api/library/search?q={q}", hdrs=built.headers())
+            assert status == 200
+        finally:
+            built.server.shutdown(2.0)
+
+
+class TestLibraryUnconfigured:
+    @pytest.mark.parametrize(
+        ("path", "code"),
+        [
+            ("/api/library", "library-not-configured"),
+            ("/api/library/3", "library-not-configured"),
+            ("/api/library/search?q=x", "library-not-configured"),
+            ("/api/todos", "memory-unavailable"),
+        ],
+    )
+    def test_an_unbound_callable_is_503_with_its_code(self, path: str, code: str) -> None:
+        built = build()
+        try:
+            status, body = built.request("GET", path, hdrs=built.headers())
+            assert status == 503
+            assert json.loads(body)["code"] == code
+            assert code in built.server.status()["degradation_counts"]
+        finally:
+            built.server.shutdown(2.0)
+
+    def test_a_malformed_answer_is_502_not_passed_through(self) -> None:
+        built = build(controls=s.Controls(library_list=lambda: {"items": "nope"}))
+        try:
+            status, body = built.request("GET", "/api/library", hdrs=built.headers())
+            assert status == 502
+            assert json.loads(body)["code"] == s.LIBRARY_BAD_SHAPE_CODE
+        finally:
+            built.server.shutdown(2.0)
+
+
+class TestLibraryClocks:
+    def test_each_bound_is_derived_and_not_the_control_default(self) -> None:
+        assert s.DEFAULT_LIBRARY_SEARCH_TIMEOUT_S == s.LIBRARY_SEARCH_BOUND_S + s.CONTROL_SLACK_S
+        assert s.DEFAULT_LIBRARY_TIMEOUT_S == s.LIBRARY_READ_BOUND_S + s.CONTROL_SLACK_S
+        assert s.DEFAULT_TODOS_TIMEOUT_S == s.TODOS_READ_BOUND_S + s.CONTROL_SLACK_S
+        for value in (
+            s.DEFAULT_LIBRARY_TIMEOUT_S,
+            s.DEFAULT_LIBRARY_SEARCH_TIMEOUT_S,
+            s.DEFAULT_TODOS_TIMEOUT_S,
+        ):
+            assert value != s.DEFAULT_CONTROL_TIMEOUT_S
+
+    def test_a_slow_read_runs_under_its_own_bound_on_the_text_pool(self) -> None:
+        names: list[str] = []
+
+        def slow() -> dict[str, Any]:
+            names.append(threading.current_thread().name)
+            time.sleep(0.6)
+            return {"items": []}
+
+        # control_timeout_s is tiny: only the library bound can let this through.
+        built = build(
+            controls=s.Controls(library_list=slow),
+            control_timeout_s=0.1,
+            library_timeout_s=3.0,
+        )
+        try:
+            status, _ = built.request("GET", "/api/library", hdrs=built.headers())
+            assert status == 200
+            assert names
+            assert "text" in names[0].lower()
+        finally:
+            built.server.shutdown(2.0)
+
+    def test_a_read_past_its_bound_is_a_503_timeout(self) -> None:
+        built = build(
+            controls=s.Controls(todos=lambda: (time.sleep(1.0), {"groups": []})[1]),
+            todos_timeout_s=0.2,
+        )
+        try:
+            status, body = built.request("GET", "/api/todos", hdrs=built.headers())
+            assert status == 503
+            assert json.loads(body)["code"] == s.CONTROL_TIMEOUT_CODE
+        finally:
+            built.server.shutdown(2.0)
+
+
+def test_server_status_carries_the_guards_access_counters(tmp_path):
+    """t5's counters reach the server snapshot (and so the daemon's /api/status)."""
+    from embodiment.http import server as srv
+
+    class _Guard:
+        def status(self):
+            return {"access": {"mode": "access", "admitted": 3, "refused_by_code": {"x": 1}}}
+
+    class _Broken:
+        def status(self):
+            raise RuntimeError("boom")
+
+    assert srv._guard_status(_Guard())["access"]["admitted"] == 3
+    assert srv._guard_status(_Broken()) == {}
+    assert srv._guard_status(object()) == {}
+
+
+class TestContinuingAConversation:
+    """Deviation d5: chat and clip carry the earlier conversation they continue."""
+
+    def test_chat_passes_the_conversation_only_when_the_body_names_one(self) -> None:
+        seen: list[tuple[Any, ...]] = []
+        built = build(
+            controls=s.Controls(chat=lambda *a: seen.append(a) or {"ok": True, "reply": "r"})
+        )
+        try:
+            for body in (
+                {"message": "hi"},
+                {"message": "hi", "conversation": "abc123"},
+                {"message": "hi", "conversation": ""},
+                {"message": "hi", "conversation": 7},
+            ):
+                status, _ = built.request(
+                    "POST", "/api/chat", body=json.dumps(body).encode(), hdrs=built.headers()
+                )
+                assert status == 200
+            assert seen == [("hi",), ("hi", "abc123"), ("hi",), ("hi",)]
+        finally:
+            built.server.shutdown(2.0)
+
+    def test_clip_passes_the_conversation_header(self) -> None:
+        seen: list[tuple[Any, ...]] = []
+        built = build(controls=s.Controls(clip=lambda *a: seen.append(a) or {"ok": True}))
+        try:
+            hdrs = TestClipRoute().clip_headers(built, X_Conversation="abc123")
+            status, _ = built.request("POST", "/api/clip", body=b"abc", hdrs=hdrs)
+            assert status == 200
+            assert seen[0][2] == "abc123"
         finally:
             built.server.shutdown(2.0)

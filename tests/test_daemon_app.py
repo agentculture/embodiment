@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import dataclasses
 import io
 import json
 import os
@@ -362,8 +363,15 @@ def harness(tmp_path: Path, request: pytest.FixtureRequest) -> Any:
                 synthesize=synthesize,
             )
 
+        # These tests are about the room ear, so the harness opens it on start
+        # (the rig's ``--listen``); the shipped default is OFF until the page's
+        # Live button opts in (d6) -- TestLiveIsOptIn passes listen_on_start=False.
+        config = dataclasses.replace(
+            overrides.pop("config", None) or AppConfig(poll_interval_s=0.01),
+            listen_on_start=overrides.pop("listen_on_start", True),
+        )
         app = DaemonApp(
-            config=overrides.pop("config", None) or AppConfig(poll_interval_s=0.01),
+            config=config,
             state=state,
             bus=bus,
             memory=memory,
@@ -394,6 +402,56 @@ def harness(tmp_path: Path, request: pytest.FixtureRequest) -> Any:
 
 
 # ── criterion 1: zero clients ─────────────────────────────────────────────────
+
+
+class TestLiveIsOptIn:
+    """d6 (operator, 2026-10-24): live voice is off until the Live button opts in."""
+
+    def test_the_default_daemon_starts_with_no_ear_and_says_so(self, harness: Any) -> None:
+        h = harness(listen_on_start=False)
+        h.app.start()
+        assert h.app.status()["ear"]["active"] is None
+        mic = h.events("mic")
+        assert mic, "the page must be told the mic is off, not left guessing"
+        assert mic[-1].data == {"hot": False, "ear": None}
+
+    def test_the_shipped_config_default_is_off(self) -> None:
+        assert AppConfig().listen_on_start is False
+
+    def test_live_on_off_and_on_again(self, harness: Any) -> None:
+        h = harness(listen_on_start=False)
+        h.app.start()
+        controls = h.app.controls()
+        controls.start_voice()
+        assert h.app.status()["ear"]["active"] == "host"
+        assert h.events("mic")[-1].data["hot"] is True
+        controls.stop_voice()
+        assert h.app.status()["ear"]["active"] is None
+        assert h.events("mic")[-1].data["hot"] is False
+        controls.start_voice()
+        assert h.app.status()["ear"]["active"] == "host"
+
+    def test_listen_on_start_keeps_the_old_hot_mic(self, harness: Any) -> None:
+        h = harness(listen_on_start=True)
+        h.app.start()
+        assert h.app.status()["ear"]["active"] == "host"
+
+    def test_the_env_flag_opts_in(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        realtime = SimpleNamespace(gateway_url="http://g.invalid", api_key="")
+        monkeypatch.delenv(app_module.ENV_LISTEN_ON_START, raising=False)
+        off = app_module._config_from_env(realtime, "semantic", None)
+        monkeypatch.setenv(app_module.ENV_LISTEN_ON_START, "1")
+        on = app_module._config_from_env(realtime, "semantic", None)
+        assert (off.listen_on_start, on.listen_on_start) == (False, True)
+
+    def test_the_start_verb_hands_listen_to_the_child(self) -> None:
+        from embodiment.cli import _build_parser
+        from embodiment.cli._commands import start as start_cmd
+
+        listen = start_cmd._http_env(_build_parser().parse_args(["start", "--listen"]))
+        plain = start_cmd._http_env(_build_parser().parse_args(["start"]))
+        assert listen[app_module.ENV_LISTEN_ON_START] == "1"
+        assert plain[app_module.ENV_LISTEN_ON_START] == "0"
 
 
 class TestZeroClients:
@@ -5812,6 +5870,115 @@ class TestTextTurns:
         assert answer["reply"] == REPLY
         assert len(endpoint.played) == played
 
+    @staticmethod
+    def _wav() -> bytes:
+        import wave
+
+        buf = io.BytesIO()
+        with wave.open(buf, "wb") as handle:
+            handle.setnchannels(1)
+            handle.setsampwidth(2)
+            handle.setframerate(24000)
+            handle.writeframes(b"\x00\x00" * 2400)
+        return buf.getvalue()
+
+    @staticmethod
+    def _logged(h: Harness) -> list[dict]:
+        path = h.app._current_session_log()
+        return [json.loads(line) for line in path.read_text().splitlines() if line.strip()]
+
+    def test_each_user_turn_records_how_it_arrived(self, harness: Any) -> None:
+        """d7: typed, recorded and uploaded turns say so in the session log."""
+        h, _ = self._build(harness)
+        h.app.controls().chat("מה עם הלוטרות?")
+        h.app.controls().clip(self._wav(), None, None, "recorded")
+        h.app.controls().clip(self._wav(), None, None, "uploaded")
+        h.app.controls().clip(self._wav(), None)
+        h.app.controls().clip(self._wav(), None, None, "typed")  # not a clip word
+        vias = [row.get("via") for row in self._logged(h) if row["role"] == "user"]
+        assert vias == ["typed", "recorded", "uploaded", "clip", "clip"]
+
+    def test_a_clip_is_kept_in_the_state_dir_and_its_turn_links_it(self, harness: Any) -> None:
+        """d10: the daemon keeps every clip; the history read shows the link."""
+        h, _ = self._build(harness)
+        h.app.controls().clip(self._wav(), None, None, "recorded")
+        (row,) = [r for r in self._logged(h) if r["role"] == "user"]
+        kept = Path(h.state.dir) / "recordings" / row["recording"]["file"]
+        assert kept.read_bytes() == self._wav()
+        assert h.app.status()["recordings"]["saved"] == 1
+        conversation = h.app._history().conversation(h.app._current_session_log().stem)
+        assert conversation["turns"][0]["recording"]["sha256"] == row["recording"]["sha256"]
+
+    def test_room_speech_is_kept_like_a_recording_and_linked_with_its_times(
+        self, harness: Any
+    ) -> None:
+        """d11 + d12: an utterance is cut by stream time, kept, and linked from its turn."""
+        h, _ = self._build(harness)
+        h.app._tap.reset(16000)
+        for _ in range(20):
+            h.app._tap.feed(b"\x01\x00" * 1600)
+        h.app._on_event(wire.SpeechStarted(item_id="u1", at_ms=200))
+        h.app._on_event(wire.SpeechStopped(item_id="u1", at_ms=1200))
+        h.app._on_event(wire.TranscriptionCompleted(item_id="u1", text=SPEECH))
+        h.app._run_heard(h.app._turn_queue.get_nowait())
+        (row,) = [r for r in self._logged(h) if r["role"] == "user"]
+        assert row["via"] == "spoken"
+        kept = Path(h.state.dir) / "recordings" / row["recording"]["file"]
+        assert kept.read_bytes()[:4] == b"RIFF"
+        assert [t["type"] for t in row["timestamps"]] == ["witnessed", "transcribed"]
+        meta = json.loads(kept.with_suffix(".json").read_text())
+        assert meta["via"] == "spoken"
+        assert [t["type"] for t in meta["timestamps"]] == ["witnessed", "received"]
+
+    def test_every_turn_carries_typed_timestamps(self, harness: Any) -> None:
+        h, _ = self._build(harness)
+        h.app.controls().chat("מה עם הלוטרות?")
+        h.app.controls().clip(self._wav(), None, None, "recorded", 1792800000.0)
+        rows = self._logged(h)
+        kinds = [(r["role"], [t["type"] for t in r.get("timestamps", [])]) for r in rows]
+        assert kinds == [
+            ("user", ["received"]),
+            ("assistant", ["generated"]),
+            ("user", ["recorded", "received", "transcribed"]),
+            ("assistant", ["generated"]),
+        ]
+        assert rows[2]["timestamps"][0] == {
+            "type": "recorded",
+            "at": "2026-10-24T00:00:00.000Z",
+            "by": "client",
+        }
+
+    def test_a_spoken_turn_records_it_was_spoken(self, harness: Any) -> None:
+        h, _ = self._build(harness)
+        h.app.run_turn(SPEECH)
+        vias = [row.get("via") for row in self._logged(h) if row["role"] == "user"]
+        assert vias == ["spoken"]
+
+    def test_a_quiet_conversation_is_announced_once_without_its_words(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        """d7: one ``conversation`` event per settled state; never the text."""
+        from embodiment.daemon.history import SETTLE_AFTER_S, SettledLedger
+
+        h, _ = self._build(harness)
+        h.app.controls().chat("מה עם הלוטרות?")
+        ledger, announced = SettledLedger(tmp_path / "settled.json"), {}
+        now = time.time()
+        assert h.app._settle_tick(ledger, announced, now) == 0, "not quiet yet"
+        assert h.app._settle_tick(ledger, announced, now + SETTLE_AFTER_S + 1) == 1
+        assert h.app._settle_tick(ledger, announced, now + SETTLE_AFTER_S + 2) == 0
+        (event,) = h.events("conversation")
+        assert set(event.data) == {"id", "status", "last", "turns"}
+        assert event.data["status"] == "settled"
+        assert event.data["turns"] == 1
+        assert "לוטרות" not in json.dumps(event.data, ensure_ascii=False)
+        assert ledger.load() == {event.data["id"]: event.data["last"]}
+        assert h.app.status()["conversations"]["settled_announced"] == 1
+
+        h.app.controls().chat("ועוד שאלה")  # continued: it settles again later
+        later = time.time() + SETTLE_AFTER_S + 1
+        assert h.app._settle_tick(ledger, announced, later) == 1
+
     def test_a_refused_chat_carries_the_layers_code_and_status(self, harness: Any) -> None:
         h, _ = self._build(harness)
         answer = h.app.controls().chat("   ")
@@ -5897,7 +6064,10 @@ class TestTextTurns:
         h.app._conversation = RecordingLock()  # type: ignore[assignment]
         session = h.app._session
         real_add_user, real_add_assistant = session.add_user, session.add_assistant
-        session.add_user = lambda text: (log.append("user"), real_add_user(text))[1]
+        session.add_user = lambda text, metadata=None: (
+            log.append("user"),
+            real_add_user(text, metadata=metadata),
+        )[1]
         session.add_assistant = lambda text, metadata=None: (
             log.append("assistant"),
             real_add_assistant(text, metadata=metadata),

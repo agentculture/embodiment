@@ -49,7 +49,13 @@ NOT_YET = (
 
 #: Shipped on this branch (Access verifier, semantic recall) and so dropped from
 #: the not-yet list: no item of that section may be headed by either again.
-SHIPPED_NOT_LISTED = ("cloudflare access", "semantic recall", "phone voice")
+SHIPPED_NOT_LISTED = (
+    "cloudflare access",
+    "semantic recall",
+    "phone voice",
+    # 33 transcripts were in the library on 2026-10-24 and retrieval was measured.
+    "transcripts in the library",
+)
 
 #: Still unmeasured at this release; the README status must say so, by name.
 STILL_UNMEASURED = (
@@ -63,10 +69,22 @@ STILL_UNMEASURED = (
 #: cites it by name and quotes the numbers it changed, with their n.
 RECALL_RESULTS_FILE = "docs/live-test-results/2026-10-23-recall-gemma2.md"
 
-#: The two tools the daemon binds (``d7`` remember, ``d8`` forget). Both
-#: surfaces must name both, in the same ``## Not yet`` section that used to
-#: say the registry was empty — the claim changed, and it changed on both.
-TOOLS_BOUND = ("remember", "forget")
+#: The tools the daemon binds: ``remember`` (``d7``) and ``forget`` (``d8``),
+#: plus ``search_library`` and ``read_passage`` on typed turns when a library is
+#: configured (gwen-is-pocketchat t11/t13), and ``search_conversations`` over her
+#: own settled conversations (deviation d8). Both surfaces must name all five, in
+#: the same ``## Not yet`` section that used to say the registry was empty.
+TOOLS_BOUND = ("remember", "forget", "search_library", "read_passage", "search_conversations")
+
+#: The library cycle's names, which README and the explain root must both carry.
+LIBRARY_TERMS = (
+    "culture-library",
+    "get-only",
+    "write guard",
+    "EMBODIMENT_LIBRARY_URL",
+    "EMBODIMENT_LIBRARY_KEY",
+    "chat-first",
+)
 
 #: Where t21 — the human acceptance run — publishes latency as measured.
 T21_RESULT_FILE = "docs/live-test-results/2026-09-22-t21-acceptance.md"
@@ -182,3 +200,30 @@ def test_no_surface_still_calls_the_old_threshold_the_default(
     text = request.getfixturevalue(surface)
     assert "`0.78`" not in text
     assert "<date>-recall-gemma2" not in text
+
+
+@pytest.mark.parametrize("surface", ["readme", "explain_root"])
+def test_surface_describes_the_library_read_path(
+    surface: str, request: pytest.FixtureRequest
+) -> None:
+    text = request.getfixturevalue(surface)
+    lowered = text.lower()
+    missing = [t for t in LIBRARY_TERMS if t.lower() not in lowered]
+    assert not missing, f"{surface} lacks {missing}"
+
+
+@pytest.mark.parametrize("surface", ["readme", "explain_root"])
+def test_surface_points_at_the_library_measurement(
+    surface: str, request: pytest.FixtureRequest
+) -> None:
+    text = request.getfixturevalue(surface)
+    assert "2026-10-24-library.md" in text
+    assert "33" in text  # the transcripts that reached the library that day
+
+
+def test_readme_status_reports_library_retrieval_as_measured_once(readme: str) -> None:
+    status = _section(readme, "Status").lower()
+    assert "measured once" in status
+    assert "19 of 32" in status
+    assert "not calibrated on library text" in status
+    assert "value is unmeasured" in status
