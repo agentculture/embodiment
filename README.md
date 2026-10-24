@@ -61,6 +61,14 @@ not spoken by a person — none of it is a measurement of real use):
   extrapolation). A `senses` completion took 4.0 s median and 5.1 s at most
   (n = 30), well inside the 30 s completion bound.
 
+**The library read path (0.18.0) is built and its value is unmeasured.** Its
+retrieval measurement (hit@5 and per-recall p90 over at least 20 model-written
+questions against the indexed library) is **pending**: no number in this repo
+describes library recall yet. The library similarity threshold reuses memory's
+`0.715` and is **provisional and not calibrated on library text**. Transcripts
+are **assumed** to arrive (decision c21); none were in the library on
+2026-10-24.
+
 Still not measured:
 
 - The follow-up window for a late recall is off by default and unmeasured.
@@ -119,11 +127,39 @@ loop. It does not drive hardware and nothing here claims a body.
   and `--allowed-host`): the dashboard, a control API, and a server-sent event
   stream. The install secret is required on every guarded request and on the
   stream, because the stream carries the transcript.
-- **The dashboard** (React / Vite / TypeScript, shipped inside the wheel): a
-  live waveform of what is being played, the transcript, and every degradation
-  as it is recorded. It streams events with `fetch` and sends the secret in
-  the `Authorization` header, so it works from a phone over TLS as well as on
-  localhost.
+- **The dashboard** (React / Vite / TypeScript, shipped inside the wheel) is
+  chat-first, after pocketchat's anatomy (cited, not imported): **Ask** is the
+  first view, with a pinned composer holding the voice controls (mic, speak,
+  record/upload, and the disabled speech-to-speech button); a **Library** view
+  of the library's items grouped by day; a **To-dos** view fed from Gwen's
+  memory; a side **reader** that opens at a cited passage; and a status drawer
+  with the degradations. The waveform is a compact strip, no longer the
+  centrepiece. Before this release the page was waveform-first with chat
+  fourth. It streams events with `fetch` and sends the secret in the
+  `Authorization` header, so it works from a phone over TLS as well as on
+  localhost; the install-secret form shows only when the stream is
+  unauthorized, and on the Access-protected public host no secret is entered.
+- **The library read path** (optional). The library is **culture-library**
+  (library.culture.dev); **xteink's instance on 127.0.0.1:8780 is today's**.
+  Gwen reads it through one small client (`embodiment/library/client.py`) that
+  is **GET-only by construction** (an AST test pins that it never sends POST,
+  PUT, PATCH or DELETE; a `gets` counter in `status` is the live evidence). She
+  fetches item files, extracts EPUB text with the stdlib under member, size and
+  character caps, embeds chunks with `gemma2-embed` into her own 0600 document
+  index (never the eidetic store), and reconciles that index against the
+  catalog by item id and sha256. Library tools run on typed turns only; their
+  results reach the model inside the same untrusted-data fence as recalled
+  memory, and every cited passage appears in the reply's sources with item id,
+  title, date and anchor, so a `[n]` citation opens the reader at that passage.
+  Routes: `GET /api/library`, `/api/library/{id}`, `/api/library/search` and
+  `/api/todos`, all behind the guard. Unset config means no library tool and a
+  visible "library not configured".
+- **The write guard.** An xteink key is a full operator key, so the client never
+  writes; and in a turn whose context holds library text, `remember` and
+  `forget` are refused unless the operator's own words in that turn name the
+  write. Each refusal is counted (`library_guarded_writes`) and recorded
+  (`app-library-guarded-write`). The audio subprocesses are spawned with a
+  scrubbed environment that drops the gateway and library keys.
 - **Text and clips**: a chat view on the dashboard (`/api/chat`) with every
   recalled fact cited by source, a speak button (`/api/speak`), and
   record/upload of a clip transcribed by `stt` (`/api/clip`).
@@ -162,6 +198,14 @@ once a process exists; a second `start` finds the first and starts nothing.
 its `stt` lane must be local to that gateway, because the realtime session
 never crosses machines (the gateway refuses to tunnel a WebSocket to a proxied
 peer).
+
+**The library** is optional. Set `EMBODIMENT_LIBRARY_URL` and
+`EMBODIMENT_LIBRARY_KEY`; the key is injected, never written by Gwen:
+
+```bash
+grant run --inject EMBODIMENT_GATEWAY_KEY=LOBES_GATEWAY_API_KEY \
+  --inject EMBODIMENT_LIBRARY_KEY=XTEINK_GWEN_API_KEY -- uv run embodiment start
+```
 
 **The dashboard** is at `http://127.0.0.1:8823`. It asks for the install
 secret; paste the contents of `<state dir>/install-secret`, where the
@@ -208,16 +252,24 @@ address the browser withholds what the guard needs to vouch for a cookie, and
 None of the following is in this release. Each is a stated seam or a stated
 absence, not an implication.
 
-- **Other tools.** The daemon binds exactly two tools, both over Gwen's own
-  private memory: `remember` (d7) and `forget` (d8, which archives a record
-  in place and never deletes a byte, and drops its vector; it does not redact
-  past conversation transcript logs, which are private, 0600 and size-bounded and
-  may have quoted the memory — a follow-up). Nothing else — no shell, no files, no
-  Qwen Code. Gwen cannot act on anything outside her own memory.
+- **Other tools.** The daemon binds `remember` (d7) and `forget` (d8, which
+  archives a record in place and never deletes a byte, and drops its vector; it
+  does not redact past conversation transcript logs, which are private, 0600 and
+  size-bounded and may have quoted the memory — a follow-up), and, on **typed
+  turns only** (chat and clips) and only when a library is configured, two
+  read-only library tools: `search_library` and `read_passage`. Spoken turns
+  keep today's path. Nothing else — no shell, no files, no Qwen Code, and no
+  tool that writes to the library. Gwen cannot act on anything outside her own
+  memory and her read of the library.
+- **Transcripts in the library.** Gwen reads the library, and the design
+  assumes culture-rules pushes Pocket transcripts into it as EPUB items
+  (decision c21). That is **assumed, not shown**: the catalog held
+  none on 2026-10-24 (13 newspaper issues, 3 documents, 1 book). Until
+  transcripts arrive, Gwen's library answers cite newspapers and documents.
 - **Vision.** The session is audio-only; `senses` does not advertise image
   understanding on this rig.
-- **A face.** The dashboard's centrepiece is a waveform; a speech-driven face
-  is later.
+- **A face.** The waveform is a compact strip beside the chat; a
+  speech-driven face is later.
 - **Live realtime voice and speech-to-speech.** The phone is control, text, and
   uploaded or recorded clips (transcribed by `stt`); there is no live voice from
   the browser. The dashboard's speech-to-speech button is present and
@@ -356,10 +408,11 @@ composes endpoints.
 | Module | What it is |
 |--------|------------|
 | `loop.py` | The bounded perceive → decide → act tool loop the turn runs on. Termination is proved *structurally* by AST tests |
-| `turn.py`, `tools.py` | One spoken turn through `loop.run`, never silent, never raises; the tool registry (empty by default; the daemon binds `remember` and `forget`) |
+| `turn.py`, `tools.py` | One spoken turn through `loop.run`, never silent, never raises; the tool registry (empty by default; the daemon binds `remember` and `forget`, plus `search_library` and `read_passage` on typed turns when a library is configured) |
 | `session.py`, `memory.py` | The conversation (explicit-ask detector, turn queue, supersede on barge-in, summary on close) and `RoomMemory`: private, pinned, deadline-bounded |
 | `realtime/`, `voice.py` | The typed lobes wire and the ears-only client; sentence-by-sentence TTS with paced waveform features |
 | `audio/` | `AudioEndpoint` protocol, the host endpoint, the inbound endpoint, the feature extractor |
+| `library/` | The GET-only library client, stdlib EPUB extraction, the 0600 document index, the sync, and the two read tools |
 | `http/`, `bus.py` | Guard (secret + allow-list + Access seam), server (static dashboard, SSE, control API), the event bus with redaction at publish |
 | `daemon/` | State dir, bounded logs, crash-durable ledger; lifecycle by `(pid, start time)`; the app that wires it all |
 | `perception.py`, `identity.py`, `framing.py`, `senses_text.py` | The verbatim invariant; explicit identity; absent identity ⇒ byte-identical prompts; measured grounding text |

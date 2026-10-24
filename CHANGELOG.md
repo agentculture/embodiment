@@ -5,6 +5,47 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.18.0] - 2026-10-24
+
+**Gwen is pocketchat: the library as knowledge.** Gwen's page is chat-first and
+she can read a library and cite it. Accepted on **one rig**; its value is
+**unmeasured**, and the library retrieval measurement (t15, hit@5 and per-recall
+p90) is **pending**: no number is claimed. **Transcripts are assumed** to reach
+the library through culture-rules (decision c21); the catalog held none on
+2026-10-24 (13 newspaper issues, 3 documents, 1 book).
+
+### Added
+
+- `embodiment/library/`: a GET-only library client with a `gets` counter
+  (culture-library; xteink's instance on 127.0.0.1:8780 today), stdlib EPUB
+  extraction under member/size/character caps, a 0600 document index
+  reconciled by (item id, sha256), a sync that yields to live turns, and two
+  read tools, `search_library` and `read_passage`, bound on typed turns only.
+  Configured by `EMBODIMENT_LIBRARY_URL` and `EMBODIMENT_LIBRARY_KEY`
+  (`grant run --inject EMBODIMENT_LIBRARY_KEY=XTEINK_GWEN_API_KEY`); unset
+  means no library tool and "library not configured".
+- The write guard: in a turn whose context holds library text, `remember` and
+  `forget` are refused unless the operator's own words name the write; counted
+  (`library_guarded_writes`) and recorded (`app-library-guarded-write`).
+- Routes `GET /api/library`, `/api/library/{id}`, `/api/library/search`,
+  `/api/todos`; clip answers carry their cited sources.
+- `status.access` admitted and refused-by-code counters in one block.
+- The library similarity threshold reuses `0.715`, provisional and not
+  calibrated on library text.
+
+### Changed
+
+- **Before:** the page was waveform-first with chat the fourth panel, and the
+  daemon bound two tools (`remember`, `forget`). **After:** the page is
+  chat-first (Ask, Library, To-dos, a side reader, the waveform a compact
+  strip, a status drawer) and typed turns can also use `search_library` and
+  `read_passage`.
+- The audio subprocesses are spawned with a scrubbed environment that drops
+  the gateway and library keys.
+- README, the `explain` root and `CLAUDE.md` describe the above;
+  `tests/test_release_docs.py` pins the four tools and the transcripts-assumed
+  boundary.
+
 ## [0.17.1] - 2026-10-23
 
 ### Changed

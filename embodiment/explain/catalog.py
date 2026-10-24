@@ -35,6 +35,19 @@ is bad. The archived tiers (strategist, configuration lane, muse, drones) were
 each proven as mechanisms and never as value; their own published verdicts said
 so, and the redesign makes no value claim either until it has a measurement.
 
+## The library and the page
+
+The dashboard is chat-first (Ask, Library, To-dos, a side reader, the waveform
+as a strip; before 0.18.0 it was waveform-first with chat fourth). Gwen reads a
+library — culture-library, with xteink's instance as today's — through a
+**GET-only** client configured by `EMBODIMENT_LIBRARY_URL` and
+`EMBODIMENT_LIBRARY_KEY` (injected with `grant run --inject
+EMBODIMENT_LIBRARY_KEY=XTEINK_GWEN_API_KEY`). She indexes item text into her
+own document index and cites passages. A **write guard** refuses `remember` and
+`forget` in a turn that holds library text unless the operator's own words name
+the write. Value is unmeasured; the library similarity threshold is `0.715`,
+provisional and uncalibrated for library text.
+
 ## Software presence, not a robot body
 
 "Embodiment" is an overloaded word in this mesh. This package is
@@ -51,11 +64,15 @@ drawn from the name.
 None of this is in the first daemon release — each is a stated seam or a stated
 absence, never an implication:
 
-- **Other tools** — the daemon binds exactly two, both over Gwen's own private
-  memory: `remember` and `forget` (archive in place, never delete). No shell,
-  no files, no Qwen Code.
+- **Other tools** — the daemon binds `remember` and `forget` (archive in place,
+  never delete), and, on typed turns only and only with a library configured,
+  two read-only library tools: `search_library` and `read_passage`. No shell,
+  no files, no Qwen Code, nothing that writes to the library.
+- **Transcripts in the library** — assumed, not shown (decision c21): the
+  catalog held none on 2026-10-24; the library retrieval measurement is
+  pending.
 - **Vision** — the session is audio-only.
-- **A face** — the dashboard's centrepiece is a waveform.
+- **A face** — the waveform is a compact strip beside the chat.
 - **Live realtime voice and speech-to-speech** — the phone is control, text and
   uploaded or recorded clips; the speech-to-speech button is present and
   disabled; the `BrowserEar` client and the inbound `/v1/realtime` endpoint
