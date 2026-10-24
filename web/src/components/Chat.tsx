@@ -33,6 +33,10 @@ export interface ChatProps {
   live?: ReactNode;
   /** The text box's placeholder; a phone passes a shorter one. */
   placeholder?: string;
+  /** The earlier conversation this chat continues (d5); questions go into it. */
+  conversation?: string;
+  /** That conversation's earlier turns, shown first (their sources were not kept). */
+  initialTurns?: { role: "user" | "assistant"; text: string }[];
   /** Called once per answer with the question it answered and its sources. */
   onAnswer?: (question: string, sources: ChatSource[]) => void;
 }
@@ -218,9 +222,13 @@ export function Chat({
   live,
   onAnswer,
   placeholder = "Ask about your library",
+  conversation,
+  initialTurns,
 }: ChatProps) {
   const [draft, setDraft] = useState("");
-  const [messages, setMessages] = useState<Message[]>([]);
+  const [messages, setMessages] = useState<Message[]>(() =>
+    (initialTurns ?? []).map((t, i) => ({ key: `h-${i}`, role: t.role, text: t.text, sources: [] })),
+  );
   const [degraded, setDegraded] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [pending, setPending] = useState<string | null>(null);
@@ -262,7 +270,7 @@ export function Chat({
     setPending(text);
     baselineSeq.current = replyEvents.reduce((mx, e) => Math.max(mx, e.seq), 0);
     setMessages((m) => [...m, { key: `u-${m.length}`, role: "user", text, sources: [] }]);
-    const outcome = await sendChat(text, secret, clientOptions);
+    const outcome = await sendChat(text, secret, clientOptions, conversation);
     if (outcome.ok) {
       setDegraded(null);
       if (outcome.value.turnSerial !== null) typedSerials.current.add(outcome.value.turnSerial);
@@ -360,6 +368,7 @@ export function Chat({
             onReply={onClipReply}
             clientOptions={clientOptions}
             live={live}
+            conversation={conversation}
           >
             <label className="sr-only" htmlFor="ask-box">
               Question

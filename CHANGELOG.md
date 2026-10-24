@@ -35,9 +35,16 @@ culture-rules (decision c21): 33 were there on 2026-10-24.
   calibrated on library text.
 - **Conversation history:** `GET /api/conversations` and
   `/api/conversations/{id}` (guarded, read-only) list and read Gwen's session
-  logs; on the page they are the left pane, newest first, and an earlier
-  conversation opens read-only. Citations in old answers show as numbers (the
-  logs keep text, not sources). The library list and the sources moved to the
+  logs; on the page they are the left pane, newest first. An earlier
+  conversation is **continued as if it never stopped** (d5): `POST /api/chat`
+  takes an optional `"conversation"` and the clip route an `X-Conversation`
+  header; the daemon reopens it as a `Session` on its own log
+  (`Session.restore`), so its turns are the window, "remember that" asks still
+  work, and new turns go to its log. Citations in its old answers show as
+  numbers (the logs keep text, not sources).
+- `embodiment history export [--since] [--json]`: past conversations with their
+  turns, read-only, for culture-rules to push into the library as private items
+  (d5; Gwen still never writes to the library). The library list and the sources moved to the
   right pane, as two tabs.
 - The page's **Stats** view: library tiles, status rows (each an icon and a
   label) and three charts with a Table view, from `GET /api/library` and

@@ -72,3 +72,18 @@ describe("postClip sources", () => {
     expect(out.ok && out.sources[0].item_id).toBe("9");
   });
 });
+
+describe("postClip continuing a conversation (deviation d5)", () => {
+  it("names the conversation in X-Conversation only when given one", async () => {
+    const seen: Record<string, string>[] = [];
+    const fetchFn = vi.fn(async (_u: RequestInfo | URL, init?: RequestInit) => {
+      seen.push({ ...(init?.headers as Record<string, string>) });
+      return { ok: true, status: 200, json: async () => ({ transcript: "t", reply: "r" }) } as Response;
+    });
+    const clip = new Blob(["abc"], { type: "audio/ogg" });
+    await postClip(clip, "", { fetchFn });
+    await postClip(clip, "", { fetchFn }, 2, "conv42");
+    expect(seen[0]["X-Conversation"]).toBeUndefined();
+    expect(seen[1]["X-Conversation"]).toBe("conv42");
+  });
+});

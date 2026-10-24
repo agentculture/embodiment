@@ -65,6 +65,7 @@ def _build_parser() -> argparse.ArgumentParser:
     from embodiment.cli._commands import cli as _cli_group
     from embodiment.cli._commands import doctor as _doctor_cmd
     from embodiment.cli._commands import explain as _explain_cmd
+    from embodiment.cli._commands import history as _history_cmd
     from embodiment.cli._commands import learn as _learn_cmd
     from embodiment.cli._commands import memory as _memory_cmd
     from embodiment.cli._commands import overview as _overview_cmd
@@ -103,6 +104,8 @@ def _build_parser() -> argparse.ArgumentParser:
     _tunnel_cmd.register(sub)
     # Memory producer verbs (ingest, forget): enqueue only, never touch the store.
     _memory_cmd.register(sub)
+    # Past conversations (d5): read-only export that culture-rules pulls into the library.
+    _history_cmd.register(sub)
     # Register your own noun groups here:
     #   from embodiment.cli._commands import my_noun as _my_noun_group
     #   _my_noun_group.register(sub)

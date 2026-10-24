@@ -570,7 +570,16 @@ export default function App({
               </button>
             </div>
             {past && (
-              <PastConversation conversation={past} secret={appliedSecret} onBack={() => setPast(null)} />
+              <PastConversation
+                conversation={past}
+                secret={appliedSecret}
+                onBack={() => setPast(null)}
+                chat={{
+                  onOpenCitation: openCitation,
+                  onAnswer,
+                  placeholder: narrow ? "Ask Gwen" : "Continue this conversation",
+                }}
+              />
             )}
             <div className="live-conversation" hidden={past !== null}>
             <section className="thread thread--voice" aria-labelledby="voice-thread-title">

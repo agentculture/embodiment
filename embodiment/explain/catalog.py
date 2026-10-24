@@ -38,7 +38,7 @@ so, and the redesign makes no value claim either until it has a measurement.
 ## The library and the page
 
 The dashboard is chat-first, the library with the chat inside it (Ask: your
-conversations on the left, read from the session logs; the conversation; the
+conversations on the left, read from the session logs and continued in place; the
 library and the answers' sources on the right; both side panes toggleable;
 Library, To-dos, Stats; before 0.18.0 it was waveform-first with chat fourth). Transcripts reach
 the library through culture-rules (33 on 2026-10-24), and retrieval was
@@ -229,6 +229,28 @@ itself (distinct from the global `overview`, which describes the agent).
     embodiment cli overview --json
 """
 
+
+_HISTORY = """\
+# embodiment history
+
+Read-only access to Gwen's past conversations, from the per-session logs the
+daemon writes. It never writes the state directory, the memory store or the
+library. culture-rules runs `export` on its schedule and turns each conversation
+into a private library item (deviation d5), so Gwen can search and cite them.
+
+## Usage
+
+    embodiment history export [--since <epoch-seconds>] [--state-dir DIR] [--json]
+    embodiment history overview [--json]
+
+## Notes
+
+- `--json` carries each conversation's turns (`role`, `text`, `ts`); the plain
+  form lists ids, turn counts and titles only.
+- `--since` keeps only conversations whose last turn is newer, for incremental runs.
+- The page continues a conversation through `POST /api/chat` with a
+  `"conversation"` id; this verb is for reading only.
+"""
 
 _MEMORY = """\
 # embodiment memory
@@ -458,6 +480,9 @@ ENTRIES: dict[tuple[str, ...], str] = {
     ("doctor",): _DOCTOR,
     ("cli",): _CLI,
     ("cli", "overview"): _CLI,
+    ("history",): _HISTORY,
+    ("history", "export"): _HISTORY,
+    ("history", "overview"): _HISTORY,
     ("memory",): _MEMORY,
     ("memory", "ingest"): _MEMORY,
     ("memory", "forget"): _MEMORY,

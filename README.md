@@ -135,7 +135,9 @@ loop. It does not drive hardware and nothing here claims a body.
   pocketchat's thread (both cited, not imported). **Ask** is a three-pane
   workspace: your conversations on the left (the live one and the earlier ones,
   read from Gwen's own session logs through `GET /api/conversations`; an
-  earlier one opens read-only), the conversation in the middle with numbered
+  earlier one can be continued as if it never stopped: its turns are Gwen's
+  context and new turns are added to its log, while the room's voice session is
+  untouched), the conversation in the middle with numbered
   citations and a Speak button per answer (markers are never read aloud), and
   on the right the **Library** list and the answers' **Sources**, which open
   the cited passage in place. Both side panes toggle, leave a rail when closed,

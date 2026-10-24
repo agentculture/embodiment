@@ -70,11 +70,14 @@ export async function postClip(
   secret: string,
   options: AudioClientOptions = {},
   durationS?: number,
+  conversation?: string,
 ): Promise<ClipOutcome> {
   if (clip.size === 0) return { ok: false, code: "empty-clip", status: 0 };
   const fetchFn = options.fetchFn ?? fetch;
   const headers: Record<string, string> = {};
   if (clip.type) headers["Content-Type"] = clip.type;
+  // Continuing an earlier conversation (deviation d5): the daemon answers in it.
+  if (conversation) headers["X-Conversation"] = conversation;
   if (durationS !== undefined && Number.isFinite(durationS) && durationS >= 0) {
     headers["X-Clip-Duration-S"] = String(durationS);
   }

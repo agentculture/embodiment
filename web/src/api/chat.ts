@@ -88,6 +88,7 @@ export async function sendChat(
   message: string,
   secret: string,
   options: ChatClientOptions = {},
+  conversation?: string,
 ): Promise<ChatOutcome> {
   const fetchFn = options.fetchFn ?? fetch;
   const basePath = options.basePath ?? "/api";
@@ -98,7 +99,8 @@ export async function sendChat(
     response = await fetchFn(`${basePath}/chat`, {
       method: "POST",
       headers,
-      body: JSON.stringify({ message }),
+      // With a conversation id the turn continues that earlier conversation (d5).
+      body: JSON.stringify(conversation ? { message, conversation } : { message }),
     });
   } catch {
     return { ok: false, code: "network-error" };

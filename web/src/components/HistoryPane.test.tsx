@@ -41,19 +41,41 @@ describe("HistoryPane", () => {
   });
 });
 
-describe("PastConversation", () => {
-  it("shows the turns read-only, Hebrew as dir=auto, with a way back", async () => {
+describe("PastConversation (continued, deviation d5)", () => {
+  it("shows the old turns and sends a new question INTO that conversation", async () => {
     const onBack = vi.fn();
-    const fetchFn = ok({
-      conversation: LIST.conversations[1],
-      turns: [
-        { role: "user", text: "מה במחסן?", ts: DAY - 60 },
-        { role: "assistant", text: "קומקום ישן [1].", ts: DAY - 30 },
-      ],
+    const calls: { url: string; body: string }[] = [];
+    const fetchFn = vi.fn(async (u: RequestInfo | URL, init?: RequestInit) => {
+      calls.push({ url: String(u), body: String(init?.body ?? "") });
+      if (String(u).endsWith("/chat")) {
+        return { ok: true, status: 200, json: async () => ({ reply: "כחולה", sources: [] }) } as Response;
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({
+          conversation: LIST.conversations[1],
+          turns: [
+            { role: "user", text: "מה במחסן?", ts: DAY - 60 },
+            { role: "assistant", text: "קומקום ישן [1].", ts: DAY - 30 },
+          ],
+        }),
+      } as Response;
     });
-    render(<PastConversation conversation={LIST.conversations[1]} onBack={onBack} clientOptions={{ fetchFn }} />);
+    render(
+      <PastConversation
+        conversation={LIST.conversations[1]}
+        onBack={onBack}
+        clientOptions={{ fetchFn }}
+        chat={{ clientOptions: { fetchFn } }}
+      />,
+    );
     expect(await screen.findByText("קומקום ישן [1].")).toHaveAttribute("dir", "auto");
-    expect(screen.queryByRole("textbox")).toBeNull();
+    await userEvent.type(screen.getByLabelText("message"), "ומה צבע הדלת?");
+    await userEvent.click(screen.getByRole("button", { name: "Send" }));
+    expect(await screen.findByText("כחולה")).toBeInTheDocument();
+    const chat = calls.find((c) => c.url.endsWith("/chat"));
+    expect(JSON.parse(chat!.body)).toEqual({ message: "ומה צבע הדלת?", conversation: "old" });
     await userEvent.click(screen.getByRole("button", { name: "Back to now" }));
     expect(onBack).toHaveBeenCalled();
   });

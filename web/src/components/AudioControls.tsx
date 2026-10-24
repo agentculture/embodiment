@@ -94,11 +94,13 @@ export interface AudioControlsProps {
   s2sRole?: string;
   /** The realtime voice control, shown beside the input box before Upload. */
   live?: ReactNode;
+  /** The earlier conversation a recorded or uploaded question continues (d5). */
+  conversation?: string;
   /** The typed half of the box (text and Send), placed after the mic. */
   children?: ReactNode;
 }
 
-export function AudioControls({ secret, onReply, clientOptions, live, children }: AudioControlsProps) {
+export function AudioControls({ secret, onReply, clientOptions, live, conversation, children }: AudioControlsProps) {
   const [recording, setRecording] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -108,7 +110,7 @@ export function AudioControls({ secret, onReply, clientOptions, live, children }
 
   async function send(clip: Blob, durationS?: number) {
     setBusy(true);
-    const out = await postClip(clip, secret, clientOptions, durationS);
+    const out = await postClip(clip, secret, clientOptions, durationS, conversation);
     if (out.ok) {
       setError(null);
       onReply({ transcript: out.transcript, reply: out.reply, turnSerial: out.turnSerial, sources: out.sources });

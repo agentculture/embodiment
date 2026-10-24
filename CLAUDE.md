@@ -66,8 +66,9 @@ write guard (`library_guarded_writes`, `app-library-guarded-write`: no
 `remember`/`forget` in a turn holding library text unless the operator's words name
 it), the audio subprocess env scrub, `status.access` admitted/refused counters,
 `/api/library*` and `/api/todos`, clip answers with sources, and the page: chat-first
-inside the library's look (Ask = conversations, read-only from the session logs via
-`/api/conversations` | conversation with a voice dock | library and the answers'
+inside the library's look (Ask = conversations from the session logs via
+`/api/conversations`, continued in place: chat's `"conversation"` / clip's
+`X-Conversation` reopen one as a `Session` with `Session.restore` (d5) | conversation with a voice dock | library and the answers'
 sources with the reader; side panes toggleable, drawers on a phone;
 Library, To-dos, Stats; Live = the rig's room mic, not the phone's). It was
 waveform-first with chat fourth. **Transcripts arrived** (33 on 2026-10-24) and
@@ -369,13 +370,16 @@ embodiment/
                         pre-set from raw argv so parse-time errors honour --json
   cli/_errors.py        CliError{code,message,remediation} + exit-code policy
   cli/_output.py        emit_result / emit_error / emit_diagnostic
-  cli/_commands/        whoami, learn, explain, overview, doctor, cli, start, status, stop, tunnel, memory
+  cli/_commands/        whoami, learn, explain, overview, doctor, cli, start, status, stop, tunnel, memory,
+                        history
   daemon/app.py         the daemon: one ear, the ears session, session + memory + voice, the
                         HTTP surface, close(deadline) with derived shares; degrade, never raise
   voice.py              Voice.speak: sentences -> /v1/audio/speech -> endpoint, paced features
   daemon/history.py     the history pane: reads the session logs, bounded, never writes
   cli/_commands/tunnel  prints the cultureflare/cloudflared commands (default host
                         gwen.culture.dev) and the Access env names; never runs them
+  cli/_commands/history `history export`: past conversations as JSON, read-only; culture-rules
+                        pulls it into the library as private items (d5)
   cli/_commands/memory  ingest | forget | overview: validate and ENQUEUE only; dry run
                         unless --apply; the daemon is the single writer
   ingest/contract.py    source registry, whole-batch validation, charset-safe stored ids

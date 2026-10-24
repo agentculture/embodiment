@@ -1,21 +1,27 @@
 // PastConversation.tsx
 //
-// One earlier conversation, read-only in the middle of Ask, drawn like the live
-// thread. Its sources were not kept in the session log, so citation numbers in
-// old answers show as text; the live conversation is one click away.
+// An earlier conversation in the middle of Ask, continued as if it never stopped
+// (operator, 2026-10-24; deviation d5): its turns are shown first, and the input
+// box sends new questions INTO it -- the daemon reopens it with those turns as
+// Gwen's context and appends to its log. Its old answers' sources were not kept
+// in the session log, so their citation numbers show as text; new answers cite
+// as usual. The live conversation is one click away.
 
 import { useEffect, useState } from "react";
 import { fetchConversation, type ConversationSummary, type HistoryClientOptions, type HistoryTurn } from "../api/history";
 import { dayLabel } from "../api/kinds";
+import { Chat, type ChatProps } from "./Chat";
 
 export interface PastConversationProps {
   conversation: ConversationSummary;
   secret?: string;
   clientOptions?: HistoryClientOptions;
   onBack: () => void;
+  /** Passed to the conversation's chat (citations, answers, placeholder). */
+  chat?: Pick<ChatProps, "onOpenCitation" | "onAnswer" | "placeholder" | "clientOptions">;
 }
 
-export function PastConversation({ conversation, secret = "", clientOptions, onBack }: PastConversationProps) {
+export function PastConversation({ conversation, secret = "", clientOptions, onBack, chat }: PastConversationProps) {
   const [turns, setTurns] = useState<HistoryTurn[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
@@ -39,7 +45,7 @@ export function PastConversation({ conversation, secret = "", clientOptions, onB
   return (
     <section className="past" aria-label="Earlier conversation">
       <div className="past-bar">
-        <span className="past-note">{day ? `Earlier conversation, ${day}` : "Earlier conversation"}</span>
+        <span className="past-note">{day ? `Continuing a conversation from ${day}` : "Continuing an earlier conversation"}</span>
         <button type="button" className="pill-btn" onClick={onBack}>
           Back to now
         </button>
@@ -50,25 +56,15 @@ export function PastConversation({ conversation, secret = "", clientOptions, onB
         </p>
       )}
       {turns === null && !error && <p className="rows-note">Opening</p>}
-      <ol className="thread past-thread" aria-label="Earlier conversation turns">
-        {turns?.map((t, i) =>
-          t.role === "user" ? (
-            <li key={i} className="turn turn--q">
-              <span className="sr-only">user: </span>
-              <p className="question" dir="auto">
-                {t.text}
-              </p>
-            </li>
-          ) : (
-            <li key={i} className="turn turn--a">
-              <span className="sr-only">assistant: </span>
-              <p className="answer" dir="auto">
-                {t.text}
-              </p>
-            </li>
-          ),
-        )}
-      </ol>
+      {turns !== null && (
+        <Chat
+          key={conversation.id}
+          secret={secret}
+          conversation={conversation.id}
+          initialTurns={turns.map((t) => ({ role: t.role, text: t.text }))}
+          {...chat}
+        />
+      )}
     </section>
   );
 }
