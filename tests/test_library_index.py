@@ -491,9 +491,10 @@ def _three_kinds(tmp_path, **kw):
     return idx, metas[2]
 
 
-def test_default_kinds_are_transcripts_articles_and_newspapers():
-    """xteink gained a native ``newspaper`` kind (2026-10-24); it must be searched."""
-    assert set(DEFAULT_KINDS) == {"transcript", "article", "newspaper"}
+def test_default_kinds_are_transcripts_articles_newspapers_and_documents():
+    """xteink gained a native ``newspaper`` kind (2026-10-24); culture-library files
+    transcripts as ``document`` (d15). Both must be searched."""
+    assert set(DEFAULT_KINDS) == {"transcript", "article", "newspaper", "document"}
 
 
 def test_a_book_not_opted_in_is_refused_without_embedding(tmp_path):
@@ -685,6 +686,16 @@ def test_item_kind_reads_an_issue_filed_as_an_article_as_a_newspaper():
     assert item_kind({"kind": "article", "title": "Daily newspaper 2026-10-23"}) == "newspaper"
     assert item_kind({"kind": "article", "title": "עיתון יומי"}) == "newspaper"
     assert item_kind({"kind": "Transcript", "title": "2026-10-24 kettle"}) == "transcript"
+
+
+def test_item_kind_reads_a_dated_document_or_article_as_a_transcript():
+    from embodiment.library.days import item_kind
+
+    assert item_kind({"kind": "document", "title": "2026-10-24 warehouse"}) == "transcript"
+    assert item_kind({"kind": "article", "title": "2026-10-15 kettle"}) == "transcript"
+    assert item_kind({"kind": "document", "title": "Daily newspaper 2026-10-24"}) == "newspaper"
+    assert item_kind({"kind": "document", "title": "ai-souls-article.md"}) == "document"
+    assert item_kind({"kind": "book", "title": "2026-10-24 warehouse"}) == "book"
 
 
 def test_passages_and_chunks_keep_their_links_and_hits_carry_them(tmp_path):

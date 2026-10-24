@@ -165,7 +165,7 @@ loop. It does not drive hardware and nothing here claims a body.
   localhost; the install-secret form shows only when the stream is
   unauthorized, and on the Access-protected public host no secret is entered.
 - **The library read path** (optional). The library is **culture-library**
-  (library.culture.dev); **xteink's instance on 127.0.0.1:8780 is today's**.
+  (library.culture.dev); **its instance on 127.0.0.1:8796 is today's** (d15, 2026-10-24; xteink's on 8780 before).
   Gwen reads it through one small client (`embodiment/library/client.py`) that
   is **GET-only by construction** (an AST test pins that it never sends POST,
   PUT, PATCH or DELETE; a `gets` counter in `status` is the live evidence). She

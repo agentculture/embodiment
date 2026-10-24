@@ -64,12 +64,16 @@ export function shortDate(iso: string): string {
 const DATED = /^(\d{4}-\d{2}-\d{2})\s+(.+)$/;
 const PAPER = /^daily newspaper\b.*?(\d{4}-\d{2}-\d{2})?/i;
 
-/** The kind to show: the wire kind, refined from the title when the wire says only "article". */
+// culture-library (d15) says "document" for the same items, transcripts included.
+const GENERIC = new Set(["article", "document"]);
+
+/** The kind to show: the wire kind, refined from the title when the wire says only
+ *  "article" (xteink) or "document" (culture-library). */
 export function displayKind(kind: string, title: string): string {
-  if (kind && kind !== "article") return kind;
+  if (kind && !GENERIC.has(kind)) return kind;
   if (PAPER.test(title)) return "newspaper";
   if (DATED.test(title)) return "transcript";
-  return kind === "article" ? "document" : kind;
+  return GENERIC.has(kind) ? "document" : kind;
 }
 
 /** The day an item is about: a date in its title (recording or issue day), else the

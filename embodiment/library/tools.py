@@ -125,7 +125,7 @@ _SEARCH_DESCRIPTION = (
 )
 #: The kinds a model may name; a reader's kind (an issue filed as an article is a
 #: newspaper), not the library's raw label.
-SEARCH_KINDS = ("newspaper", "transcript", "article", "book")
+SEARCH_KINDS = ("newspaper", "transcript", "article", "document", "book")
 _DATE_ARG = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 _READ_DESCRIPTION = (
     "Read one library passage by item_id and anchor from a search result. "
