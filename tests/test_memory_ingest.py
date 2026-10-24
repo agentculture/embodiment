@@ -529,3 +529,56 @@ def test_a_room_pinned_to_the_ingest_scope_refuses_the_forget_tool(tmp_path) -> 
     assert not result.ok
     assert result.code == continuity.CODE_INVALID_RECORD
     assert _stored(r)["pocket.r1.fact.1"]["lifecycle"] == "active"
+
+
+# -- review of PR #98 (2026-10-24): an abandoned to-dos listing is never stacked -------
+
+
+class _HeldLister:
+    """A list seam that blocks until released and counts its enumerations."""
+
+    def __init__(self) -> None:
+        self.calls = 0
+        self.release = threading.Event()
+
+    def __call__(self, **kw: Any) -> list[dict[str, Any]]:
+        self.calls += 1
+        self.release.wait(5.0)
+        return [
+            {"id": "pocket.r1.action.0", "type": "action_item", "text": "water the ferns"},
+            {"id": "pocket.r1.fact.0", "type": "fact", "text": "the ferns are green"},
+        ]
+
+
+def test_a_listing_still_running_is_joined_not_started_again(tmp_path) -> None:
+    """/api/todos bounds list_ingest at 3 s, but an abandoned enumeration keeps running
+    and holding the store lock; each page load used to start another one beside it."""
+    lister = _HeldLister()
+    r = mem.RoomMemory(
+        tmp_path / "s", ingest_scope=mem.INGEST_SCOPE, seams=mem.MemorySeams(list_fn=lister)
+    )
+    try:
+        first = r.list_ingest(record_type="action_item", deadline=0.05)
+        assert not first.ok and first.degradations
+        second = r.list_ingest(record_type="action_item", deadline=0.05)
+        assert not second.ok and second.degradations
+        assert lister.calls == 1, "a second enumeration ran beside the abandoned one"
+
+        joined: list[Any] = []
+        waiter = threading.Thread(
+            target=lambda: joined.append(r.list_ingest(record_type="action_item", deadline=5.0))
+        )
+        waiter.start()
+        time.sleep(0.05)
+        lister.release.set()
+        waiter.join(5.0)
+        assert joined and joined[0].ok
+        assert [x["id"] for x in joined[0].records] == ["pocket.r1.action.0"]
+        assert lister.calls == 1, "the joiner got the running listing's result"
+
+        fresh = r.list_ingest(record_type=None, deadline=5.0)
+        assert fresh.ok and len(fresh.records) == 2
+        assert lister.calls == 2, "a finished listing is not cached: the next load re-reads"
+    finally:
+        lister.release.set()
+        r.close()
