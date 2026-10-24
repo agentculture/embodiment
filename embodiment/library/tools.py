@@ -171,6 +171,16 @@ class CitationCollector:
                 self._index[key] = len(self._citations)
             return self._index[key]
 
+    def mark_library_text(self) -> None:
+        """Say this turn's prompt holds library-derived text that is not a citation.
+
+        The daemon calls it when the previous answer's sources are named to this
+        turn, or when the window carries a reply built from library text (review of
+        PR #98, 2026-10-24): the write guard must see that text as in context.
+        """
+        with self._lock:
+            self._library_text = True
+
     @property
     def citations(self) -> tuple[Citation, ...]:
         with self._lock:

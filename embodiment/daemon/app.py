@@ -473,33 +473,56 @@ LIBRARY_TOOL_PROMPT = (
 #: At most this many of the previous answer's sources are named to the next turn.
 PREVIOUS_SOURCES_SHOWN = 8
 
+#: The fixed host line before the previous answer's sources. Outside the fence and
+#: identical for every turn; the sources themselves follow as fenced data.
+PREVIOUS_SOURCES_HEADER = (
+    "המקורות שהוצגו למשתמש עם התשובה הקודמת שלך, לפי המספרים שהוא רואה "
+    "(כש«פריט 1» או «המקור השני» — זה הם; קראי אותם עם read_passage או search_library):"
+)
+
 
 def previous_sources_line(sources: Sequence[Mapping[str, Any]]) -> str:
-    """The prompt line naming the sources the page showed with the previous answer.
+    """The prompt section naming the sources the page showed with the previous answer.
 
     The page numbers a reply's sources 1..n, and the operator refers to them that
     way ("item 1", "the second one"); the model never saw that list, only its own
     tool results, which do not carry into the next turn (live, 2026-10-24: "Item 1"
-    got "what do you mean by item one?"). Titles are library data, already
-    neutralised and capped by the citation collector, and quoted here as data.
+    got "what do you mean by item one?").
+
+    Titles are library (or recalled) data, so they enter the prompt the way every
+    other library text does (review of PR #98, 2026-10-24: they were spliced into
+    the system prompt unfenced): through :func:`render_recalled`, attributed and
+    fenced, every field a quoted body line. ``render_recalled`` numbers its entries
+    from 1 in the order given, which is the page's order, so its ``[n]`` is the
+    page's ``n``. The caller arms the write guard whenever this section is present.
     """
     shown = [s for s in sources if isinstance(s, Mapping)][:PREVIOUS_SOURCES_SHOWN]
     if not shown:
         return ""
-    parts = []
-    for n, src in enumerate(shown, 1):
-        title = str(src.get("title") or src.get("source") or "source").replace('"', "'")
-        where = ""
-        if src.get("item_id"):
-            where = f" (item_id={src.get('item_id')}, anchor={src.get('anchor')})"
-        elif src.get("source") == "room":
-            where = " (Gwen's memory)"
-        parts.append(f'[{n}] "{title}"{where}')
-    return (
-        "המקורות שהוצגו למשתמש עם התשובה הקודמת שלך, לפי המספרים שהוא רואה "
-        "(כש«פריט 1» או «המקור השני» — זה הם; קראי אותם עם read_passage או search_library): "
-        + "; ".join(parts)
-    )
+    rendered = render_recalled([_shown_source_record(src) for src in shown])
+    return f"{PREVIOUS_SOURCES_HEADER}\n{rendered}" if rendered else ""
+
+
+def _shown_source_record(src: Mapping[str, Any]) -> dict[str, Any]:
+    """One shown source as the record shape :func:`render_recalled` fences.
+
+    Only the item id (library) or the source kind, the writer and the date reach the
+    restricted header; the title, and the anchor ``read_passage`` takes, are body.
+    """
+    kind = str(src.get("source") or "source")
+    if src.get("item_id"):  # a library citation: the reader's target
+        kind = library_tools.LIBRARY_SOURCE
+    parts = [("title", str(src.get("title") or kind))]
+    if kind == library_tools.LIBRARY_SOURCE:
+        parts.append(("anchor", str(src.get("anchor") or "")))
+    elif kind == "room":
+        parts.append(("from", "Gwen's memory"))
+    return {
+        "id": str(src.get("item_id") or kind),
+        "added_by": kind,
+        "created": str(src.get("date") or ""),
+        "text": " | ".join(f"{k}: {v}" for k, v in parts if v),
+    }
 
 
 REMEMBER_TOOL_PROMPT = (
@@ -971,6 +994,16 @@ TODO_RECORD_TYPE = "action_item"
 TODO_SOURCE = "pocket"
 #: The forget stems the write guard looks for in the operator's own turn.
 _FORGET_STEMS: tuple[str, ...] = ("שכח", "forget")
+#: A NEGATED forget asks to KEEP the fact, so it is removed before the stems are
+#: matched. Review of PR #98 (2026-10-24): only "don't forget"/"dont forget" were
+#: removed, so "אל תשכחי X" (still carrying the stem שכח), "don’t forget X" (curly
+#: apostrophe) and "do not forget X" all counted as asking to forget X. English:
+#: don't / dont / don’t / do not + forget*; Hebrew: (ו|ש)אל or (ו|ש)לא + any word
+#: carrying the stem (אל תשכח, אל תשכחי, אל תשכחו, שלא תשכחי). Applied to the
+#: casefolded, whitespace-collapsed turn. Biased to refusing, like the guard.
+_NEGATED_FORGET = re.compile(
+    r"\b(?:don['\u2019]?t|do not)\s+forget\w*" r"|(?<!\w)[וש]?(?:אל|לא)\s+\w*שכח\w*"
+)
 
 #: The prompt section for a remainder, restart or follow-up completion: what
 #: Gwen already said in this reply. Her own earlier words, in the system
@@ -996,6 +1029,9 @@ FOLLOW_UP_INSTRUCTION = (
 _RECALL_INDEX_SIZE = 16
 #: How many recent typed turns a late follow-up can still find.
 _TEXT_TURN_MEMORY = 16
+#: How many library-derived replies are remembered for the window check. A
+#: **judgement call**: a session window holds tens of turns, not hundreds.
+_LIBRARY_REPLY_MEMORY = 128
 #: The longest record text one chat source carries to the page.
 SOURCE_TEXT_MAX_CHARS = memory_module.DEFAULT_MAX_CHARS
 
@@ -1634,20 +1670,28 @@ class _TextTurn:
     collector: Optional[Any] = None
     #: The sources the page showed with the previous typed answer, in page order.
     previous_sources: tuple[Any, ...] = ()
+    #: The sources the chat route returned with THIS turn's ok answer — what the
+    #: page showed. Empty for a failed turn and for a clip (its route forwards no
+    #: sources), which is what the page showed for them.
+    shown_sources: tuple[Any, ...] = ()
 
 
-def _previous_page_sources(turn: Optional[Any]) -> tuple[Any, ...]:
-    """The sources the page showed with *turn*'s answer, in page order; () if none.
+def _previous_page_sources(recent: Iterable[Any]) -> tuple[Any, ...]:
+    """The newest numbered source list the page shows, in page order; () if none.
 
-    The same list the chat route returns (``_typed_sources``: library citations
-    first, then recalled memory), so "item 1" means what the operator saw as 1.
+    That is the list of the newest typed turn whose answer the chat route returned
+    ok WITH sources (review of PR #98, 2026-10-24: the newest turn was used whether
+    or not it succeeded, while the route shows sources only for an ok turn). A
+    failed turn shows nothing and an answer without sources shows no numbers, so
+    neither replaces the list the operator can still see and call "item 1". The
+    list is the route's own (``_typed_sources``: library citations first, then
+    recalled memory), so "item 1" means what the operator saw as 1.
     """
-    if turn is None:
-        return ()
-    try:
-        return tuple(_typed_sources(turn))
-    except Exception:  # noqa: BLE001  # a broken record names nothing, never raises
-        return ()
+    for turn in reversed(list(recent)):
+        shown = getattr(turn, "shown_sources", ())
+        if shown:
+            return tuple(shown)
+    return ()
 
 
 @dataclass(frozen=True)
@@ -1858,6 +1902,9 @@ class DaemonApp:
         self._floor_taken = False
         self._recall_seen: "OrderedDict[str, _RecallSeen]" = OrderedDict()
         self._text_turns_recent: deque[_TextTurn] = deque(maxlen=_TEXT_TURN_MEMORY)
+        #: Gwen's typed replies built from library text, so a later typed turn whose
+        #: window still carries one is guarded (review of PR #98, 2026-10-24).
+        self._library_replies: deque[str] = deque(maxlen=_LIBRARY_REPLY_MEMORY)
         self._text_serial = 0
         self._text_turns_run = 0
         self._text_follow_ups = 0
@@ -3224,8 +3271,7 @@ class DaemonApp:
             self._text_turns_run += 1
             serial = self._text_serial
             session = self._session
-            last = self._text_turns_recent[-1] if self._text_turns_recent else None
-        previous = _previous_page_sources(last)
+            previous = _previous_page_sources(self._text_turns_recent)
         turn = _TextTurn(
             serial=serial,
             thread=threading.get_ident(),
@@ -3235,6 +3281,7 @@ class DaemonApp:
             collector=library_tools.CitationCollector() if self._library is not None else None,
             previous_sources=previous,
         )
+        self._arm_library_guard(turn)
         self._tls.text_turn = turn
         with self._lock:
             self._text_turns_recent.append(turn)
@@ -3244,6 +3291,9 @@ class DaemonApp:
         finally:
             turn.replying = False
         reply = turn.final_text or turn.first_text or " ".join(outcome.spoken)
+        if turn.collector is not None and turn.collector.library_text_in_context and reply:
+            with self._lock:
+                self._library_replies.append(reply)
         # No turn_serial on this event: the page already has the answer from the
         # response, and Chat.tsx appends every serial'd reply as a NEW message.
         self._publish("reply", {"text": reply, "typed": True})
@@ -3341,6 +3391,8 @@ class DaemonApp:
         result = self._text_turns.handle_text(message)
         turn = getattr(self._tls, "text_turn", None)
         sources = _typed_sources(turn) if (turn and result.ok) else []
+        if turn is not None:
+            turn.shown_sources = tuple(sources)
         return {
             "ok": result.ok,
             "reply": result.reply,
@@ -3391,6 +3443,27 @@ class DaemonApp:
         if previous:
             library = f"{library}\n{previous}"
         return f"{base}\n{library}" if base else library
+
+    def _arm_library_guard(self, turn: _TextTurn) -> None:
+        """Mark *turn*'s collector when library-derived text reaches its prompt
+        without a citation (review of PR #98, 2026-10-24).
+
+        Two ways: the previous answer's sources are named to it
+        (:func:`previous_sources_line`), or its window carries one of Gwen's
+        replies built from library text — a clip turn's, say, whose sources the
+        page never showed. Either way a remember/forget the operator's own words
+        do not ask for is refused, as in the turn that read the library.
+        """
+        collector = turn.collector
+        if collector is None:
+            return
+        with self._lock:
+            derived = set(self._library_replies)
+        in_window = any(
+            m.get("role") == "assistant" and m.get("content") in derived for m in turn.window
+        )
+        if turn.previous_sources or in_window:
+            collector.mark_library_text()
 
     def _counted(self, spec: Any) -> Any:
         """*spec* with its fn counting calls by tool name (d1: a counter that moves)."""
@@ -3491,8 +3564,11 @@ class DaemonApp:
     def _library_tick(self) -> bool:
         """ONE bounded sync tick plus the forwarding of what it recorded. Never raises.
 
-        Returns True when the tick left wanted items behind (the worker then comes
-        back soon), False otherwise, including on a failed tick.
+        Returns True when the tick left wanted items behind, or yielded to a live
+        turn (the worker then comes back soon), False otherwise, including on a
+        failed tick or a down library. A tick that yields at its FIRST gate has
+        listed nothing, so it reports ``remaining == 0``; it is still unfinished
+        work (review of PR #98, 2026-10-24: it slept the full interval).
         """
         lane = self._library
         if lane is None:
@@ -3507,8 +3583,7 @@ class DaemonApp:
         else:
             with self._lock:
                 self._library_ticks += 1
-            remaining = out.get("remaining") if isinstance(out, Mapping) else None
-            backlog = isinstance(remaining, int) and remaining > 0
+            backlog = _tick_left_work(out)
         if not lane.stop.is_set():
             # A tick a stop cut short abandoned its chunk on purpose: not a fault.
             self._forward_library_degradations(lane)
@@ -3549,6 +3624,11 @@ class DaemonApp:
         if lane is None:
             return {"items": []}
         catalog = getattr(lane.client, "items", None) or ()
+        if not catalog:
+            # Not listed since this daemon started (a restart, the library down):
+            # the persisted index is the last catalog known, every entry indexed.
+            # Review of PR #98, 2026-10-24: this answered no items until a good tick.
+            return {"items": [_indexed_entry(meta) for meta in _indexed_items(lane.index)]}
         return {"items": [_catalog_entry(item, lane.index) for item in catalog]}
 
     def _library_get(self, item_id: int) -> Optional[dict[str, Any]]:
@@ -3751,17 +3831,26 @@ class DaemonApp:
             self._record(APP_SHUTDOWN_INCOMPLETE, f"backfill: {_describe(exc)}")
             return False
 
-    def _tool_counts(self) -> tuple[int, int, int, int]:
-        """The four memory-tool counters, as one snapshot to difference against."""
+    def _tool_counts(self) -> tuple[int, int, int, int, int]:
+        """The tool counters, as one snapshot to difference against.
+
+        ``[0]`` is every tool call, the library's included: a completion where only
+        ``search_library``/``read_passage`` ran is a tool round too (review of PR
+        #98, 2026-10-24: counting memory tools only let a late recall re-run a
+        searched turn and left a bare "ok" after a search unanswered). ``[4]`` is
+        the library's share, so the answer can name the tool that ran.
+        """
         with self._lock:
+            library = sum(self._library_tool_calls.values())
             return (
-                self._remember_tool_calls + self._forget_tool_calls,
+                self._remember_tool_calls + self._forget_tool_calls + library,
                 self._remember_tool_written,
                 self._forget_tool_written,
                 self._remember_tool_refused + self._forget_tool_refused,
+                library,
             )
 
-    def _answer_tool_step(self, spoken: str, before: tuple[int, int, int, int]) -> str:
+    def _answer_tool_step(self, spoken: str, before: tuple[int, ...]) -> str:
         """Keep d7's promise that a tool round is never silent.
 
         The turn just called a tool. If the model's answer to the tool result
@@ -3782,6 +3871,8 @@ class DaemonApp:
             tool, replacement = REMEMBER_TOOL_NAME, TOOL_CONFIRMATION[REMEMBER_TOOL_NAME]
         elif after[2] > before[2]:
             tool, replacement = FORGET_TOOL_NAME, TOOL_CONFIRMATION[FORGET_TOOL_NAME]
+        elif after[0] - before[0] == after[4] - before[4]:
+            tool, replacement = "library", FALLBACK_TEXT  # only library tools ran
         else:
             tool, replacement = "none", FALLBACK_TEXT
         with self._lock:
@@ -5341,8 +5432,8 @@ def user_turn_asks(user_text: object, tool: str, span: object) -> bool:
     said = _normalised_fact(user_text).casefold()
     if tool == FORGET_TOOL_NAME:
         stems = _FORGET_STEMS
-        # "don't forget X" asks to KEEP X: never a forget ask.
-        said_for_stems = said.replace("don't forget", "").replace("dont forget", "")
+        # "don't forget X" / "אל תשכחי X" asks to KEEP X: never a forget ask.
+        said_for_stems = _NEGATED_FORGET.sub(" ", said)
     else:
         stems, said_for_stems = _ASK_STEMS, said
     if not any(stem in said_for_stems for stem in stems):
@@ -5433,7 +5524,33 @@ def _catalog_entry(item: Any, index: Any) -> dict[str, Any]:
         "title": _text_or_empty(getattr(item, "title", "")),
         "kind": _text_or_empty(getattr(item, "kind", "")),
         "created_at": _text_or_empty(getattr(item, "created_at", "")),
-        "indexed": index.item(item_id) is not None,
+        "indexed": bool(index.has_item(item_id)),
+    }
+
+
+def _tick_left_work(out: Any) -> bool:
+    """A sync tick's result: did it stop with work left (a backlog, or a yield)?"""
+    if not isinstance(out, Mapping):
+        return False
+    remaining = out.get("remaining")
+    return out.get("yielded") is True or (isinstance(remaining, int) and remaining > 0)
+
+
+def _indexed_items(index: Any) -> list[Any]:
+    try:
+        return list(index.indexed_items())
+    except Exception:  # noqa: BLE001  # an index fault lists nothing, never raises
+        return []
+
+
+def _indexed_entry(meta: Mapping[str, Any]) -> dict[str, Any]:
+    """One persisted index item as the catalog route's entry (it is indexed)."""
+    return {
+        "id": str(meta.get("id", "")),
+        "title": _text_or_empty(meta.get("title")),
+        "kind": _text_or_empty(meta.get("kind")),
+        "created_at": _text_or_empty(meta.get("created_at")),
+        "indexed": True,
     }
 
 

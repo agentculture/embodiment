@@ -346,14 +346,50 @@ def test_a_changed_sha256_re_indexes(tmp_path):
     idx.reconcile([_meta("1")])
     idx.upsert_item(_meta("1"), [P("a#0", None, "alpha oldword")])
     assert idx.reconcile([_meta("1", sha="s2")])["changed"] == ["1"]
-    # stale text is gone at once, so nothing can cite the old version
-    assert "oldword" not in idx.path.read_text(encoding="utf-8")
-    assert idx.search(_vec("alpha"), kinds=None, limit=5, threshold=0.0) == []
     before = len(embed.content)
     assert idx.upsert_item(_meta("1", sha="s2"), [P("a#0", None, "bravo newword")]) == 1
     assert len(embed.content) == before + 1
     (hit,) = idx.search(_vec("bravo"), kinds=None, limit=5, threshold=0.0)
     assert "newword" in hit.text
+    # the upsert replaced the old version whole
+    assert "oldword" not in idx.path.read_text(encoding="utf-8")
+    assert idx.search(_vec("alpha"), kinds=None, limit=5, threshold=0.5) == []
+
+
+def test_a_changed_item_stays_readable_until_its_new_version_is_indexed(tmp_path):
+    """Review of PR #98 (2026-10-24): reconcile purged a changed item at once, and the
+    re-index runs in later bounded ticks that can stop (embed_failed, the gate) -
+    so a re-uploaded document vanished from search and the reader until then."""
+    idx = _index(tmp_path)
+    idx.reconcile([_meta("1", title="Old")])
+    idx.upsert_item(_meta("1", title="Old"), [P("a#0", None, "alpha oldword")])
+    assert idx.reconcile([_meta("1", sha="s2", title="New")])["changed"] == ["1"]
+    (hit,) = idx.search(_vec("alpha"), kinds=None, limit=5, threshold=0.0)
+    assert "oldword" in hit.text
+    assert hit.title == "Old", "the old passages keep the old metadata until replaced"
+    assert idx.read_passage("1", "a#0")["text"] == "alpha oldword"
+    assert _index(tmp_path).item("1")["sha256"] == "s1", "kept across a restart too"
+    # still reported as changed until the new version lands, so the sync retries it
+    assert idx.reconcile([_meta("1", sha="s2", title="New")])["changed"] == ["1"]
+
+
+def test_a_changed_item_whose_re_embed_fails_keeps_the_old_version(tmp_path):
+    calls = {"n": 0}
+    embed = FakeEmbed()
+
+    def flaky(text):
+        calls["n"] += 1
+        if calls["n"] > 2:
+            raise RuntimeError("embedder down")
+        return embed(text)
+
+    idx = _index(tmp_path, flaky)
+    idx.reconcile([_meta("1")])
+    idx.upsert_item(_meta("1"), [P("a#0", None, "alpha oldword")])
+    idx.reconcile([_meta("1", sha="s2")])
+    with pytest.raises(IndexRefused):
+        idx.upsert_item(_meta("1", sha="s2"), [P("a#0", None, "bravo newword")])
+    assert idx.item("1")["passages"][0]["text"] == "alpha oldword"
 
 
 def test_upserting_a_changed_sha_directly_re_embeds(tmp_path):
@@ -589,3 +625,23 @@ def test_an_index_built_at_an_older_version_re_indexes(tmp_path):
     idx = _index(tmp_path)
     assert index_mod.INDEX_VERSION == 3
     assert any("re-indexing" in d for d in idx.degradations)
+
+
+def test_has_item_matches_item_without_copying(tmp_path):
+    """Review of PR #98 (2026-10-24): the catalog route tested existence with item()."""
+    idx = _index(tmp_path)
+    idx.upsert_item(_meta("1"), [P("a#0", None, "alpha")])
+    assert idx.has_item("1") is False, "not citable before a reconcile, like item()"
+    idx.reconcile([_meta("1"), _meta("2")])
+    assert idx.has_item(1) is True and idx.has_item("2") is False
+    assert idx.has_item("1") == (idx.item("1") is not None)
+
+
+def test_indexed_items_lists_metadata_only_for_citable_items(tmp_path):
+    idx = _index(tmp_path)
+    idx.reconcile([_meta("1"), _meta("2")])
+    idx.upsert_item(_meta("1", title="One"), [P("a#0", None, "alpha secretword")])
+    idx.upsert_item(_meta("77"), [P("a#0", None, "alpha")])  # never in the catalog
+    (entry,) = _index(tmp_path).indexed_items()
+    assert entry["id"] == "1" and entry["title"] == "One" and entry["kind"] == "article"
+    assert "passages" not in entry and "secretword" not in json.dumps(entry)

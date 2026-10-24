@@ -404,9 +404,18 @@ class DocumentIndex:
     def reconcile(self, catalog: Iterable[Any]) -> dict[str, list[str]]:
         """Bring the index in step with the library's catalog by (item id, sha256).
 
-        Dropped items are purged; changed items are purged and reported for
-        re-indexing; unchanged items get the catalog's metadata. The catalog's ids
-        become the only ids search may return.
+        Dropped items are purged; changed items are reported for re-indexing and
+        KEPT, old passages and old metadata together, until :meth:`upsert_item`
+        replaces them whole; unchanged items get the catalog's metadata. The
+        catalog's ids become the only ids search may return.
+
+        Review of PR #98 (2026-10-24): a changed item used to be purged here, at
+        once, while its re-index runs in later bounded sync ticks that can stop
+        (``embed_failed``, the live-turn gate) — so a re-uploaded document vanished
+        from search and the reader until a tick got to it. A kept item still
+        differs by sha256, so every reconcile reports it ``changed`` again and the
+        sync retries it; the library still holds the id, so a citation of the old
+        version never names an item the library dropped.
         """
         entries: dict[str, Any] = {}
         for entry in catalog:
@@ -421,17 +430,21 @@ class DocumentIndex:
                 if i in self._items and self._items[i]["sha256"] != _field(entry, "sha256")
             ]
             added = [i for i in entries if i not in self._items]
-            for item_id in removed + changed:
+            for item_id in removed:
                 del self._items[item_id]
-            refreshed = self._refresh_meta(entries)
+            refreshed = self._refresh_meta(entries, frozenset(changed))
             if removed or changed or refreshed or self._catalog != set(entries):
                 self._catalog = set(entries)
                 self._commit()
         return {"added": added, "changed": changed, "removed": removed}
 
-    def _refresh_meta(self, entries: dict[str, Any]) -> bool:
+    def _refresh_meta(self, entries: dict[str, Any], changed: frozenset) -> bool:
+        """Catalog metadata onto unchanged items; a changed one keeps the metadata
+        its stored passages were indexed with until it is replaced."""
         touched = False
         for item_id, item in self._items.items():
+            if item_id in changed:
+                continue
             meta = _meta(entries[item_id])
             if item["meta"] != meta:
                 item["meta"] = meta
@@ -526,6 +539,30 @@ class DocumentIndex:
                 **item["meta"],
                 "passages": [dict(p) for p in item["passages"]],
             }
+
+    def has_item(self, item_id: Any) -> bool:
+        """True when :meth:`item` would return the item — without copying a passage.
+
+        Review of PR #98 (2026-10-24): the catalog route tested existence with
+        :meth:`item`, a copy of every passage under the lock, once per catalog entry.
+        """
+        key = str(item_id)
+        with self._lock:
+            return key in self._items and self._citable(key)
+
+    def indexed_items(self) -> list[dict]:
+        """Every citable item's id and metadata (no passages, no chunks), index order.
+
+        What the catalog route serves when the daemon has not listed the library since
+        it started (review of PR #98, 2026-10-24): the persisted index is the last
+        catalog it knows.
+        """
+        with self._lock:
+            return [
+                {"id": key, **item["meta"]}
+                for key, item in self._items.items()
+                if self._citable(key)
+            ]
 
     def read_passage(self, item_id: Any, anchor: str) -> Optional[dict]:
         """One stored passage by anchor, or None if the item or anchor is not citable."""

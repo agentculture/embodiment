@@ -3,8 +3,9 @@
 Pure orchestration over the client (t1), extraction (t2) and index (t3). A tick
 lists the catalog, reconciles, then fetches, extracts and indexes every added
 and changed item until its budget runs out; the rest resumes next tick because
-an unindexed item is simply ``added`` again. ``reconcile`` purges a changed item
-at once, so re-fetching is this module's job.
+an unindexed item is simply ``added`` again. ``reconcile`` keeps a changed item's
+old version searchable and reports it ``changed`` on every tick until its new
+version is upserted, so re-fetching is this module's job.
 
 A tick yields while the *gate* (a live turn) is held, so a recall embed is
 served first. A down library is ONE recorded degradation per transition, not
