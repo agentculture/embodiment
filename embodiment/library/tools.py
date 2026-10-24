@@ -50,7 +50,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Callable, Optional
 
 from embodiment import memory
-from embodiment.library.index import item_day, item_kind
+from embodiment.library.days import item_day, item_kind
 from embodiment.tools import ToolSpec
 
 __all__ = [
@@ -395,7 +395,8 @@ class _LibraryTools:
     ) -> str:
         text = _text_arg(query, MAX_QUERY_CHARS)
         bounded = _limit_arg(limit)
-        where = _where(_date_arg(date), _kind_arg(kind))
+        day = _date_arg(date)
+        where = _where(day, _kind_arg(kind))
         try:
             vector = self._embed_query(text)
         except Exception as exc:  # noqa: BLE001  # re-raised with a declared code
@@ -407,9 +408,12 @@ class _LibraryTools:
         else:
             hits = self._index.search(
                 vector, kinds=None, limit=bounded, threshold=self._threshold, where=where
-            ) or self._index.search(vector, kinds=None, limit=bounded, where=where)
-            # One named day (or kind): its best passages even under the threshold, so
-            # "what is in today's paper" reads today's paper rather than nothing.
+            )
+            if not hits and day is not None:
+                # One named DAY: its best passages even under the threshold, so "what is
+                # in today's paper" reads today's paper rather than nothing. A kind alone
+                # keeps the floor: it would otherwise return unrelated items.
+                hits = self._index.search(vector, kinds=None, limit=bounded, where=where)
         if not hits:
             return NO_MATCHES
         return _render(self._collector, [_hit_citation(hit) for hit in hits])

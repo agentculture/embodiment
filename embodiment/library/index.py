@@ -38,7 +38,6 @@ import contextlib
 import json
 import math
 import os
-import re
 import threading
 from collections.abc import Iterable, Iterator, Mapping
 from dataclasses import dataclass
@@ -72,33 +71,6 @@ BOOK_KIND = "book"
 #: 2026-10-24 xteink also has a native ``newspaper`` kind, which was indexed but never
 #: searched until it was named here (found live: "today's newspaper" found nothing).
 DEFAULT_KINDS = ("transcript", "article", "newspaper")
-NEWSPAPER_KIND = "newspaper"
-_NEWSPAPER_WORDS = ("newspaper", "עיתון")
-_ISO_DAY = re.compile(r"(\d{4}-\d{2}-\d{2})")
-
-
-def item_day(meta: Mapping[str, Any]) -> str:
-    """The day an item is about: an ISO date in its title, else its ``created_at`` date.
-
-    The same rule the page uses (``web/src/api/kinds.ts`` ``itemDay``): culture-rules
-    titles issues "Daily newspaper YYYY-MM-DD" and transcripts "YYYY-MM-DD topic".
-    """
-    for text in (str(meta.get("title") or ""), str(meta.get("created_at") or "")):
-        found = _ISO_DAY.search(text)
-        if found:
-            return found.group(1)
-    return ""
-
-
-def item_kind(meta: Mapping[str, Any]) -> str:
-    """The kind a reader would call it: ``newspaper`` for an issue filed as an article."""
-    kind = str(meta.get("kind") or "").lower()
-    title = str(meta.get("title") or "").lower()
-    if kind == NEWSPAPER_KIND or any(word in title for word in _NEWSPAPER_WORDS):
-        return NEWSPAPER_KIND
-    return kind
-
-
 MAX_REASON_CHARS = 200
 _PASSAGE_FIELDS = ("anchor", "heading", "text", "start_s", "end_s", "speaker", "links")
 #: Links kept on one chunk (the union of its passages' links, first seen first).

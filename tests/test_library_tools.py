@@ -489,3 +489,9 @@ def test_native_newspapers_are_searched_by_default(papers):
     search, _, collector = _tools(papers, threshold=0.0)
     search.fn(query="hotel today", limit=1)
     assert [s["item_id"] for s in collector.sources()] == ["2"]
+
+
+def test_a_kind_alone_keeps_the_similarity_floor(papers):
+    """Review of PR #101: only a named DAY answers under the threshold."""
+    search, _, _ = _tools(papers, threshold=0.99)
+    assert search.fn(query="echo foxtrot", kind="newspaper") == lt.NO_MATCHES

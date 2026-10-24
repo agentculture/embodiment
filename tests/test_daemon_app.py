@@ -42,6 +42,7 @@ from embodiment.contract import ModelResponse, ToolCall
 from embodiment.daemon import app as app_module
 from embodiment.daemon.app import AppConfig, AppFactories, DaemonApp
 from embodiment.daemon.state import DaemonState
+from embodiment.http import server as server_module
 from embodiment.memory import MemorySeams, RoomMemory, SemanticRecall
 from embodiment.realtime import wire
 from embodiment.voice import Voice, VoiceConfig
@@ -5967,6 +5968,53 @@ class TestTextTurns:
         (event,) = h.events("conversation")
         assert event.data["id"] == first
         assert h.app.status()["conversations"]["started_new"] == 1
+
+    def test_new_conversation_waits_inside_the_control_deadline(self) -> None:
+        """Review of PR #101: a wait past the HTTP deadline would answer 'failed' and
+        then swap the session unseen."""
+        assert app_module.NEW_CONVERSATION_WAIT_S < server_module.DEFAULT_CONTROL_TIMEOUT_S
+
+    def test_a_busy_conversation_is_refused_and_nothing_ends(self, harness: Any) -> None:
+        h, _ = self._build(harness)
+        h.app.controls().chat("מה עם הלוטרות?")
+        first = h.app._session.session_id
+        h.app._conversation.acquire()
+        try:
+            original = app_module.NEW_CONVERSATION_WAIT_S
+            app_module.NEW_CONVERSATION_WAIT_S = 0.05
+            try:
+                held = threading.Thread(
+                    target=lambda: results.append(h.app.controls().new_conversation())
+                )
+                results: list = []
+                held.start()
+                held.join(5)
+            finally:
+                app_module.NEW_CONVERSATION_WAIT_S = original
+        finally:
+            h.app._conversation.release()
+        assert results == [{"started": False, "ended": None, "reason": "busy"}]
+        assert h.app._session.session_id == first
+
+    def test_an_ended_conversation_skips_the_quiet_period_only_once(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        from embodiment.daemon.history import SettledLedger
+
+        h, _ = self._build(harness)
+        h.app.controls().chat("מה עם הלוטרות?")
+        first = h.app._session.session_id
+        h.app.controls().new_conversation()
+        ledger, announced = SettledLedger(tmp_path / "s.json"), {}
+        assert h.app._settle_tick(ledger, announced, time.time()) == 1
+        assert first not in h.app._ended_conversations, "pruned once announced"
+
+    def test_close_waits_for_an_ended_conversations_summary(self, harness: Any) -> None:
+        h, _ = self._build(harness)
+        h.app.controls().chat("מה עם הלוטרות?")
+        h.app.controls().new_conversation()
+        h.app.close(deadline=5.0)
+        assert all(not t.is_alive() for t in h.app._session_closers)
 
     def test_new_conversation_with_nothing_said_ends_nothing(self, harness: Any) -> None:
         h, _ = self._build(harness)
