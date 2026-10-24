@@ -458,6 +458,17 @@ REMEMBER_FACT_DESCRIPTION = (
     "The fact to store, in the user's own words. When the user refers to what was "
     "just said, write out what they meant."
 )
+#: Deviation d1 (live 2026-10-24): with the library configured, typed turns never
+#: called search_library (0 of 6) although senses calls it when asked directly. One
+#: fixed line, added ONLY to a typed turn that carries a library collector - every
+#: other prompt (voice, no library) stays byte-identical.
+LIBRARY_TOOL_PROMPT = (
+    "יש לך ספרייה של המשתמש: מסמכים, עיתונים יומיים ותמלולי הקלטות. "
+    "לפני שאת עונה על שאלה על חדשות, על משהו שקרא או הקליט, או על מסמך — "
+    "קראי לכלי search_library, וצטטי כל קטע שבו השתמשת כ־[n]. "
+    "אל תמציאי מידע שאינו בקטעים שהכלי החזיר."
+)
+
 REMEMBER_TOOL_PROMPT = (
     "כשהמשתמש מבקש ממך לזכור, לשמור, לרשום או לא לשכוח משהו — בכל ניסוח, "
     "כולל «תזכרי את כל זה» או «שמרי את מה שאמרתי» — עלייך לקרוא לכלי remember "
@@ -1861,6 +1872,7 @@ class DaemonApp:
         self._library = lane
         self._library_thread: Optional[threading.Thread] = None
         self._library_ticks = 0
+        self._library_tool_calls: dict[str, int] = {}
         self._library_tick_failures = 0
         self._library_seen = (0, 0)
         self._library_guarded_writes = 0
@@ -2942,7 +2954,7 @@ class DaemonApp:
                 self._config.system_prompt,
                 window,
                 memory,
-                tool_prompt=REMEMBER_TOOL_PROMPT if self._config.remember_tool else "",
+                tool_prompt=self._turn_tool_prompt(collector),
                 clock=clock,
                 continuation=continuation,
             ),
@@ -3310,6 +3322,25 @@ class DaemonApp:
 
     # ── the library lane (t13): typed-turn tools, the write guard, the routes ──
 
+    def _turn_tool_prompt(self, collector: Optional[Any]) -> str:
+        """The fixed tool lines for ONE completion: remember/forget, plus the library
+        line only when this turn carries a library collector (d1)."""
+        base = REMEMBER_TOOL_PROMPT if self._config.remember_tool else ""
+        if collector is None or self._library is None or self._seam is None:
+            return base
+        return f"{base}\n{LIBRARY_TOOL_PROMPT}" if base else LIBRARY_TOOL_PROMPT
+
+    def _counted(self, spec: Any) -> Any:
+        """*spec* with its fn counting calls by tool name (d1: a counter that moves)."""
+        inner = spec.fn
+
+        def counted(*args: Any, **kwargs: Any) -> Any:
+            with self._lock:
+                self._library_tool_calls[spec.name] = self._library_tool_calls.get(spec.name, 0) + 1
+            return inner(*args, **kwargs)
+
+        return replace(spec, fn=counted)
+
     def _turn_tools(self, collector: Optional[Any]) -> tuple[Callable[..., Any], ToolRegistry]:
         """The completion seam and registry for ONE completion.
 
@@ -3327,7 +3358,7 @@ class DaemonApp:
         for spec in library_tools.build_library_tools(
             lane.index, lane.embed_query, collector, threshold=lane.threshold
         ):
-            registry.add(spec)
+            registry.add(self._counted(spec))
         return bind_tools(self._seam, registry), registry
 
     def live_turn_held(self) -> bool:
@@ -3506,6 +3537,10 @@ class DaemonApp:
                 "interval_s": lane.interval_s,
                 "tick_budget_s": LIBRARY_TICK_BUDGET_S,
             }
+            tool_calls = {
+                name: self._library_tool_calls.get(name, 0)
+                for name in ("search_library", "read_passage")
+            }
         return {
             **probed,
             "configured": True,
@@ -3515,6 +3550,7 @@ class DaemonApp:
             "similarity_threshold": lane.threshold,
             "threshold_calibrated": False,
             "worker": worker,
+            "tool_calls": tool_calls,
         }
 
     # ── the drain worker and the memory lanes' own degradations ──────────

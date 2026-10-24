@@ -917,3 +917,41 @@ class TestOneAccessBlock:
                 assert secretish not in blob, secretish
         finally:
             application.close(deadline=2.0)
+
+
+class TestDeviationD1:
+    """Live 2026-10-24: typed turns never called search_library; d1 adds a prompt line
+    (library turns only), a sharper description, and call counters."""
+
+    def test_the_library_line_reaches_only_library_typed_turns(self):
+        from embodiment.daemon import app as A
+
+        assert "search_library" in A.LIBRARY_TOOL_PROMPT
+
+    def test_the_search_description_tells_the_model_when_to_call_it(self):
+        from embodiment.library import tools as T
+
+        assert "BEFORE answering" in T._SEARCH_DESCRIPTION
+        assert "newspapers" in T._SEARCH_DESCRIPTION
+
+    def test_a_typed_library_turn_carries_the_line_and_a_voice_turn_does_not(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        from embodiment.daemon import app as A
+
+        script = ToolScript()
+        h = _build(harness, tmp_path, complete=script)
+        h.app.run_turn(SPEECH)
+        voice_system = script.prompts[-1][0]["content"]
+        h.app.controls().chat("golf?")
+        typed_system = script.prompts[-1][0]["content"]
+        assert A.LIBRARY_TOOL_PROMPT not in voice_system
+        assert A.LIBRARY_TOOL_PROMPT in typed_system
+
+    def test_library_tool_calls_are_counted_by_name(self, harness: Any, tmp_path: Path) -> None:
+        script = ToolScript(_call("search_library", query="golf"), ModelResponse(content=REPLY))
+        h = _build(harness, tmp_path, complete=script)
+        h.app.controls().chat("golf?")
+        calls = h.app.status()["library"]["tool_calls"]
+        assert calls["search_library"] == 1
+        assert calls["read_passage"] == 0
