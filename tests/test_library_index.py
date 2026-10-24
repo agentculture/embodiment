@@ -670,7 +670,7 @@ def test_indexed_items_lists_metadata_only_for_citable_items(tmp_path):
 
 
 def test_item_day_prefers_the_titles_date_then_created_at():
-    from embodiment.library.index import item_day
+    from embodiment.library.days import item_day
 
     assert item_day({"title": "Daily newspaper 2026-10-23", "created_at": "2026-10-24T06:00"}) == (
         "2026-10-23"
@@ -680,7 +680,7 @@ def test_item_day_prefers_the_titles_date_then_created_at():
 
 
 def test_item_kind_reads_an_issue_filed_as_an_article_as_a_newspaper():
-    from embodiment.library.index import item_kind
+    from embodiment.library.days import item_kind
 
     assert item_kind({"kind": "article", "title": "Daily newspaper 2026-10-23"}) == "newspaper"
     assert item_kind({"kind": "article", "title": "עיתון יומי"}) == "newspaper"
@@ -712,3 +712,14 @@ def test_passages_and_chunks_keep_their_links_and_hits_carry_them(tmp_path):
     assert idx.links_of("missing") == set()
     (hit,) = idx.search(FakeEmbed()("alpha"), limit=1)
     assert [url for _, url in hit.links] == ["https://example.org/1", "https://example.org/2"]
+
+
+def test_a_utc_timestamp_is_dated_by_the_operators_local_day():
+    """Review of PR #101: 01:00 local on the 25th is the 25th, not UTC's 24th."""
+    from embodiment.library.days import LOCAL_ZONE, item_day
+
+    if getattr(LOCAL_ZONE, "key", "") != "Asia/Jerusalem":
+        pytest.skip("no tz database on this host")
+    assert item_day({"title": "Morning", "created_at": "2026-10-24T22:30:00Z"}) == "2026-10-25"
+    assert item_day({"title": "Morning", "created_at": "2026-10-24T08:00:00+00:00"}) == "2026-10-24"
+    assert item_day({"title": "Morning", "created_at": "2026-10-24"}) == "2026-10-24"

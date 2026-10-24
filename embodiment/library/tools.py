@@ -50,7 +50,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Callable, Optional
 
 from embodiment import memory
-from embodiment.library.index import item_day, item_kind
+from embodiment.library.days import item_day, item_kind
 from embodiment.tools import ToolSpec
 
 __all__ = [
@@ -277,6 +277,24 @@ def replace_source(citation: Citation, source: str) -> Citation:
     return Citation(**{**asdict(citation), "source": source})
 
 
+#: The links line's own budget, beyond the passage text's: whole links only, never a
+#: URL cut mid-string -- a cut URL is not one the item lists, so fetch_source would
+#: refuse it (review of PR #102). A link that does not fit is left out, not shortened.
+LINKS_MAX_CHARS = 700
+
+
+def _links_line(links: tuple) -> str:
+    out: list[str] = []
+    used = 0
+    for text, url in links:
+        entry = f"{text or 'link'} <{url}>"
+        if used + len(entry) + 2 > LINKS_MAX_CHARS:
+            continue
+        out.append(entry)
+        used += len(entry) + 2
+    return "; ".join(out)
+
+
 def citation_record(citation: Citation) -> dict[str, Any]:
     """*citation* as the record shape :func:`embodiment.memory.render_recalled` renders.
 
@@ -298,8 +316,8 @@ def citation_record(citation: Citation) -> dict[str, Any]:
             f"{provenance} | url: {citation.link}" if provenance else f"url: {citation.link}"
         )
     body = citation.text
-    if citation.links:
-        listed = "; ".join(f"{text or 'link'} <{url}>" for text, url in citation.links)
+    listed = _links_line(citation.links)
+    if listed:
         body = f"{body}\nlinks: {listed}"
     return {
         "id": citation.item_id or "web",
@@ -314,7 +332,8 @@ def _render(
 ) -> str:
     """The fenced tool result, each entry numbered by its collector position."""
     numbers = [collector.add(c) for c in citations]
-    rendered = memory.render_recalled([citation_record(c) for c in citations], max_chars=max_chars)
+    budget = max_chars + LINKS_MAX_CHARS + len("\nlinks: ")
+    rendered = memory.render_recalled([citation_record(c) for c in citations], max_chars=budget)
 
     def renumber(match: re.Match[str]) -> str:
         return f"[{numbers[int(match.group(1)) - 1]}] id="
@@ -395,7 +414,8 @@ class _LibraryTools:
     ) -> str:
         text = _text_arg(query, MAX_QUERY_CHARS)
         bounded = _limit_arg(limit)
-        where = _where(_date_arg(date), _kind_arg(kind))
+        day = _date_arg(date)
+        where = _where(day, _kind_arg(kind))
         try:
             vector = self._embed_query(text)
         except Exception as exc:  # noqa: BLE001  # re-raised with a declared code
@@ -407,9 +427,12 @@ class _LibraryTools:
         else:
             hits = self._index.search(
                 vector, kinds=None, limit=bounded, threshold=self._threshold, where=where
-            ) or self._index.search(vector, kinds=None, limit=bounded, where=where)
-            # One named day (or kind): its best passages even under the threshold, so
-            # "what is in today's paper" reads today's paper rather than nothing.
+            )
+            if not hits and day is not None:
+                # One named DAY: its best passages even under the threshold, so "what is
+                # in today's paper" reads today's paper rather than nothing. A kind alone
+                # keeps the floor: it would otherwise return unrelated items.
+                hits = self._index.search(vector, kinds=None, limit=bounded, where=where)
         if not hits:
             return NO_MATCHES
         return _render(self._collector, [_hit_citation(hit) for hit in hits])

@@ -167,3 +167,12 @@ def test_links_per_passage_are_capped():
     )
     out = extract(basic(**{"OEBPS/one.xhtml": f"<html><body><p>{many}</p></body></html>"}))
     assert len(out.passages[0].links) == epub.MAX_LINKS
+
+
+def test_a_link_wrapping_a_block_is_kept():
+    """Review of PR #102: <a><p>...</p></a> lost its link when the block flushed."""
+    doc = (
+        '<html><body><a href="https://example.org/wrapped"><p>A wrapped story</p></a></body></html>'
+    )
+    out = extract(basic(**{"OEBPS/one.xhtml": doc}))
+    assert out.passages[0].links == (("A wrapped story", "https://example.org/wrapped"),)

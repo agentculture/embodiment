@@ -38,8 +38,9 @@ describe("Chat", () => {
   it("a fetched web source links out in a new tab, never to the reader", async () => {
     const page = { source: "web", kind: "web", title: "Thor ships", date: "", start: null, end: null, section: "", link: "https://example.test/thor", text: "article text", item_id: "" };
     const javascript = { ...page, title: "bad", link: "javascript:alert(1)" };
+    const malformed = { ...page, title: "broken", link: "https://[bad" };
     const onOpen = vi.fn();
-    const fetchFn = fetchOk({ reply: "From the source [1].", sources: [page, javascript] });
+    const fetchFn = fetchOk({ reply: "From the source [1].", sources: [page, javascript, malformed] });
     render(<Chat secret="k" clientOptions={{ fetchFn }} onOpenCitation={onOpen} />);
     await send("summarize the source");
     const link = await screen.findByRole("link", { name: /Thor ships/ });
@@ -47,6 +48,8 @@ describe("Chat", () => {
     expect(link).toHaveAttribute("target", "_blank");
     expect(link).toHaveAttribute("rel", "noopener noreferrer");
     expect(screen.queryByRole("link", { name: /bad/ })).toBeNull();
+    // a URL that does not parse never throws during render (review of PR #102)
+    expect(screen.queryByRole("link", { name: /broken/ })).toBeNull();
     expect(onOpen).not.toHaveBeenCalled();
   });
 

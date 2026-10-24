@@ -127,3 +127,30 @@ def test_search_hits_show_their_links_too(index):
     search, _ = lt.build_library_tools(index, _embed, lt.CitationCollector())
     out = search.fn(query="Jetson", limit=1)
     assert "links: " in out and "https://example.org/" in out
+
+
+def test_long_links_are_listed_whole_or_not_at_all(tmp_path):
+    """Review of PR #102: a URL cut mid-string is not a link the item lists."""
+    idx = DocumentIndex(tmp_path / "j.json", embed=_embed, model_tag="m")
+    meta = {"id": "8", "sha256": "s", "kind": "newspaper", "title": "Daily newspaper 2026-10-24"}
+    urls = [f"https://example.org/{i}/" + "x" * 200 for i in range(6)]
+    idx.reconcile([meta])
+    idx.upsert_item(
+        meta,
+        [
+            {
+                "anchor": "p",
+                "heading": "",
+                "text": "y" * 990,
+                "links": [(f"link {i}", u) for i, u in enumerate(urls)],
+            }
+        ],
+    )
+    read, _, _ = _tools(idx)
+    out = read.fn(item_id="8")
+    listed = [u for u in urls if u in out]
+    assert listed, "some links fit"
+    assert "[truncated]" not in out.split("links:")[1]
+    for u in urls:
+        head = u[:60]
+        assert (u in out) or (head not in out), "a URL is never shown cut"

@@ -2565,3 +2565,15 @@ def test_marking_a_to_do_is_a_guarded_post_with_a_done_body() -> None:
         assert calls == [("t1", True), ("nope", False)]
     finally:
         built.server.shutdown(2.0)
+
+
+def test_a_busy_new_conversation_is_a_409_so_the_page_does_not_reset() -> None:
+    built = build(controls=s.Controls(new_conversation=lambda: {"started": False, "ended": None}))
+    try:
+        status, body = built.request(
+            "POST", s.NEW_CONVERSATION_ROUTE, body=b"{}", hdrs=built.headers()
+        )
+        assert status == 409
+        assert s.CONVERSATION_BUSY_CODE in body.decode()
+    finally:
+        built.server.shutdown(2.0)

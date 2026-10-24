@@ -81,7 +81,7 @@ function provenance(s: ChatSource): string {
     case "web":
       // A page an item links to, read by fetch_source: its title, then where it is.
       parts.push(s.title || "web page");
-      if (webLink(s)) parts.push(new URL(webLink(s) as string).host);
+      if (webLink(s)) parts.push(hostOf(webLink(s) as string));
       break;
     case "room":
       parts.push("Gwen's memory");
@@ -108,9 +108,18 @@ function sourceKind(s: ChatSource): { label: string; color: string } {
 
 type OpenCitation = (itemId: string, anchor: unknown) => void;
 
-/** A fetched source's own address (http/https only), or null. */
+/** A URL's host, or "" when it does not parse -- never a throw during render. */
+function hostOf(url: string): string {
+  try {
+    return new URL(url).host;
+  } catch {
+    return "";
+  }
+}
+
+/** A fetched source's own address (http/https only, and parseable), or null. */
 function webLink(s: ChatSource): string | null {
-  return s.source === "web" && /^https?:\/\//i.test(s.link || "") ? s.link : null;
+  return s.source === "web" && /^https?:\/\//i.test(s.link || "") && hostOf(s.link) ? s.link : null;
 }
 
 function openSource(s: ChatSource, onOpen?: OpenCitation) {

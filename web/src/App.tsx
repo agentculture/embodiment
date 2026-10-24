@@ -242,7 +242,16 @@ export default function App({
   // "New conversation" (operator, 2026-10-24): a fresh thread, and the voice
   // transcript from this point on; the ended one is in the history pane.
   const [liveKey, setLiveKey] = useState(0);
-  const [transcriptFrom, setTranscriptFrom] = useState(0);
+  // The last voice-transcript entry before "New conversation", or null. An entry, not
+  // an index: the log is capped and drops from the front, so a fixed index would point
+  // past the end once it fills (review of PR #101). If the entry has been dropped, every
+  // entry left came after it.
+  const [transcriptMark, setTranscriptMark] = useState<object | null>(null);
+  const transcriptNow = useMemo(() => {
+    if (transcriptMark === null) return stream.transcript;
+    const at = stream.transcript.indexOf(transcriptMark as (typeof stream.transcript)[number]);
+    return at < 0 ? stream.transcript : stream.transcript.slice(at + 1);
+  }, [stream.transcript, transcriptMark]);
   // On a phone the panes are drawers over the thread: opening one closes the other.
   useEffect(() => {
     if (leftOpen && rightOpen && !wide(861)) setRightOpen(false);
@@ -551,7 +560,7 @@ export default function App({
                 void runControl("new", () => newConversation(appliedSecret)).then((ok) => {
                   if (!ok) return;
                   setLiveKey((k) => k + 1);
-                  setTranscriptFrom(stream.transcript.length);
+                  setTranscriptMark(stream.transcript[stream.transcript.length - 1] ?? null);
                   setAnswers([]);
                   setPast(null);
                   setHistoryKey((k) => k + 1);
@@ -611,12 +620,12 @@ export default function App({
               <h2 className="sr-only" id="voice-thread-title">
                 Transcript
               </h2>
-              <Transcript entries={stream.transcript.slice(transcriptFrom)} />
+              <Transcript entries={transcriptNow} />
             </section>
             <Chat
               key={liveKey}
               secret={appliedSecret}
-              replyEvents={stream.transcript.slice(transcriptFrom)}
+              replyEvents={transcriptNow}
               s2sRole={stream.s2sRole ?? undefined}
               onOpenCitation={openCitation}
               onAnswer={onAnswer}
