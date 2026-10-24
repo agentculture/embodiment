@@ -977,6 +977,19 @@ class TestTheNextTurnKnowsThePagesSourceNumbers:
     mean by item one?" -- the page numbers sources 1..n, the model never saw that list.
     The next typed turn now names them in the same order."""
 
+    def test_each_entry_carries_its_page_number_and_item_n_is_tied_to_it(self):
+        # Live 2026-10-24: fenced and numbered like recalled memory, the list read as a
+        # second memory block and "Item 1" got "which item did you mean?".
+        from embodiment.daemon import app as A
+
+        line = A.previous_sources_line(
+            [{"source": "library", "title": "Daily newspaper", "item_id": "54", "anchor": "a"}] * 2
+        )
+        assert "| page: 1 |" in line
+        assert "| page: 2 |" in line
+        assert line.endswith(A.PREVIOUS_SOURCES_FOOTER)
+        assert "page: N" in A.PREVIOUS_SOURCES_FOOTER
+
     def test_the_line_names_sources_in_page_order_and_is_empty_without_any(self):
         from embodiment.daemon import app as A
 

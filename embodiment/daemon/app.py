@@ -479,6 +479,14 @@ PREVIOUS_SOURCES_HEADER = (
     "המקורות שהוצגו למשתמש עם התשובה הקודמת שלך, לפי המספרים שהוא רואה "
     "(כש«פריט 1» או «המקור השני» — זה הם; קראי אותם עם read_passage או search_library):"
 )
+#: After the fenced list. Live, 2026-10-24: fenced like recalled memory and numbered
+#: [1].. like it, the list read as a second memory block, and "Item 1" got "which item
+#: did you mean?". Each entry also carries its page number, and this line ties
+#: "item N" to it rather than to the recalled-memory block.
+PREVIOUS_SOURCES_FOOTER = (
+    "«פריט N», «מקור N» או «item N» בהודעה הבאה של המשתמש = הרשומה עם page: N ברשימה "
+    "שלמעלה (לא רשומה מהזיכרון). קראי אותה עם read_passage (item_id ו־anchor) לפני שתעני."
+)
 
 
 def previous_sources_line(sources: Sequence[Mapping[str, Any]]) -> str:
@@ -499,20 +507,23 @@ def previous_sources_line(sources: Sequence[Mapping[str, Any]]) -> str:
     shown = [s for s in sources if isinstance(s, Mapping)][:PREVIOUS_SOURCES_SHOWN]
     if not shown:
         return ""
-    rendered = render_recalled([_shown_source_record(src) for src in shown])
-    return f"{PREVIOUS_SOURCES_HEADER}\n{rendered}" if rendered else ""
+    rendered = render_recalled([_shown_source_record(src, n) for n, src in enumerate(shown, 1)])
+    if not rendered:
+        return ""
+    return f"{PREVIOUS_SOURCES_HEADER}\n{rendered}\n{PREVIOUS_SOURCES_FOOTER}"
 
 
-def _shown_source_record(src: Mapping[str, Any]) -> dict[str, Any]:
+def _shown_source_record(src: Mapping[str, Any], page: int) -> dict[str, Any]:
     """One shown source as the record shape :func:`render_recalled` fences.
 
     Only the item id (library) or the source kind, the writer and the date reach the
-    restricted header; the title, and the anchor ``read_passage`` takes, are body.
+    restricted header; the page number, the title and the anchor ``read_passage``
+    takes are body.
     """
     kind = str(src.get("source") or "source")
     if src.get("item_id"):  # a library citation: the reader's target
         kind = library_tools.LIBRARY_SOURCE
-    parts = [("title", str(src.get("title") or kind))]
+    parts = [("page", str(page)), ("title", str(src.get("title") or kind))]
     if kind == library_tools.LIBRARY_SOURCE:
         parts.append(("anchor", str(src.get("anchor") or "")))
     elif kind == "room":
