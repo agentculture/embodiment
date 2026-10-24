@@ -123,7 +123,7 @@ CODE_BAD_ARGUMENTS = "todos-bad-arguments"
 CODES = frozenset({CODE_BAD_ARGUMENTS})
 NO_TODOS = "There are no to-dos that match."
 NOT_ASKED = (
-    "Refused: the user's own words in this turn did not ask to mark a to-do. " "Ask them first."
+    "Refused: the user's own words in this turn did not ask to mark a to-do. Ask them first."
 )
 UNKNOWN_TODO = "No to-do has that id."
 NOT_SAVED = "The to-do could not be marked (the state could not be saved)."
