@@ -201,15 +201,32 @@ def test_gone_item_keeps_cursor_and_lists_gone(tmp_path):
     assert [r["item_id"] for r in reader.listing()] == ["item-b"]
 
 
-def test_explicit_section_and_paragraph_do_not_move_cursor(tmp_path):
+def test_a_seek_repins_the_cursor_to_the_sought_unit(tmp_path):
+    """d1 (approved 2026-10-26): previous/next paragraph and Choose section move the cursor."""
     reader, pos, _ = build(tmp_path, make_doc())
+    for _ in range(3):
+        reader.heard("item-a", reader.next("item-a")["position"])
+    before = reader.next("item-a")["position"]  # paragraph 3, the cursor's next
     unit = reader.next("item-a", section=1, paragraph=1)
     assert unit["text"] == "beta." and unit["heading"] == "Two"
+    assert (pos.get("item-a")["section"], pos.get("item-a")["paragraph"]) == (1, 1)
+    assert reader.heard("item-a", before)["moved"] is False  # stale after the seek
+    assert reader.heard("item-a", unit["position"])["moved"] is True
+    assert reader.next("item-a")["done"] is True  # heard the last unit
+    back = reader.next("item-a", section=0, paragraph=2)  # a seek backwards is the operator's
+    assert pos.get("item-a")["paragraph"] == 2 and back["paragraph"] == 2
+    assert reader.next("item-a")["position"] == back["position"]  # continue plays the sought one
+    assert reader.counters()["seeks"] == 2
+
+
+def test_a_seek_past_the_end_is_done_and_moves_nothing(tmp_path):
+    reader, pos, _ = build(tmp_path, make_doc())
+    reader.heard("item-a", reader.next("item-a")["position"])
     assert reader.next("item-a", section=1)["paragraph"] == 0
+    assert pos.get("item-a")["section"] == 1
     assert reader.next("item-a", section=0, paragraph=99)["done"] is True
     assert reader.next("item-a", section=9)["done"] is True
-    assert reader.heard("item-a", unit["position"])["moved"] is False  # a seek, not the cursor
-    assert reader.next("item-a")["paragraph"] == 0
+    assert (pos.get("item-a")["section"], pos.get("item-a")["paragraph"]) == (1, 0)
 
 
 def test_interleaved_readers_never_move_backwards(tmp_path):

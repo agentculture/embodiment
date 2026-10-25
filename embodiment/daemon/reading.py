@@ -246,6 +246,7 @@ class Reader:
         self.units_heard = 0
         self.heard_refused = 0
         self.continues = 0
+        self.seeks = 0
         self.last_item: Optional[str] = None
         self.last_position: Optional[str] = None
 
@@ -256,6 +257,7 @@ class Reader:
             "units_heard": self.units_heard,
             "heard_refused": self.heard_refused,
             "continues": self.continues,
+            "seeks": self.seeks,
             "last_item": self.last_item,
             "last_position": self.last_position,
         }
@@ -318,6 +320,8 @@ class Reader:
         }
         if not explicit:
             self._pin(item_id, doc, walk, unit)
+        elif unit is not None:
+            self._seek(item_id, doc, unit)
         if unit is None:
             return {**base, "done": True}
         s, p, k = unit
@@ -347,6 +351,17 @@ class Reader:
             return dict(zip(("section", "paragraph", "part"), target), sha256=doc.sha256)
 
         self._positions.update(item_id, fn)
+
+    def _seek(self, item_id: str, doc: Any, unit: tuple) -> None:
+        """An explicit seek re-pins the cursor to the sought unit (d1, approved 2026-10-26).
+
+        The dock's previous / next paragraph and Choose section are the operator's
+        own moves, forward or back; a heard report for any other unit stays refused.
+        """
+        target = dict(zip(("section", "paragraph", "part"), unit), sha256=doc.sha256)
+        _, saved = self._positions.update(item_id, lambda _current: target)
+        if saved:
+            self.seeks += 1
 
     def heard(self, item_id: str, position: Any) -> dict[str, Any]:
         doc, error = self._doc(item_id)
