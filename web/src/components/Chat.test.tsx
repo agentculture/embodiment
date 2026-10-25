@@ -233,3 +233,26 @@ describe("Chat (pocketchat port: thread, citations, composer)", () => {
     vi.unstubAllGlobals();
   });
 });
+
+describe("Chat: an answer can carry a Read aloud card (embodiment#107 t4 AC4)", () => {
+  const LIB = { source: "library", kind: "book", title: "A synthetic book", date: "", start: null, end: null, section: "Chapter one", link: "", text: "passage", item_id: "syn-9" };
+
+  it("an answer citing a library item offers to read it aloud here", async () => {
+    const onReadAloud = vi.fn();
+    render(<Chat clientOptions={{ fetchFn: fetchOk({ reply: "It is in chapter one.", sources: [REC, LIB] }) }} onReadAloud={onReadAloud} />);
+    await send("read me chapter one");
+    const card = await screen.findByRole("group", { name: "Read aloud" });
+    expect(screen.getAllByText("A synthetic book").some((n) => n.closest(".read-card") && n.getAttribute("dir") === "auto")).toBe(true);
+    const btn = screen.getByRole("button", { name: /Read aloud on this (phone|laptop)/ });
+    expect(card.contains(btn)).toBe(true);
+    await userEvent.click(btn);
+    expect(onReadAloud).toHaveBeenCalledWith("syn-9");
+  });
+
+  it("no card without a library source", async () => {
+    render(<Chat clientOptions={{ fetchFn: fetchOk({ reply: "From a recording.", sources: [REC] }) }} onReadAloud={() => {}} />);
+    await send("what was said");
+    await screen.findByText(/From a recording/);
+    expect(screen.queryByRole("group", { name: "Read aloud" })).toBeNull();
+  });
+});
