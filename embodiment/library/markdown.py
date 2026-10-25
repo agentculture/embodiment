@@ -1,0 +1,109 @@
+"""Bounded Markdown text extraction with stable passage anchors.
+
+Stdlib only (``re``, ``html``). The Markdown twin of :mod:`embodiment.library.epub`: it
+yields the same :class:`Extracted` / :class:`Passage` shape, so the index and the reader
+work unchanged, and it refuses with the same :class:`EpubRefused` (a fixed ``code``), so
+the sync needs no new ``except`` clause.
+
+culture-rules writes library items as Markdown (a transcript: an H1 title, a summary,
+``## Key facts``, ``## Transcript``; a to-do list: ``- [ ] text <!-- todo:... -->``).
+Headings set the heading of the passages under them and are not passages themselves;
+each paragraph or list item is one passage. HTML comments are dropped, tags are stripped
+(a ``<div dir="rtl">`` wrapper leaves its text), entities are unescaped, and
+``[text](http...)`` links are kept as ``links``. Caps cut rather than raise: an over-cap
+item still yields bounded passages. Text is returned as found; fencing happens at render
+time, not here.
+"""
+
+from __future__ import annotations
+
+import html
+import re
+from dataclasses import dataclass
+from typing import Optional
+
+from embodiment.library.epub import (
+    MAX_LINK_TEXT,
+    MAX_LINK_URL,
+    MAX_LINKS,
+    EpubRefused,
+    Extracted,
+    Passage,
+)
+
+_COMMENT = re.compile(r"<!--.*?(?:-->|\Z)", re.DOTALL)
+_TAG = re.compile(r"</?[A-Za-z][^<>]*>")
+_HEADING = re.compile(r"^ {0,3}(#{1,6})[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$")
+_BULLET = re.compile(r"^ {0,3}(?:[-*+]|\d{1,9}[.)])[ \t]+")
+_LINK = re.compile(r"(!?)\[([^\[\]]{0,%d})\]\(([^()\s]+)(?:\s+\"[^\"]*\")?\)" % MAX_LINK_TEXT)
+
+
+@dataclass(frozen=True)
+class Limits:
+    max_line_chars: int = 2000
+    max_lines: int = 20_000
+    max_chars: int = 4_000_000
+    max_passage_chars: int = 4000
+
+
+def _inline(line: str, links: list[tuple[str, str]]) -> str:
+    """Resolve links (kept, capped), drop images, strip tags, unescape entities."""
+
+    def sub(m: re.Match) -> str:
+        text, url = m.group(2), m.group(3)
+        if m.group(1):  # an image: no text worth indexing
+            return ""
+        if url.lower().startswith(("http://", "https://")) and len(url) <= MAX_LINK_URL:
+            if len(links) < MAX_LINKS:
+                links.append((html.unescape(_TAG.sub("", text)).strip(), url))
+        return text
+
+    return html.unescape(_TAG.sub("", _LINK.sub(sub, line)))
+
+
+def extract(data: bytes, *, limits: Optional[Limits] = None) -> Extracted:
+    """Extract passages in document order, or raise :class:`EpubRefused`.
+
+    Same one-argument seam as :func:`embodiment.library.epub.extract`.
+    """
+    limits = limits if limits is not None else Limits()
+    try:
+        source = data.decode("utf-8")
+    except (UnicodeDecodeError, AttributeError):
+        raise EpubRefused("bad_markdown") from None
+    if not source.strip():
+        raise EpubRefused("bad_markdown")
+    lines = [ln[: limits.max_line_chars] for ln in source.splitlines()[: limits.max_lines]]
+    lines = _COMMENT.sub("", "\n".join(lines)).split("\n")
+
+    passages: list[Passage] = []
+    chars = 0
+    heading = ""
+    para: list[str] = []
+    links: list[tuple[str, str]] = []
+
+    def flush() -> None:
+        nonlocal chars, links
+        text = " ".join(" ".join(para).split())
+        got, links = tuple(links), []
+        para.clear()
+        if not text or chars >= limits.max_chars:
+            return
+        text = text[: min(limits.max_passage_chars, limits.max_chars - chars)]
+        chars += len(text)
+        passages.append(Passage(f"md#{len(passages)}", heading, text, links=got))
+
+    for line in lines:
+        m = _HEADING.match(line)
+        if m:
+            flush()
+            heading = " ".join(_inline(m.group(2), []).split())
+        elif not line.strip():
+            flush()
+        elif _BULLET.match(line):
+            flush()
+            para.append(_inline(_BULLET.sub("", line, count=1), links))
+        else:
+            para.append(_inline(line, links))
+    flush()
+    return Extracted(passages=passages, chars=chars)
