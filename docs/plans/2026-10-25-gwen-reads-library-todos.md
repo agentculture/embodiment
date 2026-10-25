@@ -1,0 +1,96 @@
+# Build Plan — gwen reads library todos
+
+slug: `gwen-reads-library-todos` · status: `exported` · from frame: `gwen-reads-library-todos`
+
+> Gwen reads her to-dos from culture-library's todo items and marks one by sending its checklist id on the bus; culture-rules flips the line in the library, and the first real flip is filed as evidence
+
+## Tasks
+
+### t1 — Markdown extractor: library/markdown.py turns a format=md item into the Extracted/Passage shape epub.py yields
+
+- instruction: New file embodiment/library/markdown.py, stdlib only (re, html). Mirror epub.py Passage/Extracted and its cap style (read epub.py:60-75 first). Reuse the same refusal exception class epub.py raises so sync.py needs no new except clause. Do not touch epub.py, sync.py or app.py in this task. Synthetic fixtures only; never real library text.
+- covers: c28, h30
+- acceptance:
+  - tests/`test_library_markdown.py`: an H1, a paragraph, a `## Key facts` list and a `## Transcript` section yield passages with headings, anchors and links kept, in order
+  - HTML tags are stripped (a `<div dir="rtl">` wrapper leaves its text), entities are unescaped (`&amp;` -> `&`), HTML comments are dropped from passage text
+  - caps hold: a 10 000-character line is cut to the line cap, lines per item and characters per item are capped, and an over-cap item still yields bounded passages (no raise)
+  - non-UTF-8 or empty input raises EpubRefused-equivalent with a stated code (e.g. `bad_markdown`), never another exception
+
+### t2 — Checklist parser: library/checklist.py reads a kind=todo item into lines (id, text, done, `done_at`, by) and derives the recording id from `pocket.<recording id>.<n>`
+
+- instruction: New file embodiment/library/checklist.py, stdlib only. Group title and date come from the item title (reuse days.py `_DATED_TITLE` parsing, read days.py first). Accept a `clean: Callable[[str], str]` parameter rather than importing markdown.py, so t1 and t2 stay in one wave; the wiring task passes the real cleaner.
+- covers: c3, h21, c4
+- acceptance:
+  - tests/`test_library_checklist.py` over culture-rules' rendered example (docs/operations/library-items.md shape): every `- [ ]` / `- [x]` line with a `todo:<id>` comment becomes exactly one line; a line without an id is ignored; prose and headings are ignored
+  - `done_at=<ISO>` parses to epoch seconds and `by=` is kept; a malformed `done_at` leaves done true with `done_at` None
+  - `recording_id_of`("pocket.70b523d5-42ca-5978-a92b-b9139c2e4bf3.1") == "70b523d5-42ca-5978-a92b-b9139c2e4bf3"; a non-pocket or malformed id returns None; `valid_todo_id` accepts the literal id (pins c7)
+  - line text goes through the markdown module's tag strip/unescape/caps once t1 exists; until then the parser takes a `clean` callable (default identity) so this task is independent
+
+### t3 — Library to-do source: library/`todo_source.py` lists kind=todo items every check, re-reads only changed ones (by sha256) and holds the parsed groups
+
+- instruction: New file embodiment/library/`todo_source.py`. Take the parser as an injected callable (`parse: Callable[[meta, bytes], list]`) so this task does not import checklist.py and stays in wave 1. No thread here: expose `check() -> dict` and `groups()`; the daemon schedules it. Do not edit client.py.
+- covers: c14, h18, c9, h13
+- acceptance:
+  - tests/`test_library_todo_source.py` with a fake GET-only client and a fake clock: a replaced item (new sha256) is re-read at the next check (30 s), an unchanged one is not fetched again
+  - an item that leaves the listing (archived or deleted) disappears from the groups; a line that leaves an item disappears; a new line appears at the next check (feeds c25 at the daemon)
+  - a failed list or fetch keeps the last good groups, sets available=False with a stated code (`library_unavailable` or the client's code), and counters items, lines, checks, failures move
+  - tests/`test_library_client.py`::`test_module_is_get_only` passes unchanged; the source calls only `list_items`(kind="todo") and `fetch_file`
+
+### t4 — Extractor dispatch: library items are extracted by format (EPUB zip -> `epub_extract`, otherwise Markdown), and kind=todo items are never indexed
+
+- instruction: New file embodiment/library/extract.py; the only app.py change is the default at `build_library_lane`. Check how index.wants(meta) treats kind=todo: if culture-library serves to-do lists under another kind, exclude them by kind=="todo" explicitly in index.wants and add a test. Live check after merge: items 57, 58, 60 searchable, 59 and 61 not indexed.
+- depends on: t1
+- covers: c2, h6, c24, h26
+- acceptance:
+  - a new `extract_item(data)` in library/extract.py sends zip bytes to `epub_extract` and other bytes to the Markdown extractor; existing EPUB tests pass unchanged
+  - `build_library_lane` defaults extract= to `extract_item` (daemon/app.py:1715 one-line change); a sync over a fake library with an EPUB, a Markdown transcript and a kind=todo item indexes passages for the first two and none for the todo item; `bad_epub` stays 0
+  - `DEFAULT_KINDS` and `SEARCH_KINDS` are unchanged (tests/`test_library_index.py` default-kinds test unchanged, pins c11)
+
+### t5 — Gwen's marks: daemon/todos.py keeps pending marks against library lines, confirms them, re-sends unconfirmed ones, drops gone ones and prunes old keys
+
+- instruction: Extend TodoStates (or add a Marks class beside it) in embodiment/daemon/todos.py only. API sketch: mark(id, done, by) -> at; reconcile(lines) -> (`shown_items`, `due_resends`, counters); prune(`current_ids`). Keep the `list_todos`/`set_todo_done` tools and the untrusted fence (:221) as they are (c29). Do not touch app.py here.
+- covers: c8, h12, c21, h23, c15, h19, c25, h27
+- acceptance:
+  - a mark shows at once and stays pending until the library line agrees with `done_at` >= the mark's at; then the library state shows and confirmed +1; a newer library flip the other way wins
+  - an unconfirmed mark is due for re-send at each check until it agrees, its line disappears, or 1 hour passes (then it is reported unconfirmed and stops re-sending); re-sends are counted
+  - a mark whose line or item disappears is dropped and counted; after the first library-sourced load todos-done.json holds no key that is not a current checklist id (a test seeded with an old memory-record id)
+  - the file stays 0600 and set-aside on corruption as today; pure logic with an injected clock, no bus or HTTP import
+
+### t6 — Daemon wiring: To-dos come from the library source, a mark publishes the checklist id and recording id, a 30 s to-do check runs beside the 300 s sync, and status.todos reports it
+
+- instruction: embodiment/daemon/app.py: replace the memory path in `_todos`/`_todo_items`/`_set_todo` (:4094-4146) and `_todos_available` (:3819) with the library to-do source built from checklist.parse + markdown cleaner; `todo_groups`/`_todo_key` (:6230-6275) go or become library-shaped. Schedule the to-do check from `_library_tick` (:3900) with its own 30 s clock (derive, do not hard-code a second budget). Update tests/`test_daemon_library.py` :680/:714/TestCheckableTodos to library-sourced to-dos.
+- depends on: t2, t3, t4, t5
+- covers: c4, h22, c22, h24, c5, h9, c6, h10
+- acceptance:
+  - a daemon test with a fake library: /api/todos returns the library lines grouped per item in today's JSON shape; POST /api/todos/{id} publishes a todo bus event whose data.id is the checklist id and data.`recording_id` the Pocket recording id
+  - the 30 s check runs on the library worker, never during a live turn, re-sends due marks through the same bus publish, and touches only the to-do source and marks (never the document index)
+  - status.todos holds items, lines, marks sent, confirmed, pending, oldest pending age, re-sends, dropped; with the library down /api/todos answers a declared code (`library_unavailable`) and status records the degradation, never an empty list
+  - git diff --stat main -- embodiment/bus.py web/src embodiment/ingest embodiment/daemon/drain.py is empty; tests/`test_http_server.py` todo tests pass unchanged
+
+### t7 — Docs, fixtures and release: README, CLAUDE.md and the explain catalog say To-dos come from the library; the todo fixture and schema note use a checklist id; version bump and CHANGELOG
+
+- instruction: Use the version-bump script with stdin from a file (memory: it hangs on an open stdin). Stage paths explicitly; never git commit -a (three untracked foreign files).
+- depends on: t6
+- covers: c12, h16
+- acceptance:
+  - grep "fed from Gwen.s memory" README.md returns nothing; README.md:156-157, CLAUDE.md:76-79 and explain/catalog.py:77 describe the library source, the 30 s check and the pending/confirmed counts
+  - tests/fixtures/events/todo.json uses a `pocket.<uuid>.<n>` id with `recording_id`, schema.json says id is the checklist id; tests/`test_release_docs.py` and markdownlint pass
+  - version bumped (minor, 0.22.0) with a CHANGELOG entry; full suite and the lint stack green
+
+### t8 — Live acceptance on the test daemon and gwen.culture.dev: Markdown items searchable, the To-dos list matches the library, one real mark round-trips, and the obligation is filed for the operator's evidence
+
+- instruction: Run on the scratchpad test daemon (port 8823, state scratchpad/live0/state), never the live store. Use `md_shape.py`-style probes that print structure only. The real flip is the operator's act; prepare the obligation and the commands, then ask.
+- depends on: t7
+- covers: c1, h20, c13, h17, c16, h1, c17, h2, c18, h3, c19, h4, c20, h5, h28
+- acceptance:
+  - before/after: scratchpad live0/`appstatus_s`.txt shows `bad_epub` 6 (before); after the restart status shows `bad_epub` 0 for Markdown items and items 57, 58, 60 are found by search (h2, c17)
+  - /api/todos lines equal the lines of each kind=todo item file, compared by count and ids after one 30 s check (h1, h4); structure-only probe, no text printed
+  - devague oblige c13 with seam "live library to-do flip" is filed; the operator marks one line on the page and files the evidence: the item (same id) shows \[x\] with `done_at` and by within 60 s, `done_at` equals the at of a todo event in Gwen's log, status.todos counts 1 sent and 1 confirmed; times read from the feed event and status (h3, h5, h28, c20)
+  - nothing is claimed before the flip happens: the PR body names the obligation as open until the evidence lands (h20)
+
+## Risks
+
+- [unknown_nonblocking] culture-rules may render `done_at` from its own clock rather than the event's at (assumption c26 is unproven): confirmation compares `done_at` >= at, so a lagging clock would leave marks pending; check on the first flip and fall back to comparing done state only (task t5)
+- [unknown_nonblocking] No Hebrew Markdown transcript has been seen (frame park v1): the dir=rtl tag stripping is built from culture-rules' doc, not a live item; the first Hebrew item is its real test (task t1)
+- [unknown_nonblocking] The item-replace race: culture-rules replaces a to-do item while Gwen fetches it; a fetch of the old bytes leaves the mark pending one more check, which the 30 s re-check absorbs (task t3)
+- [follow_up] Following /api/feed instead of the 30 s list (q1) is a follow-up, not built here

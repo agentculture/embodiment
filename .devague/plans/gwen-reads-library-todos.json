@@ -1,0 +1,546 @@
+{
+  "slug": "gwen-reads-library-todos",
+  "title": "gwen reads library todos",
+  "frame_slug": "gwen-reads-library-todos",
+  "schema_version": 5,
+  "status": "exported",
+  "created": "2026-10-25T10:55:45Z",
+  "updated": "2026-10-25T11:03:21Z",
+  "targets": [
+    {
+      "id": "c1",
+      "kind": "announcement",
+      "text": "Gwen reads her to-dos from culture-library's todo items and marks one by sending its checklist id on the bus; culture-rules flips the line in the library, and the first real flip is filed as evidence",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h20",
+      "kind": "honesty",
+      "text": "the delivered tree reads library to-dos and sends checklist ids, and the first real flip is on record as evidence (not claimed before it happens)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c2",
+      "kind": "requirement",
+      "text": "Gwen reads Markdown library items: a format=md item (culture-rules' new transcripts and to-do lists) is extracted and indexed, not refused as bad_epub",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h6",
+      "kind": "honesty",
+      "text": "a format=md item yields passages (headings and paragraphs, links kept) and is searchable; an EPUB still extracts as before",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c3",
+      "kind": "requirement",
+      "text": "The To-dos list comes from culture-library kind=todo items: each line '- [ ] text <!-- todo:<id> -->' or '- [x] text <!-- todo:<id> done_at=<ISO> by=<by> -->' becomes a to-do with that checklist id, its text and its library done state, grouped per item (title and date from the item's title)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h21",
+      "kind": "honesty",
+      "text": "every `- [ ]` / `- [x]` line with a `todo:<id>` comment becomes exactly one to-do; a line without an id is not checkable; text outside lines is ignored",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c4",
+      "kind": "requirement",
+      "text": "The Pocket recording id of a to-do is taken from its checklist id (`pocket.<recording id>.<n>`), so the todo event carries `data.id` = the checklist id and `data.recording_id` = the Pocket recording id, as culture-rules' flip rule expects",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h22",
+      "kind": "honesty",
+      "text": "the published event's `data.id` is the line's checklist id and `data.recording_id` is the middle part of `pocket.<recording id>.<n>`",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c5",
+      "kind": "boundary",
+      "text": "embodiment/bus.py is unchanged: the todo event already publishes as type embodiment.bus.todo from app://embodiment, with the to-do fields under data.data, which is where culture-rules reads them",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h9",
+      "kind": "honesty",
+      "text": "bus.py has no diff in this change",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c6",
+      "kind": "boundary",
+      "text": "The /api/todos JSON shape {groups:[{recording_id,title,date,items:[{id,text,done,done_at,done_by}]}]} and POST /api/todos/{id} stay as they are, so the page (web/src/api/todos.ts, TodosView.tsx) needs no change",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h10",
+      "kind": "honesty",
+      "text": "web/src has no diff and the /api/todos response keeps its keys",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c8",
+      "kind": "requirement",
+      "text": "A mark shows at once and is kept as Gwen's pending mark until the library item shows that line flipped at least as recently; then the library's state is the one shown, and status counts marks sent and marks the library confirmed",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h12",
+      "kind": "honesty",
+      "text": "a mark stays shown until the library line agrees with it (done_at >= the mark's at); then the library's state shows, and status.todos counts marked and confirmed",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c9",
+      "kind": "boundary",
+      "text": "Gwen still never writes the library: the client stays GET-only (tests/test_library_client.py:269 AST pin); the flip travels only as the bus event",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h13",
+      "kind": "honesty",
+      "text": "the GET-only AST pin still passes and no write method is added",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c12",
+      "kind": "requirement",
+      "text": "Docs and pins follow the source: README.md:156-157, CLAUDE.md:76-79, explain/catalog.py:77 say To-dos come from the library; tests/test_daemon_library.py:680/:714/TestCheckableTodos and tests/fixtures/events/todo.json + schema.json note move from memory-record ids to checklist ids",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h16",
+      "kind": "honesty",
+      "text": "README, CLAUDE.md and the explain catalog say To-dos come from the library; the todo fixture and schema note use a checklist id",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c13",
+      "kind": "requirement",
+      "text": "The first real flip on gwen.culture.dev is an obligation with a live seam: mark a library to-do on the page and see the culture-library item (same id) show the line [x] with done_at and by within 60 s; the operator files its evidence",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h17",
+      "kind": "honesty",
+      "text": "the obligation is filed with seam 'live library to-do flip' and its evidence is filed by the operator from the first real flip",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c14",
+      "kind": "requirement",
+      "text": "Gwen checks the library's to-do items every 30 s (listing only kind=todo, re-reading the changed ones) besides the 300 s catalog check, so a mark's confirmation and a new recording's list reach her within ~30 s; following /api/feed is a follow-up (q1)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h18",
+      "kind": "honesty",
+      "text": "a todo item replaced in the library is re-read within one 30 s todo check, without waiting for the 300 s catalog check",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c15",
+      "kind": "requirement",
+      "text": "Done marks stored under the old memory-record ids are dropped: they match no checklist line and are pruned from todos-done.json (q2)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h19",
+      "kind": "honesty",
+      "text": "after the first library-sourced load, todos-done.json holds no key that is not a library checklist id",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c16",
+      "kind": "audience",
+      "text": "The operator, who reads and checks to-dos on gwen.culture.dev and asks Gwen about them; and culture-rules, which acts on the todo event",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h1",
+      "kind": "honesty",
+      "text": "the operator's page and Gwen's list_todos show the same lines the library item holds",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c17",
+      "kind": "before_state",
+      "text": "Gwen's To-dos come only from ingested action_item memory records, culture-rules never ingests them, and today's Markdown transcripts and to-do lists are refused as bad_epub (6 on 2026-10-25), so the list is empty of today's recordings",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h2",
+      "kind": "honesty",
+      "text": "the live daemon on 2026-10-25 showed bad_epub 6 with items 57-61 listed but not searchable",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c18",
+      "kind": "after_state",
+      "text": "Gwen reads every Markdown library item; her To-dos list is the library's todo items, line for line; checking one sends its checklist id, and within a minute the library item shows it done and Gwen counts the mark as confirmed",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h3",
+      "kind": "honesty",
+      "text": "a mark round-trips: page -> todo event -> library item replaced under the same id -> Gwen's confirmed counter +1",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c19",
+      "kind": "why_it_matters",
+      "text": "One source: what the library holds is what Gwen knows (d17), and the operator can check a to-do once, anywhere Gwen is, and have the record follow",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h4",
+      "kind": "honesty",
+      "text": "no to-do Gwen shows is missing from the library, and none in the library is missing from Gwen after a 30 s check",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c20",
+      "kind": "success_signal",
+      "text": "The first real flip: the culture-library item shows the line [x] with done_at and by <= 60 s after the mark, and Gwen's status counts 1 mark sent and 1 confirmed within 60 s; bad_epub is 0 for Markdown items",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h5",
+      "kind": "honesty",
+      "text": "both times are read from records (feed event at, status), not from a stopwatch",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h28",
+      "kind": "honesty",
+      "text": "the evidence flip is one Gwen published: its line's done_at equals the at of a todo event in Gwen's log, and by matches; a line already [x] before Gwen sent anything is not evidence",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c21",
+      "kind": "requirement",
+      "text": "A mark the library has not confirmed is published again on each 30 s to-do check until the line agrees, the line disappears, or 1 hour passes (then status shows it unconfirmed); re-sending the same at is safe because culture-rules applies a flip only when its at is newer",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h23",
+      "kind": "honesty",
+      "text": "with the broker down at mark time, the mark is confirmed after the broker returns, without a second click",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c22",
+      "kind": "requirement",
+      "text": "status.todos reports items and lines read from the library, marks sent, marks confirmed, marks pending with the oldest pending age, re-sends, and a library-unavailable degradation; a failed library read shows a stated code on the To-dos page, never an empty list",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h24",
+      "kind": "honesty",
+      "text": "stopping the library makes /api/todos answer a declared code and status.todos record the degradation",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c24",
+      "kind": "requirement",
+      "text": "kind=todo items are read by the checklist parser only, not chunked or embedded into the document index; transcript and other Markdown items go through the document index like EPUB items (passages with anchors that read_passage, read_item and the page's reader use)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h26",
+      "kind": "honesty",
+      "text": "after a sync, the index holds passages for items 57, 58, 60 and none for 59, 61",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c25",
+      "kind": "requirement",
+      "text": "When a to-do item is archived or deleted, or a line leaves it, its to-dos disappear from the list and any pending mark for them is dropped and counted; a re-extraction that adds lines shows them at the next to-do check",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h27",
+      "kind": "honesty",
+      "text": "removing a line in a fake library drops it and its pending mark; adding one shows it within one check",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c28",
+      "kind": "requirement",
+      "text": "Library Markdown is read as Markdown, not rendered: HTML tags are stripped (culture-rules wraps Hebrew transcripts in a dir=rtl div), entities are unescaped (derived text is HTML-escaped), and lines, characters per line and items per list are capped, so a malformed item is bounded",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h30",
+      "kind": "honesty",
+      "text": "an item holding a dir=rtl div, an entity and a 10 000-character line yields plain, bounded text",
+      "deferred": false,
+      "deferred_reason": ""
+    }
+  ],
+  "tasks": [
+    {
+      "id": "t1",
+      "summary": "Markdown extractor: library/markdown.py turns a format=md item into the Extracted/Passage shape epub.py yields",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "tests/test_library_markdown.py: an H1, a paragraph, a `## Key facts` list and a `## Transcript` section yield passages with headings, anchors and links kept, in order",
+        "HTML tags are stripped (a `<div dir=\"rtl\">` wrapper leaves its text), entities are unescaped (`&amp;` -> `&`), HTML comments are dropped from passage text",
+        "caps hold: a 10 000-character line is cut to the line cap, lines per item and characters per item are capped, and an over-cap item still yields bounded passages (no raise)",
+        "non-UTF-8 or empty input raises EpubRefused-equivalent with a stated code (e.g. bad_markdown), never another exception"
+      ],
+      "deps": [],
+      "covers": [
+        "c28",
+        "h30"
+      ],
+      "instruction": "New file embodiment/library/markdown.py, stdlib only (re, html). Mirror epub.py Passage/Extracted and its cap style (read epub.py:60-75 first). Reuse the same refusal exception class epub.py raises so sync.py needs no new except clause. Do not touch epub.py, sync.py or app.py in this task. Synthetic fixtures only; never real library text."
+    },
+    {
+      "id": "t2",
+      "summary": "Checklist parser: library/checklist.py reads a kind=todo item into lines (id, text, done, done_at, by) and derives the recording id from `pocket.<recording id>.<n>`",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "tests/test_library_checklist.py over culture-rules' rendered example (docs/operations/library-items.md shape): every `- [ ]` / `- [x]` line with a `todo:<id>` comment becomes exactly one line; a line without an id is ignored; prose and headings are ignored",
+        "`done_at=<ISO>` parses to epoch seconds and `by=` is kept; a malformed done_at leaves done true with done_at None",
+        "recording_id_of(\"pocket.70b523d5-42ca-5978-a92b-b9139c2e4bf3.1\") == \"70b523d5-42ca-5978-a92b-b9139c2e4bf3\"; a non-pocket or malformed id returns None; valid_todo_id accepts the literal id (pins c7)",
+        "line text goes through the markdown module's tag strip/unescape/caps once t1 exists; until then the parser takes a `clean` callable (default identity) so this task is independent"
+      ],
+      "deps": [],
+      "covers": [
+        "c3",
+        "h21",
+        "c4"
+      ],
+      "instruction": "New file embodiment/library/checklist.py, stdlib only. Group title and date come from the item title (reuse days.py _DATED_TITLE parsing, read days.py first). Accept a `clean: Callable[[str], str]` parameter rather than importing markdown.py, so t1 and t2 stay in one wave; the wiring task passes the real cleaner."
+    },
+    {
+      "id": "t3",
+      "summary": "Library to-do source: library/todo_source.py lists kind=todo items every check, re-reads only changed ones (by sha256) and holds the parsed groups",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "tests/test_library_todo_source.py with a fake GET-only client and a fake clock: a replaced item (new sha256) is re-read at the next check (30 s), an unchanged one is not fetched again",
+        "an item that leaves the listing (archived or deleted) disappears from the groups; a line that leaves an item disappears; a new line appears at the next check (feeds c25 at the daemon)",
+        "a failed list or fetch keeps the last good groups, sets available=False with a stated code (library_unavailable or the client's code), and counters items, lines, checks, failures move",
+        "tests/test_library_client.py::test_module_is_get_only passes unchanged; the source calls only list_items(kind=\"todo\") and fetch_file"
+      ],
+      "deps": [],
+      "covers": [
+        "c14",
+        "h18",
+        "c9",
+        "h13"
+      ],
+      "instruction": "New file embodiment/library/todo_source.py. Take the parser as an injected callable (`parse: Callable[[meta, bytes], list]`) so this task does not import checklist.py and stays in wave 1. No thread here: expose `check() -> dict` and `groups()`; the daemon schedules it. Do not edit client.py."
+    },
+    {
+      "id": "t4",
+      "summary": "Extractor dispatch: library items are extracted by format (EPUB zip -> epub_extract, otherwise Markdown), and kind=todo items are never indexed",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "a new `extract_item(data)` in library/extract.py sends zip bytes to epub_extract and other bytes to the Markdown extractor; existing EPUB tests pass unchanged",
+        "build_library_lane defaults extract= to extract_item (daemon/app.py:1715 one-line change); a sync over a fake library with an EPUB, a Markdown transcript and a kind=todo item indexes passages for the first two and none for the todo item; bad_epub stays 0",
+        "DEFAULT_KINDS and SEARCH_KINDS are unchanged (tests/test_library_index.py default-kinds test unchanged, pins c11)"
+      ],
+      "deps": [
+        "t1"
+      ],
+      "covers": [
+        "c2",
+        "h6",
+        "c24",
+        "h26"
+      ],
+      "instruction": "New file embodiment/library/extract.py; the only app.py change is the default at build_library_lane. Check how index.wants(meta) treats kind=todo: if culture-library serves to-do lists under another kind, exclude them by kind==\"todo\" explicitly in index.wants and add a test. Live check after merge: items 57, 58, 60 searchable, 59 and 61 not indexed."
+    },
+    {
+      "id": "t5",
+      "summary": "Gwen's marks: daemon/todos.py keeps pending marks against library lines, confirms them, re-sends unconfirmed ones, drops gone ones and prunes old keys",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "a mark shows at once and stays pending until the library line agrees with done_at >= the mark's at; then the library state shows and confirmed +1; a newer library flip the other way wins",
+        "an unconfirmed mark is due for re-send at each check until it agrees, its line disappears, or 1 hour passes (then it is reported unconfirmed and stops re-sending); re-sends are counted",
+        "a mark whose line or item disappears is dropped and counted; after the first library-sourced load todos-done.json holds no key that is not a current checklist id (a test seeded with an old memory-record id)",
+        "the file stays 0600 and set-aside on corruption as today; pure logic with an injected clock, no bus or HTTP import"
+      ],
+      "deps": [],
+      "covers": [
+        "c8",
+        "h12",
+        "c21",
+        "h23",
+        "c15",
+        "h19",
+        "c25",
+        "h27"
+      ],
+      "instruction": "Extend TodoStates (or add a Marks class beside it) in embodiment/daemon/todos.py only. API sketch: mark(id, done, by) -> at; reconcile(lines) -> (shown_items, due_resends, counters); prune(current_ids). Keep the list_todos/set_todo_done tools and the untrusted fence (:221) as they are (c29). Do not touch app.py here."
+    },
+    {
+      "id": "t6",
+      "summary": "Daemon wiring: To-dos come from the library source, a mark publishes the checklist id and recording id, a 30 s to-do check runs beside the 300 s sync, and status.todos reports it",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "a daemon test with a fake library: /api/todos returns the library lines grouped per item in today's JSON shape; POST /api/todos/{id} publishes a todo bus event whose data.id is the checklist id and data.recording_id the Pocket recording id",
+        "the 30 s check runs on the library worker, never during a live turn, re-sends due marks through the same bus publish, and touches only the to-do source and marks (never the document index)",
+        "status.todos holds items, lines, marks sent, confirmed, pending, oldest pending age, re-sends, dropped; with the library down /api/todos answers a declared code (library_unavailable) and status records the degradation, never an empty list",
+        "git diff --stat main -- embodiment/bus.py web/src embodiment/ingest embodiment/daemon/drain.py is empty; tests/test_http_server.py todo tests pass unchanged"
+      ],
+      "deps": [
+        "t2",
+        "t3",
+        "t4",
+        "t5"
+      ],
+      "covers": [
+        "c4",
+        "h22",
+        "c22",
+        "h24",
+        "c5",
+        "h9",
+        "c6",
+        "h10"
+      ],
+      "instruction": "embodiment/daemon/app.py: replace the memory path in _todos/_todo_items/_set_todo (:4094-4146) and _todos_available (:3819) with the library to-do source built from checklist.parse + markdown cleaner; todo_groups/_todo_key (:6230-6275) go or become library-shaped. Schedule the to-do check from _library_tick (:3900) with its own 30 s clock (derive, do not hard-code a second budget). Update tests/test_daemon_library.py :680/:714/TestCheckableTodos to library-sourced to-dos."
+    },
+    {
+      "id": "t7",
+      "summary": "Docs, fixtures and release: README, CLAUDE.md and the explain catalog say To-dos come from the library; the todo fixture and schema note use a checklist id; version bump and CHANGELOG",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "grep \"fed from Gwen.s memory\" README.md returns nothing; README.md:156-157, CLAUDE.md:76-79 and explain/catalog.py:77 describe the library source, the 30 s check and the pending/confirmed counts",
+        "tests/fixtures/events/todo.json uses a `pocket.<uuid>.<n>` id with recording_id, schema.json says id is the checklist id; tests/test_release_docs.py and markdownlint pass",
+        "version bumped (minor, 0.22.0) with a CHANGELOG entry; full suite and the lint stack green"
+      ],
+      "deps": [
+        "t6"
+      ],
+      "covers": [
+        "c12",
+        "h16"
+      ],
+      "instruction": "Use the version-bump script with stdin from a file (memory: it hangs on an open stdin). Stage paths explicitly; never git commit -a (three untracked foreign files)."
+    },
+    {
+      "id": "t8",
+      "summary": "Live acceptance on the test daemon and gwen.culture.dev: Markdown items searchable, the To-dos list matches the library, one real mark round-trips, and the obligation is filed for the operator's evidence",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "before/after: scratchpad live0/appstatus_s.txt shows bad_epub 6 (before); after the restart status shows bad_epub 0 for Markdown items and items 57, 58, 60 are found by search (h2, c17)",
+        "/api/todos lines equal the lines of each kind=todo item file, compared by count and ids after one 30 s check (h1, h4); structure-only probe, no text printed",
+        "devague oblige c13 with seam \"live library to-do flip\" is filed; the operator marks one line on the page and files the evidence: the item (same id) shows [x] with done_at and by within 60 s, done_at equals the at of a todo event in Gwen's log, status.todos counts 1 sent and 1 confirmed; times read from the feed event and status (h3, h5, h28, c20)",
+        "nothing is claimed before the flip happens: the PR body names the obligation as open until the evidence lands (h20)"
+      ],
+      "deps": [
+        "t7"
+      ],
+      "covers": [
+        "c1",
+        "h20",
+        "c13",
+        "h17",
+        "c16",
+        "h1",
+        "c17",
+        "h2",
+        "c18",
+        "h3",
+        "c19",
+        "h4",
+        "c20",
+        "h5",
+        "h28"
+      ],
+      "instruction": "Run on the scratchpad test daemon (port 8823, state scratchpad/live0/state), never the live store. Use md_shape.py-style probes that print structure only. The real flip is the operator's act; prepare the obligation and the commands, then ask."
+    }
+  ],
+  "risks": [
+    {
+      "id": "r1",
+      "text": "culture-rules may render done_at from its own clock rather than the event's at (assumption c26 is unproven): confirmation compares done_at >= at, so a lagging clock would leave marks pending; check on the first flip and fall back to comparing done state only",
+      "kind": "unknown_nonblocking",
+      "task_id": "t5",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r2",
+      "text": "No Hebrew Markdown transcript has been seen (frame park v1): the dir=rtl tag stripping is built from culture-rules' doc, not a live item; the first Hebrew item is its real test",
+      "kind": "unknown_nonblocking",
+      "task_id": "t1",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r3",
+      "text": "The item-replace race: culture-rules replaces a to-do item while Gwen fetches it; a fetch of the old bytes leaves the mark pending one more check, which the 30 s re-check absorbs",
+      "kind": "unknown_nonblocking",
+      "task_id": "t3",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r4",
+      "text": "Following /api/feed instead of the 30 s list (q1) is a follow-up, not built here",
+      "kind": "follow_up",
+      "task_id": null,
+      "resolved": false,
+      "resolution": ""
+    }
+  ],
+  "obligations": []
+}
