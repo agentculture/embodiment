@@ -77,7 +77,7 @@ absence, never an implication:
   link that library item lists); `list_todos` and `set_todo_done` (the second only
   when the operator's own words ask). The to-dos come from the library's `kind=todo`
   items only, re-read every 30 s; a mark is Gwen's pending one until the library's
-  line agrees, re-sent each check for up to an hour, then counted confirmed
+  line agrees, re-sent each check for up to an hour, then counted unconfirmed
   (`status.todos`). No shell, no files, no Qwen Code, nothing that writes to the
   library.
 - **Vision** — the session is audio-only.

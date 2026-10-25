@@ -102,3 +102,36 @@ def _no_writes_to_the_real_tmpdir(
     private_tmp = tmp_path_factory.mktemp("tmpdir")
     monkeypatch.setenv("TMPDIR", str(private_tmp))
     monkeypatch.setattr(tempfile, "tempdir", None)
+
+
+def _closed_port() -> int:
+    """A loopback port nothing listens on: bound once to learn it, then released."""
+    import socket
+
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.bind(("127.0.0.1", 0))
+        return sock.getsockname()[1]
+
+
+#: Where every test's MQTT client is sent: refused at once, never a real broker.
+NO_BROKER_PORT = _closed_port()
+
+
+@pytest.fixture(autouse=True)
+def _no_real_broker(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Point events-cli's default broker at a closed loopback port for every test.
+
+    A test that starts the real daemon (``app_module.main()``) builds a real ``Bus``,
+    and with no host given events-cli publishes to ``127.0.0.1:1883`` — the operator's
+    broker, where culture-rules acts on every ``todo`` event. Found live
+    (embodiment#105, 2026-10-25): a test's mark reached it and culture-rules flipped a
+    real to-do in the library, because the test's checklist id used a real recording
+    id. Same shape as the guards above: closed for every test, not per test. A test
+    that needs a broker passes an explicit host/port (which wins) or runs live-gated.
+    """
+    import os
+
+    if any(os.environ.get(gate) for gate in LIVE_GATES):
+        return
+    monkeypatch.setenv("EVENTS_BROKER_HOST", "127.0.0.1")
+    monkeypatch.setenv("EVENTS_BROKER_PORT", str(NO_BROKER_PORT))

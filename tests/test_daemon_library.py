@@ -1342,7 +1342,7 @@ def test_a_conversation_citation_keeps_its_source_on_the_page() -> None:
 
 # ── embodiment#105: the To-dos are the library's kind=todo items ───────────────
 
-REC_A = "70b523d5-42ca-5978-a92b-b9139c2e4bf3"
+REC_A = "5e7a1c00-0000-4000-8000-00000000c0de"
 REC_B = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
 ID_A1, ID_A2, ID_B1 = f"pocket.{REC_A}.1", f"pocket.{REC_A}.2", f"pocket.{REC_B}.1"
 

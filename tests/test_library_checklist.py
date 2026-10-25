@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 from embodiment.daemon.todos import valid_todo_id
 from embodiment.library.checklist import parse_checklist, parse_group, recording_id_of
 
-REC = "70b523d5-42ca-5978-a92b-b9139c2e4bf3"
+REC = "5e7a1c00-0000-4000-8000-00000000c0de"
 DONE_AT = "2026-10-24T09:30:00+00:00"
 DOC = f"""# 2026-10-24 Planning the garden
 
