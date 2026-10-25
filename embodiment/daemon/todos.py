@@ -197,18 +197,63 @@ class TodoStates:
                 self._save(states)
             self.resends += len(due)
             self._prune_locked(states, ids)
-            pending = [m["at"] for m in states.values() if _is_pending(m)]
-            counters = {
-                "sent": self.sent,
-                "confirmed": self.confirmed,
-                "pending": len(pending),
-                "oldest_pending_age_s": (now - min(pending)) if pending else None,
-                "resends": self.resends,
-                "dropped": self.dropped,
-                "superseded": self.superseded,
-                "unconfirmed": sum(1 for m in states.values() if m.get("expired")),
-            }
+            counters = self._counters_locked(states, now)
         return shown, due, counters
+
+    def shown(self, lines: Iterable[Any]) -> list[dict]:
+        """What :meth:`reconcile` would display for *lines*, read-only (a page load).
+
+        Nothing is confirmed, dropped, expired or counted here, so a GET may call it as
+        often as it likes; only the to-do check calls :meth:`reconcile`.
+        """
+        now = self._clock()
+        out: list[dict] = []
+        with self._lock:
+            states = self._load()
+            for line in lines:
+                lid = _field(line, "id")
+                lib = {
+                    "done": bool(_field(line, "done")),
+                    "done_at": _field(line, "done_at"),
+                    "done_by": _field(line, "by"),
+                }
+                mark = states.get(lid)
+                lib_at = lib["done_at"]
+                if (
+                    mark is None
+                    or not _is_pending(mark)
+                    or (isinstance(lib_at, (int, float)) and lib_at >= mark["at"])
+                    or now - mark["at"] >= RESEND_WINDOW_S
+                ):
+                    out.append({"id": lid, **lib})
+                else:
+                    out.append(
+                        {
+                            "id": lid,
+                            "done": mark["done"],
+                            "done_at": mark["at"],
+                            "done_by": mark["by"],
+                        }
+                    )
+        return out
+
+    def counters(self) -> dict:
+        """The marks counters :meth:`reconcile` returns, read-only (for status)."""
+        with self._lock:
+            return self._counters_locked(self._load(), self._clock())
+
+    def _counters_locked(self, states: dict[str, dict[str, Any]], now: float) -> dict:
+        pending = [m["at"] for m in states.values() if _is_pending(m)]
+        return {
+            "sent": self.sent,
+            "confirmed": self.confirmed,
+            "pending": len(pending),
+            "oldest_pending_age_s": (now - min(pending)) if pending else None,
+            "resends": self.resends,
+            "dropped": self.dropped,
+            "superseded": self.superseded,
+            "unconfirmed": sum(1 for m in states.values() if m.get("expired")),
+        }
 
     def _save(self, states: dict[str, dict[str, Any]]) -> bool:
         try:
