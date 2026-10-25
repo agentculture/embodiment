@@ -283,6 +283,8 @@ class TestCitations:
             "text": first.text,
             "link": "",
             "links": (),
+            "chunk_no": None,
+            "chunk_sha": "",
         }
         assert "alpha alpha bravo" in first.text
 
@@ -302,6 +304,8 @@ class TestCitations:
             "text": "golf",
             "link": "",
             "links": (),
+            "chunk_no": None,
+            "chunk_sha": "",
         }
 
     def test_citation_text_is_capped_and_neutralised(self, tmp_path):
@@ -495,3 +499,135 @@ def test_a_kind_alone_keeps_the_similarity_floor(papers):
     """Review of PR #101: only a named DAY answers under the threshold."""
     search, _, _ = _tools(papers, threshold=0.99)
     assert search.fn(query="echo foxtrot", kind="newspaper") == lt.NO_MATCHES
+
+
+# -- embodiment#107 t5: search_library on retrieve, read_passage on /text -----------
+
+from embodiment.library.client import LibraryError  # noqa: E402
+from embodiment.library.document import Document, Link, Section  # noqa: E402
+from embodiment.library.retrieve import Passage, RetrieveError  # noqa: E402
+
+
+class _FakeRetrieve:
+    def __init__(self, passages=(), error=None):
+        self.calls = []
+        self.passages = list(passages)
+        self.error = error
+
+    def retrieve(self, query, k, kind=None, item_ids=None):
+        self.calls.append((query, k, kind, item_ids))
+        if self.error:
+            raise self.error
+        return self.passages
+
+
+def _passage(item_id="7", no=0, sha="sha-a", text="alpha alpha bravo", score=0.01):
+    return Passage(item_id, "Night shift", "transcript", no, sha, text, score)
+
+
+_CATALOG = [
+    {"id": "1", "title": "Daily newspaper 2026-10-24", "kind": "newspaper", "created_at": "x"},
+    {"id": "2", "title": "Standup", "kind": "transcript", "created_at": "2026-10-24T10:00:00Z"},
+    {"id": "3", "title": "Old", "kind": "transcript", "created_at": "2026-09-01T10:00:00Z"},
+]
+_DOC = Document(
+    "7",
+    "s",
+    "Night shift",
+    "transcript",
+    (
+        Section("Intro", ("first paragraph", "alpha alpha bravo"), (Link("l", "https://e.org/"),)),
+        Section("", ("charlie delta",)),
+    ),
+)
+
+
+def _rtools(retrieve, collector=None, documents=None):
+    collector = collector or lt.CitationCollector()
+    docs = documents or (lambda _id: _DOC)
+    search, read = lt.build_retrieve_tools(retrieve, lambda: list(_CATALOG), docs, collector)
+    return search, read, collector
+
+
+class TestRetrieveTools:
+    def test_search_passes_k_kind_and_applies_no_floor(self):
+        fake = _FakeRetrieve([_passage(score=0.0001)])
+        search, _, _ = _rtools(fake)
+        out = search.fn(query="alpha", limit=3, kind="transcript")
+        assert fake.calls == [("alpha", 3, "transcript", None)]
+        assert out.startswith(lt.BEST_PASSAGES_NOTE)
+        assert "not confirmed matches" in lt.BEST_PASSAGES_NOTE
+        assert mem.BEGIN_MARK in out and "alpha alpha bravo" in out
+        assert out.endswith(lt.CITE_HINT)
+
+    def test_empty_answer_is_no_matches(self):
+        search, _, _ = _rtools(_FakeRetrieve([]))
+        assert search.fn(query="x") == lt.NO_MATCHES
+
+    def test_citation_carries_chunk_fields_and_dedupes_on_sha(self):
+        fake = _FakeRetrieve([_passage(no=3, sha="s1"), _passage(no=3, sha="s1")])
+        search, _, collector = _rtools(fake)
+        search.fn(query="x")
+        (c,) = collector.citations
+        assert (c.item_id, c.chunk_no, c.chunk_sha) == ("7", 3, "s1")
+        assert collector.sources()[0]["chunk_sha"] == "s1"
+
+    def test_date_lists_the_days_items_from_the_catalog(self):
+        fake = _FakeRetrieve([_passage()])
+        search, _, _ = _rtools(fake)
+        search.fn(query="x", date="2026-10-24")
+        assert fake.calls[0][3] == ["1", "2"]
+
+    def test_a_day_without_items_makes_no_retrieve_call(self):
+        fake = _FakeRetrieve([_passage()])
+        search, _, _ = _rtools(fake)
+        assert search.fn(query="x", date="2026-01-01") == lt.NO_MATCHES
+        assert fake.calls == []
+
+    @pytest.mark.parametrize("code", ["library_unavailable", "rag_unavailable", "library_timeout"])
+    def test_a_library_error_is_fixed_fault_text_with_its_code(self, code):
+        search, read, _ = _rtools(_FakeRetrieve(error=RetrieveError(code)))
+        assert search.fn(query="x") == lt.COULD_NOT_SEARCH.format(code=code)
+
+    def test_a_catalog_failure_does_not_raise(self):
+        def bad():
+            raise RuntimeError("boom")
+
+        search, _ = lt.build_retrieve_tools(
+            _FakeRetrieve(), bad, lambda _i: _DOC, lt.CitationCollector()
+        )
+        assert "library_unavailable" in search.fn(query="x", date="2026-10-24")
+
+    def test_read_passage_returns_the_paragraphs_containing_the_chunk(self):
+        fake = _FakeRetrieve([_passage(sha="s1", text="alpha alpha bravo")])
+        search, read, collector = _rtools(fake)
+        search.fn(query="x")
+        out = read.fn(item_id="7", chunk_sha="s1")
+        assert "alpha alpha bravo" in out
+        assert "first paragraph" not in out
+        assert mem.BEGIN_MARK in out
+        assert collector.citations[-1].chunk_sha == "s1"
+
+    def test_read_passage_unknown_sha_is_the_fixed_text(self):
+        _, read, _ = _rtools(_FakeRetrieve())
+        assert read.fn(item_id="7", chunk_sha="nope") == lt.NO_PASSAGE
+
+    def test_read_passage_with_no_paragraph_match_is_not_found(self):
+        fake = _FakeRetrieve([_passage(sha="s1", text="text nowhere in the document")])
+        search, read, _ = _rtools(fake)
+        search.fn(query="x")
+        assert read.fn(item_id="7", chunk_sha="s1") == lt.NO_PASSAGE
+
+    def test_read_passage_document_fault_is_fault_text(self):
+        def docs(_id):
+            raise LibraryError("library_unreachable")
+
+        fake = _FakeRetrieve([_passage(sha="s1")])
+        search, read, _ = _rtools(fake, documents=docs)
+        search.fn(query="x")
+        assert "library_unreachable" in read.fn(item_id="7", chunk_sha="s1")
+
+    def test_specs_are_shaped(self):
+        search, read, _ = _rtools(_FakeRetrieve())
+        assert (search.name, read.name) == ("search_library", "read_passage")
+        assert set(read.parameters["properties"]) == {"item_id", "chunk_sha"}
