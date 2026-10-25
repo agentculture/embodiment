@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-10-25T22:41:22Z",
-  "updated": "2026-10-25T22:56:49Z",
+  "updated": "2026-10-25T23:11:32Z",
   "claims": [
     {
       "id": "c1",
@@ -412,6 +412,207 @@
       "links": [],
       "instruction": "",
       "revisions": []
+    },
+    {
+      "id": "c25",
+      "kind": "requirement",
+      "text": "the page's library routes keep working with no index: /api/library lists the catalog from a live list_items (last good list kept on failure), /api/library/{id} serves the item's paragraphs from the library's /text, and /api/library/search answers through retrieve; each says library_unavailable (503) when the library is down",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h18",
+          "text": "with the index code removed, the Library tab lists the live catalog, opens a live EPUB and a live transcript in the reader, and a page search returns retrieve passages; with the library stopped each route answers 503 library_unavailable and the shelf keeps the last good list",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c26",
+      "kind": "requirement",
+      "text": "read_item and fetch_source move off the index: read_item returns an item's paragraphs from /text (still capped per call, with an offset so a long item can be read on), and fetch_source takes its allowed links from the item's /text sections, so Gwen still reaches only a link the item lists",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h19",
+          "text": "fetch_source refuses a URL that is not among the links /text gives for that item (test with a fake library), and read_item with an offset past the end returns the fixed end text, not an error",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c27",
+      "kind": "requirement",
+      "text": "search_library's date argument keeps working: Gwen lists that day's items from the catalog (created_at) and passes their ids as item_ids to retrieve, which accepts item_ids (live probe 2026-10-26); a named day with no items answers no matches rather than searching everything",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h20",
+          "text": "a test asks search_library for a date with two items in a fake catalog and sees retrieve called with exactly those two ids; a date with no items makes no retrieve call",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c28",
+      "kind": "requirement",
+      "text": "the reading routes (next paragraph, heard) sit behind the same guard as every state-changing route: Host and Origin allow-list plus the install secret, or a valid Cloudflare Access assertion on the public Host; a heard report changes only the cursor",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h21",
+          "text": "a heard POST without the secret (non-public Host) or without a valid Access assertion (public Host) is refused 401/403 and the cursor file is unchanged; the next-paragraph route is refused the same way, since it carries library text",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c29",
+      "kind": "assumption",
+      "text": "one reading position per item is shared by every device: if the laptop and the phone read the same item at once, each heard report moves the one cursor; h16's stale-position rule keeps the cursor from jumping backwards, and the last device to report wins",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h22",
+          "text": "two concurrent readers of one item in a test (A at paragraph 3, B at paragraph 7): reports interleave and the cursor ends at the furthest exact next position, never re-heard backwards, and the file is never torn (atomic replace under one lock)",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c30",
+      "kind": "requirement",
+      "text": "status carries reading counters: reads started, paragraphs served, paragraphs heard, heard reports refused (stale or unknown), continues, and the last read's item and position; library search carries retrieve calls, failures_by_code and the last latency, so a silent no-op shows as zeros, not as health",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h23",
+          "text": "a test drives one read of three paragraphs with one stale report and sees served 3, heard 3, refused 1 in status; a failed retrieve moves failures_by_code and not calls_ok",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c31",
+      "kind": "requirement",
+      "text": "a cursor for an item that is no longer in the catalog (deleted or archived) is kept but not offered: the library card shows no continue for it, and opening it says the item is gone; cursors are dropped only when the operator clears them",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h24",
+          "text": "a fake catalog without item X hides X's continue chip and the reader's open answers a fixed gone text; the cursor entry is still in the file afterwards",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c32",
+      "kind": "assumption",
+      "text": "the tts lane keeps ahead of playback once warm: probed 2026-10-26 on the rig, a 150-character Hebrew paragraph synthesised in 0.83 s for about 10.7 s of audio and English 0.46-0.55 s for about 7.7 s (n=2 each, synthetic text); but the first, cold call took 6.59 s, over c22's 5 s continue bar",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h25",
+          "text": "the live run records time from the continue tap to first audio for a cold and a warm tts lane separately, and c22's 5 s bar is judged on the warm figure with the cold one published beside it",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c33",
+      "kind": "boundary",
+      "text": "there is no switch back to the local library index: rollback is installing the previous release, whose index would rebuild by sync; the frame accepts that cost rather than keep two search paths",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h26",
+          "text": "the release notes say plainly that this release removes the local library index and has no switch back, and name installing the previous release as the rollback",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c34",
+      "kind": "decision",
+      "text": "on the first start of this release the daemon deletes its retired library index file (`<state>/library/index.json`) once, records that it did, and never touches the conversations index",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": [
+        {
+          "text": "on the first start of this release the daemon deletes its retired library index file (<state>/library/index.json) once, records that it did, and never touches the conversations index",
+          "kind": "decision",
+          "reason": "backtick the path for MD033; wording unchanged"
+        }
+      ]
+    },
+    {
+      "id": "c35",
+      "kind": "decision",
+      "text": "reading progress matches the line being heard: the dock's bar has one segment per paragraph of the section, the paragraph playing fills its own segment as its audio plays, and the section map and the paragraph's edge line are driven by the same position, so on the 3rd paragraph the 3rd segment is the one filling",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
     }
   ],
   "open_vagueness": [
@@ -446,6 +647,15 @@
       "id": "v4",
       "text": "voice commands for reading (read me X, continue, stop) on spoken turns when Live is on; voice turns carry no library tools today (c39)",
       "kind": "follow_up",
+      "claim_id": null,
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v5",
+      "text": "Which device plays when the same item is open on two devices at once is not decided: both would play unless the page hands off; the frame only fixes the cursor (c29)",
+      "kind": "unknown_nonblocking",
       "claim_id": null,
       "resolved": false,
       "resolution": "",
@@ -580,6 +790,90 @@
       "seeds": [
         "c16"
       ]
+    },
+    {
+      "id": "s18",
+      "surface": "challenge pass / adjacent-systems lens: daemon/app.py:4158-4202 (_library_list, _library_get, _library_search)",
+      "finding": "all three page routes read Gwen's index: the list falls back to the persisted index after a restart, the reader's item and passages come from index.item, search embeds and calls index.search; c2 alone would leave the Library tab empty",
+      "seeds": [
+        "c25"
+      ]
+    },
+    {
+      "id": "s19",
+      "surface": "challenge pass / adjacent-systems lens: embodiment/library/reading.py:66-96",
+      "finding": "read_item uses index.item and fetch_source's allow-list uses index.links_of; both break when the library index retires; /text sections carry links (live probe: book 11 sections have links with text, href, start)",
+      "seeds": [
+        "c26"
+      ]
+    },
+    {
+      "id": "s20",
+      "surface": "challenge pass / unstated-assumptions lens: embodiment/library/tools.py:410-438",
+      "finding": "the date path filters index hits by item day (where) and falls back to the day's best under the threshold; retrieve has no date filter, only kind and item_ids",
+      "seeds": [
+        "c27"
+      ]
+    },
+    {
+      "id": "s21",
+      "surface": "challenge pass / security lens: embodiment/http/server.py:453-462,549; http/guard.py",
+      "finding": "chat, speak and clip are the text routes behind the guard; reading adds two more routes, one of them state-changing, both carrying private library text over the public tunnel",
+      "seeds": [
+        "c28"
+      ]
+    },
+    {
+      "id": "s22",
+      "surface": "challenge pass / migration lens: daemon/app.py:1076-1078 (library index path)",
+      "finding": "the index lives at `<state>/library/index.json` (0700 dir, 0600 file); retiring the code leaves derived copies of private library text behind unless something removes them; the live file was not opened (live store is off limits to this pass)",
+      "seeds": []
+    },
+    {
+      "id": "s23",
+      "surface": "challenge pass / concurrency lens: c11, c23, daemon/todos.py lock pattern",
+      "finding": "the page is open on several devices (phone, laptop) and the cursor is daemon-side; nothing in the frame said what two simultaneous reads do",
+      "seeds": [
+        "c29"
+      ]
+    },
+    {
+      "id": "s24",
+      "surface": "challenge pass / observability lens: CLAUDE.md lesson 3; daemon/app.py:4386-4425",
+      "finding": "status.library is index-shaped today (items_indexed, chunks); nothing would show that reading or retrieve ran",
+      "seeds": [
+        "c30"
+      ]
+    },
+    {
+      "id": "s25",
+      "surface": "challenge pass / lifecycle lens: c11; library Item.archived_at",
+      "finding": "the library has archived_at and items can disappear; the frame covered a changed item (h9) but not a gone one",
+      "seeds": [
+        "c31"
+      ]
+    },
+    {
+      "id": "s26",
+      "surface": "challenge pass / cheap-probe lens: lobes gateway 127.0.0.1:8001 POST /v1/audio/speech (scratchpad tts_speed.py)",
+      "finding": "warm synthesis is 0.06-0.08 of real time, so one paragraph of prefetch is enough; cold first call 6.59 s; audio seconds assume 24 kHz pcm16; English produced audio but how it sounds was not judged",
+      "seeds": [
+        "c32"
+      ]
+    },
+    {
+      "id": "s27",
+      "surface": "challenge pass / rollback lens: CLAUDE.md recall rollback (EMBODIMENT_RECALL_MODE=keyword); #107 'fall back to the catalog or Gwen's current path'",
+      "finding": "memory kept a rollback env; #107 suggests a fallback to the current path on 503; c2 retires the path, so a 503 answers a fault (c6), not the old index",
+      "seeds": [
+        "c33"
+      ]
+    },
+    {
+      "id": "s28",
+      "surface": "challenge pass / injection lens: c10, c24, c13",
+      "finding": "a read never passes library text to senses (c10), so text in a document cannot steer Gwen during a read; search results stay fenced (c13); clean pass, residual risk only if a later voice-command follow-up (v4) feeds read text into a turn",
+      "seeds": []
     }
   ],
   "lapses": [],

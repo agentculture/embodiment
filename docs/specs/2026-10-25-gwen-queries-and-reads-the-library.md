@@ -33,6 +33,18 @@
   - honesty: the cursor file is 0600 under the state dir, survives a daemon restart, holds one entry per item, an unreadable file is set aside rather than overwritten, and an item whose sha256 changed resumes at the start of the saved section (or the item's start if the section is gone), never past the end
 - the page drives a read through daemon routes: start or continue returns the next paragraph (its text, section heading and position) from the saved cursor; the page synthesises it with /api/speak, plays it, and reports it heard on the audio's ended event; the daemon advances the cursor only on a heard report for that exact position, and the page prefetches the following paragraph so speech does not stall between paragraphs
   - honesty: a heard report for a stale position (not the cursor's next) does not move the cursor; a paragraph whose audio was paused, errored or cut before ended is not reported heard; reloading mid-paragraph and continuing replays that paragraph
+- the page's library routes keep working with no index: /api/library lists the catalog from a live `list_items` (last good list kept on failure), /api/library/{id} serves the item's paragraphs from the library's /text, and /api/library/search answers through retrieve; each says `library_unavailable` (503) when the library is down
+  - honesty: with the index code removed, the Library tab lists the live catalog, opens a live EPUB and a live transcript in the reader, and a page search returns retrieve passages; with the library stopped each route answers 503 `library_unavailable` and the shelf keeps the last good list
+- `read_item` and `fetch_source` move off the index: `read_item` returns an item's paragraphs from /text (still capped per call, with an offset so a long item can be read on), and `fetch_source` takes its allowed links from the item's /text sections, so Gwen still reaches only a link the item lists
+  - honesty: `fetch_source` refuses a URL that is not among the links /text gives for that item (test with a fake library), and `read_item` with an offset past the end returns the fixed end text, not an error
+- `search_library`'s date argument keeps working: Gwen lists that day's items from the catalog (`created_at`) and passes their ids as `item_ids` to retrieve, which accepts `item_ids` (live probe 2026-10-26); a named day with no items answers no matches rather than searching everything
+  - honesty: a test asks `search_library` for a date with two items in a fake catalog and sees retrieve called with exactly those two ids; a date with no items makes no retrieve call
+- the reading routes (next paragraph, heard) sit behind the same guard as every state-changing route: Host and Origin allow-list plus the install secret, or a valid Cloudflare Access assertion on the public Host; a heard report changes only the cursor
+  - honesty: a heard POST without the secret (non-public Host) or without a valid Access assertion (public Host) is refused 401/403 and the cursor file is unchanged; the next-paragraph route is refused the same way, since it carries library text
+- status carries reading counters: reads started, paragraphs served, paragraphs heard, heard reports refused (stale or unknown), continues, and the last read's item and position; library search carries retrieve calls, `failures_by_code` and the last latency, so a silent no-op shows as zeros, not as health
+  - honesty: a test drives one read of three paragraphs with one stale report and sees served 3, heard 3, refused 1 in status; a failed retrieve moves `failures_by_code` and not `calls_ok`
+- a cursor for an item that is no longer in the catalog (deleted or archived) is kept but not offered: the library card shows no continue for it, and opening it says the item is gone; cursors are dropped only when the operator clears them
+  - honesty: a fake catalog without item X hides X's continue chip and the reader's open answers a fixed gone text; the cursor entry is still in the file afterwards
 
 ## Honesty conditions
 
@@ -45,6 +57,9 @@
 - the after state is checked live once (the success signal), and the result is written to docs/live-test-results with numbers, including if it is bad
 - both parts are measured from records (status, the daemon log of library GETs, the page's heard reports), not from the operator's recollection
 - a test pins that the read route's paragraph text equals the source paragraph byte for byte
+- two concurrent readers of one item in a test (A at paragraph 3, B at paragraph 7): reports interleave and the cursor ends at the furthest exact next position, never re-heard backwards, and the file is never torn (atomic replace under one lock)
+- the live run records time from the continue tap to first audio for a cold and a warm tts lane separately, and c22's 5 s bar is judged on the warm figure with the cold one published beside it
+- the release notes say plainly that this release removes the local library index and has no switch back, and name installing the previous release as the rollback
 
 ## Success signals
 
@@ -54,6 +69,7 @@
 
 - `search_conversations` keeps its own index: Gwen's settled conversations are hers and not library items (d8), so DocumentIndex stays only as the conversations index (conversations.py:15,39,126-167); only the library lane retires
 - read text is library text: it stays fenced wherever it enters a prompt, Gwen never writes the library (c26), and the write guard counts a reading turn as one holding library text
+- there is no switch back to the local library index: rollback is installing the previous release, whose index would rebuild by sync; the frame accepts that cost rather than keep two search paths
 
 ## Non-goals
 
@@ -64,6 +80,8 @@
 - POST /api/rag/retrieve is a read, but the library client is GET-only by construction: tests/`test_library_client.py`:269 `test_module_is_get_only` rejects any POST string, method= other than GET and any data= body, and c26/h14 of the pocketchat cycle promise no write call; calling retrieve needs that pin amended to allow exactly this one route, and a recorded deviation
 - memory's similarity threshold 0.715 does not carry over: probed live 2026-10-26, hybrid scores are rank-fusion values 0.011-0.033 and semantic scores 0.68-0.77 (2 queries, k=8), so the library floor must be chosen anew or dropped (the library returns its k best)
 - Voice.speak returns when sentences are queued, not heard (SpeakResult.`sentences_queued`, voice.py:472-516), so the cursor advances past a paragraph only once its playback finishes with no barge-in; a paragraph interrupted mid-way counts unheard and is read again on continue
+- one reading position per item is shared by every device: if the laptop and the phone read the same item at once, each heard report moves the one cursor; h16's stale-position rule keeps the cursor from jumping backwards, and the last device to report wins
+- the tts lane keeps ahead of playback once warm: probed 2026-10-26 on the rig, a 150-character Hebrew paragraph synthesised in 0.83 s for about 10.7 s of audio and English 0.46-0.55 s for about 7.7 s (n=2 each, synthetic text); but the first, cold call took 6.59 s, over c22's 5 s continue bar
 
 ## Scope exploration
 
@@ -97,6 +115,26 @@
 - `s16` — `web/src/components/AudioControls.tsx:55-63; web/src/audio/lobes/audio-playback.ts:159`: the page plays /api/speak WAVs with new Audio(url) and already hooks onended (only to revoke the URL); an ended event per paragraph is available in the browser to mark it heard, and a pause before ended marks it unheard — reading q1's phone option has a precise heard signal
 - `s17` — `live transcript items 57, 58, 60 (scratchpad transcript_shape.py); culture-library#25; culture-rules issues`: no live transcript carries a time mark, speaker label or `start_s`/`end_s` (3 headings and text each), so the library cannot chunk times it never receives; culture-library#25 item 5 covers the library side, culture-rules had no issue, opened culture-rules#99 on 2026-10-26
   - seeds: `c16`
+- `s18` — `challenge pass / adjacent-systems lens: daemon/app.py:4158-4202 (_library_list, _library_get, _library_search)`: all three page routes read Gwen's index: the list falls back to the persisted index after a restart, the reader's item and passages come from index.item, search embeds and calls index.search; c2 alone would leave the Library tab empty
+  - seeds: `c25`
+- `s19` — `challenge pass / adjacent-systems lens: embodiment/library/reading.py:66-96`: `read_item` uses index.item and `fetch_source`'s allow-list uses index.`links_of`; both break when the library index retires; /text sections carry links (live probe: book 11 sections have links with text, href, start)
+  - seeds: `c26`
+- `s20` — `challenge pass / unstated-assumptions lens: embodiment/library/tools.py:410-438`: the date path filters index hits by item day (where) and falls back to the day's best under the threshold; retrieve has no date filter, only kind and `item_ids`
+  - seeds: `c27`
+- `s21` — `challenge pass / security lens: embodiment/http/server.py:453-462,549; http/guard.py`: chat, speak and clip are the text routes behind the guard; reading adds two more routes, one of them state-changing, both carrying private library text over the public tunnel
+  - seeds: `c28`
+- `s22` — `challenge pass / migration lens: daemon/app.py:1076-1078 (library index path)`: the index lives at `<state>/library/index.json` (0700 dir, 0600 file); retiring the code leaves derived copies of private library text behind unless something removes them; the live file was not opened (live store is off limits to this pass)
+- `s23` — `challenge pass / concurrency lens: c11, c23, daemon/todos.py lock pattern`: the page is open on several devices (phone, laptop) and the cursor is daemon-side; nothing in the frame said what two simultaneous reads do
+  - seeds: `c29`
+- `s24` — `challenge pass / observability lens: CLAUDE.md lesson 3; daemon/app.py:4386-4425`: status.library is index-shaped today (`items_indexed`, chunks); nothing would show that reading or retrieve ran
+  - seeds: `c30`
+- `s25` — `challenge pass / lifecycle lens: c11; library Item.archived_at`: the library has `archived_at` and items can disappear; the frame covered a changed item (h9) but not a gone one
+  - seeds: `c31`
+- `s26` — `challenge pass / cheap-probe lens: lobes gateway 127.0.0.1:8001 POST /v1/audio/speech (scratchpad tts_speed.py)`: warm synthesis is 0.06-0.08 of real time, so one paragraph of prefetch is enough; cold first call 6.59 s; audio seconds assume 24 kHz pcm16; English produced audio but how it sounds was not judged
+  - seeds: `c32`
+- `s27` — `challenge pass / rollback lens: CLAUDE.md recall rollback (EMBODIMENT_RECALL_MODE=keyword); #107 'fall back to the catalog or Gwen's current path'`: memory kept a rollback env; #107 suggests a fallback to the current path on 503; c2 retires the path, so a 503 answers a fault (c6), not the old index
+  - seeds: `c33`
+- `s28` — `challenge pass / injection lens: c10, c24, c13`: a read never passes library text to senses (c10), so text in a document cannot steer Gwen during a read; search results stay fenced (c13); clean pass, residual risk only if a later voice-command follow-up (v4) feeds read text into a turn
 
 ## Decisions
 
@@ -104,10 +142,13 @@
 - reading starts, stops and continues from typed asks and the page's controls for now; voice commands (read, continue, stop) are a follow-up for when realtime Live is on
 - transcripts are searched through the library like every other kind; Gwen keeps no local transcript index and cites transcripts without times until the library's passages carry them (culture-library#25 item 5; culture-rules for the transcripts it writes)
 - `search_library` takes the library's k best passages with no similarity floor (memory's 0.715 is not applied), and the tool says they are the library's best passages for the query, not confirmed matches
+- on the first start of this release the daemon deletes its retired library index file (`<state>/library/index.json`) once, records that it did, and never touches the conversations index
+- reading progress matches the line being heard: the dock's bar has one segment per paragraph of the section, the paragraph playing fills its own segment as its audio plays, and the section map and the paragraph's edge line are driven by the same position, so on the 3rd paragraph the 3rd segment is the one filling
 
 ## Open parks
 
 - [unknown_nonblocking] English documents: the tts lane (BlueTTS2.5) is Hebrew and voice.py sends no language; how English text sounds is unmeasured (voice.py:262,683-685)
 - [unknown_nonblocking] Retrieve latency on the typed-turn path: 0.74-1.12 s hybrid against the old warm local p90 0.21 s, n=5 on 2026-10-26; culture-library#25 tracks a faster path
+- [unknown_nonblocking] Which device plays when the same item is open on two devices at once is not decided: both would play unless the page hands off; the frame only fixes the cursor (c29)
 - [follow_up] Freshness (#107 step 3, the feed): with no local index nothing needs following for search; the shelf still lists the catalog
 - [follow_up] voice commands for reading (read me X, continue, stop) on spoken turns when Live is on; voice turns carry no library tools today (c39)
