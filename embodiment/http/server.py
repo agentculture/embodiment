@@ -302,7 +302,8 @@ LIBRARY_READ_BOUND_S = 2.0
 #: not load the daemon.
 LIBRARY_SEARCH_BOUND_S = 3.0
 
-#: Bounds ONE to-do read: a scan of the private store's action items; sized to the search.
+#: Bounds ONE to-do read: the held library to-do lines reconciled with Gwen's marks;
+#: sized to the search.
 TODOS_READ_BOUND_S = 3.0
 
 #: The request waits the callable's own bound plus the slack, never the 5 s control default.

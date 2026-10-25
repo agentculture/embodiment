@@ -152,12 +152,20 @@ loop. It does not drive hardware and nothing here claims a body.
   (record and send a question) and the text; beside it sit **Live** (the room
   microphone's
   realtime voice) and Upload. **Library** is the shelf and the items as cards,
-  **To-dos** is fed from Gwen's memory (culture-rules writes each recording's action
-  items) and is checkable: the done state is Gwen's, kept by the daemon (`POST
-  /api/todos/{id}`), and each change is published as a `todo` event carrying the
-  whole to-do so culture-rules can file the list in the library; Gwen answers about
-  them with `list_todos` and marks one with `set_todo_done` only when your own words
-  ask (d16). **Stats** shows the library and the
+  **To-dos** comes from the library only: the `kind=todo` items culture-rules files
+  (one Markdown checklist per recording), re-read every 30 s, line for line. It is
+  checkable: your mark (`POST /api/todos/{id}`, the checklist id such as
+  `pocket.<uuid>.<n>`) is Gwen's **pending** mark, shown at once and re-sent to
+  culture-rules at each 30 s check, for up to an hour, until the library's own line
+  agrees, compared to the second; then it counts **confirmed**. A line the library no
+  longer holds drops its mark. Each change is published as a `todo` event carrying the
+  checklist id and the `recording_id`. `status.todos` counts confirmed, pending,
+  unconfirmed and dropped marks; with the library down or never loaded the list
+  answers 503 `library_unavailable`, with none configured `library-not-configured`.
+  Gwen answers about them with `list_todos` and marks one with `set_todo_done` only
+  when your own words ask (d16). The first real flip, a mark confirmed by the live
+  library, is not yet on record: that is an open obligation the operator files.
+  **Stats** shows the library and the
   usage counters since Gwen started, and a status drawer keeps the room voice
   controls and the degradations. Before 0.18.0 the page was waveform-first
   with chat fourth. It streams events with `fetch` and sends the secret in the
@@ -169,8 +177,9 @@ loop. It does not drive hardware and nothing here claims a body.
   Gwen reads it through one small client (`embodiment/library/client.py`) that
   is **GET-only by construction** (an AST test pins that it never sends POST,
   PUT, PATCH or DELETE; a `gets` counter in `status` is the live evidence). She
-  fetches item files, extracts EPUB text with the stdlib under member, size and
-  character caps, embeds chunks with `gemma2-embed` into her own 0600 document
+  fetches item files, extracts EPUB or Markdown text (a zip is an EPUB, anything
+  else is Markdown; `kind=todo` items are never indexed) with the stdlib under
+  member, size and character caps, embeds chunks with `gemma2-embed` into her own 0600 document
   index (never the eidetic store), and reconciles that index against the
   catalog by item id and sha256. Library tools run on typed turns only; their
   results reach the model inside the same untrusted-data fence as recalled
@@ -453,7 +462,7 @@ composes endpoints.
 | `session.py`, `memory.py` | The conversation (explicit-ask detector, turn queue, supersede on barge-in, summary on close) and `RoomMemory`: private, pinned, deadline-bounded |
 | `realtime/`, `voice.py` | The typed lobes wire and the ears-only client; sentence-by-sentence TTS with paced waveform features |
 | `audio/` | `AudioEndpoint` protocol, the host endpoint, the inbound endpoint, the feature extractor |
-| `library/` | The GET-only library client, stdlib EPUB extraction, the 0600 document index, the sync, and the two read tools |
+| `library/` | The GET-only library client, stdlib EPUB and Markdown extraction, the to-do checklist source, the 0600 document index, the sync, and the two read tools |
 | `http/`, `bus.py` | Guard (secret + allow-list + Access seam), server (static dashboard, SSE, control API), the event bus with redaction at publish |
 | `daemon/` | State dir, bounded logs, crash-durable ledger; lifecycle by `(pid, start time)`; the app that wires it all |
 | `perception.py`, `identity.py`, `framing.py`, `senses_text.py` | The verbatim invariant; explicit identity; absent identity ⇒ byte-identical prompts; measured grounding text |

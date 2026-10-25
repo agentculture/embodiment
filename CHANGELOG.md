@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.22.0] - 2026-10-25
+
+### Added
+
+- Gwen reads Markdown library items (culture-rules' transcripts and to-do lists): `extract_item` sends a zip to the EPUB reader and anything else to the new Markdown reader, so they are no longer refused as `bad_epub`; `kind=todo` items are never indexed.
+- To-dos come from the library: a `TodoSource` lists the `kind=todo` items and re-reads the changed ones every 30 s, and each checklist line carries its id (`pocket.<uuid>.<n>`).
+- `status.todos` counts confirmed, pending, unconfirmed and dropped marks; `/api/todos` answers 503 `library_unavailable` with the library down and `library-not-configured` with none.
+
+### Changed
+
+- Gwen's to-do mark is pending until the library's own line agrees, compared to the second; it is re-sent at each 30 s check for up to an hour, dropped when the line leaves, and old keys are pruned. The `todo` event's `id` is the checklist id and it carries `recording_id`.
+- The memory `action_item` path for to-dos is gone (the ingest contract still accepts `action_item`).
+- README, CLAUDE.md, the `explain` catalog, the todo event fixture and schema, and the `TODOS_READ_BOUND_S` comment describe the library source. The first real flip against the live library is not yet on record.
+
 ## [0.21.1] - 2026-10-24
 
 ### Fixed
