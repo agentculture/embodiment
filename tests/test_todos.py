@@ -234,3 +234,27 @@ def test_lines_may_be_objects(tmp_path):
     states = t.TodoStates(tmp_path / "s.json", clock=_Clock())
     shown, _, _ = states.reconcile([SimpleNamespace(id="a", done=True, done_at=5.0, by="x")])
     assert shown == [{"id": "a", "done": True, "done_at": 5.0, "done_by": "x"}]
+
+
+def test_shown_is_a_read_only_view_of_reconcile(tmp_path):
+    clock = _Clock()
+    states = t.TodoStates(tmp_path / "s.json", clock=clock)
+    states.mark("a", True, t.BY_GWEN)
+    lines = [_line("a"), _line("b", True, 900.0, "operator")]
+    for _ in range(3):
+        assert states.shown(lines) == [
+            {"id": "a", "done": True, "done_at": 1000.0, "done_by": "gwen"},
+            {"id": "b", "done": True, "done_at": 900.0, "done_by": "operator"},
+        ]
+    c = states.counters()
+    assert (c["sent"], c["pending"], c["resends"], c["confirmed"]) == (1, 1, 0, 0)
+    # a line that agrees shows the library's state, but only reconcile confirms it
+    agreed = [_line("a", True, 1001.0, "operator")]
+    assert states.shown(agreed)[0]["done_by"] == "operator"
+    assert states.counters()["confirmed"] == 0 and states.counters()["pending"] == 1
+    # an absent line drops nothing in the view
+    assert states.shown([]) == [] and states.counters()["dropped"] == 0
+    clock.now += t.RESEND_WINDOW_S
+    assert states.shown([_line("a")])[0]["done"] is False, "past the window the library shows"
+    shown, _, c = states.reconcile(agreed)
+    assert shown == states.shown(agreed) and c["confirmed"] == 1

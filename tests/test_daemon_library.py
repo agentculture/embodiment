@@ -47,7 +47,7 @@ VOCAB = ("alpha", "bravo", "charlie", "delta", "echo", "foxtrot", "golf", "hotel
 #: With the newsletter tools (operator, 2026-10-24): a whole item, and its linked sources.
 LIBRARY_TOOLS = {"search_library", "read_passage", "read_item", "fetch_source"}
 MEMORY_TOOLS = {"remember", "forget"}
-#: Gwen's to-do tools (d16), bound on a typed turn whose memory lists to-dos.
+#: Gwen's to-do tools (d16), bound on a typed turn when a library holds the to-dos.
 TODO_TOOLS = {"list_todos", "set_todo_done"}
 
 #: A planted instruction inside a library document (h18).
@@ -84,16 +84,20 @@ def _item(
 class FakeLibrary:
     """A GET-only library stand-in: the catalog, and each item's file as JSON passages."""
 
-    def __init__(self, items: dict[LibraryItem, list[dict[str, Any]]]) -> None:
+    def __init__(self, items: dict[LibraryItem, Any]) -> None:
         self.items = dict(items)
         self.gets = 0
         self.list_error: Optional[str] = None
+        #: Every ``kind`` a listing asked for, and every item id fetched.
+        self.listed: list[Any] = []
+        self.fetched: list[str] = []
 
     def list_items(self, kind: Any = None, q: Any = None) -> list[LibraryItem]:
         self.gets += 1
+        self.listed.append(kind)
         if self.list_error:
             raise LibraryError(self.list_error)
-        return list(self.items)
+        return [i for i in self.items if kind is None or i.kind == kind]
 
     def get_item(self, item_id: Any) -> LibraryItem:
         self.gets += 1
@@ -101,8 +105,17 @@ class FakeLibrary:
 
     def fetch_file(self, item_id: Any) -> bytes:
         self.gets += 1
+        self.fetched.append(str(item_id))
         item = next(i for i in self.items if str(i.id) == str(item_id))
-        return json.dumps(self.items[item]).encode("utf-8")
+        body = self.items[item]
+        return body if isinstance(body, bytes) else json.dumps(body).encode("utf-8")
+
+    def replace(self, old: LibraryItem, body: Any, *, sha: str) -> LibraryItem:
+        """culture-library's replace: same id, a new sha256 (c25)."""
+        del self.items[old]
+        new = dataclasses.replace(old, sha256=sha)
+        self.items[new] = body
+        return new
 
 
 def _extract(data: bytes) -> list[Passage]:
@@ -276,7 +289,7 @@ class TestUnsetIsToday:
         h = _build(harness, tmp_path, complete=script, lane=None)
         answer = h.app.controls().chat("מה עם הלוטרות?")
         assert answer["ok"] is True, answer
-        assert script.tool_names[-1] == MEMORY_TOOLS | TODO_TOOLS  # no library tool (c35)
+        assert script.tool_names[-1] == MEMORY_TOOLS  # no library, no to-do tool (c35, c4)
         controls = h.app.controls()
         assert controls.library_list is None
         assert controls.library_get is None
@@ -676,100 +689,6 @@ class TestStatusAndRoutes:
         h = _build(harness, tmp_path, lane=lane)
         result = h.app.controls().library_search("hotel")
         assert result == {"hits": [], "code": "library-embed-failed"}
-
-    def test_todos_group_action_items_by_recording(self, harness: Any, tmp_path: Path) -> None:
-        def action(i: int, rec: str, text: str, archived: bool = False) -> dict[str, Any]:
-            record = {
-                "id": f"pocket.{rec}.action.{i}",
-                "type": "action_item",
-                "text": text,
-                "created": f"2026-10-0{i}",
-                "metadata": {
-                    "source": "pocket",
-                    "recording_id": rec,
-                    "title": f"title {rec}",
-                    "date": f"2026-09-2{i}",
-                },
-            }
-            if archived:
-                record["lifecycle"] = "archived"
-            return record
-
-        ingest = [
-            action(1, "recA", "call the vet"),
-            action(2, "recB", "buy milk"),
-            action(3, "recA", "send the deck"),
-            action(4, "recA", "gone", archived=True),
-            {**action(5, "recC", "a fact"), "type": "fact"},
-        ]
-        h = _build(harness, tmp_path, memory=GuardMemory(ingest=ingest), lane=None)
-        groups = h.app.controls().todos()["groups"]
-        assert [g["recording_id"] for g in groups] == ["recB", "recA"]
-        rec_a = groups[1]
-        assert rec_a["title"] == "title recA"
-        assert rec_a["date"] == "2026-09-21"
-        assert [i["text"] for i in rec_a["items"]] == ["call the vet", "send the deck"]
-        assert rec_a["items"][0]["created"] == "2026-10-01"
-
-    def test_todos_from_a_real_store(
-        self, harness: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-    ) -> None:
-        from embodiment import memory as mem
-        from embodiment.memory import RoomMemory
-
-        home = tmp_path / "home"
-        home.mkdir()
-        monkeypatch.setenv("HOME", str(home))
-        room = RoomMemory(
-            tmp_path / "store", scope="gwen", added_by="gwen", ingest_scope=mem.INGEST_SCOPE
-        )
-        try:
-            result = room.ingest_records(
-                [
-                    {
-                        "id": "pocket.recZ.action.0",
-                        "type": "action_item",
-                        "text": "synthetic: water the plants",
-                        "metadata": {
-                            "source": "pocket",
-                            "recording_id": "recZ",
-                            "title": "synthetic",
-                            "date": "2026-09-30",
-                        },
-                    },
-                    {
-                        "id": "pocket.recZ.fact.0",
-                        "type": "fact",
-                        "text": "synthetic: the plants are ferns",
-                        "metadata": {"source": "pocket", "recording_id": "recZ"},
-                    },
-                ]
-            )
-            assert result.ok, result
-            listed = room.list_ingest(record_type="action_item", deadline=3.0)
-            assert listed.ok
-            assert [r["id"] for r in listed.records] == ["pocket.recZ.action.0"]
-            h = _build(harness, tmp_path, memory=room, lane=None)
-            groups = h.app.controls().todos()["groups"]
-            assert groups == [
-                {
-                    "recording_id": "recZ",
-                    "title": "synthetic",
-                    "date": "2026-09-30",
-                    "items": [
-                        {
-                            "id": "pocket.recZ.action.0",
-                            "text": "synthetic: water the plants",
-                            "created": groups[0]["items"][0]["created"],
-                            "done": False,
-                            "done_at": None,
-                            "done_by": None,
-                        }
-                    ],
-                }
-            ]
-        finally:
-            room.close(deadline=2.0)
 
 
 # ── the background sync: gated by the live turn, bounded by close ──────────────
@@ -1307,22 +1226,22 @@ class TestARebuildCatchesUp:
     ) -> None:
         h = _build(harness, tmp_path)
         lane = h.app._library
+        lane.todo_interval_s = 1e9  # this test is about the sync's clock alone
         backlogs = iter([True, False])
-        waits: list[float] = []
+        ticked: list[float] = []
+        now = [0.0]
 
         def tick() -> bool:
+            ticked.append(now[0])
             return next(backlogs)
 
-        def wait(seconds: float) -> bool:
-            waits.append(seconds)
-            if len(waits) == 2:
-                lane.stop.set()
-            return lane.stop.is_set()
-
         monkeypatch.setattr(h.app, "_library_tick", tick)
-        monkeypatch.setattr(lane.stop, "wait", wait)
-        h.app._library_worker()
+        due = app_module._LibraryDue()
+        waits = [h.app._library_step(due, lambda: now[0])]
+        now[0] += waits[-1]
+        waits.append(h.app._library_step(due, lambda: now[0]))
         assert waits == [app_module.LIBRARY_CATCH_UP_S, float(lane.interval_s)]
+        assert ticked == [0.0, app_module.LIBRARY_CATCH_UP_S]
 
     def test_a_tick_that_yielded_at_its_first_gate_comes_back_after_the_catch_up(
         self, harness: Any, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -1390,7 +1309,7 @@ class TestPastConversations:
         h.app.controls().chat("מה שאלתי בפעם הקודמת?")
         system = " ".join(m["content"] for m in script.prompts[-1] if m["role"] == "system")
         assert app_module.CONVERSATIONS_TOOL_PROMPT not in system
-        assert script.tool_names[-1] == MEMORY_TOOLS | TODO_TOOLS
+        assert script.tool_names[-1] == MEMORY_TOOLS
 
     def test_a_settled_conversation_is_indexed_and_found_but_never_the_live_one(
         self, harness: Any, tmp_path: Path
@@ -1421,68 +1340,425 @@ def test_a_conversation_citation_keeps_its_source_on_the_page() -> None:
     assert app_module.library_chat_source({"source": "weird"})["source"] == "library"
 
 
-# ── d16: to-dos are checkable; the done state is Gwen's; culture-rules hears it ──
+# ── embodiment#105: the To-dos are the library's kind=todo items ───────────────
+
+REC_A = "70b523d5-42ca-5978-a92b-b9139c2e4bf3"
+REC_B = "0a1b2c3d-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
+ID_A1, ID_A2, ID_B1 = f"pocket.{REC_A}.1", f"pocket.{REC_A}.2", f"pocket.{REC_B}.1"
 
 
-def _action(i: int, rec: str, text: str) -> dict[str, Any]:
-    return {
-        "id": f"pocket.{rec}.action.{i}",
-        "type": "action_item",
-        "text": text,
-        "created": "2026-10-24",
-        "metadata": {
-            "source": "pocket",
-            "recording_id": rec,
-            "title": f"t {rec}",
-            "date": "2026-10-23",
-        },
-    }
+def _iso(epoch: float) -> str:
+    from datetime import datetime, timezone
+
+    return datetime.fromtimestamp(epoch, timezone.utc).isoformat()
 
 
-class TestCheckableTodos:
-    def _h(self, harness: Any, tmp_path: Path, complete: Any = None) -> Any:
-        ingest = [_action(1, "recA", "call the vet"), _action(2, "recA", "buy milk")]
-        return _build(
-            harness, tmp_path, memory=GuardMemory(ingest=ingest), lane=None, complete=complete
-        )
+def _checklist(*lines: tuple[str, str, Optional[tuple[float, str]]]) -> bytes:
+    """culture-rules' checklist.render, synthetic: one line per (id, text, done)."""
+    out = ["# To-dos", "", "Prose that is not a to-do.", "- [ ] a box with no id"]
+    for todo_id, text, done in lines:
+        if done is None:
+            out.append(f"- [ ] {text} <!-- todo:{todo_id} -->")
+        else:
+            at, by = done
+            out.append(f"- [x] {text} <!-- todo:{todo_id} done_at={_iso(at)} by={by} -->")
+    return ("\n".join(out) + "\n").encode("utf-8")
 
-    def test_the_page_marks_one_done_and_culture_rules_hears_the_whole_to_do(
-        self, harness: Any, tmp_path: Path
-    ) -> None:
-        h = self._h(harness, tmp_path)
-        result = h.app.controls().todo_set("pocket.recA.action.1", True)
-        assert result["code"] == ""
-        assert result["todo"]["done"] is True
-        items = h.app.controls().todos()["groups"][0]["items"]
-        assert [(i["id"], i["done"], i["done_by"]) for i in items] == [
-            ("pocket.recA.action.1", True, "operator"),
-            ("pocket.recA.action.2", False, None),
-        ]
-        (event,) = h.events("todo")
-        assert event.data["id"] == "pocket.recA.action.1"
-        assert (event.data["done"], event.data["by"]) == (True, "operator")
-        assert (event.data["text"], event.data["recording_id"]) == ("call the vet", "recA")
-        assert h.app.status()["conversations"]["todos_marked"] == 1
 
-    def test_an_unknown_to_do_is_refused_and_nothing_is_published(
-        self, harness: Any, tmp_path: Path
-    ) -> None:
-        h = self._h(harness, tmp_path)
-        assert h.app.controls().todo_set("pocket.nope.0", True) == {
-            "todo": None,
-            "code": "todo-unknown",
+LIST_A = _item(59, kind="todo", title="2026-10-23 <b>Vet</b> &amp; milk", sha="a1")
+LIST_B = _item(
+    61, kind="todo", title="2026-10-24 Deck", sha="b1", created_at="2026-10-24T09:00:00Z"
+)
+
+
+def _todo_library() -> FakeLibrary:
+    library = _library()
+    library.items[LIST_A] = _checklist(
+        (ID_A1, "call the <i>vet</i> &amp; book", None), (ID_A2, "buy milk", None)
+    )
+    library.items[LIST_B] = _checklist((ID_B1, "send the deck", (1_000.0, "operator")))
+    return library
+
+
+def _todo_h(harness: Any, tmp_path: Path, library: Optional[FakeLibrary] = None, **kw: Any):
+    h = _build(harness, tmp_path, library=library or _todo_library(), **kw)
+    assert h.app._todo_check() is True
+    return h
+
+
+def _http_get(controls: Any, path: str) -> tuple[int, dict[str, Any]]:
+    from embodiment.http import server as s
+    from tests.test_http_server import build as build_server
+
+    built = build_server(controls=s.Controls(todos=controls.todos))
+    try:
+        status, body = built.request("GET", path, hdrs=built.headers())
+        return status, json.loads(body)
+    finally:
+        built.server.shutdown(2.0)
+
+
+class TestLibraryTodos:
+    def test_the_lines_grouped_per_item_in_todays_shape(self, harness: Any, tmp_path: Path) -> None:
+        h = _todo_h(harness, tmp_path)
+        groups = h.app.controls().todos()
+        assert groups == {
+            "groups": [
+                {
+                    "recording_id": REC_B,
+                    "title": "2026-10-24 Deck",
+                    "date": "2026-10-24",
+                    "items": [
+                        {
+                            "id": ID_B1,
+                            "text": "send the deck",
+                            "created": "2026-10-24T09:00:00Z",
+                            "done": True,
+                            "done_at": 1_000.0,
+                            "done_by": "operator",
+                        }
+                    ],
+                },
+                {
+                    "recording_id": REC_A,
+                    "title": "2026-10-23 Vet & milk",
+                    "date": "2026-10-23",
+                    "items": [
+                        {
+                            "id": ID_A1,
+                            "text": "call the vet & book",
+                            "created": "2026-10-20T08:00:00Z",
+                            "done": False,
+                            "done_at": None,
+                            "done_by": None,
+                        },
+                        {
+                            "id": ID_A2,
+                            "text": "buy milk",
+                            "created": "2026-10-20T08:00:00Z",
+                            "done": False,
+                            "done_at": None,
+                            "done_by": None,
+                        },
+                    ],
+                },
+            ]
         }
-        assert h.app.controls().todo_set("../x", True)["code"] == "todo-bad-request"
-        assert h.events("todo") == []
+        status, body = _http_get(h.app.controls(), "/api/todos")
+        assert (status, body) == (200, groups)
+
+    def test_memory_action_items_no_longer_feed_the_to_dos(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        old = {
+            "id": "pocket.recA.action.1",
+            "type": "action_item",
+            "text": "an old memory to-do",
+            "metadata": {"source": "pocket", "recording_id": "recA", "title": "t", "date": "d"},
+        }
+        h = _todo_h(harness, tmp_path, memory=GuardMemory(ingest=[old]))
+        ids = [i["id"] for g in h.app.controls().todos()["groups"] for i in g["items"]]
+        assert ids == [ID_B1, ID_A1, ID_A2]
+
+    def test_a_mark_publishes_the_checklist_id_and_the_recording_id(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        library = _todo_library()
+        h = _todo_h(harness, tmp_path, library=library)
+        result = h.app.controls().todo_set(ID_A1, True)
+        assert result["code"] == "" and result["todo"]["done"] is True
+        (event,) = h.events("todo")
+        assert event.data["id"] == ID_A1
+        assert event.data["recording_id"] == REC_A
+        assert (event.data["done"], event.data["by"]) == (True, "operator")
+        assert event.data["text"] == "call the vet & book"
+        assert (event.data["title"], event.data["date"]) == ("2026-10-23 Vet & milk", "2026-10-23")
+        at = event.data["at"]
+        items = h.app.controls().todos()["groups"][1]["items"]
+        assert (items[0]["done"], items[0]["done_at"], items[0]["done_by"]) == (
+            True,
+            at,
+            "operator",
+        )
+        block = h.app.status()["todos"]
+        assert (block["sent"], block["pending"], block["confirmed"]) == (1, 1, 0)
+        assert block["oldest_pending_age_s"] is not None
+        # culture-rules flips the line (same id, a new sha256); the next check confirms
+        library.replace(
+            LIST_A,
+            _checklist(
+                (ID_A1, "call the vet &amp; book", (at + 1.0, "operator")),
+                (ID_A2, "buy milk", None),
+            ),
+            sha="a2",
+        )
+        assert h.app._todo_check() is True
+        block = h.app.status()["todos"]
+        assert (block["sent"], block["pending"], block["confirmed"]) == (1, 0, 1)
+        assert block["oldest_pending_age_s"] is None
+        shown_at = h.app.controls().todos()["groups"][1]["items"][0]["done_at"]
+        assert shown_at == pytest.approx(at + 1.0, abs=1e-5), "the library's stamp now shows"
+        assert h.events("todo") == [event], "a confirmed mark is not sent again"
+
+    def test_a_due_mark_is_resent_by_the_check_through_the_same_publish(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        h = _todo_h(harness, tmp_path)
+        h.app.controls().todo_set(ID_A2, True)
+        assert h.app._todo_check() is True
+        assert h.app._todo_check() is True
+        first, *again = h.events("todo")
+        assert len(again) == 2
+        for resend in again:
+            assert {k: v for k, v in resend.data.items()} == first.data, "same event, same at"
+        block = h.app.status()["todos"]
+        assert (block["resends"], block["resends_published"], block["sent"]) == (2, 2, 1)
+
+    def test_a_page_load_confirms_drops_and_counts_nothing(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        h = _todo_h(harness, tmp_path)
+        h.app.controls().todo_set(ID_A2, True)
+        before = h.app.status()["todos"]
+        for _ in range(3):
+            h.app.controls().todos()
+        assert h.app.status()["todos"]["resends"] == before["resends"] == 0
+        assert h.events("todo")[1:] == []
+
+    def test_the_check_never_runs_during_a_live_turn(self, harness: Any, tmp_path: Path) -> None:
+        library = _todo_library()
+        h = _todo_h(harness, tmp_path, library=library)
+        gets = library.gets
+        with h.app._lock:
+            h.app._turns_in_flight += 1
+        try:
+            assert h.app._todo_check() is False
+            due = app_module._LibraryDue(todo=0.0, sync=1e9)
+            wait = h.app._library_step(due, lambda: 100.0)
+            assert wait == pytest.approx(app_module.LIBRARY_CATCH_UP_S)
+        finally:
+            with h.app._lock:
+                h.app._turns_in_flight -= 1
+        assert library.gets == gets, "a live turn held: nothing was read"
+        assert h.app.status()["todos"]["checks_deferred"] == 2
+        assert h.app._todo_check() is True
+        assert library.gets > gets
+
+    def test_the_check_touches_only_the_to_do_source(self, harness: Any, tmp_path: Path) -> None:
+        library = _todo_library()
+        h = _todo_h(harness, tmp_path, library=library)
+        index_path = Path(h.app._library.index.path)
+        before = index_path.read_bytes()
+        library.items[_item(70, title="late transcript")] = [{"anchor": "z#0", "text": "echo"}]
+        library.replace(LIST_B, _checklist((ID_B1, "send the deck v2", None)), sha="b2")
+        library.listed.clear()
+        library.fetched.clear()
+        assert h.app._todo_check() is True
+        assert library.listed == ["todo"]
+        assert library.fetched == ["61"], "only the changed to-do item is re-read"
+        assert index_path.read_bytes() == before
+        assert h.app._library.index.item("70") is None
+        assert h.app._library.index.item("59") is None, "a to-do item is never indexed"
+        groups = h.app.controls().todos()["groups"]
+        assert groups[0]["items"][0]["text"] == "send the deck v2"
+
+    def test_the_worker_runs_the_check_on_its_own_clock(self, harness: Any, tmp_path: Path) -> None:
+        library = _todo_library()
+        h = _build(harness, tmp_path, library=library, tick=False)
+        now = [0.0]
+        due = app_module._LibraryDue()
+        assert app_module.TODO_CHECK_INTERVAL_S == app_module.TODO_ROUND_TRIP_BOUND_S / 2 == 30.0
+        assert h.app._library.todo_interval_s == app_module.TODO_CHECK_INTERVAL_S
+
+        def counts() -> tuple[int, int]:
+            return h.app.status()["todos"]["checks"], h.app._library_ticks
+
+        h.app._library_step(due, lambda: now[0])
+        assert counts() == (1, 1)
+        now[0] = 29.0
+        assert h.app._library_step(due, lambda: now[0]) == pytest.approx(1.0)
+        assert counts() == (1, 1)
+        for n, t in enumerate((30.0, 60.0, 90.0), start=2):
+            now[0] = t
+            h.app._library_step(due, lambda: now[0])
+            assert counts() == (n, 1), "the to-do check runs beside, not instead of, the sync"
+        now[0] = app_module.LIBRARY_SYNC_INTERVAL_S
+        h.app._library_step(due, lambda: now[0])
+        assert counts() == (5, 2)
+
+    def test_the_worker_thread_loads_the_to_dos(self, harness: Any, tmp_path: Path) -> None:
+        h = _build(harness, tmp_path, library=_todo_library(), tick=False)
+        h.app.start()
+        try:
+            deadline = time.monotonic() + 5
+            while not h.app.status()["todos"]["loaded"] and time.monotonic() < deadline:
+                time.sleep(0.02)
+            assert h.app.status()["todos"]["lines"] == 3
+            assert len(h.app.controls().todos()["groups"]) == 2
+        finally:
+            assert h.app.close(deadline=2.0).library_stopped is True
+
+    def test_a_down_library_answers_a_declared_code_and_is_recorded(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        library = _todo_library()
+        h = _todo_h(harness, tmp_path, library=library)
+        h.app.controls().todo_set(ID_A1, True)
+        library.list_error = "library_unreachable"
+        h.app._todo_check()
+        h.app._todo_check()
+        answer = h.app.controls().todos()
+        assert answer == {"groups": [], "code": "library_unavailable"}
+        status, body = _http_get(h.app.controls(), "/api/todos")
+        assert (status, body["code"], "groups" in body) == (503, "library_unavailable", False)
+        assert h.ledger_codes().count(app_module.APP_TODOS_DEGRADED) == 1, "once per transition"
+        block = h.app.status()["todos"]
+        assert (block["available"], block["code"]) == (False, "library_unreachable")
+        assert block["failures_by_code"] == {"library_unreachable": 2}
+        assert (block["pending"], block["dropped"]) == (1, 0), "a down library drops no mark"
+        library.list_error = None
+        h.clear()
+        h.app._todo_check()
+        assert any(e.data == {"component": "todos", "status": "online"} for e in h.events("state"))
+        assert len(h.app.controls().todos()["groups"]) == 2
+
+    def test_never_loaded_is_unavailable_not_empty(self, harness: Any, tmp_path: Path) -> None:
+        library = _todo_library()
+        library.list_error = "library_timeout"
+        h = _build(harness, tmp_path, library=library, tick=False)
+        assert h.app.controls().todos()["code"] == "library_unavailable", "before any check"
+        h.app._todo_check()
+        assert h.app.controls().todos() == {"groups": [], "code": "library_unavailable"}
+        assert h.app.controls().todo_set(ID_A1, True)["code"] == "todo-unknown"
+        assert h.app.status()["todos"]["loaded"] is False
+
+    def test_an_unreadable_item_is_a_recorded_code_and_keeps_its_last_good_lines(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        from embodiment.http import server as s
+
+        assert s.TODOS_UNAVAILABLE_CODE == app_module.TODOS_UNAVAILABLE
+        library = _todo_library()
+        h = _todo_h(harness, tmp_path, library=library)
+        library.replace(LIST_B, b"\xff\xfe not utf-8", sha="b9")
+        h.app._todo_check()
+        block = h.app.status()["todos"]
+        assert (block["code"], block["lines"]) == ("todo_parse_failed", 3)
+        assert h.app.controls().todos()["code"] == "library_unavailable"
+        assert app_module.APP_TODOS_DEGRADED in h.ledger_codes()
+
+    def test_no_library_reports_not_configured(self, harness: Any, tmp_path: Path) -> None:
+        h = _build(harness, tmp_path, lane=None)
+        assert h.app.controls().todos() == {"groups": [], "code": "library-not-configured"}
+        status, body = _http_get(h.app.controls(), "/api/todos")
+        assert (status, body["code"]) == (503, "library-not-configured")
+        block = h.app.status()["todos"]
+        assert (block["configured"], block["available"]) == (False, False)
+        assert h.app.controls().todo_set(ID_A1, True)["code"] == "todo-unknown"
+
+    def test_status_todos_carries_every_counter(self, harness: Any, tmp_path: Path) -> None:
+        h = _todo_h(harness, tmp_path)
+        block = h.app.status()["todos"]
+        for key in (
+            "items",
+            "lines",
+            "sent",
+            "confirmed",
+            "pending",
+            "oldest_pending_age_s",
+            "resends",
+            "dropped",
+            "available",
+            "code",
+            "checks",
+            "failures",
+            "check_interval_s",
+        ):
+            assert key in block, key
+        assert (block["items"], block["lines"], block["checks"]) == (2, 3, 1)
+        json.dumps(block)  # status is JSON
+
+    def test_old_memory_record_marks_are_pruned_at_the_first_load(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        h = _build(harness, tmp_path, library=_todo_library(), tick=False)
+        assert h.app._todo_states.set("pocket.recA.action.1", True, "operator") is not None
+        h.app._todo_check()
+        path = Path(h.app._state.dir) / "todos-done.json"
+        assert json.loads(path.read_text()) == {}
+        assert h.app.status()["todos"]["dropped"] == 1
+
+    def test_a_line_that_leaves_drops_its_pending_mark_and_a_new_one_shows(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        library = _todo_library()
+        h = _todo_h(harness, tmp_path, library=library)
+        h.app.controls().todo_set(ID_A2, True)
+        new_id = f"pocket.{REC_A}.3"
+        library.replace(
+            LIST_A, _checklist((ID_A1, "call the vet", None), (new_id, "new line", None)), sha="a3"
+        )
+        h.app._todo_check()
+        ids = [i["id"] for i in h.app.controls().todos()["groups"][1]["items"]]
+        assert ids == [ID_A1, new_id]
+        block = h.app.status()["todos"]
+        assert (block["dropped"], block["pending"]) == (1, 0)
+        del library.items[next(i for i in library.items if i.id == 61)]
+        h.app._todo_check()
+        assert [g["recording_id"] for g in h.app.controls().todos()["groups"]] == [REC_A]
+
+
+class TestGwenAndTheLibraryTodos:
+    def test_list_todos_sees_the_library_lines_fenced(self, harness: Any, tmp_path: Path) -> None:
+        script = ToolScript(_call("list_todos", status="open"), ModelResponse(content=REPLY))
+        h = _todo_h(harness, tmp_path, complete=script)
+        assert h.app.controls().chat("what is left?")["ok"] is True
+        assert TODO_TOOLS <= script.tool_names[-1]
+        tool_text = " ".join(
+            str(m.get("content")) for m in script.prompts[-1] if m.get("role") == "tool"
+        )
+        assert "buy milk" in tool_text and ID_A2 in tool_text
+        assert "send the deck" not in tool_text, "done lines filtered out"
+        assert h.app.status()["library"]["tool_calls"]["list_todos"] == 1
+
+    def test_list_todos_before_the_first_load_is_a_fault_not_none(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        from embodiment.daemon import todos as todos_module
+
+        script = ToolScript(_call("list_todos"), ModelResponse(content=REPLY))
+        library = _todo_library()
+        library.list_error = "library_unreachable"
+        h = _build(harness, tmp_path, library=library, complete=script, tick=False)
+        h.app._todo_check()
+        h.app.controls().chat("what is left?")
+        tool_text = " ".join(
+            str(m.get("content")) for m in script.prompts[-1] if m.get("role") == "tool"
+        )
+        assert todos_module.NO_TODOS not in tool_text
+        assert "list_todos failed" in tool_text
 
     def test_gwen_marks_one_only_when_the_operator_asks(self, harness: Any, tmp_path: Path) -> None:
-        mark = _call("set_todo_done", todo_id="pocket.recA.action.2", done=True)
+        mark = _call("set_todo_done", todo_id=ID_A2, done=True)
         script = ToolScript(mark, ModelResponse(content=REPLY))
-        h = self._h(harness, tmp_path, complete=script)
+        h = _todo_h(harness, tmp_path, complete=script)
         h.app.controls().chat("what's left on my list?")
         assert h.events("todo") == [], "no ask, no mark"
         script.steps = [mark, ModelResponse(content=REPLY)]
         script.tool_names.clear()
         h.app.controls().chat("סמני שקניתי חלב")
         (event,) = h.events("todo")
-        assert (event.data["id"], event.data["by"]) == ("pocket.recA.action.2", "gwen")
+        assert (event.data["id"], event.data["recording_id"]) == (ID_A2, REC_A)
+        assert event.data["by"] == "gwen"
+        assert h.app.status()["conversations"]["todos_marked"] == 1
+
+    def test_an_unknown_to_do_is_refused_and_nothing_is_published(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        h = _todo_h(harness, tmp_path)
+        assert h.app.controls().todo_set(f"pocket.{REC_B}.9", True) == {
+            "todo": None,
+            "code": "todo-unknown",
+        }
+        assert h.app.controls().todo_set("../x", True)["code"] == "todo-bad-request"
+        assert h.events("todo") == []

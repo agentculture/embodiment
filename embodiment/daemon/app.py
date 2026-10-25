@@ -187,11 +187,16 @@ from embodiment.library import conversations as conversations_module
 from embodiment.library import reading as reading_module
 from embodiment.library import tools as library_tools
 from embodiment.library import web as web_module
+from embodiment.library.checklist import parse_checklist, parse_group, recording_id_of
 from embodiment.library.client import LibraryClient, LibraryConfig, LibraryError
 from embodiment.library.extract import extract_item
 from embodiment.library.index import DocumentIndex
+from embodiment.library.markdown import Limits as MarkdownLimits
+from embodiment.library.markdown import clean_text as markdown_clean_text
 from embodiment.library.sync import RECOVERED as LIBRARY_RECOVERED
 from embodiment.library.sync import LibrarySync
+from embodiment.library.todo_source import UNAVAILABLE as TODOS_UNAVAILABLE
+from embodiment.library.todo_source import TodoSource
 from embodiment.memory import PRIVATE, RoomMemory, SemanticRecall, render_recalled
 from embodiment.perception import perceive
 from embodiment.realtime import wire
@@ -1056,6 +1061,10 @@ APP_LIBRARY_UNAVAILABLE = "app-library-unavailable"
 APP_LIBRARY_GUARDED_WRITE = "app-library-guarded-write"
 #: A to-do's done state could not be saved (d16); the mark did not happen.
 APP_TODO_NOT_SAVED = "app-todo-not-saved"
+#: The library's to-do items could not be read (embodiment#105, c22): the list, a
+#: fetch, or a parse failed. The reason is the source's fixed code; recorded on each
+#: transition into it, and the recovery publishes ``state`` ``todos`` ``online``.
+APP_TODOS_DEGRADED = "app-todos-degraded"
 #: Indexing Gwen's settled conversations failed (d8): an embed refused, or the
 #: logs could not be read. The reason is a fixed code or an exception's class.
 APP_CONVERSATIONS_INDEX_FAILED = "app-conversations-index-failed"
@@ -1072,6 +1081,14 @@ LIBRARY_INDEX_NAME = "index.json"
 #: one GET per interval keeps the index within five minutes of the library, and
 #: nothing waits on this clock (a page reads the index, never the library).
 LIBRARY_SYNC_INTERVAL_S = 300.0
+#: The round trip a to-do mark must close in (embodiment#105 acceptance 3: the
+#: library line shows it within 60 s; culture-rules measured 2 s for its own part).
+TODO_ROUND_TRIP_BOUND_S = 60.0
+#: How often the library's ``kind=todo`` items are checked (c8), derived from the
+#: bound it serves: two checks fit in it, so a mark's confirmation and a new
+#: recording's list reach Gwen within the bound with one check to spare. The check
+#: has no budget of its own: each GET is bounded by the library client's deadline.
+TODO_CHECK_INTERVAL_S = TODO_ROUND_TRIP_BOUND_S / 2
 #: Bounds ONE sync tick's work before the thread checks its interval and stop
 #: again. A **judgement call**: it bounds no request (the client bounds those) and
 #: no turn (every chunk embed yields to the live-turn gate); a stop does not wait
@@ -1091,9 +1108,6 @@ NEW_CONVERSATION_WAIT_S = 0.6 * server_module.DEFAULT_CONTROL_TIMEOUT_S
 SETTLE_CHECK_S = 60.0
 #: Hits one search route returns: the library tools' own cap.
 LIBRARY_SEARCH_LIMIT = library_tools.MAX_LIMIT
-#: The memory type the to-dos view lists, written by the culture-rules ingest.
-TODO_RECORD_TYPE = "action_item"
-TODO_SOURCE = "pocket"
 #: The forget stems the write guard looks for in the operator's own turn.
 _FORGET_STEMS: tuple[str, ...] = ("שכח", "forget")
 #: A NEGATED forget asks to KEEP the fact, so it is removed before the stems are
@@ -1651,6 +1665,18 @@ class ConversationLane:
     threshold: float = memory_module.DEFAULT_SIMILARITY_THRESHOLD
 
 
+@dataclass
+class _LibraryDue:
+    """When the library worker's two jobs are next due (monotonic seconds)."""
+
+    todo: float = 0.0
+    sync: float = 0.0
+
+
+class _TodosUnavailable(Exception):
+    """The to-dos are not readable now (``list_todos`` reports a fault, not "none")."""
+
+
 class _LibraryStopped(Exception):
     """The daemon is closing: a chunk embed is abandoned, not failed."""
 
@@ -1700,6 +1726,8 @@ class LibraryLane:
     #: library text** (plan risk r6) — status says so.
     threshold: float = memory_module.DEFAULT_SIMILARITY_THRESHOLD
     interval_s: float = LIBRARY_SYNC_INTERVAL_S
+    #: The to-do check's own clock (c8), beside the catalog's.
+    todo_interval_s: float = TODO_CHECK_INTERVAL_S
     #: ``url -> Page`` for ``fetch_source`` (:func:`embodiment.library.web.fetch_page`);
     #: ``None``: the tool answers that fetching is not configured.
     fetch: Optional[Callable[[str], Any]] = None
@@ -2150,6 +2178,20 @@ class DaemonApp:
         self._library_seen = (0, 0)
         self._library_guarded_writes = 0
         self._typed_in_flight = 0
+        #: The To-dos: the library's ``kind=todo`` items (embodiment#105), read on the
+        #: library worker every ``todo_interval_s``; None without a library.
+        self._todo_source: Optional[TodoSource] = (
+            TodoSource(lane.client, parse=_parse_todo_item, clock=time.time)
+            if lane is not None
+            else None
+        )
+        #: True once a check read every to-do item: before that, an empty source is
+        #: "not read yet", never "no to-dos", and marks are never reconciled against it.
+        self._todos_loaded = False
+        #: The source's code while it is degraded (one record per transition).
+        self._todos_down: Optional[str] = None
+        self._todo_checks_deferred = 0
+        self._todo_resends_published = 0
         if lane is not None and self._seam is None:
             self._record(
                 APP_LIBRARY_UNAVAILABLE,
@@ -3817,8 +3859,8 @@ class DaemonApp:
         return bind_tools(self._seam, registry), registry
 
     def _todos_available(self) -> bool:
-        """The to-do tools are bound when memory can list the to-dos (d16)."""
-        return callable(getattr(self._memory, "list_ingest", None))
+        """The to-do tools are bound when the library is: the to-dos are its items."""
+        return self._todo_source is not None
 
     def _operator_asks_to_mark(self) -> bool:
         """set_todo_done's guard: the operator's own words in this typed turn ask (d16)."""
@@ -3890,12 +3932,79 @@ class DaemonApp:
         self._library_thread = thread
 
     def _library_worker(self) -> None:
-        """One tick now, then one per interval, until the daemon closes."""
+        """A to-do check and a sync tick now, then each on its own clock, until close."""
         lane = self._library
+        due = _LibraryDue()
         while lane is not None and not lane.stop.is_set():
+            wait = self._library_step(due, time.monotonic)
+            lane.stop.wait(max(0.01, wait))
+
+    def _library_step(self, due: "_LibraryDue", now: Callable[[], float]) -> float:
+        """Run what is due on the library worker; return the seconds until the next.
+
+        Two clocks on one thread (s22): the to-do check every ``todo_interval_s``
+        (c8) and the catalog sync every ``interval_s`` (or :data:`LIBRARY_CATCH_UP_S`
+        while it is behind). One thread, so they never overlap; the to-do check
+        touches only the to-do source and the marks, never the document index. A
+        check a live turn deferred comes back after :data:`LIBRARY_CATCH_UP_S`.
+        """
+        lane = self._library
+        if lane is None:
+            return LIBRARY_SYNC_INTERVAL_S
+        todo_interval = float(lane.todo_interval_s)
+        if self._todo_source is not None and now() >= due.todo:
+            ran = self._todo_check()
+            due.todo = now() + (todo_interval if ran else min(LIBRARY_CATCH_UP_S, todo_interval))
+        if not lane.stop.is_set() and now() >= due.sync:
             backlog = self._library_tick()
             wait = LIBRARY_CATCH_UP_S if backlog else float(lane.interval_s)
-            lane.stop.wait(max(0.01, min(wait, float(lane.interval_s))))
+            due.sync = now() + min(wait, float(lane.interval_s))
+        nxt = due.sync if self._todo_source is None else min(due.sync, due.todo)
+        return max(0.0, nxt - now())
+
+    def _todo_check(self) -> bool:
+        """ONE to-do check (c8): read the library's to-do items, then reconcile the
+        marks and re-send the ones still due (c21). Never raises.
+
+        Returns False when a live turn held the conversation: nothing was read and
+        the worker comes back soon. Marks are reconciled ONLY after a check that read
+        every item: :meth:`TodoStates.reconcile` drops a mark whose line is absent,
+        and a line is not absent because the library was down.
+        """
+        source = self._todo_source
+        if source is None:
+            return True
+        if self.live_turn_held():
+            with self._lock:
+                self._todo_checks_deferred += 1
+            return False
+        try:
+            checked = source.check()
+        except Exception as exc:  # noqa: BLE001  # the source promises not to; say so anyway
+            checked = {"available": False, "code": TODOS_UNAVAILABLE}
+            safe_reason.describe_exception(exc)
+        if not checked.get("available"):
+            code = str(checked.get("code") or TODOS_UNAVAILABLE)
+            if self._todos_down != code:
+                self._todos_down = code
+                reason = f"to-do check: {safe_reason.safe_label(code)}"
+                self._record(APP_TODOS_DEGRADED, reason, source="todos")
+            return True
+        if self._todos_down is not None:
+            self._todos_down = None
+            self._publish("state", {"component": "todos", "status": "online"})
+        lines = [line for group in source.groups() for line in group["lines"]]
+        _shown, due, _counters = self._todo_states.reconcile(lines)
+        self._todos_loaded = True
+        if due:
+            items = {item["id"]: item for item in self._todo_flat()}
+            for mark in due:
+                item = items.get(mark["id"])
+                if item is not None:
+                    self._publish_todo(item, mark["done"], mark["at"], mark["by"])
+                    with self._lock:
+                        self._todo_resends_published += 1
+        return True
 
     def _library_tick(self) -> bool:
         """ONE bounded sync tick plus the forwarding of what it recorded. Never raises.
@@ -4092,32 +4201,86 @@ class DaemonApp:
         return {"hits": [_search_hit(hit) for hit in hits]}
 
     def _todos(self) -> dict[str, Any]:
-        """``Controls.todos``: memory's ``action_item`` records, grouped by recording."""
-        result = self._memory.list_ingest(
-            record_type=TODO_RECORD_TYPE, deadline=server_module.TODOS_READ_BOUND_S
-        )
-        if not getattr(result, "ok", False):
-            for degradation in getattr(result, "degradations", ()) or ():
-                self._fold("memory", degradation)
-            return {"groups": [], "code": server_module.MEMORY_UNAVAILABLE_CODE}
-        return {"groups": todo_groups(getattr(result, "records", ()) or (), self._todo_states)}
+        """``Controls.todos``: the library's to-do items, one group per item (c4).
 
-    def _todo_items(self) -> list[dict[str, Any]]:
-        """Every to-do, flat, with its recording's title and day (for the tools)."""
-        groups = self._todos().get("groups") or []
+        Never a live GET: the page reads what the last to-do check held. With no
+        library, or before the first check read every item, or while the source is
+        degraded, the answer is a declared code the route refuses with (c22) — an
+        empty list would read as "nothing to do".
+        """
+        source = self._todo_source
+        if source is None:
+            return {"groups": [], "code": server_module.LIBRARY_NOT_CONFIGURED_CODE}
+        if not self._todos_loaded or not source.status().get("available"):
+            return {"groups": [], "code": TODOS_UNAVAILABLE}
+        return {"groups": self._todo_groups()}
+
+    def _todo_groups(self) -> list[dict[str, Any]]:
+        """The held to-do items in ``/api/todos``'s shape, newest item first.
+
+        Each line shows Gwen's pending mark until the library agrees with it, then the
+        library's state (:meth:`TodoStates.shown`, read-only: a page load confirms,
+        drops and counts nothing).
+        """
+        source = self._todo_source
+        if source is None:
+            return []
+        groups = []
+        for held in source.groups():
+            lines = held["lines"]
+            title = markdown_clean_text(_text_or_empty(held.get("title")))
+            recording = next((r for r in (recording_id_of(x.id) for x in lines) if r), "")
+            created = _text_or_empty(held.get("created_at"))
+            shown = self._todo_states.shown(lines)
+            groups.append(
+                {
+                    "recording_id": recording,
+                    "title": title,
+                    "date": parse_group(title, "").date,
+                    "items": [
+                        {
+                            "id": line.id,
+                            "text": line.text,
+                            "created": created,
+                            "done": bool(view["done"]),
+                            "done_at": _finite_or_none(view["done_at"]),
+                            "done_by": view["done_by"] or None,
+                        }
+                        for line, view in zip(lines, shown)
+                    ],
+                }
+            )
+        return groups
+
+    def _todo_flat(self) -> list[dict[str, Any]]:
+        """Every held to-do, flat, with its recording's title and day."""
         return [
             {**item, "recording_id": g["recording_id"], "title": g["title"], "date": g["date"]}
-            for g in groups
+            for g in self._todo_groups()
             for item in g["items"]
         ]
 
-    def _set_todo(self, todo_id: str, done: bool, by: str) -> Optional[dict[str, Any]]:
-        """Mark one to-do and tell culture-rules (d16). None: no such to-do.
+    def _todo_items(self) -> list[dict[str, Any]]:
+        """``list_todos``' lines: the same lines the page shows, or a fault, never none.
 
-        The ``todo`` event carries the whole to-do, so culture-rules can file the list
-        in the library; Gwen keeps the state either way.
+        A source not read yet, or degraded, raises: the tool reports a failure to the
+        model instead of "There are no to-dos" (c22, the operator's page and Gwen's
+        list show the same lines).
         """
-        item = next((i for i in self._todo_items() if i["id"] == todo_id), None)
+        source = self._todo_source
+        if source is None or not self._todos_loaded or not source.status().get("available"):
+            raise _TodosUnavailable(TODOS_UNAVAILABLE)
+        return self._todo_flat()
+
+    def _set_todo(self, todo_id: str, done: bool, by: str) -> Optional[dict[str, Any]]:
+        """Mark one to-do and tell culture-rules (d16, c5). None: no such to-do.
+
+        The ``todo`` event's ``id`` is the checklist id and its ``recording_id`` the
+        Pocket recording id in it, which is what culture-rules' flip rule reads; the
+        mark stays Gwen's pending one until the library line agrees (each to-do check
+        re-sends it until then, through :meth:`_publish_todo` too).
+        """
+        item = next((i for i in self._todo_flat() if i["id"] == todo_id), None)
         if item is None:
             return None
         state = self._todo_states.set(todo_id, done, by)
@@ -4126,22 +4289,55 @@ class DaemonApp:
             return {**item, "saved": False}
         with self._lock:
             self._todos_marked += 1
-        marked = {**item, "done": state["done"], "done_at": state["at"], "done_by": by}
+        self._publish_todo(item, state["done"], state["at"], by)
+        return {**item, "done": state["done"], "done_at": state["at"], "done_by": by}
+
+    def _publish_todo(self, item: Mapping[str, Any], done: bool, at: float, by: str) -> None:
+        """The ONE ``todo`` event, for a mark and for each re-send of it (same ``at``)."""
+        todo_id = item["id"]
         self._publish(
             "todo",
             {
                 "id": todo_id,
-                "done": state["done"],
-                "at": state["at"],
+                "done": done,
+                "at": at,
                 "by": by,
-                "recording_id": item["recording_id"],
+                "recording_id": recording_id_of(todo_id) or item.get("recording_id") or "",
                 "title": item["title"],
                 "date": item["date"],
                 "text": item["text"],
-                "timestamps": stamps(stamp(STAMP_RECEIVED, state["at"])),
+                "timestamps": stamps(stamp(STAMP_RECEIVED, at)),
             },
         )
-        return marked
+
+    def _todos_status(self) -> dict[str, Any]:
+        """``status.todos`` (c22): what the source read, and what became of the marks."""
+        source = self._todo_source
+        lane = self._library
+        if source is None:
+            block: dict[str, Any] = {
+                "configured": False,
+                "available": False,
+                "code": server_module.LIBRARY_NOT_CONFIGURED_CODE,
+                "items": 0,
+                "lines": 0,
+            }
+        else:
+            block = source.status()
+            block["last_check_at"] = _finite_or_none(block.get("last_check_at"))
+        with self._lock:
+            block.update(
+                {
+                    "loaded": self._todos_loaded,
+                    "check_interval_s": lane.todo_interval_s if lane is not None else None,
+                    "checks_deferred": self._todo_checks_deferred,
+                    "resends_published": self._todo_resends_published,
+                    "marked": self._todos_marked,
+                    "save_failures": self._todo_states.save_failures,
+                }
+            )
+        block.update(self._todo_states.counters())
+        return block
 
     def _control_todo_set(self, todo_id: Any, done: Any) -> dict[str, Any]:
         """``Controls.todo_set``: the page's checkbox (by the operator)."""
@@ -5443,8 +5639,8 @@ class DaemonApp:
             library_list=self._library_list if self._library is not None else None,
             library_get=self._library_get if self._library is not None else None,
             library_search=self._library_search if self._library is not None else None,
-            # From memory, library or not; a memory with no listing answers 503.
-            todos=self._todos if callable(getattr(self._memory, "list_ingest", None)) else None,
+            # From the library's to-do items; without one it answers a declared code.
+            todos=self._todos,
             # The history pane: the session logs, read only (operator, 2026-10-24).
             conversations=self._history().conversations,
             conversation=self._history().conversation,
@@ -5803,6 +5999,7 @@ class DaemonApp:
             },
             "ingest": self._ingest_status(),
             "library": self._library_status(),
+            "todos": self._todos_status(),
             "conversations": self._settle_status(),
             "recordings": self._recordings.status(),
             # The mode and the guard's counters, ONCE. The team domain, the audience
@@ -6227,57 +6424,17 @@ def _search_hit(hit: Any) -> dict[str, Any]:
     }
 
 
-def _todo_key(record: Any) -> Optional[str]:
-    """The recording a record is a to-do of, or None if it is not an active one."""
-    if not isinstance(record, Mapping) or record.get("type") != TODO_RECORD_TYPE:
-        return None
-    if record.get("lifecycle", "active") not in (None, "active"):
-        return None
-    meta = record.get("metadata")
-    if not isinstance(meta, Mapping) or meta.get("source") != TODO_SOURCE:
-        return None
-    recording = meta.get("recording_id")
-    return recording if isinstance(recording, str) and recording else None
+def _parse_todo_item(meta: Any, data: bytes) -> list[Any]:
+    """One ``kind=todo`` item's file as its checklist lines (the to-do source's parser).
 
-
-def todo_groups(records: Iterable[Any], states: Any = None) -> list[dict[str, Any]]:
-    """``action_item`` records grouped by ``recording_id``, newest recording first.
-
-    Text goes through memory's one sanitiser and is capped, like a chat source;
-    the page renders it with ``textContent``. Each item carries its record id and,
-    from *states* (:class:`~embodiment.daemon.todos.TodoStates`, d16), whether it is
-    done, when and by whom.
+    UTF-8 or it raises (the source counts ``todo_parse_failed`` and keeps the last
+    good version); lines past the Markdown reader's line cap are not read, and each
+    line's text goes through the reader's cleaner (tags, entities, the line cap).
     """
-    groups: dict[str, dict[str, Any]] = {}
-    for record in records:
-        recording = _todo_key(record)
-        if recording is None:
-            continue
-        meta = record["metadata"]
-        group = groups.setdefault(
-            recording,
-            {
-                "recording_id": recording,
-                "title": _text_or_empty(meta.get("title")),
-                "date": _text_or_empty(meta.get("date")),
-                "items": [],
-            },
-        )
-        todo_id = _text_or_empty(record.get("id"))
-        state = states.get(todo_id) if states is not None and todo_id else {}
-        group["items"].append(
-            {
-                "id": todo_id,
-                "text": memory_module.neutralise_source_text(
-                    record.get("text") or "", SOURCE_TEXT_MAX_CHARS
-                ),
-                "created": _text_or_empty(record.get("created")),
-                "done": bool(state.get("done")),
-                "done_at": state.get("at"),
-                "done_by": state.get("by"),
-            }
-        )
-    return sorted(groups.values(), key=lambda g: g["date"], reverse=True)
+    limits = MarkdownLimits()
+    text = bytes(data).decode("utf-8")
+    bounded = "\n".join(text.splitlines()[: limits.max_lines])
+    return parse_checklist(bounded, markdown_clean_text)
 
 
 def _access_status(

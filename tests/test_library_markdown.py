@@ -71,3 +71,14 @@ def test_refusals(bad):
     with pytest.raises(EpubRefused) as exc:
         markdown.extract(bad)
     assert exc.value.code == "bad_markdown"
+
+
+def test_clean_text_is_one_plain_bounded_line():
+    raw = '<div dir="rtl">call &amp; <b>book</b> the [vet](https://example.com/v)</div><!-- x -->'
+    assert markdown.clean_text(raw) == "call & book the vet"
+    assert markdown.clean_text("  a \t b  ") == "a b"
+    assert markdown.clean_text("![pic](https://example.com/p.png) left") == "left"
+    assert len(markdown.clean_text("x" * 10_000)) == markdown.Limits().max_line_chars
+    small = markdown.Limits(max_line_chars=5)
+    assert markdown.clean_text("abcdefgh", limits=small) == "abcde"
+    assert markdown.clean_text(None) == ""  # type: ignore[arg-type]

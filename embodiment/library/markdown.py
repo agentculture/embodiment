@@ -61,6 +61,17 @@ def _inline(line: str, links: list[tuple[str, str]]) -> str:
     return html.unescape(_TAG.sub("", _LINK.sub(sub, line)))
 
 
+def clean_text(text: str, *, limits: Optional[Limits] = None) -> str:
+    """One line of library Markdown as plain text: the cleaner a checklist line needs.
+
+    Comments dropped, links reduced to their text, images dropped, tags stripped,
+    entities unescaped, whitespace collapsed, capped at ``max_line_chars``. Never raises.
+    """
+    limits = limits if limits is not None else Limits()
+    line = str(text or "")[: limits.max_line_chars]
+    return " ".join(_inline(_COMMENT.sub("", line), []).split())[: limits.max_line_chars]
+
+
 def extract(data: bytes, *, limits: Optional[Limits] = None) -> Extracted:
     """Extract passages in document order, or raise :class:`EpubRefused`.
 
