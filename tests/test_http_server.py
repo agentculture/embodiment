@@ -2409,6 +2409,24 @@ class TestLibraryUnconfigured:
         finally:
             built.server.shutdown(2.0)
 
+    @pytest.mark.parametrize("path", ["/api/library", "/api/library/3", "/api/library/search?q=x"])
+    def test_a_down_library_is_503_library_unavailable(self, path: str) -> None:
+        """embodiment#107: each library read says so when the library cannot answer."""
+        down = {"code": s.LIBRARY_UNAVAILABLE_CODE}
+        built = build(
+            controls=s.Controls(
+                library_list=lambda: {"items": [], **down},
+                library_get=lambda _id: dict(down),
+                library_search=lambda _q: {"hits": [], **down},
+            )
+        )
+        try:
+            status, body = built.request("GET", path, hdrs=built.headers())
+            assert status == 503
+            assert json.loads(body)["code"] == "library_unavailable"
+        finally:
+            built.server.shutdown(2.0)
+
     def test_a_malformed_answer_is_502_not_passed_through(self) -> None:
         built = build(controls=s.Controls(library_list=lambda: {"items": "nope"}))
         try:
@@ -2423,9 +2441,11 @@ class TestLibraryClocks:
     def test_each_bound_is_derived_and_not_the_control_default(self) -> None:
         assert s.DEFAULT_LIBRARY_SEARCH_TIMEOUT_S == s.LIBRARY_SEARCH_BOUND_S + s.CONTROL_SLACK_S
         assert s.DEFAULT_LIBRARY_TIMEOUT_S == s.LIBRARY_READ_BOUND_S + s.CONTROL_SLACK_S
+        assert s.DEFAULT_LIBRARY_ITEM_TIMEOUT_S == s.LIBRARY_ITEM_BOUND_S + s.CONTROL_SLACK_S
         assert s.DEFAULT_TODOS_TIMEOUT_S == s.TODOS_READ_BOUND_S + s.CONTROL_SLACK_S
         for value in (
             s.DEFAULT_LIBRARY_TIMEOUT_S,
+            s.DEFAULT_LIBRARY_ITEM_TIMEOUT_S,
             s.DEFAULT_LIBRARY_SEARCH_TIMEOUT_S,
             s.DEFAULT_TODOS_TIMEOUT_S,
         ):
@@ -2450,6 +2470,37 @@ class TestLibraryClocks:
             assert status == 200
             assert names
             assert "text" in names[0].lower()
+        finally:
+            built.server.shutdown(2.0)
+
+    def test_the_live_library_reads_are_bounded_by_the_clients_deadline(self) -> None:
+        """embodiment#107: the reader and search now reach the library; their bounds are
+        the client's request deadline (search: plus the anchor budget), copied here so
+        this module loads neither the library nor the daemon."""
+        from embodiment.daemon import app as daemon_app
+        from embodiment.library import client, retrieve
+
+        assert s.LIBRARY_REQUEST_DEADLINE_S == client.DEFAULT_DEADLINE == retrieve.DEFAULT_DEADLINE
+        assert s.LIBRARY_ANCHOR_BUDGET_S == daemon_app.LIBRARY_ANCHOR_BUDGET_S
+        assert s.LIBRARY_ITEM_BOUND_S == s.LIBRARY_REQUEST_DEADLINE_S
+        assert s.LIBRARY_SEARCH_BOUND_S == (
+            s.LIBRARY_REQUEST_DEADLINE_S + s.LIBRARY_ANCHOR_BUDGET_S
+        )
+
+    def test_the_item_read_runs_under_its_own_bound(self) -> None:
+        def slow(_id: int) -> dict[str, Any]:
+            time.sleep(0.6)
+            return {"item": {"id": "3"}, "passages": []}
+
+        built = build(
+            controls=s.Controls(library_get=slow),
+            control_timeout_s=0.1,
+            library_timeout_s=0.2,
+            library_item_timeout_s=3.0,
+        )
+        try:
+            status, _ = built.request("GET", "/api/library/3", hdrs=built.headers())
+            assert status == 200
         finally:
             built.server.shutdown(2.0)
 
