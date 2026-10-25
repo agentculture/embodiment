@@ -188,7 +188,7 @@ from embodiment.library import reading as reading_module
 from embodiment.library import tools as library_tools
 from embodiment.library import web as web_module
 from embodiment.library.client import LibraryClient, LibraryConfig, LibraryError
-from embodiment.library.epub import extract as epub_extract
+from embodiment.library.extract import extract_item
 from embodiment.library.index import DocumentIndex
 from embodiment.library.sync import RECOVERED as LIBRARY_RECOVERED
 from embodiment.library.sync import LibrarySync
@@ -1712,7 +1712,7 @@ def build_library_lane(
     embed_document: Callable[[str], Any],
     embed_query: Callable[[str], Any],
     gate: Callable[[], bool],
-    extract: Callable[[bytes], Any] = epub_extract,
+    extract: Callable[[bytes], Any] = extract_item,
     threshold: float = memory_module.DEFAULT_SIMILARITY_THRESHOLD,
     fetch: Optional[Callable[[str], Any]] = None,
 ) -> LibraryLane:
