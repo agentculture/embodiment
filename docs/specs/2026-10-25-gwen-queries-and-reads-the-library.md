@@ -1,0 +1,113 @@
+# Gwen queries and reads the library
+
+> Gwen asks culture-library for passages instead of keeping her own copy of it, and reads any library document aloud, by page or by paragraph, remembering where she stopped so the operator can say continue and hear the rest
+
+## Audience
+
+- the operator, on whatever device has gwen.culture.dev open, who asks Gwen about the library and now also listens to a library document read in Gwen's voice; and the embodiment maintainers, who stop keeping a second copy of the library
+
+## Before → After
+
+- Before: Gwen syncs every library item, extracts and embeds it into her own 0600 index (index v3, 0.715 floor, 60-char fragments dropped) on a 300 s worker, duplicating what culture-library already keeps; and she can only answer about a document, never read one: `read_item` stops at 40 passages / 16000 characters, nothing records a position, and one spoken reply drops everything past 4000 characters
+- After: `search_library` and its siblings answer from culture-library's passages; Gwen holds no library index and runs no library sync; on the page the operator says or taps read for an item, hears it paragraph by paragraph on that device's speakers, stops at any point, and later (from any device) continues at the first paragraph not fully heard
+
+## Why it matters
+
+- one copy of the library: a document the library indexes is searchable by Gwen the moment it lands, with no second embed, no re-index on an id change (d15 cost one) and no drift between two indexes; and reading aloud turns the library from something to ask into something to hear, a chapter at a time, picked up where it was left
+
+## Requirements
+
+- `search_library` is served by one POST /api/rag/retrieve per call (mode hybrid, rerank false on the turn path) and the library's own passages; Gwen's library sync and document index (library/sync.py, the library lane of library/index.py) are retired, so Gwen no longer downloads, extracts or embeds library items
+  - honesty: the daemon builds no library DocumentIndex and starts no LibrarySync: library/sync.py is gone, app.py imports neither for the library lane, and a test drives `search_library` through a fake retrieve with no index present
+- citations carry `item_id`, `chunk_no` and `chunk_sha` from the retrieve passage; `read_passage` and the page's reader open a passage by those, since a retrieve passage has no anchor (today's md#n / spine#n anchors come from Gwen's index)
+  - honesty: a citation shown on the page carries `item_id`, `chunk_no` and `chunk_sha`, and opening it lands the reader on that passage's text (matched by `chunk_sha` against the item's /text), or on the item's start when the text no longer contains it
+- a library or embedder failure (connection, timeout, 503 `rag_unavailable`) answers the tool with a fixed host fault, records a degradation and counts it in status.library; nothing raises and no turn waits past the client deadline (10 s, client.py:45)
+  - honesty: with the library stopped, with retrieve answering 503 `rag_unavailable`, and with retrieve hanging past the client deadline, a typed search turn still replies, the tool result is the fixed fault text, status.library.`failures_by_code` counts the code, and one degradation is recorded; no exception reaches the turn
+- to-do items and discord messages never come back from `search_library`: the retrieve call names a kind, or Gwen drops passages of kind todo client-side, matching today's DocumentIndex.wants exclusion
+  - honesty: a fake retrieve returning todo and discord-message passages yields none of them in the tool result, and a kind-less call on the live library returns no todo passage in 5 probe queries
+- reading a document aloud takes its text from GET /api/library/{id}/text: an EPUB's sections and paragraphs as the library gives them, and a Markdown item split into paragraphs by Gwen's markdown reader; a page is a section (an EPUB chapter, a Markdown heading)
+  - honesty: for a live EPUB the reader's sections and paragraphs equal /text's sections and paragraphs in order and count; for a live Markdown transcript each paragraph equals one passage of Gwen's markdown reader over /text's text
+- the read-aloud loop bypasses the LLM: Gwen speaks the document's own words one paragraph per Voice.speak call, verbatim, never summarised or rewritten by senses
+  - honesty: the text spoken for each paragraph is that paragraph verbatim (no senses call happens during a read, pinned by a test with a senses fake that fails on any call), and a paragraph over 4000 characters is split at sentence boundaries into several speak calls rather than truncated
+- Gwen keeps one reading position per item (`item_id`, section, paragraph, the item's sha256) in a 0600 file under the state dir, written atomically like todos-done.json; continue resumes at the first paragraph not fully heard
+  - honesty: the cursor file is 0600 under the state dir, survives a daemon restart, holds one entry per item, an unreadable file is set aside rather than overwritten, and an item whose sha256 changed resumes at the start of the saved section (or the item's start if the section is gone), never past the end
+- the page drives a read through daemon routes: start or continue returns the next paragraph (its text, section heading and position) from the saved cursor; the page synthesises it with /api/speak, plays it, and reports it heard on the audio's ended event; the daemon advances the cursor only on a heard report for that exact position, and the page prefetches the following paragraph so speech does not stall between paragraphs
+  - honesty: a heard report for a stale position (not the cursor's next) does not move the cursor; a paragraph whose audio was paused, errored or cut before ended is not reported heard; reloading mid-paragraph and continuing replays that paragraph
+
+## Honesty conditions
+
+- both halves hold live, not only in tests: a typed question is answered from a retrieve passage cited by `item_id` and `chunk_sha`, and a read is heard on the phone and continued after a reload
+- `search_conversations` still answers from conversations-index.json after the library index is retired, and its tests pass unchanged
+- read text returned to the page and to any prompt goes through the existing fencing (`render_recalled`), the retrieve module issues exactly one POST route and no other non-GET call (AST-pinned), and a turn that read library text refuses remember/forget unless the operator's words ask
+- the reading controls work from a phone over the public host with Cloudflare Access, as the rest of the page does, with no install secret on the phone
+- every before-state fact cites code or a measurement in this repo (index.py, sync.py, reading.py:31-32, voice.py:333, the 2026-10-24 library measurement)
+- a library item created during the test is returned by `search_library` within 60 s of the library indexing it, with no Gwen-side action
+- the after state is checked live once (the success signal), and the result is written to docs/live-test-results with numbers, including if it is bad
+- both parts are measured from records (status, the daemon log of library GETs, the page's heard reports), not from the operator's recollection
+- a test pins that the read route's paragraph text equals the source paragraph byte for byte
+
+## Success signals
+
+- on the live rig: (1) status.library shows retrieve calls >= 1 and 0 failures, with no `items_indexed` or sync worker, and the daemon makes 0 GET /api/library/{id}/file calls for indexing over 10 minutes; (2) one chapter of a live EPUB read from the phone is stopped mid-paragraph, the page reloaded, and continue plays that same paragraph again first, within 5 s of the tap
+
+## Scope / boundaries
+
+- `search_conversations` keeps its own index: Gwen's settled conversations are hers and not library items (d8), so DocumentIndex stays only as the conversations index (conversations.py:15,39,126-167); only the library lane retires
+- read text is library text: it stays fenced wherever it enters a prompt, Gwen never writes the library (c26), and the write guard counts a reading turn as one holding library text
+
+## Non-goals
+
+- no summarising, translating or skipping inside a read: the read is the item's own paragraphs in order; asking Gwen about what was read stays an ordinary typed turn
+
+## Assumptions
+
+- POST /api/rag/retrieve is a read, but the library client is GET-only by construction: tests/`test_library_client.py`:269 `test_module_is_get_only` rejects any POST string, method= other than GET and any data= body, and c26/h14 of the pocketchat cycle promise no write call; calling retrieve needs that pin amended to allow exactly this one route, and a recorded deviation
+- memory's similarity threshold 0.715 does not carry over: probed live 2026-10-26, hybrid scores are rank-fusion values 0.011-0.033 and semantic scores 0.68-0.77 (2 queries, k=8), so the library floor must be chosen anew or dropped (the library returns its k best)
+- Voice.speak returns when sentences are queued, not heard (SpeakResult.`sentences_queued`, voice.py:472-516), so the cursor advances past a paragraph only once its playback finishes with no barge-in; a paragraph interrupted mid-way counts unheard and is read again on continue
+
+## Scope exploration
+
+- `s1` — `embodiment/library/index.py, sync.py, daemon/app.py:1758-1771`: DocumentIndex + LibrarySync are the duplicate pipeline #107 names; app.py wires them at 1758-1771 and the sync clocks `LIBRARY_SYNC_INTERVAL_S`/`TICK_BUDGET_S`/`CATCH_UP_S` (1083-1101) go with them; about 200 tests touch them (`test_library_index` 52, `test_library_sync` 14, `test_daemon_library` 78)
+  - seeds: `c2`
+- `s2` — `embodiment/library/client.py:152-199, tests/test_library_client.py:234-290`: the only HTTP path is LibraryClient.`_get` with method=GET; the AST guard flags POST strings and data= bodies anywhere in the module; a retrieve call fails it as written
+  - seeds: `c3`
+- `s3` — `live culture-library 127.0.0.1:8796 POST /api/rag/retrieve (scratchpad probe107b.py)`: hybrid 1.11-1.12 s and 0.74 s, semantic 1.41-1.78 s on this rig (n=5, not a distribution); modes are only semantic|hybrid (keyword 422); `item_ids` filter works; passages 488-996 chars, one 13-char fragment seen; score scale differs by mode
+  - seeds: `c4`
+- `s4` — `embodiment/library/tools.py:255-270,379-452; web/src/api/library.ts:108-174`: citations dedupe on (`item_id`, anchor, text) and `read_passage` matches index.item passages by anchor; the web reader parses anchor, `start_s`, `end_s`; all of that is index-sourced
+  - seeds: `c5`
+- `s5` — `embodiment/daemon/app.py:1055-1074,4386-4425`: today's codes `APP_LIBRARY_DEGRADED`/UNAVAILABLE and `LIBRARY_EMBED_FAILED_CODE` and status.library (`items_indexed`, chunks, gets, `failures_by_code`) are index-shaped; retrieve needs its own counters (calls, `failures_by_code`, latency)
+  - seeds: `c6`
+- `s6` — `live catalog 2026-10-26: 68 items (document 36, newspaper 15, book 11, transcript 3, todo 2, discord-message 1)`: retrieve takes one kind per call; with no kind it searches every kind including todo; the `search_library` kind enum (tools.py:111) is newspaper/transcript/article/document/book
+  - seeds: `c7`
+- `s7` — `embodiment/library/conversations.py, daemon/app.py:6942-6949`: conversations.py reuses DocumentIndex in conversations-index.json with the gemma2-embed embedder; retiring index.py wholesale would break `search_conversations`
+  - seeds: `c8`
+- `s8` — `live GET /api/library/{id}/text (scratchpad probe107.py)`: EPUB items return sections \[{heading, paragraphs, links}\] (book 11: 431 sections, 3943 paragraphs, median 68 chars, max 1217); Markdown transcripts return text with sections null; `read_item` today caps at 40 passages / 16000 chars with no offset (reading.py:31-32,66-84)
+  - seeds: `c9`
+- `s9` — `embodiment/voice.py:333-566,904-960; turn.py:228,301`: one speak() voices at most 4000 chars / 64 sentences / 500 chars per sentence and silently drops the rest; a long read through an LLM reply would be bounded by model output and paraphrase; a paragraph per call stays inside every cap
+  - seeds: `c10`
+- `s10` — `embodiment/daemon/todos.py:30,93-118; daemon/state.py:420,703`: no position or bookmark state exists anywhere; TodoStates is the pattern: one 0600 JSON, atomic replace, lazy load under a lock, an unreadable file renamed aside, never raises
+  - seeds: `c11`
+- `s11` — `embodiment/voice.py:875-960; daemon/app.py:5440-5475,3379-3382`: barge-in sets `_interrupted` and stops the endpoint; nothing records how far a reply got; the paced worker plays after speak() returns, so interrupted may be False even when the operator cut in
+  - seeds: `c12`
+- `s12` — `embodiment/library/tools.py:1-47,164-216,285-297; app.py:3896-3912`: every library result goes through memory.`render_recalled` (AST-pinned); CitationCollector.`library_text_in_context` feeds the remember/forget guard
+  - seeds: `c13`
+- `s13` — `tests/test_release_docs.py:59-97,215-239; README.md:64-73,175-196,245-250,465; embodiment/explain/catalog.py:39-82; CLAUDE.md:66,86-94`: the release-docs test pins get-only, 2026-10-24-library.md, 19 of 32 and the bound tool list in README and explain; those passages and the index-v3 / 0.715 / 60-char prose must be rewritten truthfully, not just deleted
+- `s14` — `web/src/components/Reader.tsx, LibraryPane.tsx, api/audio.ts, AudioControls.tsx:33-70`: the page has a reader (openAt(anchor), passages from GET /api/library/{id}) and a one-shot per-message speak button; no queue, no playback position, no read-aloud control
+- `s15` — `embodiment/daemon/app.py:2658-2681,3355-3383; http/server.py:461-462`: the rig voice exists only once an ear attaches (`_ensure_voice` builds Voice from the ear's endpoint); with Live off (d6 default) `_voice` is None and a reply records `APP_NO_ENDPOINT`, so reading on the rig speaker today means the room mic is live too — reading q1's rig option needs a speaker-only path or Live on
+- `s16` — `web/src/components/AudioControls.tsx:55-63; web/src/audio/lobes/audio-playback.ts:159`: the page plays /api/speak WAVs with new Audio(url) and already hooks onended (only to revoke the URL); an ended event per paragraph is available in the browser to mark it heard, and a pause before ended marks it unheard — reading q1's phone option has a precise heard signal
+- `s17` — `live transcript items 57, 58, 60 (scratchpad transcript_shape.py); culture-library#25; culture-rules issues`: no live transcript carries a time mark, speaker label or `start_s`/`end_s` (3 headings and text each), so the library cannot chunk times it never receives; culture-library#25 item 5 covers the library side, culture-rules had no issue, opened culture-rules#99 on 2026-10-26
+  - seeds: `c16`
+
+## Decisions
+
+- a read-aloud plays on the speakers of the device that has gwen.culture.dev open (phone or laptop): the page fetches and plays each paragraph and reports it heard; not the rig speaker
+- reading starts, stops and continues from typed asks and the page's controls for now; voice commands (read, continue, stop) are a follow-up for when realtime Live is on
+- transcripts are searched through the library like every other kind; Gwen keeps no local transcript index and cites transcripts without times until the library's passages carry them (culture-library#25 item 5; culture-rules for the transcripts it writes)
+- `search_library` takes the library's k best passages with no similarity floor (memory's 0.715 is not applied), and the tool says they are the library's best passages for the query, not confirmed matches
+
+## Open parks
+
+- [unknown_nonblocking] English documents: the tts lane (BlueTTS2.5) is Hebrew and voice.py sends no language; how English text sounds is unmeasured (voice.py:262,683-685)
+- [unknown_nonblocking] Retrieve latency on the typed-turn path: 0.74-1.12 s hybrid against the old warm local p90 0.21 s, n=5 on 2026-10-26; culture-library#25 tracks a faster path
+- [follow_up] Freshness (#107 step 3, the feed): with no local index nothing needs following for search; the shelf still lists the catalog
+- [follow_up] voice commands for reading (read me X, continue, stop) on spoken turns when Live is on; voice turns carry no library tools today (c39)
