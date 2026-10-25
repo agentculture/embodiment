@@ -181,6 +181,15 @@ def test_a_library_line_older_than_the_mark_does_not_confirm(tmp_path):
     assert shown[0]["done_at"] == 1000.0 and len(due) == 1
 
 
+def test_a_flip_rendered_to_the_second_confirms_the_mark_it_carries(tmp_path):
+    # The event's at is 1000.7; culture-rules renders done_at to the second: 1000.0.
+    states = t.TodoStates(tmp_path / "s.json", clock=_Clock(1000.7))
+    states.mark("a", True, t.BY_GWEN)
+    assert states.shown([_line("a", True, 1000.0, "operator")])[0]["done_by"] == "operator"
+    _, due, c = states.reconcile([_line("a", True, 1000.0, "operator")])
+    assert due == [] and c["confirmed"] == 1 and c["pending"] == 0
+
+
 def test_a_newer_library_flip_the_other_way_wins(tmp_path):
     states = t.TodoStates(tmp_path / "s.json", clock=_Clock())
     states.mark("a", True, t.BY_GWEN)

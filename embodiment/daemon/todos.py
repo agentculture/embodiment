@@ -20,6 +20,7 @@ turn ask for it).
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import tempfile
@@ -47,6 +48,15 @@ def valid_todo_id(value: Any) -> bool:
 
 def _field(line: Any, name: str) -> Any:
     return line.get(name) if isinstance(line, dict) else getattr(line, name, None)
+
+
+def _flipped_since(lib_at: Any, at: float) -> bool:
+    """The library line was set no earlier than the mark, compared to the second.
+
+    culture-rules renders ``done_at`` as ISO to the second, so a flip carrying the
+    mark's own ``at`` reads back below it by the fraction; whole seconds compare equal.
+    """
+    return isinstance(lib_at, (int, float)) and math.floor(lib_at) >= math.floor(at)
 
 
 def _is_pending(mark: dict[str, Any]) -> bool:
@@ -149,9 +159,9 @@ class TodoStates:
         Each line carries ``id``, ``done``, ``done_at`` (epoch s or None) and ``by``
         (attributes or dict keys). Every call is one check. *shown* has, per line, the
         ``id`` and the ``done`` / ``done_at`` / ``done_by`` to display: the mark while it
-        is pending, the library's once it agrees (``done_at`` >= the mark's time) or a
-        newer flip the other way beats the mark. A mark still pending is due for re-send
-        at every check until it is confirmed, its line is gone, or an hour passes (then
+        is pending, the library's once it agrees (``done_at`` >= the mark's time, to the
+        second) or a newer flip the other way beats the mark. A mark still pending is due
+        for re-send at every check until it is confirmed, its line is gone, or an hour passes (then
         it counts ``unconfirmed``, stops re-sending, and the library state shows).
         A mark whose line is gone is dropped and counted, and its key leaves the file.
         """
@@ -176,7 +186,7 @@ class TodoStates:
                     continue
                 at = mark["at"]
                 lib_at = lib["done_at"]
-                if isinstance(lib_at, (int, float)) and lib_at >= at:
+                if _flipped_since(lib_at, at):
                     if lib["done"] == mark["done"]:
                         self.confirmed += 1
                     else:
@@ -222,7 +232,7 @@ class TodoStates:
                 if (
                     mark is None
                     or not _is_pending(mark)
-                    or (isinstance(lib_at, (int, float)) and lib_at >= mark["at"])
+                    or _flipped_since(lib_at, mark["at"])
                     or now - mark["at"] >= RESEND_WINDOW_S
                 ):
                     out.append({"id": lid, **lib})
