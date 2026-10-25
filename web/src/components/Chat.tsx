@@ -16,6 +16,7 @@ import {
 import { splitCitations, stripCitations } from "../api/citations";
 import { kindInfo } from "../api/kinds";
 import { AudioControls, SpeakButton, type ClipReply } from "./AudioControls";
+import { deviceKind } from "./ReadAloud";
 
 export interface ChatProps {
   /** Install secret the page already holds; sent whenever present (Access replaces it on the public Host). */
@@ -39,6 +40,29 @@ export interface ChatProps {
   initialTurns?: { role: "user" | "assistant"; text: string }[];
   /** Called once per answer with the question it answered and its sources. */
   onAnswer?: (question: string, sources: ChatSource[]) => void;
+  /** Start reading a cited library item aloud on this device (embodiment#107). */
+  onReadAloud?: (itemId: string) => void;
+}
+
+/** The library item an answer can offer to read aloud: its first cited library source. */
+export function readableSource(sources: ChatSource[]): ChatSource | null {
+  return sources.find((s) => s.source === "library" && !!s.item_id && s.kind !== "todo") ?? null;
+}
+
+/** The card under an answer that starts reading its cited item aloud here (mockup107, board 2). */
+function ReadCard({ source, onRead }: { source: ChatSource; onRead: (itemId: string) => void }) {
+  const kind = sourceKind(source);
+  const device = deviceKind();
+  return (
+    <div className="read-card" role="group" aria-label="Read aloud">
+      <span className="cover" aria-hidden="true" style={{ ["--kind" as string]: kind.color }} />
+      <b dir="auto">{source.title || "This item"}</b>
+      <span dir="auto">{source.section || kind.label}</span>
+      <button type="button" className="pill-btn pill-btn--go" onClick={() => onRead(source.item_id as string)}>
+        Read aloud on this {device}
+      </button>
+    </div>
+  );
 }
 
 interface Message {
@@ -253,6 +277,7 @@ export function Chat({
   placeholder = "Ask about your library",
   conversation,
   initialTurns,
+  onReadAloud,
 }: ChatProps) {
   const [draft, setDraft] = useState("");
   const [messages, setMessages] = useState<Message[]>(() =>
@@ -375,6 +400,9 @@ export function Chat({
                 )}
               </div>
               <Sources sources={m.sources} onOpen={onOpenCitation} />
+              {onReadAloud && readableSource(m.sources) && (
+                <ReadCard source={readableSource(m.sources) as ChatSource} onRead={onReadAloud} />
+              )}
             </li>
           ),
         )}

@@ -7,11 +7,16 @@
 // GET /api/library/{id} (anchor-addressed, times optional), summary/todos/
 // re-enrich are dropped, and every string is a text node with dir="auto".
 // Layout: side panel >= 861px, full-screen sheet below (styles/library.css).
+// Listen mode (embodiment#107, t4): ReadAloud.tsx plays the item on this device;
+// the passage being spoken is marked, heard ones recede, and the map turns into
+// one span per section while a read is on.
 
 import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
 import type { MouseEvent } from "react";
 import { fetchItem, type LibraryClientOptions, type LibraryDocument, type Passage } from "../api/library";
 import { dayLabel, kindInfo } from "../api/kinds";
+import type { ReadingUnit, SavedPosition } from "../api/reading";
+import { deviceKind, progressOf, ReadAloudDock, useReadAloud, type AudioFactory } from "./ReadAloud";
 import "../styles/library.css";
 
 export interface ReaderHandle {
@@ -22,6 +27,7 @@ export interface ReaderHandle {
 
 /** What a failed open says; "not found" mid re-index means "not ready yet". */
 function failureText(code: string): string {
+  if (code === "library-item-gone") return "This item is no longer in the library.";
   if (code === "library-item-not-found") {
     return "This item is not ready to read yet: Gwen is still indexing it. Try again in a moment.";
   }
@@ -37,6 +43,29 @@ export interface ReaderProps {
   variant?: "side" | "page";
   clientOptions?: LibraryClientOptions;
   onClose: () => void;
+  /** Start reading aloud as soon as the reader opens (a Read aloud card or a Continue chip). */
+  listen?: boolean;
+  /** This item's saved reading position, if any: the start button offers to continue there. */
+  savedPosition?: SavedPosition | null;
+  /** Tests inject a fake Audio. */
+  audioFactory?: AudioFactory;
+}
+
+const norm = (t: string) => t.replace(/\s+/g, " ").trim();
+
+/** The passage that holds the spoken text: equal, or containing it (a part of a long paragraph). */
+function matchPassage(passages: Passage[], text: string, from: number): number {
+  const want = norm(text);
+  if (!want) return -1;
+  const order = [...passages.keys()].slice(Math.max(0, from)).concat([...passages.keys()].slice(0, Math.max(0, from)));
+  for (const i of order) if (norm(passages[i].text) === want) return i;
+  for (const i of order) if (norm(passages[i].text).includes(want)) return i;
+  return -1;
+}
+
+function calmMotion(): boolean {
+  if (typeof window === "undefined" || typeof window.matchMedia !== "function") return false;
+  return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
 }
 
 function totalSeconds(passages: Passage[]): number {
@@ -56,7 +85,7 @@ function passageAt(passages: Passage[], at: number): Passage | undefined {
 }
 
 export const Reader = forwardRef<ReaderHandle, ReaderProps>(function Reader(
-  { id, secret = "", anchor, clientOptions, onClose, variant = "side" },
+  { id, secret = "", anchor, clientOptions, onClose, variant = "side", listen, savedPosition, audioFactory },
   ref,
 ) {
   const [doc, setDoc] = useState<LibraryDocument | null>(null);
@@ -64,6 +93,18 @@ export const Reader = forwardRef<ReaderHandle, ReaderProps>(function Reader(
   const [cited, setCited] = useState<string | null>(anchor ?? null);
   const [attempt, setAttempt] = useState(0);
   const nodes = useRef(new Map<string, HTMLLIElement>());
+  const docRef = useRef<LibraryDocument | null>(null);
+  docRef.current = doc;
+  // The following paragraph's text from this reader's copy, so its audio can be
+  // made while this one plays without seeking the cursor (d1). Unknown mid-paragraph.
+  const peekFollowing = useCallback((u: ReadingUnit): string | null => {
+    const d = docRef.current;
+    if (!d || u.part + 1 < u.partCount || u.paragraph + 1 >= u.paragraphCount) return null;
+    const i = matchPassage(d.passages, u.text, 0);
+    return i >= 0 && i + 1 < d.passages.length ? d.passages[i + 1].text : null;
+  }, []);
+  const [reading, controls] = useReadAloud({ itemId: id, secret, clientOptions, audioFactory, peekFollowing });
+  const device = deviceKind();
 
   useEffect(() => {
     let live = true;
@@ -96,6 +137,27 @@ export const Reader = forwardRef<ReaderHandle, ReaderProps>(function Reader(
     if (!cited || !doc) return;
     nodes.current.get(cited)?.scrollIntoView?.({ block: "center", behavior: "smooth" });
   }, [cited, doc]);
+
+  // A Read aloud card or a Continue chip opened this reader: start at the cursor.
+  useEffect(() => {
+    if (listen) controls.start();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, listen]);
+
+  const lastMatch = useRef(-1);
+  const unit = reading.unit;
+  const listening = reading.status !== "idle" && reading.status !== "gone";
+  const speakingIndex = doc && unit && listening ? matchPassage(doc.passages, unit.text, lastMatch.current) : -1;
+  if (speakingIndex >= 0) lastMatch.current = speakingIndex;
+  const live = reading.status === "playing" || reading.status === "loading";
+  const prog = unit ? progressOf(unit, reading.status === "playing" ? reading.played : 0) : null;
+
+  useEffect(() => {
+    if (speakingIndex < 0 || !doc) return;
+    const anchorOf = doc.passages[speakingIndex]?.anchor;
+    const node = anchorOf ? nodes.current.get(anchorOf) : undefined;
+    node?.scrollIntoView?.({ block: "center", behavior: calmMotion() ? "auto" : "smooth" });
+  }, [speakingIndex, doc]);
 
   useImperativeHandle(
     ref,
@@ -146,7 +208,19 @@ export const Reader = forwardRef<ReaderHandle, ReaderProps>(function Reader(
         <h2 dir="auto" className="reader-title">
           {doc ? doc.item.title : error ? "Not available" : "Opening"}
         </h2>
-        {doc && doc.passages.length > 1 && (
+        {unit && prog && listening ? (
+          <div className="reader-map reader-map--sections" aria-hidden="true">
+            {Array.from({ length: unit.sectionCount }, (_, i) =>
+              i < unit.section ? (
+                <span key={i} className="heard" data-share="1" />
+              ) : i === unit.section ? (
+                <span key={i} className="now" data-share={String(prog.section)} style={{ ["--share" as string]: prog.section }} />
+              ) : (
+                <span key={i} />
+              ),
+            )}
+          </div>
+        ) : doc && doc.passages.length > 1 && (
           <div className="reader-map" aria-hidden="true">
             {doc.passages.map((p) => (
               <span key={p.anchor} className={p.anchor === cited ? "hit" : undefined} />
@@ -167,6 +241,27 @@ export const Reader = forwardRef<ReaderHandle, ReaderProps>(function Reader(
             ))}
           </div>
         )}
+        {doc && (reading.status === "idle" || reading.status === "stopped") && (
+          <div className="listen-start">
+            {reading.status === "stopped" || (savedPosition && !savedPosition.gone) ? (
+              <>
+                <button type="button" className="pill-btn pill-btn--go" onClick={() => controls.start()}>
+                  {reading.status === "stopped" && unit
+                    ? `Continue listening: section ${unit.section + 1}, paragraph ${unit.paragraph + 1}`
+                    : `Continue listening: section ${(savedPosition?.section ?? 0) + 1}, paragraph ${(savedPosition?.paragraph ?? 0) + 1}`}
+                </button>
+                <button type="button" className="pill-btn" onClick={() => controls.start({ section: 0, paragraph: 0 })}>
+                  From the start
+                </button>
+              </>
+            ) : (
+              <button type="button" className="pill-btn pill-btn--go" onClick={() => controls.start()}>
+                Read aloud on this {device}
+              </button>
+            )}
+            <span className="listen-note" dir="auto">Gwen reads the text as written, one paragraph at a time.</span>
+          </div>
+        )}
       </div>
       <div className="reader-body">
         {error && (
@@ -178,23 +273,41 @@ export const Reader = forwardRef<ReaderHandle, ReaderProps>(function Reader(
           </div>
         )}
         <ol className="transcript">
-          {doc?.passages.map((p) => (
+          {doc?.passages.map((p, i) => {
+            const speaking = i === speakingIndex;
+            const heard = unit !== null && speakingIndex >= 0 && i < speakingIndex && i >= speakingIndex - unit.paragraph;
+            const listenClass = speaking ? (live ? " speaking" : " stopped") : heard ? " heard" : "";
+            return (
             <li
               key={p.anchor}
-              className={p.anchor === cited ? "seg cited" : "seg"}
-              aria-current={p.anchor === cited ? "true" : undefined}
+              className={(p.anchor === cited && !speaking ? "seg cited" : "seg") + listenClass}
+              aria-current={speaking || p.anchor === cited ? "true" : undefined}
+              data-played={speaking && prog ? String(prog.paragraph) : undefined}
+              style={speaking && prog ? { ["--played" as string]: prog.paragraph } : undefined}
               ref={(n) => {
                 if (n) nodes.current.set(p.anchor, n);
                 else nodes.current.delete(p.anchor);
               }}
             >
+              {speaking && !live && (
+                <span className="stop-flag" dir="auto">
+                  <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+                    <path d="M6 3h12v18l-6-4-6 4z" />
+                  </svg>
+                  {reading.status === "stopped" ? "You stopped here" : "Paused here"}
+                </span>
+              )}
               {p.speaker && <span dir="auto" className="seg-speaker">{p.speaker}</span>}
               {p.heading && <h3 dir="auto" className="seg-heading">{p.heading}</h3>}
               <p dir="auto" className="seg-text">{p.text}</p>
             </li>
-          ))}
+            );
+          })}
         </ol>
       </div>
+      {reading.status !== "idle" && reading.status !== "stopped" && (
+        <ReadAloudDock state={reading} controls={controls} device={device} />
+      )}
     </aside>
   );
 });

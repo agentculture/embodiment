@@ -251,3 +251,110 @@
 .conv:not(.conv--now) { grid-template-columns: minmax(0, 1fr) auto; }
 .conv .row-title { text-overflow: ellipsis; }
 .history .rows { overflow-x: hidden; }
+
+/* ---------- read aloud on this device (embodiment#107, t4) ----------
+   Ported from the approved mockup (scratchpad mockup107/index.html, 2026-10-26),
+   page tokens only. One bold thing: the paragraph being spoken (--mark). One
+   clock for every bar: --played is how far that paragraph has played (0-1),
+   set from its audio's currentTime/duration; --share is the section's share of
+   the map, derived from the same value. */
+
+@property --played { syntax: "<number>"; inherits: true; initial-value: 0; }
+@property --share { syntax: "<number>"; inherits: true; initial-value: 0; }
+
+.listen-start { display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem 0.75rem; margin-block-start: 1rem; }
+.pill-btn--go { background: var(--cobalt); color: var(--on-cobalt); border-color: transparent; font-weight: 700; }
+.listen-note { color: var(--muted); font-size: var(--step--1); margin: 0; }
+
+/* the section map while a read is on: heard sections filled, the current one by its share */
+.reader-map span.heard { background: color-mix(in srgb, var(--cobalt) 45%, var(--well)); }
+.reader-map span.now { background: linear-gradient(to right, var(--cobalt) 0 calc(var(--share) * 100%), var(--well) 0); }
+[dir="rtl"] .reader-map span.now { background: linear-gradient(to left, var(--cobalt) 0 calc(var(--share) * 100%), var(--well) 0); }
+
+/* paragraphs already heard recede; the next ones stay full ink */
+.seg.heard .seg-text { color: var(--muted); }
+.seg.speaking {
+  position: relative; background: var(--mark); color: var(--mark-ink);
+  padding-inline-start: 1.15rem;
+}
+.seg.speaking::before {
+  content: ""; position: absolute; inset-block: 0.55rem; inset-inline-start: 0.35rem;
+  inline-size: 4px; border-radius: 2px;
+  background: linear-gradient(to bottom, var(--cobalt) 0 calc(var(--played) * 100%), color-mix(in srgb, var(--cobalt) 25%, transparent) 0);
+}
+.seg.stopped { box-shadow: inset 0 0 0 2px var(--cobalt); }
+.stop-flag {
+  display: inline-flex; align-items: center; gap: 0.35rem; margin-block-end: 0.35rem;
+  color: var(--cobalt); font-weight: 700; font-size: var(--step--1);
+}
+.stop-flag svg { fill: currentColor; }
+
+/* the listening dock: sticks to the bottom of the reader */
+.reader { position: relative; }
+.listen-dock {
+  position: sticky; inset-block-end: 0; z-index: 2;
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 0.75rem 1rem;
+  padding-block: 0.75rem; padding-inline: clamp(1rem, 4vw, 2rem);
+  background: color-mix(in srgb, var(--sheet) 92%, transparent); backdrop-filter: blur(10px);
+  border-block-start: 1px solid var(--rule);
+}
+.transport { display: flex; align-items: center; gap: 0.35rem; }
+.transport .icon-btn svg { fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.listen-dock .play {
+  inline-size: 52px; block-size: 52px; border-radius: 999px; border: 0;
+  display: grid; place-items: center; background: var(--cobalt); color: var(--on-cobalt);
+  box-shadow: var(--shadow); cursor: pointer;
+}
+.listen-dock .play svg { fill: currentColor; }
+.listen-dock .play:disabled { opacity: 0.5; cursor: default; }
+.listen-dock button:focus-visible { outline: 3px solid var(--cobalt); outline-offset: 2px; }
+.where { min-inline-size: 0; }
+.where-section { font-weight: 750; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.where-pos { color: var(--muted); font-size: var(--step--1); }
+.where-bar { display: flex; gap: 3px; block-size: 6px; margin-block-start: 0.45rem; }
+.where-bar span { flex: 1; border-radius: 3px; background: var(--well); }
+.where-bar span.heard { background: var(--cobalt); }
+.where-bar span.now { background: linear-gradient(to right, var(--cobalt) 0 calc(var(--played) * 100%), color-mix(in srgb, var(--cobalt) 22%, var(--well)) 0); }
+[dir="rtl"] .where-bar span.now { background: linear-gradient(to left, var(--cobalt) 0 calc(var(--played) * 100%), color-mix(in srgb, var(--cobalt) 22%, var(--well)) 0); }
+.where .listen-note { margin-block-start: 0.35rem; }
+.dock-end { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
+.device {
+  display: inline-flex; align-items: center; gap: 0.35rem; color: var(--quiet); font-size: var(--step--1);
+  padding-inline: 0.6rem; block-size: 32px; border-radius: 999px; background: var(--well);
+}
+.device svg { fill: none; stroke: currentColor; stroke-width: 2; }
+
+/* the Gwen card in chat that starts a read */
+.read-card {
+  display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0.25rem 0.85rem; align-items: center;
+  margin-block-start: 0.75rem; padding-block: 0.85rem; padding-inline: 1rem; border-radius: var(--radius-m);
+  background: var(--sheet); border: 1px solid var(--rule);
+}
+.read-card .cover { grid-row: span 3; inline-size: 40px; block-size: 52px; border-radius: 4px; background: var(--kind, var(--k-book)); }
+.read-card b { font-weight: 750; }
+.read-card span:not(.cover) { color: var(--muted); font-size: var(--step--1); }
+.read-card .pill-btn { grid-column: 2; justify-self: start; margin-block-start: 0.4rem; }
+
+/* a library card with its listening actions under it */
+.card-cell { display: flex; flex-direction: column; border: 1px solid var(--rule); background: var(--sheet); border-radius: var(--radius-l); }
+.card-cell > .card, .card-cell > .card:hover { flex: 1; border: 0; background: transparent; box-shadow: none; transform: none; }
+.card-cell:hover, .card-cell:focus-within { border-color: var(--cobalt); box-shadow: var(--shadow); }
+.card-actions { padding-inline: 1.15rem; padding-block: 0 1.1rem; }
+.continue {
+  display: flex; align-items: center; gap: 0.5rem; inline-size: 100%; text-align: start;
+  padding-block: 0.45rem; padding-inline: 0.7rem; border: 0; border-radius: var(--radius-s);
+  background: var(--cobalt-soft); color: var(--ink); font-size: var(--step--1); font-weight: 650; cursor: pointer;
+}
+.continue svg { fill: currentColor; flex: none; }
+.continue:focus-visible { outline: 3px solid var(--cobalt); outline-offset: 2px; }
+
+@media (max-width: 860px) {
+  .listen-dock { grid-template-columns: minmax(0, 1fr); gap: 0.6rem; }
+  .transport { justify-content: center; gap: 1rem; }
+  .dock-end { justify-content: space-between; }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .seg.speaking, .where-bar span.now { transition: --played 260ms linear; }
+  .reader-map span.now { transition: --share 260ms linear; }
+}
