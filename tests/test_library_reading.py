@@ -157,3 +157,99 @@ def test_long_links_are_listed_whole_or_not_at_all(tmp_path):
     for u in urls:
         head = u[:60]
         assert (u in out) or (head not in out), "a URL is never shown cut"
+
+
+# -- embodiment#107 t5: read_item / fetch_source on /text documents -----------------
+
+from embodiment.library.client import LibraryError  # noqa: E402
+from embodiment.library.document import Document, Link, Section  # noqa: E402
+
+
+def _document(n=3):
+    return Document(
+        "5",
+        "s",
+        "Daily newspaper",
+        "newspaper",
+        (
+            Section(
+                "Jetson",
+                tuple(f"paragraph {i}" for i in range(n)),
+                (Link("Thor", "https://example.org/thor"),),
+            ),
+            Section("Edge", ("edge story",), (Link("Edge", "https://example.org/edge"),)),
+        ),
+    )
+
+
+def _dtools(documents=None, fetch=None):
+    collector = lt.CitationCollector()
+    docs = documents or (lambda _id: _document())
+    read, fetch_spec = reading.build_document_reading_tools(docs, collector, fetch=fetch)
+    return read, fetch_spec, collector
+
+
+def test_document_read_item_returns_paragraphs_in_order():
+    read, _, collector = _dtools()
+    out = read.fn(item_id="5")
+    for text in ("paragraph 0", "paragraph 2", "edge story"):
+        assert text in out
+    assert "More follows" not in out
+    assert "https://example.org/thor" in out
+    assert len(collector.citations) == 4
+
+
+def test_document_read_item_pages_with_an_offset_and_names_the_next(monkeypatch):
+    monkeypatch.setattr(reading, "MAX_PASSAGES", 2)
+    read, _, _ = _dtools()
+    first = read.fn(item_id="5")
+    assert "paragraph 1" in first and "paragraph 2" not in first
+    assert reading.MORE_FOLLOWS.format(offset=2) in first
+    second = read.fn(item_id="5", offset=2)
+    assert "paragraph 2" in second and "edge story" in second
+    assert "More follows" not in second
+
+
+def test_document_read_item_char_cap_names_the_next_offset(monkeypatch):
+    monkeypatch.setattr(reading, "MAX_CHARS", 25)
+    read, _, _ = _dtools()
+    out = read.fn(item_id="5")
+    assert reading.MORE_FOLLOWS.format(offset=2) in out
+
+
+def test_offset_past_the_end_is_the_fixed_end_text():
+    read, _, _ = _dtools()
+    assert read.fn(item_id="5", offset=4) == reading.END_TEXT
+
+
+def test_a_bad_offset_is_a_declared_fault():
+    read, _, _ = _dtools()
+    with pytest.raises(lt.LibraryToolError):
+        read.fn(item_id="5", offset=-1)
+
+
+def test_document_fault_is_fixed_text_with_its_code():
+    def docs(_id):
+        raise LibraryError("library_timeout")
+
+    read, fetch_spec, _ = _dtools(docs)
+    assert read.fn(item_id="5") == reading.COULD_NOT_READ.format(code="library_timeout")
+    assert fetch_spec.fn(item_id="5", url="https://x.org/") == reading.COULD_NOT_READ.format(
+        code="library_timeout"
+    )
+
+
+def test_document_fetch_source_allows_only_listed_hrefs():
+    seen = []
+
+    def fetch(url):
+        seen.append(url)
+        return web.Page(url=url, title="T", text="page body")
+
+    _, fetch_spec, collector = _dtools(fetch=fetch)
+    assert fetch_spec.fn(item_id="5", url="https://example.org/not-listed") == reading.NOT_LINKED
+    assert seen == []
+    out = fetch_spec.fn(item_id="5", url="https://example.org/edge")
+    assert seen == ["https://example.org/edge"]
+    assert "page body" in out
+    assert collector.sources()[0]["source"] == "web"

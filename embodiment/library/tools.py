@@ -50,6 +50,7 @@ from dataclasses import asdict, dataclass
 from typing import Any, Callable, Optional
 
 from embodiment import memory
+from embodiment.library.client import LibraryError
 from embodiment.library.days import item_day, item_kind
 from embodiment.tools import ToolSpec
 
@@ -71,7 +72,10 @@ __all__ = [
     "READ_TOOL",
     "SEARCH_TOOL",
     "SOURCE_TEXT_MAX_CHARS",
+    "BEST_PASSAGES_NOTE",
+    "COULD_NOT_SEARCH",
     "build_library_tools",
+    "build_retrieve_tools",
     "citation_record",
     "replace_source",
 ]
@@ -158,6 +162,10 @@ class Citation:
     link: str = ""
     #: ``[text, url]`` links the passage carries, so the model can follow them.
     links: tuple = ()
+    #: Which retrieved chunk this is (retrieve-backed citations); ``None`` otherwise.
+    chunk_no: Optional[int] = None
+    #: The chunk's content hash; with ``item_id`` it identifies a retrieved passage.
+    chunk_sha: str = ""
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -178,7 +186,10 @@ class CitationCollector:
 
     def add(self, citation: Citation) -> int:
         """Record *citation*; return its 1-based number (a repeat keeps its number)."""
-        key = (citation.item_id, citation.anchor, citation.text)
+        if citation.chunk_sha:
+            key = (citation.item_id, citation.chunk_sha, "")
+        else:
+            key = (citation.item_id, citation.anchor, citation.text)
         with self._lock:
             self._library_text = True
             if key not in self._index:
@@ -501,6 +512,184 @@ def build_library_tools(
         },
         fn=tools.read_passage,
         description=_READ_DESCRIPTION,
+        codes=CODES,
+    )
+    return search, read
+
+
+# -- the retrieve-backed tools (embodiment#107 t5) ----------------------------------
+
+#: Fixed host text: the search could not run. ``{code}`` is a declared LibraryError code.
+COULD_NOT_SEARCH = "The library could not be searched ({code})."
+#: Fixed host text before the fence: retrieve applies no similarity floor, so a
+#: result is the library's best passages for the query and never a confirmed match.
+BEST_PASSAGES_NOTE = (
+    "These are the library's best passages for the query, not confirmed matches; "
+    "check each one before relying on it.\n"
+)
+_NORMAL_SPACE = re.compile(r"\s+")
+
+
+def _normal(text: str) -> str:
+    return _NORMAL_SPACE.sub(" ", text).strip()
+
+
+def _chunk_citation(passage: Any) -> Citation:
+    return Citation(
+        source=LIBRARY_SOURCE,
+        item_id=_clean(passage.item_id, MAX_ID_CHARS),
+        title=_clean(passage.title, FIELD_MAX_CHARS),
+        kind=_clean(passage.kind, FIELD_MAX_CHARS),
+        date="",
+        anchor=_clean(f"chunk {passage.chunk_no}", FIELD_MAX_CHARS),
+        start=None,
+        end=None,
+        text=memory.neutralise_source_text(passage.text or "", SOURCE_TEXT_MAX_CHARS),
+        chunk_no=int(passage.chunk_no),
+        chunk_sha=_clean(passage.chunk_sha, FIELD_MAX_CHARS),
+    )
+
+
+class _RetrieveTools:
+    """``search_library`` and ``read_passage`` over a retrieve client and /text documents."""
+
+    def __init__(
+        self,
+        retrieve: Any,
+        catalog: Callable[[], Any],
+        documents: Callable[[Any], Any],
+        collector: CitationCollector,
+    ) -> None:
+        self._retrieve = retrieve
+        self._catalog = catalog
+        self._documents = documents
+        self._collector = collector
+        #: (item_id, chunk_sha) -> the chunk's raw text, for matching /text paragraphs.
+        self._chunks: dict[tuple[str, str], str] = {}
+
+    def _day_ids(self, day: str, kind: Optional[str]) -> list:
+        keep = _where(day, kind)
+        return [m.get("id") for m in (self._catalog() or ()) if keep is None or keep(m)]
+
+    def search_library(
+        self, query: Any = None, limit: Any = DEFAULT_LIMIT, date: Any = None, kind: Any = None
+    ) -> str:
+        text = _text_arg(query, MAX_QUERY_CHARS)
+        bounded = _limit_arg(limit)
+        day = _date_arg(date)
+        wanted_kind = _kind_arg(kind)
+        item_ids = None
+        try:
+            if day is not None:
+                item_ids = self._day_ids(day, wanted_kind)
+                if not item_ids:
+                    return NO_MATCHES
+            passages = self._retrieve.retrieve(text, bounded, wanted_kind, item_ids)
+        except LibraryError as exc:
+            return COULD_NOT_SEARCH.format(code=getattr(exc, "code", "library_unavailable"))
+        except Exception:  # noqa: BLE001  # a catalog fault must not raise into the turn
+            return COULD_NOT_SEARCH.format(code="library_unavailable")
+        if not passages:
+            return NO_MATCHES
+        citations = []
+        for passage in passages:
+            citation = _chunk_citation(passage)
+            self._chunks[(citation.item_id, citation.chunk_sha)] = str(passage.text or "")
+            citations.append(citation)
+        return BEST_PASSAGES_NOTE + _render(self._collector, citations)
+
+    def read_passage(self, item_id: Any = None, chunk_sha: Any = None) -> str:
+        key = _item_id_arg(item_id)
+        sha = _text_arg(chunk_sha, MAX_ANCHOR_CHARS)
+        chunk = self._chunks.get((key, sha))
+        if chunk is None:
+            return NO_PASSAGE
+        try:
+            document = self._documents(key)
+        except LibraryError as exc:
+            return COULD_NOT_SEARCH.format(code=getattr(exc, "code", "library_unavailable"))
+        except Exception:  # noqa: BLE001
+            return COULD_NOT_SEARCH.format(code="library_unavailable")
+        wanted = _normal(chunk)
+        found = []
+        for section in document.sections:
+            for paragraph in section.paragraphs:
+                para = _normal(paragraph)
+                if para and (
+                    (len(para) >= 8 and para in wanted)
+                    or wanted in para
+                    or wanted[:60] in para
+                    or wanted[-60:] in para
+                ):
+                    found.append(paragraph)
+        if not found:
+            return NO_PASSAGE
+        citation = Citation(
+            source=LIBRARY_SOURCE,
+            item_id=_clean(key, MAX_ID_CHARS),
+            title=_clean(document.title, FIELD_MAX_CHARS),
+            kind=_clean(document.kind, FIELD_MAX_CHARS),
+            date="",
+            anchor=_clean(f"passage {sha[:12]}", FIELD_MAX_CHARS),
+            start=None,
+            end=None,
+            text=memory.neutralise_source_text("\n".join(found), SOURCE_TEXT_MAX_CHARS),
+            chunk_sha=_clean(sha, FIELD_MAX_CHARS),
+        )
+        return _render(self._collector, [citation])
+
+
+def build_retrieve_tools(
+    retrieve: Any,
+    catalog: Callable[[], Any],
+    documents: Callable[[Any], Any],
+    collector: CitationCollector,
+) -> tuple[ToolSpec, ToolSpec]:
+    """``(search_library, read_passage)`` over the library's retrieval endpoint.
+
+    *retrieve* is a :class:`~embodiment.library.retrieve.RetrieveClient` (anything with
+    ``retrieve(query, k, kind, item_ids)``); *catalog* returns the library's item metas
+    (``id``, ``title``, ``kind``, ``created_at``), used to list a day's items; *documents*
+    is ``item_id -> Document`` (:mod:`embodiment.library.document`). No similarity floor
+    is applied: hybrid scores are small and the result is labelled best-passages-only.
+    """
+    tools = _RetrieveTools(retrieve, catalog, documents, collector)
+    search = ToolSpec(
+        name=SEARCH_TOOL,
+        parameters={
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "What to look for."},
+                "limit": {"type": "integer", "minimum": 1, "maximum": MAX_LIMIT},
+                "date": {
+                    "type": "string",
+                    "description": (
+                        "Only items about this day, YYYY-MM-DD; for 'today' or 'yesterday' "
+                        "work it out from the current time you were given."
+                    ),
+                },
+                "kind": {"type": "string", "enum": list(SEARCH_KINDS)},
+            },
+            "required": ["query"],
+            "additionalProperties": False,
+        },
+        fn=tools.search_library,
+        description=_SEARCH_DESCRIPTION,
+        codes=CODES,
+    )
+    read = ToolSpec(
+        name=READ_TOOL,
+        parameters={
+            "type": "object",
+            "properties": {"item_id": {"type": "string"}, "chunk_sha": {"type": "string"}},
+            "required": ["item_id", "chunk_sha"],
+            "additionalProperties": False,
+        },
+        fn=tools.read_passage,
+        description=(
+            "Read one library passage in full by item_id and chunk_sha from a search "
+            "result. Returns a numbered quoted passage; cite it as [n]."
+        ),
         codes=CODES,
     )
     return search, read

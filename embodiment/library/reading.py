@@ -25,6 +25,7 @@ from typing import Any, Callable, Optional
 from embodiment import memory
 from embodiment.library import tools as lt
 from embodiment.library import web
+from embodiment.library.client import LibraryError
 from embodiment.tools import ToolSpec
 
 READ_ITEM_TOOL = "read_item"
@@ -137,6 +138,170 @@ def build_reading_tools(
         parameters={
             "type": "object",
             "properties": {"item_id": {"type": "string"}},
+            "required": ["item_id"],
+            "additionalProperties": False,
+        },
+        fn=tools.read_item,
+        description=_READ_DESCRIPTION,
+        codes=lt.CODES,
+    )
+    fetch_spec = ToolSpec(
+        name=FETCH_TOOL,
+        parameters={
+            "type": "object",
+            "properties": {
+                "item_id": {"type": "string", "description": "The item that lists the link."},
+                "url": {"type": "string", "description": "One of that item's links, exactly."},
+            },
+            "required": ["item_id", "url"],
+            "additionalProperties": False,
+        },
+        fn=tools.fetch_source,
+        description=_FETCH_DESCRIPTION,
+        codes=lt.CODES,
+    )
+    return read, fetch_spec
+
+
+# -- the /text-backed tools (embodiment#107 t5) --------------------------------------
+
+#: Fixed host text: the offset is past the item's last paragraph.
+END_TEXT = "That offset is past the end of the item; there is nothing more to read."
+MORE_FOLLOWS = "\nMore follows: call read_item again with offset={offset} for the next part."
+
+
+class _DocumentReading:
+    """read_item and fetch_source over ``documents(item_id) -> Document``."""
+
+    def __init__(
+        self,
+        documents: Callable[[Any], Any],
+        collector: lt.CitationCollector,
+        fetch: Optional[Callable[[str], web.Page]],
+    ) -> None:
+        self._documents = documents
+        self._collector = collector
+        self._fetch = fetch
+        self.fetches = 0
+        self.refused = 0
+
+    def _document(self, key: str) -> Any:
+        """The document, or a fixed-text string when it cannot be had."""
+        try:
+            return self._documents(key)
+        except LibraryError as exc:
+            return COULD_NOT_READ.format(code=getattr(exc, "code", "library_unavailable"))
+        except Exception:  # noqa: BLE001  # nothing raises into the turn
+            return COULD_NOT_READ.format(code="library_unavailable")
+
+    def read_item(self, item_id: Any = None, offset: Any = 0) -> str:
+        key = lt._item_id_arg(item_id)
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            raise lt.LibraryToolError(lt.CODE_BAD_ARGUMENTS)
+        document = self._document(key)
+        if isinstance(document, str):
+            return document
+        flat = [
+            (section, i, paragraph)
+            for section in document.sections
+            for i, paragraph in enumerate(section.paragraphs)
+            if paragraph.strip()
+        ]
+        if not flat:
+            return NO_ITEM
+        if offset >= len(flat):
+            return END_TEXT
+        citations, used, position = [], 0, offset
+        while position < len(flat) and len(citations) < MAX_PASSAGES:
+            section, i, paragraph = flat[position]
+            if citations and used + len(paragraph) > MAX_CHARS:
+                break
+            used += len(paragraph)
+            citations.append(
+                lt.Citation(
+                    source=lt.LIBRARY_SOURCE,
+                    item_id=lt._clean(key, lt.MAX_ID_CHARS),
+                    title=lt._clean(document.title, lt.FIELD_MAX_CHARS),
+                    kind=lt._clean(document.kind, lt.FIELD_MAX_CHARS),
+                    date="",
+                    anchor=lt._clean(
+                        f"{section.heading} #{position}" if section.heading else f"#{position}",
+                        lt.FIELD_MAX_CHARS,
+                    ),
+                    start=None,
+                    end=None,
+                    text=memory.neutralise_source_text(paragraph, lt.SOURCE_TEXT_MAX_CHARS),
+                    links=(
+                        lt._clean_links([(ln.text, ln.href) for ln in section.links])
+                        if i == 0
+                        else ()
+                    ),
+                )
+            )
+            position += 1
+        rendered = lt._render(self._collector, citations)
+        if position < len(flat):
+            rendered += MORE_FOLLOWS.format(offset=position)
+        return rendered
+
+    def fetch_source(self, item_id: Any = None, url: Any = None) -> str:
+        key = lt._item_id_arg(item_id)
+        wanted = lt._text_arg(url, web.MAX_URL_CHARS)
+        document = self._document(key)
+        if isinstance(document, str):
+            return document
+        listed = {ln.href for section in document.sections for ln in section.links}
+        if wanted not in listed:
+            self.refused += 1
+            return NOT_LINKED
+        if self._fetch is None:
+            return COULD_NOT_READ.format(code="web-not-configured")
+        self.fetches += 1
+        try:
+            page = self._fetch(wanted)
+        except web.WebRefused as refused:
+            return COULD_NOT_READ.format(code=refused.code)
+        citation = lt.Citation(
+            source=WEB_SOURCE,
+            item_id="",
+            title=lt._clean(page.title or wanted, lt.FIELD_MAX_CHARS),
+            kind="web",
+            date="",
+            anchor="",
+            start=None,
+            end=None,
+            text=memory.neutralise_source_text(page.text, WEB_TEXT_CHARS),
+            link=page.url,
+        )
+        return lt._render(
+            self._collector, [citation], max_chars=WEB_TEXT_CHARS + 6 * lt.FIELD_MAX_CHARS
+        )
+
+
+def build_document_reading_tools(
+    documents: Callable[[Any], Any],
+    collector: lt.CitationCollector,
+    *,
+    fetch: Optional[Callable[[str], web.Page]] = None,
+) -> tuple[ToolSpec, ToolSpec]:
+    """``(read_item, fetch_source)`` over ``documents(item_id) -> Document``.
+
+    *documents* is the t2 document provider (``/text`` sections and paragraphs); a
+    LibraryError from it is a fixed fault text. *fetch* is ``url -> Page``.
+    """
+    tools = _DocumentReading(documents, collector, fetch)
+    read = ToolSpec(
+        name=READ_ITEM_TOOL,
+        parameters={
+            "type": "object",
+            "properties": {
+                "item_id": {"type": "string"},
+                "offset": {
+                    "type": "integer",
+                    "minimum": 0,
+                    "description": "Paragraph to start from; use the offset a previous read named.",
+                },
+            },
             "required": ["item_id"],
             "additionalProperties": False,
         },
