@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-10-25T08:22:51Z",
-  "updated": "2026-10-25T10:55:35Z",
+  "updated": "2026-10-25T11:43:33Z",
   "claims": [
     {
       "id": "c1",
@@ -764,5 +764,15 @@
     }
   ],
   "lapses": [],
-  "obligations": []
+  "obligations": [
+    {
+      "id": "o1",
+      "claim_id": "c13",
+      "seam": "live library to-do flip",
+      "behavior": "marking a library to-do on gwen.culture.dev makes the culture-library item (same id) show the line [x] with done_at and by within 60 s; done_at equals the at of a todo event in Gwen's log and by matches; status.todos counts 1 sent and 1 confirmed; both times read from records (the feed event and status), and a line already [x] before Gwen sent anything is not evidence",
+      "source_text": "The first real flip on gwen.culture.dev is an obligation with a live seam: mark a library to-do on the page and see the culture-library item (same id) show the line [x] with done_at and by within 60 s; the operator files its evidence",
+      "origin": "llm",
+      "status": "proposed"
+    }
+  ]
 }
