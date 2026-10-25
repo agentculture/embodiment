@@ -1,0 +1,588 @@
+{
+  "slug": "gwen-queries-and-reads-the-library",
+  "title": "Gwen queries and reads the library",
+  "frame_slug": "gwen-queries-and-reads-the-library",
+  "schema_version": 5,
+  "status": "exported",
+  "created": "2026-10-25T23:13:49Z",
+  "updated": "2026-10-25T23:18:30Z",
+  "targets": [
+    {
+      "id": "c1",
+      "kind": "announcement",
+      "text": "Gwen asks culture-library for passages instead of keeping her own copy of it, and reads any library document aloud, by page or by paragraph, remembering where she stopped so the operator can say continue and hear the rest",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h1",
+      "kind": "honesty",
+      "text": "both halves hold live, not only in tests: a typed question is answered from a retrieve passage cited by item_id and chunk_sha, and a read is heard on the phone and continued after a reload",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c2",
+      "kind": "requirement",
+      "text": "search_library is served by one POST /api/rag/retrieve per call (mode hybrid, rerank false on the turn path) and the library's own passages; Gwen's library sync and document index (library/sync.py, the library lane of library/index.py) are retired, so Gwen no longer downloads, extracts or embeds library items",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h2",
+      "kind": "honesty",
+      "text": "the daemon builds no library DocumentIndex and starts no LibrarySync: library/sync.py is gone, app.py imports neither for the library lane, and a test drives search_library through a fake retrieve with no index present",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c5",
+      "kind": "requirement",
+      "text": "citations carry item_id, chunk_no and chunk_sha from the retrieve passage; read_passage and the page's reader open a passage by those, since a retrieve passage has no anchor (today's md#n / spine#n anchors come from Gwen's index)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h3",
+      "kind": "honesty",
+      "text": "a citation shown on the page carries item_id, chunk_no and chunk_sha, and opening it lands the reader on that passage's text (matched by chunk_sha against the item's /text), or on the item's start when the text no longer contains it",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c6",
+      "kind": "requirement",
+      "text": "a library or embedder failure (connection, timeout, 503 rag_unavailable) answers the tool with a fixed host fault, records a degradation and counts it in status.library; nothing raises and no turn waits past the client deadline (10 s, client.py:45)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h4",
+      "kind": "honesty",
+      "text": "with the library stopped, with retrieve answering 503 rag_unavailable, and with retrieve hanging past the client deadline, a typed search turn still replies, the tool result is the fixed fault text, status.library.failures_by_code counts the code, and one degradation is recorded; no exception reaches the turn",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c7",
+      "kind": "requirement",
+      "text": "to-do items and discord messages never come back from search_library: the retrieve call names a kind, or Gwen drops passages of kind todo client-side, matching today's DocumentIndex.wants exclusion",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h5",
+      "kind": "honesty",
+      "text": "a fake retrieve returning todo and discord-message passages yields none of them in the tool result, and a kind-less call on the live library returns no todo passage in 5 probe queries",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c8",
+      "kind": "boundary",
+      "text": "search_conversations keeps its own index: Gwen's settled conversations are hers and not library items (d8), so DocumentIndex stays only as the conversations index (conversations.py:15,39,126-167); only the library lane retires",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h6",
+      "kind": "honesty",
+      "text": "search_conversations still answers from conversations-index.json after the library index is retired, and its tests pass unchanged",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c9",
+      "kind": "requirement",
+      "text": "reading a document aloud takes its text from GET /api/library/{id}/text: an EPUB's sections and paragraphs as the library gives them, and a Markdown item split into paragraphs by Gwen's markdown reader; a page is a section (an EPUB chapter, a Markdown heading)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h7",
+      "kind": "honesty",
+      "text": "for a live EPUB the reader's sections and paragraphs equal /text's sections and paragraphs in order and count; for a live Markdown transcript each paragraph equals one passage of Gwen's markdown reader over /text's text",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c10",
+      "kind": "requirement",
+      "text": "the read-aloud loop bypasses the LLM: Gwen speaks the document's own words one paragraph per Voice.speak call, verbatim, never summarised or rewritten by senses",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h8",
+      "kind": "honesty",
+      "text": "the text spoken for each paragraph is that paragraph verbatim (no senses call happens during a read, pinned by a test with a senses fake that fails on any call), and a paragraph over 4000 characters is split at sentence boundaries into several speak calls rather than truncated",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c11",
+      "kind": "requirement",
+      "text": "Gwen keeps one reading position per item (item_id, section, paragraph, the item's sha256) in a 0600 file under the state dir, written atomically like todos-done.json; continue resumes at the first paragraph not fully heard",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h9",
+      "kind": "honesty",
+      "text": "the cursor file is 0600 under the state dir, survives a daemon restart, holds one entry per item, an unreadable file is set aside rather than overwritten, and an item whose sha256 changed resumes at the start of the saved section (or the item's start if the section is gone), never past the end",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c13",
+      "kind": "boundary",
+      "text": "read text is library text: it stays fenced wherever it enters a prompt, Gwen never writes the library (c26), and the write guard counts a reading turn as one holding library text",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h10",
+      "kind": "honesty",
+      "text": "read text returned to the page and to any prompt goes through the existing fencing (render_recalled), the retrieve module issues exactly one POST route and no other non-GET call (AST-pinned), and a turn that read library text refuses remember/forget unless the operator's words ask",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c18",
+      "kind": "audience",
+      "text": "the operator, on whatever device has gwen.culture.dev open, who asks Gwen about the library and now also listens to a library document read in Gwen's voice; and the embodiment maintainers, who stop keeping a second copy of the library",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h11",
+      "kind": "honesty",
+      "text": "the reading controls work from a phone over the public host with Cloudflare Access, as the rest of the page does, with no install secret on the phone",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c19",
+      "kind": "before_state",
+      "text": "Gwen syncs every library item, extracts and embeds it into her own 0600 index (index v3, 0.715 floor, 60-char fragments dropped) on a 300 s worker, duplicating what culture-library already keeps; and she can only answer about a document, never read one: read_item stops at 40 passages / 16000 characters, nothing records a position, and one spoken reply drops everything past 4000 characters",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h12",
+      "kind": "honesty",
+      "text": "every before-state fact cites code or a measurement in this repo (index.py, sync.py, reading.py:31-32, voice.py:333, the 2026-10-24 library measurement)",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c20",
+      "kind": "why_it_matters",
+      "text": "one copy of the library: a document the library indexes is searchable by Gwen the moment it lands, with no second embed, no re-index on an id change (d15 cost one) and no drift between two indexes; and reading aloud turns the library from something to ask into something to hear, a chapter at a time, picked up where it was left",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h13",
+      "kind": "honesty",
+      "text": "a library item created during the test is returned by search_library within 60 s of the library indexing it, with no Gwen-side action",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c21",
+      "kind": "after_state",
+      "text": "search_library and its siblings answer from culture-library's passages; Gwen holds no library index and runs no library sync; on the page the operator says or taps read for an item, hears it paragraph by paragraph on that device's speakers, stops at any point, and later (from any device) continues at the first paragraph not fully heard",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h14",
+      "kind": "honesty",
+      "text": "the after state is checked live once (the success signal), and the result is written to docs/live-test-results with numbers, including if it is bad",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c22",
+      "kind": "success_signal",
+      "text": "on the live rig: (1) status.library shows retrieve calls >= 1 and 0 failures, with no items_indexed or sync worker, and the daemon makes 0 GET /api/library/{id}/file calls for indexing over 10 minutes; (2) one chapter of a live EPUB read from the phone is stopped mid-paragraph, the page reloaded, and continue plays that same paragraph again first, within 5 s of the tap",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h15",
+      "kind": "honesty",
+      "text": "both parts are measured from records (status, the daemon log of library GETs, the page's heard reports), not from the operator's recollection",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c23",
+      "kind": "requirement",
+      "text": "the page drives a read through daemon routes: start or continue returns the next paragraph (its text, section heading and position) from the saved cursor; the page synthesises it with /api/speak, plays it, and reports it heard on the audio's ended event; the daemon advances the cursor only on a heard report for that exact position, and the page prefetches the following paragraph so speech does not stall between paragraphs",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h16",
+      "kind": "honesty",
+      "text": "a heard report for a stale position (not the cursor's next) does not move the cursor; a paragraph whose audio was paused, errored or cut before ended is not reported heard; reloading mid-paragraph and continuing replays that paragraph",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c25",
+      "kind": "requirement",
+      "text": "the page's library routes keep working with no index: /api/library lists the catalog from a live list_items (last good list kept on failure), /api/library/{id} serves the item's paragraphs from the library's /text, and /api/library/search answers through retrieve; each says library_unavailable (503) when the library is down",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h18",
+      "kind": "honesty",
+      "text": "with the index code removed, the Library tab lists the live catalog, opens a live EPUB and a live transcript in the reader, and a page search returns retrieve passages; with the library stopped each route answers 503 library_unavailable and the shelf keeps the last good list",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c26",
+      "kind": "requirement",
+      "text": "read_item and fetch_source move off the index: read_item returns an item's paragraphs from /text (still capped per call, with an offset so a long item can be read on), and fetch_source takes its allowed links from the item's /text sections, so Gwen still reaches only a link the item lists",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h19",
+      "kind": "honesty",
+      "text": "fetch_source refuses a URL that is not among the links /text gives for that item (test with a fake library), and read_item with an offset past the end returns the fixed end text, not an error",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c27",
+      "kind": "requirement",
+      "text": "search_library's date argument keeps working: Gwen lists that day's items from the catalog (created_at) and passes their ids as item_ids to retrieve, which accepts item_ids (live probe 2026-10-26); a named day with no items answers no matches rather than searching everything",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h20",
+      "kind": "honesty",
+      "text": "a test asks search_library for a date with two items in a fake catalog and sees retrieve called with exactly those two ids; a date with no items makes no retrieve call",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c28",
+      "kind": "requirement",
+      "text": "the reading routes (next paragraph, heard) sit behind the same guard as every state-changing route: Host and Origin allow-list plus the install secret, or a valid Cloudflare Access assertion on the public Host; a heard report changes only the cursor",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h21",
+      "kind": "honesty",
+      "text": "a heard POST without the secret (non-public Host) or without a valid Access assertion (public Host) is refused 401/403 and the cursor file is unchanged; the next-paragraph route is refused the same way, since it carries library text",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c30",
+      "kind": "requirement",
+      "text": "status carries reading counters: reads started, paragraphs served, paragraphs heard, heard reports refused (stale or unknown), continues, and the last read's item and position; library search carries retrieve calls, failures_by_code and the last latency, so a silent no-op shows as zeros, not as health",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h23",
+      "kind": "honesty",
+      "text": "a test drives one read of three paragraphs with one stale report and sees served 3, heard 3, refused 1 in status; a failed retrieve moves failures_by_code and not calls_ok",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c31",
+      "kind": "requirement",
+      "text": "a cursor for an item that is no longer in the catalog (deleted or archived) is kept but not offered: the library card shows no continue for it, and opening it says the item is gone; cursors are dropped only when the operator clears them",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h24",
+      "kind": "honesty",
+      "text": "a fake catalog without item X hides X's continue chip and the reader's open answers a fixed gone text; the cursor entry is still in the file afterwards",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "c33",
+      "kind": "boundary",
+      "text": "there is no switch back to the local library index: rollback is installing the previous release, whose index would rebuild by sync; the frame accepts that cost rather than keep two search paths",
+      "deferred": false,
+      "deferred_reason": ""
+    },
+    {
+      "id": "h26",
+      "kind": "honesty",
+      "text": "the release notes say plainly that this release removes the local library index and has no switch back, and name installing the previous release as the rollback",
+      "deferred": false,
+      "deferred_reason": ""
+    }
+  ],
+  "tasks": [
+    {
+      "id": "t1",
+      "summary": "library/retrieve.py: the one POST to /api/rag/retrieve, bounded, pinned, counted",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "embodiment/library/retrieve.py exposes RetrieveClient(base_url, key, deadline).retrieve(query, k, kind=None, item_ids=None) -> list[Passage(item_id, title, kind, chunk_no, chunk_sha, text, score)] with mode hybrid and rerank false, reading EMBODIMENT_LIBRARY_URL / EMBODIMENT_LIBRARY_KEY like client.py",
+        "a new AST test pins that retrieve.py issues exactly one non-GET request, a POST to the literal path /api/rag/retrieve, and no other method, path or body; tests/test_library_client.py's GET-only pin on client.py is unchanged and still passes",
+        "passages of kind todo or discord-message are dropped before they are returned (test with a fake server answering both)",
+        "a connection failure, a 503 rag_unavailable, any other non-200, an oversize or malformed body and a hang past the deadline each raise one LibraryError with a declared code (library_unavailable, rag_unavailable, library_timeout, library_bad_response); redirects are refused; nothing else escapes",
+        "counters: calls, calls_ok, failures_by_code and last_latency_s, readable via status() and moved by the tests above"
+      ],
+      "deps": [],
+      "covers": [
+        "c13",
+        "h10",
+        "c7",
+        "h5",
+        "c6"
+      ],
+      "instruction": "Write tests/test_library_retrieve.py first against a local http.server fake (see tests/test_library_client.py for the fake-server and AST-guard helpers; reuse its _violations idea but allow the one POST). Copy client.py's bounded-read and opener (no redirects) patterns; do not edit client.py. Probed live 2026-10-26: modes are only semantic|hybrid, item_ids filters, the response is {query, mode, reranked, passages:[...]} and hybrid scores are 0.01-0.03 (do not apply any floor here)."
+    },
+    {
+      "id": "t2",
+      "summary": "library/document.py: an item's text as sections and paragraphs, from GET /api/library/{id}/text",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "LibraryClient gains fetch_text(item_id) (a GET, so client.py's GET-only pin still passes) returning the parsed JSON {item_id, kind, format, title, text, sections, reason}",
+        "embodiment/library/document.py: to_document(meta, text_json) -> Document(item_id, sha256, title, kind, sections: [Section(heading, paragraphs: [str], links: [Link(text, href)])]); an EPUB's sections and paragraphs are kept in order and count exactly as /text gives them, empty paragraphs skipped",
+        "a Markdown item (sections null) is split by embodiment/library/markdown.py into paragraphs, a heading starting a new section, text before the first heading in a section with an empty heading; each paragraph equals one passage of markdown.extract over the same text",
+        "paragraph text is returned byte for byte (no cleaning beyond what markdown.extract already does for Markdown); a test pins one EPUB fixture and one Markdown fixture (synthetic) end to end"
+      ],
+      "deps": [],
+      "covers": [
+        "c9",
+        "h7"
+      ],
+      "instruction": "Probed live 2026-10-26: EPUB /text has sections [{heading, paragraphs:[str], links:[{text, href, start}]}] (one book: 431 sections, 3943 paragraphs, median 68 chars, max 1217); Markdown transcripts return text with sections null. Tests in tests/test_library_document.py with synthetic fixtures only (public repo). Touch only client.py (one new GET method), document.py and their tests."
+    },
+    {
+      "id": "t3",
+      "summary": "daemon/reading.py: reading positions (0600) and the next/heard state machine",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "ReadingPositions keeps one cursor per item (item_id, sha256, section, paragraph, part, updated_at) in `<state>/reading-positions.json`, 0600, atomic replace under one lock, lazy load, an unreadable file renamed aside with .unreadable and counted, never raises; survives a reload from disk (restart)",
+        "Reader.next(item_id, section=None, paragraph=None) returns the unit at the cursor (or the one asked for) with a position token; Reader.heard(item_id, position) moves the cursor past that unit only when position is exactly the cursor's next unit, else returns moved False and counts a refused report; the cursor never runs past the end (done)",
+        "a paragraph over 4000 characters is served as several parts split at sentence boundaries (none over 4000), each part its own position; the text of every unit is the source text verbatim (concatenated parts equal the paragraph)",
+        "an item whose sha256 changed resumes at the start of the saved section, or the item's start if that section is gone; an item no longer in the catalog keeps its cursor, is listed with gone true, and next answers gone",
+        "two interleaved readers in a test (A at paragraph 3, B at paragraph 7) leave the cursor at the furthest exact next position, never moved backwards, file never torn",
+        "counters: reads_started, units_served, units_heard, heard_refused, continues, last_item, last_position"
+      ],
+      "deps": [],
+      "covers": [
+        "c11",
+        "h9",
+        "c23",
+        "h16",
+        "c10",
+        "h8",
+        "c31",
+        "h24"
+      ],
+      "instruction": "Pure module: the document comes from an injected provider (item_id -> Document from t2's shape, or raises gone/unavailable), the clock and the state dir are injected. Follow embodiment/daemon/todos.py (TodoStates) for the file discipline. Route contract shared by t3, t4 and t7 (JSON): GET /api/reading lists saved positions [{item_id, sha256, section, paragraph, part, updated_at, gone}]; GET /api/reading/{item_id}/next?section=&paragraph= (both optional: absent = continue at the cursor) answers {item_id, sha256, title, section, section_count, heading, paragraph, paragraph_count, part, part_count, text, position} where position is an opaque string naming exactly that unit, or {done: true} past the end; POST /api/reading/{item_id}/heard {position} answers {moved: bool, cursor: {...}}; POST /api/reading/{item_id}/clear drops the cursor. Errors: 404 library-item-not-found, 410 library-item-gone, 503 library_unavailable. This task implements the logic behind those routes, not the routes. Tests in tests/test_reading.py."
+    },
+    {
+      "id": "t4",
+      "summary": "web: read aloud on this device (reader listen mode, dock, paragraph-synced progress, continue)",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "web/src/api/reading.ts implements the route contract with the same auth headers as api/library.ts; web/src/components/ReadAloud.tsx (or a listen mode in Reader.tsx) plays each unit by POSTing its text to /api/speak and playing the WAV, reports heard only on the audio ended event for that unit's position, and prefetches the next unit while the current one plays",
+        "pause, an audio error, a reload, Stop reading or moving to another paragraph before ended never report heard (vitest with a fake Audio)",
+        "the dock has one segment per paragraph of the section; heard paragraphs full, the playing one filling with its audio's currentTime/duration, the same value driving the paragraph's edge line and the section's share of the map (tested on the computed style or a data attribute)",
+        "the library card shows Continue listening for an item with a saved position, the chat answer can carry a Read aloud card, and a gone item says it is no longer in the library; all text nodes dir=auto, keyboard reachable, reduced motion respected",
+        "npm run build, the existing web tests and check-no-external-origin pass"
+      ],
+      "deps": [],
+      "covers": [
+        "c18",
+        "c23",
+        "h16"
+      ],
+      "instruction": "Match the approved mockup (scratchpad mockup107/index.html, screenshots sent 2026-10-26): page tokens only, highlight with --mark, edge line and segments in --cobalt, the dock sticky at the reader's bottom, 'Playing on this phone/laptop'. Route contract shared by t3, t4 and t7 (JSON): GET /api/reading lists saved positions [{item_id, sha256, section, paragraph, part, updated_at, gone}]; GET /api/reading/{item_id}/next?section=&paragraph= (both optional: absent = continue at the cursor) answers {item_id, sha256, title, section, section_count, heading, paragraph, paragraph_count, part, part_count, text, position} where position is an opaque string naming exactly that unit, or {done: true} past the end; POST /api/reading/{item_id}/heard {position} answers {moved: bool, cursor: {...}}; POST /api/reading/{item_id}/clear drops the cursor. Errors: 404 library-item-not-found, 410 library-item-gone, 503 library_unavailable. Mock fetch and Audio in tests; do not touch the Python side."
+    },
+    {
+      "id": "t5",
+      "summary": "tools: search_library on retrieve, read_item and fetch_source on /text",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "search_library calls RetrieveClient.retrieve with k = limit and the kind when given, applies no similarity floor, renders through the existing _render/render_recalled fencing, and its fixed host text says these are the library's best passages for the query, not confirmed matches",
+        "a citation carries item_id, chunk_no and chunk_sha (CitationCollector dedupes on item_id + chunk_sha); read_passage takes item_id + chunk_sha and returns the passage text from the item's /text paragraphs that contain it, or the fixed not-found text",
+        "date: the day's items are listed from the catalog (created_at) and passed as item_ids; a day with no items makes no retrieve call and answers NO_MATCHES (test sees the exact ids)",
+        "read_item(item_id, offset=0) returns paragraphs from document.py from offset, capped as today (40 / 16000), with a fixed more-follows line naming the next offset; offset past the end answers the fixed end text; fetch_source allows only hrefs listed in the item's /text sections (a URL not listed is refused, test with a fake library)",
+        "a RetrieveClient LibraryError maps to the tool's fixed fault text and its code; nothing raises into the turn"
+      ],
+      "deps": [
+        "t1",
+        "t2"
+      ],
+      "covers": [
+        "c5",
+        "h3",
+        "c26",
+        "h19",
+        "c27",
+        "h20"
+      ],
+      "instruction": "Files: embodiment/library/tools.py, embodiment/library/reading.py and their tests (tests/test_library_tools.py, tests/test_library_reading.py). The tools take a retrieve client, a catalog callable and a document provider instead of an index; keep build_* signatures readable for t6 to wire. Keep the AST pin that render_recalled is the only formatter."
+    },
+    {
+      "id": "t6",
+      "summary": "daemon: retire the library sync and index; catalog, search and the reader routes go live",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "embodiment/library/sync.py and its tests are deleted; daemon/app.py builds no DocumentIndex and starts no sync thread for the library lane; the conversations index (conversations.py, conversations-index.json) is untouched and tests/test_library_conversations.py passes unchanged",
+        "/api/library lists the catalog from a live list_items refreshed on a bounded interval (last good list kept on failure, status says when it was listed); /api/library/{id} serves the reader from document.py; /api/library/search answers through retrieve; each answers 503 library_unavailable with the library down",
+        "with the library stopped, with retrieve answering 503 and with retrieve hanging past the deadline, a typed search turn still replies with the fixed fault, status.library.failures_by_code counts it and one degradation is recorded",
+        "on the first start the daemon deletes `<state>/library/index.json` if present, records one ledger entry saying it did, never touches conversations-index.json, and does nothing on later starts",
+        "status.library shows configured, catalog items, last_listed_at, retrieve calls / calls_ok / failures_by_code / last_latency_s; no items_indexed, chunks or sync worker fields remain"
+      ],
+      "deps": [
+        "t5",
+        "t3"
+      ],
+      "covers": [
+        "c2",
+        "h2",
+        "c8",
+        "h6",
+        "c25",
+        "h18",
+        "c6",
+        "h4"
+      ],
+      "instruction": "Files: embodiment/daemon/app.py, embodiment/http/server.py (only the library routes' backing), embodiment/library/index.py only if the library-only parts must go (DocumentIndex stays for conversations), delete sync.py, and tests/test_daemon_library.py / test_http_server.py. The todo source (TodoSource, embodiment#105) keeps listing kind=todo as today. The index path is `<state>/library/index.json` (app.py:1076-1078)."
+    },
+    {
+      "id": "t7",
+      "summary": "daemon: the reading routes behind the guard, and status.reading",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "the routes of the shared contract are served by daemon/reading.py through http/server.py; next and heard are refused without the install secret on a non-public Host and without a valid Access assertion on the public Host (401/403), and a refused heard leaves the cursor file unchanged",
+        "a whole read in a test (three paragraphs, one stale heard report) shows status.reading served 3, heard 3, refused 1, and no senses / completion call happens during it (a senses fake that fails on any call)",
+        "reading text served to the page is the source text verbatim; a turn that holds read text keeps the remember/forget guard (library_text_in_context)"
+      ],
+      "deps": [
+        "t6"
+      ],
+      "covers": [
+        "c28",
+        "h21",
+        "c30",
+        "h23",
+        "c13",
+        "h10",
+        "c10",
+        "h8"
+      ],
+      "instruction": "Route contract shared by t3, t4 and t7 (JSON): GET /api/reading lists saved positions [{item_id, sha256, section, paragraph, part, updated_at, gone}]; GET /api/reading/{item_id}/next?section=&paragraph= (both optional: absent = continue at the cursor) answers {item_id, sha256, title, section, section_count, heading, paragraph, paragraph_count, part, part_count, text, position} where position is an opaque string naming exactly that unit, or {done: true} past the end; POST /api/reading/{item_id}/heard {position} answers {moved: bool, cursor: {...}}; POST /api/reading/{item_id}/clear drops the cursor. Errors: 404 library-item-not-found, 410 library-item-gone, 503 library_unavailable. Files: embodiment/daemon/app.py (wiring only), embodiment/http/server.py (routes, refusals like _TODOS_READ_REFUSALS), tests/test_daemon_reading.py. Reuse the guard exactly as /api/todos and /api/speak use it."
+    },
+    {
+      "id": "t8",
+      "summary": "docs and release 0.23.0: the library is queried, not copied; documents can be heard",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "README.md, CLAUDE.md (status + code map), embodiment/explain/catalog.py and CHANGELOG 0.23.0 describe retrieve-backed search, the retired index and sync, the read-aloud routes and the cursor file, citing code and the 2026-10-26 probes; tests/test_release_docs.py passes with its pinned terms rewritten truthfully (get-only now says the one retrieve POST)",
+        "the release notes say this release removes the local library index, deletes its file once, and has no switch back: rollback is installing the previous release",
+        "version bumped with the version-bump script; uv.lock updated; markdownlint, black, isort, flake8, bandit and teken pass"
+      ],
+      "deps": [
+        "t4",
+        "t7"
+      ],
+      "covers": [
+        "c19",
+        "h12",
+        "c33",
+        "h26"
+      ],
+      "instruction": "Every before-state fact cites code or a measurement in this repo (index.py, sync.py, reading.py:31-32, voice.py:333, docs/live-test-results/2026-10-24-library.md). Do not claim the live acceptance (t9) passed."
+    },
+    {
+      "id": "t9",
+      "summary": "live acceptance on the rig, published as measured",
+      "origin": "llm",
+      "status": "confirmed",
+      "acceptance_criteria": [
+        "the gwen-live worktree moves to the merged ref and embodiment-gwen restarts on it; docs/live-test-results/2026-10-26-library-queried-and-heard.md records, from status and logs: retrieve calls >= 1 and 0 failures, 0 GET /file calls for indexing over 10 minutes, 5 kind-less live searches with 0 todo passages, a live EPUB and a live transcript matching /text in the reader",
+        "a chapter read on the phone over gwen.culture.dev with Access is stopped mid-paragraph, the page reloaded, and continue replays that paragraph; time from tap to first audio is recorded cold and warm separately (c32), and c22's 5 s bar is judged on the warm figure with the cold one beside it, including if it fails",
+        "a library item created during the run is returned by search_library within 60 s of the library indexing it, with no Gwen-side action"
+      ],
+      "deps": [
+        "t8"
+      ],
+      "covers": [
+        "c1",
+        "h1",
+        "c20",
+        "h13",
+        "c21",
+        "h14",
+        "c22",
+        "h15",
+        "c7",
+        "h5",
+        "c9",
+        "h7",
+        "c18",
+        "h11"
+      ],
+      "instruction": "Owned by the main agent with the operator (the phone part is the operator's hands). Aggregates and structure only in the committed file: no library text, no real ids beyond item numbers."
+    }
+  ],
+  "risks": [
+    {
+      "id": "r1",
+      "text": "t6 and t7 both edit daemon/app.py and http/server.py: they are serialized (t7 depends on t6), and t6 is the largest task; if it grows past one reviewable diff, split the reader routes from the sync removal",
+      "kind": "unknown_nonblocking",
+      "task_id": "t6",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r2",
+      "text": "culture-library's /text and /api/rag/retrieve shapes are unversioned; Gwen parses them defensively, but a library release can change them under her (culture-library#25 is already changing retrieve)",
+      "kind": "unknown_nonblocking",
+      "task_id": "t1",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r3",
+      "text": "deleting `<state>/library/index.json` on the live store is irreversible; the copy is derived from the library, so losing it costs only a rebuild by installing the previous release",
+      "kind": "unknown_nonblocking",
+      "task_id": "t6",
+      "resolved": false,
+      "resolution": ""
+    },
+    {
+      "id": "r4",
+      "text": "the deploy is a worktree move plus a web build under systemd (embodiment-gwen); a failed build or a bad ref takes gwen.culture.dev down until rolled back; Docker (embodiment#108) is the later home",
+      "kind": "unknown_nonblocking",
+      "task_id": "t9",
+      "resolved": false,
+      "resolution": ""
+    }
+  ],
+  "obligations": []
+}
