@@ -57,7 +57,7 @@
     },
     "todo": {
       "required": ["id", "done", "at", "by"],
-      "note": "A to-do was marked (d16). id: its memory record id. done: true or false. at: epoch seconds. by: 'operator' (the page) or 'gwen' (on the operator's words). Also carries the whole to-do (text, recording_id, title, date) and timestamps, so culture-rules can file the list in the library."
+      "note": "A to-do was marked (d16); the library is its source (embodiment#105). id: the checklist id (pocket.<uuid>.<n>) of a library to-do line; recording_id: the recording it came from. done: true or false. at: epoch seconds. by: 'operator' (the page) or 'gwen' (on the operator's words). Also carries the whole to-do (text, recording_id, title, date) and timestamps, so culture-rules can file the list in the library."
     }
   }
 }
