@@ -43,6 +43,16 @@
 - Done marks stored under the old memory-record ids are dropped: they match no checklist line and are pruned from todos-done.json (q2)
   - honesty: after the first library-sourced load, todos-done.json holds no key that is not a library checklist id
     - instruction: a daemon test seeded with an old memory-record id
+- A mark the library has not confirmed is published again on each 30 s to-do check until the line agrees, the line disappears, or 1 hour passes (then status shows it unconfirmed); re-sending the same at is safe because culture-rules applies a flip only when its at is newer
+  - honesty: with the broker down at mark time, the mark is confirmed after the broker returns, without a second click
+- status.todos reports items and lines read from the library, marks sent, marks confirmed, marks pending with the oldest pending age, re-sends, and a library-unavailable degradation; a failed library read shows a stated code on the To-dos page, never an empty list
+  - honesty: stopping the library makes /api/todos answer a declared code and status.todos record the degradation
+- kind=todo items are read by the checklist parser only, not chunked or embedded into the document index; transcript and other Markdown items go through the document index like EPUB items (passages with anchors that `read_passage`, `read_item` and the page's reader use)
+  - honesty: after a sync, the index holds passages for items 57, 58, 60 and none for 59, 61
+- When a to-do item is archived or deleted, or a line leaves it, its to-dos disappear from the list and any pending mark for them is dropped and counted; a re-extraction that adds lines shows them at the next to-do check
+  - honesty: removing a line in a fake library drops it and its pending mark; adding one shows it within one check
+- Library Markdown is read as Markdown, not rendered: HTML tags are stripped (culture-rules wraps Hebrew transcripts in a dir=rtl div), entities are unescaped (derived text is HTML-escaped), and lines, characters per line and items per list are capped, so a malformed item is bounded
+  - honesty: an item holding a dir=rtl div, an entity and a 10 000-character line yields plain, bounded text
 
 ## Honesty conditions
 
@@ -69,6 +79,8 @@
   - instruction: compare counts after one todo tick
 - both times are read from records (feed event at, status), not from a stopwatch
   - instruction: `GET /api/feed?item_id=<id>` on culture-library and `GET /api/status`
+- the evidence flip is one Gwen published: its line's `done_at` equals the at of a todo event in Gwen's log, and by matches; a line already \[x\] before Gwen sent anything is not evidence
+- for the first flip, `done_at` parsed to epoch equals the event's at to the second
 
 ## Success signals
 
@@ -89,6 +101,7 @@
 ## Assumptions
 
 - `valid_todo_id` (daemon/todos.py:36, `^[A-Za-z0-9._:-]{1,160}$`) already accepts `pocket.<uuid>.<n>` ids; no regex change
+- A line's `done_at` is rendered from the at of the event that set it (checklist.set records the event's at; checklist.render prints it as ISO), so Gwen compares her mark's at with `done_at` exactly, on one clock
 
 ## Scope exploration
 
@@ -116,3 +129,30 @@
   - seeds: `c12`
 - `s12` — `embodiment#105 acceptance 3`: culture-rules measured 2 s from run start to the replaced item; the 60 s bound is the issue's
   - seeds: `c13`
+- `s13` — `challenge pass / failure-mode lens: embodiment/bus.py publish + culture-rules checklist.set`: the bus publishes a todo event once; a broker outage or a dropped message would leave the mark pending forever; checklist.set ignores a flip that is not newer, so a re-send is idempotent
+  - seeds: `c21`
+- `s14` — `challenge pass / observability lens: daemon/app.py _todos (MEMORY_UNAVAILABLE path) + CLAUDE.md C3`: today a memory failure returns groups=\[\] with `MEMORY_UNAVAILABLE`; the library path needs the same, plus counters that move (lesson 3)
+  - seeds: `c22`
+- `s15` — `challenge pass / security lens: culture-rules docs/operations/library-items.md (transcript.render, checklist.render) + daemon/todos.py:221`: derived text is HTML-escaped and Hebrew transcripts wrapped in a div; `list_todos` already fences to-do text as untrusted
+  - seeds: `c23` (rejected)
+- `s16` — `challenge pass / adjacent-systems lens: library/reading.py:70-90 + library/index.py + library/epub.py:60-75`: `read_item` and the reader read indexed passages (anchor, heading, text, links); a Markdown extractor yielding the same Passage shape serves them; refused items are remembered in memory only, so a restart retries them without an index version bump
+  - seeds: `c24`
+- `s17` — `challenge pass / lifecycle lens: culture-library core/library.py replace + checklist.merge (culture-rules doc)`: replace keeps the item id and changes sha256; merge keeps ids and appends new ones; archive and purge are feed event types
+  - seeds: `c25`
+- `s18` — `challenge pass / counter-evidence lens: probe md_shape.py on culture-library items 59 and 61`: item 59 already holds a done line with `done_at` and by before Gwen sent any flip, and was re-fetched after a replace (`bad_epub` counted 6 for 5 Markdown items); so an \[x\] line alone is not evidence of Gwen's round trip
+  - seeds: `c20`
+- `s19` — `challenge pass / unstated-assumptions lens: culture-rules docs/operations/library-items.md checklist.set + checklist.render`: the doc says set records at (epoch seconds) and render prints `done_at=<ISO>`; nothing says it is the event's at verbatim
+  - seeds: `c26`
+- `s20` — `challenge pass / unexamined surface: Hebrew Markdown transcripts`: only non-wrapped Markdown seen live (probe of 57-61); a Hebrew item is the first real test of tag stripping
+- `s21` — `challenge pass / adjacent-systems lens: transcripts vs culture-rules#92`: live transcript items carry no recording id or recording time in their body, which #92 asked for; Gwen does not need them for to-dos (the id gives the recording), so this is noted, not built
+- `s22` — `challenge pass / concurrency lens: library/sync.py worker + the new 30 s to-do check`: two schedules on one worker or two threads could both write Gwen's state; the to-do check touches only the to-do list and its marks, never the document index; ordering of marks is by at (newer wins) both at Gwen and at culture-rules
+- `s23` — `challenge pass / migration + reversibility lens: todos-done.json`: old keys are pruned (c15); the real store has no to-do file; rollback is the previous release, since d17 removes the memory path for to-dos and there is no fallback by design
+
+## Decisions
+
+- The library is trusted: each item is classified for its trust level and its source (operator, 2026-10-25); Gwen does not treat library items as untrusted by default
+- \#105 keeps today's handling of library text (fenced as data, the write guard on library turns); using each item's trust level and source is a follow-up once culture-library serves the classification (culture-rules#90)
+
+## Open parks
+
+- [unknown_nonblocking] No Hebrew Markdown transcript has been seen yet (items 57, 58, 60 carry no div wrapper); the dir=rtl handling is built from culture-rules' doc, not from a live item

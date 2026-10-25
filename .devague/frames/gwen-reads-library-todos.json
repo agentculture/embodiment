@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-10-25T08:22:51Z",
-  "updated": "2026-10-25T09:20:36Z",
+  "updated": "2026-10-25T10:55:35Z",
   "claims": [
     {
       "id": "c1",
@@ -403,15 +403,188 @@
           "text": "both times are read from records (feed event at, status), not from a stopwatch",
           "status": "confirmed",
           "instruction": "`GET /api/feed?item_id=<id>` on culture-library and `GET /api/status`"
+        },
+        {
+          "id": "h28",
+          "text": "the evidence flip is one Gwen published: its line's done_at equals the at of a todo event in Gwen's log, and by matches; a line already [x] before Gwen sent anything is not evidence",
+          "status": "confirmed",
+          "instruction": ""
         }
       ],
       "hard_questions": [],
       "links": [],
       "instruction": "time the mark on the page against the item's updated feed event and status.todos",
       "revisions": []
+    },
+    {
+      "id": "c21",
+      "kind": "requirement",
+      "text": "A mark the library has not confirmed is published again on each 30 s to-do check until the line agrees, the line disappears, or 1 hour passes (then status shows it unconfirmed); re-sending the same at is safe because culture-rules applies a flip only when its at is newer",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h23",
+          "text": "with the broker down at mark time, the mark is confirmed after the broker returns, without a second click",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c22",
+      "kind": "requirement",
+      "text": "status.todos reports items and lines read from the library, marks sent, marks confirmed, marks pending with the oldest pending age, re-sends, and a library-unavailable degradation; a failed library read shows a stated code on the To-dos page, never an empty list",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h24",
+          "text": "stopping the library makes /api/todos answer a declared code and status.todos record the degradation",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c23",
+      "kind": "requirement",
+      "text": "Library Markdown is untrusted text: the extractor strips HTML tags (culture-rules wraps Hebrew in a dir=rtl div), unescapes entities (derived text is HTML-escaped), never renders HTML, and caps lines, chars per line and items per list; to-do text stays fenced as untrusted in list_todos",
+      "origin": "llm",
+      "status": "rejected",
+      "honesty_conditions": [
+        {
+          "id": "h25",
+          "text": "a to-do line holding a script tag, an entity and 10 000 characters is shown as bounded plain text and the turn's write guard still holds",
+          "status": "rejected",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c24",
+      "kind": "requirement",
+      "text": "kind=todo items are read by the checklist parser only, not chunked or embedded into the document index; transcript and other Markdown items go through the document index like EPUB items (passages with anchors that read_passage, read_item and the page's reader use)",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h26",
+          "text": "after a sync, the index holds passages for items 57, 58, 60 and none for 59, 61",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c25",
+      "kind": "requirement",
+      "text": "When a to-do item is archived or deleted, or a line leaves it, its to-dos disappear from the list and any pending mark for them is dropped and counted; a re-extraction that adds lines shows them at the next to-do check",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h27",
+          "text": "removing a line in a fake library drops it and its pending mark; adding one shows it within one check",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c26",
+      "kind": "assumption",
+      "text": "A line's done_at is rendered from the at of the event that set it (checklist.set records the event's at; checklist.render prints it as ISO), so Gwen compares her mark's at with done_at exactly, on one clock",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h29",
+          "text": "for the first flip, done_at parsed to epoch equals the event's at to the second",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c27",
+      "kind": "decision",
+      "text": "The library is trusted: each item is classified for its trust level and its source (operator, 2026-10-25); Gwen does not treat library items as untrusted by default",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c28",
+      "kind": "requirement",
+      "text": "Library Markdown is read as Markdown, not rendered: HTML tags are stripped (culture-rules wraps Hebrew transcripts in a dir=rtl div), entities are unescaped (derived text is HTML-escaped), and lines, characters per line and items per list are capped, so a malformed item is bounded",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h30",
+          "text": "an item holding a dir=rtl div, an entity and a 10 000-character line yields plain, bounded text",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c29",
+      "kind": "decision",
+      "text": "#105 keeps today's handling of library text (fenced as data, the write guard on library turns); using each item's trust level and source is a follow-up once culture-library serves the classification (culture-rules#90)",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
     }
   ],
-  "open_vagueness": [],
+  "open_vagueness": [
+    {
+      "id": "v1",
+      "text": "No Hebrew Markdown transcript has been seen yet (items 57, 58, 60 carry no div wrapper); the dir=rtl handling is built from culture-rules' doc, not from a live item",
+      "kind": "unknown_nonblocking",
+      "claim_id": null,
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    }
+  ],
   "scope_entries": [
     {
       "id": "s1",
@@ -508,6 +681,86 @@
       "seeds": [
         "c13"
       ]
+    },
+    {
+      "id": "s13",
+      "surface": "challenge pass / failure-mode lens: embodiment/bus.py publish + culture-rules checklist.set",
+      "finding": "the bus publishes a todo event once; a broker outage or a dropped message would leave the mark pending forever; checklist.set ignores a flip that is not newer, so a re-send is idempotent",
+      "seeds": [
+        "c21"
+      ]
+    },
+    {
+      "id": "s14",
+      "surface": "challenge pass / observability lens: daemon/app.py _todos (MEMORY_UNAVAILABLE path) + CLAUDE.md C3",
+      "finding": "today a memory failure returns groups=[] with MEMORY_UNAVAILABLE; the library path needs the same, plus counters that move (lesson 3)",
+      "seeds": [
+        "c22"
+      ]
+    },
+    {
+      "id": "s15",
+      "surface": "challenge pass / security lens: culture-rules docs/operations/library-items.md (transcript.render, checklist.render) + daemon/todos.py:221",
+      "finding": "derived text is HTML-escaped and Hebrew transcripts wrapped in a div; list_todos already fences to-do text as untrusted",
+      "seeds": [
+        "c23"
+      ]
+    },
+    {
+      "id": "s16",
+      "surface": "challenge pass / adjacent-systems lens: library/reading.py:70-90 + library/index.py + library/epub.py:60-75",
+      "finding": "read_item and the reader read indexed passages (anchor, heading, text, links); a Markdown extractor yielding the same Passage shape serves them; refused items are remembered in memory only, so a restart retries them without an index version bump",
+      "seeds": [
+        "c24"
+      ]
+    },
+    {
+      "id": "s17",
+      "surface": "challenge pass / lifecycle lens: culture-library core/library.py replace + checklist.merge (culture-rules doc)",
+      "finding": "replace keeps the item id and changes sha256; merge keeps ids and appends new ones; archive and purge are feed event types",
+      "seeds": [
+        "c25"
+      ]
+    },
+    {
+      "id": "s18",
+      "surface": "challenge pass / counter-evidence lens: probe md_shape.py on culture-library items 59 and 61",
+      "finding": "item 59 already holds a done line with done_at and by before Gwen sent any flip, and was re-fetched after a replace (bad_epub counted 6 for 5 Markdown items); so an [x] line alone is not evidence of Gwen's round trip",
+      "seeds": [
+        "c20"
+      ]
+    },
+    {
+      "id": "s19",
+      "surface": "challenge pass / unstated-assumptions lens: culture-rules docs/operations/library-items.md checklist.set + checklist.render",
+      "finding": "the doc says set records at (epoch seconds) and render prints `done_at=<ISO>`; nothing says it is the event's at verbatim",
+      "seeds": [
+        "c26"
+      ]
+    },
+    {
+      "id": "s20",
+      "surface": "challenge pass / unexamined surface: Hebrew Markdown transcripts",
+      "finding": "only non-wrapped Markdown seen live (probe of 57-61); a Hebrew item is the first real test of tag stripping",
+      "seeds": []
+    },
+    {
+      "id": "s21",
+      "surface": "challenge pass / adjacent-systems lens: transcripts vs culture-rules#92",
+      "finding": "live transcript items carry no recording id or recording time in their body, which #92 asked for; Gwen does not need them for to-dos (the id gives the recording), so this is noted, not built",
+      "seeds": []
+    },
+    {
+      "id": "s22",
+      "surface": "challenge pass / concurrency lens: library/sync.py worker + the new 30 s to-do check",
+      "finding": "two schedules on one worker or two threads could both write Gwen's state; the to-do check touches only the to-do list and its marks, never the document index; ordering of marks is by at (newer wins) both at Gwen and at culture-rules",
+      "seeds": []
+    },
+    {
+      "id": "s23",
+      "surface": "challenge pass / migration + reversibility lens: todos-done.json",
+      "finding": "old keys are pruned (c15); the real store has no to-do file; rollback is the previous release, since d17 removes the memory path for to-dos and there is no fallback by design",
+      "seeds": []
     }
   ],
   "lapses": [],
