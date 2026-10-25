@@ -55,114 +55,6 @@ _FETCH_DESCRIPTION = (
 )
 
 
-class _Reading:
-    def __init__(
-        self,
-        index: Any,
-        collector: lt.CitationCollector,
-        fetch: Optional[Callable[[str], web.Page]],
-    ) -> None:
-        self._index = index
-        self._collector = collector
-        self._fetch = fetch
-        self.fetches = 0
-        self.refused = 0
-
-    def read_item(self, item_id: Any = None) -> str:
-        key = lt._item_id_arg(item_id)
-        item = self._index.item(key)
-        if not item:
-            return NO_ITEM
-        meta = {**item, "item_id": item.get("id", key)}
-        citations, used, skipped = [], 0, 0
-        for passage in item.get("passages") or ():
-            text = str(passage.get("text") or "").strip()
-            if not text:
-                continue
-            if len(citations) >= MAX_PASSAGES or used + len(text) > MAX_CHARS:
-                skipped += 1
-                continue
-            used += len(text)
-            citations.append(lt._citation(meta, passage))
-        if not citations:
-            return NO_ITEM
-        rendered = lt._render(self._collector, citations)
-        if skipped:
-            rendered += f"\n{skipped} more passages were not included (size limit)."
-        return rendered
-
-    def fetch_source(self, item_id: Any = None, url: Any = None) -> str:
-        key = lt._item_id_arg(item_id)
-        wanted = lt._text_arg(url, web.MAX_URL_CHARS)
-        if wanted not in self._index.links_of(key):
-            self.refused += 1
-            return NOT_LINKED
-        if self._fetch is None:
-            return COULD_NOT_READ.format(code="web-not-configured")
-        self.fetches += 1
-        try:
-            page = self._fetch(wanted)
-        except web.WebRefused as refused:
-            return COULD_NOT_READ.format(code=refused.code)
-        citation = lt.Citation(
-            source=WEB_SOURCE,
-            item_id="",
-            title=lt._clean(page.title or wanted, lt.FIELD_MAX_CHARS),
-            kind="web",
-            date="",
-            anchor="",
-            start=None,
-            end=None,
-            text=memory.neutralise_source_text(page.text, WEB_TEXT_CHARS),
-            link=page.url,
-        )
-        return lt._render(
-            self._collector, [citation], max_chars=WEB_TEXT_CHARS + 6 * lt.FIELD_MAX_CHARS
-        )
-
-
-def build_reading_tools(
-    index: Any,
-    collector: lt.CitationCollector,
-    *,
-    fetch: Optional[Callable[[str], web.Page]] = None,
-) -> tuple[ToolSpec, ToolSpec]:
-    """``(read_item, fetch_source)`` over *index*, citing on the turn's *collector*.
-
-    *fetch* is ``url -> Page`` (:func:`embodiment.library.web.fetch_page` in the daemon);
-    without one, fetch_source answers that it is not configured.
-    """
-    tools = _Reading(index, collector, fetch)
-    read = ToolSpec(
-        name=READ_ITEM_TOOL,
-        parameters={
-            "type": "object",
-            "properties": {"item_id": {"type": "string"}},
-            "required": ["item_id"],
-            "additionalProperties": False,
-        },
-        fn=tools.read_item,
-        description=_READ_DESCRIPTION,
-        codes=lt.CODES,
-    )
-    fetch_spec = ToolSpec(
-        name=FETCH_TOOL,
-        parameters={
-            "type": "object",
-            "properties": {
-                "item_id": {"type": "string", "description": "The item that lists the link."},
-                "url": {"type": "string", "description": "One of that item's links, exactly."},
-            },
-            "required": ["item_id", "url"],
-            "additionalProperties": False,
-        },
-        fn=tools.fetch_source,
-        description=_FETCH_DESCRIPTION,
-        codes=lt.CODES,
-    )
-    return read, fetch_spec
-
-
 # -- the /text-backed tools (embodiment#107 t5) --------------------------------------
 
 #: Fixed host text: the offset is past the item's last paragraph.
@@ -189,6 +81,8 @@ class _DocumentReading:
         """The document, or a fixed-text string when it cannot be had."""
         try:
             return self._documents(key)
+        except LookupError:  # not in the library's catalog: nothing was fetched
+            return NO_ITEM
         except LibraryError as exc:
             return COULD_NOT_READ.format(code=getattr(exc, "code", "library_unavailable"))
         except Exception:  # noqa: BLE001  # nothing raises into the turn

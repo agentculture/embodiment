@@ -8,7 +8,6 @@ from embodiment.library.client import LibraryItem
 from embodiment.library.epub import EpubRefused
 from embodiment.library.extract import extract_item
 from embodiment.library.index import DEFAULT_KINDS, TODO_KIND, DocumentIndex
-from embodiment.library.sync import LibrarySync
 from embodiment.library.tools import SEARCH_KINDS
 from tests.test_library_epub import basic
 
@@ -38,20 +37,6 @@ def _item(i, kind, fmt):
     )
 
 
-class Client:
-    def __init__(self, files):
-        self.files = files
-        self.fetched = []
-        self.gets = 0
-
-    def list_items(self, kind=None, q=None):
-        return [_item(i, k, f) for i, (k, f, _) in self.files.items()]
-
-    def fetch_file(self, item_id):
-        self.fetched.append(item_id)
-        return self.files[item_id][2]
-
-
 def test_wants_refuses_todo_kind(tmp_path):
     index = DocumentIndex(tmp_path / "i.json", embed=lambda t: [1.0, 0.0], model_tag="m")
     assert index.wants(_item(1, TODO_KIND, "md")) is False
@@ -61,24 +46,3 @@ def test_wants_refuses_todo_kind(tmp_path):
 def test_kinds_unchanged():
     assert TODO_KIND not in DEFAULT_KINDS
     assert TODO_KIND not in SEARCH_KINDS
-
-
-def test_sync_indexes_epub_and_markdown_not_todo(tmp_path):
-    client = Client(
-        {
-            1: ("article", "epub", basic()),
-            2: ("transcript", "md", MD),
-            3: ("todo", "md", TODO_MD),
-        }
-    )
-    index = DocumentIndex(tmp_path / "i.json", embed=lambda t: [1.0, 0.0], model_tag="m")
-    sync = LibrarySync(
-        client, index, extract=extract_item, clock=lambda: 100.0, budget=30.0, sleep=lambda s: None
-    )
-    sync.tick()
-    assert client.fetched == [1, 2]
-    st = sync.status()
-    assert st["items_indexed"] == 2
-    assert st["chunks"] > 0
-    assert st["failures_by_code"] == {}
-    assert st["skipped_refused"] == 0

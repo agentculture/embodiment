@@ -16,9 +16,9 @@ route                   guarded   what it is
 ``POST /api/mic/mute``     **yes**   ``{"muted": true|false}``
 ``POST /api/chat``         **yes**   ``{"message", "conversation"?}``: a typed turn; with a
                                       conversation id it continues that conversation
-``GET /api/library``       **yes**   the catalog: ``{"items": [...]}``
-``GET /api/library/{id}``  **yes**   ``{"item": {...}, "passages": [...]}``
-``GET /api/library/search?q=``  **yes**  ``{"hits": [...]}``
+``GET /api/library``       **yes**   the catalog: ``{"items": [...]}`` (503 down)
+``GET /api/library/{id}``  **yes**   ``{"item": {...}, "passages": [...]}`` (503 down)
+``GET /api/library/search?q=``  **yes**  ``{"hits": [...]}`` (503 down)
 ``GET /api/todos``         **yes**   ``{"groups": [...]}``
 ``POST /api/todos/{id}``   **yes**   ``{"done": true|false}``: mark one to-do (d16)
 ``GET /api/conversations``      **yes**  past conversations: ``{"conversations": [...]}``
@@ -292,15 +292,27 @@ CLIP_READ_DEADLINE_S = MAX_CLIP_BYTES / CLIP_UPLINK_FLOOR_BYTES_PER_S
 
 # ── the library and to-do read routes (task t6): each clock named for what it bounds ──
 
-#: Bounds ONE library catalog or reader read: a local, indexed read. A **judgement
-#: call** on where a page load has stopped being a page load.
+#: Bounds ONE library catalog read (and a history read): the daemon's last listed
+#: catalog, in memory. A **judgement call** on where a page load has stopped being one.
 LIBRARY_READ_BOUND_S = 2.0
 
-#: Bounds ONE library search: it embeds the query (gemma2-embed) and scans the index.
-#: Derived from the recall cap in ``daemon.app.derive_recall_deadline`` (embed p90 161 ms
-#: + 0.13 ms/record + 0.15 s, capped at 3 s) - copied, not imported, so this module does
-#: not load the daemon.
-LIBRARY_SEARCH_BOUND_S = 3.0
+#: The library client's request deadline (``library.client.DEFAULT_DEADLINE``, and
+#: ``library.retrieve.DEFAULT_DEADLINE``): copied, not imported, so this module does
+#: not load the library.
+LIBRARY_REQUEST_DEADLINE_S = 10.0
+
+#: The daemon's bound on resolving one answer's reader anchors
+#: (``daemon.app.LIBRARY_ANCHOR_BUDGET_S``), copied for the same reason.
+LIBRARY_ANCHOR_BUDGET_S = 2.0
+
+#: Bounds ONE reader read: the item's ``/text`` from the library (embodiment#107), one
+#: GET under the client's request deadline. A longer body keeps arriving after the
+#: route has answered 503, and the daemon's document cache serves the next open.
+LIBRARY_ITEM_BOUND_S = LIBRARY_REQUEST_DEADLINE_S
+
+#: Bounds ONE library search: one retrieve POST under the client's deadline, then the
+#: hits' reader anchors under the daemon's anchor budget (embodiment#107).
+LIBRARY_SEARCH_BOUND_S = LIBRARY_REQUEST_DEADLINE_S + LIBRARY_ANCHOR_BUDGET_S
 
 #: Bounds ONE to-do read: the held library to-do lines reconciled with Gwen's marks;
 #: sized to the search.
@@ -308,6 +320,7 @@ TODOS_READ_BOUND_S = 3.0
 
 #: The request waits the callable's own bound plus the slack, never the 5 s control default.
 DEFAULT_LIBRARY_TIMEOUT_S = LIBRARY_READ_BOUND_S + CONTROL_SLACK_S
+DEFAULT_LIBRARY_ITEM_TIMEOUT_S = LIBRARY_ITEM_BOUND_S + CONTROL_SLACK_S
 DEFAULT_LIBRARY_SEARCH_TIMEOUT_S = LIBRARY_SEARCH_BOUND_S + CONTROL_SLACK_S
 DEFAULT_TODOS_TIMEOUT_S = TODOS_READ_BOUND_S + CONTROL_SLACK_S
 
@@ -325,6 +338,9 @@ MEMORY_UNAVAILABLE_CODE = "memory-unavailable"
 #: The to-dos' library source could not be read (embodiment#105, c22): the daemon's
 #: ``todos()`` answers it as ``code`` and the route refuses with 503, never an empty list.
 TODOS_UNAVAILABLE_CODE = "library_unavailable"
+#: The library could not answer a catalog, reader or search read (embodiment#107): the
+#: daemon answers it as ``code`` and the route refuses with 503.
+LIBRARY_UNAVAILABLE_CODE = "library_unavailable"
 #: A library path or query was malformed.
 LIBRARY_BAD_REQUEST_CODE = "library-bad-request"
 #: No library item has that id.
@@ -588,7 +604,8 @@ class Controls:
     #: A third argument, only when ``X-Conversation`` or ``X-Clip-Origin`` is sent, is
     #: the conversation id (or ``None``); a fourth, only with ``X-Clip-Origin``, is it.
     clip: Optional[Callable[..., dict[str, Any]]] = None
-    #: ``library_list() -> {"items": [{id, title, kind, created_at, indexed}]}``.
+    #: ``library_list() -> {"items": [{id, title, kind, created_at, indexed}]}``. Each of
+    #: the three library reads may answer ``{"code": "library_unavailable"}`` (503).
     library_list: Optional[Callable[[], dict[str, Any]]] = None
     #: ``library_get(item_id) -> {"item": {...}, "passages": [...]}``; an empty dict or
     #: ``None`` means no such item (404).
@@ -630,6 +647,7 @@ class ServerConfig:
     speak_timeout_s: float = DEFAULT_SPEAK_TIMEOUT_S
     clip_timeout_s: float = DEFAULT_CLIP_TIMEOUT_S
     library_timeout_s: float = DEFAULT_LIBRARY_TIMEOUT_S
+    library_item_timeout_s: float = DEFAULT_LIBRARY_ITEM_TIMEOUT_S
     library_search_timeout_s: float = DEFAULT_LIBRARY_SEARCH_TIMEOUT_S
     todos_timeout_s: float = DEFAULT_TODOS_TIMEOUT_S
     text_body_max_bytes: int = TEXT_BODY_MAX_BYTES
@@ -1084,7 +1102,12 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if route == LIBRARY_ROUTE:
             self._read_route(
-                "api.library", controls.library_list, (), config.library_timeout_s, "items"
+                "api.library",
+                controls.library_list,
+                (),
+                config.library_timeout_s,
+                "items",
+                refusals=_LIBRARY_READ_REFUSALS,
             )
             return
         if route == LIBRARY_SEARCH_ROUTE:
@@ -1098,6 +1121,7 @@ class _Handler(BaseHTTPRequestHandler):
                 (query,),
                 config.library_search_timeout_s,
                 "hits",
+                refusals=_LIBRARY_READ_REFUSALS,
             )
             return
         item_id = _parse_item_id(route[len(LIBRARY_ROUTE) + 1 :])
@@ -1108,9 +1132,10 @@ class _Handler(BaseHTTPRequestHandler):
             "api.library.item",
             controls.library_get,
             (item_id,),
-            config.library_timeout_s,
+            config.library_item_timeout_s,
             "passages",
             item=True,
+            refusals=_LIBRARY_READ_REFUSALS,
         )
 
     def _history_route(self, route: str) -> None:
@@ -1546,6 +1571,11 @@ class ControlOutcome:
 _TODOS_READ_REFUSALS: dict[str, tuple[int, str]] = {
     TODOS_UNAVAILABLE_CODE: (503, "the to-dos could not be read from the library"),
     LIBRARY_NOT_CONFIGURED_CODE: (503, "the to-dos come from the library, not configured here"),
+}
+
+#: A library read the daemon could not answer from the library (embodiment#107).
+_LIBRARY_READ_REFUSALS: dict[str, tuple[int, str]] = {
+    LIBRARY_UNAVAILABLE_CODE: (503, "the library could not be reached"),
 }
 
 _TODO_REFUSALS: dict[str, tuple[int, str, str]] = {

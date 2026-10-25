@@ -1,5 +1,6 @@
 """read_item and fetch_source (operator, 2026-10-24: summarize the newsletter and its
-sources; fetch only links in the library)."""
+sources; fetch only links in the library). Since embodiment#107 both read the item's
+``/text`` document; the index-backed builder is gone."""
 
 from __future__ import annotations
 
@@ -9,147 +10,58 @@ from embodiment import memory as mem
 from embodiment.library import reading
 from embodiment.library import tools as lt
 from embodiment.library import web
-from embodiment.library.index import DocumentIndex
+from embodiment.library.client import LibraryError
+from embodiment.library.document import Document, Link, Section
 
 
-def _embed(text):
-    return [float(len(str(text)) % 7 + 1), 1.0]
+def test_the_index_backed_builder_is_gone():
+    assert not hasattr(reading, "build_reading_tools")
+    assert not hasattr(reading, "_Reading")
 
 
-@pytest.fixture
-def index(tmp_path):
-    idx = DocumentIndex(tmp_path / "i.json", embed=_embed, model_tag="m")
-    meta = {"id": "5", "sha256": "s", "kind": "newspaper", "title": "Daily newspaper 2026-10-24"}
-    idx.reconcile([meta])
-    idx.upsert_item(
-        meta,
-        [
-            {
-                "anchor": "s1#0",
-                "heading": "Jetson",
-                "text": "Jetson Thor ships with more memory",
-                "links": [("NVIDIA blog", "https://example.org/thor")],
-            },
-            {
-                "anchor": "s1#1",
-                "heading": "Jetson",
-                "text": "A second story about edge AI",
-                "links": [("Edge news", "https://example.org/edge")],
-            },
-        ],
-    )
-    return idx
+def _documents(**by_id):
+    def documents(item_id):
+        if item_id not in by_id:
+            raise LookupError(item_id)  # the daemon's provider: not in the catalog
+        return by_id[item_id]
+
+    return documents
 
 
-def _tools(index, fetch=None):
+def test_an_item_not_in_the_catalog_is_the_fixed_no_item_text():
     collector = lt.CitationCollector()
-    read, fetch_spec = reading.build_reading_tools(index, collector, fetch=fetch)
-    return read, fetch_spec, collector
-
-
-def test_read_item_returns_every_passage_fenced_with_its_links(index):
-    read, _, collector = _tools(index)
-    out = read.fn(item_id="5")
-    assert out.count("id=5") == 2
-    assert mem.BEGIN_MARK in out
-    assert mem.END_MARK in out
-    assert "links: NVIDIA blog <https://example.org/thor>" in out
-    assert [c.anchor for c in collector.citations] == ["s1#0", "s1#1"]
-    assert collector.library_text_in_context
-
-
-def test_read_item_of_an_unknown_item_is_fixed_text(index):
-    read, _, _ = _tools(index)
+    read, fetch_spec = reading.build_document_reading_tools(_documents(), collector)
     assert read.fn(item_id="99") == reading.NO_ITEM
-
-
-def test_read_item_says_what_it_left_out(index, monkeypatch):
-    monkeypatch.setattr(reading, "MAX_PASSAGES", 1)
-    read, _, collector = _tools(index)
-    out = read.fn(item_id="5")
-    assert "1 more passages were not included" in out
-    assert len(collector.citations) == 1
-
-
-def test_fetch_source_reads_a_linked_page_as_a_web_citation(index):
-    seen = []
-
-    def fetch(url):
-        seen.append(url)
-        return web.Page(url=url, title="Thor ships", text="The full article text.")
-
-    _, fetch_spec, collector = _tools(index, fetch)
-    out = fetch_spec.fn(item_id="5", url="https://example.org/thor")
-    assert seen == ["https://example.org/thor"]
-    assert "The full article text." in out
-    assert "url: https://example.org/thor" in out
-    (source,) = collector.sources()
-    assert (source["source"], source["link"], source["item_id"]) == (
-        "web",
-        "https://example.org/thor",
-        "",
-    )
-    assert collector.library_text_in_context, "web text must arm the write guard"
-
-
-@pytest.mark.parametrize(
-    "url",
-    ["https://example.org/not-listed", "http://127.0.0.1/admin", "https://example.org/thor?x=1"],
-)
-def test_a_url_the_item_does_not_link_is_refused_and_nothing_is_fetched(index, url):
-    seen = []
-    _, fetch_spec, collector = _tools(index, lambda u: seen.append(u))
-    assert fetch_spec.fn(item_id="5", url=url) == reading.NOT_LINKED
-    assert seen == []
+    assert fetch_spec.fn(item_id="99", url="https://example.org/thor") == reading.NO_ITEM
     assert collector.citations == ()
 
 
-def test_a_link_of_another_item_does_not_count(index):
+def test_a_link_of_another_item_does_not_count():
     seen = []
-    _, fetch_spec, _ = _tools(index, lambda u: seen.append(u))
-    assert fetch_spec.fn(item_id="99", url="https://example.org/thor") == reading.NOT_LINKED
+    thor = Document(
+        "5", "s", "T", "newspaper", (Section("", ("x",), (Link("t", "https://example.org/t"),)),)
+    )
+    other = Document("6", "s", "O", "newspaper", (Section("", ("y",)),))
+    _, fetch_spec = reading.build_document_reading_tools(
+        _documents(**{"5": thor, "6": other}), lt.CitationCollector(), fetch=seen.append
+    )
+    assert fetch_spec.fn(item_id="6", url="https://example.org/t") == reading.NOT_LINKED
     assert seen == []
 
 
-def test_a_refused_fetch_answers_with_its_code(index):
-    def fetch(url):
-        raise web.WebRefused(web.CODE_PRIVATE_ADDRESS)
-
-    _, fetch_spec, _ = _tools(index, fetch)
-    out = fetch_spec.fn(item_id="5", url="https://example.org/thor")
-    assert out == reading.COULD_NOT_READ.format(code=web.CODE_PRIVATE_ADDRESS)
-
-
-def test_without_a_fetcher_the_tool_says_so(index):
-    _, fetch_spec, _ = _tools(index)
-    assert "web-not-configured" in fetch_spec.fn(item_id="5", url="https://example.org/thor")
-
-
-def test_search_hits_show_their_links_too(index):
-    search, _ = lt.build_library_tools(index, _embed, lt.CitationCollector())
-    out = search.fn(query="Jetson", limit=1)
-    assert "links: " in out
-    assert "https://example.org/" in out
-
-
-def test_long_links_are_listed_whole_or_not_at_all(tmp_path):
+def test_long_links_are_listed_whole_or_not_at_all():
     """Review of PR #102: a URL cut mid-string is not a link the item lists."""
-    idx = DocumentIndex(tmp_path / "j.json", embed=_embed, model_tag="m")
-    meta = {"id": "8", "sha256": "s", "kind": "newspaper", "title": "Daily newspaper 2026-10-24"}
     urls = [f"https://example.org/{i}/" + "x" * 200 for i in range(6)]
-    idx.reconcile([meta])
-    idx.upsert_item(
-        meta,
-        [
-            {
-                "anchor": "p",
-                "heading": "",
-                "text": "y" * 990,
-                "links": [(f"link {i}", u) for i, u in enumerate(urls)],
-            }
-        ],
+    document = Document(
+        "8",
+        "s",
+        "Daily newspaper 2026-10-24",
+        "newspaper",
+        (Section("", ("y" * 990,), tuple(Link(f"link {i}", u) for i, u in enumerate(urls))),),
     )
-    read, _, _ = _tools(idx)
+    read, _ = reading.build_document_reading_tools(
+        _documents(**{"8": document}), lt.CitationCollector()
+    )
     out = read.fn(item_id="8")
     listed = [u for u in urls if u in out]
     assert listed, "some links fit"
@@ -159,10 +71,37 @@ def test_long_links_are_listed_whole_or_not_at_all(tmp_path):
         assert (u in out) or (head not in out), "a URL is never shown cut"
 
 
-# -- embodiment#107 t5: read_item / fetch_source on /text documents -----------------
+def test_a_refused_fetch_answers_with_its_code_and_none_configured_says_so():
+    def refuse(url):
+        raise web.WebRefused(web.CODE_PRIVATE_ADDRESS)
 
-from embodiment.library.client import LibraryError  # noqa: E402
-from embodiment.library.document import Document, Link, Section  # noqa: E402
+    document = _document()
+    _, fetch_spec, _ = _dtools(lambda _i: document, refuse)
+    out = fetch_spec.fn(item_id="5", url="https://example.org/thor")
+    assert out == reading.COULD_NOT_READ.format(code=web.CODE_PRIVATE_ADDRESS)
+    _, unconfigured, _ = _dtools(lambda _i: document)
+    assert "web-not-configured" in unconfigured.fn(item_id="5", url="https://example.org/thor")
+
+
+def test_a_fetched_page_is_a_web_citation_that_arms_the_guard():
+    def fetch(url):
+        return web.Page(url=url, title="Thor ships", text="The full article text.")
+
+    _, fetch_spec, collector = _dtools(fetch=fetch)
+    out = fetch_spec.fn(item_id="5", url="https://example.org/thor")
+    assert "The full article text." in out
+    assert "url: https://example.org/thor" in out
+    assert mem.BEGIN_MARK in out
+    (source,) = collector.sources()
+    assert (source["source"], source["link"], source["item_id"]) == (
+        "web",
+        "https://example.org/thor",
+        "",
+    )
+    assert collector.library_text_in_context, "web text must arm the write guard"
+
+
+# -- embodiment#107 t5: read_item / fetch_source on /text documents -----------------
 
 
 def _document(n=3):
