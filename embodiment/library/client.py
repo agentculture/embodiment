@@ -197,6 +197,22 @@ class LibraryClient:
             read_deadline=self._deadline + MAX_FILE_BYTES / MIN_FILE_BYTES_PER_S,
         )
 
+    def fetch_text(self, item_id: Any) -> dict:
+        """``GET /api/library/{id}/text``: ``{item_id, kind, format, title, text, sections,
+        reason}`` as the library sent it; ``sections`` is null for Markdown."""
+        body = self._get(
+            f"/api/library/{_seg(item_id)}/text",
+            max_bytes=MAX_FILE_BYTES,
+            read_deadline=self._deadline + MAX_FILE_BYTES / MIN_FILE_BYTES_PER_S,
+        )
+        try:
+            parsed = json.loads(body)
+        except ValueError:
+            raise LibraryError("library_bad_response") from None
+        if not isinstance(parsed, dict):
+            raise LibraryError("library_bad_response")
+        return parsed
+
 
 def _seg(item_id: Any) -> str:
     return urllib.parse.quote(str(item_id), safe="")
