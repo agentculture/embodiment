@@ -152,9 +152,12 @@ def test_todo_and_discord_message_dropped(fake):
     assert [p.kind for p in out] == ["book"]
 
 
-def test_kind_filter(fake):
-    fake.answer([_passage(1, kind="book"), _passage(2, kind="note")])
-    assert [p.kind for p in _client(fake).retrieve("q", 5, kind="note")] == ["note"]
+def test_kind_is_sent_in_the_body(fake):
+    fake.answer([_passage(1, kind="book")])
+    assert [p.kind for p in _client(fake).retrieve("q", 5, kind="book")] == ["book"]
+    assert json.loads(fake.seen[0][3])["kind"] == "book"
+    _client(fake).retrieve("q", 5)
+    assert "kind" not in json.loads(fake.seen[1][3])
 
 
 # --- 4: failures --------------------------------------------------------------

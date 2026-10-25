@@ -187,6 +187,8 @@ class RetrieveClient:
         if not isinstance(query, str) or isinstance(k, bool) or not isinstance(k, int):
             raise RetrieveError("library_bad_response")
         payload: dict[str, Any] = {"query": query, "k": k, "mode": "hybrid", "rerank": False}
+        if kind:
+            payload["kind"] = kind
         if item_ids:
             payload["item_ids"] = list(item_ids)
         headers = {"Content-Type": "application/json"}
@@ -223,6 +225,4 @@ class RetrieveClient:
         if not isinstance(wire, list):
             raise RetrieveError("library_bad_response")
         passages = [_passage_from_wire(p) for p in wire]
-        return [
-            p for p in passages if p.kind not in EXCLUDED_KINDS and (kind is None or p.kind == kind)
-        ]
+        return [p for p in passages if p.kind not in EXCLUDED_KINDS]
