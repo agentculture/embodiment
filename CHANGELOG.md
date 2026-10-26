@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.23.4] - 2026-10-26
+
+### Changed
+
+- Evidence `e23` (Choose section on the operator's phone) confirmed by the operator; no embodiment#107 record is left proposed.
+- `t9` closed by deviation `d8` (the operator): its tap-to-sound is accepted on the by-ear figures, warm immediate and cold about 6 s; a timed measurement is optional, not owed.
+
 ## [0.23.3] - 2026-10-26
 
 ### Changed
