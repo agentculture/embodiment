@@ -35,7 +35,8 @@ from embodiment.library.epub import (
 # or to the end, is stripped by a scan (_strip_comments), and a heading's closing run of "#"
 # in code (_heading_text).
 _TAG = re.compile(r"</?[A-Za-z][^<>]*>")
-_HEADING = re.compile(r"^ {0,3}(#{1,6})[ \t]+(.*)$")
+# One separator, not [ \t]+: the text is normalised after; overlapping runs backtrack.
+_HEADING = re.compile(r"^ {0,3}(#{1,6})[ \t](.*)$")
 _BULLET = re.compile(r"^ {0,3}(?:[-*+]|\d{1,9}[.)])[ \t]+")
 _LINK = re.compile(r"(!?)\[([^\[\]]{0,%d})\]\(([^()\s]+)(?:\s+\"[^\"]*\")?\)" % MAX_LINK_TEXT)
 
