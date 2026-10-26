@@ -48,6 +48,7 @@ The operator's own words, on an iPhone (the browser was not named), against prod
 | A long one-sentence paragraph | **fail**: the voice stopped after "perception" and the reader went on. Every sentence's audio was capped at 10 s; the same paragraph measured 10.00 s cut on the pre-flight daemon, then 13.93 s whole after the fix (`23d0b01`). The operator's retest of it is not yet reported |
 | After a refresh, the header and the dock | **fail**: the header was scrolled away and the dock floated above empty space; fixed by d5 (`910cbcc`). A later screenshot showed the header in place; not confirmed as a refresh check |
 | Pause then play, relisten | slow, then pass: the audio was made again on every play; d6 keeps the current, previous and next paragraphs' audio. The operator: "Caching works well, and no ring when relisten" (the ring waits 300 ms, d4) |
+| Previous and Next, section edges included | pass: made ahead while a paragraph plays (d6, `91b486e`). The operator: "Previous and next cache works good!" |
 | Loading feedback on a jump | added by d4: a turning ring on the play button, no words (the operator: "Loading ring on play is clear") |
 | Tap-to-sound time | not reported |
 
