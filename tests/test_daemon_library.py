@@ -643,6 +643,30 @@ class TestCitationsJoinTheSources:
         assert source["item_id"] == "9"
         assert source["anchor"] == ""
 
+    def test_a_slow_text_fetch_never_holds_the_answer_past_the_anchor_budget(
+        self, harness: Any, tmp_path: Path, monkeypatch: Any
+    ) -> None:
+        # Code review of #110: the budget was checked only before a fetch started, so one
+        # slow /text fetch could hold the answer for the client's whole deadline.
+        import time as _time
+
+        monkeypatch.setattr(app_module, "LIBRARY_ANCHOR_BUDGET_S", 0.3)
+        library = _library()
+        script = ToolScript(_call("search_library", query="alpha"), ModelResponse(content=REPLY))
+        h = _build(harness, tmp_path, complete=script, library=library)
+        real = library.fetch_text
+
+        def slow(item_id: Any) -> dict:
+            _time.sleep(2.0)
+            return real(item_id)
+
+        library.fetch_text = slow  # type: ignore[method-assign]
+        started = _time.monotonic()
+        answer = h.app.controls().chat("alpha?")
+        assert _time.monotonic() - started < 1.5
+        assert answer["ok"] is True
+        assert answer["sources"][0]["anchor"] == ""
+
     def test_a_down_library_leaves_the_anchor_empty_and_the_reply_stands(
         self, harness: Any, tmp_path: Path
     ) -> None:
@@ -908,12 +932,17 @@ class TestStatusAndRoutes:
         assert block["catalog_items"] == 2
         assert block["catalog_failures_by_code"] == {"library_unreachable": 2}
         assert h.ledger_codes().count(app_module.APP_LIBRARY_DEGRADED) == 1, "one per transition"
-        assert h.app.controls().library_list() == {"items": [], "code": "library_unavailable"}
+        # the kept list is served, marked stale with the failure's code (code review of #110)
+        kept = h.app.controls().library_list()
+        assert len(kept["items"]) == 2
+        assert kept["stale"] == "library_unreachable"
+        assert kept["listed_at"] == listed_at
         # the kept list still serves the reader and the tools' item metas
         assert h.app.controls().library_get(9)["item"]["title"] == "Standup"
         library.list_error = None
         assert h.app._catalog_tick() is None
         assert len(h.app.controls().library_list()["items"]) == 2
+        assert "stale" not in h.app.controls().library_list()
         online = [e.data for e in h.events("state") if e.data.get("component") == "library"]
         assert online and online[-1]["status"] == "online"
 

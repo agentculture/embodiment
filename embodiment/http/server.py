@@ -479,6 +479,8 @@ STREAM_ROUTE = "/api/events"
 
 CHAT_ROUTE = "/api/chat"
 SPEAK_ROUTE = "/api/speak"
+#: Set on a /api/speak answer whose audio stopped short of the text (a cap or a deadline).
+SPEAK_TRUNCATED_HEADER = "X-Speak-Truncated"
 CLIP_ROUTE = "/api/clip"
 _TEXT_ROUTES = (CHAT_ROUTE, SPEAK_ROUTE, CLIP_ROUTE)
 #: End the live conversation and start a new one (operator, 2026-10-24).
@@ -1435,7 +1437,9 @@ class _Handler(BaseHTTPRequestHandler):
             return
         kind = outcome.result.get("content_type")
         kind = kind if isinstance(kind, str) and kind.startswith("audio/") else "audio/wav"
-        self._send(200, bytes(audio), _safe_header_value(kind))
+        # A cut answer says so (code review of #110): read-aloud must not report it heard.
+        extra = {SPEAK_TRUNCATED_HEADER: "1"} if outcome.result.get("truncated") is True else None
+        self._send(200, bytes(audio), _safe_header_value(kind), extra=extra)
 
     def _invoke(self, route: str, action: Optional[Callable[..., Any]], *args: Any) -> None:
         label = route.replace("/", ".").strip(".")

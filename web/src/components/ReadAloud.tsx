@@ -255,7 +255,12 @@ export function useReadAloud({ itemId, secret, clientOptions, audioFactory, peek
   const audioOf = useCallback((text: string): Promise<Made> => {
     const { secret: key, clientOptions: co } = opts.current;
     return cache.current.audio(text, () =>
-      speakMessage(text, key, co).then((r): Made => (r.ok ? { blob: r.blob, code: null } : { blob: null, code: r.code })),
+      speakMessage(text, key, co).then((r): Made => {
+        if (!r.ok) return { blob: null, code: r.code };
+        // A cut answer is never played as the whole unit: it would be reported heard
+        // past words that were not spoken (code review of #110). Never kept either.
+        return r.truncated ? { blob: null, code: "speak-truncated" } : { blob: r.blob, code: null };
+      }),
     );
   }, []);
 

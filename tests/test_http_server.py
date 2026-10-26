@@ -1600,6 +1600,29 @@ class TestSpeakRoute:
         finally:
             built.server.shutdown(2.0)
 
+    @pytest.mark.parametrize("truncated", [True, False])
+    def test_a_cut_speak_answer_says_so_in_a_header(self, truncated: bool) -> None:
+        # Code review of #110: read-aloud must not report heard a unit whose audio was cut.
+        wav = b"RIFF\x00\x00\x00\x00WAVEsynthetic"
+        speak = lambda t: {"ok": True, "audio": wav, "truncated": truncated}  # noqa: E731
+        built = build(controls=s.Controls(speak=speak))
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", built.port, timeout=5)
+            conn.request(
+                "POST",
+                "/api/speak",
+                body=json.dumps({"text": "synthetic line"}).encode(),
+                headers=built.headers(Content_Type="application/json"),
+            )
+            response = conn.getresponse()
+            response.read()
+            conn.close()
+            assert response.status == 200
+            expected = "1" if truncated else None
+            assert response.getheader(s.SPEAK_TRUNCATED_HEADER) == expected
+        finally:
+            built.server.shutdown(2.0)
+
     def test_speak_with_no_audio_is_a_json_error_not_an_empty_200(self) -> None:
         built = build(controls=s.Controls(speak=lambda t: {"ok": True, "audio": b""}))
         try:

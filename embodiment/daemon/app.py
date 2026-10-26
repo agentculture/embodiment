@@ -2318,7 +2318,9 @@ class DaemonApp:
             self._reading_positions = daemon_reading.ReadingPositions(
                 Path(self._state.dir) / daemon_reading.POSITIONS_NAME
             )
-            self._reader = daemon_reading.Reader(self._reading_positions, self._reading_document)
+            self._reader = daemon_reading.Reader(
+                self._reading_positions, self._reading_document, self._reading_listed
+            )
         self._library_thread: Optional[threading.Thread] = None
         self._library_tool_calls: dict[str, int] = {}
         #: The fixed code each library part ("catalog", "retrieve", "documents") is
@@ -3819,6 +3821,7 @@ class DaemonApp:
         return {
             "ok": result.ok,
             "audio": result.audio,
+            "truncated": bool(result.truncated),
             "content_type": result.content_type,
             "code": result.code,
             "http_status": result.http_status,
@@ -4237,6 +4240,14 @@ class DaemonApp:
         except LibraryError:
             raise daemon_reading.ItemUnavailable() from None
 
+    def _reading_listed(self, item_id: str) -> Optional[bool]:
+        """Is *item_id* in the catalog: a lookup, never a /text fetch (``None`` when the
+        catalog has not been listed yet, which says nothing about the item)."""
+        lane = self._library
+        if lane is None or lane.catalog.items() is None:
+            return None
+        return lane.catalog.meta(item_id) is not None
+
     def _reading_list(self) -> dict[str, Any]:
         """``Controls.reading_list``: the saved positions, ``gone`` flagged."""
         reader = self._reader
@@ -4286,12 +4297,31 @@ class DaemonApp:
         if lane is None or not chunk:
             return ""
         document = lane.documents.cached(item_id)
-        if document is None and time.monotonic() - started < LIBRARY_ANCHOR_BUDGET_S:
-            try:
-                document = self._recorded_documents(item_id)
-            except Exception:  # noqa: BLE001  # no anchor: the reader opens at the start
-                document = None
+        remaining = LIBRARY_ANCHOR_BUDGET_S - (time.monotonic() - started)
+        if document is None and remaining > 0:
+            document = self._document_within(item_id, remaining)
         return reader_anchor(document, chunk) if document is not None else ""
+
+    def _document_within(self, item_id: str, timeout_s: float) -> Optional[Document]:
+        """The item's document if it arrives within *timeout_s*, else ``None`` (code review
+        of #110: the budget was checked only before a fetch, so one fetch could run on the
+        client's whole deadline past it, and LIBRARY_SEARCH_BOUND_S did not bound the
+        route). The fetch runs on a daemon thread and, if late, still fills the cache."""
+        got: dict[str, Any] = {}
+        done = threading.Event()
+
+        def fetch() -> None:
+            try:
+                got["document"] = self._recorded_documents(item_id)
+            except Exception as exc:  # noqa: BLE001  # recorded there; no anchor: item's start
+                got["error"] = safe_reason.describe_exception(exc)
+            finally:
+                done.set()
+
+        threading.Thread(target=fetch, name="library-anchor", daemon=True).start()
+        done.wait(timeout_s)
+        document = got.get("document")
+        return document if isinstance(document, Document) else None
 
     # ── settled conversations (deviation d7) ─────────────────────────────────
 
@@ -4401,20 +4431,24 @@ class DaemonApp:
     def _library_list(self) -> dict[str, Any]:
         """``Controls.library_list``: the last catalog the worker listed, never a live GET.
 
-        While the latest listing failed (or none has succeeded yet) the route answers
-        503 ``library_unavailable``; the daemon still keeps the last good list for the
-        tools and the reader, and the page keeps its own shelf.
+        Before any listing has succeeded the route answers 503 ``library_unavailable``.
+        While the latest listing failed it serves the last good list, with ``listed_at``
+        and ``stale`` (the failure's code): a page loaded in that window used to get no
+        items at all for up to a listing interval (code review of #110).
         """
         lane = self._library
         if lane is None:
             return {"items": []}
         items = lane.catalog.items()
-        if items is None or lane.catalog.down is not None:
+        if items is None:
             return {"items": [], "code": LIBRARY_UNAVAILABLE_CODE}
-        return {
+        answer: dict[str, Any] = {
             "items": [_catalog_entry(item) for item in items],
             "listed_at": _finite_or_none(lane.catalog.listed_at),
         }
+        if lane.catalog.down is not None:
+            answer["stale"] = str(lane.catalog.down)
+        return answer
 
     def _library_get(self, item_id: int) -> Optional[dict[str, Any]]:
         """``Controls.library_get``: one item's paragraphs from the library's ``/text``
@@ -7287,15 +7321,15 @@ def _library_lane_from_env(
 ) -> Optional[LibraryLane]:
     """The library lane :func:`main` wires, or ``None``: unset, or unbuildable (recorded).
 
-    Both clients read the same two env names; nothing is written under the state dir.
+    Both clients are built from the one parsed config; nothing is written under the state dir.
     """
     if library is None:
         return None
     try:
+        # One parsed config for both clients (code review of #110): the retrieve client
+        # re-read the env, so the two could drift apart.
         client = LibraryClient(library.base_url, library.key)
-        retrieve = RetrieveClient.from_env(env)
-        if retrieve is None:  # the URL was set for one and not the other: cannot happen
-            raise LibraryError("library_bad_config")
+        retrieve = RetrieveClient(library.base_url, library.key)
         return build_library_lane(
             client,
             retrieve,

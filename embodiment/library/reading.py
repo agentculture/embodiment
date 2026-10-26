@@ -95,11 +95,14 @@ class _DocumentReading:
         document = self._document(key)
         if isinstance(document, str):
             return document
+        # One entry per citation-sized piece (code review of #110): a paragraph over the
+        # citation cap was cut at it while the offset stepped past the whole paragraph.
         flat = [
-            (section, i, paragraph)
-            for section in document.sections
+            (section, si, i, j, piece)
+            for si, section in enumerate(document.sections)
             for i, paragraph in enumerate(section.paragraphs)
             if paragraph.strip()
+            for j, piece in enumerate(_pieces(paragraph, lt.SOURCE_TEXT_MAX_CHARS))
         ]
         if not flat:
             return NO_ITEM
@@ -107,7 +110,7 @@ class _DocumentReading:
             return END_TEXT
         citations, used, position = [], 0, offset
         while position < len(flat) and len(citations) < MAX_PASSAGES:
-            section, i, paragraph = flat[position]
+            section, si, i, j, paragraph = flat[position]
             if citations and used + len(paragraph) > MAX_CHARS:
                 break
             used += len(paragraph)
@@ -118,16 +121,14 @@ class _DocumentReading:
                     title=lt._clean(document.title, lt.FIELD_MAX_CHARS),
                     kind=lt._clean(document.kind, lt.FIELD_MAX_CHARS),
                     date="",
-                    anchor=lt._clean(
-                        f"{section.heading} #{position}" if section.heading else f"#{position}",
-                        lt.FIELD_MAX_CHARS,
-                    ),
+                    # the reader's own anchor, so a tap opens this paragraph (code review of #110)
+                    anchor=f"s{si}.p{i}",
                     start=None,
                     end=None,
                     text=memory.neutralise_source_text(paragraph, lt.SOURCE_TEXT_MAX_CHARS),
                     links=(
                         lt._clean_links([(ln.text, ln.href) for ln in section.links])
-                        if i == 0
+                        if i == 0 and j == 0
                         else ()
                     ),
                 )
@@ -219,3 +220,24 @@ def build_document_reading_tools(
         codes=lt.CODES,
     )
     return read, fetch_spec
+
+
+def _pieces(text: str, limit: int) -> list[str]:
+    """*text* in pieces of at most *limit* characters, broken at spaces, every word kept
+    (a run longer than *limit* with no space is cut)."""
+    words, out, piece = text.split(), [], ""
+    for word in words:
+        while len(word) > limit:
+            if piece:
+                out.append(piece)
+                piece = ""
+            out.append(word[:limit])
+            word = word[limit:]
+        if piece and len(piece) + 1 + len(word) > limit:
+            out.append(piece)
+            piece = word
+        else:
+            piece = f"{piece} {word}" if piece else word
+    if piece:
+        out.append(piece)
+    return out or [text]

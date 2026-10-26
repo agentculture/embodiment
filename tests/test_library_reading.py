@@ -192,3 +192,26 @@ def test_document_fetch_source_allows_only_listed_hrefs():
     assert seen == ["https://example.org/edge"]
     assert "page body" in out
     assert collector.sources()[0]["source"] == "web"
+
+
+def test_a_long_paragraph_is_read_whole_in_citation_sized_pieces():
+    # Code review of #110: a paragraph past the citation cap was cut at it, and the offset
+    # stepped past the whole paragraph, so following "More follows" skipped its tail.
+    words = [f"w{i}" for i in range(700)]  # about 3300 characters
+    long = " ".join(words)
+    doc = Document("5", "s", "Book", "book", (Section("One", (long,), ()),))
+    read, _, collector = _dtools(lambda _id: doc)
+    out = read.fn(item_id="5")
+    pieces = [c.text for c in collector.citations]
+    assert all(len(p) <= lt.SOURCE_TEXT_MAX_CHARS for p in pieces)
+    while reading.MORE_FOLLOWS.split("{")[0] in out:  # page on to the end
+        nxt = len(collector.citations)
+        out = read.fn(item_id="5", offset=nxt)
+        pieces = [c.text for c in collector.citations]
+    assert " ".join(pieces).split() == words
+
+
+def test_a_read_item_citation_carries_the_readers_paragraph_anchor():
+    read, _, collector = _dtools()
+    read.fn(item_id="5")
+    assert [c.anchor for c in collector.citations] == ["s0.p0", "s0.p1", "s0.p2", "s1.p0"]

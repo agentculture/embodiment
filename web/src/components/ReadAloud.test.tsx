@@ -540,4 +540,26 @@ describe("ReadAloud: what the phone test asked for (d3, live t9 2026-10-26)", ()
     await waitFor(() => expect(screen.getByRole("group", { name: "Reading aloud" })).toHaveAttribute("data-status", "playing"));
     expect(spoken.length).toBe(made);
   });
+
+  it("a speak answer the daemon cut is not played as the unit and never reported heard (code review of #110)", async () => {
+    const r = rig();
+    const inner = r.fetchFn.getMockImplementation() as (u: RequestInfo | URL, i?: RequestInit) => Promise<Response>;
+    r.fetchFn.mockImplementation(async (u: RequestInfo | URL, init?: RequestInit) => {
+      if (String(u) === "/api/speak") {
+        return {
+          ok: true,
+          status: 200,
+          headers: { get: (n: string) => (n === "X-Speak-Truncated" ? "1" : null) },
+          blob: async () => new Blob(["RIFF"], { type: "audio/wav" }),
+        } as unknown as Response;
+      }
+      return inner(u, init);
+    });
+    render(<Reader id="syn-1" onClose={() => {}} clientOptions={{ fetchFn: r.fetchFn as unknown as typeof fetch }} audioFactory={() => new FakeAudio() as unknown as HTMLAudioElement} />);
+    await screen.findByText(PARAS[0]);
+    fireEvent.click(screen.getByRole("button", { name: /Read aloud on this/ }));
+    await waitFor(() => expect(screen.getByRole("group", { name: "Reading aloud" })).toHaveAttribute("data-status", "error"));
+    expect(screen.getByRole("alert")).toHaveTextContent("speak-truncated");
+    expect(r.heard).toEqual([]);
+  });
 });

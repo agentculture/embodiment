@@ -25,8 +25,17 @@ import time
 from pathlib import Path
 from typing import Any, Callable, Optional
 
+from embodiment.daemon.text_turns import BYTES_PER_SAMPLE, MAX_SPEAK_AUDIO_BYTES, SAMPLE_RATE_HZ
+from embodiment.voice import MAX_AUDIO_S_PER_CHAR
+
 POSITIONS_NAME = "reading-positions.json"
-MAX_PART_CHARS = 4000
+#: A unit must fit one /api/speak answer, so it is derived from that cap (lesson 1): the
+#: speak cap's seconds at the most audio a character can need. It was 4000, sized by
+#: Voice.speak's text cap, and /api/speak cut such a unit at 120 s while the page reported
+#: it heard (code review of #110). 120 s / 0.12 s per character = 1000.
+MAX_PART_CHARS = int(
+    MAX_SPEAK_AUDIO_BYTES / (SAMPLE_RATE_HZ * BYTES_PER_SAMPLE) / MAX_AUDIO_S_PER_CHAR
+)
 
 CODE_NOT_FOUND = "library-item-not-found"
 CODE_GONE = "library-item-gone"
@@ -238,9 +247,17 @@ class _Walk:
 class Reader:
     """``next`` and ``heard`` over a provider and a :class:`ReadingPositions`."""
 
-    def __init__(self, positions: ReadingPositions, provider: Callable[[str], Any]) -> None:
+    def __init__(
+        self,
+        positions: ReadingPositions,
+        provider: Callable[[str], Any],
+        listed: Optional[Callable[[str], Optional[bool]]] = None,
+    ) -> None:
         self._positions = positions
         self._provider = provider
+        #: Whether the catalog lists an item (None: unknown, no listing yet). The listing
+        #: asks it rather than fetching each item's /text (code review of #110).
+        self._listed = listed
         self.reads_started = 0
         self.units_served = 0
         self.units_heard = 0
@@ -402,6 +419,10 @@ class Reader:
         """Every saved position, with ``gone`` true for an item the catalog dropped."""
         out = []
         for cursor in self._positions.all():
-            _, error = self._doc(cursor["item_id"])
-            out.append({**cursor, "gone": error in (CODE_GONE, CODE_NOT_FOUND)})
+            if self._listed is not None:
+                gone = self._listed(str(cursor["item_id"])) is False
+            else:
+                _, error = self._doc(cursor["item_id"])
+                gone = error in (CODE_GONE, CODE_NOT_FOUND)
+            out.append({**cursor, "gone": gone})
         return out

@@ -271,3 +271,41 @@ def test_save_failure_keeps_cursor_and_reports_not_moved(tmp_path):
     out = reader.heard("item-a", reader.next("item-a")["position"])
     assert out["moved"] is False
     assert pos.save_failures >= 1
+
+
+def test_a_unit_always_fits_one_speak_answer():
+    # Code review of #110: a 4000-character unit needed up to ~200 s of audio against
+    # /api/speak's 120 s cap. The part cap is derived from that cap.
+    from embodiment.daemon.reading import MAX_PART_CHARS
+    from embodiment.daemon.text_turns import MAX_SPEAK_AUDIO_BYTES
+    from embodiment.voice import MAX_AUDIO_S_PER_CHAR
+
+    cap_s = MAX_SPEAK_AUDIO_BYTES / (24000 * 2)
+    assert MAX_PART_CHARS * MAX_AUDIO_S_PER_CHAR <= cap_s
+
+
+def test_the_listing_asks_the_catalog_not_the_documents():
+    # Code review of #110: the listing fetched every saved item's /text to say "gone".
+    fetched: list[str] = []
+
+    def provider(item_id: str):
+        fetched.append(item_id)
+        raise ItemGone()
+
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as d:
+        positions = ReadingPositions(Path(d) / POSITIONS_NAME)
+        positions.update(
+            "kept", lambda _c: {"section": 0, "paragraph": 1, "part": 0, "sha256": "x"}
+        )
+        positions.update(
+            "dropped", lambda _c: {"section": 0, "paragraph": 0, "part": 0, "sha256": "y"}
+        )
+        reader = Reader(
+            positions, provider, listed=lambda i: {"kept": True, "dropped": False}.get(i)
+        )
+        gone = {p["item_id"]: p["gone"] for p in reader.listing()}
+    assert gone == {"kept": False, "dropped": True}
+    assert fetched == []
