@@ -279,7 +279,7 @@ def test_ast_guard_fails_when_a_write_method_is_planted():
 
 
 def test_every_request_is_counted_as_a_get():
-    """LibrarySync.status() and the live run read `gets` (c28): it counts each request."""
+    """The catalog lane's status and the live run read `gets` (c28): it counts each request."""
 
     class _Resp:
         status = 200
