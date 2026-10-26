@@ -1645,7 +1645,12 @@ class TestLibraryTodos:
         h.app._todo_check()
         block = h.app.status()["todos"]
         assert (block["code"], block["lines"]) == ("todo_parse_failed", 3)
-        assert h.app.controls().todos()["code"] == "library_unavailable"
+        assert block["unreadable"] == 1
+        # one unreadable item no longer takes the page down (code review of #109): the
+        # last good lines are served, and the failure is still recorded
+        page = h.app.controls().todos()
+        assert "code" not in page or page["code"] is None
+        assert sum(len(g["items"]) for g in page["groups"]) == 3
         assert app_module.APP_TODOS_DEGRADED in h.ledger_codes()
 
     def test_no_library_reports_not_configured(self, harness: Any, tmp_path: Path) -> None:

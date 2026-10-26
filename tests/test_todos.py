@@ -287,3 +287,25 @@ def test_shown_is_a_read_only_view_of_reconcile(tmp_path):
     shown, _, c = states.reconcile(agreed)
     assert shown == states.shown(agreed)
     assert c["confirmed"] == 1
+
+
+def test_a_mark_that_reopens_a_to_do_is_confirmed_when_the_line_reads_open(tmp_path):
+    # Code review of #109: an open line carries no done_at (parse_checklist stamps done
+    # lines only), so a re-open mark used to be re-sent for an hour and never confirmed.
+    states = t.TodoStates(tmp_path / "s.json", clock=_Clock())
+    states.mark("a", False, t.BY_OPERATOR)
+    _, due, c = states.reconcile([_line("a", True, 900.0, "operator")])
+    assert len(due) == 1  # the library still shows it done: re-send
+    _, due, c = states.reconcile([_line("a", False, None, None)])
+    assert due == []
+    assert c["confirmed"] == 1
+    assert c["pending"] == 0
+
+
+def test_an_incomplete_read_keeps_a_mark_whose_line_is_only_missing(tmp_path):
+    # An unreadable to-do item hides its lines; its marks are not dropped for that.
+    states = t.TodoStates(tmp_path / "s.json", clock=_Clock())
+    states.mark("a", True, t.BY_GWEN)
+    _, _, c = states.reconcile([_line("b")], prune=False)
+    assert c["dropped"] == 0
+    assert states.get("a")["done"] is True
