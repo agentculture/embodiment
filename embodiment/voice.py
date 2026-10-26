@@ -287,6 +287,8 @@ __all__ = [
     "MAX_SENTENCE_CHARS",
     "MAX_SENTENCES",
     "MAX_SENTENCE_AUDIO_BYTES",
+    "MAX_AUDIO_S_PER_CHAR",
+    "sentence_audio_cap",
     "BARGE_IN_BOUND_S",
     "MAX_FEATURE_FRAMES",
     "PACE_SLICE_S",
@@ -355,6 +357,14 @@ BYTES_PER_SAMPLE = 2
 #: long clip for one short sentence, independent of the TEXT-length bounds
 #: above.
 MAX_SENTENCE_AUDIO_BYTES = 10 * SAMPLE_RATE_HZ * BYTES_PER_SAMPLE
+
+#: The most audio one character of text can need, in seconds: twice the slowest rate measured
+#: on this rig's tts lane (2026-10-26: 0.035-0.047 s per character in Hebrew over n = 5
+#: paragraphs, 0.052-0.053 in English over n = 3 sentences). The 10 s floor above was a
+#: judgement call sized for spoken replies; a library paragraph read aloud can be one long
+#: sentence, and at the floor it was cut mid-word at exactly 10.00 s (the operator's phone,
+#: embodiment#107 t9). :func:`sentence_audio_cap` derives the cap from the sentence (lesson 1).
+MAX_AUDIO_S_PER_CHAR = 0.12
 
 #: Chunk size :func:`_read_bounded` requests per ``read()`` call. A
 #: **judgement call**: large enough that a healthy response streams without
@@ -466,6 +476,8 @@ class VoiceConfig:
     max_sentence_chars: int = MAX_SENTENCE_CHARS
     max_sentences: int = MAX_SENTENCES
     max_sentence_audio_bytes: int = MAX_SENTENCE_AUDIO_BYTES
+    #: Audio seconds one character may need; with the floor above, :func:`sentence_audio_cap`.
+    max_audio_s_per_char: float = MAX_AUDIO_S_PER_CHAR
 
 
 @dataclass(frozen=True)
@@ -563,7 +575,33 @@ def split_sentences(
         sentences = [stripped]
     capped_count = max(1, int(max_sentences))
     capped_len = max(1, int(max_sentence_chars))
-    return [s[:capped_len] for s in sentences[:capped_count]]
+    pieces = [piece for s in sentences for piece in _split_long(s, capped_len)]
+    return pieces[:capped_count]
+
+
+#: Where a sentence too long for one synthesis call is best broken: after a clause mark, else
+#: at a space.
+_CLAUSE_BREAK = re.compile(r"[,;:–—]\s")
+
+
+def _split_long(sentence: str, limit: int) -> list[str]:
+    """*sentence* in pieces of at most *limit* characters, every word kept (embodiment#107 t9:
+    slicing at the cap dropped a long sentence's tail from a read). Breaks after the last
+    clause mark in range, else the last space; a run with no space is cut hard."""
+    out: list[str] = []
+    rest = sentence
+    while len(rest) > limit:
+        window = rest[: limit + 1]
+        marks = [m.end() for m in _CLAUSE_BREAK.finditer(window) if m.end() <= limit + 1]
+        cut = marks[-1] if marks and marks[-1] > limit // 3 else window.rfind(" ")
+        if cut <= 0:
+            cut = limit
+        piece, rest = rest[:cut].strip(), rest[cut:].strip()
+        if piece:
+            out.append(piece)
+    if rest:
+        out.append(rest)
+    return out
 
 
 class VoiceSynthesizeError(Exception):
@@ -607,7 +645,16 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
 _REDIRECT_REFUSING_OPENER = urllib.request.build_opener(_NoRedirectHandler)
 
 
-def _read_deadline(config: VoiceConfig) -> float:
+def sentence_audio_cap(sentence: str, config: VoiceConfig) -> int:
+    """The most audio bytes one sentence may synthesise to: the configured floor, or the
+    sentence's length at :data:`MAX_AUDIO_S_PER_CHAR`, whichever is larger (whole samples)."""
+    per_char = max(0.0, float(config.max_audio_s_per_char)) * SAMPLE_RATE_HZ * BYTES_PER_SAMPLE
+    derived = int(len(sentence) * per_char)
+    cap = max(int(config.max_sentence_audio_bytes), derived)
+    return cap - cap % BYTES_PER_SAMPLE
+
+
+def _read_deadline(config: VoiceConfig, max_bytes: Optional[int] = None) -> float:
     """Total wall-clock budget for reading one sentence's whole response body.
 
     Derived from what it bounds (lesson 1), not chosen freely: the worst
@@ -620,7 +667,8 @@ def _read_deadline(config: VoiceConfig) -> float:
     function can incur beyond its own deadline is bounded by one more
     ``speech_deadline``, never unbounded.
     """
-    return config.speech_deadline + (config.max_sentence_audio_bytes / MIN_TTS_STREAM_BYTES_PER_S)
+    cap = config.max_sentence_audio_bytes if max_bytes is None else max_bytes
+    return config.speech_deadline + (cap / MIN_TTS_STREAM_BYTES_PER_S)
 
 
 def _read_bounded(response: Any, *, max_bytes: int, deadline_s: float) -> bytes:
@@ -723,11 +771,8 @@ def http_synthesize(sentence: str, config: VoiceConfig, *, opener: Optional[Any]
     with active_opener.open(  # nosec B310 - scheme checked above, redirects refused
         request, timeout=config.speech_deadline
     ) as response:
-        return _read_bounded(
-            response,
-            max_bytes=config.max_sentence_audio_bytes,
-            deadline_s=_read_deadline(config),
-        )
+        cap = sentence_audio_cap(sentence, config)
+        return _read_bounded(response, max_bytes=cap, deadline_s=_read_deadline(config, cap))
 
 
 @dataclass
@@ -1041,9 +1086,9 @@ class Voice:
             progress.tts_degraded = True
             self._degrade(VOICE_TTS_FAILED, safe_reason.describe_exception(exc))
             return b""
-        return self._bound_pcm(pcm, progress)
+        return self._bound_pcm(pcm, progress, sentence)
 
-    def _bound_pcm(self, pcm: object, progress: _SpeakProgress) -> bytes:
+    def _bound_pcm(self, pcm: object, progress: _SpeakProgress, sentence: str = "") -> bytes:
         """Validate and cap what the synthesizer returned.
 
         A non-bytes return is a synthesis fault (latches, like a raise); an
@@ -1058,7 +1103,7 @@ class Voice:
             )
             return b""
         pcm = bytes(pcm)
-        cap = self._config.max_sentence_audio_bytes
+        cap = sentence_audio_cap(sentence, self._config)
         if len(pcm) > cap:
             self._degrade(
                 VOICE_TTS_OVERSIZE,

@@ -46,6 +46,7 @@ from embodiment.voice import (
     VoiceConfig,
     http_synthesize,
     mark_language,
+    sentence_audio_cap,
     split_sentences,
 )
 
@@ -1063,7 +1064,9 @@ class TestBoundedRead:
         assert result == payload
 
     def test_stops_at_max_bytes_plus_one_for_the_oversize_path(self) -> None:
-        config = VoiceConfig(gateway_url="http://gw.example", max_sentence_audio_bytes=100)
+        config = VoiceConfig(
+            gateway_url="http://gw.example", max_sentence_audio_bytes=100, max_audio_s_per_char=0.0
+        )
         payload = b"\x01" * 10_000  # far larger than the 100-byte cap
         opener = _FakeOpener(_FakeResponse(payload))
         result = http_synthesize("hi", config, opener=opener)
@@ -1088,6 +1091,7 @@ class TestBoundedRead:
             gateway_url="http://gw.example",
             speech_deadline=0.05,
             max_sentence_audio_bytes=100,
+            max_audio_s_per_char=0.0,
         )
         opener = _FakeOpener(_SleepyResponse())
         start = time.monotonic()
@@ -1471,3 +1475,49 @@ class TestAttacks:
         derived = replace(base, api_key="x")
         assert base.api_key == ""
         assert derived.api_key == "x"
+
+
+class TestALongSentenceIsSpokenWhole:
+    """embodiment#107 t9, the operator's phone 2026-10-26: a library paragraph that is one long
+    sentence stopped mid-word at exactly 10.00 s (MAX_SENTENCE_AUDIO_BYTES) and the reader went
+    on to the next paragraph; and a sentence past MAX_SENTENCE_CHARS lost its tail. A read is
+    the item's own words, never skipped (c10, c24)."""
+
+    def test_the_cap_grows_with_the_sentence_and_keeps_its_floor(self) -> None:
+        config = VoiceConfig()
+        assert sentence_audio_cap("hi", config) == config.max_sentence_audio_bytes
+        long = "word " * 60  # 300 characters, about 15 s spoken
+        assert sentence_audio_cap(long, config) >= 300 * 0.1 * 24000 * 2
+
+    def test_the_read_takes_a_long_sentences_whole_audio(self) -> None:
+        sentence = "word " * 60
+        payload = b"\x01" * (16 * 24000 * 2)  # 16 s: past the old 10 s cap
+        opener = _FakeOpener(_FakeResponse(payload))
+        result = http_synthesize(
+            sentence, VoiceConfig(gateway_url="http://gw.example"), opener=opener
+        )
+        assert result == payload
+
+    def test_voice_does_not_truncate_a_long_sentences_audio(self) -> None:
+        player = FakePlayer()
+        bus = FakeBus()
+        clip = _silence_pcm(16 * 24000)
+        voice = Voice(endpoint=player, bus=bus, synthesize=lambda s, c: clip)
+        voice.speak("word " * 60)
+        assert sum(len(c) for c in player.play_calls) == len(clip)
+        from embodiment.voice import VOICE_TTS_OVERSIZE
+
+        assert VOICE_TTS_OVERSIZE not in [d.code for d in voice.degradations]
+        voice.close(deadline=1.0)
+
+    def test_a_sentence_past_the_char_cap_is_split_at_spaces_and_keeps_every_word(self) -> None:
+        words = [f"w{i}" for i in range(400)]
+        sentence = " ".join(words) + "."
+        out = split_sentences(sentence)
+        assert all(len(s) <= MAX_SENTENCE_CHARS for s in out)
+        assert " ".join(out).split() == sentence.split()
+
+    def test_a_split_prefers_a_comma_or_semicolon(self) -> None:
+        head = "a" * 300 + ", " + "b " * 150
+        out = split_sentences(head)
+        assert out[0].endswith(",")
