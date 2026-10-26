@@ -53,6 +53,7 @@ Quoted verbatim from the `devague summary` skeleton:
 - `d7` — speech: faded edges and a pause after each sentence (measured before: 0-10 ms of silence and a click at each seam; after: 0.27 s quiet, clips start and end at 0; the full-stop pause later raised to 0.43 s and then 0.53 s, the colon's to 0.30 s, on the operator's ear), and a long paragraph starts from its first sentence while the rest is made — the operator's report ("transitions between sentences aren't great") and idea ("send first sentence"). The made-ahead audio also stopped making the item's first paragraph again as its own Previous
 - A code review of #109 and #110 (the operator's `/code-review medium`) found 10 candidates; each was checked against the code and all 10 were fixed: for #110, a reading unit cut at `/api/speak`'s 120 s cap was reported heard (units are now 1000 characters, derived from that cap, and a cut answer says `X-Speak-Truncated` and is never reported heard); `GET /api/reading` fetched each saved item's `/text` to say "gone" (now a catalog lookup); `read_item` cut a long paragraph at the 1000-character citation cap while its offset stepped past it (now citation-sized pieces, every word kept) and cited a flat index the reader could not open (now `s<section>.p<paragraph>`); the anchor budget did not bound a fetch already started (now a wait bounded by what is left of it); one failed listing blanked the Library page (the kept list is served, marked `stale`); the retrieve client re-read the environment (now the one parsed config). For #109: a re-open mark could never be confirmed, one unreadable to-do item took the page down, and the to-do source had no lock
 - CI now fails a PR with unresolved SonarCloud issues (cited from culture-rules and culture-library); #109's 31 were fixed, none accepted
+- #110's first scan after #109 merged (squash `a4e521c`; #110 retargeted to `main`, joined with `merge -s ours`) failed the gate on reliability C with 44 issues; all 44 were fixed in `09af199`, none accepted. The three "always false" findings were Sonar not seeing a closure set `moved` in `Reader.heard`, not a live bug; the closure now records its target in a list. `Reader.next`/`heard` and the HTTP routing were split under the complexity limit, behavior unchanged
 - The title line stays a paragraph: the library's text opens with the item's title as its own block, so it is read first; the operator heard it and kept it.
 - The document cache went from 4 to 12 items (`93f4152`): the pre-flight saw 20 refetches of a 752 KB book when a search ran during a read. No deviation record covers this; it changes no contract.
 - Review fixes after the colleague review (`2a58a65`): the retrieve AST pin is alias-proof; a passage under 40 characters no longer anchors a citation (it opens the item at its start); resume continues at the saved cursor instead of replaying a heard paragraph. No deviation record covers these; they tighten behavior already promised.
@@ -84,10 +85,12 @@ Quoted verbatim from the `devague summary` skeleton:
   - `tests/test_daemon_library.py::TestTheRetiredIndexIsRemoved::test_first_start_deletes_it_once_and_later_starts_do_nothing` — pass
   - `tests/test_daemon_reading.py::TestRefusals::test_next_and_heard_need_the_secret_and_a_refused_heard_leaves_the_file` — pass
 - live: `docs/live-test-results/2026-10-26-library-queried-and-heard.md` — every probe row passed or is reported as measured
+- tests: the full suite at `09af199` (the Sonar fixes) — 4525 passed, 1 skipped; `o4`/`o5`'s tests plus `tests/test_daemon_reading.py` and `tests/test_http_server.py` re-run there (2026-10-26T11:17:41Z) — 231 passed, filed as `e16`-`e18`
+- CI: #110 at `09af199` — every check passes, SonarCloud gate OK, 0 open issues; #109 merged as `a4e521c`
 - lint: `black --check`, `isort --check-only`, `flake8`, `bandit -c pyproject.toml`, `markdownlint-cli2` — clean
-- validate-delivery records: obligations `o1`-`o10`, evidence `e1`-`e15` (all pass), deltas `b1`-`b10`; all `llm`-origin and proposed
+- validate-delivery records: obligations `o1`-`o10`, evidence `e1`-`e18` (all pass), deltas `b1`-`b10`; all `llm`-origin and proposed. The records covering d2-d7 (`o10`, `e14`-`e15`, `b6`-`b10`) were filed after #109 and #110 were opened, not before: the validate-before-PR order was not kept for those changes
 - deviations: `d1`, `d2` approved (operator); `d3`-`d7` approved (operator's own asks and report, user-origin)
-- commits: `74f51f1..6fbe7c4` on `feat/gwen-queries-the-library`, stacked on `feat/gwen-reads-library-todos` (`8425c06`)
+- commits: `74f51f1..09af199` on `feat/gwen-queries-the-library`, now on `main` after #109's squash (`a4e521c`); production runs `4cea3ef`, before the Sonar refactor
 - PRs / issues: embodiment#107; follow-ups embodiment#108, culture-rules#99
 
 ## Delivery Claims
@@ -121,7 +124,7 @@ pending approval (not yet evidence): `l1`, `l2`
 - Choose section control (`b3`) — not built; tap a paragraph (d3) jumps. Build it only if the operator still wants it.
 - Narration rules (embodiment#111): skip citation markers (`[1]`) and repeated abbreviations ("natural language (NL)") when reading aloud, per item kind, with a lexicon and an editable rules file; it amends c24 first. The operator chose a separate cycle.
 - An English voice on purpose: lobes could take a per-request language instead of the `<en>` tags (a lobes issue, to draft and ask before posting).
-- Proposed records to adjudicate: obligations `o1`-`o10`, evidence `e1`-`e15`, deltas `b1`-`b10`, lapses `l1`, `l2`.
+- Proposed records to adjudicate: obligations `o1`-`o10`, evidence `e1`-`e18`, deltas `b1`-`b10`, lapses `l1`, `l2`.
 - A culture-library issue for title-only chunks (about 40 characters) returned as passages — to draft and ask before posting.
 - Follow-ups already named: voice commands for reading (v4, with realtime Live); two devices reading one item (v5); embodiment#106; Docker (embodiment#108); transcript segment times (culture-rules#99); deleting the dead library code in `library/index.py` and `library/extract.py`.
-- The `feat/gwen-reads-library-todos` PR (embodiment#105) this branch stacks on still awaits the operator's go-ahead.
+- #109 (embodiment#105) merged 2026-10-26 as `a4e521c`. #110 awaits the operator's merge go-ahead; the refactor in `09af199` has not run on the phone (production is `4cea3ef`).
