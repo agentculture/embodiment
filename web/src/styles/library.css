@@ -348,8 +348,20 @@
 .continue svg { fill: currentColor; flex: none; }
 .continue:focus-visible { outline: 3px solid var(--cobalt); outline-offset: 2px; }
 
+/* a paragraph is a place to start listening from (d3) */
+.reader .seg[tabindex] { cursor: pointer; }
+.reader .seg[tabindex]:focus-visible { outline: 3px solid var(--cobalt); outline-offset: 2px; }
+
 @media (max-width: 860px) {
-  .listen-dock { grid-template-columns: minmax(0, 1fr); gap: 0.6rem; }
+  /* d3 (live t9): on a phone the dock is fixed to the screen, so pause is reachable mid-article;
+     the reader leaves room under its last paragraph for it */
+  .listen-dock {
+    position: fixed; inset-inline: 0; inset-block-end: 0; z-index: 30;
+    grid-template-columns: minmax(0, 1fr); gap: 0.6rem;
+    padding-block-end: max(0.75rem, env(safe-area-inset-bottom));
+    background: var(--sheet); box-shadow: var(--shadow-lift);
+  }
+  .reader:has(.listen-dock) .reader-body { padding-block-end: 16rem; }
   .transport { justify-content: center; gap: 1rem; }
   .dock-end { justify-content: space-between; }
 }

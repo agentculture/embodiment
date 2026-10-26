@@ -16,7 +16,7 @@ import type { MouseEvent } from "react";
 import { fetchItem, type LibraryClientOptions, type LibraryDocument, type Passage } from "../api/library";
 import { dayLabel, kindInfo } from "../api/kinds";
 import type { ReadingUnit, SavedPosition } from "../api/reading";
-import { deviceKind, progressOf, ReadAloudDock, useReadAloud, type AudioFactory } from "./ReadAloud";
+import { deviceKind, playedOf, progressOf, ReadAloudDock, useReadAloud, type AudioFactory } from "./ReadAloud";
 import "../styles/library.css";
 
 export interface ReaderHandle {
@@ -52,6 +52,13 @@ export interface ReaderProps {
 }
 
 const norm = (t: string) => t.replace(/\s+/g, " ").trim();
+
+/** A reader anchor (`s<section>.p<paragraph>`, the daemon's paragraph_anchor) as a reading
+ * position, or null for any other anchor. */
+export function positionOf(anchorOf: string): { section: number; paragraph: number } | null {
+  const m = /^s(\d+)\.p(\d+)$/.exec(anchorOf);
+  return m ? { section: Number(m[1]), paragraph: Number(m[2]) } : null;
+}
 
 /** The passage that holds the spoken text: equal, or containing it (a part of a long paragraph). */
 function matchPassage(passages: Passage[], text: string, from: number): number {
@@ -150,7 +157,8 @@ export const Reader = forwardRef<ReaderHandle, ReaderProps>(function Reader(
   const speakingIndex = doc && unit && listening ? matchPassage(doc.passages, unit.text, lastMatch.current) : -1;
   if (speakingIndex >= 0) lastMatch.current = speakingIndex;
   const live = reading.status === "playing" || reading.status === "loading";
-  const prog = unit ? progressOf(unit, reading.status === "playing" ? reading.played : 0) : null;
+  const prog = unit ? progressOf(unit, playedOf(reading)) : null;
+  const finished = reading.status === "done";
 
   useEffect(() => {
     if (speakingIndex < 0 || !doc) return;
@@ -175,6 +183,18 @@ export const Reader = forwardRef<ReaderHandle, ReaderProps>(function Reader(
       if (target) setCited(target.anchor);
     },
     [doc],
+  );
+
+  // d3 (live t9): tap a paragraph to hear it from there. A seek, so the cursor follows (d1).
+  const listenFrom = useCallback(
+    (anchorOf: string) => {
+      const at = positionOf(anchorOf);
+      if (!at) return;
+      const picked = window.getSelection?.()?.toString() ?? "";
+      if (picked.trim()) return; // selecting text is not a tap
+      controls.start(at);
+    },
+    [controls],
   );
 
   const total = doc ? totalSeconds(doc.passages) : 0;
@@ -211,7 +231,7 @@ export const Reader = forwardRef<ReaderHandle, ReaderProps>(function Reader(
         {unit && prog && listening ? (
           <div className="reader-map reader-map--sections" aria-hidden="true">
             {Array.from({ length: unit.sectionCount }, (_, i) =>
-              i < unit.section ? (
+              i < unit.section || finished ? (
                 <span key={i} className="heard" data-share="1" />
               ) : i === unit.section ? (
                 <span key={i} className="now" data-share={String(prog.section)} style={{ ["--share" as string]: prog.section }} />
@@ -274,14 +294,24 @@ export const Reader = forwardRef<ReaderHandle, ReaderProps>(function Reader(
         )}
         <ol className="transcript">
           {doc?.passages.map((p, i) => {
-            const speaking = i === speakingIndex;
-            const heard = unit !== null && speakingIndex >= 0 && i < speakingIndex && i >= speakingIndex - unit.paragraph;
+            // past the end, the last paragraph spoken is heard like the ones before it
+            const speaking = i === speakingIndex && !finished;
+            const heard =
+              unit !== null && speakingIndex >= 0 && i <= speakingIndex && i >= speakingIndex - unit.paragraph && (i < speakingIndex || finished);
             const listenClass = speaking ? (live ? " speaking" : " stopped") : heard ? " heard" : "";
             return (
             <li
               key={p.anchor}
               className={(p.anchor === cited && !speaking ? "seg cited" : "seg") + listenClass}
               aria-current={speaking || p.anchor === cited ? "true" : undefined}
+              tabIndex={positionOf(p.anchor) ? 0 : undefined}
+              title={positionOf(p.anchor) ? "Listen from here" : undefined}
+              onClick={() => listenFrom(p.anchor)}
+              onKeyDown={(e) => {
+                if (e.target !== e.currentTarget || (e.key !== "Enter" && e.key !== " ")) return;
+                e.preventDefault();
+                listenFrom(p.anchor);
+              }}
               data-played={speaking && prog ? String(prog.paragraph) : undefined}
               style={speaking && prog ? { ["--played" as string]: prog.paragraph } : undefined}
               ref={(n) => {

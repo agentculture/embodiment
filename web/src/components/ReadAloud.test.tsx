@@ -8,7 +8,7 @@ import { progressOf } from "./ReadAloud";
 const PARAS = ["Alpha synthetic paragraph.", "Beta synthetic paragraph.", "Gamma synthetic paragraph.", "Delta synthetic paragraph."];
 const doc = {
   item: { id: "syn-1", title: "A synthetic book", kind: "book", author: "", created_at: "2026-01-02" },
-  passages: PARAS.map((text, i) => ({ anchor: `a${i}`, heading: i === 0 ? "One" : "", text, start_s: null, end_s: null, speaker: "" })),
+  passages: PARAS.map((text, i) => ({ anchor: `s0.p${i}`, heading: i === 0 ? "One" : "", text, start_s: null, end_s: null, speaker: "" })),
 };
 const unit = (paragraph: number) => ({
   item_id: "syn-1",
@@ -50,16 +50,22 @@ interface Rig {
   spoken: string[];
   nexts: string[];
   cursor: { p: number };
+  /** With `hold`, every /next after the first waits here until `release()`. */
+  release: () => void;
 }
 
-function rig(opts: { gone?: boolean; done?: number } = {}): Rig {
-  const r: Rig = { heard: [], spoken: [], nexts: [], cursor: { p: 0 }, fetchFn: vi.fn() };
+function rig(opts: { gone?: boolean; done?: number; hold?: boolean } = {}): Rig {
+  let gate: Promise<void> = Promise.resolve();
+  let open = () => {};
+  if (opts.hold) gate = new Promise<void>((done) => (open = done));
+  const r: Rig = { heard: [], spoken: [], nexts: [], cursor: { p: 0 }, fetchFn: vi.fn(), release: () => open() };
   r.fetchFn = vi.fn(async (u: RequestInfo | URL, init?: RequestInit) => {
     const url = String(u);
     const json = (status: number, body: unknown) => ({ ok: status < 300, status, json: async () => body }) as Response;
     if (url === "/api/library/syn-1") return json(200, doc);
     if (url.startsWith("/api/reading/syn-1/next")) {
       r.nexts.push(url);
+      if (r.nexts.length > 1) await gate;
       if (opts.gone) return json(410, { error: { code: "library-item-gone" } });
       const m = /paragraph=(\d+)/.exec(url);
       const p = m ? Number(m[1]) : r.cursor.p;
@@ -292,9 +298,77 @@ describe("ReadAloud: gone, text direction, keyboard, motion (t4 AC4)", () => {
     expect(listen).toMatch(/\.seg\.speaking\s*\{[^}]*var\(--mark\)/);
     expect(listen).toMatch(/var\(--cobalt\)/);
     expect(listen).toMatch(/\.listen-dock\s*\{[^}]*position:\s*sticky/);
+    // d3: on a phone the dock is fixed to the screen, so pause is reachable mid-article
+    const phone = /@media \(max-width: 860px\) \{([\s\S]*?)\n\}/.exec(listen);
+    expect(phone?.[1]).toMatch(/\.listen-dock\s*\{[^}]*position:\s*fixed/);
+    expect(phone?.[1]).toMatch(/\.reader-body\s*\{[^}]*padding-block-end/);
     expect(listen).not.toMatch(/#[0-9a-fA-F]{3,8}\b/);
     const motion = /@media \(prefers-reduced-motion: no-preference\) \{([\s\S]*?)\n\}/.exec(listen);
     expect(motion?.[1]).toMatch(/transition:\s*--played/);
     expect(listen.replace(motion?.[0] ?? "", "")).not.toMatch(/transition:\s*--played/);
+  });
+});
+
+describe("ReadAloud: what the phone test asked for (d3, live t9 2026-10-26)", () => {
+  it("tapping a paragraph starts reading there: a seek, so it is reported heard on ended", async () => {
+    const r = rig();
+    render(<Reader id="syn-1" onClose={() => {}} clientOptions={{ fetchFn: r.fetchFn as unknown as typeof fetch }} audioFactory={() => new FakeAudio() as unknown as HTMLAudioElement} />);
+    await screen.findByText(PARAS[0]);
+    fireEvent.click(screen.getByText(PARAS[2]));
+    await waitFor(() => expect(screen.getByText(PARAS[2]).closest("li")).toHaveClass("speaking"));
+    expect(r.nexts[0]).toBe("/api/reading/syn-1/next?section=0&paragraph=2");
+    audio().fire("ended");
+    await waitFor(() => expect(r.heard).toEqual(["pos-0-2"]));
+  });
+
+  it("tapping another paragraph while one plays jumps there and never reports the one left", async () => {
+    const r = rig();
+    await openAndStart(r);
+    fireEvent.click(screen.getByText(PARAS[3]));
+    await waitFor(() => expect(screen.getByText(PARAS[3]).closest("li")).toHaveClass("speaking"));
+    expect(r.nexts).toContain("/api/reading/syn-1/next?section=0&paragraph=3");
+    expect(r.heard).toEqual([]);
+  });
+
+  it("a paragraph is a keyboard target too: Enter starts reading there", async () => {
+    const r = rig();
+    render(<Reader id="syn-1" onClose={() => {}} clientOptions={{ fetchFn: r.fetchFn as unknown as typeof fetch }} audioFactory={() => new FakeAudio() as unknown as HTMLAudioElement} />);
+    await screen.findByText(PARAS[0]);
+    const li = screen.getByText(PARAS[1]).closest("li") as HTMLElement;
+    expect(li).toHaveAttribute("tabindex", "0");
+    fireEvent.keyDown(li, { key: "Enter" });
+    await waitFor(() => expect(r.nexts[0]).toBe("/api/reading/syn-1/next?section=0&paragraph=1"));
+  });
+
+  it("a finished paragraph's bar stays full while the next one loads, never snapping back", async () => {
+    const r = rig({ hold: true });
+    const { container } = await openAndStart(r);
+    const a = audio();
+    a.duration = 4;
+    a.currentTime = 4;
+    a.fire("timeupdate");
+    a.fire("ended");
+    await waitFor(() => expect(r.heard).toEqual(["pos-0-0"]));
+    await waitFor(() => expect(screen.getByRole("group", { name: "Reading aloud" })).toHaveAttribute("data-status", "loading"));
+    const now = container.querySelector(".where-bar span.now") as HTMLElement;
+    expect(now).toHaveAttribute("data-played", "1");
+    const li = screen.getByText(PARAS[0]).closest("li") as HTMLElement;
+    expect(li).toHaveAttribute("data-played", "1");
+    act(() => r.release());
+    await waitFor(() => expect(screen.getByText(PARAS[1]).closest("li")).toHaveClass("speaking"));
+    expect(container.querySelector(".where-bar span.heard")).not.toBeNull();
+  });
+
+  it("past the end every paragraph reads as heard: the last is not 'paused', the bar and map are full", async () => {
+    const r = rig({ done: 1 });
+    const { container } = await openAndStart(r);
+    audio().fire("ended");
+    await waitFor(() => expect(screen.getByText(/reached the end/)).toBeInTheDocument());
+    expect(screen.queryByText("Paused here")).toBeNull();
+    expect(screen.getByText(PARAS[0]).closest("li")).toHaveClass("heard");
+    const segs = container.querySelectorAll(".where-bar span");
+    expect(segs).toHaveLength(PARAS.length);
+    for (const seg of segs) expect(seg).toHaveClass("heard");
+    for (const sec of container.querySelectorAll(".reader-map span")) expect(sec).toHaveClass("heard");
   });
 });

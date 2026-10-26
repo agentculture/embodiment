@@ -2,7 +2,7 @@
   "plan_slug": "gwen-queries-and-reads-the-library",
   "schema_version": 2,
   "created": "2026-10-25T23:25:27Z",
-  "updated": "2026-10-26T04:47:49Z",
+  "updated": "2026-10-26T05:00:11Z",
   "deviations": [
     {
       "id": "d1",
@@ -35,6 +35,20 @@
       "status": "approved",
       "classification": "acceptable",
       "seq": 14
+    },
+    {
+      "id": "d3",
+      "what": "page: tapping a paragraph in the reader starts reading from that paragraph (a seek, d1); on a phone the listening dock is fixed to the bottom of the screen; a finished paragraph's bar stays full while the next one loads",
+      "task_ref": "t4",
+      "reason": "operator, live t9 on the phone 2026-10-26: 'I have to scroll to bottom to pause... I also need the option to jump (press a paragraph and jump to listen to it)... The progress bar progresses fine but resets before I move to next line/paragraph'",
+      "affects": [
+        "c23",
+        "c35"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 15
     }
   ],
   "evidence": [

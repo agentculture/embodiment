@@ -79,6 +79,14 @@ export interface UseReadAloudOptions {
 
 const IDLE: ListenState = { status: "idle", unit: null, played: 0, code: null, note: null };
 
+/** How far the current unit has played, for every bar: its audio while it plays, kept while
+ * the next one loads, full past the end, empty when paused or stopped (it plays again). */
+export function playedOf(state: ListenState): number {
+  const { status, played } = state;
+  if (status === "done") return 1;
+  return status === "playing" || status === "loading" ? played : 0;
+}
+
 /** One paragraph's progress (parts folded in) and its section's share. Pure. */
 export function progressOf(unit: ReadingUnit, played: number): { paragraph: number; section: number } {
   const p = Math.min(1, Math.max(0, Number.isFinite(played) ? played : 0));
@@ -211,7 +219,7 @@ export function useReadAloud({ itemId, secret, clientOptions, audioFactory, peek
     (t: number, r: Ready) => {
       if (t !== token.current) return;
       if (r.kind === "unit") playRef.current(t, r.unit, r.blob);
-      else if (r.kind === "done") set({ status: "done", played: 0 });
+      else if (r.kind === "done") set({ status: "done", played: 1 });
       else if (r.code === "library-item-gone") set({ status: "gone", code: r.code });
       else set({ status: "error", code: r.code });
     },
@@ -220,7 +228,9 @@ export function useReadAloud({ itemId, secret, clientOptions, audioFactory, peek
 
   loadRef.current = (t: number, at: At | undefined) => {
     if (t !== token.current) return;
-    set({ status: "loading", code: null, played: 0 });
+    // played is left as it was: a paragraph just heard stays full while the next one loads
+    // (d3: the bar used to snap back to empty between paragraphs).
+    set({ status: "loading", code: null });
     void ready(at).then((r) => settle(t, r));
   };
 
@@ -299,9 +309,10 @@ export function useReadAloud({ itemId, secret, clientOptions, audioFactory, peek
       token.current += 1;
       halt();
       prefetch.current = null;
+      set({ played: 0 });
       loadRef.current(token.current, at);
     },
-    [halt],
+    [halt, set],
   );
 
   const start = useCallback(
@@ -399,7 +410,7 @@ const IconNext = () => (
 export function ReadAloudDock({ state, controls, device = deviceKind() }: ReadAloudDockProps) {
   const { status, unit } = state;
   const going = status === "playing" || status === "loading";
-  const prog = unit ? progressOf(unit, status === "playing" ? state.played : 0) : null;
+  const prog = unit ? progressOf(unit, playedOf(state)) : null;
   const where = (() => {
     if (status === "done") return "You reached the end of this item.";
     if (status === "gone") return "This item is no longer in the library.";
@@ -451,7 +462,7 @@ export function ReadAloudDock({ state, controls, device = deviceKind() }: ReadAl
         {unit && prog && (
           <div className="where-bar" aria-hidden="true">
             {Array.from({ length: unit.paragraphCount }, (_, i) =>
-              i < unit.paragraph ? (
+              i < unit.paragraph || status === "done" ? (
                 <span key={i} className="heard" data-played="1" />
               ) : i === unit.paragraph ? (
                 <span key={i} className="now" data-played={String(prog.paragraph)} style={{ ["--played" as string]: prog.paragraph }} />
