@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.23.3] - 2026-10-26
+
+### Changed
+
+- embodiment#107's records adjudicated by the operator (lapses `l1`-`l3`, obligations `o1`-`o11`, evidence `e1`-`e22`, deltas `b1`-`b11` confirmed), and Choose section confirmed on the operator's phone against production 0.23.2 (evidence `e23`, proposed); the delivery summary and live results say so.
+
 ## [0.23.2] - 2026-10-26
 
 ### Added

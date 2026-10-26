@@ -2,7 +2,7 @@
   "plan_slug": "gwen-queries-and-reads-the-library",
   "schema_version": 2,
   "created": "2026-10-25T23:25:27Z",
-  "updated": "2026-10-26T17:23:26Z",
+  "updated": "2026-10-26T18:19:58Z",
   "deviations": [
     {
       "id": "d1",
@@ -120,7 +120,7 @@
         "commit": "2a58a65"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 2
     },
@@ -139,7 +139,7 @@
         "commit": "2a58a65"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 3
     },
@@ -158,7 +158,7 @@
         "commit": "2a58a65"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 4
     },
@@ -177,7 +177,7 @@
         "commit": "2a58a65"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 5
     },
@@ -196,7 +196,7 @@
         "commit": "2a58a65"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 6
     },
@@ -215,7 +215,7 @@
         "commit": "2a58a65"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 7
     },
@@ -234,7 +234,7 @@
         "commit": "2a58a65"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 8
     },
@@ -253,7 +253,7 @@
         "commit": "2a58a65"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 9
     },
@@ -269,7 +269,7 @@
       "outcome": "pass",
       "run": null,
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 10
     },
@@ -285,7 +285,7 @@
       "outcome": "pass",
       "run": null,
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 11
     },
@@ -301,7 +301,7 @@
       "outcome": "pass",
       "run": null,
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 12
     },
@@ -317,7 +317,7 @@
       "outcome": "pass",
       "run": null,
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 13
     },
@@ -336,7 +336,7 @@
         "commit": "24ba287"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 16
     },
@@ -355,7 +355,7 @@
         "commit": "6fbe7c4"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 21
     },
@@ -371,7 +371,7 @@
       "outcome": "pass",
       "run": null,
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 22
     },
@@ -390,7 +390,7 @@
         "commit": "09af199"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 23
     },
@@ -409,7 +409,7 @@
         "commit": "09af199"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 24
     },
@@ -428,7 +428,7 @@
         "commit": "09af199"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 25
     },
@@ -447,7 +447,7 @@
         "commit": "e19be55"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 26
     },
@@ -466,7 +466,7 @@
         "commit": "e19be55"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 27
     },
@@ -485,7 +485,7 @@
         "commit": "5b384c5"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 28
     },
@@ -504,9 +504,28 @@
         "commit": "5b384c5"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 29
+    },
+    {
+      "id": "e23",
+      "obligation_ref": "o11",
+      "test_ref": "operator on the phone, gwen.culture.dev (production 0.23.2, 682ac74), 2026-10-26",
+      "behavior_text": "Choose section opened, a section was chosen and read; the operator: 'confirmed choose section works'",
+      "contract_text": "the approved mockup's Choose section control; a choice seeks to that section's first paragraph (d1)",
+      "evidence_type": "manual",
+      "strength": "fidelity",
+      "strength_basis": "the operator's own report on the real device against the merged, deployed ref",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-26T00:00:00Z",
+        "commit": "682ac74"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 30
     }
   ],
   "deltas": [
@@ -521,7 +540,7 @@
         "e6"
       ],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false
     },
     {
@@ -533,7 +552,7 @@
       ],
       "evidence_refs": [],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false
     },
     {
@@ -545,7 +564,7 @@
       ],
       "evidence_refs": [],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": true
     },
     {
@@ -557,7 +576,7 @@
       ],
       "evidence_refs": [],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false
     },
     {
@@ -569,7 +588,7 @@
       ],
       "evidence_refs": [],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false
     },
     {
@@ -584,7 +603,7 @@
         "e15"
       ],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false
     },
     {
@@ -596,7 +615,7 @@
       ],
       "evidence_refs": [],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false
     },
     {
@@ -608,7 +627,7 @@
       ],
       "evidence_refs": [],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false
     },
     {
@@ -620,7 +639,7 @@
       ],
       "evidence_refs": [],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false
     },
     {
@@ -632,7 +651,7 @@
       ],
       "evidence_refs": [],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false
     },
     {
@@ -647,7 +666,7 @@
         "e22"
       ],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false
     }
   ],
