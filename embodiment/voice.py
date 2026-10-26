@@ -670,11 +670,14 @@ def sentence_audio_cap(sentence: str, config: VoiceConfig) -> int:
 #: after . ! ? (and their CJK forms), PAUSE_AFTER_CLAUSE_S after a clause break (a long sentence
 #: split by :func:`split_sentences`). Judgement calls, by ear: not measured against listeners.
 FADE_S = 0.008
-PAUSE_AFTER_SENTENCE_S = 0.28
+#: 0.28 s at first; the operator, by ear: "less than a second extra between period and next
+#: sentence is needed. Maybe 100-200 ms?" So 0.28 + 0.15.
+PAUSE_AFTER_SENTENCE_S = 0.43
 PAUSE_AFTER_CLAUSE_S = 0.12
 #: After a colon that ends a piece (the operator: "Colon (:) still passes fast"): between a
 #: clause break and a full stop. :func:`split_sentences` ends a piece at a colon and a space.
-PAUSE_AFTER_COLON_S = 0.22
+#: 0.22 s at first; the operator: "Colon pause was good, maybe extra 50-100ms". So 0.22 + 0.08.
+PAUSE_AFTER_COLON_S = 0.30
 _SENTENCE_STOP = re.compile(r"[.!?。！？][\"'”’)\]]*\s*$")
 
 

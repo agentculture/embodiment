@@ -175,7 +175,7 @@ type Ready = { kind: "unit"; unit: ReadingUnit; blob: Blob; rest?: Rest } | { ki
 export const HEAD_MIN_CHARS = 200;
 /** The pause between the first sentence and the rest when they are joined into one file:
  *  the daemon's pause after a full stop (voice.py PAUSE_AFTER_SENTENCE_S). */
-const SENTENCE_PAUSE_S = 0.28;
+const SENTENCE_PAUSE_S = 0.43;
 
 const norm = (t: string) => t.replace(/\s+/g, " ").trim();
 
