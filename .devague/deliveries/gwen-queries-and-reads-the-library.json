@@ -1,0 +1,564 @@
+{
+  "plan_slug": "gwen-queries-and-reads-the-library",
+  "schema_version": 2,
+  "created": "2026-10-25T23:25:27Z",
+  "updated": "2026-10-26T11:18:52Z",
+  "deviations": [
+    {
+      "id": "d1",
+      "what": "an explicit seek (GET /api/reading/{id}/next with section/paragraph: the dock's previous/next paragraph and Choose section) re-pins the cursor to the sought unit, so heard reports for it advance the position; stale reports for any other position are still refused",
+      "task_ref": "t3",
+      "reason": "as built (criterion 2, quoted verbatim), a seek only previews: every heard report after a seek is refused and continue returns to the old place, which breaks the approved mockup's previous/next/choose-section controls; decider 0.68 for re-pin (choice), 0.62 that it amends the exact-next rule",
+      "affects": [
+        "t4",
+        "t7",
+        "c23",
+        "h16",
+        "c29"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 1
+    },
+    {
+      "id": "d2",
+      "what": "voice: before each sentence goes to /v1/audio/speech, Latin-script text is wrapped in <en>...</en> (a whole sentence with no Hebrew, or each Latin run inside a Hebrew sentence) and any lang tags already in the text are stripped, so BlueTTS (run with TTS_LANGUAGE=he) phonemizes English as English",
+      "task_ref": "t9",
+      "reason": "live t9 on the phone: an English newspaper played garbled; lobes' BlueTTS sidecar sends a span with no Hebrew letters to the model as raw letters in he mode, while an <en> span goes through espeak English; operator listened to en-tagged and mixed-tagged clips: 'Tagged and mixed are perfect'",
+      "affects": [
+        "t4",
+        "c10",
+        "c32"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 14
+    },
+    {
+      "id": "d3",
+      "what": "page: tapping a paragraph in the reader starts reading from that paragraph (a seek, d1); on a phone the listening dock is fixed to the bottom of the screen; a finished paragraph's bar stays full while the next one loads",
+      "task_ref": "t4",
+      "reason": "operator, live t9 on the phone 2026-10-26: 'I have to scroll to bottom to pause... I also need the option to jump (press a paragraph and jump to listen to it)... The progress bar progresses fine but resets before I move to next line/paragraph'",
+      "affects": [
+        "c23",
+        "c35"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 15
+    },
+    {
+      "id": "d4",
+      "what": "page: while a paragraph loads (a jump, a continue, or between paragraphs) the dock's play button shows a turning partial ring and is marked busy",
+      "task_ref": "t4",
+      "reason": "operator, live t9 on the phone 2026-10-26: 'When we jump a paragraph, there is a small wait time. We need to add a loading effect in the play (like a partial circle on the play button?) so it's clear it's loading'",
+      "affects": [
+        "c23"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 17
+    },
+    {
+      "id": "d5",
+      "what": "page shell: the app re-reads the visual viewport after load, on pageshow, orientation change, window resize and at 0.1/0.4/1 s after mount, clamps its top at 0, turns off scroll restoration and keeps the document at the top",
+      "task_ref": "t4",
+      "reason": "operator, live t9 on the phone 2026-10-26 (screenshot): 'When I initially refresh on phone, top menu hidden, and bottom part is shifted up'; the app follows the visual viewport (App.tsx, since 0.18.0) but read it only at mount and on its own resize/scroll events, so a refresh could keep a reading taken before the browser's toolbars settled",
+      "affects": [
+        "c23"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 18
+    },
+    {
+      "id": "d6",
+      "what": "page: the reader keeps the audio of the current, previous and next paragraphs (a small LRU of WAV blobs keyed by text): pause then play, Previous and Next reuse it; while one plays, the next and then the previous are made ahead",
+      "task_ref": "t4",
+      "reason": "operator, live t9 on the phone 2026-10-26: 'we need to cache last audio (if it's not huge) as it loads it over every time I pause and play. Relisten happens often. And we need to cache next and previous for faster move, too'",
+      "affects": [
+        "c23"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 19
+    },
+    {
+      "id": "d7",
+      "what": "speech: every synthesised sentence's edges fade over 8 ms and a pause follows it (longer after . ! ?, shorter after a clause break) in /api/speak and the room voice; the page starts a long paragraph from its first sentence's audio while the rest is made, and plays the rest on at the sentence pause",
+      "task_ref": "t4",
+      "reason": "operator, live t9 on the phone 2026-10-26: 'Reads well to the end, but transitions between sentences aren't great. For long content we can try send first sentence and seamlessly replace with full paragraph'; measured: sentences are joined with 0-10 ms of silence and start at full amplitude (a click at each seam)",
+      "affects": [
+        "c10",
+        "c23"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 20
+    }
+  ],
+  "evidence": [
+    {
+      "id": "e1",
+      "obligation_ref": "o1",
+      "test_ref": "tests/test_library_retrieve.py::test_module_issues_exactly_one_post_to_the_literal_path",
+      "behavior_text": "the AST pin finds exactly one POST, to /api/rag/retrieve, alias-proof (planted alias cases fail it)",
+      "contract_text": "search_library is served by one POST /api/rag/retrieve per call",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran green at 2a58a65 (validate107-tests.sh: 128 passed)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-26T03:05:31Z",
+        "commit": "2a58a65"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 2
+    },
+    {
+      "id": "e2",
+      "obligation_ref": "o1",
+      "test_ref": "tests/test_daemon_library.py::TestNoIndexNoSync::test_the_worker_lists_the_catalog_and_never_starts_a_sync",
+      "behavior_text": "the library worker lists the catalog and never runs a sync; the sync module is gone",
+      "contract_text": "Gwen's library sync and document index are removed",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran green at 2a58a65 (validate107-tests.sh: 128 passed)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-26T03:05:31Z",
+        "commit": "2a58a65"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 3
+    },
+    {
+      "id": "e3",
+      "obligation_ref": "o2",
+      "test_ref": "tests/test_library_retrieve.py::test_todo_and_discord_message_dropped",
+      "behavior_text": "passages of kind todo and discord-message are dropped from a retrieve answer",
+      "contract_text": "to-do items and discord messages never come back from search_library",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran green at 2a58a65 (validate107-tests.sh: 128 passed)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-26T03:05:31Z",
+        "commit": "2a58a65"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 4
+    },
+    {
+      "id": "e4",
+      "obligation_ref": "o3",
+      "test_ref": "tests/test_library_document.py::test_epub_kept_in_order_empty_paragraphs_skipped_bytes_exact",
+      "behavior_text": "an EPUB /text becomes sections and paragraphs in order, bytes exact",
+      "contract_text": "reading a document aloud takes its text from GET /api/library/{id}/text",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran green at 2a58a65 (validate107-tests.sh: 128 passed)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-26T03:05:31Z",
+        "commit": "2a58a65"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 5
+    },
+    {
+      "id": "e5",
+      "obligation_ref": "o4",
+      "test_ref": "tests/test_reading.py::test_heard_must_be_exact_next_and_never_backwards",
+      "behavior_text": "heard moves the cursor only for the exact next unit and never backwards",
+      "contract_text": "the cursor advances past a paragraph only once its playback is reported heard",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran green at 2a58a65 (validate107-tests.sh: 128 passed)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-26T03:05:31Z",
+        "commit": "2a58a65"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 6
+    },
+    {
+      "id": "e6",
+      "obligation_ref": "o4",
+      "test_ref": "tests/test_reading.py::test_a_seek_repins_the_cursor_to_the_sought_unit",
+      "behavior_text": "an explicit seek re-pins the cursor to the sought unit (d1)",
+      "contract_text": "d1: an explicit seek re-pins the reading cursor",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran green at 2a58a65 (validate107-tests.sh: 128 passed)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-26T03:05:31Z",
+        "commit": "2a58a65"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 7
+    },
+    {
+      "id": "e7",
+      "obligation_ref": "o5",
+      "test_ref": "tests/test_daemon_reading.py::TestRefusals::test_next_and_heard_need_the_secret_and_a_refused_heard_leaves_the_file",
+      "behavior_text": "next and heard without the install secret are refused and the positions file is unchanged",
+      "contract_text": "the reading routes sit behind the same guard as every state-changing route",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran green at 2a58a65 (validate107-tests.sh: 128 passed)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-26T03:05:31Z",
+        "commit": "2a58a65"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 8
+    },
+    {
+      "id": "e8",
+      "obligation_ref": "o6",
+      "test_ref": "tests/test_daemon_library.py::TestTheRetiredIndexIsRemoved::test_first_start_deletes_it_once_and_later_starts_do_nothing",
+      "behavior_text": "the first start deletes index.json once and records it; a later start does nothing",
+      "contract_text": "on the first start the daemon deletes its retired library index file once",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran green at 2a58a65 (validate107-tests.sh: 128 passed)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-26T03:05:31Z",
+        "commit": "2a58a65"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 9
+    },
+    {
+      "id": "e9",
+      "obligation_ref": "o3",
+      "test_ref": "scratchpad/live0/acceptance107.py (pre-flight daemon on 8824, live culture-library)",
+      "behavior_text": "the reader's paragraphs equal /text: EPUB 3943 of 3943 in order with the same sha256; transcript 4 of 4",
+      "contract_text": "reading a document aloud takes its text from GET /api/library/{id}/text",
+      "evidence_type": "observation",
+      "strength": "fidelity",
+      "strength_basis": "live rig run, 2026-10-26, real library items; structure-only probe",
+      "outcome": "pass",
+      "run": null,
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 10
+    },
+    {
+      "id": "e10",
+      "obligation_ref": "o6",
+      "test_ref": "production start of embodiment-gwen.service",
+      "behavior_text": "one app-library-index-retired ledger entry; index.json absent; the conversations index kept",
+      "contract_text": "on the first start the daemon deletes its retired library index file once",
+      "evidence_type": "observation",
+      "strength": "fidelity",
+      "strength_basis": "observed on the production state dir by a count and a file-existence check, 2026-10-26",
+      "outcome": "pass",
+      "run": null,
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 11
+    },
+    {
+      "id": "e11",
+      "obligation_ref": "o7",
+      "test_ref": "scratchpad/live0/new_item_watch.py",
+      "behavior_text": "item 73 (newspaper) created 03:01:55Z, in the catalog by 03:02:03Z, found by Gwen's search 0.7 s later: about 9 s, n = 1",
+      "contract_text": "a document the library indexes is searchable by Gwen the moment it lands",
+      "evidence_type": "observation",
+      "strength": "fidelity",
+      "strength_basis": "one live item on the rig, 10 s catalog polling bounds the timing; n = 1",
+      "outcome": "pass",
+      "run": null,
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 12
+    },
+    {
+      "id": "e12",
+      "obligation_ref": "o8",
+      "test_ref": "scratchpad/live0/window107.txt (600 s window on the pre-flight daemon)",
+      "behavior_text": "30 library GETs = 10 catalog listings + 20 to-do checks, 0 other GETs; 5 retrieve searches 0 failures, latency 0.78/1.08/1.46 s",
+      "contract_text": "status.library shows retrieve calls >= 1 and 0 failures, and the daemon makes 0 GET /api/library/{id}/file calls",
+      "evidence_type": "observation",
+      "strength": "fidelity",
+      "strength_basis": "live rig window, counters read from status; the pre-flight daemon runs the release code on a scratch state dir",
+      "outcome": "pass",
+      "run": null,
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 13
+    },
+    {
+      "id": "e13",
+      "obligation_ref": "o9",
+      "test_ref": "operator on an iPhone, gwen.culture.dev (production), 2026-10-26",
+      "behavior_text": "a Hebrew transcript read aloud on the phone, stopped, reloaded and continued: confirmed; an English newspaper played garbled until d2, then correctly",
+      "contract_text": "a read plays on the device that has the page open; after a reload, Continue listening replays the paragraph stopped in from its start",
+      "evidence_type": "manual",
+      "strength": "execution",
+      "strength_basis": "the operator ran it on the phone against production at 24ba287 and reported it in their own words",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-26T04:56:00Z",
+        "commit": "24ba287"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 16
+    },
+    {
+      "id": "e14",
+      "obligation_ref": "o10",
+      "test_ref": "tests/test_voice.py::TestALongSentenceIsSpokenWhole",
+      "behavior_text": "a 300-character sentence's 16 s of audio is read and played whole; a sentence past 500 characters splits at spaces keeping every word",
+      "contract_text": "the read-aloud loop speaks the document's own words, verbatim",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran green at 6fbe7c4 (full suite 4497 passed)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-26T05:56:51Z",
+        "commit": "6fbe7c4"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 21
+    },
+    {
+      "id": "e15",
+      "obligation_ref": "o10",
+      "test_ref": "scratchpad/live0/speak_wav.py on the pre-flight daemon, then the operator on the phone",
+      "behavior_text": "the same one-sentence paragraph measured 10.00 s cut before the fix and 13.93 s whole after; the operator: 'Reads well to the end'",
+      "contract_text": "the read-aloud loop speaks the document's own words, verbatim",
+      "evidence_type": "observation",
+      "strength": "fidelity",
+      "strength_basis": "a live measurement on this rig and the operator's own report, n = 1 paragraph",
+      "outcome": "pass",
+      "run": null,
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 22
+    },
+    {
+      "id": "e16",
+      "obligation_ref": "o4",
+      "test_ref": "tests/test_reading.py::test_heard_must_be_exact_next_and_never_backwards",
+      "behavior_text": "after the Sonar refactor of Reader.next/heard (_sought, _served, _after_heard), a heard report moves the cursor only for the exact next unit; stale or backwards reports move nothing",
+      "contract_text": "the cursor moves only on a heard report for the exact next unit (or an explicit seek, d1); a stale heard moves nothing",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "re-run green at the Sonar-fix commit; full suite 4525 passed",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-26T11:17:41",
+        "commit": "09af199"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 23
+    },
+    {
+      "id": "e17",
+      "obligation_ref": "o4",
+      "test_ref": "tests/test_reading.py::test_a_seek_repins_the_cursor_to_the_sought_unit",
+      "behavior_text": "after the refactor, an explicit seek still re-pins the cursor (d1) and the pre-seek position becomes stale",
+      "contract_text": "the cursor moves only on a heard report for the exact next unit (or an explicit seek, d1); a stale heard moves nothing",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "re-run green at the Sonar-fix commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-26T11:17:41",
+        "commit": "09af199"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 24
+    },
+    {
+      "id": "e18",
+      "obligation_ref": "o5",
+      "test_ref": "tests/test_daemon_reading.py::TestRefusals::test_next_and_heard_need_the_secret_and_a_refused_heard_leaves_the_file",
+      "behavior_text": "after server.py's routing split (_api_route, _stream_or_status, _reading_call, _reading_answer), next and heard are still refused without the install secret and a refused heard leaves the positions file untouched",
+      "contract_text": "next and heard need the install secret, or a valid Access assertion on the public Host",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "re-run green at the Sonar-fix commit with all of test_http_server.py (231 passed)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-26T11:17:41",
+        "commit": "09af199"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 25
+    }
+  ],
+  "deltas": [
+    {
+      "id": "b1",
+      "kind": "added",
+      "behavior_text": "an explicit seek (section/paragraph on /next) re-pins the reading cursor, counted as status.reading.seeks",
+      "caused_by": [
+        "d1"
+      ],
+      "evidence_refs": [
+        "e6"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b2",
+      "kind": "amended",
+      "behavior_text": "a citation from a passage under 40 characters (a title-only chunk) opens the item at its start instead of anchoring on any paragraph containing it",
+      "caused_by": [
+        "c5"
+      ],
+      "evidence_refs": [],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b3",
+      "kind": "removed",
+      "behavior_text": "the mockup's Choose section control was not built; seeking by section exists only as the /next route's section/paragraph parameters",
+      "caused_by": [
+        "c23"
+      ],
+      "evidence_refs": [],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b4",
+      "kind": "amended",
+      "behavior_text": "every spoken sentence tags Latin-script text <en>\u2026</en> before the speech request, so English is phonemized as English",
+      "caused_by": [
+        "d2"
+      ],
+      "evidence_refs": [],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b5",
+      "kind": "added",
+      "behavior_text": "a tap or Enter on a paragraph starts reading there; the phone dock is fixed to the screen; bars keep their fill while loading and are full past the end",
+      "caused_by": [
+        "d3"
+      ],
+      "evidence_refs": [],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b6",
+      "kind": "amended",
+      "behavior_text": "a sentence's audio cap grows with its length (0.12 s per character over a 10 s floor) and a sentence past 500 characters is split at a clause mark or a space, never sliced",
+      "caused_by": [
+        "c10"
+      ],
+      "evidence_refs": [
+        "e14",
+        "e15"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b7",
+      "kind": "added",
+      "behavior_text": "the play button turns a partial ring while a load lasts past 300 ms; no loading words",
+      "caused_by": [
+        "d4"
+      ],
+      "evidence_refs": [],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b8",
+      "kind": "amended",
+      "behavior_text": "the page re-reads the visual viewport after load, pageshow, rotation, resize and in the first second, clamps its top and keeps the document at the top",
+      "caused_by": [
+        "d5"
+      ],
+      "evidence_refs": [],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b9",
+      "kind": "added",
+      "behavior_text": "the reader keeps the current, previous and next paragraphs' audio and makes the next and previous ahead, across section edges",
+      "caused_by": [
+        "d6"
+      ],
+      "evidence_refs": [],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b10",
+      "kind": "amended",
+      "behavior_text": "every spoken sentence fades in and out over 8 ms with a pause after it; a long uncached paragraph starts from its first sentence and is kept joined",
+      "caused_by": [
+        "d7"
+      ],
+      "evidence_refs": [],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    }
+  ],
+  "supersessions": []
+}

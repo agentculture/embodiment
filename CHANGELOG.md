@@ -5,6 +5,28 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.23.0] - 2026-10-26
+
+### Added
+
+- Gwen reads library documents aloud (embodiment#107): `daemon/reading.py` keeps one cursor per item in `reading-positions.json` (0600) behind `GET /api/reading`, `GET /api/reading/{id}/next` (with `section`/`paragraph` it is a seek that re-pins the cursor, deviation d1), `POST /api/reading/{id}/heard` and `POST /api/reading/{id}/clear`; `status.reading` counts reads started, units served and heard, refused reports, continues and seeks. The page has the Reader dock, Continue listening and a Read aloud card in chat (no Choose section control yet)
+- Read aloud from the phone test (deviation d3): tap a paragraph (or Enter on it) to hear the item from there, a seek; on a phone the listening dock is fixed to the bottom of the screen, so pause is reachable mid-article; a finished paragraph's bar stays full while the next loads, and past the end every paragraph and bar reads as heard; while a paragraph loads (a jump, a continue, between paragraphs) the play button turns a partial ring, with no loading words, shown only once a load lasts 300 ms so a cached replay stays still (deviation d4); the reader keeps the audio of the current, previous and next paragraphs (a 6-unit, 12 MB cache), so pause and play, Previous and Next play what was already made, and while one plays the next and then the previous are made ahead (deviation d6)
+- `library/retrieve.py`: the one POST this package makes, `/api/rag/retrieve` in hybrid mode, AST-pinned, four declared codes, no score floor; `library/document.py` and `LibraryClient.fetch_text` read an item's `/text` as sections and paragraphs
+
+### Fixed
+
+- English is spoken as English (deviation d2): lobes' BlueTTS runs with `TTS_LANGUAGE=he` and passed a span with no Hebrew letters to the model as raw letters, so an English newspaper read aloud was garbled. `voice.mark_language` wraps Latin-script text in `<en>…</en>` (a whole sentence with no Hebrew, or each Latin run inside a Hebrew one) before every speech request, spoken replies included, and strips any language tags already in the text. Found on the phone, not by a probe (lapse l2)
+- Sentences no longer run together with a click at each seam (deviation d7): measured, each synthesised sentence came back with 0-10 ms of silence and started at full amplitude. `voice.shape_sentence` fades each sentence's edges over 8 ms and `voice.pause_after` adds 0.53 s after a full stop (0.28 s at first, then 0.43 s, each step on the operator's ear), 0.30 s after a colon (a colon and a space now end a piece of speech; a time or a link is never split) and 0.12 s after a clause break, in `/api/speak` and the room voice; measured after, 0.27 s quiet at each join and every clip starts and ends at 0. A long paragraph not yet made starts from its first sentence's audio while the rest is made, plays the rest on at the pause, and is kept joined (`web/src/audio/wav.ts`) for replays
+- A long sentence is spoken whole: every sentence's audio was capped at 10 s (`MAX_SENTENCE_AUDIO_BYTES`, a judgement call sized for replies), so a library paragraph that is one long sentence stopped mid-word and the reader went on (the operator's phone); and a sentence past 500 characters lost its tail. `voice.sentence_audio_cap` derives the cap from the sentence (0.12 s per character, twice the slowest rate measured, over the 10 s floor) and `split_sentences` breaks a long sentence at a clause mark or a space, keeping every word. The same paragraph measured 10.00 s cut, then 13.93 s whole
+- A refresh on a phone no longer leaves the header scrolled away and the dock above empty space (deviation d5): `hooks/useVisualViewport.ts` reads the visual viewport again after load, on pageshow, orientation change and resize and in the first second, keeps the app's top on the screen, and keeps the document (which never scrolls) at the top unless a field has focus
+
+### Changed
+
+- The library is queried, not copied: `search_library`, `read_passage`, `read_item` and the `/api/library*` routes answer through retrieve and `/text`; the catalog is listed every 60 s. Measured only by the 2026-10-26 probes on this rig: n = 5 retrieve latencies (hybrid 0.74-1.12 s, against the old warm p90 of 0.21 s) and n = 2 text-to-speech runs per language (warm 0.46-0.83 s, cold 6.59 s)
+- This release removes the local library index and its sync (`library/sync.py` is deleted; `DocumentIndex` stays for `search_conversations` only, its library-only code unused and not yet deleted). The first start deletes its file once (`<state>/library/index.json`) and records `app-library-index-retired`. There is no switch back: the rollback is installing the previous release, whose sync rebuilds the index
+- The 0.715 library threshold and the 60-character floor went with the index; retrieval applies no similarity floor (hybrid scores are 0.011-0.033). The 2026-10-24 measurement (hit@5 19 of 32) describes the retired index. Memory's 0.715 is unchanged
+- README, CLAUDE.md (status and code map), the `explain` catalog and `tests/test_release_docs.py` describe this (the catalog client is GET-only; the retrieve client makes one retrieve POST). Not yet done: the live acceptance (t9); hit rate against the library's own retrieval and the read-aloud flow on the rig are unmeasured
+
 ## [0.22.0] - 2026-10-25
 
 ### Added

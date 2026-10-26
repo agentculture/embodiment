@@ -1,0 +1,253 @@
+{
+ "what": "one fresh decider call per plan task (domain general), 2026-10-26; each request holds a shared preamble and only that task's facts",
+ "plan": "gwen-queries-and-reads-the-library",
+ "tasks": {
+  "t1": {
+   "request": {
+    "model": "clef",
+    "state": "A nine-task plan (t1-t9) was built and its PR (#110) is open, all CI and a SonarCloud gate passing, 4525 tests passing. Per task, the facts:\nt1 (a retrieve client: one POST to /api/rag/retrieve, hybrid, no rerank, AST-pinned, to-do and discord passages dropped): built; its AST pin test and kind-filter test pass; live probes made 5 retrieve calls, 0 failures.",
+    "questions": {
+     "t1": {
+      "type": "noul",
+      "instructions": "Is t1 delivered as its acceptance criteria require?"
+     }
+    }
+   },
+   "answer": {
+    "model": "clef",
+    "answers": {
+     "t1": {
+      "type": "noul",
+      "noul": 0.9831
+     }
+    },
+    "usage": {
+     "input_tokens": 253,
+     "output_tokens": 0
+    }
+   }
+  },
+  "t2": {
+   "request": {
+    "model": "clef",
+    "state": "A nine-task plan (t1-t9) was built and its PR (#110) is open, all CI and a SonarCloud gate passing, 4525 tests passing. Per task, the facts:\nt2 (an item's text as sections and paragraphs from GET /text; EPUB order kept; Markdown split like the library): built; the EPUB-order test passes; a live EPUB and a live transcript matched /text in a pre-flight probe.",
+    "questions": {
+     "t2": {
+      "type": "noul",
+      "instructions": "Is t2 delivered as its acceptance criteria require?"
+     }
+    }
+   },
+   "answer": {
+    "model": "clef",
+    "answers": {
+     "t2": {
+      "type": "noul",
+      "noul": 0.9791
+     }
+    },
+    "usage": {
+     "input_tokens": 248,
+     "output_tokens": 0
+    }
+   }
+  },
+  "t3": {
+   "request": {
+    "model": "clef",
+    "state": "A nine-task plan (t1-t9) was built and its PR (#110) is open, all CI and a SonarCloud gate passing, 4525 tests passing. Per task, the facts:\nt3 (reading positions file 0600 and the next/heard state machine; the cursor moves only on a heard report for the exact next unit): built; an approved deviation d1 added that an explicit seek also re-pins the cursor; tests pass, re-run green after a later behavior-preserving refactor.",
+    "questions": {
+     "t3": {
+      "type": "noul",
+      "instructions": "Is t3 delivered as its acceptance criteria require, counting the approved deviation?"
+     }
+    }
+   },
+   "answer": {
+    "model": "clef",
+    "answers": {
+     "t3": {
+      "type": "noul",
+      "noul": 0.9843
+     }
+    },
+    "usage": {
+     "input_tokens": 266,
+     "output_tokens": 0
+    }
+   }
+  },
+  "t4": {
+   "request": {
+    "model": "clef",
+    "state": "A nine-task plan (t1-t9) was built and its PR (#110) is open, all CI and a SonarCloud gate passing, 4525 tests passing. Per task, the facts:\nt4 (the web read-aloud: dock, paragraph-synced progress, continue listening, heard only on the audio ended event): built and used on the operator's phone; one control from the mockup, Choose section, was not built (tapping a paragraph to jump was built instead, at the operator's request); the operator reported several defects, each fixed and confirmed on the phone (progress reset, mark all read, loading ring, caching, previous/next prefetch, transitions).",
+    "questions": {
+     "t4": {
+      "type": "choice",
+      "instructions": "What is t4's delivery status?",
+      "criteria": {
+       "delivered": "delivered as its criteria require",
+       "partial": "delivered except a named piece",
+       "not_delivered": "not delivered"
+      }
+     }
+    }
+   },
+   "answer": {
+    "model": "clef",
+    "answers": {
+     "t4": {
+      "type": "choice",
+      "choice": "partial",
+      "confidence": 0.8576,
+      "probabilities": {
+       "delivered": 0.1212,
+       "partial": 0.8576,
+       "not_delivered": 0.0212
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 305,
+     "output_tokens": 0
+    }
+   }
+  },
+  "t5": {
+   "request": {
+    "model": "clef",
+    "state": "A nine-task plan (t1-t9) was built and its PR (#110) is open, all CI and a SonarCloud gate passing, 4525 tests passing. Per task, the facts:\nt5 (search_library on retrieve, read_item and fetch_source on /text, citations with chunk_sha): built; tests pass; a code review found read_item cut long paragraphs and cited an index the reader could not open; both fixed with tests.",
+    "questions": {
+     "t5": {
+      "type": "noul",
+      "instructions": "Is t5 delivered as its acceptance criteria require?"
+     }
+    }
+   },
+   "answer": {
+    "model": "clef",
+    "answers": {
+     "t5": {
+      "type": "noul",
+      "noul": 0.9832
+     }
+    },
+    "usage": {
+     "input_tokens": 246,
+     "output_tokens": 0
+    }
+   }
+  },
+  "t6": {
+   "request": {
+    "model": "clef",
+    "state": "A nine-task plan (t1-t9) was built and its PR (#110) is open, all CI and a SonarCloud gate passing, 4525 tests passing. Per task, the facts:\nt6 (sync and index deleted, retired index file removed once, catalog/search/reader live, 503 when the library is down): built; the delete-once test passes; production's first start removed the file once.",
+    "questions": {
+     "t6": {
+      "type": "noul",
+      "instructions": "Is t6 delivered as its acceptance criteria require?"
+     }
+    }
+   },
+   "answer": {
+    "model": "clef",
+    "answers": {
+     "t6": {
+      "type": "noul",
+      "noul": 0.9778
+     }
+    },
+    "usage": {
+     "input_tokens": 243,
+     "output_tokens": 0
+    }
+   }
+  },
+  "t7": {
+   "request": {
+    "model": "clef",
+    "state": "A nine-task plan (t1-t9) was built and its PR (#110) is open, all CI and a SonarCloud gate passing, 4525 tests passing. Per task, the facts:\nt7 (reading routes behind the install secret or Access, status.reading counters, no model call during a read): built; the refusal test passes and was re-run after the refactor.",
+    "questions": {
+     "t7": {
+      "type": "noul",
+      "instructions": "Is t7 delivered as its acceptance criteria require?"
+     }
+    }
+   },
+   "answer": {
+    "model": "clef",
+    "answers": {
+     "t7": {
+      "type": "noul",
+      "noul": 0.9712
+     }
+    },
+    "usage": {
+     "input_tokens": 233,
+     "output_tokens": 0
+    }
+   }
+  },
+  "t8": {
+   "request": {
+    "model": "clef",
+    "state": "A nine-task plan (t1-t9) was built and its PR (#110) is open, all CI and a SonarCloud gate passing, 4525 tests passing. Per task, the facts:\nt8 (README, CLAUDE.md, explain catalog, CHANGELOG 0.23.0, version bump, release-docs test): written; the release-docs test passes; markdownlint clean.",
+    "questions": {
+     "t8": {
+      "type": "noul",
+      "instructions": "Is t8 delivered as its acceptance criteria require?"
+     }
+    }
+   },
+   "answer": {
+    "model": "clef",
+    "answers": {
+     "t8": {
+      "type": "noul",
+      "noul": 0.9831
+     }
+    },
+    "usage": {
+     "input_tokens": 239,
+     "output_tokens": 0
+    }
+   }
+  },
+  "t9": {
+   "request": {
+    "model": "clef",
+    "state": "A nine-task plan (t1-t9) was built and its PR (#110) is open, all CI and a SonarCloud gate passing, 4525 tests passing. Per task, the facts:\nt9 (live acceptance: the gwen-live worktree moves to the MERGED ref and restarts; status and logs recorded; a read on the phone stopped mid-paragraph, reloaded and continued; tap-to-first-audio time recorded cold and warm): the PR is not merged, so production runs an earlier pre-merge commit; the status, log and probe rows are recorded; the phone stop-reload-continue passed; the tap-to-sound time is not yet recorded; three retests (header after refresh, a 0.53 s period pause, tap-to-sound) are not reported by the operator.",
+    "questions": {
+     "t9": {
+      "type": "choice",
+      "instructions": "What is t9's delivery status?",
+      "criteria": {
+       "delivered": "delivered as its criteria require",
+       "partial": "some criteria met, others still open",
+       "not_delivered": "not delivered"
+      }
+     }
+    }
+   },
+   "answer": {
+    "model": "clef",
+    "answers": {
+     "t9": {
+      "type": "choice",
+      "choice": "partial",
+      "confidence": 0.5132,
+      "probabilities": {
+       "delivered": 0.0112,
+       "partial": 0.5132,
+       "not_delivered": 0.4756
+      }
+     }
+    },
+    "usage": {
+     "input_tokens": 336,
+     "output_tokens": 0
+    }
+   }
+  }
+ }
+}

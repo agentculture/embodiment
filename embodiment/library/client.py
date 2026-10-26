@@ -142,7 +142,7 @@ class LibraryClient:
         self._deadline = deadline
         self._opener = opener if opener is not None else _REDIRECT_REFUSING_OPENER
         #: Requests issued (every one a GET by construction - the AST test pins it);
-        #: read by LibrarySync.status() and the live acceptance run (c28).
+        #: read by the catalog lane's status (`status.library.gets`) and the live run (c28).
         self.gets = 0
         self._count_lock = threading.Lock()
 
@@ -196,6 +196,22 @@ class LibraryClient:
             max_bytes=MAX_FILE_BYTES,
             read_deadline=self._deadline + MAX_FILE_BYTES / MIN_FILE_BYTES_PER_S,
         )
+
+    def fetch_text(self, item_id: Any) -> dict:
+        """``GET /api/library/{id}/text``: ``{item_id, kind, format, title, text, sections,
+        reason}`` as the library sent it; ``sections`` is null for Markdown."""
+        body = self._get(
+            f"/api/library/{_seg(item_id)}/text",
+            max_bytes=MAX_FILE_BYTES,
+            read_deadline=self._deadline + MAX_FILE_BYTES / MIN_FILE_BYTES_PER_S,
+        )
+        try:
+            parsed = json.loads(body)
+        except ValueError:
+            raise LibraryError("library_bad_response") from None
+        if not isinstance(parsed, dict):
+            raise LibraryError("library_bad_response")
+        return parsed
 
 
 def _seg(item_id: Any) -> str:

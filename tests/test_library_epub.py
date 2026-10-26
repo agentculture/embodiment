@@ -126,18 +126,12 @@ def test_not_a_zip_and_missing_container():
     assert refused(build({"x": "y"}, container=False), LIM) == "bad_epub"
 
 
-def test_extract_is_the_one_argument_seam_the_daemon_hands_the_sync():
-    """Found live 2026-10-24: the daemon passes epub.extract to LibrarySync, which calls
-    extract(data); with a required ``limits`` every real item failed (extract_failed)."""
-    from embodiment.daemon import app as daemon_app
+def test_extract_takes_one_argument():
+    """Found live 2026-10-24: a required ``limits`` made every one-argument caller fail
+    (the retired sync's ``extract_failed``); the defaults apply without one."""
     from embodiment.library import epub as epub_mod
 
-    out = epub_mod.extract(basic())  # no limits: the defaults apply
-    assert out.passages
-    import inspect
-
-    default = inspect.signature(daemon_app.build_library_lane).parameters["extract"].default
-    assert default(basic()).passages  # the daemon's own default, called as sync calls it
+    assert epub_mod.extract(basic()).passages
 
 
 def test_a_passage_keeps_its_web_links_in_order():

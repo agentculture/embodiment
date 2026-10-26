@@ -1,0 +1,668 @@
+// ReadAloud.tsx
+//
+// Read an item aloud on this device (embodiment#107, plan t4): the page asks
+// the daemon for the next unit (api/reading.ts), synthesises its text with
+// POST /api/speak, plays the WAV here, and reports the unit heard ONLY from the
+// audio's `ended` event for that unit's exact position. A pause, an audio
+// error, Stop reading, moving to another paragraph, or the page going away
+// (reload, unmount) bumps a session token, so a late `ended` can never report a
+// unit that was not heard to its end. While one unit plays, the following one's
+// audio is synthesised (prefetch), so speech does not stall between paragraphs.
+// The prefetch never asks the daemon for that unit: next?section=&paragraph= is
+// a seek that re-pins the cursor (deviation d1), and seeking ahead while this
+// unit plays would make a reload skip it. The following text comes from the
+// reader's own copy of the item (`peekFollowing`); once this unit is heard, the
+// page asks next at the cursor (a small JSON call) and plays the prefetched
+// audio when its text is the unit's text, else synthesises it then.
+// Previous / Next paragraph are seeks: their unit is reported heard on ended
+// like any other. The daemon owns the cursor (h16).
+//
+// The dock's look is the approved mockup (scratchpad mockup107, 2026-10-26):
+// one segment per paragraph of the section, the playing one filling with its
+// audio's currentTime/duration; the same value drives the paragraph's edge line
+// in the reader and the section's share of the map (see `progressOf`).
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import { speakMessage } from "../api/audio";
+import { joinWav, splitHead } from "../audio/wav";
+import {
+  fetchNext,
+  reportHeard,
+  type At,
+  type ReadingClientOptions,
+  type ReadingUnit,
+} from "../api/reading";
+
+export type ListenStatus =
+  | "idle"
+  | "loading"
+  | "playing"
+  | "paused"
+  | "stopped"
+  | "blocked"
+  | "done"
+  | "gone"
+  | "error";
+
+export interface ListenState {
+  status: ListenStatus;
+  /** The unit playing, paused or last stopped; null before the first one arrives. */
+  unit: ReadingUnit | null;
+  /** How far this unit's audio has played, 0..1 (currentTime / duration). */
+  played: number;
+  /** A fixed failure code (error), never a response body. */
+  code: string | null;
+  /** A heard report that did not reach the daemon: listening goes on, the position may lag. */
+  note: string | null;
+}
+
+export interface ListenControls {
+  /** Start or continue: at the cursor when `at` is absent. Call from a tap. */
+  start: (at?: At) => void;
+  pause: () => void;
+  /** Continue after a pause: the paragraph plays again from its start. */
+  resume: () => void;
+  stop: () => void;
+  /** The previous (-1) or next (+1) paragraph; nothing is reported heard. */
+  move: (delta: -1 | 1) => void;
+}
+
+export type AudioFactory = () => HTMLAudioElement;
+
+export interface UseReadAloudOptions {
+  itemId: string;
+  secret: string;
+  clientOptions?: ReadingClientOptions;
+  audioFactory?: AudioFactory;
+  /** The text of the unit after `unit`, from the reader's copy of the item; null when unknown. */
+  peekFollowing?: (unit: ReadingUnit) => string | null;
+  /** The text Previous would play from `unit` (d6, made ahead); null when unknown. */
+  peekPreceding?: (unit: ReadingUnit) => string | null;
+}
+
+const IDLE: ListenState = { status: "idle", unit: null, played: 0, code: null, note: null };
+
+/** Where Previous (-1) and Next (+1) go from *u*: the paragraph before or after in its
+ *  section; across a section edge, the first paragraph of the section before or after; Next
+ *  past the end is null. Pure: the buttons and the made-ahead audio (d6) share it. */
+export function neighbour(u: ReadingUnit, delta: -1 | 1): At | null {
+  if (delta < 0) {
+    if (u.paragraph > 0) return { section: u.section, paragraph: u.paragraph - 1 };
+    return u.section > 0 ? { section: u.section - 1, paragraph: 0 } : { section: 0, paragraph: 0 };
+  }
+  if (u.paragraph + 1 < u.paragraphCount) return { section: u.section, paragraph: u.paragraph + 1 };
+  return u.section + 1 < u.sectionCount ? { section: u.section + 1, paragraph: 0 } : null;
+}
+
+/** How far the current unit has played, for every bar: its audio while it plays, kept while
+ * the next one loads, full past the end, empty when paused or stopped (it plays again). */
+export function playedOf(state: ListenState): number {
+  const { status, played } = state;
+  if (status === "done") return 1;
+  return status === "playing" || status === "loading" ? played : 0;
+}
+
+/** One paragraph's progress (parts folded in) and its section's share. Pure. */
+export function progressOf(unit: ReadingUnit, played: number): { paragraph: number; section: number } {
+  const p = Math.min(1, Math.max(0, Number.isFinite(played) ? played : 0));
+  const paragraph = (unit.part + p) / unit.partCount;
+  return { paragraph, section: (unit.paragraph + paragraph) / unit.paragraphCount };
+}
+
+/** "phone" or "laptop": which device the audio comes out of. */
+export function deviceKind(): "phone" | "laptop" {
+  try {
+    if (/iPhone|iPod|Android.*Mobile|Mobi/i.test(navigator.userAgent)) return "phone";
+    if (typeof window.matchMedia === "function" && window.matchMedia("(pointer: coarse) and (max-width: 860px)").matches) {
+      return "phone";
+    }
+  } catch {
+    /* fall through */
+  }
+  return "laptop";
+}
+
+/** A 12 ms silent WAV, played inside the tap so a later play() after a fetch is allowed. */
+function silentWav(): Blob {
+  const n = 100;
+  const buf = new ArrayBuffer(44 + n);
+  const v = new DataView(buf);
+  const w = (o: number, s: string) => [...s].forEach((c, i) => v.setUint8(o + i, c.charCodeAt(0)));
+  w(0, "RIFF");
+  v.setUint32(4, 36 + n, true);
+  w(8, "WAVEfmt ");
+  v.setUint32(16, 16, true);
+  v.setUint16(20, 1, true);
+  v.setUint16(22, 1, true);
+  v.setUint32(24, 8000, true);
+  v.setUint32(28, 8000, true);
+  v.setUint16(32, 1, true);
+  v.setUint16(34, 8, true);
+  w(36, "data");
+  v.setUint32(40, n, true);
+  for (let i = 0; i < n; i++) v.setUint8(44 + i, 128);
+  return new Blob([buf], { type: "audio/wav" });
+}
+
+function makeUrl(blob: Blob): string {
+  try {
+    return URL.createObjectURL(blob);
+  } catch {
+    return "";
+  }
+}
+
+function dropUrl(url: string) {
+  if (!url) return;
+  try {
+    URL.revokeObjectURL(url);
+  } catch {
+    /* nothing held */
+  }
+}
+
+/** The rest of a paragraph started from its first sentence (d7): its audio, and the share of
+ *  the paragraph's text the first sentence holds (the bar's split point). */
+interface Rest {
+  audio: Promise<Made>;
+  share: number;
+}
+
+type Ready = { kind: "unit"; unit: ReadingUnit; blob: Blob; rest?: Rest } | { kind: "done" } | { kind: "failed"; code: string };
+
+/** d7: a paragraph at least this long, not yet made, starts from its first sentence's audio
+ *  while the rest is made (the operator's phone: "send first sentence"). */
+export const HEAD_MIN_CHARS = 200;
+/** The pause between the first sentence and the rest when they are joined into one file:
+ *  the daemon's pause after a full stop (voice.py PAUSE_AFTER_SENTENCE_S). */
+const SENTENCE_PAUSE_S = 0.53;
+
+const norm = (t: string) => t.replace(/\s+/g, " ").trim();
+
+/** d6 (the operator's phone): how many paragraphs' audio the reader keeps, and how many bytes
+ *  at most. Current, previous and next, plus room for a jump back; a paragraph's WAV is
+ *  about 1.4 MB per 30 s, so the byte bound holds about two minutes of speech. */
+const KEEP_UNITS = 6;
+const KEEP_BYTES = 12 * 1024 * 1024;
+
+/** Made audio, or the fixed code it failed with. */
+type Made = { blob: Blob; code: null } | { blob: null; code: string };
+
+/** A small LRU of made audio, keyed by the unit's text, so pause/play, Previous and Next play
+ *  what was already made. Failures are never kept; one request per text is in flight. */
+class AudioCache {
+  private kept = new Map<string, Blob>();
+  private making = new Map<string, Promise<Made>>();
+
+  get(text: string): Blob | null {
+    const key = norm(text);
+    const blob = this.kept.get(key);
+    if (!blob) return null;
+    this.kept.delete(key);
+    this.kept.set(key, blob);
+    return blob;
+  }
+
+  put(text: string, blob: Blob) {
+    const key = norm(text);
+    this.kept.delete(key);
+    this.kept.set(key, blob);
+    let bytes = 0;
+    for (const b of this.kept.values()) bytes += b.size;
+    for (const [k, b] of this.kept) {
+      if (this.kept.size <= KEEP_UNITS && bytes <= KEEP_BYTES) break;
+      if (k === key) continue;
+      this.kept.delete(k);
+      bytes -= b.size;
+    }
+  }
+
+  /** The audio for *text*: kept, already being made, or made now by *make*. */
+  audio(text: string, make: () => Promise<Made>): Promise<Made> {
+    const key = norm(text);
+    const kept = this.get(text);
+    if (kept) return Promise.resolve({ blob: kept, code: null });
+    const inFlight = this.making.get(key);
+    if (inFlight) return inFlight;
+    const made = make()
+      .then((m) => {
+        if (m.blob) this.put(text, m.blob);
+        return m;
+      })
+      .catch((): Made => ({ blob: null, code: "speak-failed" }))
+      .finally(() => this.making.delete(key));
+    this.making.set(key, made);
+    return made;
+  }
+
+  clear() {
+    this.kept.clear();
+    this.making.clear();
+  }
+}
+
+export function useReadAloud({ itemId, secret, clientOptions, audioFactory, peekFollowing, peekPreceding }: UseReadAloudOptions): [ListenState, ListenControls] {
+  const [state, setState] = useState<ListenState>(IDLE);
+  const stateRef = useRef<ListenState>(IDLE);
+  const token = useRef(0);
+  const audio = useRef<HTMLAudioElement | null>(null);
+  const url = useRef("");
+  const cache = useRef(new AudioCache());
+  const opts = useRef({ itemId, secret, clientOptions, audioFactory, peekFollowing, peekPreceding });
+  opts.current = { itemId, secret, clientOptions, audioFactory, peekFollowing, peekPreceding };
+
+  /** One paragraph's audio from the cache, or made (and kept) through /api/speak. */
+  const audioOf = useCallback((text: string): Promise<Made> => {
+    const { secret: key, clientOptions: co } = opts.current;
+    return cache.current.audio(text, () =>
+      speakMessage(text, key, co).then((r): Made => {
+        if (!r.ok) return { blob: null, code: r.code };
+        // A cut answer is never played as the whole unit: it would be reported heard
+        // past words that were not spoken (code review of #110). Never kept either.
+        return r.truncated ? { blob: null, code: "speak-truncated" } : { blob: r.blob, code: null };
+      }),
+    );
+  }, []);
+
+  const set = useCallback((patch: Partial<ListenState>) => {
+    stateRef.current = { ...stateRef.current, ...patch };
+    setState(stateRef.current);
+  }, []);
+
+  const element = useCallback((): HTMLAudioElement | null => {
+    if (!audio.current) {
+      try {
+        audio.current = (opts.current.audioFactory ?? (() => new Audio()))();
+      } catch {
+        audio.current = null;
+      }
+    }
+    return audio.current;
+  }, []);
+
+  /** d7: once a split paragraph's rest is made, keep the two joined as the paragraph's audio. */
+  const keepJoined = useCallback(async (text: string, head: Blob, restAudio: Promise<Made>) => {
+    const rest = await restAudio;
+    if (!rest.blob) return;
+    try {
+      const [a, b] = await Promise.all([head.arrayBuffer(), rest.blob.arrayBuffer()]);
+      const joined = joinWav(new Uint8Array(a), new Uint8Array(b), SENTENCE_PAUSE_S);
+      if (joined) cache.current.put(text, new Blob([joined], { type: "audio/wav" }));
+    } catch {
+      /* not joined: the next play makes it whole */
+    }
+  }, []);
+
+  /** Silence the element and detach every handler: nothing it does now is a report. */
+  const halt = useCallback(() => {
+    const a = audio.current;
+    if (!a) return;
+    a.onended = null;
+    a.onerror = null;
+    a.ontimeupdate = null;
+    try {
+      a.pause();
+    } catch {
+      /* already stopped */
+    }
+  }, []);
+
+  const ready = useCallback(async (at: At | undefined): Promise<Ready> => {
+    const { itemId: id, secret: key, clientOptions: co } = opts.current;
+    const next = await fetchNext(id, key, co, at);
+    if (!next.ok) return { kind: "failed", code: next.code };
+    if (next.value.done) return { kind: "done" };
+    const text = next.value.unit.text;
+    const split = !cache.current.get(text) && text.length >= HEAD_MIN_CHARS ? splitHead(text) : null;
+    if (split) {
+      // The tts lane makes one sentence at a time: the first sentence alone first, then the rest.
+      const head = await audioOf(split.head);
+      if (head.blob) {
+        const restAudio = audioOf(split.rest);
+        void keepJoined(text, head.blob, restAudio);
+        return { kind: "unit", unit: next.value.unit, blob: head.blob, rest: { audio: restAudio, share: split.head.length / text.length } };
+      }
+    }
+    const made = await audioOf(text);
+    if (!made.blob) return { kind: "failed", code: made.code };
+    return { kind: "unit", unit: next.value.unit, blob: made.blob };
+  }, [audioOf, keepJoined]);
+
+  // Declared before use through refs, so the handlers always see the current ones.
+  const playRef = useRef<(t: number, unit: ReadingUnit, blob: Blob, rest?: Rest) => void>(() => {});
+  const loadRef = useRef<(t: number, at: At | undefined) => void>(() => {});
+
+  const settle = useCallback(
+    (t: number, r: Ready) => {
+      if (t !== token.current) return;
+      if (r.kind === "unit") playRef.current(t, r.unit, r.blob, r.rest);
+      else if (r.kind === "done") set({ status: "done", played: 1 });
+      else if (r.code === "library-item-gone") set({ status: "gone", code: r.code });
+      else set({ status: "error", code: r.code });
+    },
+    [set],
+  );
+
+  loadRef.current = (t: number, at: At | undefined) => {
+    if (t !== token.current) return;
+    // played is left as it was: a paragraph just heard stays full while the next one loads
+    // (d3: the bar used to snap back to empty between paragraphs).
+    set({ status: "loading", code: null });
+    void ready(at).then((r) => settle(t, r));
+  };
+
+  const onEnded = useCallback(
+    (t: number, unit: ReadingUnit) => {
+      if (t !== token.current || stateRef.current.status !== "playing" || stateRef.current.unit !== unit) return;
+      set({ played: 1 });
+      const { itemId: id, secret: key, clientOptions: co } = opts.current;
+      void reportHeard(id, unit.position, key, co).then((heard) => {
+        if (t !== token.current) return;
+        set({ note: heard.ok ? null : heard.code });
+        // Continue at the cursor just moved; the prefetched audio is used when it matches.
+        loadRef.current(t, undefined);
+      });
+    },
+    [set, settle],
+  );
+
+  /** Play one clip of *unit*: its audio fills the bar from *from* over *span*, then *done*. */
+  const playClip = (t: number, unit: ReadingUnit, blob: Blob, from: number, span: number, done: () => void) => {
+    if (t !== token.current) return;
+    const a = element();
+    if (!a) {
+      set({ status: "error", code: "no-audio", unit });
+      return;
+    }
+    halt();
+    dropUrl(url.current);
+    url.current = makeUrl(blob);
+    a.src = url.current;
+    try {
+      a.currentTime = 0;
+    } catch {
+      /* not seekable yet */
+    }
+    a.ontimeupdate = () => {
+      if (t !== token.current) return;
+      const d = a.duration;
+      if (Number.isFinite(d) && d > 0) set({ played: Math.min(1, from + span * (a.currentTime / d)) });
+    };
+    a.onerror = () => {
+      if (t !== token.current) return;
+      halt();
+      set({ status: "error", code: "playback-failed" });
+    };
+    a.onended = done;
+    set({ status: "playing", unit, played: from, code: null });
+    let started: Promise<void> | undefined;
+    try {
+      started = a.play();
+    } catch {
+      started = Promise.reject(new Error("play"));
+    }
+    void Promise.resolve(started).catch((e: unknown) => {
+      if (t !== token.current) return;
+      halt();
+      const blocked = e instanceof Error && e.name === "NotAllowedError";
+      set({ status: blocked ? "blocked" : "error", code: blocked ? null : "playback-failed" });
+    });
+  };
+
+  playRef.current = (t: number, unit: ReadingUnit, blob: Blob, rest?: Rest) => {
+    if (t !== token.current) return;
+    if (rest) {
+      // d7: the first sentence now, the rest after it; heard only once the rest has ended.
+      playClip(t, unit, blob, 0, rest.share, () => {
+        if (t !== token.current) return;
+        set({ status: "loading" });
+        void rest.audio.then((made) => {
+          if (t !== token.current) return;
+          if (made.blob) playClip(t, unit, made.blob, rest.share, 1 - rest.share, () => onEnded(t, unit));
+          else set({ status: "error", code: made.code });
+        });
+      });
+    } else {
+      playClip(t, unit, blob, 0, 1, () => onEnded(t, unit));
+      cache.current.put(unit.text, blob);
+    }
+    // Keep this paragraph's audio for a pause or a Previous (above; a split one is kept joined),
+    // and make the next and then the previous ahead (d6), one at a time.
+    const peek = (f: ((u: ReadingUnit) => string | null) | undefined): string | null => {
+      try {
+        const text = f?.(unit) ?? null;
+        return text && norm(text) ? text : null;
+      } catch {
+        return null;
+      }
+    };
+    const following = peek(opts.current.peekFollowing);
+    const preceding = peek(opts.current.peekPreceding);
+    // After a split paragraph's rest is made, so the made-ahead never queues in front of it.
+    const after: Promise<unknown> = rest ? rest.audio : Promise.resolve(null);
+    void after
+      .then(() => (following ? audioOf(following) : null))
+      .then(() => (preceding ? audioOf(preceding) : null));
+  };
+
+  const begin = useCallback(
+    (at: At | undefined) => {
+      token.current += 1;
+      halt();
+      set({ played: 0 });
+      loadRef.current(token.current, at);
+    },
+    [halt, set],
+  );
+
+  const start = useCallback(
+    (at?: At) => {
+      // Inside the tap: let this element play later, after the fetch resolves.
+      const a = element();
+      if (a && !a.src) {
+        const u = makeUrl(silentWav());
+        if (u) {
+          a.src = u;
+          try {
+            void Promise.resolve(a.play()).catch(() => {});
+          } catch {
+            /* the tap still counts on most browsers */
+          }
+        }
+      }
+      begin(at);
+    },
+    [begin, element],
+  );
+
+  const pause = useCallback(() => {
+    const s = stateRef.current.status;
+    if (s !== "playing" && s !== "loading") return;
+    token.current += 1;
+    halt();
+    set({ status: "paused", played: 0 });
+  }, [halt, set]);
+
+  // Resume continues at the saved cursor, which is always the first unit not fully heard:
+  // the paragraph cut off by a pause plays again from its start, and a pause while the
+  // next one was loading does not replay (or seek the cursor back to) the one just heard.
+  const resume = useCallback(() => {
+    begin(undefined);
+  }, [begin]);
+
+  const stop = useCallback(() => {
+    token.current += 1;
+    halt();
+    set({ status: "stopped", played: 0 });
+  }, [halt, set]);
+
+  const move = useCallback(
+    (delta: -1 | 1) => {
+      const u = stateRef.current.unit;
+      if (!u) return;
+      const at = neighbour(u, delta);
+      if (!at) return;
+      begin(at);
+    },
+    [begin],
+  );
+
+  // A new item, or the page going away: nothing playing now is reported heard.
+  useEffect(() => {
+    set(IDLE);
+    return () => {
+      token.current += 1;
+      halt();
+      dropUrl(url.current);
+      url.current = "";
+      cache.current.clear();
+      stateRef.current = IDLE;
+    };
+  }, [itemId, halt, set]);
+
+  return [state, { start, pause, resume, stop, move }];
+}
+
+export interface ReadAloudDockProps {
+  state: ListenState;
+  controls: ListenControls;
+  device?: "phone" | "laptop";
+}
+
+const IconPrev = () => (
+  <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+    <path d="M18 6 9 12l9 6zM6 6v12" />
+  </svg>
+);
+const IconNext = () => (
+  <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+    <path d="m6 6 9 6-9 6zM18 6v12" />
+  </svg>
+);
+
+/** How long a load lasts before the play button shows its ring (d4: none on a cached replay). */
+export const RING_DELAY_MS = 300;
+
+/** The listening dock: sticky at the reader's bottom (styles/library.css .listen-dock). */
+export function ReadAloudDock({ state, controls, device = deviceKind() }: ReadAloudDockProps) {
+  const { status, unit } = state;
+  const going = status === "playing" || status === "loading";
+  const prog = unit ? progressOf(unit, playedOf(state)) : null;
+  const where = (() => {
+    if (status === "done") return "You reached the end of this item.";
+    if (status === "gone") return "This item is no longer in the library.";
+    if (!unit) return "";
+    const para = `paragraph ${unit.paragraph + 1} of ${unit.paragraphCount}`;
+    const part = unit.partCount > 1 ? ` Part ${unit.part + 1} of ${unit.partCount}.` : "";
+    if (status === "paused" || status === "error" || status === "blocked") {
+      return `Paused at ${para}. This paragraph plays again from its start.${part}`;
+    }
+    return `Paragraph ${unit.paragraph + 1} of ${unit.paragraphCount} in this section. Section ${unit.section + 1} of ${unit.sectionCount}.${part}`;
+  })();
+  // d4: the ring is for a wait you notice. A replay from the cache still asks the daemon for
+  // the cursor (a short "loading"); the ring shows only once loading has lasted RING_DELAY_MS.
+  const [ring, setRing] = useState(false);
+  useEffect(() => {
+    if (status !== "loading") {
+      setRing(false);
+      return;
+    }
+    const t = window.setTimeout(() => setRing(true), RING_DELAY_MS);
+    return () => window.clearTimeout(t);
+  }, [status]);
+  const loading = status === "loading" && ring;
+  // The ring is the only loading signal: no words, so nothing is announced between paragraphs.
+  const playLabel = going ? "Pause" : status === "blocked" ? "Play" : "Continue";
+  return (
+    <div className="listen-dock" role="group" aria-label="Reading aloud" data-status={status}>
+      <div className="transport">
+        <button type="button" className="icon-btn" aria-label="Previous paragraph" disabled={!unit} onClick={() => controls.move(-1)}>
+          <IconPrev />
+        </button>
+        <button
+          type="button"
+          className="play"
+          aria-label={playLabel}
+          aria-busy={loading ? true : undefined}
+          disabled={status === "done" || status === "gone"}
+          onClick={() => (going ? controls.pause() : controls.resume())}
+        >
+          {loading && (
+            // d4 (live t9): a partial ring turns while the paragraph is being made, so a
+            // jump's short wait reads as loading, not as nothing happening.
+            <svg className="play-ring" viewBox="0 0 64 64" aria-hidden="true">
+              <circle cx="32" cy="32" r="29" pathLength="100" />
+            </svg>
+          )}
+          {going ? (
+            <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
+              <rect x="6" y="5" width="4" height="14" rx="1" />
+              <rect x="14" y="5" width="4" height="14" rx="1" />
+            </svg>
+          ) : (
+            <svg viewBox="0 0 24 24" width="24" height="24" aria-hidden="true">
+              <path d="M8 5v14l11-7z" />
+            </svg>
+          )}
+        </button>
+        <button type="button" className="icon-btn" aria-label="Next paragraph" disabled={!unit} onClick={() => controls.move(1)}>
+          <IconNext />
+        </button>
+      </div>
+      <div className="where">
+        <div className="where-section" dir="auto">
+          {unit ? unit.heading || `Section ${unit.section + 1}` : "Reading aloud"}
+        </div>
+        <div className="where-pos" dir="auto" aria-live="polite">
+          {where}
+        </div>
+        {unit && prog && (
+          <div className="where-bar" aria-hidden="true">
+            {Array.from({ length: unit.paragraphCount }, (_, i) =>
+              i < unit.paragraph || status === "done" ? (
+                <span key={i} className="heard" data-played="1" />
+              ) : i === unit.paragraph ? (
+                <span key={i} className="now" data-played={String(prog.paragraph)} style={{ ["--played" as string]: prog.paragraph }} />
+              ) : (
+                <span key={i} />
+              ),
+            )}
+          </div>
+        )}
+        {status === "error" && (
+          <p className="listen-note" role="alert" dir="auto">
+            Reading stopped: this paragraph could not be played ({state.code}). Nothing was marked heard.
+          </p>
+        )}
+        {status === "blocked" && (
+          <p className="listen-note" role="alert" dir="auto">
+            This browser waits for a tap before it plays sound. Tap play to start.
+          </p>
+        )}
+        {state.note && (
+          <p className="listen-note" role="status" dir="auto">
+            Where you are was not saved ({state.note}); it is saved again after the next paragraph.
+          </p>
+        )}
+      </div>
+      <div className="dock-end">
+        <span className="device" dir="auto">
+          {device === "phone" ? (
+            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+              <rect x="7" y="2" width="10" height="20" rx="2" />
+            </svg>
+          ) : (
+            <svg viewBox="0 0 24 24" width="14" height="14" aria-hidden="true">
+              <rect x="3" y="5" width="18" height="12" rx="2" />
+              <path d="M8 21h8" />
+            </svg>
+          )}
+          {going ? `Playing on this ${device}` : `Plays on this ${device}`}
+        </span>
+        <button type="button" className="pill-btn" onClick={controls.stop}>
+          Stop reading
+        </button>
+      </div>
+    </div>
+  );
+}

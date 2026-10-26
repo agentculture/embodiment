@@ -81,7 +81,10 @@ from embodiment.voice import (
     VoiceConfig,
     _read_bounded,
     http_synthesize,
+    pause_after,
+    shape_sentence,
     split_sentences,
+    synthesize_pieces,
 )
 
 __all__ = [
@@ -614,12 +617,15 @@ class TextTurns:
         started = self._clock()
         pcm = bytearray()
         used = 0
-        for sentence in sentences:
+        for index, sentence in enumerate(sentences):
             if self._clock() - started > self._config.speak_deadline:
                 return pcm, used, True
             chunk = self._synthesise_one(sentence, voice_config)
             if chunk is None:
                 return (pcm, used, True) if pcm else None
+            # d7: faded edges and a pause between sentences, none after the last
+            last = index == len(sentences) - 1
+            chunk = shape_sentence(chunk, 0.0 if last else pause_after(sentence))
             room = MAX_SPEAK_AUDIO_BYTES - len(pcm)
             if len(chunk) > room:
                 pcm += bytes(chunk[: room - room % BYTES_PER_SAMPLE])
@@ -631,7 +637,7 @@ class TextTurns:
     def _synthesise_one(self, sentence: str, voice_config: VoiceConfig) -> Optional[bytes]:
         """One sentence's pcm, or ``None`` (recorded) when the tts lane gave none."""
         try:
-            chunk = self._tts(sentence, voice_config)
+            chunk = synthesize_pieces(self._tts, sentence, voice_config)  # d7: a colon pauses
         except Exception as exc:  # noqa: BLE001
             self._record(SPEAK_TTS_FAILED, safe_reason.describe_exception(exc))
             return None

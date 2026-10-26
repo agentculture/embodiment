@@ -268,6 +268,7 @@ utterances one reply produces.
 
 from __future__ import annotations
 
+import array
 import json
 import re
 import threading
@@ -287,6 +288,12 @@ __all__ = [
     "MAX_SENTENCE_CHARS",
     "MAX_SENTENCES",
     "MAX_SENTENCE_AUDIO_BYTES",
+    "MAX_AUDIO_S_PER_CHAR",
+    "sentence_audio_cap",
+    "shape_sentence",
+    "pause_after",
+    "speech_pieces",
+    "synthesize_pieces",
     "BARGE_IN_BOUND_S",
     "MAX_FEATURE_FRAMES",
     "PACE_SLICE_S",
@@ -355,6 +362,14 @@ BYTES_PER_SAMPLE = 2
 #: long clip for one short sentence, independent of the TEXT-length bounds
 #: above.
 MAX_SENTENCE_AUDIO_BYTES = 10 * SAMPLE_RATE_HZ * BYTES_PER_SAMPLE
+
+#: The most audio one character of text can need, in seconds: twice the slowest rate measured
+#: on this rig's tts lane (2026-10-26: 0.035-0.047 s per character in Hebrew over n = 5
+#: paragraphs, 0.052-0.053 in English over n = 3 sentences). The 10 s floor above was a
+#: judgement call sized for spoken replies; a library paragraph read aloud can be one long
+#: sentence, and at the floor it was cut mid-word at exactly 10.00 s (the operator's phone,
+#: embodiment#107 t9). :func:`sentence_audio_cap` derives the cap from the sentence (lesson 1).
+MAX_AUDIO_S_PER_CHAR = 0.12
 
 #: Chunk size :func:`_read_bounded` requests per ``read()`` call. A
 #: **judgement call**: large enough that a healthy response streams without
@@ -432,6 +447,10 @@ VOICE_PUBLISH_FAILED = "voice-publish-failed"
 #: Splits on a sentence terminator (ASCII or full-width) followed by
 #: whitespace. Deliberately simple — see the module docstring.
 _SENTENCE_END = re.compile(r"(?<=[.!?。！？])\s+")
+#: A colon followed by space ends a piece of speech (d7): "emerges: can we" pauses there. A
+#: time (12:30) or a link (https://) has no space after its colon and is never split. Applied
+#: at synthesis only (:func:`synthesize_pieces`): a sentence stays the turn's unit.
+_COLON_END = re.compile(r"(?<=[:\uff1a])\s+")
 
 
 @dataclass(frozen=True)
@@ -466,6 +485,8 @@ class VoiceConfig:
     max_sentence_chars: int = MAX_SENTENCE_CHARS
     max_sentences: int = MAX_SENTENCES
     max_sentence_audio_bytes: int = MAX_SENTENCE_AUDIO_BYTES
+    #: Audio seconds one character may need; with the floor above, :func:`sentence_audio_cap`.
+    max_audio_s_per_char: float = MAX_AUDIO_S_PER_CHAR
 
 
 @dataclass(frozen=True)
@@ -563,7 +584,33 @@ def split_sentences(
         sentences = [stripped]
     capped_count = max(1, int(max_sentences))
     capped_len = max(1, int(max_sentence_chars))
-    return [s[:capped_len] for s in sentences[:capped_count]]
+    pieces = [piece for s in sentences for piece in _split_long(s, capped_len)]
+    return pieces[:capped_count]
+
+
+#: Where a sentence too long for one synthesis call is best broken: after a clause mark, else
+#: at a space.
+_CLAUSE_BREAK = re.compile(r"[,;:–—]\s")
+
+
+def _split_long(sentence: str, limit: int) -> list[str]:
+    """*sentence* in pieces of at most *limit* characters, every word kept (embodiment#107 t9:
+    slicing at the cap dropped a long sentence's tail from a read). Breaks after the last
+    clause mark in range, else the last space; a run with no space is cut hard."""
+    out: list[str] = []
+    rest = sentence
+    while len(rest) > limit:
+        window = rest[: limit + 1]
+        marks = [m.end() for m in _CLAUSE_BREAK.finditer(window) if m.end() <= limit + 1]
+        cut = marks[-1] if marks and marks[-1] > limit // 3 else window.rfind(" ")
+        if cut <= 0:
+            cut = limit
+        piece, rest = rest[:cut].strip(), rest[cut:].strip()
+        if piece:
+            out.append(piece)
+    if rest:
+        out.append(rest)
+    return out
 
 
 class VoiceSynthesizeError(Exception):
@@ -607,7 +654,83 @@ class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
 _REDIRECT_REFUSING_OPENER = urllib.request.build_opener(_NoRedirectHandler)
 
 
-def _read_deadline(config: VoiceConfig) -> float:
+def sentence_audio_cap(sentence: str, config: VoiceConfig) -> int:
+    """The most audio bytes one sentence may synthesise to: the configured floor, or the
+    sentence's length at :data:`MAX_AUDIO_S_PER_CHAR`, whichever is larger (whole samples)."""
+    per_char = max(0.0, float(config.max_audio_s_per_char)) * SAMPLE_RATE_HZ * BYTES_PER_SAMPLE
+    derived = int(len(sentence) * per_char)
+    cap = max(int(config.max_sentence_audio_bytes), derived)
+    return cap - cap % BYTES_PER_SAMPLE
+
+
+#: d7 (the operator's phone, 2026-10-26: "transitions between sentences aren't great"). Measured
+#: on the rig's tts lane: each sentence comes back with 0-10 ms of silence at either end and
+#: starts at full amplitude, so sentences joined as they came ran together with a click at each
+#: seam. Each sentence's edges fade over FADE_S and a pause follows it: PAUSE_AFTER_SENTENCE_S
+#: after . ! ? (and their CJK forms), PAUSE_AFTER_CLAUSE_S after a clause break (a long sentence
+#: split by :func:`split_sentences`). Judgement calls, by ear: not measured against listeners.
+FADE_S = 0.008
+#: 0.28 s at first; the operator, by ear: "less than a second extra between period and next
+#: sentence is needed. Maybe 100-200 ms?" So 0.28 + 0.15; then "a period needs a bit more
+#: weight. Maybe 100ms": 0.53.
+PAUSE_AFTER_SENTENCE_S = 0.53
+PAUSE_AFTER_CLAUSE_S = 0.12
+#: After a colon that ends a piece (the operator: "Colon (:) still passes fast"): between a
+#: clause break and a full stop. :func:`split_sentences` ends a piece at a colon and a space.
+#: 0.22 s at first; the operator: "Colon pause was good, maybe extra 50-100ms". So 0.22 + 0.08.
+PAUSE_AFTER_COLON_S = 0.30
+_SENTENCE_STOP = re.compile(r"[.!?。！？][\"'”’)\]]*\s*$")
+
+
+def pause_after(sentence: str) -> float:
+    """Seconds of silence after *sentence*: a full stop's pause, else a clause break's."""
+    if _SENTENCE_STOP.search(sentence):
+        return PAUSE_AFTER_SENTENCE_S
+    return (
+        PAUSE_AFTER_COLON_S if sentence.rstrip().endswith((":", "\uff1a")) else PAUSE_AFTER_CLAUSE_S
+    )
+
+
+def speech_pieces(sentence: str) -> list[str]:
+    """*sentence* in the pieces it is synthesised in: split after a colon and a space (d7)."""
+    pieces = [p.strip() for p in _COLON_END.split(sentence) if p.strip()]
+    return pieces or [sentence]
+
+
+def synthesize_pieces(synthesize: Callable[[str, Any], Any], sentence: str, config: Any) -> Any:
+    """One sentence's pcm from *synthesize*, a piece at a time (:func:`speech_pieces`), with
+    the colon's pause between pieces. A sentence of one piece returns exactly what *synthesize*
+    returned, so a malformed return still reaches the caller's checks. Raises what it raises."""
+    pieces = speech_pieces(sentence)
+    if len(pieces) == 1:
+        return synthesize(sentence, config)
+    out = b""
+    for index, piece in enumerate(pieces):
+        pcm = synthesize(piece, config)
+        if not isinstance(pcm, (bytes, bytearray)):
+            return pcm
+        last = index == len(pieces) - 1
+        out += bytes(pcm) if last else shape_sentence(bytes(pcm), pause_after(piece))
+    return out
+
+
+def shape_sentence(pcm: bytes, pause_s: float) -> bytes:
+    """One sentence's pcm16 with its edges faded over :data:`FADE_S` (no click where it meets
+    the next) and *pause_s* of silence after it. A trailing odd byte is dropped. Never raises."""
+    whole = bytes(pcm[: len(pcm) - len(pcm) % BYTES_PER_SAMPLE])
+    samples = array.array("h")
+    samples.frombytes(whole)
+    n = len(samples)
+    fade = min(int(FADE_S * SAMPLE_RATE_HZ), n // 2)
+    for i in range(fade):
+        gain = i / fade
+        samples[i] = int(samples[i] * gain)
+        samples[n - 1 - i] = int(samples[n - 1 - i] * gain)
+    silence = b"\x00" * (round(max(0.0, pause_s) * SAMPLE_RATE_HZ) * BYTES_PER_SAMPLE)
+    return samples.tobytes() + silence
+
+
+def _read_deadline(config: VoiceConfig, max_bytes: Optional[int] = None) -> float:
     """Total wall-clock budget for reading one sentence's whole response body.
 
     Derived from what it bounds (lesson 1), not chosen freely: the worst
@@ -620,7 +743,8 @@ def _read_deadline(config: VoiceConfig) -> float:
     function can incur beyond its own deadline is bounded by one more
     ``speech_deadline``, never unbounded.
     """
-    return config.speech_deadline + (config.max_sentence_audio_bytes / MIN_TTS_STREAM_BYTES_PER_S)
+    cap = config.max_sentence_audio_bytes if max_bytes is None else max_bytes
+    return config.speech_deadline + (cap / MIN_TTS_STREAM_BYTES_PER_S)
 
 
 def _read_bounded(response: Any, *, max_bytes: int, deadline_s: float) -> bytes:
@@ -649,6 +773,35 @@ def _read_bounded(response: Any, *, max_bytes: int, deadline_s: float) -> bytes:
         chunks.append(chunk)
         total += len(chunk)
     return b"".join(chunks)
+
+
+_HEBREW_LETTER = re.compile(r"[א-ת]")
+_LATIN_LETTER = re.compile(r"[A-Za-z]")
+#: A ``<xx>`` / ``</xx>`` language tag as BlueTTS reads them; stripped from the text first so
+#: untrusted text (library, recalled memory) never picks the phonemizer's language itself.
+_LANG_TAG = re.compile(r"</?[A-Za-z]{2}>")
+#: One run of Latin-script words: a word, then more words joined by spaces or punctuation,
+#: and the run's own closing punctuation.
+_LATIN_RUN = re.compile(
+    r"[A-Za-z][\w'’-]*(?:[ \t,;:()\"“”'’-]+[A-Za-z0-9][\w'’-]*)*[.!?,:;]?", re.ASCII
+)
+
+
+def mark_language(sentence: str) -> str:
+    """Tag Latin-script text ``<en>…</en>`` for the tts lane (deviation d2, embodiment#107).
+
+    lobes' BlueTTS runs with ``TTS_LANGUAGE=he`` and passes a span with no Hebrew letters
+    to the model as raw letters, so English came out garbled; an ``<en>`` span goes
+    through espeak English (``blue_onnx._phonemize_segment``). A sentence with no Hebrew
+    is tagged whole; inside a Hebrew sentence each Latin run is tagged; Hebrew, digits and
+    punctuation alone are left as they were.
+    """
+    text = _LANG_TAG.sub("", sentence)
+    if not _LATIN_LETTER.search(text):
+        return text
+    if not _HEBREW_LETTER.search(text):
+        return f"<en>{text}</en>"
+    return _LATIN_RUN.sub(lambda m: f"<en>{m.group(0)}</en>", text)
 
 
 def http_synthesize(sentence: str, config: VoiceConfig, *, opener: Optional[Any] = None) -> bytes:
@@ -680,7 +833,7 @@ def http_synthesize(sentence: str, config: VoiceConfig, *, opener: Optional[Any]
     url = f"{origin}{SPEECH_ROUTE}"
     if not url.startswith(("http://", "https://")):
         raise ValueError("gateway_url must be http(s)")
-    payload: dict[str, str] = {"input": sentence, "response_format": "pcm"}
+    payload: dict[str, str] = {"input": mark_language(sentence), "response_format": "pcm"}
     if config.voice:
         payload["voice"] = config.voice
     body = json.dumps(payload).encode("utf-8")
@@ -694,11 +847,8 @@ def http_synthesize(sentence: str, config: VoiceConfig, *, opener: Optional[Any]
     with active_opener.open(  # nosec B310 - scheme checked above, redirects refused
         request, timeout=config.speech_deadline
     ) as response:
-        return _read_bounded(
-            response,
-            max_bytes=config.max_sentence_audio_bytes,
-            deadline_s=_read_deadline(config),
-        )
+        cap = sentence_audio_cap(sentence, config)
+        return _read_bounded(response, max_bytes=cap, deadline_s=_read_deadline(config, cap))
 
 
 @dataclass
@@ -942,7 +1092,7 @@ class Voice:
         progress = _SpeakProgress()
         interrupted = False
 
-        for sentence in sentences:
+        for index, sentence in enumerate(sentences):
             if self._interrupted.is_set():
                 interrupted = True
                 break
@@ -950,6 +1100,8 @@ class Voice:
             pcm = self._sentence_pcm(sentence, progress)
             if not pcm:
                 continue
+            last = index == len(sentences) - 1
+            pcm = shape_sentence(pcm, 0.0 if last else pause_after(sentence))  # d7
 
             if self._interrupted.is_set():
                 interrupted = True
@@ -997,7 +1149,7 @@ class Voice:
         if progress.tts_degraded:
             return b""
         try:
-            pcm = self._synthesize(sentence, self._config)
+            pcm = synthesize_pieces(self._synthesize, sentence, self._config)
         except VoiceReadTimeoutError as exc:
             # Named ahead of the generic case (round 4) — a distinct
             # fault from an outright failure (lesson 4).
@@ -1012,9 +1164,9 @@ class Voice:
             progress.tts_degraded = True
             self._degrade(VOICE_TTS_FAILED, safe_reason.describe_exception(exc))
             return b""
-        return self._bound_pcm(pcm, progress)
+        return self._bound_pcm(pcm, progress, sentence)
 
-    def _bound_pcm(self, pcm: object, progress: _SpeakProgress) -> bytes:
+    def _bound_pcm(self, pcm: object, progress: _SpeakProgress, sentence: str = "") -> bytes:
         """Validate and cap what the synthesizer returned.
 
         A non-bytes return is a synthesis fault (latches, like a raise); an
@@ -1029,7 +1181,7 @@ class Voice:
             )
             return b""
         pcm = bytes(pcm)
-        cap = self._config.max_sentence_audio_bytes
+        cap = sentence_audio_cap(sentence, self._config)
         if len(pcm) > cap:
             self._degrade(
                 VOICE_TTS_OVERSIZE,

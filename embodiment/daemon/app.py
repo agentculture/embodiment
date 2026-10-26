@@ -149,6 +149,7 @@ from embodiment.audio.features import FeatureExtractor
 from embodiment.bus import Bus, fold_degradation
 from embodiment.contract import ModelResponse
 from embodiment.daemon import drain as drain_module
+from embodiment.daemon import reading as daemon_reading
 from embodiment.daemon import todos as todos_module
 from embodiment.daemon.history import (
     SETTLED_NAME,
@@ -185,16 +186,16 @@ from embodiment.http import server as server_module
 from embodiment.ingest.spool import Spool
 from embodiment.library import conversations as conversations_module
 from embodiment.library import reading as reading_module
+from embodiment.library import retrieve as retrieve_module
 from embodiment.library import tools as library_tools
 from embodiment.library import web as web_module
 from embodiment.library.checklist import parse_checklist, parse_group, recording_id_of
 from embodiment.library.client import LibraryClient, LibraryConfig, LibraryError
-from embodiment.library.extract import extract_item
+from embodiment.library.document import Document, to_document
 from embodiment.library.index import DocumentIndex
 from embodiment.library.markdown import Limits as MarkdownLimits
 from embodiment.library.markdown import clean_text as markdown_clean_text
-from embodiment.library.sync import RECOVERED as LIBRARY_RECOVERED
-from embodiment.library.sync import LibrarySync
+from embodiment.library.retrieve import RetrieveClient
 from embodiment.library.todo_source import UNAVAILABLE as TODOS_UNAVAILABLE
 from embodiment.library.todo_source import TodoSource
 from embodiment.memory import PRIVATE, RoomMemory, SemanticRecall, render_recalled
@@ -533,7 +534,7 @@ PREVIOUS_SOURCES_HEADER = (
 #: "item N" to it rather than to the recalled-memory block.
 PREVIOUS_SOURCES_FOOTER = (
     "«פריט N», «מקור N» או «item N» בהודעה הבאה של המשתמש = הרשומה עם page: N ברשימה "
-    "שלמעלה (לא רשומה מהזיכרון). קראי אותה עם read_passage (item_id ו־anchor) לפני שתעני."
+    "שלמעלה (לא רשומה מהזיכרון). קראי אותה עם read_passage (item_id ו־chunk_sha) לפני שתעני."
 )
 
 
@@ -565,15 +566,16 @@ def _shown_source_record(src: Mapping[str, Any], page: int) -> dict[str, Any]:
     """One shown source as the record shape :func:`render_recalled` fences.
 
     Only the item id (library) or the source kind, the writer and the date reach the
-    restricted header; the page number, the title and the anchor ``read_passage``
-    takes are body.
+    restricted header; the page number, the title and the ``chunk_sha``
+    ``read_passage`` takes (embodiment#107; the anchor when a source has none) are body.
     """
     kind = str(src.get("source") or "source")
     if src.get("item_id"):  # a library citation: the reader's target
         kind = library_tools.LIBRARY_SOURCE
     parts = [("page", str(page)), ("title", str(src.get("title") or kind))]
     if kind == library_tools.LIBRARY_SOURCE:
-        parts.append(("anchor", str(src.get("anchor") or "")))
+        sha = str(src.get("chunk_sha") or "")
+        parts.append(("chunk_sha", sha) if sha else ("anchor", str(src.get("anchor") or "")))
     elif kind == "room":
         parts.append(("from", "Gwen's memory"))
     return {
@@ -1050,8 +1052,9 @@ APP_TEXT_FOLLOW_UP_UNROUTED = "app-text-follow-up-unrouted"
 
 # ── the library lane (plan task t13) ──────────────────────────────────────────
 
-#: The library (or its sync, or the document index) degraded; the reason is a
-#: fixed code from the library modules, never library text or the key.
+#: The library degraded (a catalog listing, a retrieve call or a document fetch
+#: failed); the reason is a fixed code from the library modules, never library text
+#: or the key. Recorded on each transition into a fault, per part.
 APP_LIBRARY_DEGRADED = "app-library-degraded"
 #: The library is configured but could not be wired (bad URL, no state dir,
 #: a model seam that was bound before the daemon saw it).
@@ -1068,19 +1071,37 @@ APP_TODOS_DEGRADED = "app-todos-degraded"
 #: Indexing Gwen's settled conversations failed (d8): an embed refused, or the
 #: logs could not be read. The reason is a fixed code or an exception's class.
 APP_CONVERSATIONS_INDEX_FAILED = "app-conversations-index-failed"
+#: The retired library index was removed on the first start without it (embodiment#107).
+APP_LIBRARY_INDEX_RETIRED = "app-library-index-retired"
 #: The refusal token the model reads back from a guarded write.
 LIBRARY_GUARDED_REASON = "library-guarded"
-#: A library search whose query could not be embedded.
-LIBRARY_EMBED_FAILED_CODE = library_tools.CODE_EMBED_FAILED
+#: The page routes' refusal while the library cannot answer (503).
+LIBRARY_UNAVAILABLE_CODE = "library_unavailable"
 
-#: The document index: ``<state>/library/index.json`` (0700 dir, 0600 file — t3's
-#: ``DocumentIndex._save``). Never inside an eidetic store (the index refuses one).
+#: The RETIRED document index: ``<state>/library/index.json``. Gwen keeps no copy of
+#: the library any more (embodiment#107); the first start without it deletes the file
+#: (:func:`retire_library_index`). The conversations index is a different file.
 LIBRARY_DIRNAME = "library"
 LIBRARY_INDEX_NAME = "index.json"
 #: How often the catalog is listed again. A **judgement call**, not a measurement:
-#: one GET per interval keeps the index within five minutes of the library, and
-#: nothing waits on this clock (a page reads the index, never the library).
-LIBRARY_SYNC_INTERVAL_S = 300.0
+#: one metadata GET a minute keeps the shelf, the date filter and the reader's item
+#: metas within a minute of the library; nothing waits on this clock (a page reads
+#: the last list, never the library). Search does not depend on it: retrieve is live.
+LIBRARY_CATALOG_INTERVAL_S = 60.0
+#: Documents (an item's ``/text``) kept by the one provider, keyed by (id, sha256). A
+#: **judgement call**, sized from the pre-flight run (2026-10-26): a search cites up to
+#: ``LIBRARY_SEARCH_LIMIT`` items and looks each one up for its anchor, so at 4 a search
+#: during a read evicted the book being read and every next paragraph fetched its 752 KB
+#: ``/text`` again (20 refetches in 5 paragraphs). 12 holds one search's items plus the read.
+LIBRARY_DOCUMENT_CACHE_ITEMS = 12
+#: Retrieved passages' raw text kept for ``read_passage`` and the reader anchor: a
+#: few turns' worth of searches (8 passages each).
+LIBRARY_CHUNK_TEXTS = 256
+#: Bounds resolving the reader anchors of one reply's (or one search's) sources: each
+#: cited item's ``/text`` may be fetched (one GET, the client's own deadline) until
+#: this much has passed; the rest keep an empty anchor and the reader opens at the
+#: item's start. A **judgement call**: a page answer should not wait on a cold library.
+LIBRARY_ANCHOR_BUDGET_S = 2.0
 #: The round trip a to-do mark must close in (embodiment#105 acceptance 3: the
 #: library line shows it within 60 s; culture-rules measured 2 s for its own part).
 TODO_ROUND_TRIP_BOUND_S = 60.0
@@ -1089,15 +1110,7 @@ TODO_ROUND_TRIP_BOUND_S = 60.0
 #: recording's list reach Gwen within the bound with one check to spare. The check
 #: has no budget of its own: each GET is bounded by the library client's deadline.
 TODO_CHECK_INTERVAL_S = TODO_ROUND_TRIP_BOUND_S / 2
-#: Bounds ONE sync tick's work before the thread checks its interval and stop
-#: again. A **judgement call**: it bounds no request (the client bounds those) and
-#: no turn (every chunk embed yields to the live-turn gate); a stop does not wait
-#: on it either — closing ends the tick at the next chunk.
-LIBRARY_TICK_BUDGET_S = 60.0
-#: Seconds between ticks while a tick left work behind (a first sync, a re-index):
-#: the next bounded tick runs soon instead of an interval later. Each tick still has
-#: its budget and still yields to live turns. Measured 2026-10-24: a full re-index of
-#: 51 items took one item-budget per 300 s tick (15 items each), about 15 minutes.
+#: Seconds until a to-do check a live turn deferred comes back.
 LIBRARY_CATCH_UP_S = 5.0
 #: How long "New conversation" waits for a turn in flight to finish: well inside the
 #: HTTP control lane's own deadline, so the page's answer is the real outcome.
@@ -1643,7 +1656,8 @@ class AppLanes:
     #: ``None`` is a daemon thread per recall. Tests inject a holder or a
     #: synchronous call to choose the moment a recall lands.
     recall_spawn: Optional[Callable[[Callable[[], None]], object]] = None
-    #: :class:`LibraryLane` (t13) — the library client, document index and sync.
+    #: :class:`LibraryLane` (t13, embodiment#107) — the library client, its retrieve,
+    #: the live catalog and the one document provider; no index, no sync.
     #: ``None`` (``EMBODIMENT_LIBRARY_URL`` unset): no library tool is bound, the
     #: library routes answer 503 ``library-not-configured``, and every turn is
     #: exactly what it was before the library existed.
@@ -1670,62 +1684,219 @@ class _LibraryDue:
     """When the library worker's two jobs are next due (monotonic seconds)."""
 
     todo: float = 0.0
-    sync: float = 0.0
+    catalog: float = 0.0
 
 
 class _TodosUnavailable(Exception):
     """The to-dos are not readable now (``list_todos`` reports a fault, not "none")."""
 
 
-class _LibraryStopped(Exception):
-    """The daemon is closing: a chunk embed is abandoned, not failed."""
+class LibraryItemUnknown(LookupError):
+    """The item is not in the last catalog listed: nothing is fetched for it."""
 
 
-class _RememberedCatalog:
-    """The library client as the sync sees it, keeping the last full catalog it listed.
+def _catalog_meta(item: Any) -> dict[str, Any]:
+    """One catalog item as the plain meta the tools and the catalog route read."""
+    return {
+        "id": str(getattr(item, "id", "")),
+        "title": _text_or_empty(getattr(item, "title", "")),
+        "kind": _text_or_empty(getattr(item, "kind", "")),
+        "created_at": _text_or_empty(getattr(item, "created_at", "")),
+    }
 
-    The catalog route answers from this — a page load never reaches the library —
-    and ``gets`` stays the client's own counter (the c28 live check reads it).
+
+class LibraryCatalog:
+    """The library's catalog as last listed (embodiment#107 t6): a live ``list_items``
+    on the library worker's clock, never on a page load.
+
+    The catalog route, ``search_library``'s date filter and the document provider read
+    :meth:`items`: the last GOOD list, kept when a listing fails. ``listed_at`` says
+    when that list was read; ``down`` is the failing listing's code until one succeeds.
+    Nothing is downloaded, extracted or embedded: this is metadata only.
     """
 
-    def __init__(self, client: Any) -> None:
+    def __init__(self, client: Any, clock: Callable[[], float] = time.time) -> None:
         self._client = client
-        self.items: Optional[tuple[Any, ...]] = None
+        self._clock = clock
+        self._lock = threading.Lock()
+        self._items: Optional[tuple[Any, ...]] = None
+        self._by_id: dict[str, Any] = {}
+        self.listed_at: Optional[float] = None
+        self.listings = 0
+        self.failures_by_code: dict[str, int] = {}
+        self.down: Optional[str] = None
 
     @property
     def gets(self) -> int:
+        """The library client's own request counter (every one a GET)."""
         return int(getattr(self._client, "gets", 0) or 0)
 
-    def list_items(self, kind: Optional[str] = None, q: Optional[str] = None) -> list[Any]:
-        items = self._client.list_items(kind=kind, q=q)
-        if kind is None and q is None:
-            self.items = tuple(items)
-        return items
+    def refresh(self) -> Optional[str]:
+        """List the catalog once. ``None`` when it was read, else its fixed code. Never
+        raises; a failure keeps the last good list."""
+        try:
+            items = tuple(self._client.list_items())
+        except LibraryError as exc:
+            code = str(getattr(exc, "code", "") or LIBRARY_UNAVAILABLE_CODE)
+        except Exception:  # noqa: BLE001  # a client bug is a bad answer, never a raise
+            code = "library_bad_response"
+        else:
+            with self._lock:
+                self._items = items
+                self._by_id = {str(getattr(i, "id", "")): i for i in items}
+                self.listed_at = self._clock()
+                self.listings += 1
+                self.down = None
+            return None
+        with self._lock:
+            self.failures_by_code[code] = self.failures_by_code.get(code, 0) + 1
+            self.down = code
+        return code
 
-    def get_item(self, item_id: Any) -> Any:
-        return self._client.get_item(item_id)
+    def items(self) -> Optional[tuple[Any, ...]]:
+        """The last good list, or ``None`` before any listing succeeded."""
+        with self._lock:
+            return self._items
 
-    def fetch_file(self, item_id: Any) -> bytes:
-        return self._client.fetch_file(item_id)
+    def meta(self, item_id: Any) -> Optional[Any]:
+        with self._lock:
+            return self._by_id.get(str(item_id))
+
+    def metas(self) -> list[dict[str, Any]]:
+        """``[{id, title, kind, created_at}]`` for the tools (``catalog`` callable)."""
+        return [_catalog_meta(item) for item in self.items() or ()]
+
+    def status(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "catalog_items": len(self._items) if self._items is not None else 0,
+                "last_listed_at": self.listed_at,
+                "listings": self.listings,
+                "catalog_failures_by_code": dict(self.failures_by_code),
+                "catalog_down": self.down,
+            }
+
+
+class LibraryDocuments:
+    """``item_id -> Document`` from the library's ``/text`` (t2's :func:`to_document`).
+
+    ONE provider for the tools and the reader route (and t7's reading loop): the item's
+    meta comes from the live :class:`LibraryCatalog`, and a small LRU keyed by
+    ``(item_id, sha256)`` keeps the last few documents, so an item replaced in the
+    library (a new sha256) is fetched again rather than served stale. An item not in
+    the catalog raises :class:`LibraryItemUnknown` and fetches nothing; a library
+    failure raises its :class:`LibraryError`.
+    """
+
+    def __init__(
+        self, client: Any, catalog: LibraryCatalog, size: int = LIBRARY_DOCUMENT_CACHE_ITEMS
+    ) -> None:
+        self._client = client
+        self._catalog = catalog
+        self._size = max(1, int(size))
+        self._lock = threading.Lock()
+        self._cache: "OrderedDict[tuple[str, str], Document]" = OrderedDict()
+        self.fetched = 0
+        self.hits = 0
+        self.failures_by_code: dict[str, int] = {}
+
+    def _key(self, item_id: Any) -> tuple[tuple[str, str], Any]:
+        meta = self._catalog.meta(item_id)
+        if meta is None:
+            raise LibraryItemUnknown(str(item_id))
+        return (str(getattr(meta, "id", item_id)), str(getattr(meta, "sha256", ""))), meta
+
+    def cached(self, item_id: Any) -> Optional[Document]:
+        """The document if it is cached for the item's current sha256; never fetches."""
+        try:
+            key, _meta = self._key(item_id)
+        except LookupError:
+            return None
+        with self._lock:
+            return self._cache.get(key)
+
+    def __call__(self, item_id: Any) -> Document:
+        key, meta = self._key(item_id)
+        with self._lock:
+            document = self._cache.get(key)
+            if document is not None:
+                self._cache.move_to_end(key)
+                self.hits += 1
+                return document
+        try:
+            document = to_document(meta, self._client.fetch_text(meta.id))
+        except LibraryError as exc:
+            self._failed(str(getattr(exc, "code", "") or LIBRARY_UNAVAILABLE_CODE))
+            raise
+        except Exception:  # noqa: BLE001  # folded to the library's own declared code
+            self._failed("library_bad_response")
+            raise LibraryError("library_bad_response") from None
+        with self._lock:
+            self.fetched += 1
+            self._cache[key] = document
+            self._cache.move_to_end(key)
+            while len(self._cache) > self._size:
+                self._cache.popitem(last=False)
+        return document
+
+    def _failed(self, code: str) -> None:
+        with self._lock:
+            self.failures_by_code[code] = self.failures_by_code.get(code, 0) + 1
+
+    def status(self) -> dict[str, Any]:
+        with self._lock:
+            return {
+                "fetched": self.fetched,
+                "hits": self.hits,
+                "cached": len(self._cache),
+                "failures_by_code": dict(self.failures_by_code),
+            }
+
+
+class _ChunkTexts:
+    """The raw text of the passages retrieve returned, by ``(item_id, chunk_sha)``.
+
+    Shared across a daemon's typed turns, so ``read_passage`` can open a passage the
+    previous answer cited, and the page's reader anchor is matched against the chunk's
+    own text rather than its capped, neutralised citation copy. Bounded: the oldest
+    entries go first.
+    """
+
+    def __init__(self, size: int = LIBRARY_CHUNK_TEXTS) -> None:
+        self._size = size
+        self._lock = threading.Lock()
+        self._texts: "OrderedDict[tuple[str, str], str]" = OrderedDict()
+
+    def __setitem__(self, key: tuple[str, str], value: str) -> None:
+        with self._lock:
+            self._texts[key] = value
+            self._texts.move_to_end(key)
+            while len(self._texts) > self._size:
+                self._texts.popitem(last=False)
+
+    def get(self, key: tuple[str, str], default: Optional[str] = None) -> Optional[str]:
+        with self._lock:
+            return self._texts.get(key, default)
 
 
 @dataclass(eq=False)
 class LibraryLane:
-    """The library, wired: see :func:`build_library_lane`. Built only when configured."""
+    """The library, wired: see :func:`build_library_lane`. Built only when configured.
 
+    No index and no sync (embodiment#107): search goes to the library's retrieve, the
+    catalog is listed live on a clock, and documents come from the library's ``/text``.
+    """
+
+    #: The GET-only :class:`~embodiment.library.client.LibraryClient`.
     client: Any
-    index: Any
-    sync: Any
-    #: ``text -> vector`` for a QUERY (a search tool call or the search route).
-    #: Never gated: it serves the live turn the gate protects.
-    embed_query: Callable[[str], Any]
-    #: Set when the daemon closes: the sync's clock reads past every deadline and
-    #: the next chunk embed is abandoned, so the tick ends at the next chunk.
+    #: The :class:`~embodiment.library.retrieve.RetrieveClient` (``retrieve`` + ``status``).
+    retrieve: Any
+    catalog: LibraryCatalog
+    documents: LibraryDocuments
+    #: Set when the daemon closes: the worker's clock stops.
     stop: threading.Event
-    #: The library search floor: memory's provisional 0.715, **uncalibrated for
-    #: library text** (plan risk r6) — status says so.
-    threshold: float = memory_module.DEFAULT_SIMILARITY_THRESHOLD
-    interval_s: float = LIBRARY_SYNC_INTERVAL_S
+    chunks: _ChunkTexts
+    interval_s: float = LIBRARY_CATALOG_INTERVAL_S
     #: The to-do check's own clock (c8), beside the catalog's.
     todo_interval_s: float = TODO_CHECK_INTERVAL_S
     #: ``url -> Page`` for ``fetch_source`` (:func:`embodiment.library.web.fetch_page`);
@@ -1735,53 +1906,21 @@ class LibraryLane:
 
 def build_library_lane(
     client: Any,
-    index_path: Any,
+    retrieve: Any,
     *,
-    embed_document: Callable[[str], Any],
-    embed_query: Callable[[str], Any],
-    gate: Callable[[], bool],
-    extract: Callable[[bytes], Any] = extract_item,
-    threshold: float = memory_module.DEFAULT_SIMILARITY_THRESHOLD,
     fetch: Optional[Callable[[str], Any]] = None,
+    clock: Callable[[], float] = time.time,
+    document_cache: int = LIBRARY_DOCUMENT_CACHE_ITEMS,
 ) -> LibraryLane:
-    """The client, the index and the sync, wired as t10 asks.
-
-    The index embeds every chunk through ``sync.gate_embed`` so a chunk waits
-    while *gate* (a live turn) is held — not only the gap between items. The two
-    are mutually referential (the sync needs the index, the index's embedder is
-    the sync's), so the index's embedder is bound one line later. Raises only what
-    :class:`DocumentIndex` raises for a path inside an eidetic store.
-    """
-    stop = threading.Event()
-    catalog = _RememberedCatalog(client)
-    gated: list[Callable[[str], Any]] = []
-    index = DocumentIndex(
-        index_path, embed=lambda text: gated[0](text), model_tag=vectors.EMBED_ROLE
-    )
-    sync = LibrarySync(
-        catalog,
-        index,
-        extract=extract,
-        clock=lambda: math.inf if stop.is_set() else time.time(),
-        budget=LIBRARY_TICK_BUDGET_S,
-        # Never held while stopping: a held gate would park the embed below
-        # instead of letting it abandon the chunk.
-        gate=lambda: not stop.is_set() and bool(gate()),
-    )
-
-    def embed(text: str) -> Any:
-        if stop.is_set():
-            raise _LibraryStopped()
-        return embed_document(text)
-
-    gated.append(sync.gate_embed(embed))
+    """The client, the retrieve client, the live catalog and the one document provider."""
+    catalog = LibraryCatalog(client, clock=clock)
     return LibraryLane(
-        client=catalog,
-        index=index,
-        sync=sync,
-        embed_query=embed_query,
-        stop=stop,
-        threshold=threshold,
+        client=client,
+        retrieve=retrieve,
+        catalog=catalog,
+        documents=LibraryDocuments(client, catalog, size=document_cache),
+        stop=threading.Event(),
+        chunks=_ChunkTexts(),
         fetch=fetch,
     )
 
@@ -2171,11 +2310,23 @@ class DaemonApp:
     def _init_library(self, lane: Optional[LibraryLane]) -> None:
         """The library lane's state (t13). With no lane every counter stays zero."""
         self._library = lane
+        #: Reading aloud (embodiment#107): saved positions and the next/heard machine
+        #: over the lane's ONE document provider. No lane, no reader.
+        self._reading_positions: Optional[daemon_reading.ReadingPositions] = None
+        self._reader: Optional[daemon_reading.Reader] = None
+        if lane is not None:
+            self._reading_positions = daemon_reading.ReadingPositions(
+                Path(self._state.dir) / daemon_reading.POSITIONS_NAME
+            )
+            self._reader = daemon_reading.Reader(
+                self._reading_positions, self._reading_document, self._reading_listed
+            )
         self._library_thread: Optional[threading.Thread] = None
-        self._library_ticks = 0
         self._library_tool_calls: dict[str, int] = {}
-        self._library_tick_failures = 0
-        self._library_seen = (0, 0)
+        #: The fixed code each library part ("catalog", "retrieve", "documents") is
+        #: failing with, so a fault is recorded once per transition and the recovery
+        #: publishes ``state`` ``library`` ``online``.
+        self._library_faults: dict[str, str] = {}
         self._library_guarded_writes = 0
         self._typed_in_flight = 0
         #: The To-dos: the library's ``kind=todo`` items (embodiment#105), read on the
@@ -2343,7 +2494,7 @@ class DaemonApp:
         self._start_turn_thread()
         self._start_drain_worker()
         self._start_backfill()
-        self._start_library_sync()
+        self._start_library_worker()
         self._start_settle_watch()
         self._publish("state", {"component": "daemon", "status": "running"})
 
@@ -3652,7 +3803,7 @@ class DaemonApp:
         finally:
             self._tls.conversation_session = None
         turn = getattr(self._tls, "text_turn", None)
-        sources = _typed_sources(turn) if (turn and result.ok) else []
+        sources = self._anchored(_typed_sources(turn)) if (turn and result.ok) else []
         if turn is not None:
             turn.shown_sources = tuple(sources)
         return {
@@ -3670,6 +3821,7 @@ class DaemonApp:
         return {
             "ok": result.ok,
             "audio": result.audio,
+            "truncated": bool(result.truncated),
             "content_type": result.content_type,
             "code": result.code,
             "http_status": result.http_status,
@@ -3706,7 +3858,7 @@ class DaemonApp:
             "transcript": result.transcript,
             "reply": result.reply,
             # Carried for the page; the clip route forwards only transcript and reply today.
-            "sources": _typed_sources(turn) if (turn and result.ok) else [],
+            "sources": self._anchored(_typed_sources(turn)) if (turn and result.ok) else [],
             "turn_serial": result.turn_serial if result.ok else None,
             "code": result.code,
             "http_status": result.http_status,
@@ -3832,11 +3984,17 @@ class DaemonApp:
         for spec in self._tools.specs.values():
             registry.add(spec)
         if lane is not None:
-            for spec in library_tools.build_library_tools(
-                lane.index, lane.embed_query, collector, threshold=lane.threshold
+            for spec in library_tools.build_retrieve_tools(
+                _RecordedRetrieve(self, lane.retrieve),
+                lane.catalog.metas,
+                self._recorded_documents,
+                collector,
+                chunks=lane.chunks,
             ):
                 registry.add(self._counted(spec))
-            for spec in reading_module.build_reading_tools(lane.index, collector, fetch=lane.fetch):
+            for spec in reading_module.build_document_reading_tools(
+                self._recorded_documents, collector, fetch=lane.fetch
+            ):
                 registry.add(self._counted(spec))
         if todos:
             for spec in todos_module.build_todo_tools(
@@ -3877,7 +4035,7 @@ class DaemonApp:
         return {i for i in ids if i}
 
     def live_turn_held(self) -> bool:
-        """The library sync's gate: True while a live turn holds the conversation.
+        """The to-do check's gate: True while a live turn holds the conversation.
 
         A voice turn in flight or queued, a typed turn holding the conversation, or
         the speaker still playing. Never raises.
@@ -3919,22 +4077,27 @@ class DaemonApp:
         )
         return True
 
-    def _start_library_sync(self) -> None:
+    def _start_library_worker(self) -> None:
+        """The library worker: the to-do check and the catalog listing, each on its clock.
+
+        Not a sync (embodiment#107): nothing is downloaded, extracted or embedded; one
+        metadata ``list_items`` per catalog interval and the to-do source's own reads.
+        """
         lane = self._library
-        if lane is None or lane.sync is None:
+        if lane is None:
             return
         thread = threading.Thread(
             target=self._library_worker, name="embodiment-library", daemon=True
         )
         try:
             thread.start()
-        except Exception as exc:  # noqa: BLE001  # no sync: the index stays as it is, said aloud
-            self._record(APP_LIBRARY_UNAVAILABLE, f"sync worker: {_describe(exc)}")
+        except Exception as exc:  # noqa: BLE001  # no worker: the catalog stays as listed
+            self._record(APP_LIBRARY_UNAVAILABLE, f"library worker: {_describe(exc)}")
             return
         self._library_thread = thread
 
     def _library_worker(self) -> None:
-        """A to-do check and a sync tick now, then each on its own clock, until close."""
+        """A to-do check and a catalog listing now, then each on its own clock, until close."""
         lane = self._library
         due = _LibraryDue()
         while lane is not None and not lane.stop.is_set():
@@ -3945,23 +4108,20 @@ class DaemonApp:
         """Run what is due on the library worker; return the seconds until the next.
 
         Two clocks on one thread (s22): the to-do check every ``todo_interval_s``
-        (c8) and the catalog sync every ``interval_s`` (or :data:`LIBRARY_CATCH_UP_S`
-        while it is behind). One thread, so they never overlap; the to-do check
-        touches only the to-do source and the marks, never the document index. A
-        check a live turn deferred comes back after :data:`LIBRARY_CATCH_UP_S`.
+        (c8) and the catalog listing every ``interval_s``. One thread, so they never
+        overlap. A check a live turn deferred comes back after :data:`LIBRARY_CATCH_UP_S`.
         """
         lane = self._library
         if lane is None:
-            return LIBRARY_SYNC_INTERVAL_S
+            return LIBRARY_CATALOG_INTERVAL_S
         todo_interval = float(lane.todo_interval_s)
         if self._todo_source is not None and now() >= due.todo:
             ran = self._todo_check()
             due.todo = now() + (todo_interval if ran else min(LIBRARY_CATCH_UP_S, todo_interval))
-        if not lane.stop.is_set() and now() >= due.sync:
-            backlog = self._library_tick()
-            wait = LIBRARY_CATCH_UP_S if backlog else float(lane.interval_s)
-            due.sync = now() + min(wait, float(lane.interval_s))
-        nxt = due.sync if self._todo_source is None else min(due.sync, due.todo)
+        if not lane.stop.is_set() and now() >= due.catalog:
+            self._catalog_tick()
+            due.catalog = now() + float(lane.interval_s)
+        nxt = due.catalog if self._todo_source is None else min(due.catalog, due.todo)
         return max(0.0, nxt - now())
 
     def _todo_check(self) -> bool:
@@ -4023,49 +4183,153 @@ class DaemonApp:
                 with self._lock:
                     self._todo_resends_published += 1
 
-    def _library_tick(self) -> bool:
-        """ONE bounded sync tick plus the forwarding of what it recorded. Never raises.
+    def _catalog_tick(self) -> Optional[str]:
+        """ONE catalog listing; its fault recorded once per transition. Never raises.
 
-        Returns True when the tick left wanted items behind, or yielded to a live
-        turn (the worker then comes back soon), False otherwise, including on a
-        failed tick or a down library. A tick that yields at its FIRST gate has
-        listed nothing, so it reports ``remaining == 0``; it is still unfinished
-        work (review of PR #98, 2026-10-24: it slept the full interval).
+        Returns the listing's fixed code, or ``None`` when it was read.
         """
         lane = self._library
         if lane is None:
-            return False
-        backlog = False
-        try:
-            out = lane.sync.tick()
-        except Exception as exc:  # noqa: BLE001  # the sync promises not to; count anyway
-            with self._lock:
-                self._library_tick_failures += 1
-            self._record(APP_LIBRARY_DEGRADED, f"tick: {_describe(exc)}", source="library")
-        else:
-            with self._lock:
-                self._library_ticks += 1
-            backlog = _tick_left_work(out)
+            return None
+        code = lane.catalog.refresh()
         if not lane.stop.is_set():
-            # A tick a stop cut short abandoned its chunk on purpose: not a fault.
-            self._forward_library_degradations(lane)
-        return backlog
+            self._library_outcome("catalog", code)
+        return code
 
-    def _forward_library_degradations(self, lane: LibraryLane) -> None:
-        """The sync's transitions and the index's faults, each recorded once."""
-        transitions = list(getattr(lane.sync, "degradations", ()) or ())
-        problems = list(getattr(lane.index, "degradations", ()) or ())
+    def _library_outcome(self, part: str, code: Optional[str]) -> None:
+        """Record a library *part*'s fault on the transition into it; say when it
+        recovers. One record per transition, never one per failed call (C3)."""
         with self._lock:
-            seen_sync, seen_index = self._library_seen
-            self._library_seen = (len(transitions), len(problems))
-        for code in transitions[seen_sync:]:
-            if code == LIBRARY_RECOVERED:
-                self._publish("state", {"component": "library", "status": "online"})
+            before = self._library_faults.get(part)
+            if code is None:
+                self._library_faults.pop(part, None)
             else:
-                reason = f"library sync: {safe_reason.safe_label(code)}"
-                self._record(APP_LIBRARY_DEGRADED, reason, source="library")
-        for problem in problems[seen_index:]:
-            self._record(APP_LIBRARY_DEGRADED, f"document index: {problem}", source="library")
+                self._library_faults[part] = code
+        if code is None:
+            if before is not None:
+                self._publish("state", {"component": "library", "status": "online", "part": part})
+            return
+        if code != before:
+            reason = f"library {part}: {safe_reason.safe_label(code)}"
+            self._record(APP_LIBRARY_DEGRADED, reason, source="library")
+
+    def _recorded_documents(self, item_id: Any) -> Document:
+        """The lane's document provider, its library faults recorded (an unknown item
+        is not one: nothing was asked of the library)."""
+        lane = self._library
+        if lane is None:
+            raise LibraryItemUnknown(str(item_id))
+        try:
+            document = lane.documents(item_id)
+        except LibraryError as exc:
+            self._library_outcome("documents", _library_code(exc))
+            raise
+        self._library_outcome("documents", None)
+        return document
+
+    def _reading_document(self, item_id: Any) -> Document:
+        """The reader's provider: the lane's documents, in the reader's own exceptions.
+
+        An item not in the catalog is *gone* when it had a saved position and *not found*
+        otherwise; a catalog never listed says nothing about the item, so it is
+        unavailable; a library failure is unavailable."""
+        lane = self._library
+        positions = self._reading_positions
+        if lane is None:
+            raise daemon_reading.ItemUnavailable()
+        try:
+            return self._recorded_documents(item_id)
+        except LookupError:
+            if lane.catalog.items() is None:
+                raise daemon_reading.ItemUnavailable() from None
+            if positions is not None and positions.get(str(item_id)) is not None:
+                raise daemon_reading.ItemGone() from None
+            raise daemon_reading.ItemNotFound() from None
+        except LibraryError:
+            raise daemon_reading.ItemUnavailable() from None
+
+    def _reading_listed(self, item_id: str) -> Optional[bool]:
+        """Is *item_id* in the catalog: a lookup, never a /text fetch (``None`` when the
+        catalog has not been listed yet, which says nothing about the item)."""
+        lane = self._library
+        if lane is None or lane.catalog.items() is None:
+            return None
+        return lane.catalog.meta(item_id) is not None
+
+    def _reading_list(self) -> dict[str, Any]:
+        """``Controls.reading_list``: the saved positions, ``gone`` flagged."""
+        reader = self._reader
+        return {"positions": reader.listing() if reader is not None else []}
+
+    def _reading_status(self) -> dict[str, Any]:
+        reader = self._reader
+        positions = self._reading_positions
+        if reader is None or positions is None:
+            return {"configured": False}
+        counters = reader.counters()
+        return {
+            "configured": True,
+            **counters,
+            "served": counters["units_served"],
+            "heard": counters["units_heard"],
+            "refused": counters["heard_refused"],
+            "positions": len(positions.all()),
+            "save_failures": positions.save_failures,
+            "unreadable": positions.unreadable,
+        }
+
+    def _anchored(self, sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """*sources* with each retrieved passage's reader anchor (h3); see
+        :meth:`_anchor_for`. Sources that are not retrieved passages pass unchanged."""
+        if self._library is None:
+            return sources
+        started = time.monotonic()
+        out = []
+        for source in sources:
+            sha = str(source.get("chunk_sha") or "")
+            item_id = str(source.get("item_id") or "")
+            if not sha or not item_id or source.get("source") != library_tools.LIBRARY_SOURCE:
+                out.append(source)
+                continue
+            out.append({**source, "anchor": self._anchor_for(item_id, sha, started)})
+        return out
+
+    def _anchor_for(self, item_id: str, chunk_sha: str, started: float) -> str:
+        """The reader anchor of a retrieved passage: the first paragraph of its item's
+        ``/text`` that matches the chunk's own text (the matching ``read_passage``
+        uses), else ``""`` so the reader opens at the item's start. A document not
+        cached is fetched only within :data:`LIBRARY_ANCHOR_BUDGET_S` of *started*.
+        Never raises."""
+        lane = self._library
+        chunk = lane.chunks.get((item_id, chunk_sha)) if lane is not None else None
+        if lane is None or not chunk:
+            return ""
+        document = lane.documents.cached(item_id)
+        remaining = LIBRARY_ANCHOR_BUDGET_S - (time.monotonic() - started)
+        if document is None and remaining > 0:
+            document = self._document_within(item_id, remaining)
+        return reader_anchor(document, chunk) if document is not None else ""
+
+    def _document_within(self, item_id: str, timeout_s: float) -> Optional[Document]:
+        """The item's document if it arrives within *timeout_s*, else ``None`` (code review
+        of #110: the budget was checked only before a fetch, so one fetch could run on the
+        client's whole deadline past it, and LIBRARY_SEARCH_BOUND_S did not bound the
+        route). The fetch runs on a daemon thread and, if late, still fills the cache."""
+        got: dict[str, Any] = {}
+        done = threading.Event()
+
+        def fetch() -> None:
+            try:
+                got["document"] = self._recorded_documents(item_id)
+            except Exception as exc:  # noqa: BLE001  # recorded there; no anchor: item's start
+                got["error"] = safe_reason.describe_exception(exc)
+            finally:
+                done.set()
+
+        threading.Thread(target=fetch, name="library-anchor", daemon=True).start()
+        done.wait(timeout_s)
+        document = got.get("document")
+        return document if isinstance(document, Document) else None
 
     # ── settled conversations (deviation d7) ─────────────────────────────────
 
@@ -4160,7 +4424,7 @@ class DaemonApp:
         return not thread.is_alive()
 
     def _stop_library(self, deadline: float) -> bool:
-        """Stop the sync thread inside *deadline*. A fetch in flight is bounded by the
+        """Stop the library worker inside *deadline*. A GET in flight is bounded by the
         client's own deadline, not this one, and is then reported unfinished."""
         lane = self._library
         if lane is None:
@@ -4173,49 +4437,97 @@ class DaemonApp:
         return not thread.is_alive()
 
     def _library_list(self) -> dict[str, Any]:
-        """``Controls.library_list``: the last catalog the sync listed, never a live GET."""
+        """``Controls.library_list``: the last catalog the worker listed, never a live GET.
+
+        Before any listing has succeeded the route answers 503 ``library_unavailable``.
+        While the latest listing failed it serves the last good list, with ``listed_at``
+        and ``stale`` (the failure's code): a page loaded in that window used to get no
+        items at all for up to a listing interval (code review of #110).
+        """
         lane = self._library
         if lane is None:
             return {"items": []}
-        catalog = getattr(lane.client, "items", None) or ()
-        if not catalog:
-            # Not listed since this daemon started (a restart, the library down):
-            # the persisted index is the last catalog known, every entry indexed.
-            # Review of PR #98, 2026-10-24: this answered no items until a good tick.
-            return {"items": [_indexed_entry(meta) for meta in _indexed_items(lane.index)]}
-        return {"items": [_catalog_entry(item, lane.index) for item in catalog]}
+        items = lane.catalog.items()
+        if items is None:
+            return {"items": [], "code": LIBRARY_UNAVAILABLE_CODE}
+        answer: dict[str, Any] = {
+            "items": [_catalog_entry(item) for item in items],
+            "listed_at": _finite_or_none(lane.catalog.listed_at),
+        }
+        if lane.catalog.down is not None:
+            answer["stale"] = str(lane.catalog.down)
+        return answer
 
     def _library_get(self, item_id: int) -> Optional[dict[str, Any]]:
-        """``Controls.library_get``: one indexed, citable item for the reader, or None."""
+        """``Controls.library_get``: one item's paragraphs from the library's ``/text``
+        (document.py), each with its reader anchor; ``None`` for an item not in the
+        catalog, 503 ``library_unavailable`` when the library cannot answer."""
         lane = self._library
-        item = lane.index.item(str(item_id)) if lane is not None else None
-        if not item:
+        if lane is None:
             return None
+        meta = lane.catalog.meta(item_id)
+        if meta is None:
+            if lane.catalog.items() is None:
+                return {"code": LIBRARY_UNAVAILABLE_CODE}  # never listed: not "no such item"
+            return None
+        try:
+            document = self._recorded_documents(item_id)
+        except LookupError:
+            return None
+        except LibraryError:
+            return {"code": LIBRARY_UNAVAILABLE_CODE}
         return {
             "item": {
-                "id": str(item.get("id", item_id)),
-                **{k: _text_or_empty(item.get(k)) for k in ("title", "kind", "author")},
-                "created_at": _text_or_empty(item.get("created_at")),
+                **_catalog_meta(meta),
+                "author": _text_or_empty(getattr(meta, "author", "")),
             },
-            "passages": [_reader_passage(p) for p in item.get("passages") or ()],
+            "passages": [
+                {
+                    "anchor": paragraph_anchor(s, p),
+                    "heading": _text_or_empty(section.heading),
+                    "text": paragraph,
+                    "start_s": None,
+                    "end_s": None,
+                    "speaker": "",
+                }
+                for s, section in enumerate(document.sections)
+                for p, paragraph in enumerate(section.paragraphs)
+            ],
         }
 
     def _library_search(self, query: str) -> dict[str, Any]:
-        """``Controls.library_search``: the query embedded (ungated), the index searched."""
+        """``Controls.library_search``: one retrieve call (the library's own index), each
+        hit with its catalog date and reader anchor; 503 when retrieve fails."""
         lane = self._library
         if lane is None:
             return {"hits": []}
         try:
-            vector = lane.embed_query(query)
-        except Exception as exc:  # noqa: BLE001  # an embedder fault degrades the search only
-            self._record(APP_LIBRARY_DEGRADED, f"search: {_describe(exc)}", once=True)
-            vector = None
-        if vector is None:
-            return {"hits": [], "code": LIBRARY_EMBED_FAILED_CODE}
-        hits = lane.index.search(
-            vector, kinds=None, limit=LIBRARY_SEARCH_LIMIT, threshold=lane.threshold
-        )
-        return {"hits": [_search_hit(hit) for hit in hits]}
+            passages = _RecordedRetrieve(self, lane.retrieve).retrieve(query, LIBRARY_SEARCH_LIMIT)
+        except LibraryError:
+            return {"hits": [], "code": LIBRARY_UNAVAILABLE_CODE}
+        started = time.monotonic()
+        hits = []
+        for passage in passages:
+            item_id = str(passage.item_id)
+            lane.chunks[(item_id, str(passage.chunk_sha))] = str(passage.text)
+            meta = lane.catalog.meta(item_id)
+            hits.append(
+                {
+                    "item_id": item_id,
+                    "title": _text_or_empty(passage.title),
+                    "kind": _text_or_empty(passage.kind),
+                    "created_at": _catalog_meta(meta)["created_at"] if meta is not None else "",
+                    "anchor": self._anchor_for(item_id, str(passage.chunk_sha), started),
+                    "heading": "",
+                    "text": _text_or_empty(passage.text),
+                    "score": round(float(passage.score), 4),
+                    "start_s": None,
+                    "end_s": None,
+                    "chunk_no": int(passage.chunk_no),
+                    "chunk_sha": str(passage.chunk_sha),
+                }
+            )
+        return {"hits": hits}
 
     def _todos(self) -> dict[str, Any]:
         """``Controls.todos``: the library's to-do items, one group per item (c4).
@@ -4401,19 +4713,24 @@ class DaemonApp:
             }
 
     def _library_status(self) -> dict[str, Any]:
+        """The library block: the live catalog and the retrieve counters (embodiment#107).
+
+        A silent no-op shows as zeros, never as health: ``calls`` and ``calls_ok`` move
+        only when retrieve was asked, ``failures_by_code`` only when it failed.
+        """
         lane = self._library
         if lane is None:
             return {"configured": False}
-        probed = _probe(lane.sync) or {"unavailable": True}
+        retrieve = _probe(lane.retrieve) or {"unavailable": True}
+        catalog = lane.catalog.status()
         thread = self._library_thread
         with self._lock:
             worker = {
                 "running": bool(thread is not None and thread.is_alive()),
-                "ticks": self._library_ticks,
-                "tick_failures": self._library_tick_failures,
                 "interval_s": lane.interval_s,
-                "tick_budget_s": LIBRARY_TICK_BUDGET_S,
+                "todo_interval_s": lane.todo_interval_s,
             }
+            faults = dict(self._library_faults)
             tool_calls = {
                 name: self._library_tool_calls.get(name, 0)
                 for name in (
@@ -4427,13 +4744,16 @@ class DaemonApp:
                 )
             }
         return {
-            **probed,
             "configured": True,
-            "last_sync_at": _finite_or_none(probed.get("last_sync_at")),
-            # Memory's provisional threshold, applied to library text it was never
-            # measured on (plan risk r6): reported, so nobody reads it as calibrated.
-            "similarity_threshold": lane.threshold,
-            "threshold_calibrated": False,
+            **catalog,
+            "last_listed_at": _finite_or_none(catalog.get("last_listed_at")),
+            "gets": lane.catalog.gets,
+            "calls": int(retrieve.get("calls", 0) or 0),
+            "calls_ok": int(retrieve.get("calls_ok", 0) or 0),
+            "failures_by_code": dict(retrieve.get("failures_by_code") or {}),
+            "last_latency_s": _finite_or_none(retrieve.get("last_latency_s")),
+            "documents": lane.documents.status(),
+            "faults": faults,
             "worker": worker,
             "tool_calls": tool_calls,
         }
@@ -5654,6 +5974,10 @@ class DaemonApp:
             clip=self._control_clip,
             # Unbound without a library: the routes answer 503 library-not-configured.
             library_list=self._library_list if self._library is not None else None,
+            reading_list=self._reading_list if self._reader is not None else None,
+            reading_next=self._reader.next if self._reader is not None else None,
+            reading_heard=self._reader.heard if self._reader is not None else None,
+            reading_clear=self._reader.clear if self._reader is not None else None,
             library_get=self._library_get if self._library is not None else None,
             library_search=self._library_search if self._library is not None else None,
             # From the library's to-do items; without one it answers a declared code.
@@ -6016,6 +6340,7 @@ class DaemonApp:
             },
             "ingest": self._ingest_status(),
             "library": self._library_status(),
+            "reading": self._reading_status(),
             "todos": self._todos_status(),
             "conversations": self._settle_status(),
             "recordings": self._recordings.status(),
@@ -6305,12 +6630,15 @@ def library_chat_source(citation: Mapping[str, Any]) -> dict[str, Any]:
     """One library :class:`~embodiment.library.tools.Citation` as the chat page's source.
 
     Every field was already neutralised and capped by the tools; ``item_id`` and
-    ``anchor`` let the page open the reader at the cited passage (t7).
+    ``anchor`` let the page open the reader at the cited passage (t7). A retrieved
+    passage also carries ``chunk_no`` and ``chunk_sha`` (embodiment#107); its anchor is
+    resolved against the item's ``/text`` by :meth:`DaemonApp._anchored`.
     """
     # A past conversation's citation (d8) says so, so the page opens the conversation
     # rather than the library reader; anything else is the library.
     source = citation.get("source")
     link = str(citation.get("link") or "")
+    chunk_no = citation.get("chunk_no")
     return {
         "source": (
             source
@@ -6328,6 +6656,10 @@ def library_chat_source(citation: Mapping[str, Any]) -> dict[str, Any]:
         # A fetched source's address, for the page to link out to; http(s) only.
         "link": link if link.lower().startswith(("http://", "https://")) else "",
         "text": str(citation.get("text") or ""),
+        "chunk_no": (
+            chunk_no if isinstance(chunk_no, int) and not isinstance(chunk_no, bool) else None
+        ),
+        "chunk_sha": str(citation.get("chunk_sha") or ""),
     }
 
 
@@ -6378,67 +6710,65 @@ def _text_or_empty(value: object) -> str:
     return value if isinstance(value, str) else ""
 
 
-def _catalog_entry(item: Any, index: Any) -> dict[str, Any]:
-    item_id = str(getattr(item, "id", ""))
-    return {
-        "id": item_id,
-        "title": _text_or_empty(getattr(item, "title", "")),
-        "kind": _text_or_empty(getattr(item, "kind", "")),
-        "created_at": _text_or_empty(getattr(item, "created_at", "")),
-        "indexed": bool(index.has_item(item_id)),
-    }
+def _catalog_entry(item: Any) -> dict[str, Any]:
+    """One catalog item as the catalog route's entry. ``indexed`` is True for a kind
+    retrieve can return (the LIBRARY's own index; Gwen keeps none), so the page's "not
+    searchable yet" flag marks the to-do lists and messages retrieve never answers."""
+    meta = _catalog_meta(item)
+    return {**meta, "indexed": meta["kind"] not in retrieve_module.EXCLUDED_KINDS}
 
 
-def _tick_left_work(out: Any) -> bool:
-    """A sync tick's result: did it stop with work left (a backlog, or a yield)?"""
-    if not isinstance(out, Mapping):
-        return False
-    remaining = out.get("remaining")
-    return out.get("yielded") is True or (isinstance(remaining, int) and remaining > 0)
+def _library_code(exc: BaseException) -> str:
+    """A library failure's declared code (``library_unavailable`` when it has none)."""
+    code = getattr(exc, "code", None)
+    return code if isinstance(code, str) and code else LIBRARY_UNAVAILABLE_CODE
 
 
-def _indexed_items(index: Any) -> list[Any]:
+class _RecordedRetrieve:
+    """The lane's retrieve client with its failures recorded once per transition.
+
+    ``retrieve`` re-raises the client's :class:`LibraryError` after recording it, so
+    the tool answers its fixed fault text and the search route its 503; the client's
+    own counters (calls, calls_ok, failures_by_code) are what status reports.
+    """
+
+    def __init__(self, app: "DaemonApp", inner: Any) -> None:
+        self._app = app
+        self._inner = inner
+
+    def retrieve(
+        self,
+        query: str,
+        k: int,
+        kind: Optional[str] = None,
+        item_ids: Optional[Sequence[Any]] = None,
+    ) -> list[Any]:
+        try:
+            passages = self._inner.retrieve(query, k, kind, item_ids)
+        except LibraryError as exc:
+            self._app._library_outcome("retrieve", _library_code(exc))
+            raise
+        self._app._library_outcome("retrieve", None)
+        return passages
+
+
+def paragraph_anchor(section: int, paragraph: int) -> str:
+    """The reader's anchor for one ``/text`` paragraph: ``s<section>.p<paragraph>``,
+    both 0-based (the positions the reading cursor uses)."""
+    return f"s{int(section)}.p{int(paragraph)}"
+
+
+def reader_anchor(document: Any, chunk: str) -> str:
+    """The anchor of the first paragraph of *document* that matches *chunk* (the
+    matching ``read_passage`` uses), or ``""`` when none does. Never raises."""
     try:
-        return list(index.indexed_items())
-    except Exception:  # noqa: BLE001  # an index fault lists nothing, never raises
-        return []
-
-
-def _indexed_entry(meta: Mapping[str, Any]) -> dict[str, Any]:
-    """One persisted index item as the catalog route's entry (it is indexed)."""
-    return {
-        "id": str(meta.get("id", "")),
-        "title": _text_or_empty(meta.get("title")),
-        "kind": _text_or_empty(meta.get("kind")),
-        "created_at": _text_or_empty(meta.get("created_at")),
-        "indexed": True,
-    }
-
-
-def _reader_passage(passage: Mapping[str, Any]) -> dict[str, Any]:
-    return {
-        "anchor": _text_or_empty(passage.get("anchor")),
-        "heading": _text_or_empty(passage.get("heading")),
-        "text": _text_or_empty(passage.get("text")),
-        "start_s": _finite_or_none(passage.get("start_s")),
-        "end_s": _finite_or_none(passage.get("end_s")),
-        "speaker": _text_or_empty(passage.get("speaker")),
-    }
-
-
-def _search_hit(hit: Any) -> dict[str, Any]:
-    return {
-        "item_id": str(getattr(hit, "item_id", "")),
-        "title": _text_or_empty(getattr(hit, "title", "")),
-        "kind": _text_or_empty(getattr(hit, "kind", "")),
-        "created_at": _text_or_empty(getattr(hit, "created_at", "")),
-        "anchor": _text_or_empty(getattr(hit, "anchor", "")),
-        "heading": _text_or_empty(getattr(hit, "heading", "")),
-        "text": _text_or_empty(getattr(hit, "text", "")),
-        "score": round(float(getattr(hit, "score", 0.0)), 4),
-        "start_s": _finite_or_none(getattr(hit, "start_s", None)),
-        "end_s": _finite_or_none(getattr(hit, "end_s", None)),
-    }
+        for s, section in enumerate(document.sections):
+            for p, paragraph in enumerate(section.paragraphs):
+                if library_tools.paragraph_matches(paragraph, chunk):
+                    return paragraph_anchor(s, p)
+    except Exception:  # noqa: BLE001  # a malformed document has no anchor
+        return ""
+    return ""
 
 
 def _parse_todo_item(meta: Any, data: bytes) -> list[Any]:
@@ -6967,34 +7297,49 @@ def _conversation_lane(state_dir: Any, embedder: Any) -> ConversationLane:
     )
 
 
-def _library_lane_from_env(
+def retire_library_index(state_dir: Any) -> Optional[tuple[str, str]]:
+    """Delete the retired library index, ``<state>/library/index.json``, if it is there.
+
+    Gwen keeps no copy of the library any more (embodiment#107, no switch back: the
+    rollback is the previous release, whose sync rebuilds it). Returns the ledger entry
+    to record, ``(code, reason)``, or ``None`` when there was nothing to do (every start
+    after the first). Only that one file: ``conversations-index.json`` is Gwen's own
+    and sits elsewhere. Never raises.
+    """
+    if state_dir is None:
+        return None
+    path = Path(state_dir) / LIBRARY_DIRNAME / LIBRARY_INDEX_NAME
+    try:
+        if not path.is_file():
+            return None
+        path.unlink()
+    except OSError as exc:
+        return (APP_LIBRARY_DEGRADED, f"retired library index not removed: {_describe(exc)}")
+    return (
+        APP_LIBRARY_INDEX_RETIRED,
+        "removed the retired library index (library/index.json); search is the library's own",
+    )
+
+
+def _library_lane_from_config(
     library: Optional[LibraryConfig],
-    state_dir: Any,
-    embedder: Any,
     *,
-    gate: Callable[[], bool],
     early: list[tuple[str, str, str]],
 ) -> Optional[LibraryLane]:
     """The library lane :func:`main` wires, or ``None``: unset, or unbuildable (recorded).
 
-    The index lives at ``<state>/library/index.json``; both embedders are the
-    gemma2-embed role memory already uses (one shared lane on orin), by name.
+    Both clients are built from the one parsed config; nothing is written under the state dir.
     """
     if library is None:
         return None
-    if state_dir is None:
-        early.append((APP_LIBRARY_UNAVAILABLE, "library: no state dir for the index", APP_SOURCE))
-        return None
     try:
+        # One parsed config for both clients (code review of #110): the retrieve client
+        # re-read the env, so the two could drift apart.
         client = LibraryClient(library.base_url, library.key)
+        retrieve = RetrieveClient(library.base_url, library.key)
         return build_library_lane(
             client,
-            Path(state_dir) / LIBRARY_DIRNAME / LIBRARY_INDEX_NAME,
-            embed_document=lambda text: embedder.embed(
-                text, prompt=memory_module.DOCUMENT_PROMPT
-            ).vector,
-            embed_query=lambda text: embedder.embed(text, prompt=memory_module.QUERY_PROMPT).vector,
-            gate=gate,
+            retrieve,
             # Only links a library item lists (operator, 2026-10-24); the tool checks
             # that before this is called, and web.fetch_page allows public hosts only.
             fetch=web_module.fetch_page,
@@ -7125,13 +7470,10 @@ def main() -> DaemonApp:
     # ledger through the drain's own forwarding — spool.on_degradation stays
     # unset, or each would be recorded twice.
     drain = drain_module.Drain(Spool.for_state_dir(state.dir), memory, record=sink("ingest"))
-    library = _library_lane_from_env(
-        library_config,
-        state.dir,
-        embedder,
-        gate=lambda: bool(built) and built[0].live_turn_held(),
-        early=early,
-    )
+    retired = retire_library_index(state.dir)
+    if retired is not None:
+        early.append((*retired, "library"))
+    library = _library_lane_from_config(library_config, early=early)
     tools = ToolRegistry()
 
     def seam(messages: list[dict[str, Any]], tools: Any = None) -> ModelResponse:

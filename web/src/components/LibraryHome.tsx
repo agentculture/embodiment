@@ -4,9 +4,12 @@
 // newest items as cards with kind filters), and its reader view (list pane +
 // wide reader) once an item opens. Ported from culture_library/web/static/
 // index.html (#view-home, #view-read), cited not imported.
+// Read aloud (embodiment#107, t4): with `onListen`, each card carries Read aloud,
+// or Continue listening when the item has a saved position that is not gone.
 
 import { useMemo, useState } from "react";
 import type { LibraryItem } from "../api/library";
+import type { SavedPosition } from "../api/reading";
 import { itemDay, kindInfo, kindsPresent, shortDate, shortTitle } from "../api/kinds";
 import { Shelf } from "./Shelf";
 
@@ -15,9 +18,14 @@ export interface LibraryHomeProps {
   error?: string | null;
   onOpen: (itemId: string) => void;
   onAsk: (question: string) => void;
+  /** Saved reading positions (GET /api/reading); a gone one offers no continue. */
+  positions?: SavedPosition[];
+  /** Open the item and start reading it aloud at its cursor. */
+  onListen?: (itemId: string) => void;
 }
 
-export function LibraryHome({ items, error, onOpen, onAsk }: LibraryHomeProps) {
+export function LibraryHome({ items, error, onOpen, onAsk, positions = [], onListen }: LibraryHomeProps) {
+  const saved = new Map(positions.filter((p) => !p.gone).map((p) => [p.itemId, p]));
   const [kind, setKind] = useState<string | null>(null);
   const kinds = useMemo(() => kindsPresent(items), [items]);
   const day = (i: LibraryItem) => itemDay(i.createdAt, i.title);
@@ -74,7 +82,7 @@ export function LibraryHome({ items, error, onOpen, onAsk }: LibraryHomeProps) {
       <div className="cards">
         {shown.map((item) => {
           const k = kindInfo(item.kind);
-          return (
+          const card = (
             <button key={item.id} type="button" className="card" onClick={() => onOpen(item.id)}>
               <span className="kind-badge" style={{ ["--kind" as string]: k.color }}>
                 {k.one}
@@ -87,6 +95,29 @@ export function LibraryHome({ items, error, onOpen, onAsk }: LibraryHomeProps) {
                 {!item.indexed && <span className="card-flag">not searchable yet</span>}
               </span>
             </button>
+          );
+          if (!onListen) return card;
+          const at = saved.get(item.id);
+          return (
+            <div key={item.id} className="card-cell">
+              {card}
+              <div className="card-actions">
+                {at ? (
+                  <button type="button" className="continue" onClick={() => onListen(item.id)}>
+                    <svg viewBox="0 0 24 24" width="16" height="16" aria-hidden="true">
+                      <path d="M8 5v14l11-7z" />
+                    </svg>
+                    <span dir="auto">
+                      Continue listening: section {at.section + 1}, paragraph {at.paragraph + 1}
+                    </span>
+                  </button>
+                ) : (
+                  <button type="button" className="pill-btn" onClick={() => onListen(item.id)}>
+                    Read aloud
+                  </button>
+                )}
+              </div>
+            </div>
           );
         })}
       </div>

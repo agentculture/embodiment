@@ -15,7 +15,8 @@ export interface AudioClientOptions {
   fetchFn?: typeof fetch;
 }
 
-export type SpeakOutcome = { ok: true; blob: Blob } | { ok: false; code: string };
+/** `truncated`: the daemon stopped short of the text (X-Speak-Truncated, a cap or a deadline). */
+export type SpeakOutcome = { ok: true; blob: Blob; truncated: boolean } | { ok: false; code: string };
 export type ClipOutcome =
   | { ok: true; transcript: string; reply: string; turnSerial: number | null; sources: ChatSource[] }
   | { ok: false; code: string; status: number };
@@ -59,7 +60,7 @@ export async function speakMessage(
   try {
     const blob = await response.blob();
     if (blob.size === 0) return { ok: false, code: "empty-audio" };
-    return { ok: true, blob };
+    return { ok: true, blob, truncated: response.headers?.get?.("X-Speak-Truncated") === "1" };
   } catch {
     return { ok: false, code: "unparseable-response" };
   }

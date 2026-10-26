@@ -153,7 +153,9 @@ class TestSpeakMessage:
         assert r.content_type == "audio/wav"
         with wave.open(io.BytesIO(r.audio)) as w:
             assert w.getframerate() == 24000
-            assert w.getnframes() == 2 * 2400
+            # d7: a pause after "One." and none after the last sentence
+            pause = round(T.pause_after("One.") * 24000)
+            assert w.getnframes() == 2 * 2400 + pause
         assert opened == []
 
     def test_no_playback_endpoint_involved(self):

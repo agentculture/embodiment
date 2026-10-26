@@ -45,7 +45,13 @@ from embodiment.voice import (
     Voice,
     VoiceConfig,
     http_synthesize,
+    mark_language,
+    pause_after,
+    sentence_audio_cap,
+    shape_sentence,
+    speech_pieces,
     split_sentences,
+    synthesize_pieces,
 )
 
 # ── test doubles ─────────────────────────────────────────────────────────────
@@ -476,9 +482,10 @@ class TestPlayedAudioFedToFeatureExtractor:
         result = voice.speak("only one short sentence")
 
         assert result.sentences_queued == 1
-        assert player.play_calls == [payload]
+        played = shape_sentence(payload, 0.0)  # d7: faded edges, no pause after the last
+        assert player.play_calls == [played]
         assert _wait_until(lambda: len(voice.feature_frames) == 1, timeout=3.0)
-        assert voice.feature_frames == extract_features(payload)
+        assert voice.feature_frames == extract_features(played)
         voice.close(deadline=1.0)
 
     def test_dropped_sentence_is_never_fed_to_features(self) -> None:
@@ -693,7 +700,7 @@ class TestDrainFeatures:
         voice.speak("only one short sentence")
         assert _wait_until(lambda: len(voice.feature_frames) == 1, timeout=3.0)
         drained = voice.drain_features()
-        assert drained == extract_features(payload)
+        assert drained == extract_features(shape_sentence(payload, 0.0))
         assert voice.feature_frames == []
         voice.close(deadline=1.0)
 
@@ -1006,6 +1013,46 @@ class TestHttpSynthesizeVoiceField:
         assert opener.captured["body"].get("voice") != "default"
 
 
+class TestMarkLanguage:
+    """d2 (embodiment#107 t9): lobes' BlueTTS runs with ``TTS_LANGUAGE=he`` and hands a span
+    with no Hebrew letters to the model as raw letters, so English came out garbled on the
+    phone; an ``<en>`` span goes through espeak English. Measured by ear 2026-10-26: the
+    tagged and mixed clips are right, the plain one is not."""
+
+    @pytest.mark.parametrize(
+        ("sentence", "sent"),
+        [
+            ("Markets rose on Monday.", "<en>Markets rose on Monday.</en>"),
+            ("שלום, אני כאן.", "שלום, אני כאן."),
+            ("המועצה התכנסה ביום שני.", "המועצה התכנסה ביום שני."),
+            ("שלחתי email אתמול", "שלחתי <en>email</en> אתמול"),
+            (
+                "המועצה התכנסה. The council met on Monday.",
+                "המועצה התכנסה. <en>The council met on Monday.</en>",
+            ),
+            ("ב-2024 היו 3 ישיבות", "ב-2024 היו 3 ישיבות"),
+            ("12:30", "12:30"),
+            ("", ""),
+        ],
+    )
+    def test_latin_text_is_tagged_english_and_hebrew_is_left_alone(
+        self, sentence: str, sent: str
+    ) -> None:
+        assert mark_language(sentence) == sent
+
+    def test_tags_already_in_the_text_are_stripped(self) -> None:
+        # Library text is untrusted: it must not pick the phonemizer's language itself.
+        assert mark_language("<he>Hello there</he>") == "<en>Hello there</en>"
+        assert mark_language("שלום <ko>abc</ko>") == "שלום <en>abc</en>"
+
+    def test_the_request_carries_the_marked_text(self) -> None:
+        opener = _FakeOpener(_FakeResponse(b"\x00\x00" * 800))
+        http_synthesize(
+            "Good morning.", VoiceConfig(gateway_url="http://gw.example"), opener=opener
+        )
+        assert opener.captured["body"]["input"] == "<en>Good morning.</en>"
+
+
 # ── round 4: bounded read, redirect refusal, stall-tolerance widening ───────
 
 
@@ -1022,7 +1069,9 @@ class TestBoundedRead:
         assert result == payload
 
     def test_stops_at_max_bytes_plus_one_for_the_oversize_path(self) -> None:
-        config = VoiceConfig(gateway_url="http://gw.example", max_sentence_audio_bytes=100)
+        config = VoiceConfig(
+            gateway_url="http://gw.example", max_sentence_audio_bytes=100, max_audio_s_per_char=0.0
+        )
         payload = b"\x01" * 10_000  # far larger than the 100-byte cap
         opener = _FakeOpener(_FakeResponse(payload))
         result = http_synthesize("hi", config, opener=opener)
@@ -1047,6 +1096,7 @@ class TestBoundedRead:
             gateway_url="http://gw.example",
             speech_deadline=0.05,
             max_sentence_audio_bytes=100,
+            max_audio_s_per_char=0.0,
         )
         opener = _FakeOpener(_SleepyResponse())
         start = time.monotonic()
@@ -1430,3 +1480,113 @@ class TestAttacks:
         derived = replace(base, api_key="x")
         assert base.api_key == ""
         assert derived.api_key == "x"
+
+
+class TestALongSentenceIsSpokenWhole:
+    """embodiment#107 t9, the operator's phone 2026-10-26: a library paragraph that is one long
+    sentence stopped mid-word at exactly 10.00 s (MAX_SENTENCE_AUDIO_BYTES) and the reader went
+    on to the next paragraph; and a sentence past MAX_SENTENCE_CHARS lost its tail. A read is
+    the item's own words, never skipped (c10, c24)."""
+
+    def test_the_cap_grows_with_the_sentence_and_keeps_its_floor(self) -> None:
+        config = VoiceConfig()
+        assert sentence_audio_cap("hi", config) == config.max_sentence_audio_bytes
+        long = "word " * 60  # 300 characters, about 15 s spoken
+        assert sentence_audio_cap(long, config) >= 300 * 0.1 * 24000 * 2
+
+    def test_the_read_takes_a_long_sentences_whole_audio(self) -> None:
+        sentence = "word " * 60
+        payload = b"\x01" * (16 * 24000 * 2)  # 16 s: past the old 10 s cap
+        opener = _FakeOpener(_FakeResponse(payload))
+        result = http_synthesize(
+            sentence, VoiceConfig(gateway_url="http://gw.example"), opener=opener
+        )
+        assert result == payload
+
+    def test_voice_does_not_truncate_a_long_sentences_audio(self) -> None:
+        player = FakePlayer()
+        bus = FakeBus()
+        clip = _silence_pcm(16 * 24000)
+        voice = Voice(endpoint=player, bus=bus, synthesize=lambda s, c: clip)
+        voice.speak("word " * 60)
+        assert sum(len(c) for c in player.play_calls) == len(clip)
+        from embodiment.voice import VOICE_TTS_OVERSIZE
+
+        assert VOICE_TTS_OVERSIZE not in [d.code for d in voice.degradations]
+        voice.close(deadline=1.0)
+
+    def test_a_sentence_past_the_char_cap_is_split_at_spaces_and_keeps_every_word(self) -> None:
+        words = [f"w{i}" for i in range(400)]
+        sentence = " ".join(words) + "."
+        out = split_sentences(sentence)
+        assert all(len(s) <= MAX_SENTENCE_CHARS for s in out)
+        assert " ".join(out).split() == sentence.split()
+
+    def test_a_split_prefers_a_comma_or_semicolon(self) -> None:
+        head = "a" * 300 + ", " + "b " * 150
+        out = split_sentences(head)
+        assert out[0].endswith(",")
+
+
+class TestSentenceJoins:
+    """d7 (the operator's phone, 2026-10-26: "transitions between sentences aren't great"):
+    measured, each sentence came back with 0-10 ms of silence and started at full amplitude, so
+    joined sentences ran together with a click at each seam."""
+
+    def test_edges_fade_from_and_to_silence(self) -> None:
+        loud = b"\x00\x40" * 4800  # 0.2 s at a constant 16384
+        shaped = shape_sentence(loud, 0.0)
+        samples = memoryview(shaped).cast("h")
+        assert len(shaped) == len(loud)
+        assert abs(samples[0]) < 200
+        assert abs(samples[-1]) < 200
+        assert samples[len(samples) // 2] == 16384
+
+    def test_a_pause_follows_in_silence(self) -> None:
+        shaped = shape_sentence(b"\x00\x40" * 4800, 0.25)
+        tail = memoryview(shaped).cast("h")[-6000:]
+        assert len(shaped) == 4800 * 2 + 6000 * 2
+        assert all(x == 0 for x in tail)
+
+    def test_a_full_stop_pauses_longer_than_a_clause_break(self) -> None:
+        assert pause_after("The vote is set.") > pause_after("a long clause,") > 0
+        assert pause_after("Is it?") == pause_after("Yes!") == pause_after("Done.")
+
+    def test_odd_or_tiny_pcm_never_raises(self) -> None:
+        assert shape_sentence(b"", 0.1) == b"\x00\x00" * 2400
+        assert len(shape_sentence(b"\x01", 0.0)) == 0
+
+
+class TestAColonPauses:
+    """d7, the operator's phone 2026-10-26: "Colon (:) still passes fast". A colon followed by
+    a space ends a piece of speech with its own pause; a time or a link keeps its colon."""
+
+    def test_a_colon_with_a_space_ends_a_piece_but_not_a_sentence(self) -> None:
+        text = "A key challenge emerges: can we develop guardrails?"
+        assert speech_pieces(text) == ["A key challenge emerges:", "can we develop guardrails?"]
+        # the turn's unit is still the sentence (the spoken prefix, the published reply)
+        assert split_sentences(text) == [text]
+
+    def test_a_time_or_a_link_is_not_split(self) -> None:
+        assert speech_pieces("We meet at 12:30 today.") == ["We meet at 12:30 today."]
+        assert speech_pieces("See https://example.org for more.") == [
+            "See https://example.org for more."
+        ]
+
+    def test_the_pieces_are_synthesised_apart_with_the_colon_pause_between(self) -> None:
+        asked: list[str] = []
+        pcm = b"\x00\x40" * 2400
+
+        def synth(text: str, config: object) -> bytes:
+            asked.append(text)
+            return pcm
+
+        out = synthesize_pieces(synth, "It emerges: a question.", VoiceConfig())
+        assert asked == ["It emerges:", "a question."]
+        gap = round(pause_after("It emerges:") * 24000) * 2
+        assert len(out) == 2 * len(pcm) + gap
+        assert synthesize_pieces(synth, "One piece only.", VoiceConfig()) == pcm
+
+    def test_the_colon_pause_sits_between_a_clause_and_a_full_stop(self) -> None:
+        colon = pause_after("emerges:")
+        assert pause_after("a clause,") < colon < pause_after("A sentence.")

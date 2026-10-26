@@ -16,11 +16,15 @@ route                   guarded   what it is
 ``POST /api/mic/mute``     **yes**   ``{"muted": true|false}``
 ``POST /api/chat``         **yes**   ``{"message", "conversation"?}``: a typed turn; with a
                                       conversation id it continues that conversation
-``GET /api/library``       **yes**   the catalog: ``{"items": [...]}``
-``GET /api/library/{id}``  **yes**   ``{"item": {...}, "passages": [...]}``
-``GET /api/library/search?q=``  **yes**  ``{"hits": [...]}``
+``GET /api/library``       **yes**   the catalog: ``{"items": [...]}`` (503 down)
+``GET /api/library/{id}``  **yes**   ``{"item": {...}, "passages": [...]}`` (503 down)
+``GET /api/library/search?q=``  **yes**  ``{"hits": [...]}`` (503 down)
 ``GET /api/todos``         **yes**   ``{"groups": [...]}``
 ``POST /api/todos/{id}``   **yes**   ``{"done": true|false}``: mark one to-do (d16)
+``GET /api/reading``       **yes**   ``{"positions": [...]}``: Gwen's saved reading positions
+``GET /api/reading/{id}/next?section=&paragraph=``  **yes**  one unit, or ``{"done": true}``
+``POST /api/reading/{id}/heard``  **yes**  ``{"position"}`` -> ``{"moved", "cursor"}``
+``POST /api/reading/{id}/clear``  **yes**  drop the item's saved position
 ``GET /api/conversations``      **yes**  past conversations: ``{"conversations": [...]}``
 ``GET /api/conversations/{id}`` **yes**  ``{"conversation": {...}, "turns": [...]}``
 ======================  ========  ==================================
@@ -98,6 +102,7 @@ import ipaddress
 import json
 import math
 import os
+import re
 import threading
 import time
 import unicodedata
@@ -292,15 +297,27 @@ CLIP_READ_DEADLINE_S = MAX_CLIP_BYTES / CLIP_UPLINK_FLOOR_BYTES_PER_S
 
 # ── the library and to-do read routes (task t6): each clock named for what it bounds ──
 
-#: Bounds ONE library catalog or reader read: a local, indexed read. A **judgement
-#: call** on where a page load has stopped being a page load.
+#: Bounds ONE library catalog read (and a history read): the daemon's last listed
+#: catalog, in memory. A **judgement call** on where a page load has stopped being one.
 LIBRARY_READ_BOUND_S = 2.0
 
-#: Bounds ONE library search: it embeds the query (gemma2-embed) and scans the index.
-#: Derived from the recall cap in ``daemon.app.derive_recall_deadline`` (embed p90 161 ms
-#: + 0.13 ms/record + 0.15 s, capped at 3 s) - copied, not imported, so this module does
-#: not load the daemon.
-LIBRARY_SEARCH_BOUND_S = 3.0
+#: The library client's request deadline (``library.client.DEFAULT_DEADLINE``, and
+#: ``library.retrieve.DEFAULT_DEADLINE``): copied, not imported, so this module does
+#: not load the library.
+LIBRARY_REQUEST_DEADLINE_S = 10.0
+
+#: The daemon's bound on resolving one answer's reader anchors
+#: (``daemon.app.LIBRARY_ANCHOR_BUDGET_S``), copied for the same reason.
+LIBRARY_ANCHOR_BUDGET_S = 2.0
+
+#: Bounds ONE reader read: the item's ``/text`` from the library (embodiment#107), one
+#: GET under the client's request deadline. A longer body keeps arriving after the
+#: route has answered 503, and the daemon's document cache serves the next open.
+LIBRARY_ITEM_BOUND_S = LIBRARY_REQUEST_DEADLINE_S
+
+#: Bounds ONE library search: one retrieve POST under the client's deadline, then the
+#: hits' reader anchors under the daemon's anchor budget (embodiment#107).
+LIBRARY_SEARCH_BOUND_S = LIBRARY_REQUEST_DEADLINE_S + LIBRARY_ANCHOR_BUDGET_S
 
 #: Bounds ONE to-do read: the held library to-do lines reconciled with Gwen's marks;
 #: sized to the search.
@@ -308,6 +325,7 @@ TODOS_READ_BOUND_S = 3.0
 
 #: The request waits the callable's own bound plus the slack, never the 5 s control default.
 DEFAULT_LIBRARY_TIMEOUT_S = LIBRARY_READ_BOUND_S + CONTROL_SLACK_S
+DEFAULT_LIBRARY_ITEM_TIMEOUT_S = LIBRARY_ITEM_BOUND_S + CONTROL_SLACK_S
 DEFAULT_LIBRARY_SEARCH_TIMEOUT_S = LIBRARY_SEARCH_BOUND_S + CONTROL_SLACK_S
 DEFAULT_TODOS_TIMEOUT_S = TODOS_READ_BOUND_S + CONTROL_SLACK_S
 
@@ -325,16 +343,27 @@ MEMORY_UNAVAILABLE_CODE = "memory-unavailable"
 #: The to-dos' library source could not be read (embodiment#105, c22): the daemon's
 #: ``todos()`` answers it as ``code`` and the route refuses with 503, never an empty list.
 TODOS_UNAVAILABLE_CODE = "library_unavailable"
+#: The library could not answer a catalog, reader or search read (embodiment#107): the
+#: daemon answers it as ``code`` and the route refuses with 503.
+LIBRARY_UNAVAILABLE_CODE = "library_unavailable"
 #: A library path or query was malformed.
 LIBRARY_BAD_REQUEST_CODE = "library-bad-request"
 #: No library item has that id.
 LIBRARY_NOT_FOUND_CODE = "library-item-not-found"
 #: A callable answered a shape the contract does not allow.
 LIBRARY_BAD_SHAPE_CODE = "library-bad-shape"
+MALFORMED_MESSAGE = "the answer was malformed"
 
 LIBRARY_ROUTE = "/api/library"
 LIBRARY_SEARCH_ROUTE = "/api/library/search"
 TODOS_ROUTE = "/api/todos"
+#: Reading aloud, a unit at a time (embodiment#107): the library's text, never a model.
+READING_ROUTE = "/api/reading"
+_READING_ID = re.compile(r"^[A-Za-z0-9._:-]{1,160}$")
+#: Longest ``section`` / ``paragraph`` accepted, in digits.
+READING_INDEX_MAX_DIGITS = 9
+#: The saved item left the library (410) or never was in it (404).
+LIBRARY_GONE_CODE = "library-item-gone"
 #: The history pane (operator, 2026-10-24): read-only, from the session logs.
 CONVERSATIONS_ROUTE = "/api/conversations"
 CONVERSATION_NOT_FOUND_CODE = "conversation-not-found"
@@ -448,9 +477,12 @@ _MAX_PATH_CHARS = 2048
 #: The SSE route. Under ``/api/`` like every other non-static route, agreed
 #: with the dashboard (task t17), which connects to exactly this path.
 STREAM_ROUTE = "/api/events"
+STATUS_ROUTE = "/api/status"
 
 CHAT_ROUTE = "/api/chat"
 SPEAK_ROUTE = "/api/speak"
+#: Set on a /api/speak answer whose audio stopped short of the text (a cap or a deadline).
+SPEAK_TRUNCATED_HEADER = "X-Speak-Truncated"
 CLIP_ROUTE = "/api/clip"
 _TEXT_ROUTES = (CHAT_ROUTE, SPEAK_ROUTE, CLIP_ROUTE)
 #: End the live conversation and start a new one (operator, 2026-10-24).
@@ -588,7 +620,8 @@ class Controls:
     #: A third argument, only when ``X-Conversation`` or ``X-Clip-Origin`` is sent, is
     #: the conversation id (or ``None``); a fourth, only with ``X-Clip-Origin``, is it.
     clip: Optional[Callable[..., dict[str, Any]]] = None
-    #: ``library_list() -> {"items": [{id, title, kind, created_at, indexed}]}``.
+    #: ``library_list() -> {"items": [{id, title, kind, created_at, indexed}]}``. Each of
+    #: the three library reads may answer ``{"code": "library_unavailable"}`` (503).
     library_list: Optional[Callable[[], dict[str, Any]]] = None
     #: ``library_get(item_id) -> {"item": {...}, "passages": [...]}``; an empty dict or
     #: ``None`` means no such item (404).
@@ -600,6 +633,15 @@ class Controls:
     #: ``todo_set(todo_id, done) -> {"todo": {...} | None, "code"}``: the page's checkbox
     #: (d16); ``POST /api/todos/{id}`` with ``{"done": true|false}``.
     todo_set: Optional[Callable[[str, bool], dict[str, Any]]] = None
+    #: The reading routes (embodiment#107). ``reading_list() -> {"positions": [...]}``;
+    #: ``reading_next(item_id, section, paragraph)`` -> one unit or ``{"done": true}``;
+    #: ``reading_heard(item_id, position) -> {"moved", "cursor"}``;
+    #: ``reading_clear(item_id) -> {"cleared"}``. Any may answer ``{"error": code}``
+    #: with a library code (404 / 410 / 503).
+    reading_list: Optional[Callable[[], dict[str, Any]]] = None
+    reading_next: Optional[Callable[..., dict[str, Any]]] = None
+    reading_heard: Optional[Callable[[str, Any], dict[str, Any]]] = None
+    reading_clear: Optional[Callable[[str], dict[str, Any]]] = None
     #: ``conversations() -> {"conversations": [{id, title, started, last, turns, current}]}``.
     conversations: Optional[Callable[[], dict[str, Any]]] = None
     #: ``conversation(id) -> {"conversation": {...}, "turns": [...]}``; ``None`` is a 404.
@@ -630,8 +672,11 @@ class ServerConfig:
     speak_timeout_s: float = DEFAULT_SPEAK_TIMEOUT_S
     clip_timeout_s: float = DEFAULT_CLIP_TIMEOUT_S
     library_timeout_s: float = DEFAULT_LIBRARY_TIMEOUT_S
+    library_item_timeout_s: float = DEFAULT_LIBRARY_ITEM_TIMEOUT_S
     library_search_timeout_s: float = DEFAULT_LIBRARY_SEARCH_TIMEOUT_S
     todos_timeout_s: float = DEFAULT_TODOS_TIMEOUT_S
+    #: A reading call may fetch the item's ``/text``: the item read's bound.
+    reading_timeout_s: float = DEFAULT_LIBRARY_ITEM_TIMEOUT_S
     text_body_max_bytes: int = TEXT_BODY_MAX_BYTES
     clip_max_bytes: int = MAX_CLIP_BYTES
     clip_read_deadline_s: float = CLIP_READ_DEADLINE_S
@@ -781,37 +826,49 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _route(self, method: str, decision: Any = None) -> None:
         route = self.path.split("?", 1)[0].split("#", 1)[0]
+        if self._api_route(route, method, decision):
+            return
+        if method == "POST":
+            self._refuse_unread(405, "http-method-not-allowed", "nothing here accepts a POST")
+            return
+        self._static(route, head=method == "HEAD")
+
+    def _api_route(self, route: str, method: str, decision: Any) -> bool:
+        """Answer *route* if it is the stream, status or an ``/api/`` route; else False."""
+        if route in (STREAM_ROUTE, STATUS_ROUTE):
+            self._stream_or_status(route, method, decision)
+            return True
+        if route == READING_ROUTE or route.startswith(READING_ROUTE + "/"):
+            self._reading_route(route, method)
+            return True
+        if _is_library_route(route):
+            self._library_route(route, method)
+            return True
+        if route in _CONTROL_ROUTES:
+            if method != "POST":
+                self._refuse_unread(405, "http-method-not-allowed", "this control is POST only")
+                return True
+            if route in _TEXT_ROUTES:
+                self._text_route(route)
+            else:
+                self._control(route)
+            return True
+        if route.startswith("/api/"):
+            self._refuse_unread(404, "http-unknown-route", "no such API route")
+            return True
+        return False
+
+    def _stream_or_status(self, route: str, method: str, decision: Any) -> None:
         if route == STREAM_ROUTE:
             if method != "GET":
                 self._refuse_unread(405, "http-method-not-allowed", "the stream is GET only")
                 return
             self._stream(decision)
             return
-        if route == "/api/status":
-            if method not in ("GET", "HEAD"):
-                self._refuse_unread(405, "http-method-not-allowed", "status is GET only")
-                return
-            self._status(head=method == "HEAD")
+        if method not in ("GET", "HEAD"):
+            self._refuse_unread(405, "http-method-not-allowed", "status is GET only")
             return
-        if _is_library_route(route):
-            self._library_route(route, method)
-            return
-        if route in _CONTROL_ROUTES:
-            if method != "POST":
-                self._refuse_unread(405, "http-method-not-allowed", "this control is POST only")
-                return
-            if route in _TEXT_ROUTES:
-                self._text_route(route)
-            else:
-                self._control(route)
-            return
-        if route.startswith("/api/"):
-            self._refuse_unread(404, "http-unknown-route", "no such API route")
-            return
-        if method == "POST":
-            self._refuse_unread(405, "http-method-not-allowed", "nothing here accepts a POST")
-            return
-        self._static(route, head=method == "HEAD")
+        self._status(head=method == "HEAD")
 
     # ── responses ────────────────────────────────────────────────────────────
 
@@ -1058,6 +1115,96 @@ class _Handler(BaseHTTPRequestHandler):
             return
         self._send_json(200, {"ok": True, "result": result})
 
+    def _reading_route(self, route: str, method: str) -> None:
+        """``GET /api/reading`` and ``/api/reading/{id}/{next|heard|clear}`` (embodiment#107).
+
+        Behind the same guard as every ``/api/`` route (it runs before routing). The
+        item's text reaches the page verbatim; no model is asked.
+        """
+        app = self._app
+        config = app.config
+        controls = app.controls
+        if route == READING_ROUTE:
+            if method != "GET":
+                self._refuse_unread(405, "http-method-not-allowed", "this route is GET only")
+                return
+            self._read_route(
+                "api.reading",
+                controls.reading_list,
+                (),
+                config.reading_timeout_s,
+                "positions",
+                refusals=_LIBRARY_READ_REFUSALS,
+            )
+            return
+        parts = route[len(READING_ROUTE) + 1 :].split("/")
+        verbs = {"next": "GET", "heard": "POST", "clear": "POST"}
+        if len(parts) != 2 or parts[1] not in verbs:
+            self._refuse_unread(404, "http-unknown-route", "no such API route")
+            return
+        verb = parts[1]
+        if method != verbs[verb]:
+            self._refuse_unread(405, "http-method-not-allowed", f"{verb} is {verbs[verb]} only")
+            return
+        try:
+            item_id = unquote(parts[0], errors="strict") if parts[0].isascii() else ""
+        except UnicodeDecodeError:
+            item_id = ""
+        call = self._reading_call(verb, item_id)
+        if call is None:
+            return
+        action, args = call
+        if not _READING_ID.match(item_id):
+            self._send_error(*_READING_ERRORS[LIBRARY_NOT_FOUND_CODE])
+            return
+        if action is None:
+            app._degrade(LIBRARY_NOT_CONFIGURED_CODE, f"api.reading.{verb} is not configured")
+            self._send_error(503, LIBRARY_NOT_CONFIGURED_CODE, "this is not configured here")
+            return
+        outcome = app.call_text(
+            f"api.reading.{verb}", action, *args, timeout_s=config.reading_timeout_s
+        )
+        if not outcome.ok:
+            self._send_error(outcome.status, outcome.code, outcome.message)
+            return
+        self._reading_answer(verb, outcome.result)
+
+    def _reading_call(self, verb: str, item_id: str) -> Optional[tuple[Any, tuple[Any, ...]]]:
+        """The control and its arguments for *verb*; None once a refusal is sent."""
+        controls = self._app.controls
+        if verb == "next":
+            indexes = _parse_reading_indexes(self.path)
+            if indexes is None:
+                self._send_error(
+                    400, LIBRARY_BAD_REQUEST_CODE, "section and paragraph are integers"
+                )
+                return None
+            return controls.reading_next, (item_id, *indexes)
+        body = self._read_body()
+        if body is None:
+            return None
+        if verb == "clear":
+            return controls.reading_clear, (item_id,)
+        payload = _parse_object(body)
+        position = payload.get("position") if payload is not None else None
+        if not isinstance(position, str) or not 0 < len(position) <= 64:
+            self._send_error(400, BAD_REQUEST_CODE, 'the body must be {"position": "..."}')
+            return None
+        return controls.reading_heard, (item_id, position)
+
+    def _reading_answer(self, verb: str, result: Any) -> None:
+        refused = None
+        if isinstance(result, dict) and "error" in result:
+            refused = _READING_ERRORS.get(result.get("error"))
+        if not isinstance(result, dict) or ("error" in result and refused is None):
+            self._app._degrade(LIBRARY_BAD_SHAPE_CODE, f"api.reading.{verb} answered a bad shape")
+            self._send_error(502, LIBRARY_BAD_SHAPE_CODE, MALFORMED_MESSAGE)
+            return
+        if refused is not None:
+            self._send_error(*refused)
+            return
+        self._send_json(200, result)
+
     def _library_route(self, route: str, method: str) -> None:
         if route.startswith(TODOS_ROUTE + "/"):  # the one POST here: marking a to-do (d16)
             self._todo_set_route(route, method)
@@ -1084,7 +1231,12 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if route == LIBRARY_ROUTE:
             self._read_route(
-                "api.library", controls.library_list, (), config.library_timeout_s, "items"
+                "api.library",
+                controls.library_list,
+                (),
+                config.library_timeout_s,
+                "items",
+                refusals=_LIBRARY_READ_REFUSALS,
             )
             return
         if route == LIBRARY_SEARCH_ROUTE:
@@ -1098,6 +1250,7 @@ class _Handler(BaseHTTPRequestHandler):
                 (query,),
                 config.library_search_timeout_s,
                 "hits",
+                refusals=_LIBRARY_READ_REFUSALS,
             )
             return
         item_id = _parse_item_id(route[len(LIBRARY_ROUTE) + 1 :])
@@ -1108,9 +1261,10 @@ class _Handler(BaseHTTPRequestHandler):
             "api.library.item",
             controls.library_get,
             (item_id,),
-            config.library_timeout_s,
+            config.library_item_timeout_s,
             "passages",
             item=True,
+            refusals=_LIBRARY_READ_REFUSALS,
         )
 
     def _history_route(self, route: str) -> None:
@@ -1146,7 +1300,7 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if not (isinstance(result, dict) and isinstance(result.get("turns"), list)):
             app._degrade(LIBRARY_BAD_SHAPE_CODE, "api.conversation answered a bad shape")
-            self._send_error(502, LIBRARY_BAD_SHAPE_CODE, "the answer was malformed")
+            self._send_error(502, LIBRARY_BAD_SHAPE_CODE, MALFORMED_MESSAGE)
             return
         self._send_json(200, result)
 
@@ -1188,7 +1342,7 @@ class _Handler(BaseHTTPRequestHandler):
             valid = isinstance(result.get("item"), dict)
         if not valid:
             app._degrade(LIBRARY_BAD_SHAPE_CODE, f"{_safe_token(label)} answered a bad shape")
-            self._send_error(502, LIBRARY_BAD_SHAPE_CODE, "the answer was malformed")
+            self._send_error(502, LIBRARY_BAD_SHAPE_CODE, MALFORMED_MESSAGE)
             return
         self._send_json(200, result)
 
@@ -1294,7 +1448,9 @@ class _Handler(BaseHTTPRequestHandler):
             return
         kind = outcome.result.get("content_type")
         kind = kind if isinstance(kind, str) and kind.startswith("audio/") else "audio/wav"
-        self._send(200, bytes(audio), _safe_header_value(kind))
+        # A cut answer says so (code review of #110): read-aloud must not report it heard.
+        extra = {SPEAK_TRUNCATED_HEADER: "1"} if outcome.result.get("truncated") is True else None
+        self._send(200, bytes(audio), _safe_header_value(kind), extra=extra)
 
     def _invoke(self, route: str, action: Optional[Callable[..., Any]], *args: Any) -> None:
         label = route.replace("/", ".").strip(".")
@@ -1548,6 +1704,18 @@ _TODOS_READ_REFUSALS: dict[str, tuple[int, str]] = {
     LIBRARY_NOT_CONFIGURED_CODE: (503, "the to-dos come from the library, not configured here"),
 }
 
+#: A library read the daemon could not answer from the library (embodiment#107).
+_LIBRARY_READ_REFUSALS: dict[str, tuple[int, str]] = {
+    LIBRARY_UNAVAILABLE_CODE: (503, "the library could not be reached"),
+}
+
+#: The reader's declared codes (daemon/reading.py) as ``(status, code, message)``.
+_READING_ERRORS: dict[str, tuple[int, str, str]] = {
+    LIBRARY_NOT_FOUND_CODE: (404, LIBRARY_NOT_FOUND_CODE, "no such library item"),
+    LIBRARY_GONE_CODE: (410, LIBRARY_GONE_CODE, "the item has left the library"),
+    LIBRARY_UNAVAILABLE_CODE: (503, LIBRARY_UNAVAILABLE_CODE, "the library could not be reached"),
+}
+
 _TODO_REFUSALS: dict[str, tuple[int, str, str]] = {
     "todo-unknown": (404, "todo-unknown", "no such to-do"),
     "todo-bad-request": (400, "todo-bad-request", "not a to-do id"),
@@ -1560,6 +1728,27 @@ def _is_library_route(route: str) -> bool:
     if route in (LIBRARY_ROUTE, TODOS_ROUTE, CONVERSATIONS_ROUTE):
         return True
     return route.startswith((LIBRARY_ROUTE + "/", CONVERSATIONS_ROUTE + "/", TODOS_ROUTE + "/"))
+
+
+def _parse_reading_indexes(path: str) -> Optional[tuple[Optional[int], Optional[int]]]:
+    """``(section, paragraph)`` from a ``next`` request's query; each ``None`` when absent.
+
+    ``None`` overall for a repeated, unknown or non-digit parameter."""
+    _route, _sep, rest = path.partition("?")
+    rest = rest.split("#", 1)[0]
+    found: dict[str, Optional[int]] = {"section": None, "paragraph": None}
+    if not rest:
+        return None, None
+    seen: set[str] = set()
+    for pair in rest.split("&"):
+        name, _eq, value = pair.partition("=")
+        if name not in found or name in seen:
+            return None
+        seen.add(name)
+        if not (value.isascii() and value.isdigit()) or len(value) > READING_INDEX_MAX_DIGITS:
+            return None
+        found[name] = int(value)
+    return found["section"], found["paragraph"]
 
 
 def _parse_item_id(segment: str) -> Optional[int]:

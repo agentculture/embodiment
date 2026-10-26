@@ -36,6 +36,8 @@ import { useEventStream, type UseEventStreamOptions } from "./hooks/useEventStre
 import { newConversation, parseControlOutcome, setMicMute, startVoice, stopVoice } from "./api/control";
 import { loadInstallSecretFromSession, saveInstallSecretToSession } from "./api/secret";
 import { fetchLibrary, searchLibrary, type LibraryItem, type SearchHit } from "./api/library";
+import { fetchPositions, type SavedPosition } from "./api/reading";
+import { useVisualViewport } from "./hooks/useVisualViewport";
 import type { ChatSource } from "./api/chat";
 import { itemDay, kindInfo, shortTitle } from "./api/kinds";
 
@@ -184,26 +186,9 @@ export default function App({
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
-  // iOS Safari keeps the layout viewport when the keyboard opens and shrinks only
-  // the visual one, so a 100dvh page slides up and the dock hides behind the
-  // keyboard (operator's phone, 2026-10-24). The app follows the visual viewport:
-  // its height and top come from it, so the dock rides above the keyboard.
-  useEffect(() => {
-    const vv = typeof window !== "undefined" ? window.visualViewport : null;
-    if (!vv) return;
-    const root = document.documentElement;
-    const sync = () => {
-      root.style.setProperty("--app-h", `${Math.round(vv.height)}px`);
-      root.style.setProperty("--app-top", `${Math.round(vv.offsetTop)}px`);
-    };
-    sync();
-    vv.addEventListener("resize", sync);
-    vv.addEventListener("scroll", sync);
-    return () => {
-      vv.removeEventListener("resize", sync);
-      vv.removeEventListener("scroll", sync);
-    };
-  }, []);
+  // The app follows the visual viewport (hooks/useVisualViewport.ts: the keyboard, and d5's
+  // refresh on a phone).
+  useVisualViewport();
 
   // A phone gets the short placeholder, so it fits on one line.
   const [narrow, setNarrow] = useState(() => !wide(520));
@@ -347,6 +332,25 @@ export default function App({
 
   // The Library tab's own reader (culture-library's reader view).
   const [libOpen, setLibOpen] = useState<string | null>(null);
+  // Read aloud (embodiment#107): the item to start reading when its reader opens,
+  // and the saved positions behind the cards' Continue listening (asked again
+  // whenever the library view opens or a reader closes).
+  const [listenFor, setListenFor] = useState<string | null>(null);
+  const [positions, setPositions] = useState<SavedPosition[]>([]);
+  useEffect(() => {
+    if (view !== "library") return;
+    let live = true;
+    void fetchPositions(appliedSecret).then((r) => {
+      if (live && r.ok) setPositions(r.value);
+    });
+    return () => {
+      live = false;
+    };
+  }, [appliedSecret, reconnectVersion, view, libOpen]);
+  const listenInLibrary = (id: string) => {
+    setListenFor(id);
+    openInLibrary(id);
+  };
   const openInLibrary = (id: string) => {
     setLibOpen(id);
     window.location.hash = "#library";
@@ -629,6 +633,7 @@ export default function App({
               s2sRole={stream.s2sRole ?? undefined}
               onOpenCitation={openCitation}
               onAnswer={onAnswer}
+              onReadAloud={listenInLibrary}
               emptyState={emptyState}
               live={live}
               placeholder={narrow ? "Ask Gwen" : undefined}
@@ -687,7 +692,7 @@ export default function App({
             <section className="view view--read" data-view="library" aria-label="Library">
               <div className="read-split">
                 <div className="read-pane">
-                  <LibraryPane items={items} error={libraryError} openId={libOpen} onOpen={(id) => setLibOpen(id)} />
+                  <LibraryPane items={items} error={libraryError} openId={libOpen} onOpen={(id) => { setListenFor(null); setLibOpen(id); }} />
                 </div>
                 <div className="read-main">
                   <div className="read-tools">
@@ -700,7 +705,18 @@ export default function App({
                       {kindInfo(items.find((i) => i.id === libOpen)?.kind ?? "").one}
                     </span>
                   </div>
-                  <Reader id={libOpen} secret={appliedSecret} variant="page" onClose={() => setLibOpen(null)} />
+                  <Reader
+                    key={libOpen}
+                    id={libOpen}
+                    secret={appliedSecret}
+                    variant="page"
+                    listen={listenFor === libOpen}
+                    savedPosition={positions.find((p) => p.itemId === libOpen) ?? null}
+                    onClose={() => {
+                      setListenFor(null);
+                      setLibOpen(null);
+                    }}
+                  />
                 </div>
               </div>
             </section>
@@ -710,6 +726,8 @@ export default function App({
                 items={items}
                 error={libraryError}
                 onOpen={openInLibrary}
+                positions={positions}
+                onListen={listenInLibrary}
                 onAsk={() => {
                   window.location.hash = "#ask";
                   go("ask");
