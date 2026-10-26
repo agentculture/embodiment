@@ -13,7 +13,8 @@ const ITEMS = [
 ];
 const STATUS = {
   daemon: {
-    library: { configured: true, items_indexed: 2, chunks: 40, last_sync_at: null, failures_by_code: {}, similarity_threshold: 0.715, tool_calls: { search_library: 3, read_passage: 1 } },
+    library: { configured: true, catalog_items: 40, last_listed_at: null, catalog_down: null, calls: 4, calls_ok: 3, failures_by_code: { library_timeout: 1 }, last_latency_s: 0.21, tool_calls: { search_library: 3, read_passage: 1 } },
+    reading: { configured: true, served: 3, heard: 3, refused: 1, seeks: 2 },
     recall: { mode: "semantic", calls: 9, hits_total: 0, empty_total: 9 },
     access: { mode: "on", admitted: 5, refused: 1 },
     ear: { active: null },
@@ -28,7 +29,12 @@ describe("StatsView", () => {
     const fetchStatusFn = vi.fn(async () => STATUS);
     render(<StatsView items={ITEMS} fetchStatusFn={fetchStatusFn} />);
     expect(await screen.findByText("Finds nothing")).toBeInTheDocument();
-    expect(screen.getByText("Passages Gwen can search").previousSibling).toHaveTextContent("40");
+    expect(screen.getByText("Items in the catalog").previousSibling).toHaveTextContent("40");
+    expect(screen.getByText("3 of 4 retrievals answered")).toBeInTheDocument();
+    expect(screen.getByText("1 failed")).toBeInTheDocument();
+    expect(screen.getByText("Reading aloud")).toBeInTheDocument();
+    expect(screen.getByText("3 of 3 heard")).toBeInTheDocument();
+    expect(screen.getByText(/1 heard reports refused, 2 jumps/)).toBeInTheDocument();
     expect(screen.getByText("Questions since Gwen started").previousSibling).toHaveTextContent("8");
     expect(screen.getByText("1 newspaper, 1 transcript")).toBeInTheDocument();
     expect(screen.getByText("Cloudflare Access")).toBeInTheDocument();

@@ -149,6 +149,7 @@ from embodiment.audio.features import FeatureExtractor
 from embodiment.bus import Bus, fold_degradation
 from embodiment.contract import ModelResponse
 from embodiment.daemon import drain as drain_module
+from embodiment.daemon import reading as daemon_reading
 from embodiment.daemon import todos as todos_module
 from embodiment.daemon.history import (
     SETTLED_NAME,
@@ -2306,6 +2307,15 @@ class DaemonApp:
     def _init_library(self, lane: Optional[LibraryLane]) -> None:
         """The library lane's state (t13). With no lane every counter stays zero."""
         self._library = lane
+        #: Reading aloud (embodiment#107): saved positions and the next/heard machine
+        #: over the lane's ONE document provider. No lane, no reader.
+        self._reading_positions: Optional[daemon_reading.ReadingPositions] = None
+        self._reader: Optional[daemon_reading.Reader] = None
+        if lane is not None:
+            self._reading_positions = daemon_reading.ReadingPositions(
+                Path(self._state.dir) / daemon_reading.POSITIONS_NAME
+            )
+            self._reader = daemon_reading.Reader(self._reading_positions, self._reading_document)
         self._library_thread: Optional[threading.Thread] = None
         self._library_tool_calls: dict[str, int] = {}
         #: The fixed code each library part ("catalog", "retrieve", "documents") is
@@ -4194,6 +4204,49 @@ class DaemonApp:
         self._library_outcome("documents", None)
         return document
 
+    def _reading_document(self, item_id: Any) -> Document:
+        """The reader's provider: the lane's documents, in the reader's own exceptions.
+
+        An item not in the catalog is *gone* when it had a saved position and *not found*
+        otherwise; a catalog never listed says nothing about the item, so it is
+        unavailable; a library failure is unavailable."""
+        lane = self._library
+        positions = self._reading_positions
+        if lane is None:
+            raise daemon_reading.ItemUnavailable()
+        try:
+            return self._recorded_documents(item_id)
+        except LookupError:
+            if lane.catalog.items() is None:
+                raise daemon_reading.ItemUnavailable() from None
+            if positions is not None and positions.get(str(item_id)) is not None:
+                raise daemon_reading.ItemGone() from None
+            raise daemon_reading.ItemNotFound() from None
+        except LibraryError:
+            raise daemon_reading.ItemUnavailable() from None
+
+    def _reading_list(self) -> dict[str, Any]:
+        """``Controls.reading_list``: the saved positions, ``gone`` flagged."""
+        reader = self._reader
+        return {"positions": reader.listing() if reader is not None else []}
+
+    def _reading_status(self) -> dict[str, Any]:
+        reader = self._reader
+        positions = self._reading_positions
+        if reader is None or positions is None:
+            return {"configured": False}
+        counters = reader.counters()
+        return {
+            "configured": True,
+            **counters,
+            "served": counters["units_served"],
+            "heard": counters["units_heard"],
+            "refused": counters["heard_refused"],
+            "positions": len(positions.all()),
+            "save_failures": positions.save_failures,
+            "unreadable": positions.unreadable,
+        }
+
     def _anchored(self, sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
         """*sources* with each retrieved passage's reader anchor (h3); see
         :meth:`_anchor_for`. Sources that are not retrieved passages pass unchanged."""
@@ -5867,6 +5920,10 @@ class DaemonApp:
             clip=self._control_clip,
             # Unbound without a library: the routes answer 503 library-not-configured.
             library_list=self._library_list if self._library is not None else None,
+            reading_list=self._reading_list if self._reader is not None else None,
+            reading_next=self._reader.next if self._reader is not None else None,
+            reading_heard=self._reader.heard if self._reader is not None else None,
+            reading_clear=self._reader.clear if self._reader is not None else None,
             library_get=self._library_get if self._library is not None else None,
             library_search=self._library_search if self._library is not None else None,
             # From the library's to-do items; without one it answers a declared code.
@@ -6229,6 +6286,7 @@ class DaemonApp:
             },
             "ingest": self._ingest_status(),
             "library": self._library_status(),
+            "reading": self._reading_status(),
             "todos": self._todos_status(),
             "conversations": self._settle_status(),
             "recordings": self._recordings.status(),
