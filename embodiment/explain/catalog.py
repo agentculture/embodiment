@@ -58,7 +58,9 @@ the only measurements are the probes of 2026-10-26 (n = 5 retrieve latencies, hy
 0.74-1.12 s; n = 2 text-to-speech runs per language, warm 0.46-0.83 s, cold 6.59 s).
 Gwen can also read a document aloud: `GET /api/reading`, `/api/reading/{id}/next`,
 `POST /api/reading/{id}/heard` and `/clear`, with one cursor per item kept in
-`reading-positions.json` (0600). The live acceptance of this (t9) is not yet done.
+`reading-positions.json` (0600). The live acceptance (t9) ran on a phone
+(`docs/live-test-results/2026-10-26-library-queried-and-heard.md`): tap to first sound
+warm at once, cold about 6 s (over the 5 s bar), by ear, n = 1.
 A **write guard** refuses `remember` and `forget` in a turn that holds library text
 unless the operator's own words name the write. Value is unmeasured.
 
