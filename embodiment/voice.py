@@ -671,8 +671,9 @@ def sentence_audio_cap(sentence: str, config: VoiceConfig) -> int:
 #: split by :func:`split_sentences`). Judgement calls, by ear: not measured against listeners.
 FADE_S = 0.008
 #: 0.28 s at first; the operator, by ear: "less than a second extra between period and next
-#: sentence is needed. Maybe 100-200 ms?" So 0.28 + 0.15.
-PAUSE_AFTER_SENTENCE_S = 0.43
+#: sentence is needed. Maybe 100-200 ms?" So 0.28 + 0.15; then "a period needs a bit more
+#: weight. Maybe 100ms": 0.53.
+PAUSE_AFTER_SENTENCE_S = 0.53
 PAUSE_AFTER_CLAUSE_S = 0.12
 #: After a colon that ends a piece (the operator: "Colon (:) still passes fast"): between a
 #: clause break and a full stop. :func:`split_sentences` ends a piece at a colon and a space.
