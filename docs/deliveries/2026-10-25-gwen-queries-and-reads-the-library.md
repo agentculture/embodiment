@@ -34,7 +34,7 @@ Quoted verbatim from the `devague summary` skeleton:
 | `t1` | delivered | `embodiment/library/retrieve.py` (`c3ed2a2`, `kind` sent in the body after a send-back `3ce6a37`); merged `6a9fdb3` |
 | `t2` | delivered | `embodiment/library/document.py` + `LibraryClient.fetch_text` (`1b3f32b`); merged `09a0c9d` |
 | `t3` | delivered | `embodiment/daemon/reading.py` (`4026432`), seek re-pin per `d1` (`acf169c`); merged `972bd50` |
-| `t4` | delivered, one control short | Reader dock, Continue listening, Read aloud card, paragraph-synced progress (`fe22ad2`); the mockup's Choose section control was not built; merged `705ccb9` |
+| `t4` | partial | Reader dock, Continue listening, Read aloud card, paragraph-synced progress (`fe22ad2`); the mockup's Choose section control was not built; merged `705ccb9` |
 | `t5` | delivered | retrieve-backed `search_library`/`read_passage`, `/text`-backed `read_item`/`fetch_source` (`12cddcf`); merged `c30a149` |
 | `t6` | delivered | `library/sync.py` deleted, `retire_library_index`, catalog/search/reader live (`6874d7e`); merged `dd23476` |
 | `t7` | delivered | `/api/reading*` behind the guard, `status.reading`, Stats (`9cbed7d`); merged `653c37f` |
@@ -86,6 +86,7 @@ Quoted verbatim from the `devague summary` skeleton:
   - `tests/test_daemon_reading.py::TestRefusals::test_next_and_heard_need_the_secret_and_a_refused_heard_leaves_the_file` — pass
 - live: `docs/live-test-results/2026-10-26-library-queried-and-heard.md` — every probe row passed or is reported as measured
 - tests: the full suite at `09af199` (the Sonar fixes) — 4525 passed, 1 skipped; `o4`/`o5`'s tests plus `tests/test_daemon_reading.py` and `tests/test_http_server.py` re-run there (2026-10-26T11:17:41Z) — 231 passed, filed as `e16`-`e18`
+- assess: the decider (`general`, 2026-10-26) on each task from the facts above: `t1`-`t3`, `t5`-`t8` delivered (P 0.95-0.97); `t4` partial (0.86, the Choose section control); `t9` partial (0.81). `t4` was relabelled from "delivered, one control short" to partial on that reading
 - CI: #110 at `09af199` — every check passes, SonarCloud gate OK, 0 open issues; #109 merged as `a4e521c`
 - lint: `black --check`, `isort --check-only`, `flake8`, `bandit -c pyproject.toml`, `markdownlint-cli2` — clean
 - validate-delivery records: obligations `o1`-`o10`, evidence `e1`-`e18` (all pass), deltas `b1`-`b10`; all `llm`-origin and proposed. The records covering d2-d7 (`o10`, `e14`-`e15`, `b6`-`b10`) were filed after #109 and #110 were opened, not before: the validate-before-PR order was not kept for those changes
