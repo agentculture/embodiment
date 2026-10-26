@@ -179,7 +179,13 @@ export function StatsView({ items, secret = "", fetchStatusFn = fetchStatus, chi
   const turns = rec(status?.turns);
   const tools = rec(lib.tool_calls);
 
-  const chunks = num(lib.chunks);
+  const reading = rec(status?.reading);
+  const catalogItems = num(lib.catalog_items);
+  const retrieveCalls = num(lib.calls) ?? 0;
+  const retrieveOk = num(lib.calls_ok) ?? 0;
+  const readServed = num(reading.served) ?? 0;
+  const readHeard = num(reading.heard) ?? 0;
+  const readRefused = num(reading.refused) ?? 0;
   const typed = num(textTurns.run) ?? 0;
   const spoken = num(turns.completed) ?? 0;
   const searches = num(tools.search_library) ?? 0;
@@ -193,18 +199,27 @@ export function StatsView({ items, secret = "", fetchStatusFn = fetchStatus, chi
       rows.push({ name: "Library", level: "warning", label: "Not connected", detail: "No library URL is set for Gwen." });
     } else {
       const failures = Object.values(rec(lib.failures_by_code)).reduce<number>((n, v) => n + (num(v) ?? 0), 0);
+      const lastLatency = num(lib.last_latency_s);
       rows.push({
-        name: "Library sync",
-        level: failures > 0 ? "warning" : "good",
-        label: failures > 0 ? `${failures} failed` : "In sync",
-        detail: `Last sync ${ago(num(lib.last_sync_at))}; ${num(lib.items_indexed) ?? 0} items indexed into ${chunks ?? 0} passages.`,
+        name: "Library catalog",
+        level: lib.catalog_down ? "warning" : "good",
+        label: lib.catalog_down ? "Not reachable" : "Listed",
+        detail: `Last listed ${ago(num(lib.last_listed_at))}; ${catalogItems ?? 0} items in the catalog.`,
       });
       rows.push({
         name: "Library answers",
-        level: searches > 0 ? "good" : typed > 0 ? "warning" : "info",
-        label: searches > 0 ? `${searches} searches` : "Not used yet",
-        detail: `Gwen searched the library ${searches} times and opened ${reads} passages over ${typed} typed questions. Match threshold ${num(lib.similarity_threshold) ?? "?"}, not yet calibrated for library text.`,
+        level: failures > 0 ? "warning" : searches > 0 ? "good" : typed > 0 ? "warning" : "info",
+        label: failures > 0 ? `${failures} failed` : searches > 0 ? `${searches} searches` : "Not used yet",
+        detail: `Gwen searched the library ${searches} times and opened ${reads} passages over ${typed} typed questions. The library answered ${retrieveOk} of ${retrieveCalls} retrievals${lastLatency === null ? "" : `, the last in ${lastLatency.toFixed(2)} s`}.`,
       });
+      if (reading.configured !== false) {
+        rows.push({
+          name: "Reading aloud",
+          level: readServed === 0 ? "info" : readRefused > 0 ? "warning" : "good",
+          label: readServed === 0 ? "Not used yet" : `${readHeard} of ${readServed} heard`,
+          detail: `${readServed} paragraphs served, ${readHeard} heard to the end, ${readRefused} heard reports refused, ${num(reading.seeks) ?? 0} jumps.`,
+        });
+      }
     }
     rows.push({
       name: "Memory recall",
@@ -283,9 +298,11 @@ export function StatsView({ items, secret = "", fetchStatusFn = fetchStatus, chi
           </small>
         </div>
         <div className="tile">
-          <b>{chunks ?? "–"}</b>
-          <span>Passages Gwen can search</span>
-          <small>{num(lib.items_indexed) ?? 0} items indexed</small>
+          <b>{catalogItems ?? "–"}</b>
+          <span>Items in the catalog</span>
+          <small>
+            {retrieveOk} of {retrieveCalls} retrievals answered
+          </small>
         </div>
         <div className="tile">
           <b>{typed + spoken}</b>
