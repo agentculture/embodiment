@@ -363,7 +363,15 @@ class TestTheDaemonsSeams:
         "paragraph, chunk, expected",
         [
             ("alpha  alpha\nbravo", "alpha alpha bravo", True),
-            ("a long chunk of words and then some", "chunk of words", True),
+            # a fragment under MIN_MATCH_CHARS matches only a paragraph that IS it (review of #107)
+            ("a long chunk of words and then some", "chunk of words", False),
+            ("chunk  of\nwords", "chunk of words", True),
+            (
+                "the opening sixty characters of a long chunk appear in this paragraph, then more",
+                "the opening sixty characters of a long chunk appear in this paragraph, "
+                + "while the rest of the chunk goes on elsewhere for a while",
+                True,
+            ),
             ("short", "a chunk that holds short in it", False),
             ("a paragraph", "a chunk that holds a paragraph in it", True),
             ("", "anything", False),

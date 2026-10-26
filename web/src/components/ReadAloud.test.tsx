@@ -140,8 +140,12 @@ describe("ReadAloud: nothing short of ended reports heard (t4 AC2)", () => {
     audio().fire("ended");
     expect(screen.getByText(/Paused at paragraph 1 of 4/)).toBeInTheDocument();
     expect(screen.getByText("Paused here")).toBeInTheDocument();
+    const before = r.nexts.length;
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
-    await waitFor(() => expect(r.nexts).toContain("/api/reading/syn-1/next?section=0&paragraph=0"));
+    // Continue asks for the saved cursor (no seek): it is still paragraph 1, not heard.
+    await waitFor(() => expect(r.nexts.length).toBeGreaterThan(before));
+    expect(r.nexts[r.nexts.length - 1]).toBe("/api/reading/syn-1/next");
+    expect(r.nexts.some((u) => u.includes("section="))).toBe(false);
     expect(r.heard).toEqual([]);
   });
 

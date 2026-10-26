@@ -332,9 +332,11 @@ export function useReadAloud({ itemId, secret, clientOptions, audioFactory, peek
     set({ status: "paused", played: 0 });
   }, [halt, set]);
 
+  // Resume continues at the saved cursor, which is always the first unit not fully heard:
+  // the paragraph cut off by a pause plays again from its start, and a pause while the
+  // next one was loading does not replay (or seek the cursor back to) the one just heard.
   const resume = useCallback(() => {
-    const unit = stateRef.current.unit;
-    begin(unit ? { section: unit.section, paragraph: unit.paragraph } : undefined);
+    begin(undefined);
   }, [begin]);
 
   const stop = useCallback(() => {

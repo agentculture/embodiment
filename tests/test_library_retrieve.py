@@ -260,18 +260,45 @@ def test_counters(fake):
 # --- 2: AST pin ---------------------------------------------------------------
 
 
+def _is_urllib_request_request(func) -> bool:
+    """``urllib.request.Request`` spelled out in full: the only way the module may build one."""
+    return (
+        isinstance(func, ast.Attribute)
+        and func.attr == "Request"
+        and isinstance(func.value, ast.Attribute)
+        and func.value.attr == "request"
+        and isinstance(func.value.value, ast.Name)
+        and func.value.value.id == "urllib"
+    )
+
+
 def _request_calls(tree):
     return [
-        n
-        for n in ast.walk(tree)
-        if isinstance(n, ast.Call)
-        and getattr(n.func, "attr", getattr(n.func, "id", "")) == "Request"
+        n for n in ast.walk(tree) if isinstance(n, ast.Call) and _is_urllib_request_request(n.func)
     ]
+
+
+def _alias_violations(tree) -> list[str]:
+    """Anything that could build a request out of the pin's sight: a from-import or an alias
+    of urllib.request, an assignment of urllib.request.Request, or a call named Request."""
+    found = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ImportFrom) and (node.module or "").startswith("urllib"):
+            found.append(f"from {node.module} import")
+        if isinstance(node, ast.Import):
+            found += [f"import {a.name} as {a.asname}" for a in node.names if a.asname]
+        if isinstance(node, ast.Call) and not _is_urllib_request_request(node.func):
+            if getattr(node.func, "attr", getattr(node.func, "id", "")) in {"Request", "urlopen"}:
+                found.append("a Request/urlopen call not spelled urllib.request.Request")
+        if isinstance(node, ast.Assign) and isinstance(node.value, ast.Attribute):
+            if node.value.attr in {"Request", "urlopen", "build_opener", "OpenerDirector"}:
+                found.append(f"alias of {node.value.attr}")
+    return found
 
 
 def _pin_violations(source: str) -> list[str]:
     tree = ast.parse(source)
-    found = []
+    found = _alias_violations(tree)
     calls = _request_calls(tree)
     if len(calls) != 1:
         found.append(f"{len(calls)} Request calls")
@@ -308,6 +335,12 @@ def test_pin_fails_on_planted_changes():
     assert _pin_violations(base.replace('method="POST"', 'method="PUT"'))
     assert _pin_violations(base.replace("/api/rag/retrieve", "/api/rag/other"))
     assert _pin_violations(base + '\nx = "GET"\n')
+    # review of #107: aliases and from-imports cannot slip a second request past the pin
+    assert _pin_violations(
+        base + '\nfrom urllib.request import Request as R\nR(u, method="POST", data=b"")\n'
+    )
+    assert _pin_violations(base + "\nR = urllib.request.Request\n")
+    assert _pin_violations(base + "\nimport urllib.request as ur\n")
 
 
 def test_client_py_get_only_pin_unchanged():

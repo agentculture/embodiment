@@ -422,6 +422,12 @@ def _normal(text: str) -> str:
     return _NORMAL_SPACE.sub(" ", text).strip()
 
 
+#: A retrieved chunk shorter than this matches only a paragraph equal to it (normalised).
+MIN_MATCH_CHARS = 40
+#: The leading / trailing characters of a longer chunk that may locate its paragraph.
+EDGE_CHARS = 60
+
+
 def paragraph_matches(paragraph: str, chunk: str) -> bool:
     """Does one ``/text`` paragraph belong to a retrieved *chunk*? Whitespace-normalised:
     the paragraph inside the chunk (8+ characters), the chunk inside the paragraph, or
@@ -431,11 +437,18 @@ def paragraph_matches(paragraph: str, chunk: str) -> bool:
     wanted = _normal(chunk)
     if not para or not wanted:
         return False
+    if len(wanted) < MIN_MATCH_CHARS:
+        # A fragment (a title chunk, a 21-character tail) sits inside unrelated paragraphs
+        # too, so it never matches by being found inside one; a paragraph wholly inside
+        # the fragment still does (review of #107).
+        return para == wanted or (len(para) >= 8 and para in wanted)
     return (
         (len(para) >= 8 and para in wanted)
         or wanted in para
-        or wanted[:60] in para
-        or wanted[-60:] in para
+        or (
+            len(wanted) > EDGE_CHARS
+            and (wanted[:EDGE_CHARS] in para or wanted[-EDGE_CHARS:] in para)
+        )
     )
 
 
