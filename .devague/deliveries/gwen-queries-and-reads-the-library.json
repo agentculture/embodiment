@@ -2,7 +2,7 @@
   "plan_slug": "gwen-queries-and-reads-the-library",
   "schema_version": 2,
   "created": "2026-10-25T23:25:27Z",
-  "updated": "2026-10-26T05:00:11Z",
+  "updated": "2026-10-26T05:06:47Z",
   "deviations": [
     {
       "id": "d1",
@@ -267,6 +267,25 @@
       "status": "proposed",
       "superseded": false,
       "seq": 13
+    },
+    {
+      "id": "e13",
+      "obligation_ref": "o9",
+      "test_ref": "operator on an iPhone, gwen.culture.dev (production), 2026-10-26",
+      "behavior_text": "a Hebrew transcript read aloud on the phone, stopped, reloaded and continued: confirmed; an English newspaper played garbled until d2, then correctly",
+      "contract_text": "a read plays on the device that has the page open; after a reload, Continue listening replays the paragraph stopped in from its start",
+      "evidence_type": "manual",
+      "strength": "execution",
+      "strength_basis": "the operator ran it on the phone against production at 24ba287 and reported it in their own words",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-26T04:56:00Z",
+        "commit": "24ba287"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 16
     }
   ],
   "deltas": [
@@ -302,6 +321,30 @@
       "behavior_text": "the mockup's Choose section control was not built; seeking by section exists only as the /next route's section/paragraph parameters",
       "caused_by": [
         "c23"
+      ],
+      "evidence_refs": [],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b4",
+      "kind": "amended",
+      "behavior_text": "every spoken sentence tags Latin-script text <en>\u2026</en> before the speech request, so English is phonemized as English",
+      "caused_by": [
+        "d2"
+      ],
+      "evidence_refs": [],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b5",
+      "kind": "added",
+      "behavior_text": "a tap or Enter on a paragraph starts reading there; the phone dock is fixed to the screen; bars keep their fill while loading and are full past the end",
+      "caused_by": [
+        "d3"
       ],
       "evidence_refs": [],
       "origin": "llm",

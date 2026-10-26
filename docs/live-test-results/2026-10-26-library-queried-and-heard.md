@@ -35,9 +35,20 @@ scripts printed structure, counts and seconds.
 
 ## On the phone (the operator)
 
-Pending: read a chapter aloud on gwen.culture.dev, stop mid-paragraph,
-reload, tap Continue listening; whether the same paragraph replays from its
-start, and the tap-to-sound time cold and warm; whether iOS Safari plays it.
+The operator's own words, on an iPhone (the browser was not named), against production:
+
+| Check | Result |
+| --- | --- |
+| A Hebrew transcript read aloud, stopped, reloaded, Continue listening | pass ("I checked on transcript Hebrew and confirmed") |
+| An English newspaper read aloud | **fail**, then pass after d2: it played audio that was not English. BlueTTS runs with `TTS_LANGUAGE=he` and passes a span with no Hebrew letters to the model as raw letters. Gwen now tags Latin-script text `<en>` (d2, `24ba287`); the operator heard tagged and mixed clips ("Tagged and mixed are perfect"), then the newspaper ("I can listen to it correctly now") |
+| Pause reachable mid-article | **fail**: the dock sat after the last paragraph of a long article. Fixed by d3 (`c4d3f8b`): on a phone the dock is fixed to the screen; checked at 390 px in a browser against the real page, mid-article |
+| Jump to a paragraph | missing; added by d3: a tap on a paragraph starts there (checked in the browser: a tap on paragraph 10 played paragraph 10) |
+| Progress bar | **fail**: a finished paragraph's bar emptied before the next one began, and past the end the last paragraph read "Paused here" with its segment unfilled. Fixed by d3 |
+| The item's title as its first paragraph | as designed: the library's text opens with the title as its own block; the operator heard it and kept it |
+| Tap-to-sound time | not reported |
+
+Server side, production's reading positions moved one paragraph per heard
+report on both items read (paragraph 0 heard, cursor at paragraph 1).
 
 ## Not measured
 
