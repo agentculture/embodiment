@@ -52,6 +52,7 @@ The operator's own words, on an iPhone (the browser was not named), against prod
 | Loading feedback on a jump | added by d4: a turning ring on the play button, no words (the operator: "Loading ring on play is clear") |
 | A long one-sentence paragraph, retested | pass ("Reads well to the end") |
 | Transitions between sentences | **fail**: "transitions between sentences aren't great". Measured: sentences joined with 0-10 ms of silence and starting at full amplitude. Fixed by d7; measured after on the pre-flight daemon: 0.27 s quiet at each join, every clip starts and ends at sample 0. Retested: pass ("Transitions are far better. Very natural in the paragraph"), except a colon ("still passes fast"): a colon and a space now end a piece of speech with a pause. Retested: "Colon pause was good, maybe extra 50-100ms" and "100-200 ms" more after a period; then "Colon is perfect" at 0.30 s, and "a period [needs] a bit more weight. Maybe 100ms": 0.53 s after a full stop, not yet retested |
+| One paragraph per sentence (A) or in one tts call (B) | A kept. The operator, by ear on one synthetic paragraph: "Per sentence is better! The model didn't parse well the transition to the question. Otherwise, whole sentence was better." Made in 1.06 s (A) and 0.70 s (B) for about 20 s of audio; B is the alternative if the voice handles questions mid-paragraph |
 | Tap-to-sound time | not reported |
 
 Server side, production's reading positions moved one paragraph per heard
