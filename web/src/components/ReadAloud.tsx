@@ -414,15 +414,16 @@ export function ReadAloudDock({ state, controls, device = deviceKind() }: ReadAl
   const where = (() => {
     if (status === "done") return "You reached the end of this item.";
     if (status === "gone") return "This item is no longer in the library.";
-    if (!unit) return "Getting the first paragraph ready.";
+    if (!unit) return "";
     const para = `paragraph ${unit.paragraph + 1} of ${unit.paragraphCount}`;
     const part = unit.partCount > 1 ? ` Part ${unit.part + 1} of ${unit.partCount}.` : "";
     if (status === "paused" || status === "error" || status === "blocked") {
       return `Paused at ${para}. This paragraph plays again from its start.${part}`;
     }
-    if (status === "loading") return `Getting the next paragraph ready. Section ${unit.section + 1} of ${unit.sectionCount}.`;
     return `Paragraph ${unit.paragraph + 1} of ${unit.paragraphCount} in this section. Section ${unit.section + 1} of ${unit.sectionCount}.${part}`;
   })();
+  const loading = status === "loading";
+  // The ring is the only loading signal: no words, so nothing is announced between paragraphs.
   const playLabel = going ? "Pause" : status === "blocked" ? "Play" : "Continue";
   return (
     <div className="listen-dock" role="group" aria-label="Reading aloud" data-status={status}>
@@ -434,9 +435,17 @@ export function ReadAloudDock({ state, controls, device = deviceKind() }: ReadAl
           type="button"
           className="play"
           aria-label={playLabel}
+          aria-busy={loading ? true : undefined}
           disabled={status === "done" || status === "gone"}
           onClick={() => (going ? controls.pause() : controls.resume())}
         >
+          {loading && (
+            // d4 (live t9): a partial ring turns while the paragraph is being made, so a
+            // jump's short wait reads as loading, not as nothing happening.
+            <svg className="play-ring" viewBox="0 0 64 64" aria-hidden="true">
+              <circle cx="32" cy="32" r="29" pathLength="100" />
+            </svg>
+          )}
           {going ? (
             <svg viewBox="0 0 24 24" width="22" height="22" aria-hidden="true">
               <rect x="6" y="5" width="4" height="14" rx="1" />

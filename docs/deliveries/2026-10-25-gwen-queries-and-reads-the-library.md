@@ -46,6 +46,7 @@ Quoted verbatim from the `devague summary` skeleton:
 - `d1` — an explicit seek (GET /api/reading/{id}/next with section/paragraph: the dock's previous/next paragraph and Choose section) re-pins the cursor to the sought unit, so heard reports for it advance the position; stale reports for any other position are still refused — as built (criterion 2, quoted verbatim), a seek only previews: every heard report after a seek is refused and continue returns to the old place, which breaks the approved mockup's previous/next/choose-section controls; decider 0.68 for re-pin (choice), 0.62 that it amends the exact-next rule
 - `d2` — voice: before each sentence goes to /v1/audio/speech, Latin-script text is wrapped in `<en>...</en>` (a whole sentence with no Hebrew, or each Latin run inside a Hebrew sentence) and any lang tags already in the text are stripped, so BlueTTS (run with TTS_LANGUAGE=he) phonemizes English as English — the operator listened to tagged and mixed clips and approved ("D2 approved")
 - `d3` — page: tapping a paragraph in the reader starts reading from that paragraph (a seek, d1); on a phone the listening dock is fixed to the bottom of the screen; a finished paragraph's bar stays full while the next one loads — asked for by the operator from the phone test; the same commit makes "done" read every paragraph and bar as heard (the operator's screenshot showed the last one "Paused here")
+- `d4` — page: while a paragraph loads (a jump, a continue, or between paragraphs) the dock's play button shows a turning partial ring and is marked busy — the operator's ask from the phone ("a small wait time" on a jump); the operator then asked for no loading words ("Loading ring on play is clear"), so the dock's "Getting the next paragraph ready" text went too
 - The title line stays a paragraph: the library's text opens with the item's title as its own block, so it is read first; the operator heard it and kept it.
 - The document cache went from 4 to 12 items (`93f4152`): the pre-flight saw 20 refetches of a 752 KB book when a search ran during a read. No deviation record covers this; it changes no contract.
 - Review fixes after the colleague review (`2a58a65`): the retrieve AST pin is alias-proof; a passage under 40 characters no longer anchors a citation (it opens the item at its start); resume continues at the saved cursor instead of replaying a heard paragraph. No deviation record covers these; they tighten behavior already promised.
@@ -79,7 +80,7 @@ Quoted verbatim from the `devague summary` skeleton:
 - live: `docs/live-test-results/2026-10-26-library-queried-and-heard.md` — every probe row passed or is reported as measured
 - lint: `black --check`, `isort --check-only`, `flake8`, `bandit -c pyproject.toml`, `markdownlint-cli2` — clean
 - validate-delivery records: obligations `o1`-`o9`, evidence `e1`-`e13` (all pass), deltas `b1`-`b5`; all `llm`-origin and proposed
-- deviations: `d1`, `d2` approved (operator); `d3` approved (operator's own ask, user-origin)
+- deviations: `d1`, `d2` approved (operator); `d3`, `d4` approved (operator's own asks, user-origin)
 - commits: `74f51f1..c4d3f8b` on `feat/gwen-queries-the-library`, stacked on `feat/gwen-reads-library-todos` (`8425c06`)
 - PRs / issues: embodiment#107; follow-ups embodiment#108, culture-rules#99
 

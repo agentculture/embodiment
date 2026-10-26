@@ -10,7 +10,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - Gwen reads library documents aloud (embodiment#107): `daemon/reading.py` keeps one cursor per item in `reading-positions.json` (0600) behind `GET /api/reading`, `GET /api/reading/{id}/next` (with `section`/`paragraph` it is a seek that re-pins the cursor, deviation d1), `POST /api/reading/{id}/heard` and `POST /api/reading/{id}/clear`; `status.reading` counts reads started, units served and heard, refused reports, continues and seeks. The page has the Reader dock, Continue listening and a Read aloud card in chat (no Choose section control yet)
-- Read aloud from the phone test (deviation d3): tap a paragraph (or Enter on it) to hear the item from there, a seek; on a phone the listening dock is fixed to the bottom of the screen, so pause is reachable mid-article; a finished paragraph's bar stays full while the next loads, and past the end every paragraph and bar reads as heard
+- Read aloud from the phone test (deviation d3): tap a paragraph (or Enter on it) to hear the item from there, a seek; on a phone the listening dock is fixed to the bottom of the screen, so pause is reachable mid-article; a finished paragraph's bar stays full while the next loads, and past the end every paragraph and bar reads as heard; while a paragraph loads (a jump, a continue, between paragraphs) the play button turns a partial ring, with no loading words (deviation d4)
 - `library/retrieve.py`: the one POST this package makes, `/api/rag/retrieve` in hybrid mode, AST-pinned, four declared codes, no score floor; `library/document.py` and `LibraryClient.fetch_text` read an item's `/text` as sections and paragraphs
 
 ### Fixed

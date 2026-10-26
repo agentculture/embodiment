@@ -2,7 +2,7 @@
   "plan_slug": "gwen-queries-and-reads-the-library",
   "schema_version": 2,
   "created": "2026-10-25T23:25:27Z",
-  "updated": "2026-10-26T05:06:47Z",
+  "updated": "2026-10-26T05:08:30Z",
   "deviations": [
     {
       "id": "d1",
@@ -49,6 +49,19 @@
       "status": "approved",
       "classification": "acceptable",
       "seq": 15
+    },
+    {
+      "id": "d4",
+      "what": "page: while a paragraph loads (a jump, a continue, or between paragraphs) the dock's play button shows a turning partial ring and is marked busy",
+      "task_ref": "t4",
+      "reason": "operator, live t9 on the phone 2026-10-26: 'When we jump a paragraph, there is a small wait time. We need to add a loading effect in the play (like a partial circle on the play button?) so it's clear it's loading'",
+      "affects": [
+        "c23"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 17
     }
   ],
   "evidence": [

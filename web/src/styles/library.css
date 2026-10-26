@@ -305,7 +305,16 @@
   display: grid; place-items: center; background: var(--cobalt); color: var(--on-cobalt);
   box-shadow: var(--shadow); cursor: pointer;
 }
+.listen-dock .play { position: relative; }
 .listen-dock .play svg { fill: currentColor; }
+/* d4: the loading ring, a quarter-length arc just outside the play button */
+.play-ring {
+  position: absolute; inset: -6px; inline-size: calc(100% + 12px); block-size: calc(100% + 12px);
+  pointer-events: none;
+}
+.listen-dock .play .play-ring { fill: none; }
+.play-ring circle { fill: none; stroke: var(--cobalt); stroke-width: 4; stroke-linecap: round; stroke-dasharray: 28 72; }
+@keyframes play-ring-turn { to { transform: rotate(360deg); } }
 .listen-dock .play:disabled { opacity: 0.5; cursor: default; }
 .listen-dock button:focus-visible { outline: 3px solid var(--cobalt); outline-offset: 2px; }
 .where { min-inline-size: 0; }
@@ -367,6 +376,7 @@
 }
 
 @media (prefers-reduced-motion: no-preference) {
+  .play-ring { animation: play-ring-turn 900ms linear infinite; }
   .seg.speaking, .where-bar span.now { transition: --played 260ms linear; }
   .reader-map span.now { transition: --share 260ms linear; }
 }

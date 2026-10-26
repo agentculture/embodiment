@@ -371,4 +371,29 @@ describe("ReadAloud: what the phone test asked for (d3, live t9 2026-10-26)", ()
     for (const seg of segs) expect(seg).toHaveClass("heard");
     for (const sec of container.querySelectorAll(".reader-map span")) expect(sec).toHaveClass("heard");
   });
+
+  it("while the next paragraph loads the play button turns a ring and says it is loading (d4)", async () => {
+    const r = rig({ hold: true });
+    await openAndStart(r);
+    const play = screen.getByRole("button", { name: "Pause" });
+    expect(play).not.toHaveAttribute("aria-busy");
+    fireEvent.click(screen.getByText(PARAS[2]));
+    await waitFor(() => expect(screen.getByRole("group", { name: "Reading aloud" })).toHaveAttribute("data-status", "loading"));
+    // a ring and nothing else: the label stays Pause, and no loading words are shown or announced
+    const busy = screen.getByRole("button", { name: "Pause" });
+    expect(busy).toHaveAttribute("aria-busy", "true");
+    expect(busy.querySelector(".play-ring")).not.toBeNull();
+    expect(screen.queryByText(/ready|Loading/i)).toBeNull();
+    act(() => r.release());
+    await waitFor(() => expect(screen.getByText(PARAS[2]).closest("li")).toHaveClass("speaking"));
+    expect(screen.getByRole("button", { name: "Pause" })).not.toHaveAttribute("aria-busy");
+  });
+
+  it("the ring turns only when motion is allowed", () => {
+    const css = readFileSync("src/styles/library.css", "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+    expect(css).toMatch(/\.play-ring\s*\{/);
+    const motion = [...css.matchAll(/@media \(prefers-reduced-motion: no-preference\) \{([\s\S]*?)\n\}/g)].map((m) => m[1]).join("\n");
+    expect(motion).toMatch(/\.play-ring\s*\{[^}]*animation/);
+    expect(css.replace(/@media \(prefers-reduced-motion: no-preference\) \{[\s\S]*?\n\}/g, "")).not.toMatch(/\.play-ring\s*\{[^}]*animation/);
+  });
 });
