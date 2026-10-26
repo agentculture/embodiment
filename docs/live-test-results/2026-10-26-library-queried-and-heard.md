@@ -55,6 +55,7 @@ The operator's own words, on an iPhone (the browser was not named), against prod
 | Transitions between sentences | **fail**: "transitions between sentences aren't great". Measured: sentences joined with 0-10 ms of silence and starting at full amplitude. Fixed by d7; measured after on the pre-flight daemon: 0.27 s quiet at each join, every clip starts and ends at sample 0. Retested: pass ("Transitions are far better. Very natural in the paragraph"), except a colon ("still passes fast"): a colon and a space now end a piece of speech with a pause. Retested: "Colon pause was good, maybe extra 50-100ms" and "100-200 ms" more after a period; then "Colon is perfect" at 0.30 s, and "a period [needs] a bit more weight. Maybe 100ms": 0.53 s after a full stop; retested on the merged ref: pass ("pause is right") |
 | One paragraph per sentence (A) or in one tts call (B) | A kept. The operator, by ear on one synthetic paragraph: "Per sentence is better! The model didn't parse well the transition to the question. Otherwise, whole sentence was better." Made in 1.06 s (A) and 0.70 s (B) for about 20 s of audio; B is the alternative if the voice handles questions mid-paragraph |
 | Tap-to-sound time, cold | a long paragraph: "maybe 6" seconds (the operator's estimate by ear, n = 1, not timed) |
+| Choose section (0.23.2, `682ac74`, production) | pass ("confirmed choose section works") |
 | Tap-to-sound time, warm | the same paragraph re-tapped: "immediate and smooth" (by ear, n = 1) |
 
 c22's 5 s bar, judged on the warm figure as the plan says: **pass**. The cold

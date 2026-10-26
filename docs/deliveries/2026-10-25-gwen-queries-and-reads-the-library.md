@@ -90,13 +90,13 @@ Quoted verbatim from the `devague summary` skeleton:
 - live: `docs/live-test-results/2026-10-26-library-queried-and-heard.md` — every probe row passed or is reported as measured
 - tests: the full suite at `09af199` (the Sonar fixes) — 4525 passed, 1 skipped; `o4`/`o5`'s tests plus `tests/test_daemon_reading.py` and `tests/test_http_server.py` re-run there (2026-10-26T11:17:41Z) — 231 passed, filed as `e16`-`e18`
 - tests: Choose section at #113 (2026-10-26T17:21:35Z) — its 4 vitest cases seen failing (3 of 4) before the control existed, then passing; full web suite 531 passed; Python suite 4526 passed, 1 skipped; build and the origin check pass. One unnamed web test failed once in 17 runs on the branch (0 of 5 on its base, 16 clean runs after it); not explained, filed nowhere as a pass
-- live: Choose section at 390 px on the pre-flight daemon from `feat/choose-section` against a live 304-section book — the list sits in the fixed dock, the playing section marked, focused and in view, no sideways scroll; a choice played section 8 of 304 and closed the list. Clicks were dispatched in the page: this harness's second browser context delivered no pointer input at all (Pause, already confirmed on the phone, also got 0 clicks). Not yet tried on the operator's phone
+- live: Choose section at 390 px on the pre-flight daemon from `feat/choose-section` against a live 304-section book — the list sits in the fixed dock, the playing section marked, focused and in view, no sideways scroll; a choice played section 8 of 304 and closed the list. Clicks were dispatched in the page: this harness's second browser context delivered no pointer input at all (Pause, already confirmed on the phone, also got 0 clicks). Then on the operator's phone against production 0.23.2 (`682ac74`): "confirmed choose section works" (`e23`)
 - assess, t4 after Choose section (`general`, 2026-10-26; `docs/deliveries/2026-10-26-gwen-queries-assess-t4-choose.json`): delivered 0.83, partial 0.14; P(the one unexplained web failure blocks the PR) 0.075
 - assess, after the retests (`general`, 2026-10-26; `docs/deliveries/2026-10-26-gwen-queries-assess-t9-retest.json`): `t9` delivered 0.65, partial 0.32, not delivered 0.03; P(a transcript stands in for an EPUB chapter) 0.42, P(by-ear estimates suffice) 0.40, so both are drift entries above
 - assess: one fresh decider call per task (`general`, 2026-10-26; requests and answers in `docs/deliveries/2026-10-26-gwen-queries-assess-per-task.json`): `t1`-`t3`, `t5`-`t8` delivered (P 0.97-0.98); `t4` partial (0.86, the Choose section control); `t9` partial 0.51 against not delivered 0.48 (the merged-ref deploy and the tap-to-sound time are unmet). A batched pass before it agreed on every task (`t9` partial 0.81). `t4` was relabelled from "delivered, one control short" to partial on that reading
 - CI: #110 at `09af199` — every check passes, SonarCloud gate OK, 0 open issues; #109 merged as `a4e521c`
 - lint: `black --check`, `isort --check-only`, `flake8`, `bandit -c pyproject.toml`, `markdownlint-cli2` — clean
-- validate-delivery records: obligations `o1`-`o10`, evidence `e1`-`e18` (all pass; `e19`, `e20` are the retests), deltas `b1`-`b10`; `o11`, `e21`, `e22`, `b11` (Choose section, filed before its PR; `b11` supersedes `b3`); all `llm`-origin and proposed. The records covering d2-d7 (`o10`, `e14`-`e15`, `b6`-`b10`) were filed after #109 and #110 were opened, not before: the validate-before-PR order was not kept for those changes
+- validate-delivery records: obligations `o1`-`o10`, evidence `e1`-`e18` (all pass; `e19`, `e20` are the retests), deltas `b1`-`b10`; `o11`, `e21`, `e22`, `b11` (Choose section, filed before its PR; `b11` supersedes `b3`); all `llm`-origin, confirmed by the operator on 2026-10-26, and `e23` (Choose section on the phone) filed after, still proposed. The records covering d2-d7 (`o10`, `e14`-`e15`, `b6`-`b10`) were filed after #109 and #110 were opened, not before: the validate-before-PR order was not kept for those changes
 - deviations: `d1`, `d2` approved (operator); `d3`-`d7` approved (operator's own asks and report, user-origin)
 - commits: `74f51f1..09af199` on `feat/gwen-queries-the-library`, now on `main` after #109's squash (`a4e521c`); #110 squash-merged as `e19be55`, deployed to production 2026-10-26
 - PRs / issues: embodiment#107; follow-ups embodiment#108, culture-rules#99
@@ -112,29 +112,32 @@ Quoted verbatim from the `devague summary` skeleton:
 | the reading routes are guarded | high | `e7`; live unauthenticated heard refused 401 |
 | the old index is deleted once and never again | high | `e8`; `e10` (production ledger entry, file absent) |
 | a new library item is searchable with no Gwen action | medium | `e11` (n = 1, about 9 s, bounded by 10 s polling) |
-| the page's TS reading client is tested | medium | `web/src/api/reading.test.ts`; lapse `l1` (proposed): its tests were not seen failing first; mutation check after the fact (break `/heard`: 1 of 7 fails) |
+| the page's TS reading client is tested | medium | `web/src/api/reading.test.ts`; lapse `l1` (approved): its tests were not seen failing first; mutation check after the fact (break `/heard`: 1 of 7 fails) |
 | a read plays on the phone and Continue listening resumes the stopped paragraph | medium | `e13` (the operator, Hebrew transcript, in their words); `e19` (refresh retest on `e19be55`) |
 | tap to first sound: warm within c22's 5 s, cold about 6 s | low | `e20` (the operator's estimate by ear, n = 1 each; the cold figure matches the probed 6.59 s, c32) |
-| English is spoken as English | medium | `TestMarkLanguage`; the operator by ear ("I can listen to it correctly now"); lapse `l2` (proposed): English was timed, never listened to, before the phone found it |
+| English is spoken as English | medium | `TestMarkLanguage`; the operator by ear ("I can listen to it correctly now"); lapse `l2` (approved): English was timed, never listened to, before the phone found it |
 | tap to jump, a reachable pause, bars that never snap back | medium | the d3 tests; one 390 px browser check |
 | a paragraph is spoken whole | high | `e14` (tests at `6fbe7c4`), `e15` (10.00 s cut, then 13.93 s whole; the operator: "Reads well to the end") |
 | sentence joins without clicks, a pause between sentences | high | `TestSentenceJoins`; one live measurement (0.27 s quiet at each join); the operator: "Transitions are far better. Very natural" |
 | a colon and a full stop pause | medium | `TestAColonPauses`; the operator: "Colon is perfect" at 0.30 s, and the 0.53 s full stop retested on `e19be55`: "pause is right" |
 | caching: replay, Previous and Next play at once | medium | the d6 tests; the operator: "Caching works well", "Previous and next cache works good!" |
-| Choose section lists the sections and seeks to the chosen one's first paragraph, heard only on ended | medium | `e21` (4 vitest cases at #113), `e22` (390 px, live 304-section book); not on the phone yet |
+| Choose section lists the sections and seeks to the chosen one's first paragraph, heard only on ended | high | `e21` (4 vitest cases at #113), `e22` (390 px, live 304-section book), `e23` (the operator's phone, production 0.23.2) |
 | library retrieval hit rate | unverified | not measured; hybrid scores 0.011-0.033 do not compare with memory's 0.715 |
 
 Lapse ledger evidence:
 
-pending approval (not yet evidence): `l1`, `l2`
+| Lapse | Code | What |
+|-------|------|------|
+| `l1` | grader-unverified | t4's TS reading client tests were never seen failing first; caps that claim at medium |
+| `l2` | assumption-for-measurement | English TTS was timed, not listened to; caps the English claim at medium |
+| `l3` | control-absent | #109 and #110 opened before validate and summarize covered d2-d7; caps no claim, records the order break |
 
 ## Remaining Work / Follow-up
 
 - `t9` — a timed tap-to-sound figure (cold and warm, n > 1) would replace the by-ear estimates; a cold tts lane is the likely 6 s, and a warm-up call at start is one way under 5 s.
-- Choose section (`b11`, 0.23.2) — try it on the phone: it is checked only at 390 px in a browser.
 - Narration rules (embodiment#111): skip citation markers (`[1]`) and repeated abbreviations ("natural language (NL)") when reading aloud, per item kind, with a lexicon and an editable rules file; it amends c24 first. The operator chose a separate cycle.
 - An English voice on purpose: lobes could take a per-request language instead of the `<en>` tags (a lobes issue, to draft and ask before posting).
-- Proposed records to adjudicate: obligations `o1`-`o11`, evidence `e1`-`e22`, deltas `b1`-`b11` (`b3` superseded by `b11`), lapses `l1`, `l2`, `l3` (`l3`: the validate-before-PR order was not kept for d2-d7, filed `control-absent`).
+- Records: the operator confirmed obligations `o1`-`o11`, evidence `e1`-`e22`, deltas `b1`-`b11` (`b3` superseded by `b11`) and lapses `l1`-`l3` on 2026-10-26; `e23` (Choose section on the phone) awaits the operator.
 - A culture-library issue for title-only chunks (about 40 characters) returned as passages — to draft and ask before posting.
 - Follow-ups already named: voice commands for reading (v4, with realtime Live); two devices reading one item (v5); embodiment#106; Docker (embodiment#108); transcript segment times (culture-rules#99); deleting the dead library code in `library/index.py` and `library/extract.py`.
-- #109 (embodiment#105) merged 2026-10-26 as `a4e521c`. #110 (embodiment#107) merged as `e19be55` and runs in production; the retests above ran on it.
+- #109 (embodiment#105) merged 2026-10-26 as `a4e521c`. #110 (embodiment#107) merged as `e19be55`; the retests above ran on it. #112 merged as `a9da1db`, #113 as `682ac74`, which runs in production (0.23.2).
