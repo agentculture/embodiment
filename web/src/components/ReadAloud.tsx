@@ -466,6 +466,9 @@ const IconNext = () => (
   </svg>
 );
 
+/** How long a load lasts before the play button shows its ring (d4: none on a cached replay). */
+export const RING_DELAY_MS = 300;
+
 /** The listening dock: sticky at the reader's bottom (styles/library.css .listen-dock). */
 export function ReadAloudDock({ state, controls, device = deviceKind() }: ReadAloudDockProps) {
   const { status, unit } = state;
@@ -482,7 +485,18 @@ export function ReadAloudDock({ state, controls, device = deviceKind() }: ReadAl
     }
     return `Paragraph ${unit.paragraph + 1} of ${unit.paragraphCount} in this section. Section ${unit.section + 1} of ${unit.sectionCount}.${part}`;
   })();
-  const loading = status === "loading";
+  // d4: the ring is for a wait you notice. A replay from the cache still asks the daemon for
+  // the cursor (a short "loading"); the ring shows only once loading has lasted RING_DELAY_MS.
+  const [ring, setRing] = useState(false);
+  useEffect(() => {
+    if (status !== "loading") {
+      setRing(false);
+      return;
+    }
+    const t = window.setTimeout(() => setRing(true), RING_DELAY_MS);
+    return () => window.clearTimeout(t);
+  }, [status]);
+  const loading = status === "loading" && ring;
   // The ring is the only loading signal: no words, so nothing is announced between paragraphs.
   const playLabel = going ? "Pause" : status === "blocked" ? "Play" : "Continue";
   return (

@@ -380,8 +380,9 @@ describe("ReadAloud: what the phone test asked for (d3, live t9 2026-10-26)", ()
     fireEvent.click(screen.getByText(PARAS[2]));
     await waitFor(() => expect(screen.getByRole("group", { name: "Reading aloud" })).toHaveAttribute("data-status", "loading"));
     // a ring and nothing else: the label stays Pause, and no loading words are shown or announced
+    // a wait you notice (past RING_DELAY_MS) shows the ring
+    await waitFor(() => expect(screen.getByRole("button", { name: "Pause" })).toHaveAttribute("aria-busy", "true"));
     const busy = screen.getByRole("button", { name: "Pause" });
-    expect(busy).toHaveAttribute("aria-busy", "true");
     expect(busy.querySelector(".play-ring")).not.toBeNull();
     expect(screen.queryByText(/ready|Loading/i)).toBeNull();
     act(() => r.release());
@@ -437,5 +438,15 @@ describe("ReadAloud: what the phone test asked for (d3, live t9 2026-10-26)", ()
     await waitFor(() => expect(screen.getByRole("group", { name: "Reading aloud" })).toHaveAttribute("data-status", "error"));
     fireEvent.click(screen.getByRole("button", { name: "Continue" }));
     await waitFor(() => expect(screen.getByRole("group", { name: "Reading aloud" })).toHaveAttribute("data-status", "playing"));
+  });
+
+  it("a quick load shows no ring: a cached replay stays still (d4)", async () => {
+    const r = rig();
+    await openAndStart(r);
+    fireEvent.click(screen.getByRole("button", { name: "Pause" }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    // the replay's /next answers at once and its audio is kept: playing again with no ring shown
+    await waitFor(() => expect(screen.getByRole("group", { name: "Reading aloud" })).toHaveAttribute("data-status", "playing"));
+    expect(document.querySelector(".play-ring")).toBeNull();
   });
 });
