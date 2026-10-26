@@ -37,7 +37,9 @@ def test_done_at_epoch_and_by_kept():
 
 def test_malformed_done_at_leaves_done_with_none():
     bad = parse_checklist(DOC)[2]
-    assert bad.done is True and bad.done_at is None and bad.by == "gwen"
+    assert bad.done is True
+    assert bad.done_at is None
+    assert bad.by == "gwen"
     assert parse_checklist(f"- [ ] x <!-- todo:pocket.{REC}.1 -->")[0].done_at is None
 
 
@@ -67,4 +69,22 @@ def test_group_title_date_recording():
     assert group.title == "2026-10-24 Planning the garden"
     assert len(group.items) == 3
     empty = parse_group("Untitled", "nothing here")
-    assert empty.recording_id == "" and empty.date == "" and empty.items == ()
+    assert empty.recording_id == ""
+    assert empty.date == ""
+    assert empty.items == ()
+
+
+def test_text_holding_a_comment_ends_at_the_todo_comment_that_closes_the_line() -> None:
+    # The linear parser (Sonar S8786) takes the first "<!--" whose todo comment runs to the
+    # end of the line, as the lazy regex did; a stray "<!--todo:" in the text stays text.
+    (line,) = parse_checklist("- [ ] see <!--todo:note--> later <!-- todo:pocket.a.1 -->")
+    assert line.id == "pocket.a.1"
+    assert line.text == "see <!--todo:note--> later"
+
+
+def test_a_long_line_with_no_todo_comment_is_not_slow() -> None:
+    import time
+
+    start = time.monotonic()
+    assert parse_checklist("- [ ] " + "<!-- " * 20_000) == []
+    assert time.monotonic() - start < 1.0

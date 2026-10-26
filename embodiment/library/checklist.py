@@ -25,7 +25,11 @@ _POCKET_ID = re.compile(
     r"^pocket\.([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})"
     r"\.([1-9][0-9]*)$"
 )
-_LINE = re.compile(r"^\s*[-*+]\s+\[([ xX])\]\s*(.*?)\s*<!--\s*todo:(\S+)([^>]*?)-->\s*$")
+# Linear (Sonar S8786): the checkbox prefix, then the todo comment tried at each "<!--" in turn
+# (_split_line); the first one that runs to the end of the line ends the text, exactly as a
+# lazy text group would, without backtracking.
+_PREFIX = re.compile(r"^\s*[-*+]\s+\[([ xX])\]")
+_COMMENT = re.compile(r"<!--\s*todo:((?:(?!-->)\S)+)((?:(?!-->)[^>])*)-->\s*$")
 _DONE_AT = re.compile(r"(?:^|\s)done_at=(\S+)")
 _BY = re.compile(r"(?:^|\s)by=(\S+)")
 
@@ -68,16 +72,31 @@ def _epoch(stamp: str) -> Optional[float]:
         return None
 
 
+def _split_line(raw: str) -> Optional[tuple[str, str, str, str]]:
+    """``(mark, text, id, attrs)`` of a checkbox line with a todo comment, else ``None``."""
+    head = _PREFIX.match(raw)
+    if not head:
+        return None
+    rest = raw[head.end() :]
+    at = rest.find("<!--")
+    while at >= 0:
+        tail = _COMMENT.match(rest, at)
+        if tail:
+            return head.group(1), rest[:at].strip(), tail.group(1), tail.group(2)
+        at = rest.find("<!--", at + 1)
+    return None
+
+
 def parse_checklist(
     markdown: str, clean: Callable[[str], str] = lambda text: text
 ) -> list[ChecklistLine]:
     """Every checkbox line with a ``todo:<id>`` comment, in order. Never raises."""
     lines: list[ChecklistLine] = []
     for raw in str(markdown or "").splitlines():
-        found = _LINE.match(raw)
+        found = _split_line(raw)
         if not found:
             continue
-        mark, text, todo_id, attrs = found.groups()
+        mark, text, todo_id, attrs = found
         done = mark in "xX"
         stamp = _DONE_AT.search(attrs)
         by = _BY.search(attrs)

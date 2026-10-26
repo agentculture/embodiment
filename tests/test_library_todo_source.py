@@ -54,7 +54,8 @@ def test_replaced_item_is_reread_unchanged_is_not():
     c.put("b", "s2", "x")
     src, now = _source(c)
     src.check()
-    assert c.fetched == ["a", "b"] and c.list_kinds == ["todo"]
+    assert c.fetched == ["a", "b"]
+    assert c.list_kinds == ["todo"]
     now[0] = 30
     src.check()
     assert c.fetched == ["a", "b"]
@@ -77,7 +78,8 @@ def test_leaving_item_and_line_disappear_new_line_appears():
     groups = src.groups()
     assert [g["id"] for g in groups] == ["a"]
     assert groups[0]["lines"] == ["two", "new"]
-    assert st["items"] == 1 and st["lines"] == 2
+    assert st["items"] == 1
+    assert st["lines"] == 2
 
 
 def test_failed_list_keeps_last_good():
@@ -87,12 +89,17 @@ def test_failed_list_keeps_last_good():
     src.check()
     c.list_error = "library_unreachable"
     st = src.check()
-    assert st["available"] is False and st["code"] == "library_unreachable"
-    assert st["failures"] == 1 and st["checks"] == 2 and st["items"] == 1 and st["lines"] == 1
+    assert st["available"] is False
+    assert st["code"] == "library_unreachable"
+    assert st["failures"] == 1
+    assert st["checks"] == 2
+    assert st["items"] == 1
+    assert st["lines"] == 1
     assert src.groups()[0]["lines"] == ["one"]
     c.list_error = None
     st = src.check()
-    assert st["available"] is True and st["code"] is None
+    assert st["available"] is True
+    assert st["code"] is None
 
 
 def test_failed_fetch_keeps_old_version_and_retries():
@@ -103,11 +110,13 @@ def test_failed_fetch_keeps_old_version_and_retries():
     c.put("a", "s2", "changed")
     c.fetch_error = "library_timeout"
     st = src.check()
-    assert st["available"] is False and st["code"] == "library_timeout"
+    assert st["available"] is False
+    assert st["code"] == "library_timeout"
     assert src.groups()[0]["lines"] == ["one"]
     c.fetch_error = None
     st = src.check()
-    assert st["available"] is True and src.groups()[0]["lines"] == ["changed"]
+    assert st["available"] is True
+    assert src.groups()[0]["lines"] == ["changed"]
 
 
 def test_parse_failure_and_no_client_are_reported_not_raised():
@@ -119,10 +128,12 @@ def test_parse_failure_and_no_client_are_reported_not_raised():
 
     src = TodoSource(c, parse=boom, clock=lambda: 0.0)
     st = src.check()
-    assert st["available"] is False and st["code"] == "todo_parse_failed"
+    assert st["available"] is False
+    assert st["code"] == "todo_parse_failed"
     assert src.groups() == []
     none = TodoSource(None, parse=_parse, clock=lambda: 0.0)
-    assert none.check()["available"] is False and none.groups() == []
+    assert none.check()["available"] is False
+    assert none.groups() == []
 
 
 def test_groups_newest_first():
