@@ -222,8 +222,9 @@ loop. It does not drive hardware and nothing here claims a body.
   unit through `/api/speak` (the Reader dock, Continue listening on the Library, and a
   Read aloud card in chat); `status.reading` counts reads started, units served and
   heard, refused reports, continues and seeks. Not built: the "Choose section" control
-  of the mockup (previous and next paragraph are). The live acceptance (t9) passed on a
-  phone, with tap to first sound judged by ear: warm at once, cold about 6 s.
+  of the mockup (previous and next paragraph are). The live acceptance (t9) ran on a
+  phone, with tap to first sound judged by ear: warm at once, cold about 6 s, over the 5 s
+  bar.
 - **The write guard.** An xteink key is a full operator key, so the client never
   writes; and in a turn whose context holds library text, `remember` and
   `forget` are refused unless the operator's own words in that turn name the

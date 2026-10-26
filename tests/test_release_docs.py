@@ -261,6 +261,7 @@ def test_surface_describes_retrieve_retired_index_and_read_aloud(
     assert "library-queried-and-heard" in text, "t9 cites its live results"
     assert "by ear" in lowered, "the tap-to-sound figures are estimates, not timed"
     assert "6 s" in text, "the cold figure that misses the 5 s bar is published"
+    assert "(t9) passed" not in lowered, "t9 ran; its cold figure missed the bar"
 
 
 def test_readme_status_does_not_claim_the_old_index_or_threshold_for_the_library(

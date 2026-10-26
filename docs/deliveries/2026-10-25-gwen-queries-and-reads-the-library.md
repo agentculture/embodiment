@@ -11,7 +11,9 @@ After: `search_library` and its siblings answer from culture-library's passages;
 
 The run is `partial` only because `t4` is: the mockup's Choose section control
 was not built. Every task merged, the phone check found and fixed two defects
-(d2, d3), and the operator's retests on the merged ref closed `t9`.
+(d2, d3), and the operator's retests on the merged ref met `t9`'s criteria with one
+follow-up left open: the tap-to-sound times are estimates by ear, and the cold one is
+over the 5 s bar (see Drift).
 
 ## Planned Work
 
