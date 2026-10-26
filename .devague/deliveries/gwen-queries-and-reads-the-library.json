@@ -1,0 +1,284 @@
+{
+  "plan_slug": "gwen-queries-and-reads-the-library",
+  "schema_version": 2,
+  "created": "2026-10-25T23:25:27Z",
+  "updated": "2026-10-26T03:06:13Z",
+  "deviations": [
+    {
+      "id": "d1",
+      "what": "an explicit seek (GET /api/reading/{id}/next with section/paragraph: the dock's previous/next paragraph and Choose section) re-pins the cursor to the sought unit, so heard reports for it advance the position; stale reports for any other position are still refused",
+      "task_ref": "t3",
+      "reason": "as built (criterion 2, quoted verbatim), a seek only previews: every heard report after a seek is refused and continue returns to the old place, which breaks the approved mockup's previous/next/choose-section controls; decider 0.68 for re-pin (choice), 0.62 that it amends the exact-next rule",
+      "affects": [
+        "t4",
+        "t7",
+        "c23",
+        "h16",
+        "c29"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 1
+    }
+  ],
+  "evidence": [
+    {
+      "id": "e1",
+      "obligation_ref": "o1",
+      "test_ref": "tests/test_library_retrieve.py::test_module_issues_exactly_one_post_to_the_literal_path",
+      "behavior_text": "the AST pin finds exactly one POST, to /api/rag/retrieve, alias-proof (planted alias cases fail it)",
+      "contract_text": "search_library is served by one POST /api/rag/retrieve per call",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran green at 2a58a65 (validate107-tests.sh: 128 passed)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-26T03:05:31Z",
+        "commit": "2a58a65"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 2
+    },
+    {
+      "id": "e2",
+      "obligation_ref": "o1",
+      "test_ref": "tests/test_daemon_library.py::TestNoIndexNoSync::test_the_worker_lists_the_catalog_and_never_starts_a_sync",
+      "behavior_text": "the library worker lists the catalog and never runs a sync; the sync module is gone",
+      "contract_text": "Gwen's library sync and document index are removed",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran green at 2a58a65 (validate107-tests.sh: 128 passed)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-26T03:05:31Z",
+        "commit": "2a58a65"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 3
+    },
+    {
+      "id": "e3",
+      "obligation_ref": "o2",
+      "test_ref": "tests/test_library_retrieve.py::test_todo_and_discord_message_dropped",
+      "behavior_text": "passages of kind todo and discord-message are dropped from a retrieve answer",
+      "contract_text": "to-do items and discord messages never come back from search_library",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran green at 2a58a65 (validate107-tests.sh: 128 passed)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-26T03:05:31Z",
+        "commit": "2a58a65"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 4
+    },
+    {
+      "id": "e4",
+      "obligation_ref": "o3",
+      "test_ref": "tests/test_library_document.py::test_epub_kept_in_order_empty_paragraphs_skipped_bytes_exact",
+      "behavior_text": "an EPUB /text becomes sections and paragraphs in order, bytes exact",
+      "contract_text": "reading a document aloud takes its text from GET /api/library/{id}/text",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran green at 2a58a65 (validate107-tests.sh: 128 passed)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-26T03:05:31Z",
+        "commit": "2a58a65"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 5
+    },
+    {
+      "id": "e5",
+      "obligation_ref": "o4",
+      "test_ref": "tests/test_reading.py::test_heard_must_be_exact_next_and_never_backwards",
+      "behavior_text": "heard moves the cursor only for the exact next unit and never backwards",
+      "contract_text": "the cursor advances past a paragraph only once its playback is reported heard",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran green at 2a58a65 (validate107-tests.sh: 128 passed)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-26T03:05:31Z",
+        "commit": "2a58a65"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 6
+    },
+    {
+      "id": "e6",
+      "obligation_ref": "o4",
+      "test_ref": "tests/test_reading.py::test_a_seek_repins_the_cursor_to_the_sought_unit",
+      "behavior_text": "an explicit seek re-pins the cursor to the sought unit (d1)",
+      "contract_text": "d1: an explicit seek re-pins the reading cursor",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran green at 2a58a65 (validate107-tests.sh: 128 passed)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-26T03:05:31Z",
+        "commit": "2a58a65"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 7
+    },
+    {
+      "id": "e7",
+      "obligation_ref": "o5",
+      "test_ref": "tests/test_daemon_reading.py::TestRefusals::test_next_and_heard_need_the_secret_and_a_refused_heard_leaves_the_file",
+      "behavior_text": "next and heard without the install secret are refused and the positions file is unchanged",
+      "contract_text": "the reading routes sit behind the same guard as every state-changing route",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran green at 2a58a65 (validate107-tests.sh: 128 passed)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-26T03:05:31Z",
+        "commit": "2a58a65"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 8
+    },
+    {
+      "id": "e8",
+      "obligation_ref": "o6",
+      "test_ref": "tests/test_daemon_library.py::TestTheRetiredIndexIsRemoved::test_first_start_deletes_it_once_and_later_starts_do_nothing",
+      "behavior_text": "the first start deletes index.json once and records it; a later start does nothing",
+      "contract_text": "on the first start the daemon deletes its retired library index file once",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "ran green at 2a58a65 (validate107-tests.sh: 128 passed)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-26T03:05:31Z",
+        "commit": "2a58a65"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 9
+    },
+    {
+      "id": "e9",
+      "obligation_ref": "o3",
+      "test_ref": "scratchpad/live0/acceptance107.py (pre-flight daemon on 8824, live culture-library)",
+      "behavior_text": "the reader's paragraphs equal /text: EPUB 3943 of 3943 in order with the same sha256; transcript 4 of 4",
+      "contract_text": "reading a document aloud takes its text from GET /api/library/{id}/text",
+      "evidence_type": "observation",
+      "strength": "fidelity",
+      "strength_basis": "live rig run, 2026-10-26, real library items; structure-only probe",
+      "outcome": "pass",
+      "run": null,
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 10
+    },
+    {
+      "id": "e10",
+      "obligation_ref": "o6",
+      "test_ref": "production start of embodiment-gwen.service",
+      "behavior_text": "one app-library-index-retired ledger entry; index.json absent; the conversations index kept",
+      "contract_text": "on the first start the daemon deletes its retired library index file once",
+      "evidence_type": "observation",
+      "strength": "fidelity",
+      "strength_basis": "observed on the production state dir by a count and a file-existence check, 2026-10-26",
+      "outcome": "pass",
+      "run": null,
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 11
+    },
+    {
+      "id": "e11",
+      "obligation_ref": "o7",
+      "test_ref": "scratchpad/live0/new_item_watch.py",
+      "behavior_text": "item 73 (newspaper) created 03:01:55Z, in the catalog by 03:02:03Z, found by Gwen's search 0.7 s later: about 9 s, n = 1",
+      "contract_text": "a document the library indexes is searchable by Gwen the moment it lands",
+      "evidence_type": "observation",
+      "strength": "fidelity",
+      "strength_basis": "one live item on the rig, 10 s catalog polling bounds the timing; n = 1",
+      "outcome": "pass",
+      "run": null,
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 12
+    },
+    {
+      "id": "e12",
+      "obligation_ref": "o8",
+      "test_ref": "scratchpad/live0/window107.txt (600 s window on the pre-flight daemon)",
+      "behavior_text": "30 library GETs = 10 catalog listings + 20 to-do checks, 0 other GETs; 5 retrieve searches 0 failures, latency 0.78/1.08/1.46 s",
+      "contract_text": "status.library shows retrieve calls >= 1 and 0 failures, and the daemon makes 0 GET /api/library/{id}/file calls",
+      "evidence_type": "observation",
+      "strength": "fidelity",
+      "strength_basis": "live rig window, counters read from status; the pre-flight daemon runs the release code on a scratch state dir",
+      "outcome": "pass",
+      "run": null,
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 13
+    }
+  ],
+  "deltas": [
+    {
+      "id": "b1",
+      "kind": "added",
+      "behavior_text": "an explicit seek (section/paragraph on /next) re-pins the reading cursor, counted as status.reading.seeks",
+      "caused_by": [
+        "d1"
+      ],
+      "evidence_refs": [
+        "e6"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b2",
+      "kind": "amended",
+      "behavior_text": "a citation from a passage under 40 characters (a title-only chunk) opens the item at its start instead of anchoring on any paragraph containing it",
+      "caused_by": [
+        "c5"
+      ],
+      "evidence_refs": [],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b3",
+      "kind": "removed",
+      "behavior_text": "the mockup's Choose section control was not built; seeking by section exists only as the /next route's section/paragraph parameters",
+      "caused_by": [
+        "c23"
+      ],
+      "evidence_refs": [],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    }
+  ],
+  "supersessions": []
+}

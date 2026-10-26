@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-10-25T22:41:22Z",
-  "updated": "2026-10-25T23:11:32Z",
+  "updated": "2026-10-26T03:05:43Z",
   "claims": [
     {
       "id": "c1",
@@ -876,6 +876,100 @@
       "seeds": []
     }
   ],
-  "lapses": [],
-  "obligations": []
+  "lapses": [
+    {
+      "id": "l1",
+      "code": "grader-unverified",
+      "what": "t4 wrote web/src/api/reading.ts and its tests back to back without seeing the tests fail first (task agent's own report), so those tests were never shown able to fail",
+      "skipped_check": "red-first run of api/reading.test.ts",
+      "refs": [
+        "t4"
+      ],
+      "origin": "llm",
+      "status": "proposed"
+    }
+  ],
+  "obligations": [
+    {
+      "id": "o1",
+      "claim_id": "c2",
+      "seam": "library/retrieve.py + daemon/app.py library lane",
+      "behavior": "search_library is one POST /api/rag/retrieve (hybrid, no rerank); no sync module, no library index, no indexing GET",
+      "source_text": "search_library is served by one POST /api/rag/retrieve per call (mode hybrid, rerank false on the turn path) and the library's own passages; Gwen's library sync and document index (library/sync.py, the library lane of library/index.py) are retired, so Gwen no longer downloads, extracts or embeds library items",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o2",
+      "claim_id": "c7",
+      "seam": "library/retrieve.py",
+      "behavior": "to-do and discord-message passages never come back from search_library",
+      "source_text": "to-do items and discord messages never come back from search_library: the retrieve call names a kind, or Gwen drops passages of kind todo client-side, matching today's DocumentIndex.wants exclusion",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o3",
+      "claim_id": "c9",
+      "seam": "library/document.py + daemon/reading.py",
+      "behavior": "a read takes the item's paragraphs from /text: an EPUB's paragraphs in order, Markdown split as the library splits it",
+      "source_text": "reading a document aloud takes its text from GET /api/library/{id}/text: an EPUB's sections and paragraphs as the library gives them, and a Markdown item split into paragraphs by Gwen's markdown reader; a page is a section (an EPUB chapter, a Markdown heading)",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o4",
+      "claim_id": "c12",
+      "seam": "daemon/reading.py Reader.heard",
+      "behavior": "the cursor moves only on a heard report for the exact next unit (or an explicit seek, d1); a stale heard moves nothing",
+      "source_text": "Voice.speak returns when sentences are queued, not heard (SpeakResult.sentences_queued, voice.py:472-516), so the cursor advances past a paragraph only once its playback finishes with no barge-in; a paragraph interrupted mid-way counts unheard and is read again on continue",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o5",
+      "claim_id": "c28",
+      "seam": "http/server.py /api/reading routes",
+      "behavior": "next and heard need the install secret, or a valid Access assertion on the public Host",
+      "source_text": "the reading routes (next paragraph, heard) sit behind the same guard as every state-changing route: Host and Origin allow-list plus the install secret, or a valid Cloudflare Access assertion on the public Host; a heard report changes only the cursor",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o6",
+      "claim_id": "c34",
+      "seam": "daemon/app.py retire_library_index",
+      "behavior": "the first start deletes the retired library index once, records it, and later starts do nothing",
+      "source_text": "on the first start of this release the daemon deletes its retired library index file (`<state>/library/index.json`) once, records that it did, and never touches the conversations index",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o7",
+      "claim_id": "c20",
+      "seam": "culture-library catalog -> search_library",
+      "behavior": "a newly created library item is searchable by Gwen with no Gwen-side action",
+      "source_text": "one copy of the library: a document the library indexes is searchable by Gwen the moment it lands, with no second embed, no re-index on an id change (d15 cost one) and no drift between two indexes; and reading aloud turns the library from something to ask into something to hear, a chapter at a time, picked up where it was left",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o8",
+      "claim_id": "c22",
+      "seam": "the live rig, status.library",
+      "behavior": "retrieve calls succeed with 0 failures and the daemon makes 0 GET /api/library/{id}/file calls",
+      "source_text": "on the live rig: (1) status.library shows retrieve calls >= 1 and 0 failures, with no items_indexed or sync worker, and the daemon makes 0 GET /api/library/{id}/file calls for indexing over 10 minutes; (2) one chapter of a live EPUB read from the phone is stopped mid-paragraph, the page reloaded, and continue plays that same paragraph again first, within 5 s of the tap",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o9",
+      "claim_id": "c14",
+      "seam": "the page on a phone (gwen.culture.dev)",
+      "behavior": "a read plays on the device that has the page open; after a reload, Continue listening replays the paragraph stopped in from its start",
+      "source_text": "a read-aloud plays on the speakers of the device that has gwen.culture.dev open (phone or laptop): the page fetches and plays each paragraph and reports it heard; not the rig speaker",
+      "origin": "llm",
+      "status": "proposed"
+    }
+  ]
 }
