@@ -153,7 +153,9 @@ class TodoStates:
         self.dropped += sum(1 for v in removed.values() if v.get("pending", True))
         return len(gone)
 
-    def reconcile(self, lines: Iterable[Any]) -> tuple[list[dict], list[dict], dict]:
+    def reconcile(
+        self, lines: Iterable[Any], *, prune: bool = True
+    ) -> tuple[list[dict], list[dict], dict]:
         """Merge the library's lines with Gwen's marks: ``(shown, due_resends, counters)``.
 
         Each line carries ``id``, ``done``, ``done_at`` (epoch s or None) and ``by``
@@ -186,7 +188,14 @@ class TodoStates:
                     continue
                 at = mark["at"]
                 lib_at = lib["done_at"]
-                if _flipped_since(lib_at, at):
+                if not mark["done"] and not lib["done"]:
+                    # An open line carries no done_at (the parser stamps done lines only), so
+                    # a mark that re-opens a to-do is confirmed when the line reads open.
+                    self.confirmed += 1
+                    del states[lid]
+                    changed = True
+                    shown.append({"id": lid, **lib})
+                elif _flipped_since(lib_at, at):
                     if lib["done"] == mark["done"]:
                         self.confirmed += 1
                     else:
@@ -206,7 +215,8 @@ class TodoStates:
             if changed:
                 self._save(states)
             self.resends += len(due)
-            self._prune_locked(states, ids)
+            if prune:  # not while an unreadable item may be what hides a line
+                self._prune_locked(states, ids)
             counters = self._counters_locked(states, now)
         return shown, due, counters
 

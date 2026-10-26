@@ -2339,6 +2339,8 @@ class DaemonApp:
         self._todos_loaded = False
         #: The source's code while it is degraded (one record per transition).
         self._todos_down: Optional[str] = None
+        #: The code an unreadable to-do item gave at the last check (the source stays up).
+        self._todos_item_code: Optional[str] = None
         self._todo_checks_deferred = 0
         self._todo_resends_published = 0
         if lane is not None and self._seam is None:
@@ -4151,7 +4153,14 @@ class DaemonApp:
             self._todos_down = None
             self._publish("state", {"component": "todos", "status": "online"})
         lines = [line for group in source.groups() for line in group["lines"]]
-        _shown, due, _counters = self._todo_states.reconcile(lines)
+        item_code = checked.get("code")
+        if item_code and item_code != self._todos_item_code:
+            # One unreadable item: recorded, the others still served (code review of #109).
+            reason = f"to-do item unreadable: {safe_reason.safe_label(str(item_code))}"
+            self._record(APP_TODOS_DEGRADED, reason, source="todos")
+        self._todos_item_code = str(item_code) if item_code else None
+        complete = bool(checked.get("complete", True))
+        _shown, due, _counters = self._todo_states.reconcile(lines, prune=complete)
         self._todos_loaded = True
         if due:
             items = {item["id"]: item for item in self._todo_flat()}

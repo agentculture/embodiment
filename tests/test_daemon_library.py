@@ -1701,7 +1701,8 @@ class TestLibraryTodos:
         library = _todo_library()
         h = _todo_h(harness, tmp_path, library=library)
         result = h.app.controls().todo_set(ID_A1, True)
-        assert result["code"] == "" and result["todo"]["done"] is True
+        assert result["code"] == ""
+        assert result["todo"]["done"] is True
         (event,) = h.events("todo")
         assert event.data["id"] == ID_A1
         assert event.data["recording_id"] == REC_A
@@ -1874,7 +1875,12 @@ class TestLibraryTodos:
         h.app._todo_check()
         block = h.app.status()["todos"]
         assert (block["code"], block["lines"]) == ("todo_parse_failed", 3)
-        assert h.app.controls().todos()["code"] == "library_unavailable"
+        assert block["unreadable"] == 1
+        # one unreadable item no longer takes the page down (code review of #109): the
+        # last good lines are served, and the failure is still recorded
+        page = h.app.controls().todos()
+        assert "code" not in page or page["code"] is None
+        assert sum(len(g["items"]) for g in page["groups"]) == 3
         assert app_module.APP_TODOS_DEGRADED in h.ledger_codes()
 
     def test_no_library_reports_not_configured(self, harness: Any, tmp_path: Path) -> None:
@@ -1947,7 +1953,8 @@ class TestGwenAndTheLibraryTodos:
         tool_text = " ".join(
             str(m.get("content")) for m in script.prompts[-1] if m.get("role") == "tool"
         )
-        assert "buy milk" in tool_text and ID_A2 in tool_text
+        assert "buy milk" in tool_text
+        assert ID_A2 in tool_text
         assert "send the deck" not in tool_text, "done lines filtered out"
         assert h.app.status()["library"]["tool_calls"]["list_todos"] == 1
 

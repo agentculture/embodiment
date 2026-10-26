@@ -31,11 +31,23 @@ from embodiment.library.epub import (
     Passage,
 )
 
-_COMMENT = re.compile(r"<!--.*?(?:-->|\Z)", re.DOTALL)
+# Linear forms (Sonar S6019/S8786): a comment runs to the first "-->" or to the end, and a
+# heading's closing run of "#" is stripped in code (_heading_text), not by backtracking.
+_COMMENT = re.compile(r"<!--(?:[^-]|-(?!->))*(?:-->|\Z)")
 _TAG = re.compile(r"</?[A-Za-z][^<>]*>")
-_HEADING = re.compile(r"^ {0,3}(#{1,6})[ \t]+(.*?)(?:[ \t]+#+)?[ \t]*$")
+_HEADING = re.compile(r"^ {0,3}(#{1,6})[ \t]+(.*)$")
 _BULLET = re.compile(r"^ {0,3}(?:[-*+]|\d{1,9}[.)])[ \t]+")
 _LINK = re.compile(r"(!?)\[([^\[\]]{0,%d})\]\(([^()\s]+)(?:\s+\"[^\"]*\")?\)" % MAX_LINK_TEXT)
+
+
+def _heading_text(rest: str) -> str:
+    """A heading's text without its optional closing run of "#" (CommonMark: the run must
+    follow a space or tab, or be all there is)."""
+    text = rest.rstrip(" \t")
+    bare = text.rstrip("#")
+    if bare != text and (not bare or bare[-1] in " \t"):
+        text = bare.rstrip(" \t")
+    return text
 
 
 @dataclass(frozen=True)
@@ -108,7 +120,7 @@ def extract(data: bytes, *, limits: Optional[Limits] = None) -> Extracted:
         m = _HEADING.match(line)
         if m:
             flush()
-            heading = " ".join(_inline(m.group(2), []).split())
+            heading = " ".join(_inline(_heading_text(m.group(2)), []).split())
         elif not line.strip():
             flush()
         elif _BULLET.match(line):

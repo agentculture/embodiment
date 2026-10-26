@@ -58,7 +58,8 @@ def test_todo_lines():
 def test_caps_cut_not_raise():
     lim = markdown.Limits(max_line_chars=50, max_lines=5, max_chars=80, max_passage_chars=40)
     ex = markdown.extract((("x" * 10_000 + "\n") * 10).encode(), limits=lim)
-    assert ex.passages and all(len(p.text) <= 40 for p in ex.passages)
+    assert ex.passages
+    assert all(len(p.text) <= 40 for p in ex.passages)
     assert ex.chars <= 80
     one = markdown.extract(("y" * 10_000).encode())
     assert len(one.passages[0].text) == markdown.Limits().max_line_chars
@@ -82,3 +83,12 @@ def test_clean_text_is_one_plain_bounded_line():
     small = markdown.Limits(max_line_chars=5)
     assert markdown.clean_text("abcdefgh", limits=small) == "abcde"
     assert markdown.clean_text(None) == ""  # type: ignore[arg-type]
+
+
+def test_a_heading_closing_run_is_stripped_as_commonmark_does() -> None:
+    from embodiment.library.markdown import _heading_text
+
+    assert _heading_text("Title ##") == "Title"
+    assert _heading_text("Title#") == "Title#"
+    assert _heading_text("#") == ""
+    assert _heading_text("C# and F# ") == "C# and F#"
