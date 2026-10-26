@@ -292,6 +292,8 @@ __all__ = [
     "sentence_audio_cap",
     "shape_sentence",
     "pause_after",
+    "speech_pieces",
+    "synthesize_pieces",
     "BARGE_IN_BOUND_S",
     "MAX_FEATURE_FRAMES",
     "PACE_SLICE_S",
@@ -445,6 +447,10 @@ VOICE_PUBLISH_FAILED = "voice-publish-failed"
 #: Splits on a sentence terminator (ASCII or full-width) followed by
 #: whitespace. Deliberately simple — see the module docstring.
 _SENTENCE_END = re.compile(r"(?<=[.!?。！？])\s+")
+#: A colon followed by space ends a piece of speech (d7): "emerges: can we" pauses there. A
+#: time (12:30) or a link (https://) has no space after its colon and is never split. Applied
+#: at synthesis only (:func:`synthesize_pieces`): a sentence stays the turn's unit.
+_COLON_END = re.compile(r"(?<=[:\uff1a])\s+")
 
 
 @dataclass(frozen=True)
@@ -666,12 +672,42 @@ def sentence_audio_cap(sentence: str, config: VoiceConfig) -> int:
 FADE_S = 0.008
 PAUSE_AFTER_SENTENCE_S = 0.28
 PAUSE_AFTER_CLAUSE_S = 0.12
+#: After a colon that ends a piece (the operator: "Colon (:) still passes fast"): between a
+#: clause break and a full stop. :func:`split_sentences` ends a piece at a colon and a space.
+PAUSE_AFTER_COLON_S = 0.22
 _SENTENCE_STOP = re.compile(r"[.!?。！？][\"'”’)\]]*\s*$")
 
 
 def pause_after(sentence: str) -> float:
     """Seconds of silence after *sentence*: a full stop's pause, else a clause break's."""
-    return PAUSE_AFTER_SENTENCE_S if _SENTENCE_STOP.search(sentence) else PAUSE_AFTER_CLAUSE_S
+    if _SENTENCE_STOP.search(sentence):
+        return PAUSE_AFTER_SENTENCE_S
+    return (
+        PAUSE_AFTER_COLON_S if sentence.rstrip().endswith((":", "\uff1a")) else PAUSE_AFTER_CLAUSE_S
+    )
+
+
+def speech_pieces(sentence: str) -> list[str]:
+    """*sentence* in the pieces it is synthesised in: split after a colon and a space (d7)."""
+    pieces = [p.strip() for p in _COLON_END.split(sentence) if p.strip()]
+    return pieces or [sentence]
+
+
+def synthesize_pieces(synthesize: Callable[[str, Any], Any], sentence: str, config: Any) -> Any:
+    """One sentence's pcm from *synthesize*, a piece at a time (:func:`speech_pieces`), with
+    the colon's pause between pieces. A sentence of one piece returns exactly what *synthesize*
+    returned, so a malformed return still reaches the caller's checks. Raises what it raises."""
+    pieces = speech_pieces(sentence)
+    if len(pieces) == 1:
+        return synthesize(sentence, config)
+    out = b""
+    for index, piece in enumerate(pieces):
+        pcm = synthesize(piece, config)
+        if not isinstance(pcm, (bytes, bytearray)):
+            return pcm
+        last = index == len(pieces) - 1
+        out += bytes(pcm) if last else shape_sentence(bytes(pcm), pause_after(piece))
+    return out
 
 
 def shape_sentence(pcm: bytes, pause_s: float) -> bytes:
@@ -1109,7 +1145,7 @@ class Voice:
         if progress.tts_degraded:
             return b""
         try:
-            pcm = self._synthesize(sentence, self._config)
+            pcm = synthesize_pieces(self._synthesize, sentence, self._config)
         except VoiceReadTimeoutError as exc:
             # Named ahead of the generic case (round 4) — a distinct
             # fault from an outright failure (lesson 4).

@@ -49,7 +49,9 @@ from embodiment.voice import (
     pause_after,
     sentence_audio_cap,
     shape_sentence,
+    speech_pieces,
     split_sentences,
+    synthesize_pieces,
 )
 
 # ── test doubles ─────────────────────────────────────────────────────────────
@@ -1552,3 +1554,38 @@ class TestSentenceJoins:
     def test_odd_or_tiny_pcm_never_raises(self) -> None:
         assert shape_sentence(b"", 0.1) == b"\x00\x00" * 2400
         assert len(shape_sentence(b"\x01", 0.0)) == 0
+
+
+class TestAColonPauses:
+    """d7, the operator's phone 2026-10-26: "Colon (:) still passes fast". A colon followed by
+    a space ends a piece of speech with its own pause; a time or a link keeps its colon."""
+
+    def test_a_colon_with_a_space_ends_a_piece_but_not_a_sentence(self) -> None:
+        text = "A key challenge emerges: can we develop guardrails?"
+        assert speech_pieces(text) == ["A key challenge emerges:", "can we develop guardrails?"]
+        # the turn's unit is still the sentence (the spoken prefix, the published reply)
+        assert split_sentences(text) == [text]
+
+    def test_a_time_or_a_link_is_not_split(self) -> None:
+        assert speech_pieces("We meet at 12:30 today.") == ["We meet at 12:30 today."]
+        assert speech_pieces("See https://example.org for more.") == [
+            "See https://example.org for more."
+        ]
+
+    def test_the_pieces_are_synthesised_apart_with_the_colon_pause_between(self) -> None:
+        asked: list[str] = []
+        pcm = b"\x00\x40" * 2400
+
+        def synth(text: str, config: object) -> bytes:
+            asked.append(text)
+            return pcm
+
+        out = synthesize_pieces(synth, "It emerges: a question.", VoiceConfig())
+        assert asked == ["It emerges:", "a question."]
+        gap = round(pause_after("It emerges:") * 24000) * 2
+        assert len(out) == 2 * len(pcm) + gap
+        assert synthesize_pieces(synth, "One piece only.", VoiceConfig()) == pcm
+
+    def test_the_colon_pause_sits_between_a_clause_and_a_full_stop(self) -> None:
+        colon = pause_after("emerges:")
+        assert pause_after("a clause,") < colon < pause_after("A sentence.")

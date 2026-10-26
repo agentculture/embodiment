@@ -84,6 +84,7 @@ from embodiment.voice import (
     pause_after,
     shape_sentence,
     split_sentences,
+    synthesize_pieces,
 )
 
 __all__ = [
@@ -636,7 +637,7 @@ class TextTurns:
     def _synthesise_one(self, sentence: str, voice_config: VoiceConfig) -> Optional[bytes]:
         """One sentence's pcm, or ``None`` (recorded) when the tts lane gave none."""
         try:
-            chunk = self._tts(sentence, voice_config)
+            chunk = synthesize_pieces(self._tts, sentence, voice_config)  # d7: a colon pauses
         except Exception as exc:  # noqa: BLE001
             self._record(SPEAK_TTS_FAILED, safe_reason.describe_exception(exc))
             return None

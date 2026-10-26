@@ -104,7 +104,8 @@ Quoted verbatim from the `devague summary` skeleton:
 | English is spoken as English | medium | `TestMarkLanguage`; the operator by ear ("I can listen to it correctly now"); lapse `l2` (proposed): English was timed, never listened to, before the phone found it |
 | tap to jump, a reachable pause, bars that never snap back | medium | the d3 tests; one 390 px browser check |
 | a paragraph is spoken whole | high | `e14` (tests at `6fbe7c4`), `e15` (10.00 s cut, then 13.93 s whole; the operator: "Reads well to the end") |
-| sentence joins without clicks, a pause between sentences | medium | `TestSentenceJoins`; one live measurement (0.27 s quiet at each join); not yet retested on the phone |
+| sentence joins without clicks, a pause between sentences | high | `TestSentenceJoins`; one live measurement (0.27 s quiet at each join); the operator: "Transitions are far better. Very natural" |
+| a colon pauses | medium | `TestAColonPauses`; not yet retested on the phone |
 | caching: replay, Previous and Next play at once | medium | the d6 tests; the operator: "Caching works well", "Previous and next cache works good!" |
 | library retrieval hit rate | unverified | not measured; hybrid scores 0.011-0.033 do not compare with memory's 0.715 |
 
