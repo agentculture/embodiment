@@ -1,6 +1,6 @@
 # Delivery Summary — Gwen queries and reads the library
 
-plan: `gwen-queries-and-reads-the-library` · run: `partial` · date: `2026-10-25`
+plan: `gwen-queries-and-reads-the-library` · run: `complete` · date: `2026-10-25`
 baseline: `devague summary skeleton`
 
 ## Intent
@@ -9,11 +9,11 @@ baseline: `devague summary skeleton`
 
 After: `search_library` and its siblings answer from culture-library's passages; Gwen holds no library index and runs no library sync; on the page the operator says or taps read for an item, hears it paragraph by paragraph on that device's speakers, stops at any point, and later (from any device) continues at the first paragraph not fully heard
 
-The run is `partial` only because `t4` is: the mockup's Choose section control
-was not built. Every task merged, the phone check found and fixed two defects
-(d2, d3), and the operator's retests on the merged ref met `t9`'s criteria with one
-follow-up left open: the tap-to-sound times are estimates by ear, and the cold one is
-over the 5 s bar (see Drift).
+The run is `complete`: every task merged and is delivered. The phone check found
+and fixed two defects (d2, d3); the operator's retests on the merged ref met `t9`'s
+criteria with one follow-up left open (the tap-to-sound times are estimates by ear,
+and the cold one is over the 5 s bar; see Drift); and the mockup's Choose section
+control, missing from `t4` when it merged, shipped in 0.23.2.
 
 ## Planned Work
 
@@ -36,7 +36,7 @@ Quoted verbatim from the `devague summary` skeleton:
 | `t1` | delivered | `embodiment/library/retrieve.py` (`c3ed2a2`, `kind` sent in the body after a send-back `3ce6a37`); merged `6a9fdb3` |
 | `t2` | delivered | `embodiment/library/document.py` + `LibraryClient.fetch_text` (`1b3f32b`); merged `09a0c9d` |
 | `t3` | delivered | `embodiment/daemon/reading.py` (`4026432`), seek re-pin per `d1` (`acf169c`); merged `972bd50` |
-| `t4` | partial | Reader dock, Continue listening, Read aloud card, paragraph-synced progress (`fe22ad2`); the mockup's Choose section control was not built; merged `705ccb9` |
+| `t4` | delivered | Reader dock, Continue listening, Read aloud card, paragraph-synced progress (`fe22ad2`), merged `705ccb9`; the mockup's Choose section control was missing then and shipped later as `5b384c5` (0.23.2) |
 | `t5` | delivered | retrieve-backed `search_library`/`read_passage`, `/text`-backed `read_item`/`fetch_source` (`12cddcf`); merged `c30a149` |
 | `t6` | delivered | `library/sync.py` deleted, `retire_library_index`, catalog/search/reader live (`6874d7e`); merged `dd23476` |
 | `t7` | delivered | `/api/reading*` behind the guard, `status.reading`, Stats (`9cbed7d`); merged `653c37f` |
@@ -67,7 +67,7 @@ Quoted verbatim from the `devague summary` skeleton:
 | Plan item | Reason for divergence | Classification |
 |-----------|------------------------|-----------------|
 | `t3` (`d1`) | as built (criterion 2, quoted verbatim), a seek only previews: every heard report after a seek is refused and continue returns to the old place, which breaks the approved mockup's previous/next/choose-section controls; decider 0.68 for re-pin (choice), 0.62 that it amends the exact-next rule | `acceptable` |
-| `t4` | the Choose section control from the approved mockup was not built; a tap on a paragraph (d3) is the way to jump | `acceptable` |
+| `t4` | the Choose section control from the approved mockup was not built with the task; it shipped after the rest of the plan merged (`5b384c5`, 0.23.2; delta `b11` supersedes `b3`) | `acceptable` |
 | `t9` (`d2`) | live t9 on the phone: an English newspaper played garbled; lobes' BlueTTS sidecar sends a span with no Hebrew letters to the model as raw letters in he mode, while an `<en>` span goes through espeak English | `acceptable` |
 | `t4` (`d3`) | operator, live t9 on the phone: the pause button was out of reach on long articles, there was no jump to a paragraph, and the progress bar reset between paragraphs | `acceptable` |
 | `t9` | the stop, reload and continue check ran on a Hebrew transcript, not a chapter of an EPUB; the EPUB was matched against `/text` by the probe only (decider: 0.42 that this stands in) | `acceptable` |
@@ -89,11 +89,14 @@ Quoted verbatim from the `devague summary` skeleton:
   - `tests/test_daemon_reading.py::TestRefusals::test_next_and_heard_need_the_secret_and_a_refused_heard_leaves_the_file` — pass
 - live: `docs/live-test-results/2026-10-26-library-queried-and-heard.md` — every probe row passed or is reported as measured
 - tests: the full suite at `09af199` (the Sonar fixes) — 4525 passed, 1 skipped; `o4`/`o5`'s tests plus `tests/test_daemon_reading.py` and `tests/test_http_server.py` re-run there (2026-10-26T11:17:41Z) — 231 passed, filed as `e16`-`e18`
+- tests: Choose section at `5b384c5` (2026-10-26T17:21:35Z) — its 4 vitest cases seen failing (3 of 4) before the control existed, then passing; full web suite 531 passed; Python suite 4526 passed, 1 skipped; build and the origin check pass. One unnamed web test failed once in 17 runs on the branch (0 of 5 on its base, 16 clean runs after it); not explained, filed nowhere as a pass
+- live: Choose section at 390 px on the pre-flight daemon from `feat/choose-section` against a live 304-section book — the list sits in the fixed dock, the playing section marked, focused and in view, no sideways scroll; a choice played section 8 of 304 and closed the list. Clicks were dispatched in the page: this harness's second browser context delivered no pointer input at all (Pause, already confirmed on the phone, also got 0 clicks). Not yet tried on the operator's phone
+- assess, t4 after Choose section (`general`, 2026-10-26; `docs/deliveries/2026-10-26-gwen-queries-assess-t4-choose.json`): delivered 0.83, partial 0.14; P(the one unexplained web failure blocks the PR) 0.075
 - assess, after the retests (`general`, 2026-10-26; `docs/deliveries/2026-10-26-gwen-queries-assess-t9-retest.json`): `t9` delivered 0.65, partial 0.32, not delivered 0.03; P(a transcript stands in for an EPUB chapter) 0.42, P(by-ear estimates suffice) 0.40, so both are drift entries above
 - assess: one fresh decider call per task (`general`, 2026-10-26; requests and answers in `docs/deliveries/2026-10-26-gwen-queries-assess-per-task.json`): `t1`-`t3`, `t5`-`t8` delivered (P 0.97-0.98); `t4` partial (0.86, the Choose section control); `t9` partial 0.51 against not delivered 0.48 (the merged-ref deploy and the tap-to-sound time are unmet). A batched pass before it agreed on every task (`t9` partial 0.81). `t4` was relabelled from "delivered, one control short" to partial on that reading
 - CI: #110 at `09af199` — every check passes, SonarCloud gate OK, 0 open issues; #109 merged as `a4e521c`
 - lint: `black --check`, `isort --check-only`, `flake8`, `bandit -c pyproject.toml`, `markdownlint-cli2` — clean
-- validate-delivery records: obligations `o1`-`o10`, evidence `e1`-`e18` (all pass; `e19`, `e20` are the retests), deltas `b1`-`b10`; all `llm`-origin and proposed. The records covering d2-d7 (`o10`, `e14`-`e15`, `b6`-`b10`) were filed after #109 and #110 were opened, not before: the validate-before-PR order was not kept for those changes
+- validate-delivery records: obligations `o1`-`o10`, evidence `e1`-`e18` (all pass; `e19`, `e20` are the retests), deltas `b1`-`b10`; `o11`, `e21`, `e22`, `b11` (Choose section, filed before its PR; `b11` supersedes `b3`); all `llm`-origin and proposed. The records covering d2-d7 (`o10`, `e14`-`e15`, `b6`-`b10`) were filed after #109 and #110 were opened, not before: the validate-before-PR order was not kept for those changes
 - deviations: `d1`, `d2` approved (operator); `d3`-`d7` approved (operator's own asks and report, user-origin)
 - commits: `74f51f1..09af199` on `feat/gwen-queries-the-library`, now on `main` after #109's squash (`a4e521c`); #110 squash-merged as `e19be55`, deployed to production 2026-10-26
 - PRs / issues: embodiment#107; follow-ups embodiment#108, culture-rules#99
@@ -118,6 +121,7 @@ Quoted verbatim from the `devague summary` skeleton:
 | sentence joins without clicks, a pause between sentences | high | `TestSentenceJoins`; one live measurement (0.27 s quiet at each join); the operator: "Transitions are far better. Very natural" |
 | a colon and a full stop pause | medium | `TestAColonPauses`; the operator: "Colon is perfect" at 0.30 s, and the 0.53 s full stop retested on `e19be55`: "pause is right" |
 | caching: replay, Previous and Next play at once | medium | the d6 tests; the operator: "Caching works well", "Previous and next cache works good!" |
+| Choose section lists the sections and seeks to the chosen one's first paragraph, heard only on ended | medium | `e21` (4 vitest cases at `5b384c5`), `e22` (390 px, live 304-section book); not on the phone yet |
 | library retrieval hit rate | unverified | not measured; hybrid scores 0.011-0.033 do not compare with memory's 0.715 |
 
 Lapse ledger evidence:
@@ -127,10 +131,10 @@ pending approval (not yet evidence): `l1`, `l2`
 ## Remaining Work / Follow-up
 
 - `t9` — a timed tap-to-sound figure (cold and warm, n > 1) would replace the by-ear estimates; a cold tts lane is the likely 6 s, and a warm-up call at start is one way under 5 s.
-- Choose section control (`b3`) — not built; tap a paragraph (d3) jumps. Build it only if the operator still wants it.
+- Choose section (`b11`, 0.23.2) — try it on the phone: it is checked only at 390 px in a browser.
 - Narration rules (embodiment#111): skip citation markers (`[1]`) and repeated abbreviations ("natural language (NL)") when reading aloud, per item kind, with a lexicon and an editable rules file; it amends c24 first. The operator chose a separate cycle.
 - An English voice on purpose: lobes could take a per-request language instead of the `<en>` tags (a lobes issue, to draft and ask before posting).
-- Proposed records to adjudicate: obligations `o1`-`o10`, evidence `e1`-`e20`, deltas `b1`-`b10`, lapses `l1`, `l2`, `l3` (`l3`: the validate-before-PR order was not kept for d2-d7, filed `control-absent`).
+- Proposed records to adjudicate: obligations `o1`-`o11`, evidence `e1`-`e22`, deltas `b1`-`b11` (`b3` superseded by `b11`), lapses `l1`, `l2`, `l3` (`l3`: the validate-before-PR order was not kept for d2-d7, filed `control-absent`).
 - A culture-library issue for title-only chunks (about 40 characters) returned as passages — to draft and ask before posting.
 - Follow-ups already named: voice commands for reading (v4, with realtime Live); two devices reading one item (v5); embodiment#106; Docker (embodiment#108); transcript segment times (culture-rules#99); deleting the dead library code in `library/index.py` and `library/extract.py`.
 - #109 (embodiment#105) merged 2026-10-26 as `a4e521c`. #110 (embodiment#107) merged as `e19be55` and runs in production; the retests above ran on it.
