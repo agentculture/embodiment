@@ -119,7 +119,14 @@ export const Reader = forwardRef<ReaderHandle, ReaderProps>(function Reader(
     (u: ReadingUnit): string | null => (u.part + 1 < u.partCount ? null : textAt(neighbour(u, 1))),
     [textAt],
   );
-  const peekPreceding = useCallback((u: ReadingUnit): string | null => textAt(neighbour(u, -1)), [textAt]);
+  const peekPreceding = useCallback(
+    (u: ReadingUnit): string | null => {
+      const at = neighbour(u, -1);
+      // at the item's first paragraph Previous plays the same one: nothing to make ahead
+      return at && (at.section !== u.section || at.paragraph !== u.paragraph) ? textAt(at) : null;
+    },
+    [textAt],
+  );
   const [reading, controls] = useReadAloud({ itemId: id, secret, clientOptions, audioFactory, peekFollowing, peekPreceding });
   const device = deviceKind();
 

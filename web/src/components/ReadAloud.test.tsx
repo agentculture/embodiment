@@ -480,4 +480,64 @@ describe("ReadAloud: what the phone test asked for (d3, live t9 2026-10-26)", ()
     fireEvent.click(screen.getByText(texts[2]));
     await waitFor(() => expect(spoken).toContain(texts[0]));
   });
+
+  it("a long paragraph starts from its first sentence, plays the rest after it, and is heard once at the end (d7)", async () => {
+    const head = "The first synthetic sentence of a long paragraph, written to be read aloud on its own.";
+    const rest = "Then the rest of it follows, sentence after sentence, " + "long enough to matter. ".repeat(6).trim();
+    const text = `${head} ${rest}`;
+    const docL = { item: doc.item, passages: [{ anchor: "s0.p0", heading: "", text, start_s: null, end_s: null, speaker: "" }] };
+    const wav = (n: number) => {
+      const b = new Uint8Array(44 + n * 2);
+      const v = new DataView(b.buffer);
+      [..."RIFF"].forEach((c, i) => (b[i] = c.charCodeAt(0)));
+      [..."WAVEfmt "].forEach((c, i) => (b[8 + i] = c.charCodeAt(0)));
+      v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true); v.setUint32(24, 24000, true);
+      v.setUint32(28, 48000, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+      [..."data"].forEach((c, i) => (b[36 + i] = c.charCodeAt(0)));
+      v.setUint32(40, n * 2, true);
+      return b;
+    };
+    const spoken: string[] = [];
+    const heard: string[] = [];
+    const fetchFn = vi.fn(async (u: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(u);
+      const json = (status: number, body: unknown) => ({ ok: status < 300, status, json: async () => body }) as Response;
+      if (url === "/api/library/syn-1") return json(200, docL);
+      if (url.startsWith("/api/reading/syn-1/next")) return json(200, { ...unit(0), paragraph_count: 1, text });
+      if (url === "/api/reading/syn-1/heard") {
+        heard.push(JSON.parse(String(init?.body)).position);
+        return json(200, { moved: true, cursor: {} });
+      }
+      if (url === "/api/speak") {
+        const t = JSON.parse(String(init?.body)).text as string;
+        spoken.push(t);
+        return { ok: true, status: 200, blob: async () => new Blob([wav(t.length * 10)], { type: "audio/wav" }) } as unknown as Response;
+      }
+      return json(404, {});
+    });
+    render(<Reader id="syn-1" onClose={() => {}} clientOptions={{ fetchFn: fetchFn as unknown as typeof fetch }} audioFactory={() => new FakeAudio() as unknown as HTMLAudioElement} />);
+    await screen.findByText(text);
+    fireEvent.click(screen.getByRole("button", { name: /Read aloud on this/ }));
+    await waitFor(() => expect(screen.getByRole("group", { name: "Reading aloud" })).toHaveAttribute("data-status", "playing"));
+    expect(spoken[0]).toBe(head); // the first sentence is asked for alone, first
+    expect(spoken).not.toContain(text);
+    const a = audio();
+    a.duration = 2;
+    a.currentTime = 2;
+    a.fire("timeupdate");
+    const share = head.length / text.length;
+    expect(Number(document.querySelector(".where-bar span.now")?.getAttribute("data-played"))).toBeCloseTo(share, 5);
+    const headSrc = a.src;
+    a.fire("ended"); // the first sentence ended: not heard yet, the rest plays on
+    await waitFor(() => expect(a.src).not.toBe(headSrc));
+    expect(spoken).toContain(rest);
+    expect(heard).toEqual([]);
+    a.fire("ended");
+    await waitFor(() => expect(heard).toEqual(["pos-0-0"]));
+    // a replay plays the two joined: no new speech is made
+    const made = spoken.length;
+    fireEvent.click(screen.getByText(text));
+    await waitFor(() => expect(screen.getByRole("group", { name: "Reading aloud" })).toHaveAttribute("data-status", "playing"));
+    expect(spoken.length).toBe(made);
+  });
 });

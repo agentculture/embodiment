@@ -81,6 +81,8 @@ from embodiment.voice import (
     VoiceConfig,
     _read_bounded,
     http_synthesize,
+    pause_after,
+    shape_sentence,
     split_sentences,
 )
 
@@ -614,12 +616,15 @@ class TextTurns:
         started = self._clock()
         pcm = bytearray()
         used = 0
-        for sentence in sentences:
+        for index, sentence in enumerate(sentences):
             if self._clock() - started > self._config.speak_deadline:
                 return pcm, used, True
             chunk = self._synthesise_one(sentence, voice_config)
             if chunk is None:
                 return (pcm, used, True) if pcm else None
+            # d7: faded edges and a pause between sentences, none after the last
+            last = index == len(sentences) - 1
+            chunk = shape_sentence(chunk, 0.0 if last else pause_after(sentence))
             room = MAX_SPEAK_AUDIO_BYTES - len(pcm)
             if len(chunk) > room:
                 pcm += bytes(chunk[: room - room % BYTES_PER_SAMPLE])

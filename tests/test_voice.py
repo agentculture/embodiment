@@ -46,7 +46,9 @@ from embodiment.voice import (
     VoiceConfig,
     http_synthesize,
     mark_language,
+    pause_after,
     sentence_audio_cap,
+    shape_sentence,
     split_sentences,
 )
 
@@ -478,9 +480,10 @@ class TestPlayedAudioFedToFeatureExtractor:
         result = voice.speak("only one short sentence")
 
         assert result.sentences_queued == 1
-        assert player.play_calls == [payload]
+        played = shape_sentence(payload, 0.0)  # d7: faded edges, no pause after the last
+        assert player.play_calls == [played]
         assert _wait_until(lambda: len(voice.feature_frames) == 1, timeout=3.0)
-        assert voice.feature_frames == extract_features(payload)
+        assert voice.feature_frames == extract_features(played)
         voice.close(deadline=1.0)
 
     def test_dropped_sentence_is_never_fed_to_features(self) -> None:
@@ -695,7 +698,7 @@ class TestDrainFeatures:
         voice.speak("only one short sentence")
         assert _wait_until(lambda: len(voice.feature_frames) == 1, timeout=3.0)
         drained = voice.drain_features()
-        assert drained == extract_features(payload)
+        assert drained == extract_features(shape_sentence(payload, 0.0))
         assert voice.feature_frames == []
         voice.close(deadline=1.0)
 
@@ -1521,3 +1524,31 @@ class TestALongSentenceIsSpokenWhole:
         head = "a" * 300 + ", " + "b " * 150
         out = split_sentences(head)
         assert out[0].endswith(",")
+
+
+class TestSentenceJoins:
+    """d7 (the operator's phone, 2026-10-26: "transitions between sentences aren't great"):
+    measured, each sentence came back with 0-10 ms of silence and started at full amplitude, so
+    joined sentences ran together with a click at each seam."""
+
+    def test_edges_fade_from_and_to_silence(self) -> None:
+        loud = b"\x00\x40" * 4800  # 0.2 s at a constant 16384
+        shaped = shape_sentence(loud, 0.0)
+        samples = memoryview(shaped).cast("h")
+        assert len(shaped) == len(loud)
+        assert abs(samples[0]) < 200 and abs(samples[-1]) < 200
+        assert samples[len(samples) // 2] == 16384
+
+    def test_a_pause_follows_in_silence(self) -> None:
+        shaped = shape_sentence(b"\x00\x40" * 4800, 0.25)
+        tail = memoryview(shaped).cast("h")[-6000:]
+        assert len(shaped) == 4800 * 2 + 6000 * 2
+        assert all(x == 0 for x in tail)
+
+    def test_a_full_stop_pauses_longer_than_a_clause_break(self) -> None:
+        assert pause_after("The vote is set.") > pause_after("a long clause,") > 0
+        assert pause_after("Is it?") == pause_after("Yes!") == pause_after("Done.")
+
+    def test_odd_or_tiny_pcm_never_raises(self) -> None:
+        assert shape_sentence(b"", 0.1) == b"\x00\x00" * 2400
+        assert len(shape_sentence(b"\x01", 0.0)) == 0

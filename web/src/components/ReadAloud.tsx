@@ -24,6 +24,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { speakMessage } from "../api/audio";
+import { joinWav, splitHead } from "../audio/wav";
 import {
   fetchNext,
   reportHeard,
@@ -160,7 +161,21 @@ function dropUrl(url: string) {
   }
 }
 
-type Ready = { kind: "unit"; unit: ReadingUnit; blob: Blob } | { kind: "done" } | { kind: "failed"; code: string };
+/** The rest of a paragraph started from its first sentence (d7): its audio, and the share of
+ *  the paragraph's text the first sentence holds (the bar's split point). */
+interface Rest {
+  audio: Promise<Made>;
+  share: number;
+}
+
+type Ready = { kind: "unit"; unit: ReadingUnit; blob: Blob; rest?: Rest } | { kind: "done" } | { kind: "failed"; code: string };
+
+/** d7: a paragraph at least this long, not yet made, starts from its first sentence's audio
+ *  while the rest is made (the operator's phone: "send first sentence"). */
+export const HEAD_MIN_CHARS = 200;
+/** The pause between the first sentence and the rest when they are joined into one file:
+ *  the daemon's pause after a full stop (voice.py PAUSE_AFTER_SENTENCE_S). */
+const SENTENCE_PAUSE_S = 0.28;
 
 const norm = (t: string) => t.replace(/\s+/g, " ").trim();
 
@@ -260,6 +275,19 @@ export function useReadAloud({ itemId, secret, clientOptions, audioFactory, peek
     return audio.current;
   }, []);
 
+  /** d7: once a split paragraph's rest is made, keep the two joined as the paragraph's audio. */
+  const keepJoined = useCallback(async (text: string, head: Blob, restAudio: Promise<Made>) => {
+    const rest = await restAudio;
+    if (!rest.blob) return;
+    try {
+      const [a, b] = await Promise.all([head.arrayBuffer(), rest.blob.arrayBuffer()]);
+      const joined = joinWav(new Uint8Array(a), new Uint8Array(b), SENTENCE_PAUSE_S);
+      if (joined) cache.current.put(text, new Blob([joined], { type: "audio/wav" }));
+    } catch {
+      /* not joined: the next play makes it whole */
+    }
+  }, []);
+
   /** Silence the element and detach every handler: nothing it does now is a report. */
   const halt = useCallback(() => {
     const a = audio.current;
@@ -279,19 +307,30 @@ export function useReadAloud({ itemId, secret, clientOptions, audioFactory, peek
     const next = await fetchNext(id, key, co, at);
     if (!next.ok) return { kind: "failed", code: next.code };
     if (next.value.done) return { kind: "done" };
-    const made = await audioOf(next.value.unit.text);
+    const text = next.value.unit.text;
+    const split = !cache.current.get(text) && text.length >= HEAD_MIN_CHARS ? splitHead(text) : null;
+    if (split) {
+      // The tts lane makes one sentence at a time: the first sentence alone first, then the rest.
+      const head = await audioOf(split.head);
+      if (head.blob) {
+        const restAudio = audioOf(split.rest);
+        void keepJoined(text, head.blob, restAudio);
+        return { kind: "unit", unit: next.value.unit, blob: head.blob, rest: { audio: restAudio, share: split.head.length / text.length } };
+      }
+    }
+    const made = await audioOf(text);
     if (!made.blob) return { kind: "failed", code: made.code };
     return { kind: "unit", unit: next.value.unit, blob: made.blob };
-  }, [audioOf]);
+  }, [audioOf, keepJoined]);
 
   // Declared before use through refs, so the handlers always see the current ones.
-  const playRef = useRef<(t: number, unit: ReadingUnit, blob: Blob) => void>(() => {});
+  const playRef = useRef<(t: number, unit: ReadingUnit, blob: Blob, rest?: Rest) => void>(() => {});
   const loadRef = useRef<(t: number, at: At | undefined) => void>(() => {});
 
   const settle = useCallback(
     (t: number, r: Ready) => {
       if (t !== token.current) return;
-      if (r.kind === "unit") playRef.current(t, r.unit, r.blob);
+      if (r.kind === "unit") playRef.current(t, r.unit, r.blob, r.rest);
       else if (r.kind === "done") set({ status: "done", played: 1 });
       else if (r.code === "library-item-gone") set({ status: "gone", code: r.code });
       else set({ status: "error", code: r.code });
@@ -322,7 +361,8 @@ export function useReadAloud({ itemId, secret, clientOptions, audioFactory, peek
     [set, settle],
   );
 
-  playRef.current = (t: number, unit: ReadingUnit, blob: Blob) => {
+  /** Play one clip of *unit*: its audio fills the bar from *from* over *span*, then *done*. */
+  const playClip = (t: number, unit: ReadingUnit, blob: Blob, from: number, span: number, done: () => void) => {
     if (t !== token.current) return;
     const a = element();
     if (!a) {
@@ -341,15 +381,15 @@ export function useReadAloud({ itemId, secret, clientOptions, audioFactory, peek
     a.ontimeupdate = () => {
       if (t !== token.current) return;
       const d = a.duration;
-      if (Number.isFinite(d) && d > 0) set({ played: Math.min(1, a.currentTime / d) });
+      if (Number.isFinite(d) && d > 0) set({ played: Math.min(1, from + span * (a.currentTime / d)) });
     };
     a.onerror = () => {
       if (t !== token.current) return;
       halt();
       set({ status: "error", code: "playback-failed" });
     };
-    a.onended = () => onEnded(t, unit);
-    set({ status: "playing", unit, played: 0, code: null });
+    a.onended = done;
+    set({ status: "playing", unit, played: from, code: null });
     let started: Promise<void> | undefined;
     try {
       started = a.play();
@@ -362,9 +402,27 @@ export function useReadAloud({ itemId, secret, clientOptions, audioFactory, peek
       const blocked = e instanceof Error && e.name === "NotAllowedError";
       set({ status: blocked ? "blocked" : "error", code: blocked ? null : "playback-failed" });
     });
-    // Keep this paragraph's audio for a pause or a Previous, and make the next and then the
-    // previous ahead (d6), one at a time so the next is never queued behind the previous.
-    cache.current.put(unit.text, blob);
+  };
+
+  playRef.current = (t: number, unit: ReadingUnit, blob: Blob, rest?: Rest) => {
+    if (t !== token.current) return;
+    if (rest) {
+      // d7: the first sentence now, the rest after it; heard only once the rest has ended.
+      playClip(t, unit, blob, 0, rest.share, () => {
+        if (t !== token.current) return;
+        set({ status: "loading" });
+        void rest.audio.then((made) => {
+          if (t !== token.current) return;
+          if (made.blob) playClip(t, unit, made.blob, rest.share, 1 - rest.share, () => onEnded(t, unit));
+          else set({ status: "error", code: made.code });
+        });
+      });
+    } else {
+      playClip(t, unit, blob, 0, 1, () => onEnded(t, unit));
+      cache.current.put(unit.text, blob);
+    }
+    // Keep this paragraph's audio for a pause or a Previous (above; a split one is kept joined),
+    // and make the next and then the previous ahead (d6), one at a time.
     const peek = (f: ((u: ReadingUnit) => string | null) | undefined): string | null => {
       try {
         const text = f?.(unit) ?? null;
@@ -375,7 +433,11 @@ export function useReadAloud({ itemId, secret, clientOptions, audioFactory, peek
     };
     const following = peek(opts.current.peekFollowing);
     const preceding = peek(opts.current.peekPreceding);
-    void (following ? audioOf(following) : Promise.resolve(null)).then(() => (preceding ? audioOf(preceding) : null));
+    // After a split paragraph's rest is made, so the made-ahead never queues in front of it.
+    const after: Promise<unknown> = rest ? rest.audio : Promise.resolve(null);
+    void after
+      .then(() => (following ? audioOf(following) : null))
+      .then(() => (preceding ? audioOf(preceding) : null));
   };
 
   const begin = useCallback(

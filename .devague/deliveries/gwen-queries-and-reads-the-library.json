@@ -2,7 +2,7 @@
   "plan_slug": "gwen-queries-and-reads-the-library",
   "schema_version": 2,
   "created": "2026-10-25T23:25:27Z",
-  "updated": "2026-10-26T05:20:19Z",
+  "updated": "2026-10-26T05:49:04Z",
   "deviations": [
     {
       "id": "d1",
@@ -88,6 +88,20 @@
       "status": "approved",
       "classification": "acceptable",
       "seq": 19
+    },
+    {
+      "id": "d7",
+      "what": "speech: every synthesised sentence's edges fade over 8 ms and a pause follows it (longer after . ! ?, shorter after a clause break) in /api/speak and the room voice; the page starts a long paragraph from its first sentence's audio while the rest is made, and plays the rest on at the sentence pause",
+      "task_ref": "t4",
+      "reason": "operator, live t9 on the phone 2026-10-26: 'Reads well to the end, but transitions between sentences aren't great. For long content we can try send first sentence and seamlessly replace with full paragraph'; measured: sentences are joined with 0-10 ms of silence and start at full amplitude (a click at each seam)",
+      "affects": [
+        "c10",
+        "c23"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 20
     }
   ],
   "evidence": [

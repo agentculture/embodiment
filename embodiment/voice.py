@@ -268,6 +268,7 @@ utterances one reply produces.
 
 from __future__ import annotations
 
+import array
 import json
 import re
 import threading
@@ -289,6 +290,8 @@ __all__ = [
     "MAX_SENTENCE_AUDIO_BYTES",
     "MAX_AUDIO_S_PER_CHAR",
     "sentence_audio_cap",
+    "shape_sentence",
+    "pause_after",
     "BARGE_IN_BOUND_S",
     "MAX_FEATURE_FRAMES",
     "PACE_SLICE_S",
@@ -654,6 +657,39 @@ def sentence_audio_cap(sentence: str, config: VoiceConfig) -> int:
     return cap - cap % BYTES_PER_SAMPLE
 
 
+#: d7 (the operator's phone, 2026-10-26: "transitions between sentences aren't great"). Measured
+#: on the rig's tts lane: each sentence comes back with 0-10 ms of silence at either end and
+#: starts at full amplitude, so sentences joined as they came ran together with a click at each
+#: seam. Each sentence's edges fade over FADE_S and a pause follows it: PAUSE_AFTER_SENTENCE_S
+#: after . ! ? (and their CJK forms), PAUSE_AFTER_CLAUSE_S after a clause break (a long sentence
+#: split by :func:`split_sentences`). Judgement calls, by ear: not measured against listeners.
+FADE_S = 0.008
+PAUSE_AFTER_SENTENCE_S = 0.28
+PAUSE_AFTER_CLAUSE_S = 0.12
+_SENTENCE_STOP = re.compile(r"[.!?。！？][\"'”’)\]]*\s*$")
+
+
+def pause_after(sentence: str) -> float:
+    """Seconds of silence after *sentence*: a full stop's pause, else a clause break's."""
+    return PAUSE_AFTER_SENTENCE_S if _SENTENCE_STOP.search(sentence) else PAUSE_AFTER_CLAUSE_S
+
+
+def shape_sentence(pcm: bytes, pause_s: float) -> bytes:
+    """One sentence's pcm16 with its edges faded over :data:`FADE_S` (no click where it meets
+    the next) and *pause_s* of silence after it. A trailing odd byte is dropped. Never raises."""
+    whole = bytes(pcm[: len(pcm) - len(pcm) % BYTES_PER_SAMPLE])
+    samples = array.array("h")
+    samples.frombytes(whole)
+    n = len(samples)
+    fade = min(int(FADE_S * SAMPLE_RATE_HZ), n // 2)
+    for i in range(fade):
+        gain = i / fade
+        samples[i] = int(samples[i] * gain)
+        samples[n - 1 - i] = int(samples[n - 1 - i] * gain)
+    silence = b"\x00" * (round(max(0.0, pause_s) * SAMPLE_RATE_HZ) * BYTES_PER_SAMPLE)
+    return samples.tobytes() + silence
+
+
 def _read_deadline(config: VoiceConfig, max_bytes: Optional[int] = None) -> float:
     """Total wall-clock budget for reading one sentence's whole response body.
 
@@ -1016,7 +1052,7 @@ class Voice:
         progress = _SpeakProgress()
         interrupted = False
 
-        for sentence in sentences:
+        for index, sentence in enumerate(sentences):
             if self._interrupted.is_set():
                 interrupted = True
                 break
@@ -1024,6 +1060,8 @@ class Voice:
             pcm = self._sentence_pcm(sentence, progress)
             if not pcm:
                 continue
+            last = index == len(sentences) - 1
+            pcm = shape_sentence(pcm, 0.0 if last else pause_after(sentence))  # d7
 
             if self._interrupted.is_set():
                 interrupted = True

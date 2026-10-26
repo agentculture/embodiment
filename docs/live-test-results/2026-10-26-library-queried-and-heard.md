@@ -45,11 +45,13 @@ The operator's own words, on an iPhone (the browser was not named), against prod
 | Jump to a paragraph | missing; added by d3: a tap on a paragraph starts there (checked in the browser: a tap on paragraph 10 played paragraph 10) |
 | Progress bar | **fail**: a finished paragraph's bar emptied before the next one began, and past the end the last paragraph read "Paused here" with its segment unfilled. Fixed by d3 |
 | The item's title as its first paragraph | as designed: the library's text opens with the title as its own block; the operator heard it and kept it |
-| A long one-sentence paragraph | **fail**: the voice stopped after "perception" and the reader went on. Every sentence's audio was capped at 10 s; the same paragraph measured 10.00 s cut on the pre-flight daemon, then 13.93 s whole after the fix (`23d0b01`). The operator's retest of it is not yet reported |
+| A long one-sentence paragraph | **fail**: the voice stopped after "perception" and the reader went on. Every sentence's audio was capped at 10 s; the same paragraph measured 10.00 s cut on the pre-flight daemon, then 13.93 s whole after the fix (`23d0b01`). Retested below |
 | After a refresh, the header and the dock | **fail**: the header was scrolled away and the dock floated above empty space; fixed by d5 (`910cbcc`). A later screenshot showed the header in place; not confirmed as a refresh check |
 | Pause then play, relisten | slow, then pass: the audio was made again on every play; d6 keeps the current, previous and next paragraphs' audio. The operator: "Caching works well, and no ring when relisten" (the ring waits 300 ms, d4) |
 | Previous and Next, section edges included | pass: made ahead while a paragraph plays (d6, `91b486e`). The operator: "Previous and next cache works good!" |
 | Loading feedback on a jump | added by d4: a turning ring on the play button, no words (the operator: "Loading ring on play is clear") |
+| A long one-sentence paragraph, retested | pass ("Reads well to the end") |
+| Transitions between sentences | **fail**: "transitions between sentences aren't great". Measured: sentences joined with 0-10 ms of silence and starting at full amplitude. Fixed by d7; measured after on the pre-flight daemon: 0.27 s quiet at each join, every clip starts and ends at sample 0. Not yet retested on the phone |
 | Tap-to-sound time | not reported |
 
 Server side, production's reading positions moved one paragraph per heard
