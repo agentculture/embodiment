@@ -36,7 +36,7 @@ Quoted verbatim from the `devague summary` skeleton:
 | `t1` | delivered | `embodiment/library/retrieve.py` (`c3ed2a2`, `kind` sent in the body after a send-back `3ce6a37`); merged `6a9fdb3` |
 | `t2` | delivered | `embodiment/library/document.py` + `LibraryClient.fetch_text` (`1b3f32b`); merged `09a0c9d` |
 | `t3` | delivered | `embodiment/daemon/reading.py` (`4026432`), seek re-pin per `d1` (`acf169c`); merged `972bd50` |
-| `t4` | delivered | Reader dock, Continue listening, Read aloud card, paragraph-synced progress (`fe22ad2`), merged `705ccb9`; the mockup's Choose section control was missing then and shipped later as `5b384c5` (0.23.2) |
+| `t4` | delivered | Reader dock, Continue listening, Read aloud card, paragraph-synced progress (`fe22ad2`), merged `705ccb9`; the mockup's Choose section control was missing then and shipped later as #113 (0.23.2) |
 | `t5` | delivered | retrieve-backed `search_library`/`read_passage`, `/text`-backed `read_item`/`fetch_source` (`12cddcf`); merged `c30a149` |
 | `t6` | delivered | `library/sync.py` deleted, `retire_library_index`, catalog/search/reader live (`6874d7e`); merged `dd23476` |
 | `t7` | delivered | `/api/reading*` behind the guard, `status.reading`, Stats (`9cbed7d`); merged `653c37f` |
@@ -67,7 +67,7 @@ Quoted verbatim from the `devague summary` skeleton:
 | Plan item | Reason for divergence | Classification |
 |-----------|------------------------|-----------------|
 | `t3` (`d1`) | as built (criterion 2, quoted verbatim), a seek only previews: every heard report after a seek is refused and continue returns to the old place, which breaks the approved mockup's previous/next/choose-section controls; decider 0.68 for re-pin (choice), 0.62 that it amends the exact-next rule | `acceptable` |
-| `t4` | the Choose section control from the approved mockup was not built with the task; it shipped after the rest of the plan merged (`5b384c5`, 0.23.2; delta `b11` supersedes `b3`) | `acceptable` |
+| `t4` | the Choose section control from the approved mockup was not built with the task; it shipped after the rest of the plan merged (#113, 0.23.2; delta `b11` supersedes `b3`) | `acceptable` |
 | `t9` (`d2`) | live t9 on the phone: an English newspaper played garbled; lobes' BlueTTS sidecar sends a span with no Hebrew letters to the model as raw letters in he mode, while an `<en>` span goes through espeak English | `acceptable` |
 | `t4` (`d3`) | operator, live t9 on the phone: the pause button was out of reach on long articles, there was no jump to a paragraph, and the progress bar reset between paragraphs | `acceptable` |
 | `t9` | the stop, reload and continue check ran on a Hebrew transcript, not a chapter of an EPUB; the EPUB was matched against `/text` by the probe only (decider: 0.42 that this stands in) | `acceptable` |
@@ -89,7 +89,7 @@ Quoted verbatim from the `devague summary` skeleton:
   - `tests/test_daemon_reading.py::TestRefusals::test_next_and_heard_need_the_secret_and_a_refused_heard_leaves_the_file` — pass
 - live: `docs/live-test-results/2026-10-26-library-queried-and-heard.md` — every probe row passed or is reported as measured
 - tests: the full suite at `09af199` (the Sonar fixes) — 4525 passed, 1 skipped; `o4`/`o5`'s tests plus `tests/test_daemon_reading.py` and `tests/test_http_server.py` re-run there (2026-10-26T11:17:41Z) — 231 passed, filed as `e16`-`e18`
-- tests: Choose section at `5b384c5` (2026-10-26T17:21:35Z) — its 4 vitest cases seen failing (3 of 4) before the control existed, then passing; full web suite 531 passed; Python suite 4526 passed, 1 skipped; build and the origin check pass. One unnamed web test failed once in 17 runs on the branch (0 of 5 on its base, 16 clean runs after it); not explained, filed nowhere as a pass
+- tests: Choose section at #113 (2026-10-26T17:21:35Z) — its 4 vitest cases seen failing (3 of 4) before the control existed, then passing; full web suite 531 passed; Python suite 4526 passed, 1 skipped; build and the origin check pass. One unnamed web test failed once in 17 runs on the branch (0 of 5 on its base, 16 clean runs after it); not explained, filed nowhere as a pass
 - live: Choose section at 390 px on the pre-flight daemon from `feat/choose-section` against a live 304-section book — the list sits in the fixed dock, the playing section marked, focused and in view, no sideways scroll; a choice played section 8 of 304 and closed the list. Clicks were dispatched in the page: this harness's second browser context delivered no pointer input at all (Pause, already confirmed on the phone, also got 0 clicks). Not yet tried on the operator's phone
 - assess, t4 after Choose section (`general`, 2026-10-26; `docs/deliveries/2026-10-26-gwen-queries-assess-t4-choose.json`): delivered 0.83, partial 0.14; P(the one unexplained web failure blocks the PR) 0.075
 - assess, after the retests (`general`, 2026-10-26; `docs/deliveries/2026-10-26-gwen-queries-assess-t9-retest.json`): `t9` delivered 0.65, partial 0.32, not delivered 0.03; P(a transcript stands in for an EPUB chapter) 0.42, P(by-ear estimates suffice) 0.40, so both are drift entries above
@@ -121,7 +121,7 @@ Quoted verbatim from the `devague summary` skeleton:
 | sentence joins without clicks, a pause between sentences | high | `TestSentenceJoins`; one live measurement (0.27 s quiet at each join); the operator: "Transitions are far better. Very natural" |
 | a colon and a full stop pause | medium | `TestAColonPauses`; the operator: "Colon is perfect" at 0.30 s, and the 0.53 s full stop retested on `e19be55`: "pause is right" |
 | caching: replay, Previous and Next play at once | medium | the d6 tests; the operator: "Caching works well", "Previous and next cache works good!" |
-| Choose section lists the sections and seeks to the chosen one's first paragraph, heard only on ended | medium | `e21` (4 vitest cases at `5b384c5`), `e22` (390 px, live 304-section book); not on the phone yet |
+| Choose section lists the sections and seeks to the chosen one's first paragraph, heard only on ended | medium | `e21` (4 vitest cases at #113), `e22` (390 px, live 304-section book); not on the phone yet |
 | library retrieval hit rate | unverified | not measured; hybrid scores 0.011-0.033 do not compare with memory's 0.715 |
 
 Lapse ledger evidence:

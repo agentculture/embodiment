@@ -565,7 +565,8 @@ describe("ReadAloud: what the phone test asked for (d3, live t9 2026-10-26)", ()
 });
 
 describe("ReadAloud: Choose section (t4, the approved mockup's dock)", () => {
-  // Synthetic: three sections, the middle one without a heading of its own.
+  // Synthetic: three sections, the middle one without a heading of its own. As the daemon
+  // sends it, a section's heading is on every one of its passages.
   const SECTIONS = [
     { heading: "One", paras: ["S0 first synthetic.", "S0 second synthetic."] },
     { heading: "", paras: ["S1 first synthetic.", "S1 second synthetic."] },
@@ -574,11 +575,11 @@ describe("ReadAloud: Choose section (t4, the approved mockup's dock)", () => {
   const multi = {
     item: doc.item,
     passages: SECTIONS.flatMap((s, si) =>
-      s.paras.map((text, pi) => ({ anchor: `s${si}.p${pi}`, heading: pi === 0 ? s.heading : "", text, start_s: null, end_s: null, speaker: "" })),
+      s.paras.map((text, pi) => ({ anchor: `s${si}.p${pi}`, heading: s.heading, text, start_s: null, end_s: null, speaker: "" })),
     ),
   };
   function multiRig() {
-    const r = { nexts: [] as string[], heard: [] as string[] };
+    const r = { nexts: [] as string[], heard: [] as string[], spoken: [] as string[] };
     const fetchFn = vi.fn(async (u: RequestInfo | URL, init?: RequestInit) => {
       const url = String(u);
       const json = (status: number, body: unknown) => ({ ok: status < 300, status, json: async () => body }) as Response;
@@ -603,7 +604,10 @@ describe("ReadAloud: Choose section (t4, the approved mockup's dock)", () => {
         r.heard.push(JSON.parse(String(init?.body)).position as string);
         return json(200, { moved: true, cursor: {} });
       }
-      if (url === "/api/speak") return { ok: true, status: 200, blob: async () => new Blob(["RIFF"], { type: "audio/wav" }) } as unknown as Response;
+      if (url === "/api/speak") {
+        r.spoken.push(JSON.parse(String(init?.body)).text);
+        return { ok: true, status: 200, blob: async () => new Blob(["RIFF"], { type: "audio/wav" }) } as unknown as Response;
+      }
       return json(404, {});
     });
     return { r, fetchFn };
@@ -632,11 +636,19 @@ describe("ReadAloud: Choose section (t4, the approved mockup's dock)", () => {
 
   it("choosing a section reads its first paragraph: a seek, reported heard on ended", async () => {
     const r = await openMulti();
+    const srcBefore = audio().src;
+    const playsBefore = audio().play.mock.calls.length;
     fireEvent.click(screen.getByRole("button", { name: "Choose section" }));
     fireEvent.click(screen.getByRole("button", { name: "Three" }));
     await waitFor(() => expect(r.nexts).toContain("/api/reading/syn-1/next?section=2&paragraph=0"));
     expect(screen.queryByRole("list", { name: "Sections" })).not.toBeInTheDocument();
+    expect(document.activeElement).toBe(screen.getByRole("button", { name: "Choose section" }));
     await waitFor(() => expect(screen.getByText(SECTIONS[2].paras[0]).closest("li")).toHaveClass("speaking"));
+    // ended only once the chosen paragraph's own audio is playing, never the one before it
+    await waitFor(() => expect(r.spoken).toContain(SECTIONS[2].paras[0]));
+    await waitFor(() => expect(audio().src).not.toBe(srcBefore));
+    await waitFor(() => expect(audio().play.mock.calls.length).toBeGreaterThan(playsBefore));
+    await waitFor(() => expect(screen.getByRole("group", { name: "Reading aloud" })).toHaveAttribute("data-status", "playing"));
     expect(r.heard).toEqual([]);
     audio().fire("ended");
     await waitFor(() => expect(r.heard).toEqual(["pos-2-0"]));

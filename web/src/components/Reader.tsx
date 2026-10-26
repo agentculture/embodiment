@@ -130,18 +130,17 @@ export const Reader = forwardRef<ReaderHandle, ReaderProps>(function Reader(
   const [reading, controls] = useReadAloud({ itemId: id, secret, clientOptions, audioFactory, peekFollowing, peekPreceding });
   const device = deviceKind();
   // The dock's Choose section list, from this reader's own copy: each section in order,
-  // named by its first heading, else by its number.
+  // named by its heading (the daemon puts it on every passage of the section), else by
+  // its number. The number is the section's own index, the one the dock's "Section N of M"
+  // shows, so a section the library left without paragraphs is skipped, not renumbered.
   const sections = useMemo((): SectionChoice[] => {
     const out: SectionChoice[] = [];
     for (const p of doc?.passages ?? []) {
       const pos = positionOf(p.anchor);
-      if (!pos) continue;
-      const last = out[out.length - 1];
-      if (last?.section === pos.section) {
-        if (!last.label && p.heading) last.label = p.heading;
-      } else out.push({ section: pos.section, label: p.heading });
+      if (!pos || out[out.length - 1]?.section === pos.section) continue;
+      out.push({ section: pos.section, label: p.heading || `Section ${pos.section + 1}` });
     }
-    return out.map((s) => ({ ...s, label: s.label || `Section ${s.section + 1}` }));
+    return out;
   }, [doc]);
 
   useEffect(() => {

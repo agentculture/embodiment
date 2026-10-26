@@ -717,7 +717,8 @@ export function ReadAloudDock({ state, controls, device = deviceKind(), sections
                 dir="auto"
                 aria-current={unit?.section === s.section ? "true" : undefined}
                 onClick={() => {
-                  setChoosing(false);
+                  // The chosen button leaves the DOM: focus goes back to Choose section.
+                  closeChoosing();
                   controls.start({ section: s.section, paragraph: 0 });
                 }}
               >
