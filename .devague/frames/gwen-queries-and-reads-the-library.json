@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-10-25T22:41:22Z",
-  "updated": "2026-10-26T04:41:16Z",
+  "updated": "2026-10-26T05:56:51Z",
   "claims": [
     {
       "id": "c1",
@@ -979,6 +979,15 @@
       "seam": "the page on a phone (gwen.culture.dev)",
       "behavior": "a read plays on the device that has the page open; after a reload, Continue listening replays the paragraph stopped in from its start",
       "source_text": "a read-aloud plays on the speakers of the device that has gwen.culture.dev open (phone or laptop): the page fetches and plays each paragraph and reports it heard; not the rig speaker",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o10",
+      "claim_id": "c10",
+      "seam": "voice.py split_sentences + sentence_audio_cap, /api/speak",
+      "behavior": "a paragraph is spoken whole: no sentence's audio is cut and no sentence's text is dropped",
+      "source_text": "the read-aloud loop bypasses the LLM: Gwen speaks the document's own words one paragraph per Voice.speak call, verbatim, never summarised or rewritten by senses",
       "origin": "llm",
       "status": "proposed"
     }

@@ -69,7 +69,7 @@ Quoted verbatim from the `devague summary` skeleton:
 
 ## Evidence
 
-- tests: the full suite at `24ba287` — 4488 passed, 1 skipped; web (vitest) at `c4d3f8b` 508 passed; `tsc` and the build clean
+- tests: the full suite at `6fbe7c4` — 4497 passed, 1 skipped; web (vitest) 526 passed; `tsc` and the build clean
 - tests: `tests/test_voice.py::TestMarkLanguage` (d2) and the `ReadAloud: what the phone test asked for (d3, …)` block in `web/src/components/ReadAloud.test.tsx` — pass; both seen failing before the fix
 - live: d2 through Gwen's own `http_synthesize` against the gateway (`scratchpad/live0/seam_en.py`); d3 in a 390 px browser against the real page on the pre-flight daemon (tap on paragraph 10 played it; the dock stayed on screen mid-article)
 - tests: the obligation set at `2a58a65` (`validate107-tests.sh`, 2026-10-26T03:05:31Z) — 128 passed, including:
@@ -83,9 +83,9 @@ Quoted verbatim from the `devague summary` skeleton:
   - `tests/test_daemon_reading.py::TestRefusals::test_next_and_heard_need_the_secret_and_a_refused_heard_leaves_the_file` — pass
 - live: `docs/live-test-results/2026-10-26-library-queried-and-heard.md` — every probe row passed or is reported as measured
 - lint: `black --check`, `isort --check-only`, `flake8`, `bandit -c pyproject.toml`, `markdownlint-cli2` — clean
-- validate-delivery records: obligations `o1`-`o9`, evidence `e1`-`e13` (all pass), deltas `b1`-`b5`; all `llm`-origin and proposed
+- validate-delivery records: obligations `o1`-`o10`, evidence `e1`-`e15` (all pass), deltas `b1`-`b10`; all `llm`-origin and proposed
 - deviations: `d1`, `d2` approved (operator); `d3`-`d7` approved (operator's own asks and report, user-origin)
-- commits: `74f51f1..c4d3f8b` on `feat/gwen-queries-the-library`, stacked on `feat/gwen-reads-library-todos` (`8425c06`)
+- commits: `74f51f1..6fbe7c4` on `feat/gwen-queries-the-library`, stacked on `feat/gwen-reads-library-todos` (`8425c06`)
 - PRs / issues: embodiment#107; follow-ups embodiment#108, culture-rules#99
 
 ## Delivery Claims
@@ -102,7 +102,10 @@ Quoted verbatim from the `devague summary` skeleton:
 | the page's TS reading client is tested | medium | `web/src/api/reading.test.ts`; lapse `l1` (proposed): its tests were not seen failing first; mutation check after the fact (break `/heard`: 1 of 7 fails) |
 | a read plays on the phone and Continue listening resumes the stopped paragraph | medium | `e13` (the operator, Hebrew transcript, in their words; tap-to-sound time not reported) |
 | English is spoken as English | medium | `TestMarkLanguage`; the operator by ear ("I can listen to it correctly now"); lapse `l2` (proposed): English was timed, never listened to, before the phone found it |
-| tap to jump, a reachable pause, bars that never snap back | medium | the d3 tests; one 390 px browser check; not yet retested on the phone |
+| tap to jump, a reachable pause, bars that never snap back | medium | the d3 tests; one 390 px browser check |
+| a paragraph is spoken whole | high | `e14` (tests at `6fbe7c4`), `e15` (10.00 s cut, then 13.93 s whole; the operator: "Reads well to the end") |
+| sentence joins without clicks, a pause between sentences | medium | `TestSentenceJoins`; one live measurement (0.27 s quiet at each join); not yet retested on the phone |
+| caching: replay, Previous and Next play at once | medium | the d6 tests; the operator: "Caching works well", "Previous and next cache works good!" |
 | library retrieval hit rate | unverified | not measured; hybrid scores 0.011-0.033 do not compare with memory's 0.715 |
 
 Lapse ledger evidence:
@@ -114,7 +117,7 @@ pending approval (not yet evidence): `l1`, `l2`
 - `t9` — the operator's retest of the d3 fixes on the phone, and a tap-to-sound time.
 - Choose section control (`b3`) — not built; tap a paragraph (d3) jumps. Build it only if the operator still wants it.
 - An English voice on purpose: lobes could take a per-request language instead of the `<en>` tags (a lobes issue, to draft and ask before posting).
-- Proposed records to adjudicate: obligations `o1`-`o9`, evidence `e1`-`e13`, deltas `b1`-`b5`, lapses `l1`, `l2`.
+- Proposed records to adjudicate: obligations `o1`-`o10`, evidence `e1`-`e15`, deltas `b1`-`b10`, lapses `l1`, `l2`.
 - A culture-library issue for title-only chunks (about 40 characters) returned as passages — to draft and ask before posting.
 - Follow-ups already named: voice commands for reading (v4, with realtime Live); two devices reading one item (v5); embodiment#106; Docker (embodiment#108); transcript segment times (culture-rules#99); deleting the dead library code in `library/index.py` and `library/extract.py`.
 - The `feat/gwen-reads-library-todos` PR (embodiment#105) this branch stacks on still awaits the operator's go-ahead.
