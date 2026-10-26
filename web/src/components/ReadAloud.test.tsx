@@ -396,4 +396,46 @@ describe("ReadAloud: what the phone test asked for (d3, live t9 2026-10-26)", ()
     expect(motion).toMatch(/\.play-ring\s*\{[^}]*animation/);
     expect(css.replace(/@media \(prefers-reduced-motion: no-preference\) \{[\s\S]*?\n\}/g, "")).not.toMatch(/\.play-ring\s*\{[^}]*animation/);
   });
+
+  it("pause then play reuses the paragraph's audio: it is made once (d6)", async () => {
+    const r = rig();
+    await openAndStart(r);
+    fireEvent.click(screen.getByRole("button", { name: "Pause" }));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(screen.getByRole("group", { name: "Reading aloud" })).toHaveAttribute("data-status", "playing"));
+    expect(r.spoken.filter((t) => t === PARAS[0])).toHaveLength(1);
+  });
+
+  it("while a paragraph plays, the next and the previous are made ahead; Previous and Next reuse them (d6)", async () => {
+    const r = rig();
+    render(<Reader id="syn-1" onClose={() => {}} clientOptions={{ fetchFn: r.fetchFn as unknown as typeof fetch }} audioFactory={() => new FakeAudio() as unknown as HTMLAudioElement} />);
+    await screen.findByText(PARAS[0]);
+    fireEvent.click(screen.getByText(PARAS[1]));
+    await waitFor(() => expect(screen.getByText(PARAS[1]).closest("li")).toHaveClass("speaking"));
+    await waitFor(() => expect(r.spoken).toEqual(expect.arrayContaining([PARAS[2], PARAS[0]])));
+    fireEvent.click(screen.getByRole("button", { name: "Previous paragraph" }));
+    await waitFor(() => expect(screen.getByText(PARAS[0]).closest("li")).toHaveClass("speaking"));
+    fireEvent.click(screen.getByRole("button", { name: "Next paragraph" }));
+    await waitFor(() => expect(screen.getByText(PARAS[1]).closest("li")).toHaveClass("speaking"));
+    for (const p of PARAS.slice(0, 3)) expect(r.spoken.filter((t) => t === p)).toHaveLength(1);
+  });
+
+  it("a failed synthesis is not kept: the next try asks again", async () => {
+    const r = rig();
+    let fail = true;
+    const inner = r.fetchFn.getMockImplementation() as (u: RequestInfo | URL, i?: RequestInit) => Promise<Response>;
+    r.fetchFn.mockImplementation(async (u: RequestInfo | URL, init?: RequestInit) => {
+      if (String(u) === "/api/speak" && fail) {
+        fail = false;
+        return { ok: false, status: 503, json: async () => ({ error: { code: "tts-unavailable" } }) } as Response;
+      }
+      return inner(u, init);
+    });
+    render(<Reader id="syn-1" onClose={() => {}} clientOptions={{ fetchFn: r.fetchFn as unknown as typeof fetch }} audioFactory={() => new FakeAudio() as unknown as HTMLAudioElement} />);
+    await screen.findByText(PARAS[0]);
+    fireEvent.click(screen.getByRole("button", { name: /Read aloud on this/ }));
+    await waitFor(() => expect(screen.getByRole("group", { name: "Reading aloud" })).toHaveAttribute("data-status", "error"));
+    fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+    await waitFor(() => expect(screen.getByRole("group", { name: "Reading aloud" })).toHaveAttribute("data-status", "playing"));
+  });
 });

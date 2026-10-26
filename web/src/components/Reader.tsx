@@ -110,7 +110,14 @@ export const Reader = forwardRef<ReaderHandle, ReaderProps>(function Reader(
     const i = matchPassage(d.passages, u.text, 0);
     return i >= 0 && i + 1 < d.passages.length ? d.passages[i + 1].text : null;
   }, []);
-  const [reading, controls] = useReadAloud({ itemId: id, secret, clientOptions, audioFactory, peekFollowing });
+  // The paragraph Previous plays (the one before, in this section), made ahead (d6).
+  const peekPreceding = useCallback((u: ReadingUnit): string | null => {
+    const d = docRef.current;
+    if (!d || u.paragraph === 0) return null;
+    const i = matchPassage(d.passages, u.text, 0);
+    return i > 0 ? d.passages[i - 1].text : null;
+  }, []);
+  const [reading, controls] = useReadAloud({ itemId: id, secret, clientOptions, audioFactory, peekFollowing, peekPreceding });
   const device = deviceKind();
 
   useEffect(() => {

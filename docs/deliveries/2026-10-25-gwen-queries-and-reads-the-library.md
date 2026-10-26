@@ -48,6 +48,8 @@ Quoted verbatim from the `devague summary` skeleton:
 - `d3` — page: tapping a paragraph in the reader starts reading from that paragraph (a seek, d1); on a phone the listening dock is fixed to the bottom of the screen; a finished paragraph's bar stays full while the next one loads — asked for by the operator from the phone test; the same commit makes "done" read every paragraph and bar as heard (the operator's screenshot showed the last one "Paused here")
 - `d4` — page: while a paragraph loads (a jump, a continue, or between paragraphs) the dock's play button shows a turning partial ring and is marked busy — the operator's ask from the phone ("a small wait time" on a jump); the operator then asked for no loading words ("Loading ring on play is clear"), so the dock's "Getting the next paragraph ready" text went too
 - `d5` — page shell: after a refresh on a phone the header was scrolled away and the dock floated above empty space (the operator's screenshot); the app follows the visual viewport since 0.18.0 but read it only at mount and on its own events. It now reads it again after load, on pageshow, rotation and resize and in the first second, clamps its top, and keeps the document at the top. Not reproducible here (no iOS browser); the operator's refresh is the check
+- A defect the phone found, fixed with no deviation (it restores c10/c24, the read is the item's own words): every sentence's audio was capped at 10 s and a sentence past 500 characters was sliced, so a one-sentence paragraph stopped after "perception" and the reader skipped on. The cap now grows with the sentence; long sentences split at clause marks or spaces (`23d0b01`; 10.00 s cut, then 13.93 s whole, on the pre-flight daemon)
+- `d6` — page: the reader keeps the current, previous and next paragraphs' audio (pause and play, Previous and Next reuse it) and makes the next and the previous ahead — the operator's ask ("Relisten happens often")
 - The title line stays a paragraph: the library's text opens with the item's title as its own block, so it is read first; the operator heard it and kept it.
 - The document cache went from 4 to 12 items (`93f4152`): the pre-flight saw 20 refetches of a 752 KB book when a search ran during a read. No deviation record covers this; it changes no contract.
 - Review fixes after the colleague review (`2a58a65`): the retrieve AST pin is alias-proof; a passage under 40 characters no longer anchors a citation (it opens the item at its start); resume continues at the saved cursor instead of replaying a heard paragraph. No deviation record covers these; they tighten behavior already promised.
@@ -81,7 +83,7 @@ Quoted verbatim from the `devague summary` skeleton:
 - live: `docs/live-test-results/2026-10-26-library-queried-and-heard.md` — every probe row passed or is reported as measured
 - lint: `black --check`, `isort --check-only`, `flake8`, `bandit -c pyproject.toml`, `markdownlint-cli2` — clean
 - validate-delivery records: obligations `o1`-`o9`, evidence `e1`-`e13` (all pass), deltas `b1`-`b5`; all `llm`-origin and proposed
-- deviations: `d1`, `d2` approved (operator); `d3`, `d4`, `d5` approved (operator's own asks and report, user-origin)
+- deviations: `d1`, `d2` approved (operator); `d3`-`d6` approved (operator's own asks and report, user-origin)
 - commits: `74f51f1..c4d3f8b` on `feat/gwen-queries-the-library`, stacked on `feat/gwen-reads-library-todos` (`8425c06`)
 - PRs / issues: embodiment#107; follow-ups embodiment#108, culture-rules#99
 

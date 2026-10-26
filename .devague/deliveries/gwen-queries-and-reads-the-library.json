@@ -2,7 +2,7 @@
   "plan_slug": "gwen-queries-and-reads-the-library",
   "schema_version": 2,
   "created": "2026-10-25T23:25:27Z",
-  "updated": "2026-10-26T05:13:14Z",
+  "updated": "2026-10-26T05:20:19Z",
   "deviations": [
     {
       "id": "d1",
@@ -75,6 +75,19 @@
       "status": "approved",
       "classification": "acceptable",
       "seq": 18
+    },
+    {
+      "id": "d6",
+      "what": "page: the reader keeps the audio of the current, previous and next paragraphs (a small LRU of WAV blobs keyed by text): pause then play, Previous and Next reuse it; while one plays, the next and then the previous are made ahead",
+      "task_ref": "t4",
+      "reason": "operator, live t9 on the phone 2026-10-26: 'we need to cache last audio (if it's not huge) as it loads it over every time I pause and play. Relisten happens often. And we need to cache next and previous for faster move, too'",
+      "affects": [
+        "c23"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 19
     }
   ],
   "evidence": [

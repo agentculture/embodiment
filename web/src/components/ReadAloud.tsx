@@ -75,6 +75,8 @@ export interface UseReadAloudOptions {
   audioFactory?: AudioFactory;
   /** The text of the unit after `unit`, from the reader's copy of the item; null when unknown. */
   peekFollowing?: (unit: ReadingUnit) => string | null;
+  /** The text Previous would play from `unit` (d6, made ahead); null when unknown. */
+  peekPreceding?: (unit: ReadingUnit) => string | null;
 }
 
 const IDLE: ListenState = { status: "idle", unit: null, played: 0, code: null, note: null };
@@ -148,23 +150,87 @@ function dropUrl(url: string) {
 
 type Ready = { kind: "unit"; unit: ReadingUnit; blob: Blob } | { kind: "done" } | { kind: "failed"; code: string };
 
-interface Prefetch {
-  token: number;
-  text: string;
-  audio: Promise<Blob | null>;
-}
-
 const norm = (t: string) => t.replace(/\s+/g, " ").trim();
 
-export function useReadAloud({ itemId, secret, clientOptions, audioFactory, peekFollowing }: UseReadAloudOptions): [ListenState, ListenControls] {
+/** d6 (the operator's phone): how many paragraphs' audio the reader keeps, and how many bytes
+ *  at most. Current, previous and next, plus room for a jump back; a paragraph's WAV is
+ *  about 1.4 MB per 30 s, so the byte bound holds about two minutes of speech. */
+const KEEP_UNITS = 6;
+const KEEP_BYTES = 12 * 1024 * 1024;
+
+/** Made audio, or the fixed code it failed with. */
+type Made = { blob: Blob; code: null } | { blob: null; code: string };
+
+/** A small LRU of made audio, keyed by the unit's text, so pause/play, Previous and Next play
+ *  what was already made. Failures are never kept; one request per text is in flight. */
+class AudioCache {
+  private kept = new Map<string, Blob>();
+  private making = new Map<string, Promise<Made>>();
+
+  get(text: string): Blob | null {
+    const key = norm(text);
+    const blob = this.kept.get(key);
+    if (!blob) return null;
+    this.kept.delete(key);
+    this.kept.set(key, blob);
+    return blob;
+  }
+
+  put(text: string, blob: Blob) {
+    const key = norm(text);
+    this.kept.delete(key);
+    this.kept.set(key, blob);
+    let bytes = 0;
+    for (const b of this.kept.values()) bytes += b.size;
+    for (const [k, b] of this.kept) {
+      if (this.kept.size <= KEEP_UNITS && bytes <= KEEP_BYTES) break;
+      if (k === key) continue;
+      this.kept.delete(k);
+      bytes -= b.size;
+    }
+  }
+
+  /** The audio for *text*: kept, already being made, or made now by *make*. */
+  audio(text: string, make: () => Promise<Made>): Promise<Made> {
+    const key = norm(text);
+    const kept = this.get(text);
+    if (kept) return Promise.resolve({ blob: kept, code: null });
+    const inFlight = this.making.get(key);
+    if (inFlight) return inFlight;
+    const made = make()
+      .then((m) => {
+        if (m.blob) this.put(text, m.blob);
+        return m;
+      })
+      .catch((): Made => ({ blob: null, code: "speak-failed" }))
+      .finally(() => this.making.delete(key));
+    this.making.set(key, made);
+    return made;
+  }
+
+  clear() {
+    this.kept.clear();
+    this.making.clear();
+  }
+}
+
+export function useReadAloud({ itemId, secret, clientOptions, audioFactory, peekFollowing, peekPreceding }: UseReadAloudOptions): [ListenState, ListenControls] {
   const [state, setState] = useState<ListenState>(IDLE);
   const stateRef = useRef<ListenState>(IDLE);
   const token = useRef(0);
   const audio = useRef<HTMLAudioElement | null>(null);
   const url = useRef("");
-  const prefetch = useRef<Prefetch | null>(null);
-  const opts = useRef({ itemId, secret, clientOptions, audioFactory, peekFollowing });
-  opts.current = { itemId, secret, clientOptions, audioFactory, peekFollowing };
+  const cache = useRef(new AudioCache());
+  const opts = useRef({ itemId, secret, clientOptions, audioFactory, peekFollowing, peekPreceding });
+  opts.current = { itemId, secret, clientOptions, audioFactory, peekFollowing, peekPreceding };
+
+  /** One paragraph's audio from the cache, or made (and kept) through /api/speak. */
+  const audioOf = useCallback((text: string): Promise<Made> => {
+    const { secret: key, clientOptions: co } = opts.current;
+    return cache.current.audio(text, () =>
+      speakMessage(text, key, co).then((r): Made => (r.ok ? { blob: r.blob, code: null } : { blob: null, code: r.code })),
+    );
+  }, []);
 
   const set = useCallback((patch: Partial<ListenState>) => {
     stateRef.current = { ...stateRef.current, ...patch };
@@ -201,15 +267,10 @@ export function useReadAloud({ itemId, secret, clientOptions, audioFactory, peek
     const next = await fetchNext(id, key, co, at);
     if (!next.ok) return { kind: "failed", code: next.code };
     if (next.value.done) return { kind: "done" };
-    const pre = prefetch.current;
-    if (!at && pre && norm(pre.text) === norm(next.value.unit.text)) {
-      const blob = await pre.audio;
-      if (blob) return { kind: "unit", unit: next.value.unit, blob };
-    }
-    const spoken = await speakMessage(next.value.unit.text, key, co);
-    if (!spoken.ok) return { kind: "failed", code: spoken.code };
-    return { kind: "unit", unit: next.value.unit, blob: spoken.blob };
-  }, []);
+    const made = await audioOf(next.value.unit.text);
+    if (!made.blob) return { kind: "failed", code: made.code };
+    return { kind: "unit", unit: next.value.unit, blob: made.blob };
+  }, [audioOf]);
 
   // Declared before use through refs, so the handlers always see the current ones.
   const playRef = useRef<(t: number, unit: ReadingUnit, blob: Blob) => void>(() => {});
@@ -289,26 +350,26 @@ export function useReadAloud({ itemId, secret, clientOptions, audioFactory, peek
       const blocked = e instanceof Error && e.name === "NotAllowedError";
       set({ status: blocked ? "blocked" : "error", code: blocked ? null : "playback-failed" });
     });
-    let text: string | null = null;
-    try {
-      text = opts.current.peekFollowing?.(unit) ?? null;
-    } catch {
-      text = null;
-    }
-    if (text && norm(text)) {
-      const { secret: key, clientOptions: co } = opts.current;
-      const audioReady = speakMessage(text, key, co).then((r) => (r.ok ? r.blob : null));
-      prefetch.current = { token: t, text, audio: audioReady };
-    } else {
-      prefetch.current = null;
-    }
+    // Keep this paragraph's audio for a pause or a Previous, and make the next and then the
+    // previous ahead (d6), one at a time so the next is never queued behind the previous.
+    cache.current.put(unit.text, blob);
+    const peek = (f: ((u: ReadingUnit) => string | null) | undefined): string | null => {
+      try {
+        const text = f?.(unit) ?? null;
+        return text && norm(text) ? text : null;
+      } catch {
+        return null;
+      }
+    };
+    const following = peek(opts.current.peekFollowing);
+    const preceding = peek(opts.current.peekPreceding);
+    void (following ? audioOf(following) : Promise.resolve(null)).then(() => (preceding ? audioOf(preceding) : null));
   };
 
   const begin = useCallback(
     (at: At | undefined) => {
       token.current += 1;
       halt();
-      prefetch.current = null;
       set({ played: 0 });
       loadRef.current(token.current, at);
     },
@@ -353,7 +414,6 @@ export function useReadAloud({ itemId, secret, clientOptions, audioFactory, peek
   const stop = useCallback(() => {
     token.current += 1;
     halt();
-    prefetch.current = null;
     set({ status: "stopped", played: 0 });
   }, [halt, set]);
 
@@ -381,7 +441,7 @@ export function useReadAloud({ itemId, secret, clientOptions, audioFactory, peek
       halt();
       dropUrl(url.current);
       url.current = "";
-      prefetch.current = null;
+      cache.current.clear();
       stateRef.current = IDLE;
     };
   }, [itemId, halt, set]);
