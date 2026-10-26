@@ -37,6 +37,7 @@ import { newConversation, parseControlOutcome, setMicMute, startVoice, stopVoice
 import { loadInstallSecretFromSession, saveInstallSecretToSession } from "./api/secret";
 import { fetchLibrary, searchLibrary, type LibraryItem, type SearchHit } from "./api/library";
 import { fetchPositions, type SavedPosition } from "./api/reading";
+import { useVisualViewport } from "./hooks/useVisualViewport";
 import type { ChatSource } from "./api/chat";
 import { itemDay, kindInfo, shortTitle } from "./api/kinds";
 
@@ -185,26 +186,9 @@ export default function App({
     return () => window.removeEventListener("hashchange", onHash);
   }, []);
 
-  // iOS Safari keeps the layout viewport when the keyboard opens and shrinks only
-  // the visual one, so a 100dvh page slides up and the dock hides behind the
-  // keyboard (operator's phone, 2026-10-24). The app follows the visual viewport:
-  // its height and top come from it, so the dock rides above the keyboard.
-  useEffect(() => {
-    const vv = typeof window !== "undefined" ? window.visualViewport : null;
-    if (!vv) return;
-    const root = document.documentElement;
-    const sync = () => {
-      root.style.setProperty("--app-h", `${Math.round(vv.height)}px`);
-      root.style.setProperty("--app-top", `${Math.round(vv.offsetTop)}px`);
-    };
-    sync();
-    vv.addEventListener("resize", sync);
-    vv.addEventListener("scroll", sync);
-    return () => {
-      vv.removeEventListener("resize", sync);
-      vv.removeEventListener("scroll", sync);
-    };
-  }, []);
+  // The app follows the visual viewport (hooks/useVisualViewport.ts: the keyboard, and d5's
+  // refresh on a phone).
+  useVisualViewport();
 
   // A phone gets the short placeholder, so it fits on one line.
   const [narrow, setNarrow] = useState(() => !wide(520));

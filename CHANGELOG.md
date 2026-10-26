@@ -16,6 +16,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 - English is spoken as English (deviation d2): lobes' BlueTTS runs with `TTS_LANGUAGE=he` and passed a span with no Hebrew letters to the model as raw letters, so an English newspaper read aloud was garbled. `voice.mark_language` wraps Latin-script text in `<en>…</en>` (a whole sentence with no Hebrew, or each Latin run inside a Hebrew one) before every speech request, spoken replies included, and strips any language tags already in the text. Found on the phone, not by a probe (lapse l2)
+- A refresh on a phone no longer leaves the header scrolled away and the dock above empty space (deviation d5): `hooks/useVisualViewport.ts` reads the visual viewport again after load, on pageshow, orientation change and resize and in the first second, keeps the app's top on the screen, and keeps the document (which never scrolls) at the top unless a field has focus
 
 ### Changed
 

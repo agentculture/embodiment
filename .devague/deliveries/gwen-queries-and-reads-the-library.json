@@ -2,7 +2,7 @@
   "plan_slug": "gwen-queries-and-reads-the-library",
   "schema_version": 2,
   "created": "2026-10-25T23:25:27Z",
-  "updated": "2026-10-26T05:08:30Z",
+  "updated": "2026-10-26T05:13:14Z",
   "deviations": [
     {
       "id": "d1",
@@ -62,6 +62,19 @@
       "status": "approved",
       "classification": "acceptable",
       "seq": 17
+    },
+    {
+      "id": "d5",
+      "what": "page shell: the app re-reads the visual viewport after load, on pageshow, orientation change, window resize and at 0.1/0.4/1 s after mount, clamps its top at 0, turns off scroll restoration and keeps the document at the top",
+      "task_ref": "t4",
+      "reason": "operator, live t9 on the phone 2026-10-26 (screenshot): 'When I initially refresh on phone, top menu hidden, and bottom part is shifted up'; the app follows the visual viewport (App.tsx, since 0.18.0) but read it only at mount and on its own resize/scroll events, so a refresh could keep a reading taken before the browser's toolbars settled",
+      "affects": [
+        "c23"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 18
     }
   ],
   "evidence": [
