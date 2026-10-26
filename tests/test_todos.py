@@ -144,3 +144,168 @@ def test_an_unreadable_state_file_is_set_aside_not_overwritten(tmp_path):
     assert states.set("b", True, t.BY_OPERATOR) is not None
     kept = tmp_path / "s.json.unreadable"
     assert kept.read_text().startswith('{"a": {"done": true')
+
+
+# ── Gwen's marks against library lines (embodiment#105 t5) ──────────────────
+
+
+class _Clock:
+    def __init__(self, now=1000.0):
+        self.now = now
+
+    def __call__(self):
+        return self.now
+
+
+def _line(i, done=False, done_at=None, by=None):
+    return {"id": i, "done": done, "done_at": done_at, "by": by}
+
+
+def test_a_mark_shows_at_once_then_the_library_confirms_it(tmp_path):
+    clock = _Clock()
+    states = t.TodoStates(tmp_path / "s.json", clock=clock)
+    at = states.mark("a", True, t.BY_GWEN)
+    assert at == 1000.0
+    shown, due, c = states.reconcile([_line("a")])
+    assert shown == [{"id": "a", "done": True, "done_at": 1000.0, "done_by": "gwen"}]
+    assert [d["id"] for d in due] == ["a"]
+    assert c["pending"] == 1
+    assert c["confirmed"] == 0
+    shown, due, c = states.reconcile([_line("a", True, 1001.0, "operator")])
+    assert shown[0] == {"id": "a", "done": True, "done_at": 1001.0, "done_by": "operator"}
+    assert due == []
+    assert c["confirmed"] == 1
+    assert c["pending"] == 0
+
+
+def test_a_library_line_older_than_the_mark_does_not_confirm(tmp_path):
+    states = t.TodoStates(tmp_path / "s.json", clock=_Clock())
+    states.mark("a", True, t.BY_GWEN)
+    shown, due, _ = states.reconcile([_line("a", True, 999.0, "operator")])
+    assert shown[0]["done_at"] == 1000.0
+    assert len(due) == 1
+
+
+def test_a_flip_rendered_to_the_second_confirms_the_mark_it_carries(tmp_path):
+    # The event's at is 1000.7; culture-rules renders done_at to the second: 1000.0.
+    states = t.TodoStates(tmp_path / "s.json", clock=_Clock(1000.7))
+    states.mark("a", True, t.BY_GWEN)
+    assert states.shown([_line("a", True, 1000.0, "operator")])[0]["done_by"] == "operator"
+    _, due, c = states.reconcile([_line("a", True, 1000.0, "operator")])
+    assert due == []
+    assert c["confirmed"] == 1
+    assert c["pending"] == 0
+
+
+def test_a_newer_library_flip_the_other_way_wins(tmp_path):
+    states = t.TodoStates(tmp_path / "s.json", clock=_Clock())
+    states.mark("a", True, t.BY_GWEN)
+    shown, due, c = states.reconcile([_line("a", False, 1005.0, "operator")])
+    assert shown[0]["done"] is False
+    assert due == []
+    assert c["pending"] == 0
+    assert c["confirmed"] == 0
+    assert c["superseded"] == 1
+
+
+def test_an_unconfirmed_mark_is_resent_each_check_then_expires_after_an_hour(tmp_path):
+    clock = _Clock()
+    states = t.TodoStates(tmp_path / "s.json", clock=clock)
+    states.mark("a", True, t.BY_GWEN)
+    for n in (1, 2, 3):
+        clock.now += 60
+        _, due, c = states.reconcile([_line("a")])
+        assert len(due) == 1
+        assert c["resends"] == n
+        assert c["oldest_pending_age_s"] == 60 * n
+    clock.now = 1000.0 + t.RESEND_WINDOW_S
+    shown, due, c = states.reconcile([_line("a")])
+    assert due == []
+    assert c["unconfirmed"] == 1
+    assert c["pending"] == 0
+    assert shown[0]["done"] is False
+    _, due, c = states.reconcile([_line("a")])
+    assert due == []
+    assert c["resends"] == 3
+
+
+def test_a_mark_whose_line_disappears_is_dropped_and_counted(tmp_path):
+    states = t.TodoStates(tmp_path / "s.json", clock=_Clock())
+    states.mark("a", True, t.BY_GWEN)
+    _, due, c = states.reconcile([_line("b")])
+    assert due == []
+    assert c["dropped"] == 1
+    assert c["pending"] == 0
+    assert states.get("a") == {"done": False, "at": None, "by": None}
+
+
+def test_the_file_holds_only_current_ids_after_a_library_load(tmp_path):
+    path = tmp_path / "s.json"
+    old = t.TodoStates(path, clock=_Clock())
+    old.set("old-memory-record-id", True, t.BY_OPERATOR)
+    old.set("cur", True, t.BY_OPERATOR)
+    fresh = t.TodoStates(path, clock=_Clock())
+    fresh.reconcile([_line("cur")])
+    import json
+
+    assert set(json.loads(path.read_text())) == {"cur"}
+    assert fresh.prune([]) == 1
+    assert json.loads(path.read_text()) == {}
+    assert (path.stat().st_mode & 0o777) == 0o600
+
+
+def test_lines_may_be_objects(tmp_path):
+    from types import SimpleNamespace
+
+    states = t.TodoStates(tmp_path / "s.json", clock=_Clock())
+    shown, _, _ = states.reconcile([SimpleNamespace(id="a", done=True, done_at=5.0, by="x")])
+    assert shown == [{"id": "a", "done": True, "done_at": 5.0, "done_by": "x"}]
+
+
+def test_shown_is_a_read_only_view_of_reconcile(tmp_path):
+    clock = _Clock()
+    states = t.TodoStates(tmp_path / "s.json", clock=clock)
+    states.mark("a", True, t.BY_GWEN)
+    lines = [_line("a"), _line("b", True, 900.0, "operator")]
+    for _ in range(3):
+        assert states.shown(lines) == [
+            {"id": "a", "done": True, "done_at": 1000.0, "done_by": "gwen"},
+            {"id": "b", "done": True, "done_at": 900.0, "done_by": "operator"},
+        ]
+    c = states.counters()
+    assert (c["sent"], c["pending"], c["resends"], c["confirmed"]) == (1, 1, 0, 0)
+    # a line that agrees shows the library's state, but only reconcile confirms it
+    agreed = [_line("a", True, 1001.0, "operator")]
+    assert states.shown(agreed)[0]["done_by"] == "operator"
+    assert states.counters()["confirmed"] == 0
+    assert states.counters()["pending"] == 1
+    # an absent line drops nothing in the view
+    assert states.shown([]) == []
+    assert states.counters()["dropped"] == 0
+    clock.now += t.RESEND_WINDOW_S
+    assert states.shown([_line("a")])[0]["done"] is False, "past the window the library shows"
+    shown, _, c = states.reconcile(agreed)
+    assert shown == states.shown(agreed)
+    assert c["confirmed"] == 1
+
+
+def test_a_mark_that_reopens_a_to_do_is_confirmed_when_the_line_reads_open(tmp_path):
+    # Code review of #109: an open line carries no done_at (parse_checklist stamps done
+    # lines only), so a re-open mark used to be re-sent for an hour and never confirmed.
+    states = t.TodoStates(tmp_path / "s.json", clock=_Clock())
+    states.mark("a", False, t.BY_OPERATOR)
+    _, due, c = states.reconcile([_line("a", True, 900.0, "operator")])
+    assert len(due) == 1  # the library still shows it done: re-send
+    _, due, c = states.reconcile([_line("a", False, None, None)])
+    assert due == []
+    assert c["confirmed"] == 1
+    assert c["pending"] == 0
+
+
+def test_an_incomplete_read_keeps_a_mark_whose_line_is_only_missing(tmp_path):
+    # An unreadable to-do item hides its lines; its marks are not dropped for that.
+    states = t.TodoStates(tmp_path / "s.json", clock=_Clock())
+    states.mark("a", True, t.BY_GWEN)
+    _, _, c = states.reconcile([_line("b")], prune=False)
+    assert c["dropped"] == 0
+    assert states.get("a")["done"] is True

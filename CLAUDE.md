@@ -74,9 +74,15 @@ conversation button (`POST /api/conversation/new`) that ends the live one, via
 `/api/conversations`, continued in place: chat's `"conversation"` / clip's
 `X-Conversation` reopen one as a `Session` with `Session.restore` (d5) | conversation with a voice dock | library and the answers'
 sources with the reader; side panes toggleable, drawers on a phone;
-Library, To-dos (checkable since d16: done state at Gwen, `POST /api/todos/{id}`, a
-`todo` bus event per change for culture-rules; `list_todos` / `set_todo_done`, the
-second only on the operator's own words), Stats; Live = the rig's room mic, not the
+Library, To-dos (checkable since d16; since embodiment#105 (0.22.0) they come from
+the library's `kind=todo` items only, re-read every 30 s: Gwen's mark is **pending**
+until the library's line agrees to the second, re-sent each check for up to an hour,
+dropped when the line leaves; `status.todos` counts confirmed / pending / unconfirmed;
+`POST /api/todos/{id}` takes the checklist id, a `todo` bus event per change carries
+it and the `recording_id`; the page answers 503 `library_unavailable` with the
+library down. The first real flip is not yet on record: an open obligation the
+operator files. `list_todos` / `set_todo_done`, the second only on the operator's own
+words), Stats; Live = the rig's room mic, not the
 phone's). It was
 waveform-first with chat fourth. **Transcripts arrived** (33 on 2026-10-24) and
 retrieval was **measured once** (t15, `docs/live-test-results/2026-10-24-library.md`:
@@ -353,6 +359,12 @@ embodiment/
     client.py           GET-only by construction (AST-pinned), `gets` counter, deadline,
                         redirects refused; EMBODIMENT_LIBRARY_URL / _KEY from the env only
     epub.py             stdlib EPUB text extraction under member/size/char caps
+    markdown.py         Markdown items read (headings/paragraphs/links; tags stripped,
+                        entities decoded, capped); `clean_text`
+    extract.py          `extract_item`: a zip is an EPUB, anything else Markdown;
+                        todo items are never indexed
+    checklist.py        checklist lines with their ids (`pocket.<uuid>.<n>`), recording_id_of
+    todo_source.py      TodoSource: lists kind=todo items, re-reads the changed ones
     index.py            DocumentIndex: separate 0600 file, reconcile by (id, sha256)
     sync.py             LibrarySync: bounded ticks that yield to live turns
     reading.py          read_item (a whole item) + fetch_source (only a link the item lists)
@@ -400,7 +412,8 @@ embodiment/
   daemon/history.py     the history pane: reads the session logs, bounded; the `via` tags and
                         what each is worth (d7); when a conversation has settled
   daemon/recordings.py  the ONE writer of audio: page clips kept as they arrived (d10)
-  daemon/todos.py       to-dos' done state (Gwen's, 0600) + list_todos / set_todo_done (d16)
+  daemon/todos.py       Gwen's to-do marks (0600), pending until the library line agrees,
+                        reconciled against the library's checklists + list_todos / set_todo_done
   cli/_commands/tunnel  prints the cultureflare/cloudflared commands (default host
                         gwen.culture.dev) and the Access env names; never runs them
   cli/_commands/history `history export`: past conversations as JSON, read-only, each turn

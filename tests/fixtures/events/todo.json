@@ -5,11 +5,11 @@
   "seq": 11,
   "source": "app://embodiment",
   "data": {
-    "id": "pocket.r1.0",
+    "id": "pocket.0a1b2c3d-0000-4000-8000-000000000001.1",
     "done": true,
     "at": 1792836900.0,
     "by": "operator",
-    "recording_id": "r1",
+    "recording_id": "0a1b2c3d-0000-4000-8000-000000000001",
     "title": "2026-10-23 warehouse",
     "date": "2026-10-23",
     "text": "Call the plumber about the tap",

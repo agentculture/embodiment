@@ -66,6 +66,8 @@ CHUNK_SEPARATOR = "\n\n"
 #: the paper, so the model was handed five dates and no news.
 MIN_CHUNK_CHARS = 60
 BOOK_KIND = "book"
+#: To-do lists are Gwen's checklist (daemon/todos.py), never searchable library text.
+TODO_KIND = "todo"
 #: Searched when the caller names no kinds. xteink labelled newspapers and documents
 #: ``article``; transcripts arrive as ``article`` EPUBs or as ``transcript``; since
 #: 2026-10-24 xteink also has a native ``newspaper`` kind, which was indexed but never
@@ -389,8 +391,11 @@ class DocumentIndex:
     # -- writes -----------------------------------------------------------
 
     def wants(self, item_meta: Any) -> bool:
-        """False for a book whose item id is not opted in; True otherwise."""
-        if str(_field(item_meta, "kind") or "") != BOOK_KIND:
+        """False for a to-do list, and for a book whose id is not opted in; True otherwise."""
+        kind = str(_field(item_meta, "kind") or "")
+        if kind == TODO_KIND:
+            return False
+        if kind != BOOK_KIND:
             return True
         return _item_id(item_meta) in self.book_ids
 

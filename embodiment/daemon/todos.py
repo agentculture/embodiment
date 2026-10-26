@@ -20,13 +20,14 @@ turn ask for it).
 from __future__ import annotations
 
 import json
+import math
 import os
 import re
 import tempfile
 import threading
 import time
 from pathlib import Path
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Iterable, Optional
 
 TODOS_NAME = "todos-done.json"
 BY_OPERATOR = "operator"
@@ -36,8 +37,30 @@ _BY = frozenset({BY_OPERATOR, BY_GWEN})
 _ID = re.compile(r"^[A-Za-z0-9._:-]{1,160}$")
 
 
+#: A mark the library has not confirmed is re-sent at every check, for this long (c15).
+RESEND_WINDOW_S = 3600.0
+_STATE_KEYS = ("done", "at", "by")
+
+
 def valid_todo_id(value: Any) -> bool:
     return isinstance(value, str) and bool(_ID.match(value))
+
+
+def _field(line: Any, name: str) -> Any:
+    return line.get(name) if isinstance(line, dict) else getattr(line, name, None)
+
+
+def _flipped_since(lib_at: Any, at: float) -> bool:
+    """The library line was set no earlier than the mark, compared to the second.
+
+    culture-rules renders ``done_at`` as ISO to the second, so a flip carrying the
+    mark's own ``at`` reads back below it by the fraction; whole seconds compare equal.
+    """
+    return isinstance(lib_at, (int, float)) and math.floor(lib_at) >= math.floor(at)
+
+
+def _is_pending(mark: dict[str, Any]) -> bool:
+    return mark.get("pending", True) and not mark.get("expired")
 
 
 class TodoStates:
@@ -49,6 +72,14 @@ class TodoStates:
         self._lock = threading.Lock()
         self._states: Optional[dict[str, dict[str, Any]]] = None
         self.save_failures = 0
+        # Marks bookkeeping (counters live for the process; the marks themselves are
+        # in the file). The LIBRARY line is the truth: an entry here is only Gwen's
+        # pending mark until the library agrees with it.
+        self.sent = 0
+        self.confirmed = 0
+        self.resends = 0
+        self.dropped = 0
+        self.superseded = 0
 
     def _load(self) -> dict[str, dict[str, Any]]:
         if self._states is None:
@@ -78,7 +109,9 @@ class TodoStates:
         """``{"done", "at", "by"}`` for *todo_id*; a never-marked one is open."""
         with self._lock:
             state = self._load().get(todo_id)
-        return dict(state) if state else {"done": False, "at": None, "by": None}
+        if not state:
+            return {"done": False, "at": None, "by": None}
+        return {k: state[k] for k in _STATE_KEYS if k in state}
 
     def set(self, todo_id: str, done: bool, by: str) -> Optional[dict[str, Any]]:
         """Mark *todo_id*; return its new state, or None when it could not be saved."""
@@ -86,7 +119,7 @@ class TodoStates:
             return None
         with self._lock:
             states = self._load()
-            state = {"done": done, "at": self._clock(), "by": by}
+            state = {"done": done, "at": self._clock(), "by": by, "pending": True}
             previous = states.get(todo_id)
             states[todo_id] = state
             if not self._save(states):
@@ -95,7 +128,157 @@ class TodoStates:
                 else:
                     states[todo_id] = previous
                 return None
-        return dict(state)
+            self.sent += 1
+        return {k: state[k] for k in _STATE_KEYS}
+
+    def mark(self, todo_id: str, done: bool, by: str) -> Optional[float]:
+        """Record Gwen's mark as pending; return its time ``at``, or None if not saved."""
+        state = self.set(todo_id, done, by)
+        return None if state is None else state["at"]
+
+    def prune(self, current_ids: Iterable[str]) -> int:
+        """Drop every key that is not a current checklist id; return how many (c25)."""
+        keep = set(current_ids)
+        with self._lock:
+            return self._prune_locked(self._load(), keep)
+
+    def _prune_locked(self, states: dict[str, dict[str, Any]], keep: set) -> int:
+        gone = [k for k in states if k not in keep]
+        if not gone:
+            return 0
+        removed = {k: states.pop(k) for k in gone}
+        if not self._save(states):
+            states.update(removed)  # the file still holds them; try again next check
+            return 0
+        self.dropped += sum(1 for v in removed.values() if v.get("pending", True))
+        return len(gone)
+
+    def reconcile(
+        self, lines: Iterable[Any], *, prune: bool = True
+    ) -> tuple[list[dict], list[dict], dict]:
+        """Merge the library's lines with Gwen's marks: ``(shown, due_resends, counters)``.
+
+        Each line carries ``id``, ``done``, ``done_at`` (epoch s or None) and ``by``
+        (attributes or dict keys). Every call is one check. *shown* has, per line, the
+        ``id`` and the ``done`` / ``done_at`` / ``done_by`` to display: the mark while it
+        is pending, the library's once it agrees (``done_at`` >= the mark's time, to the
+        second) or a newer flip the other way beats the mark. A mark still pending is due
+        for re-send at every check until it is confirmed, its line is gone, or an hour passes (then
+        it counts ``unconfirmed``, stops re-sending, and the library state shows).
+        A mark whose line is gone is dropped and counted, and its key leaves the file.
+        """
+        now = self._clock()
+        shown: list[dict] = []
+        due: list[dict] = []
+        ids: set = set()
+        with self._lock:
+            states = self._load()
+            changed = False
+            for line in lines:
+                lid = _field(line, "id")
+                ids.add(lid)
+                lib = {
+                    "done": bool(_field(line, "done")),
+                    "done_at": _field(line, "done_at"),
+                    "done_by": _field(line, "by"),
+                }
+                mark = states.get(lid)
+                if mark is None or not mark.get("pending", True) or mark.get("expired"):
+                    shown.append({"id": lid, **lib})
+                    continue
+                verdict = self._judge(mark, lib, now)
+                if verdict == "settled":
+                    del states[lid]
+                    changed = True
+                    shown.append({"id": lid, **lib})
+                elif verdict == "expired":
+                    mark["expired"] = True
+                    changed = True
+                    shown.append({"id": lid, **lib})
+                else:
+                    at = mark["at"]
+                    shown.append(
+                        {"id": lid, "done": mark["done"], "done_at": at, "done_by": mark["by"]}
+                    )
+                    due.append({"id": lid, "done": mark["done"], "at": at, "by": mark["by"]})
+            if changed:
+                self._save(states)
+            self.resends += len(due)
+            if prune:  # not while an unreadable item may be what hides a line
+                self._prune_locked(states, ids)
+            counters = self._counters_locked(states, now)
+        return shown, due, counters
+
+    def _judge(self, mark: dict[str, Any], lib: dict[str, Any], now: float) -> str:
+        """One pending mark against its library line: ``settled`` (confirmed or
+        superseded, counted), ``expired`` or ``due``."""
+        if not mark["done"] and not lib["done"]:
+            # An open line carries no done_at (the parser stamps done lines only), so a
+            # mark that re-opens a to-do is confirmed when the line reads open.
+            self.confirmed += 1
+            return "settled"
+        if _flipped_since(lib["done_at"], mark["at"]):
+            if lib["done"] == mark["done"]:
+                self.confirmed += 1
+            else:
+                self.superseded += 1  # a newer library flip the other way wins
+            return "settled"
+        return "expired" if now - mark["at"] >= RESEND_WINDOW_S else "due"
+
+    def shown(self, lines: Iterable[Any]) -> list[dict]:
+        """What :meth:`reconcile` would display for *lines*, read-only (a page load).
+
+        Nothing is confirmed, dropped, expired or counted here, so a GET may call it as
+        often as it likes; only the to-do check calls :meth:`reconcile`.
+        """
+        now = self._clock()
+        out: list[dict] = []
+        with self._lock:
+            states = self._load()
+            for line in lines:
+                lid = _field(line, "id")
+                lib = {
+                    "done": bool(_field(line, "done")),
+                    "done_at": _field(line, "done_at"),
+                    "done_by": _field(line, "by"),
+                }
+                mark = states.get(lid)
+                lib_at = lib["done_at"]
+                if (
+                    mark is None
+                    or not _is_pending(mark)
+                    or _flipped_since(lib_at, mark["at"])
+                    or now - mark["at"] >= RESEND_WINDOW_S
+                ):
+                    out.append({"id": lid, **lib})
+                else:
+                    out.append(
+                        {
+                            "id": lid,
+                            "done": mark["done"],
+                            "done_at": mark["at"],
+                            "done_by": mark["by"],
+                        }
+                    )
+        return out
+
+    def counters(self) -> dict:
+        """The marks counters :meth:`reconcile` returns, read-only (for status)."""
+        with self._lock:
+            return self._counters_locked(self._load(), self._clock())
+
+    def _counters_locked(self, states: dict[str, dict[str, Any]], now: float) -> dict:
+        pending = [m["at"] for m in states.values() if _is_pending(m)]
+        return {
+            "sent": self.sent,
+            "confirmed": self.confirmed,
+            "pending": len(pending),
+            "oldest_pending_age_s": (now - min(pending)) if pending else None,
+            "resends": self.resends,
+            "dropped": self.dropped,
+            "superseded": self.superseded,
+            "unconfirmed": sum(1 for m in states.values() if m.get("expired")),
+        }
 
     def _save(self, states: dict[str, dict[str, Any]]) -> bool:
         try:

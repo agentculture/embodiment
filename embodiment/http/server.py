@@ -157,6 +157,7 @@ __all__ = [
     "TODOS_ROUTE",
     "LIBRARY_NOT_CONFIGURED_CODE",
     "MEMORY_UNAVAILABLE_CODE",
+    "TODOS_UNAVAILABLE_CODE",
     "BAD_REQUEST_CODE",
     "BODY_TOO_LARGE_CODE",
     "TOO_MANY_STREAMS_CODE",
@@ -301,7 +302,8 @@ LIBRARY_READ_BOUND_S = 2.0
 #: not load the daemon.
 LIBRARY_SEARCH_BOUND_S = 3.0
 
-#: Bounds ONE to-do read: a scan of the private store's action items; sized to the search.
+#: Bounds ONE to-do read: the held library to-do lines reconciled with Gwen's marks;
+#: sized to the search.
 TODOS_READ_BOUND_S = 3.0
 
 #: The request waits the callable's own bound plus the slack, never the 5 s control default.
@@ -320,6 +322,9 @@ LIBRARY_ID_MAX_DIGITS = 12
 LIBRARY_NOT_CONFIGURED_CODE = "library-not-configured"
 #: The to-do callable is not bound.
 MEMORY_UNAVAILABLE_CODE = "memory-unavailable"
+#: The to-dos' library source could not be read (embodiment#105, c22): the daemon's
+#: ``todos()`` answers it as ``code`` and the route refuses with 503, never an empty list.
+TODOS_UNAVAILABLE_CODE = "library_unavailable"
 #: A library path or query was malformed.
 LIBRARY_BAD_REQUEST_CODE = "library-bad-request"
 #: No library item has that id.
@@ -1074,6 +1079,7 @@ class _Handler(BaseHTTPRequestHandler):
                 config.todos_timeout_s,
                 "groups",
                 MEMORY_UNAVAILABLE_CODE,
+                refusals=_TODOS_READ_REFUSALS,
             )
             return
         if route == LIBRARY_ROUTE:
@@ -1154,9 +1160,11 @@ class _Handler(BaseHTTPRequestHandler):
         missing_code: str = LIBRARY_NOT_CONFIGURED_CODE,
         *,
         item: bool = False,
+        refusals: Optional[dict[str, tuple[int, str]]] = None,
     ) -> None:
         """One GET read on the text pool: pass through what the callable returned,
-        after checking it has the contract's shape."""
+        after checking it has the contract's shape. A ``code`` the callable answered
+        that *refusals* names is sent as that error instead."""
         app = self._app
         if action is None:
             app._degrade(missing_code, f"{label} is not configured")
@@ -1167,6 +1175,11 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_error(outcome.status, outcome.code, outcome.message)
             return
         result = outcome.result
+        code = result.get("code") if isinstance(result, dict) else None
+        refused = (refusals or {}).get(code) if isinstance(code, str) else None
+        if refused is not None:
+            self._send_error(refused[0], code, refused[1])
+            return
         if item and not result:
             self._send_error(404, LIBRARY_NOT_FOUND_CODE, "no such library item")
             return
@@ -1529,6 +1542,12 @@ class ControlOutcome:
 
 #: How a refused mark is answered (review of PR #103): a save that failed is not a
 #: success the page could keep showing, and a malformed id is the caller's error.
+#: ``todos()`` codes that are refusals, not a list: the page shows the code (c22).
+_TODOS_READ_REFUSALS: dict[str, tuple[int, str]] = {
+    TODOS_UNAVAILABLE_CODE: (503, "the to-dos could not be read from the library"),
+    LIBRARY_NOT_CONFIGURED_CODE: (503, "the to-dos come from the library, not configured here"),
+}
+
 _TODO_REFUSALS: dict[str, tuple[int, str, str]] = {
     "todo-unknown": (404, "todo-unknown", "no such to-do"),
     "todo-bad-request": (400, "todo-bad-request", "not a to-do id"),

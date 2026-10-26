@@ -2,7 +2,7 @@
   "plan_slug": "gwen-is-pocketchat-transcripts-as-knowledge",
   "schema_version": 2,
   "created": "2026-10-24T04:42:23Z",
-  "updated": "2026-10-24T19:15:01Z",
+  "updated": "2026-10-24T21:20:27Z",
   "deviations": [
     {
       "id": "d1",
@@ -210,6 +210,19 @@
       "status": "approved",
       "classification": "acceptable",
       "seq": 16
+    },
+    {
+      "id": "d17",
+      "what": "Gwen learns only from the library (amends d16 and the 0.17.0 ingest path): transcripts (kind=transcript, with summary and key facts folded in), newspapers (kind=newspaper) and to-dos (kind=todo, one Markdown checklist per recording, a stable id per line in an HTML comment) all arrive as culture-library items; Gwen indexes todo items and the To-dos page and list_todos read from the library; a checked to-do is published as the existing todo event, culture-rules flips the line and replaces the item under the same id, and Gwen shows her mark until the library agrees (newer 'at' wins); culture-rules stops calling 'embodiment memory ingest' only after Gwen's library to-dos are confirmed, then the ingest mailbox is retired; Gwen still never writes the library (c26)",
+      "task_ref": "t9",
+      "reason": "Operator, 2026-10-25: 'I want just the library. Including todo items and all.' Two inputs drift: the To-dos list came only from the ingest mailbox and missed what it never received; one source makes what the library holds what Gwen knows. Markdown checklists chosen over JSON (readable on the reader). Amends deviation d16.",
+      "affects": [
+        "t13"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "needs-follow-up",
+      "seq": 63
     }
   ],
   "evidence": [
