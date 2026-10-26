@@ -2,7 +2,7 @@
   "plan_slug": "gwen-queries-and-reads-the-library",
   "schema_version": 2,
   "created": "2026-10-25T23:25:27Z",
-  "updated": "2026-10-26T05:56:51Z",
+  "updated": "2026-10-26T11:18:52Z",
   "deviations": [
     {
       "id": "d1",
@@ -374,6 +374,63 @@
       "status": "proposed",
       "superseded": false,
       "seq": 22
+    },
+    {
+      "id": "e16",
+      "obligation_ref": "o4",
+      "test_ref": "tests/test_reading.py::test_heard_must_be_exact_next_and_never_backwards",
+      "behavior_text": "after the Sonar refactor of Reader.next/heard (_sought, _served, _after_heard), a heard report moves the cursor only for the exact next unit; stale or backwards reports move nothing",
+      "contract_text": "the cursor moves only on a heard report for the exact next unit (or an explicit seek, d1); a stale heard moves nothing",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "re-run green at the Sonar-fix commit; full suite 4525 passed",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-26T11:17:41",
+        "commit": "09af199"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 23
+    },
+    {
+      "id": "e17",
+      "obligation_ref": "o4",
+      "test_ref": "tests/test_reading.py::test_a_seek_repins_the_cursor_to_the_sought_unit",
+      "behavior_text": "after the refactor, an explicit seek still re-pins the cursor (d1) and the pre-seek position becomes stale",
+      "contract_text": "the cursor moves only on a heard report for the exact next unit (or an explicit seek, d1); a stale heard moves nothing",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "re-run green at the Sonar-fix commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-26T11:17:41",
+        "commit": "09af199"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 24
+    },
+    {
+      "id": "e18",
+      "obligation_ref": "o5",
+      "test_ref": "tests/test_daemon_reading.py::TestRefusals::test_next_and_heard_need_the_secret_and_a_refused_heard_leaves_the_file",
+      "behavior_text": "after server.py's routing split (_api_route, _stream_or_status, _reading_call, _reading_answer), next and heard are still refused without the install secret and a refused heard leaves the positions file untouched",
+      "contract_text": "next and heard need the install secret, or a valid Access assertion on the public Host",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "re-run green at the Sonar-fix commit with all of test_http_server.py (231 passed)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-26T11:17:41",
+        "commit": "09af199"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 25
     }
   ],
   "deltas": [

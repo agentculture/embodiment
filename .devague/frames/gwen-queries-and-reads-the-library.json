@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-10-25T22:41:22Z",
-  "updated": "2026-10-26T05:56:51Z",
+  "updated": "2026-10-26T11:22:05Z",
   "claims": [
     {
       "id": "c1",
@@ -896,6 +896,15 @@
       "refs": [
         "c32 / t9"
       ],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l3",
+      "code": "control-absent",
+      "what": "PRs #109 and #110 were opened before /validate-delivery and /summarize-delivery covered d2-d7; o10, e14-e15 and b6-b10 and the refreshed summary were filed after the PRs existed, and the per-task /assess (d5e03bb) also ran after them - the validate-before-PR gate the operator set was not in place when the PRs opened",
+      "skipped_check": "",
+      "refs": [],
       "origin": "llm",
       "status": "proposed"
     }

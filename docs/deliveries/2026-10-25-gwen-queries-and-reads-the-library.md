@@ -125,7 +125,7 @@ pending approval (not yet evidence): `l1`, `l2`
 - Choose section control (`b3`) — not built; tap a paragraph (d3) jumps. Build it only if the operator still wants it.
 - Narration rules (embodiment#111): skip citation markers (`[1]`) and repeated abbreviations ("natural language (NL)") when reading aloud, per item kind, with a lexicon and an editable rules file; it amends c24 first. The operator chose a separate cycle.
 - An English voice on purpose: lobes could take a per-request language instead of the `<en>` tags (a lobes issue, to draft and ask before posting).
-- Proposed records to adjudicate: obligations `o1`-`o10`, evidence `e1`-`e18`, deltas `b1`-`b10`, lapses `l1`, `l2`.
+- Proposed records to adjudicate: obligations `o1`-`o10`, evidence `e1`-`e18`, deltas `b1`-`b10`, lapses `l1`, `l2`, `l3` (`l3`: the validate-before-PR order was not kept for d2-d7, filed `control-absent`).
 - A culture-library issue for title-only chunks (about 40 characters) returned as passages — to draft and ask before posting.
 - Follow-ups already named: voice commands for reading (v4, with realtime Live); two devices reading one item (v5); embodiment#106; Docker (embodiment#108); transcript segment times (culture-rules#99); deleting the dead library code in `library/index.py` and `library/extract.py`.
 - #109 (embodiment#105) merged 2026-10-26 as `a4e521c`. #110 awaits the operator's merge go-ahead; the refactor in `09af199` has not run on the phone (production is `4cea3ef`).
