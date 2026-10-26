@@ -11,12 +11,12 @@
 // the passage being spoken is marked, heard ones recede, and the map turns into
 // one span per section while a read is on.
 
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import type { MouseEvent } from "react";
 import { fetchItem, type LibraryClientOptions, type LibraryDocument, type Passage } from "../api/library";
 import { dayLabel, kindInfo } from "../api/kinds";
 import type { ReadingUnit, SavedPosition } from "../api/reading";
-import { deviceKind, neighbour, playedOf, progressOf, ReadAloudDock, useReadAloud, type AudioFactory } from "./ReadAloud";
+import { deviceKind, neighbour, playedOf, progressOf, ReadAloudDock, useReadAloud, type AudioFactory, type SectionChoice } from "./ReadAloud";
 import "../styles/library.css";
 
 export interface ReaderHandle {
@@ -129,6 +129,20 @@ export const Reader = forwardRef<ReaderHandle, ReaderProps>(function Reader(
   );
   const [reading, controls] = useReadAloud({ itemId: id, secret, clientOptions, audioFactory, peekFollowing, peekPreceding });
   const device = deviceKind();
+  // The dock's Choose section list, from this reader's own copy: each section in order,
+  // named by its first heading, else by its number.
+  const sections = useMemo((): SectionChoice[] => {
+    const out: SectionChoice[] = [];
+    for (const p of doc?.passages ?? []) {
+      const pos = positionOf(p.anchor);
+      if (!pos) continue;
+      const last = out[out.length - 1];
+      if (last?.section === pos.section) {
+        if (!last.label && p.heading) last.label = p.heading;
+      } else out.push({ section: pos.section, label: p.heading });
+    }
+    return out.map((s) => ({ ...s, label: s.label || `Section ${s.section + 1}` }));
+  }, [doc]);
 
   useEffect(() => {
     let live = true;
@@ -353,7 +367,7 @@ export const Reader = forwardRef<ReaderHandle, ReaderProps>(function Reader(
         </ol>
       </div>
       {reading.status !== "idle" && reading.status !== "stopped" && (
-        <ReadAloudDock state={reading} controls={controls} device={device} />
+        <ReadAloudDock state={reading} controls={controls} device={device} sections={sections} />
       )}
     </aside>
   );

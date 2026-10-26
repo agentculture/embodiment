@@ -563,3 +563,100 @@ describe("ReadAloud: what the phone test asked for (d3, live t9 2026-10-26)", ()
     expect(r.heard).toEqual([]);
   });
 });
+
+describe("ReadAloud: Choose section (t4, the approved mockup's dock)", () => {
+  // Synthetic: three sections, the middle one without a heading of its own.
+  const SECTIONS = [
+    { heading: "One", paras: ["S0 first synthetic.", "S0 second synthetic."] },
+    { heading: "", paras: ["S1 first synthetic.", "S1 second synthetic."] },
+    { heading: "Three", paras: ["S2 first synthetic."] },
+  ];
+  const multi = {
+    item: doc.item,
+    passages: SECTIONS.flatMap((s, si) =>
+      s.paras.map((text, pi) => ({ anchor: `s${si}.p${pi}`, heading: pi === 0 ? s.heading : "", text, start_s: null, end_s: null, speaker: "" })),
+    ),
+  };
+  function multiRig() {
+    const r = { nexts: [] as string[], heard: [] as string[] };
+    const fetchFn = vi.fn(async (u: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(u);
+      const json = (status: number, body: unknown) => ({ ok: status < 300, status, json: async () => body }) as Response;
+      if (url === "/api/library/syn-1") return json(200, multi);
+      if (url.startsWith("/api/reading/syn-1/next")) {
+        r.nexts.push(url);
+        const s = Number(/section=(\d+)/.exec(url)?.[1] ?? 0);
+        const p = Number(/paragraph=(\d+)/.exec(url)?.[1] ?? 0);
+        const sec = SECTIONS[s];
+        return json(200, {
+          ...unit(0),
+          section: s,
+          section_count: SECTIONS.length,
+          heading: sec.heading,
+          paragraph: p,
+          paragraph_count: sec.paras.length,
+          text: sec.paras[p],
+          position: `pos-${s}-${p}`,
+        });
+      }
+      if (url === "/api/reading/syn-1/heard") {
+        r.heard.push(JSON.parse(String(init?.body)).position as string);
+        return json(200, { moved: true, cursor: {} });
+      }
+      if (url === "/api/speak") return { ok: true, status: 200, blob: async () => new Blob(["RIFF"], { type: "audio/wav" }) } as unknown as Response;
+      return json(404, {});
+    });
+    return { r, fetchFn };
+  }
+  async function openMulti(onClose = () => {}) {
+    const { r, fetchFn } = multiRig();
+    render(<Reader id="syn-1" onClose={onClose} clientOptions={{ fetchFn: fetchFn as unknown as typeof fetch }} audioFactory={() => new FakeAudio() as unknown as HTMLAudioElement} />);
+    await screen.findByText(SECTIONS[0].paras[0]);
+    fireEvent.click(screen.getByText(SECTIONS[0].paras[1]));
+    await waitFor(() => expect(screen.getByRole("group", { name: "Reading aloud" })).toHaveAttribute("data-status", "playing"));
+    return r;
+  }
+
+  it("lists every section by its heading (or its number) and marks the one playing", async () => {
+    await openMulti();
+    const choose = screen.getByRole("button", { name: "Choose section" });
+    expect(choose).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(choose);
+    expect(choose).toHaveAttribute("aria-expanded", "true");
+    const list = screen.getByRole("list", { name: "Sections" });
+    const items = Array.from(list.querySelectorAll("button")).map((b) => b.textContent);
+    expect(items).toEqual(["One", "Section 2", "Three"]);
+    expect(screen.getByRole("button", { name: "One" })).toHaveAttribute("aria-current", "true");
+    for (const b of list.querySelectorAll("button")) expect(b).toHaveAttribute("dir", "auto");
+  });
+
+  it("choosing a section reads its first paragraph: a seek, reported heard on ended", async () => {
+    const r = await openMulti();
+    fireEvent.click(screen.getByRole("button", { name: "Choose section" }));
+    fireEvent.click(screen.getByRole("button", { name: "Three" }));
+    await waitFor(() => expect(r.nexts).toContain("/api/reading/syn-1/next?section=2&paragraph=0"));
+    expect(screen.queryByRole("list", { name: "Sections" })).not.toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText(SECTIONS[2].paras[0]).closest("li")).toHaveClass("speaking"));
+    expect(r.heard).toEqual([]);
+    audio().fire("ended");
+    await waitFor(() => expect(r.heard).toEqual(["pos-2-0"]));
+  });
+
+  it("Escape closes the list, seeks nothing, keeps the reader open and returns focus", async () => {
+    const onClose = vi.fn();
+    const r = await openMulti(onClose);
+    const seen = r.nexts.length;
+    const choose = screen.getByRole("button", { name: "Choose section" });
+    fireEvent.click(choose);
+    fireEvent.keyDown(screen.getByRole("button", { name: "Three" }), { key: "Escape" });
+    expect(screen.queryByRole("list", { name: "Sections" })).not.toBeInTheDocument();
+    expect(document.activeElement).toBe(choose);
+    expect(onClose).not.toHaveBeenCalled();
+    expect(r.nexts.length).toBe(seen);
+  });
+
+  it("an item with one section has no Choose section control", async () => {
+    await openAndStart(rig());
+    expect(screen.queryByRole("button", { name: "Choose section" })).not.toBeInTheDocument();
+  });
+});

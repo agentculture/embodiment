@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.23.2] - 2026-10-26
+
+### Added
+
+- Choose section in the listening dock (embodiment#107 t4, the approved mockup's control): with two or more sections the dock lists them in order, each by its first heading or else its number, the one playing marked and focused; choosing one reads it from its first paragraph through `/api/reading/{id}/next?section=&paragraph=0`, a seek that re-pins the cursor (d1), reported heard only on ended. Escape closes the list and not the reader; the list scrolls within the dock on a phone. t4 is delivered
+
 ## [0.23.1] - 2026-10-26
 
 ### Changed

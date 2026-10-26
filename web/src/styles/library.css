@@ -327,6 +327,17 @@
 [dir="rtl"] .where-bar span.now { background: linear-gradient(to left, var(--cobalt) 0 calc(var(--played) * 100%), color-mix(in srgb, var(--cobalt) 22%, var(--well)) 0); }
 .where .listen-note { margin-block-start: 0.35rem; }
 .dock-end { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem; }
+.section-list {
+  grid-column: 1 / -1; list-style: none; margin: 0; padding: 0.25rem;
+  max-block-size: min(40vh, 18rem); overflow-y: auto;
+  border: 1px solid var(--line); border-radius: 12px; background: var(--sheet);
+}
+.section-list button {
+  inline-size: 100%; text-align: start; padding: 0.5rem 0.65rem; border: 0; border-radius: 8px;
+  background: none; color: var(--ink); font: inherit; cursor: pointer;
+}
+.section-list button:hover, .section-list button:focus-visible { background: var(--well); }
+.section-list button[aria-current="true"] { background: var(--cobalt-soft); font-weight: 700; }
 .device {
   display: inline-flex; align-items: center; gap: 0.35rem; color: var(--quiet); font-size: var(--step--1);
   padding-inline: 0.6rem; block-size: 32px; border-radius: 999px; background: var(--well);

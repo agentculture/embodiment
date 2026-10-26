@@ -523,10 +523,18 @@ export function useReadAloud({ itemId, secret, clientOptions, audioFactory, peek
   return [state, { start, pause, resume, stop, move }];
 }
 
+/** One entry of the dock's Choose section list: a section index and what to call it. */
+export interface SectionChoice {
+  section: number;
+  label: string;
+}
+
 export interface ReadAloudDockProps {
   state: ListenState;
   controls: ListenControls;
   device?: "phone" | "laptop";
+  /** The item's sections, in order; with two or more the dock offers Choose section. */
+  sections?: SectionChoice[];
 }
 
 const IconPrev = () => (
@@ -544,8 +552,24 @@ const IconNext = () => (
 export const RING_DELAY_MS = 300;
 
 /** The listening dock: sticky at the reader's bottom (styles/library.css .listen-dock). */
-export function ReadAloudDock({ state, controls, device = deviceKind() }: ReadAloudDockProps) {
+export function ReadAloudDock({ state, controls, device = deviceKind(), sections = [] }: ReadAloudDockProps) {
   const { status, unit } = state;
+  // Choose section (the approved mockup's dock): a section's first paragraph is a seek (d1),
+  // like a tap on a paragraph (d3), so it is reported heard on ended.
+  const [choosing, setChoosing] = useState(false);
+  const chooseRef = useRef<HTMLButtonElement | null>(null);
+  const listRef = useRef<HTMLUListElement | null>(null);
+  useEffect(() => {
+    if (!choosing) return;
+    const list = listRef.current;
+    const current = list?.querySelector<HTMLButtonElement>('button[aria-current="true"]');
+    (current ?? list?.querySelector<HTMLButtonElement>("button"))?.focus();
+    current?.scrollIntoView?.({ block: "nearest" });
+  }, [choosing]);
+  const closeChoosing = () => {
+    setChoosing(false);
+    chooseRef.current?.focus();
+  };
   const going = status === "playing" || status === "loading";
   const prog = unit ? progressOf(unit, playedOf(state)) : null;
   const where = (() => {
@@ -659,10 +683,50 @@ export function ReadAloudDock({ state, controls, device = deviceKind() }: ReadAl
           )}
           {going ? `Playing on this ${device}` : `Plays on this ${device}`}
         </span>
+        {sections.length > 1 && (
+          <button
+            type="button"
+            className="pill-btn"
+            ref={chooseRef}
+            aria-expanded={choosing}
+            onClick={() => setChoosing((v) => !v)}
+          >
+            Choose section
+          </button>
+        )}
         <button type="button" className="pill-btn" onClick={controls.stop}>
           Stop reading
         </button>
       </div>
+      {choosing && sections.length > 1 && (
+        <ul
+          className="section-list"
+          aria-label="Sections"
+          ref={listRef}
+          onKeyDown={(e) => {
+            // Escape closes the list only, not the reader behind it.
+            if (e.key !== "Escape") return;
+            e.stopPropagation();
+            closeChoosing();
+          }}
+        >
+          {sections.map((s) => (
+            <li key={s.section}>
+              <button
+                type="button"
+                dir="auto"
+                aria-current={unit?.section === s.section ? "true" : undefined}
+                onClick={() => {
+                  setChoosing(false);
+                  controls.start({ section: s.section, paragraph: 0 });
+                }}
+              >
+                {s.label}
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
     </div>
   );
 }
