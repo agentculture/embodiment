@@ -186,28 +186,17 @@ class TodoStates:
                 if mark is None or not mark.get("pending", True) or mark.get("expired"):
                     shown.append({"id": lid, **lib})
                     continue
-                at = mark["at"]
-                lib_at = lib["done_at"]
-                if not mark["done"] and not lib["done"]:
-                    # An open line carries no done_at (the parser stamps done lines only), so
-                    # a mark that re-opens a to-do is confirmed when the line reads open.
-                    self.confirmed += 1
+                verdict = self._judge(mark, lib, now)
+                if verdict == "settled":
                     del states[lid]
                     changed = True
                     shown.append({"id": lid, **lib})
-                elif _flipped_since(lib_at, at):
-                    if lib["done"] == mark["done"]:
-                        self.confirmed += 1
-                    else:
-                        self.superseded += 1  # a newer library flip the other way wins
-                    del states[lid]
-                    changed = True
-                    shown.append({"id": lid, **lib})
-                elif now - at >= RESEND_WINDOW_S:
+                elif verdict == "expired":
                     mark["expired"] = True
                     changed = True
                     shown.append({"id": lid, **lib})
                 else:
+                    at = mark["at"]
                     shown.append(
                         {"id": lid, "done": mark["done"], "done_at": at, "done_by": mark["by"]}
                     )
@@ -219,6 +208,22 @@ class TodoStates:
                 self._prune_locked(states, ids)
             counters = self._counters_locked(states, now)
         return shown, due, counters
+
+    def _judge(self, mark: dict[str, Any], lib: dict[str, Any], now: float) -> str:
+        """One pending mark against its library line: ``settled`` (confirmed or
+        superseded, counted), ``expired`` or ``due``."""
+        if not mark["done"] and not lib["done"]:
+            # An open line carries no done_at (the parser stamps done lines only), so a
+            # mark that re-opens a to-do is confirmed when the line reads open.
+            self.confirmed += 1
+            return "settled"
+        if _flipped_since(lib["done_at"], mark["at"]):
+            if lib["done"] == mark["done"]:
+                self.confirmed += 1
+            else:
+                self.superseded += 1  # a newer library flip the other way wins
+            return "settled"
+        return "expired" if now - mark["at"] >= RESEND_WINDOW_S else "due"
 
     def shown(self, lines: Iterable[Any]) -> list[dict]:
         """What :meth:`reconcile` would display for *lines*, read-only (a page load).

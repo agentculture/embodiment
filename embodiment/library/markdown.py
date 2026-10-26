@@ -31,13 +31,28 @@ from embodiment.library.epub import (
     Passage,
 )
 
-# Linear forms (Sonar S6019/S8786): a comment runs to the first "-->" or to the end, and a
-# heading's closing run of "#" is stripped in code (_heading_text), not by backtracking.
-_COMMENT = re.compile(r"<!--(?:[^-]|-(?!->))*(?:-->|\Z)")
+# No regex can be linear and clear here (Sonar S6019/S8786): a comment, to the first "-->"
+# or to the end, is stripped by a scan (_strip_comments), and a heading's closing run of "#"
+# in code (_heading_text).
 _TAG = re.compile(r"</?[A-Za-z][^<>]*>")
 _HEADING = re.compile(r"^ {0,3}(#{1,6})[ \t]+(.*)$")
 _BULLET = re.compile(r"^ {0,3}(?:[-*+]|\d{1,9}[.)])[ \t]+")
 _LINK = re.compile(r"(!?)\[([^\[\]]{0,%d})\]\(([^()\s]+)(?:\s+\"[^\"]*\")?\)" % MAX_LINK_TEXT)
+
+
+def _strip_comments(text: str) -> str:
+    """*text* without its HTML comments: each runs to the first "-->", or to the end."""
+    out, at = [], 0
+    while True:
+        start = text.find("<!--", at)
+        if start < 0:
+            out.append(text[at:])
+            return "".join(out)
+        out.append(text[at:start])
+        end = text.find("-->", start + 4)
+        if end < 0:
+            return "".join(out)
+        at = end + 3
 
 
 def _heading_text(rest: str) -> str:
@@ -81,7 +96,7 @@ def clean_text(text: str, *, limits: Optional[Limits] = None) -> str:
     """
     limits = limits if limits is not None else Limits()
     line = str(text or "")[: limits.max_line_chars]
-    return " ".join(_inline(_COMMENT.sub("", line), []).split())[: limits.max_line_chars]
+    return " ".join(_inline(_strip_comments(line), []).split())[: limits.max_line_chars]
 
 
 def extract(data: bytes, *, limits: Optional[Limits] = None) -> Extracted:
@@ -97,7 +112,7 @@ def extract(data: bytes, *, limits: Optional[Limits] = None) -> Extracted:
     if not source.strip():
         raise EpubRefused("bad_markdown")
     lines = [ln[: limits.max_line_chars] for ln in source.splitlines()[: limits.max_lines]]
-    lines = _COMMENT.sub("", "\n".join(lines)).split("\n")
+    lines = _strip_comments("\n".join(lines)).split("\n")
 
     passages: list[Passage] = []
     chars = 0

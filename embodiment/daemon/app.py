@@ -3996,24 +3996,32 @@ class DaemonApp:
             self._todos_down = None
             self._publish("state", {"component": "todos", "status": "online"})
         lines = [line for group in source.groups() for line in group["lines"]]
-        item_code = checked.get("code")
-        if item_code and item_code != self._todos_item_code:
-            # One unreadable item: recorded, the others still served (code review of #109).
-            reason = f"to-do item unreadable: {safe_reason.safe_label(str(item_code))}"
-            self._record(APP_TODOS_DEGRADED, reason, source="todos")
-        self._todos_item_code = str(item_code) if item_code else None
+        self._note_unreadable_item(checked.get("code"))
         complete = bool(checked.get("complete", True))
         _shown, due, _counters = self._todo_states.reconcile(lines, prune=complete)
         self._todos_loaded = True
-        if due:
-            items = {item["id"]: item for item in self._todo_flat()}
-            for mark in due:
-                item = items.get(mark["id"])
-                if item is not None:
-                    self._publish_todo(item, mark["done"], mark["at"], mark["by"])
-                    with self._lock:
-                        self._todo_resends_published += 1
+        self._resend_due(due)
         return True
+
+    def _note_unreadable_item(self, item_code: Any) -> None:
+        """Record an unreadable to-do item once per code; the others are still served
+        (code review of #109)."""
+        if item_code and item_code != self._todos_item_code:
+            reason = f"to-do item unreadable: {safe_reason.safe_label(str(item_code))}"
+            self._record(APP_TODOS_DEGRADED, reason, source="todos")
+        self._todos_item_code = str(item_code) if item_code else None
+
+    def _resend_due(self, due: list[dict]) -> None:
+        """Publish a ``todo`` event for each mark still waiting for the library."""
+        if not due:
+            return
+        items = {item["id"]: item for item in self._todo_flat()}
+        for mark in due:
+            item = items.get(mark["id"])
+            if item is not None:
+                self._publish_todo(item, mark["done"], mark["at"], mark["by"])
+                with self._lock:
+                    self._todo_resends_published += 1
 
     def _library_tick(self) -> bool:
         """ONE bounded sync tick plus the forwarding of what it recorded. Never raises.

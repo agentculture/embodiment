@@ -124,12 +124,11 @@ class TodoSource:
     def groups(self) -> list[dict]:
         """The held items, newest first (created_at, then title, then id); stable."""
         with self._lock:
-            held = list(self._held.items())
-        ordered = sorted(
-            held,
-            key=lambda kv: (kv[1][0].created_at, str(kv[1][0].title), kv[0]),
-            reverse=True,
-        )
+            ordered = sorted(
+                self._held.items(),
+                key=lambda kv: (kv[1][0].created_at, str(kv[1][0].title), kv[0]),
+                reverse=True,
+            )
         return [
             {
                 "id": item_id,
