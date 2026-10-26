@@ -295,6 +295,16 @@ def test_changelog_names_the_release_removal_and_its_rollback() -> None:
     assert "t9" in section
 
 
-def test_version_is_0_23_1() -> None:
+def test_version_is_0_23_2() -> None:
     pyproject = (_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert 'version = "0.23.1"' in pyproject
+    assert 'version = "0.23.2"' in pyproject
+
+
+def test_choose_section_is_described_as_built() -> None:
+    """t4: the approved mockup's Choose section control shipped in 0.23.2."""
+    readme = (_REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    claude = (_REPO_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
+    assert 'Not built: the "Choose section"' not in readme
+    assert 'no "Choose section" control' not in claude
+    assert "Choose section" in readme
+    assert "Choose section" in claude

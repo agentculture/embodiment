@@ -221,8 +221,9 @@ loop. It does not drive hardware and nothing here claims a body.
   the cursor's unit, and `POST /api/reading/{id}/clear` drops it. The page speaks each
   unit through `/api/speak` (the Reader dock, Continue listening on the Library, and a
   Read aloud card in chat); `status.reading` counts reads started, units served and
-  heard, refused reports, continues and seeks. Not built: the "Choose section" control
-  of the mockup (previous and next paragraph are). The live acceptance (t9) ran on a
+  heard, refused reports, continues and seeks. The dock's Choose section (0.23.2) lists the
+  item's sections by heading and reads the chosen one from its first paragraph, a seek
+  like previous, next and a tap on a paragraph. The live acceptance (t9) ran on a
   phone, with tap to first sound judged by ear: warm at once, cold about 6 s, over the 5 s
   bar.
 - **The write guard.** An xteink key is a full operator key, so the client never

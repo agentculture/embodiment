@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-10-25T22:41:22Z",
-  "updated": "2026-10-26T11:22:05Z",
+  "updated": "2026-10-26T17:23:20Z",
   "claims": [
     {
       "id": "c1",
@@ -997,6 +997,15 @@
       "seam": "voice.py split_sentences + sentence_audio_cap, /api/speak",
       "behavior": "a paragraph is spoken whole: no sentence's audio is cut and no sentence's text is dropped",
       "source_text": "the read-aloud loop bypasses the LLM: Gwen speaks the document's own words one paragraph per Voice.speak call, verbatim, never summarised or rewritten by senses",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o11",
+      "claim_id": "c23",
+      "seam": "web/src/components/ReadAloud.tsx ReadAloudDock + Reader.tsx sections",
+      "behavior": "Choose section lists the item's sections and reads the chosen one from its first paragraph through a seek (d1), reported heard only on ended; Escape closes the list, not the reader",
+      "source_text": "the page drives a read through daemon routes: start or continue returns the next paragraph (its text, section heading and position) from the saved cursor; the page synthesises it with /api/speak, plays it, and reports it heard on the audio's ended event; the daemon advances the cursor only on a heard report for that exact position, and the page prefetches the following paragraph so speech does not stall between paragraphs",
       "origin": "llm",
       "status": "proposed"
     }

@@ -1,0 +1,44 @@
+{
+ "request": {
+  "model": "clef",
+  "state": "Plan task t4: web read aloud on this device (reader listen mode, dock, paragraph-synced progress, continue). Instruction: match the approved mockup, whose dock has Previous, Play/Pause, Next, a device label and a Choose section button. Acceptance criteria: (1) a reading client with the shared auth headers, each unit spoken via /api/speak, heard reported only on the audio ended event, next unit prefetched; (2) pause, audio error, reload, Stop or moving away never report heard (tested with a fake Audio); (3) one dock segment per paragraph, the playing one filling with its audio, the same value driving the edge line and the section map; (4) Continue listening on the library card, a Read aloud card in chat, a gone item says so; text dir=auto, keyboard reachable, reduced motion respected; (5) build, web tests and the no-external-origin check pass. Facts: criteria 1-5 were met when t4 merged (tests, a browser check, the operator's phone check), but the mockup's Choose section button was not built. Now built: with two or more sections the dock lists them by heading or number, marks and focuses the current one, and a choice seeks to that section's first paragraph, reported heard only on ended; Escape closes the list. 4 new tests seen failing then passing; full web suite 531 passed; build and the origin check pass; a 390 px check on a live 304-section book showed the list inside the dock and a choice playing section 8. One unnamed web test failed once in 17 runs on the branch and 0 of 5 on the base. Not yet checked on the operator's phone.",
+  "questions": {
+   "t4_status": {
+    "type": "choice",
+    "instructions": "What is t4's delivery status with this change merged?",
+    "criteria": {
+     "delivered": "every acceptance criterion and the mockup's controls are met",
+     "partial": "something t4 promised is still missing",
+     "not_delivered": "the read-aloud page is not built"
+    }
+   },
+   "flake_blocks": {
+    "type": "noul",
+    "instructions": "Does the single unnamed web test failure in 17 runs block opening the PR?"
+   }
+  }
+ },
+ "answer": {
+  "model": "clef",
+  "answers": {
+   "t4_status": {
+    "type": "choice",
+    "choice": "delivered",
+    "confidence": 0.8324,
+    "probabilities": {
+     "delivered": 0.8324,
+     "partial": 0.143,
+     "not_delivered": 0.0246
+    }
+   },
+   "flake_blocks": {
+    "type": "noul",
+    "noul": 0.075
+   }
+  },
+  "usage": {
+   "input_tokens": 637,
+   "output_tokens": 0
+  }
+ }
+}

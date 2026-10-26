@@ -101,7 +101,7 @@ provider (`library/document.py`, `LibraryClient.fetch_text`). Documents can be h
 `daemon/reading.py` keeps one cursor per item in `reading-positions.json` (0600) behind
 `GET /api/reading`, `/api/reading/{id}/next` (with `section`/`paragraph` a seek that
 re-pins the cursor, deviation d1), `POST .../heard` and `.../clear`, and the page has the
-Reader dock, Continue listening and a Read aloud card (no "Choose section" control).
+Reader dock (Choose section since 0.23.2), Continue listening and a Read aloud card.
 **Measured, and only by the 2026-10-26 probes on this rig:** n = 5 retrieve latencies
 (hybrid 0.74-1.12 s), n = 2 TTS runs per language (warm 0.46-0.83 s, cold 6.59 s) and
 the live catalog and `/text` shapes. The before-state it replaces: `read_item` returned
