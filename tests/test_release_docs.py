@@ -295,9 +295,9 @@ def test_changelog_names_the_release_removal_and_its_rollback() -> None:
     assert "t9" in section
 
 
-def test_version_is_0_23_3() -> None:
+def test_version_is_0_23_4() -> None:
     pyproject = (_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
-    assert 'version = "0.23.3"' in pyproject
+    assert 'version = "0.23.4"' in pyproject
 
 
 def test_choose_section_is_described_as_built() -> None:

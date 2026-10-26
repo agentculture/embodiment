@@ -2,7 +2,7 @@
   "plan_slug": "gwen-queries-and-reads-the-library",
   "schema_version": 2,
   "created": "2026-10-25T23:25:27Z",
-  "updated": "2026-10-26T18:19:58Z",
+  "updated": "2026-10-26T18:33:50Z",
   "deviations": [
     {
       "id": "d1",
@@ -102,6 +102,20 @@
       "status": "approved",
       "classification": "acceptable",
       "seq": 20
+    },
+    {
+      "id": "d8",
+      "what": "t9's tap-to-sound is accepted on the operator's by-ear figures (warm immediate, cold about 6 s); no timed cold/warm measurement is required to close t9",
+      "task_ref": "t9",
+      "reason": "the operator, after using it: 't9 feels right, so we can approve for now or /deviate to close it'",
+      "affects": [
+        "c22",
+        "c32"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 31
     }
   ],
   "evidence": [
@@ -523,7 +537,7 @@
         "commit": "682ac74"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 30
     }

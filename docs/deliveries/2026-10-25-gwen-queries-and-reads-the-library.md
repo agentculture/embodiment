@@ -11,8 +11,8 @@ After: `search_library` and its siblings answer from culture-library's passages;
 
 The run is `complete`: every task merged and is delivered. The phone check found
 and fixed two defects (d2, d3); the operator's retests on the merged ref met `t9`'s
-criteria with one follow-up left open (the tap-to-sound times are estimates by ear,
-and the cold one is over the 5 s bar; see Drift); and the mockup's Choose section
+criteria, the tap-to-sound times by ear (the cold one over the 5 s bar), which the
+operator accepted to close `t9` (`d8`); and the mockup's Choose section
 control, missing from `t4` when it merged, shipped in 0.23.2.
 
 ## Planned Work
@@ -53,6 +53,7 @@ Quoted verbatim from the `devague summary` skeleton:
 - A defect the phone found, fixed with no deviation (it restores c10/c24, the read is the item's own words): every sentence's audio was capped at 10 s and a sentence past 500 characters was sliced, so a one-sentence paragraph stopped after "perception" and the reader skipped on. The cap now grows with the sentence; long sentences split at clause marks or spaces (`23d0b01`; 10.00 s cut, then 13.93 s whole, on the pre-flight daemon)
 - `d6` — page: the reader keeps the current, previous and next paragraphs' audio (pause and play, Previous and Next reuse it) and makes the next and the previous ahead — the operator's ask ("Relisten happens often")
 - `d7` — speech: faded edges and a pause after each sentence (measured before: 0-10 ms of silence and a click at each seam; after: 0.27 s quiet, clips start and end at 0; the full-stop pause later raised to 0.43 s and then 0.53 s, the colon's to 0.30 s, on the operator's ear), and a long paragraph starts from its first sentence while the rest is made — the operator's report ("transitions between sentences aren't great") and idea ("send first sentence"). The made-ahead audio also stopped making the item's first paragraph again as its own Previous
+- `d8` — t9's tap-to-sound is accepted on the operator's by-ear figures (warm immediate, cold about 6 s); no timed cold/warm measurement is required to close t9 — the operator, after using it: "t9 feels right, so we can approve for now or /deviate to close it"
 - A code review of #109 and #110 (the operator's `/code-review medium`) found 10 candidates; each was checked against the code and all 10 were fixed: for #110, a reading unit cut at `/api/speak`'s 120 s cap was reported heard (units are now 1000 characters, derived from that cap, and a cut answer says `X-Speak-Truncated` and is never reported heard); `GET /api/reading` fetched each saved item's `/text` to say "gone" (now a catalog lookup); `read_item` cut a long paragraph at the 1000-character citation cap while its offset stepped past it (now citation-sized pieces, every word kept) and cited a flat index the reader could not open (now `s<section>.p<paragraph>`); the anchor budget did not bound a fetch already started (now a wait bounded by what is left of it); one failed listing blanked the Library page (the kept list is served, marked `stale`); the retrieve client re-read the environment (now the one parsed config). For #109: a re-open mark could never be confirmed, one unreadable to-do item took the page down, and the to-do source had no lock
 - CI now fails a PR with unresolved SonarCloud issues (cited from culture-rules and culture-library); #109's 31 were fixed, none accepted
 - #110's first scan after #109 merged (squash `a4e521c`; #110 retargeted to `main`, joined with `merge -s ours`) failed the gate on reliability C with 44 issues; all 44 were fixed in `09af199`, none accepted. The three "always false" findings were Sonar not seeing a closure set `moved` in `Reader.heard`, not a live bug; the closure now records its target in a list. `Reader.next`/`heard` and the HTTP routing were split under the complexity limit, behavior unchanged
@@ -71,7 +72,7 @@ Quoted verbatim from the `devague summary` skeleton:
 | `t9` (`d2`) | live t9 on the phone: an English newspaper played garbled; lobes' BlueTTS sidecar sends a span with no Hebrew letters to the model as raw letters in he mode, while an `<en>` span goes through espeak English | `acceptable` |
 | `t4` (`d3`) | operator, live t9 on the phone: the pause button was out of reach on long articles, there was no jump to a paragraph, and the progress bar reset between paragraphs | `acceptable` |
 | `t9` | the stop, reload and continue check ran on a Hebrew transcript, not a chapter of an EPUB; the EPUB was matched against `/text` by the probe only (decider: 0.42 that this stands in) | `acceptable` |
-| `t9` | tap-to-sound is the operator's estimate by ear, n = 1 each, not a timed figure: cold about 6 s misses c22's 5 s bar, warm "immediate" meets it (decider: 0.40 that estimates suffice) | `needs-follow-up` |
+| `t9` (`d8`) | tap-to-sound is the operator's estimate by ear, n = 1 each, not a timed figure: cold about 6 s misses c22's 5 s bar, warm "immediate" meets it (decider: 0.40 that estimates suffice); the operator accepted these figures and closed it: "t9 feels right" | `acceptable` |
 
 ## Evidence
 
@@ -96,8 +97,8 @@ Quoted verbatim from the `devague summary` skeleton:
 - assess: one fresh decider call per task (`general`, 2026-10-26; requests and answers in `docs/deliveries/2026-10-26-gwen-queries-assess-per-task.json`): `t1`-`t3`, `t5`-`t8` delivered (P 0.97-0.98); `t4` partial (0.86, the Choose section control); `t9` partial 0.51 against not delivered 0.48 (the merged-ref deploy and the tap-to-sound time are unmet). A batched pass before it agreed on every task (`t9` partial 0.81). `t4` was relabelled from "delivered, one control short" to partial on that reading
 - CI: #110 at `09af199` — every check passes, SonarCloud gate OK, 0 open issues; #109 merged as `a4e521c`
 - lint: `black --check`, `isort --check-only`, `flake8`, `bandit -c pyproject.toml`, `markdownlint-cli2` — clean
-- validate-delivery records: obligations `o1`-`o10`, evidence `e1`-`e18` (all pass; `e19`, `e20` are the retests), deltas `b1`-`b10`; `o11`, `e21`, `e22`, `b11` (Choose section, filed before its PR; `b11` supersedes `b3`); all `llm`-origin, confirmed by the operator on 2026-10-26, and `e23` (Choose section on the phone) filed after, still proposed. The records covering d2-d7 (`o10`, `e14`-`e15`, `b6`-`b10`) were filed after #109 and #110 were opened, not before: the validate-before-PR order was not kept for those changes
-- deviations: `d1`, `d2` approved (operator); `d3`-`d7` approved (operator's own asks and report, user-origin)
+- validate-delivery records: obligations `o1`-`o10`, evidence `e1`-`e18` (all pass; `e19`, `e20` are the retests), deltas `b1`-`b10`; `o11`, `e21`, `e22`, `b11` (Choose section, filed before its PR; `b11` supersedes `b3`); all `llm`-origin, confirmed by the operator on 2026-10-26, and `e23` (Choose section on the phone), filed after, confirmed too. The records covering d2-d7 (`o10`, `e14`-`e15`, `b6`-`b10`) were filed after #109 and #110 were opened, not before: the validate-before-PR order was not kept for those changes
+- deviations: `d1`, `d2` approved (operator); `d3`-`d7` approved (operator's own asks and report, user-origin); `d8` approved (the operator closed `t9` on the by-ear figures)
 - commits: `74f51f1..09af199` on `feat/gwen-queries-the-library`, now on `main` after #109's squash (`a4e521c`); #110 squash-merged as `e19be55`, deployed to production 2026-10-26
 - PRs / issues: embodiment#107; follow-ups embodiment#108, culture-rules#99
 
@@ -134,10 +135,10 @@ Lapse ledger evidence:
 
 ## Remaining Work / Follow-up
 
-- `t9` — a timed tap-to-sound figure (cold and warm, n > 1) would replace the by-ear estimates; a cold tts lane is the likely 6 s, and a warm-up call at start is one way under 5 s.
+- Optional, not owed (`t9` closed by `d8`): a timed tap-to-sound figure (cold and warm, n > 1); a cold tts lane is the likely 6 s, and a warm-up call at start is one way under 5 s.
 - Narration rules (embodiment#111): skip citation markers (`[1]`) and repeated abbreviations ("natural language (NL)") when reading aloud, per item kind, with a lexicon and an editable rules file; it amends c24 first. The operator chose a separate cycle.
 - An English voice on purpose: lobes could take a per-request language instead of the `<en>` tags (a lobes issue, to draft and ask before posting).
-- Records: the operator confirmed obligations `o1`-`o11`, evidence `e1`-`e22`, deltas `b1`-`b11` (`b3` superseded by `b11`) and lapses `l1`-`l3` on 2026-10-26; `e23` (Choose section on the phone) awaits the operator.
+- Records: the operator confirmed obligations `o1`-`o11`, evidence `e1`-`e22`, deltas `b1`-`b11` (`b3` superseded by `b11`) and lapses `l1`-`l3` on 2026-10-26, then `e23` (Choose section on the phone); no record is left proposed.
 - A culture-library issue for title-only chunks (about 40 characters) returned as passages — to draft and ask before posting.
 - Follow-ups already named: voice commands for reading (v4, with realtime Live); two devices reading one item (v5); embodiment#106; Docker (embodiment#108); transcript segment times (culture-rules#99); deleting the dead library code in `library/index.py` and `library/extract.py`.
 - #109 (embodiment#105) merged 2026-10-26 as `a4e521c`. #110 (embodiment#107) merged as `e19be55`; the retests above ran on it. #112 merged as `a9da1db`, #113 as `682ac74`, which runs in production (0.23.2).
