@@ -1,0 +1,52 @@
+{
+ "request": {
+  "model": "clef",
+  "state": "Plan task t9: live acceptance on the rig, published as measured. Its acceptance criteria: (1) the production worktree moves to the merged ref and the service restarts on it; the live results doc records retrieve calls >= 1 with 0 failures, 0 indexing file GETs over 10 minutes, 5 kind-less searches with 0 to-do passages, a live EPUB and a live transcript matching the library text in the reader. (2) a chapter read on the phone over the public host with Access is stopped mid-paragraph, the page reloaded, and continue replays that paragraph; time from tap to first audio is recorded cold and warm separately, and the 5 s bar is judged on the warm figure with the cold one beside it, including if it fails. (3) a library item created during the run is returned by search within 60 s of the library indexing it, with no app-side action. Facts: (1) met: the merged ref e19be55 is deployed and the service restarted on it (version 0.23.0); the doc records retrieve calls with 0 failures, a 600 s window with 0 file GETs, 5 searches with 0 to-do passages, an EPUB 3943 of 3943 paragraphs equal and a transcript 4 of 4 equal. (2) the operator on an iPhone stopped a Hebrew transcript (not an EPUB chapter), reloaded, and continue replayed the paragraph: pass. A refresh retest on the deployed merged ref shows the header and bottom dock in place. Tap-to-sound: a long paragraph cold about 6 s (operator estimate by ear, n=1), warm re-tap immediate (operator estimate, n=1). Cold misses 5 s, warm meets it. (3) one new newspaper item found by search about 9 s after creation, n=1. All delivery records are proposed and await operator adjudication.",
+  "questions": {
+   "t9_status": {
+    "type": "choice",
+    "instructions": "What is t9's delivery status now?",
+    "criteria": {
+     "delivered": "every acceptance criterion is met, with the stated caveats recorded",
+     "partial": "some acceptance criterion is still unmet",
+     "not_delivered": "the live acceptance has not been done"
+    }
+   },
+   "transcript_for_epub_ok": {
+    "type": "noul",
+    "instructions": "Is a stop-reload-continue check done on a Hebrew transcript, alongside a separate live EPUB reader match, an acceptable stand-in for a chapter of an EPUB?"
+   },
+   "estimates_ok": {
+    "type": "noul",
+    "instructions": "Are the operator's by-ear tap-to-sound estimates (cold about 6 s, warm immediate, n=1) enough to record the cold and warm figures the criterion asks for?"
+   }
+  }
+ },
+ "answer": {
+  "model": "clef",
+  "answers": {
+   "t9_status": {
+    "type": "choice",
+    "choice": "delivered",
+    "confidence": 0.6472,
+    "probabilities": {
+     "delivered": 0.6472,
+     "partial": 0.3204,
+     "not_delivered": 0.0325
+    }
+   },
+   "transcript_for_epub_ok": {
+    "type": "noul",
+    "noul": 0.4187
+   },
+   "estimates_ok": {
+    "type": "noul",
+    "noul": 0.3951
+   }
+  },
+  "usage": {
+   "input_tokens": 817,
+   "output_tokens": 0
+  }
+ }
+}

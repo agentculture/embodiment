@@ -108,7 +108,9 @@ the live catalog and `/text` shapes. The before-state it replaces: `read_item` r
 at most 40 passages and 16,000 characters (`library/reading.py:36-37`), so a long
 document could be summarized and never heard whole, and `Voice.speak` caps one reply at
 4,000 characters (`voice.py:333`), which is why a reading unit is at most that long
-(`daemon/reading.py:MAX_PART_CHARS`). **Not yet done: the live acceptance (t9)**; hit rate on
+(`daemon/reading.py:MAX_PART_CHARS`). **The live acceptance (t9) ran on the phone**
+(`docs/live-test-results/2026-10-26-library-queried-and-heard.md`; tap to first sound warm at
+once, cold about 6 s, by ear, n = 1, so the 5 s bar holds warm only); hit rate on
 the library's retrieval is unmeasured and its hybrid scores (0.011-0.033) do not compare
 with memory's 0.715. **gwen.culture.dev
 needs its own Cloudflare never-cache rule** (the culture.dev zone caches everything,

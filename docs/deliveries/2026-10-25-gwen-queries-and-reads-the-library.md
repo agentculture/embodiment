@@ -9,9 +9,9 @@ baseline: `devague summary skeleton`
 
 After: `search_library` and its siblings answer from culture-library's passages; Gwen holds no library index and runs no library sync; on the page the operator says or taps read for an item, hears it paragraph by paragraph on that device's speakers, stops at any point, and later (from any device) continues at the first paragraph not fully heard
 
-The run is `partial` only because the operator's retest of the d3 page fixes is
-still to come; every task merged, and the phone check found and fixed two
-defects (d2, d3).
+The run is `partial` only because `t4` is: the mockup's Choose section control
+was not built. Every task merged, the phone check found and fixed two defects
+(d2, d3), and the operator's retests on the merged ref closed `t9`.
 
 ## Planned Work
 
@@ -39,7 +39,7 @@ Quoted verbatim from the `devague summary` skeleton:
 | `t6` | delivered | `library/sync.py` deleted, `retire_library_index`, catalog/search/reader live (`6874d7e`); merged `dd23476` |
 | `t7` | delivered | `/api/reading*` behind the guard, `status.reading`, Stats (`9cbed7d`); merged `653c37f` |
 | `t8` | delivered | README, CLAUDE.md, `explain` catalog, CHANGELOG 0.23.0 (`a65a8e6`); merged `a9c5235` |
-| `t9` | partial | pre-flight and production probes, and the operator's phone check, written up in `docs/live-test-results/2026-10-26-library-queried-and-heard.md`. The phone check passed in Hebrew, found English garbled (fixed, d2, `24ba287`) and four page defects (fixed, d3, `c4d3f8b`); the retest of the d3 fixes on the phone is still to come |
+| `t9` | delivered | pre-flight and production probes, and the operator's phone check, written up in `docs/live-test-results/2026-10-26-library-queried-and-heard.md`. The phone check passed in Hebrew, found English garbled (fixed, d2, `24ba287`) and four page defects (fixed, d3, `c4d3f8b`). The merged `e19be55` runs in production; the operator's retests on it passed the refresh (d5) and the 0.53 s full-stop pause, and gave tap-to-sound cold about 6 s, warm immediate (by ear). Two departures from the criterion's wording are in Drift |
 
 ## Mid-work Decisions
 
@@ -68,7 +68,8 @@ Quoted verbatim from the `devague summary` skeleton:
 | `t4` | the Choose section control from the approved mockup was not built; a tap on a paragraph (d3) is the way to jump | `acceptable` |
 | `t9` (`d2`) | live t9 on the phone: an English newspaper played garbled; lobes' BlueTTS sidecar sends a span with no Hebrew letters to the model as raw letters in he mode, while an `<en>` span goes through espeak English | `acceptable` |
 | `t4` (`d3`) | operator, live t9 on the phone: the pause button was out of reach on long articles, there was no jump to a paragraph, and the progress bar reset between paragraphs | `acceptable` |
-| `t9` | the operator's retest of the d3 fixes on the phone, and the tap-to-sound time, are not yet reported | `needs-follow-up` |
+| `t9` | the stop, reload and continue check ran on a Hebrew transcript, not a chapter of an EPUB; the EPUB was matched against `/text` by the probe only (decider: 0.42 that this stands in) | `acceptable` |
+| `t9` | tap-to-sound is the operator's estimate by ear, n = 1 each, not a timed figure: cold about 6 s misses c22's 5 s bar, warm "immediate" meets it (decider: 0.40 that estimates suffice) | `needs-follow-up` |
 
 ## Evidence
 
@@ -86,12 +87,13 @@ Quoted verbatim from the `devague summary` skeleton:
   - `tests/test_daemon_reading.py::TestRefusals::test_next_and_heard_need_the_secret_and_a_refused_heard_leaves_the_file` — pass
 - live: `docs/live-test-results/2026-10-26-library-queried-and-heard.md` — every probe row passed or is reported as measured
 - tests: the full suite at `09af199` (the Sonar fixes) — 4525 passed, 1 skipped; `o4`/`o5`'s tests plus `tests/test_daemon_reading.py` and `tests/test_http_server.py` re-run there (2026-10-26T11:17:41Z) — 231 passed, filed as `e16`-`e18`
+- assess, after the retests (`general`, 2026-10-26; `docs/deliveries/2026-10-26-gwen-queries-assess-t9-retest.json`): `t9` delivered 0.65, partial 0.32, not delivered 0.03; P(a transcript stands in for an EPUB chapter) 0.42, P(by-ear estimates suffice) 0.40, so both are drift entries above
 - assess: one fresh decider call per task (`general`, 2026-10-26; requests and answers in `docs/deliveries/2026-10-26-gwen-queries-assess-per-task.json`): `t1`-`t3`, `t5`-`t8` delivered (P 0.97-0.98); `t4` partial (0.86, the Choose section control); `t9` partial 0.51 against not delivered 0.48 (the merged-ref deploy and the tap-to-sound time are unmet). A batched pass before it agreed on every task (`t9` partial 0.81). `t4` was relabelled from "delivered, one control short" to partial on that reading
 - CI: #110 at `09af199` — every check passes, SonarCloud gate OK, 0 open issues; #109 merged as `a4e521c`
 - lint: `black --check`, `isort --check-only`, `flake8`, `bandit -c pyproject.toml`, `markdownlint-cli2` — clean
-- validate-delivery records: obligations `o1`-`o10`, evidence `e1`-`e18` (all pass), deltas `b1`-`b10`; all `llm`-origin and proposed. The records covering d2-d7 (`o10`, `e14`-`e15`, `b6`-`b10`) were filed after #109 and #110 were opened, not before: the validate-before-PR order was not kept for those changes
+- validate-delivery records: obligations `o1`-`o10`, evidence `e1`-`e18` (all pass; `e19`, `e20` are the retests), deltas `b1`-`b10`; all `llm`-origin and proposed. The records covering d2-d7 (`o10`, `e14`-`e15`, `b6`-`b10`) were filed after #109 and #110 were opened, not before: the validate-before-PR order was not kept for those changes
 - deviations: `d1`, `d2` approved (operator); `d3`-`d7` approved (operator's own asks and report, user-origin)
-- commits: `74f51f1..09af199` on `feat/gwen-queries-the-library`, now on `main` after #109's squash (`a4e521c`); production runs `4cea3ef`, before the Sonar refactor
+- commits: `74f51f1..09af199` on `feat/gwen-queries-the-library`, now on `main` after #109's squash (`a4e521c`); #110 squash-merged as `e19be55`, deployed to production 2026-10-26
 - PRs / issues: embodiment#107; follow-ups embodiment#108, culture-rules#99
 
 ## Delivery Claims
@@ -106,12 +108,13 @@ Quoted verbatim from the `devague summary` skeleton:
 | the old index is deleted once and never again | high | `e8`; `e10` (production ledger entry, file absent) |
 | a new library item is searchable with no Gwen action | medium | `e11` (n = 1, about 9 s, bounded by 10 s polling) |
 | the page's TS reading client is tested | medium | `web/src/api/reading.test.ts`; lapse `l1` (proposed): its tests were not seen failing first; mutation check after the fact (break `/heard`: 1 of 7 fails) |
-| a read plays on the phone and Continue listening resumes the stopped paragraph | medium | `e13` (the operator, Hebrew transcript, in their words; tap-to-sound time not reported) |
+| a read plays on the phone and Continue listening resumes the stopped paragraph | medium | `e13` (the operator, Hebrew transcript, in their words); `e19` (refresh retest on `e19be55`) |
+| tap to first sound: warm within c22's 5 s, cold about 6 s | low | `e20` (the operator's estimate by ear, n = 1 each; the cold figure matches the probed 6.59 s, c32) |
 | English is spoken as English | medium | `TestMarkLanguage`; the operator by ear ("I can listen to it correctly now"); lapse `l2` (proposed): English was timed, never listened to, before the phone found it |
 | tap to jump, a reachable pause, bars that never snap back | medium | the d3 tests; one 390 px browser check |
 | a paragraph is spoken whole | high | `e14` (tests at `6fbe7c4`), `e15` (10.00 s cut, then 13.93 s whole; the operator: "Reads well to the end") |
 | sentence joins without clicks, a pause between sentences | high | `TestSentenceJoins`; one live measurement (0.27 s quiet at each join); the operator: "Transitions are far better. Very natural" |
-| a colon pauses | medium | `TestAColonPauses`; the operator: "Colon pause was good" (then lengthened to 0.30 s, not yet retested) |
+| a colon and a full stop pause | medium | `TestAColonPauses`; the operator: "Colon is perfect" at 0.30 s, and the 0.53 s full stop retested on `e19be55`: "pause is right" |
 | caching: replay, Previous and Next play at once | medium | the d6 tests; the operator: "Caching works well", "Previous and next cache works good!" |
 | library retrieval hit rate | unverified | not measured; hybrid scores 0.011-0.033 do not compare with memory's 0.715 |
 
@@ -121,11 +124,11 @@ pending approval (not yet evidence): `l1`, `l2`
 
 ## Remaining Work / Follow-up
 
-- `t9` — the operator's retest of the d3 fixes on the phone, and a tap-to-sound time.
+- `t9` — a timed tap-to-sound figure (cold and warm, n > 1) would replace the by-ear estimates; a cold tts lane is the likely 6 s, and a warm-up call at start is one way under 5 s.
 - Choose section control (`b3`) — not built; tap a paragraph (d3) jumps. Build it only if the operator still wants it.
 - Narration rules (embodiment#111): skip citation markers (`[1]`) and repeated abbreviations ("natural language (NL)") when reading aloud, per item kind, with a lexicon and an editable rules file; it amends c24 first. The operator chose a separate cycle.
 - An English voice on purpose: lobes could take a per-request language instead of the `<en>` tags (a lobes issue, to draft and ask before posting).
-- Proposed records to adjudicate: obligations `o1`-`o10`, evidence `e1`-`e18`, deltas `b1`-`b10`, lapses `l1`, `l2`, `l3` (`l3`: the validate-before-PR order was not kept for d2-d7, filed `control-absent`).
+- Proposed records to adjudicate: obligations `o1`-`o10`, evidence `e1`-`e20`, deltas `b1`-`b10`, lapses `l1`, `l2`, `l3` (`l3`: the validate-before-PR order was not kept for d2-d7, filed `control-absent`).
 - A culture-library issue for title-only chunks (about 40 characters) returned as passages — to draft and ask before posting.
 - Follow-ups already named: voice commands for reading (v4, with realtime Live); two devices reading one item (v5); embodiment#106; Docker (embodiment#108); transcript segment times (culture-rules#99); deleting the dead library code in `library/index.py` and `library/extract.py`.
-- #109 (embodiment#105) merged 2026-10-26 as `a4e521c`. #110 awaits the operator's merge go-ahead; the refactor in `09af199` has not run on the phone (production is `4cea3ef`).
+- #109 (embodiment#105) merged 2026-10-26 as `a4e521c`. #110 (embodiment#107) merged as `e19be55` and runs in production; the retests above ran on it.

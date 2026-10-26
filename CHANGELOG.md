@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.23.1] - 2026-10-26
+
+### Changed
+
+- The live acceptance of embodiment#107 (t9) is recorded as done: the operator's retests on the merged 0.23.0 passed the refresh (d5) and the 0.53 s full-stop pause, and tap to first sound was warm "immediate" and cold about 6 s, over c22's 5 s bar; both are estimates by ear (n = 1), not timed. `docs/live-test-results/2026-10-26-library-queried-and-heard.md`, the delivery summary, the README, CLAUDE.md and the `explain` root say so; evidence `e19`, `e20` filed (proposed)
+
 ## [0.23.0] - 2026-10-26
 
 ### Added
