@@ -16,7 +16,7 @@ import type { MouseEvent } from "react";
 import { fetchItem, type LibraryClientOptions, type LibraryDocument, type Passage } from "../api/library";
 import { dayLabel, kindInfo } from "../api/kinds";
 import type { ReadingUnit, SavedPosition } from "../api/reading";
-import { deviceKind, playedOf, progressOf, ReadAloudDock, useReadAloud, type AudioFactory } from "./ReadAloud";
+import { deviceKind, neighbour, playedOf, progressOf, ReadAloudDock, useReadAloud, type AudioFactory } from "./ReadAloud";
 import "../styles/library.css";
 
 export interface ReaderHandle {
@@ -102,21 +102,24 @@ export const Reader = forwardRef<ReaderHandle, ReaderProps>(function Reader(
   const nodes = useRef(new Map<string, HTMLLIElement>());
   const docRef = useRef<LibraryDocument | null>(null);
   docRef.current = doc;
-  // The following paragraph's text from this reader's copy, so its audio can be
-  // made while this one plays without seeking the cursor (d1). Unknown mid-paragraph.
-  const peekFollowing = useCallback((u: ReadingUnit): string | null => {
+  // The audio made ahead (d6) comes from this reader's own copy of the item, never via
+  // next?section=&paragraph= (under d1 that is a seek that re-pins the cursor). "After" is
+  // what plays once this unit is heard (unknown mid-paragraph, when the next part follows);
+  // "before" is what Previous plays. Both use the buttons' rule, so section edges are covered.
+  const textAt = useCallback((at: { section: number; paragraph: number } | null): string | null => {
     const d = docRef.current;
-    if (!d || u.part + 1 < u.partCount || u.paragraph + 1 >= u.paragraphCount) return null;
-    const i = matchPassage(d.passages, u.text, 0);
-    return i >= 0 && i + 1 < d.passages.length ? d.passages[i + 1].text : null;
+    if (!d || !at) return null;
+    const p = d.passages.find((x) => {
+      const pos = positionOf(x.anchor);
+      return pos !== null && pos.section === at.section && pos.paragraph === at.paragraph;
+    });
+    return p ? p.text : null;
   }, []);
-  // The paragraph Previous plays (the one before, in this section), made ahead (d6).
-  const peekPreceding = useCallback((u: ReadingUnit): string | null => {
-    const d = docRef.current;
-    if (!d || u.paragraph === 0) return null;
-    const i = matchPassage(d.passages, u.text, 0);
-    return i > 0 ? d.passages[i - 1].text : null;
-  }, []);
+  const peekFollowing = useCallback(
+    (u: ReadingUnit): string | null => (u.part + 1 < u.partCount ? null : textAt(neighbour(u, 1))),
+    [textAt],
+  );
+  const peekPreceding = useCallback((u: ReadingUnit): string | null => textAt(neighbour(u, -1)), [textAt]);
   const [reading, controls] = useReadAloud({ itemId: id, secret, clientOptions, audioFactory, peekFollowing, peekPreceding });
   const device = deviceKind();
 

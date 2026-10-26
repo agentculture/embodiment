@@ -449,4 +449,35 @@ describe("ReadAloud: what the phone test asked for (d3, live t9 2026-10-26)", ()
     await waitFor(() => expect(screen.getByRole("group", { name: "Reading aloud" })).toHaveAttribute("data-status", "playing"));
     expect(document.querySelector(".play-ring")).toBeNull();
   });
+
+  it("at a section's edges Previous and Next are made ahead too: they target what the buttons do (d6)", async () => {
+    // Two sections of two paragraphs: s0.p0 s0.p1 | s1.p0 s1.p1
+    const texts = ["S0 first synthetic.", "S0 second synthetic.", "S1 first synthetic.", "S1 second synthetic."];
+    const anchors = ["s0.p0", "s0.p1", "s1.p0", "s1.p1"];
+    const doc2 = { item: doc.item, passages: texts.map((text, i) => ({ anchor: anchors[i], heading: "", text, start_s: null, end_s: null, speaker: "" })) };
+    const spoken: string[] = [];
+    const u2 = (section: number, paragraph: number) => ({ ...unit(0), section, section_count: 2, paragraph, paragraph_count: 2, text: texts[section * 2 + paragraph], position: `pos-${section}-${paragraph}` });
+    const fetchFn = vi.fn(async (u: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(u);
+      const json = (status: number, body: unknown) => ({ ok: status < 300, status, json: async () => body }) as Response;
+      if (url === "/api/library/syn-1") return json(200, doc2);
+      if (url.startsWith("/api/reading/syn-1/next")) {
+        const m = /section=(\d+)&paragraph=(\d+)/.exec(url);
+        return json(200, m ? u2(Number(m[1]), Number(m[2])) : u2(0, 0));
+      }
+      if (url === "/api/speak") {
+        spoken.push(JSON.parse(String(init?.body)).text);
+        return { ok: true, status: 200, blob: async () => new Blob(["RIFF"], { type: "audio/wav" }) } as unknown as Response;
+      }
+      return json(404, {});
+    });
+    render(<Reader id="syn-1" onClose={() => {}} clientOptions={{ fetchFn: fetchFn as unknown as typeof fetch }} audioFactory={() => new FakeAudio() as unknown as HTMLAudioElement} />);
+    await screen.findByText(texts[0]);
+    // last paragraph of section 0: Next is section 1's first paragraph
+    fireEvent.click(screen.getByText(texts[1]));
+    await waitFor(() => expect(spoken).toContain(texts[2]));
+    // first paragraph of section 1: Previous is section 0's first paragraph (the button's rule)
+    fireEvent.click(screen.getByText(texts[2]));
+    await waitFor(() => expect(spoken).toContain(texts[0]));
+  });
 });

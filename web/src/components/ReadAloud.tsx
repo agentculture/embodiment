@@ -81,6 +81,18 @@ export interface UseReadAloudOptions {
 
 const IDLE: ListenState = { status: "idle", unit: null, played: 0, code: null, note: null };
 
+/** Where Previous (-1) and Next (+1) go from *u*: the paragraph before or after in its
+ *  section; across a section edge, the first paragraph of the section before or after; Next
+ *  past the end is null. Pure: the buttons and the made-ahead audio (d6) share it. */
+export function neighbour(u: ReadingUnit, delta: -1 | 1): At | null {
+  if (delta < 0) {
+    if (u.paragraph > 0) return { section: u.section, paragraph: u.paragraph - 1 };
+    return u.section > 0 ? { section: u.section - 1, paragraph: 0 } : { section: 0, paragraph: 0 };
+  }
+  if (u.paragraph + 1 < u.paragraphCount) return { section: u.section, paragraph: u.paragraph + 1 };
+  return u.section + 1 < u.sectionCount ? { section: u.section + 1, paragraph: 0 } : null;
+}
+
 /** How far the current unit has played, for every bar: its audio while it plays, kept while
  * the next one loads, full past the end, empty when paused or stopped (it plays again). */
 export function playedOf(state: ListenState): number {
@@ -421,12 +433,7 @@ export function useReadAloud({ itemId, secret, clientOptions, audioFactory, peek
     (delta: -1 | 1) => {
       const u = stateRef.current.unit;
       if (!u) return;
-      let at: At | null;
-      if (delta < 0) {
-        at = u.paragraph > 0 ? { section: u.section, paragraph: u.paragraph - 1 } : u.section > 0 ? { section: u.section - 1, paragraph: 0 } : { section: 0, paragraph: 0 };
-      } else {
-        at = u.paragraph + 1 < u.paragraphCount ? { section: u.section, paragraph: u.paragraph + 1 } : u.section + 1 < u.sectionCount ? { section: u.section + 1, paragraph: 0 } : null;
-      }
+      const at = neighbour(u, delta);
       if (!at) return;
       begin(at);
     },
