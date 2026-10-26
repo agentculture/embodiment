@@ -64,7 +64,8 @@ not-yet list against the README and the `explain` root.
 
 **Shipped on the `feat/gwen-is-pocketchat` branch (0.18.0):** the library read path
 (`embodiment/library/`; culture-library, on 127.0.0.1:8796 since 2026-10-24 (d15; xteink's instance on 8780 before);
-a GET-only client; `search_library` and `read_passage` on typed turns only), the
+a GET-only catalog client plus, since 0.23.0, one retrieve POST; `search_library` and
+`read_passage` on typed turns only), the
 write guard (`library_guarded_writes`, `app-library-guarded-write`: no
 `remember`/`forget` in a turn holding library text unless the operator's words name
 it), the audio subprocess env scrub, `status.access` admitted/refused counters,
@@ -86,11 +87,30 @@ words), Stats; Live = the rig's room mic, not the
 phone's). It was
 waveform-first with chat fourth. **Transcripts arrived** (33 on 2026-10-24) and
 retrieval was **measured once** (t15, `docs/live-test-results/2026-10-24-library.md`:
-hit@5 19/32 and 17/28, 0/10 false positives, search p90 0.21 s). The document index
-is at version 3: each chunk scores the better of a content vector and a vector in
-its item's context (title), and fragments under 60 characters are not searched; the
-title-only version 2 measured worse and never shipped. The library threshold is
-memory's 0.715, provisional and uncalibrated for library text. **gwen.culture.dev
+hit@5 19/32 and 17/28, 0/10 false positives, search p90 0.21 s) — against a document
+index (version 3, a 0.715 threshold, a 60-character floor) that **no longer exists**.
+
+**Shipped on the `feat/gwen-queries-the-library` branch (0.23.0, embodiment#107):
+the library is queried, not copied.** `library/sync.py` is deleted and the first start
+without it deletes `<state>/library/index.json` once (`retire_library_index`,
+`app-library-index-retired`); there is no switch back, the rollback is the previous
+release. `search_library` and `read_passage` ask the library's `POST /api/rag/retrieve`
+(`library/retrieve.py`, hybrid, the one POST this package makes, AST-pinned, no score
+floor); the catalog is listed every 60 s and `/text` documents are fetched by one shared
+provider (`library/document.py`, `LibraryClient.fetch_text`). Documents can be heard:
+`daemon/reading.py` keeps one cursor per item in `reading-positions.json` (0600) behind
+`GET /api/reading`, `/api/reading/{id}/next` (with `section`/`paragraph` a seek that
+re-pins the cursor, deviation d1), `POST .../heard` and `.../clear`, and the page has the
+Reader dock, Continue listening and a Read aloud card (no "Choose section" control).
+**Measured, and only by the 2026-10-26 probes on this rig:** n = 5 retrieve latencies
+(hybrid 0.74-1.12 s), n = 2 TTS runs per language (warm 0.46-0.83 s, cold 6.59 s) and
+the live catalog and `/text` shapes. The before-state it replaces: `read_item` returned
+at most 40 passages and 16,000 characters (`library/reading.py:36-37`), so a long
+document could be summarized and never heard whole, and `Voice.speak` caps one reply at
+4,000 characters (`voice.py:333`), which is why a reading unit is at most that long
+(`daemon/reading.py:MAX_PART_CHARS`). **Not yet done: the live acceptance (t9)**; hit rate on
+the library's retrieval is unmeasured and its hybrid scores (0.011-0.033) do not compare
+with memory's 0.715. **gwen.culture.dev
 needs its own Cloudflare never-cache rule** (the culture.dev zone caches everything,
 overriding `no-store`); it has one since 2026-10-24.
 
@@ -362,18 +382,24 @@ embodiment/
     markdown.py         Markdown items read (headings/paragraphs/links; tags stripped,
                         entities decoded, capped); `clean_text`
     extract.py          `extract_item`: a zip is an EPUB, anything else Markdown;
-                        todo items are never indexed
+                        todo items are never indexed (no caller since the sync
+                        went; not yet deleted)
+    retrieve.py         RetrieveClient: the ONE POST (/api/rag/retrieve, hybrid), AST-pinned,
+                        four declared codes, no score floor, todo/discord kinds dropped
+    document.py         an item's /text as sections and paragraphs (LibraryClient.fetch_text)
     checklist.py        checklist lines with their ids (`pocket.<uuid>.<n>`), recording_id_of
     todo_source.py      TodoSource: lists kind=todo items, re-reads the changed ones
-    index.py            DocumentIndex: separate 0600 file, reconcile by (id, sha256)
-    sync.py             LibrarySync: bounded ticks that yield to live turns
+    index.py            DocumentIndex: now used only by conversations.py; its library-only
+                        code (reconcile, versions, the title vector) is unused since
+                        0.23.0 and not yet deleted
+                        (sync.py is gone: Gwen keeps no copy of the library)
     reading.py          read_item (a whole item) + fetch_source (only a link the item lists)
     web.py              the fetch: http(s), public addresses only (pinned connect, redirects
                         re-checked), GET, 2 MB / 15 s; no other module reaches the web
     conversations.py    Gwen's own past conversations (d8): settled ones indexed in a
                         separate 0600 index, labelled by `via`; search_conversations
-    tools.py            search_library + read_passage, built per turn with a
-                        CitationCollector; results fenced as untrusted
+    tools.py            search_library + read_passage over retrieve and /text, built per
+                        turn with a CitationCollector; results fenced as untrusted
   memory.py             RoomMemory over continuity: private, pinned, deadline-bounded;
                         render_recalled is the ONE place recall enters a prompt
   session.py            the conversation: explicit-ask detector (Hebrew/English), the
@@ -412,6 +438,7 @@ embodiment/
   daemon/history.py     the history pane: reads the session logs, bounded; the `via` tags and
                         what each is worth (d7); when a conversation has settled
   daemon/recordings.py  the ONE writer of audio: page clips kept as they arrived (d10)
+  daemon/reading.py     read-aloud cursor: reading-positions.json (0600), next/heard/seek/clear
   daemon/todos.py       Gwen's to-do marks (0600), pending until the library line agrees,
                         reconciled against the library's checklists + list_todos / set_todo_done
   cli/_commands/tunnel  prints the cultureflare/cloudflared commands (default host

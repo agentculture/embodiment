@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.23.0] - 2026-10-26
+
+### Added
+
+- Gwen reads library documents aloud (embodiment#107): `daemon/reading.py` keeps one cursor per item in `reading-positions.json` (0600) behind `GET /api/reading`, `GET /api/reading/{id}/next` (with `section`/`paragraph` it is a seek that re-pins the cursor, deviation d1), `POST /api/reading/{id}/heard` and `POST /api/reading/{id}/clear`; `status.reading` counts reads started, units served and heard, refused reports, continues and seeks. The page has the Reader dock, Continue listening and a Read aloud card in chat (no Choose section control yet)
+- `library/retrieve.py`: the one POST this package makes, `/api/rag/retrieve` in hybrid mode, AST-pinned, four declared codes, no score floor; `library/document.py` and `LibraryClient.fetch_text` read an item's `/text` as sections and paragraphs
+
+### Changed
+
+- The library is queried, not copied: `search_library`, `read_passage`, `read_item` and the `/api/library*` routes answer through retrieve and `/text`; the catalog is listed every 60 s. Measured only by the 2026-10-26 probes on this rig: n = 5 retrieve latencies (hybrid 0.74-1.12 s, against the old warm p90 of 0.21 s) and n = 2 text-to-speech runs per language (warm 0.46-0.83 s, cold 6.59 s)
+- This release removes the local library index and its sync (`library/sync.py` is deleted; `DocumentIndex` stays for `search_conversations` only, its library-only code unused and not yet deleted). The first start deletes its file once (`<state>/library/index.json`) and records `app-library-index-retired`. There is no switch back: the rollback is installing the previous release, whose sync rebuilds the index
+- The 0.715 library threshold and the 60-character floor went with the index; retrieval applies no similarity floor (hybrid scores are 0.011-0.033). The 2026-10-24 measurement (hit@5 19 of 32) describes the retired index. Memory's 0.715 is unchanged
+- README, CLAUDE.md (status and code map), the `explain` catalog and `tests/test_release_docs.py` describe this (the catalog client is GET-only; the retrieve client makes one retrieve POST). Not yet done: the live acceptance (t9); hit rate against the library's own retrieval and the read-aloud flow on the rig are unmeasured
+
 ## [0.22.0] - 2026-10-25
 
 ### Added

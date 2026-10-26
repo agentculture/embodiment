@@ -142,7 +142,7 @@ class LibraryClient:
         self._deadline = deadline
         self._opener = opener if opener is not None else _REDIRECT_REFUSING_OPENER
         #: Requests issued (every one a GET by construction - the AST test pins it);
-        #: read by LibrarySync.status() and the live acceptance run (c28).
+        #: read by the catalog lane's status (`status.library.gets`) and the live run (c28).
         self.gets = 0
         self._count_lock = threading.Lock()
 

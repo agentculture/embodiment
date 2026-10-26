@@ -42,16 +42,25 @@ The dashboard is chat-first, the library with the chat inside it (Ask: your
 conversations on the left, read from the session logs and continued in place; the
 library and the answers' sources on the right; both side panes toggleable;
 Library, To-dos, Stats; before 0.18.0 it was waveform-first with chat fourth). Transcripts reach
-the library through culture-rules (33 on 2026-10-24), and retrieval was
-measured once: `docs/live-test-results/2026-10-24-library.md`. Gwen reads a
-library — culture-library, with xteink's instance as today's — through a
-**GET-only** client configured by `EMBODIMENT_LIBRARY_URL` and
+the library through culture-rules (33 on 2026-10-24). Gwen's retrieval was
+measured once, against the document index she no longer has
+(`docs/live-test-results/2026-10-24-library.md`: hit@5 19 of 32). Since 0.23.0 the
+library is queried, not copied: Gwen reads culture-library — with xteink's instance
+as today's — through two clients configured by `EMBODIMENT_LIBRARY_URL` and
 `EMBODIMENT_LIBRARY_KEY` (injected with `grant run --inject
-EMBODIMENT_LIBRARY_KEY=XTEINK_GWEN_API_KEY`). She indexes item text into her
-own document index and cites passages. A **write guard** refuses `remember` and
-`forget` in a turn that holds library text unless the operator's own words name
-the write. Value is unmeasured; the library similarity threshold is `0.715`,
-provisional and uncalibrated for library text.
+EMBODIMENT_LIBRARY_KEY=XTEINK_GWEN_API_KEY`): the catalog and `/text` client is
+**GET-only** (an AST test pins it), and the retrieve client makes
+**one retrieve POST**, `/api/rag/retrieve` in hybrid mode, and nothing else (also pinned). The sync
+and the document index (`library/sync.py`, `library/index.py`) are retired: the first
+start on this release deletes the old index file once and there is no switch back (the
+rollback is installing the previous release). Search applies no similarity floor;
+the only measurements are the probes of 2026-10-26 (n = 5 retrieve latencies, hybrid
+0.74-1.12 s; n = 2 text-to-speech runs per language, warm 0.46-0.83 s, cold 6.59 s).
+Gwen can also read a document aloud: `GET /api/reading`, `/api/reading/{id}/next`,
+`POST /api/reading/{id}/heard` and `/clear`, with one cursor per item kept in
+`reading-positions.json` (0600). The live acceptance of this (t9) is not yet done.
+A **write guard** refuses `remember` and `forget` in a turn that holds library text
+unless the operator's own words name the write. Value is unmeasured.
 
 ## Software presence, not a robot body
 

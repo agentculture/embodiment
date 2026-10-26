@@ -89,7 +89,8 @@ TOOLS_BOUND = (
 #: The library cycle's names, which README and the explain root must both carry.
 LIBRARY_TERMS = (
     "culture-library",
-    "get-only",
+    "get-only",  # the catalog client is still GET-only
+    "one retrieve POST",  # and the retrieve client's single request says so
     "write guard",
     "EMBODIMENT_LIBRARY_URL",
     "EMBODIMENT_LIBRARY_KEY",
@@ -235,5 +236,60 @@ def test_readme_status_reports_library_retrieval_as_measured_once(readme: str) -
     status = _section(readme, "Status").lower()
     assert "measured once" in status
     assert "19 of 32" in status
-    assert "not calibrated on library text" in status
+    assert "no longer exists" in status
+    assert "unmeasured" in status
     assert "value is unmeasured" in status
+
+
+# --- embodiment#107 (0.23.0): the library is queried, not copied -------------
+
+PROBE_DAY = "2026-10-26"
+READING_TERMS = ("/api/reading", "reading-positions.json", "/api/rag/retrieve")
+
+
+@pytest.mark.parametrize("surface", ["readme", "explain_root"])
+def test_surface_describes_retrieve_retired_index_and_read_aloud(
+    surface: str, request: pytest.FixtureRequest
+) -> None:
+    text = request.getfixturevalue(surface)
+    missing = [t for t in READING_TERMS if t not in text]
+    assert not missing, f"{surface} lacks {missing}"
+    lowered = text.lower()
+    assert "no switch back" in lowered
+    assert PROBE_DAY in text, "measured claims cite the 2026-10-26 probes"
+    assert "not yet done" in lowered and "(t9)" in lowered, "live acceptance is not claimed"
+
+
+def test_readme_status_does_not_claim_the_old_index_or_threshold_for_the_library(
+    readme: str,
+) -> None:
+    status = _section(readme, "Status")
+    assert "uncalibrated for library text" not in status
+    assert "not calibrated on library text" not in status
+    assert "no similarity floor" in status
+
+
+def test_claude_md_code_map_has_no_live_sync_and_says_the_index_is_unused() -> None:
+    claude = (_REPO_ROOT / "CLAUDE.md").read_text(encoding="utf-8")
+    assert "LibrarySync: bounded ticks" not in claude
+    assert "reading-positions.json" in claude
+    assert "retrieve.py" in claude
+    assert "not yet deleted" in claude
+    assert "uncalibrated for library text" not in claude
+    assert not (_REPO_ROOT / "embodiment" / "library" / "sync.py").exists()
+
+
+def test_changelog_names_the_release_removal_and_its_rollback() -> None:
+    changelog = (_REPO_ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
+    start = changelog.index("## [0.23.0]")
+    section = changelog[start : changelog.index("\n## [", start + 1)].lower()
+    assert "removes the local library index" in section
+    assert "deletes its file once" in section
+    assert "no switch back" in section
+    assert "previous release" in section
+    assert "not yet done" in section and "t9" in section
+
+
+def test_version_is_0_23_0() -> None:
+    pyproject = (_REPO_ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    assert 'version = "0.23.0"' in pyproject

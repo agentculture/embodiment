@@ -61,16 +61,28 @@ not spoken by a person — none of it is a measurement of real use):
   extrapolation). A `senses` completion took 4.0 s median and 5.1 s at most
   (n = 30), well inside the 30 s completion bound.
 
-**The library read path (0.18.0) is built; its retrieval was measured once on
-this rig, and its value is unmeasured.** In
+**The library is queried, not copied (0.23.0, embodiment#107); its value is unmeasured, and
+the live acceptance (t9) is not yet done.** Before 0.23.0 Gwen
+kept her own copy (`read_item` was capped at 40 passages and 16,000 characters,
+`library/reading.py:36-37`; one spoken reply at 4,000, `voice.py:333`): a sync
+(`embodiment/library/sync.py`) fetched every item, and
+a 0600 document index (`embodiment/library/index.py`, version 3, a 0.715
+threshold and a 60-character floor) answered search. That retrieval was
+**measured once**, against that retired index, in
 `docs/live-test-results/2026-10-24-library.md` (aggregates only, model-written
-questions, through the daemon's own search route, 50 indexed items): hit@5 was
-19 of 32 and 17 of 28 on two question sets, with 0 of 10 off-topic false
-positives in each run and a search p90 of 0.21 s. Transcripts alone scored 6 of
-11 (index version 1). Most misses are the threshold returning nothing: the
-library similarity threshold reuses memory's `0.715` and is **provisional and
-not calibrated on library text**. Transcripts reach the library through
-culture-rules (decision c21): 33 Pocket transcripts were there on 2026-10-24.
+questions, 50 indexed items): hit@5 was 19 of 32 and 17 of 28 on two question
+sets, with 0 of 10 off-topic false positives in each run and a search p90 of
+0.21 s. That number describes the index that no longer exists. Search now asks
+the library's own `POST /api/rag/retrieve` (hybrid mode), and the only things
+measured about it are the probes of 2026-10-26, on this rig, n = 5 retrieve
+latencies (hybrid 0.74-1.12 s, against the old warm p90 of 0.21 s; culture-library#25
+tracks a faster path), the shape of the live catalog (68 items) and of an item's
+`/text`, and n = 2 text-to-speech runs per language (warm 0.46-0.83 s for 7.7-10.7 s
+of audio, but the first, cold call took 6.59 s). Hit rate against the library's
+retrieval is not measured, no similarity floor is applied (hybrid scores are
+0.011-0.033, not comparable to memory's `0.715`), and transcripts reach the
+library through culture-rules (decision c21): 33 Pocket transcripts were there
+on 2026-10-24.
 
 Still not measured:
 
@@ -173,21 +185,42 @@ loop. It does not drive hardware and nothing here claims a body.
   localhost; the install-secret form shows only when the stream is
   unauthorized, and on the Access-protected public host no secret is entered.
 - **The library read path** (optional). The library is **culture-library**
-  (library.culture.dev); **its instance on 127.0.0.1:8796 is today's** (d15, 2026-10-24; xteink's on 8780 before).
-  Gwen reads it through one small client (`embodiment/library/client.py`) that
-  is **GET-only by construction** (an AST test pins that it never sends POST,
-  PUT, PATCH or DELETE; a `gets` counter in `status` is the live evidence). She
-  fetches item files, extracts EPUB or Markdown text (a zip is an EPUB, anything
-  else is Markdown; `kind=todo` items are never indexed) with the stdlib under
-  member, size and character caps, embeds chunks with `gemma2-embed` into her own 0600 document
-  index (never the eidetic store), and reconciles that index against the
-  catalog by item id and sha256. Library tools run on typed turns only; their
-  results reach the model inside the same untrusted-data fence as recalled
-  memory, and every cited passage appears in the reply's sources with item id,
-  title, date and anchor, so a `[n]` citation opens the reader at that passage.
-  Routes: `GET /api/library`, `/api/library/{id}`, `/api/library/search` and
-  `/api/todos`, all behind the guard. Unset config means no library tool and a
+  (library.culture.dev); **its instance on 127.0.0.1:8796 is today's** (d15, 2026-10-24).
+  Gwen keeps no copy of it any more (0.23.0, embodiment#107). Two clients talk to
+  it, both configured by `EMBODIMENT_LIBRARY_URL` and `EMBODIMENT_LIBRARY_KEY`:
+  `embodiment/library/client.py` is **GET-only by construction** (an AST test pins
+  that it never sends POST, PUT, PATCH or DELETE; its `gets` counter in `status` is
+  the live evidence) and lists the catalog (every 60 s) and fetches an item's
+  `/text`; `embodiment/library/retrieve.py` makes **one retrieve POST**, to the
+  literal path `/api/rag/retrieve` in hybrid mode, and nothing else (an AST test
+  pins that too). `search_library` and `read_passage` ask it live on typed turns;
+  a date argument lists that day's items from the catalog and passes their ids as
+  `item_ids`. Retrieve answers with the library's best passages and no score floor is
+  applied, so the result says "best passages only". The first start on this release
+  **deletes the retired index file once** (`<state>/library/index.json`, recorded as
+  `app-library-index-retired`) and there is **no switch back**: the rollback is installing
+  the previous release, whose sync rebuilds it. Gwen's own conversations keep a separate
+  index (`search_conversations`). Library tools run on typed turns only; their results
+  reach the model inside the same untrusted-data fence as recalled memory, and every
+  cited passage appears in the reply's sources with item id, title, date and anchor, so
+  a `[n]` citation opens the reader at that passage. Routes: `GET /api/library`,
+  `/api/library/{id}`, `/api/library/search` and `/api/todos`, all behind the guard,
+  answering through retrieve and `/text`. Unset config means no library tool and a
   visible "library not configured".
+- **Read aloud.** Gwen can read a library document to you, in order, and remember
+  where she got to. `embodiment/daemon/reading.py` splits an item's `/text` into
+  units (a paragraph, or sentence-bounded parts of at most 4,000 characters) and keeps
+  one cursor per item in `reading-positions.json` (0600, in the state dir).
+  `GET /api/reading` lists the saved positions; `GET /api/reading/{id}/next` serves the
+  next unit with an opaque position token (with `section` and/or `paragraph` it is a
+  seek that re-pins the cursor, forward or back: deviation d1); `POST
+  /api/reading/{id}/heard` moves the cursor past a unit only when the token names exactly
+  the cursor's unit, and `POST /api/reading/{id}/clear` drops it. The page speaks each
+  unit through `/api/speak` (the Reader dock, Continue listening on the Library, and a
+  Read aloud card in chat); `status.reading` counts reads started, units served and
+  heard, refused reports, continues and seeks. Not built: the "Choose section" control
+  of the mockup (previous and next paragraph are). Nothing here has run in the live
+  acceptance yet (t9).
 - **The write guard.** An xteink key is a full operator key, so the client never
   writes; and in a turn whose context holds library text, `remember` and
   `forget` are refused unless the operator's own words in that turn name the
@@ -303,8 +336,8 @@ absence, not an implication.
   read-only library tools: `search_library` and `read_passage`. Also on typed
   turns, `search_conversations` searches Gwen's own earlier conversations (d8),
   and `list_todos` / `set_todo_done` read and mark the to-dos (d16).
-  They are indexed in her private index once each has been quiet for 30 minutes,
-  every turn labelled with who said it and how it arrived, her own replies
+  They are indexed in her private conversation index once each has been quiet for 30
+  minutes, every turn labelled with who said it and how it arrived, her own replies
   marked as not a source of fact; the live conversation is never searched.
   To summarize a whole item (the day's newspaper), `read_item` reads it in
   order; to follow an article's source, `fetch_source` reads one web page —
@@ -462,7 +495,8 @@ composes endpoints.
 | `session.py`, `memory.py` | The conversation (explicit-ask detector, turn queue, supersede on barge-in, summary on close) and `RoomMemory`: private, pinned, deadline-bounded |
 | `realtime/`, `voice.py` | The typed lobes wire and the ears-only client; sentence-by-sentence TTS with paced waveform features |
 | `audio/` | `AudioEndpoint` protocol, the host endpoint, the inbound endpoint, the feature extractor |
-| `library/` | The GET-only library client, stdlib EPUB and Markdown extraction, the to-do checklist source, the 0600 document index, the sync, and the two read tools |
+| `library/` | The GET-only catalog client, the one retrieve POST, `/text` documents, the to-do checklist source, the conversation index, and the read tools; no library copy (the sync is gone) |
+| `daemon/reading.py` | The read-aloud cursor (`reading-positions.json`, 0600) and its next/heard machine |
 | `http/`, `bus.py` | Guard (secret + allow-list + Access seam), server (static dashboard, SSE, control API), the event bus with redaction at publish |
 | `daemon/` | State dir, bounded logs, crash-durable ledger; lifecycle by `(pid, start time)`; the app that wires it all |
 | `perception.py`, `identity.py`, `framing.py`, `senses_text.py` | The verbatim invariant; explicit identity; absent identity ⇒ byte-identical prompts; measured grounding text |
