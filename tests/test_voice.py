@@ -45,6 +45,7 @@ from embodiment.voice import (
     Voice,
     VoiceConfig,
     http_synthesize,
+    mark_language,
     split_sentences,
 )
 
@@ -1004,6 +1005,46 @@ class TestHttpSynthesizeVoiceField:
         opener = _FakeOpener(_FakeResponse(b"\x00\x00" * 800))
         http_synthesize("hello there", VoiceConfig(gateway_url="http://gw.example"), opener=opener)
         assert opener.captured["body"].get("voice") != "default"
+
+
+class TestMarkLanguage:
+    """d2 (embodiment#107 t9): lobes' BlueTTS runs with ``TTS_LANGUAGE=he`` and hands a span
+    with no Hebrew letters to the model as raw letters, so English came out garbled on the
+    phone; an ``<en>`` span goes through espeak English. Measured by ear 2026-10-26: the
+    tagged and mixed clips are right, the plain one is not."""
+
+    @pytest.mark.parametrize(
+        ("sentence", "sent"),
+        [
+            ("Markets rose on Monday.", "<en>Markets rose on Monday.</en>"),
+            ("שלום, אני כאן.", "שלום, אני כאן."),
+            ("המועצה התכנסה ביום שני.", "המועצה התכנסה ביום שני."),
+            ("שלחתי email אתמול", "שלחתי <en>email</en> אתמול"),
+            (
+                "המועצה התכנסה. The council met on Monday.",
+                "המועצה התכנסה. <en>The council met on Monday.</en>",
+            ),
+            ("ב-2024 היו 3 ישיבות", "ב-2024 היו 3 ישיבות"),
+            ("12:30", "12:30"),
+            ("", ""),
+        ],
+    )
+    def test_latin_text_is_tagged_english_and_hebrew_is_left_alone(
+        self, sentence: str, sent: str
+    ) -> None:
+        assert mark_language(sentence) == sent
+
+    def test_tags_already_in_the_text_are_stripped(self) -> None:
+        # Library text is untrusted: it must not pick the phonemizer's language itself.
+        assert mark_language("<he>Hello there</he>") == "<en>Hello there</en>"
+        assert mark_language("שלום <ko>abc</ko>") == "שלום <en>abc</en>"
+
+    def test_the_request_carries_the_marked_text(self) -> None:
+        opener = _FakeOpener(_FakeResponse(b"\x00\x00" * 800))
+        http_synthesize(
+            "Good morning.", VoiceConfig(gateway_url="http://gw.example"), opener=opener
+        )
+        assert opener.captured["body"]["input"] == "<en>Good morning.</en>"
 
 
 # ── round 4: bounded read, redirect refusal, stall-tolerance widening ───────

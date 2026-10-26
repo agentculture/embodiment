@@ -651,6 +651,35 @@ def _read_bounded(response: Any, *, max_bytes: int, deadline_s: float) -> bytes:
     return b"".join(chunks)
 
 
+_HEBREW_LETTER = re.compile(r"[א-ת]")
+_LATIN_LETTER = re.compile(r"[A-Za-z]")
+#: A ``<xx>`` / ``</xx>`` language tag as BlueTTS reads them; stripped from the text first so
+#: untrusted text (library, recalled memory) never picks the phonemizer's language itself.
+_LANG_TAG = re.compile(r"</?[A-Za-z]{2}>")
+#: One run of Latin-script words: a word, then more words joined by spaces or punctuation,
+#: and the run's own closing punctuation.
+_LATIN_RUN = re.compile(
+    r"[A-Za-z][\w'’-]*(?:[ \t,;:()\"“”'’-]+[A-Za-z0-9][\w'’-]*)*[.!?,:;]?", re.ASCII
+)
+
+
+def mark_language(sentence: str) -> str:
+    """Tag Latin-script text ``<en>…</en>`` for the tts lane (deviation d2, embodiment#107).
+
+    lobes' BlueTTS runs with ``TTS_LANGUAGE=he`` and passes a span with no Hebrew letters
+    to the model as raw letters, so English came out garbled; an ``<en>`` span goes
+    through espeak English (``blue_onnx._phonemize_segment``). A sentence with no Hebrew
+    is tagged whole; inside a Hebrew sentence each Latin run is tagged; Hebrew, digits and
+    punctuation alone are left as they were.
+    """
+    text = _LANG_TAG.sub("", sentence)
+    if not _LATIN_LETTER.search(text):
+        return text
+    if not _HEBREW_LETTER.search(text):
+        return f"<en>{text}</en>"
+    return _LATIN_RUN.sub(lambda m: f"<en>{m.group(0)}</en>", text)
+
+
 def http_synthesize(sentence: str, config: VoiceConfig, *, opener: Optional[Any] = None) -> bytes:
     """The default :data:`SynthesizeFn`: ``POST /v1/audio/speech`` on the lobes gateway.
 
@@ -680,7 +709,7 @@ def http_synthesize(sentence: str, config: VoiceConfig, *, opener: Optional[Any]
     url = f"{origin}{SPEECH_ROUTE}"
     if not url.startswith(("http://", "https://")):
         raise ValueError("gateway_url must be http(s)")
-    payload: dict[str, str] = {"input": sentence, "response_format": "pcm"}
+    payload: dict[str, str] = {"input": mark_language(sentence), "response_format": "pcm"}
     if config.voice:
         payload["voice"] = config.voice
     body = json.dumps(payload).encode("utf-8")

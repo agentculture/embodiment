@@ -2,7 +2,7 @@
   "plan_slug": "gwen-queries-and-reads-the-library",
   "schema_version": 2,
   "created": "2026-10-25T23:25:27Z",
-  "updated": "2026-10-26T03:06:13Z",
+  "updated": "2026-10-26T04:47:49Z",
   "deviations": [
     {
       "id": "d1",
@@ -20,6 +20,21 @@
       "status": "approved",
       "classification": "acceptable",
       "seq": 1
+    },
+    {
+      "id": "d2",
+      "what": "voice: before each sentence goes to /v1/audio/speech, Latin-script text is wrapped in <en>...</en> (a whole sentence with no Hebrew, or each Latin run inside a Hebrew sentence) and any lang tags already in the text are stripped, so BlueTTS (run with TTS_LANGUAGE=he) phonemizes English as English",
+      "task_ref": "t9",
+      "reason": "live t9 on the phone: an English newspaper played garbled; lobes' BlueTTS sidecar sends a span with no Hebrew letters to the model as raw letters in he mode, while an <en> span goes through espeak English; operator listened to en-tagged and mixed-tagged clips: 'Tagged and mixed are perfect'",
+      "affects": [
+        "t4",
+        "c10",
+        "c32"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 14
     }
   ],
   "evidence": [
