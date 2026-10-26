@@ -72,14 +72,18 @@ def test_next_starts_then_continues_and_persists(tmp_path):
     first = reader.next("item-a")
     assert (first["section"], first["paragraph"], first["part"]) == (0, 0, 0)
     assert first["text"] == "p0 of one."
-    assert first["section_count"] == 2 and first["paragraph_count"] == 10
+    assert first["section_count"] == 2
+    assert first["paragraph_count"] == 10
     assert reader.heard("item-a", first["position"])["moved"] is True
     second = reader.next("item-a")
     assert second["paragraph"] == 1
     c = reader.counters()
-    assert c["reads_started"] == 1 and c["continues"] == 1
-    assert c["units_served"] == 2 and c["units_heard"] == 1
-    assert c["last_item"] == "item-a" and c["last_position"] == second["position"]
+    assert c["reads_started"] == 1
+    assert c["continues"] == 1
+    assert c["units_served"] == 2
+    assert c["units_heard"] == 1
+    assert c["last_item"] == "item-a"
+    assert c["last_position"] == second["position"]
     # restart: a new object over the same file resumes
     reader2 = Reader(ReadingPositions(tmp_path / POSITIONS_NAME), Catalog(make_doc()))
     assert reader2.next("item-a")["paragraph"] == 1
@@ -161,7 +165,8 @@ def test_changed_sha_resumes_at_section_start(tmp_path):
     reader, pos, cat = build(tmp_path, make_doc())
     for _ in range(11):  # 10 in section one, then one in section two
         reader.heard("item-a", reader.next("item-a")["position"])
-    assert pos.get("item-a")["section"] == 1 and pos.get("item-a")["paragraph"] == 1
+    assert pos.get("item-a")["section"] == 1
+    assert pos.get("item-a")["paragraph"] == 1
     stale = reader.next("item-a")["position"]
     cat.docs["item-a"] = make_doc(salt="v2")  # edited: new sha256, same shape
     resumed = reader.next("item-a")
@@ -182,7 +187,8 @@ def test_gone_item_keeps_cursor_and_lists_gone(tmp_path):
     assert reader.next("item-a") == {"error": CODE_GONE, "item_id": "item-a"}
     assert reader.heard("item-a", "x")["error"] == CODE_GONE
     listing = {row["item_id"]: row for row in reader.listing()}
-    assert listing["item-a"]["gone"] is True and listing["item-b"]["gone"] is False
+    assert listing["item-a"]["gone"] is True
+    assert listing["item-b"]["gone"] is False
     assert listing["item-a"]["paragraph"] == 1
     assert set(listing["item-a"]) >= {
         "item_id",
@@ -208,13 +214,15 @@ def test_a_seek_repins_the_cursor_to_the_sought_unit(tmp_path):
         reader.heard("item-a", reader.next("item-a")["position"])
     before = reader.next("item-a")["position"]  # paragraph 3, the cursor's next
     unit = reader.next("item-a", section=1, paragraph=1)
-    assert unit["text"] == "beta." and unit["heading"] == "Two"
+    assert unit["text"] == "beta."
+    assert unit["heading"] == "Two"
     assert (pos.get("item-a")["section"], pos.get("item-a")["paragraph"]) == (1, 1)
     assert reader.heard("item-a", before)["moved"] is False  # stale after the seek
     assert reader.heard("item-a", unit["position"])["moved"] is True
     assert reader.next("item-a")["done"] is True  # heard the last unit
     back = reader.next("item-a", section=0, paragraph=2)  # a seek backwards is the operator's
-    assert pos.get("item-a")["paragraph"] == 2 and back["paragraph"] == 2
+    assert pos.get("item-a")["paragraph"] == 2
+    assert back["paragraph"] == 2
     assert reader.next("item-a")["position"] == back["position"]  # continue plays the sought one
     assert reader.counters()["seeks"] == 2
 

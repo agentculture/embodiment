@@ -7321,9 +7321,8 @@ def retire_library_index(state_dir: Any) -> Optional[tuple[str, str]]:
     )
 
 
-def _library_lane_from_env(
+def _library_lane_from_config(
     library: Optional[LibraryConfig],
-    env: Mapping[str, str],
     *,
     early: list[tuple[str, str, str]],
 ) -> Optional[LibraryLane]:
@@ -7474,7 +7473,7 @@ def main() -> DaemonApp:
     retired = retire_library_index(state.dir)
     if retired is not None:
         early.append((*retired, "library"))
-    library = _library_lane_from_env(library_config, os.environ, early=early)
+    library = _library_lane_from_config(library_config, early=early)
     tools = ToolRegistry()
 
     def seam(messages: list[dict[str, Any]], tools: Any = None) -> ModelResponse:

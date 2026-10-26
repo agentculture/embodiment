@@ -288,7 +288,7 @@ class Reader:
             return None, CODE_NOT_FOUND
         except ItemGone:
             return None, CODE_GONE
-        except Exception:  # noqa: BLE001 - a provider fault is a degradation, not a raise
+        except Exception:  # noqa: BLE001  # a provider fault is a degradation, not a raise
             return None, CODE_UNAVAILABLE
         if doc is None:
             return None, CODE_NOT_FOUND
@@ -311,23 +311,20 @@ class Reader:
         if error:
             return {"error": error, "item_id": item_id}
         walk = _Walk(doc)
-        cursor = self._positions.get(item_id)
-        explicit = section is not None or paragraph is not None
-        if explicit:
-            want = (section or 0, paragraph or 0, 0)
-            if min(want) < 0:
+        if section is not None or paragraph is not None:
+            unit, refused = self._sought(walk, section, paragraph)
+            if refused:
                 return {"error": CODE_NOT_FOUND, "item_id": item_id}
-            unit = walk.first_at_or_after(*want)
-            # An explicit ask for a unit that does not exist is past the end, not a jump.
-            if unit is not None and (unit[0], unit[1]) != want[:2] and paragraph is not None:
-                unit = None
+            if unit is not None:
+                self._seek(item_id, doc, unit)
         else:
+            cursor = self._positions.get(item_id)
             unit = walk.first_at_or_after(*self._resolve(cursor, doc, walk))
-        if not explicit:
             if cursor is None:
                 self.reads_started += 1
             else:
                 self.continues += 1
+            self._pin(item_id, doc, walk, unit)
         self.last_item = item_id
         base = {
             "item_id": item_id,
@@ -335,23 +332,35 @@ class Reader:
             "title": doc.title,
             "section_count": len(walk.sections),
         }
-        if not explicit:
-            self._pin(item_id, doc, walk, unit)
-        elif unit is not None:
-            self._seek(item_id, doc, unit)
         if unit is None:
             return {**base, "done": True}
+        return {**base, **self._served(doc, walk, unit)}
+
+    @staticmethod
+    def _sought(
+        walk: _Walk, section: Optional[int], paragraph: Optional[int]
+    ) -> tuple[Optional[tuple], bool]:
+        """The unit an explicit seek asks for, and whether the ask is refused."""
+        want = (section or 0, paragraph or 0, 0)
+        if min(want) < 0:
+            return None, True
+        unit = walk.first_at_or_after(*want)
+        # An explicit ask for a unit that does not exist is past the end, not a jump.
+        if unit is not None and (unit[0], unit[1]) != want[:2] and paragraph is not None:
+            unit = None
+        return unit, False
+
+    def _served(self, doc: Any, walk: _Walk, unit: tuple) -> dict[str, Any]:
+        """The fields of one served unit; counts it."""
         s, p, k = unit
-        paragraphs = walk.sections[s].paragraphs
         position = _token(doc.sha256, s, p, k)
         self.units_served += 1
         self.last_position = position
         return {
-            **base,
             "section": s,
             "heading": walk.sections[s].heading,
             "paragraph": p,
-            "paragraph_count": len(paragraphs),
+            "paragraph_count": len(walk.sections[s].paragraphs),
             "part": k,
             "part_count": len(walk.parts(s, p)),
             "text": walk.parts(s, p)[k],
@@ -386,31 +395,38 @@ class Reader:
             return {"error": error, "item_id": item_id}
         match = _TOKEN.match(position) if isinstance(position, str) else None
         walk = _Walk(doc)
-        moved = False
+        targets: list[dict] = []
 
         def fn(current: Optional[dict]) -> Optional[dict]:
-            nonlocal moved
-            if match is None or match.group(1) != doc.sha256[:12]:
-                return None
-            at = tuple(int(match.group(i)) for i in (2, 3, 4))
-            here = self._resolve(current, doc, walk) if current else (0, 0, 0)
-            unit = walk.first_at_or_after(*here)
-            if unit is None or unit != at:
-                return None
-            nxt = walk.after(*unit)
-            if nxt is None:
-                nxt = (len(walk.sections), 0, 0)  # the end: the cursor stays here
-            moved = True
-            return dict(zip(("section", "paragraph", "part"), nxt), sha256=doc.sha256)
+            target = self._after_heard(current, doc, walk, match)
+            if target is not None:
+                targets.append(target)
+            return target
 
         cursor, saved = self._positions.update(item_id, fn)
-        if moved and not saved:
-            moved = False
+        moved = bool(targets) and saved
         if moved:
             self.units_heard += 1
         else:
             self.heard_refused += 1
         return {"moved": moved, "cursor": cursor}
+
+    @classmethod
+    def _after_heard(
+        cls, current: Optional[dict], doc: Any, walk: _Walk, match: Any
+    ) -> Optional[dict]:
+        """The cursor after a heard report, or None unless it names the exact next unit."""
+        if match is None or match.group(1) != doc.sha256[:12]:
+            return None
+        at = tuple(int(match.group(i)) for i in (2, 3, 4))
+        here = cls._resolve(current, doc, walk) if current else (0, 0, 0)
+        unit = walk.first_at_or_after(*here)
+        if unit is None or unit != at:
+            return None
+        nxt = walk.after(*unit)
+        if nxt is None:
+            nxt = (len(walk.sections), 0, 0)  # the end: the cursor stays here
+        return dict(zip(("section", "paragraph", "part"), nxt), sha256=doc.sha256)
 
     def clear(self, item_id: str) -> dict[str, Any]:
         return {"cleared": self._positions.clear(item_id)}

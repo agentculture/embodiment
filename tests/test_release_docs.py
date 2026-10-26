@@ -257,7 +257,8 @@ def test_surface_describes_retrieve_retired_index_and_read_aloud(
     lowered = text.lower()
     assert "no switch back" in lowered
     assert PROBE_DAY in text, "measured claims cite the 2026-10-26 probes"
-    assert "not yet done" in lowered and "(t9)" in lowered, "live acceptance is not claimed"
+    assert "not yet done" in lowered, "live acceptance is not claimed"
+    assert "(t9)" in lowered, "live acceptance is not claimed"
 
 
 def test_readme_status_does_not_claim_the_old_index_or_threshold_for_the_library(
@@ -287,7 +288,8 @@ def test_changelog_names_the_release_removal_and_its_rollback() -> None:
     assert "deletes its file once" in section
     assert "no switch back" in section
     assert "previous release" in section
-    assert "not yet done" in section and "t9" in section
+    assert "not yet done" in section
+    assert "t9" in section
 
 
 def test_version_is_0_23_0() -> None:

@@ -352,6 +352,7 @@ LIBRARY_BAD_REQUEST_CODE = "library-bad-request"
 LIBRARY_NOT_FOUND_CODE = "library-item-not-found"
 #: A callable answered a shape the contract does not allow.
 LIBRARY_BAD_SHAPE_CODE = "library-bad-shape"
+MALFORMED_MESSAGE = "the answer was malformed"
 
 LIBRARY_ROUTE = "/api/library"
 LIBRARY_SEARCH_ROUTE = "/api/library/search"
@@ -476,6 +477,7 @@ _MAX_PATH_CHARS = 2048
 #: The SSE route. Under ``/api/`` like every other non-static route, agreed
 #: with the dashboard (task t17), which connects to exactly this path.
 STREAM_ROUTE = "/api/events"
+STATUS_ROUTE = "/api/status"
 
 CHAT_ROUTE = "/api/chat"
 SPEAK_ROUTE = "/api/speak"
@@ -824,40 +826,49 @@ class _Handler(BaseHTTPRequestHandler):
 
     def _route(self, method: str, decision: Any = None) -> None:
         route = self.path.split("?", 1)[0].split("#", 1)[0]
+        if self._api_route(route, method, decision):
+            return
+        if method == "POST":
+            self._refuse_unread(405, "http-method-not-allowed", "nothing here accepts a POST")
+            return
+        self._static(route, head=method == "HEAD")
+
+    def _api_route(self, route: str, method: str, decision: Any) -> bool:
+        """Answer *route* if it is the stream, status or an ``/api/`` route; else False."""
+        if route in (STREAM_ROUTE, STATUS_ROUTE):
+            self._stream_or_status(route, method, decision)
+            return True
+        if route == READING_ROUTE or route.startswith(READING_ROUTE + "/"):
+            self._reading_route(route, method)
+            return True
+        if _is_library_route(route):
+            self._library_route(route, method)
+            return True
+        if route in _CONTROL_ROUTES:
+            if method != "POST":
+                self._refuse_unread(405, "http-method-not-allowed", "this control is POST only")
+                return True
+            if route in _TEXT_ROUTES:
+                self._text_route(route)
+            else:
+                self._control(route)
+            return True
+        if route.startswith("/api/"):
+            self._refuse_unread(404, "http-unknown-route", "no such API route")
+            return True
+        return False
+
+    def _stream_or_status(self, route: str, method: str, decision: Any) -> None:
         if route == STREAM_ROUTE:
             if method != "GET":
                 self._refuse_unread(405, "http-method-not-allowed", "the stream is GET only")
                 return
             self._stream(decision)
             return
-        if route == "/api/status":
-            if method not in ("GET", "HEAD"):
-                self._refuse_unread(405, "http-method-not-allowed", "status is GET only")
-                return
-            self._status(head=method == "HEAD")
+        if method not in ("GET", "HEAD"):
+            self._refuse_unread(405, "http-method-not-allowed", "status is GET only")
             return
-        if route == READING_ROUTE or route.startswith(READING_ROUTE + "/"):
-            self._reading_route(route, method)
-            return
-        if _is_library_route(route):
-            self._library_route(route, method)
-            return
-        if route in _CONTROL_ROUTES:
-            if method != "POST":
-                self._refuse_unread(405, "http-method-not-allowed", "this control is POST only")
-                return
-            if route in _TEXT_ROUTES:
-                self._text_route(route)
-            else:
-                self._control(route)
-            return
-        if route.startswith("/api/"):
-            self._refuse_unread(404, "http-unknown-route", "no such API route")
-            return
-        if method == "POST":
-            self._refuse_unread(405, "http-method-not-allowed", "nothing here accepts a POST")
-            return
-        self._static(route, head=method == "HEAD")
+        self._status(head=method == "HEAD")
 
     # ── responses ────────────────────────────────────────────────────────────
 
@@ -1139,33 +1150,10 @@ class _Handler(BaseHTTPRequestHandler):
             item_id = unquote(parts[0], errors="strict") if parts[0].isascii() else ""
         except UnicodeDecodeError:
             item_id = ""
-        args: tuple[Any, ...]
-        if verb == "next":
-            indexes = _parse_reading_indexes(self.path)
-            if indexes is None:
-                self._send_error(
-                    400, LIBRARY_BAD_REQUEST_CODE, "section and paragraph are integers"
-                )
-                return
-            args = (item_id, *indexes)
-            action = controls.reading_next
-        elif verb == "heard":
-            body = self._read_body()
-            if body is None:
-                return
-            payload = _parse_object(body)
-            position = payload.get("position") if payload is not None else None
-            if not isinstance(position, str) or not 0 < len(position) <= 64:
-                self._send_error(400, BAD_REQUEST_CODE, 'the body must be {"position": "..."}')
-                return
-            args = (item_id, position)
-            action = controls.reading_heard
-        else:
-            body = self._read_body()
-            if body is None:
-                return
-            args = (item_id,)
-            action = controls.reading_clear
+        call = self._reading_call(verb, item_id)
+        if call is None:
+            return
+        action, args = call
         if not _READING_ID.match(item_id):
             self._send_error(*_READING_ERRORS[LIBRARY_NOT_FOUND_CODE])
             return
@@ -1179,15 +1167,38 @@ class _Handler(BaseHTTPRequestHandler):
         if not outcome.ok:
             self._send_error(outcome.status, outcome.code, outcome.message)
             return
-        result = outcome.result
-        if not isinstance(result, dict):
-            app._degrade(LIBRARY_BAD_SHAPE_CODE, f"api.reading.{verb} answered a bad shape")
-            self._send_error(502, LIBRARY_BAD_SHAPE_CODE, "the answer was malformed")
-            return
-        refused = _READING_ERRORS.get(result.get("error")) if "error" in result else None
-        if "error" in result and refused is None:
-            app._degrade(LIBRARY_BAD_SHAPE_CODE, f"api.reading.{verb} answered a bad shape")
-            self._send_error(502, LIBRARY_BAD_SHAPE_CODE, "the answer was malformed")
+        self._reading_answer(verb, outcome.result)
+
+    def _reading_call(self, verb: str, item_id: str) -> Optional[tuple[Any, tuple[Any, ...]]]:
+        """The control and its arguments for *verb*; None once a refusal is sent."""
+        controls = self._app.controls
+        if verb == "next":
+            indexes = _parse_reading_indexes(self.path)
+            if indexes is None:
+                self._send_error(
+                    400, LIBRARY_BAD_REQUEST_CODE, "section and paragraph are integers"
+                )
+                return None
+            return controls.reading_next, (item_id, *indexes)
+        body = self._read_body()
+        if body is None:
+            return None
+        if verb == "clear":
+            return controls.reading_clear, (item_id,)
+        payload = _parse_object(body)
+        position = payload.get("position") if payload is not None else None
+        if not isinstance(position, str) or not 0 < len(position) <= 64:
+            self._send_error(400, BAD_REQUEST_CODE, 'the body must be {"position": "..."}')
+            return None
+        return controls.reading_heard, (item_id, position)
+
+    def _reading_answer(self, verb: str, result: Any) -> None:
+        refused = None
+        if isinstance(result, dict) and "error" in result:
+            refused = _READING_ERRORS.get(result.get("error"))
+        if not isinstance(result, dict) or ("error" in result and refused is None):
+            self._app._degrade(LIBRARY_BAD_SHAPE_CODE, f"api.reading.{verb} answered a bad shape")
+            self._send_error(502, LIBRARY_BAD_SHAPE_CODE, MALFORMED_MESSAGE)
             return
         if refused is not None:
             self._send_error(*refused)
@@ -1289,7 +1300,7 @@ class _Handler(BaseHTTPRequestHandler):
             return
         if not (isinstance(result, dict) and isinstance(result.get("turns"), list)):
             app._degrade(LIBRARY_BAD_SHAPE_CODE, "api.conversation answered a bad shape")
-            self._send_error(502, LIBRARY_BAD_SHAPE_CODE, "the answer was malformed")
+            self._send_error(502, LIBRARY_BAD_SHAPE_CODE, MALFORMED_MESSAGE)
             return
         self._send_json(200, result)
 
@@ -1331,7 +1342,7 @@ class _Handler(BaseHTTPRequestHandler):
             valid = isinstance(result.get("item"), dict)
         if not valid:
             app._degrade(LIBRARY_BAD_SHAPE_CODE, f"{_safe_token(label)} answered a bad shape")
-            self._send_error(502, LIBRARY_BAD_SHAPE_CODE, "the answer was malformed")
+            self._send_error(502, LIBRARY_BAD_SHAPE_CODE, MALFORMED_MESSAGE)
             return
         self._send_json(200, result)
 

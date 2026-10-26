@@ -142,10 +142,12 @@ def test_document_read_item_pages_with_an_offset_and_names_the_next(monkeypatch)
     monkeypatch.setattr(reading, "MAX_PASSAGES", 2)
     read, _, _ = _dtools()
     first = read.fn(item_id="5")
-    assert "paragraph 1" in first and "paragraph 2" not in first
+    assert "paragraph 1" in first
+    assert "paragraph 2" not in first
     assert reading.MORE_FOLLOWS.format(offset=2) in first
     second = read.fn(item_id="5", offset=2)
-    assert "paragraph 2" in second and "edge story" in second
+    assert "paragraph 2" in second
+    assert "edge story" in second
     assert "More follows" not in second
 
 

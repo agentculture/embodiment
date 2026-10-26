@@ -1538,7 +1538,8 @@ class TestSentenceJoins:
         shaped = shape_sentence(loud, 0.0)
         samples = memoryview(shaped).cast("h")
         assert len(shaped) == len(loud)
-        assert abs(samples[0]) < 200 and abs(samples[-1]) < 200
+        assert abs(samples[0]) < 200
+        assert abs(samples[-1]) < 200
         assert samples[len(samples) // 2] == 16384
 
     def test_a_pause_follows_in_silence(self) -> None:

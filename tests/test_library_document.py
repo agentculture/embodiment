@@ -108,6 +108,7 @@ def test_fetch_text_is_a_get_and_parses_json():
     assert op.requests[0].get_method() == "GET"
     assert op.requests[0].full_url.endswith("/api/library/5/text")
     for body in (b"not json", b"[1]"):
+        client = LibraryClient("http://x.test", "k", opener=_Opener(body))
         with pytest.raises(LibraryError) as e:
-            LibraryClient("http://x.test", "k", opener=_Opener(body)).fetch_text(5)
+            client.fetch_text(5)
         assert e.value.code == "library_bad_response"

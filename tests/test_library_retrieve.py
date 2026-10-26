@@ -90,7 +90,8 @@ def _client(fake, deadline=2.0):
 def _code(call):
     with pytest.raises(LibraryError) as e:
         call()
-    assert KEY not in str(e.value) and KEY not in repr(e.value)
+    assert KEY not in str(e.value)
+    assert KEY not in repr(e.value)
     return e.value.code
 
 
@@ -103,8 +104,10 @@ def test_retrieve_posts_hybrid_no_rerank_with_bearer(fake):
     method, path, auth, raw = fake.seen[0]
     assert (method, path, auth) == ("POST", "/api/rag/retrieve", f"Bearer {KEY}")
     body = json.loads(raw)
-    assert body["query"] == "hello there" and body["k"] == 5
-    assert body["mode"] == "hybrid" and body["rerank"] is False
+    assert body["query"] == "hello there"
+    assert body["k"] == 5
+    assert body["mode"] == "hybrid"
+    assert body["rerank"] is False
     assert body["item_ids"] == [1, 9]
     assert out[0] == Passage(
         item_id=1,
@@ -134,7 +137,8 @@ def test_env_names_match_client():
     assert (rt.ENV_URL, rt.ENV_KEY) == (client.ENV_URL, client.ENV_KEY)
     assert rt.RetrieveClient.from_env({}) is None
     c = rt.RetrieveClient.from_env({rt.ENV_URL: "http://l:1", rt.ENV_KEY: KEY})
-    assert c is not None and KEY not in repr(c)
+    assert c is not None
+    assert KEY not in repr(c)
 
 
 # --- 3: kind filtering --------------------------------------------------------
@@ -241,8 +245,11 @@ def test_counters(fake):
     }
     c.retrieve("q", 3)
     st = c.status()
-    assert st["calls"] == 1 and st["calls_ok"] == 1 and st["failures_by_code"] == {}
-    assert isinstance(st["last_latency_s"], float) and st["last_latency_s"] >= 0
+    assert st["calls"] == 1
+    assert st["calls_ok"] == 1
+    assert st["failures_by_code"] == {}
+    assert isinstance(st["last_latency_s"], float)
+    assert st["last_latency_s"] >= 0
     fake.status, fake.body = 503, json.dumps({"error": "rag_unavailable"})
     with pytest.raises(LibraryError):
         c.retrieve("q", 3)
@@ -251,7 +258,8 @@ def test_counters(fake):
     with pytest.raises(LibraryError):
         c.retrieve("q", 3)
     st = c.status()
-    assert st["calls"] == 3 and st["calls_ok"] == 1
+    assert st["calls"] == 3
+    assert st["calls_ok"] == 1
     assert st["failures_by_code"] == {"rag_unavailable": 1, "library_bad_response": 1}
     st["failures_by_code"]["x"] = 1
     assert "x" not in c.status()["failures_by_code"]

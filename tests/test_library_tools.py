@@ -246,7 +246,8 @@ class TestRetrieveTools:
         assert fake.calls == [("alpha", 3, "transcript", None)]
         assert out.startswith(lt.BEST_PASSAGES_NOTE)
         assert "not confirmed matches" in lt.BEST_PASSAGES_NOTE
-        assert mem.BEGIN_MARK in out and "alpha alpha bravo" in out
+        assert mem.BEGIN_MARK in out
+        assert "alpha alpha bravo" in out
         assert out.endswith(lt.CITE_HINT)
 
     def test_empty_answer_is_no_matches(self):

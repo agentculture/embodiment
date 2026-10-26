@@ -119,10 +119,12 @@ class TestAWholeRead:
             if n == 0:
                 first = unit["position"]
             status, heard = page.post("/api/reading/31/heard", {"position": unit["position"]})
-            assert status == 200 and heard["moved"] is True
+            assert status == 200
+            assert heard["moved"] is True
             if n == 1:  # a stale report: the first unit again
                 status, stale = page.post("/api/reading/31/heard", {"position": first})
-                assert status == 200 and stale["moved"] is False
+                assert status == 200
+                assert stale["moved"] is False
         assert served == TEXTS  # the source text, verbatim
         status, end = page.get("/api/reading/31/next")
         assert (status, end.get("done")) == (200, True)
@@ -133,7 +135,8 @@ class TestAWholeRead:
     def test_status_without_a_library_is_unconfigured(self, harness: Any, tmp_path: Path) -> None:
         h = _build(harness, tmp_path, lane=None)
         controls = h.app.controls()
-        assert controls.reading_next is None and controls.reading_list is None
+        assert controls.reading_next is None
+        assert controls.reading_list is None
         assert h.app.status()["reading"] == {"configured": False}
         page = Page(controls)
         try:
@@ -148,7 +151,8 @@ class TestAWholeRead:
         status, body = page.get("/api/reading")
         assert status == 200
         (entry,) = body["positions"]
-        assert entry["item_id"] == "31" and entry["gone"] is False
+        assert entry["item_id"] == "31"
+        assert entry["gone"] is False
         assert {"sha256", "section", "paragraph", "part", "updated_at"} <= set(entry)
         assert page.post("/api/reading/31/clear") == (200, {"cleared": True})
         assert page.get("/api/reading")[1] == {"positions": []}
@@ -156,7 +160,9 @@ class TestAWholeRead:
     def test_a_seek_re_pins_the_cursor(self, rig: Any) -> None:
         h, page, _, _ = rig
         status, unit = page.get("/api/reading/31/next?section=1&paragraph=0")
-        assert status == 200 and unit["text"] == TEXTS[2] and unit["section"] == 1
+        assert status == 200
+        assert unit["text"] == TEXTS[2]
+        assert unit["section"] == 1
         assert page.post("/api/reading/31/heard", {"position": unit["position"]})[1]["moved"]
         assert h.app.status()["reading"]["seeks"] == 1
 
@@ -228,7 +234,8 @@ class TestCodes:
         h.app._library.catalog._items = ()  # the library dropped it
         h.app._library.catalog._by_id = {}
         status, body = page.get("/api/reading/31/next")
-        assert status == 410 and body["error"]["code"] == "library-item-gone"
+        assert status == 410
+        assert body["error"]["code"] == "library-item-gone"
         assert page.get("/api/reading")[1]["positions"][0]["gone"] is True
 
     def test_a_catalog_never_listed_is_unavailable(self, harness: Any, tmp_path: Path) -> None:
@@ -236,7 +243,8 @@ class TestCodes:
         page = Page(h.app.controls())
         try:
             status, body = page.get("/api/reading/31/next")
-            assert status == 503 and body["error"]["code"] == "library_unavailable"
+            assert status == 503
+            assert body["error"]["code"] == "library_unavailable"
         finally:
             page.close()
 

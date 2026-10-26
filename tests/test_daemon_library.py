@@ -361,7 +361,8 @@ class TestUnsetIsToday:
             lane = application._library
             assert lane is not None
             assert isinstance(lane.retrieve, RetrieveClient)
-            assert not hasattr(lane, "index") and not hasattr(lane, "sync")
+            assert not hasattr(lane, "index")
+            assert not hasattr(lane, "sync")
             assert not (tmp_path / "state" / "library").exists(), "no library index is built"
             controls = _RecordingServer.captured["controls"]
             assert controls.library_list is not None
@@ -433,7 +434,8 @@ class TestNoIndexNoSync:
         ]
         assert [b.name for b in builders] == ["_conversation_lane"]
         source = inspect.getsource(app_module.build_library_lane)
-        assert "DocumentIndex" not in source and "index" not in source.split('"""')[-1]
+        assert "DocumentIndex" not in source
+        assert "index" not in source.split('"""')[-1]
 
     def test_a_typed_search_answers_through_retrieve_with_no_index_anywhere(
         self, harness: Any, tmp_path: Path
@@ -464,7 +466,8 @@ class TestNoIndexNoSync:
             assert block["worker"]["running"] is True
             names = {t.name for t in threading.enumerate()}
             assert not any("sync" in name for name in names), names
-            assert library.fetched == [] and library.texts == []
+            assert library.fetched == []
+            assert library.texts == []
         finally:
             report = h.app.close(deadline=2.0)
         assert report.library_stopped is True
@@ -944,7 +947,8 @@ class TestStatusAndRoutes:
         assert len(h.app.controls().library_list()["items"]) == 2
         assert "stale" not in h.app.controls().library_list()
         online = [e.data for e in h.events("state") if e.data.get("component") == "library"]
-        assert online and online[-1]["status"] == "online"
+        assert online
+        assert online[-1]["status"] == "online"
 
     def test_the_item_route_serves_the_readers_paragraphs_from_text(
         self, harness: Any, tmp_path: Path
@@ -1111,7 +1115,8 @@ class TestAFailedRetrieveIsAFixedFault:
         assert tool_results == [library_tools.COULD_NOT_SEARCH.format(code=code)]
         block = h.app.status()["library"]
         assert block["failures_by_code"] == {code: 1}
-        assert block["calls"] == 1 and block["calls_ok"] == 0
+        assert block["calls"] == 1
+        assert block["calls_ok"] == 0
         assert h.ledger_codes().count(app_module.APP_LIBRARY_DEGRADED) == 1
         assert elapsed < deadline + 1.0, "no turn waits past the client deadline"
 
