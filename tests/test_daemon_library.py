@@ -958,9 +958,10 @@ class TestStatusAndRoutes:
         assert library.texts == ["9", "9"]
 
     def test_the_document_cache_is_bounded(self, harness: Any, tmp_path: Path) -> None:
-        library = FakeLibrary({_item(n): [{"text": f"item {n}"}] for n in range(1, 8)})
+        over = app_module.LIBRARY_DOCUMENT_CACHE_ITEMS + 3
+        library = FakeLibrary({_item(n): [{"text": f"item {n}"}] for n in range(1, over + 1)})
         h = _build(harness, tmp_path, library=library)
-        for n in range(1, 8):
+        for n in range(1, over + 1):
             h.app.controls().library_get(n)
         assert h.app.status()["library"]["documents"]["cached"] == (
             app_module.LIBRARY_DOCUMENT_CACHE_ITEMS

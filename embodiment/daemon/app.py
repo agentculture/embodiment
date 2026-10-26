@@ -1089,8 +1089,11 @@ LIBRARY_INDEX_NAME = "index.json"
 #: the last list, never the library). Search does not depend on it: retrieve is live.
 LIBRARY_CATALOG_INTERVAL_S = 60.0
 #: Documents (an item's ``/text``) kept by the one provider, keyed by (id, sha256). A
-#: **judgement call**: the item being read, plus the few a reply just cited.
-LIBRARY_DOCUMENT_CACHE_ITEMS = 4
+#: **judgement call**, sized from the pre-flight run (2026-10-26): a search cites up to
+#: ``LIBRARY_SEARCH_LIMIT`` items and looks each one up for its anchor, so at 4 a search
+#: during a read evicted the book being read and every next paragraph fetched its 752 KB
+#: ``/text`` again (20 refetches in 5 paragraphs). 12 holds one search's items plus the read.
+LIBRARY_DOCUMENT_CACHE_ITEMS = 12
 #: Retrieved passages' raw text kept for ``read_passage`` and the reader anchor: a
 #: few turns' worth of searches (8 passages each).
 LIBRARY_CHUNK_TEXTS = 256
