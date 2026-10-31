@@ -77,6 +77,7 @@ Each approved deviation is quoted from `devague deviate --list`:
 - `d5` — Every chat completion streams (stream: true): the per-call 60 s read timeout becomes a bound on SILENCE between chunks, not on length (lesson 1); reasoning and answer tokens of a typed turn are published to the page as they arrive and shown live; no reasoning summary yet — t19 live: cortex calls cut off by the 60 s completion deadline 2 of 3 runs; operator: 'stream the tokens for now, so we can see reasoning and no timeout'
 - `d6` — On a translated turn, remember stores the chosen model's English fact as the record and keeps the operator's own sentence beside it verbatim (metadata.original); forget by text matches either field (exact, normalised); searches still receive the operator's words — operator, 2026-10-31, review of #117 finding 5: 'suggestion accepted'
 - `d7` — Which ask a mesh message answers is decided by a small senses call ('was it for me?') whenever an ask is listening in that channel or thread; the deterministic rules decide only when the judge cannot be asked (budget 60 per 10 min, 10 s bound) or its reply cannot be read, recorded as app-mesh-judge-failed — operator, 2026-10-31, review of #117 finding 3: 'A small llm call for common sense (Was it for me?)'
+- `d8` — t8 posted the external-resident ask as agentculture/culture#506 instead of only drafting it; the post was on the operator's go-ahead — operator, 2026-10-31 (confirmed after the fact)
 
 Decisions no deviation record covers:
 
@@ -95,7 +96,7 @@ Decisions no deviation record covers:
 | `t19` (`d5`) | t19 live: cortex calls cut off by the 60 s completion deadline 2 of 3 runs; operator: 'stream the tokens for now, so we can see reasoning and no timeout' | needs-follow-up |
 | `t13` (`d6`) | Operator, 2026-10-31, review of #117 finding 5: the whole sentence as the record made two facts one and left forget nothing to find | acceptable |
 | `t5` (`d7`) | Operator, 2026-10-31, review of #117 finding 3: 'A small llm call for common sense (Was it for me?)' | acceptable |
-| `t8` | the task said "draft the external-resident issue (no post)"; it exists, posted, as agentculture/culture#506. No deviation record covers the post, and devague state does not record a go-ahead for it | risky |
+| `t8` (`d8`) | Operator, 2026-10-31: confirmed that posting culture#506 was their go-ahead (the plan said 'draft the external-resident issue (no post)') | acceptable |
 | `t19` | not finished: no live mesh ask answered by another agent (c33), no published results document, no latency published as measured | needs-follow-up |
 | `t12` | its contract is a model choice that answers; live, `worker` loops on tool calls and never answers (`e26`) | needs-follow-up |
 
@@ -161,9 +162,7 @@ All filed by `/validate-delivery` (`devague evidence --list`: e1–e27, each `pr
 
 Lapse ledger evidence:
 
-pending approval (not yet evidence): `l1`, `l2`, `l3`, `l4`, `l5`
-
-None of these lapses caps a claim until it is approved. `l2`, `l3` and `l5` record tests
+Approved by the operator on 2026-10-31, together with o1–o27, e1–e50 and b1–b7: `l1`–`l5`, all `grader-unverified`. They cap the claims they touch: the typed-answer and streaming row (`l5`) stays medium. `l2`, `l3` and `l5` record tests
 written after the code, for t11, t14, and the web side of d4 and d5. `l1` and `l4` record
 gate misses that were caught and fixed before merge.
 
@@ -172,10 +171,8 @@ gate misses that were caught and fixed before merge.
 - `t19` — run one live mesh ask answered by another agent and record its latency (c33); publish the live acceptance under `docs/live-test-results/`, latency as measured. Owner: the operator plus the next session.
 - `t12` / c8 — worker/Bolt loops on tool calls and never answers; give it a final step with no tools (needs the operator's approval), then re-check live.
 - c35 — agentculture/culture#506 is open; Gwen is not listed as a resident until Culture ships it. Owner: culture.
-- `t8` — confirm, or record as a deviation, that posting #506 was on the operator's go-ahead.
 - #118 — voice latency through the translator; fix only if it proves slow in use.
 - `d5` follow-up — a reasoning summary (deferred by the operator); the chat POST should return immediately when a `request_id` is present, removing the `http-control-timeout` entry logged at 65 s on long turns.
 - The dock's persona and model reset after a page reload: restore them.
 - Add the live-reasoning panel to the mockup artifact.
-- Adjudicate the proposed records: o1–o27, e1–e27, b1–b7 and lapses l1–l5 (`devague … --confirm` / `--reject`).
 - Cleanup: deduplicate the private-file writers.
