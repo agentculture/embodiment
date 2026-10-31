@@ -182,48 +182,79 @@ def translated_complete(
     clock: Callable[[], float] = time.monotonic,
 ) -> Callable[..., TranslatedResponse]:
     """Wrap *chosen* so it reads English and answers in *language*; see the module doc."""
-    context = original if original is not None else OriginalText()
+    return _TranslatedSeam(
+        chosen,
+        senses,
+        chosen_role=chosen_role,
+        senses_role=senses_role,
+        language=language,
+        context=original if original is not None else OriginalText(),
+        clock=clock,
+    ).seam
 
-    def say(system: str, text: str, spent: list[float]) -> str:
-        start = clock()
-        reply = senses([{"role": "system", "content": system}, {"role": "user", "content": text}])
-        spent.append(clock() - start)
-        _usage.append(reply)
+
+class _TranslatedSeam:
+    """The state behind one :func:`translated_complete` seam: the two models, the
+    operator's original text, and the translator responses of the current call."""
+
+    def __init__(
+        self,
+        chosen: Callable[..., ModelResponse],
+        senses: Callable[..., ModelResponse],
+        *,
+        chosen_role: str,
+        senses_role: str,
+        language: str,
+        context: OriginalText,
+        clock: Callable[[], float],
+    ) -> None:
+        self._chosen = chosen
+        self._senses = senses
+        self._chosen_role = chosen_role
+        self._senses_role = senses_role
+        self._language = language
+        self._context = context
+        self._clock = clock
+        self._usage: list[ModelResponse] = []
+
+    def _say(self, system: str, text: str, spent: list[float]) -> str:
+        start = self._clock()
+        reply = self._senses(
+            [{"role": "system", "content": system}, {"role": "user", "content": text}]
+        )
+        spent.append(self._clock() - start)
+        self._usage.append(reply)
         out = (reply.content or "").strip()
         if not out:
             raise TranslationError("the translator returned nothing")
         return out
 
-    _usage: list[ModelResponse] = []
-
-    def data(block: str, spent: list[float]) -> str:
+    def _data(self, block: str, spent: list[float]) -> str:
         lines = block.split("\n")
         begin, end, body = lines[0], lines[-1], lines[1:-1]
         if not any(line.strip() for line in body):
             return block
         quoted = all(line.startswith(QUOTE) for line in body if line.strip() and line[0] != "[")
-        out = say(DATA_TO_ENGLISH_PROMPT, "\n".join(body), spent)
+        out = self._say(DATA_TO_ENGLISH_PROMPT, "\n".join(body), spent)
         out_lines = [_BRACKETS.sub("", line) for line in out.split("\n")]
         if quoted:
-            out_lines = [
-                line if line.startswith(("| ", "[")) else QUOTE + line for line in out_lines
-            ]
+            out_lines = [_requote(line) for line in out_lines]
         return "\n".join([begin, *out_lines, end])
 
-    def to_english(text: str, spent: list[float], *, fences_only: bool = False) -> str:
+    def _to_english(self, text: str, spent: list[float], *, fences_only: bool = False) -> str:
         pieces: list[str] = []
         for is_fence, part in _split_fences(text):
             if is_fence:
-                pieces.append(data(part, spent))
+                pieces.append(self._data(part, spent))
             elif fences_only or not part.strip():
                 pieces.append(part)
             else:
-                pieces.append(say(TO_ENGLISH_PROMPT, part, spent))
+                pieces.append(self._say(TO_ENGLISH_PROMPT, part, spent))
         return "\n".join(pieces)
 
-    def seam(messages: list[dict[str, Any]], tools: Any = None) -> TranslatedResponse:
-        spent: list[float] = []
-        _usage.clear()
+    def _english_messages(
+        self, messages: list[dict[str, Any]], spent: list[float]
+    ) -> list[dict[str, Any]]:
         last_user = None
         for m in messages:
             if m.get("role") == "user":
@@ -234,29 +265,42 @@ def translated_complete(
             text = _text_of(m.get("content"))
             copy = dict(m)
             if role == "user" and text:
-                english = to_english(text, spent)
+                english = self._to_english(text, spent)
                 copy["content"] = english
                 if m is last_user:
-                    context.original, context.english = text, english
+                    self._context.original, self._context.english = text, english
             elif role in ("tool", "system") and text and "<<<BEGIN" in text:
-                copy["content"] = to_english(text, spent, fences_only=True)
+                copy["content"] = self._to_english(text, spent, fences_only=True)
             out_messages.append(copy)
-        start = clock()
-        reply = chosen(out_messages, tools) if tools is not None else chosen(out_messages)
-        chosen_latency = clock() - start
+        return out_messages
+
+    def seam(self, messages: list[dict[str, Any]], tools: Any = None) -> TranslatedResponse:
+        spent: list[float] = []
+        self._usage.clear()
+        out_messages = self._english_messages(messages, spent)
+        start = self._clock()
+        if tools is not None:
+            reply = self._chosen(out_messages, tools)
+        else:
+            reply = self._chosen(out_messages)
+        chosen_latency = self._clock() - start
         content = reply.content
         if not reply.tool_calls and (content or "").strip():
-            content = say(FROM_ENGLISH_PROMPT.format(language=language), content, spent)
+            content = self._say(FROM_ENGLISH_PROMPT.format(language=self._language), content, spent)
+        usage = self._usage
         return TranslatedResponse(
             content=content,
             tool_calls=list(reply.tool_calls),
-            prompt_tokens=reply.prompt_tokens + sum(r.prompt_tokens for r in _usage),
-            completion_tokens=reply.completion_tokens + sum(r.completion_tokens for r in _usage),
+            prompt_tokens=reply.prompt_tokens + sum(r.prompt_tokens for r in usage),
+            completion_tokens=reply.completion_tokens + sum(r.completion_tokens for r in usage),
             reasoning=reply.reasoning,
-            chosen_role=chosen_role,
-            senses_role=senses_role,
+            chosen_role=self._chosen_role,
+            senses_role=self._senses_role,
             chosen_latency=chosen_latency,
             translate_latency=sum(spent),
         )
 
-    return seam
+
+def _requote(line: str) -> str:
+    """A translated line of a quoted body, quoted again (a table row or mark kept)."""
+    return line if line.startswith(("| ", "[")) else QUOTE + line

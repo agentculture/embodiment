@@ -362,6 +362,14 @@ class _Dropped(Exception):
         self.reason = reason
 
 
+def _raise_if_pump_ended(pump: "asyncio.Future[None]") -> None:
+    """The writer pump ended (raised or returned): the connection is dropped."""
+    if not pump.done():
+        return
+    exc = pump.exception() if not pump.cancelled() else None
+    raise _Dropped("connection-dropped", describe_exception(exc) if exc else "writer ended")
+
+
 class MeshClient:
     """Gwen's one connection to agentirc. Thread-safe API; runs on its own loop thread.
 
@@ -671,15 +679,15 @@ class MeshClient:
         finally:
             await self._teardown(writer, quit_first=registered and stop.is_set())
 
-    async def _readline(self, reader: asyncio.StreamReader, timeout: float) -> Optional[str]:
-        """One line, or ``None`` on timeout; EOF raises ``_Dropped``; stop raises it too."""
+    async def _readline(self, reader: asyncio.StreamReader, wait_s: float) -> Optional[str]:
+        """One line, or ``None`` after *wait_s*; EOF raises ``_Dropped``; stop raises it too."""
         stop = self._stop
         assert stop is not None  # nosec B101 - set by start()
         read = asyncio.ensure_future(reader.readline())
         halt = asyncio.ensure_future(stop.wait())
         try:
             done, _ = await asyncio.wait(
-                {read, halt}, timeout=max(0.0, timeout), return_when=asyncio.FIRST_COMPLETED
+                {read, halt}, timeout=max(0.0, wait_s), return_when=asyncio.FIRST_COMPLETED
             )
         finally:
             halt.cancel()
@@ -710,20 +718,24 @@ class MeshClient:
             if msg is None:
                 continue
             if msg.command == "001":
-                with self._lock:
-                    self._server_name = msg.prefix
-                    self._counts["registrations"] += 1
-                    if self._counts["registrations"] > 1:
-                        self._counts["reconnects"] += 1
-                    self._streak.clear()
-                    if self._state != "closed":
-                        self._state = "registered"
+                self._on_welcome(msg)
                 return
             if msg.command == "433":
                 raise _Dropped("nick-taken", "433 ERR_NICKNAMEINUSE")
             if msg.command == "432":
                 raise _Dropped("nick-refused", "432 ERR_ERRONEUSNICKNAME")
             self._handle_common(msg, writer)
+
+    def _on_welcome(self, msg: IrcLine) -> None:
+        """001: registered. Counted (a second one is a reconnect); the streak resets."""
+        with self._lock:
+            self._server_name = msg.prefix
+            self._counts["registrations"] += 1
+            if self._counts["registrations"] > 1:
+                self._counts["reconnects"] += 1
+            self._streak.clear()
+            if self._state != "closed":
+                self._state = "registered"
 
     async def _run_registered(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
@@ -764,11 +776,7 @@ class MeshClient:
         cfg = self._config
         ping_pending = False
         while True:
-            if pump.done():
-                exc = pump.exception() if not pump.cancelled() else None
-                raise _Dropped(
-                    "connection-dropped", describe_exception(exc) if exc else "writer ended"
-                )
+            _raise_if_pump_ended(pump)
             timeout = cfg.ping_timeout if ping_pending else cfg.ping_interval
             raw = await self._readline(reader, timeout)
             if raw is None:
@@ -792,33 +800,52 @@ class MeshClient:
         if command == "PING":
             token = msg.params[-1] if msg.params else ""
             writer.write(f"PONG :{token}\r\n".encode("utf-8"))
-        elif command == "CAP" and len(msg.params) >= 3:
-            if msg.params[1].upper() == "ACK" and "message-tags" in msg.params[2].split():
-                with self._lock:
-                    self._message_tags = True
-        elif command == "JOIN" and msg.params:
-            channel = msg.params[0]
-            if channel.casefold() not in self._allowed:
-                return
-            if msg.nick.casefold() == own:
-                with self._lock:
-                    self._joined.add(self._allowed[channel.casefold()])
+            return
+        if command in ("PART", "QUIT"):
+            if msg.nick.casefold() != own:
+                self._rewho_joined(writer)
+            return
+        # command -> (the fewest params it needs, its handler)
+        handlers: dict[str, tuple[int, Callable[[], None]]] = {
+            "CAP": (3, lambda: self._on_cap(msg)),
+            "JOIN": (1, lambda: self._on_join(msg, writer, own)),
+            "352": (5, lambda: self._on_who_reply(msg)),
+            "315": (2, lambda: self._on_who_end(msg)),
+            "PRIVMSG": (2, lambda: self._deliver(msg)),
+        }
+        entry = handlers.get(command)
+        if entry is not None and len(msg.params) >= entry[0]:
+            entry[1]()
+
+    def _on_cap(self, msg: IrcLine) -> None:
+        if msg.params[1].upper() == "ACK" and "message-tags" in msg.params[2].split():
+            with self._lock:
+                self._message_tags = True
+
+    def _on_join(self, msg: IrcLine, writer: asyncio.StreamWriter, own: str) -> None:
+        channel = msg.params[0]
+        if channel.casefold() not in self._allowed:
+            return
+        if msg.nick.casefold() == own:
+            with self._lock:
+                self._joined.add(self._allowed[channel.casefold()])
+        writer.write(f"WHO {channel}\r\n".encode("utf-8"))
+
+    def _rewho_joined(self, writer: asyncio.StreamWriter) -> None:
+        with self._lock:
+            joined = sorted(self._joined)
+        for channel in joined:
             writer.write(f"WHO {channel}\r\n".encode("utf-8"))
-        elif command in ("PART", "QUIT") and msg.nick.casefold() != own:
-            with self._lock:
-                joined = sorted(self._joined)
-            for channel in joined:
-                writer.write(f"WHO {channel}\r\n".encode("utf-8"))
-        elif command == "352" and len(msg.params) >= 5:
-            key = msg.params[1].casefold()
-            with self._lock:
-                self._who_pending.setdefault(key, set()).add(msg.params[4])
-        elif command == "315" and len(msg.params) >= 2:
-            key = msg.params[1].casefold()
-            with self._lock:
-                self._who_done[key] = frozenset(self._who_pending.pop(key, set()))
-        elif command == "PRIVMSG" and len(msg.params) >= 2:
-            self._deliver(msg)
+
+    def _on_who_reply(self, msg: IrcLine) -> None:
+        key = msg.params[1].casefold()
+        with self._lock:
+            self._who_pending.setdefault(key, set()).add(msg.params[4])
+
+    def _on_who_end(self, msg: IrcLine) -> None:
+        key = msg.params[1].casefold()
+        with self._lock:
+            self._who_done[key] = frozenset(self._who_pending.pop(key, set()))
 
     def _deliver(self, msg: IrcLine) -> None:
         own = self._config.nick

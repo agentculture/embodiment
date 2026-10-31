@@ -158,6 +158,41 @@ def mesh_write_guard(
     return not asks(operator_text, tool, span)
 
 
+def _ask_culture(
+    config: MeshConfig,
+    book: AskBook,
+    post: Callable[[str, str, str], bool],
+    refuse: Callable[[str], str],
+    turn_id: str,
+    conversation_id: str,
+    question: Any,
+    channel: Any,
+) -> str:
+    """One ``ask_culture`` call: validate, open the ask, post it; a refusal otherwise."""
+    if not config.enabled or config.error or not config.channels:
+        return refuse(REFUSE_OFF)
+    chosen = config.channels[0] if channel in (None, "") else channel
+    if not isinstance(chosen, str) or chosen not in config.channels:
+        return refuse(REFUSE_CHANNEL)
+    if not isinstance(question, str) or not question.strip():
+        return refuse(REFUSE_BAD_QUESTION)
+    text = " ".join(question.split())[:MAX_QUESTION_CHARS]
+    opened = book.open_ask(turn_id, conversation_id, chosen, text)
+    if not opened.ok or opened.ask is None:
+        return refuse(opened.refusal or REFUSE_POST)
+    ask = opened.ask
+    thread = thread_name(ask["ask_id"])
+    try:
+        sent = bool(post(chosen, thread, text))
+    except Exception:  # noqa: BLE001  # a dead client is a refusal, not a raised turn
+        sent = False
+    if not sent:
+        return refuse(REFUSE_POST)
+    return json.dumps(
+        {"status": "posted", "ask_id": ask["ask_id"], "channel": chosen, "thread": thread}
+    )
+
+
 def build_mesh_tools(
     config: MeshConfig,
     book: AskBook,
@@ -183,28 +218,7 @@ def build_mesh_tools(
         return json.dumps({"status": "refused", "code": code})
 
     def ask_culture(question: Any = None, channel: Any = None) -> str:
-        if not config.enabled or config.error or not config.channels:
-            return refuse(REFUSE_OFF)
-        chosen = config.channels[0] if channel in (None, "") else channel
-        if not isinstance(chosen, str) or chosen not in config.channels:
-            return refuse(REFUSE_CHANNEL)
-        if not isinstance(question, str) or not question.strip():
-            return refuse(REFUSE_BAD_QUESTION)
-        text = " ".join(question.split())[:MAX_QUESTION_CHARS]
-        opened = book.open_ask(turn_id, conversation_id, chosen, text)
-        if not opened.ok or opened.ask is None:
-            return refuse(opened.refusal or REFUSE_POST)
-        ask = opened.ask
-        thread = thread_name(ask["ask_id"])
-        try:
-            sent = bool(post(chosen, thread, text))
-        except Exception:  # noqa: BLE001  # a dead client is a refusal, not a raised turn
-            sent = False
-        if not sent:
-            return refuse(REFUSE_POST)
-        return json.dumps(
-            {"status": "posted", "ask_id": ask["ask_id"], "channel": chosen, "thread": thread}
-        )
+        return _ask_culture(config, book, post, refuse, turn_id, conversation_id, question, channel)
 
     spec = ToolSpec(
         name=ASK_TOOL,
