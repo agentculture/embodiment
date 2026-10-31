@@ -2,7 +2,7 @@
   "plan_slug": "gwen-personas-model-choice-culture-residency",
   "schema_version": 2,
   "created": "2026-10-31T09:53:28Z",
-  "updated": "2026-10-31T09:53:28Z",
+  "updated": "2026-10-31T09:58:40Z",
   "deviations": [
     {
       "id": "d1",
@@ -19,6 +19,20 @@
       "status": "approved",
       "classification": "acceptable",
       "seq": 1
+    },
+    {
+      "id": "d2",
+      "what": "An answer that arrives after its ask expired still lands in its conversation, marked after_expiry and late, and is delivered as an event; only exact matches (thread or reply-to) reach an expired ask",
+      "task_ref": "t5",
+      "reason": "operator, 2026-10-31: 'Whether a mesh answer arriving after its ask expired should still land, marked late. Yes. Via event'",
+      "affects": [
+        "t15",
+        "c46"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 2
     }
   ],
   "evidence": [],
