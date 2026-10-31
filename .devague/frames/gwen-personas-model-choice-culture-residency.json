@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-10-31T07:09:13Z",
-  "updated": "2026-10-31T07:55:17Z",
+  "updated": "2026-10-31T08:40:11Z",
   "claims": [
     {
       "id": "c1",
@@ -680,6 +680,375 @@
       "links": [],
       "instruction": "draft through the communicate skill; record the issue link on the frame once the operator posts it",
       "revisions": []
+    },
+    {
+      "id": "c36",
+      "kind": "requirement",
+      "text": "The tool prompts' language follows the persona: REMEMBER_TOOL_PROMPT orders the confirmation 'always in spoken Hebrew, never in English' (app.py:598-599) and every tool prompt is Hebrew text, so freezing them byte-for-byte (c4) would make an English or None persona confirm in Hebrew; the obligation sentences stay fixed, their language line follows the persona, and the 5-of-5 measurement (d7) is re-run in English before an English persona is called supported",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h33",
+          "text": "under the default persona the tool prompts are byte-identical to today; under an English persona no Hebrew-only instruction remains in them, by test; and the English call rate is published as measured",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "an English rendering of each tool prompt, chosen by the persona's language; re-measure remember/forget calls on the live rig in English, n stated",
+      "revisions": []
+    },
+    {
+      "id": "c37",
+      "kind": "requirement",
+      "text": "With the translator on, the operator's own words stay the record: the verbatim ContextPacket.original, the transcript and any remember write keep the operator's Hebrew, and library and conversation searches are queried with the operator's text, never only with the model's English rendering",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h34",
+          "text": "a translated turn that remembers a fact stores Hebrew text the operator said, and a search it makes includes the operator's Hebrew query, by test",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "pass the original alongside the translation into the tool executors; remember stores the operator's words (REMEMBER_FACT_DESCRIPTION: 'in the user's own words'); test with a translated turn that calls remember and search_library",
+      "revisions": []
+    },
+    {
+      "id": "c38",
+      "kind": "requirement",
+      "text": "Mesh traffic is bounded: at most one ask per turn; a turn started by any mesh message (an answer or another agent's mention, q6 = c) can reply but never ask; a cap on open asks, each expiring after a derived window; a rate cap on turns started from the mesh; every bound that trips is a recorded degradation; two agents can never ping-pong through Gwen",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h35",
+          "text": "a scripted mesh peer that answers every ask with a new question produces at most one Gwen post per operator turn, by test",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "constants with their reasons beside the tool; tests for the one-per-turn, no-ask-from-answer and open-cap rules",
+      "revisions": [
+        {
+          "text": "Mesh asks are bounded: at most one ask per turn, a turn started by a mesh answer can never ask again, a small cap on open asks with each expiring after a derived window, and every bound that trips is a recorded degradation; two agents can never ping-pong through Gwen",
+          "kind": "requirement",
+          "reason": "q6 = c makes inbound mentions start turns, so the loop bound must cover every mesh-started turn, not only answers"
+        }
+      ]
+    },
+    {
+      "id": "c39",
+      "kind": "boundary",
+      "text": "A nick is not an identity: agentirc enforces only the server-name prefix on client nicks (agentirc/client.py:469-475; PASS authenticates server links only, ircd.py:713), so any local process can hold spark-gwen while the daemon is down and any agent can claim to answer; answers stay untrusted whatever nick sent them, the page names the sender as reported, and Gwen's daemon reports when it finds spark-gwen already taken",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h36",
+          "text": "with spark-gwen held by another client at start, the daemon records mesh-nick-taken, posts nothing, and status shows the mesh as degraded, by test against a fake server",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "on ERR_NICKNAMEINUSE record a mesh-nick-taken degradation and stay off the mesh; never append a suffix and carry on",
+      "revisions": []
+    },
+    {
+      "id": "c40",
+      "kind": "assumption",
+      "text": "Connecting as spark-gwen needs no culture registration: agentirc accepts any client whose nick carries the server prefix (agentirc/client.py:469-475), so c35's culture-side change is about being listed and managed as a resident (server.yaml manifest, /residents.json), not about being allowed to connect",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h37",
+          "text": "a scratch probe connects a stdlib client as spark-<name> to a test agentirc and joins a channel with no culture registration",
+          "status": "rejected",
+          "instruction": ""
+        },
+        {
+          "id": "h47",
+          "text": "a scratch probe connects a stdlib client with a `spark-` prefixed nick to a test agentirc and joins a channel with no culture registration",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "verify against a scratch agentirc before the culture issue is drafted; narrow c35's draft to listing",
+      "revisions": []
+    },
+    {
+      "id": "c41",
+      "kind": "requirement",
+      "text": "Every mesh post is visible the moment it goes out (the ask card in the conversation, and a bus event) and one switch stops all posting at once (the Mesh control in the row, and an env override), so a post the operator would not have made is seen and stoppable",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h38",
+          "text": "with the switch off, an ask_culture call is refused and recorded and nothing reaches the server, by test",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "a mesh event kind in schema.json + bus.py + EVENT_KINDS; EMBODIMENT_MESH env; test that the switch blocks a pending tool call",
+      "revisions": []
+    },
+    {
+      "id": "c42",
+      "kind": "requirement",
+      "text": "A conversation keeps its persona and model across its life: continuing one (d5, Session.restore session.py:922 restores turns only today) reads them back from its log; a persona deleted or a role lobes stopped serving since then is a visible state with a switch, never a silent default; and a turn uses the persona as it was when the turn began",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h39",
+          "text": "continuing a conversation whose persona was deleted shows the deleted state and does not answer with another persona, by test",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "persona id and role in each assistant record's metadata; restore reads the last; snapshot the persona at turn start; tests for deleted persona and vanished role on continue",
+      "revisions": []
+    },
+    {
+      "id": "c43",
+      "kind": "boundary",
+      "text": "Bookkeeping calls stay on senses whatever the conversation's model: the end-of-session summary (summarise, SUMMARY_PROMPT, 300 tokens, 5 s) and recall-side calls are not replies and keep their measured role and clocks",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h40",
+          "text": "with worker chosen, the session summary request still names senses, by test",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "summarise reads a fixed role, not the conversation's holder; test",
+      "revisions": []
+    },
+    {
+      "id": "c44",
+      "kind": "boundary",
+      "text": "loop.py is not touched (tests/test_turn.py:200 pins it byte-identical to the archived core), so the translator and persona layers live in the daemon's seam; and the release-docs pins (tests/test_release_docs.py NOT_YET, TOOLS_BOUND) are updated in the same change that binds ask_culture",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h41",
+          "text": "tests/test_turn.py and tests/test_release_docs.py pass with loop.py unchanged",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "grep the diff for embodiment/loop.py; update README and explain root with the tool",
+      "revisions": []
+    },
+    {
+      "id": "c45",
+      "kind": "requirement",
+      "text": "status shows what is alive, by counters that increment (lesson 3): the capabilities snapshot's age and the chat roles in it, each live conversation's persona and role, the mesh connection state and nick, and asks posted, answered and expired",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h42",
+          "text": "a scripted run that posts one ask and receives one answer moves posted and answered by one each, by test",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "extend status() and the Status drawer; tests assert the counters move on a scripted run",
+      "revisions": []
+    },
+    {
+      "id": "c46",
+      "kind": "requirement",
+      "text": "Open asks survive a daemon restart or expire visibly: they are kept 0600 under the state dir with their conversation and deadline, an answer arriving after a restart still lands in its conversation, and one past its window is shown as expired, never dropped silently",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h43",
+          "text": "an answer to an ask posted before a restart reaches the right conversation after it, by test",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "an asks.json beside reading-positions.json; test restart between post and answer",
+      "revisions": []
+    },
+    {
+      "id": "c47",
+      "kind": "decision",
+      "text": "Agents on the mesh may talk to Gwen and get a normal turn, memory, library and conversations included: 'Local agent is allowed to know local memory' (operator, 2026-10-31, q6 = c)",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c48",
+      "kind": "decision",
+      "text": "Gwen's mesh access is enabled from the first start (operator, 2026-10-31, q7: 'Mesh access enabled'); the Mesh control in the row and an env override stop it",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c49",
+      "kind": "decision",
+      "text": "Gwen is a personified UI for Culture: voice and chat both reach the mesh through her, spoken turns use the conversation's persona and model, and when agents speak to her the operator knows she was contacted and is answering them (operator, 2026-10-31: 'Qwen essentially becomes a personified UI for culture, so audio chat should work and when they speak I should know it was contacted and answering them')",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c50",
+      "kind": "requirement",
+      "text": "When an agent contacts Gwen, the operator knows at once: an 'agent is talking to Gwen' card in the live conversation names the agent (as reported), shows its message and her reply as she sends it, and with live voice on and the floor free she says so aloud in a short spoken notice; a conversation with an agent is its own entry in the Conversations list, labelled with the agent's nick",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h44",
+          "text": "a scripted agent mention produces the card on the page and, with voice on and the floor free, exactly one spoken notice per agent conversation, and Gwen's reply is visible before or as it is sent, by test",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "an inbound-mesh event kind on the bus and SSE; the card reuses the mesh card from mockup v2; the spoken notice goes through the Unprompted path with its own dedup key per agent conversation",
+      "revisions": []
+    },
+    {
+      "id": "c51",
+      "kind": "requirement",
+      "text": "Spoken turns follow the conversation's persona and model (q8), gated by measurement: a role or translator combination is used for voice only after its spoken latency has been measured; choosing an unmeasured one starts a short automatic probe, typed turns work at once, a spoken turn on it waits for the probe or gets the distinct model-unavailable error, the model menu shows the measured speed, every real spoken turn adds to the measurement, and the voice deadline is derived from the measured p90 (lesson 1), never from senses' 60 s",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h45",
+          "text": "with worker chosen, a spoken turn's request names worker, and status shows its latency as unmeasured until a probe records it, by test",
+          "status": "confirmed",
+          "instruction": ""
+        },
+        {
+          "id": "h49",
+          "text": "with worker unmeasured, a spoken turn on it makes no completion request to worker and shows the probing or unavailable state, and after the probe records a latency the next spoken turn uses worker with a deadline derived from that latency, by test",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "a per-role voice-latency store (0600) filled by the probe and by live spoken turns; the voice path consults it before calling; the menu reads it; tests for unmeasured, probing and measured states",
+      "revisions": [
+        {
+          "text": "Spoken turns follow the conversation's persona and model (q8): the voice path reads the same per-conversation holder as typed turns; a spoken turn on a role or translator combination without a measured latency is marked unmeasured in status, and its completion deadline is derived from that role's measured p90 once measured (lesson 1), never from senses' 60 s by default",
+          "kind": "requirement",
+          "reason": "operator, 2026-10-31: 'Amend c51 to gated'; decider assessment s37: both_gated 0.521 vs both_marked 0.275, P(status mark is enough) 0.126"
+        }
+      ]
+    },
+    {
+      "id": "c52",
+      "kind": "decision",
+      "text": "Every agent on the mesh may talk to Gwen as a local agent: the mesh holds only local or trusted servers (operator, 2026-10-31, q9: 'This mesh is local or only trusted servers'), so trust rests on which servers are linked, not on individual nicks",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c53",
+      "kind": "boundary",
+      "text": "Because trust rests on mesh membership (q9), linking a new server to the mesh widens who can read Gwen's memory: the README and explain root say so, and status lists the servers Gwen's connection sees, so a link the operator adds is visible from Gwen's side",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h46",
+          "text": "status names every server visible on Gwen's connection, and the docs state that a new link is a new reader of her memory",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "doc line beside the mesh section; status reads the server list the IRC connection reports",
+      "revisions": []
+    },
+    {
+      "id": "c54",
+      "kind": "decision",
+      "text": "Some tasks and Culture chat asks are background tasks that take minutes or more, and that is acceptable (operator, 2026-10-31: 'some tasks or culture chat asks will be background tasks that take minutes or more and that's ok')",
+      "origin": "user",
+      "status": "confirmed",
+      "honesty_conditions": [],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "",
+      "revisions": []
+    },
+    {
+      "id": "c55",
+      "kind": "requirement",
+      "text": "An ask is a background task, not a wait: the conversation stays usable while it runs, the page lists open background tasks with their age, the answer lands whenever it arrives (minutes or more), and an ask's expiry window is long enough for that, set by the operator per ask kind rather than by a turn clock (c38's derived window is the outer bound, never a turn deadline)",
+      "origin": "llm",
+      "status": "confirmed",
+      "honesty_conditions": [
+        {
+          "id": "h48",
+          "text": "an answer arriving well after its turn ended, and after other turns in the same conversation, reaches that conversation and is marked late, by test",
+          "status": "confirmed",
+          "instruction": ""
+        }
+      ],
+      "hard_questions": [],
+      "links": [],
+      "instruction": "open asks shown in the dock-meta row as a count and in status; default window in hours, a named constant with its reason; tests that a two-hour-late answer still lands",
+      "revisions": []
     }
   ],
   "open_vagueness": [
@@ -723,6 +1092,33 @@
       "id": "v5",
       "text": "Whether culture already accepts a registered agent with no harness (none documented: docs/reference/harnesses/index.md and docs/shared/concepts/harnesses.md describe harness-run agents only), and how agentirc authenticates a nick, decides how much the culture-side change is",
       "kind": "unknown_nonblocking",
+      "claim_id": null,
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v6",
+      "text": "Spoken-turn latency with cortex, worker or the translator is unmeasured; a deadline for those roles must be derived from a measured p90, not from senses' 60 s (CLAUDE.md lesson 1)",
+      "kind": "unknown_nonblocking",
+      "claim_id": null,
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v7",
+      "text": "Unexamined by this pass: how agentirc federates spark-gwen's messages to other servers (spark2, thor) and whether a mention arrives across a link; and the hand model's tool-call behaviour",
+      "kind": "unknown_nonblocking",
+      "claim_id": null,
+      "resolved": false,
+      "resolution": "",
+      "resolution_claim_id": null
+    },
+    {
+      "id": "v8",
+      "text": "Workflow management on culture-rules through Gwen (operator, 2026-10-31: 'Some in future will be workflow management on culture-rules') is a later stage, not this spec",
+      "kind": "follow_up",
       "claim_id": null,
       "resolved": false,
       "resolution": "",
@@ -880,6 +1276,138 @@
       "finding": "mockup v2 (version 1793432718-7d11, https://claude.ai/artifact/PEUzLDEqvbEEc7DWN3LpuG) approved by the operator 2026-10-31: 'Perfect! We may need dimension adjustments, but the interactive UI is great.' Sizes may be tuned at implementation; the layout and interactions are the approved design",
       "seeds": [
         "c17"
+      ]
+    },
+    {
+      "id": "s20",
+      "surface": "challenge pass / depth",
+      "finding": "rigorous: security-sensitive (autonomous outbound posts; other agents' text entering the prompt), distributed state (a new mesh identity and connection), and data that can leave the room are all c19 escalation signals",
+      "seeds": []
+    },
+    {
+      "id": "s21",
+      "surface": "challenge pass / adjacent-systems lens: daemon/app.py REMEMBER_TOOL_PROMPT",
+      "finding": "Hebrew-forcing clause in a measured obligation; contradicts c4's byte-fixed rule for non-Hebrew personas",
+      "seeds": [
+        "c36"
+      ]
+    },
+    {
+      "id": "s22",
+      "surface": "challenge pass / data-flow lens: translator x memory.py + library/tools.py",
+      "finding": "a translated model would write English facts and query a Hebrew library in English; breaks 'the user's own words' and the verbatim invariant",
+      "seeds": [
+        "c37"
+      ]
+    },
+    {
+      "id": "s23",
+      "surface": "challenge pass / overlooked-actors lens: resident nick (c19)",
+      "finding": "a mentionable resident means other agents can start turns; nothing in the frame says what they may reach",
+      "seeds": []
+    },
+    {
+      "id": "s24",
+      "surface": "challenge pass / failure-mode lens: ask_culture x recall_events.py Unprompted",
+      "finding": "an answer re-entering the turn path can trigger another ask; no bound in the frame",
+      "seeds": [
+        "c38"
+      ]
+    },
+    {
+      "id": "s25",
+      "surface": "challenge pass / security lens: agentirc/client.py nick registration",
+      "finding": "client nicks are first-come with a prefix check only; no SASL or PASS for clients",
+      "seeds": [
+        "c39"
+      ]
+    },
+    {
+      "id": "s26",
+      "surface": "challenge pass / cheap-probe lens: agentirc client path",
+      "finding": "read-only: no client auth found; narrows v5 and c35, to be confirmed by a scratch probe",
+      "seeds": [
+        "c40"
+      ]
+    },
+    {
+      "id": "s27",
+      "surface": "challenge pass / privacy lens: c15 x Gwen's own judgement (c18)",
+      "finding": "the question she composes can itself carry private words; containment is visibility plus a kill switch",
+      "seeds": [
+        "c41"
+      ]
+    },
+    {
+      "id": "s28",
+      "surface": "challenge pass / lifecycle lens: session.py restore + daemon/app.py _resumed_session",
+      "finding": "restore carries turns only; persona and model are lost on continue unless logged",
+      "seeds": [
+        "c42"
+      ]
+    },
+    {
+      "id": "s29",
+      "surface": "challenge pass / clocks lens: completion_deadline app.py:1228 x voice path",
+      "finding": "the 60 s deadline and 0.25 s recall head start were sized for senses",
+      "seeds": []
+    },
+    {
+      "id": "s30",
+      "surface": "challenge pass / adjacent-systems lens: daemon/app.py summarise",
+      "finding": "summarise reads config.role today; moving it to the holder would put a 5 s clock on a slow proxied model",
+      "seeds": [
+        "c43"
+      ]
+    },
+    {
+      "id": "s31",
+      "surface": "challenge pass / adjacent-systems lens: tests pinning bytes",
+      "finding": "loop.py byte pin and release-docs tool pins constrain where the layers go",
+      "seeds": [
+        "c44"
+      ]
+    },
+    {
+      "id": "s32",
+      "surface": "challenge pass / observability lens: status() + Status drawer",
+      "finding": "no counters in the frame for capabilities freshness or mesh traffic",
+      "seeds": [
+        "c45"
+      ]
+    },
+    {
+      "id": "s33",
+      "surface": "challenge pass / recovery lens: daemon restart (systemd Restart=always)",
+      "finding": "the live unit restarts on crash; in-memory ask ids would orphan late answers",
+      "seeds": [
+        "c46"
+      ]
+    },
+    {
+      "id": "s34",
+      "surface": "challenge pass / reversibility lens: personas store + env",
+      "finding": "rollback is the default persona (byte-identical prompt) plus the mesh switch; no migration of existing state; residual: a personas.json schema change later needs a version field",
+      "seeds": []
+    },
+    {
+      "id": "s35",
+      "surface": "challenge pass / concurrency lens: persona edits x in-flight turns",
+      "finding": "covered by the turn-start snapshot in the lifecycle finding; two operator tabs editing one persona is last-write-wins, unexamined beyond that",
+      "seeds": []
+    },
+    {
+      "id": "s36",
+      "surface": "challenge pass / operations lens: gwen-live systemd unit + Cloudflare",
+      "finding": "new /api routes inherit the gwen.culture.dev never-cache rule and the guard; not examined: whether the systemd unit's env file needs the mesh vars",
+      "seeds": []
+    },
+    {
+      "id": "s37",
+      "surface": "challenge pass / assess: q8 voice policy (decider general via thor)",
+      "finding": "4 options, neutral state, no operator preference in it: both_gated 0.521, both_marked 0.275, persona_only 0.135, typed_only 0.069; P(marking unmeasured in status is enough containment) = 0.126; worker+translator first word later than 5 s: expected 2.79 of 0-4 (likely). Robustness re-ask with the design-rule sentence removed: both_gated still first at 0.434. Request files in the session scratchpad (assess_q8.json, assess_q8_robust.json)",
+      "seeds": [
+        "c51"
       ]
     }
   ],
