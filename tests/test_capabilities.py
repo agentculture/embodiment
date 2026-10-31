@@ -211,3 +211,19 @@ def test_start_stop_background_thread():
     assert poller.wait_first_poll(5)
     poller.stop()
     assert len(poller.snapshot().roles) == 4
+
+
+def test_a_failing_degrade_hook_is_counted_not_swallowed() -> None:
+    """The host hook raising must not kill the poll, and must not vanish either."""
+
+    def boom(code: str, detail: str) -> None:
+        raise RuntimeError("hook down")
+
+    def fail() -> str:
+        raise OSError("gateway down")
+
+    poller = CapabilitiesPoller("http://gateway.invalid", fetch=fail, on_degrade=boom)
+    poller.poll_once()
+    count, reason = poller.hook_failures
+    assert count == 1
+    assert "RuntimeError" in reason

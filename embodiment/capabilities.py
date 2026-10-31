@@ -104,6 +104,8 @@ class CapabilitiesPoller:
         self._roles: tuple = ()
         self._good_at: Optional[float] = None
         self._failed = False
+        self._hook_failures = 0
+        self._last_hook_error = ""
         self._stop = threading.Event()
         self._first = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -127,8 +129,18 @@ class CapabilitiesPoller:
         if self._on_degrade is not None:
             try:
                 self._on_degrade(code, detail)
-            except Exception:  # noqa: BLE001  # nosec B110 - the host hook must not kill the poll
-                pass
+            except Exception as exc:  # noqa: BLE001 - the host hook must not kill the poll
+                # Recorded, never silent: a hook that fails is counted and its last reason kept,
+                # so status can show that degradations stopped reaching the host.
+                with self._lock:
+                    self._hook_failures += 1
+                    self._last_hook_error = describe_exception(exc)
+
+    @property
+    def hook_failures(self) -> tuple[int, str]:
+        """How often the host's degrade hook raised, and its last reason."""
+        with self._lock:
+            return self._hook_failures, self._last_hook_error
 
     def poll_once(self) -> None:
         """One blocking poll. Never raises."""
