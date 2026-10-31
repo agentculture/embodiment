@@ -14,7 +14,8 @@ import {
   type ChatSource,
 } from "../api/chat";
 import type { ConversationSettings } from "../api/models";
-import { splitCitations, stripCitations } from "../api/citations";
+import { stripCitations, splitCitations } from "../api/citations";
+import { parseBlocks, type Inline, type ListBlock } from "./markdown";
 import { kindInfo } from "../api/kinds";
 import { AudioControls, SpeakButton, type ClipReply } from "./AudioControls";
 import { deviceKind } from "./ReadAloud";
@@ -242,19 +243,14 @@ function Words({ text, base }: { text: string; base: number }) {
   );
 }
 
-/** An answer with its citation markers as cite buttons; a marker naming no source stays text. */
-function Answer({
-  text,
-  sources,
-  reveal,
-  onOpen,
-}: {
+/** Text with its citation markers as cite buttons; a marker naming no source stays text. */
+function CitedText({ text, sources, reveal, onOpen, counter }: {
   text: string;
   sources: ChatSource[];
   reveal: boolean;
   onOpen?: OpenCitation;
+  counter: { words: number };
 }) {
-  let words = 0;
   return (
     <>
       {splitCitations(text, sources.length).map((part, i) => {
@@ -274,9 +270,89 @@ function Answer({
           );
         }
         if (!reveal) return part.text;
-        const node = <Words key={i} text={part.text} base={words} />;
-        words += part.text.split(/\s+/).filter(Boolean).length;
+        const node = <Words key={i} text={part.text} base={counter.words} />;
+        counter.words += part.text.split(/\s+/).filter(Boolean).length;
         return node;
+      })}
+    </>
+  );
+}
+
+interface AnswerCtx {
+  sources: ChatSource[];
+  reveal: boolean;
+  onOpen?: OpenCitation;
+  counter: { words: number };
+}
+
+function Inlines({ nodes, ctx }: { nodes: Inline[]; ctx: AnswerCtx }) {
+  return (
+    <>
+      {nodes.map((n, i) => {
+        switch (n.k) {
+          case "br":
+            return <br key={i} />;
+          case "code":
+            return <code key={i}>{n.text}</code>;
+          case "strong":
+            return <strong key={i}><Inlines nodes={n.c} ctx={ctx} /></strong>;
+          case "em":
+            return <em key={i}><Inlines nodes={n.c} ctx={ctx} /></em>;
+          default:
+            return <CitedText key={i} text={n.text} {...ctx} />;
+        }
+      })}
+    </>
+  );
+}
+
+function MdList({ list, ctx }: { list: ListBlock; ctx: AnswerCtx }) {
+  const Tag = list.ordered ? "ol" : "ul";
+  return (
+    <Tag className="answer__list">
+      {list.items.map((it, i) => (
+        <li key={i} dir="auto">
+          <Inlines nodes={it.inline} ctx={ctx} />
+          {it.children ? <MdList list={it.children} ctx={ctx} /> : null}
+        </li>
+      ))}
+    </Tag>
+  );
+}
+
+/**
+ * An answer rendered from safe Markdown: every node is a React element with text children
+ * (never HTML, never a link), citation markers are cite buttons anywhere in it.
+ */
+function Answer({
+  text,
+  sources,
+  reveal,
+  onOpen,
+}: {
+  text: string;
+  sources: ChatSource[];
+  reveal: boolean;
+  onOpen?: OpenCitation;
+}) {
+  const ctx: AnswerCtx = { sources, reveal, onOpen, counter: { words: 0 } };
+  return (
+    <>
+      {parseBlocks(text).map((b, i) => {
+        switch (b.type) {
+          case "list":
+            return <MdList key={i} list={b} ctx={ctx} />;
+          case "code":
+            return <pre key={i} className="answer__pre" dir="auto"><code>{b.text}</code></pre>;
+          case "h":
+            return (
+              <div key={i} role="heading" aria-level={b.level + 2} className={`answer__h answer__h--${b.level}`} dir="auto">
+                <Inlines nodes={b.inline} ctx={ctx} />
+              </div>
+            );
+          default:
+            return <p key={i} className="answer__p" dir="auto"><Inlines nodes={b.inline} ctx={ctx} /></p>;
+        }
       })}
     </>
   );
@@ -421,9 +497,9 @@ export function Chat({
               data-follow-up={m.followUp ? "true" : undefined}
             >
               <span className="sr-only">assistant: </span>
-              <p className="answer" dir="auto">
+              <div className="answer" dir="auto">
                 <Answer text={m.text} sources={m.sources} reveal={!!m.reveal} onOpen={onOpenCitation} />
-              </p>
+              </div>
               {m.fallback && (
                 <p className="answer-fallback" role="note">
                   Fixed reply: the model&apos;s answer was not used (<code>{m.fallback}</code>).
