@@ -11,12 +11,15 @@ Decisions (documented here because they are choices, not facts):
   ``allow_formatting``: the base text simply says nothing about formatting on that path
   (a typed reply may use it); there is no "format!" line either, since that would be a
   new fixed instruction.
-* The built-in persona on the typed path is still Hebrew Gwen: identity, the
-  language-and-brevity line and the clarification line, minus the speakability line.
+* The built-in persona on the typed path is still Hebrew Gwen: identity, a plain
+  language line and the clarification line, with neither the speakability line nor the
+  "short sentences" wording, both of which fit speech, not text (deviation d1, operator
+  2026-10-31: "short sentences feats speech not text"). Only the voice path is
+  byte-identical to ``turn.SYSTEM_PROMPT``.
 * A non-default persona gets, in this fixed order: identity (its ``name``), a language
   line (none for ``"none"``), a length line (none for ``"unset"``), the speakability line
-  (voice path only), then ``persona.text`` last. It gets no fixed brevity wording and no
-  clarification line.
+  (voice path only), the clarification line without "short", then ``persona.text`` last.
+  It gets no fixed brevity wording.
 * Prompt-part language follows the persona's language: ``"en"`` is English, ``"he"`` and
   ``"none"`` are Hebrew (``"none"`` -> ``"he"``, the rig's default).
 * The four tool prompts keep their obligation sentences; only their language, and
@@ -41,6 +44,12 @@ _HE_IDENTITY_BUILTIN = "את גוון, בת שיחה קולית. את מקשיב
 _HE_LANG_BREVITY_BUILTIN = "עני בעברית, במשפטים קצרים וטבעיים לדיבור."
 _HE_SPEAKABLE = "כל מה שתכתבי ייאמר בקול רם: בלי סימוני עיצוב, בלי רשימות ובלי קוד."
 _HE_CLARIFY = "אם משהו לא ברור, בקשי הבהרה קצרה במקום לנחש."
+#: The clarification line without "short": every typed prompt and every non-default
+#: persona (d1). Only the built-in voice prompt keeps the original wording.
+_CLARIFY_PLAIN = {
+    "he": "אם משהו לא ברור, בקשי הבהרה במקום לנחש.",
+    "en": "If something is unclear, ask for clarification instead of guessing.",
+}
 
 # --- persona-driven pieces -----------------------------------------------------------
 _IDENTITY = {
@@ -82,11 +91,11 @@ def compose_base(persona: Persona, path: str) -> str:
         raise ValueError(f"path must be one of {PATHS}")
     voice = path == "voice"
     if persona == builtin_persona():
-        lines = [_HE_IDENTITY_BUILTIN, _HE_LANG_BREVITY_BUILTIN]
         if voice:
-            lines.append(_HE_SPEAKABLE)
-        lines.append(_HE_CLARIFY)
-        return "\n".join(lines)
+            return "\n".join(
+                [_HE_IDENTITY_BUILTIN, _HE_LANG_BREVITY_BUILTIN, _HE_SPEAKABLE, _HE_CLARIFY]
+            )
+        return "\n".join([_HE_IDENTITY_BUILTIN, _LANGUAGE["he"], _CLARIFY_PLAIN["he"]])
     lang = tool_prompt_language(persona)
     lines = [_IDENTITY[(lang, path)].format(name=persona.name)]
     if persona.language != "none":
@@ -95,6 +104,7 @@ def compose_base(persona: Persona, path: str) -> str:
         lines.append(_LENGTH[lang][persona.length])
     if voice:
         lines.append(_SPEAKABLE[lang])
+    lines.append(_CLARIFY_PLAIN[lang])
     if persona.text:
         lines.append(persona.text)
     return "\n".join(lines)

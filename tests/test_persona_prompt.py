@@ -20,8 +20,23 @@ def test_builtin_typed_omits_speakability_and_stays_hebrew():
     typed = pp.compose_base(builtin_persona(), "typed")
     assert "ייאמר בקול רם" not in typed
     assert typed.startswith("את גוון")
-    assert turn.SYSTEM_PROMPT.splitlines()[3] in typed
-    assert len(typed.splitlines()) == 3
+    # d1: typed drops the voice-only line AND "short sentences" (they fit speech, not text).
+    assert "קצר" not in typed
+    assert typed.splitlines() == [
+        turn.SYSTEM_PROMPT.splitlines()[0],
+        "עני בעברית.",
+        "אם משהו לא ברור, בקשי הבהרה במקום לנחש.",
+    ]
+
+
+def test_builtin_typed_differs_from_today_exactly_by_the_two_speech_lines():
+    """d1 narrows c30: the built-in voice prompt is byte-identical; typed differs only here."""
+    today = turn.SYSTEM_PROMPT.splitlines()
+    typed = pp.compose_base(builtin_persona(), "typed").splitlines()
+    assert typed[0] == today[0]
+    assert today[1] == "עני בעברית, במשפטים קצרים וטבעיים לדיבור." and typed[1] == "עני בעברית."
+    assert today[2].startswith("כל מה שתכתבי ייאמר") and len(typed) == len(today) - 1
+    assert today[3].replace("הבהרה קצרה", "הבהרה") == typed[2]
 
 
 def test_bad_path():
@@ -44,12 +59,13 @@ def test_length_line_between_language_and_speakability():
     lines = pp.compose_base(_p(language="he", length="detailed", text="T"), "voice").splitlines()
     assert lines[1] == "עני בעברית."
     assert lines[2].startswith("אורך")
-    assert "ייאמר" in lines[3] and lines[4] == "T"
+    assert "ייאמר" in lines[3]
+    assert lines[4] == "אם משהו לא ברור, בקשי הבהרה במקום לנחש." and lines[5] == "T"
 
 
 def test_language_none_adds_no_language_line_and_typed_has_no_speakability():
     s = pp.compose_base(_p(language="none", text="T"), "typed")
-    assert s.splitlines() == ["את Dana, בת שיחה.", "T"]
+    assert s.splitlines() == ["את Dana, בת שיחה.", "אם משהו לא ברור, בקשי הבהרה במקום לנחש.", "T"]
 
 
 def test_typed_has_no_speakability_en():

@@ -1,0 +1,27 @@
+{
+  "plan_slug": "gwen-personas-model-choice-culture-residency",
+  "schema_version": 2,
+  "created": "2026-10-31T09:53:28Z",
+  "updated": "2026-10-31T09:53:28Z",
+  "deviations": [
+    {
+      "id": "d1",
+      "what": "Built-in Gwen's typed prompt is no longer byte-identical to today's: it drops both the voice-only speakability line and the 'short sentences' brevity wording; her spoken prompt stays byte-identical. c30 narrows to 'spoken turns byte-identical; typed turns differ from today exactly by those two lines', pinned by a test; t9's compose_base typed output for the built-in persona changes accordingly; t11's first criterion is read with this narrowing",
+      "task_ref": "t11",
+      "reason": "operator, 2026-10-31: 'Gwen prompts C, short sentences feats speech not text' (c30 and c3 conflicted for built-in Gwen on the typed path; option C chosen over A and B)",
+      "affects": [
+        "t9",
+        "c30",
+        "c3",
+        "c2"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 1
+    }
+  ],
+  "evidence": [],
+  "deltas": [],
+  "supersessions": []
+}
