@@ -500,13 +500,14 @@ class _RetrieveTools:
             return {}
 
     def _newest_day(self, kind: Optional[str]) -> Optional[str]:
-        """The latest item day in the catalog (of *kind* when given), or None. Never raises."""
-        try:
-            days = [
-                item_day(m) for m in (self._catalog() or ()) if kind is None or item_kind(m) == kind
-            ]
-        except Exception:  # noqa: BLE001  # no catalog: no hint, the plain no-match stands
-            return None
+        """The latest item day in the catalog (of *kind* when given), or None.
+
+        Called inside :meth:`search_library`'s guarded block, so a catalog fault becomes
+        that block's recorded "could not search" text, not a silently missing hint.
+        """
+        days = [
+            item_day(m) for m in (self._catalog() or ()) if kind is None or item_kind(m) == kind
+        ]
         days = [d for d in days if isinstance(d, str) and _date_arg(d) is not None]
         return max(days) if days else None
 
