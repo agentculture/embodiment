@@ -93,6 +93,20 @@ pytestmark = pytest.mark.skipif(
 POCKET_SENTINEL = "zqxotter-survey-moved-to-thursday"
 POCKET_TITLE = "synthetic standup"
 POCKET_DATE = "2026-09-30"
+#: The drain's wall clock, anchored the day after the fixture newspaper's issue date
+#: (2026-10-01) and running at real speed from there. The drain archives an issue's items
+#: 30 days after the issue date, by the UTC date of this clock (daemon/drain.py), so
+#: a drain on the host's real clock expired the fixture on 2026-10-31 and six tests
+#: failed. Shifted, not frozen: the same clock drives the drain's backoff and status.
+DRAIN_EPOCH = 1_790_942_400.0  # 2026-10-02T12:00:00Z
+_DRAIN_SHIFT = time.time() - DRAIN_EPOCH
+
+
+def drain_clock() -> float:
+    """Real time, shifted so the drain's UTC date is the day after the fixture issue."""
+    return time.time() - _DRAIN_SHIFT
+
+
 NEWS_SENTINEL = "zqxharbour-bridge-closes-for-repairs"
 NEWS_LINK = "https://example.invalid/bridge"
 PUBLIC_HOST = "gwen.example.invalid"
@@ -165,7 +179,7 @@ class Rig:
                 embedder=self.embedder, vector_cache=self.cache, similarity_threshold=0.3
             ),
         )
-        self.drain = Drain(Spool.for_state_dir(self.state_dir), self.memory)
+        self.drain = Drain(Spool.for_state_dir(self.state_dir), self.memory, clock=drain_clock)
         self.bus = Bus()
         self.endpoint = FakeEndpoint(name="host")
         self.subscription = self.bus.subscribe(include_speech=True)
