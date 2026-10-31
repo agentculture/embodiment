@@ -117,7 +117,8 @@ def test_a_streamed_completion_assembles_reasoning_content_tools_and_usage(serve
         ("content", " it is."),
     ]
     body = calls[0]["body"]
-    assert body["stream"] is True and body["stream_options"] == {"include_usage": True}
+    assert body["stream"] is True
+    assert body["stream_options"] == {"include_usage": True}
     # the read timeout is now a bound on silence between chunks, not on length
     assert calls[0]["timeout"] == 42.0
 
@@ -247,7 +248,8 @@ def test_live_text_is_scrubbed_like_a_reply(harness: Any, monkeypatch: Any) -> N
     complete.holder = h.app._role_holder
     h.app.controls().chat("שאלה", None, RID)
     texts = [e.data["text"] for e in h.events("stream")]
-    assert texts and all(secret not in t for t in texts)
+    assert texts
+    assert all(secret not in t for t in texts)
 
 
 def test_each_model_step_restarts_the_live_text(monkeypatch: Any) -> None:

@@ -493,7 +493,8 @@ class TestEventsAndAnswers:
         before = len(h.script.calls)
         h.app.controls().chat("ומה ענו?")
         system = h.script.calls[before]["messages"][0]["content"]
-        assert "the answer is" in system and "the newspaper, at two" in system
+        assert "the answer is" in system
+        assert "the newspaper, at two" in system
 
     def test_an_answer_a_turn_used_is_not_read_again(
         self, harness: Any, ircd: FakeIrcd, tmp_path: Path
@@ -849,11 +850,14 @@ class TestTheJudge:
         assert arrived[0].data["rule"] == mesh_asks.RULE_JUDGED
         assert arrived[0].data["text"] == ANSWER
         mesh = h.app.status()["mesh"]
-        assert mesh["judge_calls"] == 2 and mesh["judge_answers"] == 1
+        assert mesh["judge_calls"] == 2
+        assert mesh["judge_answers"] == 1
         assert mesh["asks_answered"] == 1
         # In context: the second call saw the ask, the earlier line and the new one.
         body = judge.calls[1][1]["content"]
-        assert QUESTION in body and "anyone for lunch?" in body and ANSWER in body
+        assert QUESTION in body
+        assert "anyone for lunch?" in body
+        assert ANSWER in body
 
     def test_a_thread_line_the_judge_rejects_is_not_an_answer(
         self, harness: Any, ircd: FakeIrcd, tmp_path: Path

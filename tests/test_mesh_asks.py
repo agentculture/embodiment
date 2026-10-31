@@ -274,7 +274,8 @@ def test_a_multi_line_answer_keeps_its_following_lines(tmp_path):
     assert first is not None
     clock.t += 0.2
     more = b.continuation("spark-ada", "#r", "X, Y and Z")
-    assert more is not None and more["ask_id"] == first["ask_id"]
+    assert more is not None
+    assert more["ask_id"] == first["ask_id"]
     (ask,) = b.all()
     assert ask["answers"][-1]["text"] == f"{NICK}: the answer is\nX, Y and Z"
 
@@ -325,10 +326,12 @@ def test_attach_records_the_judged_answer_with_its_rule(tmp_path):
     clock.t += 5
     got = b.attach(ask["ask_id"], "peer", "#r", "I do")
     assert got["conversation_id"] == "conv1"
-    assert got["rule"] == ma.RULE_JUDGED and got["late"] is True
+    assert got["rule"] == ma.RULE_JUDGED
+    assert got["late"] is True
     kept = b.all()[0]
     assert kept["status"] == ma.ANSWERED
-    assert kept["answers"][0]["text"] == "I do" and kept["answers"][0]["rule"] == ma.RULE_JUDGED
+    assert kept["answers"][0]["text"] == "I do"
+    assert kept["answers"][0]["rule"] == ma.RULE_JUDGED
     # The next plain line from the same sender continues it, as for any answer.
     assert b.continuation("peer", "#r", "and Bob helps")["ask_id"] == ask["ask_id"]
     assert b.attach("nope", "peer", "#r", "x") is None

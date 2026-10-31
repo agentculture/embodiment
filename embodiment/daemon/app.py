@@ -1805,17 +1805,7 @@ def http_complete(
     url = f"{origin}{CHAT_ROUTE}"
     if not url.startswith(("http://", "https://")):
         raise ValueError("gateway_url must be http(s)")
-    payload: dict[str, Any] = {
-        "model": role,
-        "messages": messages,
-        "max_tokens": max_tokens,
-    }
-    if tools:
-        payload["tools"] = tools
-    if stream:
-        payload["stream"] = True
-        payload["stream_options"] = {"include_usage": True}
-    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    body = _chat_body(messages, tools, role, max_tokens, stream)
     headers = {"Content-Type": "application/json"}
     if api_key:
         headers["Authorization"] = f"Bearer {api_key}"
@@ -1838,9 +1828,7 @@ def http_complete(
             raise unavailable from None
         raise
     if not streamed:
-        choices = raw.get("choices") or []
-        message = (choices[0].get("message") if choices else None) or {}
-        usage = raw.get("usage") or {}
+        message, usage = _message_and_usage(raw)
     return ModelResponse.from_dict(
         {
             "content": message.get("content") or "",
@@ -1850,6 +1838,30 @@ def http_complete(
             "completion_tokens": usage.get("completion_tokens") or 0,
         }
     )
+
+
+def _chat_body(
+    messages: list[dict[str, Any]],
+    tools: Optional[list[dict[str, Any]]],
+    role: str,
+    max_tokens: int,
+    stream: bool,
+) -> bytes:
+    """The ``/v1/chat/completions`` request body: the role by name, tools when any."""
+    payload: dict[str, Any] = {"model": role, "messages": messages, "max_tokens": max_tokens}
+    if tools:
+        payload["tools"] = tools
+    if stream:
+        payload["stream"] = True
+        payload["stream_options"] = {"include_usage": True}
+    return json.dumps(payload, ensure_ascii=False).encode("utf-8")
+
+
+def _message_and_usage(raw: Any) -> tuple[dict[str, Any], dict[str, Any]]:
+    """A non-streamed reply's first message and its usage (each ``{}`` when absent)."""
+    choices = raw.get("choices") or []
+    message = (choices[0].get("message") if choices else None) or {}
+    return message, raw.get("usage") or {}
 
 
 #: The most text one streamed completion may carry (reasoning + answer + tool arguments).
@@ -1871,48 +1883,67 @@ def _read_stream(
     Lines that are not ``data:`` JSON are skipped; ``[DONE]`` ends it, and so does the
     end of the body. Tool-call pieces are joined by their ``index``.
     """
-    content: list[str] = []
-    reasoning: list[str] = []
+    text: dict[str, list[str]] = {"content": [], "reasoning": []}
     calls: dict[int, dict[str, Any]] = {}
     usage: dict[str, Any] = {}
     size = 0
     for raw_line in response:
-        line = raw_line.decode("utf-8", "replace").strip()
-        if not line.startswith("data:"):
-            continue
-        data = line[5:].strip()
-        if data == "[DONE]":
+        chunk = _stream_chunk(raw_line)
+        if chunk is _STREAM_DONE:
             break
-        try:
-            chunk = json.loads(data)
-        except (ValueError, RecursionError):
-            continue
         if not isinstance(chunk, dict):
             continue
         if isinstance(chunk.get("usage"), dict):
             usage = chunk["usage"]
         for choice in chunk.get("choices") or []:
             delta = choice.get("delta") if isinstance(choice, dict) else None
-            if not isinstance(delta, dict):
-                continue
-            for channel, sink, keys in (
-                ("reasoning", reasoning, ("reasoning", "reasoning_content")),
-                ("content", content, ("content",)),
-            ):
-                piece = next((delta[k] for k in keys if isinstance(delta.get(k), str)), "")
-                if piece:
-                    sink.append(piece)
-                    size += len(piece)
-                    _feed(on_delta, channel, piece)
-            size += _join_tool_calls(calls, delta.get("tool_calls"))
+            if isinstance(delta, dict):
+                size += _take_delta(delta, text, calls, on_delta)
         if size > MAX_STREAM_CHARS:
             raise ValueError("the streamed completion exceeded its size bound")
     message = {
-        "content": "".join(content),
-        "reasoning": "".join(reasoning),
+        "content": "".join(text["content"]),
+        "reasoning": "".join(text["reasoning"]),
         "tool_calls": [calls[i] for i in sorted(calls)],
     }
     return message, usage
+
+
+#: :func:`_stream_chunk`'s answer for the ``[DONE]`` line.
+_STREAM_DONE = object()
+#: Where each channel's piece is read from in a streamed delta.
+_DELTA_KEYS = (("reasoning", ("reasoning", "reasoning_content")), ("content", ("content",)))
+
+
+def _stream_chunk(raw_line: bytes) -> Any:
+    """One SSE line as its JSON chunk, :data:`_STREAM_DONE`, or ``None`` (skip it)."""
+    line = raw_line.decode("utf-8", "replace").strip()
+    if not line.startswith("data:"):
+        return None
+    data = line[5:].strip()
+    if data == "[DONE]":
+        return _STREAM_DONE
+    try:
+        return json.loads(data)
+    except (ValueError, RecursionError):
+        return None
+
+
+def _take_delta(
+    delta: dict[str, Any],
+    text: dict[str, list[str]],
+    calls: dict[int, dict[str, Any]],
+    on_delta: Optional[Callable[[str, str], None]],
+) -> int:
+    """Fold one delta's reasoning, content and tool-call pieces in; the characters added."""
+    size = 0
+    for channel, keys in _DELTA_KEYS:
+        piece = next((delta[k] for k in keys if isinstance(delta.get(k), str)), "")
+        if piece:
+            text[channel].append(piece)
+            size += len(piece)
+            _feed(on_delta, channel, piece)
+    return size + _join_tool_calls(calls, delta.get("tool_calls"))
 
 
 #: The live view of a typed turn (d5) failed and stopped for that turn; the answer still lands.
@@ -2028,13 +2059,20 @@ def _join_tool_calls(calls: dict[int, dict[str, Any]], pieces: Any) -> int:
         call = calls.setdefault(
             index, {"id": "", "type": "function", "function": {"name": "", "arguments": ""}}
         )
-        if isinstance(piece.get("id"), str) and piece["id"]:
-            call["id"] = piece["id"]
-        function = piece.get("function") if isinstance(piece.get("function"), dict) else {}
-        for key in ("name", "arguments"):
-            if isinstance(function.get(key), str):
-                call["function"][key] += function[key]
-                added += len(function[key])
+        added += _join_tool_call(call, piece)
+    return added
+
+
+def _join_tool_call(call: dict[str, Any], piece: dict[str, Any]) -> int:
+    """Fold one tool-call piece into *call*; the characters added."""
+    if isinstance(piece.get("id"), str) and piece["id"]:
+        call["id"] = piece["id"]
+    function = piece.get("function") if isinstance(piece.get("function"), dict) else {}
+    added = 0
+    for key in ("name", "arguments"):
+        if isinstance(function.get(key), str):
+            call["function"][key] += function[key]
+            added += len(function[key])
     return added
 
 
@@ -4408,14 +4446,7 @@ class DaemonApp:
         ):
             return _replay_after_tool_round(turn.first_text, request)
         if turn.persona is None or gate is not None:
-            turn.result = (
-                self._persona_missing_result()
-                if turn.persona is None
-                else self._voice_gated_result(turn.target)
-            )
-            turn.first_text = turn.final_text = turn.result.spoken
-            turn.reply_text_at = self._clock()
-            return turn.result.spoken
+            return self._voice_refused_reply(turn)
         result, tooled = self._complete_turn(
             turn.query,
             turn.window,
@@ -4425,10 +4456,7 @@ class DaemonApp:
             persona=turn.persona,
             target=turn.target,
         )
-        turn.unavailable = turn.unavailable or result.exit_reason == APP_TEXT_MODEL_UNAVAILABLE
-        turn.fallback = turn.fallback or getattr(self._tls, "turn_fallback", None)
-        turn.steps += result.steps
-        turn.tool_round = turn.tool_round or tooled
+        self._voice_note_result(turn, result, tooled)
         if first:
             turn.result = result
             turn.first_text = result.spoken
@@ -4441,6 +4469,24 @@ class DaemonApp:
             turn.rendered_ids = self._seen(request.memory).ids
         turn.final_text = " ".join((*request.spoken, result.spoken)).strip()
         return result.spoken
+
+    def _voice_refused_reply(self, turn: _VoiceTurn) -> str:
+        """The voice turn's own line when no model may answer it (no persona, or gated)."""
+        turn.result = (
+            self._persona_missing_result()
+            if turn.persona is None
+            else self._voice_gated_result(turn.target)
+        )
+        turn.first_text = turn.final_text = turn.result.spoken
+        turn.reply_text_at = self._clock()
+        return turn.result.spoken
+
+    def _voice_note_result(self, turn: _VoiceTurn, result: Any, tooled: bool) -> None:
+        """Fold one completion's outcome into the voice turn's running state."""
+        turn.unavailable = turn.unavailable or result.exit_reason == APP_TEXT_MODEL_UNAVAILABLE
+        turn.fallback = turn.fallback or getattr(self._tls, "turn_fallback", None)
+        turn.steps += result.steps
+        turn.tool_round = turn.tool_round or tooled
 
     def _follow_up_text(self, request: CompletionRequest) -> str:
         """A late memory's one follow-up (off by default), composed off the turn thread.
@@ -6914,27 +6960,32 @@ class DaemonApp:
             record=self._mesh_refused,
         )
 
+    def _mesh_create_thread(self, channel: str, thread: str, text: str) -> bool:
+        """One THREAD CREATE through the live client; ``False`` when it was not sent."""
+        client = self._mesh_client
+        if client is None or self._stopping:
+            return False
+        try:
+            return bool(client.create_thread(channel, thread, text))
+        except Exception as exc:  # noqa: BLE001  # a dead client is a failed post
+            self._record(APP_MESH_FAILED, f"post: {_describe(exc)}", source="mesh")
+            return False
+
     def _mesh_poster(self, conversation: str) -> Callable[[str, str, str], bool]:
         """``post`` for ``ask_culture``: one THREAD CREATE; a failed post closes the ask (r8)."""
 
         def post(channel: str, thread: str, text: str) -> bool:
             lane = self._mesh
-            client = self._mesh_client
             ask_id = thread[len(THREAD_PREFIX) :] if thread.startswith(THREAD_PREFIX) else ""
-            sent = False
-            if lane is not None and client is not None and not self._stopping:
-                try:
-                    sent = bool(client.create_thread(channel, thread, text))
-                except Exception as exc:  # noqa: BLE001  # a dead client is a failed post
-                    self._record(APP_MESH_FAILED, f"post: {_describe(exc)}", source="mesh")
-            if not sent:
-                if lane is not None and ask_id:
+            if lane is None:
+                return False
+            if not self._mesh_create_thread(channel, thread, text):
+                if ask_id:
                     lane.book.fail(ask_id)
                 return False
             with self._lock:
                 self._mesh_counts["asks_posted"] += 1
-            if lane is not None:
-                self._mesh_recent.add(channel, lane.config.nick, text, thread)
+            self._mesh_recent.add(channel, lane.config.nick, text, thread)
             expires = next(
                 (a.get("expires_at") for a in lane.book.all() if a.get("ask_id") == ask_id), None
             )

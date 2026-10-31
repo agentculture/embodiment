@@ -287,7 +287,8 @@ class TestTheOperatorsWords:
         h.app.run_turn(SPOKEN)
         records = [json.loads(text) for text in stored]
         mine = [r for r in records if r["text"] == "Tell the operator something"]
-        assert mine and all(r["metadata"].get("original") == SPOKEN for r in mine), records
+        assert mine, records
+        assert all(r["metadata"].get("original") == SPOKEN for r in mine), records
 
     def test_an_untranslated_remember_keeps_no_original_field(
         self, harness: Any, tmp_path: Path

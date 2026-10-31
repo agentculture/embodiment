@@ -387,6 +387,8 @@ _CLIP_CHUNK_BYTES = 64 * 1024
 #: ``Content-Length`` was absent (or the body is chunked) on a route that must know the
 #: size before reading.
 LENGTH_REQUIRED_CODE = "http-length-required"
+#: The 404 text for a path under /api that names no route.
+UNKNOWN_ROUTE_TEXT = "no such API route"
 #: A text/clip route answered a refusal from the text layer (the layer recorded why).
 TEXT_REFUSED_CODE = "http-text-route-refused"
 #: Why a stream ended at its assertion's expiry (a frame comment, not a fault).
@@ -911,7 +913,7 @@ class _Handler(BaseHTTPRequestHandler):
                 self._control(route)
             return True
         if route.startswith("/api/"):
-            self._refuse_unread(404, "http-unknown-route", "no such API route")
+            self._refuse_unread(404, "http-unknown-route", UNKNOWN_ROUTE_TEXT)
             return True
         return False
 
@@ -1327,7 +1329,7 @@ class _Handler(BaseHTTPRequestHandler):
         parts = route[len(READING_ROUTE) + 1 :].split("/")
         verbs = {"next": "GET", "heard": "POST", "clear": "POST"}
         if len(parts) != 2 or parts[1] not in verbs:
-            self._refuse_unread(404, "http-unknown-route", "no such API route")
+            self._refuse_unread(404, "http-unknown-route", UNKNOWN_ROUTE_TEXT)
             return
         verb = parts[1]
         if method != verbs[verb]:
@@ -1585,7 +1587,7 @@ class _Handler(BaseHTTPRequestHandler):
             self._refuse_unread(405, "http-method-not-allowed", "a chat result is GET only")
             return
         if not _CHAT_REQUEST_ID_RE.match(request_id):
-            self._refuse_unread(404, "http-unknown-route", "no such API route")
+            self._refuse_unread(404, "http-unknown-route", UNKNOWN_ROUTE_TEXT)
             return
         app = self._app
         action = app.controls.chat_result

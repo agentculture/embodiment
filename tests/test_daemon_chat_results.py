@@ -27,7 +27,8 @@ def test_a_named_request_is_done_with_the_same_result_the_route_returned(harness
     h = harness()
     controls = h.app.controls()
     answer = controls.chat(TYPED, None, RID)
-    assert answer["ok"] and answer["reply"] == REPLY
+    assert answer["ok"]
+    assert answer["reply"] == REPLY
     stored = controls.chat_result(RID)
     assert stored["state"] == "done"
     for key in ("ok", "reply", "sources", "turn_serial", "code", "fallback"):
@@ -73,7 +74,8 @@ def test_the_reply_event_carries_the_request_id(harness: Any) -> None:
     h = harness()
     h.app.controls().chat(TYPED, None, RID)
     replies = [e for e in h.events("reply") if e.data.get("typed")]
-    assert replies and replies[-1].data["request_id"] == RID
+    assert replies
+    assert replies[-1].data["request_id"] == RID
 
 
 def test_a_chat_without_a_request_id_is_unchanged(harness: Any) -> None:

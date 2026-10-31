@@ -306,24 +306,29 @@ class _TranslatedSeam:
         for m in messages:
             if m.get("role") == "user":
                 last_user = m
-        out_messages: list[dict[str, Any]] = []
-        for m in messages:
-            role = m.get("role")
-            text = _text_of(m.get("content"))
-            copy = dict(m)
-            if role == "user" and text:
-                english = self._to_english(text, spent)
-                copy["content"] = english
-                if m is last_user:
-                    self._context.original, self._context.english = text, english
-            elif role in ("tool", "system") and text and "<<<BEGIN" in text:
-                copy["content"] = self._to_english(text, spent, fences_only=True)
-            elif role == "assistant" and text and self._cache is not None:
-                draft = self._cache.get(("draft", text))
-                if draft is not None:  # known: her English draft; unknown passes through
-                    copy["content"] = draft
-            out_messages.append(copy)
-        return out_messages
+        return [self._english_message(m, m is last_user, spent) for m in messages]
+
+    def _english_message(
+        self, m: dict[str, Any], is_last_user: bool, spent: list[float]
+    ) -> dict[str, Any]:
+        """One message as the chosen model reads it (see the module docstring)."""
+        role = m.get("role")
+        text = _text_of(m.get("content"))
+        copy = dict(m)
+        if not text:
+            return copy
+        if role == "user":
+            english = self._to_english(text, spent)
+            copy["content"] = english
+            if is_last_user:
+                self._context.original, self._context.english = text, english
+        elif role in ("tool", "system") and "<<<BEGIN" in text:
+            copy["content"] = self._to_english(text, spent, fences_only=True)
+        elif role == "assistant" and self._cache is not None:
+            draft = self._cache.get(("draft", text))
+            if draft is not None:  # known: her English draft; unknown passes through
+                copy["content"] = draft
+        return copy
 
     def seam(self, messages: list[dict[str, Any]], tools: Any = None) -> TranslatedResponse:
         spent: list[float] = []

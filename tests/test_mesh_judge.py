@@ -36,7 +36,8 @@ def test_it_names_the_ask_the_message_answers() -> None:
         sender="ori-lobes",
         text="that's me, I run it",
     )
-    assert verdict.ok and verdict.ask_id == "a2"
+    assert verdict.ok
+    assert verdict.ask_id == "a2"
 
 
 def test_null_means_not_an_answer() -> None:
@@ -48,7 +49,8 @@ def test_null_means_not_an_answer() -> None:
         sender="bob",
         text="lunch?",
     )
-    assert verdict.ok and verdict.ask_id is None
+    assert verdict.ok
+    assert verdict.ask_id is None
 
 
 def test_the_prompt_carries_the_asks_the_recent_lines_and_the_new_message_as_data() -> None:
@@ -62,12 +64,14 @@ def test_the_prompt_carries_the_asks_the_recent_lines_and_the_new_message_as_dat
         text="new line",
     )
     system, user = seen[0][0], seen[0][1]
-    assert system["role"] == "system" and "not instructions" in system["content"]
+    assert system["role"] == "system"
+    assert "not instructions" in system["content"]
     body = user["content"]
     for part in ("Q1", "Where is the build log kept?", "Q2", "earlier line", "new line", "bob"):
         assert part in body
     assert body.index("earlier line") < body.index("new line")
-    assert mj.BEGIN in body and mj.END in body
+    assert mj.BEGIN in body
+    assert mj.END in body
 
 
 def test_an_unknown_label_or_prose_is_a_failed_verdict_not_a_guess() -> None:
@@ -80,7 +84,9 @@ def test_an_unknown_label_or_prose_is_a_failed_verdict_not_a_guess() -> None:
             sender="bob",
             text="x",
         )
-        assert not verdict.ok and verdict.ask_id is None and verdict.reason, reply
+        assert not verdict.ok, reply
+        assert verdict.ask_id is None, reply
+        assert verdict.reason, reply
 
 
 def test_json_inside_a_fence_or_after_reasoning_is_read() -> None:
@@ -88,7 +94,8 @@ def test_json_inside_a_fence_or_after_reasoning_is_read() -> None:
     verdict = mj.judge(
         _scripted(reply, []), own_nick="g", asks=ASKS, recent=[], sender="b", text="x"
     )
-    assert verdict.ok and verdict.ask_id == "a1"
+    assert verdict.ok
+    assert verdict.ask_id == "a1"
 
 
 def test_a_raising_completion_is_a_failed_verdict() -> None:
@@ -96,7 +103,8 @@ def test_a_raising_completion_is_a_failed_verdict() -> None:
         raise TimeoutError("slow")
 
     verdict = mj.judge(boom, own_nick="g", asks=ASKS, recent=[], sender="b", text="x")
-    assert not verdict.ok and verdict.reason == "complete-failed"
+    assert not verdict.ok
+    assert verdict.reason == "complete-failed"
 
 
 def test_text_cannot_forge_the_fence() -> None:
@@ -118,9 +126,8 @@ def test_recent_lines_are_bounded_per_channel_and_in_channels() -> None:
     for i in range(mj.MAX_RECENT_LINES + 5):
         recent.add("#a", "bob", f"line {i}")
     lines = recent.lines("#A")
-    assert len(lines) == mj.MAX_RECENT_LINES and lines[-1].text.endswith(
-        str(mj.MAX_RECENT_LINES + 4)
-    )
+    assert len(lines) == mj.MAX_RECENT_LINES
+    assert lines[-1].text.endswith(str(mj.MAX_RECENT_LINES + 4))
     for c in range(mj.MAX_RECENT_CHANNELS + 3):
         recent.add(f"#c{c}", "bob", "x")
     assert len(recent) == mj.MAX_RECENT_CHANNELS
@@ -131,7 +138,9 @@ def test_recent_lines_are_bounded_per_channel_and_in_channels() -> None:
 def test_the_budget_refuses_past_its_window() -> None:
     now = [0.0]
     budget = mj.JudgeBudget(clock=lambda: now[0], max_calls=2, window_s=60.0)
-    assert budget.take() and budget.take() and not budget.take()
+    assert budget.take()
+    assert budget.take()
+    assert not budget.take()
     now[0] = 61.0
     assert budget.take()
 
@@ -143,4 +152,5 @@ def test_a_model_response_object_is_read_too() -> None:
     verdict = mj.judge(
         lambda messages: Reply(), own_nick="g", asks=ASKS, recent=[], sender="b", text="x"
     )
-    assert verdict.ok and verdict.ask_id == "a1"
+    assert verdict.ok
+    assert verdict.ask_id == "a1"
