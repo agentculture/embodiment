@@ -272,6 +272,10 @@ stage needs another role.
 
 - Reuse the **resolved identity** (`identity.py` → `culture.yaml`
   `nick`/`suffix`, then `.colleague/identity.json`); no parallel persona system.
+  The 0.24.0 personas (`personas.py`) do not break this rule. They are a **style layer**
+  (language, length, the operator's own text, a default role), never an identity. They
+  never set `TurnConfig.identity`, and they change no tool authority, routing or safety
+  policy (claim c7).
 - Configure Gwen **explicitly**. Never infer an identity from model names.
 - **Absent identity ⇒ byte-identical prompts.** This is the acceptance
   criterion that keeps the feature honest.
