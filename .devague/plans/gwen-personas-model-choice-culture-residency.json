@@ -5,7 +5,7 @@
   "schema_version": 5,
   "status": "exported",
   "created": "2026-10-31T08:43:31Z",
-  "updated": "2026-10-31T09:24:27Z",
+  "updated": "2026-10-31T10:17:09Z",
   "targets": [
     {
       "id": "c1",
@@ -1088,8 +1088,8 @@
       "text": "This branch stacks on feat/gwen-queries-the-library (0.23.0, embodiment#107, its live acceptance t9 not yet done); the work must rebase or merge onto main once #107 lands, per the squash-merged-stacked-PRs practice",
       "kind": "unknown_nonblocking",
       "task_id": null,
-      "resolved": false,
-      "resolution": ""
+      "resolved": true,
+      "resolution": "done 2026-10-31: #110's squash e19be55 merged -s ours (tree identical to 816ed03), then origin/main #112-#116 merged normally; integration at 0.23.5, full suite 4702 passed"
     },
     {
       "id": "r6",
