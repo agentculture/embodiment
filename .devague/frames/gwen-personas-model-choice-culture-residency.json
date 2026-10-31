@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-10-31T07:09:13Z",
-  "updated": "2026-10-31T10:28:03Z",
+  "updated": "2026-10-31T11:20:38Z",
   "claims": [
     {
       "id": "c1",
@@ -1441,6 +1441,15 @@
       "id": "l2",
       "code": "grader-unverified",
       "what": "t11 was implemented before its tests (not TDD); the main agent's mutation check (pre-t11 app.py + session.py) shows 16 of 18 new tests fail without the change, the 2 that pass are invariance checks",
+      "skipped_check": "",
+      "refs": [],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l3",
+      "code": "grader-unverified",
+      "what": "t14 was implemented before its tests (not TDD); the agent's own mutation check (source restored to HEAD) showed 13 failed + 28 errors of 43 new tests without the change",
       "skipped_check": "",
       "refs": [],
       "origin": "llm",
