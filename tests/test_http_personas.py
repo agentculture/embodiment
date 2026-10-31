@@ -167,7 +167,9 @@ class TestPersonaRoutes:
     def test_list(self, fake: Any) -> None:
         built, _ = fake
         status, body = _send(built, "GET", "/api/personas")
-        assert status == 200 and body["builtin_id"] == "gwen" and body["personas"]
+        assert status == 200
+        assert body["builtin_id"] == "gwen"
+        assert body["personas"]
 
     def test_create_update_delete(self, fake: Any) -> None:
         built, calls = fake
@@ -199,7 +201,8 @@ class TestPersonaRoutes:
     def test_a_non_object_body_is_400(self, fake: Any) -> None:
         built, calls = fake
         status, _ = _send(built, "POST", "/api/personas", ["x"])
-        assert status == 400 and calls == []
+        assert status == 400
+        assert calls == []
 
     def test_an_oversized_body_is_413(self) -> None:
         built = build(controls=_fake_controls([]), text_body_max_bytes=64)
@@ -234,13 +237,15 @@ class TestSettingsOnTheTextRoutes:
     def test_a_refused_setting_is_a_400_and_no_turn_runs(self, fake: Any) -> None:
         built, calls = fake
         status, body = _send(built, "POST", "/api/chat", {"message": "hi", "persona": "ghost"})
-        assert status == 400 and body["error"]["code"] == "unknown_persona"
+        assert status == 400
+        assert body["error"]["code"] == "unknown_persona"
         assert [c[0] for c in calls] == ["settings"]
 
     def test_a_non_string_setting_is_a_400_never_ignored(self, fake: Any) -> None:
         built, calls = fake
         status, _ = _send(built, "POST", "/api/chat", {"message": "hi", "language": 5})
-        assert status == 400 and calls == []
+        assert status == 400
+        assert calls == []
 
     def test_chat_without_settings_does_not_touch_them(self, fake: Any) -> None:
         built, calls = fake
@@ -265,7 +270,8 @@ class TestSettingsOnTheTextRoutes:
         built, calls = fake
         headers = built.headers(Content_Type="audio/wav", X_Persona="ghost")
         status, raw = built.request("POST", "/api/clip", body=b"RIFF", hdrs=headers)
-        assert status == 400 and json.loads(raw)["error"]["code"] == "unknown_persona"
+        assert status == 400
+        assert json.loads(raw)["error"]["code"] == "unknown_persona"
         assert [c[0] for c in calls] == ["settings"]
 
     def test_new_conversation_validates_then_ends_then_applies(self, fake: Any) -> None:
@@ -286,7 +292,8 @@ class TestSettingsOnTheTextRoutes:
     def test_a_refused_new_conversation_setting_ends_nothing(self, fake: Any) -> None:
         built, calls = fake
         status, body = _send(built, "POST", "/api/conversation/new", {"persona": "ghost"})
-        assert status == 400 and body["error"]["code"] == "unknown_persona"
+        assert status == 400
+        assert body["error"]["code"] == "unknown_persona"
         assert ("new",) not in calls
 
 
@@ -311,7 +318,8 @@ class TestAgainstTheDaemon:
     def test_persona_crud_through_the_store(self, live: Any) -> None:
         h, built = live
         status, body = _send(built, "POST", "/api/personas", PERSONA)
-        assert status == 200 and body["persona"]["id"] == "ada"
+        assert status == 200
+        assert body["persona"]["id"] == "ada"
         assert (
             _send(built, "PUT", "/api/personas/ada", {"name": "Ada2"})[1]["persona"]["name"]
             == "Ada2"
@@ -333,7 +341,8 @@ class TestAgainstTheDaemon:
         by_role = {r["role"]: r for r in body["roles"]}
         assert by_role["worker"]["voice"] == "unmeasured"
         assert by_role["worker"]["voice_p90_s"] is None
-        assert body["stale"] is False and body["age_s"] == 1.0
+        assert body["stale"] is False
+        assert body["age_s"] == 1.0
         assert body["conversation_role"] == "senses"
 
     def test_chat_settings_land_and_a_refusal_changes_nothing(self, live: Any) -> None:
@@ -378,10 +387,12 @@ class TestAgainstTheDaemon:
         status, body = _send(built, "GET", "/api/status")
         assert status == 200
         m = body["daemon"]["models"]
-        assert m["age_s"] == 1.0 and [r["role"] for r in m["roles"]] == ["senses", "worker"]
+        assert m["age_s"] == 1.0
+        assert [r["role"] for r in m["roles"]] == ["senses", "worker"]
         assert "voice_latency" in m
         (live_conv,) = [c for c in m["conversations"] if c["live"]]
-        assert live_conv["persona"] == "ada" and live_conv["role"] == "worker"
+        assert live_conv["persona"] == "ada"
+        assert live_conv["role"] == "worker"
 
     def test_the_language_override_composes_with_a_copy_and_is_recorded(self, live: Any) -> None:
         h, built = live
@@ -389,7 +400,8 @@ class TestAgainstTheDaemon:
         _send(built, "POST", "/api/chat", {"message": "hi", "persona": "ada", "language": "he"})
         assert h.app.personas.get("ada").language == "en"  # the stored persona is untouched
         records = models._assistant_records(h.state)
-        assert records[-1]["persona"] == "ada" and records[-1]["language"] == "he"
+        assert records[-1]["persona"] == "ada"
+        assert records[-1]["language"] == "he"
 
     def test_no_secret_or_key_is_in_any_response(self, live: Any) -> None:
         h, built = live
@@ -403,4 +415,5 @@ class TestAgainstTheDaemon:
             )[1].decode()
             seen.append(raw)
         for text in seen:
-            assert MARKER_SECRET not in text and MARKER_GATEWAY_KEY not in text
+            assert MARKER_SECRET not in text
+            assert MARKER_GATEWAY_KEY not in text

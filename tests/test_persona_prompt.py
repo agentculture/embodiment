@@ -34,14 +34,17 @@ def test_builtin_typed_differs_from_today_exactly_by_the_two_speech_lines():
     today = turn.SYSTEM_PROMPT.splitlines()
     typed = pp.compose_base(builtin_persona(), "typed").splitlines()
     assert typed[0] == today[0]
-    assert today[1] == "עני בעברית, במשפטים קצרים וטבעיים לדיבור." and typed[1] == "עני בעברית."
-    assert today[2].startswith("כל מה שתכתבי ייאמר") and len(typed) == len(today) - 1
+    assert today[1] == "עני בעברית, במשפטים קצרים וטבעיים לדיבור."
+    assert typed[1] == "עני בעברית."
+    assert today[2].startswith("כל מה שתכתבי ייאמר")
+    assert len(typed) == len(today) - 1
     assert today[3].replace("הבהרה קצרה", "הבהרה") == typed[2]
 
 
 def test_bad_path():
+    persona = builtin_persona()
     with pytest.raises(ValueError):
-        pp.compose_base(builtin_persona(), "x")
+        pp.compose_base(persona, "x")
 
 
 def test_non_default_order_and_no_fixed_brevity():
@@ -52,7 +55,9 @@ def test_non_default_order_and_no_fixed_brevity():
     assert "aloud" in lines[2]
     assert lines[-1] == "Be wry."
     low = s.lower()
-    assert "short" not in low and "brief" not in low and "קצר" not in s
+    assert "short" not in low
+    assert "brief" not in low
+    assert "קצר" not in s
 
 
 def test_length_line_between_language_and_speakability():
@@ -60,7 +65,8 @@ def test_length_line_between_language_and_speakability():
     assert lines[1] == "עני בעברית."
     assert lines[2].startswith("אורך")
     assert "ייאמר" in lines[3]
-    assert lines[4] == "אם משהו לא ברור, בקשי הבהרה במקום לנחש." and lines[5] == "T"
+    assert lines[4] == "אם משהו לא ברור, בקשי הבהרה במקום לנחש."
+    assert lines[5] == "T"
 
 
 def test_language_none_adds_no_language_line_and_typed_has_no_speakability():
@@ -88,7 +94,8 @@ def test_english_tool_prompts_keep_obligations():
     for k in ("search_library", "read_item", "fetch_source", "[n]", "YYYY-MM-DD"):
         assert k in en["LIBRARY"]
     assert "search_conversations" in en["CONVERSATIONS"]
-    assert "list_todos" in en["TODOS"] and "set_todo_done" in en["TODOS"]
+    assert "list_todos" in en["TODOS"]
+    assert "set_todo_done" in en["TODOS"]
 
 
 def test_tool_names_match_hebrew_originals():

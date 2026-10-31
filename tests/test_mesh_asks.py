@@ -27,7 +27,8 @@ def test_file_is_0600_and_survives_restart_with_answer(tmp_path):
     assert ask["expires_at"] - ask["posted_at"] == ma.DEFAULT_EXPIRY_S
     b2 = book(tmp_path, clock)  # restart
     got = b2.answer(NICK, "peer", "#room", f"{NICK}: me")
-    assert got["conversation_id"] == "conv1" and got["ask_id"] == ask["ask_id"]
+    assert got["conversation_id"] == "conv1"
+    assert got["ask_id"] == ask["ask_id"]
     assert b2.all()[0]["answers"][0]["sender"] == "peer"
     assert b2.all()[0]["status"] == ma.ANSWERED
 
@@ -53,8 +54,11 @@ def test_an_answer_in_the_thread_after_expiry_still_lands_marked(tmp_path):
     clock.t += ma.DEFAULT_EXPIRY_S + 1
     thread = next(a["thread"] for a in b.all())
     got = b.answer(NICK, "p", "#r", "here at last", thread=thread)
-    assert got is not None and got["conversation_id"] == "c"
-    assert got["after_expiry"] is True and got["late"] is True and got["rule"] == ma.RULE_THREAD
+    assert got is not None
+    assert got["conversation_id"] == "c"
+    assert got["after_expiry"] is True
+    assert got["late"] is True
+    assert got["rule"] == ma.RULE_THREAD
     assert ask is not None
 
 
@@ -66,7 +70,8 @@ def test_two_hour_late_answer_lands_marked_late(tmp_path):
     b.end_turn("t1")
     clock.t += 2 * 3600
     got = b.answer(NICK, "p", "#r", f"{NICK}, here")
-    assert got["late"] is True and got["ambiguous"] is False
+    assert got["late"] is True
+    assert got["ambiguous"] is False
 
 
 def test_answer_before_turn_end_is_not_late(tmp_path):
@@ -102,7 +107,8 @@ def test_ambiguous_and_most_recent(tmp_path):
     b.begin_turn("t2")
     b.open_ask("t2", "c2", "#r")
     got = b.answer(NICK, "p", "#r", f"{NICK}: x")
-    assert got["conversation_id"] == "c2" and got["ambiguous"] is True
+    assert got["conversation_id"] == "c2"
+    assert got["ambiguous"] is True
 
 
 def test_reply_to_msgid_wins(tmp_path):
@@ -112,7 +118,8 @@ def test_reply_to_msgid_wins(tmp_path):
     b.begin_turn("t2")
     b.open_ask("t2", "c2", "#r", msgid="m2")
     got = b.answer(NICK, "p", "#r", "no address", reply_to="m1")
-    assert got["conversation_id"] == "c1" and got["ambiguous"] is False
+    assert got["conversation_id"] == "c1"
+    assert got["ambiguous"] is False
 
 
 def test_one_ask_per_turn(tmp_path):
@@ -120,7 +127,8 @@ def test_one_ask_per_turn(tmp_path):
     b.begin_turn("t1")
     assert b.open_ask("t1", "c", "#r").ok
     r = b.open_ask("t1", "c", "#r")
-    assert not r.ok and r.refusal == ma.REFUSE_TURN_LIMIT
+    assert not r.ok
+    assert r.refusal == ma.REFUSE_TURN_LIMIT
     assert b.refusals[-1]["code"] == ma.REFUSE_TURN_LIMIT
 
 
@@ -169,7 +177,8 @@ def test_peer_answering_with_questions_yields_one_post_per_operator_turn(tmp_pat
 def test_unreadable_file_set_aside_never_raises(tmp_path):
     (tmp_path / ma.ASKS_NAME).write_text("{not json")
     b = book(tmp_path)
-    assert b.all() == [] and b.unreadable == 1
+    assert b.all() == []
+    assert b.unreadable == 1
     assert (tmp_path / (ma.ASKS_NAME + ".unreadable")).exists()
 
 
@@ -192,7 +201,8 @@ def test_thread_name_valid_and_matches_first(tmp_path):
     b.open_ask("t2", "c2", "#r")
     assert re.fullmatch(r"[a-zA-Z0-9]([a-zA-Z0-9-]{0,30}[a-zA-Z0-9])?", a1["thread"])
     got = b.answer(NICK, "p", "#r", "no address", reply_to="zzz", thread=a1["thread"])
-    assert got["conversation_id"] == "c1" and got["rule"] == ma.RULE_THREAD
+    assert got["conversation_id"] == "c1"
+    assert got["rule"] == ma.RULE_THREAD
     assert got["ambiguous"] is False
 
 

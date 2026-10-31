@@ -292,7 +292,8 @@ def test_registers_as_configured_nick_and_joins(ircd, started):
     assert ircd.sent("NICK") == ["NICK spark-gwen"]
     assert ircd.sent("CAP REQ") == ["CAP REQ :message-tags"]
     assert ircd.sent("USER")
-    assert "JOIN #general" in ircd.lines and "JOIN #gwen" in ircd.lines
+    assert "JOIN #general" in ircd.lines
+    assert "JOIN #gwen" in ircd.lines
     assert client.status()["message_tags"] is True
 
 
@@ -332,7 +333,9 @@ def test_nick_in_use_records_sends_nothing_and_stays_off(ircd, started):
     time.sleep(0.4)  # several backoff_max windows: no reconnect
     assert ircd.connections == 1
     assert len(ircd.lines) == before
-    assert not ircd.sent("PRIVMSG") and not ircd.sent("JOIN") and not ircd.sent("QUIT")
+    assert not ircd.sent("PRIVMSG")
+    assert not ircd.sent("JOIN")
+    assert not ircd.sent("QUIT")
     assert [d.code for d in client.degradations] == ["mesh-nick-taken"]
 
 
@@ -452,8 +455,10 @@ def test_inbound_channel_message_and_mention(ircd, started):
     ircd.push(":spark-ori!ori@h PRIVMSG #general :spark-gwenny is someone else")
     wait_for(lambda: len(got) == 4)
     assert [m.mention for m in got] == [False, True, True, False]
-    assert got[0].sender == "spark-ori" and got[0].channel == "#general"
-    assert got[0].text == "just chatting" and got[0].direct is False
+    assert got[0].sender == "spark-ori"
+    assert got[0].channel == "#general"
+    assert got[0].text == "just chatting"
+    assert got[0].direct is False
     assert (got[1].msgid, got[1].server_time) == ("m2", "t2")
     assert client.status()["counts"]["delivered"] == 4
 
@@ -462,8 +467,10 @@ def test_inbound_direct_message(ircd, started):
     _, got = _inbound(ircd, started)
     ircd.push(":thor-claude!c@h PRIVMSG spark-gwen :private hello")
     wait_for(lambda: len(got) == 1)
-    assert got[0].direct is True and got[0].mention is True
-    assert got[0].channel is None and got[0].target == "spark-gwen"
+    assert got[0].direct is True
+    assert got[0].mention is True
+    assert got[0].channel is None
+    assert got[0].target == "spark-gwen"
 
 
 def test_inbound_thread_tag_and_prefix_stripped(ircd, started):
@@ -654,4 +661,5 @@ def test_stdlib_only_and_no_subprocess():
         "embodiment",
     }
     assert imported <= allowed, imported - allowed
-    assert "subprocess" not in imported and "culture" not in imported
+    assert "subprocess" not in imported
+    assert "culture" not in imported

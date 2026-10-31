@@ -160,7 +160,8 @@ class TestPersonaPrompt:
         h.app.set_conversation_persona("ada")
         h.app.controls().chat(TYPED)
         (gwen, gwen_tools), (ada, ada_tools) = configs
-        assert gwen_tools == ada_tools and seen.tools[0] == seen.tools[1]
+        assert gwen_tools == ada_tools
+        assert seen.tools[0] == seen.tools[1]
         assert (gwen.identity, gwen.role, gwen.max_tokens, gwen.max_steps) == (
             ada.identity,
             ada.role,

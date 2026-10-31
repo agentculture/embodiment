@@ -453,7 +453,9 @@ class TestTrace:
 
         before = run(None)
         after = run("worker")
-        assert before["tts"] and before["stt"] and before["recall"]
+        assert before["tts"]
+        assert before["stt"]
+        assert before["recall"]
         assert after == before
 
 
@@ -527,7 +529,8 @@ class TestVoiceGate:
         h.app.set_conversation_role("worker")
         h.spawned.run_all()
         deadline = h.app.voice_latency.spoken_deadline("worker")
-        assert deadline is not None and deadline != 60.0
+        assert deadline is not None
+        assert deadline != 60.0
         gateway.requests.clear()
         h.app.attach_ear("host", FakeEndpoint())
         assert h.app.run_turn(SPEECH).spoken == REPLY
