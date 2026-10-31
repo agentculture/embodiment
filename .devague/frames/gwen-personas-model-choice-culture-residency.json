@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-10-31T07:09:13Z",
-  "updated": "2026-10-31T11:20:38Z",
+  "updated": "2026-10-31T19:21:56Z",
   "claims": [
     {
       "id": "c1",
@@ -1454,7 +1454,269 @@
       "refs": [],
       "origin": "llm",
       "status": "proposed"
+    },
+    {
+      "id": "l4",
+      "code": "grader-unverified",
+      "what": "The main agent committed and pushed 257eb99 with 1 failing test (test_no_silent_degradation): its gate chain piped pytest through tail, so the failure line printed but the && chain continued; fixed in the next commit and gates now run via a fail-fast script",
+      "skipped_check": "",
+      "refs": [],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l5",
+      "code": "grader-unverified",
+      "what": "The web tests for d4 and d5 (ChatLateAnswer.test.tsx, ChatLive.test.tsx, liveText.test.ts, chatResults.test.ts) were written after the code they test, not test-first; disclosed to the operator at the time, no mutation check was run on them",
+      "skipped_check": "write the failing test first, or mutation-check after",
+      "refs": [],
+      "origin": "llm",
+      "status": "proposed"
     }
   ],
-  "obligations": []
+  "obligations": [
+    {
+      "id": "o1",
+      "claim_id": "c6",
+      "seam": "personas store (embodiment/personas.py, /api/personas)",
+      "behavior": "a persona is operator-authored data in a private 0600 store; built-in Gwen is the default",
+      "source_text": "A persona is operator-authored data (name, language, style and length guidance, free prompt text, default model role) kept 0600 in the private state dir, created and edited through guarded /api/personas routes, and chosen per conversation; each turn's transcript record names the persona used",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o2",
+      "claim_id": "c20",
+      "seam": "persona language + per-conversation override",
+      "behavior": "language he/en/none is a persona setting a conversation can override",
+      "source_text": "Language is a persona setting with a per-conversation override: Hebrew, English or None (None sends no language line); Hebrew becomes optional and today's Gwen, Hebrew, stays the default persona (operator decisions q3 and 2026-10-31 mockup review)",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o3",
+      "claim_id": "c24",
+      "seam": "translate_via on the persona",
+      "behavior": "the translation hop is set explicitly on the persona, never inferred from a model name",
+      "source_text": "Whether a model needs the translation hop is set explicitly on the persona, never inferred from the model's name (CLAUDE.md: roles resolve by name, never by parsing model names)",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o4",
+      "claim_id": "c31",
+      "seam": "the model list (capabilities.py, /api/models)",
+      "behavior": "the offered roles equal the ready /v1/chat/completions roles of /capabilities",
+      "source_text": "The model list equals the set of /capabilities roles with path /v1/chat/completions and ready=true within one poll interval of at most 60 s, and a role that turns not-ready is greyed within the same interval",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o5",
+      "claim_id": "c51",
+      "seam": "the voice gate (voice_latency.py)",
+      "behavior": "senses is exempt; any other role speaks only after its latency is measured",
+      "source_text": "Spoken turns follow the conversation's persona and model (q8), gated by measurement: a role or translator combination is used for voice only after its spoken latency has been measured; choosing an unmeasured one starts a short automatic probe, typed turns work at once, a spoken turn on it waits for the probe or gets the distinct model-unavailable error, the model menu shows the measured speed, every real spoken turn adds to the measurement, and the voice deadline is derived from the measured p90 (lesson 1), never from senses' 60 s",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o6",
+      "claim_id": "c19",
+      "seam": "Gwen's own agentirc client (mesh_client.py)",
+      "behavior": "the daemon holds spark-gwen's connection, degrades and never raises",
+      "source_text": "Gwen's mesh presence is a resident spark-gwen whose persistent connection Gwen's own daemon holds (q1 = A): an attributed nick, mentions and replies arrive without polling, and every mesh message goes through Gwen's own turn path, so no harness backend and no second model ever speaks as her (operator decisions q2 and q1)",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o7",
+      "claim_id": "c38",
+      "seam": "mesh bounds (mesh_asks.py)",
+      "behavior": "one ask per turn, a mesh-started turn cannot ask, mesh turns rate-capped, open asks capped",
+      "source_text": "Mesh traffic is bounded: at most one ask per turn; a turn started by any mesh message (an answer or another agent's mention, q6 = c) can reply but never ask; a cap on open asks, each expiring after a derived window; a rate cap on turns started from the mesh; every bound that trips is a recorded degradation; two agents can never ping-pong through Gwen",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o8",
+      "claim_id": "c46",
+      "seam": "open asks across a restart",
+      "behavior": "asks are kept 0600 with their conversation and expire visibly, never dropped",
+      "source_text": "Open asks survive a daemon restart or expire visibly: they are kept 0600 under the state dir with their conversation and deadline, an answer arriving after a restart still lands in its conversation, and one past its window is shown as expired, never dropped silently",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o9",
+      "claim_id": "c21",
+      "seam": "the translation hop (translate.py)",
+      "behavior": "Hebrew in is translated to English for the chosen role and the reply back",
+      "source_text": "A persona may pair a model that does not speak Hebrew with a Gemma translation hop: Hebrew in is translated to English for that model and its answer translated back to Hebrew, and the trace names both roles (operator decision q3)",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o10",
+      "claim_id": "c37",
+      "seam": "a translated turn's tool arguments",
+      "behavior": "searches receive the operator's words; remember keeps them beside the model's fact (d6)",
+      "source_text": "With the translator on, the operator's own words stay the record: the verbatim ContextPacket.original, the transcript and any remember write keep the operator's Hebrew, and library and conversation searches are queried with the operator's text, never only with the model's English rendering",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o11",
+      "claim_id": "c25",
+      "seam": "embodiment mesh / doctor",
+      "behavior": "the CLI prints the resident setup and runs nothing",
+      "source_text": "Registering the spark-gwen resident (culture agents register, the server.yaml manifest) is the operator's provisioning act: the repo ships the agent definition and the commands, the way tunnel prints cultureflare commands and runs none",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o12",
+      "claim_id": "c36",
+      "seam": "persona_prompt.py tool prompts",
+      "behavior": "the tool prompts' language follows the persona",
+      "source_text": "The tool prompts' language follows the persona: REMEMBER_TOOL_PROMPT orders the confirmation 'always in spoken Hebrew, never in English' (app.py:598-599) and every tool prompt is Hebrew text, so freezing them byte-for-byte (c4) would make an English or None persona confirm in Hebrew; the obligation sentences stay fixed, their language line follows the persona, and the 5-of-5 measurement (d7) is re-run in English before an English persona is called supported",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o13",
+      "claim_id": "c13",
+      "seam": "ask_culture (mesh_tools.py)",
+      "behavior": "a turn can post one question as its own thread to an allow-listed channel",
+      "source_text": "Gwen can choose, inside a turn, to ask the mesh: an ask_culture tool posts the operator's question to an allow-listed channel and returns at once; the answer arrives later and is delivered to the page and, when the floor allows, spoken, through the existing unprompted path (daemon/recall_events.py) and a new event kind",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o14",
+      "claim_id": "c14",
+      "seam": "mesh text in the prompt",
+      "behavior": "answers from other agents enter fenced and attributed, never as instructions",
+      "source_text": "Mesh text is untrusted data: answers from other agents enter the prompt fenced and attributed the way recalled memory and library text do, never as instructions, and they cannot trigger remember, forget or set_todo_done without the operator's own words",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o15",
+      "claim_id": "c30",
+      "seam": "the composed prompt for the default persona",
+      "behavior": "spoken prompt byte-identical to v1; typed differs by exactly the two speech lines (d1)",
+      "source_text": "With the default persona selected, the composed system prompt for a spoken and for a typed turn is byte-identical to the prompt before this change, for 100% of the pinned prompt tests",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o16",
+      "claim_id": "c42",
+      "seam": "a continued conversation",
+      "behavior": "a conversation keeps its persona and model across restore",
+      "source_text": "A conversation keeps its persona and model across its life: continuing one (d5, Session.restore session.py:922 restores turns only today) reads them back from its log; a persona deleted or a role lobes stopped serving since then is a visible state with a switch, never a silent default; and a turn uses the persona as it was when the turn began",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o17",
+      "claim_id": "c22",
+      "seam": "an unavailable chosen role",
+      "behavior": "a distinct model-unavailable error, never a fallback to another model",
+      "source_text": "A chosen model that is unavailable fails the turn with its own error message, distinct from the models-down message, and the page offers to switch model; nothing falls back silently (operator decision q4)",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o18",
+      "claim_id": "c9",
+      "seam": "the turn trace",
+      "behavior": "every reply records chat_role, chat_model and chat_host as the gateway reported",
+      "source_text": "Every turn's trace records the role actually called and the model and host the gateway reported for it, and a chosen role that is unavailable (404 role_infeasible, 503 role_unverified, 429 shed) is a recorded degradation shown on the page, never a silent substitution",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o19",
+      "claim_id": "c43",
+      "seam": "bookkeeping calls",
+      "behavior": "summary and other bookkeeping stay on senses whatever the conversation's model",
+      "source_text": "Bookkeeping calls stay on senses whatever the conversation's model: the end-of-session summary (summarise, SUMMARY_PROMPT, 300 tokens, 5 s) and recall-side calls are not replies and keep their measured role and clocks",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o20",
+      "claim_id": "c45",
+      "seam": "status",
+      "behavior": "status shows the capabilities snapshot age and counters that move",
+      "source_text": "status shows what is alive, by counters that increment (lesson 3): the capabilities snapshot's age and the chat roles in it, each live conversation's persona and role, the mesh connection state and nick, and asks posted, answered and expired",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o21",
+      "claim_id": "c50",
+      "seam": "an agent contacts Gwen",
+      "behavior": "the page shows an 'agent is talking to Gwen' card and a mesh event at once",
+      "source_text": "When an agent contacts Gwen, the operator knows at once: an 'agent is talking to Gwen' card in the live conversation names the agent (as reported), shows its message and her reply as she sends it, and with live voice on and the floor free she says so aloud in a short spoken notice; a conversation with an agent is its own entry in the Conversations list, labelled with the agent's nick",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o22",
+      "claim_id": "c17",
+      "seam": "the web UI (mockup v2)",
+      "behavior": "the settings row under the dock and the Personas tab, built from the page's components",
+      "source_text": "The UI is designed first as a mockup artifact the operator approves, built from the page's own components and tokens (web/src/styles/app.css, library.css); persona, language and model are a small-font control row under the dock, where the page has room for more controls, opening menus upward; personas are edited in their own tab; no invented chrome such as a conversation header",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o23",
+      "claim_id": "c1",
+      "seam": "typed chat on the page with a chosen model (cortex)",
+      "behavior": "a long answer arrives without timing out, with reasoning live, and is recovered after the page was left",
+      "source_text": "Gwen becomes a configurable companion: the operator designs personas (style, length, language, prompt) and talks with one, picks the reply model per conversation from what the lobes gateway currently serves, and Gwen holds a residency on Culture chat where she can choose to ask the mesh a question and bring the answer back \u2014 with less brevity enforced by fixed prompt text",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o24",
+      "claim_id": "c8",
+      "seam": "per-conversation model choice, live",
+      "behavior": "any offered chat role can be chosen and answers the conversation",
+      "source_text": "The operator chooses the reply model per conversation from a list built from the gateway's GET /capabilities: every role whose path is /v1/chat/completions and that is ready, re-read on a poll because lobes publishes no change event; the choice is sent as the role name in the request's model field, never parsed from a model id",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o25",
+      "claim_id": "c34",
+      "seam": "the UI design artifact",
+      "behavior": "mockup v2 is the approved design",
+      "source_text": "The UI design is mockup v2 (artifact version 1793432718-7d11), approved by the operator on 2026-10-31 ('Perfect! We may need dimension adjustments, but the interactive UI is great'): layout and interactions are fixed, dimensions may be adjusted during implementation",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o26",
+      "claim_id": "c33",
+      "seam": "a live end-to-end mesh ask",
+      "behavior": "Gwen posts as spark-gwen, another agent answers, the answer reaches the conversation with its latency recorded",
+      "source_text": "At least 1 live end-to-end mesh ask on the rig: Gwen posts as spark-gwen to an allow-listed channel, another agent answers, and the answer reaches the same conversation on the page, with its latency recorded",
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "o27",
+      "claim_id": "c35",
+      "seam": "agentculture/culture",
+      "behavior": "Culture can register an external resident (issue agentculture/culture#506, open)",
+      "source_text": "Culture learns to register an external resident (an agent with a nick and a manifest entry but no harness backend); the ask is drafted as an issue for agentculture/culture and posted only on the operator's go-ahead (CLAUDE.md: propose to siblings, don't push)",
+      "origin": "llm",
+      "status": "proposed"
+    }
+  ]
 }

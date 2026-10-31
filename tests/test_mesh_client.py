@@ -12,7 +12,7 @@ import asyncio
 import threading
 import time
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Any, Callable, Optional
 
 import pytest
 
@@ -362,7 +362,10 @@ def test_send_privmsg_from_another_thread(ircd, started):
     assert results == [True]
     wait_for(lambda: ircd.sent("PRIVMSG #general"))
     assert ircd.sent("PRIVMSG #general") == ["PRIVMSG #general :שלום"]
-    assert client.status()["counts"]["sent"] == 1
+    # The server can see the line before the client's loop counts it (CI, PR #119):
+    # wait for the counter rather than read it once.
+    wait_for(lambda: client.status()["counts"]["sent"] >= 1)
+    assert client.status()["counts"]["sent"] == 1  # still shows a double count
 
 
 def test_send_splits_lines_and_never_injects(ircd, started):
@@ -461,7 +464,9 @@ def test_inbound_channel_message_and_mention(ircd, started):
     assert got[0].text == "just chatting"
     assert got[0].direct is False
     assert (got[1].msgid, got[1].server_time) == ("m2", "t2")
-    assert client.status()["counts"]["delivered"] == 4
+    # Counted after the callback returns, so it can trail ``got`` by a moment.
+    wait_for(lambda: client.status()["counts"]["delivered"] >= 4)
+    assert client.status()["counts"]["delivered"] == 4  # still shows a double count
 
 
 def test_inbound_direct_message(ircd, started):
@@ -679,3 +684,56 @@ def test_a_create_line_filled_to_the_budget_still_fits_the_server_bound(ircd, st
     assert lines[0].startswith("THREAD CREATE #general ask-1 :")
     assert all(len(line.encode()) + 2 <= mc.MAX_LINE_BYTES for line in lines)
     assert "".join(line.split(" :", 1)[1] for line in lines) == text
+
+
+# ── a line in flight is counted once, whatever ends the pump (review of #119) ──
+
+
+class _Writer:
+    def __init__(self, drain: Any) -> None:
+        self.written: list[bytes] = []
+        self._drain = drain
+
+    def write(self, data: bytes) -> None:
+        self.written.append(data)
+
+    async def drain(self) -> None:
+        await self._drain()
+
+
+def _pump_once(client: MeshClient, drain: Any, *, cancel: bool = False) -> None:
+    async def run() -> None:
+        outbox: "asyncio.Queue[str]" = asyncio.Queue()
+        outbox.put_nowait("PRIVMSG #general :hello")
+        task = asyncio.ensure_future(client._pump(outbox, _Writer(drain)))
+        if cancel:
+            await asyncio.sleep(0.05)
+            task.cancel()
+        with pytest.raises((ConnectionResetError, asyncio.CancelledError)):
+            await task
+
+    asyncio.run(run())
+
+
+def test_a_line_whose_drain_fails_is_a_dropped_send_not_lost(ircd: Any) -> None:
+    client = MeshClient(make_config(ircd))
+
+    async def broken() -> None:
+        raise ConnectionResetError("peer gone")
+
+    _pump_once(client, broken)
+    counts = client.status()["counts"]
+    assert counts["sent"] == 0
+    assert counts["dropped_sends"] == 1
+
+
+def test_a_line_whose_drain_is_cancelled_is_a_dropped_send_not_lost(ircd: Any) -> None:
+    client = MeshClient(make_config(ircd))
+
+    async def forever() -> None:
+        await asyncio.sleep(3600)
+
+    _pump_once(client, forever, cancel=True)
+    counts = client.status()["counts"]
+    assert counts["sent"] == 0
+    assert counts["dropped_sends"] == 1

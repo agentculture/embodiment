@@ -311,8 +311,7 @@ address the browser withholds what the guard needs to vouch for a cookie, and
 
 ## Personas, model choice and spark-gwen
 
-Unreleased (0.24.0, branch `feat/gwen-personas-models-mesh`); measured only where
-stated.
+Released in 0.24.0 (#117, merged 2026-10-31); measured only where stated.
 
 - **Personas.** The Personas tab (`/api/personas`) holds personas the operator
   writes: a private 0600 store, a language (`he`, `en` or `none`), a length and

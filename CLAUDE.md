@@ -116,7 +116,7 @@ with memory's 0.715. **gwen.culture.dev
 needs its own Cloudflare never-cache rule** (the culture.dev zone caches everything,
 overriding `no-store`); it has one since 2026-10-24.
 
-**Shipped on the `feat/gwen-personas-models-mesh` branch (0.24.0, unreleased;
+**Shipped in 0.24.0 (#117, merged to `main` 2026-10-31;
 spec `docs/specs/2026-10-31-gwen-personas-model-choice-culture-residency.md`):
 personas, a chosen model, a translator, and Gwen on the mesh.** The before-state,
 quoted from the code at the spec's export commit (`8182fa8`): `turn.py` had one
