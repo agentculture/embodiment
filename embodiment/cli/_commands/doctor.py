@@ -94,6 +94,24 @@ def _diagnose() -> dict[str, object]:
         }
     )
 
+    # 3. two identities: the repo's agent and the Gwen it ships share nothing.
+    own = f"spark-{fields['nick']}" if fields.get("nick") else "spark-embodiment"
+    gwen = "spark-gwen"
+    distinct = own != gwen
+    checks.append(
+        {
+            "id": "mesh_identities",
+            "passed": distinct,
+            "severity": "error",
+            "message": (
+                f"two identities: {own} (this repo's agent, culture.yaml entry, "
+                f"its own socket) and {gwen} (Gwen, not in culture.yaml, no socket "
+                "unless registered); they share no nick, socket or culture.yaml entry"
+            ),
+            "remediation": "" if distinct else "give Gwen a nick other than the repo agent's",
+        }
+    )
+
     healthy = all(c["passed"] for c in checks)
     return {"healthy": healthy, "checks": checks}
 

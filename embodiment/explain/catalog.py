@@ -451,6 +451,24 @@ of the command.
 """
 
 
+_MESH = """\
+# embodiment mesh
+
+Prints Gwen's culture-mesh identity and setup; runs nothing (no subprocess,
+no socket). Shows the nick (`spark-gwen`), the server, the channel allow-list
+(`#general`), the env names `EMBODIMENT_MESH`, `EMBODIMENT_MESH_NICK`,
+`EMBODIMENT_MESH_SERVER`, `EMBODIMENT_MESH_CHANNELS`, and the registration
+steps: connecting needs no registration (agentirc accepts any client whose nick
+starts with the server name; the daemon holds the connection itself), while
+listing Gwen as a culture resident is pending a culture-side change and is
+"not yet supported". This repo's own agent is `spark-embodiment`; the two share
+no nick, socket or `culture.yaml` entry.
+
+## Usage
+
+    embodiment mesh [--json]
+"""
+
 _TUNNEL = """\
 # embodiment tunnel
 
@@ -520,4 +538,5 @@ ENTRIES: dict[tuple[str, ...], str] = {
     ("stop",): _STOP,
     ("status",): _STATUS,
     ("tunnel",): _TUNNEL,
+    ("mesh",): _MESH,
 }

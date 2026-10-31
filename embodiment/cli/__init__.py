@@ -68,6 +68,7 @@ def _build_parser() -> argparse.ArgumentParser:
     from embodiment.cli._commands import history as _history_cmd
     from embodiment.cli._commands import learn as _learn_cmd
     from embodiment.cli._commands import memory as _memory_cmd
+    from embodiment.cli._commands import mesh as _mesh_cmd
     from embodiment.cli._commands import overview as _overview_cmd
     from embodiment.cli._commands import start as _start_cmd
     from embodiment.cli._commands import status as _status_cmd
@@ -102,6 +103,8 @@ def _build_parser() -> argparse.ArgumentParser:
     # Remote access (plan task t20): dry-run only, prints the cultureflare /
     # cloudflared commands. Never provisions or runs anything itself.
     _tunnel_cmd.register(sub)
+    # Gwen's culture-mesh identity (plan task t7): prints only.
+    _mesh_cmd.register(sub)
     # Memory producer verbs (ingest, forget): enqueue only, never touch the store.
     _memory_cmd.register(sub)
     # Past conversations (d5): read-only export that culture-rules pulls into the library.
