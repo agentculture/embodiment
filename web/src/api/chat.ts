@@ -37,7 +37,7 @@ export interface ChatReply {
 
 export type ChatOutcome =
   | { ok: true; value: ChatReply }
-  | { ok: false; code: string };
+  | { ok: false; code: string; /** the role a model-unavailable refusal names, when it says */ role?: string };
 
 export interface ChatClientOptions {
   basePath?: string;
@@ -45,6 +45,7 @@ export interface ChatClientOptions {
 }
 
 import { displayKind } from "./kinds";
+import { settingsBody, type ConversationSettings } from "./models";
 
 const str = (v: unknown): string => (typeof v === "string" ? v : "");
 const num = (v: unknown): number | null =>
@@ -89,6 +90,7 @@ export async function sendChat(
   secret: string,
   options: ChatClientOptions = {},
   conversation?: string,
+  settings: ConversationSettings = {},
 ): Promise<ChatOutcome> {
   const fetchFn = options.fetchFn ?? fetch;
   const basePath = options.basePath ?? "/api";
@@ -100,7 +102,7 @@ export async function sendChat(
       method: "POST",
       headers,
       // With a conversation id the turn continues that earlier conversation (d5).
-      body: JSON.stringify(conversation ? { message, conversation } : { message }),
+      body: JSON.stringify({ message, ...(conversation ? { conversation } : {}), ...settingsBody(settings) }),
     });
   } catch {
     return { ok: false, code: "network-error" };
@@ -114,8 +116,14 @@ export async function sendChat(
   const obj = body && typeof body === "object" ? (body as Record<string, unknown>) : null;
   if (!response.ok) {
     const err = obj && typeof obj.error === "object" && obj.error ? (obj.error as Record<string, unknown>) : null;
-    const code = err && typeof err.code === "string" ? err.code : "unparseable-response";
-    return { ok: false, code };
+    const code =
+      err && typeof err.code === "string"
+        ? err.code
+        : obj && typeof obj.code === "string"
+          ? obj.code
+          : "unparseable-response";
+    const named = [err?.role, obj?.role].find((r) => typeof r === "string" && r);
+    return { ok: false, code, ...(typeof named === "string" ? { role: named } : {}) };
   }
   const result =
     obj && typeof obj.result === "object" && obj.result ? (obj.result as Record<string, unknown>) : obj;

@@ -705,8 +705,8 @@ describe("App — every state from the committed event fixtures", () => {
     const health = within(bar).getByRole("status");
     const nav = within(bar).getByRole("navigation", { name: "Views" });
     const links = within(nav).getAllByRole("link");
-    expect(links.map((a) => a.textContent)).toEqual(["Ask", "Library", "To-dos", "Stats"]);
-    expect(links.map((a) => a.getAttribute("href"))).toEqual(["#ask", "#library", "#todos", "#stats"]);
+    expect(links.map((a) => a.textContent)).toEqual(["Ask", "Library", "To-dos", "Stats", "Personas"]);
+    expect(links.map((a) => a.getAttribute("href"))).toEqual(["#ask", "#library", "#todos", "#stats", "#personas"]);
     expect(brand.getAttribute("href")).toBe("#ask");
     expect(health).toHaveAttribute("data-status", "connecting");
 
@@ -1062,5 +1062,56 @@ describe("App — a public-host session with no secret (Access), end to end", ()
     expect(within(reader).getByText("first passage").closest("li")).toHaveAttribute("aria-current", "true");
     fireEvent.click(within(reader).getByRole("button", { name: "Close" }));
     expect(screen.queryByRole("complementary", { name: "Reader" })).toBeNull();
+  });
+});
+
+describe("App — personas and models (gwen-pm t16)", () => {
+  const personasBody = {
+    personas: [
+      { id: "gwen", name: "Gwen", language: "he", length: "unset", allow_formatting: false, translate_via: null, mesh_enabled: false, text: "", default_role: "senses" },
+    ],
+    builtin_id: "gwen",
+  };
+  const modelsBody = {
+    roles: [
+      { role: "senses", model: "Gemma", ready: true, host: "spark", voice: "measured", voice_p90_s: 1.1 },
+      { role: "worker", model: "Bolt", ready: true, host: "spark", voice: "unmeasured", voice_p90_s: null },
+    ],
+    stale: false, age_s: 3, conversation_role: "senses",
+  };
+
+  it("the dock row switches the model and the next question carries it; the Personas tab opens", async () => {
+    const chats: Record<string, unknown>[] = [];
+    globalThis.fetch = (async (url: RequestInfo | URL, init?: RequestInit) => {
+      const u = String(url);
+      if (u.endsWith("/api/personas")) return new Response(JSON.stringify(personasBody), { status: 200 });
+      if (u.endsWith("/api/models")) return new Response(JSON.stringify(modelsBody), { status: 200 });
+      if (u.endsWith("/api/chat")) {
+        chats.push(JSON.parse(String(init?.body)));
+        return new Response(JSON.stringify({ reply: "answer", sources: [], turn_serial: 1 }), { status: 200 });
+      }
+      if (u.endsWith("/api/conversations")) return new Response(JSON.stringify({ conversations: [] }), { status: 200 });
+      return new Response(JSON.stringify({ error: { code: "not-found" } }), { status: 404 });
+    }) as typeof fetch;
+    const source = renderApp(undefined, { drawer: false });
+    act(() => source.open());
+    const modelBtn = await screen.findByRole("button", { name: /Model/ });
+    await act(async () => {
+      fireEvent.click(modelBtn);
+    });
+    await act(async () => {
+      fireEvent.click(await screen.findByRole("option", { name: /worker/ }));
+    });
+    fireEvent.change(screen.getByLabelText("message"), { target: { value: "hi" } });
+    await act(async () => {
+      fireEvent.submit(screen.getByRole("form", { name: "composer" }));
+    });
+    expect(await screen.findByText("answer")).toBeInTheDocument();
+    expect(chats[0]).toMatchObject({ message: "hi", model: "worker" });
+    await act(async () => {
+      fireEvent.click(screen.getByRole("link", { name: "Personas" }));
+    });
+    expect(await screen.findByRole("heading", { name: "Personas", level: 1 })).toBeInTheDocument();
+    expect(await screen.findByRole("navigation", { name: "Personas" })).toBeInTheDocument();
   });
 });

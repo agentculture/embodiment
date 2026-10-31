@@ -2,6 +2,7 @@
 // pocketsync/web/static/index.html (#composer) and app.js:790-808 (composer wiring).
 // The recording and speech-to-speech logic is embodiment's own, not ported.
 import type { ChatSource } from "../api/chat";
+import type { ConversationSettings } from "../api/models";
 import { useRef, useState, type ReactNode } from "react";
 import { postClip, speakMessage, type AudioClientOptions, type ClipOrigin } from "../api/audio";
 
@@ -96,11 +97,13 @@ export interface AudioControlsProps {
   live?: ReactNode;
   /** The earlier conversation a recorded or uploaded question continues (d5). */
   conversation?: string;
+  /** Persona, model and language chosen for this conversation (sent as X-Persona/X-Model/X-Language). */
+  settings?: ConversationSettings;
   /** The typed half of the box (text and Send), placed after the mic. */
   children?: ReactNode;
 }
 
-export function AudioControls({ secret, onReply, clientOptions, live, conversation, children }: AudioControlsProps) {
+export function AudioControls({ secret, onReply, clientOptions, live, conversation, settings, children }: AudioControlsProps) {
   const [recording, setRecording] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -110,7 +113,7 @@ export function AudioControls({ secret, onReply, clientOptions, live, conversati
 
   async function send(clip: Blob, origin: ClipOrigin, atMs: number, durationS?: number) {
     setBusy(true);
-    const out = await postClip(clip, secret, clientOptions, durationS, conversation, origin, atMs);
+    const out = await postClip(clip, secret, clientOptions, durationS, conversation, origin, atMs, settings);
     if (out.ok) {
       setError(null);
       onReply({ transcript: out.transcript, reply: out.reply, turnSerial: out.turnSerial, sources: out.sources });
