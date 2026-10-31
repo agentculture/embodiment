@@ -11,6 +11,10 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - The delivery record for the 0.24.0 cycle (#117): `docs/deliveries/2026-10-31-gwen-personas-model-choice-culture-residency.md`, and the /validate-delivery records (obligations o1-o27, evidence e1-e27, deltas b1-b7, lapses l4-l5), all proposed for the operator's adjudication. The run is partial: t19's live mesh ask (c33) and the published acceptance are still open, and worker (Bolt) fails live (e26).
 
+### Fixed
+
+- tests/test_mesh_client.py waits for the client's sent and delivered counters instead of reading them once: both are counted after the write or the callback, so a loaded runner saw 0 (CI on PR #119).
+
 ## [0.24.0] - 2026-10-31
 
 ### Added
