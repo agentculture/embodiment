@@ -196,6 +196,12 @@ def _valid_id(conversation_id: Any) -> bool:
     )
 
 
+def _mesh_agent(row: dict[str, Any]) -> Optional[str]:
+    """The nick of the agent a mesh turn came from, or None."""
+    nick = row.get("mesh_agent")
+    return nick.strip() if isinstance(nick, str) and nick.strip() else None
+
+
 def _turns(path: Path) -> list[dict[str, Any]]:
     """The user/assistant turns of one log, in order; [] if it cannot be read."""
     try:
@@ -222,6 +228,7 @@ def _turns(path: Path) -> list[dict[str, Any]]:
                 "via": _via(row),
                 "recording": _recording(row.get("recording")),
                 "timestamps": _stamps(row.get("timestamps")),
+                "mesh_agent": _mesh_agent(row),
             }
         )
     return turns
@@ -240,6 +247,7 @@ def _summary(conversation_id: str, turns: list[dict[str, Any]], current: bool) -
         "last": max(stamps) if stamps else None,
         "turns": sum(1 for t in turns if t["role"] == "user"),
         "current": current,
+        "agent": next((t["mesh_agent"] for t in turns if t.get("mesh_agent")), None),
     }
 
 

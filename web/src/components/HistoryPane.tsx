@@ -109,6 +109,7 @@ export function HistoryPane({ secret = "", clientOptions, openId, refreshKey = 0
                 aria-current={openId === c.id ? "true" : undefined}
                 onClick={() => onOpen(c)}
               >
+                {c.agent && <span className="nick">{c.agent}</span>}
                 <span className="row-title" dir="auto">
                   {c.title || "Untitled"}
                 </span>

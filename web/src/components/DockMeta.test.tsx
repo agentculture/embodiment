@@ -30,6 +30,12 @@ function setup(over: Partial<React.ComponentProps<typeof DockMeta>> = {}) {
 }
 
 describe("DockMeta", () => {
+  it("shows the open-asks count only when there are open asks", () => {
+    const { rerender } = setup({ openAsks: 2 });
+    expect(screen.getByText(/open asks/i).closest(".meta-btn")).toHaveTextContent("Open asks 2");
+    rerender(<DockMeta personas={personas} builtinId="gwen" models={models} settings={{}} onChange={() => {}} openAsks={0} />);
+    expect(screen.queryByText(/open asks/i)).toBeNull();
+  });
   it("shows Persona, Language and Model with their current values; labels sit outside dir=auto", () => {
     setup({ settings: { persona: "p1", model: "worker" } });
     const persona = screen.getByRole("button", { name: /Persona/ });
