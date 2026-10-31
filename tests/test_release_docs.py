@@ -332,3 +332,12 @@ def test_surface_describes_personas_models_and_the_mesh(
     text = " ".join(request.getfixturevalue(surface).lower().split())
     missing = [term for term in PERSONA_MESH_TERMS if term not in text]
     assert not missing, f"{surface} lacks {missing}"
+
+
+def test_the_personas_section_says_released_not_a_branch() -> None:
+    """Review of #119: after #117 merged, the docs still called 0.24.0 unreleased."""
+    readme = (_REPO_ROOT / "README.md").read_text(encoding="utf-8")
+    root = (_REPO_ROOT / "embodiment" / "explain" / "catalog.py").read_text(encoding="utf-8")
+    for text in (readme, root):
+        assert "Released in 0.24.0 (#117" in text
+        assert "Unreleased (0.24.0" not in text

@@ -768,11 +768,21 @@ class MeshClient:
                 pass
 
     async def _pump(self, outbox: "asyncio.Queue[str]", writer: asyncio.StreamWriter) -> None:
+        """Write queued lines. A message line taken off the queue is counted exactly once:
+        ``sent`` when its drain completes, ``dropped_sends`` when a failed or cancelled
+        drain ends the pump with it in flight (teardown counts only what is still queued;
+        review of #119, lesson 3)."""
         while True:
             line = await outbox.get()
-            writer.write((line + "\r\n").encode("utf-8"))
-            await writer.drain()
-            if line.startswith(("PRIVMSG", "THREAD")):
+            counted = line.startswith(("PRIVMSG", "THREAD"))
+            try:
+                writer.write((line + "\r\n").encode("utf-8"))
+                await writer.drain()
+            except BaseException:
+                if counted:
+                    self._count("dropped_sends")
+                raise
+            if counted:
                 self._count("sent")
 
     async def _read_registered(
