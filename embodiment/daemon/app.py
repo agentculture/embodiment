@@ -209,7 +209,8 @@ from embodiment.personas import BUILTIN_ID, Persona, PersonaStore, builtin_perso
 from embodiment.realtime import wire
 from embodiment.realtime.client import RealtimeConfig, RealtimeEars
 from embodiment.session import ASK_RECORD_TYPE, PERSONA_FIELD, Session, default_ask_detector
-from embodiment.tools import BOUND_REGISTRY_ATTR, ToolRegistry, bind_tools
+from embodiment.tools import BOUND_REGISTRY_ATTR, ToolRegistry, ToolSpec, bind_tools
+from embodiment.translate import OriginalText, bind_original, translated_complete
 from embodiment.turn import (
     DEGRADED_SEAM_ABORTED,
     FALLBACK_TEXT,
@@ -307,6 +308,9 @@ __all__ = [
     "CHAT_MODEL_FIELD",
     "CHAT_HOST_FIELD",
     "VOICE_GATE_FIELD",
+    "TRANSLATE_VIA_FIELD",
+    "CHAT_LATENCY_FIELD",
+    "TRANSLATE_LATENCY_FIELD",
     "voice_gate_text",
     "text_model_unavailable_text",
     "ENV_HTTP_BIND",
@@ -947,6 +951,21 @@ CHAT_MODEL_FIELD = "chat_model"
 CHAT_HOST_FIELD = "chat_host"
 #: On a gated spoken turn's record: the voice-latency state that gated it.
 VOICE_GATE_FIELD = "voice_gate"
+#: On a translated turn's record (t13): the role that translated, and the seconds the
+#: chosen role and the translator each spent over the turn's completions.
+TRANSLATE_VIA_FIELD = "translate_via"
+CHAT_LATENCY_FIELD = "chat_latency"
+TRANSLATE_LATENCY_FIELD = "translate_latency"
+#: The tool arguments a translated turn replaces with the operator's own words (t13,
+#: c37): what is stored and what is searched is what the operator said, never the
+#: chosen model's English. Ids (``read_passage``, ``set_todo_done``) pass through.
+ORIGINAL_ARGUMENTS: dict[str, tuple[str, ...]] = {
+    REMEMBER_TOOL_NAME: ("fact",),
+    library_tools.SEARCH_TOOL: ("query",),
+    conversations_module.SEARCH_TOOL: ("query",),
+}
+#: A persona's ``language`` as the translator's target; ``none`` keeps v1's Hebrew.
+TRANSLATION_LANGUAGES = {"he": "Hebrew", "en": "English"}
 #: At most this many conversations keep a chosen role in memory (as for personas).
 CONVERSATION_ROLES_KEPT = CONVERSATION_PERSONAS_KEPT
 #: The longest gateway error body read to classify a refusal; the codes are short.
@@ -2184,6 +2203,8 @@ class _VoiceTurn:
     target: Optional["_ChatTarget"] = None
     #: True once the chosen role refused this turn (t12): nothing is asked again.
     unavailable: bool = False
+    #: The turn's translation (t13), set by its first translated completion.
+    translation: Optional["_Translation"] = None
 
 
 @dataclass(eq=False)
@@ -2220,6 +2241,30 @@ class _TextTurn:
     #: The conversation's model, snapshotted when the turn began (t12).
     target: Optional["_ChatTarget"] = None
     unavailable: bool = False
+    translation: Optional["_Translation"] = None
+
+
+@dataclass(eq=False)
+class _Translation:
+    """ONE turn's translation hop (t13): who translates, into what, what it cost.
+
+    *pinned* holds the operator's own words for the turn's tool executors
+    (:data:`ORIGINAL_ARGUMENTS`): the turn's query, set by the daemon, never read back
+    from a message the loop composed.
+    """
+
+    via: str
+    language: str
+    pinned: OriginalText
+    chat_latency: float = 0.0
+    translate_latency: float = 0.0
+
+    def trace(self) -> dict[str, Any]:
+        return {
+            TRANSLATE_VIA_FIELD: self.via,
+            CHAT_LATENCY_FIELD: round(self.chat_latency, 3),
+            TRANSLATE_LATENCY_FIELD: round(self.translate_latency, 3),
+        }
 
 
 @dataclass(frozen=True)
@@ -3699,7 +3744,7 @@ class DaemonApp:
                         **timing.to_dict(),
                         "timestamps": stamps(stamp(STAMP_GENERATED, time.time())),
                         PERSONA_FIELD: turn.persona_id,
-                        **_target_trace(turn.target),
+                        **_target_trace(turn.target, turn.translation),
                     },
                 ),
                 APP_TURN_FAILED,
@@ -3749,7 +3794,8 @@ class DaemonApp:
         """
         persona = persona if persona is not None else builtin_persona()
         target = target or self._default_target()
-        bound, tools = self._turn_tools(collector)
+        translation = self._turn_translation(persona, query)
+        bound, tools = self._turn_tools(collector, translation, target)
         complete, refused = _stop_after_refusal(bound)
         config = TurnConfig(
             role=target.role,
@@ -4600,7 +4646,7 @@ class DaemonApp:
     def _typed_trace(self) -> dict[str, Any]:
         """The running typed turn's role/model/host, for its assistant record."""
         turn = getattr(self._tls, "text_turn", None)
-        return _target_trace(turn.target) if turn is not None else {}
+        return _target_trace(turn.target, turn.translation) if turn is not None else {}
 
     def _maybe_probe(self, role: str) -> None:
         """Start ONE background voice-latency probe of *role* when it is unmeasured.
@@ -4783,21 +4829,52 @@ class DaemonApp:
 
         return replace(spec, fn=counted)
 
-    def _turn_tools(self, collector: Optional[Any]) -> tuple[Callable[..., Any], ToolRegistry]:
+    def _turn_tools(
+        self,
+        collector: Optional[Any],
+        translation: Optional[_Translation] = None,
+        target: Optional[_ChatTarget] = None,
+    ) -> tuple[Callable[..., Any], ToolRegistry]:
         """The completion seam and registry for ONE completion.
 
-        No collector (every voice turn, c39; every turn with no library): the shared
-        registry, exactly as before the library. With one, a registry built for this
-        turn — the memory tools plus ``search_library``/``read_passage`` closed over
-        the turn's own collector — bound to the raw seam so the schemas reach the wire.
+        No collector (every voice turn, c39; every turn with no library) and no
+        translation: the shared registry, exactly as before the library. With one, a
+        registry built for this turn — the memory tools plus ``search_library``/
+        ``read_passage`` closed over the turn's own collector — bound to the raw seam
+        so the schemas reach the wire.
+
+        A translated turn (t13) binds the same tools to the translated seam
+        (:meth:`_translated_seam`), each executor named in :data:`ORIGINAL_ARGUMENTS`
+        wrapped with :func:`bind_original` so it receives the operator's own words.
         """
         lane, past = self._library, self._conversations
         todos = self._todos_available()
-        if collector is None or (lane is None and past is None and not todos) or self._seam is None:
+        if self._seam is None:
+            return self._complete, self._tools
+        if translation is None and (
+            collector is None or (lane is None and past is None and not todos)
+        ):
             return self._complete, self._tools
         registry = ToolRegistry()
+        pinned = translation.pinned if translation is not None else None
+
+        def add(spec: ToolSpec) -> None:
+            registry.add(spec if pinned is None else _with_original(spec, pinned))
+
         for spec in self._tools.specs.values():
-            registry.add(spec)
+            add(spec)
+        if collector is not None:
+            self._add_library_tools(add, collector)
+        seam = (
+            self._seam
+            if translation is None
+            else self._translated_seam(self._seam, translation, target or self._default_target())
+        )
+        return bind_tools(seam, registry), registry
+
+    def _add_library_tools(self, add: Callable[[ToolSpec], Any], collector: Any) -> None:
+        """A typed turn's library, to-do and past-conversation tools, counted."""
+        lane, past = self._library, self._conversations
         if lane is not None:
             for spec in library_tools.build_retrieve_tools(
                 _RecordedRetrieve(self, lane.retrieve),
@@ -4806,21 +4883,21 @@ class DaemonApp:
                 collector,
                 chunks=lane.chunks,
             ):
-                registry.add(self._counted(spec))
+                add(self._counted(spec))
             for spec in reading_module.build_document_reading_tools(
                 self._recorded_documents, collector, fetch=lane.fetch
             ):
-                registry.add(self._counted(spec))
-        if todos:
+                add(self._counted(spec))
+        if self._todos_available():
             for spec in todos_module.build_todo_tools(
                 list_items=self._todo_items,
                 set_done=lambda todo_id, done: self._set_todo(todo_id, done, todos_module.BY_GWEN),
                 asked=self._operator_asks_to_mark,
                 render=self._render_todos,
             ):
-                registry.add(self._counted(spec))
+                add(self._counted(spec))
         if past is not None:
-            registry.add(
+            add(
                 self._counted(
                     conversations_module.build_conversation_tool(
                         past.index,
@@ -4831,7 +4908,73 @@ class DaemonApp:
                     )
                 )
             )
-        return bind_tools(self._seam, registry), registry
+
+    def _turn_translation(self, persona: Persona, query: str) -> Optional[_Translation]:
+        """The running turn's translation when *persona* has ``translate_via`` set (t13).
+
+        One per turn: a turn's later completions (remainder, tool rounds) reuse it, so
+        its latencies add up on the turn's record. ``None`` without ``translate_via``;
+        also ``None``, recorded, when the daemon was handed a prebound seam (the
+        translator cannot be put in front of it).
+        """
+        via = persona.translate_via
+        if not via:
+            return None
+        if self._seam is None:
+            self._record(
+                APP_BOOTSTRAP_DEGRADED,
+                "translation: the seam is prebound; translate_via was not applied",
+                once=True,
+            )
+            return None
+        turn: Any = self._text_turn_here() or self._voice_turn_here()
+        existing = getattr(turn, "translation", None)
+        if isinstance(existing, _Translation) and existing.via == via:
+            return existing
+        pinned = OriginalText()
+        pinned.original = query  # the operator's words, never a loop-composed message
+        translation = _Translation(
+            via=via,
+            language=TRANSLATION_LANGUAGES.get(persona.language, "Hebrew"),
+            pinned=pinned,
+        )
+        if turn is not None:
+            turn.translation = translation
+        return translation
+
+    def _translated_seam(
+        self, raw: Callable[..., Any], translation: _Translation, target: _ChatTarget
+    ) -> Callable[..., ModelResponse]:
+        """:func:`translated_complete` over the daemon's seam: the chosen role answers in
+        English under its own bound, ``translate_via`` translates under the text
+        completion deadline (one completion each), and both latencies land on the turn.
+        """
+        holder = self._role_holder
+
+        def chosen(messages: list[dict[str, Any]], tools: Any = None) -> ModelResponse:
+            with holder.using(target.role, target.deadline):
+                return raw(messages, tools)
+
+        def senses(messages: list[dict[str, Any]], tools: Any = None) -> ModelResponse:
+            with holder.using(translation.via, self._config.completion_deadline):
+                return raw(messages)  # no tool schema reaches the translator
+
+        inner = translated_complete(
+            chosen,
+            senses,
+            chosen_role=target.role,
+            senses_role=translation.via,
+            language=translation.language,
+            clock=self._clock,
+        )
+
+        def seam(messages: list[dict[str, Any]], tools: Any = None) -> ModelResponse:
+            reply = inner(messages, tools)
+            translation.chat_latency += reply.chosen_latency
+            translation.translate_latency += reply.translate_latency
+            return reply
+
+        return seam
 
     def _todos_available(self) -> bool:
         """The to-do tools are bound when the library is: the to-dos are its items."""
@@ -7303,13 +7446,36 @@ def _logged_field(path: Any, name: str) -> Optional[str]:
     return None
 
 
-def _target_trace(target: Optional[_ChatTarget]) -> dict[str, Any]:
-    """An assistant record's role/model/host fields (plus the gate when one held)."""
+def _with_original(spec: ToolSpec, pinned: OriginalText) -> ToolSpec:
+    """*spec* with :func:`bind_original` over its :data:`ORIGINAL_ARGUMENTS` (t13).
+
+    A tool not named there is returned unchanged. The registry calls ``fn(**args)``
+    and :func:`bind_original` wraps an ``executor(args)``, so the two are adapted here.
+    """
+    keys = ORIGINAL_ARGUMENTS.get(spec.name)
+    if not keys:
+        return spec
+    inner = spec.fn
+    bound = bind_original(lambda arguments: inner(**arguments), pinned, keys=keys)
+
+    def fn(**arguments: Any) -> Any:
+        return bound(arguments)
+
+    return replace(spec, fn=fn)
+
+
+def _target_trace(
+    target: Optional[_ChatTarget], translation: Optional[_Translation] = None
+) -> dict[str, Any]:
+    """An assistant record's role/model/host fields (plus the gate when one held, and
+    the translator and both latencies when the turn was translated, t13)."""
     if target is None:
         return {}
     trace = target.trace()
     if target.gate is not None:
         trace[VOICE_GATE_FIELD] = target.gate
+    if translation is not None:
+        trace.update(translation.trace())
     return trace
 
 
