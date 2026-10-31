@@ -208,14 +208,16 @@ def build_mesh_tools(
     off a call is a recorded refusal. *record* receives every refusal code.
     """
     note = record or (lambda code: None)
-    recorder_faults: list[str] = []
 
     def refuse(code: str) -> str:
+        result: dict[str, Any] = {"status": "refused", "code": code}
         try:
             note(code)
         except Exception:  # noqa: BLE001  # a recorder fault must not turn a refusal into a raise
-            recorder_faults.append(REFUSE_RECORD_FAULT)  # counted, never silent
-        return json.dumps({"status": "refused", "code": code})
+            # Never silent: the fault rides in the tool result, which the turn's trace
+            # keeps (review of #117: it went into a list nothing read).
+            result["record_fault"] = REFUSE_RECORD_FAULT
+        return json.dumps(result)
 
     def ask_culture(question: Any = None, channel: Any = None) -> str:
         return _ask_culture(config, book, post, refuse, turn_id, conversation_id, question, channel)

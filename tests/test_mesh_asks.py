@@ -236,3 +236,28 @@ def test_a_failed_post_closes_its_ask_and_frees_the_open_slot(tmp_path):
     thread = opened[0]["thread"]
     got = b.answer(NICK, "p", "#r", "x", thread=thread)
     assert got is None or got["ask_id"] != opened[0]["ask_id"]
+
+
+def test_a_server_notice_is_never_an_answer(tmp_path):
+    """Review of #117, finding 3: t19 saw 'spark-gwen joined #general' from system-spark.
+    A system- sender is the server, never an agent answering Gwen -- not even in-thread."""
+    b = book(tmp_path)
+    b.begin_turn("t1")
+    ask = b.open_ask("t1", "c", "#general").ask
+    assert b.answer(NICK, "system-spark", "#general", f"{NICK} joined #general") is None
+    assert b.answer(NICK, "SYSTEM-spark", "#general", f"Welcome {NICK}") is None
+    assert b.answer(NICK, "system-spark", "#general", "x", thread=ask["thread"]) is None
+    assert b.answer(NICK, "spark-ada", "#general", f"{NICK}: it is noon") is not None
+
+
+def test_a_message_that_matches_nothing_does_not_rewrite_the_file(tmp_path):
+    """Review of #117, finding 10: answer() saved mesh-asks.json on every unmatched message."""
+    b = book(tmp_path)
+    b.begin_turn("t1")
+    b.open_ask("t1", "c", "#r")
+    path = tmp_path / ma.ASKS_NAME
+    before = path.stat().st_mtime_ns
+    os.utime(path, ns=(before - 10**9, before - 10**9))
+    stamped = path.stat().st_mtime_ns
+    assert b.answer(NICK, "p", "#r", "unrelated chatter") is None
+    assert path.stat().st_mtime_ns == stamped

@@ -90,3 +90,24 @@ def test_the_store_is_bounded_oldest_first(harness: Any, monkeypatch: Any) -> No
         h.app.controls().chat(TYPED, None, f"req-{n:016d}")
     states = [h.app.controls().chat_result(f"req-{n:016d}")["state"] for n in range(3)]
     assert states == ["unknown", "done", "done"]
+
+
+def test_a_turn_that_raises_is_done_with_a_failure_not_pending_forever(
+    harness: Any, monkeypatch: Any
+) -> None:
+    """Review of #117: the pending entry was only replaced on return, so a raise left it
+    pending and the page said 'Still working' forever."""
+    h = harness()
+
+    def boom(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("session error")
+
+    monkeypatch.setattr(h.app, "_chat_outcome", boom)
+    try:
+        h.app.controls().chat(TYPED, None, RID)
+    except RuntimeError:
+        pass
+    stored = h.app.controls().chat_result(RID)
+    assert stored["state"] == "done"
+    assert stored["result"]["ok"] is False
+    assert stored["result"]["code"] == app_module.APP_CHAT_TURN_FAILED

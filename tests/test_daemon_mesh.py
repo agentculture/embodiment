@@ -629,6 +629,31 @@ class TestNickRetry:
         assert h.app.status()["mesh"]["nick_retries"] == 1
         assert app_module.APP_MESH_NICK_TAKEN not in h.ledger_codes()
 
+    def test_a_retry_that_got_her_back_is_available_again_on_a_later_drop(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        """Review of #117, finding 7: the one retry was once per daemon LIFETIME, so a
+        second blip (day 2) left her off the mesh until a restart."""
+        clients: list[_StubClient] = []
+
+        def factory(cfg: MeshConfig, cb: Any) -> _StubClient:
+            client = _StubClient("registered", registrations=1)
+            clients.append(client)
+            return client
+
+        lane = _lane(tmp_path, MeshConfig(), factory=factory, nick_retry_wait_s=0.05)
+        h = _wired(harness, lane)
+        h.app.start()
+        wait_for(lambda: h.app.status()["mesh"]["state"] == "registered")
+        clients[0].state = "nick-taken"
+        wait_for(lambda: len(clients) == 2)
+        wait_for(lambda: h.app.status()["mesh"]["state"] == "registered")
+        time.sleep(0.1)  # the tick sees her up again
+        clients[1].state = "nick-taken"  # the next day's blip
+        wait_for(lambda: len(clients) == 3)
+        assert h.app.status()["mesh"]["nick_retries"] == 2
+        assert app_module.APP_MESH_NICK_TAKEN not in h.ledger_codes()
+
     def test_a_433_that_persists_is_recorded(self, harness: Any, tmp_path: Path) -> None:
         clients: list[_StubClient] = []
 

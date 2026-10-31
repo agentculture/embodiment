@@ -28,6 +28,7 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - A failing capabilities degrade hook is counted instead of silently swallowed.
 - Saving a persona no longer reports 'Could not save (unparseable-response)': the page reads the daemon's {persona: ...} reply.
 - An agent conversation's row in the history pane lays out nick, title and time instead of overlapping.
+- Review of #117 (/code-review medium): a named chat whose turn raised is stored as failed, never left pending; a translated turn shows only the chosen model's reasoning live (the translator's text and the English draft are not her answer); a server (system-) notice never answers an ask; an unreadable personas.json is set aside (personas.json.unreadable) before a save would replace it; the mesh nick-retry is available again after she is back up; translations are cached per conversation (no text translated twice, her earlier replies reach the model as their English drafts); live spoken turns on a measured role add voice-latency samples, a deadline cut-off kept as a censored sample at the deadline; a failing ask-refusal recorder is reported in the tool result; an unmatched mesh message no longer rewrites mesh-asks.json.
 
 ## [0.23.5] - 2026-10-31
 

@@ -45,7 +45,9 @@ injected.
 from __future__ import annotations
 
 import re
+import threading
 import time
+from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Callable, Optional
 
@@ -180,8 +182,13 @@ def translated_complete(
     language: str = "Hebrew",
     original: Optional[OriginalText] = None,
     clock: Callable[[], float] = time.monotonic,
+    cache: Optional["TranslationCache"] = None,
 ) -> Callable[..., TranslatedResponse]:
-    """Wrap *chosen* so it reads English and answers in *language*; see the module doc."""
+    """Wrap *chosen* so it reads English and answers in *language*; see the module doc.
+
+    With *cache* (one per conversation) no text is translated twice: not in the loop's
+    next step, not on the next turn; and Gwen's own earlier replies reach the chosen
+    model as the English drafts they were translated from (review of #117)."""
     return _TranslatedSeam(
         chosen,
         senses,
@@ -190,7 +197,32 @@ def translated_complete(
         language=language,
         context=original if original is not None else OriginalText(),
         clock=clock,
+        cache=cache,
     ).seam
+
+
+class TranslationCache:
+    """Translations already made, by ``(prompt, text)``; and each English draft by the
+    reply it became. Bounded, least recently used first out. Thread-safe."""
+
+    def __init__(self, max_entries: int = 512) -> None:
+        self._max = max(1, int(max_entries))
+        self._items: "OrderedDict[tuple[Any, ...], str]" = OrderedDict()
+        self._lock = threading.Lock()
+
+    def get(self, key: tuple[Any, ...]) -> Optional[str]:
+        with self._lock:
+            value = self._items.get(key)
+            if value is not None:
+                self._items.move_to_end(key)
+            return value
+
+    def put(self, key: tuple[Any, ...], value: str) -> None:
+        with self._lock:
+            self._items[key] = value
+            self._items.move_to_end(key)
+            while len(self._items) > self._max:
+                self._items.popitem(last=False)
 
 
 class _TranslatedSeam:
@@ -207,6 +239,7 @@ class _TranslatedSeam:
         language: str,
         context: OriginalText,
         clock: Callable[[], float],
+        cache: Optional[TranslationCache] = None,
     ) -> None:
         self._chosen = chosen
         self._senses = senses
@@ -215,9 +248,21 @@ class _TranslatedSeam:
         self._language = language
         self._context = context
         self._clock = clock
+        self._cache = cache
         self._usage: list[ModelResponse] = []
 
     def _say(self, system: str, text: str, spent: list[float]) -> str:
+        key = ("say", system, text)
+        if self._cache is not None:
+            known = self._cache.get(key)
+            if known is not None:
+                return known
+        out = self._say_now(system, text, spent)
+        if self._cache is not None:
+            self._cache.put(key, out)
+        return out
+
+    def _say_now(self, system: str, text: str, spent: list[float]) -> str:
         start = self._clock()
         reply = self._senses(
             [{"role": "system", "content": system}, {"role": "user", "content": text}]
@@ -271,6 +316,10 @@ class _TranslatedSeam:
                     self._context.original, self._context.english = text, english
             elif role in ("tool", "system") and text and "<<<BEGIN" in text:
                 copy["content"] = self._to_english(text, spent, fences_only=True)
+            elif role == "assistant" and text and self._cache is not None:
+                draft = self._cache.get(("draft", text))
+                if draft is not None:  # known: her English draft; unknown passes through
+                    copy["content"] = draft
             out_messages.append(copy)
         return out_messages
 
@@ -286,7 +335,10 @@ class _TranslatedSeam:
         chosen_latency = self._clock() - start
         content = reply.content
         if not reply.tool_calls and (content or "").strip():
-            content = self._say(FROM_ENGLISH_PROMPT.format(language=self._language), content, spent)
+            draft = content
+            content = self._say(FROM_ENGLISH_PROMPT.format(language=self._language), draft, spent)
+            if self._cache is not None:
+                self._cache.put(("draft", content), draft)  # her reply -> its English draft
         usage = self._usage
         return TranslatedResponse(
             content=content,

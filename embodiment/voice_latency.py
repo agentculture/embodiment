@@ -253,14 +253,20 @@ class VoiceLatency:
         completion_s: Any,
         translate_via: Any = None,
         first_token_s: Any = None,
+        censored: bool = False,
     ) -> bool:
-        """Record one latency (a probe call or a live spoken turn); False if not kept."""
+        """Record one latency (a probe call or a live spoken turn); False if not kept.
+
+        *censored*: the call was cut off at *completion_s* (its deadline), so the true
+        latency was at least that; kept, so a slow rig raises the p90 (lesson 1)."""
         key = combo_key(role, translate_via)
         if key is None or not _num(completion_s):
             return False
         sample: dict[str, Any] = {"completion_s": float(completion_s), "at": self._wall()}
         if _num(first_token_s):
             sample["first_token_s"] = float(first_token_s)
+        if censored:
+            sample["censored"] = True
         with self._lock:
             data = self._load()
             rec = self._rec(data, key)

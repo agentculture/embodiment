@@ -170,3 +170,20 @@ def test_prompt_lines_short_fixed_two_languages():
     assert len(mt.MESH_PROMPT_LINE_EN) < 250
     assert len(mt.MESH_PROMPT_LINE_HE) < 250
     assert any("א" <= c <= "ת" for c in mt.MESH_PROMPT_LINE_HE)
+
+
+def test_a_failing_refusal_recorder_is_reported_in_the_result_not_swallowed(tmp_path):
+    """Review of #117, finding 10: the fault went into a list nothing read."""
+    cfg = MeshConfig(enabled=False, channels=CHANNELS)
+    book = mesh_asks.AskBook(tmp_path / mesh_asks.ASKS_NAME)
+    book.begin_turn("t1")
+
+    def broken(code):
+        raise RuntimeError("ledger gone")
+
+    (spec,) = mt.build_mesh_tools(
+        cfg, book, Poster(), turn_id="t1", conversation_id="c1", record=broken
+    )
+    out = call(spec, question="q")
+    assert out["status"] == "refused"
+    assert out["record_fault"] == mt.REFUSE_RECORD_FAULT

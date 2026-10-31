@@ -92,6 +92,10 @@ def thread_name(ask_id: str) -> str:
     return f"{THREAD_PREFIX}{ask_id}"
 
 
+#: The nick prefix agentirc reserves for the server's own notices.
+SYSTEM_SENDER_PREFIX = "system-"
+
+
 def _addresses(text: str, own_nick: str) -> bool:
     nick = re.escape(own_nick)
     return re.search(rf"(?<![\w-]){nick}(?![\w-])", text, re.IGNORECASE) is not None
@@ -107,7 +111,12 @@ def match_answer(
     reply_to: Optional[str] = None,
     thread: Optional[str] = None,
 ) -> Optional[Match]:
-    """The one matching rule (see the module docstring). ``None`` when nothing matches."""
+    """The one matching rule (see the module docstring). ``None`` when nothing matches.
+
+    A ``system-`` sender is the server (join notices, welcomes), never an agent answering:
+    it matches nothing, not even in an ask's own thread (t19 live; review of #117)."""
+    if sender.lower().startswith(SYSTEM_SENDER_PREFIX):
+        return None
     open_asks = [a for a in asks if a.get("status") == OPEN and now < a["expires_at"]]
     # Exact matches also reach an ask that expired (or was already answered): a late
     # answer in the ask's own thread is still that ask's answer.
@@ -213,10 +222,14 @@ class AskBook:
             return False
         return True
 
-    def _expire(self, asks: dict[str, dict[str, Any]], now: float) -> None:
+    def _expire(self, asks: dict[str, dict[str, Any]], now: float) -> bool:
+        """Mark the asks whose time ran out; whether any changed."""
+        changed = False
         for ask in asks.values():
             if ask["status"] == OPEN and now >= ask["expires_at"]:
                 ask["status"] = EXPIRED  # shown, never dropped
+                changed = True
+        return changed
 
     def _refuse(self, code: str, **fields: Any) -> Result:
         self.refusals.append({"code": code, "at": self._clock(), **fields})
@@ -324,12 +337,13 @@ class AskBook:
         with self._lock:
             now = self._clock()
             asks = self._load()
-            self._expire(asks, now)
+            expired = self._expire(asks, now)
             m = match_answer(
                 list(asks.values()), own_nick, sender, channel, text, now, reply_to, thread
             )
             if m is None:
-                self._save(asks)
+                if expired:  # only a real change is written (review of #117)
+                    self._save(asks)
                 return None
             ask = asks[m.ask_id]
             if len(ask["answers"]) < MAX_ANSWERS_PER_ASK:

@@ -138,6 +138,7 @@ class PersonaStore:
         if self._personas is not None:
             return self._personas
         out: dict[str, Persona] = {}
+        before = len(self.degradations)
         try:
             data = json.loads(self._path.read_text(encoding="utf-8"))
         except (FileNotFoundError, NotADirectoryError):
@@ -155,8 +156,31 @@ class PersonaStore:
                     self._degrade("persona_record_duplicate")
                 else:
                     out[persona.id] = persona
+        if len(self.degradations) > before:
+            # Something on disk was not loaded; the next save would replace it. Keep the
+            # original beside it first (review of #117, finding 8), as voice_latency and
+            # mesh_asks do.
+            self._set_aside()
         self._personas = out
         return out
+
+    def _set_aside(self) -> None:
+        """Copy the file as it is to ``<name>.unreadable`` (``.1``, ``.2``... when taken), 0600."""
+        try:
+            raw = self._path.read_bytes()
+        except OSError:
+            return  # nothing readable to keep; personas_unreadable is already recorded
+        base = self._path.with_name(f"{self._path.name}.unreadable")
+        target, n = base, 0
+        while target.exists():
+            n += 1
+            target = base.with_name(f"{base.name}.{n}")
+        try:
+            fd = os.open(target, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+            with os.fdopen(fd, "wb") as handle:
+                handle.write(raw)
+        except OSError:
+            self._degrade("personas_set_aside_failed")
 
     def _records(self, data: Any) -> list[Any]:
         if not isinstance(data, dict) or data.get("schema_version") != SCHEMA_VERSION:

@@ -208,3 +208,49 @@ def test_module_never_takes_or_inspects_a_model_id():
         mod = getattr(n, "module", None) or ""
         names = [a.name for a in n.names]
         assert not any("daemon" in x for x in [mod, *names]), mod
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "{not json",
+        json.dumps({"schema_version": 999, "personas": [{"id": "ada", "name": "Ada"}]}),
+    ],
+)
+def test_an_unreadable_file_is_set_aside_before_a_save_replaces_it(
+    tmp_path: Path, content: str
+) -> None:
+    """Review of #117, finding 8: it loaded as empty and the next save destroyed it."""
+    path = tmp_path / "personas.json"
+    path.write_text(content, encoding="utf-8")
+    store = personas.PersonaStore(path)
+    store.create(name="New")
+    aside = tmp_path / "personas.json.unreadable"
+    assert aside.read_text(encoding="utf-8") == content
+    assert stat.S_IMODE(aside.stat().st_mode) == 0o600
+
+
+def test_a_second_bad_file_never_overwrites_the_first_set_aside(tmp_path: Path) -> None:
+    path = tmp_path / "personas.json"
+    (tmp_path / "personas.json.unreadable").write_text("first", encoding="utf-8")
+    path.write_text("{second", encoding="utf-8")
+    personas.PersonaStore(path).create(name="New")
+    assert (tmp_path / "personas.json.unreadable").read_text(encoding="utf-8") == "first"
+    assert (tmp_path / "personas.json.unreadable.1").read_text(encoding="utf-8") == "{second"
+
+
+def test_a_dropped_record_keeps_the_original_file_aside(tmp_path: Path) -> None:
+    path = tmp_path / "personas.json"
+    good = {"id": "ada", "name": "Ada"}
+    original = json.dumps({"schema_version": personas.SCHEMA_VERSION, "personas": [good, 7]})
+    path.write_text(original, encoding="utf-8")
+    personas.PersonaStore(path).create(name="New")
+    assert (tmp_path / "personas.json.unreadable").read_text(encoding="utf-8") == original
+
+
+def test_a_clean_file_sets_nothing_aside(tmp_path: Path) -> None:
+    path = tmp_path / "personas.json"
+    store = personas.PersonaStore(path)
+    store.create(name="A")
+    personas.PersonaStore(path).create(name="B")
+    assert not list(tmp_path.glob("*.unreadable*"))

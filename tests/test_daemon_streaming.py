@@ -313,3 +313,77 @@ def test_only_a_typed_turn_streams_a_spoken_turn_keeps_its_total_bound(monkeypat
     with holder.using("cortex", 60.0, stream=True):
         seam([{"role": "user", "content": "typed"}])
     assert [c["body"].get("stream", False) for c in calls] == [False, True]
+
+
+# ── a translated turn's live text (review of #117, finding 1) ────────────────
+
+
+def test_a_translated_turn_shows_only_the_chosen_models_reasoning_live(harness: Any) -> None:
+    """The translator's calls (the operator's words and recall into English, the reply
+    back) and the chosen model's English draft are not Gwen's answer: only the chosen
+    model's reasoning reaches the page live; every call still streams (silence bound)."""
+    from embodiment.translate import OriginalText
+
+    h = harness()
+    holder = h.app._role_holder
+    seen: list[tuple[str, bool]] = []
+
+    def raw(messages: Any, tools: Any = None) -> ModelResponse:
+        role = holder.current()[0]
+        seen.append((role, holder.streams()))
+        sink = holder.sink()
+        if sink is not None:
+            sink(app_module.STREAM_STEP, "")
+            sink("reasoning", f"{role} thinks")
+            sink("content", f"{role} says")
+        text = "Hello there." if role == "worker" else "שלום."
+        return ModelResponse(content=text, prompt_tokens=1, completion_tokens=1)
+
+    translation = app_module._Translation(via="senses", language="he", pinned=OriginalText())
+    target = app_module._ChatTarget(role="worker", deadline=30.0)
+    seam = h.app._translated_seam(raw, translation, target)
+    got: list[tuple[str, str]] = []
+    with (
+        holder.using("worker", 30.0, stream=True),
+        holder.streaming(lambda c, t: got.append((c, t))),
+    ):
+        seam([{"role": "system", "content": "s"}, {"role": "user", "content": "שלום"}])
+    assert {r for r, _ in seen} == {"senses", "worker"}
+    assert all(streams for _, streams in seen)
+    assert ("reasoning", "worker thinks") in got
+    assert not [t for c, t in got if c == "content"]
+    assert not [t for _, t in got if t.startswith("senses")]
+
+
+def test_a_conversations_turns_share_one_translation_cache(harness: Any) -> None:
+    """Review of #117, finding 6: each turn's seam re-translated the whole history."""
+    from embodiment.translate import OriginalText
+
+    h = harness()
+    calls: list[str] = []
+
+    def raw(messages: Any, tools: Any = None) -> ModelResponse:
+        role = h.app._role_holder.current()[0]
+        if role == "senses":
+            calls.append(messages[-1]["content"])
+            return ModelResponse(content=f"EN({messages[-1]['content']})")
+        return ModelResponse(content="draft")
+
+    target = app_module._ChatTarget(role="worker", deadline=30.0)
+
+    def turn(conversation: str, window: list[str]) -> None:
+        cache = h.app._translation_cache(conversation, "senses", "Hebrew")
+        translation = app_module._Translation(
+            via="senses", language="Hebrew", pinned=OriginalText(), cache=cache
+        )
+        h.app._translated_seam(raw, translation, target)(
+            [{"role": "user", "content": t} for t in window]
+        )
+
+    turn("c1", ["one"])
+    turn("c1", ["one", "two"])
+    turn("c2", ["one"])  # another conversation translates on its own
+    assert [c for c in calls if c != "draft"].count("one") == 2
+    assert h.app._translation_cache("c1", "senses", "Hebrew") is h.app._translation_cache(
+        "c1", "senses", "Hebrew"
+    )

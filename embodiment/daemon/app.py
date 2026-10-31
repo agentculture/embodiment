@@ -221,7 +221,12 @@ from embodiment.realtime import wire
 from embodiment.realtime.client import RealtimeConfig, RealtimeEars
 from embodiment.session import ASK_RECORD_TYPE, PERSONA_FIELD, Session, default_ask_detector
 from embodiment.tools import BOUND_REGISTRY_ATTR, ToolRegistry, ToolSpec, bind_tools
-from embodiment.translate import OriginalText, bind_original, translated_complete
+from embodiment.translate import (
+    OriginalText,
+    TranslationCache,
+    bind_original,
+    translated_complete,
+)
 from embodiment.turn import (
     DEGRADED_SEAM_ABORTED,
     FALLBACK_TEXT,
@@ -991,6 +996,10 @@ APP_TEXT_MODEL_UNAVAILABLE = "app-text-model-unavailable"
 #: outlives its HTTP request and is recoverable after the page was left). Count-bounded,
 #: oldest dropped first; in memory, so a restart forgets them (the log keeps the turn).
 MAX_CHAT_RESULTS = 128
+#: Conversations whose translations are kept (each cache is itself bounded).
+TRANSLATION_CACHES_KEPT = 16
+#: A named typed turn raised before it answered; its stored result says so (not pending).
+APP_CHAT_TURN_FAILED = "app-chat-turn-failed"
 #: The page's request id: a token, never a path or free text.
 CHAT_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}\Z")
 
@@ -1980,6 +1989,16 @@ class _LiveText:
         )
 
 
+def _reasoning_only(sink: Callable[[str, str], None]) -> Callable[[str, str], None]:
+    """*sink*, passed only step markers and reasoning (a translated turn's chosen role)."""
+
+    def feed(channel: str, piece: str) -> None:
+        if channel in (STREAM_STEP, "reasoning"):
+            sink(channel, piece)
+
+    return feed
+
+
 def _join_tool_calls(calls: dict[int, dict[str, Any]], pieces: Any) -> int:
     """Fold streamed tool-call pieces into *calls* by index; the characters added."""
     added = 0
@@ -2071,8 +2090,9 @@ class RoleHolder:
         return getattr(self._tls, "sink", None)
 
     @contextlib.contextmanager
-    def streaming(self, sink: Callable[[str, str], None]) -> Any:
-        """Feed every streamed piece of the completions inside this block to *sink*."""
+    def streaming(self, sink: Optional[Callable[[str, str], None]]) -> Any:
+        """Feed every streamed piece of the completions inside this block to *sink*
+        (``None``: to nothing, inside a block that otherwise would)."""
         previous = getattr(self._tls, "sink", None)
         self._tls.sink = sink
         try:
@@ -2675,6 +2695,8 @@ class _Translation:
     pinned: OriginalText
     chat_latency: float = 0.0
     translate_latency: float = 0.0
+    #: The conversation's translations (review of #117): no text translated twice.
+    cache: Optional[TranslationCache] = None
 
     def trace(self) -> dict[str, Any]:
         return {
@@ -2934,6 +2956,9 @@ class DaemonApp:
         self._recall_seen: "OrderedDict[str, _RecallSeen]" = OrderedDict()
         self._text_turns_recent: deque[_TextTurn] = deque(maxlen=_TEXT_TURN_MEMORY)
         self._chat_results: "OrderedDict[str, Optional[dict[str, Any]]]" = OrderedDict()
+        self._translation_caches: "OrderedDict[tuple[str, str, str], TranslationCache]" = (
+            OrderedDict()
+        )
         #: Earlier conversations reopened for continuing (d5), least recent first.
         self._resumed: OrderedDict[str, Any] = OrderedDict()
         #: The operator's personas (t11) and each conversation's chosen persona id,
@@ -4283,6 +4308,11 @@ class DaemonApp:
         translation = self._turn_translation(persona, query)
         bound, tools = self._turn_tools(collector, translation, target)
         complete, refused = _stop_after_refusal(bound)
+        if path == "voice" and target.role != self._config.role and target.gate is None:
+            # A measured spoken role (senses is exempt; a gated one does not speak): every
+            # live completion is a sample, so the p90 its deadline is derived from follows
+            # the rig (review of #117, finding 9).
+            complete = self._timed_spoken(complete, target, translation)
         # Answers from the mesh enter beside recall, fenced and attributed (c14).
         here = self._turn_here()
         mesh_block = here.mesh_block if here is not None else ""
@@ -4754,6 +4784,13 @@ class DaemonApp:
         self._tls.chat_request_id = rid
         try:
             result = self._chat_outcome(message, conversation)
+        except BaseException:
+            if rid is not None:  # never left pending: the page would wait forever
+                failed = dict.fromkeys(CHAT_RESULT_FIELDS)
+                self._keep_chat_result(
+                    rid, {**failed, "ok": False, "code": APP_CHAT_TURN_FAILED, "sources": []}
+                )
+            raise
         finally:
             self._tls.chat_request_id = None
         if rid is not None:
@@ -5692,6 +5729,44 @@ class DaemonApp:
                 )
             )
 
+    def _timed_spoken(
+        self, complete: Callable[..., Any], target: _ChatTarget, translation: Any
+    ) -> Callable[..., Any]:
+        """*complete*, each call timed into the voice-latency store for *target*'s role.
+
+        A call cut off by its deadline is kept as a censored sample AT the deadline; a
+        refusal or any other failure is no sample (it measured nothing about speed)."""
+        store = self._voice_latency
+        via = getattr(translation, "via", None)
+
+        def timed(messages: Any, *args: Any, **kwargs: Any) -> Any:
+            start = self._clock()
+            try:
+                reply = complete(messages, *args, **kwargs)
+            except BaseException as exc:
+                if _is_timeout(exc):
+                    store.add_sample(target.role, target.deadline, via, censored=True)
+                raise
+            store.add_sample(target.role, self._clock() - start, via)
+            return reply
+
+        registry = getattr(complete, BOUND_REGISTRY_ATTR, None)
+        if registry is not None:
+            setattr(timed, BOUND_REGISTRY_ATTR, registry)
+        return timed
+
+    def _translation_cache(self, conversation: str, via: str, language: str) -> TranslationCache:
+        """The one cache of *conversation*'s translations by *via* into *language*."""
+        key = (conversation, via, language)
+        with self._lock:
+            cache = self._translation_caches.get(key)
+            if cache is None:
+                cache = self._translation_caches[key] = TranslationCache()
+            self._translation_caches.move_to_end(key)
+            while len(self._translation_caches) > TRANSLATION_CACHES_KEPT:
+                self._translation_caches.popitem(last=False)
+            return cache
+
     def _turn_translation(self, persona: Persona, query: str) -> Optional[_Translation]:
         """The running turn's translation when *persona* has ``translate_via`` set (t13).
 
@@ -5716,10 +5791,13 @@ class DaemonApp:
             return existing
         pinned = OriginalText()
         pinned.original = query  # the operator's words, never a loop-composed message
+        language = TRANSLATION_LANGUAGES.get(persona.language, "Hebrew")
+        conversation = str(getattr(turn, "mesh_conversation", "") or "")
         translation = _Translation(
             via=via,
-            language=TRANSLATION_LANGUAGES.get(persona.language, "Hebrew"),
+            language=language,
             pinned=pinned,
+            cache=self._translation_cache(conversation, via, language),
         )
         if turn is not None:
             turn.translation = translation
@@ -5733,13 +5811,29 @@ class DaemonApp:
         completion deadline (one completion each), and both latencies land on the turn.
         """
         holder = self._role_holder
+        # Live text (d5): the translator's calls carry the operator's words and recall
+        # into English and the reply back -- none of it is Gwen's answer -- and the
+        # chosen role's English draft is not the answer the operator gets. So only the
+        # chosen role's REASONING reaches the page; both still stream when the turn
+        # does, so their clocks bound silence (review of #117, finding 1).
+        # Read at call time: the seam may be built before the turn's block opens.
 
         def chosen(messages: list[dict[str, Any]], tools: Any = None) -> ModelResponse:
-            with holder.using(target.role, target.deadline):
+            page = holder.sink()
+            only = _reasoning_only(page) if page is not None else None
+            with (
+                holder.using(target.role, target.deadline, stream=holder.streams()),
+                holder.streaming(only),
+            ):
                 return raw(messages, tools)
 
         def senses(messages: list[dict[str, Any]], tools: Any = None) -> ModelResponse:
-            with holder.using(translation.via, self._config.completion_deadline):
+            with (
+                holder.using(
+                    translation.via, self._config.completion_deadline, stream=holder.streams()
+                ),
+                holder.streaming(None),
+            ):
                 return raw(messages)  # no tool schema reaches the translator
 
         inner = translated_complete(
@@ -5749,6 +5843,7 @@ class DaemonApp:
             senses_role=translation.via,
             language=translation.language,
             clock=self._clock,
+            cache=translation.cache,
         )
 
         def seam(messages: list[dict[str, Any]], tools: Any = None) -> ModelResponse:
@@ -6539,6 +6634,10 @@ class DaemonApp:
             return
         self._mesh_health = health
         if health == "up":
+            # Registered again: a later drop may use the r7 retry again (review of #117,
+            # finding 7 -- it was once per daemon lifetime). Still once per drop: a retry
+            # that meets 433 again is recorded, never looped.
+            self._mesh_retried = False
             self._publish("state", {"component": "mesh", "status": "online"})
             return
         records = tuple(getattr(client, "degradations", ()) or ())
@@ -8894,6 +8993,14 @@ def _target_trace(
     if translation is not None:
         trace.update(translation.trace())
     return trace
+
+
+def _is_timeout(exc: BaseException) -> bool:
+    """A socket or urllib timeout, however it is wrapped."""
+    if isinstance(exc, TimeoutError):
+        return True
+    reason = getattr(exc, "reason", None)
+    return isinstance(reason, TimeoutError)
 
 
 def _stop_after_refusal(

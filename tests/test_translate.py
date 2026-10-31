@@ -220,3 +220,68 @@ def test_no_network_imports():
         for a in (n.names if isinstance(n, ast.Import) else [ast.alias(name=n.module or "")])
     }
     assert not names & {"urllib", "http", "socket", "requests", "ssl"}
+
+
+# ── the translation cache (review of #117, finding 6) ────────────────────────
+
+
+def _translations(senses) -> list[str]:
+    return [c[-1]["content"] for c in senses.calls]
+
+
+def test_a_tool_round_does_not_translate_the_same_text_twice():
+    senses = make_senses()
+    seam = translated_complete(
+        Fake(reply="ok"),
+        senses,
+        chosen_role="w",
+        senses_role="s",
+        cache=translate.TranslationCache(),
+    )
+    msgs = [{"role": "system", "content": FENCE}, {"role": "user", "content": "שלום"}]
+    seam(msgs)
+    seam(msgs)  # the loop's next step: same window
+    to_english = [t for t in _translations(senses) if t != "ok"]
+    assert to_english.count("שלום") == 1
+    assert len([t for t in to_english if "shalom" in t]) == 1
+
+
+def test_a_shared_cache_spares_the_history_on_the_next_turn():
+    senses = make_senses()
+    cache = translate.TranslationCache()
+    first = translated_complete(
+        Fake(reply="a"), senses, chosen_role="w", senses_role="s", cache=cache
+    )
+    first([{"role": "user", "content": "one"}])
+    second = translated_complete(
+        Fake(reply="b"), senses, chosen_role="w", senses_role="s", cache=cache
+    )
+    second([{"role": "user", "content": "one"}, {"role": "user", "content": "two"}])
+    assert _translations(senses).count("one") == 1
+
+
+def test_her_own_earlier_reply_reaches_the_model_as_her_english_draft():
+    senses = make_senses()
+    cache = translate.TranslationCache()
+    chosen = Fake(reply="the sky is blue")
+    seam = translated_complete(chosen, senses, chosen_role="w", senses_role="s", cache=cache)
+    hebrew = seam([{"role": "user", "content": "q"}]).content  # HE(the sky is blue)
+    seam(
+        [
+            {"role": "user", "content": "q"},
+            {"role": "assistant", "content": hebrew},
+            {"role": "assistant", "content": "unknown earlier reply"},
+            {"role": "user", "content": "why?"},
+        ]
+    )
+    sent = chosen.calls[-1]
+    assert sent[1]["content"] == "the sky is blue"
+    assert sent[2]["content"] == "unknown earlier reply"  # not known: passes through, no call
+
+
+def test_the_cache_is_bounded():
+    cache = translate.TranslationCache(max_entries=2)
+    for n in range(3):
+        cache.put(("en", False, str(n)), "x")
+    assert cache.get(("en", False, "0")) is None
+    assert cache.get(("en", False, "2")) == "x"

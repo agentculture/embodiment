@@ -538,6 +538,36 @@ class TestVoiceGate:
         assert request["body"]["model"] == "worker"
         assert request["timeout"] == deadline
 
+    def test_a_live_spoken_turn_adds_a_sample_so_the_p90_follows_the_rig(
+        self, harness: Any, tmp_path: Path, gateway: Gateway
+    ) -> None:
+        """Review of #117, finding 9: only the probe ever recorded, so the p90 froze at
+        probe time while the docstring said live turns keep adding samples."""
+        h = _wired(harness, tmp_path)
+        h.app.set_conversation_role("worker")
+        h.spawned.run_all()
+        before = h.app.voice_latency.snapshot()["worker"]["n"]
+        h.app.attach_ear("host", FakeEndpoint())
+        h.app.run_turn(SPEECH)
+        assert h.app.voice_latency.snapshot()["worker"]["n"] == before + 1
+
+    def test_a_spoken_completion_cut_off_by_its_deadline_is_a_censored_sample(
+        self, harness: Any, tmp_path: Path, gateway: Gateway
+    ) -> None:
+        """Lesson 1: a call cut at the deadline took AT LEAST that long; dropping it
+        would bias the p90 low exactly when the rig is slow."""
+        h = _wired(harness, tmp_path)
+        h.app.set_conversation_role("worker")
+        h.spawned.run_all()
+        deadline = h.app.voice_latency.spoken_deadline("worker")
+        gateway.fail = TimeoutError("timed out")
+        h.app.attach_ear("host", FakeEndpoint())
+        h.app.run_turn(SPEECH)
+        store = h.app.voice_latency
+        samples = json.loads(store._path.read_text(encoding="utf-8"))["worker"]["samples"]
+        assert samples[-1]["censored"] is True
+        assert samples[-1]["completion_s"] == deadline
+
     def test_status_reports_the_role_the_snapshot_and_latency(
         self, harness: Any, tmp_path: Path, gateway: Gateway
     ) -> None:
