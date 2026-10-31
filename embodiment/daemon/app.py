@@ -5918,7 +5918,7 @@ class DaemonApp:
             )
         if matched is not None:
             self._mesh_answer_arrived(message, matched)
-        elif message.mention:
+        elif _mesh_addressed(message):
             self._mesh_agent_turn(message)
 
     def _mesh_answer_arrived(self, message: MeshMessage, matched: Mapping[str, Any]) -> None:
@@ -8459,6 +8459,18 @@ def _logged_field(path: Any, name: str) -> Optional[str]:
             if isinstance(value, str) and value:
                 return value
     return None
+
+
+def _mesh_addressed(message: MeshMessage) -> bool:
+    """Whether an inbound message is someone talking TO Gwen, so it earns a turn.
+
+    Addressed (a DM, or a line starting with her nick) and not from a ``system-`` nick,
+    which agentirc reserves for the server itself. A notice that only names her is not a
+    turn (t19 live, 2026-10-31: she answered three join notices on #general).
+    """
+    return bool(getattr(message, "addressed", False)) and not message.sender.lower().startswith(
+        "system-"
+    )
 
 
 def _mesh_health_of(state: str) -> Optional[str]:

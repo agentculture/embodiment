@@ -2,7 +2,7 @@
   "plan_slug": "gwen-personas-model-choice-culture-residency",
   "schema_version": 2,
   "created": "2026-10-31T09:53:28Z",
-  "updated": "2026-10-31T09:58:40Z",
+  "updated": "2026-10-31T12:49:45Z",
   "deviations": [
     {
       "id": "d1",
@@ -33,6 +33,19 @@
       "status": "approved",
       "classification": "acceptable",
       "seq": 2
+    },
+    {
+      "id": "d3",
+      "what": "An agent turn starts only when a message is ADDRESSED to Gwen (a direct message, or a line starting with 'spark-gwen:', 'spark-gwen,' or '@spark-gwen') and never from a system- nick; a notice that only names her is not a turn. Narrows t15's 'an agent mention starts a normal Gwen turn'",
+      "task_ref": "t15",
+      "reason": "t19 live, 2026-10-31: on joining #general Gwen answered three automated notices (system-spark-welcome, spark-culture-greeter's join notice, spark-culture-chain-bot) in Hebrew, because any line naming her nick counted as a mention",
+      "affects": [
+        "c50"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "classification": "acceptable",
+      "seq": 3
     }
   ],
   "evidence": [],

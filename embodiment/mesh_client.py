@@ -170,6 +170,10 @@ class MeshMessage:
 
     ``channel`` is ``None`` for a direct message. ``mention`` is true for a
     direct message or when the text names Gwen's nick as a whole word.
+    ``addressed`` is narrower: a direct message, or a line that *starts* with her nick
+    (``spark-gwen: ...``, ``spark-gwen, ...``, ``@spark-gwen ...``). A notice that only
+    names her ("spark-gwen just joined #general") is a mention, not an address (t19 live,
+    2026-10-31: Gwen answered three join notices on #general).
     ``msgid``/``server_time``/``thread`` come from the IRCv3 tags and are empty
     when the server sent none.
     """
@@ -180,6 +184,7 @@ class MeshMessage:
     channel: Optional[str]
     direct: bool
     mention: bool
+    addressed: bool = False
     msgid: str = ""
     server_time: str = ""
     thread: str = ""
@@ -872,6 +877,9 @@ class MeshClient:
         mention = direct or bool(
             re.search(rf"(?<![\w-]){re.escape(own)}(?![\w-])", text, re.IGNORECASE)
         )
+        addressed = direct or bool(
+            re.match(rf"\s*(?:@{re.escape(own)}\b|{re.escape(own)}\s*[:,])", text, re.IGNORECASE)
+        )
         message = MeshMessage(
             sender=sender,
             target=target,
@@ -879,6 +887,7 @@ class MeshClient:
             channel=channel,
             direct=direct,
             mention=mention,
+            addressed=addressed,
             msgid=msg.tags.get("msgid", ""),
             server_time=msg.tags.get("time", ""),
             thread=thread,

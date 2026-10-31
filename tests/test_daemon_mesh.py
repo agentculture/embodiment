@@ -320,6 +320,30 @@ class TestTheResident:
         assert h.script.calls == []
         assert h.app.status()["mesh"]["agent_turns"] == 0
 
+    @pytest.mark.parametrize(
+        "sender,text",
+        [
+            # t19 live, 2026-10-31: the three notices Gwen answered on joining #general.
+            ("spark-culture-greeter", "👋 spark-gwen just joined #general"),
+            ("spark-culture-chain-bot", "Chain complete: spark-gwen was greeted"),
+            ("system-spark-welcome", "Welcome spark-gwen to #general on CULTURE.DEV"),
+            # A system- nick is the server's own, even when it addresses her.
+            ("system-spark-welcome", "spark-gwen: welcome"),
+        ],
+    )
+    def test_a_notice_that_only_names_her_starts_nothing(
+        self, harness: Any, ircd: FakeIrcd, tmp_path: Path, sender: str, text: str
+    ) -> None:
+        h = _wired(harness, _lane(tmp_path, make_config(ircd)))
+        h.app.start()
+        _registered(h)
+        ircd.push(f":{sender}!a@127.0.0.1 PRIVMSG #general :{text}")
+        wait_for(lambda: h.app.status()["mesh"]["inbound"] == 1)
+        time.sleep(0.2)
+        assert h.script.calls == []
+        assert h.app.status()["mesh"]["agent_turns"] == 0
+        assert ircd.sent("PRIVMSG #general :") == []
+
 
 # ── the bounds an agent-started turn runs under (c38, c14) ─────────────────────
 
