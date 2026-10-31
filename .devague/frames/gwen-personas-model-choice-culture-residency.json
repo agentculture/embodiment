@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-10-31T07:09:13Z",
-  "updated": "2026-10-31T09:54:38Z",
+  "updated": "2026-10-31T10:28:03Z",
   "claims": [
     {
       "id": "c1",
@@ -1432,6 +1432,15 @@
       "id": "l1",
       "code": "grader-unverified",
       "what": "t2's report said the AST no-silent-degradation test still passed; on the merged tree it failed on t2's own new silent swallow (capabilities.py _degrade), found by the main agent's full-suite gate after merge and fixed on the integration branch",
+      "skipped_check": "",
+      "refs": [],
+      "origin": "llm",
+      "status": "proposed"
+    },
+    {
+      "id": "l2",
+      "code": "grader-unverified",
+      "what": "t11 was implemented before its tests (not TDD); the main agent's mutation check (pre-t11 app.py + session.py) shows 16 of 18 new tests fail without the change, the 2 that pass are invariance checks",
       "skipped_check": "",
       "refs": [],
       "origin": "llm",
