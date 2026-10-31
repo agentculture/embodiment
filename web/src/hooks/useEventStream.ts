@@ -68,6 +68,8 @@ export interface EventStreamSnapshot {
   conversation: EventEnvelope<"conversation"> | null;
   /** The last to-do that was marked (d16), or null before the first. */
   todo: EventEnvelope<"todo"> | null;
+  /** Mesh events (asks, answers, agent contacts, Gwen's replies), oldest first, bounded. */
+  mesh: EventEnvelope<"mesh">[];
   /** transcript + reply, merged into one speech log in arrival order. */
   transcript: EventEnvelope<"transcript" | "reply">[];
   degradations: EventEnvelope<"degradation">[];
@@ -115,6 +117,7 @@ interface DataState {
   /** The last conversation that settled (d7), or null before the first. */
   conversation: EventEnvelope<"conversation"> | null;
   todo: EventEnvelope<"todo"> | null;
+  mesh: EventEnvelope<"mesh">[];
   transcript: EventEnvelope<"transcript" | "reply">[];
   degradations: EventEnvelope<"degradation">[];
   droppedFrames: number;
@@ -131,6 +134,7 @@ const INITIAL_DATA: DataState = {
   clients: null,
   conversation: null,
   todo: null,
+  mesh: [],
   transcript: [],
   degradations: [],
   droppedFrames: 0,
@@ -147,10 +151,14 @@ type Action =
   | { type: "clients"; envelope: EventEnvelope<"clients">; data: ClientsData }
   | { type: "conversation"; envelope: EventEnvelope<"conversation">; data: ConversationData }
   | { type: "todo"; envelope: EventEnvelope<"todo">; data: EventEnvelopeData }
+  | { type: "mesh"; envelope: EventEnvelope<"mesh"> }
   | { type: "speech"; envelope: EventEnvelope<"transcript" | "reply">; data: TranscriptData | ReplyData }
   | { type: "degradation"; envelope: EventEnvelope<"degradation">; data: DegradationData }
   | { type: "dropped" }
   | { type: "recallStatusMode"; mode: string | null; configuredMode: string | null; s2sRole: string | null };
+
+/** How many mesh events the page keeps: a long afternoon of asks and agent contacts. */
+const MESH_EVENTS_KEPT = 200;
 
 function reducer(prev: DataState, action: Action): DataState {
   switch (action.type) {
@@ -168,6 +176,10 @@ function reducer(prev: DataState, action: Action): DataState {
       return { ...prev, conversation: action.envelope };
     case "todo":
       return { ...prev, todo: action.envelope };
+    case "mesh": {
+      const next = [...prev.mesh, action.envelope];
+      return { ...prev, mesh: next.length > MESH_EVENTS_KEPT ? next.slice(-MESH_EVENTS_KEPT) : next };
+    }
     case "speech": {
       const next = [...prev.transcript, action.envelope];
       const overflow = next.length - TRANSCRIPT_LOG_LIMIT;
@@ -372,6 +384,9 @@ export function useEventStream(
         case "todo":
           dispatch({ type: "todo", envelope: envelope as EventEnvelope<"todo">, data: envelope.data });
           break;
+        case "mesh":
+          dispatch({ type: "mesh", envelope: envelope as EventEnvelope<"mesh"> });
+          break;
         case "conversation":
           dispatch({
             type: "conversation",
@@ -454,6 +469,7 @@ export function useEventStream(
     clients: data.clients,
     conversation: data.conversation,
     todo: data.todo,
+    mesh: data.mesh,
     transcript: data.transcript,
     degradations: data.degradations,
     lastHeartbeatAtMs,

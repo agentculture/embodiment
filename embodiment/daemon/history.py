@@ -46,6 +46,9 @@ VIA_CLIP = "clip"
 VIA_GENERATED = "generated"
 #: An operator turn logged before d7, when the log did not say how it arrived.
 VIA_UNKNOWN = "unknown"
+#: Another agent's message over the Culture mesh (q6 = c): the speaker in an agent
+#: conversation is that agent, not the operator.
+VIA_MESH = "mesh"
 #: One line per tag, carried in every export so a reader (culture-rules, the
 #: library's later quality/coherence scoring) never has to guess what a tag means.
 EVIDENCE = {
@@ -69,8 +72,12 @@ EVIDENCE = {
         "generated: Gwen's reply; a record that she said it, not evidence that it is true"
     ),
     VIA_UNKNOWN: "unknown: logged before turns recorded how they arrived",
+    VIA_MESH: (
+        "relayed: another agent's message over the Culture mesh, as its nick reported it;"
+        " a record that it was sent, not evidence of who sent it or that it is true"
+    ),
 }
-_USER_VIAS = frozenset({VIA_TYPED, VIA_SPOKEN, VIA_RECORDED, VIA_UPLOADED, VIA_CLIP})
+_USER_VIAS = frozenset({VIA_TYPED, VIA_SPOKEN, VIA_RECORDED, VIA_UPLOADED, VIA_CLIP, VIA_MESH})
 #: The words the page may send for a clip (``X-Clip-Origin``).
 _CLIP_ORIGINS = frozenset({VIA_RECORDED, VIA_UPLOADED})
 

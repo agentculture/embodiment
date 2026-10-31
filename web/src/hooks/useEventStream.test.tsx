@@ -342,6 +342,10 @@ describe("useEventStream", () => {
           expect(result.current.degradations[0]?.data).toEqual(fixture.data);
         } else if (kind === "heartbeat") {
           expect(result.current.lastHeartbeatAtMs).not.toBeNull();
+        } else if (kind === "mesh") {
+          // Mesh events accumulate in a bounded list, like degradations.
+          expect(result.current.mesh).toHaveLength(1);
+          expect(result.current.mesh[0]?.data).toEqual(fixture.data);
         } else {
           expect(field?.data).toEqual(fixture.data);
         }
