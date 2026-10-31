@@ -2,7 +2,7 @@
   "plan_slug": "gwen-personas-model-choice-culture-residency",
   "schema_version": 2,
   "created": "2026-10-31T09:53:28Z",
-  "updated": "2026-10-31T19:21:30Z",
+  "updated": "2026-10-31T19:51:31Z",
   "deviations": [
     {
       "id": "d1",
@@ -596,6 +596,443 @@
       "status": "proposed",
       "superseded": false,
       "seq": 34
+    },
+    {
+      "id": "e28",
+      "obligation_ref": "o1",
+      "test_ref": "test_http_personas.py::TestGuard::test_refused_without_the_secret[DELETE-/api/personas/ada-None]; test_http_personas.py::TestGuard::test_refused_without_the_secret[GET-/api/models-None]; test_http_personas.py::TestGuard::test_refused_without_the_secret[GET-/api/personas-None]; test_http_personas.py::TestGuard::test_refused_without_the_secret[POST-/api/personas-payload1]; test_http_personas.py::TestGuard::test_refused_without_the_secret[PUT-/api/personas/ada-payload2]; test_http_personas.py::TestPersonaRoutes::test_create_update_delete; test_personas.py::test_builtin_is_todays_behaviour; test_personas.py::test_empty_store_lists_only_builtin; test_personas.py::test_file_is_0600_with_schema_version",
+      "behavior_text": "these 9 named tests assert: a persona is operator-authored data in a private 0600 store; built-in Gwen is the default",
+      "contract_text": "a persona is operator-authored data in a private 0600 store; built-in Gwen is the default",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "node-level: each named test ran green at 2a45f6b; supersedes the file-level record filed earlier for this obligation (review of #119)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:51:30",
+        "commit": "2a45f6b"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 35
+    },
+    {
+      "id": "e29",
+      "obligation_ref": "o2",
+      "test_ref": "test_http_personas.py::TestAgainstTheDaemon::test_the_language_override_composes_with_a_copy_and_is_recorded; test_personas.py::test_language_none_is_the_string_none",
+      "behavior_text": "these 2 named tests assert: language he/en/none is a persona setting a conversation can override",
+      "contract_text": "language he/en/none is a persona setting a conversation can override",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "node-level: each named test ran green at 2a45f6b; supersedes the file-level record filed earlier for this obligation (review of #119)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:51:30",
+        "commit": "2a45f6b"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 36
+    },
+    {
+      "id": "e30",
+      "obligation_ref": "o3",
+      "test_ref": "test_daemon_translate.py::TestTranslatedTurns::test_without_translate_via_no_translation_runs; test_personas.py::test_module_never_takes_or_inspects_a_model_id",
+      "behavior_text": "these 2 named tests assert: the translation hop is set explicitly on the persona, never inferred from a model name",
+      "contract_text": "the translation hop is set explicitly on the persona, never inferred from a model name",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "node-level: each named test ran green at 2a45f6b; supersedes the file-level record filed earlier for this obligation (review of #119)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:51:30",
+        "commit": "2a45f6b"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 37
+    },
+    {
+      "id": "e31",
+      "obligation_ref": "o4",
+      "test_ref": "test_capabilities.py::test_role_identity_comes_from_key_not_model_name; test_capabilities.py::test_role_turning_not_ready_shows_next_snapshot; test_capabilities.py::test_snapshot_lists_only_chat_roles_with_fields",
+      "behavior_text": "these 3 named tests assert: the offered roles equal the ready /v1/chat/completions roles of /capabilities",
+      "contract_text": "the offered roles equal the ready /v1/chat/completions roles of /capabilities",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "node-level: each named test ran green at 2a45f6b; supersedes the file-level record filed earlier for this obligation (review of #119)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:51:30",
+        "commit": "2a45f6b"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 38
+    },
+    {
+      "id": "e32",
+      "obligation_ref": "o5",
+      "test_ref": "test_daemon_models.py::TestVoiceGate::test_a_spoken_turn_while_probing_asks_nothing_and_says_probing; test_daemon_models.py::TestVoiceGate::test_after_a_recorded_probe_a_spoken_turn_names_worker_under_the_derived_deadline; test_daemon_models.py::TestVoiceGate::test_senses_is_exempt_and_never_probed; test_voice_latency.py::test_unmeasured_until_enough_samples",
+      "behavior_text": "these 4 named tests assert: senses is exempt; any other role speaks only after its latency is measured",
+      "contract_text": "senses is exempt; any other role speaks only after its latency is measured",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "node-level: each named test ran green at 2a45f6b; supersedes the file-level record filed earlier for this obligation (review of #119)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:51:30",
+        "commit": "2a45f6b"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 39
+    },
+    {
+      "id": "e33",
+      "obligation_ref": "o6",
+      "test_ref": "test_daemon_mesh.py::TestTheResident::test_mesh_on_starts_the_client_and_status_names_nick_and_servers; test_mesh_client.py::test_dropped_connection_records_and_reconnects; test_mesh_client.py::test_registers_as_configured_nick_and_joins",
+      "behavior_text": "these 3 named tests assert: the daemon holds spark-gwen's connection, degrades and never raises",
+      "contract_text": "the daemon holds spark-gwen's connection, degrades and never raises",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "node-level: each named test ran green at 2a45f6b; supersedes the file-level record filed earlier for this obligation (review of #119)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:51:30",
+        "commit": "2a45f6b"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 40
+    },
+    {
+      "id": "e34",
+      "obligation_ref": "o7",
+      "test_ref": "test_daemon_mesh.py::TestAgentTurnBounds::test_mesh_started_turns_are_rate_capped_and_the_refusal_recorded; test_mesh_asks.py::test_mesh_started_turn_cannot_ask; test_mesh_asks.py::test_mesh_turn_rate_cap_and_window; test_mesh_asks.py::test_one_ask_per_turn; test_mesh_asks.py::test_open_cap",
+      "behavior_text": "these 5 named tests assert: one ask per turn, a mesh-started turn cannot ask, mesh turns rate-capped, open asks capped",
+      "contract_text": "one ask per turn, a mesh-started turn cannot ask, mesh turns rate-capped, open asks capped",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "node-level: each named test ran green at 2a45f6b; supersedes the file-level record filed earlier for this obligation (review of #119)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:51:30",
+        "commit": "2a45f6b"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 41
+    },
+    {
+      "id": "e35",
+      "obligation_ref": "o8",
+      "test_ref": "test_mesh_asks.py::test_expired_is_shown_never_dropped_and_a_mention_does_not_match; test_mesh_asks.py::test_file_is_0600_and_survives_restart_with_answer",
+      "behavior_text": "these 2 named tests assert: asks are kept 0600 with their conversation and expire visibly, never dropped",
+      "contract_text": "asks are kept 0600 with their conversation and expire visibly, never dropped",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "node-level: each named test ran green at 2a45f6b; supersedes the file-level record filed earlier for this obligation (review of #119)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:51:30",
+        "commit": "2a45f6b"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 42
+    },
+    {
+      "id": "e36",
+      "obligation_ref": "o9",
+      "test_ref": "test_daemon_translate.py::TestTranslatedTurns::test_a_spoken_turn_reads_english_and_answers_in_the_persona_language; test_daemon_translate.py::TestTranslatedTurns::test_a_typed_turn_reads_english_and_answers_in_the_persona_language; test_translate.py::test_user_text_goes_english_reply_comes_back",
+      "behavior_text": "these 3 named tests assert: Hebrew in is translated to English for the chosen role and the reply back",
+      "contract_text": "Hebrew in is translated to English for the chosen role and the reply back",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "node-level: each named test ran green at 2a45f6b; supersedes the file-level record filed earlier for this obligation (review of #119)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:51:30",
+        "commit": "2a45f6b"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 43
+    },
+    {
+      "id": "e37",
+      "obligation_ref": "o10",
+      "test_ref": "test_daemon_app.py::TestForgetByTheFactsOwnWords::test_forget_finds_a_translated_record_by_the_operators_original; test_daemon_translate.py::TestTheOperatorsWords::test_remember_stores_the_operators_own_words_on_a_typed_turn; test_daemon_translate.py::TestTheOperatorsWords::test_search_conversations_receives_the_operators_query; test_daemon_translate.py::TestTheOperatorsWords::test_search_library_receives_the_operators_query",
+      "behavior_text": "these 4 named tests assert: searches receive the operator's words; remember keeps them beside the model's fact (d6)",
+      "contract_text": "searches receive the operator's words; remember keeps them beside the model's fact (d6)",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "node-level: each named test ran green at 2a45f6b; supersedes the file-level record filed earlier for this obligation (review of #119)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:51:30",
+        "commit": "2a45f6b"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 44
+    },
+    {
+      "id": "e38",
+      "obligation_ref": "o11",
+      "test_ref": "test_cli_mesh.py::test_doctor_reports_two_distinct_identities; test_cli_mesh.py::test_mesh_module_imports_no_process_api; test_cli_mesh.py::test_mesh_spawns_nothing",
+      "behavior_text": "these 3 named tests assert: the CLI prints the resident setup and runs nothing",
+      "contract_text": "the CLI prints the resident setup and runs nothing",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "node-level: each named test ran green at 2a45f6b; supersedes the file-level record filed earlier for this obligation (review of #119)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:51:30",
+        "commit": "2a45f6b"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 45
+    },
+    {
+      "id": "e39",
+      "obligation_ref": "o12",
+      "test_ref": "test_persona_prompt.py::test_english_tool_prompts_keep_obligations; test_persona_prompt.py::test_tool_prompt_language",
+      "behavior_text": "these 2 named tests assert: the tool prompts' language follows the persona",
+      "contract_text": "the tool prompts' language follows the persona",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "node-level: each named test ran green at 2a45f6b; supersedes the file-level record filed earlier for this obligation (review of #119)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:51:30",
+        "commit": "2a45f6b"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 46
+    },
+    {
+      "id": "e40",
+      "obligation_ref": "o13",
+      "test_ref": "test_daemon_mesh.py::TestTheResident::test_a_typed_turn_offers_ask_culture_and_posts_one_thread; test_mesh_tools.py::test_listed_second_channel_ok_unlisted_refused; test_mesh_tools.py::test_posts_only_question_to_default_channel_and_returns_at_once",
+      "behavior_text": "these 3 named tests assert: a turn can post one question as its own thread to an allow-listed channel",
+      "contract_text": "a turn can post one question as its own thread to an allow-listed channel",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "node-level: each named test ran green at 2a45f6b; supersedes the file-level record filed earlier for this obligation (review of #119)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:51:30",
+        "commit": "2a45f6b"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 47
+    },
+    {
+      "id": "e41",
+      "obligation_ref": "o14",
+      "test_ref": "test_daemon_mesh.py::TestEventsAndAnswers::test_an_answer_in_the_ask_thread_lands_in_its_conversation_fenced; test_mesh_judge.py::test_text_cannot_forge_the_fence; test_mesh_tools.py::test_fence_is_attributed_quoted_and_arms_guard; test_mesh_tools.py::test_hostile_nick_cannot_break_header",
+      "behavior_text": "these 4 named tests assert: answers from other agents enter fenced and attributed, never as instructions",
+      "contract_text": "answers from other agents enter fenced and attributed, never as instructions",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "node-level: each named test ran green at 2a45f6b; supersedes the file-level record filed earlier for this obligation (review of #119)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:51:30",
+        "commit": "2a45f6b"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 48
+    },
+    {
+      "id": "e42",
+      "obligation_ref": "o15",
+      "test_ref": "test_daemon_personas.py::TestBuiltinPromptBytes::test_the_spoken_prompt_is_byte_identical_to_before; test_daemon_personas.py::TestBuiltinPromptBytes::test_the_typed_prompt_differs_by_exactly_d1; test_persona_prompt.py::test_builtin_typed_differs_from_today_exactly_by_the_two_speech_lines; test_persona_prompt.py::test_builtin_voice_is_system_prompt_byte_for_byte",
+      "behavior_text": "these 4 named tests assert: spoken prompt byte-identical to v1; typed differs by exactly the two speech lines (d1)",
+      "contract_text": "spoken prompt byte-identical to v1; typed differs by exactly the two speech lines (d1)",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "node-level: each named test ran green at 2a45f6b; supersedes the file-level record filed earlier for this obligation (review of #119)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:51:30",
+        "commit": "2a45f6b"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 49
+    },
+    {
+      "id": "e43",
+      "obligation_ref": "o16",
+      "test_ref": "test_daemon_models.py::TestOneHolder::test_continuing_restores_the_role_after_a_restart; test_daemon_personas.py::TestContinueRestoresThePersona::test_continuing_restores_it_after_a_restart",
+      "behavior_text": "these 2 named tests assert: a conversation keeps its persona and model across restore",
+      "contract_text": "a conversation keeps its persona and model across restore",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "node-level: each named test ran green at 2a45f6b; supersedes the file-level record filed earlier for this obligation (review of #119)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:51:30",
+        "commit": "2a45f6b"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 50
+    },
+    {
+      "id": "e44",
+      "obligation_ref": "o17",
+      "test_ref": "test_daemon_models.py::TestTextModelUnavailable::test_a_spoken_turn_says_so_after_one_request[404-role_infeasible]; test_daemon_models.py::TestTextModelUnavailable::test_a_spoken_turn_says_so_after_one_request[429]; test_daemon_models.py::TestTextModelUnavailable::test_a_spoken_turn_says_so_after_one_request[503-role_unverified]; test_daemon_models.py::TestTextModelUnavailable::test_a_typed_turn_answers_the_distinct_code_after_one_request[404-role_infeasible]; test_daemon_models.py::TestTextModelUnavailable::test_a_typed_turn_answers_the_distinct_code_after_one_request[429]; test_daemon_models.py::TestTextModelUnavailable::test_a_typed_turn_answers_the_distinct_code_after_one_request[503-role_unverified]; test_daemon_models.py::TestTextModelUnavailable::test_the_gateway_down_path_keeps_its_own_code",
+      "behavior_text": "these 7 named tests assert: a distinct model-unavailable error, never a fallback to another model",
+      "contract_text": "a distinct model-unavailable error, never a fallback to another model",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "node-level: each named test ran green at 2a45f6b; supersedes the file-level record filed earlier for this obligation (review of #119)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:51:30",
+        "commit": "2a45f6b"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 51
+    },
+    {
+      "id": "e45",
+      "obligation_ref": "o18",
+      "test_ref": "test_daemon_models.py::TestTrace::test_a_role_the_snapshot_does_not_list_records_no_invented_model; test_daemon_models.py::TestTrace::test_every_assistant_record_names_role_model_and_host",
+      "behavior_text": "these 2 named tests assert: every reply records chat_role, chat_model and chat_host as the gateway reported",
+      "contract_text": "every reply records chat_role, chat_model and chat_host as the gateway reported",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "node-level: each named test ran green at 2a45f6b; supersedes the file-level record filed earlier for this obligation (review of #119)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:51:30",
+        "commit": "2a45f6b"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 52
+    },
+    {
+      "id": "e46",
+      "obligation_ref": "o19",
+      "test_ref": "test_daemon_models.py::TestOneHolder::test_the_session_summary_names_senses_with_worker_chosen",
+      "behavior_text": "these 1 named tests assert: summary and other bookkeeping stay on senses whatever the conversation's model",
+      "contract_text": "summary and other bookkeeping stay on senses whatever the conversation's model",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "node-level: each named test ran green at 2a45f6b; supersedes the file-level record filed earlier for this obligation (review of #119)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:51:30",
+        "commit": "2a45f6b"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 53
+    },
+    {
+      "id": "e47",
+      "obligation_ref": "o20",
+      "test_ref": "test_daemon_mesh.py::TestSwitchAndCounters::test_the_counters_move_on_a_scripted_run; test_daemon_models.py::TestVoiceGate::test_status_reports_the_role_the_snapshot_and_latency; test_http_personas.py::TestAgainstTheDaemon::test_status_reports_snapshot_roles_and_each_conversations_settings",
+      "behavior_text": "these 3 named tests assert: status shows the capabilities snapshot age and counters that move",
+      "contract_text": "status shows the capabilities snapshot age and counters that move",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "node-level: each named test ran green at 2a45f6b; supersedes the file-level record filed earlier for this obligation (review of #119)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:51:30",
+        "commit": "2a45f6b"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 54
+    },
+    {
+      "id": "e48",
+      "obligation_ref": "o21",
+      "test_ref": "test_daemon_mesh.py::TestTheResident::test_an_agent_mention_starts_a_turn_in_its_own_conversation_and_gets_the_reply; web/src/components/MeshCards.test.tsx > MeshCards > renders an agent-contacted card",
+      "behavior_text": "these 1 named tests assert: the page shows an 'agent is talking to Gwen' card and a mesh event at once",
+      "contract_text": "the page shows an 'agent is talking to Gwen' card and a mesh event at once",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "node-level: each named test ran green at 2a45f6b; supersedes the file-level record filed earlier for this obligation (review of #119)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:51:30",
+        "commit": "2a45f6b"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 55
+    },
+    {
+      "id": "e49",
+      "obligation_ref": "o24",
+      "test_ref": "test_daemon_models.py::TestOneHolder::test_a_typed_turn_asks_the_chosen_role",
+      "behavior_text": "these 1 named tests assert: a typed turn asks the conversation's chosen role",
+      "contract_text": "a typed turn asks the conversation's chosen role",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "node-level: each named test ran green at 2a45f6b; supersedes the file-level record filed earlier for this obligation (review of #119)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:51:30",
+        "commit": "2a45f6b"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 56
+    },
+    {
+      "id": "e50",
+      "obligation_ref": "o22",
+      "test_ref": "web/src/components/DockMeta.test.tsx (Persona, Language, Model row: 8 tests) and web/src/components/PersonasView.test.tsx (edit, create, refusal, preview: 6 tests)",
+      "behavior_text": "these 14 named web tests assert the settings row and the Personas tab",
+      "contract_text": "the settings row under the dock and the Personas tab, built from the page's components",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "node-level: the named vitest cases ran green at 2a45f6b; supersedes the file-level record (review of #119)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:51:30",
+        "commit": "2a45f6b"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 57
     }
   ],
   "deltas": [

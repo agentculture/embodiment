@@ -54,7 +54,7 @@ Quoted verbatim from the `devague summary` skeleton:
 | `t9` | delivered, amended (`d1`) | `embodiment/persona_prompt.py`: the spoken prompt byte-identical, the typed prompt minus the two speech-only lines, tool prompts in the persona's language |
 | `t10` | delivered | `embodiment/mesh_tools.py`: `ask_culture`, mesh answers fenced as untrusted, the write guard |
 | `t11` | delivered | per-conversation persona in the prompt, kept across `Session.restore` |
-| `t12` | delivered | per-conversation model, `app-text-model-unavailable` with no fallback, `chat_role`/`chat_model`/`chat_host` traces, the voice gate |
+| `t12` | partial | per-conversation model, `app-text-model-unavailable` with no fallback, `chat_role`/`chat_model`/`chat_host` traces, the voice gate all landed and pass their tests; **live, choosing `worker` (Nemotron Bolt) gives no answer** (it loops on tool calls, `e26`), so model choice does not yet work for every offered role |
 | `t13` | delivered, amended (`d6`) | the translator wired into typed and spoken turns; searches get the operator's words; `remember` keeps them beside the model's fact |
 | `t14` | delivered | `/api/personas`, `/api/models`, conversation settings, status fields; plus `GET /api/chat/{request_id}` (`d4`) |
 | `t15` | delivered, amended (`d3`) | the daemon holds `spark-gwen`; an agent turn starts only when the message is addressed to her; mesh events, counters, spoken notices |
@@ -63,8 +63,8 @@ Quoted verbatim from the `devague summary` skeleton:
 | `t18` | delivered | README, `explain` root and CLAUDE.md updated; `tests/test_release_docs.py` pins them |
 | `t19` | partial | live on the rig through the browser: personas saved, chat with `cortex` (72.5 s, streamed reasoning, recovered after leaving the page). It also produced `d3`, `d4`, `d5` and five fixes. **Not done:** a live mesh ask answered by another agent (c33); the results document under `docs/live-test-results/`; latency published as measured |
 
-All 19 tasks are accounted for: 17 delivered as planned or amended by an approved
-deviation, `t8` delivered beyond its stated scope, and `t19` partial.
+All 19 tasks are accounted for: 16 delivered as planned or amended by an approved
+deviation, `t8` delivered beyond its stated scope, and `t12` and `t19` partial.
 
 ## Mid-work Decisions
 
@@ -97,12 +97,13 @@ Decisions no deviation record covers:
 | `t5` (`d7`) | Operator, 2026-10-31, review of #117 finding 3: 'A small llm call for common sense (Was it for me?)' | acceptable |
 | `t8` | the task said "draft the external-resident issue (no post)"; it exists, posted, as agentculture/culture#506. No deviation record covers the post, and devague state does not record a go-ahead for it | risky |
 | `t19` | not finished: no live mesh ask answered by another agent (c33), no published results document, no latency published as measured | needs-follow-up |
+| `t12` | its contract is a model choice that answers; live, `worker` loops on tool calls and never answers (`e26`) | needs-follow-up |
 
 ## Evidence
 
 All filed by `/validate-delivery` (`devague evidence --list`: e1–e27, each `proposed`):
 
-- tests: the 19 task test files ran at `86aeabd` (main, after the merge), 410 passed, 0 failed:
+- tests, file level (`e1`–`e22`, `e25`): 19 test files ran at `86aeabd` (main, after the merge), 410 passed, 0 failed. 15 of the files belong to plan tasks; `test_mesh_judge.py` (`d7`) and the chat-result and streaming files (`d4`, `d5`) belong to deviations. t8, t16 and t17 have no Python file of their own (t16 and t17 are covered by the web list below):
   - `tests/test_personas.py` 33
   - `tests/test_capabilities.py` 16
   - `tests/test_voice_latency.py` 16
@@ -122,11 +123,13 @@ All filed by `/validate-delivery` (`devague evidence --list`: e1–e27, each `pr
   - `tests/test_http_chat_results.py` 8
   - `tests/test_daemon_streaming.py` 15
   - `tests/test_release_docs.py` 29
+- tests, node level (`e28`–`e50`, review of #119): for each automated obligation, the specific tests that assert it, 70 node ids, ran at `2a45f6b`, all passed; each record names its tests. They replace the file-level records above as the evidence for those obligations. Evidence records cannot be superseded, so both stay on file.
 - tests (web): 10 vitest files ran, 60 passed:
   - `src/api/personas.test.ts`, `models.test.ts`, `mesh.test.ts`, `chatResults.test.ts`, `liveText.test.ts`;
   - `src/components/DockMeta.test.tsx`, `MeshCards.test.tsx`, `PersonasView.test.tsx`, `ChatLateAnswer.test.tsx`, `ChatLive.test.tsx`.
 - full gates before merge, at `146518e`: 4926 Python passed (1 skipped), 615 web passed, black, isort, flake8, bandit, `teken cli doctor --strict` 26/26, web build.
 - `tests/test_audio_remote.py::TestRound4ReviewFindings::test_control_send_burst_against_a_never_reading_peer_is_bounded` failed once under the parallel suite; it then passed 5 of 5 alone and in the full rerun. Untouched code, so read as a timing flake; no baseline rate measured.
+- `tests/test_mesh_client.py::test_send_privmsg_from_another_thread` failed once in CI on #119 (`sent` read as 0) and passed 20 of 20 alone. Cause: the client counts a line only after its write drains, so the test read the counter too early. The same review found that a line whose drain failed or was cancelled was counted nowhere. Fixed in `2a45f6b`: it is now a `dropped_sends`, and the tests wait for the counter and then assert its exact value.
 - CI on #117 at `146518e`: test, lint, version-check, test-publish, SonarCloud, GitGuardian all green.
 - live (observation, `fidelity`): `e24` (cortex chat end to end, pass) and `e26` (worker/Bolt loops on tool calls, **fail**).
 - manual: `e27`, mockup v2 approved by the operator (<https://claude.ai/artifact/PEUzLDEqvbEEc7DWN3LpuG>).
@@ -137,22 +140,22 @@ All filed by `/validate-delivery` (`devague evidence --list`: e1–e27, each `pr
 
 | Claim | Confidence | Evidence |
 |-------|------------|----------|
-| Personas are operator-authored, private (0600), and built-in Gwen is the default (c6) | high | `e1` · `tests/test_personas.py`, `tests/test_http_personas.py` |
-| Default Gwen's spoken prompt is byte-identical to v1; typed differs by exactly two lines (c30, `d1`) | high | `e15` · `tests/test_persona_prompt.py` |
-| The model list equals the gateway's ready chat roles (c31) | high | `e4` · `tests/test_capabilities.py` |
-| An unavailable chosen model fails with its own error and never falls back (c22) | high | `e17` · `tests/test_daemon_models.py` |
-| Every reply traces the role, model and host actually used (c9) | high | `e18` · `tests/test_daemon_models.py` |
-| A non-`senses` role speaks only after its voice latency is measured (c51) | medium | `e5` · `tests/test_voice_latency.py`; per-role voice latency itself is not measured live, and the translator combination is unmeasured (#118) |
-| The Gemma translator gives the chosen role English and the operator the persona's language (c21) | medium | `e9` · `tests/test_translate.py`; translation quality is unmeasured |
-| Searches use the operator's words; a translated `remember` keeps them beside the model's fact, and `forget` finds either (c37, `d6`) | high | `e10` · `tests/test_daemon_translate.py`, `tests/test_daemon_app.py::TestForgetByTheFactsOwnWords` |
-| Mesh text enters the prompt fenced and attributed, never as instructions (c14) | high | `e14` · `tests/test_mesh_tools.py`, `tests/test_mesh_judge.py` |
-| Mesh traffic is bounded: one ask per turn, rate caps, open-ask cap (c38) | high | `e7` · `tests/test_mesh_asks.py` |
-| Open asks survive a restart and expire visibly (c46) | high | `e8` · `tests/test_mesh_asks.py` |
+| Personas are operator-authored, private (0600), and built-in Gwen is the default (c6) | high | `e28` (9 named tests) |
+| Default Gwen's spoken prompt is byte-identical to v1; typed differs by exactly two lines (c30, `d1`) | high | `e42` (4 named tests) |
+| The model list equals the gateway's ready chat roles (c31) | high | `e31` (3 named tests) |
+| An unavailable chosen model fails with its own error and never falls back (c22) | high | `e44` (7 named tests) |
+| Every reply traces the role, model and host actually used (c9) | high | `e45` (2 named tests) |
+| A non-`senses` role speaks only after its voice latency is measured (c51) | medium | `e32` (4 named tests); per-role voice latency itself is not measured live, and the translator combination is unmeasured (#118) |
+| The Gemma translator gives the chosen role English and the operator the persona's language (c21) | medium | `e36` (3 named tests); translation quality is unmeasured |
+| Searches use the operator's words; a translated `remember` keeps them beside the model's fact, and `forget` finds either (c37, `d6`) | high | `e37` (4 named tests) |
+| Mesh text enters the prompt fenced and attributed, never as instructions (c14) | high | `e41` (4 named tests) |
+| Mesh traffic is bounded: one ask per turn, rate caps, open-ask cap (c38) | high | `e34` (5 named tests) |
+| Open asks survive a restart and expire visibly (c46) | high | `e35` (2 named tests) |
 | The "was it for me?" judge places answers in context, and the rules are its recorded fallback (`d7`) | medium | `b7` · `e14` · `tests/test_mesh_judge.py`, `tests/test_daemon_mesh.py::TestTheJudge`; tested against a scripted judge only, never live Gemma |
 | A typed answer outlives its request and streams live; recovered after leaving the page (`d4`, `d5`) | medium | `e23`, `e24` · `tests/test_daemon_chat_results.py`, `tests/test_daemon_streaming.py`; live n = 1; lapse `l5` (web tests written after the code) is pending |
-| Per-conversation model choice works for every offered role (c8) | low | `e25` pass (automated) · `e26` **fail** (live: worker/Bolt loops on tool calls) |
-| An agent contacting Gwen shows a card at once (c50) | high | `e21` · `tests/test_daemon_mesh.py`, `MeshCards.test.tsx` |
-| The UI follows the approved mockup v2 (c17, c34) | medium | `e22`, `e27`; the live-reasoning panel (`d5`) is not in the mockup |
+| Per-conversation model choice works for every offered role (c8) | unverified | **fails live**: `e26` (worker/Bolt loops on tool calls, no answer); only the mechanism passes (`e49`: a typed turn asks the chosen role). Not claimed done |
+| An agent contacting Gwen shows a card at once (c50) | high | `e48` (a daemon test and `MeshCards > renders an agent-contacted card`) |
+| The UI follows the approved mockup v2 (c17, c34) | medium | `e50` (14 named web tests), `e27`; the live-reasoning panel (`d5`) is not in the mockup |
 | At least one live end-to-end mesh ask answered by another agent (c33) | unverified | (no evidence — not claimed done) |
 | Culture registers an external resident (c35) | unverified | (agentculture/culture#506 open — not claimed done) |
 
@@ -167,7 +170,7 @@ gate misses that were caught and fixed before merge.
 ## Remaining Work / Follow-up
 
 - `t19` — run one live mesh ask answered by another agent and record its latency (c33); publish the live acceptance under `docs/live-test-results/`, latency as measured. Owner: the operator plus the next session.
-- c8 — worker/Bolt loops on tool calls and never answers; give it a final step with no tools (needs the operator's approval).
+- `t12` / c8 — worker/Bolt loops on tool calls and never answers; give it a final step with no tools (needs the operator's approval), then re-check live.
 - c35 — agentculture/culture#506 is open; Gwen is not listed as a resident until Culture ships it. Owner: culture.
 - `t8` — confirm, or record as a deviation, that posting #506 was on the operator's go-ahead.
 - #118 — voice latency through the translator; fix only if it proves slow in use.

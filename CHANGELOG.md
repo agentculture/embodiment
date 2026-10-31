@@ -14,6 +14,9 @@ adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Fixed
 
 - tests/test_mesh_client.py waits for the client's sent and delivered counters instead of reading them once: both are counted after the write or the callback, so a loaded runner saw 0 (CI on PR #119).
+- mesh_client: a message line whose write fails or is cancelled while draining is counted as a dropped send; before, it reached neither `sent` nor `dropped_sends` (review of #119).
+- README, the explain root and CLAUDE.md say 0.24.0 is released (#117), not on a branch.
+- The delivery record: t12 is partial and c8 is not claimed done (worker/Bolt fails live); node-level evidence e28-e50 names the tests behind each obligation (review of #119).
 
 ## [0.24.0] - 2026-10-31
 
