@@ -2,7 +2,7 @@
   "plan_slug": "gwen-queries-and-reads-the-library",
   "schema_version": 2,
   "created": "2026-10-25T23:25:27Z",
-  "updated": "2026-10-26T11:18:52Z",
+  "updated": "2026-10-26T18:33:50Z",
   "deviations": [
     {
       "id": "d1",
@@ -102,6 +102,20 @@
       "status": "approved",
       "classification": "acceptable",
       "seq": 20
+    },
+    {
+      "id": "d8",
+      "what": "t9's tap-to-sound is accepted on the operator's by-ear figures (warm immediate, cold about 6 s); no timed cold/warm measurement is required to close t9",
+      "task_ref": "t9",
+      "reason": "the operator, after using it: 't9 feels right, so we can approve for now or /deviate to close it'",
+      "affects": [
+        "c22",
+        "c32"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 31
     }
   ],
   "evidence": [
@@ -120,7 +134,7 @@
         "commit": "2a58a65"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 2
     },
@@ -139,7 +153,7 @@
         "commit": "2a58a65"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 3
     },
@@ -158,7 +172,7 @@
         "commit": "2a58a65"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 4
     },
@@ -177,7 +191,7 @@
         "commit": "2a58a65"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 5
     },
@@ -196,7 +210,7 @@
         "commit": "2a58a65"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 6
     },
@@ -215,7 +229,7 @@
         "commit": "2a58a65"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 7
     },
@@ -234,7 +248,7 @@
         "commit": "2a58a65"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 8
     },
@@ -253,7 +267,7 @@
         "commit": "2a58a65"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 9
     },
@@ -269,7 +283,7 @@
       "outcome": "pass",
       "run": null,
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 10
     },
@@ -285,7 +299,7 @@
       "outcome": "pass",
       "run": null,
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 11
     },
@@ -301,7 +315,7 @@
       "outcome": "pass",
       "run": null,
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 12
     },
@@ -317,7 +331,7 @@
       "outcome": "pass",
       "run": null,
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 13
     },
@@ -336,7 +350,7 @@
         "commit": "24ba287"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 16
     },
@@ -355,7 +369,7 @@
         "commit": "6fbe7c4"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 21
     },
@@ -371,7 +385,7 @@
       "outcome": "pass",
       "run": null,
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 22
     },
@@ -390,7 +404,7 @@
         "commit": "09af199"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 23
     },
@@ -409,7 +423,7 @@
         "commit": "09af199"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 24
     },
@@ -428,9 +442,104 @@
         "commit": "09af199"
       },
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false,
       "seq": 25
+    },
+    {
+      "id": "e19",
+      "obligation_ref": "o9",
+      "test_ref": "operator on an iPhone, gwen.culture.dev (production 0.23.0, e19be55), 2026-10-26: refresh retest",
+      "behavior_text": "after a page refresh the header is in place and the bottom of the page (the dock) sits where it should; the operator: 'I don't see the issue with bottom place and missing header'",
+      "contract_text": "a read plays on the device that has the page open; after a reload, Continue listening replays the paragraph stopped in from its start",
+      "evidence_type": "manual",
+      "strength": "fidelity",
+      "strength_basis": "the operator's own report on the real device against the merged, deployed ref; one refresh check, no screenshot",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-26T00:00:00Z",
+        "commit": "e19be55"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 26
+    },
+    {
+      "id": "e20",
+      "obligation_ref": "o9",
+      "test_ref": "operator on an iPhone, gwen.culture.dev (production 0.23.0, e19be55), 2026-10-26: tap-to-sound",
+      "behavior_text": "tap on a paragraph to first audio: a long paragraph, cold, 'maybe 6' seconds; the same paragraph re-tapped (warm), 'immediate and smooth'",
+      "contract_text": "c22: continue plays that same paragraph again first, within 5 s of the tap; c32: judged on the warm figure with the cold one beside it",
+      "evidence_type": "manual",
+      "strength": "fidelity",
+      "strength_basis": "operator estimate by ear, not a timer, n = 1 each; warm meets the 5 s bar, cold (about 6 s) misses it, consistent with the probed cold tts call of 6.59 s (c32)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-26T00:00:00Z",
+        "commit": "e19be55"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 27
+    },
+    {
+      "id": "e21",
+      "obligation_ref": "o11",
+      "test_ref": "web/src/components/ReadAloud.test.tsx > ReadAloud: Choose section (t4, the approved mockup's dock)",
+      "behavior_text": "4 tests: sections listed by heading or number with the playing one aria-current; a choice requests next?section=2&paragraph=0, closes the list and reports pos-2-0 heard only after ended; Escape seeks nothing, keeps the reader open, returns focus; a one-section item has no control",
+      "contract_text": "the page drives a read through daemon routes ... reports it heard on the audio's ended event",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "seen failing (3 of 4) before the control existed, passing after; full web suite 531 at the named commit",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-26T17:21:35Z",
+        "commit": "5b384c5"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 28
+    },
+    {
+      "id": "e22",
+      "obligation_ref": "o11",
+      "test_ref": "scratchpad/live0 pre-flight daemon on 8824 from feat/choose-section, live 304-section book, 390 px mobile context",
+      "behavior_text": "the list opened inside the fixed dock (list 563-833 of 844 px), 304 entries, the playing section marked, focused and in view, no horizontal scroll; choosing entry 8 played section 8 of 304 and closed the list",
+      "contract_text": "the approved mockup's Choose section control",
+      "evidence_type": "observation",
+      "strength": "fidelity",
+      "strength_basis": "real page and real library; clicks dispatched in-page because this harness's second context delivered no input (Pause, already phone-verified, also got 0 clicks)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-26T17:15:00Z",
+        "commit": "5b384c5"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 29
+    },
+    {
+      "id": "e23",
+      "obligation_ref": "o11",
+      "test_ref": "operator on the phone, gwen.culture.dev (production 0.23.2, 682ac74), 2026-10-26",
+      "behavior_text": "Choose section opened, a section was chosen and read; the operator: 'confirmed choose section works'",
+      "contract_text": "the approved mockup's Choose section control; a choice seeks to that section's first paragraph (d1)",
+      "evidence_type": "manual",
+      "strength": "fidelity",
+      "strength_basis": "the operator's own report on the real device against the merged, deployed ref",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-26T00:00:00Z",
+        "commit": "682ac74"
+      },
+      "origin": "llm",
+      "status": "approved",
+      "superseded": false,
+      "seq": 30
     }
   ],
   "deltas": [
@@ -445,7 +554,7 @@
         "e6"
       ],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false
     },
     {
@@ -457,7 +566,7 @@
       ],
       "evidence_refs": [],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false
     },
     {
@@ -469,8 +578,8 @@
       ],
       "evidence_refs": [],
       "origin": "llm",
-      "status": "proposed",
-      "superseded": false
+      "status": "approved",
+      "superseded": true
     },
     {
       "id": "b4",
@@ -481,7 +590,7 @@
       ],
       "evidence_refs": [],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false
     },
     {
@@ -493,7 +602,7 @@
       ],
       "evidence_refs": [],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false
     },
     {
@@ -508,7 +617,7 @@
         "e15"
       ],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false
     },
     {
@@ -520,7 +629,7 @@
       ],
       "evidence_refs": [],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false
     },
     {
@@ -532,7 +641,7 @@
       ],
       "evidence_refs": [],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false
     },
     {
@@ -544,7 +653,7 @@
       ],
       "evidence_refs": [],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "superseded": false
     },
     {
@@ -556,9 +665,32 @@
       ],
       "evidence_refs": [],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
+      "superseded": false
+    },
+    {
+      "id": "b11",
+      "kind": "added",
+      "behavior_text": "the dock's Choose section control: sections listed in order, a choice seeks to that section's first paragraph (d1)",
+      "caused_by": [
+        "c23"
+      ],
+      "evidence_refs": [
+        "e21",
+        "e22"
+      ],
+      "origin": "llm",
+      "status": "approved",
       "superseded": false
     }
   ],
-  "supersessions": []
+  "supersessions": [
+    {
+      "id": "s1",
+      "action": "supersede",
+      "target_ref": "b3",
+      "replacement_ref": "b11",
+      "origin": "llm"
+    }
+  ]
 }

@@ -61,8 +61,11 @@ not spoken by a person — none of it is a measurement of real use):
   extrapolation). A `senses` completion took 4.0 s median and 5.1 s at most
   (n = 30), well inside the 30 s completion bound.
 
-**The library is queried, not copied (0.23.0, embodiment#107); its value is unmeasured, and
-the live acceptance (t9) is not yet done.** Before 0.23.0 Gwen
+**The library is queried, not copied (0.23.0, embodiment#107); its value is unmeasured.**
+The live acceptance (t9) ran on the phone
+(`docs/live-test-results/2026-10-26-library-queried-and-heard.md`): tap to first sound
+was warm "immediate" and cold about 6 s, over the 5 s bar, both the operator's estimates by
+ear (n = 1), not timed. Before 0.23.0 Gwen
 kept her own copy (`read_item` was capped at 40 passages and 16,000 characters,
 `library/reading.py:36-37`; one spoken reply at 4,000, `voice.py:333`): a sync
 (`embodiment/library/sync.py`) fetched every item, and
@@ -218,9 +221,11 @@ loop. It does not drive hardware and nothing here claims a body.
   the cursor's unit, and `POST /api/reading/{id}/clear` drops it. The page speaks each
   unit through `/api/speak` (the Reader dock, Continue listening on the Library, and a
   Read aloud card in chat); `status.reading` counts reads started, units served and
-  heard, refused reports, continues and seeks. Not built: the "Choose section" control
-  of the mockup (previous and next paragraph are). Nothing here has run in the live
-  acceptance yet (t9).
+  heard, refused reports, continues and seeks. The dock's Choose section (0.23.2) lists the
+  item's sections by heading and reads the chosen one from its first paragraph, a seek
+  like previous, next and a tap on a paragraph. The live acceptance (t9) ran on a
+  phone, with tap to first sound judged by ear: warm at once, cold about 6 s, over the 5 s
+  bar.
 - **The write guard.** An xteink key is a full operator key, so the client never
   writes; and in a turn whose context holds library text, `remember` and
   `forget` are refused unless the operator's own words in that turn name the

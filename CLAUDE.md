@@ -101,14 +101,16 @@ provider (`library/document.py`, `LibraryClient.fetch_text`). Documents can be h
 `daemon/reading.py` keeps one cursor per item in `reading-positions.json` (0600) behind
 `GET /api/reading`, `/api/reading/{id}/next` (with `section`/`paragraph` a seek that
 re-pins the cursor, deviation d1), `POST .../heard` and `.../clear`, and the page has the
-Reader dock, Continue listening and a Read aloud card (no "Choose section" control).
+Reader dock (Choose section since 0.23.2), Continue listening and a Read aloud card.
 **Measured, and only by the 2026-10-26 probes on this rig:** n = 5 retrieve latencies
 (hybrid 0.74-1.12 s), n = 2 TTS runs per language (warm 0.46-0.83 s, cold 6.59 s) and
 the live catalog and `/text` shapes. The before-state it replaces: `read_item` returned
 at most 40 passages and 16,000 characters (`library/reading.py:36-37`), so a long
 document could be summarized and never heard whole, and `Voice.speak` caps one reply at
 4,000 characters (`voice.py:333`), which is why a reading unit is at most that long
-(`daemon/reading.py:MAX_PART_CHARS`). **Not yet done: the live acceptance (t9)**; hit rate on
+(`daemon/reading.py:MAX_PART_CHARS`). **The live acceptance (t9) ran on the phone**
+(`docs/live-test-results/2026-10-26-library-queried-and-heard.md`; tap to first sound warm at
+once, cold about 6 s, by ear, n = 1, so the 5 s bar holds warm only); hit rate on
 the library's retrieval is unmeasured and its hybrid scores (0.011-0.033) do not compare
 with memory's 0.715. **gwen.culture.dev
 needs its own Cloudflare never-cache rule** (the culture.dev zone caches everything,

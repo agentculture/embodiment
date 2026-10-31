@@ -4,7 +4,7 @@
   "schema_version": 6,
   "status": "exported",
   "created": "2026-10-25T22:41:22Z",
-  "updated": "2026-10-26T11:22:05Z",
+  "updated": "2026-10-26T18:19:56Z",
   "claims": [
     {
       "id": "c1",
@@ -886,7 +886,7 @@
         "t4"
       ],
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "l2",
@@ -897,7 +897,7 @@
         "c32 / t9"
       ],
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "l3",
@@ -906,7 +906,7 @@
       "skipped_check": "",
       "refs": [],
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     }
   ],
   "obligations": [
@@ -917,7 +917,7 @@
       "behavior": "search_library is one POST /api/rag/retrieve (hybrid, no rerank); no sync module, no library index, no indexing GET",
       "source_text": "search_library is served by one POST /api/rag/retrieve per call (mode hybrid, rerank false on the turn path) and the library's own passages; Gwen's library sync and document index (library/sync.py, the library lane of library/index.py) are retired, so Gwen no longer downloads, extracts or embeds library items",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "o2",
@@ -926,7 +926,7 @@
       "behavior": "to-do and discord-message passages never come back from search_library",
       "source_text": "to-do items and discord messages never come back from search_library: the retrieve call names a kind, or Gwen drops passages of kind todo client-side, matching today's DocumentIndex.wants exclusion",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "o3",
@@ -935,7 +935,7 @@
       "behavior": "a read takes the item's paragraphs from /text: an EPUB's paragraphs in order, Markdown split as the library splits it",
       "source_text": "reading a document aloud takes its text from GET /api/library/{id}/text: an EPUB's sections and paragraphs as the library gives them, and a Markdown item split into paragraphs by Gwen's markdown reader; a page is a section (an EPUB chapter, a Markdown heading)",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "o4",
@@ -944,7 +944,7 @@
       "behavior": "the cursor moves only on a heard report for the exact next unit (or an explicit seek, d1); a stale heard moves nothing",
       "source_text": "Voice.speak returns when sentences are queued, not heard (SpeakResult.sentences_queued, voice.py:472-516), so the cursor advances past a paragraph only once its playback finishes with no barge-in; a paragraph interrupted mid-way counts unheard and is read again on continue",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "o5",
@@ -953,7 +953,7 @@
       "behavior": "next and heard need the install secret, or a valid Access assertion on the public Host",
       "source_text": "the reading routes (next paragraph, heard) sit behind the same guard as every state-changing route: Host and Origin allow-list plus the install secret, or a valid Cloudflare Access assertion on the public Host; a heard report changes only the cursor",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "o6",
@@ -962,7 +962,7 @@
       "behavior": "the first start deletes the retired library index once, records it, and later starts do nothing",
       "source_text": "on the first start of this release the daemon deletes its retired library index file (`<state>/library/index.json`) once, records that it did, and never touches the conversations index",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "o7",
@@ -971,7 +971,7 @@
       "behavior": "a newly created library item is searchable by Gwen with no Gwen-side action",
       "source_text": "one copy of the library: a document the library indexes is searchable by Gwen the moment it lands, with no second embed, no re-index on an id change (d15 cost one) and no drift between two indexes; and reading aloud turns the library from something to ask into something to hear, a chapter at a time, picked up where it was left",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "o8",
@@ -980,7 +980,7 @@
       "behavior": "retrieve calls succeed with 0 failures and the daemon makes 0 GET /api/library/{id}/file calls",
       "source_text": "on the live rig: (1) status.library shows retrieve calls >= 1 and 0 failures, with no items_indexed or sync worker, and the daemon makes 0 GET /api/library/{id}/file calls for indexing over 10 minutes; (2) one chapter of a live EPUB read from the phone is stopped mid-paragraph, the page reloaded, and continue plays that same paragraph again first, within 5 s of the tap",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "o9",
@@ -989,7 +989,7 @@
       "behavior": "a read plays on the device that has the page open; after a reload, Continue listening replays the paragraph stopped in from its start",
       "source_text": "a read-aloud plays on the speakers of the device that has gwen.culture.dev open (phone or laptop): the page fetches and plays each paragraph and reports it heard; not the rig speaker",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
     },
     {
       "id": "o10",
@@ -998,7 +998,16 @@
       "behavior": "a paragraph is spoken whole: no sentence's audio is cut and no sentence's text is dropped",
       "source_text": "the read-aloud loop bypasses the LLM: Gwen speaks the document's own words one paragraph per Voice.speak call, verbatim, never summarised or rewritten by senses",
       "origin": "llm",
-      "status": "proposed"
+      "status": "approved"
+    },
+    {
+      "id": "o11",
+      "claim_id": "c23",
+      "seam": "web/src/components/ReadAloud.tsx ReadAloudDock + Reader.tsx sections",
+      "behavior": "Choose section lists the item's sections and reads the chosen one from its first paragraph through a seek (d1), reported heard only on ended; Escape closes the list, not the reader",
+      "source_text": "the page drives a read through daemon routes: start or continue returns the next paragraph (its text, section heading and position) from the saved cursor; the page synthesises it with /api/speak, plays it, and reports it heard on the audio's ended event; the daemon advances the cursor only on a heard report for that exact position, and the page prefetches the following paragraph so speech does not stall between paragraphs",
+      "origin": "llm",
+      "status": "approved"
     }
   ]
 }

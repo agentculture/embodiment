@@ -11,12 +11,12 @@
 // the passage being spoken is marked, heard ones recede, and the map turns into
 // one span per section while a read is on.
 
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState } from "react";
 import type { MouseEvent } from "react";
 import { fetchItem, type LibraryClientOptions, type LibraryDocument, type Passage } from "../api/library";
 import { dayLabel, kindInfo } from "../api/kinds";
 import type { ReadingUnit, SavedPosition } from "../api/reading";
-import { deviceKind, neighbour, playedOf, progressOf, ReadAloudDock, useReadAloud, type AudioFactory } from "./ReadAloud";
+import { deviceKind, neighbour, playedOf, progressOf, ReadAloudDock, useReadAloud, type AudioFactory, type SectionChoice } from "./ReadAloud";
 import "../styles/library.css";
 
 export interface ReaderHandle {
@@ -129,6 +129,19 @@ export const Reader = forwardRef<ReaderHandle, ReaderProps>(function Reader(
   );
   const [reading, controls] = useReadAloud({ itemId: id, secret, clientOptions, audioFactory, peekFollowing, peekPreceding });
   const device = deviceKind();
+  // The dock's Choose section list, from this reader's own copy: each section in order,
+  // named by its heading (the daemon puts it on every passage of the section), else by
+  // its number. The number is the section's own index, the one the dock's "Section N of M"
+  // shows, so a section the library left without paragraphs is skipped, not renumbered.
+  const sections = useMemo((): SectionChoice[] => {
+    const out: SectionChoice[] = [];
+    for (const p of doc?.passages ?? []) {
+      const pos = positionOf(p.anchor);
+      if (!pos || out[out.length - 1]?.section === pos.section) continue;
+      out.push({ section: pos.section, label: p.heading || `Section ${pos.section + 1}` });
+    }
+    return out;
+  }, [doc]);
 
   useEffect(() => {
     let live = true;
@@ -353,7 +366,7 @@ export const Reader = forwardRef<ReaderHandle, ReaderProps>(function Reader(
         </ol>
       </div>
       {reading.status !== "idle" && reading.status !== "stopped" && (
-        <ReadAloudDock state={reading} controls={controls} device={device} />
+        <ReadAloudDock state={reading} controls={controls} device={device} sections={sections} />
       )}
     </aside>
   );

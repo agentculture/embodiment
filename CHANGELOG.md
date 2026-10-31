@@ -5,6 +5,31 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.23.4] - 2026-10-26
+
+### Changed
+
+- Evidence `e23` (Choose section on the operator's phone) confirmed by the operator; no embodiment#107 record is left proposed.
+- `t9` closed by deviation `d8` (the operator): its tap-to-sound is accepted on the by-ear figures, warm immediate and cold about 6 s; a timed measurement is optional, not owed.
+
+## [0.23.3] - 2026-10-26
+
+### Changed
+
+- embodiment#107's records adjudicated by the operator (lapses `l1`-`l3`, obligations `o1`-`o11`, evidence `e1`-`e22`, deltas `b1`-`b11` confirmed), and Choose section confirmed on the operator's phone against production 0.23.2 (evidence `e23`, proposed); the delivery summary and live results say so.
+
+## [0.23.2] - 2026-10-26
+
+### Added
+
+- Choose section in the listening dock (embodiment#107 t4, the approved mockup's control): with two or more sections the dock lists them in order, each by its first heading or else its number, the one playing marked and focused; choosing one reads it from its first paragraph through `/api/reading/{id}/next?section=&paragraph=0`, a seek that re-pins the cursor (d1), reported heard only on ended. Escape closes the list and not the reader; the list scrolls within the dock on a phone. t4 is delivered.
+
+## [0.23.1] - 2026-10-26
+
+### Changed
+
+- The live acceptance of embodiment#107 (t9) is recorded as done: the operator's retests on the merged 0.23.0 passed the refresh (d5) and the 0.53 s full-stop pause, and tap to first sound was warm "immediate" and cold about 6 s, over c22's 5 s bar; both are estimates by ear (n = 1), not timed. `docs/live-test-results/2026-10-26-library-queried-and-heard.md`, the delivery summary, the README, CLAUDE.md and the `explain` root say so; evidence `e19`, `e20` filed (proposed)
+
 ## [0.23.0] - 2026-10-26
 
 ### Added

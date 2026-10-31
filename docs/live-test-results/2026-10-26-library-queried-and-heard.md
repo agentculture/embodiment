@@ -7,7 +7,8 @@ scripts printed structure, counts and seconds.
 ## Setup
 
 - Code: branch `feat/gwen-queries-the-library` (0.23.0). The pre-flight ran
-  `0.23.0` before the review fixes; production now runs `2a58a65`.
+  `0.23.0` before the review fixes; production ran `2a58a65` for the probes
+  and the phone check, and the merged `e19be55` (0.23.0, #110) for the retests.
 - Pre-flight daemon: the same code on port 8824 with a scratch state
   directory, so the live store was never touched by a probe.
 - Production: `embodiment-gwen.service` on gwen.culture.dev, state in the
@@ -46,14 +47,22 @@ The operator's own words, on an iPhone (the browser was not named), against prod
 | Progress bar | **fail**: a finished paragraph's bar emptied before the next one began, and past the end the last paragraph read "Paused here" with its segment unfilled. Fixed by d3 |
 | The item's title as its first paragraph | as designed: the library's text opens with the title as its own block; the operator heard it and kept it |
 | A long one-sentence paragraph | **fail**: the voice stopped after "perception" and the reader went on. Every sentence's audio was capped at 10 s; the same paragraph measured 10.00 s cut on the pre-flight daemon, then 13.93 s whole after the fix (`23d0b01`). Retested below |
-| After a refresh, the header and the dock | **fail**: the header was scrolled away and the dock floated above empty space; fixed by d5 (`910cbcc`). A later screenshot showed the header in place; not confirmed as a refresh check |
+| After a refresh, the header and the dock | **fail**: the header was scrolled away and the dock floated above empty space; fixed by d5 (`910cbcc`). Retested on the merged ref: pass ("I don't see the issue with bottom place and missing header") |
 | Pause then play, relisten | slow, then pass: the audio was made again on every play; d6 keeps the current, previous and next paragraphs' audio. The operator: "Caching works well, and no ring when relisten" (the ring waits 300 ms, d4) |
 | Previous and Next, section edges included | pass: made ahead while a paragraph plays (d6, `91b486e`). The operator: "Previous and next cache works good!" |
 | Loading feedback on a jump | added by d4: a turning ring on the play button, no words (the operator: "Loading ring on play is clear") |
 | A long one-sentence paragraph, retested | pass ("Reads well to the end") |
-| Transitions between sentences | **fail**: "transitions between sentences aren't great". Measured: sentences joined with 0-10 ms of silence and starting at full amplitude. Fixed by d7; measured after on the pre-flight daemon: 0.27 s quiet at each join, every clip starts and ends at sample 0. Retested: pass ("Transitions are far better. Very natural in the paragraph"), except a colon ("still passes fast"): a colon and a space now end a piece of speech with a pause. Retested: "Colon pause was good, maybe extra 50-100ms" and "100-200 ms" more after a period; then "Colon is perfect" at 0.30 s, and "a period [needs] a bit more weight. Maybe 100ms": 0.53 s after a full stop, not yet retested |
+| Transitions between sentences | **fail**: "transitions between sentences aren't great". Measured: sentences joined with 0-10 ms of silence and starting at full amplitude. Fixed by d7; measured after on the pre-flight daemon: 0.27 s quiet at each join, every clip starts and ends at sample 0. Retested: pass ("Transitions are far better. Very natural in the paragraph"), except a colon ("still passes fast"): a colon and a space now end a piece of speech with a pause. Retested: "Colon pause was good, maybe extra 50-100ms" and "100-200 ms" more after a period; then "Colon is perfect" at 0.30 s, and "a period [needs] a bit more weight. Maybe 100ms": 0.53 s after a full stop; retested on the merged ref: pass ("pause is right") |
 | One paragraph per sentence (A) or in one tts call (B) | A kept. The operator, by ear on one synthetic paragraph: "Per sentence is better! The model didn't parse well the transition to the question. Otherwise, whole sentence was better." Made in 1.06 s (A) and 0.70 s (B) for about 20 s of audio; B is the alternative if the voice handles questions mid-paragraph |
-| Tap-to-sound time | not reported |
+| Tap-to-sound time, cold | a long paragraph: "maybe 6" seconds (the operator's estimate by ear, n = 1, not timed) |
+| Choose section (0.23.2, `682ac74`, production) | pass ("confirmed choose section works") |
+| Tap-to-sound time, warm | the same paragraph re-tapped: "immediate and smooth" (by ear, n = 1) |
+
+c22's 5 s bar, judged on the warm figure as the plan says: **pass**. The cold
+figure beside it, about 6 s, **misses** the bar; it matches the cold tts call
+probed on the rig (6.59 s, c32). Both figures are estimates by ear, not timed.
+The stop, reload and continue check was made on a Hebrew transcript, not on a
+chapter of an EPUB; the EPUB was matched against `/text` by the probe only.
 
 Server side, production's reading positions moved one paragraph per heard
 report on both items read (paragraph 0 heard, cursor at paragraph 1).
