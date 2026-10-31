@@ -46,6 +46,9 @@ VIA_CLIP = "clip"
 VIA_GENERATED = "generated"
 #: An operator turn logged before d7, when the log did not say how it arrived.
 VIA_UNKNOWN = "unknown"
+#: Another agent's message over the Culture mesh (q6 = c): the speaker in an agent
+#: conversation is that agent, not the operator.
+VIA_MESH = "mesh"
 #: One line per tag, carried in every export so a reader (culture-rules, the
 #: library's later quality/coherence scoring) never has to guess what a tag means.
 EVIDENCE = {
@@ -69,8 +72,12 @@ EVIDENCE = {
         "generated: Gwen's reply; a record that she said it, not evidence that it is true"
     ),
     VIA_UNKNOWN: "unknown: logged before turns recorded how they arrived",
+    VIA_MESH: (
+        "relayed: another agent's message over the Culture mesh, as its nick reported it;"
+        " a record that it was sent, not evidence of who sent it or that it is true"
+    ),
 }
-_USER_VIAS = frozenset({VIA_TYPED, VIA_SPOKEN, VIA_RECORDED, VIA_UPLOADED, VIA_CLIP})
+_USER_VIAS = frozenset({VIA_TYPED, VIA_SPOKEN, VIA_RECORDED, VIA_UPLOADED, VIA_CLIP, VIA_MESH})
 #: The words the page may send for a clip (``X-Clip-Origin``).
 _CLIP_ORIGINS = frozenset({VIA_RECORDED, VIA_UPLOADED})
 
@@ -189,6 +196,12 @@ def _valid_id(conversation_id: Any) -> bool:
     )
 
 
+def _mesh_agent(row: dict[str, Any]) -> Optional[str]:
+    """The nick of the agent a mesh turn came from, or None."""
+    nick = row.get("mesh_agent")
+    return nick.strip() if isinstance(nick, str) and nick.strip() else None
+
+
 def _turns(path: Path) -> list[dict[str, Any]]:
     """The user/assistant turns of one log, in order; [] if it cannot be read."""
     try:
@@ -215,6 +228,7 @@ def _turns(path: Path) -> list[dict[str, Any]]:
                 "via": _via(row),
                 "recording": _recording(row.get("recording")),
                 "timestamps": _stamps(row.get("timestamps")),
+                "mesh_agent": _mesh_agent(row),
             }
         )
     return turns
@@ -233,6 +247,7 @@ def _summary(conversation_id: str, turns: list[dict[str, Any]], current: bool) -
         "last": max(stamps) if stamps else None,
         "turns": sum(1 for t in turns if t["role"] == "user"),
         "current": current,
+        "agent": next((t["mesh_agent"] for t in turns if t.get("mesh_agent")), None),
     }
 
 

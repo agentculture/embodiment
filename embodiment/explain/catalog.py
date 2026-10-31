@@ -64,6 +64,46 @@ warm at once, cold about 6 s (over the 5 s bar), by ear, n = 1.
 A **write guard** refuses `remember` and `forget` in a turn that holds library text
 unless the operator's own words name the write. Value is unmeasured.
 
+## Personas, model choice and spark-gwen
+
+Unreleased (0.24.0, branch `feat/gwen-personas-models-mesh`); measured only where
+stated.
+
+- **Personas.** The Personas tab (`/api/personas`) holds personas the operator
+  writes: a private 0600 store, a language (`he`, `en` or `none`), a length and
+  free text. The built-in Gwen is the default; her **spoken** prompt is
+  byte-identical to before, and her **typed** prompt drops the speech-only lines
+  (deviation d1: short sentences fit speech, not text). The tool registry, the
+  write guard and the identity framing are the same with and without a persona.
+- **Model choice per conversation.** The page lists the roles the gateway
+  reports on `/capabilities` (`/api/models`, polled every 60 s) and a
+  conversation can pick one. A chosen role that is unavailable is its own
+  degradation (`app-text-model-unavailable`, distinct from the gateway being
+  down) and there is **no fallback** to another model; the trace carries
+  `chat_role`, `chat_model` and `chat_host`. **Voice is gated:** `senses` is
+  exempt; any other role speaks only after its voice latency has been measured
+  by the background probe. `stt`, `tts`, the realtime session and the embedder
+  do not change with the choice.
+- **The translator.** A persona's `translate_via` role is the Gemma translator
+  (`embodiment/translate.py`): the chosen role sees English, and `remember` and
+  `search_*` use the operator's own words, not the translation.
+- **English is text-only.** lobes has no English voice (its `tts` role is
+  Hebrew-only), so an English persona answers in text and is never spoken.
+- **spark-gwen.** Gwen's daemon holds its own agentirc connection as
+  `spark-gwen` (`EMBODIMENT_MESH`, on by default; `EMBODIMENT_MESH_NICK`,
+  `EMBODIMENT_MESH_SERVER`, `EMBODIMENT_MESH_CHANNELS`); `embodiment mesh` prints
+  the setup and runs nothing. The `ask_culture` tool posts **only the question
+  she composed** as its own thread to a listed channel; answers arrive later,
+  also after expiry, marked as late. Any agent on the mesh may talk to her and
+  gets a normal turn, **memory included**: a local agent is allowed to know
+  local memory, so **a newly linked server can read Gwen's memory**. The nick is
+  not authenticated by agentirc; link only a local or trusted server. Her
+  listing as a resident agent awaits agentculture/culture#506. A mesh answer
+  that asks her to remember, forget or mark a to-do causes none of those writes.
+- **Unmeasured:** Hebrew quality of the non-Gemma roles, the English
+  `remember`/`forget` call rate, voice latency per role and for the translator,
+  and mesh answer latency.
+
 ## Software presence, not a robot body
 
 "Embodiment" is an overloaded word in this mesh. This package is
@@ -89,8 +129,10 @@ absence, never an implication:
   when the operator's own words ask). The to-dos come from the library's `kind=todo`
   items only, re-read every 30 s; a mark is Gwen's pending one until the library's
   line agrees, re-sent each check for up to an hour, then counted unconfirmed
-  (`status.todos`). No shell, no files, no Qwen Code, nothing that writes to the
+  (`status.todos`). `ask_culture` posts one question to a listed mesh channel; the
+  answer arrives later. No shell, no files, no Qwen Code, nothing that writes to the
   library.
+- **An English voice** — lobes `tts` is Hebrew-only; English is text-only.
 - **Vision** — the session is audio-only.
 - **A face** — the waveform is a compact strip beside the chat.
 - **Live realtime voice and speech-to-speech** — the phone is control, text and
@@ -453,6 +495,24 @@ of the command.
 """
 
 
+_MESH = """\
+# embodiment mesh
+
+Prints Gwen's culture-mesh identity and setup; runs nothing (no subprocess,
+no socket). Shows the nick (`spark-gwen`), the server, the channel allow-list
+(`#general`), the env names `EMBODIMENT_MESH`, `EMBODIMENT_MESH_NICK`,
+`EMBODIMENT_MESH_SERVER`, `EMBODIMENT_MESH_CHANNELS`, and the registration
+steps: connecting needs no registration (agentirc accepts any client whose nick
+starts with the server name; the daemon holds the connection itself), while
+listing Gwen as a culture resident is pending a culture-side change and is
+"not yet supported". This repo's own agent is `spark-embodiment`; the two share
+no nick, socket or `culture.yaml` entry.
+
+## Usage
+
+    embodiment mesh [--json]
+"""
+
 _TUNNEL = """\
 # embodiment tunnel
 
@@ -522,4 +582,5 @@ ENTRIES: dict[tuple[str, ...], str] = {
     ("stop",): _STOP,
     ("status",): _STATUS,
     ("tunnel",): _TUNNEL,
+    ("mesh",): _MESH,
 }

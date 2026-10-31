@@ -22,6 +22,8 @@ export const EVENT_KINDS = [
   "heartbeat",
   "conversation",
   "todo",
+  "mesh",
+  "stream",
 ] as const;
 
 export type EventKind = (typeof EVENT_KINDS)[number];
@@ -29,7 +31,7 @@ export type EventKind = (typeof EVENT_KINDS)[number];
 /** kind -> whether it can carry speech (schema.json's own note on
  *  transcript/reply; mirrors embodiment.bus.SPEECH_KINDS). Never rendered
  *  outside the transcript pane. */
-export const SPEECH_KINDS: ReadonlySet<EventKind> = new Set(["transcript", "reply"]);
+export const SPEECH_KINDS: ReadonlySet<EventKind> = new Set(["transcript", "reply", "mesh", "stream"]);
 
 /**
  * embodiment/bus.py's HEARTBEAT_INTERVAL_S (embodiment/bus.py, module
@@ -121,6 +123,51 @@ export interface ConversationData extends EventEnvelopeData {
   status: "settled" | string;
   last: number;
   turns: number;
+}
+
+/** What a `mesh` event says happened (t15; embodiment.bus.MESH_EVENTS). */
+export const MESH_EVENTS = [
+  "ask_posted",
+  "answer_arrived",
+  "ask_expired",
+  "agent_contacted",
+  "gwen_replied",
+] as const;
+
+export type MeshEvent = (typeof MESH_EVENTS)[number];
+
+/**
+ * Gwen on the Culture mesh (t15). SPEECH-CARRYING: `text` is the question Gwen
+ * posted, another agent's words (UNTRUSTED: render with textContent, marked as
+ * another agent's), or Gwen's reply. Required: `event`, `conversation_id`, `at`;
+ * the rest depend on `event` (schema.json's note on the kind).
+ */
+export interface MeshData extends EventEnvelopeData {
+  event: MeshEvent | string;
+  /** The session-log id: the ask's conversation, or the agent's own conversation. */
+  conversation_id: string;
+  /** Epoch seconds. */
+  at: number;
+  ask_id?: string;
+  /** The other agent's nick (answer_arrived, agent_contacted, gwen_replied). */
+  nick?: string;
+  /** The channel; null for a direct message. */
+  channel?: string | null;
+  thread?: string | null;
+  text?: string;
+  /** ask_posted: when the ask stops waiting (epoch seconds). */
+  expires_at?: number;
+  /** answer_arrived: after the asking turn ended, or after the ask expired. */
+  late?: boolean;
+  after_expiry?: boolean;
+  /** answer_arrived: several asks were open in the channel (fallback rule). */
+  ambiguous?: boolean;
+  /** answer_arrived: which rule matched it: "thread" | "reply_to" | "fallback". */
+  rule?: string;
+  /** agent_contacted / gwen_replied: a direct message rather than a channel. */
+  direct?: boolean;
+  /** gwen_replied: whether the mesh client accepted the reply for sending. */
+  sent?: boolean;
 }
 
 // heartbeat carries no required fields (schema.json: "required": []).

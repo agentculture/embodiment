@@ -5,6 +5,32 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.24.0] - 2026-10-31
+
+### Added
+
+- Personas: operator-authored, private (0600) personas.json with language (he/en/none), length, formatting, translator, mesh and default model; built-in Gwen stays the default; /api/personas; the Personas tab.
+- Model choice per conversation from lobes /capabilities (polled every 60 s): /api/models, the Persona/Language/Model row under the dock, chat_role/chat_model/chat_host on every reply.
+- A distinct model-unavailable error (app-text-model-unavailable) with no fallback to another model, and a one-tap switch.
+- Voice gated by measured latency: senses is exempt; any other role speaks only after a background probe measures it (voice-latency.json).
+- The Gemma translator (translate_via): the chosen model sees English, the operator hears the persona's language, and remember and searches keep the operator's own words.
+- A typed answer outlives its request: the page names each chat with a request_id; the daemon keeps the result (pending, then done; 128 kept, in memory) at GET /api/chat/{request_id} and tags the reply event with it. On http-control-timeout the page shows 'Still working on this' and fetches the answer when the turn ends; a question asked before the page was left is recovered on the next visit (localStorage keeps only the id, question and conversation).
+- Typed turns stream (deviation d5): completions ask lobes for server-sent chunks, so the 60 s per-call clock bounds silence between tokens, not the answer's length (cortex calls had been cut off mid-reasoning). The page shows the reasoning and the answer as they arrive (`stream` events, cumulative, scrubbed, throttled to 4 a second) and keeps the reasoning folded under the finished answer. Spoken turns are unchanged: their deadline stays a total bound.
+- spark-gwen on the Culture mesh: Gwen's daemon holds its own agentirc connection (EMBODIMENT_MESH on by default); ask_culture posts only the question, as its own thread; answers arrive later (also after expiry, marked); agents that contact her get a normal turn; mesh events, cards and status counters; embodiment mesh prints the setup.
+
+### Changed
+
+- Built-in Gwen's typed prompt drops the speech-only lines ('short sentences', no lists/formatting); her spoken prompt is byte-identical (deviation d1).
+- Spoken replies cut by the voice caps now record app-reply-truncated instead of being cut silently.
+
+### Fixed
+
+- A failing capabilities degrade hook is counted instead of silently swallowed.
+- Saving a persona no longer reports 'Could not save (unparseable-response)': the page reads the daemon's {persona: ...} reply.
+- An agent conversation's row in the history pane lays out nick, title and time instead of overlapping.
+- Review of #117, first pass: create_thread sizes its lines for the longer THREAD CREATE head (the first line could be 8193 bytes); `embodiment mesh` reads the env through MeshConfig.from_env, as the daemon does ('0'/'false'/'no' are off, invalid channels dropped, a bad server reported); a translated fenced line that lost its quote is quoted again unless it is one of the block's own header lines; mesh answers a turn took but never used (failed, superseded, refused, gated) go back to its conversation's queue; a plain line from the same sender within 5 s of an answer is that answer's next line (answer_lines_continued).
+- Review of #117 (/code-review medium): a named chat whose turn raised is stored as failed, never left pending; a translated turn shows only the chosen model's reasoning live (the translator's text and the English draft are not her answer); a server (system-) notice never answers an ask; an unreadable personas.json is set aside (personas.json.unreadable) before a save would replace it; the mesh nick-retry is available again after she is back up; translations are cached per conversation (no text translated twice, her earlier replies reach the model as their English drafts); live spoken turns on a measured role add voice-latency samples, a deadline cut-off kept as a censored sample at the deadline; a failing ask-refusal recorder is reported in the tool result; an unmatched mesh message no longer rewrites mesh-asks.json.
+
 ## [0.23.5] - 2026-10-31
 
 ### Fixed

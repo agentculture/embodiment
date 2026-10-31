@@ -480,13 +480,37 @@ STREAM_ROUTE = "/api/events"
 STATUS_ROUTE = "/api/status"
 
 CHAT_ROUTE = "/api/chat"
+#: The page's chat request id (mirrors the daemon's ``CHAT_REQUEST_ID_RE``).
+_CHAT_REQUEST_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}\Z")
+_CHAT_RESULT_STATES = ("pending", "done", "unknown")
+CHAT_RESULTS_NOT_CONFIGURED_CODE = "chat-results-not-configured"
 SPEAK_ROUTE = "/api/speak"
 #: Set on a /api/speak answer whose audio stopped short of the text (a cap or a deadline).
 SPEAK_TRUNCATED_HEADER = "X-Speak-Truncated"
 CLIP_ROUTE = "/api/clip"
+PERSONAS_NOT_CONFIGURED_CODE = "personas-not-configured"
 _TEXT_ROUTES = (CHAT_ROUTE, SPEAK_ROUTE, CLIP_ROUTE)
 #: End the live conversation and start a new one (operator, 2026-10-24).
 NEW_CONVERSATION_ROUTE = "/api/conversation/new"
+PERSONAS_ROUTE = "/api/personas"
+MODELS_ROUTE = "/api/models"
+#: Optional per-request settings (t14): body keys on chat / new-conversation, headers on clip.
+PERSONA_HEADER = "X-Persona"
+MODEL_HEADER = "X-Model"
+LANGUAGE_HEADER = "X-Language"
+SETTINGS_KEYS = ("persona", "model", "language")
+#: The HTTP status of each refusal a persona or settings callable may answer by code.
+_PERSONA_STATUS = {
+    "not_found": 404,
+    "builtin_read_only": 409,
+    "exists": 409,
+    "too_many": 409,
+    "save_failed": 503,
+    "unknown_persona": 400,
+    "unknown_model": 400,
+    "bad_language": 400,
+    "conversation-not-found": 404,
+}
 #: A turn held the conversation for the whole wait: nothing was ended.
 CONVERSATION_BUSY_CODE = "conversation-busy"
 _CONTROL_ROUTES = (
@@ -610,6 +634,9 @@ class Controls:
     #: refuses a non-string). Runs under :attr:`ServerConfig.chat_timeout_s`. A second
     #: argument, only when the body names one, is the conversation id it continues.
     chat: Optional[Callable[..., dict[str, Any]]] = None
+    #: ``chat_result(request_id) -> {"state": "pending"|"done"|"unknown", "result"}``:
+    #: ``GET /api/chat/{request_id}``, a typed answer that outlived its request.
+    chat_result: Optional[Callable[[Any], dict[str, Any]]] = None
     #: ``speak(text) -> {"ok", "audio": bytes, "content_type", "code", "http_status"}``.
     #: Runs under :attr:`ServerConfig.speak_timeout_s`.
     speak: Optional[Callable[[Any], dict[str, Any]]] = None
@@ -646,6 +673,21 @@ class Controls:
     conversations: Optional[Callable[[], dict[str, Any]]] = None
     #: ``conversation(id) -> {"conversation": {...}, "turns": [...]}``; ``None`` is a 404.
     conversation: Optional[Callable[[str], Optional[dict[str, Any]]]] = None
+    #: The persona and model routes (t14). ``personas() -> {"personas", "builtin_id"}``;
+    #: ``persona_create(fields)`` / ``persona_update(id, fields)`` ->
+    #: ``{"persona": {...}}``; ``persona_delete(id) -> {"deleted": id}``; each may answer
+    #: ``{"code": <PersonaError code>}`` instead. ``models() -> {"roles", "stale",
+    #: "age_s", "conversation_role"}``. Never a key or a secret in any of them.
+    personas: Optional[Callable[[], dict[str, Any]]] = None
+    persona_create: Optional[Callable[[dict[str, Any]], dict[str, Any]]] = None
+    persona_update: Optional[Callable[[str, dict[str, Any]], dict[str, Any]]] = None
+    persona_delete: Optional[Callable[[str], dict[str, Any]]] = None
+    models: Optional[Callable[[], dict[str, Any]]] = None
+    #: ``conversation_settings(conversation, persona, model, language, apply) ->
+    #: {"code": None | <refusal>}``: the optional persona, model (a role name) and
+    #: language of a chat, clip or new-conversation request. ``apply`` false only
+    #: validates (nothing changes); a refusal is never silently ignored.
+    conversation_settings: Optional[Callable[..., dict[str, Any]]] = None
 
 
 @dataclass(frozen=True)
@@ -805,6 +847,12 @@ class _Handler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802  # stdlib hook
         self._dispatch("POST")
 
+    def do_PUT(self) -> None:  # noqa: N802  # stdlib hook
+        self._dispatch("PUT")
+
+    def do_DELETE(self) -> None:  # noqa: N802  # stdlib hook
+        self._dispatch("DELETE")
+
     # ── routing ──────────────────────────────────────────────────────────────
 
     def _dispatch(self, method: str) -> None:
@@ -828,8 +876,8 @@ class _Handler(BaseHTTPRequestHandler):
         route = self.path.split("?", 1)[0].split("#", 1)[0]
         if self._api_route(route, method, decision):
             return
-        if method == "POST":
-            self._refuse_unread(405, "http-method-not-allowed", "nothing here accepts a POST")
+        if method in ("POST", "PUT", "DELETE"):
+            self._refuse_unread(405, "http-method-not-allowed", f"nothing here accepts a {method}")
             return
         self._static(route, head=method == "HEAD")
 
@@ -843,6 +891,15 @@ class _Handler(BaseHTTPRequestHandler):
             return True
         if _is_library_route(route):
             self._library_route(route, method)
+            return True
+        if route == PERSONAS_ROUTE or route.startswith(PERSONAS_ROUTE + "/"):
+            self._personas_route(route, method)
+            return True
+        if route == MODELS_ROUTE:
+            self._models_route(method)
+            return True
+        if route.startswith(CHAT_ROUTE + "/"):
+            self._chat_result_route(route[len(CHAT_ROUTE) + 1 :], method)
             return True
         if route in _CONTROL_ROUTES:
             if method != "POST":
@@ -1011,7 +1068,26 @@ class _Handler(BaseHTTPRequestHandler):
         self._invoke(route, callable_)
 
     def _new_conversation(self) -> None:
-        """A busy refusal is a 409, not a 200: the page must not reset on it."""
+        """A busy refusal is a 409, not a 200: the page must not reset on it.
+
+        An optional body ``{"persona"?, "model"?, "language"?}`` (t14) sets the NEW
+        conversation: validated first (a refusal changes nothing, nothing ends), applied
+        once the old one has ended."""
+        body = self._read_body()
+        if body is None:
+            return
+        settings: dict[str, str] = {}
+        if body.strip():
+            payload = _parse_object(body)
+            if payload is None:
+                self._send_error(400, BAD_REQUEST_CODE, "the body must be a JSON object")
+                return
+            settings = _settings_of(payload)
+            if settings is None:
+                self._send_error(400, BAD_REQUEST_CODE, "persona, model and language are strings")
+                return
+        if settings and not self._settings(None, settings, apply=False):
+            return
         outcome = self._app.call_control(
             "api.conversation.new", self._app.controls.new_conversation
         )
@@ -1022,7 +1098,118 @@ class _Handler(BaseHTTPRequestHandler):
         if result.get("started") is False:
             self._send_error(409, CONVERSATION_BUSY_CODE, "a turn is in flight; try again")
             return
+        if settings and not self._settings(None, settings, apply=True):
+            return
         self._send_json(200, {"ok": True, "result": result})
+
+    def _settings(
+        self, conversation: Optional[str], settings: dict[str, str], *, apply: bool
+    ) -> bool:
+        """Validate or apply one request's persona/model/language. ``False`` once a
+        refusal (a 400 with a stable code, nothing changed) is sent."""
+        outcome = self._app.call_control(
+            "api.conversation.settings",
+            self._app.controls.conversation_settings,
+            conversation,
+            settings.get("persona"),
+            settings.get("model"),
+            settings.get("language"),
+            apply,
+        )
+        if not outcome.ok:
+            self._send_error(outcome.status, outcome.code, outcome.message)
+            return False
+        code = (outcome.result or {}).get("code")
+        if code:
+            code = _safe_token(code) if isinstance(code, str) else "bad_setting"
+            self._send_error(_PERSONA_STATUS.get(code, 400), code, "that setting was refused")
+            return False
+        return True
+
+    # ── personas and models (t14) ────────────────────────────────────────────
+
+    def _personas_route(self, route: str, method: str) -> None:
+        """``/api/personas`` (GET list, POST create) and ``/api/personas/{id}`` (PUT, DELETE)."""
+        app = self._app
+        controls = app.controls
+        config = app.config
+        timeout_s = config.control_timeout_s
+        if route == PERSONAS_ROUTE:
+            if method == "GET":
+                self._read_route(
+                    "api.personas",
+                    controls.personas,
+                    (),
+                    timeout_s,
+                    "personas",
+                    PERSONAS_NOT_CONFIGURED_CODE,
+                )
+                return
+            if method == "POST":
+                self._persona_write("api.personas.create", controls.persona_create, ())
+                return
+            self._refuse_unread(405, "http-method-not-allowed", "personas is GET or POST")
+            return
+        try:
+            persona_id = unquote(route[len(PERSONAS_ROUTE) + 1 :], errors="strict")
+        except UnicodeDecodeError:
+            persona_id = ""
+        if method not in ("PUT", "DELETE"):
+            self._refuse_unread(405, "http-method-not-allowed", "a persona is PUT or DELETE")
+            return
+        if not persona_id or "/" in persona_id or len(persona_id) > 64:
+            self._refuse_unread(400, BAD_REQUEST_CODE, "not a persona id")
+            return
+        if method == "PUT":
+            self._persona_write("api.personas.update", controls.persona_update, (persona_id,))
+        else:
+            self._persona_write(
+                "api.personas.delete", controls.persona_delete, (persona_id,), body=False
+            )
+
+    def _persona_write(
+        self, label: str, action: Any, args: tuple[Any, ...], *, body: bool = True
+    ) -> None:
+        app = self._app
+        raw = self._read_body(limit=app.config.text_body_max_bytes)
+        if raw is None:
+            return
+        if body:
+            payload = _parse_object(raw)
+            if payload is None:
+                self._send_error(400, BAD_REQUEST_CODE, "the body must be a JSON object")
+                return
+            args = (*args, payload)
+        outcome = app.call_control(label, action, *args)
+        if not outcome.ok:
+            self._send_error(outcome.status, outcome.code, outcome.message)
+            return
+        result = outcome.result
+        code = result.get("code") if isinstance(result, dict) else None
+        if isinstance(code, str) and code:
+            code = _safe_token(code)
+            self._send_error(
+                _PERSONA_STATUS.get(code, 400), code, "that persona change was refused"
+            )
+            return
+        if not isinstance(result, dict):
+            app._degrade(LIBRARY_BAD_SHAPE_CODE, f"{_safe_token(label)} answered a bad shape")
+            self._send_error(502, LIBRARY_BAD_SHAPE_CODE, MALFORMED_MESSAGE)
+            return
+        self._send_json(200, result)
+
+    def _models_route(self, method: str) -> None:
+        if method != "GET":
+            self._refuse_unread(405, "http-method-not-allowed", "models is GET only")
+            return
+        self._read_route(
+            "api.models",
+            self._app.controls.models,
+            (),
+            self._app.config.control_timeout_s,
+            "roles",
+            PERSONAS_NOT_CONFIGURED_CODE,
+        )
 
     def _read_bounded(self, length: int, deadline_s: float) -> Optional[bytes]:
         """*length* bytes inside a TOTAL deadline. ``None`` (answered) when it is not met.
@@ -1347,23 +1534,11 @@ class _Handler(BaseHTTPRequestHandler):
         self._send_json(200, result)
 
     def _text_route(self, route: str) -> None:
+        if route == CLIP_ROUTE:
+            self._clip_route()
+            return
         app = self._app
         config = app.config
-        controls = app.controls
-        if route == CLIP_ROUTE:
-            body = self._read_body(
-                limit=config.clip_max_bytes,
-                require_length=True,
-                read_deadline_s=config.clip_read_deadline_s,
-            )
-            if body is None:
-                return
-            args = (body, *_clip_extras(self.headers))
-            outcome = app.call_text(
-                "api.clip", controls.clip, *args, timeout_s=config.clip_timeout_s
-            )
-            self._answer_text(outcome, ("transcript", "reply"), serial=True, sources=True)
-            return
         body = self._read_body(limit=config.text_body_max_bytes)
         if body is None:
             return
@@ -1374,23 +1549,89 @@ class _Handler(BaseHTTPRequestHandler):
             return
         value = payload.get(key)
         if route == CHAT_ROUTE:
-            # An optional "conversation" continues an earlier conversation (d5); without
-            # one the turn joins the live session, as before.
-            conversation = payload.get("conversation")
-            args = (
-                (value, conversation)
-                if isinstance(conversation, str) and conversation
-                else (value,)
-            )
-            outcome = app.call_text(
-                "api.chat", controls.chat, *args, timeout_s=config.chat_timeout_s
-            )
-            self._answer_text(outcome, ("reply",), serial=True, sources=True)
+            self._chat_route(payload, value)
             return
         outcome = app.call_text(
-            "api.speak", controls.speak, value, timeout_s=config.speak_timeout_s
+            "api.speak", app.controls.speak, value, timeout_s=config.speak_timeout_s
         )
         self._answer_speak(outcome)
+
+    def _clip_route(self) -> None:
+        app = self._app
+        config = app.config
+        body = self._read_body(
+            limit=config.clip_max_bytes,
+            require_length=True,
+            read_deadline_s=config.clip_read_deadline_s,
+        )
+        if body is None:
+            return
+        settings = _settings_of({k: self.headers.get(h) for k, h in _SETTINGS_HEADERS})
+        if settings is None:
+            self._send_error(400, BAD_REQUEST_CODE, "persona, model and language are text")
+            return
+        conversation = self.headers.get(CONVERSATION_HEADER) or None
+        if settings and not self._settings(conversation, settings, apply=True):
+            return
+        args = (body, *_clip_extras(self.headers))
+        outcome = app.call_text(
+            "api.clip", app.controls.clip, *args, timeout_s=config.clip_timeout_s
+        )
+        self._answer_text(outcome, ("transcript", "reply"), serial=True, sources=True)
+
+    def _chat_result_route(self, request_id: str, method: str) -> None:
+        """``GET /api/chat/{request_id}``: a typed answer that outlived its request."""
+        if method != "GET":
+            self._refuse_unread(405, "http-method-not-allowed", "a chat result is GET only")
+            return
+        if not _CHAT_REQUEST_ID_RE.match(request_id):
+            self._refuse_unread(404, "http-unknown-route", "no such API route")
+            return
+        app = self._app
+        action = app.controls.chat_result
+        if action is None:
+            app._degrade(CHAT_RESULTS_NOT_CONFIGURED_CODE, "api.chat.result is not configured")
+            self._send_error(503, CHAT_RESULTS_NOT_CONFIGURED_CODE, "not configured here")
+            return
+        outcome = app.call_text(
+            "api.chat.result", action, request_id, timeout_s=app.config.control_timeout_s
+        )
+        if not outcome.ok:
+            self._send_error(outcome.status, outcome.code, outcome.message)
+            return
+        result = outcome.result
+        if not isinstance(result, dict) or result.get("state") not in _CHAT_RESULT_STATES:
+            app._degrade(LIBRARY_BAD_SHAPE_CODE, "api.chat.result answered a bad shape")
+            self._send_error(502, LIBRARY_BAD_SHAPE_CODE, MALFORMED_MESSAGE)
+            return
+        self._send_json(200, result)
+
+    def _chat_route(self, payload: dict[str, Any], value: Any) -> None:
+        app = self._app
+        # An optional "conversation" continues an earlier conversation (d5); without
+        # one the turn joins the live session, as before.
+        conversation = payload.get("conversation")
+        settings = _settings_of(payload)
+        if settings is None:
+            self._send_error(400, BAD_REQUEST_CODE, "persona, model and language are strings")
+            return
+        continued = conversation if isinstance(conversation, str) and conversation else None
+        request_id = payload.get("request_id")
+        if request_id is not None and not (
+            isinstance(request_id, str) and _CHAT_REQUEST_ID_RE.match(request_id)
+        ):
+            self._send_error(400, BAD_REQUEST_CODE, "request_id is a short token")
+            return
+        if settings and not self._settings(continued, settings, apply=True):
+            return
+        if request_id is not None:
+            args: tuple[Any, ...] = (value, continued, request_id)
+        else:
+            args = (value, continued) if continued is not None else (value,)
+        outcome = app.call_text(
+            "api.chat", app.controls.chat, *args, timeout_s=app.config.chat_timeout_s
+        )
+        self._answer_text(outcome, ("reply",), serial=True, sources=True)
 
     def _text_refusal(self, outcome: ControlOutcome) -> bool:
         """Answer a transport-level failure (unbound, slow, raised). ``True`` if answered."""
@@ -1801,6 +2042,29 @@ def _parse_object(body: bytes) -> Optional[dict[str, Any]]:
     except ValueError:
         return None
     return payload if isinstance(payload, dict) else None
+
+
+_SETTINGS_HEADERS = (
+    ("persona", PERSONA_HEADER),
+    ("model", MODEL_HEADER),
+    ("language", LANGUAGE_HEADER),
+)
+
+
+def _settings_of(source: Any) -> Optional[dict[str, str]]:
+    """The persona/model/language a request names, or ``None`` when one is not text.
+
+    Absent (or ``None``) keys are left off. An empty or non-string value is a refusal
+    to the caller, never a silent skip."""
+    out: dict[str, str] = {}
+    for key in SETTINGS_KEYS:
+        value = source.get(key)
+        if value is None:
+            continue
+        if not isinstance(value, str) or not value or len(value) > 64:
+            return None
+        out[key] = value
+    return out
 
 
 def _clip_extras(headers: Any) -> tuple[Any, ...]:

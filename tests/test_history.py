@@ -110,7 +110,8 @@ def test_turns_carry_how_they_arrived(tmp_path):
 
 def test_every_tag_has_an_evidence_line():
     vias = {h.VIA_TYPED, h.VIA_SPOKEN, h.VIA_RECORDED, h.VIA_UPLOADED, h.VIA_CLIP}
-    assert vias | {h.VIA_GENERATED, h.VIA_UNKNOWN} == set(h.EVIDENCE)
+    assert vias | {h.VIA_GENERATED, h.VIA_UNKNOWN, h.VIA_MESH} == set(h.EVIDENCE)
+    assert h.EVIDENCE[h.VIA_MESH].startswith("relayed")
     assert h.EVIDENCE[h.VIA_TYPED].startswith("verbatim")
     assert h.EVIDENCE[h.VIA_GENERATED].startswith("generated")
     assert all(h.EVIDENCE[v].startswith("transcribed") for v in vias - {h.VIA_TYPED})
@@ -183,3 +184,32 @@ def test_logged_timestamps_are_read_back_and_filtered(tmp_path):
     _log(tmp_path, "c", rows, 1)
     (turn,) = ConversationHistory(tmp_path).conversation("c")["turns"]
     assert turn["timestamps"] == [good]
+
+
+def test_an_agent_turn_logged_via_mesh_keeps_its_tag() -> None:
+    """t15 logs agent conversations with via: mesh; the history pane must not call it unknown."""
+    from embodiment.daemon import history
+
+    assert history.VIA_MESH in history.EVIDENCE
+    assert history.VIA_MESH in history._USER_VIAS
+
+
+def test_a_conversation_summary_names_the_agent(tmp_path: Path) -> None:
+    """The list API says which agent a mesh conversation is with (t17); null otherwise."""
+    _log(
+        tmp_path,
+        "agent1",
+        [
+            {**_turn("user", "hi gwen", 10.0), "via": "mesh", "mesh_agent": "thor-lobes"},
+            _turn("assistant", "hello", 11.0),
+        ],
+        50.0,
+    )
+    _log(tmp_path, "plain", [_turn("user", "q", 20.0)], 60.0)
+    by_id = {c["id"]: c for c in ConversationHistory(tmp_path).conversations()["conversations"]}
+    assert by_id["agent1"]["agent"] == "thor-lobes"
+    assert by_id["plain"]["agent"] is None
+    assert (
+        ConversationHistory(tmp_path).conversation("agent1")["conversation"]["agent"]
+        == "thor-lobes"
+    )

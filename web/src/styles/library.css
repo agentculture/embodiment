@@ -249,6 +249,9 @@
 .live-conversation { display: contents; }
 .live-conversation[hidden] { display: none !important; }
 .conv:not(.conv--now) { grid-template-columns: minmax(0, 1fr) auto; }
+/* An agent conversation's row: nick | title | time on one line; a long nick is cut, never wrapped. */
+.conv.conv--agent { grid-template-columns: auto minmax(0, 1fr) auto; }
+.conv--agent .nick { max-inline-size: 9rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .conv .row-title { text-overflow: ellipsis; }
 .history .rows { overflow-x: hidden; }
 
