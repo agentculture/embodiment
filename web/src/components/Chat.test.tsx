@@ -338,3 +338,55 @@ describe("Chat: settings and the model-unavailable state (gwen-pm t16)", () => {
     expect((await screen.findByRole("alert")).textContent).toContain("Gwen could not answer (boom)");
   });
 });
+
+describe("Chat: Markdown answers", () => {
+  const SRC = { source: "library", kind: "book", title: "Standup", date: "", start: null, end: null, section: "", link: "", text: "t", item_id: "item-1" };
+
+  it("renders lists, bold and headings as elements, with dir=auto on each block", async () => {
+    const reply = "## Plan\n\n*   **Jetson Optimization:** fast [1]\n*   second\n\n1. one\n2. two";
+    const { container } = render(<Chat clientOptions={{ fetchFn: fetchOk({ reply, sources: [SRC] }) }} />);
+    await send("q");
+    await screen.findByText("Jetson Optimization:");
+    const answer = container.querySelector(".answer") as HTMLElement;
+    expect(answer.tagName).toBe("DIV");
+    expect(answer.textContent).not.toContain("**");
+    expect(answer.textContent).not.toContain("*   ");
+    expect(container.querySelector(".answer strong")).toHaveTextContent("Jetson Optimization:");
+    expect(container.querySelectorAll(".answer ul > li")).toHaveLength(2);
+    expect(container.querySelectorAll(".answer ol > li")).toHaveLength(2);
+    expect(container.querySelector(".answer h2, .answer h3, .answer .answer__h")).not.toBeNull();
+    for (const el of container.querySelectorAll(".answer li, .answer p, .answer .answer__h")) expect(el).toHaveAttribute("dir", "auto");
+    // the citation inside a list item is still a working cite button
+    expect(screen.getByRole("button", { name: /Open source 1: Standup/ })).toHaveTextContent("1");
+  });
+
+  it("a citation inside bold still opens the source", async () => {
+    const onOpen = vi.fn();
+    render(<Chat clientOptions={{ fetchFn: fetchOk({ reply: "**key [1]** point", sources: [SRC] }) }} onOpenCitation={onOpen} />);
+    await send("q");
+    await userEvent.click(await screen.findByRole("button", { name: /Open source 1/ }));
+    expect(onOpen).toHaveBeenCalledWith("item-1", undefined);
+  });
+
+  it("never renders HTML from a reply: img, script and links stay text", async () => {
+    const reply = "<img src=x onerror=alert(1)> and <script>alert(2)</script>\n\n[click](javascript:alert(3))\n\n```\n<b>x</b>\n```";
+    const { container } = render(<Chat clientOptions={{ fetchFn: fetchOk({ reply, sources: [] }) }} />);
+    await send("q");
+    await screen.findByText(/click \(javascript:alert\(3\)\)/);
+    const answer = container.querySelector(".answer") as HTMLElement;
+    expect(answer.querySelector("img, script, a, b")).toBeNull();
+    expect(answer.textContent).toContain("<img src=x onerror=alert(1)>");
+    expect(answer.textContent).toContain("<script>alert(2)</script>");
+    expect(answer.querySelector("pre code")).toHaveTextContent("<b>x</b>");
+  });
+
+  it("separates adjacent citations and keeps the reveal animation per text run", async () => {
+    vi.stubGlobal("matchMedia", (q: string) => ({ matches: false, media: q, addEventListener() {}, removeEventListener() {} }));
+    const { container } = render(<Chat clientOptions={{ fetchFn: fetchOk({ reply: "- alpha beta [1][1]\n- gamma", sources: [SRC] }) }} />);
+    await send("q");
+    await screen.findByText("gamma");
+    expect(container.querySelectorAll(".answer .chat__word")).toHaveLength(3);
+    expect(container.querySelectorAll(".answer li .cite")).toHaveLength(2);
+    vi.unstubAllGlobals();
+  });
+});
