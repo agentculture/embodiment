@@ -113,7 +113,9 @@ export async function savePersona(
   const path = id ? `/personas/${encodeURIComponent(id)}` : "/personas";
   const out = await call(id ? "PUT" : "POST", path, secret, options, fields);
   if (!out.ok) return out;
-  const persona = parsePersona(out.body);
+  // The daemon answers {persona: {...}} (pinned by tests/test_http_personas.py).
+  const b = out.body;
+  const persona = parsePersona(isObj(b) && isObj(b.persona) ? b.persona : b);
   return persona ? { ok: true, persona } : { ok: false, status: 200, code: "unparseable-response" };
 }
 

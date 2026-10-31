@@ -41,4 +41,11 @@ describe("api/personas", () => {
     });
     expect(await deletePersona("x", "", { fetchFn: res(200, { deleted: "x" }) })).toEqual({ ok: true });
   });
+
+  it("reads the saved persona from the daemon's {persona: ...} reply (the shape test_http_personas pins)", async () => {
+    const out = await savePersona(undefined, fields, "k", { fetchFn: res(200, { persona: { id: "p1", ...fields } }) });
+    expect(out).toMatchObject({ ok: true, persona: { id: "p1", name: "Explainer" } });
+    const upd = await savePersona("p1", fields, "k", { fetchFn: res(200, { persona: { id: "p1", ...fields, name: "E2" } }) });
+    expect(upd.ok && upd.persona.name).toBe("E2");
+  });
 });
