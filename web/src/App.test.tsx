@@ -698,6 +698,22 @@ describe("App — every state from the committed event fixtures", () => {
   // t12 AC1 (decision c2 supersedes obligation o9): the top bar carries
   // brand, health pill and the Ask/Library/To-dos/Stats nav; the Ask view is
   // the first view; the waveform is a compact strip, never the hero.
+  it("a ctrl-click on a view tab leaves this tab where it is (the browser opens a new one)", () => {
+    // t19 live, 2026-10-31: ctrl-clicking Personas opened a new tab AND switched this one.
+    renderApp(undefined, { drawer: false });
+    const nav = within(screen.getByRole("banner")).getByRole("navigation", { name: "Views" });
+    const personas = within(nav).getByRole("link", { name: "Personas" });
+    const ask = within(nav).getByRole("link", { name: "Ask" });
+    const noFollow = (e: Event) => e.preventDefault(); // jsdom would follow the href itself
+    personas.addEventListener("click", noFollow);
+    fireEvent.click(personas, { ctrlKey: true });
+    fireEvent.click(personas, { metaKey: true });
+    expect(ask).toHaveAttribute("aria-current", "page");
+    expect(personas).not.toHaveAttribute("aria-current");
+    fireEvent.click(personas);
+    expect(personas).toHaveAttribute("aria-current", "page");
+  });
+
   it("pins the chat-first order: top bar (brand, health, nav), then the Ask view, waveform a strip", () => {
     renderApp(undefined, { drawer: false });
     const bar = screen.getByRole("banner");

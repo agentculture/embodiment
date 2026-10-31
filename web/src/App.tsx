@@ -483,7 +483,16 @@ export default function App({
         </a>
         <nav className="tabs" aria-label="Views">
           {VIEWS.map((v) => (
-            <a key={v.id} href={`#${v.id}`} aria-current={view === v.id ? "page" : undefined} onClick={() => go(v.id)}>
+            <a
+              key={v.id}
+              href={`#${v.id}`}
+              aria-current={view === v.id ? "page" : undefined}
+              onClick={(e) => {
+                // A modified or middle click opens a new tab: leave this one where it is.
+                if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button !== 0) return;
+                go(v.id);
+              }}
+            >
               {v.label}
             </a>
           ))}
