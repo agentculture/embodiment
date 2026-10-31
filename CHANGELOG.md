@@ -5,6 +5,26 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.24.0] - 2026-10-31
+
+### Added
+
+- Personas: operator-authored, private (0600) personas.json with language (he/en/none), length, formatting, translator, mesh and default model; built-in Gwen stays the default; /api/personas; the Personas tab.
+- Model choice per conversation from lobes /capabilities (polled every 60 s): /api/models, the Persona/Language/Model row under the dock, chat_role/chat_model/chat_host on every reply.
+- A distinct model-unavailable error (app-text-model-unavailable) with no fallback to another model, and a one-tap switch.
+- Voice gated by measured latency: senses is exempt; any other role speaks only after a background probe measures it (voice-latency.json).
+- The Gemma translator (translate_via): the chosen model sees English, the operator hears the persona's language, and remember and searches keep the operator's own words.
+- spark-gwen on the Culture mesh: Gwen's daemon holds its own agentirc connection (EMBODIMENT_MESH on by default); ask_culture posts only the question, as its own thread; answers arrive later (also after expiry, marked); agents that contact her get a normal turn; mesh events, cards and status counters; embodiment mesh prints the setup.
+
+### Changed
+
+- Built-in Gwen's typed prompt drops the speech-only lines ('short sentences', no lists/formatting); her spoken prompt is byte-identical (deviation d1).
+- Spoken replies cut by the voice caps now record app-reply-truncated instead of being cut silently.
+
+### Fixed
+
+- A failing capabilities degrade hook is counted instead of silently swallowed.
+
 ## [0.23.5] - 2026-10-31
 
 ### Fixed
