@@ -2,7 +2,7 @@
   "plan_slug": "gwen-personas-model-choice-culture-residency",
   "schema_version": 2,
   "created": "2026-10-31T09:53:28Z",
-  "updated": "2026-10-31T15:34:09Z",
+  "updated": "2026-10-31T16:25:43Z",
   "deviations": [
     {
       "id": "d1",
@@ -43,7 +43,7 @@
         "c50"
       ],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "classification": "acceptable",
       "seq": 3
     },
@@ -54,7 +54,7 @@
       "reason": "t19 live: a cortex turn answered at 80.2 s after the route gave up at 65 s and the answer reached only the log; operator chose option A ('A then C') and added 'It also solves recovering an answer after user left page'",
       "affects": [],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "classification": "acceptable",
       "seq": 4
     },
@@ -65,7 +65,7 @@
       "reason": "t19 live: cortex calls cut off by the 60 s completion deadline (turn-seam-aborted) 2 of 3 runs; probe 2026-10-31 showed lobes already streams content, reasoning and tool calls for senses/cortex/worker (first token <=0.25 s, max gap 0.32 s); operator: 'stream the tokens for now, so we can see reasoning and no timeout'",
       "affects": [],
       "origin": "llm",
-      "status": "proposed",
+      "status": "approved",
       "classification": "needs-follow-up",
       "seq": 5
     }
