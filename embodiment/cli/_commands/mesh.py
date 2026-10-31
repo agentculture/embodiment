@@ -12,9 +12,9 @@ nick, no socket and no ``culture.yaml`` entry.
 from __future__ import annotations
 
 import argparse
-import os
 
 from embodiment.cli._output import emit_result
+from embodiment.mesh_client import MeshConfig
 
 __all__ = ["MESH_ENV", "build_report", "cmd_mesh", "register"]
 
@@ -24,9 +24,6 @@ MESH_ENV = (
     "EMBODIMENT_MESH_SERVER",
     "EMBODIMENT_MESH_CHANNELS",
 )
-DEFAULT_NICK = "spark-gwen"
-DEFAULT_SERVER = "localhost:6667"
-DEFAULT_CHANNELS = "#general"
 REPO_AGENT_NICK = "spark-embodiment"
 
 _STEPS = (
@@ -42,17 +39,16 @@ _STEPS = (
 
 
 def build_report() -> dict[str, object]:
-    env = os.environ
-    channels = [
-        c.strip()
-        for c in env.get("EMBODIMENT_MESH_CHANNELS", DEFAULT_CHANNELS).split(",")
-        if c.strip()
-    ]
+    # The daemon's own reading of the env (review of #117: a second parser here had
+    # drifted -- 'false' was on, invalid channels were listed). Building it connects
+    # nothing: MeshConfig is data.
+    config = MeshConfig.from_env()
     return {
-        "enabled": env.get("EMBODIMENT_MESH", "on").strip().lower() != "off",
-        "nick": env.get("EMBODIMENT_MESH_NICK", DEFAULT_NICK),
-        "server": env.get("EMBODIMENT_MESH_SERVER", DEFAULT_SERVER),
-        "channels": channels,
+        "enabled": config.enabled,
+        "nick": config.nick,
+        "server": f"{config.host}:{config.port}",
+        "channels": list(config.channels),
+        "error": config.error,
         "env": list(MESH_ENV),
         "registered_resident": False,
         "repo_agent_nick": REPO_AGENT_NICK,

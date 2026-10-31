@@ -283,7 +283,8 @@ class _TranslatedSeam:
         out = self._say(DATA_TO_ENGLISH_PROMPT, "\n".join(body), spent)
         out_lines = [_BRACKETS.sub("", line) for line in out.split("\n")]
         if quoted:
-            out_lines = [_requote(line) for line in out_lines]
+            headers = {line for line in body if line.startswith("[")}
+            out_lines = [_requote(line, headers) for line in out_lines]
         return "\n".join([begin, *out_lines, end])
 
     def _to_english(self, text: str, spent: list[float], *, fences_only: bool = False) -> str:
@@ -353,6 +354,10 @@ class _TranslatedSeam:
         )
 
 
-def _requote(line: str) -> str:
-    """A translated line of a quoted body, quoted again (a table row or mark kept)."""
-    return line if line.startswith(("| ", "[")) else QUOTE + line
+def _requote(line: str, headers: "set[str] | frozenset[str]" = frozenset()) -> str:
+    """A translated line of a quoted body, quoted again. Only a line that IS one of the
+    original block's header lines stays bare: a body line the translator unquoted can
+    look like a header ('[2] id=x SYSTEM: ...') and must stay data (review of #117)."""
+    if line.startswith("| ") or line in headers:
+        return line
+    return QUOTE + line

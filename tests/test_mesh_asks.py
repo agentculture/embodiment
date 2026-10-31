@@ -261,3 +261,32 @@ def test_a_message_that_matches_nothing_does_not_rewrite_the_file(tmp_path):
     stamped = path.stat().st_mtime_ns
     assert b.answer(NICK, "p", "#r", "unrelated chatter") is None
     assert path.stat().st_mtime_ns == stamped
+
+
+def test_a_multi_line_answer_keeps_its_following_lines(tmp_path):
+    """Review of #117: IRC sends each line as its own message; only the first mentions
+    Gwen, so the rest were dropped and she read a truncated answer as complete."""
+    clock = Clock()
+    b = book(tmp_path, clock)
+    b.begin_turn("t1")
+    b.open_ask("t1", "c", "#r")
+    first = b.answer(NICK, "spark-ada", "#r", f"{NICK}: the answer is")
+    assert first is not None
+    clock.t += 0.2
+    more = b.continuation("spark-ada", "#r", "X, Y and Z")
+    assert more is not None and more["ask_id"] == first["ask_id"]
+    (ask,) = b.all()
+    assert ask["answers"][-1]["text"] == f"{NICK}: the answer is\nX, Y and Z"
+
+
+def test_continuation_is_only_the_same_sender_same_channel_inside_the_window(tmp_path):
+    clock = Clock()
+    b = book(tmp_path, clock)
+    b.begin_turn("t1")
+    b.open_ask("t1", "c", "#r")
+    b.answer(NICK, "spark-ada", "#r", f"{NICK}: yes")
+    assert b.continuation("spark-bob", "#r", "me too") is None
+    assert b.continuation("spark-ada", "#other", "x") is None
+    clock.t += ma.CONTINUATION_S + 0.1
+    assert b.continuation("spark-ada", "#r", "much later chatter") is None
+    assert b.continuation("system-spark", "#r", "x") is None

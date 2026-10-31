@@ -567,12 +567,15 @@ class MeshClient:
         """``THREAD CREATE``; further lines of *text* follow as ``THREAD REPLY``."""
         if not self._thread_ok(channel, name):
             return False
-        lines = _framed(f"THREAD REPLY {channel} {name}", text)
+        # Sized for the LONGER head (CREATE is one byte over REPLY), so the first line
+        # fits too; the rest are re-headed as REPLY, which only makes them shorter.
+        create = f"THREAD CREATE {channel} {name}"
+        lines = _framed(create, text)
         if not lines:
             return False
-        head = f"THREAD REPLY {channel} {name} :"
-        first = f"THREAD CREATE {channel} {name} :" + lines[0][len(head) :]
-        return self._submit([first, *lines[1:]])
+        head = f"{create} :"
+        rest = [f"THREAD REPLY {channel} {name} :" + line[len(head) :] for line in lines[1:]]
+        return self._submit([lines[0], *rest])
 
     def reply_thread(self, channel: str, name: str, text: str) -> bool:
         """``THREAD REPLY`` into an existing thread."""

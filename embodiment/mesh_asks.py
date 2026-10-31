@@ -62,6 +62,10 @@ MAX_ASKS_PER_TURN = 1
 #: Caps on stored text, so the file stays bounded whatever a peer sends.
 MAX_TEXT_CHARS = 2000
 MAX_ANSWERS_PER_ASK = 20
+#: How soon after an answer a plain line from the same sender in the same channel is
+#: taken as that answer's next line (IRC sends a multi-line message one line at a time,
+#: back to back). A judgement call, not a measurement (review of #117).
+CONTINUATION_S = 5.0
 
 OPEN, ANSWERED, EXPIRED = "open", "answered", "expired"
 #: The post never reached the mesh (plan risk r8): closed at once, kept, never answered.
@@ -167,6 +171,8 @@ class AskBook:
         self._expiry_s = expiry_s
         self._lock = threading.Lock()
         self._asks: Optional[dict[str, dict[str, Any]]] = None
+        #: (sender, channel) -> (ask_id, at) of the last answer line, for continuation.
+        self._last_answer: dict[tuple[str, str], tuple[str, float]] = {}
         self._turns_asked: dict[str, int] = {}
         self._mesh_turns: set[str] = set()
         self._mesh_starts: list[float] = []
@@ -324,6 +330,35 @@ class AskBook:
             self._save(asks)
             return True
 
+    def continuation(self, sender: str, channel: str, text: str) -> Optional[dict[str, Any]]:
+        """A plain line that continues *sender*'s answer in *channel* (within
+        :data:`CONTINUATION_S` of its last line): appended to that answer. None otherwise."""
+        if sender.lower().startswith(SYSTEM_SENDER_PREFIX) or not (text or "").strip():
+            return None
+        key = (sender.lower(), channel.lower())
+        with self._lock:
+            now = self._clock()
+            last = self._last_answer.get(key)
+            if last is None or now - last[1] > CONTINUATION_S:
+                return None
+            asks = self._load()
+            ask = asks.get(last[0])
+            if ask is None or not ask["answers"]:
+                return None
+            entry = ask["answers"][-1]
+            entry["text"] = f"{entry['text']}\n{text}"[:MAX_TEXT_CHARS]
+            self._save(asks)
+            self._last_answer[key] = (last[0], now)
+            return {
+                "ask_id": last[0],
+                "conversation_id": ask["conversation_id"],
+                "late": bool(entry.get("late")),
+                "ambiguous": bool(entry.get("ambiguous")),
+                "rule": entry.get("rule"),
+                "after_expiry": bool(entry.get("after_expiry")),
+                "continued": True,
+            }
+
     def answer(
         self,
         own_nick: str,
@@ -360,6 +395,7 @@ class AskBook:
                 )
             ask["status"] = ANSWERED
             self._save(asks)
+            self._last_answer[(sender.lower(), channel.lower())] = (m.ask_id, now)
             return {
                 "ask_id": m.ask_id,
                 "conversation_id": m.conversation_id,

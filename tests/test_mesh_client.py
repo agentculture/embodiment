@@ -17,6 +17,7 @@ from typing import Callable, Optional
 import pytest
 
 from embodiment import mesh_client
+from embodiment import mesh_client as mc
 from embodiment.mesh_client import (
     MeshClient,
     MeshCloseReport,
@@ -663,3 +664,18 @@ def test_stdlib_only_and_no_subprocess():
     assert imported <= allowed, imported - allowed
     assert "subprocess" not in imported
     assert "culture" not in imported
+
+
+def test_a_create_line_filled_to_the_budget_still_fits_the_server_bound(ircd, started):
+    """Review of #117: chunks were sized for 'THREAD REPLY', one byte shorter than the
+    'THREAD CREATE' head the first line gets, so it could reach 8193 bytes."""
+    client = started(make_config(ircd))
+    wait_for(lambda: client.status()["state"] == "registered")
+    reply_head = "THREAD REPLY #general ask-1 :"
+    text = "x" * (mc.MAX_LINE_BYTES - len(reply_head) - 2)  # fills the REPLY budget exactly
+    assert client.create_thread("#general", "ask-1", text)
+    wait_for(lambda: len(ircd.sent("THREAD")) >= 1)
+    lines = ircd.sent("THREAD")
+    assert lines[0].startswith("THREAD CREATE #general ask-1 :")
+    assert all(len(line.encode()) + 2 <= mc.MAX_LINE_BYTES for line in lines)
+    assert "".join(line.split(" :", 1)[1] for line in lines) == text

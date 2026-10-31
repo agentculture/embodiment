@@ -205,7 +205,16 @@ from embodiment.library.retrieve import RetrieveClient
 from embodiment.library.todo_source import UNAVAILABLE as TODOS_UNAVAILABLE
 from embodiment.library.todo_source import TodoSource
 from embodiment.memory import PRIVATE, RoomMemory, SemanticRecall, render_recalled
-from embodiment.mesh_asks import ASKS_NAME, EXPIRED, REFUSE_RATE, THREAD_PREFIX, AskBook
+from embodiment.mesh_asks import (
+    ASKS_NAME,
+    EXPIRED,
+)
+from embodiment.mesh_asks import MAX_TEXT_CHARS as MESH_MAX_TEXT_CHARS
+from embodiment.mesh_asks import (
+    REFUSE_RATE,
+    THREAD_PREFIX,
+    AskBook,
+)
 from embodiment.mesh_client import MeshClient, MeshConfig, MeshMessage
 from embodiment.perception import perceive
 from embodiment.persona_prompt import compose_base, english_tool_prompts, tool_prompt_language
@@ -2619,6 +2628,10 @@ class _VoiceTurn:
     mesh_conversation: str = ""
     mesh: Optional[Any] = None
     mesh_block: str = ""
+    #: The mesh answers this turn took from its conversation's queue, and whether a
+    #: completion actually used them; unused ones go back (review of #117).
+    mesh_taken: list[dict[str, Any]] = field(default_factory=list)
+    mesh_consumed: bool = False
     mesh_inbound: Optional["_MeshInbound"] = None
 
 
@@ -2677,6 +2690,10 @@ class _TextTurn:
     mesh_conversation: str = ""
     mesh: Optional[Any] = None
     mesh_block: str = ""
+    #: The mesh answers this turn took from its conversation's queue, and whether a
+    #: completion actually used them; unused ones go back (review of #117).
+    mesh_taken: list[dict[str, Any]] = field(default_factory=list)
+    mesh_consumed: bool = False
     mesh_inbound: Optional[_MeshInbound] = None
     prompt_query: str = ""
 
@@ -3088,6 +3105,7 @@ class DaemonApp:
         self._mesh_counts = {
             "asks_posted": 0,
             "asks_answered": 0,
+            "answer_lines_continued": 0,
             "asks_expired": 0,
             "agent_turns": 0,
             "inbound": 0,
@@ -4335,6 +4353,8 @@ class DaemonApp:
             result = run_one_turn(query, complete, tools=tools, config=config)
         if refused:
             result = self._unavailable_result(refused[0], result)
+        if mesh_block and here is not None and _answered(result, bool(refused)):
+            here.mesh_consumed = True  # the mesh answers it read were used
         # Before the session, the transcript, the bus or the voice see it.
         scrubbed = self._scrub_reply(result.spoken)
         spoken = self._answer_tool_step(scrubbed, before, language="en" if english else "he")
@@ -6380,10 +6400,38 @@ class DaemonApp:
                 message.text,
                 thread=message.thread or None,
             )
+        elif message.text:
+            # A plain line right after an answer from the same sender is its next line
+            # (IRC sends each line on its own; review of #117).
+            more = lane.book.continuation(message.sender, where, message.text)
+            if more is not None:
+                self._mesh_answer_continued(message, more)
+                return
         if matched is not None:
             self._mesh_answer_arrived(message, matched)
         elif _mesh_addressed(message):
             self._mesh_agent_turn(message)
+
+    def _mesh_answer_continued(self, message: MeshMessage, more: Mapping[str, Any]) -> None:
+        """Join a continued line to its answer while it waits; queue it if one was read."""
+        conversation = str(more.get("conversation_id") or "")
+        ask_id = str(more.get("ask_id") or "")
+        with self._lock:
+            self._mesh_counts["answer_lines_continued"] += 1
+            pending = self._mesh_answers.setdefault(conversation, [])
+            waiting = next(
+                (
+                    a
+                    for a in reversed(pending)
+                    if a["ask_id"] == ask_id and a["nick"] == message.sender
+                ),
+                None,
+            )
+            if waiting is not None:
+                waiting["text"] = f"{waiting['text']}\n{message.text}"[:MESH_MAX_TEXT_CHARS]
+            elif len(pending) < MESH_PENDING_ANSWERS:
+                pending.append({"nick": message.sender, "text": message.text, "ask_id": ask_id})
+            self._mesh_answers.move_to_end(conversation)
 
     def _mesh_answer_arrived(self, message: MeshMessage, matched: Mapping[str, Any]) -> None:
         """An answer to an ask: its conversation's next turn reads it, fenced (c14)."""
@@ -6712,6 +6760,7 @@ class DaemonApp:
             lane.book.begin_turn(turn.mesh_turn_id)
         with self._lock:
             answers = self._mesh_answers.pop(conversation, [])
+        turn.mesh_taken = list(answers)
         if answers:
             turn.mesh_block = "\n\n".join(
                 mesh_tools.fence_mesh_answer(
@@ -6725,6 +6774,16 @@ class DaemonApp:
         lane = self._mesh
         if lane is not None and turn.mesh_turn_id:
             lane.book.end_turn(turn.mesh_turn_id)
+        taken = getattr(turn, "mesh_taken", None)
+        if taken and not getattr(turn, "mesh_consumed", False):
+            # No completion answered with them (failed, superseded, refused, gated):
+            # back at the front of the queue for the conversation's next turn.
+            conversation = getattr(turn, "mesh_conversation", "")
+            with self._lock:
+                pending = self._mesh_answers.setdefault(conversation, [])
+                pending[:0] = taken
+                del pending[MESH_PENDING_ANSWERS:]
+            turn.mesh_taken = []
 
     def _mesh_offered(self, turn: Any) -> bool:
         """``ask_culture`` is bound for *turn*: a lane, a turn id, a persona that allows it."""
@@ -9080,6 +9139,12 @@ def _replay_after_tool_round(first_text: str, request: CompletionRequest) -> str
     if request.purpose == PURPOSE_REMAINDER:
         return " ".join(split_sentences(first_text)[len(request.spoken) :])
     return ""
+
+
+def _answered(result: TurnResult, refused: bool) -> bool:
+    """A completion answered in its own words: prose, no refusal, no fixed fallback."""
+    spoken = (result.spoken or "").strip()
+    return bool(spoken) and not refused and spoken not in (FALLBACK_TEXT, FALLBACK_TEXT_EN)
 
 
 def _fell_back(result: TurnResult) -> bool:

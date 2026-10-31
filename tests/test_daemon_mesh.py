@@ -64,14 +64,17 @@ def _call(name: str, **arguments: Any) -> ModelResponse:
 class Script:
     """The model: scripted steps first, then :data:`base.REPLY`. Records every call."""
 
-    def __init__(self, *steps: ModelResponse) -> None:
+    def __init__(self, *steps: Any) -> None:
         self.steps = list(steps)
         self.calls: list[dict[str, Any]] = []
 
     def __call__(self, messages: list[dict[str, Any]], tools: Any = None) -> ModelResponse:
         self.calls.append({"messages": messages, "tools": tools})
         if self.steps:
-            return self.steps.pop(0)
+            step = self.steps.pop(0)
+            if isinstance(step, BaseException):
+                raise step
+            return step
         return ModelResponse(content=base.REPLY)
 
     def tool_names(self, index: int = 0) -> str:
@@ -450,6 +453,65 @@ class TestEventsAndAnswers:
         assert ANSWER in system
         assert h.app.status()["memory"]["remember_tool_written"] == 0
         assert app_module.APP_MESH_GUARDED_WRITE in h.ledger_codes()
+
+    def test_an_answer_a_failed_turn_never_used_is_read_by_the_next_one(
+        self, harness: Any, ircd: FakeIrcd, tmp_path: Path
+    ) -> None:
+        """Review of #117: the answers were popped as a turn BEGAN, so a turn that
+        failed (or was superseded, refused, gated) lost them for good."""
+        h = _wired(
+            harness,
+            _lane(tmp_path, make_config(ircd)),
+            _call("ask_culture", question=QUESTION),
+            ModelResponse(content=base.REPLY),
+        )
+        h.app.start()
+        thread = _ask_once(h, ircd)
+        _push_thread_answer(ircd, thread)
+        wait_for(lambda: _mesh_events(h, "answer_arrived"))
+        h.script.steps.append(RuntimeError("gateway down"))
+        h.app.controls().chat("ומה ענו?")  # fails: the never-silent fallback answers
+        before = len(h.script.calls)
+        h.app.controls().chat("ומה ענו עכשיו?")
+        assert ANSWER in h.script.calls[before]["messages"][0]["content"]
+
+    def test_a_plain_line_right_after_an_answer_is_read_as_its_next_line(
+        self, harness: Any, ircd: FakeIrcd, tmp_path: Path
+    ) -> None:
+        """Review of #117: a multi-line answer kept only the line that named her."""
+        h = _wired(
+            harness,
+            _lane(tmp_path, make_config(ircd)),
+            _call("ask_culture", question=QUESTION),
+            ModelResponse(content=base.REPLY),
+        )
+        h.app.start()
+        _ask_once(h, ircd)
+        ircd.push(f":{AGENT}!a@127.0.0.1 PRIVMSG #general :spark-gwen: the answer is")
+        ircd.push(f":{AGENT}!a@127.0.0.1 PRIVMSG #general :the newspaper, at two")
+        wait_for(lambda: h.app.status()["mesh"]["answer_lines_continued"] == 1)
+        before = len(h.script.calls)
+        h.app.controls().chat("ומה ענו?")
+        system = h.script.calls[before]["messages"][0]["content"]
+        assert "the answer is" in system and "the newspaper, at two" in system
+
+    def test_an_answer_a_turn_used_is_not_read_again(
+        self, harness: Any, ircd: FakeIrcd, tmp_path: Path
+    ) -> None:
+        h = _wired(
+            harness,
+            _lane(tmp_path, make_config(ircd)),
+            _call("ask_culture", question=QUESTION),
+            ModelResponse(content=base.REPLY),
+        )
+        h.app.start()
+        thread = _ask_once(h, ircd)
+        _push_thread_answer(ircd, thread)
+        wait_for(lambda: _mesh_events(h, "answer_arrived"))
+        h.app.controls().chat("ומה ענו?")
+        before = len(h.script.calls)
+        h.app.controls().chat("ומה עוד?")
+        assert ANSWER not in h.script.calls[before]["messages"][0]["content"]
 
     def test_an_ask_expires_with_an_event_and_a_late_answer_still_lands(
         self, harness: Any, ircd: FakeIrcd, tmp_path: Path

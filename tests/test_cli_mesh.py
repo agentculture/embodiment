@@ -95,3 +95,27 @@ def test_doctor_reports_two_distinct_identities(capsys: pytest.CaptureFixture[st
     assert check["passed"] is True
     assert "spark-embodiment" in check["message"]
     assert "spark-gwen" in check["message"]
+
+
+@pytest.mark.parametrize("off", ["off", "0", "false", "no", "OFF"])
+def test_mesh_reads_the_env_exactly_as_the_daemon_does(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], off: str
+) -> None:
+    """Review of #117: the CLI took only 'off' as off and kept invalid channels, so an
+    agent checking setup saw enabled: true for a mesh the daemon had turned off."""
+    monkeypatch.setenv("EMBODIMENT_MESH", off)
+    monkeypatch.setenv("EMBODIMENT_MESH_CHANNELS", "general,#ops")
+    assert main(["mesh", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["enabled"] is False
+    assert payload["channels"] == ["#ops"]
+    assert payload["error"] == ""
+
+
+def test_mesh_reports_a_server_the_daemon_would_refuse(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    monkeypatch.setenv("EMBODIMENT_MESH_SERVER", "no-port-here")
+    assert main(["mesh", "--json"]) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["error"] == "mesh-config-invalid"
