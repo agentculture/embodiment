@@ -126,6 +126,7 @@ unverified against a running one (plan task ``t21``).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import math
 import os
@@ -134,6 +135,7 @@ import re
 import threading
 import time
 import unicodedata
+import urllib.error
 import urllib.request
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field, replace
@@ -143,10 +145,12 @@ from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
 from embodiment import memory as memory_module
 from embodiment import safe_reason, vectors
+from embodiment import voice_latency as voice_latency_module
 from embodiment.audio.endpoint import SAMPLE_RATE_HZ as PLAYBACK_RATE_HZ
 from embodiment.audio.endpoint import NullEndpoint
 from embodiment.audio.features import FeatureExtractor
 from embodiment.bus import Bus, fold_degradation
+from embodiment.capabilities import CapabilitiesPoller
 from embodiment.contract import ModelResponse
 from embodiment.daemon import drain as drain_module
 from embodiment.daemon import reading as daemon_reading
@@ -206,7 +210,13 @@ from embodiment.realtime import wire
 from embodiment.realtime.client import RealtimeConfig, RealtimeEars
 from embodiment.session import ASK_RECORD_TYPE, PERSONA_FIELD, Session, default_ask_detector
 from embodiment.tools import BOUND_REGISTRY_ATTR, ToolRegistry, bind_tools
-from embodiment.turn import FALLBACK_TEXT, SYSTEM_PROMPT, TurnConfig, TurnResult
+from embodiment.turn import (
+    DEGRADED_SEAM_ABORTED,
+    FALLBACK_TEXT,
+    SYSTEM_PROMPT,
+    TurnConfig,
+    TurnResult,
+)
 from embodiment.turn import turn as run_one_turn
 from embodiment.voice import BARGE_IN_BOUND_S, Voice, VoiceConfig, http_synthesize, split_sentences
 
@@ -286,6 +296,19 @@ __all__ = [
     "EarHandover",
     "DaemonApp",
     "http_complete",
+    "gateway_seam",
+    "gateway_summariser",
+    "RoleHolder",
+    "TextModelUnavailable",
+    "APP_TEXT_MODEL_UNAVAILABLE",
+    "APP_VOICE_ROLE_GATED",
+    "APP_VOICE_PROBE_UNMEASURED",
+    "CHAT_ROLE_FIELD",
+    "CHAT_MODEL_FIELD",
+    "CHAT_HOST_FIELD",
+    "VOICE_GATE_FIELD",
+    "voice_gate_text",
+    "text_model_unavailable_text",
     "ENV_HTTP_BIND",
     "ENV_BIND_PUBLIC",
     "ENV_ALLOWED_HOSTS",
@@ -903,6 +926,56 @@ PERSONA_MISSING_TEXT = "הפרסונה של השיחה הזאת נמחקה, ול
 #: At most this many conversations keep a chosen persona in memory; the oldest is
 #: dropped first and read back from its transcript when it is continued.
 CONVERSATION_PERSONAS_KEPT = 256
+
+# ── the conversation's model (t12) ────────────────────────────────────────────
+
+#: The conversation's chosen chat role refused the turn: a 404 ``role_infeasible``, a
+#: 503 ``role_unverified`` or a 429 from the gateway. Never retried and never sent to
+#: another role. DISTINCT from the gateway-down path, which keeps
+#: :data:`embodiment.turn.DEGRADED_SEAM_ABORTED` and the never-silent fallback line.
+APP_TEXT_MODEL_UNAVAILABLE = "app-text-model-unavailable"
+#: A spoken turn on a role whose voice latency is not measured (or still probing):
+#: no completion was asked of it, and the fixed notice was spoken instead.
+APP_VOICE_ROLE_GATED = "app-voice-role-gated"
+#: A background voice-latency probe ended without enough samples (or could not start).
+APP_VOICE_PROBE_UNMEASURED = "app-voice-probe-unmeasured"
+#: The assistant record's trace (t12): the role, model and host the capabilities
+#: snapshot reported for the turn's role (``None`` when the snapshot did not list it).
+#: Not ``role``/``model``: ``role`` is the record's own speaker, ``model`` a clip's stt.
+CHAT_ROLE_FIELD = "chat_role"
+CHAT_MODEL_FIELD = "chat_model"
+CHAT_HOST_FIELD = "chat_host"
+#: On a gated spoken turn's record: the voice-latency state that gated it.
+VOICE_GATE_FIELD = "voice_gate"
+#: At most this many conversations keep a chosen role in memory (as for personas).
+CONVERSATION_ROLES_KEPT = CONVERSATION_PERSONAS_KEPT
+#: The longest gateway error body read to classify a refusal; the codes are short.
+MAX_ERROR_BODY_BYTES = 65_536
+
+_TEXT_MODEL_UNAVAILABLE_TEXT = (
+    "המודל {role} לא זמין כרגע, ולכן לא עניתי. אפשר לבחור מודל אחר לשיחה."
+)
+_VOICE_GATE_TEXTS = {
+    voice_latency_module.PROBING: (
+        "המודל {role} עדיין נמדד לדיבור, ולכן הוא לא עונה בקול. בינתיים אפשר לכתוב לו."
+    ),
+    voice_latency_module.UNMEASURED: (
+        "המודל {role} לא נמדד לדיבור, ולכן הוא לא עונה בקול. אפשר לכתוב לו או לבחור מודל אחר."
+    ),
+}
+
+
+def text_model_unavailable_text(role: str) -> str:
+    """What a turn says when its chosen role refused it: fixed text naming the role."""
+    return _TEXT_MODEL_UNAVAILABLE_TEXT.format(role=_safe_name(role))
+
+
+def voice_gate_text(role: str, state: str) -> str:
+    """What a gated spoken turn says: probing, or unavailable (any other state)."""
+    template = _VOICE_GATE_TEXTS.get(state, _VOICE_GATE_TEXTS[voice_latency_module.UNMEASURED])
+    return template.format(role=_safe_name(role))
+
+
 #: At most this many earlier conversations are kept open for continuing (d5); the
 #: least recently continued is dropped first and reopened from its log if needed.
 RESUMED_CONVERSATIONS = 8
@@ -1556,10 +1629,16 @@ def http_complete(
     request = urllib.request.Request(  # nosec B310 - scheme checked above
         url, data=body, headers=headers, method="POST"
     )
-    with urllib.request.urlopen(  # nosec B310 - scheme checked above
-        request, timeout=deadline
-    ) as response:
-        raw = json.loads(response.read().decode("utf-8"))
+    try:
+        with urllib.request.urlopen(  # nosec B310 - scheme checked above
+            request, timeout=deadline
+        ) as response:
+            raw = json.loads(response.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        unavailable = _role_unavailable(exc, role)
+        if unavailable is not None:
+            raise unavailable from None
+        raise
     choices = raw.get("choices") or []
     message = (choices[0].get("message") if choices else None) or {}
     usage = raw.get("usage") or {}
@@ -1572,6 +1651,122 @@ def http_complete(
             "completion_tokens": usage.get("completion_tokens") or 0,
         }
     )
+
+
+class TextModelUnavailable(RuntimeError):
+    """The chosen chat role refused the request (t12): 404 ``role_infeasible``,
+    503 ``role_unverified`` or 429. *token* is the gateway's error code, sanitised."""
+
+    def __init__(self, role: str, status: int, token: str) -> None:
+        super().__init__(f"role {role} unavailable: {status} {token}")
+        self.role = role
+        self.status = status
+        self.token = token
+
+
+#: Which statuses mean "this role cannot answer now", and the error code each needs
+#: (``None``: any body). A 404 or 503 with another code is NOT this: it stays the
+#: plain HTTP error the gateway-down path already folds.
+_ROLE_REFUSALS: dict[int, Optional[str]] = {
+    404: "role_infeasible",
+    503: "role_unverified",
+    429: None,
+}
+
+
+def _role_unavailable(exc: urllib.error.HTTPError, role: str) -> Optional[TextModelUnavailable]:
+    """Classify a gateway refusal of *role*; ``None`` when it is not one. Never raises."""
+    status = getattr(exc, "code", None)
+    if status not in _ROLE_REFUSALS:
+        return None
+    token = _error_token(exc)
+    wanted = _ROLE_REFUSALS[status]
+    if wanted is not None and token != wanted:
+        return None
+    return TextModelUnavailable(_safe_name(role), int(status), token or str(status))
+
+
+def _error_token(exc: urllib.error.HTTPError) -> str:
+    """The error code in a gateway error body (``error`` as a string, or its ``code``
+    or ``type``), sanitised; empty when there is none or it cannot be read."""
+    try:
+        body = json.loads(exc.read(MAX_ERROR_BODY_BYTES).decode("utf-8", "replace"))
+    except (OSError, ValueError, RecursionError, AttributeError, TypeError):
+        return ""
+    error = body.get("error") if isinstance(body, dict) else None
+    if isinstance(error, dict):
+        error = error.get("code") or error.get("type")
+    return safe_reason.safe_label(error, fallback="") if isinstance(error, str) else ""
+
+
+class RoleHolder:
+    """The ONE place a completion reads which chat role it asks, and under what bound.
+
+    The gateway seam (:func:`gateway_seam`) and the voice path read it; the daemon
+    sets it per turn (:meth:`using`, thread-local, so a typed turn and a spoken turn
+    on two threads never see each other's role). Unset, it is the configured
+    speaker under the text completion deadline: byte-for-byte what ran before t12.
+    """
+
+    def __init__(self, role: str = "senses", deadline: float = 60.0) -> None:
+        self._default = (role, float(deadline))
+        self._tls = threading.local()
+
+    def current(self) -> tuple[str, float]:
+        """``(role, deadline)`` for a completion on this thread."""
+        return getattr(self._tls, "target", None) or self._default
+
+    @contextlib.contextmanager
+    def using(self, role: str, deadline: float) -> Any:
+        """Ask *role* under *deadline* for the completions inside this block."""
+        previous = getattr(self._tls, "target", None)
+        self._tls.target = (role, float(deadline))
+        try:
+            yield
+        finally:
+            self._tls.target = previous
+
+
+def gateway_seam(config: "AppConfig", holder: RoleHolder) -> Callable[..., ModelResponse]:
+    """The daemon's chat seam: :func:`http_complete` on the role *holder* names."""
+
+    def seam(messages: list[dict[str, Any]], tools: Any = None) -> ModelResponse:
+        role, deadline = holder.current()
+        return http_complete(
+            messages,
+            tools=tools,
+            gateway_url=config.gateway_url,
+            api_key=config.api_key,
+            role=role,
+            deadline=deadline,
+        )
+
+    return seam
+
+
+def gateway_summariser(config: "AppConfig") -> Callable[[list[dict[str, Any]]], str]:
+    """The end-of-session summary seam: one call on the CONFIGURED role, its own prompt.
+
+    Wired because it was the missing half of the memory lane — ``Session.close``
+    writes a summary record only when it is GIVEN a summariser, and a daemon built
+    without one reported ``session-summary-not-provided`` and wrote nothing, which is
+    exactly what the live runs showed. Bounded by the close step that calls it. It
+    never reads :class:`RoleHolder`: the summary stays on senses whatever model a
+    conversation chose (t12).
+    """
+
+    def summarise(messages: list[dict[str, Any]]) -> str:
+        reply = http_complete(
+            [{"role": "system", "content": SUMMARY_PROMPT}, *messages],
+            gateway_url=config.gateway_url,
+            api_key=config.api_key,
+            role=config.role,
+            max_tokens=SUMMARY_MAX_TOKENS,
+            deadline=config.session_summary_deadline,
+        )
+        return reply.content
+
+    return summarise
 
 
 def _wire_tool_calls(raw: Any) -> list[dict[str, Any]]:
@@ -1686,6 +1881,16 @@ class AppLanes:
     #: :class:`ConversationLane` (d8) — Gwen's own index of her settled past
     #: conversations. ``None``: no ``search_conversations`` tool, nothing indexed.
     conversations: Optional[Any] = None
+    #: :class:`embodiment.capabilities.CapabilitiesPoller` (t12) — the chat roles the
+    #: gateway serves, started with the daemon. ``None``: no role is listed, so only
+    #: the configured speaker can be chosen and every trace's model/host is ``None``.
+    capabilities: Optional[Any] = None
+    #: How a background voice-latency probe is started (t12); ``None`` is a daemon
+    #: thread per probe. Tests inject a holder to choose when it runs.
+    probe_spawn: Optional[Callable[[Callable[[], None]], object]] = None
+    #: The ONE :class:`RoleHolder` the gateway seam reads; ``None`` builds one from
+    #: the config (the shipped seam in :func:`main` shares it with the app).
+    role_holder: Optional["RoleHolder"] = None
 
 
 @dataclass(eq=False)
@@ -1975,6 +2180,10 @@ class _VoiceTurn:
     #: mid-turn applies to the next turn. ``persona`` is ``None`` when it is missing.
     persona_id: str = BUILTIN_ID
     persona: Optional[Persona] = builtin_persona()
+    #: The conversation's model, snapshotted when the turn began (t12).
+    target: Optional["_ChatTarget"] = None
+    #: True once the chosen role refused this turn (t12): nothing is asked again.
+    unavailable: bool = False
 
 
 @dataclass(eq=False)
@@ -2008,6 +2217,28 @@ class _TextTurn:
     #: The persona snapshot taken when the turn began (t11); ``None`` when missing.
     persona_id: str = BUILTIN_ID
     persona: Optional[Persona] = builtin_persona()
+    #: The conversation's model, snapshotted when the turn began (t12).
+    target: Optional["_ChatTarget"] = None
+    unavailable: bool = False
+
+
+@dataclass(frozen=True)
+class _ChatTarget:
+    """Which role ONE turn asks, under what bound, and what the snapshot said of it."""
+
+    role: str
+    deadline: float
+    model: Optional[str] = None
+    host: Optional[str] = None
+    #: A spoken turn's voice-latency state when it gates the role; ``None`` when not.
+    gate: Optional[str] = None
+
+    def trace(self) -> dict[str, Any]:
+        return {
+            CHAT_ROLE_FIELD: self.role,
+            CHAT_MODEL_FIELD: self.model,
+            CHAT_HOST_FIELD: self.host,
+        }
 
 
 def _previous_page_sources(
@@ -2247,6 +2478,21 @@ class DaemonApp:
         self._personas = PersonaStore(Path(self._state.dir) / PERSONAS_FILENAME)
         self._personas_folded = 0
         self._conversation_personas: OrderedDict[str, str] = OrderedDict()
+        #: The conversation's model (t12): each conversation's chosen role, keyed as
+        #: personas are; one holder the seam reads; the gateway's roles; voice latency.
+        self._conversation_roles: OrderedDict[str, str] = OrderedDict()
+        self._role_holder = lanes.role_holder or RoleHolder(
+            self._config.role, self._config.completion_deadline
+        )
+        self._capabilities = lanes.capabilities
+        self._probe_spawn = lanes.probe_spawn or _spawn_daemon_thread
+        self._voice_latency = voice_latency_module.VoiceLatency(
+            Path(self._state.dir) / voice_latency_module.STORE_NAME
+        )
+        self._probing_roles: set[str] = set()
+        self._probes_started = 0
+        self._models_unavailable = 0
+        self._voice_gated = 0
         #: Gwen's typed replies built from library text, so a later typed turn whose
         #: window still carries one is guarded (review of PR #98, 2026-10-24).
         self._library_replies: deque[str] = deque(maxlen=_LIBRARY_REPLY_MEMORY)
@@ -2529,6 +2775,7 @@ class DaemonApp:
         self._start_backfill()
         self._start_library_worker()
         self._start_settle_watch()
+        self._start_capabilities()
         self._publish("state", {"component": "daemon", "status": "running"})
 
     def run(self, stop_event: threading.Event) -> int:
@@ -2632,7 +2879,11 @@ class DaemonApp:
         server_stopped = step(0.95, self._stop_server)
         # The settle watch only reads logs and replaces one small file atomically,
         # so it shares the library's slot rather than taking one of its own.
-        library_stopped = step(0.955, lambda d: self._stop_library(d) & self._stop_settle(d))
+        # The capabilities poll (t12) is one GET at a time; it shares the slot too.
+        library_stopped = step(
+            0.955,
+            lambda d: self._stop_library(d) & self._stop_settle(d) & self._stop_capabilities(),
+        )
         # The drain's share sits BEFORE memory closes, so a batch the worker
         # was part-way through (or one enqueued just before the stop) gets one
         # last bounded pass while the store still takes writes; whatever does
@@ -3396,6 +3647,7 @@ class DaemonApp:
             clock=self._clock_line(),
             persona_id=persona_id,
             persona=persona,
+            target=self._turn_target(session, spoken=True),
         )
         with self._lock:
             self._voice_turn = turn
@@ -3408,7 +3660,7 @@ class DaemonApp:
                     self._voice_turn = None
         # No first completion came back (the turn path raised; BackgroundRecall
         # recorded it and voiced the never-silent fallback): a FAILED turn.
-        failed = turn.result is None
+        failed = turn.result is None or turn.unavailable
         with self._lock:
             if failed:
                 self._turns_failed += 1
@@ -3447,6 +3699,7 @@ class DaemonApp:
                         **timing.to_dict(),
                         "timestamps": stamps(stamp(STAMP_GENERATED, time.time())),
                         PERSONA_FIELD: turn.persona_id,
+                        **_target_trace(turn.target),
                     },
                 ),
                 APP_TURN_FAILED,
@@ -3472,6 +3725,7 @@ class DaemonApp:
         collector: Optional[Any] = None,
         persona: Optional[Persona] = None,
         path: str = "voice",
+        target: Optional[_ChatTarget] = None,
     ) -> tuple[TurnResult, bool]:
         """ONE completion through the turn path: (scrubbed result, whether a tool ran).
 
@@ -3486,11 +3740,19 @@ class DaemonApp:
         *persona* (t11; ``None`` is the built-in) and *path* (``"voice"`` or
         ``"typed"``) choose the base prompt and the tool prompts' language, and
         nothing else: the tools, the write guard and the turn's config are the same.
+
+        *target* (t12) is the role this completion asks and its bound, set on the ONE
+        :class:`RoleHolder` the seam reads (``None``: the configured speaker, as before).
+        A refusal from that role (:class:`TextModelUnavailable`) is answered with fixed
+        text naming it, recorded as :data:`APP_TEXT_MODEL_UNAVAILABLE`; the seam is not
+        called again inside this completion.
         """
         persona = persona if persona is not None else builtin_persona()
-        complete, tools = self._turn_tools(collector)
+        target = target or self._default_target()
+        bound, tools = self._turn_tools(collector)
+        complete, refused = _stop_after_refusal(bound)
         config = TurnConfig(
-            role=self._config.role,
+            role=target.role,
             system_prompt=_compose_prompt(
                 self._persona_base(persona, path),
                 window,
@@ -3501,7 +3763,10 @@ class DaemonApp:
             ),
         )
         before = self._tool_counts()
-        result = run_one_turn(query, complete, tools=tools, config=config)
+        with self._role_holder.using(target.role, target.deadline):
+            result = run_one_turn(query, complete, tools=tools, config=config)
+        if refused:
+            result = self._unavailable_result(refused[0], result)
         # Before the session, the transcript, the bus or the voice see it.
         spoken = self._answer_tool_step(self._scrub_reply(result.spoken), before)
         if spoken != result.spoken:
@@ -3516,10 +3781,17 @@ class DaemonApp:
         if turn is None or request.purpose == PURPOSE_FOLLOW_UP:
             return self._follow_up_text(request)
         first = turn.result is None
-        if not first and (turn.tool_round or turn.persona is None):
+        gate = turn.target.gate if turn.target is not None else None
+        if not first and (
+            turn.tool_round or turn.persona is None or turn.unavailable or gate is not None
+        ):
             return _replay_after_tool_round(turn.first_text, request)
-        if turn.persona is None:
-            turn.result = self._persona_missing_result()
+        if turn.persona is None or gate is not None:
+            turn.result = (
+                self._persona_missing_result()
+                if turn.persona is None
+                else self._voice_gated_result(turn.target)
+            )
             turn.first_text = turn.final_text = turn.result.spoken
             turn.reply_text_at = self._clock()
             return turn.result.spoken
@@ -3530,7 +3802,9 @@ class DaemonApp:
             turn.clock,
             _continuation(request),
             persona=turn.persona,
+            target=turn.target,
         )
+        turn.unavailable = turn.unavailable or result.exit_reason == APP_TEXT_MODEL_UNAVAILABLE
         turn.steps += result.steps
         turn.tool_round = turn.tool_round or tooled
         if first:
@@ -3558,6 +3832,9 @@ class DaemonApp:
         _, persona = self._session_persona(session)
         if persona is None:
             return ""  # the persona is gone: nothing unprompted is said for it
+        target = self._turn_target(session, spoken=True)
+        if target.gate is not None:
+            return ""  # the role may not speak yet: nothing unprompted is said on it
         result, _ = self._complete_turn(
             request.query,
             self._window_now(),
@@ -3565,8 +3842,11 @@ class DaemonApp:
             self._clock_line(),
             _continuation(request),
             persona=persona,
+            target=target,
         )
-        return "" if _fell_back(result) else result.spoken
+        if _fell_back(result) or result.exit_reason == APP_TEXT_MODEL_UNAVAILABLE:
+            return ""
+        return result.spoken
 
     def _voice_speak(self, sentence: str) -> None:
         """The ``speak`` seam: ONE sentence to the voice, timed and barge-in checked.
@@ -3682,7 +3962,11 @@ class DaemonApp:
         if session is None:
             return None
         return _LockedSession(
-            session, self._conversation, self._conversation_bound(), self._typed_persona_id
+            session,
+            self._conversation,
+            self._conversation_bound(),
+            self._typed_persona_id,
+            trace=self._typed_trace,
         )
 
     def _conversation_bound(self) -> float:
@@ -3751,6 +4035,7 @@ class DaemonApp:
             conversation=conversation,
             persona_id=persona_id,
             persona=persona,
+            target=self._turn_target(session, spoken=False),
         )
         self._arm_library_guard(turn)
         self._tls.text_turn = turn
@@ -3784,7 +4069,7 @@ class DaemonApp:
         if turn is None:
             return ""
         first = turn.result is None
-        if not first and (turn.tool_round or turn.persona is None):
+        if not first and (turn.tool_round or turn.persona is None or turn.unavailable):
             return _replay_after_tool_round(turn.first_text, request)
         if turn.persona is None:
             turn.result = self._persona_missing_result()
@@ -3799,7 +4084,9 @@ class DaemonApp:
             collector=turn.collector,
             persona=turn.persona,
             path="typed",
+            target=turn.target,
         )
+        turn.unavailable = turn.unavailable or result.exit_reason == APP_TEXT_MODEL_UNAVAILABLE
         turn.tool_round = turn.tool_round or tooled
         if first:
             turn.result = result
@@ -3818,8 +4105,8 @@ class DaemonApp:
             self._record(APP_TEXT_FOLLOW_UP_UNROUTED, "no recent typed turn matched", source="text")
             return ""
         self._tls.follow_up_turn = None
-        if turn.persona is None:
-            return ""  # the persona is gone: nothing unprompted is said for it
+        if turn.persona is None or turn.unavailable:
+            return ""  # the persona is gone, or its role refused: nothing unprompted
         result, _ = self._complete_turn(
             request.query,
             turn.window,
@@ -3828,8 +4115,9 @@ class DaemonApp:
             _continuation(request),
             persona=turn.persona,
             path="typed",
+            target=turn.target,
         )
-        if _fell_back(result):
+        if _fell_back(result) or result.exit_reason == APP_TEXT_MODEL_UNAVAILABLE:
             return ""
         turn.follow_up_records = self._seen(request.memory).records
         self._tls.follow_up_turn = turn
@@ -3888,6 +4176,16 @@ class DaemonApp:
         finally:
             self._tls.conversation_session = None
         turn = getattr(self._tls, "text_turn", None)
+        if turn is not None and turn.unavailable and result.ok:
+            # The chosen role refused (t12): its own code, never the gateway-down one.
+            return {
+                "ok": False,
+                "reply": result.reply,
+                "sources": [],
+                "turn_serial": turn.serial,
+                "code": APP_TEXT_MODEL_UNAVAILABLE,
+                "http_status": 503,
+            }
         sources = self._anchored(_typed_sources(turn)) if (turn and result.ok) else []
         if turn is not None:
             turn.shown_sources = tuple(sources)
@@ -3938,6 +4236,16 @@ class DaemonApp:
         finally:
             self._tls.conversation_session = None
         turn = getattr(self._tls, "text_turn", None)
+        if turn is not None and turn.unavailable and result.ok:
+            return {
+                "ok": False,
+                "transcript": result.transcript,
+                "reply": result.reply,
+                "sources": [],
+                "turn_serial": result.turn_serial,
+                "code": APP_TEXT_MODEL_UNAVAILABLE,
+                "http_status": 503,
+            }
         return {
             "ok": result.ok,
             "transcript": result.transcript,
@@ -3996,8 +4304,12 @@ class DaemonApp:
             ((t["role"], t["text"]) for t in found["turns"]),
             last_turn_at=max(stamps_) if stamps_ else None,
         )
-        logged = _logged_persona(getattr(session.transcript, "path", None))
+        log_path = getattr(session.transcript, "path", None)
+        logged = _logged_persona(log_path)
+        logged_role = _logged_field(log_path, CHAT_ROLE_FIELD)
         with self._lock:
+            if logged_role is not None and conversation not in self._conversation_roles:
+                self._keep_role(conversation, logged_role)
             if conversation not in self._conversation_personas:
                 self._keep_persona(conversation, logged or BUILTIN_ID)
             session.persona_id = self._conversation_personas[conversation]
@@ -4060,6 +4372,7 @@ class DaemonApp:
             self._keep_persona(key, persona.id)
         if isinstance(session, Session):
             session.persona_id = persona.id
+        self._maybe_probe(self._session_role(session))  # its default role, if chosen so
         return persona
 
     def _session_for(self, conversation: str) -> Optional[Any]:
@@ -4159,6 +4472,258 @@ class DaemonApp:
             start, self._personas_folded = self._personas_folded, len(reasons)
         for reason in reasons[start:]:
             self._record(APP_PERSONAS_DEGRADED, reason)
+
+    # ── the conversation's model (t12): one holder, the trace, the voice gate ──
+
+    @property
+    def voice_latency(self) -> voice_latency_module.VoiceLatency:
+        """Per-role voice latency (``<state>/voice-latency.json``, 0600)."""
+        return self._voice_latency
+
+    def conversation_role(self, conversation: Optional[str] = None) -> str:
+        """The chat role *conversation* (``None``: the live one) asks.
+
+        The role chosen for it, else (on continue) the one its log names, else its
+        persona's ``default_role`` — the configured speaker for the built-in.
+        """
+        if conversation is None:
+            with self._lock:
+                session = self._session
+        else:
+            session = self._session_for(conversation)
+        return self._session_role(session)
+
+    def set_conversation_role(self, role: Any, conversation: Optional[str] = None) -> Optional[str]:
+        """Make *conversation* (``None``: the live one) ask *role*; the role, or ``None``.
+
+        Refused (``None``, nothing changes) unless the latest capabilities snapshot
+        lists *role* as a chat role — the configured speaker is always accepted, so
+        going back to it never depends on a poll — or when there is no such
+        conversation. A running turn keeps its role; the next one takes this. A role
+        whose voice latency is unmeasured starts ONE background probe.
+        """
+        if voice_latency_module.combo_key(role) != role:
+            return None
+        if role != self._config.role and self._listed(role) is None:
+            return None
+        session = (
+            self._ensure_session() if conversation is None else self._session_for(conversation)
+        )
+        if session is None:
+            return None
+        key = self._persona_key(conversation, session)
+        with self._lock:
+            self._keep_role(key, role)
+        self._maybe_probe(role)
+        return role
+
+    def _keep_role(self, key: str, role: str) -> None:
+        """Record *key*'s role, bounded. Caller holds ``self._lock``."""
+        self._conversation_roles[key] = role
+        self._conversation_roles.move_to_end(key)
+        while len(self._conversation_roles) > CONVERSATION_ROLES_KEPT:
+            self._conversation_roles.popitem(last=False)
+
+    def _session_role(self, session: Any) -> str:
+        key = self._persona_key(None, session) if session is not None else None
+        with self._lock:
+            chosen = self._conversation_roles.get(key) if key is not None else None
+        if chosen is not None:
+            return chosen
+        persona = self._personas.get(self._session_persona_id(session))
+        if persona is None or persona.builtin:
+            return self._config.role
+        return persona.default_role
+
+    def _snapshot(self) -> Any:
+        """The latest capabilities snapshot, or ``None`` (no poller, or it failed)."""
+        if self._capabilities is None:
+            return None
+        try:
+            return self._capabilities.snapshot()
+        except Exception as exc:  # noqa: BLE001  # an injected poller is not trusted
+            self._record(APP_BOOTSTRAP_DEGRADED, f"capabilities: {_describe(exc)}", once=True)
+            return None
+
+    def _listed(self, role: str) -> Optional[Any]:
+        """The snapshot's entry for *role*, or ``None`` when it does not list it."""
+        snapshot = self._snapshot()
+        for entry in getattr(snapshot, "roles", ()) or ():
+            if getattr(entry, "role", None) == role:
+                return entry
+        return None
+
+    def _default_target(self) -> _ChatTarget:
+        role, deadline = self._config.role, self._config.completion_deadline
+        entry = self._listed(role)
+        return _ChatTarget(
+            role=role,
+            deadline=deadline,
+            model=getattr(entry, "model", None) or None,
+            host=getattr(entry, "host", None) or None,
+        )
+
+    def _turn_target(self, session: Any, *, spoken: bool) -> _ChatTarget:
+        """The role ONE turn asks and its bound, snapshotted when the turn begins.
+
+        The configured speaker (senses) keeps the text completion deadline on every
+        path, byte for byte. Any other role answers a typed turn under that same
+        bound (the same quantity: one text completion), and a SPOKEN turn only when
+        its voice latency is measured, under the deadline derived from that
+        measurement; otherwise the turn is gated (``gate`` names the state).
+        """
+        role = self._session_role(session)
+        entry = self._listed(role)
+        deadline = self._config.completion_deadline
+        gate: Optional[str] = None
+        if spoken and role != self._config.role:
+            with self._lock:
+                probing = role in self._probing_roles
+            state = voice_latency_module.PROBING if probing else self._voice_latency.state(role)
+            derived = self._voice_latency.spoken_deadline(role)
+            if state == voice_latency_module.MEASURED and derived is not None:
+                deadline = derived
+            else:
+                gate = (
+                    state
+                    if state != voice_latency_module.MEASURED
+                    else voice_latency_module.UNMEASURED
+                )
+        return _ChatTarget(
+            role=role,
+            deadline=deadline,
+            model=getattr(entry, "model", None) or None,
+            host=getattr(entry, "host", None) or None,
+            gate=gate,
+        )
+
+    def _typed_trace(self) -> dict[str, Any]:
+        """The running typed turn's role/model/host, for its assistant record."""
+        turn = getattr(self._tls, "text_turn", None)
+        return _target_trace(turn.target) if turn is not None else {}
+
+    def _maybe_probe(self, role: str) -> None:
+        """Start ONE background voice-latency probe of *role* when it is unmeasured.
+
+        Through the real seam, under the text completion deadline (a probe call IS
+        one completion; a tighter bound would censor the very latency it measures,
+        lesson 1). The configured speaker is exempt. Never raises.
+        """
+        if role == self._config.role:
+            return
+        if self._voice_latency.state(role) != voice_latency_module.UNMEASURED:
+            return
+        with self._lock:
+            if role in self._probing_roles:
+                return
+            self._probing_roles.add(role)
+            self._probes_started += 1
+
+        def job() -> None:
+            try:
+                outcome = self._voice_latency.probe(
+                    role, lambda prompt: self._probe_call(role, prompt)
+                )
+            finally:
+                with self._lock:
+                    self._probing_roles.discard(role)
+            if outcome.get("state") != voice_latency_module.MEASURED:
+                self._record(
+                    APP_VOICE_PROBE_UNMEASURED,
+                    f"role {_safe_name(role)}: {outcome.get('samples', 0)} samples, "
+                    f"{outcome.get('failures', 0)} failures",
+                )
+
+        try:
+            self._probe_spawn(job)
+        except Exception as exc:  # noqa: BLE001  # a probe that cannot start is recorded
+            with self._lock:
+                self._probing_roles.discard(role)
+            self._record(APP_VOICE_PROBE_UNMEASURED, f"spawn: {_describe(exc)}")
+
+    def _probe_call(self, role: str, prompt: str) -> None:
+        """One probe completion of *role* through the daemon's own seam."""
+        seam = self._seam if self._seam is not None else self._complete
+        with self._role_holder.using(role, self._config.completion_deadline):
+            seam([{"role": "user", "content": prompt}])
+
+    def _unavailable_result(self, refusal: TextModelUnavailable, result: TurnResult) -> TurnResult:
+        """The turn's answer when its chosen role refused: recorded, fixed, distinct."""
+        with self._lock:
+            self._models_unavailable += 1
+        self._record(
+            APP_TEXT_MODEL_UNAVAILABLE,
+            f"role {refusal.role} answered {refusal.status} {refusal.token}; not retried",
+        )
+        kept = tuple(d for d in result.degradations if d.code != DEGRADED_SEAM_ABORTED)
+        return replace(
+            result,
+            spoken=text_model_unavailable_text(refusal.role),
+            exit_reason=APP_TEXT_MODEL_UNAVAILABLE,
+            degradations=kept,
+        )
+
+    def _voice_gated_result(self, target: _ChatTarget) -> TurnResult:
+        """A spoken turn on a role not yet measured for voice: no completion, a notice."""
+        gate = target.gate or voice_latency_module.UNMEASURED
+        with self._lock:
+            self._voice_gated += 1
+        self._record(
+            APP_VOICE_ROLE_GATED,
+            f"role {_safe_name(target.role)} is {gate} for voice; it was not asked",
+        )
+        return TurnResult(
+            spoken=voice_gate_text(target.role, gate), exit_reason=APP_VOICE_ROLE_GATED
+        )
+
+    def _start_capabilities(self) -> None:
+        if self._capabilities is None:
+            return
+        try:
+            self._capabilities.start()
+        except Exception as exc:  # noqa: BLE001  # no role list is a degradation
+            self._record(APP_BOOTSTRAP_DEGRADED, f"capabilities: {_describe(exc)}")
+
+    def _stop_capabilities(self) -> bool:
+        if self._capabilities is None:
+            return True
+        try:
+            self._capabilities.stop()
+        except Exception as exc:  # noqa: BLE001  # a stop that raises is a stop that failed
+            self._record(APP_SHUTDOWN_INCOMPLETE, f"capabilities: {_describe(exc)}")
+            return False
+        return True
+
+    def _models_status(self) -> dict[str, Any]:
+        """``status()["models"]``: the live conversation's role and gate, the roles."""
+        snapshot = self._snapshot()
+        with self._lock:
+            session = self._session
+            probing = sorted(self._probing_roles)
+            counts = (self._probes_started, self._models_unavailable, self._voice_gated)
+        target = self._turn_target(session, spoken=True)
+        return {
+            "role": target.role,
+            "model": target.model,
+            "host": target.host,
+            "voice_gate": target.gate,
+            "roles": [
+                {
+                    "role": getattr(r, "role", None),
+                    "model": getattr(r, "model", None),
+                    "ready": getattr(r, "ready", None),
+                    "host": getattr(r, "host", None),
+                }
+                for r in (getattr(snapshot, "roles", ()) or ())
+            ],
+            "stale": getattr(snapshot, "stale", True) if snapshot is not None else True,
+            "age_s": getattr(snapshot, "age", None) if snapshot is not None else None,
+            "voice_latency": self._voice_latency.snapshot(),
+            "probing": probing,
+            "probes_started": counts[0],
+            "unavailable": counts[1],
+            "voice_gated": counts[2],
+        }
 
     # ── the library lane (t13): typed-turn tools, the write guard, the routes ──
 
@@ -6599,6 +7164,7 @@ class DaemonApp:
             # business reading.
             "access": access,
             "speech_to_speech": {"role": self._config.s2s_role or None, "enabled": False},
+            "models": self._models_status(),
             "clock": {"zone": CLOCK_ZONE_NAME, "zone_available": CLOCK_ZONE_AVAILABLE},
             "ears": _probe(self._ears),
             "voice": _probe(self._voice),
@@ -6711,6 +7277,14 @@ def _logged_persona(path: Any) -> Optional[str]:
     How a continued conversation gets its persona back (d5, t11). An unreadable
     log, or one written before personas, names none — the caller's default holds.
     """
+    return _logged_field(path, PERSONA_FIELD)
+
+
+def _logged_field(path: Any, name: str) -> Optional[str]:
+    """*name* on the newest assistant record that carries it as text, or None.
+
+    The persona (t11) and the chat role (t12) come back on continue through here.
+    """
     if not path:
         return None
     try:
@@ -6723,10 +7297,52 @@ def _logged_persona(path: Any) -> Optional[str]:
         except ValueError:
             continue
         if isinstance(row, dict) and row.get("role") == "assistant":
-            value = row.get(PERSONA_FIELD)
+            value = row.get(name)
             if isinstance(value, str) and value:
                 return value
     return None
+
+
+def _target_trace(target: Optional[_ChatTarget]) -> dict[str, Any]:
+    """An assistant record's role/model/host fields (plus the gate when one held)."""
+    if target is None:
+        return {}
+    trace = target.trace()
+    if target.gate is not None:
+        trace[VOICE_GATE_FIELD] = target.gate
+    return trace
+
+
+def _stop_after_refusal(
+    complete: Callable[..., Any],
+) -> tuple[Callable[..., Any], list[TextModelUnavailable]]:
+    """*complete*, and a box that holds the chosen role's refusal once it comes.
+
+    After a refusal every further call re-raises it WITHOUT reaching the seam, so a
+    loop that finalizes or a ladder that retries cannot send a second request.
+    """
+    refused: list[TextModelUnavailable] = []
+
+    def guarded(messages: Any, *args: Any, **kwargs: Any) -> Any:
+        if refused:
+            raise refused[0]
+        try:
+            return complete(messages, *args, **kwargs)
+        except TextModelUnavailable as exc:
+            refused.append(exc)
+            raise
+
+    registry = getattr(complete, BOUND_REGISTRY_ATTR, None)
+    if registry is not None:
+        setattr(guarded, BOUND_REGISTRY_ATTR, registry)
+    return guarded, refused
+
+
+def _spawn_daemon_thread(job: Callable[[], None]) -> object:
+    """The default ``probe_spawn``: one daemon thread per probe."""
+    thread = threading.Thread(target=job, name="embodiment-voice-probe", daemon=True)
+    thread.start()
+    return thread
 
 
 def _no_playback() -> None:
@@ -6812,12 +7428,15 @@ class _LockedSession:
         lock: Any,
         timeout: float,
         persona_id: Optional[Callable[[], Optional[str]]] = None,
+        trace: Optional[Callable[[], dict[str, Any]]] = None,
     ) -> None:
         self._session = session
         self._lock = lock
         self._timeout = timeout
         #: The typed turn's persona snapshot (t11), stamped on its assistant record.
         self._persona_id = persona_id
+        #: The typed turn's role/model/host (t12), stamped beside it.
+        self._trace = trace
 
     def _write(self, call: Callable[[], Any]) -> Any:
         if not self._lock.acquire(timeout=self._timeout):
@@ -6834,6 +7453,9 @@ class _LockedSession:
         persona_id = self._persona_id() if self._persona_id is not None else None
         if persona_id is not None and PERSONA_FIELD not in (metadata or {}):
             metadata = {**dict(metadata or {}), PERSONA_FIELD: persona_id}
+        trace = self._trace() if self._trace is not None else {}
+        if trace and CHAT_ROLE_FIELD not in (metadata or {}):
+            metadata = {**dict(metadata or {}), **trace}
         return self._write(lambda: self._session.add_assistant(text, metadata=metadata))
 
     def __getattr__(self, name: str) -> Any:
@@ -7788,34 +8410,17 @@ def main() -> DaemonApp:
     library = _library_lane_from_config(library_config, early=early)
     tools = ToolRegistry()
 
-    def seam(messages: list[dict[str, Any]], tools: Any = None) -> ModelResponse:
-        return http_complete(
-            messages,
-            tools=tools,
-            gateway_url=config.gateway_url,
-            api_key=config.api_key,
-            role=config.role,
-            deadline=config.completion_deadline,
-        )
-
-    def summarise(messages: list[dict[str, Any]]) -> str:
-        """The end-of-session summary seam: one senses call, its own prompt.
-
-        Wired here because it was the missing half of the memory lane —
-        ``Session.close`` writes a summary record only when it is GIVEN a
-        summariser, and a daemon built without one reported
-        ``session-summary-not-provided`` and wrote nothing, which is exactly
-        what the live runs showed. Bounded by the close step that calls it.
-        """
-        reply = http_complete(
-            [{"role": "system", "content": SUMMARY_PROMPT}, *messages],
-            gateway_url=config.gateway_url,
-            api_key=config.api_key,
-            role=config.role,
-            max_tokens=SUMMARY_MAX_TOKENS,
-            deadline=config.session_summary_deadline,
-        )
-        return reply.content
+    holder = RoleHolder(config.role, config.completion_deadline)
+    seam = gateway_seam(config, holder)
+    summarise = gateway_summariser(config)
+    # The chat roles the gateway serves, polled from start (t2, t12). Its failures
+    # are recorded ONCE per code: a dead gateway is a degradation, never a raise,
+    # and a poll a minute must not grow the ledger by one record a minute.
+    capabilities = CapabilitiesPoller(
+        config.gateway_url,
+        api_key=config.api_key or None,
+        on_degrade=lambda code, reason: app._record(code, reason, source="capabilities", once=True),
+    )
 
     def voice_factory(endpoint: Any) -> Voice:
         return Voice(
@@ -7858,6 +8463,8 @@ def main() -> DaemonApp:
             vector_cache=vector_cache,
             library=library,
             conversations=_conversation_lane(state.dir, embedder),
+            capabilities=capabilities,
+            role_holder=holder,
         ),
     )
     built.append(app)
