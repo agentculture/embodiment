@@ -34,6 +34,7 @@ _VERBS = [
     "stop — stop the running daemon within a bounded time",
     "status — report the daemon's state: running, stopped, dead (unclean)",
     "tunnel — print the cultureflare/cloudflared commands for remote access (dry-run only)",
+    "mesh — print Gwen's culture-mesh nick, channels, env names and setup (prints only)",
     "memory ingest|forget|overview — enqueue facts for Gwen to remember or forget (dry run)",
 ]
 
