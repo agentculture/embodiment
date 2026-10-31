@@ -35,6 +35,19 @@ describe("Chat", () => {
     expect(container.querySelector("b")).toBeNull();
   });
 
+  it("says when a fixed text stood in for the model's answer, and only then", async () => {
+    const fallback = fetchOk({ reply: "Sorry, I couldn't put an answer together just now.", sources: [], fallback: "app-tool-reply-unspoken" });
+    const first = render(<Chat secret="k" clientOptions={{ fetchFn: fallback }} />);
+    await send("news?");
+    expect(await screen.findByRole("note")).toHaveTextContent(/Fixed reply/);
+    expect(screen.getByText("app-tool-reply-unspoken")).toBeInTheDocument();
+    first.unmount();
+    render(<Chat secret="k" clientOptions={{ fetchFn: fetchOk({ reply: "Real answer.", sources: [], fallback: null }) }} />);
+    await send("again");
+    await screen.findByText(/Real answer/);
+    expect(screen.queryByRole("note")).toBeNull();
+  });
+
   it("a fetched web source links out in a new tab, never to the reader", async () => {
     const page = { source: "web", kind: "web", title: "Thor ships", date: "", start: null, end: null, section: "", link: "https://example.test/thor", text: "article text", item_id: "" };
     const javascript = { ...page, title: "bad", link: "javascript:alert(1)" };

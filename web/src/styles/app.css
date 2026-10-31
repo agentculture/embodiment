@@ -806,3 +806,11 @@ button.source-open:hover { border-color: var(--cobalt); box-shadow: var(--shadow
 .mesh small { color: var(--muted); font-size: 0.72rem; }
 .meta-count b { font-weight: 750; color: var(--warn); }
 .conv .nick { flex: none; }
+
+/* A fixed text stood in for the model's answer: say so, never pass it off as hers. */
+.answer-fallback {
+  margin: 0.4rem 0 0; padding-block: 0.25rem; padding-inline: 0.6rem;
+  border-inline-start: 3px solid var(--warn); background: var(--warn-soft);
+  border-radius: var(--radius-s); color: var(--ink); font-size: var(--step--1);
+}
+.answer-fallback code { font-family: var(--mono); font-size: 0.75rem; }

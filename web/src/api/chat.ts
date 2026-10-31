@@ -33,6 +33,8 @@ export interface ChatReply {
   reply: string;
   sources: ChatSource[];
   turnSerial: number | null;
+  /** Set when a fixed text stood in for the model's answer: the reason's code. */
+  fallback: string | null;
 }
 
 export type ChatOutcome =
@@ -136,6 +138,7 @@ export async function sendChat(
       reply: result.reply,
       sources: parseSources(result.sources),
       turnSerial: num(result.turn_serial),
+      fallback: typeof result.fallback === "string" && result.fallback ? result.fallback : null,
     },
   };
 }

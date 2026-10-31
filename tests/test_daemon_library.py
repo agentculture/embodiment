@@ -63,6 +63,10 @@ PLANTED_FORGET = "otters"
 PLANTED_REMEMBER = "the vault code is 1234"
 
 
+#: An English answer, for the t19 English-conversation cases.
+REPLY_EN = "The front page leads with the budget vote."
+
+
 def _item(
     item_id: int,
     *,
@@ -1536,6 +1540,32 @@ class TestALibraryOnlyRoundIsAToolRound:
         assert app_module.APP_TOOL_REPLY_UNSPOKEN in h.ledger_codes()
         reasons = [r.detail for r in h.state.ledger.read_all()]
         assert any(r.startswith("library:") for r in reasons), reasons
+
+    def test_an_english_reply_after_a_search_is_kept_for_an_english_conversation(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        """t19 live, 2026-10-31: built-in Gwen with Language English asked about the news,
+        searched, answered in English, and the post-tool check (which required Hebrew)
+        replaced the answer with the Hebrew apology."""
+        model = ByTurn({"news?": _call("search_library", query="news")}, reply=REPLY_EN)
+        h = _build(harness, tmp_path, complete=model, library=_door_library())
+        assert h.app.set_conversation_language("en") == "en"
+        answer = h.app.controls().chat("news?")
+        assert answer["reply"] == REPLY_EN
+        assert app_module.APP_TOOL_REPLY_UNSPOKEN not in h.ledger_codes()
+        assert answer["fallback"] is None
+
+    def test_a_bare_ok_after_a_search_gets_the_english_apology_in_english(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        model = ByTurn({"news?": _call("search_library", query="news")}, reply="ok")
+        h = _build(harness, tmp_path, complete=model, library=_door_library())
+        h.app.set_conversation_language("en")
+        answer = h.app.controls().chat("news?")
+        assert answer["reply"] == app_module.FALLBACK_TEXT_EN
+        assert app_module.APP_TOOL_REPLY_UNSPOKEN in h.ledger_codes()
+        # "I need to know when fallback occurs": the reply says it was the fixed text.
+        assert answer["fallback"] == app_module.APP_TOOL_REPLY_UNSPOKEN
 
 
 # ── d8: Gwen's own past conversations ──────────────────────────────────────────

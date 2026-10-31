@@ -85,6 +85,8 @@ interface Message {
   text: string;
   sources: ChatSource[];
   followUp?: boolean;
+  /** The code of the fixed text that stood in for the model's answer, if any. */
+  fallback?: string | null;
   /** Reveal word by word (a fresh answer, motion allowed). */
   reveal?: boolean;
 }
@@ -357,6 +359,7 @@ export function Chat({
           role: "assistant",
           text: outcome.value.reply,
           sources: outcome.value.sources,
+          fallback: outcome.value.fallback,
           reveal: !calmMotion(),
         },
       ]);
@@ -421,6 +424,11 @@ export function Chat({
               <p className="answer" dir="auto">
                 <Answer text={m.text} sources={m.sources} reveal={!!m.reveal} onOpen={onOpenCitation} />
               </p>
+              {m.fallback && (
+                <p className="answer-fallback" role="note">
+                  Fixed reply: the model&apos;s answer was not used (<code>{m.fallback}</code>).
+                </p>
+              )}
               <div className="answer-tools">
                 <SpeakButton text={stripCitations(m.text, m.sources.length)} secret={secret} clientOptions={clientOptions} />
                 {m.sources.length > 0 && (

@@ -691,11 +691,49 @@ FORGET_TEXT_TOP_K = 10
 #: turn has already spent its budget, and a confirmation that itself needs
 #: the gateway to work is no floor at all.
 TOOL_CONFIRMATION = {REMEMBER_TOOL_NAME: "שמרתי.", FORGET_TOOL_NAME: "שכחתי."}
+#: The same fixed confirmations and apology for a persona that answers in English
+#: (t19 live, 2026-10-31: an English persona's library answer was replaced with the
+#: Hebrew apology because the post-tool check required Hebrew).
+TOOL_CONFIRMATION_EN = {REMEMBER_TOOL_NAME: "Saved.", FORGET_TOOL_NAME: "Forgotten."}
+FALLBACK_TEXT_EN = "Sorry, I couldn't put an answer together just now."
+#: Replies a post-tool check treats as saying nothing, in a non-Hebrew persona.
+_EMPTY_REPLIES_EN = frozenset({"ok", "okay", "done", "ok.", "done."})
 
 #: The Unicode block whose presence makes a reply speakable *here*. The check
 #: is deliberately this blunt: it asks whether the voice has anything to say,
 #: not whether the sentence is good Hebrew.
 _HEBREW_BLOCK = (0x0590, 0x05FF)
+
+
+def _fallback_code(
+    *,
+    refused: bool,
+    replaced: bool,
+    spoken: str,
+    fallback_text: str,
+    degradations: Sequence[Any],
+) -> Optional[str]:
+    """Why a fixed text stood in for the model's answer, or ``None`` when it did not."""
+    if refused:
+        return APP_TEXT_MODEL_UNAVAILABLE
+    if replaced:
+        return APP_TOOL_REPLY_UNSPOKEN
+    if spoken in (fallback_text, FALLBACK_TEXT, FALLBACK_TEXT_EN):
+        codes = [str(getattr(d, "code", "")) for d in degradations if getattr(d, "code", "")]
+        return codes[0] if codes else "turn-fallback"
+    return None
+
+
+def _says_something(text: str, language: str) -> bool:
+    """Whether a post-tool reply says anything in the turn's *language*.
+
+    Hebrew keeps the original, deliberately blunt test (any Hebrew letter). English asks
+    for letters and not a bare acknowledgement such as "ok".
+    """
+    if language != "en":
+        return _has_hebrew(text)
+    stripped = (text or "").strip()
+    return any(ch.isalpha() for ch in stripped) and stripped.lower() not in _EMPTY_REPLIES_EN
 
 
 def _has_hebrew(text: str) -> bool:
@@ -2307,6 +2345,8 @@ class _VoiceTurn:
     target: Optional["_ChatTarget"] = None
     #: True once the chosen role refused this turn (t12): nothing is asked again.
     unavailable: bool = False
+    #: The code of the fixed text that stood in for the model's answer, if any.
+    fallback: Optional[str] = None
     #: The turn's translation (t13), set by its first translated completion.
     translation: Optional["_Translation"] = None
     #: t15: this turn's id in the ask book, its conversation, and the mesh text in it.
@@ -2363,6 +2403,8 @@ class _TextTurn:
     #: The conversation's model, snapshotted when the turn began (t12).
     target: Optional["_ChatTarget"] = None
     unavailable: bool = False
+    #: The code of the fixed text that stood in for the model's answer, if any.
+    fallback: Optional[str] = None
     translation: Optional["_Translation"] = None
     #: t15, as on :class:`_VoiceTurn`; *prompt_query* is what the model reads as the
     #: user turn when it is not *query* (an agent's message, fenced).
@@ -3992,8 +4034,10 @@ class DaemonApp:
         here = self._turn_here()
         mesh_block = here.mesh_block if here is not None else ""
         recalled = f"{memory}\n\n{mesh_block}" if memory and mesh_block else memory or mesh_block
+        english = tool_prompt_language(persona) == "en"
         config = TurnConfig(
             role=target.role,
+            fallback_text=FALLBACK_TEXT_EN if english else FALLBACK_TEXT,
             system_prompt=_compose_prompt(
                 self._persona_base(persona, path),
                 window,
@@ -4009,7 +4053,17 @@ class DaemonApp:
         if refused:
             result = self._unavailable_result(refused[0], result)
         # Before the session, the transcript, the bus or the voice see it.
-        spoken = self._answer_tool_step(self._scrub_reply(result.spoken), before)
+        scrubbed = self._scrub_reply(result.spoken)
+        spoken = self._answer_tool_step(scrubbed, before, language="en" if english else "he")
+        # Operator, 2026-10-31: "I need to know when fallback occurs". The code of the
+        # fixed text that stood in for the model's answer, shown with the reply.
+        self._tls.turn_fallback = _fallback_code(
+            refused=bool(refused),
+            replaced=spoken != scrubbed,
+            spoken=result.spoken,
+            fallback_text=config.fallback_text,
+            degradations=result.degradations,
+        )
         if spoken != result.spoken:
             result = replace(result, spoken=spoken)
         for degradation in result.degradations:
@@ -4046,6 +4100,7 @@ class DaemonApp:
             target=turn.target,
         )
         turn.unavailable = turn.unavailable or result.exit_reason == APP_TEXT_MODEL_UNAVAILABLE
+        turn.fallback = turn.fallback or getattr(self._tls, "turn_fallback", None)
         turn.steps += result.steps
         turn.tool_round = turn.tool_round or tooled
         if first:
@@ -4301,6 +4356,8 @@ class DaemonApp:
                 self._library_replies.append(reply)
         # No turn_serial on this event: the page already has the answer from the
         # response, and Chat.tsx appends every serial'd reply as a NEW message.
+        if turn.fallback:
+            labels = {**labels, "fallback": turn.fallback}
         self._publish("reply", {"text": reply, "typed": True, **labels})
         return reply
 
@@ -4336,6 +4393,7 @@ class DaemonApp:
             target=turn.target,
         )
         turn.unavailable = turn.unavailable or result.exit_reason == APP_TEXT_MODEL_UNAVAILABLE
+        turn.fallback = turn.fallback or getattr(self._tls, "turn_fallback", None)
         turn.tool_round = turn.tool_round or tooled
         if first:
             turn.result = result
@@ -4445,6 +4503,7 @@ class DaemonApp:
             "turn_serial": turn.serial if turn is not None else None,
             "code": result.code,
             "http_status": result.http_status,
+            "fallback": turn.fallback if turn is not None else None,
         }
 
     def _control_speak(self, text: Any) -> dict[str, Any]:
@@ -6862,7 +6921,9 @@ class DaemonApp:
                 library,
             )
 
-    def _answer_tool_step(self, spoken: str, before: tuple[int, ...]) -> str:
+    def _answer_tool_step(
+        self, spoken: str, before: tuple[int, ...], *, language: str = "he"
+    ) -> str:
         """Keep d7's promise that a tool round is never silent.
 
         The turn just called a tool. If the model's answer to the tool result
@@ -6877,16 +6938,18 @@ class DaemonApp:
         never be answered with "I saved it".
         """
         after = self._tool_counts()
-        if after[0] == before[0] or _has_hebrew(spoken):
+        if after[0] == before[0] or _says_something(spoken, language):
             return spoken
+        confirmations = TOOL_CONFIRMATION_EN if language == "en" else TOOL_CONFIRMATION
+        apology = FALLBACK_TEXT_EN if language == "en" else FALLBACK_TEXT
         if after[1] > before[1]:
-            tool, replacement = REMEMBER_TOOL_NAME, TOOL_CONFIRMATION[REMEMBER_TOOL_NAME]
+            tool, replacement = REMEMBER_TOOL_NAME, confirmations[REMEMBER_TOOL_NAME]
         elif after[2] > before[2]:
-            tool, replacement = FORGET_TOOL_NAME, TOOL_CONFIRMATION[FORGET_TOOL_NAME]
+            tool, replacement = FORGET_TOOL_NAME, confirmations[FORGET_TOOL_NAME]
         elif after[0] - before[0] == after[4] - before[4]:
-            tool, replacement = "library", FALLBACK_TEXT  # only library tools ran
+            tool, replacement = "library", apology  # only library tools ran
         else:
-            tool, replacement = "none", FALLBACK_TEXT
+            tool, replacement = "none", apology
         with self._lock:
             self._tool_replies_answered += 1
             answered = self._tool_replies_answered
@@ -6894,7 +6957,7 @@ class DaemonApp:
         # and never enters a record.
         self._record(
             APP_TOOL_REPLY_UNSPOKEN,
-            f"{tool}: the reply after the tool round had no Hebrew "
+            f"{tool}: the reply after the tool round said nothing in {language} "
             f"({len(spoken)} chars); spoke the fixed confirmation (#{answered})",
         )
         self._publish(
