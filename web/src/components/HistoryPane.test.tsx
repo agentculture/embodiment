@@ -10,8 +10,8 @@ const ok = (body: unknown) => vi.fn(async () => ({ ok: true, status: 200, json: 
 const DAY = Date.UTC(2026, 9, 23, 9, 30) / 1000;
 const LIST = {
   conversations: [
-    { id: "live", title: "golf?", started: DAY, last: DAY, turns: 1, current: true },
-    { id: "old", title: "מה במחסן?", started: DAY - 60, last: DAY - 30, turns: 2, current: false },
+    { id: "live", title: "golf?", started: DAY, last: DAY, turns: 1, current: true, agent: null },
+    { id: "old", title: "מה במחסן?", started: DAY - 60, last: DAY - 30, turns: 2, current: false, agent: null },
   ],
 };
 
@@ -23,6 +23,19 @@ describe("HistoryPane", () => {
     expect(screen.getByRole("button", { name: /Now/ })).toHaveAttribute("aria-current", "true");
     expect(screen.getByRole("heading", { name: "Friday 23 October" })).toBeInTheDocument();
     expect(screen.queryByText("golf?")).toBeNull(); // the live one is "Now", not repeated
+  });
+
+  it("shows an agent conversation with the nick as a chip", async () => {
+    const list = { conversations: [...LIST.conversations, { id: "ag", title: "hello gwen", started: DAY - 20, last: DAY - 10, turns: 1, current: false, agent: "thor-lobes" }] };
+    render(<HistoryPane openId={null} onOpen={() => {}} clientOptions={{ fetchFn: ok(list) }} />);
+    const chip = await screen.findByText("thor-lobes");
+    expect(chip).toHaveClass("nick");
+    expect(chip).not.toHaveAttribute("dir", "auto");
+    expect(screen.getByText("hello gwen")).toHaveAttribute("dir", "auto");
+    expect(screen.queryAllByText(/^thor-lobes$/)).toHaveLength(1);
+    // its row gets the three-column layout (nick | title | time), not the two-column one
+    expect(chip.closest("button")).toHaveClass("conv--agent");
+    expect(screen.getByText("מה במחסן?").closest("button")).not.toHaveClass("conv--agent");
   });
 
   it("offers New conversation when the page can start one", async () => {
@@ -95,7 +108,9 @@ describe("PastConversation (continued, deviation d5)", () => {
     await userEvent.click(screen.getByRole("button", { name: "Send" }));
     expect(await screen.findByText("כחולה")).toBeInTheDocument();
     const chat = calls.find((c) => c.url.endsWith("/chat"));
-    expect(JSON.parse(chat!.body)).toEqual({ message: "ומה צבע הדלת?", conversation: "old" });
+    expect(JSON.parse(chat!.body)).toEqual({
+      message: "ומה צבע הדלת?", conversation: "old", request_id: expect.stringMatching(/^req-/),
+    });
     await userEvent.click(screen.getByRole("button", { name: "Back to now" }));
     expect(onBack).toHaveBeenCalled();
   });

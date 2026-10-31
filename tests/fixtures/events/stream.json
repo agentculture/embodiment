@@ -1,0 +1,13 @@
+{
+  "v": 1,
+  "kind": "stream",
+  "ts": "2026-10-31T16:00:00.000Z",
+  "seq": 40,
+  "source": "app://embodiment",
+  "data": {
+    "request_id": "req-0123456789abcdef",
+    "channel": "reasoning",
+    "text": "The newest paper is dated 2026-10-31; search with that date.",
+    "step": 0
+  }
+}

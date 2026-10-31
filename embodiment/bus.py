@@ -265,6 +265,7 @@ from embodiment.safe_reason import describe_exception
 __all__ = [
     "SCHEMA_VERSION",
     "EVENT_KINDS",
+    "MESH_EVENTS",
     "SPEECH_KINDS",
     "LOCAL_ONLY_KINDS",
     "HEARTBEAT_INTERVAL_S",
@@ -292,7 +293,7 @@ __all__ = [
 #: field names, when the envelope shape itself changes.
 SCHEMA_VERSION = 1
 
-#: The nine event kinds this bus knows how to validate and route. A publish
+#: The event kinds this bus knows how to validate and route. A publish
 #: naming any other kind is refused and recorded as
 #: :data:`DEGRADED_SCHEMA_INVALID` — never silently accepted with an
 #: unvalidated shape.
@@ -309,14 +310,18 @@ EVENT_KINDS: frozenset[str] = frozenset(
         "heartbeat",
         "conversation",
         "todo",
+        "mesh",
+        "stream",
     }
 )
 
-#: The ONLY kinds allowed to carry speech (the user's words, or Gwen's reply).
+#: The ONLY kinds allowed to carry speech (the user's words, or Gwen's reply) -- and,
+#: since t15, ``mesh``: another agent's words to Gwen and her reply to it.
 #: See the module docstring's privacy-boundary section. Excluded from a
 #: subscription by default (round 2, defect 6b) — pass
 #: ``Bus.subscribe(include_speech=True)`` or an explicit ``kinds=`` to get them.
-SPEECH_KINDS: frozenset[str] = frozenset({"transcript", "reply"})
+#: ``stream`` (deviation d5) too: a typed turn's reasoning and answer as they arrive.
+SPEECH_KINDS: frozenset[str] = frozenset({"transcript", "reply", "mesh", "stream"})
 
 #: Kinds that never leave this process for the broker. Only ``conversation``:
 #: conversations are Gwen's own business (deviation d8), so nothing outside the
@@ -433,6 +438,8 @@ _REQUIRED_DATA_FIELDS: dict[str, tuple[str, ...]] = {
     "heartbeat": (),
     "conversation": ("id", "status", "last", "turns"),
     "todo": ("id", "done", "at", "by"),
+    "mesh": ("event", "conversation_id", "at"),
+    "stream": ("request_id", "channel", "text"),
 }
 
 #: Kinds dropped FIRST under queue back-pressure — a subscriber's own queue
@@ -440,7 +447,9 @@ _REQUIRED_DATA_FIELDS: dict[str, tuple[str, ...]] = {
 #: same policy (:func:`_drop_policy`, lesson 8: one code path). Currently just
 #: ``features`` — the high-rate kind named in the brief — kept as a set rather
 #: than a single constant so a future high-rate kind can join it in one place.
-_DROP_FIRST_KINDS: frozenset[str] = frozenset({"features"})
+#: ``stream`` (d5) joins it: each event carries the text so far, so a dropped one is
+#: superseded by the next and nothing is lost but a frame of the live view.
+_DROP_FIRST_KINDS: frozenset[str] = frozenset({"features", "stream"})
 
 
 def _now_rfc3339() -> str:
@@ -687,6 +696,24 @@ def _check_clients_types(data: dict[str, Any]) -> Optional[str]:
     return None if _plain_int(data.get("count")) else "count"
 
 
+#: What a ``mesh`` event says happened (t15): one of five, never free text.
+MESH_EVENTS: tuple[str, ...] = (
+    "ask_posted",
+    "answer_arrived",
+    "ask_expired",
+    "agent_contacted",
+    "gwen_replied",
+)
+
+
+def _check_mesh_types(data: dict[str, Any]) -> Optional[str]:
+    if data.get("event") not in MESH_EVENTS:
+        return "event"
+    if not isinstance(data.get("conversation_id"), str):
+        return "conversation_id"
+    return None
+
+
 #: The targeted per-kind type checks :func:`_validate_data` runs AFTER the
 #: presence check, keyed by kind. Each returns the first offending field name
 #: or ``None``; a kind absent here has presence-only validation.
@@ -697,6 +724,7 @@ _KIND_TYPE_CHECKS: dict[str, Callable[[dict[str, Any]], Optional[str]]] = {
     "degradation": _check_degradation_types,
     "features": _check_features_types,
     "clients": _check_clients_types,
+    "mesh": _check_mesh_types,
 }
 
 
@@ -1099,7 +1127,7 @@ class Bus:
 
         Private by default (round 2, defect 6b, lesson 7): with ``kinds=None``
         (the default) the subscription receives every kind EXCEPT
-        :data:`SPEECH_KINDS` (``transcript``/``reply``). Pass
+        :data:`SPEECH_KINDS` (``transcript``/``reply``/``mesh``). Pass
         ``include_speech=True`` to receive everything, or name ``kinds=``
         explicitly — naming ``transcript``/``reply`` there is itself the
         deliberate ask, so an explicit ``kinds=`` is always honoured exactly

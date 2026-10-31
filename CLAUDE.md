@@ -116,6 +116,36 @@ with memory's 0.715. **gwen.culture.dev
 needs its own Cloudflare never-cache rule** (the culture.dev zone caches everything,
 overriding `no-store`); it has one since 2026-10-24.
 
+**Shipped on the `feat/gwen-personas-models-mesh` branch (0.24.0, unreleased;
+spec `docs/specs/2026-10-31-gwen-personas-model-choice-culture-residency.md`):
+personas, a chosen model, a translator, and Gwen on the mesh.** The before-state,
+quoted from the code at the spec's export commit (`8182fa8`): `turn.py` had one
+`ROLE_SENSES = "senses"` and one Hebrew `SYSTEM_PROMPT` ("עני בעברית, במשפטים
+קצרים וטבעיים לדיבור", every reply written to be spoken), and the daemon had no
+mesh connection. Now: `personas.py` / `persona_prompt.py` (the Personas tab,
+`/api/personas`, a private 0600 store; the built-in Gwen's spoken prompt is
+byte-identical to that `SYSTEM_PROMPT`, her typed prompt drops the speech-only
+lines, deviation d1), `capabilities.py` (`/api/models`, polled every 60 s; the
+chosen role per conversation; `app-text-model-unavailable` is distinct from
+gateway-down and never falls back; trace `chat_role`/`chat_model`/`chat_host`),
+`voice_latency.py` (voice gated: `senses` exempt, any other role speaks only after
+its latency is measured), `translate.py` (the Gemma translator, read only from the
+persona's `translate_via`; the chosen role sees English, search uses the operator's
+words, `remember` stores the model's English with the operator's sentence beside it and
+`forget` matches either, d6), and `mesh_client.py` / `mesh_tools.py` / `mesh_asks.py`
+(`spark-gwen`, Gwen's daemon holding its own agentirc connection, no harness
+and no second model speaking as her; `ask_culture` posts only the question as its
+own thread; answers arrive later, also after expiry, marked, d2; `embodiment
+mesh` prints the setup and runs nothing). **Any agent on the mesh may talk to
+her and gets a normal turn, memory included** (operator q6/q9: "local agent is
+allowed to know local memory", "this mesh is local or only trusted servers"), so
+**a newly linked server is a new reader of her memory**, and agentirc does not
+authenticate a nick. Listing her as a resident awaits agentculture/culture#506.
+English is text-only: lobes `tts` is Hebrew-only. **Not measured, not claimed:**
+Hebrew quality of the non-Gemma roles, the English `remember`/`forget` call rate,
+voice latency per role and for the translator, mesh answer latency. Culture-rules
+workflow management is later.
+
 - **Spec:** `docs/specs/2026-09-21-realtime-embodiment-app.md` — 50 claims, 33
   honesty conditions, after a rigorous `/challenge` pass.
 - **Plan:** `docs/plans/2026-09-21-realtime-embodiment-app.md` — 22 tasks in 7
@@ -211,19 +241,28 @@ Gwen is one prompt-visible teammate. The name came from **G**emma + Q**wen**,
 and it stays: the speaker is a Gemma, and a later stage gives Gwen a tool that
 operates Qwen Code through the `worker` role.
 
-The rig, **as the gateway reported it on 2026-10-23** (`GET /capabilities`).
-Roles resolve **by name**, never by parsing model names, and this table drifts
-— re-probe before relying on it:
+The rig, **as the gateway reported it on 2026-10-31** (`GET /capabilities`,
+probed through `grant run`; `ready`/`loaded`/`member` are the gateway's own
+fields). Roles resolve **by name**, never by parsing model names, and this
+table drifts — re-probe before relying on it:
 
 | Role | Model | State | Gwen uses it for |
 |------|-------|-------|------------------|
-| `senses` | `nvidia/Gemma-4-26B-A4B-NVFP4` | ready, proxied (served from thor; 3 tiny completions 2.35 s cold / 0.25 s warm, n=3, not a distribution) | **the speaker** — generates every spoken reply |
-| `stt` | `ivrit-ai/whisper-large-v3-turbo` | ready, local, advertises `realtime_vad_session` | ears (Hebrew); also clip transcription |
-| `tts` | `notmax123/BlueTTS2.5-onnx` | ready, local | voice (Hebrew) |
-| `worker` | `nvidia/Qwen3.6-35B-A3B-NVFP4` | ready, proxied | later: Qwen Code, behind a tool |
-| `gemma2-embed` | `google/embeddinggemma-2` | ready, proxied (orin) | **the embedder Gwen uses** — semantic recall, by role name |
-| `embedder` | `Qwen/Qwen3-Embedding-0.6B` | ready, proxied | not used |
-| `cortex` | — | not ready | not used by the base |
+| `senses` | `nvidia/Gemma-4-26B-A4B-NVFP4` | ready, loaded, local (no `member`) | **the speaker** — generates every spoken reply; the default chat role |
+| `stt` | `ivrit-ai/whisper-large-v3-turbo` | ready, loaded, local | ears (Hebrew); also clip transcription |
+| `tts` | `notmax123/BlueTTS2.5-onnx` | ready, loaded, local | voice (Hebrew only; no English voice) |
+| `worker` | `nvidia/NVIDIA-Nemotron-3.5-Bolt-74B-A9B-24GB` | ready, loaded, local | a choosable chat role (text; voice only once its latency is measured); later Qwen Code behind a tool |
+| `cortex` | `unsloth/Qwen3.8-27B-NVFP4` | ready, not loaded, proxied (spark2) | a choosable chat role, same gate |
+| `hand` | `LiquidAI/LFM2.5-1.2B-Instruct` | ready, not loaded, proxied (spark2) | a choosable chat role, same gate |
+| `gemma2-embed` | `google/embeddinggemma-2` | ready, not loaded, proxied (thor) | **the embedder Gwen uses** — semantic recall, by role name |
+| `embedder` | `Qwen/Qwen3-Embedding-0.6B` | ready, proxied (spark2) | not used |
+| `reranker` | `Qwen/Qwen3-Reranker-0.6B` | ready, proxied (spark2) | not used |
+| `stt-en`, `stt-he` | `ivrit-ai/whisper-large-v3-turbo`, `ivrit-ai/zipformer2-66m-streaming-he` | ready | not used (the daemon asks for `stt`) |
+| `muse`, `associate`, `decider`, `innereye` | — | not ready | not used |
+
+The 2026-10-23 table named `worker` as Qwen3.6-35B and `cortex` as not ready;
+both have changed. Which roles the page offers is read live from the gateway,
+not from this table.
 
 Gwen **listens and speaks Hebrew** in v1, matching the deployed audio lane.
 `senses` does not advertise image understanding on this rig, so a later vision
@@ -234,6 +273,10 @@ stage needs another role.
 
 - Reuse the **resolved identity** (`identity.py` → `culture.yaml`
   `nick`/`suffix`, then `.colleague/identity.json`); no parallel persona system.
+  The 0.24.0 personas (`personas.py`) do not break this rule. They are a **style layer**
+  (language, length, the operator's own text, a default role), never an identity. They
+  never set `TurnConfig.identity`, and they change no tool authority, routing or safety
+  policy (claim c7).
 - Configure Gwen **explicitly**. Never infer an identity from model names.
 - **Absent identity ⇒ byte-identical prompts.** This is the acceptance
   criterion that keeps the feature honest.
@@ -326,7 +369,12 @@ operator's decisions, recorded in the spec:
   attributed (`KNOWLEDGE_ATTRIBUTION`), never as instructions.
 - **Provisioning and cross-repo posts are the operator's acts.** Nothing here
   runs `cultureflare … --apply`, and nothing is posted to a sibling repo
-  without an explicit go-ahead. Draft, then ask.
+  without an explicit go-ahead. Draft, then ask. **One exception, by the
+  operator's decision (q1, 2026-10-31): Gwen's own mesh posts are hers.** What
+  `spark-gwen` says on a listed mesh channel (the `ask_culture` question) goes
+  through her own turn path and needs no go-ahead. **Issue posts stay the
+  operator's** — including the culture-side change to list her as a resident
+  (agentculture/culture#506): draft it, then ask.
 
 ## Commands
 
@@ -371,6 +419,18 @@ embodiment/
   perception.py         verbatim-invariant intake + never-raise
   identity.py           resolved identity
   framing.py            pure prompt framing; absent identity => identical prompts
+  personas.py           operator-authored personas: private 0600 store, language he/en/none,
+                        length; built-in Gwen is the default
+  persona_prompt.py     composes the persona's prompt; spoken Gwen byte-identical, typed drops
+                        the speech-only lines (d1)
+  capabilities.py       lobes /capabilities poll (60 s), the roles the page offers, chosen
+                        role per conversation, app-text-model-unavailable
+  voice_latency.py      background voice-latency probe; the gate on non-senses voices
+  translate.py          the Gemma translator (persona translate_via); original text kept
+  mesh_client.py        spark-gwen: Gwen's own agentirc connection (stdlib), degrade-never-raise
+  mesh_tools.py         ask_culture + the mesh write guard; mesh answers fenced as untrusted
+  mesh_asks.py          open asks, late answers (d2); cli/_commands/mesh.py prints the setup
+  mesh_judge.py         "was it for me?": a small senses call picks which ask a line answers (d7)
   senses_text.py        SENSES_GROUNDING + KNOWLEDGE_ATTRIBUTION (measured text)
   continuity.py         the eidetic/coherence seam, in-process
   events.py             optional observer onto events-cli (MQTT)

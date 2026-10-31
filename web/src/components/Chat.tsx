@@ -7,13 +7,21 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { EventEnvelope } from "../api/events";
 import {
+  CHAT_TIMEOUT_CODE,
+  fetchChatResult,
   formatMmSs,
+  newRequestId,
   parseSources,
   sendChat,
   type ChatClientOptions,
+  type ChatOutcome,
   type ChatSource,
 } from "../api/chat";
-import { splitCitations, stripCitations } from "../api/citations";
+import { addPending, loadPending, removePending, type PendingChat } from "../api/pendingChats";
+import { liveReasoning, type LiveMap, type LiveView } from "../api/liveText";
+import type { ConversationSettings } from "../api/models";
+import { stripCitations, splitCitations } from "../api/citations";
+import { parseBlocks, type Inline, type ListBlock } from "./markdown";
 import { kindInfo } from "../api/kinds";
 import { AudioControls, SpeakButton, type ClipReply } from "./AudioControls";
 import { deviceKind } from "./ReadAloud";
@@ -42,7 +50,24 @@ export interface ChatProps {
   onAnswer?: (question: string, sources: ChatSource[]) => void;
   /** Start reading a cited library item aloud on this device (embodiment#107). */
   onReadAloud?: (itemId: string) => void;
+  /** Persona, model (a role name) and language chosen for this conversation; sent with every turn. */
+  settings?: ConversationSettings;
+  /** The settings row under the dock. `unavailable` names the role that could not answer, else null. */
+  meta?: (state: ChatMetaState) => ReactNode;
+  /** How often a still-running answer is asked for (GET /api/chat/{id}). */
+  pollMs?: number;
+  /** Streamed text by request id (d5): shown while a question of this chat is answered. */
+  liveText?: LiveMap;
 }
+
+export interface ChatMetaState {
+  unavailable: string | null;
+  /** Ask the last question again (with the settings as they are now). */
+  retry: () => void;
+}
+
+/** The chat code the daemon answers with when the chosen reply model is not ready. */
+export const MODEL_UNAVAILABLE = "app-text-model-unavailable";
 
 /** The library item an answer can offer to read aloud: its first cited library source. */
 export function readableSource(sources: ChatSource[]): ChatSource | null {
@@ -71,8 +96,45 @@ interface Message {
   text: string;
   sources: ChatSource[];
   followUp?: boolean;
+  /** The code of the fixed text that stood in for the model's answer, if any. */
+  fallback?: string | null;
   /** Reveal word by word (a fresh answer, motion allowed). */
   reveal?: boolean;
+  /** Still running past the request's own clock: the request id it is fetched by. */
+  waiting?: string;
+  /** A note in place of an answer (the turn refused, or the answer was lost). */
+  note?: string;
+  /** The reasoning that streamed while it was answered (d5), shown folded. */
+  reasoning?: string;
+}
+
+/** What has streamed so far for one request: reasoning muted, then the answer. Text only. */
+function LivePanel({ view }: { view: LiveView | undefined }) {
+  const reasoning = liveReasoning(view);
+  if (!reasoning && !view?.content) return null;
+  return (
+    <div className="livetext" aria-live="off">
+      {reasoning && (
+        <p className="livetext__reasoning" dir="auto">
+          {reasoning}
+        </p>
+      )}
+      {view?.content && (
+        <p className="livetext__answer" dir="auto">
+          {view.content}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** The chat this pending question belongs to: its conversation, or the live one. */
+const sameConversation = (p: PendingChat, conversation: string | undefined) =>
+  p.conversation === (conversation ?? null);
+
+/** True when the history already holds *question* followed by an answer. */
+function answeredIn(turns: { role: string; text: string }[], question: string): boolean {
+  return turns.some((t, i) => t.role === "user" && t.text === question && turns[i + 1]?.role === "assistant");
 }
 
 /**
@@ -226,19 +288,14 @@ function Words({ text, base }: { text: string; base: number }) {
   );
 }
 
-/** An answer with its citation markers as cite buttons; a marker naming no source stays text. */
-function Answer({
-  text,
-  sources,
-  reveal,
-  onOpen,
-}: {
+/** Text with its citation markers as cite buttons; a marker naming no source stays text. */
+function CitedText({ text, sources, reveal, onOpen, counter }: {
   text: string;
   sources: ChatSource[];
   reveal: boolean;
   onOpen?: OpenCitation;
+  counter: { words: number };
 }) {
-  let words = 0;
   return (
     <>
       {splitCitations(text, sources.length).map((part, i) => {
@@ -258,9 +315,89 @@ function Answer({
           );
         }
         if (!reveal) return part.text;
-        const node = <Words key={i} text={part.text} base={words} />;
-        words += part.text.split(/\s+/).filter(Boolean).length;
+        const node = <Words key={i} text={part.text} base={counter.words} />;
+        counter.words += part.text.split(/\s+/).filter(Boolean).length;
         return node;
+      })}
+    </>
+  );
+}
+
+interface AnswerCtx {
+  sources: ChatSource[];
+  reveal: boolean;
+  onOpen?: OpenCitation;
+  counter: { words: number };
+}
+
+function Inlines({ nodes, ctx }: { nodes: Inline[]; ctx: AnswerCtx }) {
+  return (
+    <>
+      {nodes.map((n, i) => {
+        switch (n.k) {
+          case "br":
+            return <br key={i} />;
+          case "code":
+            return <code key={i}>{n.text}</code>;
+          case "strong":
+            return <strong key={i}><Inlines nodes={n.c} ctx={ctx} /></strong>;
+          case "em":
+            return <em key={i}><Inlines nodes={n.c} ctx={ctx} /></em>;
+          default:
+            return <CitedText key={i} text={n.text} {...ctx} />;
+        }
+      })}
+    </>
+  );
+}
+
+function MdList({ list, ctx }: { list: ListBlock; ctx: AnswerCtx }) {
+  const Tag = list.ordered ? "ol" : "ul";
+  return (
+    <Tag className="answer__list">
+      {list.items.map((it, i) => (
+        <li key={i} dir="auto">
+          <Inlines nodes={it.inline} ctx={ctx} />
+          {it.children ? <MdList list={it.children} ctx={ctx} /> : null}
+        </li>
+      ))}
+    </Tag>
+  );
+}
+
+/**
+ * An answer rendered from safe Markdown: every node is a React element with text children
+ * (never HTML, never a link), citation markers are cite buttons anywhere in it.
+ */
+function Answer({
+  text,
+  sources,
+  reveal,
+  onOpen,
+}: {
+  text: string;
+  sources: ChatSource[];
+  reveal: boolean;
+  onOpen?: OpenCitation;
+}) {
+  const ctx: AnswerCtx = { sources, reveal, onOpen, counter: { words: 0 } };
+  return (
+    <>
+      {parseBlocks(text).map((b, i) => {
+        switch (b.type) {
+          case "list":
+            return <MdList key={i} list={b} ctx={ctx} />;
+          case "code":
+            return <pre key={i} className="answer__pre" dir="auto"><code>{b.text}</code></pre>;
+          case "h":
+            return (
+              <div key={i} role="heading" aria-level={b.level + 2} className={`answer__h answer__h--${b.level}`} dir="auto">
+                <Inlines nodes={b.inline} ctx={ctx} />
+              </div>
+            );
+          default:
+            return <p key={i} className="answer__p" dir="auto"><Inlines nodes={b.inline} ctx={ctx} /></p>;
+        }
       })}
     </>
   );
@@ -278,14 +415,40 @@ export function Chat({
   conversation,
   initialTurns,
   onReadAloud,
+  settings,
+  meta,
+  pollMs = 3000,
+  liveText = {},
 }: ChatProps) {
   const [draft, setDraft] = useState("");
-  const [messages, setMessages] = useState<Message[]>(() =>
-    (initialTurns ?? []).map((t, i) => ({ key: `h-${i}`, role: t.role, text: t.text, sources: [] })),
-  );
+  const [messages, setMessages] = useState<Message[]>(() => {
+    const history: Message[] = (initialTurns ?? []).map((t, i) => ({ key: `h-${i}`, role: t.role, text: t.text, sources: [] }));
+    // Questions asked here whose answers never reached the page (it was left, or the
+    // route's clock ran out): shown again and fetched, unless the history holds them.
+    const recovered: Message[] = [];
+    for (const p of loadPending()) {
+      if (!sameConversation(p, conversation)) continue;
+      if (answeredIn(initialTurns ?? [], p.question)) {
+        removePending(p.id);
+        continue;
+      }
+      recovered.push(
+        { key: `r-q-${p.id}`, role: "user", text: p.question, sources: [] },
+        { key: `w-${p.id}`, role: "assistant", text: "", sources: [], waiting: p.id },
+      );
+    }
+    return [...history, ...recovered];
+  });
   const [degraded, setDegraded] = useState<string | null>(null);
+  // The role a model-unavailable refusal named; the Model control is amber only while it is still chosen.
+  const [unavailableRole, setUnavailableRole] = useState<string | null>(null);
+  const lastQuestion = useRef("");
   const [busy, setBusy] = useState(false);
   const [pending, setPending] = useState<string | null>(null);
+  // The request now being answered in the open (d5): its live text is drawn under it.
+  const [activeId, setActiveId] = useState<string | null>(null);
+  const liveRef = useRef(liveText);
+  liveRef.current = liveText;
   const baselineSeq = useRef<number | null>(null);
   const typedSerials = useRef<Set<number>>(new Set());
   const seen = useRef<Set<number>>(new Set());
@@ -316,17 +479,80 @@ export function Chat({
     end.current?.scrollIntoView?.({ block: "end", behavior: calmMotion() ? "auto" : "smooth" });
   }, [messages.length, pending]);
 
+  // Read through refs: a parent re-rendering with a new options object must not restart polling.
+  const access = useRef({ secret, clientOptions });
+  access.current = { secret, clientOptions };
+  const waitingIds = messages.flatMap((m) => (m.waiting ? [m.waiting] : [])).join(" ");
+  useEffect(() => {
+    if (!waitingIds) return;
+    let stopped = false;
+    const settle = (id: string, outcome: ChatOutcome | null) => {
+      removePending(id);
+      setMessages((m) =>
+        m.map((msg): Message => {
+          if (msg.waiting !== id) return msg;
+          if (outcome === null) {
+            return { ...msg, waiting: undefined, note: "Gwen has no answer for this question: it never arrived, or Gwen restarted. Ask again, or look in this conversation's history." };
+          }
+          if (!outcome.ok) return { ...msg, waiting: undefined, note: `Gwen could not answer (${outcome.code}).` };
+          if (outcome.value.turnSerial !== null) typedSerials.current.add(outcome.value.turnSerial);
+          return {
+            ...msg,
+            waiting: undefined,
+            text: outcome.value.reply,
+            sources: outcome.value.sources,
+            fallback: outcome.value.fallback,
+            reveal: !calmMotion(),
+            reasoning: liveReasoning(liveRef.current[id]) || undefined,
+          };
+        }),
+      );
+    };
+    const poll = async () => {
+      for (const id of waitingIds.split(" ")) {
+        const got = await fetchChatResult(id, access.current.secret, access.current.clientOptions);
+        if (stopped) return;
+        if (got.state === "done") settle(id, got.outcome);
+        else if (got.state === "unknown") settle(id, null);
+        // pending, or this poll failed: ask again next tick
+      }
+    };
+    const timer = setInterval(() => void poll(), pollMs);
+    void poll();
+    return () => {
+      stopped = true;
+      clearInterval(timer);
+    };
+  }, [waitingIds, pollMs]);
+
   async function ask(raw: string) {
     const text = raw.trim();
     if (!text || busy) return;
     setDraft("");
+    lastQuestion.current = text;
     setBusy(true);
     setPending(text);
     baselineSeq.current = replyEvents.reduce((mx, e) => Math.max(mx, e.seq), 0);
     setMessages((m) => [...m, { key: `u-${m.length}`, role: "user", text, sources: [] }]);
-    const outcome = await sendChat(text, secret, clientOptions, conversation);
+    const requestId = newRequestId();
+    setActiveId(requestId);
+    addPending({ id: requestId, question: text, conversation: conversation ?? null, at: Date.now() });
+    const outcome = await sendChat(text, secret, clientOptions, conversation, settings, requestId);
+    if (!outcome.ok && outcome.code === CHAT_TIMEOUT_CODE) {
+      // The turn runs on past the route's clock: wait for its answer, never call it failed.
+      setDegraded(null);
+      setMessages((m) => [...m, { key: `w-${requestId}`, role: "assistant", text: "", sources: [], waiting: requestId }]);
+      setPending(null);
+      setActiveId(null);
+      setBusy(false);
+      return;
+    }
+    // A request cut off in flight (network-error: the page was left, or the daemon is
+    // down) stays pending: the daemon may have the turn, and the next visit asks for it.
+    if (outcome.ok || outcome.code !== "network-error") removePending(requestId);
     if (outcome.ok) {
       setDegraded(null);
+      setUnavailableRole(null);
       if (outcome.value.turnSerial !== null) typedSerials.current.add(outcome.value.turnSerial);
       onAnswer?.(text, outcome.value.sources);
       setMessages((m) => [
@@ -336,14 +562,20 @@ export function Chat({
           role: "assistant",
           text: outcome.value.reply,
           sources: outcome.value.sources,
+          fallback: outcome.value.fallback,
           reveal: !calmMotion(),
+          reasoning: liveReasoning(liveRef.current[requestId]) || undefined,
         },
       ]);
     } else {
       // Recorded, visible degradation (C3): a fixed code, never the response body.
       setDegraded(outcome.code);
+      setUnavailableRole(
+        outcome.code === MODEL_UNAVAILABLE ? outcome.role || settings?.model || "" : null,
+      );
     }
     setPending(null);
+    setActiveId(null);
     setBusy(false);
   }
 
@@ -354,6 +586,7 @@ export function Chat({
 
   function onClipReply({ transcript, reply, turnSerial, sources }: ClipReply) {
     setDegraded(null);
+    setUnavailableRole(null);
     if (baselineSeq.current === null) {
       baselineSeq.current = replyEvents.reduce((mx, e) => Math.max(mx, e.seq), 0);
     }
@@ -367,6 +600,11 @@ export function Chat({
   }
 
   const empty = messages.length === 0;
+  // Unavailable only while the refused role is still the chosen one (a switch clears it at once).
+  const unavailable =
+    degraded === MODEL_UNAVAILABLE && unavailableRole !== null && (unavailableRole === (settings?.model ?? "") || !settings?.model)
+      ? unavailableRole || "the reply model"
+      : null;
 
   return (
     <div className="chat" data-empty={empty ? "true" : undefined}>
@@ -388,9 +626,33 @@ export function Chat({
               data-follow-up={m.followUp ? "true" : undefined}
             >
               <span className="sr-only">assistant: </span>
-              <p className="answer" dir="auto">
+              {m.waiting ? (
+                <>
+                  <p className="answer answer--pending answer--waiting" role="status">
+                    Still working on this. The answer will appear here, even if you leave and come back.
+                  </p>
+                  <LivePanel view={liveText[m.waiting]} />
+                </>
+              ) : m.note ? (
+                <p className="answer-fallback" role="note">
+                  {m.note}
+                </p>
+              ) : (
+              <>
+              {m.reasoning && (
+                <details className="answer-reasoning">
+                  <summary>Reasoning</summary>
+                  <p dir="auto">{m.reasoning}</p>
+                </details>
+              )}
+              <div className="answer" dir="auto">
                 <Answer text={m.text} sources={m.sources} reveal={!!m.reveal} onOpen={onOpenCitation} />
-              </p>
+              </div>
+              {m.fallback && (
+                <p className="answer-fallback" role="note">
+                  Fixed reply: the model&apos;s answer was not used (<code>{m.fallback}</code>).
+                </p>
+              )}
               <div className="answer-tools">
                 <SpeakButton text={stripCitations(m.text, m.sources.length)} secret={secret} clientOptions={clientOptions} />
                 {m.sources.length > 0 && (
@@ -403,12 +665,15 @@ export function Chat({
               {onReadAloud && readableSource(m.sources) && (
                 <ReadCard source={readableSource(m.sources) as ChatSource} onRead={onReadAloud} />
               )}
+              </>
+              )}
             </li>
           ),
         )}
         {pending && (
           <li className="turn turn--a turn--pending" aria-label="Gwen is answering">
             <p className="answer answer--pending">Reading your library</p>
+            <LivePanel view={activeId ? liveText[activeId] : undefined} />
           </li>
         )}
       </ol>
@@ -416,7 +681,14 @@ export function Chat({
       <div className="dock-wrap">
         {degraded && (
           <p className="chat__degraded" role="alert">
-            Gwen could not answer ({degraded}). Try again in a moment.
+            {degraded === MODEL_UNAVAILABLE ? (
+              <>
+                <b dir="auto">{unavailableRole || "The reply model"}</b> isn't available right now. Nothing else
+                answered. Pick another model below, or try again.
+              </>
+            ) : (
+              <>Gwen could not answer ({degraded}). Try again in a moment.</>
+            )}
           </p>
         )}
         <form className="dock-line" aria-label="composer" onSubmit={submit}>
@@ -426,6 +698,7 @@ export function Chat({
             clientOptions={clientOptions}
             live={live}
             conversation={conversation}
+            settings={settings}
           >
             <label className="sr-only" htmlFor="ask-box">
               Question
@@ -453,6 +726,12 @@ export function Chat({
             </button>
           </AudioControls>
         </form>
+        {meta?.({
+          unavailable,
+          retry: () => {
+            if (lastQuestion.current) void ask(lastQuestion.current);
+          },
+        })}
       </div>
     </div>
   );

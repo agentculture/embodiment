@@ -18,7 +18,7 @@ export interface PastConversationProps {
   clientOptions?: HistoryClientOptions;
   onBack: () => void;
   /** Passed to the conversation's chat (citations, answers, placeholder). */
-  chat?: Pick<ChatProps, "onOpenCitation" | "onAnswer" | "placeholder" | "clientOptions">;
+  chat?: Pick<ChatProps, "onOpenCitation" | "onAnswer" | "placeholder" | "clientOptions" | "liveText">;
 }
 
 export function PastConversation({ conversation, secret = "", clientOptions, onBack, chat }: PastConversationProps) {

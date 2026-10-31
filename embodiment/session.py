@@ -234,6 +234,7 @@ from embodiment.turn import is_speakable
 __all__ = [
     "ROLE_USER",
     "ROLE_ASSISTANT",
+    "PERSONA_FIELD",
     "DEFAULT_WINDOW_BUDGET_TOKENS",
     "DEFAULT_SUMMARY_DEADLINE",
     "DEFAULT_REMEMBER_DEADLINE",
@@ -267,6 +268,9 @@ __all__ = [
 
 ROLE_USER = "user"
 ROLE_ASSISTANT = "assistant"
+#: The transcript field naming the persona an assistant turn was spoken as. It is
+#: metadata in the log only: never in the window, the budget or a memory record.
+PERSONA_FIELD = "persona"
 
 #: Chosen, not measured — a generous conversational window under the chars/4
 #: heuristic (see module docstring). A host tunes this to its own engine.
@@ -716,6 +720,11 @@ class Session:
         remember_deadline: forwarded to every ``memory.remember`` call this
             session makes (the explicit ask; the end-of-session write uses
             the same deadline for its own store confirmation).
+        persona_id: the persona this conversation speaks as (a persona id, see
+            :mod:`embodiment.personas`), or ``None``. When set, every assistant
+            turn's transcript record carries it under :data:`PERSONA_FIELD`
+            unless the caller's metadata already names one (a turn's snapshot
+            wins). It is the attribute :attr:`persona_id`, settable later.
     """
 
     def __init__(
@@ -730,8 +739,10 @@ class Session:
         added_by: Optional[str] = None,
         transcript_max_bytes: Optional[int] = None,
         remember_deadline: float = DEFAULT_REMEMBER_DEADLINE,
+        persona_id: Optional[str] = None,
     ) -> None:
         self.session_id = session_id if session_id is not None else generate_session_id()
+        self.persona_id: Optional[str] = persona_id
         self._memory = memory
         self._budget_tokens = max(0, int(budget_tokens))
         self._count_tokens: TokenCounter = count_tokens or count_tokens_chars
@@ -904,10 +915,15 @@ class Session:
         turn they describe rather than in a parallel file a reader has to
         join by hand.
 
+        With :attr:`persona_id` set, the record also carries it under
+        :data:`PERSONA_FIELD`, unless *metadata* already names a persona.
+
         Raises ``TypeError`` if *text* is not a ``str`` — see
         :meth:`add_user`.
         """
         self._require_str(text)
+        if self.persona_id is not None and PERSONA_FIELD not in (metadata or {}):
+            metadata = {**dict(metadata or {}), PERSONA_FIELD: self.persona_id}
         self._append(ROLE_ASSISTANT, text, metadata=metadata)
 
     @property

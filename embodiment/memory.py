@@ -2448,6 +2448,28 @@ class RoomMemory:
         records = [r for r in value if record_type is None or r.get("type") == record_type]
         return RecallResult(ok=True, records=records, mode=None)
 
+    def list_own(self, *, deadline: float, record_type: Optional[str] = None) -> RecallResult:
+        """Every ACTIVE record of this scope's private pool (of *record_type*), by enumeration.
+
+        For a lookup that must not depend on a ranker: ``forget`` by text matches a
+        translated record's kept original (``metadata.original``), which no recall mode
+        searches (eidetic's exact mode reads only the text). *deadline* bounds the wait;
+        ``mode`` is ``None`` because nothing ranked. Never raises.
+        """
+        status, value, degradation = self._run_job(
+            lambda: self._enumerate_active([(self._scope, PRIVATE)]),
+            "own-list",
+            deadline,
+            verb="recall",
+            code=CODE_ABANDONED_RECALL,
+        )
+        if status != "ok":
+            return RecallResult(
+                ok=False, records=[], mode=None, degradations=tuple(d for d in (degradation,) if d)
+            )
+        records = [r for r in value if record_type is None or r.get("type") == record_type]
+        return RecallResult(ok=True, records=records, mode=None)
+
     def _shared_ingest_listing(self, deadline: float) -> tuple[str, Any, Optional[Degradation]]:
         """ONE ingest enumeration at a time: join the one still running, else start one.
 

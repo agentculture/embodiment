@@ -309,9 +309,51 @@ browser sends it. Put TLS in front (`tailscale serve` pointing at
 address the browser withholds what the guard needs to vouch for a cookie, and
 `status` reports `http.secure_context_required` when that applies.
 
+## Personas, model choice and spark-gwen
+
+Unreleased (0.24.0, branch `feat/gwen-personas-models-mesh`); measured only where
+stated.
+
+- **Personas.** The Personas tab (`/api/personas`) holds personas the operator
+  writes: a private 0600 store, a language (`he`, `en` or `none`), a length and
+  free text. The built-in Gwen is the default; her **spoken** prompt is
+  byte-identical to before, and her **typed** prompt drops the speech-only lines
+  (deviation d1: short sentences fit speech, not text). The tool registry, the
+  write guard and the identity framing are the same with and without a persona.
+- **Model choice per conversation.** The page lists the roles the gateway
+  reports on `/capabilities` (`/api/models`, polled every 60 s) and a
+  conversation can pick one. A chosen role that is unavailable is its own
+  degradation (`app-text-model-unavailable`, distinct from the gateway being
+  down) and there is **no fallback** to another model; the trace carries
+  `chat_role`, `chat_model` and `chat_host`. **Voice is gated:** `senses` is
+  exempt; any other role speaks only after its voice latency has been measured
+  by the background probe. `stt`, `tts`, the realtime session and the embedder
+  do not change with the choice.
+- **The translator.** A persona's `translate_via` role is the Gemma translator
+  (`embodiment/translate.py`): the chosen role sees English; `search_*` use
+  the operator's own words, not the translation, and `remember` stores the
+  model's English fact with the operator's sentence kept beside it
+  (`metadata.original`), which `forget` matches too (d6).
+- **English is text-only.** lobes has no English voice (its `tts` role is
+  Hebrew-only), so an English persona answers in text and is never spoken.
+- **spark-gwen.** Gwen's daemon holds its own agentirc connection as
+  `spark-gwen` (`EMBODIMENT_MESH`, on by default; `EMBODIMENT_MESH_NICK`,
+  `EMBODIMENT_MESH_SERVER`, `EMBODIMENT_MESH_CHANNELS`); `embodiment mesh` prints
+  the setup and runs nothing. The `ask_culture` tool posts **only the question
+  she composed** as its own thread to a listed channel; answers arrive later,
+  also after expiry, marked as late. Any agent on the mesh may talk to her and
+  gets a normal turn, **memory included**: a local agent is allowed to know
+  local memory, so **a newly linked server can read Gwen's memory**. The nick is
+  not authenticated by agentirc; link only a local or trusted server. Her
+  listing as a resident agent awaits agentculture/culture#506. A mesh answer
+  that asks her to remember, forget or mark a to-do causes none of those writes.
+- **Unmeasured:** Hebrew quality of the non-Gemma roles, the English
+  `remember`/`forget` call rate, voice latency per role and for the translator,
+  and mesh answer latency.
+
 ## Boundaries
 
-- **Hebrew only in v1**, listening and speaking, matching the deployed audio
+- **Hebrew is the only voice.** Listening and speaking are Hebrew, matching the deployed audio
   lane on the rig (`stt`: `ivrit-ai/whisper-large-v3-turbo`; `tts`:
   `notmax123/BlueTTS2.5-onnx`). Roles resolve by name on the gateway; the
   models behind them drift.
@@ -351,8 +393,9 @@ absence, not an implication.
   connection pinned to the checked address, every redirect re-checked), GET
   only, at most 2 MB and 15 s, the text fenced as untrusted like library text.
   This is Gwen's first reach outside the rig. Spoken turns keep today's path.
-  Nothing else — no shell, no files, no Qwen Code, and no tool that writes to
-  the library. Gwen cannot act on anything outside her own memory, her own
+  `ask_culture` posts one question to a listed mesh channel and the answer
+  comes back later. Nothing else — no shell, no files, no Qwen Code, and no
+  tool that writes to the library. Gwen cannot act on anything outside her own memory, her own
   conversations and her read of the library and the pages it links.
 - **Vision.** The session is audio-only; `senses` does not advertise image
   understanding on this rig.
@@ -364,6 +407,7 @@ absence, not an implication.
   microphone, not the phone's, and no speech-to-speech role is used. The `BrowserEar` client and the inbound `/v1/realtime`
   endpoint (`audio/remote.py`) exist and are tested, and are **not wired** into
   the daemon.
+- **An English voice.** lobes `tts` is Hebrew-only; English is text-only.
 - **A robot relay.** Same seam, same status: a Reachy Mini speaking the lobes
   wire into that endpoint is a future, separate implementation.
 - **Reconnection.** A dropped realtime session is recorded and the daemon

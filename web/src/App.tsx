@@ -18,11 +18,17 @@ import { ConnectionStatus } from "./components/ConnectionStatus";
 import { VoiceControls } from "./components/VoiceControls";
 import { Transcript } from "./components/Transcript";
 import { Chat } from "./components/Chat";
+import { DockMeta } from "./components/DockMeta";
+import { PersonasView } from "./components/PersonasView";
+import { fetchModels, type ConversationSettings, type ModelsInfo } from "./api/models";
+import { listPersonas, type Persona } from "./api/personas";
 import { LibraryHome } from "./components/LibraryHome";
 import { LibraryPane } from "./components/LibraryPane";
 import { Reader, type ReaderHandle } from "./components/Reader";
 import { SourcesPane, type AnswerSources, type SideTab } from "./components/SourcesPane";
 import { HistoryPane } from "./components/HistoryPane";
+import { MeshCards } from "./components/MeshCards";
+import { openAskCount } from "./api/mesh";
 import { PastConversation } from "./components/PastConversation";
 import type { ConversationSummary } from "./api/history";
 import { StatsView } from "./components/StatsView";
@@ -65,13 +71,14 @@ const DEFAULT_EVENTS_URL = "/api/events";
 /** Milliseconds before asking for an empty or failed library again. */
 const LIBRARY_RETRY_MS = 10_000;
 
-type View = "ask" | "library" | "todos" | "stats";
+type View = "ask" | "library" | "todos" | "stats" | "personas";
 
 const VIEWS: { id: View; label: string }[] = [
   { id: "ask", label: "Ask" },
   { id: "library", label: "Library" },
   { id: "todos", label: "To-dos" },
   { id: "stats", label: "Stats" },
+  { id: "personas", label: "Personas" },
 ];
 
 /** The view a location hash names; anything else (or none) is Ask. */
@@ -178,6 +185,38 @@ export default function App({
   // string when attached and JSON null when not.
   const voiceOn = stream.mic ? stream.mic.data.ear !== null : false;
   const micHot = stream.mic ? Boolean(stream.mic.data.hot) : null;
+
+  // Personas and the models lobes serves feed the settings row under the dock; what the
+  // operator picks rides with every turn of this conversation (gwen-pm t16).
+  const [personas, setPersonas] = useState<Persona[]>([]);
+  const [builtinId, setBuiltinId] = useState("");
+  const [models, setModels] = useState<ModelsInfo | null>(null);
+  const [settings, setSettings] = useState<ConversationSettings>({});
+  const [personasKey, setPersonasKey] = useState(0);
+  useEffect(() => {
+    let live = true;
+    void listPersonas(appliedSecret).then((out) => {
+      if (!live || !out.ok) return;
+      setPersonas(out.personas);
+      setBuiltinId(out.builtinId);
+    });
+    return () => {
+      live = false;
+    };
+  }, [appliedSecret, personasKey]);
+  useEffect(() => {
+    let live = true;
+    const load = () =>
+      void fetchModels(appliedSecret).then((out) => {
+        if (live && out.ok) setModels(out.info);
+      });
+    load();
+    const t = setInterval(load, 60_000);
+    return () => {
+      live = false;
+      clearInterval(t);
+    };
+  }, [appliedSecret]);
 
   const [view, setView] = useState<View>(() => viewFromHash(currentHash()));
   useEffect(() => {
@@ -308,7 +347,7 @@ export default function App({
       // continued; everything else opens the library reader on the right.
       const cited = answers.flatMap((a) => a.sources).find((s) => s.item_id === itemId);
       if (cited?.source === "conversation") {
-        setPast({ id: itemId, title: cited.title, started: null, last: null, turns: 0, current: false });
+        setPast({ id: itemId, title: cited.title, started: null, last: null, turns: 0, current: false, agent: null });
         if (!wide(1280)) setRightOpen(false);
         return;
       }
@@ -444,7 +483,16 @@ export default function App({
         </a>
         <nav className="tabs" aria-label="Views">
           {VIEWS.map((v) => (
-            <a key={v.id} href={`#${v.id}`} aria-current={view === v.id ? "page" : undefined} onClick={() => go(v.id)}>
+            <a
+              key={v.id}
+              href={`#${v.id}`}
+              aria-current={view === v.id ? "page" : undefined}
+              onClick={(e) => {
+                // A modified or middle click opens a new tab: leave this one where it is.
+                if (e.ctrlKey || e.metaKey || e.shiftKey || e.altKey || e.button !== 0) return;
+                go(v.id);
+              }}
+            >
               {v.label}
             </a>
           ))}
@@ -608,6 +656,8 @@ export default function App({
               </button>
             </div>
             {past && (
+              <>
+              <MeshCards events={stream.mesh} conversationId={past.id} />
               <PastConversation
                 conversation={past}
                 secret={appliedSecret}
@@ -615,9 +665,11 @@ export default function App({
                 chat={{
                   onOpenCitation: openCitation,
                   onAnswer,
+                  liveText: stream.liveText,
                   placeholder: narrow ? "Ask Gwen" : "Continue this conversation",
                 }}
               />
+              </>
             )}
             <div className="live-conversation" hidden={past !== null}>
             <section className="thread thread--voice" aria-labelledby="voice-thread-title">
@@ -625,11 +677,13 @@ export default function App({
                 Transcript
               </h2>
               <Transcript entries={transcriptNow} />
+              <MeshCards events={stream.mesh} conversationId={null} />
             </section>
             <Chat
               key={liveKey}
               secret={appliedSecret}
               replyEvents={transcriptNow}
+              liveText={stream.liveText}
               s2sRole={stream.s2sRole ?? undefined}
               onOpenCitation={openCitation}
               onAnswer={onAnswer}
@@ -637,6 +691,19 @@ export default function App({
               emptyState={emptyState}
               live={live}
               placeholder={narrow ? "Ask Gwen" : undefined}
+              settings={settings}
+              meta={({ unavailable, retry }) => (
+                <DockMeta
+                  personas={personas}
+                  builtinId={builtinId}
+                  models={models}
+                  settings={settings}
+                  onChange={(patch) => setSettings((cur) => ({ ...cur, ...patch }))}
+                  unavailable={unavailable}
+                  onRetry={retry}
+                  openAsks={openAskCount(stream.mesh)}
+                />
+              )}
             />
             </div>
           </div>
@@ -745,6 +812,25 @@ export default function App({
         {view === "stats" && (
           <section className="view view--page" data-view="stats">
             <StatsView items={items} secret={appliedSecret} />
+          </section>
+        )}
+        {view === "personas" && (
+          <section className="view view--page" data-view="personas">
+            <h1 className="view__title">Personas</h1>
+            <p className="view__lede">
+              How Gwen talks, in your words. A persona sets style, language and a default model. It never changes
+              what she may do.
+            </p>
+            <PersonasView
+              secret={appliedSecret}
+              models={models}
+              onChanged={() => setPersonasKey((k) => k + 1)}
+              onUse={(id) => {
+                setSettings((cur) => ({ ...cur, persona: id }));
+                window.location.hash = "#ask";
+                go("ask");
+              }}
+            />
           </section>
         )}
       </main>

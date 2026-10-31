@@ -14,7 +14,7 @@ them.
   `_comment` field for how to read it.
 - `state.json`, `mic.json`, `turn.json`, `transcript.json`, `reply.json`,
   `degradation.json`, `features.json`, `clients.json`, `heartbeat.json`,
-  `conversation.json`, `todo.json` — one
+  `conversation.json`, `todo.json`, `mesh.json`, `stream.json` — one
   full, valid example envelope per event kind, each satisfying `schema.json`'s
   contract for that kind.
 

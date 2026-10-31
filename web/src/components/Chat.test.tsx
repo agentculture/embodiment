@@ -35,6 +35,19 @@ describe("Chat", () => {
     expect(container.querySelector("b")).toBeNull();
   });
 
+  it("says when a fixed text stood in for the model's answer, and only then", async () => {
+    const fallback = fetchOk({ reply: "Sorry, I couldn't put an answer together just now.", sources: [], fallback: "app-tool-reply-unspoken" });
+    const first = render(<Chat secret="k" clientOptions={{ fetchFn: fallback }} />);
+    await send("news?");
+    expect(await screen.findByRole("note")).toHaveTextContent(/Fixed reply/);
+    expect(screen.getByText("app-tool-reply-unspoken")).toBeInTheDocument();
+    first.unmount();
+    render(<Chat secret="k" clientOptions={{ fetchFn: fetchOk({ reply: "Real answer.", sources: [], fallback: null }) }} />);
+    await send("again");
+    await screen.findByText(/Real answer/);
+    expect(screen.queryByRole("note")).toBeNull();
+  });
+
   it("a fetched web source links out in a new tab, never to the reader", async () => {
     const page = { source: "web", kind: "web", title: "Thor ships", date: "", start: null, end: null, section: "", link: "https://example.test/thor", text: "article text", item_id: "" };
     const javascript = { ...page, title: "bad", link: "javascript:alert(1)" };
@@ -254,5 +267,127 @@ describe("Chat: an answer can carry a Read aloud card (embodiment#107 t4 AC4)", 
     await send("what was said");
     await screen.findByText(/From a recording/);
     expect(screen.queryByRole("group", { name: "Read aloud" })).toBeNull();
+  });
+});
+
+describe("Chat: settings and the model-unavailable state (gwen-pm t16)", () => {
+  it("sends the chosen persona, model and language with the question", async () => {
+    const fetchFn = fetchOk({ reply: "ok", sources: [] });
+    render(<Chat secret="k" clientOptions={{ fetchFn }} settings={{ persona: "p1", model: "worker", language: "none" }} />);
+    await send("hi");
+    await screen.findByText("ok");
+    expect(JSON.parse(String(fetchFn.mock.calls[0][1]?.body))).toEqual({
+      message: "hi", persona: "p1", model: "worker", language: "none",
+      request_id: expect.stringMatching(/^req-[A-Za-z0-9]+$/),
+    });
+  });
+
+  it("app-text-model-unavailable shows its own banner naming the role, reuses chat__degraded, turns the Model control amber", async () => {
+    const fetchFn = vi.fn(async (_u: RequestInfo | URL, _i?: RequestInit) =>
+      ({ ok: false, status: 503, json: async () => ({ ok: false, code: "app-text-model-unavailable" }) }) as Response);
+    const seen: (string | null)[] = [];
+    render(
+      <Chat
+        secret=""
+        clientOptions={{ fetchFn }}
+        settings={{ model: "cortex" }}
+        meta={({ unavailable }) => {
+          seen.push(unavailable);
+          return <span data-testid="meta">{unavailable ?? "fine"}</span>;
+        }}
+      />,
+    );
+    await send("hello");
+    const banner = await screen.findByRole("alert");
+    expect(banner).toHaveClass("chat__degraded");
+    expect(banner.textContent).toContain("cortex");
+    expect(banner.textContent).toContain("isn't available");
+    expect(banner.textContent).not.toContain("Gwen could not answer");
+    expect(screen.getByTestId("meta")).toHaveTextContent("cortex");
+  });
+
+  it("changing the model clears the unavailable state, and Retry resends the same question", async () => {
+    let n = 0;
+    const fetchFn = vi.fn(async (_u: RequestInfo | URL, _i?: RequestInit) => {
+      n += 1;
+      return n === 1
+        ? ({ ok: false, status: 503, json: async () => ({ ok: false, code: "app-text-model-unavailable" }) } as Response)
+        : ({ ok: true, status: 200, json: async () => ({ reply: "now fine", sources: [] }) } as Response);
+    });
+    let retry: (() => void) | undefined;
+    const { rerender } = render(
+      <Chat secret="" clientOptions={{ fetchFn }} settings={{ model: "cortex" }}
+        meta={(s) => { retry = s.retry; return null; }} />,
+    );
+    await send("hello");
+    await screen.findByRole("alert");
+    rerender(
+      <Chat secret="" clientOptions={{ fetchFn }} settings={{ model: "senses" }}
+        meta={(s) => { retry = s.retry; return null; }} />,
+    );
+    retry!();
+    await screen.findByText("now fine");
+    const bodies = fetchFn.mock.calls.map((c) => JSON.parse(String(c[1]?.body)));
+    expect(bodies[1]).toMatchObject({ message: "hello", model: "senses" });
+    expect(screen.queryByRole("alert")).toBeNull();
+  });
+
+  it("other failures keep the old banner", async () => {
+    const fetchFn = vi.fn(async () => ({ ok: false, status: 500, json: async () => ({ error: { code: "boom" } }) }) as Response);
+    render(<Chat secret="" clientOptions={{ fetchFn }} />);
+    await send("x");
+    expect((await screen.findByRole("alert")).textContent).toContain("Gwen could not answer (boom)");
+  });
+});
+
+describe("Chat: Markdown answers", () => {
+  const SRC = { source: "library", kind: "book", title: "Standup", date: "", start: null, end: null, section: "", link: "", text: "t", item_id: "item-1" };
+
+  it("renders lists, bold and headings as elements, with dir=auto on each block", async () => {
+    const reply = "## Plan\n\n*   **Jetson Optimization:** fast [1]\n*   second\n\n1. one\n2. two";
+    const { container } = render(<Chat clientOptions={{ fetchFn: fetchOk({ reply, sources: [SRC] }) }} />);
+    await send("q");
+    await screen.findByText("Jetson Optimization:");
+    const answer = container.querySelector(".answer") as HTMLElement;
+    expect(answer.tagName).toBe("DIV");
+    expect(answer.textContent).not.toContain("**");
+    expect(answer.textContent).not.toContain("*   ");
+    expect(container.querySelector(".answer strong")).toHaveTextContent("Jetson Optimization:");
+    expect(container.querySelectorAll(".answer ul > li")).toHaveLength(2);
+    expect(container.querySelectorAll(".answer ol > li")).toHaveLength(2);
+    expect(container.querySelector(".answer h2, .answer h3, .answer .answer__h")).not.toBeNull();
+    for (const el of container.querySelectorAll(".answer li, .answer p, .answer .answer__h")) expect(el).toHaveAttribute("dir", "auto");
+    // the citation inside a list item is still a working cite button
+    expect(screen.getByRole("button", { name: /Open source 1: Standup/ })).toHaveTextContent("1");
+  });
+
+  it("a citation inside bold still opens the source", async () => {
+    const onOpen = vi.fn();
+    render(<Chat clientOptions={{ fetchFn: fetchOk({ reply: "**key [1]** point", sources: [SRC] }) }} onOpenCitation={onOpen} />);
+    await send("q");
+    await userEvent.click(await screen.findByRole("button", { name: /Open source 1/ }));
+    expect(onOpen).toHaveBeenCalledWith("item-1", undefined);
+  });
+
+  it("never renders HTML from a reply: img, script and links stay text", async () => {
+    const reply = "<img src=x onerror=alert(1)> and <script>alert(2)</script>\n\n[click](javascript:alert(3))\n\n```\n<b>x</b>\n```";
+    const { container } = render(<Chat clientOptions={{ fetchFn: fetchOk({ reply, sources: [] }) }} />);
+    await send("q");
+    await screen.findByText(/click \(javascript:alert\(3\)\)/);
+    const answer = container.querySelector(".answer") as HTMLElement;
+    expect(answer.querySelector("img, script, a, b")).toBeNull();
+    expect(answer.textContent).toContain("<img src=x onerror=alert(1)>");
+    expect(answer.textContent).toContain("<script>alert(2)</script>");
+    expect(answer.querySelector("pre code")).toHaveTextContent("<b>x</b>");
+  });
+
+  it("separates adjacent citations and keeps the reveal animation per text run", async () => {
+    vi.stubGlobal("matchMedia", (q: string) => ({ matches: false, media: q, addEventListener() {}, removeEventListener() {} }));
+    const { container } = render(<Chat clientOptions={{ fetchFn: fetchOk({ reply: "- alpha beta [1][1]\n- gamma", sources: [SRC] }) }} />);
+    await send("q");
+    await screen.findByText("gamma");
+    expect(container.querySelectorAll(".answer .chat__word")).toHaveLength(3);
+    expect(container.querySelectorAll(".answer li .cite")).toHaveLength(2);
+    vi.unstubAllGlobals();
   });
 });

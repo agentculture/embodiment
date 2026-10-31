@@ -1,0 +1,98 @@
+{
+  "plan_slug": "gwen-personas-model-choice-culture-residency",
+  "schema_version": 2,
+  "created": "2026-10-31T09:53:28Z",
+  "updated": "2026-10-31T18:05:25Z",
+  "deviations": [
+    {
+      "id": "d1",
+      "what": "Built-in Gwen's typed prompt is no longer byte-identical to today's: it drops both the voice-only speakability line and the 'short sentences' brevity wording; her spoken prompt stays byte-identical. c30 narrows to 'spoken turns byte-identical; typed turns differ from today exactly by those two lines', pinned by a test; t9's compose_base typed output for the built-in persona changes accordingly; t11's first criterion is read with this narrowing",
+      "task_ref": "t11",
+      "reason": "operator, 2026-10-31: 'Gwen prompts C, short sentences feats speech not text' (c30 and c3 conflicted for built-in Gwen on the typed path; option C chosen over A and B)",
+      "affects": [
+        "t9",
+        "c30",
+        "c3",
+        "c2"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 1
+    },
+    {
+      "id": "d2",
+      "what": "An answer that arrives after its ask expired still lands in its conversation, marked after_expiry and late, and is delivered as an event; only exact matches (thread or reply-to) reach an expired ask",
+      "task_ref": "t5",
+      "reason": "operator, 2026-10-31: 'Whether a mesh answer arriving after its ask expired should still land, marked late. Yes. Via event'",
+      "affects": [
+        "t15",
+        "c46"
+      ],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 2
+    },
+    {
+      "id": "d3",
+      "what": "An agent turn starts only when a message is ADDRESSED to Gwen (a direct message, or a line starting with 'spark-gwen:', 'spark-gwen,' or '@spark-gwen') and never from a system- nick; a notice that only names her is not a turn. Narrows t15's 'an agent mention starts a normal Gwen turn'",
+      "task_ref": "t15",
+      "reason": "t19 live, 2026-10-31: on joining #general Gwen answered three automated notices (system-spark-welcome, spark-culture-greeter's join notice, spark-culture-chain-bot) in Hebrew, because any line naming her nick counted as a mention",
+      "affects": [
+        "c50"
+      ],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 3
+    },
+    {
+      "id": "d4",
+      "what": "A typed answer outlives its HTTP request: the page names each chat with a request_id; the daemon keeps the result (pending then done, 128, in memory) at GET /api/chat/{request_id} and tags the reply event; on http-control-timeout the page waits ('Still working on this') instead of failing, and questions left pending (id, question, conversation in localStorage, never the secret) are recovered on the next visit",
+      "task_ref": "t19",
+      "reason": "t19 live: a cortex turn answered at 80.2 s after the route gave up at 65 s and the answer reached only the log; operator chose option A ('A then C') and added 'It also solves recovering an answer after user left page'",
+      "affects": [],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 4
+    },
+    {
+      "id": "d5",
+      "what": "Every chat completion streams (stream: true): the per-call 60 s read timeout becomes a bound on SILENCE between chunks, not on length (lesson 1); reasoning and answer tokens of a typed turn are published to the page as they arrive and shown live; no reasoning summary yet",
+      "task_ref": "t19",
+      "reason": "t19 live: cortex calls cut off by the 60 s completion deadline (turn-seam-aborted) 2 of 3 runs; probe 2026-10-31 showed lobes already streams content, reasoning and tool calls for senses/cortex/worker (first token <=0.25 s, max gap 0.32 s); operator: 'stream the tokens for now, so we can see reasoning and no timeout'",
+      "affects": [],
+      "origin": "llm",
+      "status": "approved",
+      "classification": "needs-follow-up",
+      "seq": 5
+    },
+    {
+      "id": "d6",
+      "what": "On a translated turn, remember stores the chosen model's English fact as the record and keeps the operator's own sentence beside it verbatim (metadata.original); forget by text matches either field (exact, normalised). search_library and search_conversations still receive the operator's words. Narrows c37's 'remember and search use the operator's words' to search only",
+      "task_ref": "t13",
+      "reason": "Operator, 2026-10-31, review of #117 finding 5: the whole sentence as the record made two facts one and left forget nothing to find; 'suggestion accepted (the model's English fact is stored with your original sentence kept beside it, and forget searches both.)'",
+      "affects": [],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 6
+    },
+    {
+      "id": "d7",
+      "what": "Which ask a mesh message answers is decided by a small senses call ('was it for me?') whenever an ask is listening in that channel or thread: it reads the open asks, the channel's last 12 lines and the new message, and names an ask or none (rule 'judged'), for thread lines and plain lines alike. The deterministic rules (thread, reply_to, nick-addressed fallback) decide only when the judge cannot be asked (budget 60 per 10 min, 10 s bound) or its reply cannot be read, recorded as app-mesh-judge-failed. A line the judge rejects but which addresses Gwen is still a new turn (d3)",
+      "task_ref": "t5",
+      "reason": "Operator, 2026-10-31, review of #117 finding 3: 'A small llm call for common sense (Was it for me?). Works for threads or other messages. works in context, so Gwen can tell if a question 2 messages back got answer now.'",
+      "affects": [],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 7
+    }
+  ],
+  "evidence": [],
+  "deltas": [],
+  "supersessions": []
+}

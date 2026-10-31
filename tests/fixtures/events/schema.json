@@ -58,6 +58,14 @@
     "todo": {
       "required": ["id", "done", "at", "by"],
       "note": "A to-do was marked (d16); the library is its source (embodiment#105). id: the checklist id (pocket.<uuid>.<n>) of a library to-do line; recording_id: the recording it came from. done: true or false. at: epoch seconds. by: 'operator' (the page) or 'gwen' (on the operator's words). Also carries the whole to-do (text, recording_id, title, date) and timestamps, so culture-rules can file the list in the library."
+    },
+    "mesh": {
+      "required": ["event", "conversation_id", "at"],
+      "note": "SPEECH-CARRYING (t15): Gwen on the Culture mesh. event: one of 'ask_posted' (ask_id, channel, thread, text = the question, expires_at), 'answer_arrived' (ask_id, nick, channel, thread, text = the agent's words, UNTRUSTED, late, after_expiry, ambiguous, rule), 'ask_expired' (ask_id, channel, thread), 'agent_contacted' (nick, channel or null for a DM, thread, direct, text = the agent's words, UNTRUSTED), 'gwen_replied' (nick, channel, thread, direct, text = Gwen's reply, sent: whether the mesh client accepted it). conversation_id: the session-log id the event belongs to (the ask's conversation, or the agent's own). at: epoch seconds."
+    },
+    "stream": {
+      "required": ["request_id", "channel", "text"],
+      "note": "SPEECH-CARRYING (deviation d5): a typed turn's live text, for the page that asked. request_id: the page's chat request id. channel: 'reasoning' or 'content'. text: everything that channel has said so far in this model step (cumulative, scrubbed like a reply; a later event supersedes an earlier one). step: the model step, from 0. Dropped first under back-pressure."
     }
   }
 }

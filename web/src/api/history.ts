@@ -11,6 +11,8 @@ export interface ConversationSummary {
   last: number | null;
   turns: number;
   current: boolean;
+  /** The nick of the agent this conversation is with (via the mesh), or null. */
+  agent: string | null;
 }
 
 export interface HistoryTurn {
@@ -41,6 +43,7 @@ function summary(raw: unknown): ConversationSummary | null {
     last: num(o.last),
     turns: num(o.turns) ?? 0,
     current: o.current === true,
+    agent: str(o.agent) || null,
   };
 }
 
