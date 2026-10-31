@@ -246,13 +246,16 @@ class TestTheResident:
 
         (contacted,) = _mesh_events(h, "agent_contacted")
         conversation = contacted.data["conversation_id"]
-        assert contacted.data["nick"] == AGENT and contacted.data["text"] == MENTION
+        assert contacted.data["nick"] == AGENT
+        assert contacted.data["text"] == MENTION
         assert conversation != getattr(h.app._session, "session_id", None)
         replies = [e for e in h.events("reply") if e.data.get("conversation") == conversation]
-        assert replies and replies[0].data["text"] == base.REPLY
+        assert replies
+        assert replies[0].data["text"] == base.REPLY
         assert replies[0].data["mesh"] == AGENT
         (replied,) = _mesh_events(h, "gwen_replied")
-        assert replied.data["sent"] is True and replied.data["nick"] == AGENT
+        assert replied.data["sent"] is True
+        assert replied.data["nick"] == AGENT
         # Visible on the page before it was sent.
         assert replies[0].seq < replied.seq
 
@@ -290,7 +293,8 @@ class TestTheResident:
         ircd.push(f":{AGENT}!a@127.0.0.1 PRIVMSG spark-gwen :hello there")
         wait_for(lambda: ircd.sent(f"PRIVMSG {AGENT} :"))
         (contacted,) = _mesh_events(h, "agent_contacted")
-        assert contacted.data["channel"] is None and contacted.data["direct"] is True
+        assert contacted.data["channel"] is None
+        assert contacted.data["direct"] is True
 
     def test_a_mention_in_a_thread_is_answered_in_the_thread(
         self, harness: Any, ircd: FakeIrcd, tmp_path: Path
@@ -376,7 +380,8 @@ class TestEventsAndAnswers:
             (Path(__file__).parent / "fixtures" / "events" / "schema.json").read_text()
         )
         kind = app_module.MESH_EVENT_KIND
-        assert kind in bus_module.EVENT_KINDS and kind in schema["kinds"]
+        assert kind in bus_module.EVENT_KINDS
+        assert kind in schema["kinds"]
         assert kind in bus_module.SPEECH_KINDS  # it carries other agents' and Gwen's words
         # Not local-only: the operator's word (2026-10-24) is that it is all internal.
         assert kind not in bus_module.LOCAL_ONLY_KINDS
@@ -405,9 +410,11 @@ class TestEventsAndAnswers:
         arrived = wait_for(lambda: _mesh_events(h, "answer_arrived"))
         data = arrived[0].data
         assert data["conversation_id"] == conversation
-        assert data["nick"] == AGENT and data["text"] == ANSWER
+        assert data["nick"] == AGENT
+        assert data["text"] == ANSWER
         assert data["ask_id"] == thread[len(mesh_asks.THREAD_PREFIX) :]
-        assert data["rule"] == mesh_asks.RULE_THREAD and data["after_expiry"] is False
+        assert data["rule"] == mesh_asks.RULE_THREAD
+        assert data["after_expiry"] is False
         assert h.app.status()["mesh"]["asks_answered"] == 1
 
         # The next turn in that conversation reads the answer fenced, and the write
@@ -435,7 +442,8 @@ class TestEventsAndAnswers:
         assert h.app.status()["mesh"]["asks_expired"] == 1
         _push_thread_answer(ircd, thread)
         (arrived,) = wait_for(lambda: _mesh_events(h, "answer_arrived"))
-        assert arrived.data["after_expiry"] is True and arrived.data["late"] is True
+        assert arrived.data["after_expiry"] is True
+        assert arrived.data["late"] is True
         time.sleep(0.1)
         assert len(_mesh_events(h, "ask_expired")) == 1  # one event per ask
 
@@ -484,7 +492,8 @@ class TestSwitchAndCounters:
         assert lane.made == []  # no client
         assert ircd.connections == 0
         status = h.app.status()["mesh"]
-        assert status["state"] == "off" and status["enabled"] is False
+        assert status["state"] == "off"
+        assert status["enabled"] is False
         assert status["refusal_codes"] == {mesh_tools.REFUSE_OFF: 1}
         assert status["asks_posted"] == 0
         assert mesh_tools.mesh_prompt_line("he") not in h.script.calls[0]["messages"][0]["content"]
@@ -501,7 +510,8 @@ class TestSwitchAndCounters:
         assert ask["status"] == mesh_asks.FAILED
         status = h.app.status()["mesh"]
         assert status["refusal_codes"] == {mesh_tools.REFUSE_POST: 1}
-        assert status["asks_open"] == 0 and status["asks_posted"] == 0
+        assert status["asks_open"] == 0
+        assert status["asks_posted"] == 0
 
     def test_the_counters_move_on_a_scripted_run(
         self, harness: Any, ircd: FakeIrcd, tmp_path: Path
@@ -590,7 +600,8 @@ class TestNickRetry:
         assert len(clients) == 1
         assert app_module.APP_MESH_NICK_TAKEN not in h.ledger_codes()
         wait_for(lambda: len(clients) == 2)
-        assert clients[0].closed == 1 and clients[1].started == 1
+        assert clients[0].closed == 1
+        assert clients[1].started == 1
         assert h.app.status()["mesh"]["nick_retries"] == 1
         assert app_module.APP_MESH_NICK_TAKEN not in h.ledger_codes()
 
@@ -661,7 +672,8 @@ class TestMain:
         application, built = self._main(tmp_path, monkeypatch)
         try:
             lane = application._mesh
-            assert lane is not None and lane.config.enabled is True
+            assert lane is not None
+            assert lane.config.enabled is True
             assert lane.config.nick == "spark-gwen"
             assert built == []  # the client is built by start(), never by main()
             assert Path(lane.book._path).parent == Path(application._state.dir)

@@ -110,7 +110,8 @@ def test_failed_probe_never_raises_and_stays_unmeasured(tmp_path):
     assert out["failures"] == len(vl.PROBE_PROMPTS) * vl.PROBE_ROUNDS
     assert s.state("worker") == vl.UNMEASURED
     raw = (tmp_path / vl.STORE_NAME).read_text()
-    assert "secret" not in raw and "RuntimeError" in raw
+    assert "secret" not in raw
+    assert "RuntimeError" in raw
 
 
 def test_partial_failure_keeps_good_samples_but_stays_unmeasured(tmp_path):

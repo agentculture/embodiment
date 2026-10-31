@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import ast
+import dataclasses
 import json
 import os
 import stat
@@ -38,8 +39,9 @@ def test_builtin_is_todays_behaviour():
 
 
 def test_persona_is_frozen():
-    with pytest.raises(Exception):
-        builtin_persona().name = "x"  # type: ignore[misc]
+    persona = builtin_persona()
+    with pytest.raises(dataclasses.FrozenInstanceError):
+        persona.name = "x"  # type: ignore[misc]
 
 
 def test_empty_store_lists_only_builtin(tmp_path):
@@ -56,7 +58,9 @@ def test_create_update_delete_survive_reload(tmp_path):
     got = s2.get(p.id)
     assert got == p
     upd = s2.update(p.id, name="Noa2", language="none", mesh_enabled=False)
-    assert upd.language == "none" and upd.mesh_enabled is False and upd.text == "be kind"
+    assert upd.language == "none"
+    assert upd.mesh_enabled is False
+    assert upd.text == "be kind"
     s3 = _store(tmp_path)
     assert s3.get(p.id) == upd
     assert s3.delete(p.id) is True
@@ -114,7 +118,8 @@ def test_corrupt_file_degrades_to_builtin_with_reason(tmp_path, content):
     s = PersonaStore(path)
     assert [p.id for p in s.list()] == [BUILTIN_ID]
     assert len(s.degradations) == 1
-    assert isinstance(s.degradations[0], str) and s.degradations[0]
+    assert isinstance(s.degradations[0], str)
+    assert s.degradations[0]
     assert "not json" not in s.degradations[0]
 
 
@@ -171,8 +176,9 @@ def test_language_none_is_the_string_none(tmp_path):
 
 
 def test_update_unknown_id_raises(tmp_path):
+    store = _store(tmp_path)
     with pytest.raises(PersonaError):
-        _store(tmp_path).update("nope", name="x")
+        store.update("nope", name="x")
 
 
 def test_update_cannot_change_id(tmp_path):

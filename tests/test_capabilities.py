@@ -70,7 +70,9 @@ def test_interval_is_named_60s_with_reason():
 def test_snapshot_before_any_poll_is_empty_and_stale():
     poller, _, _ = make(ADVERT)
     snap = poller.snapshot()
-    assert snap.roles == () and snap.stale and snap.age is None
+    assert snap.roles == ()
+    assert snap.stale
+    assert snap.age is None
 
 
 def test_snapshot_lists_only_chat_roles_with_fields():
@@ -81,11 +83,15 @@ def test_snapshot_lists_only_chat_roles_with_fields():
     snap = poller.snapshot()
     by = {r.role: r for r in snap.roles}
     assert set(by) == {"senses", "cortex", "worker", "muse"}
-    assert by["senses"].host == "local" and by["senses"].model == "m-a" and by["senses"].ready
+    assert by["senses"].host == "local"
+    assert by["senses"].model == "m-a"
+    assert by["senses"].ready
     assert by["cortex"].host == "spark2"
     assert by["worker"].host == "http://thor"
     assert by["muse"].ready is False
-    assert snap.age == pytest.approx(12.5) and not snap.stale and log == []
+    assert snap.age == pytest.approx(12.5)
+    assert not snap.stale
+    assert log == []
 
 
 def test_role_turning_not_ready_shows_next_snapshot():
@@ -110,7 +116,9 @@ def test_failed_poll_keeps_last_snapshot_marks_stale_records_degradation(bad):
     clock.now += 61
     poller.poll_once()  # never raises
     snap = poller.snapshot()
-    assert len(snap.roles) == 4 and snap.stale and snap.age == pytest.approx(61)
+    assert len(snap.roles) == 4
+    assert snap.stale
+    assert snap.age == pytest.approx(61)
     assert len(log) == 1
 
 
@@ -194,7 +202,8 @@ def test_redirects_refused_and_body_bounded(gateway, mode):
     log = []
     poller = CapabilitiesPoller(url, on_degrade=lambda c, d: log.append(c))
     poller.poll_once()
-    assert poller.snapshot().roles == () and len(log) == 1
+    assert poller.snapshot().roles == ()
+    assert len(log) == 1
 
 
 def test_non_http_url_degrades_not_raises():

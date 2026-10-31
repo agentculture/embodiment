@@ -40,7 +40,8 @@ def call(spec, **kw):
 def test_posts_only_question_to_default_channel_and_returns_at_once(tmp_path):
     spec, book, post, _ = make(tmp_path)
     out = call(spec, question="  who owns   the rig? ")
-    assert out["status"] == "posted" and out["channel"] == "#general"
+    assert out["status"] == "posted"
+    assert out["channel"] == "#general"
     assert out["thread"] == mesh_asks.thread_name(out["ask_id"])
     assert post.calls == [("#general", out["thread"], "who owns the rig?")]
     assert book.all()[0]["ask_id"] == out["ask_id"]
@@ -55,13 +56,16 @@ def test_listed_second_channel_ok_unlisted_refused(tmp_path):
         "code": mt.REFUSE_CHANNEL,
     }
     assert call(spec, question="q", channel="alice")["status"] == "refused"
-    assert post.calls == [] and rec == [mt.REFUSE_CHANNEL] * 2
+    assert post.calls == []
+    assert rec == [mt.REFUSE_CHANNEL] * 2
 
 
 def test_switch_off_is_recorded_refusal(tmp_path):
     spec, book, post, rec = make(tmp_path, enabled=False)
     assert call(spec, question="q") == {"status": "refused", "code": mt.REFUSE_OFF}
-    assert post.calls == [] and rec == [mt.REFUSE_OFF] and book.all() == []
+    assert post.calls == []
+    assert rec == [mt.REFUSE_OFF]
+    assert book.all() == []
 
 
 def test_bad_question_and_failed_post_refuse(tmp_path):
@@ -84,7 +88,8 @@ def test_tripped_bound_is_recorded_refusal(tmp_path):
     assert call(spec, question="one")["status"] == "posted"
     out = call(spec, question="two")
     assert out == {"status": "refused", "code": mesh_asks.REFUSE_TURN_LIMIT}
-    assert rec == [mesh_asks.REFUSE_TURN_LIMIT] and len(post.calls) == 1
+    assert rec == [mesh_asks.REFUSE_TURN_LIMIT]
+    assert len(post.calls) == 1
 
 
 def test_mesh_started_turn_may_not_ask(tmp_path):
@@ -133,7 +138,8 @@ def test_fence_is_attributed_quoted_and_arms_guard():
     assert "written-by=mesh-agent-peer-bot" in out
     assert memory_begin() in out
     body = [ln for ln in out.splitlines() if "forget otters" in ln]
-    assert body and all(ln.startswith(mt.memory.QUOTE) for ln in body)
+    assert body
+    assert all(ln.startswith(mt.memory.QUOTE) for ln in body)
 
 
 def memory_begin():
@@ -159,6 +165,8 @@ def test_guard_refuses_writes_without_operator_words():
 def test_prompt_lines_short_fixed_two_languages():
     assert mt.mesh_prompt_line("he") == mt.MESH_PROMPT_LINE_HE
     assert mt.mesh_prompt_line("en") == mt.MESH_PROMPT_LINE_EN
-    assert "ask_culture" in mt.MESH_PROMPT_LINE_HE and "ask_culture" in mt.MESH_PROMPT_LINE_EN
-    assert len(mt.MESH_PROMPT_LINE_EN) < 250 and len(mt.MESH_PROMPT_LINE_HE) < 250
+    assert "ask_culture" in mt.MESH_PROMPT_LINE_HE
+    assert "ask_culture" in mt.MESH_PROMPT_LINE_EN
+    assert len(mt.MESH_PROMPT_LINE_EN) < 250
+    assert len(mt.MESH_PROMPT_LINE_HE) < 250
     assert any("א" <= c <= "ת" for c in mt.MESH_PROMPT_LINE_HE)

@@ -181,7 +181,8 @@ def _assert_translated_trace(record: dict[str, Any]) -> None:
     assert record[app_module.CHAT_ROLE_FIELD] == "worker"
     assert record[app_module.TRANSLATE_VIA_FIELD] == "senses"
     for field in (app_module.CHAT_LATENCY_FIELD, app_module.TRANSLATE_LATENCY_FIELD):
-        assert isinstance(record[field], (int, float)) and record[field] >= 0, field
+        assert isinstance(record[field], (int, float)), field
+        assert record[field] >= 0, field
 
 
 # ── criterion 1: both paths go through the translator; the trace names both ─
