@@ -149,19 +149,23 @@ class VoiceLatency:
             ),
         }
 
+    def _read_raw(self) -> Any:
+        """The file's parsed JSON; ``{}`` when absent, or unreadable (set aside, counted)."""
+        try:
+            return json.loads(self._path.read_text(encoding="utf-8"))
+        except (FileNotFoundError, NotADirectoryError):
+            return {}
+        except (OSError, ValueError):
+            self.unreadable += 1
+            try:
+                os.replace(self._path, self._path.with_name(f"{self._path.name}.unreadable"))
+            except OSError:
+                self.save_failures += 1
+            return {}
+
     def _load(self) -> dict[str, dict[str, Any]]:
         if self._data is None:
-            try:
-                raw = json.loads(self._path.read_text(encoding="utf-8"))
-            except (FileNotFoundError, NotADirectoryError):
-                raw = {}
-            except (OSError, ValueError):
-                self.unreadable += 1
-                try:
-                    os.replace(self._path, self._path.with_name(f"{self._path.name}.unreadable"))
-                except OSError:
-                    self.save_failures += 1
-                raw = {}
+            raw = self._read_raw()
             self._data = {}
             for key, rec in raw.items() if isinstance(raw, dict) else ():
                 cleaned = self._clean(rec)

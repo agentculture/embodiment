@@ -3881,18 +3881,11 @@ class DaemonApp:
         try:
             outcome = self._recall_events.run_turn(spoken_in)
         finally:
-            with self._lock:
-                if self._voice_turn is turn:
-                    self._voice_turn = None
-            self._mesh_end(turn)
+            self._end_voice_turn(turn)
         # No first completion came back (the turn path raised; BackgroundRecall
         # recorded it and voiced the never-silent fallback): a FAILED turn.
         failed = turn.result is None or turn.unavailable
-        with self._lock:
-            if failed:
-                self._turns_failed += 1
-            else:
-                self._turns_completed += 1
+        self._tally_turn(failed)
 
         final = turn.final_text or " ".join(outcome.spoken) or FALLBACK_TEXT
         cut = _spoken_cut(final)
@@ -3940,6 +3933,21 @@ class DaemonApp:
         )
         self._note_timing(timing)
         return result
+
+    def _end_voice_turn(self, turn: _VoiceTurn) -> None:
+        """Clear *turn* as the live voice turn (if it still is) and close its mesh."""
+        with self._lock:
+            if self._voice_turn is turn:
+                self._voice_turn = None
+        self._mesh_end(turn)
+
+    def _tally_turn(self, failed: bool) -> None:
+        """Count one finished voice turn as failed or completed."""
+        with self._lock:
+            if failed:
+                self._turns_failed += 1
+            else:
+                self._turns_completed += 1
 
     # ── the background-recall seams (t13's injected seams, bound here) ───
 
@@ -4953,11 +4961,13 @@ class DaemonApp:
             f"role {refusal.role} answered {refusal.status} {refusal.token}; not retried",
         )
         kept = tuple(d for d in result.degradations if d.code != DEGRADED_SEAM_ABORTED)
-        return replace(
-            result,
+        return TurnResult(
             spoken=text_model_unavailable_text(refusal.role),
-            exit_reason=APP_TEXT_MODEL_UNAVAILABLE,
             degradations=kept,
+            tool_calls=result.tool_calls,
+            steps=result.steps,
+            exit_reason=APP_TEXT_MODEL_UNAVAILABLE,
+            packet=result.packet,
         )
 
     def _voice_gated_result(self, target: _ChatTarget) -> TurnResult:
@@ -5116,27 +5126,48 @@ class DaemonApp:
     ) -> dict[str, Any]:
         """Validate (``apply`` false) or apply the optional persona, model and language of
         one request. Validation changes nothing; a refusal is ``{"code": ...}``."""
+        refused = self._settings_refusal(conversation, persona, model, language)
+        if refused is None and apply:
+            refused = self._apply_settings(conversation or None, persona, model, language)
+        return {"code": refused}
+
+    def _settings_refusal(
+        self,
+        conversation: Optional[str],
+        persona: Optional[str],
+        model: Optional[str],
+        language: Optional[str],
+    ) -> Optional[str]:
+        """The refusal code for one request's settings, or ``None``; changes nothing."""
         if persona is not None and self._personas.get(persona) is None:
             self._fold_personas()
-            return {"code": "unknown_persona"}
+            return "unknown_persona"
         if model is not None and (
             voice_latency_module.combo_key(model) != model
             or (model != self._config.role and self._listed(model) is None)
         ):
-            return {"code": "unknown_model"}
+            return "unknown_model"
         if language is not None and language not in LANGUAGES:
-            return {"code": "bad_language"}
+            return "bad_language"
         if conversation and self._session_for(conversation) is None:
-            return {"code": APP_CONVERSATION_NOT_FOUND}
-        if apply:
-            target = conversation or None
-            if persona is not None and self.set_conversation_persona(persona, target) is None:
-                return {"code": "unknown_persona"}
-            if model is not None and self.set_conversation_role(model, target) is None:
-                return {"code": "unknown_model"}
-            if language is not None and self.set_conversation_language(language, target) is None:
-                return {"code": "bad_language"}
-        return {"code": None}
+            return APP_CONVERSATION_NOT_FOUND
+        return None
+
+    def _apply_settings(
+        self,
+        target: Optional[str],
+        persona: Optional[str],
+        model: Optional[str],
+        language: Optional[str],
+    ) -> Optional[str]:
+        """Apply the validated settings to *target*; the refusal code, or ``None``."""
+        if persona is not None and self.set_conversation_persona(persona, target) is None:
+            return "unknown_persona"
+        if model is not None and self.set_conversation_role(model, target) is None:
+            return "unknown_model"
+        if language is not None and self.set_conversation_language(language, target) is None:
+            return "bad_language"
+        return None
 
     # ── the library lane (t13): typed-turn tools, the write guard, the routes ──
 
@@ -6132,21 +6163,9 @@ class DaemonApp:
             return
         state = getattr(client, "state", "")
         if state == "nick-taken":
-            if self._mesh_health == "nick-taken":
-                return
-            counts = (client.status() or {}).get("counts", {})
-            if int(counts.get("registrations", 0) or 0) > 0 and not self._mesh_retried:
-                # r7: at RECONNECT her own ghost may still hold the nick. Quiet until
-                # the one retry; recorded only if it persists.
-                wait = lane.nick_retry_wait_s
-                wait = nick_retry_wait(lane.config) if wait is None else float(wait)
-                self._mesh_retry_at = self._clock() + max(0.0, wait)
-                self._publish("state", {"component": "mesh", "status": "nick-retry-pending"})
-                return
-            self._mesh_health = "nick-taken"
-            self._record(APP_MESH_NICK_TAKEN, "433 ERR_NICKNAMEINUSE", source="mesh")
+            self._mesh_nick_taken(client, lane)
             return
-        health = "up" if state == "registered" else "down" if state in _MESH_DOWN_STATES else None
+        health = _mesh_health_of(state)
         if health is None or health == self._mesh_health:
             return
         self._mesh_health = health
@@ -6157,6 +6176,22 @@ class DaemonApp:
         # The newest record's code, or "" when there is none (no indexing on an empty tuple).
         last = next((getattr(r, "code", "") for r in reversed(records)), "")
         self._record(APP_MESH_DOWN, _safe_name(last or state), source="mesh")
+
+    def _mesh_nick_taken(self, client: Any, lane: MeshLane) -> None:
+        """The client met 433: the one r7 retry is scheduled, or it is recorded once."""
+        if self._mesh_health == "nick-taken":
+            return
+        counts = (client.status() or {}).get("counts", {})
+        if int(counts.get("registrations", 0) or 0) > 0 and not self._mesh_retried:
+            # r7: at RECONNECT her own ghost may still hold the nick. Quiet until
+            # the one retry; recorded only if it persists.
+            wait = lane.nick_retry_wait_s
+            wait = nick_retry_wait(lane.config) if wait is None else float(wait)
+            self._mesh_retry_at = self._clock() + max(0.0, wait)
+            self._publish("state", {"component": "mesh", "status": "nick-retry-pending"})
+            return
+        self._mesh_health = "nick-taken"
+        self._record(APP_MESH_NICK_TAKEN, "433 ERR_NICKNAMEINUSE", source="mesh")
 
     def _mesh_retry(self, client: Any) -> None:
         """The one r7 retry: close the client that met 433, build and start a new one."""
@@ -7011,16 +7046,7 @@ class DaemonApp:
             self._record(APP_FORGET_REFUSED, f"store: {_describe(exc)}")
             return self._refuse_forget("store-failed", recorded=True)
         if not getattr(result, "ok", False):
-            code = getattr(result, "code", None)
-            reason = _FORGET_REFUSAL_BY_CODE.get(code)
-            if reason is not None:
-                # A fact about the store, not a fault in it: one ledger line,
-                # the fixed token, and never the id the model supplied.
-                return self._refuse_forget(reason)
-            degradation = getattr(result, "degradation", None)
-            if degradation is not None:
-                self._fold("memory", degradation)
-            return self._refuse_forget("store-refused", recorded=degradation is not None)
+            return self._forget_store_refused(result)
         with self._lock:
             self._forget_tool_written += 1
             written = self._forget_tool_written
@@ -7035,6 +7061,19 @@ class DaemonApp:
             },
         )
         return f"ok: forgot {stripped}"
+
+    def _forget_store_refused(self, result: Any) -> str:
+        """The refusal line for a forget the store answered without ``ok``."""
+        code = getattr(result, "code", None)
+        reason = _FORGET_REFUSAL_BY_CODE.get(code)
+        if reason is not None:
+            # A fact about the store, not a fault in it: one ledger line,
+            # the fixed token, and never the id the model supplied.
+            return self._refuse_forget(reason)
+        degradation = getattr(result, "degradation", None)
+        if degradation is not None:
+            self._fold("memory", degradation)
+        return self._refuse_forget("store-refused", recorded=degradation is not None)
 
     def _forget_id_for_text(self, text: str) -> "str | _ForgetTextRefusal":
         """The id of the ONE record whose text is exactly *text* (``d10``).
@@ -8422,6 +8461,15 @@ def _logged_field(path: Any, name: str) -> Optional[str]:
     return None
 
 
+def _mesh_health_of(state: str) -> Optional[str]:
+    """``"up"`` for a registered client, ``"down"`` for a down state, else ``None``."""
+    if state == "registered":
+        return "up"
+    if state in _MESH_DOWN_STATES:
+        return "down"
+    return None
+
+
 def _with_original(spec: ToolSpec, pinned: OriginalText) -> ToolSpec:
     """*spec* with :func:`bind_original` over its :data:`ORIGINAL_ARGUMENTS` (t13).
 
@@ -8437,7 +8485,14 @@ def _with_original(spec: ToolSpec, pinned: OriginalText) -> ToolSpec:
     def fn(**arguments: Any) -> Any:
         return bound(arguments)
 
-    return replace(spec, fn=fn)
+    return ToolSpec(
+        name=spec.name,
+        parameters=spec.parameters,
+        fn=fn,
+        description=spec.description,
+        finishes=spec.finishes,
+        codes=spec.codes,
+    )
 
 
 def _target_trace(

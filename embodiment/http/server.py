@@ -1524,30 +1524,11 @@ class _Handler(BaseHTTPRequestHandler):
         self._send_json(200, result)
 
     def _text_route(self, route: str) -> None:
+        if route == CLIP_ROUTE:
+            self._clip_route()
+            return
         app = self._app
         config = app.config
-        controls = app.controls
-        if route == CLIP_ROUTE:
-            body = self._read_body(
-                limit=config.clip_max_bytes,
-                require_length=True,
-                read_deadline_s=config.clip_read_deadline_s,
-            )
-            if body is None:
-                return
-            settings = _settings_of({k: self.headers.get(h) for k, h in _SETTINGS_HEADERS})
-            if settings is None:
-                self._send_error(400, BAD_REQUEST_CODE, "persona, model and language are text")
-                return
-            conversation = self.headers.get(CONVERSATION_HEADER) or None
-            if settings and not self._settings(conversation, settings, apply=True):
-                return
-            args = (body, *_clip_extras(self.headers))
-            outcome = app.call_text(
-                "api.clip", controls.clip, *args, timeout_s=config.clip_timeout_s
-            )
-            self._answer_text(outcome, ("transcript", "reply"), serial=True, sources=True)
-            return
         body = self._read_body(limit=config.text_body_max_bytes)
         if body is None:
             return
@@ -1558,33 +1539,53 @@ class _Handler(BaseHTTPRequestHandler):
             return
         value = payload.get(key)
         if route == CHAT_ROUTE:
-            # An optional "conversation" continues an earlier conversation (d5); without
-            # one the turn joins the live session, as before.
-            conversation = payload.get("conversation")
-            settings = _settings_of(payload)
-            if settings is None:
-                self._send_error(400, BAD_REQUEST_CODE, "persona, model and language are strings")
-                return
-            if settings and not self._settings(
-                conversation if isinstance(conversation, str) and conversation else None,
-                settings,
-                apply=True,
-            ):
-                return
-            args = (
-                (value, conversation)
-                if isinstance(conversation, str) and conversation
-                else (value,)
-            )
-            outcome = app.call_text(
-                "api.chat", controls.chat, *args, timeout_s=config.chat_timeout_s
-            )
-            self._answer_text(outcome, ("reply",), serial=True, sources=True)
+            self._chat_route(payload, value)
             return
         outcome = app.call_text(
-            "api.speak", controls.speak, value, timeout_s=config.speak_timeout_s
+            "api.speak", app.controls.speak, value, timeout_s=config.speak_timeout_s
         )
         self._answer_speak(outcome)
+
+    def _clip_route(self) -> None:
+        app = self._app
+        config = app.config
+        body = self._read_body(
+            limit=config.clip_max_bytes,
+            require_length=True,
+            read_deadline_s=config.clip_read_deadline_s,
+        )
+        if body is None:
+            return
+        settings = _settings_of({k: self.headers.get(h) for k, h in _SETTINGS_HEADERS})
+        if settings is None:
+            self._send_error(400, BAD_REQUEST_CODE, "persona, model and language are text")
+            return
+        conversation = self.headers.get(CONVERSATION_HEADER) or None
+        if settings and not self._settings(conversation, settings, apply=True):
+            return
+        args = (body, *_clip_extras(self.headers))
+        outcome = app.call_text(
+            "api.clip", app.controls.clip, *args, timeout_s=config.clip_timeout_s
+        )
+        self._answer_text(outcome, ("transcript", "reply"), serial=True, sources=True)
+
+    def _chat_route(self, payload: dict[str, Any], value: Any) -> None:
+        app = self._app
+        # An optional "conversation" continues an earlier conversation (d5); without
+        # one the turn joins the live session, as before.
+        conversation = payload.get("conversation")
+        settings = _settings_of(payload)
+        if settings is None:
+            self._send_error(400, BAD_REQUEST_CODE, "persona, model and language are strings")
+            return
+        continued = conversation if isinstance(conversation, str) and conversation else None
+        if settings and not self._settings(continued, settings, apply=True):
+            return
+        args = (value, continued) if continued is not None else (value,)
+        outcome = app.call_text(
+            "api.chat", app.controls.chat, *args, timeout_s=app.config.chat_timeout_s
+        )
+        self._answer_text(outcome, ("reply",), serial=True, sources=True)
 
     def _text_refusal(self, outcome: ControlOutcome) -> bool:
         """Answer a transport-level failure (unbound, slow, raised). ``True`` if answered."""
