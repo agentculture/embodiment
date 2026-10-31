@@ -85,8 +85,10 @@ stated.
   by the background probe. `stt`, `tts`, the realtime session and the embedder
   do not change with the choice.
 - **The translator.** A persona's `translate_via` role is the Gemma translator
-  (`embodiment/translate.py`): the chosen role sees English, and `remember` and
-  `search_*` use the operator's own words, not the translation.
+  (`embodiment/translate.py`): the chosen role sees English; `search_*` use
+  the operator's own words, not the translation, and `remember` stores the
+  model's English fact with the operator's sentence kept beside it
+  (`metadata.original`), which `forget` matches too (d6).
 - **English is text-only.** lobes has no English voice (its `tts` role is
   Hebrew-only), so an English persona answers in text and is never spoken.
 - **spark-gwen.** Gwen's daemon holds its own agentirc connection as

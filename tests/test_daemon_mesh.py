@@ -786,6 +786,7 @@ class TestMain:
             assert lane is not None
             assert lane.config.enabled is True
             assert lane.config.nick == "spark-gwen"
+            assert lane.judge == app_module.MESH_JUDGE_ROLE == "senses"
             assert built == []  # the client is built by start(), never by main()
             assert Path(lane.book._path).parent == Path(application._state.dir)
         finally:
@@ -800,3 +801,104 @@ class TestMain:
         finally:
             application.close(deadline=2.0)
         assert built == []
+
+
+# ── "was it for me?": the judge decides answer vs. chatter (review of #117, 3) ─
+
+
+class Judge:
+    """A scripted judge: replies in order (an exception is raised), records each call."""
+
+    def __init__(self, *replies: Any) -> None:
+        self.replies = list(replies)
+        self.calls: list[list[dict[str, Any]]] = []
+
+    def __call__(self, messages: list[dict[str, Any]]) -> Any:
+        self.calls.append(messages)
+        reply = self.replies.pop(0) if self.replies else '{"answers": null}'
+        if isinstance(reply, BaseException):
+            raise reply
+        return reply
+
+
+def _push_line(ircd: FakeIrcd, text: str, sender: str = AGENT) -> None:
+    ircd.push(f":{sender}!a@127.0.0.1 PRIVMSG #general :{text}")
+
+
+class TestTheJudge:
+    def _asked(self, harness: Any, ircd: FakeIrcd, tmp_path: Path, judge: Judge) -> Any:
+        h = _wired(
+            harness,
+            _lane(tmp_path, make_config(ircd), judge=judge),
+            _call("ask_culture", question=QUESTION),
+            ModelResponse(content=base.REPLY),
+        )
+        h.app.start()
+        h.thread = _ask_once(h, ircd)
+        return h
+
+    def test_a_plain_line_the_judge_names_lands_as_the_answer(
+        self, harness: Any, ircd: FakeIrcd, tmp_path: Path
+    ) -> None:
+        judge = Judge('{"answers": null}', '{"answers": "Q1"}')
+        h = self._asked(harness, ircd, tmp_path, judge)
+        _push_line(ircd, "anyone for lunch?", sender="spark-bob")
+        wait_for(lambda: h.app.status()["mesh"]["judge_not_answers"] == 1)
+        _push_line(ircd, ANSWER)  # no nick, no thread: only the judge can place it
+        arrived = wait_for(lambda: _mesh_events(h, "answer_arrived"))
+        assert arrived[0].data["rule"] == mesh_asks.RULE_JUDGED
+        assert arrived[0].data["text"] == ANSWER
+        mesh = h.app.status()["mesh"]
+        assert mesh["judge_calls"] == 2 and mesh["judge_answers"] == 1
+        assert mesh["asks_answered"] == 1
+        # In context: the second call saw the ask, the earlier line and the new one.
+        body = judge.calls[1][1]["content"]
+        assert QUESTION in body and "anyone for lunch?" in body and ANSWER in body
+
+    def test_a_thread_line_the_judge_rejects_is_not_an_answer(
+        self, harness: Any, ircd: FakeIrcd, tmp_path: Path
+    ) -> None:
+        judge = Judge('{"answers": null}')
+        h = self._asked(harness, ircd, tmp_path, judge)
+        _push_thread_answer(ircd, h.thread, "@spark-carol did you see this?")
+        wait_for(lambda: h.app.status()["mesh"]["judge_not_answers"] == 1)
+        assert _mesh_events(h, "answer_arrived") == []
+        assert h.app.status()["mesh"]["asks_answered"] == 0
+
+    def test_a_failed_judge_falls_back_to_the_rules_and_is_recorded(
+        self, harness: Any, ircd: FakeIrcd, tmp_path: Path
+    ) -> None:
+        judge = Judge(TimeoutError("slow"))
+        h = self._asked(harness, ircd, tmp_path, judge)
+        _push_thread_answer(ircd, h.thread)
+        arrived = wait_for(lambda: _mesh_events(h, "answer_arrived"))
+        assert arrived[0].data["rule"] == mesh_asks.RULE_THREAD
+        assert h.app.status()["mesh"]["judge_failed"] == 1
+        assert app_module.APP_MESH_JUDGE_FAILED in h.ledger_codes()
+
+    def test_no_listening_ask_means_no_judge_call(
+        self, harness: Any, ircd: FakeIrcd, tmp_path: Path
+    ) -> None:
+        judge = Judge()
+        h = _wired(harness, _lane(tmp_path, make_config(ircd), judge=judge))
+        h.app.start()
+        _registered(h)
+        _push_line(ircd, "chatter")
+        _push_line(ircd, MENTION)
+        wait_for(lambda: h.app.status()["mesh"]["agent_turns"] == 1)
+        assert judge.calls == []
+
+
+def test_the_role_judge_runs_on_the_daemons_seam_as_that_role(harness: Any) -> None:
+    config = app_module.AppConfig(poll_interval_s=0.01)
+    holder = app_module.RoleHolder(config.role, config.completion_deadline)
+    seen: list[tuple[str, float]] = []
+
+    def seam(messages: list[dict[str, Any]], tools: Any = None) -> ModelResponse:
+        seen.append(holder.current())
+        return ModelResponse(content='{"answers": null}')
+
+    h = harness(config=config, complete=seam, lanes=app_module.AppLanes(role_holder=holder))
+    reply = h.app._judge_complete("senses", [{"role": "user", "content": "x"}])
+    assert reply.content == '{"answers": null}'
+    assert seen == [("senses", app_module.mesh_judge.JUDGE_DEADLINE_S)]

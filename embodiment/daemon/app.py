@@ -144,7 +144,7 @@ from pathlib import Path
 from typing import Any, Callable, Iterable, Mapping, Optional, Sequence
 
 from embodiment import memory as memory_module
-from embodiment import mesh_tools, safe_reason, vectors
+from embodiment import mesh_judge, mesh_tools, safe_reason, vectors
 from embodiment import voice_latency as voice_latency_module
 from embodiment.audio.endpoint import SAMPLE_RATE_HZ as PLAYBACK_RATE_HZ
 from embodiment.audio.endpoint import NullEndpoint
@@ -1038,13 +1038,18 @@ TRANSLATE_VIA_FIELD = "translate_via"
 CHAT_LATENCY_FIELD = "chat_latency"
 TRANSLATE_LATENCY_FIELD = "translate_latency"
 #: The tool arguments a translated turn replaces with the operator's own words (t13,
-#: c37): what is stored and what is searched is what the operator said, never the
-#: chosen model's English. Ids (``read_passage``, ``set_todo_done``) pass through.
+#: c37): what is searched is what the operator said, never the chosen model's English.
+#: Ids (``read_passage``, ``set_todo_done``) pass through. ``remember`` is NOT here any
+#: more (operator, 2026-10-31, review of #117 finding 5): the whole sentence as the record
+#: made two facts one and left ``forget`` nothing to find. A translated ``remember`` now
+#: stores the chosen model's English fact and keeps the operator's sentence beside it,
+#: verbatim, as ``metadata[ORIGINAL_FIELD]``; ``forget`` by text matches either.
 ORIGINAL_ARGUMENTS: dict[str, tuple[str, ...]] = {
-    REMEMBER_TOOL_NAME: ("fact",),
     library_tools.SEARCH_TOOL: ("query",),
     conversations_module.SEARCH_TOOL: ("query",),
 }
+#: Where a translated record keeps the operator's own sentence (see above).
+ORIGINAL_FIELD = "original"
 #: A persona's ``language`` as the translator's target; ``none`` keeps v1's Hebrew.
 TRANSLATION_LANGUAGES = {"he": "Hebrew", "en": "English"}
 #: At most this many conversations keep a chosen role in memory (as for personas).
@@ -1388,6 +1393,11 @@ APP_MESH_NICK_TAKEN = "mesh-nick-taken"
 APP_MESH_DOWN = "app-mesh-down"
 #: The inbound queue was full and a mesh message was dropped (counted after the first).
 APP_MESH_INBOX_FULL = "app-mesh-inbox-full"
+#: The "was it for me?" judge could not be asked or its reply not read (review of #117,
+#: finding 3): the deterministic rules decided that message instead.
+APP_MESH_JUDGE_FAILED = "app-mesh-judge-failed"
+#: The role the judge runs as: the local speaker, the smallest model always loaded.
+MESH_JUDGE_ROLE = "senses"
 #: Gwen's reply to an agent was not accepted for sending, or the agent turn gave none.
 APP_MESH_REPLY_FAILED = "app-mesh-reply-failed"
 #: A mesh step raised (a bug, recorded; the worker keeps running).
@@ -2326,6 +2336,11 @@ class MeshLane:
     tick_s: float = MESH_TICK_S
     #: ``None``: :func:`nick_retry_wait` of the config.
     nick_retry_wait_s: Optional[float] = None
+    #: The "was it for me?" judge (:mod:`embodiment.mesh_judge`; operator, 2026-10-31):
+    #: ``None`` is off (the rules alone decide); a role name runs it on the daemon's own
+    #: seam as that role, under :data:`mesh_judge.JUDGE_DEADLINE_S`; a callable
+    #: ``messages -> reply`` is used as is (tests).
+    judge: Any = None
 
 
 @dataclass(eq=False)
@@ -3106,6 +3121,11 @@ class DaemonApp:
             "asks_posted": 0,
             "asks_answered": 0,
             "answer_lines_continued": 0,
+            "judge_calls": 0,
+            "judge_answers": 0,
+            "judge_not_answers": 0,
+            "judge_failed": 0,
+            "judge_over_budget": 0,
             "asks_expired": 0,
             "agent_turns": 0,
             "inbound": 0,
@@ -3117,6 +3137,9 @@ class DaemonApp:
             "notices_skipped_voice_off": 0,
         }
         self._mesh_refusals: dict[str, int] = {}
+        #: The channels' recent lines and the judge's call budget (review of #117, 3).
+        self._mesh_recent = mesh_judge.RecentLines()
+        self._mesh_judge_budget = mesh_judge.JudgeBudget()
         self._mesh_turn_seq = 0
         #: Each agent's open conversation, by casefolded nick; and every agent
         #: conversation's nick, by session id (the label the page shows).
@@ -6391,26 +6414,105 @@ class DaemonApp:
         if lane is None or self._stopping:
             return
         where = message.channel or message.sender
-        matched = None
-        if message.thread or message.mention:
-            matched = lane.book.answer(
-                lane.config.nick,
-                message.sender,
-                where,
-                message.text,
-                thread=message.thread or None,
-            )
-        elif message.text:
+        try:
+            self._mesh_dispatch(lane, message, where)
+        finally:
+            # Context for the next judgement: every line, after it was judged itself.
+            self._mesh_recent.add(where, message.sender, message.text, message.thread or None)
+
+    def _mesh_dispatch(self, lane: MeshLane, message: MeshMessage, where: str) -> None:
+        if not (message.thread or message.mention) and message.text:
             # A plain line right after an answer from the same sender is its next line
             # (IRC sends each line on its own; review of #117).
             more = lane.book.continuation(message.sender, where, message.text)
             if more is not None:
                 self._mesh_answer_continued(message, more)
                 return
+        matched = self._mesh_match(lane, message, where)
         if matched is not None:
             self._mesh_answer_arrived(message, matched)
         elif _mesh_addressed(message):
             self._mesh_agent_turn(message)
+
+    def _mesh_match(
+        self, lane: MeshLane, message: MeshMessage, where: str
+    ) -> Optional[dict[str, Any]]:
+        """The ask *message* answers: the judge's call when it can make one, else the rules.
+
+        The judge (operator, 2026-10-31: "Was it for me?") runs only while an ask is
+        listening in that channel or thread, so ordinary chatter costs no model call.
+        """
+        thread = message.thread or None
+        if lane.judge is not None and message.text:
+            candidates = lane.book.candidates(message.sender, where, thread)
+            if candidates:
+                verdict = self._mesh_judge(lane, message, candidates)
+                if verdict is not None and verdict.ok:
+                    if verdict.ask_id is None:
+                        return None
+                    return lane.book.attach(verdict.ask_id, message.sender, where, message.text)
+        if message.thread or message.mention:
+            return lane.book.answer(
+                lane.config.nick, message.sender, where, message.text, thread=thread
+            )
+        return None
+
+    def _mesh_judge(
+        self, lane: MeshLane, message: MeshMessage, candidates: list[dict[str, Any]]
+    ) -> Optional[mesh_judge.Verdict]:
+        """One judge call, counted; ``None`` past the budget. A failure is recorded."""
+        if not self._mesh_judge_budget.take():
+            with self._lock:
+                self._mesh_counts["judge_over_budget"] += 1
+            self._record(
+                APP_MESH_JUDGE_FAILED,
+                "over the judge budget: the rules decided",
+                source="mesh",
+                once=True,
+            )
+            return None
+        complete = lane.judge
+        if isinstance(complete, str):
+            role = complete
+
+            def complete(messages: list[dict[str, Any]]) -> Any:
+                return self._judge_complete(role, messages)
+
+        with self._lock:
+            self._mesh_counts["judge_calls"] += 1
+        where = message.channel or message.sender
+        verdict = mesh_judge.judge(
+            complete,
+            own_nick=lane.config.nick,
+            asks=candidates,
+            recent=self._mesh_recent.lines(where),
+            sender=message.sender,
+            text=message.text,
+            thread=message.thread or None,
+        )
+        with self._lock:
+            if not verdict.ok:
+                self._mesh_counts["judge_failed"] += 1
+            elif verdict.ask_id is None:
+                self._mesh_counts["judge_not_answers"] += 1
+            else:
+                self._mesh_counts["judge_answers"] += 1
+        if not verdict.ok:
+            self._record(
+                APP_MESH_JUDGE_FAILED, f"{verdict.reason}: the rules decided", source="mesh"
+            )
+        return verdict
+
+    def _judge_complete(self, role: str, messages: list[dict[str, Any]]) -> Any:
+        """The judge's completion on the daemon's own seam, as *role*, no tools."""
+        seam = self._seam
+        if seam is None:
+            raise RuntimeError("no seam for the judge")
+        with (
+            self._role_holder.using(role, mesh_judge.JUDGE_DEADLINE_S),
+            self._role_holder.streaming(None),
+        ):
+            return seam(messages)
 
     def _mesh_answer_continued(self, message: MeshMessage, more: Mapping[str, Any]) -> None:
         """Join a continued line to its answer while it waits; queue it if one was read."""
@@ -6831,6 +6933,8 @@ class DaemonApp:
                 return False
             with self._lock:
                 self._mesh_counts["asks_posted"] += 1
+            if lane is not None:
+                self._mesh_recent.add(channel, lane.config.nick, text, thread)
             expires = next(
                 (a.get("expires_at") for a in lane.book.all() if a.get("ask_id") == ask_id), None
             )
@@ -7485,11 +7589,13 @@ class DaemonApp:
             return self._refuse_remember(LIBRARY_GUARDED_REASON, recorded=True)
         if self._mesh_guard(REMEMBER_TOOL_NAME, stripped):
             return self._refuse_remember(MESH_GUARDED_REASON, recorded=True)
+        original = self._turn_original()
         try:
             result = self._memory.remember(
                 stripped,
                 visibility=PRIVATE,
                 record_type=ASK_RECORD_TYPE,
+                metadata={ORIGINAL_FIELD: original} if original else None,
                 added_by=self._config.added_by,
             )
         except Exception as exc:  # noqa: BLE001  # memory is a seam; a turn never dies on it
@@ -7515,6 +7621,18 @@ class DaemonApp:
             },
         )
         return f"ok: stored as {record_id}" if record_id else "ok: stored"
+
+    def _turn_original(self) -> str:
+        """The operator's own words on a TRANSLATED turn on this thread, else ``""``.
+
+        Set by the daemon from the turn's query (:meth:`_turn_translation`), never from
+        a tool argument, so a model cannot supply its own "original"."""
+        turn: Any = self._text_turn_here() or self._voice_turn_here()
+        translation = getattr(turn, "translation", None)
+        if not isinstance(translation, _Translation):
+            return ""
+        original = translation.pinned.original
+        return original if isinstance(original, str) else ""
 
     def _refuse_remember(self, reason: str, *, recorded: bool = False) -> str:
         """Count a refusal, say so on the bus, and tell the model why. Never text.
@@ -7632,14 +7750,21 @@ class DaemonApp:
         except Exception as exc:  # noqa: BLE001  # memory is a seam; a turn never dies on it
             self._record(APP_FORGET_REFUSED, f"lookup: {_describe(exc)}")
             return _ForgetTextRefusal("store-failed")
-        matches = [
-            identifier
-            for record in self._records_of(result)
-            if isinstance(record, dict)
-            and _normalised_fact(record.get("text")) == wanted
-            and isinstance(identifier := record.get("id"), str)
-            and identifier
-        ]
+        matches = _matching_ids(self._records_of(result), wanted)
+        if not matches:
+            # A translated turn stored the model's English with the operator's own
+            # sentence beside it (operator, 2026-10-31): forget searches both. No recall
+            # mode reads metadata, so the kept originals are enumerated, then compared
+            # by the same exact equality.
+            try:
+                kept = self._memory.list_own(
+                    deadline=self._recall_deadline_now(semantic_configured=False),
+                    record_type=ASK_RECORD_TYPE,
+                )
+            except Exception as exc:  # noqa: BLE001  # memory is a seam; a turn never dies on it
+                self._record(APP_FORGET_REFUSED, f"lookup: {_describe(exc)}")
+                return _ForgetTextRefusal("store-failed")
+            matches = _matching_ids(self._records_of(kept), wanted)
         if not matches:
             return _ForgetTextRefusal("not-found")
         if len(set(matches)) > 1:
@@ -9014,6 +9139,23 @@ def _mesh_health_of(state: str) -> Optional[str]:
     return None
 
 
+def _matching_ids(records: list[Any], wanted: str) -> list[str]:
+    """Ids of the records whose text, or kept original (``metadata.original``), is
+    exactly *wanted* once normalised (d10; operator, 2026-10-31)."""
+    found: list[str] = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+        identifier = record.get("id")
+        if not isinstance(identifier, str) or not identifier:
+            continue
+        meta = record.get("metadata")
+        original = meta.get(ORIGINAL_FIELD) if isinstance(meta, dict) else None
+        if wanted in (_normalised_fact(record.get("text")), _normalised_fact(original)):
+            found.append(identifier)
+    return found
+
+
 def _with_original(spec: ToolSpec, pinned: OriginalText) -> ToolSpec:
     """*spec* with :func:`bind_original` over its :data:`ORIGINAL_ARGUMENTS` (t13).
 
@@ -10181,6 +10323,8 @@ def main() -> DaemonApp:
             if mesh_config.enabled
             else None
         ),
+        # "Was it for me?" on the small local model (operator, 2026-10-31).
+        judge=MESH_JUDGE_ROLE,
     )
 
     holder = RoleHolder(config.role, config.completion_deadline)

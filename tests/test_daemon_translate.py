@@ -9,7 +9,9 @@ operator hears the persona's language. Pinned on the daemon's own seam (the ONE
 * a typed and a spoken turn both go through the translator; the chosen role receives
   English, the operator receives the persona's language, and the assistant record
   names both roles and both latencies;
-* in a translated turn ``remember`` stores the operator's own words, and
+* in a translated turn ``remember`` stores the chosen model's English fact with the
+  operator's own sentence kept beside it (``metadata.original``), and ``forget`` by
+  text matches either (operator, 2026-10-31); and
   ``search_library`` and ``search_conversations`` receive the operator's query, not
   the chosen model's English; ``ContextPacket.original`` is the operator's text.
 """
@@ -265,8 +267,11 @@ class TestTheOperatorsWords:
         )
         _translating(h)
         assert h.app.controls().chat(TYPED)["ok"] is True
-        assert any(TYPED in text for text in stored), stored
-        assert not any("likes tea" in text for text in stored), stored
+        records = [json.loads(text) for text in stored]
+        # Operator, 2026-10-31 (review of #117, #5): the model's English fact is the
+        # record, and the operator's own sentence is kept beside it, verbatim.
+        assert [r["text"] for r in records] == ["The operator likes tea"], records
+        assert [r["metadata"].get("original") for r in records] == [TYPED], records
 
     def test_remember_stores_the_operators_own_words_on_a_spoken_turn(
         self, harness: Any, tmp_path: Path
@@ -280,8 +285,23 @@ class TestTheOperatorsWords:
         _translating(h, measured=True)
         h.app.attach_ear("host", FakeEndpoint())
         h.app.run_turn(SPOKEN)
-        assert any(SPOKEN in text for text in stored), stored
-        assert not any("Tell the operator" in text for text in stored), stored
+        records = [json.loads(text) for text in stored]
+        mine = [r for r in records if r["text"] == "Tell the operator something"]
+        assert mine and all(r["metadata"].get("original") == SPOKEN for r in mine), records
+
+    def test_an_untranslated_remember_keeps_no_original_field(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        stored: list[str] = []
+        h = _wired(
+            harness,
+            _call("remember", fact="The operator likes tea"),
+            memory=_remembering_memory(tmp_path, stored),
+        )
+        _translating(h, translate_via=None)  # the chosen role answers, nothing translated
+        assert h.app.controls().chat(TYPED)["ok"] is True
+        records = [json.loads(text) for text in stored]
+        assert all("original" not in r["metadata"] for r in records), records
 
     def test_search_library_receives_the_operators_query(self, harness: Any) -> None:
         library = lib._library()

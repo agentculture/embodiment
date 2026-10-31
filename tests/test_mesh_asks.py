@@ -290,3 +290,45 @@ def test_continuation_is_only_the_same_sender_same_channel_inside_the_window(tmp
     clock.t += ma.CONTINUATION_S + 0.1
     assert b.continuation("spark-ada", "#r", "much later chatter") is None
     assert b.continuation("system-spark", "#r", "x") is None
+
+
+# -- the "was it for me?" judge's side of the book (review of #117, finding 3) ----------
+
+
+def test_candidates_are_the_channels_listening_asks_and_the_threads_own(tmp_path):
+    clock = Clock()
+    b = book(tmp_path, clock)
+    for turn, channel in (("t1", "#r"), ("t2", "#r"), ("t3", "#other")):
+        b.begin_turn(turn)
+        b.open_ask(turn, "c", channel, f"q {turn}")
+    first, second, other = b.all()
+    # An answered ask still listens (a second agent may answer) until it expires.
+    b.answer(NICK, "p", "#r", "an answer", thread=first["thread"])
+    assert {a["ask_id"] for a in b.candidates("bob", "#R")} == {
+        first["ask_id"],
+        second["ask_id"],
+    }
+    clock.t += ma.DEFAULT_EXPIRY_S + 1
+    assert b.candidates("bob", "#r") == []
+    # The thread's own ask is a candidate even after it expired (d2).
+    got = b.candidates("bob", "#other", thread=other["thread"])
+    assert [a["ask_id"] for a in got] == [other["ask_id"]]
+    assert b.candidates("system-spark", "#other", thread=other["thread"]) == []
+
+
+def test_attach_records_the_judged_answer_with_its_rule(tmp_path):
+    clock = Clock()
+    b = book(tmp_path, clock)
+    b.begin_turn("t1")
+    ask = b.open_ask("t1", "conv1", "#r", "who owns it?").ask
+    b.end_turn("t1")
+    clock.t += 5
+    got = b.attach(ask["ask_id"], "peer", "#r", "I do")
+    assert got["conversation_id"] == "conv1"
+    assert got["rule"] == ma.RULE_JUDGED and got["late"] is True
+    kept = b.all()[0]
+    assert kept["status"] == ma.ANSWERED
+    assert kept["answers"][0]["text"] == "I do" and kept["answers"][0]["rule"] == ma.RULE_JUDGED
+    # The next plain line from the same sender continues it, as for any answer.
+    assert b.continuation("peer", "#r", "and Bob helps")["ask_id"] == ask["ask_id"]
+    assert b.attach("nope", "peer", "#r", "x") is None

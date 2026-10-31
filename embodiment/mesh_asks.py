@@ -3,9 +3,12 @@
 Pure state plus one 0600 JSON file (the store pattern of :mod:`embodiment.daemon.reading`):
 no IRC client is imported, inputs are plain values (nick, channel, text, time).
 
-Answer matching (the documented rule; it lives in :func:`match_answer` ALONE so it can
-change). IRC has no threads and it is not yet known whether agentirc carries IRCv3 reply
-tags, so:
+Answer matching. Since the operator's decision of 2026-10-31 (review of #117, d7) the
+daemon first asks the "was it for me?" judge (:mod:`embodiment.mesh_judge`) whenever an
+ask is listening (:meth:`AskBook.candidates`) and records its pick with
+:meth:`AskBook.attach` (rule ``judged``). The deterministic rule below (it lives in
+:func:`match_answer` ALONE so it can change) decides when the judge cannot. IRC has no
+threads and it is not yet known whether agentirc carries IRCv3 reply tags, so:
 
 0. agentirc has native threads: each ask is posted as its own thread, named from its ask id
    (:func:`thread_name`, valid for ``^[a-zA-Z0-9]([a-zA-Z0-9-]{0,30}[a-zA-Z0-9])?$``), and
@@ -43,6 +46,9 @@ ASKS_NAME = "mesh-asks.json"
 #: 32 agentirc allows.
 THREAD_PREFIX = "gwen-ask-"
 RULE_THREAD, RULE_REPLY_TO, RULE_FALLBACK = "thread", "reply_to", "fallback"
+#: The "was it for me?" judge (:mod:`embodiment.mesh_judge`) chose the ask; rules 1-3
+#: are the fallback when it cannot be asked (operator, 2026-10-31, review of #117).
+RULE_JUDGED = "judged"
 
 #: How long an ask stays open. Hours, not minutes: a peer agent answers when its own turn
 #: comes round, and a two-hour-late answer must still land (marked late). 6 h covers a
@@ -359,6 +365,83 @@ class AskBook:
                 "continued": True,
             }
 
+    def candidates(
+        self, sender: str, channel: str, thread: Optional[str] = None
+    ) -> list[dict[str, Any]]:
+        """The asks a message from *sender* in *channel* (or *thread*) could answer,
+        oldest first: the channel's asks still listening (open or answered, not expired)
+        and the thread's own ask whatever its state (d2). For the judge; never raises."""
+        if sender.lower().startswith(SYSTEM_SENDER_PREFIX):
+            return []
+        with self._lock:
+            now = self._clock()
+            asks = self._load()
+            if self._expire(asks, now):
+                self._save(asks)
+            found = [
+                a
+                for a in asks.values()
+                if (thread and a.get("thread") == thread and a["status"] != FAILED)
+                or (
+                    a["status"] in (OPEN, ANSWERED)
+                    and now < a["expires_at"]
+                    and a["channel"].lower() == channel.lower()
+                )
+            ]
+            return [dict(a) for a in sorted(found, key=lambda a: a["posted_at"])]
+
+    def attach(
+        self, ask_id: str, sender: str, channel: str, text: str, rule: str = RULE_JUDGED
+    ) -> Optional[dict[str, Any]]:
+        """Record *text* as an answer to *ask_id* (the judge's choice). None if unknown."""
+        with self._lock:
+            now = self._clock()
+            asks = self._load()
+            self._expire(asks, now)
+            ask = asks.get(ask_id)
+            if ask is None or ask["status"] == FAILED:
+                return None
+            ended = ask.get("turn_ended_at")
+            after_expiry = ask["status"] == EXPIRED or now >= ask["expires_at"]
+            late = (ended is not None and now > ended) or after_expiry
+            matched = Match(ask_id, ask["conversation_id"], False, late, rule, after_expiry)
+            return self._record_answer(asks, matched, sender, channel, text, now)
+
+    def _record_answer(
+        self,
+        asks: dict[str, dict[str, Any]],
+        m: Match,
+        sender: str,
+        channel: str,
+        text: str,
+        now: float,
+    ) -> dict[str, Any]:
+        """Append the answer to its ask, save, and remember it for continuation lines."""
+        ask = asks[m.ask_id]
+        if len(ask["answers"]) < MAX_ANSWERS_PER_ASK:
+            ask["answers"].append(
+                {
+                    "sender": sender,
+                    "text": (text or "")[:MAX_TEXT_CHARS],
+                    "at": now,
+                    "late": m.late,
+                    "ambiguous": m.ambiguous,
+                    "rule": m.rule,
+                    "after_expiry": m.after_expiry,
+                }
+            )
+        ask["status"] = ANSWERED
+        self._save(asks)
+        self._last_answer[(sender.lower(), channel.lower())] = (m.ask_id, now)
+        return {
+            "ask_id": m.ask_id,
+            "conversation_id": m.conversation_id,
+            "late": m.late,
+            "ambiguous": m.ambiguous,
+            "rule": m.rule,
+            "after_expiry": m.after_expiry,
+        }
+
     def answer(
         self,
         own_nick: str,
@@ -380,30 +463,7 @@ class AskBook:
                 if expired:  # only a real change is written (review of #117)
                     self._save(asks)
                 return None
-            ask = asks[m.ask_id]
-            if len(ask["answers"]) < MAX_ANSWERS_PER_ASK:
-                ask["answers"].append(
-                    {
-                        "sender": sender,
-                        "text": (text or "")[:MAX_TEXT_CHARS],
-                        "at": now,
-                        "late": m.late,
-                        "ambiguous": m.ambiguous,
-                        "rule": m.rule,
-                        "after_expiry": m.after_expiry,
-                    }
-                )
-            ask["status"] = ANSWERED
-            self._save(asks)
-            self._last_answer[(sender.lower(), channel.lower())] = (m.ask_id, now)
-            return {
-                "ask_id": m.ask_id,
-                "conversation_id": m.conversation_id,
-                "late": m.late,
-                "ambiguous": m.ambiguous,
-                "rule": m.rule,
-                "after_expiry": m.after_expiry,
-            }
+            return self._record_answer(asks, m, sender, channel, text, now)
 
     def all(self) -> list[dict[str, Any]]:
         """Every kept ask, oldest first; expired ones are shown, never dropped."""

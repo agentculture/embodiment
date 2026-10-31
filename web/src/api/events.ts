@@ -162,7 +162,7 @@ export interface MeshData extends EventEnvelopeData {
   after_expiry?: boolean;
   /** answer_arrived: several asks were open in the channel (fallback rule). */
   ambiguous?: boolean;
-  /** answer_arrived: which rule matched it: "thread" | "reply_to" | "fallback". */
+  /** answer_arrived: which rule matched it: "judged" | "thread" | "reply_to" | "fallback". */
   rule?: string;
   /** agent_contacted / gwen_replied: a direct message rather than a channel. */
   direct?: boolean;

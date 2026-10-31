@@ -26,12 +26,13 @@ What is translated, and why
 
 Original text for tool executors
 --------------------------------
-The chosen model works in English, so a ``remember`` call it makes carries
-English the operator never said, and a search query is its paraphrase. The
-verbatim invariant says the operator's own words are what is stored and
-searched. Each call records the operator's untranslated text on an
-:class:`OriginalText` (``.original``, plus ``.english``); the daemon passes one
-instance to :func:`translated_complete` and wraps executors with
+The chosen model works in English, so a search query is its paraphrase of what
+the operator said; searches use the operator's own words. (``remember`` no longer
+does: since d6 the daemon stores the model's English fact and keeps the operator's
+sentence beside it, so two facts in one sentence stay two records.) Each call
+records the operator's untranslated text on an :class:`OriginalText`
+(``.original``, plus ``.english``); the daemon passes one instance to
+:func:`translated_complete` and wraps executors with
 :func:`bind_original`, which replaces the named argument(s) with
 ``.original`` before the executor runs. Without an original it changes nothing.
 (Wiring is a later task.)

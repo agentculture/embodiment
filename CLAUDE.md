@@ -130,8 +130,9 @@ chosen role per conversation; `app-text-model-unavailable` is distinct from
 gateway-down and never falls back; trace `chat_role`/`chat_model`/`chat_host`),
 `voice_latency.py` (voice gated: `senses` exempt, any other role speaks only after
 its latency is measured), `translate.py` (the Gemma translator, read only from the
-persona's `translate_via`; the chosen role sees English, `remember` and search use
-the operator's words), and `mesh_client.py` / `mesh_tools.py` / `mesh_asks.py`
+persona's `translate_via`; the chosen role sees English, search uses the operator's
+words, `remember` stores the model's English with the operator's sentence beside it and
+`forget` matches either, d6), and `mesh_client.py` / `mesh_tools.py` / `mesh_asks.py`
 (`spark-gwen`, Gwen's daemon holding its own agentirc connection, no harness
 and no second model speaking as her; `ask_culture` posts only the question as its
 own thread; answers arrive later, also after expiry, marked, d2; `embodiment
@@ -429,6 +430,7 @@ embodiment/
   mesh_client.py        spark-gwen: Gwen's own agentirc connection (stdlib), degrade-never-raise
   mesh_tools.py         ask_culture + the mesh write guard; mesh answers fenced as untrusted
   mesh_asks.py          open asks, late answers (d2); cli/_commands/mesh.py prints the setup
+  mesh_judge.py         "was it for me?": a small senses call picks which ask a line answers (d7)
   senses_text.py        SENSES_GROUNDING + KNOWLEDGE_ATTRIBUTION (measured text)
   continuity.py         the eidetic/coherence seam, in-process
   events.py             optional observer onto events-cli (MQTT)

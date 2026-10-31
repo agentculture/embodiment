@@ -2,7 +2,7 @@
   "plan_slug": "gwen-personas-model-choice-culture-residency",
   "schema_version": 2,
   "created": "2026-10-31T09:53:28Z",
-  "updated": "2026-10-31T16:25:43Z",
+  "updated": "2026-10-31T18:05:25Z",
   "deviations": [
     {
       "id": "d1",
@@ -68,6 +68,28 @@
       "status": "approved",
       "classification": "needs-follow-up",
       "seq": 5
+    },
+    {
+      "id": "d6",
+      "what": "On a translated turn, remember stores the chosen model's English fact as the record and keeps the operator's own sentence beside it verbatim (metadata.original); forget by text matches either field (exact, normalised). search_library and search_conversations still receive the operator's words. Narrows c37's 'remember and search use the operator's words' to search only",
+      "task_ref": "t13",
+      "reason": "Operator, 2026-10-31, review of #117 finding 5: the whole sentence as the record made two facts one and left forget nothing to find; 'suggestion accepted (the model's English fact is stored with your original sentence kept beside it, and forget searches both.)'",
+      "affects": [],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 6
+    },
+    {
+      "id": "d7",
+      "what": "Which ask a mesh message answers is decided by a small senses call ('was it for me?') whenever an ask is listening in that channel or thread: it reads the open asks, the channel's last 12 lines and the new message, and names an ask or none (rule 'judged'), for thread lines and plain lines alike. The deterministic rules (thread, reply_to, nick-addressed fallback) decide only when the judge cannot be asked (budget 60 per 10 min, 10 s bound) or its reply cannot be read, recorded as app-mesh-judge-failed. A line the judge rejects but which addresses Gwen is still a new turn (d3)",
+      "task_ref": "t5",
+      "reason": "Operator, 2026-10-31, review of #117 finding 3: 'A small llm call for common sense (Was it for me?). Works for threads or other messages. works in context, so Gwen can tell if a question 2 messages back got answer now.'",
+      "affects": [],
+      "origin": "user",
+      "status": "approved",
+      "classification": "acceptable",
+      "seq": 7
     }
   ],
   "evidence": [],

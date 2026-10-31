@@ -5402,6 +5402,52 @@ class TestForgetByTheFactsOwnWords:
         assert h.app._forget_tool(fact="המפתח") == "refused: not-found"
         assert self._lifecycle(tmp_path, self.FACT) == "active"
 
+    ENGLISH = "The key is in the blue drawer"
+
+    def _store_translated(self, memory: RoomMemory) -> None:
+        """A translated turn's record: the model's English, the operator's words beside it."""
+        written = memory.remember(
+            self.ENGLISH,
+            visibility="private",
+            record_type="explicit-ask",
+            metadata={"original": self.FACT},
+            deadline=5.0,
+        )
+        assert written.ok
+
+    def test_forget_finds_a_translated_record_by_its_english_fact(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        memory = self._memory(tmp_path)
+        self._store_translated(memory)
+        h = harness(memory=memory)
+
+        assert h.app._forget_tool(fact=self.ENGLISH).startswith("ok:")
+        assert self._lifecycle(tmp_path, self.ENGLISH) == "archived"
+
+    def test_forget_finds_a_translated_record_by_the_operators_original(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        """Operator, 2026-10-31 (review of #117, #5): forget searches both fields."""
+        memory = self._memory(tmp_path)
+        self._store_translated(memory)
+        self._store(memory, self.OTHER)
+        h = harness(memory=memory)
+
+        assert h.app._forget_tool(fact="  " + self.FACT + " ").startswith("ok:")
+        assert self._lifecycle(tmp_path, self.ENGLISH) == "archived"
+        assert self._lifecycle(tmp_path, self.OTHER) == "active"
+
+    def test_a_partial_original_is_never_treated_as_the_fact(
+        self, harness: Any, tmp_path: Path
+    ) -> None:
+        memory = self._memory(tmp_path)
+        self._store_translated(memory)
+        h = harness(memory=memory)
+
+        assert h.app._forget_tool(fact="המפתח") == "refused: not-found"
+        assert self._lifecycle(tmp_path, self.ENGLISH) == "active"
+
     def test_an_id_still_wins_when_the_model_has_one(self, harness: Any, tmp_path: Path) -> None:
         memory = self._memory(tmp_path)
         written = memory.remember(
