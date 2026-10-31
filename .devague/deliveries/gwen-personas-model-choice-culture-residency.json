@@ -2,7 +2,7 @@
   "plan_slug": "gwen-personas-model-choice-culture-residency",
   "schema_version": 2,
   "created": "2026-10-31T09:53:28Z",
-  "updated": "2026-10-31T18:05:25Z",
+  "updated": "2026-10-31T19:21:30Z",
   "deviations": [
     {
       "id": "d1",
@@ -92,7 +92,614 @@
       "seq": 7
     }
   ],
-  "evidence": [],
-  "deltas": [],
+  "evidence": [
+    {
+      "id": "e1",
+      "obligation_ref": "o1",
+      "test_ref": "tests/test_personas.py tests/test_http_personas.py (76 tests)",
+      "behavior_text": "asserts: a persona is operator-authored data in a private 0600 store",
+      "contract_text": "a persona is operator-authored data in a private 0600 store",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named tests ran green at 86aeabd (main, after the #117 merge)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:19:25",
+        "commit": "86aeabd"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 8
+    },
+    {
+      "id": "e2",
+      "obligation_ref": "o2",
+      "test_ref": "tests/test_personas.py tests/test_daemon_personas.py (51 tests)",
+      "behavior_text": "asserts: language he/en/none is a persona setting a conversation can override",
+      "contract_text": "language he/en/none is a persona setting a conversation can override",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named tests ran green at 86aeabd (main, after the #117 merge)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:19:25",
+        "commit": "86aeabd"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 9
+    },
+    {
+      "id": "e3",
+      "obligation_ref": "o3",
+      "test_ref": "tests/test_personas.py tests/test_daemon_translate.py (43 tests)",
+      "behavior_text": "asserts: the translation hop is set explicitly on the persona, never inferred from a model name",
+      "contract_text": "the translation hop is set explicitly on the persona, never inferred from a model name",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named tests ran green at 86aeabd (main, after the #117 merge)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:19:25",
+        "commit": "86aeabd"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 10
+    },
+    {
+      "id": "e4",
+      "obligation_ref": "o4",
+      "test_ref": "tests/test_capabilities.py tests/test_daemon_models.py (47 tests)",
+      "behavior_text": "asserts: the offered roles equal the ready /v1/chat/completions roles of /capabilities",
+      "contract_text": "the offered roles equal the ready /v1/chat/completions roles of /capabilities",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named tests ran green at 86aeabd (main, after the #117 merge)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:19:25",
+        "commit": "86aeabd"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 11
+    },
+    {
+      "id": "e5",
+      "obligation_ref": "o5",
+      "test_ref": "tests/test_voice_latency.py tests/test_daemon_models.py (47 tests)",
+      "behavior_text": "asserts: senses is exempt; any other role speaks only after its latency is measured",
+      "contract_text": "senses is exempt; any other role speaks only after its latency is measured",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named tests ran green at 86aeabd (main, after the #117 merge)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:19:25",
+        "commit": "86aeabd"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 12
+    },
+    {
+      "id": "e6",
+      "obligation_ref": "o6",
+      "test_ref": "tests/test_mesh_client.py tests/test_daemon_mesh.py (92 tests)",
+      "behavior_text": "asserts: the daemon holds spark-gwen's connection, degrades and never raises",
+      "contract_text": "the daemon holds spark-gwen's connection, degrades and never raises",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named tests ran green at 86aeabd (main, after the #117 merge)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:19:25",
+        "commit": "86aeabd"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 13
+    },
+    {
+      "id": "e7",
+      "obligation_ref": "o7",
+      "test_ref": "tests/test_mesh_asks.py tests/test_daemon_mesh.py (64 tests)",
+      "behavior_text": "asserts: one ask per turn, a mesh-started turn cannot ask, mesh turns rate-capped, open asks capped",
+      "contract_text": "one ask per turn, a mesh-started turn cannot ask, mesh turns rate-capped, open asks capped",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named tests ran green at 86aeabd (main, after the #117 merge)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:19:25",
+        "commit": "86aeabd"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 14
+    },
+    {
+      "id": "e8",
+      "obligation_ref": "o8",
+      "test_ref": "tests/test_mesh_asks.py (25 tests)",
+      "behavior_text": "asserts: asks are kept 0600 with their conversation and expire visibly, never dropped",
+      "contract_text": "asks are kept 0600 with their conversation and expire visibly, never dropped",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named tests ran green at 86aeabd (main, after the #117 merge)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:19:25",
+        "commit": "86aeabd"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 15
+    },
+    {
+      "id": "e9",
+      "obligation_ref": "o9",
+      "test_ref": "tests/test_translate.py tests/test_daemon_translate.py (28 tests)",
+      "behavior_text": "asserts: Hebrew in is translated to English for the chosen role and the reply back",
+      "contract_text": "Hebrew in is translated to English for the chosen role and the reply back",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named tests ran green at 86aeabd (main, after the #117 merge)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:19:25",
+        "commit": "86aeabd"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 16
+    },
+    {
+      "id": "e10",
+      "obligation_ref": "o10",
+      "test_ref": "tests/test_daemon_translate.py tests/test_daemon_app.py::TestForgetByTheFactsOwnWords",
+      "behavior_text": "asserts: searches receive the operator's words; remember keeps them beside the model's fact (d6)",
+      "contract_text": "searches receive the operator's words; remember keeps them beside the model's fact (d6)",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named tests ran green at 86aeabd (main, after the #117 merge)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:19:25",
+        "commit": "86aeabd"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 17
+    },
+    {
+      "id": "e11",
+      "obligation_ref": "o11",
+      "test_ref": "tests/test_cli_mesh.py (13 tests)",
+      "behavior_text": "asserts: the CLI prints the resident setup and runs nothing",
+      "contract_text": "the CLI prints the resident setup and runs nothing",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named tests ran green at 86aeabd (main, after the #117 merge)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:19:25",
+        "commit": "86aeabd"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 18
+    },
+    {
+      "id": "e12",
+      "obligation_ref": "o12",
+      "test_ref": "tests/test_persona_prompt.py (11 tests)",
+      "behavior_text": "asserts: the tool prompts' language follows the persona",
+      "contract_text": "the tool prompts' language follows the persona",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named tests ran green at 86aeabd (main, after the #117 merge)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:19:25",
+        "commit": "86aeabd"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 19
+    },
+    {
+      "id": "e13",
+      "obligation_ref": "o13",
+      "test_ref": "tests/test_mesh_tools.py tests/test_daemon_mesh.py (53 tests)",
+      "behavior_text": "asserts: a turn can post one question as its own thread to an allow-listed channel",
+      "contract_text": "a turn can post one question as its own thread to an allow-listed channel",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named tests ran green at 86aeabd (main, after the #117 merge)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:19:25",
+        "commit": "86aeabd"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 20
+    },
+    {
+      "id": "e14",
+      "obligation_ref": "o14",
+      "test_ref": "tests/test_mesh_tools.py tests/test_daemon_mesh.py tests/test_mesh_judge.py",
+      "behavior_text": "asserts: answers from other agents enter fenced and attributed, never as instructions",
+      "contract_text": "answers from other agents enter fenced and attributed, never as instructions",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named tests ran green at 86aeabd (main, after the #117 merge)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:19:25",
+        "commit": "86aeabd"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 21
+    },
+    {
+      "id": "e15",
+      "obligation_ref": "o15",
+      "test_ref": "tests/test_persona_prompt.py tests/test_daemon_personas.py (29 tests)",
+      "behavior_text": "asserts: spoken prompt byte-identical to v1; typed differs by exactly the two speech lines (d1)",
+      "contract_text": "spoken prompt byte-identical to v1; typed differs by exactly the two speech lines (d1)",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named tests ran green at 86aeabd (main, after the #117 merge)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:19:25",
+        "commit": "86aeabd"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 22
+    },
+    {
+      "id": "e16",
+      "obligation_ref": "o16",
+      "test_ref": "tests/test_daemon_personas.py tests/test_daemon_models.py",
+      "behavior_text": "asserts: a conversation keeps its persona and model across restore",
+      "contract_text": "a conversation keeps its persona and model across restore",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named tests ran green at 86aeabd (main, after the #117 merge)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:19:25",
+        "commit": "86aeabd"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 23
+    },
+    {
+      "id": "e17",
+      "obligation_ref": "o17",
+      "test_ref": "tests/test_daemon_models.py (31 tests)",
+      "behavior_text": "asserts: a distinct model-unavailable error, never a fallback to another model",
+      "contract_text": "a distinct model-unavailable error, never a fallback to another model",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named tests ran green at 86aeabd (main, after the #117 merge)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:19:25",
+        "commit": "86aeabd"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 24
+    },
+    {
+      "id": "e18",
+      "obligation_ref": "o18",
+      "test_ref": "tests/test_daemon_models.py (31 tests)",
+      "behavior_text": "asserts: every reply records chat_role, chat_model and chat_host as the gateway reported",
+      "contract_text": "every reply records chat_role, chat_model and chat_host as the gateway reported",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named tests ran green at 86aeabd (main, after the #117 merge)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:19:25",
+        "commit": "86aeabd"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 25
+    },
+    {
+      "id": "e19",
+      "obligation_ref": "o19",
+      "test_ref": "tests/test_daemon_models.py (31 tests)",
+      "behavior_text": "asserts: summary and other bookkeeping stay on senses whatever the conversation's model",
+      "contract_text": "summary and other bookkeeping stay on senses whatever the conversation's model",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named tests ran green at 86aeabd (main, after the #117 merge)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:19:25",
+        "commit": "86aeabd"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 26
+    },
+    {
+      "id": "e20",
+      "obligation_ref": "o20",
+      "test_ref": "tests/test_http_personas.py tests/test_daemon_models.py tests/test_daemon_mesh.py",
+      "behavior_text": "asserts: status shows the capabilities snapshot age and counters that move",
+      "contract_text": "status shows the capabilities snapshot age and counters that move",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named tests ran green at 86aeabd (main, after the #117 merge)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:19:25",
+        "commit": "86aeabd"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 27
+    },
+    {
+      "id": "e21",
+      "obligation_ref": "o21",
+      "test_ref": "tests/test_daemon_mesh.py; web src/components/MeshCards.test.tsx, src/api/mesh.test.ts",
+      "behavior_text": "asserts: the page shows an 'agent is talking to Gwen' card and a mesh event at once",
+      "contract_text": "the page shows an 'agent is talking to Gwen' card and a mesh event at once",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named tests ran green at 86aeabd (main, after the #117 merge)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:19:25",
+        "commit": "86aeabd"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 28
+    },
+    {
+      "id": "e22",
+      "obligation_ref": "o22",
+      "test_ref": "web src/components/DockMeta.test.tsx PersonasView.test.tsx src/api/personas.test.ts src/api/models.test.ts (22 tests)",
+      "behavior_text": "asserts: the settings row under the dock and the Personas tab, built from the page's components",
+      "contract_text": "the settings row under the dock and the Personas tab, built from the page's components",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named tests ran green at 86aeabd (main, after the #117 merge)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:19:25",
+        "commit": "86aeabd"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 29
+    },
+    {
+      "id": "e23",
+      "obligation_ref": "o23",
+      "test_ref": "tests/test_daemon_chat_results.py tests/test_http_chat_results.py tests/test_daemon_streaming.py; web ChatLateAnswer/ChatLive/chatResults/liveText tests",
+      "behavior_text": "asserts results kept by request_id, streamed text published, waiting bubble recovers",
+      "contract_text": "typed answer outlives its request and streams (d4, d5)",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named tests ran green at 86aeabd (main, after the #117 merge)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:19:25",
+        "commit": "86aeabd"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 30
+    },
+    {
+      "id": "e24",
+      "obligation_ref": "o23",
+      "test_ref": "t19 live, Claude in Chrome on http://100.127.105.72:18791",
+      "behavior_text": "observed: cortex answered in full after 72.5 s with live reasoning and a Reasoning fold; the answer reappeared after a reload and after leaving the page",
+      "contract_text": "typed chat with a chosen model",
+      "evidence_type": "observation",
+      "strength": "fidelity",
+      "strength_basis": "observed once on the rig by the agent driving the operator's browser; operator: 'Experience is perfect'; n = 1, not a latency claim; on t19 daemons pinned up to 21dfa21, no run timestamp kept",
+      "outcome": "pass",
+      "run": null,
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 31
+    },
+    {
+      "id": "e25",
+      "obligation_ref": "o24",
+      "test_ref": "tests/test_daemon_models.py (31 tests)",
+      "behavior_text": "asserts the chosen role answers and is traced",
+      "contract_text": "model choice per conversation",
+      "evidence_type": "automated",
+      "strength": "execution",
+      "strength_basis": "the named tests ran green at 86aeabd (main, after the #117 merge)",
+      "outcome": "pass",
+      "run": {
+        "timestamp": "2026-10-31T19:19:25",
+        "commit": "86aeabd"
+      },
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 32
+    },
+    {
+      "id": "e26",
+      "obligation_ref": "o24",
+      "test_ref": "t19 live, Claude in Chrome",
+      "behavior_text": "observed: worker (Nemotron Bolt) looped on tool calls and gave no answer; cortex and senses answered",
+      "contract_text": "any offered role answers",
+      "evidence_type": "observation",
+      "strength": "fidelity",
+      "strength_basis": "observed on the rig during t19; unfixed (follow-up: Bolt's final no-tools step); no run timestamp kept",
+      "outcome": "fail",
+      "run": null,
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 33
+    },
+    {
+      "id": "e27",
+      "obligation_ref": "o25",
+      "test_ref": "https://claude.ai/artifact/PEUzLDEqvbEEc7DWN3LpuG",
+      "behavior_text": "the operator approved mockup v2",
+      "contract_text": "UI is mockup v2",
+      "evidence_type": "manual",
+      "strength": "fidelity",
+      "strength_basis": "the operator's approval in chat on 2026-10-31; the live-reasoning panel added later (d5) is not yet in the mockup",
+      "outcome": "pass",
+      "run": null,
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false,
+      "seq": 34
+    }
+  ],
+  "deltas": [
+    {
+      "id": "b1",
+      "kind": "amended",
+      "behavior_text": "built-in Gwen's typed prompt drops the two speech-only lines; spoken stays byte-identical",
+      "caused_by": [
+        "d1"
+      ],
+      "evidence_refs": [
+        "e15"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b2",
+      "kind": "added",
+      "behavior_text": "an answer after its ask expired still lands, marked after_expiry and late",
+      "caused_by": [
+        "d2"
+      ],
+      "evidence_refs": [
+        "e8"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b3",
+      "kind": "amended",
+      "behavior_text": "an agent turn starts only when a message is addressed to Gwen, never from a system- nick",
+      "caused_by": [
+        "d3"
+      ],
+      "evidence_refs": [
+        "e6"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b4",
+      "kind": "added",
+      "behavior_text": "a typed answer outlives its HTTP request (request_id, GET /api/chat/{id}, recovered after leaving the page)",
+      "caused_by": [
+        "d4"
+      ],
+      "evidence_refs": [
+        "e23",
+        "e24"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b5",
+      "kind": "added",
+      "behavior_text": "every completion streams; the clock bounds silence; reasoning and answer shown live",
+      "caused_by": [
+        "d5"
+      ],
+      "evidence_refs": [
+        "e23",
+        "e24"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b6",
+      "kind": "amended",
+      "behavior_text": "a translated remember stores the model's English fact with the operator's sentence beside it; forget matches either",
+      "caused_by": [
+        "d6"
+      ],
+      "evidence_refs": [
+        "e10"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    },
+    {
+      "id": "b7",
+      "kind": "added",
+      "behavior_text": "a small senses call ('was it for me?') decides which listening ask a mesh line answers; the rules are its fallback",
+      "caused_by": [
+        "d7"
+      ],
+      "evidence_refs": [
+        "e14",
+        "e7"
+      ],
+      "origin": "llm",
+      "status": "proposed",
+      "superseded": false
+    }
+  ],
   "supersessions": []
 }

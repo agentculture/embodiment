@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 Format follows [Keep a Changelog](https://keepachangelog.com/). This project
 adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.24.1] - 2026-10-31
+
+### Added
+
+- The delivery record for the 0.24.0 cycle (#117): `docs/deliveries/2026-10-31-gwen-personas-model-choice-culture-residency.md`, and the /validate-delivery records (obligations o1-o27, evidence e1-e27, deltas b1-b7, lapses l4-l5), all proposed for the operator's adjudication. The run is partial: t19's live mesh ask (c33) and the published acceptance are still open, and worker (Bolt) fails live (e26).
+
 ## [0.24.0] - 2026-10-31
 
 ### Added
